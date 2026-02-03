@@ -1,16 +1,17 @@
 import logging
 import os
 from datetime import datetime
+from functools import lru_cache
 from qdrant_client import QdrantClient
 from qdrant_client.http import models as qdrant_models
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Iterable, Tuple
 
 logger = logging.getLogger(__name__)
 
 # Configuración de Colecciones (Solo 2 principales)
 COLLECTION_CATALOG = "catalog_items"
 COLLECTION_KNOWLEDGE = "knowledge_docs"
-EMBEDDING_DIMENSION = 1024 # Standardized dimension
+EMBEDDING_DIMENSION = 1024  # Standardized dimension
 
 def get_qdrant_client():
     """Singleton getter for Qdrant client."""
@@ -19,6 +20,7 @@ def get_qdrant_client():
     if not url:
         return None
     return QdrantClient(url=url, api_key=api_key)
+
 
 def ensure_collections_exist():
     """Ensure standard collections exist with correct config."""
@@ -48,8 +50,57 @@ def ensure_collections_exist():
             client.create_payload_index(name, "tenant_type", qdrant_models.PayloadSchemaType.KEYWORD)
             client.create_payload_index(name, "rubro", qdrant_models.PayloadSchemaType.KEYWORD)
             if name == COLLECTION_CATALOG:
-                 client.create_payload_index(name, "precio", qdrant_models.PayloadSchemaType.FLOAT)
-                 client.create_payload_index(name, "stock", qdrant_models.PayloadSchemaType.INTEGER)
+                client.create_payload_index(name, "price", qdrant_models.PayloadSchemaType.FLOAT)
+                client.create_payload_index(name, "stock", qdrant_models.PayloadSchemaType.INTEGER)
+
+
+def _extra_metadata_entries(extra_metadata: Dict[str, Any], prefix: str = "extra_metadata") -> Iterable[Tuple[str, Any]]:
+    for key, value in extra_metadata.items():
+        if value is None:
+            continue
+        nested_key = f"{prefix}.{key}"
+        if isinstance(value, dict):
+            yield from _extra_metadata_entries(value, prefix=nested_key)
+        else:
+            yield nested_key, value
+
+
+def _payload_schema_for_value(value: Any) -> qdrant_models.PayloadSchemaType:
+    if isinstance(value, bool):
+        return qdrant_models.PayloadSchemaType.BOOL
+    if isinstance(value, int) and not isinstance(value, bool):
+        return qdrant_models.PayloadSchemaType.INTEGER
+    if isinstance(value, float):
+        return qdrant_models.PayloadSchemaType.FLOAT
+    if isinstance(value, list):
+        return qdrant_models.PayloadSchemaType.KEYWORD
+    return qdrant_models.PayloadSchemaType.KEYWORD
+
+
+@lru_cache(maxsize=1)
+def _collection_payload_schema(collection_name: str) -> Dict[str, Any]:
+    client = get_qdrant_client()
+    if not client:
+        return {}
+    collection_info = client.get_collection(collection_name=collection_name)
+    return collection_info.payload_schema or {}
+
+
+def _ensure_extra_metadata_indexes(extra_metadata: Dict[str, Any]):
+    if not extra_metadata:
+        return
+    client = get_qdrant_client()
+    if not client:
+        return
+    payload_schema = _collection_payload_schema(COLLECTION_CATALOG)
+    for field_key, field_value in _extra_metadata_entries(extra_metadata):
+        if field_key in payload_schema:
+            continue
+        schema_type = _payload_schema_for_value(field_value)
+        logger.info("Creating Qdrant payload index for %s (%s)", field_key, schema_type)
+        client.create_payload_index(COLLECTION_CATALOG, field_key, schema_type)
+        payload_schema[field_key] = schema_type
+
 
 def index_catalog_item(tenant_id: str, item_data: Dict[str, Any], embedding: List[float]):
     """Index a catalog item into the shared catalog collection."""
@@ -70,6 +121,7 @@ def index_catalog_item(tenant_id: str, item_data: Dict[str, Any], embedding: Lis
     }
     extra_metadata = item_data.get("extra_metadata") or {}
     if isinstance(extra_metadata, dict) and extra_metadata:
+        _ensure_extra_metadata_indexes(extra_metadata)
         payload["extra_metadata"] = extra_metadata
 
     client.upsert(
@@ -83,6 +135,7 @@ def index_catalog_item(tenant_id: str, item_data: Dict[str, Any], embedding: Lis
         ]
     )
     return True
+
 
 def search_catalog(tenant_id: str, query_vector: List[float], limit: int = 5, filters: Dict = None):
     """Search catalog items scoped to a specific tenant."""
