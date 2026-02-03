@@ -998,6 +998,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 promo_text=promo_text,
                 contacto_especializado=contacto_especializado,
                 info_url=municipio_config.get("link_web") or municipio_config.get("url_web"),
+                include_menu=channel_value != "whatsapp",
             )
             if channel_value == "whatsapp":
                 receipt = response_payload["whatsapp_receipt"]
@@ -1279,6 +1280,7 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
                     "promo_text": promo_text,
                 }
             }
+            channel_value = (self.context.get("channel") or "").strip().lower()
             response_payload["whatsapp_receipt"] = render_ticket_whatsapp(
                 kind="sugerencia",
                 nombre=nombre_vecino_final,
@@ -1293,7 +1295,6 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
                 promo_text=promo_text,
                 info_url=municipio_config.get("link_web") or municipio_config.get("url_web"),
             )
-            channel_value = (self.context.get("channel") or "").strip().lower()
             if channel_value == "whatsapp":
                 receipt = response_payload["whatsapp_receipt"]
                 response_payload["message_to_user"] = receipt.get("body_text") or respuesta_formateada
