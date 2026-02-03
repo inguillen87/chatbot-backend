@@ -670,7 +670,7 @@ def llamar_llm_para_json_estructurado(system_prompt: str, user_prompt: str) -> O
             system_prompt_especifico=system_prompt,
             user_prompt=user_prompt,
             temperature=0.1,  # Lower temp for more deterministic JSON extraction
-            json_output=True
+            json_output=True, model="gpt-4o"
         )
 
         if not response_text:

@@ -30,6 +30,89 @@ document_intelligence_public_bp = Blueprint(
 )
 
 
+
+def parse_price(v: Any) -> float:
+    """Robust price parsing for Argentine format."""
+    if v is None:
+        return 0.0
+    s = str(v).strip()
+    # Remove currency symbols and whitespace
+    s = re.sub(r"[^\d.,-]", "", s)
+
+    if not s:
+        return 0.0
+
+    # Argentine format: 1.500,00 -> 1500.00
+    # US format: 1,500.00 -> 1500.00
+
+    if "," in s and "." in s:
+        if s.rfind(",") > s.rfind("."): # 1.500,00
+            s = s.replace(".", "").replace(",", ".")
+        else: # 1,500.00
+            s = s.replace(",", "")
+    elif "," in s: # 1500,00 or 1,500 (ambiguous, assume decimal if 2 digits after, else thousands?)
+        # Simple heuristic: if comma is close to end, it's decimal
+        if len(s) - s.rfind(",") <= 3:
+            s = s.replace(",", ".")
+        else:
+            s = s.replace(",", "")
+
+    try:
+        return float(s)
+    except ValueError:
+        return 0.0
+
+def _map_columns_heuristically(df: pd.DataFrame) -> pd.DataFrame:
+    """Map columns to standard names using regex synonyms."""
+    if df is None or df.empty:
+        return df
+
+    mapping = {}
+    synonyms = {
+        "sku": ["codigo", "id", "ref", "cod", "articulo"],
+        "nombre": ["producto", "descripcion", "detalle", "item", "nombre"],
+        "precio": ["valor", "importe", "costo", "precio venta", "precio unitario", "p.unit", "precio_lista"],
+        "stock": ["cantidad", "existencia", "disponible", "cant"],
+        "marca": ["brand", "fabricante", "bodega"],
+        "categoria": ["rubro", "familia", "tipo", "seccion"],
+        "unidad": ["medida", "uni", "pres"],
+        "moneda": ["divisa"]
+    }
+
+    used_cols = set()
+
+    for col in df.columns:
+        col_lower = str(col).lower().strip()
+        mapped = None
+
+        # Exact match
+        if col_lower in synonyms:
+            mapped = col_lower
+
+        # Synonym match
+        if not mapped:
+            for standard, syns in synonyms.items():
+                if any(s in col_lower for s in syns):
+                    mapped = standard
+                    break
+
+        if mapped and mapped not in used_cols:
+            mapping[col] = mapped
+            used_cols.add(mapped)
+
+    if mapping:
+        # Create a copy with renamed columns for the preview,
+        # but maybe we should keep original names and just suggest mapping?
+        # The frontend expects "columns" list.
+        # For the preview logic which expects specific keys in the 'rows' for the commit phase,
+        # we might want to rename.
+        # But wait, the commit phase uses `columns` sent back from frontend.
+        # If we rename here, the frontend shows mapped names.
+        return df.rename(columns=mapping)
+
+    return df
+
+
 def _build_columns(columns: List[Any]) -> List[dict[str, str]]:
     parsed: List[dict[str, str]] = []
     for col in columns:
@@ -170,33 +253,50 @@ def document_intelligence_preview_options(pyme_id: int):
 
 
 def _catalog_llm_prompt(rubro: Optional[str] = None) -> str:
-    rubro_hint = f"Rubro sugerido: {rubro}. " if rubro else ""
+    rubro_hint = f"Contexto del negocio: {rubro}. " if rubro else ""
     return (
-        "Extrae la tabla del catálogo en JSON con claves "
-        "'columns' (lista de strings) y 'rows' (lista de listas ordenadas según columns). "
-        "Detecta los encabezados reales del documento (no fuerces columnas fijas) y "
-        "respeta el orden original. "
+        "Analiza el documento o texto y extrae la información de productos en formato estructurado JSON. "
+        "El objetivo es crear una vista previa fiel del catálogo. "
+        "Formato de respuesta esperado (JSON Object): "
+        "{ "
+        "  \"columns\": [\"Nombre\", \"Precio\", \"Marca\", ...], "
+        "  \"rows\": [[\"Vino Malbec\", \"1500.00\", \"Rutini\", ...], ...] "
+        "} "
         f"{rubro_hint}"
-        "Si el catálogo trae columnas de marca, presentación, variedad, unidades, medidas, "
-        "precio unitario, precio por caja, moneda, SKU, stock u otros campos, inclúyelos tal cual. "
-        "No inventes datos, deja vacío si no se ve. "
-        "Mantén los valores numéricos tal como aparecen (puntos para miles, comas decimales)."
+        "Instrucciones clave: "
+        "1. Identifica los encabezados reales. Si no hay encabezados, infiérelos (ej: Producto, Precio, SKU, Variedad). "
+        "2. Extrae TODOS los productos visibles. "
+        "3. Maneja formatos de precios argentinos (ej: 1.500,00 es mil quinientos; 1500 es mil quinientos). "
+        "4. Si hay múltiples columnas de precios (ej: Precio Caja, Precio Unitario), inclúyelas todas en 'columns' y 'rows'. "
+        "5. No inventes datos. Si una celda está vacía, usa string vacío \"\". "
+        "6. Si la imagen contiene promociones o listas complejas, intenta tabularlas lo mejor posible. "
+        "7. Responde SOLO el JSON."
     )
 
 
 def _catalog_items_prompt(rubro: Optional[str] = None) -> str:
-    rubro_hint = f"Rubro sugerido: {rubro}. " if rubro else ""
+    rubro_hint = f"Contexto del negocio: {rubro}. " if rubro else ""
     return (
-        "Eres un asistente experto en normalizar catálogos. "
-        "Convertí una tabla con columnas variables en una lista JSON de items. "
+        "Eres un asistente experto en normalizar catálogos para una plataforma de e-commerce y IA. "
+        "Tu tarea es convertir datos tabulares (columns/rows) en una lista de objetos JSON estandarizados. "
         f"{rubro_hint}"
-        "Cada item debe incluir, cuando esté disponible: "
-        "nombre, sku, marca, categoria, precio, moneda, stock, unidad, presentacion, descripcion. "
-        "Además, incluí campos dinámicos en 'extra_metadata' cuando existan (por ejemplo: "
-        "varietal, anada, pallet, caja, unidades_por_caja, precio_por_caja, "
-        "litros, ml, kg, gramos, bolsa, medida, alto, ancho, largo, peso). "
-        "No inventes datos; si falta un campo, dejalo vacío o null. "
-        "Mantén los precios tal como aparecen (puntos miles, comas decimales)."
+        "Output esperado: JSON con clave 'items', que es una lista de objetos. "
+        "Cada objeto debe tener: "
+        " - nombre (string, obligatorio) "
+        " - sku (string, opcional) "
+        " - marca (string, opcional) "
+        " - categoria (string, opcional) "
+        " - precio (number/float, extrae solo el valor numérico, ej: 1500.00) "
+        " - moneda (string, ej: ARS, USD) "
+        " - stock (number, opcional) "
+        " - unidad (string, ej: un, kg, lt) "
+        " - presentacion (string, ej: Caja x 6, Botella 750ml) "
+        " - descripcion (string, detalles adicionales) "
+        " - extra_metadata (dict, para cualquier otro campo: varietal, anada, region, etc.) "
+        "REGLAS: "
+        "1. Normaliza los precios a float. Si dice '$1.500', es 1500.0. "
+        "2. Detecta variantes implícitas si es necesario. "
+        "3. Si hay info en 'extra_metadata', usa claves en snake_case."
     )
 
 
@@ -412,14 +512,23 @@ def _document_intelligence_preview(current_user, pyme_id: int):
     df = df if df is not None else pd.DataFrame()
     df = df.dropna(how="all")
 
+    if df.empty:
+        return jsonify({
+            "error": "No se pudieron detectar datos en el archivo.",
+            "details": "El análisis automático no encontró tablas válidas. Intente subir un CSV o Excel estándar.",
+            "retry_with_csv": True
+        }), 422
+
     max_rows = request.form.get("maxRows", type=int) or 50
     preview_df = df.head(max_rows).fillna("")
     if not preview_df.empty and len(preview_df.columns) > 0:
-        csv_sample = preview_df.to_csv(index=False)
-        structured = analyze_text_structured(csv_sample, _catalog_llm_prompt(rubro_hint))
-        structured_df = _build_df_from_vision(structured)
-        if structured_df is not None and not structured_df.empty:
-            preview_df = structured_df.head(max_rows).fillna("")
+        # HEURISTIC MAPPING INSTEAD OF LLM FOR TABULAR DATA
+        preview_df = _map_columns_heuristically(preview_df)
+        # csv_sample = preview_df.to_csv(index=False)
+        # structured = analyze_text_structured(csv_sample, _catalog_llm_prompt(rubro_hint))
+        # structured_df = _build_df_from_vision(structured)
+        # if structured_df is not None and not structured_df.empty:
+        #    preview_df = structured_df.head(max_rows).fillna("")
 
     # Ensure all column names are strings to avoid JSON serialization issues (e.g. sorting keys)
     preview_df.columns = preview_df.columns.map(lambda x: str(x) if x is not None else "")
@@ -500,7 +609,7 @@ def document_intelligence_commit(current_user, pyme_id: int):
         if not nombre:
             continue
         sku = _sanitize_sku(item.get("sku"), f"item-{idx}-{nombre}")
-        precio = item.get("precio") or item.get("price")
+        precio = parse_price(item.get("precio") or item.get("price"))
         normalized_items.append({
             "nombre": nombre,
             "sku": sku,

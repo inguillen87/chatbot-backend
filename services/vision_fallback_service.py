@@ -27,116 +27,76 @@ def _safe_json_loads(text: str) -> Dict[str, Any]:
 
     candidates = []
     if text:
-        text = _strip_code_fences(text.strip())
-        candidates.append(text)
-        candidates.append(re.sub(r"[\x00-\x1f]", " ", text))
-        obj_start = text.find("{")
-        obj_end = text.rfind("}")
+        text_stripped = _strip_code_fences(text.strip())
+        candidates.append(text_stripped)
+        candidates.append(re.sub(r"[\x00-\x1f]", " ", text_stripped))
+
+        obj_start = text_stripped.find("{")
+        obj_end = text_stripped.rfind("}")
         if obj_start != -1 and obj_end != -1 and obj_end > obj_start:
-            candidates.append(text[obj_start : obj_end + 1])
-        arr_start = text.find("[")
-        arr_end = text.rfind("]")
+            candidates.append(text_stripped[obj_start : obj_end + 1])
+
+        arr_start = text_stripped.find("[")
+        arr_end = text_stripped.rfind("]")
         if arr_start != -1 and arr_end != -1 and arr_end > arr_start:
-            candidates.append(text[arr_start : arr_end + 1])
+            candidates.append(text_stripped[arr_start : arr_end + 1])
 
     def _attempt(payload: str) -> Optional[Dict[str, Any]]:
         try:
             return json.loads(payload, strict=False)
         except json.JSONDecodeError:
             cleaned = re.sub(r"[\x00-\x1f]", " ", payload)
-            cleaned = re.sub(r",\\s*([}\\]])", r"\\1", cleaned)
+            cleaned = re.sub(r",\s*([}\]])", r"\1", cleaned)
             try:
                 return json.loads(cleaned, strict=False)
             except json.JSONDecodeError:
-                return literal_eval(cleaned)
+                try:
+                    return literal_eval(payload)
+                except Exception:
+                    return None
 
-    for candidate in candidates:
-        try:
-            parsed = _attempt(candidate)
-            if isinstance(parsed, dict):
-                return parsed
-            if isinstance(parsed, list):
-                return {"rows": parsed}
-        except Exception:
-            continue
+    for cand in candidates:
+        res = _attempt(cand)
+        if isinstance(res, (dict, list)):
+            return res if isinstance(res, dict) else {"data": res}
 
     logger.warning("No se pudo parsear JSON válido desde la respuesta del modelo.")
-    return {}
-
+    return None
 
 def _call_openai(image_bytes: bytes, custom_prompt: Optional[str] = None) -> Optional[Dict[str, Any]]:
-    """Analyze an image using OpenAI's vision models."""
+    """Analyze an image using OpenAI and return structured JSON."""
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         logger.error("OPENAI_API_KEY not found in environment variables.")
         return None
     try:
         b64 = base64.b64encode(image_bytes).decode("utf-8")
-        # Use a client that ignores proxy environment variables to avoid
-        # `Client.__init__()` receiving unsupported arguments.
         http_client = httpx.Client(proxy=None, trust_env=False)
         client = OpenAI(api_key=api_key, http_client=http_client)
         prompt = custom_prompt or (
-            "Describe la imagen en español para un sistema de reclamos municipales. "
-            "Devuelve un JSON con las claves: labels (lista de palabras clave en español), "
-            "objects (lista de objetos principales en español) y text (cadena con cualquier texto encontrado en español)."
+            "Describe the image for a municipal complaint system. "
+            "Return JSON with keys: labels, objects, text."
         )
         prompt = _ensure_json_prompt(prompt)
 
-        # Use the modern Responses API when available; otherwise fall back
-        # to chat completions for older OpenAI client versions. If the
-        # Responses API call fails for any reason, attempt the chat
-        # completions path.
-        text = ""
-        if hasattr(client, "responses"):
-            try:
-                response = client.responses.create(
-                    model="gpt-4.1",
-                    input=[{
-                        "role": "user",
-                        "content": [
-                            {"type": "input_text", "text": prompt},
-                            {"type": "input_image", "image": {"data": b64, "mime_type": "image/jpeg"}},
-                        ],
-                    }],
-                    max_output_tokens=300,
-                    response_format={"type": "json_object"},
-                )
-                text = getattr(response, "output_text", "") or response.output[0].content[0].text
-            except Exception as exc:
-                logger.warning("Responses API unavailable (%s); falling back to chat completions", exc)
-
-        if not text:
-            completion = client.chat.completions.create(
-                model="gpt-4.1",
-                messages=[{
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
-                    ],
-                }],
-                max_tokens=300,
-                response_format={"type": "json_object"},
-            )
-            message = completion.choices[0].message
-            # ``message`` may be a dict (old SDK) or a pydantic object (new SDK)
-            content = (
-                message.get("content") if isinstance(message, dict) else getattr(message, "content", None)
-            )
-            if isinstance(content, list):
-                parts = []
-                for part in content:
-                    parts.append(
-                        part.get("text") if isinstance(part, dict) else getattr(part, "text", "")
-                    )
-                text = "".join(parts)
-            else:
-                text = content
-
-        if not text:
+        completion = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+                ],
+            }],
+            max_tokens=4096,
+            response_format={"type": "json_object"},
+        )
+        message = completion.choices[0].message
+        content = message.content
+        logger.info(f"DEBUG RAW OPENAI CONTENT: {content}")
+        if not content:
             raise ValueError("No content returned from OpenAI")
-        return _safe_json_loads(text)
+        return _safe_json_loads(content)
     except Exception as e:
         logger.error(f"OpenAI Vision failed: {e}", exc_info=True)
         return None
@@ -157,41 +117,20 @@ def _call_openai_image_text(image_bytes: bytes, custom_prompt: Optional[str] = N
             "No agregues explicaciones."
         )
 
-        text = ""
-        if hasattr(client, "responses"):
-            try:
-                response = client.responses.create(
-                    model="gpt-4.1",
-                    input=[{
-                        "role": "user",
-                        "content": [
-                            {"type": "input_text", "text": prompt},
-                            {"type": "input_image", "image": {"data": b64, "mime_type": "image/jpeg"}},
-                        ],
-                    }],
-                    max_output_tokens=800,
-                )
-                text = getattr(response, "output_text", "") or response.output[0].content[0].text
-            except Exception as exc:
-                logger.warning("Responses API unavailable for OCR (%s); falling back to chat completions", exc)
-
-        if not text:
-            completion = client.chat.completions.create(
-                model="gpt-4.1",
-                messages=[{
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
-                    ],
-                }],
-                max_tokens=800,
-            )
-            message = completion.choices[0].message
-            content = message.get("content") if isinstance(message, dict) else getattr(message, "content", None)
-            text = content if isinstance(content, str) else ""
-
-        return text.strip() or None
+        completion = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+                ],
+            }],
+            max_tokens=4096,
+        )
+        message = completion.choices[0].message
+        content = message.content
+        return content.strip() if content else None
     except Exception as exc:
         logger.error("OpenAI OCR failed: %s", exc, exc_info=True)
         return None
@@ -213,35 +152,21 @@ def _call_openai_text(text: str, custom_prompt: Optional[str] = None) -> Optiona
         )
         prompt = _ensure_json_prompt(prompt)
 
-        text_response = ""
-        if hasattr(client, "responses"):
-            response = client.responses.create(
-                model="gpt-4.1",
-                input=[{
-                    "role": "user",
-                    "content": [{"type": "input_text", "text": f"{prompt}\n\n{str(text)}"}],
-                }],
-                max_output_tokens=600,
-                response_format={"type": "json_object"},
-            )
-            text_response = getattr(response, "output_text", "") or response.output[0].content[0].text
-        if not text_response:
-            completion = client.chat.completions.create(
-                model="gpt-4.1",
-                messages=[{
-                    "role": "user",
-                    "content": f"{prompt}\n\n{str(text)}",
-                }],
-                max_tokens=600,
-                response_format={"type": "json_object"},
-            )
-            message = completion.choices[0].message
-            content = message.get("content") if isinstance(message, dict) else getattr(message, "content", None)
-            text_response = content if isinstance(content, str) else ""
-
-        if not text_response:
+        completion = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{
+                "role": "user",
+                "content": f"{prompt}\n\n{str(text)}",
+            }],
+            max_tokens=4096,
+            response_format={"type": "json_object"},
+        )
+        message = completion.choices[0].message
+        content = message.content
+        logger.info(f"DEBUG RAW OPENAI CONTENT: {content}")
+        if not content:
             raise ValueError("No content returned from OpenAI")
-        return _safe_json_loads(text_response)
+        return _safe_json_loads(content)
     except Exception as e:
         logger.error(f"OpenAI text analysis failed: {e}", exc_info=True)
         return None
@@ -266,7 +191,7 @@ def _call_cohere(image_bytes: bytes, custom_prompt: Optional[str] = None) -> Opt
             )
             text = resp.text
         except TypeError:
-            # Older SDKs may not support the ``images`` parameter; fall back to generate()
+            # Older SDKs may not support the images parameter; fall back to generate()
             resp = co.generate(
                 model="command-r-plus",
                 prompt=prompt,
