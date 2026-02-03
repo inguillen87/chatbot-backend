@@ -98,12 +98,16 @@ def document_intelligence_preview_options(pyme_id: int):
     return "", 204
 
 
-def _catalog_llm_prompt() -> str:
+def _catalog_llm_prompt(rubro: Optional[str] = None) -> str:
+    rubro_hint = f"Rubro sugerido: {rubro}. " if rubro else ""
     return (
         "Extrae la tabla del catálogo en JSON con claves "
         "'columns' (lista de strings) y 'rows' (lista de listas ordenadas según columns). "
-        "Incluye columnas como Marca, Varietal, Unidades/Caja, Pallet, "
-        "Precio Caja, Precio Botella, Sugerido Público si están presentes. "
+        "Detecta los encabezados reales del documento (no fuerces columnas fijas) y "
+        "respeta el orden original. "
+        f"{rubro_hint}"
+        "Si el catálogo trae columnas de marca, presentación, variedad, unidades, medidas, "
+        "precio unitario, precio por caja, moneda, SKU, stock u otros campos, inclúyelos tal cual. "
         "No inventes datos, deja vacío si no se ve. "
         "Mantén los valores numéricos tal como aparecen (puntos para miles, comas decimales)."
     )
@@ -131,6 +135,8 @@ def _document_intelligence_preview(current_user, pyme_id: int):
     header_index = 0 if header_row is None else header_row
 
     filename = uploaded.filename.lower() if uploaded.filename else ""
+
+    rubro_hint = request.form.get("rubro") or request.form.get("rubroSlug")
 
     if filename.endswith(".pdf"):
         try:
@@ -181,7 +187,10 @@ def _document_intelligence_preview(current_user, pyme_id: int):
                     image = page_for_image.to_image(resolution=300).original
                     buffer = io.BytesIO()
                     image.save(buffer, format="JPEG")
-                    vision = analyze_image_structured(buffer.getvalue(), _catalog_llm_prompt())
+                    vision = analyze_image_structured(
+                        buffer.getvalue(),
+                        _catalog_llm_prompt(rubro_hint),
+                    )
                     vision_df = _build_df_from_vision(vision)
                     if vision_df is not None and not vision_df.empty:
                         df = vision_df
@@ -199,7 +208,7 @@ def _document_intelligence_preview(current_user, pyme_id: int):
 
                 if df is None or df.empty:
                     text = page_for_image.extract_text() or ""
-                    structured = analyze_text_structured(text, _catalog_llm_prompt())
+                    structured = analyze_text_structured(text, _catalog_llm_prompt(rubro_hint))
                     structured_df = _build_df_from_vision(structured)
                     if structured_df is not None and not structured_df.empty:
                         df = structured_df
@@ -234,7 +243,7 @@ def _document_intelligence_preview(current_user, pyme_id: int):
     max_rows = request.form.get("maxRows", type=int) or 50
     preview_df = df.head(max_rows).fillna("")
     csv_sample = preview_df.to_csv(index=False)
-    structured = analyze_text_structured(csv_sample, _catalog_llm_prompt())
+    structured = analyze_text_structured(csv_sample, _catalog_llm_prompt(rubro_hint))
     structured_df = _build_df_from_vision(structured)
     if structured_df is not None and not structured_df.empty:
         preview_df = structured_df.head(max_rows).fillna("")
