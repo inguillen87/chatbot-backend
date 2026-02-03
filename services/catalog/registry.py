@@ -35,12 +35,26 @@ class CatalogProcessorRegistry:
         except Exception as e:
             print(f"Error registering processor {processor_cls}: {e}")
 
+    def _normalize_rubro_slug(self, rubro_slug: str) -> str:
+        slug = (rubro_slug or "").lower().strip()
+        if not slug:
+            return "generic"
+        if "bodega" in slug or "vino" in slug or "vinos" in slug or "vinoteca" in slug:
+            return "bodega"
+        if "indumentaria" in slug or "ropa" in slug or "textil" in slug:
+            return "indumentaria"
+        if "ortopedia" in slug or "salud" in slug or "medic" in slug:
+            return "ortopedia"
+        if "corralon" in slug or "construccion" in slug or "construcción" in slug or "ferreteria" in slug:
+            return "corralon"
+        return slug
+
     def get_processor(self, rubro_slug: str) -> CatalogProcessor:
         """
         Returns a configured instance of the appropriate processor.
         """
         # Normalize slug
-        target_slug = rubro_slug.lower().strip()
+        target_slug = self._normalize_rubro_slug(rubro_slug)
 
         # Determine which processor class to use
         # If specific processor exists for this rubro, use it.
