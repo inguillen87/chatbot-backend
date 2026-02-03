@@ -1,6 +1,7 @@
 import os
 import uuid
 import logging
+from typing import Optional
 from werkzeug.utils import secure_filename
 from flask import Blueprint, g, request, jsonify, current_app, send_from_directory, render_template
 from socket_service import emit_ticket_update, emit_ticket_comment, emit_new_ticket
