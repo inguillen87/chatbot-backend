@@ -204,11 +204,20 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
     welcome_title = cfg.get("widget_welcome_title") or cfg.get("welcome_title") or tenant.nombre
     welcome_subtitle = cfg.get("widget_welcome_subtitle") or cfg.get("welcome_subtitle") or "Asistente Virtual"
 
+    position = cfg.get("widget_position") or cfg.get("position")
+    border_radius = cfg.get("widget_border_radius") or cfg.get("border_radius")
+    launcher_text = cfg.get("widget_launcher_text") or cfg.get("launcher_text")
+    header_title = cfg.get("widget_header_title") or cfg.get("header_title")
+    header_subtitle = cfg.get("widget_header_subtitle") or cfg.get("header_subtitle")
+
     width = cfg.get("widget_width") or "460px"
     height = cfg.get("widget_height") or "680px"
     closed_size = cfg.get("widget_closed_size") or "108px"
 
     script_url = current_app.config.get("WIDGET_SCRIPT_URL", "https://www.chatboc.ar/widget.js")
+
+    right_offset = cfg.get("widget_right", "20px")
+    left_offset = cfg.get("widget_left", right_offset)
 
     attrs = {
         "data-owner-token": canonical_token,
@@ -218,7 +227,6 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
         "data-closed-width": closed_size,
         "data-closed-height": closed_size,
         "data-bottom": cfg.get("widget_bottom", "20px"),
-        "data-right": cfg.get("widget_right", "20px"),
         "data-z-index": cfg.get("widget_z_index", "100000"),
         "data-endpoint": cfg.get("widget_endpoint") or tenant.tipo or "municipio",
         "data-theme": cfg.get("widget_theme") or cfg.get("tema") or "light",
@@ -237,6 +245,20 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
         "data-domain": tenant.dominio or None,
         "data-shadow-dom": "true",  # Ensure styles don't leak/conflict with host page
     }
+    if str(position).lower() == "left":
+        attrs["data-left"] = left_offset
+    else:
+        attrs["data-right"] = right_offset
+    if position:
+        attrs["data-position"] = position
+    if border_radius:
+        attrs["data-border-radius"] = border_radius
+    if launcher_text:
+        attrs["data-launcher-text"] = launcher_text
+    if header_title:
+        attrs["data-header-title"] = header_title
+    if header_subtitle:
+        attrs["data-header-subtitle"] = header_subtitle
 
     # Remove None values so the frontend only renders concrete attributes
     attrs = {k: v for k, v in attrs.items() if v is not None}
@@ -245,11 +267,28 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
     attr_snippet = " ".join(f"{k}='{v}'" for k, v in attrs.items())
     embed_snippet = f"<script src='{script_url}' async {attr_snippet}></script>"
 
+    builder_config = {
+        "welcome_title": welcome_title,
+        "welcome_subtitle": welcome_subtitle,
+        "cta_messages": cfg.get("cta_messages") or [],
+        "theme_config": cfg.get("theme_config") or {},
+        "channels": cfg.get("channels") or {},
+        "preview": cfg.get("preview") or {},
+        "layout": {
+            "position": position or "right",
+            "width": width,
+            "height": height,
+            "closed_size": closed_size,
+            "border_radius": border_radius,
+        },
+    }
+
     return {
         "script_url": script_url,
         "attributes": attrs,
         "embed_snippet": embed_snippet,
         "theme": theme,
+        "builder_config": builder_config,
         "marketplace": marketplace,
         "widget_token": canonical_token,
         "widget_token_cookie_name": current_app.config.get("WIDGET_TOKEN_COOKIE_NAME", "widget_token"),
@@ -280,6 +319,50 @@ def _normalize_widget_config(config: dict | None, widget_settings=None) -> dict:
 
     if isinstance(widget_settings, WidgetSettings):
         cfg.update(widget_settings.to_config_dict())
+
+    cfg.setdefault("cta_messages", [])
+    cfg.setdefault("theme_config", {})
+
+    channels_config = cfg.get("channels") if isinstance(cfg.get("channels"), dict) else {}
+    channels_config.setdefault(
+        "whatsapp",
+        {
+            "enabled": False,
+            "phone": cfg.get("whatsapp_phone") or "",
+            "cta": "Escribinos por WhatsApp",
+            "preview_message": "Hola, ¿en qué podemos ayudarte?",
+            "brand_name": cfg.get("whatsapp_brand") or cfg.get("tenant_name") or "",
+        },
+    )
+    channels_config.setdefault(
+        "telegram",
+        {
+            "enabled": False,
+            "username": cfg.get("telegram_username") or "",
+            "cta": "Chatear por Telegram",
+            "preview_message": "¡Estamos en Telegram!",
+            "brand_name": cfg.get("telegram_brand") or cfg.get("tenant_name") or "",
+        },
+    )
+    channels_config.setdefault(
+        "web_widget",
+        {
+            "enabled": True,
+            "cta": cfg.get("widget_launcher_text") or "¿Necesitás ayuda?",
+            "welcome_message": cfg.get("widget_welcome_message")
+            or cfg.get("widget_welcome_subtitle")
+            or "Asistente Virtual",
+            "brand_name": cfg.get("widget_brand") or cfg.get("tenant_name") or "",
+        },
+    )
+    cfg["channels"] = channels_config
+
+    preview_config = cfg.get("preview") if isinstance(cfg.get("preview"), dict) else {}
+    preview_config.setdefault("device", "desktop")
+    preview_config.setdefault("show_branding", True)
+    preview_config.setdefault("alignment", "right")
+    preview_config.setdefault("card_density", "comfortable")
+    cfg["preview"] = preview_config
 
     return cfg
 
@@ -590,9 +673,11 @@ def widget_config():
 
     is_integration_preview = "/integracion" in (request.headers.get("Referer", "") or "")
 
+    widget_payload = _build_widget_embed_payload(tenant, widget_token)
     payload = {
         "tenant": tenant.to_public_dict(),
-        "widget": _build_widget_embed_payload(tenant, widget_token),
+        "widget": widget_payload,
+        "builder_config": widget_payload.get("builder_config", {}),
         # The integration builder renders its own preview iframe; the global
         # site-wide widget bubble must stay hidden to avoid duplicated widgets
         # on /t/[tenant]/integracion.
