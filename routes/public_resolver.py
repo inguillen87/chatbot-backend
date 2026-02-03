@@ -221,6 +221,8 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
 
     attrs = {
         "data-owner-token": canonical_token,
+        "data-tenant": tenant.slug,
+        "data-tenant-slug": tenant.slug,
         "data-default-open": str(cfg.get("widget_default_open", False)).lower(),
         "data-width": width,
         "data-height": height,
@@ -274,6 +276,8 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
         "theme_config": cfg.get("theme_config") or {},
         "channels": cfg.get("channels") or {},
         "preview": cfg.get("preview") or {},
+        "embed_snippet": embed_snippet,
+        "attributes": attrs,
         "layout": {
             "position": position or "right",
             "width": width,
