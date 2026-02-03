@@ -779,6 +779,28 @@ class CrearReclamoActionHandler(BaseActionHandler):
             nro_ticket_str = f"M-{ticket_nro}"
             logger.info(f"Ticket {nro_ticket_str} creado exitosamente.")
 
+            try:
+                from models import MunicipioTicket
+                from routes.ticket import serialize_ticket_to_json
+                from socket_service import emit_new_ticket
+
+                ticket_obj = db.session.get(MunicipioTicket, ticket_creado.get("id"))
+                if ticket_obj:
+                    ticket_json = serialize_ticket_to_json(ticket_obj, "municipio")
+                    emit_new_ticket(ticket_json)
+                else:
+                    logger.warning(
+                        "No se pudo recuperar el ticket recién creado para emitir socket: id=%s",
+                        ticket_creado.get("id"),
+                    )
+            except Exception as e_notify:
+                logger.error(
+                    "Error enviando notificación en tiempo real para ticket %s: %s",
+                    nro_ticket_str,
+                    e_notify,
+                    exc_info=True,
+                )
+
             # Completar datos desde tramites.json si existen
             tramites_cfg = cargar_configuracion_municipio(
                 getattr(owner_user, "municipio_id", "default"),
@@ -998,6 +1020,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 promo_text=promo_text,
                 contacto_especializado=contacto_especializado,
                 info_url=municipio_config.get("link_web") or municipio_config.get("url_web"),
+                include_menu=channel_value != "whatsapp",
             )
             if channel_value == "whatsapp":
                 receipt = response_payload["whatsapp_receipt"]
@@ -1212,6 +1235,28 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
             nro_ticket_str = f"S-{ticket_creado.get('nro_ticket')}"
             logger.info(f"Ticket de sugerencia {nro_ticket_str} creado exitosamente.")
 
+            try:
+                from models import MunicipioTicket
+                from routes.ticket import serialize_ticket_to_json
+                from socket_service import emit_new_ticket
+
+                ticket_obj = db.session.get(MunicipioTicket, ticket_creado.get("id"))
+                if ticket_obj:
+                    ticket_json = serialize_ticket_to_json(ticket_obj, "municipio")
+                    emit_new_ticket(ticket_json)
+                else:
+                    logger.warning(
+                        "No se pudo recuperar la sugerencia recién creada para emitir socket: id=%s",
+                        ticket_creado.get("id"),
+                    )
+            except Exception as e_notify:
+                logger.error(
+                    "Error enviando notificación en tiempo real para sugerencia %s: %s",
+                    nro_ticket_str,
+                    e_notify,
+                    exc_info=True,
+                )
+
             # Limpiar el contexto para evitar estados pegajosos
             user_info = self.context.get(CONTEXTO_MUNICIPIO, {}).get('user', {})
             contacto_usuario = {
@@ -1279,6 +1324,7 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
                     "promo_text": promo_text,
                 }
             }
+            channel_value = (self.context.get("channel") or "").strip().lower()
             response_payload["whatsapp_receipt"] = render_ticket_whatsapp(
                 kind="sugerencia",
                 nombre=nombre_vecino_final,
@@ -1293,7 +1339,6 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
                 promo_text=promo_text,
                 info_url=municipio_config.get("link_web") or municipio_config.get("url_web"),
             )
-            channel_value = (self.context.get("channel") or "").strip().lower()
             if channel_value == "whatsapp":
                 receipt = response_payload["whatsapp_receipt"]
                 response_payload["message_to_user"] = receipt.get("body_text") or respuesta_formateada
