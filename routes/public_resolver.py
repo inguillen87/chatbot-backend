@@ -162,9 +162,15 @@ def _theme_from_tenant(tenant: TenantProfile) -> dict:
 
     tema = tenant.tema or {}
     cfg = tenant.configuracion or {}
+    widget_settings = getattr(tenant, "widget_settings", None)
+    theme_config = {}
+    if widget_settings and getattr(widget_settings, "theme_config", None):
+        theme_config = widget_settings.theme_config or {}
 
     def pick(*keys, default=None):
         for key in keys:
+            if isinstance(theme_config, dict) and theme_config.get(key):
+                return theme_config[key]
             if isinstance(tema, dict) and tema.get(key):
                 return tema[key]
             if isinstance(cfg, dict) and cfg.get(key):
@@ -256,6 +262,10 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
         "data-theme": cfg.get("widget_theme") or cfg.get("tema") or "light",
         "data-primary-color": cfg.get("primary_color") or theme.get("primary"),
         "data-accent-color": cfg.get("secondary_color") or theme.get("accent"),
+        "data-text-color": theme.get("text"),
+        "data-background-color": theme.get("background"),
+        "data-surface-color": theme.get("surface"),
+        "data-launcher-color": theme.get("launcher"),
         "data-logo-url": cfg.get("avatar_url") or theme.get("logo"),
         "data-logo-animation": cfg.get("widget_logo_animation") or theme.get("animation"),
         "data-font-family": cfg.get("font_family") or "inherit",
