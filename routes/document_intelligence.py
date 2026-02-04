@@ -409,8 +409,9 @@ def _document_intelligence_preview(current_user, pyme_id: int):
                                 "error": "preview_failed",
                                 "detail": "No se pudo interpretar el PDF con IA.",
                                 "debug_id": debug_id,
+                                "actions": ["retry_ocr", "download_template", "open_manual_editor"],
                             }),
-                            502,
+                            422,
                         )
                     fallback_text = ""
                     if ocr_texts:
@@ -458,8 +459,9 @@ def _document_intelligence_preview(current_user, pyme_id: int):
                     "error": "preview_failed",
                     "detail": "No se pudo interpretar la tabla con IA.",
                     "debug_id": debug_id,
+                    "actions": ["retry_ocr", "download_template", "open_manual_editor"],
                 }),
-                502,
+                422,
             )
 
     # Ensure all column names are strings to avoid JSON serialization issues (e.g. sorting keys)
