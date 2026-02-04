@@ -17,7 +17,11 @@ from models import (
 )
 from routes.catalogo import _formatear_producto
 from routes.carrito import _product_query_for_tenant
+from services.common_utils import parse_precio_flexible
 from services.catalog_seed import ensure_seed_catalog
+from services.embedding_service import embed_textos_llm
+from services.pymes import tiene_archivo_catalogo
+from services.qdrant_service import index_catalog_item
 from services.tenant_factory import create_tenant_from_template, assign_number_to_tenant
 from services.tenant_resolver import apply_tenant_alias
 
@@ -144,6 +148,210 @@ def admin_get_catalog(current_user, slug):
         "download_url_json": f"{base_api}/api/public/tenants/{tenant.slug}/catalog/download?format=json",
         "has_pdf": has_pdf,
     })
+
+
+@admin_tenant_bp.route('/api/admin/tenants/<slug>/catalog/publish', methods=['OPTIONS'])
+def admin_catalog_publish_options(slug):
+    return _cors_preflight_response()
+
+
+@admin_tenant_bp.route('/api/admin/tenants/<slug>/catalog/publish', methods=['POST'])
+@token_requerido
+@require_tenant
+def admin_publish_catalog(current_user, slug):
+    tenant = _resolve_admin_tenant(current_user, slug)
+    if not tenant:
+        return jsonify({"error": "Tenant not found"}), 404
+
+    if not _is_authorized_for_tenant(current_user, tenant):
+        return jsonify({"error": "Unauthorized"}), 403
+
+    payload = request.json or {}
+    cfg = tenant.configuracion if isinstance(tenant.configuracion, dict) else {}
+    catalog_cfg = cfg.get("catalogo")
+    if not isinstance(catalog_cfg, dict):
+        catalog_cfg = {}
+
+    title = payload.get("titulo") or payload.get("title")
+    description = payload.get("descripcion") or payload.get("description")
+    banner = (
+        payload.get("banner")
+        or payload.get("banner_url")
+        or payload.get("banner_image_url")
+    )
+    message = (
+        payload.get("mensaje_default")
+        or payload.get("default_message")
+        or payload.get("mensaje")
+    )
+
+    if title is not None:
+        catalog_cfg["titulo"] = title
+        catalog_cfg["title"] = title
+    if description is not None:
+        catalog_cfg["descripcion"] = description
+        catalog_cfg["description"] = description
+    if banner is not None:
+        catalog_cfg["banner_image_url"] = banner
+    if message is not None:
+        catalog_cfg["mensaje_default"] = message
+
+    enabled = payload.get("habilitado")
+    if enabled is None:
+        enabled = payload.get("catalogo_habilitado")
+    if enabled is None:
+        enabled = payload.get("enabled")
+    if enabled is None:
+        enabled = payload.get("catalog_enabled")
+    if enabled is not None:
+        enabled = bool(enabled)
+        catalog_cfg["widget_visible"] = enabled
+        catalog_cfg["catalogo_widget_visible"] = enabled
+        cfg["widget_catalog_enabled"] = enabled
+
+    is_public = payload.get("publico")
+    if is_public is None:
+        is_public = payload.get("public")
+    if is_public is None:
+        is_public = payload.get("is_public")
+    if is_public is not None:
+        catalog_cfg["publico"] = bool(is_public)
+        catalog_cfg["public"] = bool(is_public)
+
+    share_in_intent = payload.get("compartir_en_intencion")
+    if share_in_intent is None:
+        share_in_intent = payload.get("share_in_intent")
+    if share_in_intent is None:
+        share_in_intent = payload.get("share_in_intention")
+    if share_in_intent is not None:
+        catalog_cfg["compartir_en_intencion"] = bool(share_in_intent)
+
+    prefer_pdf_whatsapp = payload.get("prefer_pdf_whatsapp")
+    if prefer_pdf_whatsapp is None:
+        prefer_pdf_whatsapp = payload.get("prefer_pdf_en_whatsapp")
+    if prefer_pdf_whatsapp is not None:
+        catalog_cfg["prefer_pdf_whatsapp"] = bool(prefer_pdf_whatsapp)
+
+    cfg["catalogo"] = catalog_cfg
+    tenant.configuracion = cfg
+    db.session.commit()
+
+    owner = tenant.municipio or tenant.pyme
+    has_pdf = bool(owner and tiene_archivo_catalogo(owner.id))
+
+    return jsonify({
+        "status": "published" if has_pdf else "missing",
+        "has_pdf": has_pdf,
+        "catalogo": catalog_cfg,
+    })
+
+
+@admin_tenant_bp.route('/api/admin/tenants/<slug>/catalog/items/<int:item_id>', methods=['OPTIONS'])
+def admin_catalog_item_options(slug, item_id):
+    return _cors_preflight_response()
+
+
+@admin_tenant_bp.route('/api/admin/tenants/<slug>/catalog/items/<int:item_id>', methods=['PATCH'])
+@token_requerido
+@require_tenant
+def admin_update_catalog_item(current_user, slug, item_id: int):
+    tenant = _resolve_admin_tenant(current_user, slug)
+    if not tenant:
+        return jsonify({"error": "Tenant not found"}), 404
+
+    if not _is_authorized_for_tenant(current_user, tenant):
+        return jsonify({"error": "Unauthorized"}), 403
+
+    owner = tenant.municipio or tenant.pyme
+    if not owner:
+        return jsonify({"error": "Tenant owner not found"}), 404
+
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict):
+        payload = {}
+
+    product_query = _product_query_for_tenant(owner, tenant)
+    item = product_query.filter(CatalogoItem.id == item_id).first()
+    if not item:
+        return jsonify({"error": "Catalog item not found"}), 404
+
+    if "nombre" in payload:
+        item.nombre = payload.get("nombre") or ""
+    if "descripcion" in payload:
+        item.descripcion = payload.get("descripcion")
+    if "descripcion_corta" in payload:
+        item.descripcion_corta = payload.get("descripcion_corta")
+    if "sku" in payload:
+        item.sku = payload.get("sku")
+    if "marca" in payload:
+        item.marca = payload.get("marca")
+    if "categoria" in payload:
+        item.categoria = payload.get("categoria")
+    if "moneda" in payload:
+        item.moneda = payload.get("moneda")
+    if "unidad" in payload:
+        item.unidad = payload.get("unidad")
+    if "disponible" in payload:
+        item.disponible = bool(payload.get("disponible"))
+    if "extra_metadata" in payload and isinstance(payload.get("extra_metadata"), dict):
+        item.extra_metadata = payload.get("extra_metadata")
+
+    if "precio" in payload:
+        precio_raw = payload.get("precio")
+        item.precio = str(precio_raw) if precio_raw is not None else item.precio
+        _, precio_float, _ = parse_precio_flexible(precio_raw)
+        item.precio_monetario = precio_float or 0.0
+
+    if "cantidad" in payload or "stock" in payload:
+        cantidad_raw = payload.get("cantidad")
+        if cantidad_raw is None:
+            cantidad_raw = payload.get("stock")
+        item.cantidad = str(cantidad_raw) if cantidad_raw is not None else item.cantidad
+
+    db.session.commit()
+
+    text_parts = [
+        item.nombre,
+        item.descripcion or "",
+        item.sku or "",
+    ]
+    if isinstance(item.extra_metadata, dict):
+        text_parts.extend(
+            str(value)
+            for value in item.extra_metadata.values()
+            if value and not isinstance(value, (list, dict))
+        )
+    texto = " ".join(part for part in text_parts if part).strip()
+    embeddings = embed_textos_llm([texto]) if texto else []
+    if embeddings and embeddings[0]:
+        rubro_nombre = "general"
+        if getattr(owner, "rubro", None) and owner.rubro.nombre:
+            rubro_nombre = owner.rubro.nombre
+
+        index_catalog_item(
+            tenant.id,
+            {
+                "id": item.id,
+                "nombre": item.nombre,
+                "descripcion": item.descripcion,
+                "precio": item.precio or item.precio_monetario or 0,
+                "rubro": rubro_nombre,
+                "stock": item.cantidad,
+                "user_id": owner.id,
+                "tenant_id": tenant.id,
+                "sku": item.sku,
+                "marca": item.marca,
+                "categoria": item.categoria,
+                "moneda": item.moneda,
+                "unidad": item.unidad,
+                "precio_por_caja": item.precio_por_caja,
+                "unidad_por_caja": item.unidad_por_caja,
+                "extra_metadata": item.extra_metadata or {},
+            },
+            embeddings[0],
+        )
+
+    return jsonify({"item": _formatear_producto(item)})
 
 # --- Tenant Management ---
 

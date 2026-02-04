@@ -1,12 +1,18 @@
 import logging
 import os
+import re
 from datetime import datetime
 from functools import lru_cache
 from qdrant_client import QdrantClient
 from qdrant_client.http import models as qdrant_models
 from typing import List, Optional, Dict, Any, Iterable, Tuple
 
-from services.common_utils import parse_precio_flexible
+from services.common_utils import parse_precio_flexible, parse_cantidad_flexible
+from services.qdrant_search import coleccion_catalogo_para_rubro
+from services.qdrant_utils import (
+    get_qdrant_client as get_qdrant_utils_client,
+    verificar_y_crear_coleccion_qdrant,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -104,42 +110,112 @@ def _ensure_extra_metadata_indexes(extra_metadata: Dict[str, Any]):
         payload_schema[field_key] = schema_type
 
 
-def index_catalog_item(tenant_id: str, item_data: Dict[str, Any], embedding: List[float]):
-    """Index a catalog item into the shared catalog collection."""
-    client = get_qdrant_client()
-    if not client: return False
+def _parse_stock_value(raw_value: Any) -> int:
+    if raw_value is None:
+        return 0
 
-    point_id = item_data.get("id") # Assuming robust ID or hash
+    if isinstance(raw_value, bool):
+        return int(raw_value)
+
+    if isinstance(raw_value, (int, float)):
+        return int(raw_value)
+
+    value_str = str(raw_value).strip()
+    if not value_str:
+        return 0
+
+    if re.fullmatch(r"\d{1,3}(\.\d{3})+", value_str):
+        return int(value_str.replace(".", ""))
+
+    if re.fullmatch(r"\d{1,3}(,\d{3})+", value_str):
+        return int(value_str.replace(",", ""))
+
+    parsed = parse_cantidad_flexible(value_str)
+    if parsed is not None:
+        return parsed
+
+    digits = re.findall(r"\d+", value_str)
+    if digits:
+        return int("".join(digits))
+
+    return 0
+
+
+def index_catalog_item(tenant_id: str, item_data: Dict[str, Any], embedding: List[float]):
+    """Index a catalog item into the Qdrant catalog collections."""
+    client = get_qdrant_utils_client()
+    if not client:
+        return False
+
+    rubro = item_data.get("rubro") or "general"
+    coleccion = coleccion_catalogo_para_rubro(rubro)
+    if not verificar_y_crear_coleccion_qdrant(
+        coleccion,
+        vector_size=EMBEDDING_DIMENSION,
+        create_indexes=True,
+    ):
+        return False
+
+    point_id = item_data.get("id")
     precio_raw = item_data.get("precio", 0)
     _, precio_float, _ = parse_precio_flexible(precio_raw)
     if precio_float is None:
         logger.warning("Precio inválido para indexar en Qdrant: %s", precio_raw)
         precio_float = 0.0
-    payload = {
-        "tenant_id": str(tenant_id),
-        "tenant_type": "pyme", # Default for catalog
-        "rubro": item_data.get("rubro", "general"),
-        "title": item_data.get("nombre"),
-        "description": item_data.get("descripcion"),
-        "price": float(precio_float),
-        "stock": int(item_data.get("stock", 0)),
-        "source": "manual",
-        "updated_at": datetime.utcnow().isoformat()
-    }
+
+    nombre = item_data.get("nombre")
+    descripcion = item_data.get("descripcion")
+    sku = item_data.get("sku")
     extra_metadata = item_data.get("extra_metadata") or {}
-    if isinstance(extra_metadata, dict) and extra_metadata:
-        _ensure_extra_metadata_indexes(extra_metadata)
-        payload["extra_metadata"] = extra_metadata
+    texto_original = " ".join(
+        part
+        for part in [
+            nombre,
+            descripcion,
+            sku,
+            " ".join(
+                str(value)
+                for value in extra_metadata.values()
+                if value and not isinstance(value, (list, dict))
+            ),
+        ]
+        if part
+    ).strip()
+
+    categoria = (item_data.get("categoria") or rubro or "").strip().lower() or None
+    payload = {
+        "db_id": point_id,
+        "nombre": nombre,
+        "precio": precio_float,
+        "precio_float": precio_float,
+        "precio_str": str(precio_raw),
+        "categoria_qdrant": categoria,
+        "descripcion": descripcion,
+        "sku": sku,
+        "marca": item_data.get("marca"),
+        "stock": _parse_stock_value(item_data.get("stock", 0)),
+        "unidad": item_data.get("unidad"),
+        "moneda": item_data.get("moneda"),
+        "precio_por_caja": item_data.get("precio_por_caja"),
+        "unidad_por_caja": item_data.get("unidad_por_caja"),
+        "user_id": item_data.get("user_id") or item_data.get("owner_id") or tenant_id,
+        "tenant_id": item_data.get("tenant_id") or tenant_id,
+        "rubro_slug": rubro,
+        "texto_original_para_embedding": texto_original,
+        "varietal": extra_metadata.get("varietal"),
+        "anada": extra_metadata.get("anada"),
+        "presentacion": extra_metadata.get("presentacion_original"),
+    }
 
     client.upsert(
-        collection_name=COLLECTION_CATALOG,
+        collection_name=coleccion,
         points=[
             qdrant_models.PointStruct(
-                id=point_id,
+                id=str(point_id),
                 vector=embedding,
-                payload=payload
+                payload=payload,
             )
-        ]
+        ],
     )
     return True
 
