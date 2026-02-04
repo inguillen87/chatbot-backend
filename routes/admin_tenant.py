@@ -146,6 +146,102 @@ def admin_get_catalog(current_user, slug):
         "has_pdf": has_pdf,
     })
 
+
+@admin_tenant_bp.route('/api/admin/tenants/<slug>/catalog/publish', methods=['OPTIONS'])
+def admin_catalog_publish_options(slug):
+    return _cors_preflight_response()
+
+
+@admin_tenant_bp.route('/api/admin/tenants/<slug>/catalog/publish', methods=['POST'])
+@token_requerido
+@require_tenant
+def admin_publish_catalog(current_user, slug):
+    tenant = _resolve_admin_tenant(current_user, slug)
+    if not tenant:
+        return jsonify({"error": "Tenant not found"}), 404
+
+    if not _is_authorized_for_tenant(current_user, tenant):
+        return jsonify({"error": "Unauthorized"}), 403
+
+    payload = request.json or {}
+    cfg = tenant.configuracion if isinstance(tenant.configuracion, dict) else {}
+    catalog_cfg = cfg.get("catalogo")
+    if not isinstance(catalog_cfg, dict):
+        catalog_cfg = {}
+
+    title = payload.get("titulo") or payload.get("title")
+    description = payload.get("descripcion") or payload.get("description")
+    banner = (
+        payload.get("banner")
+        or payload.get("banner_url")
+        or payload.get("banner_image_url")
+    )
+    message = (
+        payload.get("mensaje_default")
+        or payload.get("default_message")
+        or payload.get("mensaje")
+    )
+
+    if title is not None:
+        catalog_cfg["titulo"] = title
+        catalog_cfg["title"] = title
+    if description is not None:
+        catalog_cfg["descripcion"] = description
+        catalog_cfg["description"] = description
+    if banner is not None:
+        catalog_cfg["banner_image_url"] = banner
+    if message is not None:
+        catalog_cfg["mensaje_default"] = message
+
+    enabled = payload.get("habilitado")
+    if enabled is None:
+        enabled = payload.get("catalogo_habilitado")
+    if enabled is None:
+        enabled = payload.get("enabled")
+    if enabled is None:
+        enabled = payload.get("catalog_enabled")
+    if enabled is not None:
+        enabled = bool(enabled)
+        catalog_cfg["widget_visible"] = enabled
+        catalog_cfg["catalogo_widget_visible"] = enabled
+        cfg["widget_catalog_enabled"] = enabled
+
+    is_public = payload.get("publico")
+    if is_public is None:
+        is_public = payload.get("public")
+    if is_public is None:
+        is_public = payload.get("is_public")
+    if is_public is not None:
+        catalog_cfg["publico"] = bool(is_public)
+        catalog_cfg["public"] = bool(is_public)
+
+    share_in_intent = payload.get("compartir_en_intencion")
+    if share_in_intent is None:
+        share_in_intent = payload.get("share_in_intent")
+    if share_in_intent is None:
+        share_in_intent = payload.get("share_in_intention")
+    if share_in_intent is not None:
+        catalog_cfg["compartir_en_intencion"] = bool(share_in_intent)
+
+    prefer_pdf_whatsapp = payload.get("prefer_pdf_whatsapp")
+    if prefer_pdf_whatsapp is None:
+        prefer_pdf_whatsapp = payload.get("prefer_pdf_en_whatsapp")
+    if prefer_pdf_whatsapp is not None:
+        catalog_cfg["prefer_pdf_whatsapp"] = bool(prefer_pdf_whatsapp)
+
+    cfg["catalogo"] = catalog_cfg
+    tenant.configuracion = cfg
+    db.session.commit()
+
+    owner = tenant.municipio or tenant.pyme
+    has_pdf = bool(owner and tiene_archivo_catalogo(owner.id))
+
+    return jsonify({
+        "status": "published" if has_pdf else "missing",
+        "has_pdf": has_pdf,
+        "catalogo": catalog_cfg,
+    })
+
 # --- Tenant Management ---
 
 @admin_tenant_bp.route('/api/admin/tenants', methods=['POST'])
