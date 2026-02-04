@@ -1,12 +1,13 @@
 import logging
 import os
+import re
 from datetime import datetime
 from functools import lru_cache
 from qdrant_client import QdrantClient
 from qdrant_client.http import models as qdrant_models
 from typing import List, Optional, Dict, Any, Iterable, Tuple
 
-from services.common_utils import parse_precio_flexible
+from services.common_utils import parse_precio_flexible, parse_cantidad_flexible
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +105,37 @@ def _ensure_extra_metadata_indexes(extra_metadata: Dict[str, Any]):
         payload_schema[field_key] = schema_type
 
 
+def _parse_stock_value(raw_value: Any) -> int:
+    if raw_value is None:
+        return 0
+
+    if isinstance(raw_value, bool):
+        return int(raw_value)
+
+    if isinstance(raw_value, (int, float)):
+        return int(raw_value)
+
+    value_str = str(raw_value).strip()
+    if not value_str:
+        return 0
+
+    if re.fullmatch(r"\d{1,3}(\.\d{3})+", value_str):
+        return int(value_str.replace(".", ""))
+
+    if re.fullmatch(r"\d{1,3}(,\d{3})+", value_str):
+        return int(value_str.replace(",", ""))
+
+    parsed = parse_cantidad_flexible(value_str)
+    if parsed is not None:
+        return parsed
+
+    digits = re.findall(r"\d+", value_str)
+    if digits:
+        return int("".join(digits))
+
+    return 0
+
+
 def index_catalog_item(tenant_id: str, item_data: Dict[str, Any], embedding: List[float]):
     """Index a catalog item into the shared catalog collection."""
     client = get_qdrant_client()
@@ -122,7 +154,7 @@ def index_catalog_item(tenant_id: str, item_data: Dict[str, Any], embedding: Lis
         "title": item_data.get("nombre"),
         "description": item_data.get("descripcion"),
         "price": float(precio_float),
-        "stock": int(item_data.get("stock", 0)),
+        "stock": _parse_stock_value(item_data.get("stock", 0)),
         "source": "manual",
         "updated_at": datetime.utcnow().isoformat()
     }
