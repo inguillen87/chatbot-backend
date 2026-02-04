@@ -4,6 +4,7 @@ from flask import Blueprint, current_app, jsonify, request
 from flask_cors import cross_origin
 
 from models import TenantProfile, WidgetSettings, db
+from routes.public_resolver import _build_widget_embed_payload
 from services.tenant_resolver import TenantResolutionError, resolve_tenant_only
 from routes.auth import solo_admin_requerido, token_requerido
 from utils.tenant import get_current_tenant_profile, get_current_tenant_slug
@@ -38,27 +39,10 @@ def _tenant_for_user(user) -> TenantProfile | None:
 
 def _serialize_settings(settings: WidgetSettings, tenant: TenantProfile) -> dict:
     cfg = settings.to_config_dict()
-    script_url = current_app.config.get(
-        "WIDGET_SCRIPT_URL", "https://www.chatboc.ar/widget.js"
-    )
-    attrs = {
-        "src": script_url,
-        "data-tenant": tenant.slug,
-        "data-primary-color": cfg["primary_color"],
-        "data-secondary-color": cfg["secondary_color"],
-        "data-avatar-url": cfg.get("avatar_url") or "",
-        "data-welcome-title": cfg.get("welcome_title") or tenant.nombre,
-        "data-welcome-subtitle": cfg.get("welcome_subtitle") or "Asistente Virtual",
-        "data-font-family": cfg.get("font_family") or "inherit",
-        "data-bubble-shape": cfg.get("bubble_shape") or "round",
-        "data-default-open": str(cfg.get("default_open", False)).lower(),
-        "data-bottom": cfg.get("bottom") or "20px",
-        "data-right": cfg.get("side_offset") or "20px",
-        "data-singleton": "true",
-    }
-    snippet_attrs = " ".join(
-        f'{key}="{value}"' for key, value in attrs.items() if value is not None
-    )
+    tenant.widget_settings = settings
+    widget_payload = _build_widget_embed_payload(tenant, None)
+    embed_snippet = widget_payload.get("embed_snippet")
+    attrs = widget_payload.get("attributes") or {}
 
     # Inject default styles to ensure readability and size
     default_styles = """
@@ -74,10 +58,12 @@ def _serialize_settings(settings: WidgetSettings, tenant: TenantProfile) -> dict
   }
 </style>"""
 
-    embed_code = f"{default_styles}\n<script {snippet_attrs}></script>"
+    embed_code = f"{default_styles}\n{embed_snippet}" if embed_snippet else default_styles
 
     return {
         **cfg,
+        "embed_snippet": embed_snippet,
+        "embed_attributes": attrs,
         "embed_code": embed_code,
     }
 
