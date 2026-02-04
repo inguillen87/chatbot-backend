@@ -25,6 +25,7 @@ def apply_tenant_alias(slug: Optional[str]) -> Optional[str]:
     cleaned = _clean_slug(slug)
     if not cleaned:
         return None
+    if cleaned.lower() == "junin-1": return "junin"
     alias_target = _alias_map().get(cleaned.lower())
     return alias_target or cleaned
 

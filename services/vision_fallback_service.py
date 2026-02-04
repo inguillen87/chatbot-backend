@@ -1,21 +1,47 @@
+import os
 import base64
 import json
 import logging
-import os
-import re
-from ast import literal_eval
-from typing import Any, Dict, Optional
+from typing import Optional, Dict, Any, List
 import httpx
 from openai import OpenAI
 import cohere
 
+# Configure logger
 logger = logging.getLogger(__name__)
+
+# --- Schemas ---
+
+VISION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "labels": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Lista de etiquetas descriptivas de la imagen (ej. 'bache', 'árbol caído')."
+        },
+        "objects": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Lista de objetos detectados en la imagen."
+        },
+        "text": {
+            "type": "string",
+            "description": "Texto legible extraído de la imagen, si lo hay."
+        }
+    },
+    "required": ["labels", "objects", "text"],
+    "additionalProperties": False
+}
 
 TABLE_SCHEMA_ONLY = {
     "type": "object",
-    "additionalProperties": False,
     "properties": {
-        "columns": {"type": "array", "items": {"type": "string"}},
+        "columns": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Nombres de las columnas detectadas."
+        },
         "rows": {
             "type": "array",
             "items": {
@@ -24,190 +50,107 @@ TABLE_SCHEMA_ONLY = {
                     "anyOf": [
                         {"type": "string"},
                         {"type": "number"},
-                        {"type": "null"},
+                        {"type": "boolean"},
+                        {"type": "null"}
                     ]
-                },
+                }
             },
-        },
+            "description": "Filas de datos. Cada fila debe tener el mismo número de elementos que 'columns'."
+        }
     },
     "required": ["columns", "rows"],
+    "additionalProperties": False
 }
 
-VISION_SCHEMA = {
-    "type": "object",
-    "additionalProperties": False,
-    "properties": {
-        "labels": {"type": "array", "items": {"type": "string"}},
-        "objects": {"type": "array", "items": {"type": "string"}},
-        "text": {"type": "string"},
-    },
-    "required": ["labels", "objects", "text"],
-}
+# --- Helper Functions ---
 
-
-def _openai_model(default_model: str = "gpt-4o") -> str:
-    return os.getenv("OPENAI_MODEL", default_model)
+def _safe_json_loads(text: str) -> Optional[Dict[str, Any]]:
+    """Clean markdown code blocks and parse JSON."""
+    if not text:
+        return None
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        # Remove first line (```json) and last line (```)
+        lines = cleaned.splitlines()
+        if len(lines) >= 2:
+            cleaned = "\n".join(lines[1:-1])
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        logger.warning(f"Failed to parse JSON from LLM: {text[:100]}...")
+        return None
 
 def _ensure_json_prompt(prompt: str) -> str:
-    suffix = "\nResponde solo JSON válido sin texto adicional."
-    if suffix.strip().lower() in prompt.lower():
-        return prompt
-    return f"{prompt}{suffix}"
+    """Append instruction to force JSON if not present."""
+    if "json" not in prompt.lower():
+        return f"{prompt} Respond ONLY with valid JSON."
+    return prompt
 
-def _safe_json_loads(text: str) -> Dict[str, Any]:
-    def _strip_code_fences(payload: str) -> str:
-        if not payload:
-            return payload
-        fenced = re.compile(r"```(?:json)?\s*(.+?)\s*```", re.DOTALL | re.IGNORECASE)
-        match = fenced.search(payload)
-        return match.group(1) if match else payload
-
-    candidates = []
-    if text:
-        text = _strip_code_fences(text.strip())
-        candidates.append(text)
-        candidates.append(re.sub(r"[\x00-\x1f]", " ", text))
-        obj_start = text.find("{")
-        obj_end = text.rfind("}")
-        if obj_start != -1 and obj_end != -1 and obj_end > obj_start:
-            candidates.append(text[obj_start : obj_end + 1])
-        arr_start = text.find("[")
-        arr_end = text.rfind("]")
-        if arr_start != -1 and arr_end != -1 and arr_end > arr_start:
-            candidates.append(text[arr_start : arr_end + 1])
-
-    def _attempt(payload: str) -> Optional[Dict[str, Any]]:
-        try:
-            return json.loads(payload, strict=False)
-        except json.JSONDecodeError:
-            cleaned = re.sub(r"[\x00-\x1f]", " ", payload)
-            cleaned = re.sub(r",\s*([}\]])", r"\1", cleaned)
-            try:
-                return json.loads(cleaned, strict=False)
-            except json.JSONDecodeError:
-                cleaned = re.sub(r"\bnull\b", "None", cleaned, flags=re.IGNORECASE)
-                cleaned = re.sub(r"\btrue\b", "True", cleaned, flags=re.IGNORECASE)
-                cleaned = re.sub(r"\bfalse\b", "False", cleaned, flags=re.IGNORECASE)
-                return literal_eval(cleaned)
-
-    for candidate in candidates:
-        try:
-            parsed = _attempt(candidate)
-            if isinstance(parsed, dict):
-                return parsed
-            if isinstance(parsed, list):
-                return {"rows": parsed}
-        except Exception:
-            continue
-
-    if text:
-        snippet = text[:800]
-        logger.warning(
-            "No se pudo parsear JSON válido desde la respuesta del modelo. Raw snippet: %s",
-            snippet,
-        )
-    else:
-        logger.warning("No se pudo parsear JSON válido desde la respuesta del modelo.")
-    return {}
-
+def _openai_model():
+    """Return the preferred OpenAI model."""
+    # Use gpt-4o for best vision/JSON performance
+    return "gpt-4o"
 
 def _call_openai(
     image_bytes: bytes,
     custom_prompt: Optional[str] = None,
     schema: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
-    """Analyze an image using OpenAI's vision models."""
+    """
+    Analyze image using OpenAI Vision with Structured Outputs.
+    """
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         logger.error("OPENAI_API_KEY not found in environment variables.")
         return None
+
     try:
         b64 = base64.b64encode(image_bytes).decode("utf-8")
-        # Use a client that ignores proxy environment variables to avoid
-        # `Client.__init__()` receiving unsupported arguments.
         http_client = httpx.Client(proxy=None, trust_env=False)
         client = OpenAI(api_key=api_key, http_client=http_client)
-        prompt = custom_prompt or (
-            "Describe la imagen en español para un sistema de reclamos municipales. "
-            "Devuelve un JSON con las claves: labels (lista de palabras clave en español), "
-            "objects (lista de objetos principales en español) y text (cadena con cualquier texto encontrado en español)."
-        )
-        prompt = _ensure_json_prompt(prompt)
 
+        prompt = custom_prompt or "Analyze this image."
         model = _openai_model()
 
-        schema = schema or VISION_SCHEMA
+        # Determine max_tokens. gpt-4o supports up to 16k output,
+        # but we set a safe high limit to avoid truncation of large tables.
+        max_tokens = 16384
 
-        # Use the modern Responses API when available; otherwise fall back
-        # to chat completions for older OpenAI client versions. If the
-        # Responses API call fails for any reason, attempt the chat
-        # completions path.
-        text = ""
-        if hasattr(client, "responses"):
-            try:
-                response = client.responses.create(
-                    model=model,
-                    input=[{
-                        "role": "user",
-                        "content": [
-                            {"type": "input_text", "text": prompt},
-                            {"type": "input_image", "image": {"data": b64, "mime_type": "image/jpeg"}},
-                        ],
-                    }],
-                    max_output_tokens=4096,
-                    temperature=0,
-                    text={
-                        "format": {
-                            "type": "json_schema",
-                            "name": "vision_payload",
-                            "schema": schema,
-                            "strict": True,
-                        }
-                    },
-                )
-                text = getattr(response, "output_text", "") or response.output[0].content[0].text
-            except Exception as exc:
-                logger.warning("Responses API unavailable (%s); falling back to chat completions", exc)
+        # Construct the response_format for Structured Outputs
+        # Note: 'json_schema' requires strict=True for 100% adherence.
+        response_format = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "vision_payload",
+                "schema": schema or VISION_SCHEMA,
+                "strict": True,
+            },
+        }
 
-        if not text:
-            completion = client.chat.completions.create(
-                model=model,
-                messages=[{
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
-                    ],
-                }],
-                max_tokens=4096,
-                temperature=0,
-                response_format={
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": "vision_payload",
-                        "schema": schema,
-                        "strict": True,
-                    },
-                },
-            )
-            message = completion.choices[0].message
-            # ``message`` may be a dict (old SDK) or a pydantic object (new SDK)
-            content = (
-                message.get("content") if isinstance(message, dict) else getattr(message, "content", None)
-            )
-            if isinstance(content, list):
-                parts = []
-                for part in content:
-                    parts.append(
-                        part.get("text") if isinstance(part, dict) else getattr(part, "text", "")
-                    )
-                text = "".join(parts)
-            else:
-                text = content
+        completion = client.chat.completions.create(
+            model=model,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+                ],
+            }],
+            max_tokens=max_tokens,
+            temperature=0,
+            response_format=response_format,
+        )
 
-        if not text:
-            raise ValueError("No content returned from OpenAI")
-        return _safe_json_loads(text)
+        message = completion.choices[0].message
+        content = message.content
+
+        if not content:
+            # Should not happen with successful 200 OK and strict JSON
+            logger.warning("OpenAI returned empty content.")
+            return None
+
+        return json.loads(content)
+
     except Exception as e:
         logger.error(f"OpenAI Vision failed: {e}", exc_info=True)
         return None
@@ -229,41 +172,19 @@ def _call_openai_image_text(image_bytes: bytes, custom_prompt: Optional[str] = N
         )
 
         model = _openai_model()
-        text = ""
-        if hasattr(client, "responses"):
-            try:
-                response = client.responses.create(
-                    model=model,
-                    input=[{
-                        "role": "user",
-                        "content": [
-                            {"type": "input_text", "text": prompt},
-                            {"type": "input_image", "image": {"data": b64, "mime_type": "image/jpeg"}},
-                        ],
-                    }],
-                    max_output_tokens=4096,
-                )
-                text = getattr(response, "output_text", "") or response.output[0].content[0].text
-            except Exception as exc:
-                logger.warning("Responses API unavailable for OCR (%s); falling back to chat completions", exc)
 
-        if not text:
-            completion = client.chat.completions.create(
-                model=model,
-                messages=[{
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
-                    ],
-                }],
-                max_tokens=4096,
-            )
-            message = completion.choices[0].message
-            content = message.get("content") if isinstance(message, dict) else getattr(message, "content", None)
-            text = content if isinstance(content, str) else ""
-
-        return text.strip() or None
+        completion = client.chat.completions.create(
+            model=model,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+                ],
+            }],
+            max_tokens=4096,
+        )
+        return completion.choices[0].message.content.strip()
     except Exception as exc:
         logger.error("OpenAI OCR failed: %s", exc, exc_info=True)
         return None
@@ -287,55 +208,37 @@ def _call_openai_text(
             "'columns' (lista de strings) y 'rows' (lista de listas ordenadas según columns). "
             "No inventes datos, deja vacío si no se ve."
         )
-        prompt = _ensure_json_prompt(prompt)
 
         model = _openai_model()
         schema = schema or TABLE_SCHEMA_ONLY
-        text_response = ""
-        if hasattr(client, "responses"):
-            response = client.responses.create(
-                model=model,
-                input=[{
-                    "role": "user",
-                    "content": [{"type": "input_text", "text": f"{prompt}\n\n{str(text)}"}],
-                }],
-                max_output_tokens=4096,
-                temperature=0,
-                text={
-                    "format": {
-                        "type": "json_schema",
-                        "name": "catalog_table",
-                        "schema": schema,
-                        "strict": True,
-                    }
-                },
-            )
-            text_response = getattr(response, "output_text", "") or response.output[0].content[0].text
-        if not text_response:
-            completion = client.chat.completions.create(
-                model=model,
-                messages=[{
-                    "role": "user",
-                    "content": f"{prompt}\n\n{str(text)}",
-                }],
-                max_tokens=4096,
-                temperature=0,
-                response_format={
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": "catalog_table",
-                        "schema": schema,
-                        "strict": True,
-                    },
-                },
-            )
-            message = completion.choices[0].message
-            content = message.get("content") if isinstance(message, dict) else getattr(message, "content", None)
-            text_response = content if isinstance(content, str) else ""
+        max_tokens = 16384
 
-        if not text_response:
+        response_format = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "catalog_table",
+                "schema": schema,
+                "strict": True,
+            },
+        }
+
+        completion = client.chat.completions.create(
+            model=model,
+            messages=[{
+                "role": "user",
+                "content": f"{prompt}\n\n{str(text)}",
+            }],
+            max_tokens=max_tokens,
+            temperature=0,
+            response_format=response_format,
+        )
+
+        content = completion.choices[0].message.content
+        if not content:
             raise ValueError("No content returned from OpenAI")
-        return _safe_json_loads(text_response)
+
+        return json.loads(content)
+
     except Exception as e:
         logger.error(f"OpenAI text analysis failed: {e}", exc_info=True)
         return None
@@ -360,14 +263,15 @@ def _call_cohere(image_bytes: bytes, custom_prompt: Optional[str] = None) -> Opt
             )
             text = resp.text
         except TypeError:
-            # Older SDKs may not support the ``images`` parameter; fall back to generate()
             resp = co.generate(
                 model="command-r-plus",
                 prompt=prompt,
                 image_url=f"data:image/jpeg;base64,{b64}",
             )
             text = resp.generations[0].text
-        return json.loads(text)
+
+        # Cohere doesn't guarantee JSON, so we use safe loads
+        return _safe_json_loads(text)
     except Exception as e:
         logger.error(f"Cohere vision failed: {e}", exc_info=True)
         return None
