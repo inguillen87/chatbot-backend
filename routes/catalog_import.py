@@ -209,13 +209,21 @@ def commit_import_session(current_user, upload_id):
                 if tenant.pyme and tenant.pyme.rubro:
                     rubro_nombre = tenant.pyme.rubro.nombre
 
+                owner_user_id = None
+                if tenant.pyme:
+                    owner_user_id = tenant.pyme.id
+                elif tenant.municipio:
+                    owner_user_id = tenant.municipio.id
+
                 item_data = {
                     "id": item_obj.id,
                     "nombre": item_obj.nombre,
                     "descripcion": "",
                     "precio": float(item_obj.precio_monetario or 0),
                     "rubro": rubro_nombre,
-                    "stock": 0
+                    "stock": 0,
+                    "user_id": owner_user_id or tenant.id,
+                    "tenant_id": tenant.id,
                 }
                 index_catalog_item(tenant.id, item_data, embedding_list[0])
 

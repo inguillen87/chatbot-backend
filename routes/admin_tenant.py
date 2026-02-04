@@ -17,8 +17,11 @@ from models import (
 )
 from routes.catalogo import _formatear_producto
 from routes.carrito import _product_query_for_tenant
+from services.common_utils import parse_precio_flexible
 from services.catalog_seed import ensure_seed_catalog
+from services.embedding_service import embed_textos_llm
 from services.pymes import tiene_archivo_catalogo
+from services.qdrant_service import index_catalog_item
 from services.tenant_factory import create_tenant_from_template, assign_number_to_tenant
 from services.tenant_resolver import apply_tenant_alias
 
@@ -241,6 +244,114 @@ def admin_publish_catalog(current_user, slug):
         "has_pdf": has_pdf,
         "catalogo": catalog_cfg,
     })
+
+
+@admin_tenant_bp.route('/api/admin/tenants/<slug>/catalog/items/<int:item_id>', methods=['OPTIONS'])
+def admin_catalog_item_options(slug, item_id):
+    return _cors_preflight_response()
+
+
+@admin_tenant_bp.route('/api/admin/tenants/<slug>/catalog/items/<int:item_id>', methods=['PATCH'])
+@token_requerido
+@require_tenant
+def admin_update_catalog_item(current_user, slug, item_id: int):
+    tenant = _resolve_admin_tenant(current_user, slug)
+    if not tenant:
+        return jsonify({"error": "Tenant not found"}), 404
+
+    if not _is_authorized_for_tenant(current_user, tenant):
+        return jsonify({"error": "Unauthorized"}), 403
+
+    owner = tenant.municipio or tenant.pyme
+    if not owner:
+        return jsonify({"error": "Tenant owner not found"}), 404
+
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict):
+        payload = {}
+
+    product_query = _product_query_for_tenant(owner, tenant)
+    item = product_query.filter(CatalogoItem.id == item_id).first()
+    if not item:
+        return jsonify({"error": "Catalog item not found"}), 404
+
+    if "nombre" in payload:
+        item.nombre = payload.get("nombre") or ""
+    if "descripcion" in payload:
+        item.descripcion = payload.get("descripcion")
+    if "descripcion_corta" in payload:
+        item.descripcion_corta = payload.get("descripcion_corta")
+    if "sku" in payload:
+        item.sku = payload.get("sku")
+    if "marca" in payload:
+        item.marca = payload.get("marca")
+    if "categoria" in payload:
+        item.categoria = payload.get("categoria")
+    if "moneda" in payload:
+        item.moneda = payload.get("moneda")
+    if "unidad" in payload:
+        item.unidad = payload.get("unidad")
+    if "disponible" in payload:
+        item.disponible = bool(payload.get("disponible"))
+    if "extra_metadata" in payload and isinstance(payload.get("extra_metadata"), dict):
+        item.extra_metadata = payload.get("extra_metadata")
+
+    if "precio" in payload:
+        precio_raw = payload.get("precio")
+        item.precio = str(precio_raw) if precio_raw is not None else item.precio
+        _, precio_float, _ = parse_precio_flexible(precio_raw)
+        item.precio_monetario = precio_float or 0.0
+
+    if "cantidad" in payload or "stock" in payload:
+        cantidad_raw = payload.get("cantidad")
+        if cantidad_raw is None:
+            cantidad_raw = payload.get("stock")
+        item.cantidad = str(cantidad_raw) if cantidad_raw is not None else item.cantidad
+
+    db.session.commit()
+
+    text_parts = [
+        item.nombre,
+        item.descripcion or "",
+        item.sku or "",
+    ]
+    if isinstance(item.extra_metadata, dict):
+        text_parts.extend(
+            str(value)
+            for value in item.extra_metadata.values()
+            if value and not isinstance(value, (list, dict))
+        )
+    texto = " ".join(part for part in text_parts if part).strip()
+    embeddings = embed_textos_llm([texto]) if texto else []
+    if embeddings and embeddings[0]:
+        rubro_nombre = "general"
+        if getattr(owner, "rubro", None) and owner.rubro.nombre:
+            rubro_nombre = owner.rubro.nombre
+
+        index_catalog_item(
+            tenant.id,
+            {
+                "id": item.id,
+                "nombre": item.nombre,
+                "descripcion": item.descripcion,
+                "precio": item.precio or item.precio_monetario or 0,
+                "rubro": rubro_nombre,
+                "stock": item.cantidad,
+                "user_id": owner.id,
+                "tenant_id": tenant.id,
+                "sku": item.sku,
+                "marca": item.marca,
+                "categoria": item.categoria,
+                "moneda": item.moneda,
+                "unidad": item.unidad,
+                "precio_por_caja": item.precio_por_caja,
+                "unidad_por_caja": item.unidad_por_caja,
+                "extra_metadata": item.extra_metadata or {},
+            },
+            embeddings[0],
+        )
+
+    return jsonify({"item": _formatear_producto(item)})
 
 # --- Tenant Management ---
 

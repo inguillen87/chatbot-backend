@@ -605,6 +605,8 @@ def document_intelligence_commit(current_user, pyme_id: int):
                         "precio": catalog_item.precio,
                         "rubro": rubro_hint or "general",
                         "stock": item.get("stock") or 0,
+                        "user_id": current_user.id,
+                        "tenant_id": tenant_id,
                         "extra_metadata": item.get("extra_metadata") or {},
                     },
                     embedding,
