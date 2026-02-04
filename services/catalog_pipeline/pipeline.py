@@ -22,27 +22,12 @@ class CatalogPipeline:
         result = self.orchestrator.process(content, filename, mode="auto")
 
         # Transform result to match what route expects ('items' list vs 'columns'/'rows')
-        # The route expects 'items' for preview_data.
-        # But wait, the user wants 'columns' and 'rows' in the new contract.
-        # The existing route code does:
-        # upload.preview_data = extraction_result.get('items', [])
-
-        # If I change the contract, I must update the route too.
-        # The Orchestrator returns {columns, rows, ...}.
-        # I should adapt it here or update the route.
-        # Updating the route is better to support the new UI features (column mapping).
-
-        # However, to be safe and compatible with the CURRENT route code shown above:
-        # The route commits by iterating 'items'.
-        # 'items' seems to be a list of dicts: [{sku, title, price...}]
-
-        # My extractors return 'rows' as list of dicts (normalized).
-        # I can just map 'rows' to 'items' in the return here.
 
         return {
             "items": result.get("rows", []),
             "columns": result.get("columns", []),
             "warnings": result.get("warnings", []),
             "confidence": result.get("confidence", 0.0),
-            "metadata": result.get("metadata", {})
+            "metadata": result.get("metadata", {}),
+            "engine": result.get("engine", "unknown")
         }
