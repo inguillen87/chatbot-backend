@@ -68,3 +68,5 @@ To avoid spending LLM tokens for routine updates, the backend should support a *
 - [ ] **Catalog File Metadata:** Store optional metadata (title/description/banner image) to allow richer link previews in WhatsApp/widget chat.
 - [ ] **Permissions & Validation:** Ensure only authenticated admins can upload/replace catalogs, validate file type/size, and keep access read-only for the public CDN URL.
 - [ ] **R2 + Cloudinary Fallback:** On download, redirect to R2 when available and fall back to Cloudinary if missing or unavailable.
+- [ ] **Versioned Paths:** Store catalog artifacts under versioned paths (e.g., `tenants/{tenant_slug}/catalog/v{N}/catalog.pdf|json|xlsx|csv`) and resolve the published version in the download endpoint.
+- [ ] **Storage Abstraction:** Implement simple provider methods (`put`, `exists`, `public_url`) for R2 primary and Cloudinary fallback to keep the download redirect logic consistent.

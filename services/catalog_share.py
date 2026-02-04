@@ -75,6 +75,7 @@ def build_catalog_share_payload(
     view_url = _build_catalog_view_url(tenant_slug)
 
     download_url = _build_catalog_download_url(tenant_slug)
+    download_url_json = _build_catalog_download_url(tenant_slug, fmt="json")
     has_pdf = bool(owner_user.id and tiene_archivo_catalogo(owner_user.id))
 
     nombre_tenant = (
@@ -82,7 +83,11 @@ def build_catalog_share_payload(
         or getattr(owner_user, "name", None)
         or tenant_slug
     )
-    message_body = f"Acá tenés el catálogo completo de {nombre_tenant}."
+    message_body = (
+        f"Acá tenés el catálogo completo de {nombre_tenant}.\n"
+        f"Ver online: {view_url}\n"
+        f"Descargar PDF: {download_url}"
+    )
 
     options_list = [
         {"texto": "Ver online", "url": view_url},
@@ -99,6 +104,7 @@ def build_catalog_share_payload(
                 "text": message_body,
                 "view_url": view_url,
                 "download_url": download_url,
+                "download_url_json": download_url_json,
                 "also_send_pdf_as_media": bool(has_pdf and channel == "whatsapp"),
             }
         },
