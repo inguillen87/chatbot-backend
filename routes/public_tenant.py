@@ -1,7 +1,7 @@
-from flask import Blueprint, request, jsonify, g, current_app
+from flask import Blueprint, request, jsonify, g, current_app, redirect
 from models import TenantProfile, TenantConfig, WidgetSettings, db
 from routes.auth import token_requerido
-from services.tenant_resolver import resolve_tenant_only
+from services.pymes import tiene_archivo_catalogo, url_descargar_catalogo_pyme
 from middleware.tenant_context import require_tenant
 
 public_tenant_bp = Blueprint('public_tenant_bp', __name__)
@@ -25,6 +25,8 @@ def _get_tenant_from_request(slug: str):
         tenant = TenantProfile.query.filter_by(slug=fallback_slug).first()
 
     return tenant
+
+
 
 @public_tenant_bp.route('/api/public/tenants/<slug>/menu', methods=['GET', 'OPTIONS'])
 def get_menu(slug):
@@ -99,6 +101,46 @@ def get_widget_config(slug):
     except Exception as e:
         current_app.logger.error(f"Error fetching widget config: {e}")
         return jsonify({"error": "Internal Error"}), 500
+
+
+@public_tenant_bp.route('/api/public/tenants/<slug>/catalog', methods=['GET', 'OPTIONS'])
+def get_public_catalog(slug):
+    if request.method == 'OPTIONS':
+        return _add_cors_headers(jsonify({"ok": True}))
+
+    tenant = _get_tenant_from_request(slug)
+    if not tenant:
+        return jsonify({"error": "Tenant not found"}), 404
+
+    base_web = current_app.config.get("APP_BASE_URL", "https://chatboc.ar")
+    base_api = current_app.config.get("API_BASE_URL", "https://api.chatboc.ar")
+    response = jsonify({
+        "tenant_slug": tenant.slug,
+        "view_url": f"{base_web}/{tenant.slug}/catalogo",
+        "download_url": f"{base_api}/api/public/tenants/{tenant.slug}/catalog/download?format=pdf",
+        "download_url_json": f"{base_api}/api/public/tenants/{tenant.slug}/catalog/download?format=json",
+    })
+    return _add_cors_headers(response)
+
+
+@public_tenant_bp.route('/api/public/tenants/<slug>/catalog/download', methods=['GET', 'OPTIONS'])
+def download_public_catalog(slug):
+    if request.method == 'OPTIONS':
+        return _add_cors_headers(jsonify({"ok": True}))
+
+    tenant = _get_tenant_from_request(slug)
+    if not tenant:
+        return jsonify({"error": "Tenant not found"}), 404
+
+    fmt = (request.args.get("format") or "pdf").lower()
+    if fmt != "pdf":
+        return jsonify({"error": "format_not_supported"}), 400
+
+    owner = tenant.municipio or tenant.pyme
+    if not owner or not tiene_archivo_catalogo(owner.id):
+        return jsonify({"error": "not_found"}), 404
+
+    return redirect(url_descargar_catalogo_pyme(owner.id), code=302)
 
 # --- Fix for missing /api/tenant/config endpoint ---
 

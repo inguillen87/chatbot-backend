@@ -20,3 +20,15 @@
 ## 5. Catalog Display
 - [ ] **Rich Response Rendering:** The backend sends `message_type: "interactive_list"` or `"interactive_buttons"` with an `options_list`. Ensure the frontend renders these as clickable elements.
 - [ ] **Product Cards:** When `data.cart_summary` or `data.catalogo` items are present, render them as structured cards rather than just relying on the markdown `message_body`.
+
+## 6. Catalog Management (Integrations)
+- [ ] **Integrations > Catalog Section:** Add a dedicated section under Integrations to manage the catalog **without consuming AI tokens**. This should allow:
+  - Uploading/replacing the full catalog file.
+  - Editing cells (price, name, description, stock).
+  - Adding/removing rows (new articles).
+  - Validating required fields before saving.
+- [ ] **Tenant Catalog CDN Link:** Display and copy a per-tenant CDN URL where the catalog is hosted (for sharing via WhatsApp, widget chat, email, etc.). Include:
+  - A “Copy link” button.
+  - A short description/banner preview (if available).
+  - Guidance text that this link is used for end-user catalog browsing outside the AI flow.
+- [ ] **Widget/WhatsApp Sharing CTA:** Add a small CTA in the catalog section to generate/share the catalog link (button to “Enviar por WhatsApp” or “Compartir enlace”) that uses the CDN URL.
