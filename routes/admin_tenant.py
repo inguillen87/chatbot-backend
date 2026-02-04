@@ -24,6 +24,14 @@ from services.tenant_resolver import apply_tenant_alias
 admin_tenant_bp = Blueprint('admin_tenant_bp', __name__)
 
 
+def _cors_preflight_response():
+    response = jsonify({"status": "ok"})
+    response.headers.add("Access-Control-Allow-Origin", "*")
+    response.headers.add("Access-Control-Allow-Headers", "Content-Type,Authorization")
+    response.headers.add("Access-Control-Allow-Methods", "GET,POST,OPTIONS,PUT,DELETE,PATCH")
+    return response
+
+
 def _is_authorized_for_tenant(current_user: User, tenant: TenantProfile) -> bool:
     """Return True if ``current_user`` can manage the given tenant.
 
@@ -105,6 +113,37 @@ def _resolve_admin_tenant(current_user: User, slug: str) -> TenantProfile | None
         return tenant_from_user
 
     return tenant
+
+
+@admin_tenant_bp.route('/api/admin/tenants/<slug>/catalog', methods=['OPTIONS'])
+def admin_catalog_options(slug):
+    return _cors_preflight_response()
+
+
+@admin_tenant_bp.route('/api/admin/tenants/<slug>/catalog', methods=['GET'])
+@token_requerido
+@require_tenant
+def admin_get_catalog(current_user, slug):
+    tenant = _resolve_admin_tenant(current_user, slug)
+    if not tenant:
+        return jsonify({"error": "Tenant not found"}), 404
+
+    if not _is_authorized_for_tenant(current_user, tenant):
+        return jsonify({"error": "Unauthorized"}), 403
+
+    owner = tenant.municipio or tenant.pyme
+    has_pdf = bool(owner and tiene_archivo_catalogo(owner.id))
+    base_web = current_app.config.get("APP_BASE_URL", "https://chatboc.ar")
+    base_api = current_app.config.get("API_BASE_URL", "https://api.chatboc.ar")
+
+    return jsonify({
+        "tenant_slug": tenant.slug,
+        "status": "published" if has_pdf else "missing",
+        "view_url": f"{base_web}/{tenant.slug}/catalogo",
+        "download_url": f"{base_api}/api/public/tenants/{tenant.slug}/catalog/download?format=pdf",
+        "download_url_json": f"{base_api}/api/public/tenants/{tenant.slug}/catalog/download?format=json",
+        "has_pdf": has_pdf,
+    })
 
 # --- Tenant Management ---
 

@@ -35,6 +35,8 @@ def _get_tenant_from_request(slug: str):
 
     return tenant
 
+
+
 @public_tenant_bp.route('/api/public/tenants/<slug>/menu', methods=['GET', 'OPTIONS'])
 def get_menu(slug):
     if request.method == 'OPTIONS':
