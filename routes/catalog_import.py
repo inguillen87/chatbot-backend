@@ -6,13 +6,12 @@ from werkzeug.utils import secure_filename
 import os
 import json
 import logging
-import uuid # Imported for UUID generation
+import uuid
+import hashlib
 
-# Re-using upload folder logic
 UPLOAD_FOLDER = os.path.join(os.getcwd(), "temp_uploads")
 logger = logging.getLogger(__name__)
 
-# This replaces/extends catalog_routes.py logic for the new flow
 catalog_import_bp = Blueprint('catalog_import_bp', __name__)
 
 @catalog_import_bp.route('/api/admin/catalog/import', methods=['POST'])
@@ -30,46 +29,68 @@ def create_import_session(current_user):
     path = os.path.join(UPLOAD_FOLDER, f"{tenant.slug}_{filename}")
     file.save(path)
 
+    # Calculate hash
+    hasher = hashlib.md5()
+    with open(path, 'rb') as f:
+        buf = f.read()
+        hasher.update(buf)
+    file_hash = hasher.hexdigest()
+
     # Create Upload Record
     upload = CatalogUpload(
         tenant_id=tenant.id,
         filename=filename,
         mime_type=file.mimetype,
         status="processing",
-        processor_slug="generic_v2"
+        processor_slug="generic_v2",
+        file_hash=file_hash
     )
     db.session.add(upload)
     db.session.commit()
 
     # Trigger Processing
     try:
-        from services.catalog.pipeline import CatalogPipeline
+        from services.catalog_pipeline import CatalogPipeline
         pipeline = CatalogPipeline()
 
-        # Determine rubro for extraction heuristics
         rubro_slug = "generic"
         if tenant.municipio and tenant.municipio.rubro:
              rubro_slug = tenant.municipio.rubro.nombre
         elif tenant.pyme and tenant.pyme.rubro:
              rubro_slug = tenant.pyme.rubro.nombre
 
-        # Process upload (synchronous for P0 MVP)
-        # This returns a dict with 'items', 'warnings', etc.
+        # Process upload
         extraction_result = pipeline.process_upload_preview(upload.id, path, file.mimetype, rubro_slug)
 
-        upload.preview_data = extraction_result.get('items', [])
+        # Store full result
+        upload.preview_data = extraction_result
         upload.warnings = extraction_result.get('warnings', [])
-        upload.status = "ready_to_commit"
+        upload.engine_used = extraction_result.get('engine', 'unknown')
+        upload.stats = {
+            "confidence": extraction_result.get('confidence', 0),
+            "total_rows": len(extraction_result.get('items', []))
+        }
+
+        # Validation Logic
+        items = extraction_result.get('items') or []
+        if not items:
+             upload.status = "failed"
+             upload.errors = extraction_result.get('errors', []) + ["No structured data found"]
+             if not upload.errors:
+                 upload.errors = ["No se encontraron productos válidos."]
+        else:
+             upload.status = "ready_to_commit"
+
         db.session.commit()
 
     except Exception as e:
-        logger.error(f"Import failed: {e}")
+        logger.error(f"Import failed: {e}", exc_info=True)
         upload.status = "failed"
+        upload.errors = [str(e)]
         db.session.commit()
-        return jsonify({"error": "Processing failed"}), 500
+        return jsonify({"error": "Processing failed", "details": str(e)}), 500
 
     resp = upload.to_dict()
-    # Ensure legacy frontend compatibility if it expects 'upload_id'
     resp['upload_id'] = resp['id']
     return jsonify(resp)
 
@@ -87,7 +108,6 @@ def get_import_session(current_user, upload_id):
         return jsonify({"error": "Not found"}), 404
 
     resp = upload.to_dict()
-    # Ensure legacy frontend compatibility if it expects 'upload_id'
     resp['upload_id'] = resp['id']
     return jsonify(resp)
 
@@ -95,9 +115,6 @@ def get_import_session(current_user, upload_id):
 @token_requerido
 @require_tenant
 def update_import_preview(current_user, upload_id):
-    """
-    Allow frontend to fix/edit preview data before commit.
-    """
     tenant = g.tenant_profile
     upload = CatalogUpload.query.filter_by(id=upload_id, tenant_id=tenant.id).first()
     if not upload:
@@ -105,8 +122,8 @@ def update_import_preview(current_user, upload_id):
 
     data = request.json
     if 'preview_data' in data:
+        # User is manually correcting the data
         upload.preview_data = data['preview_data']
-        # Recalculate warnings if needed
         upload.status = "ready_to_commit"
 
     db.session.commit()
@@ -124,24 +141,31 @@ def commit_import_session(current_user, upload_id):
     if upload.status != "ready_to_commit":
         return jsonify({"error": "Upload not ready"}), 400
 
-    items = upload.preview_data or []
+    preview = upload.preview_data or {}
+    items = preview.get('items') or preview.get('rows') or []
     count = 0
 
-    # Lazy import to avoid circular dependency if service imports routes
     from services.qdrant_service import index_catalog_item
     from services.embedding_service import embed_textos_llm
 
-    CatalogoItem.query.filter_by(tenant_id=tenant.id).delete()
+    replace = request.json.get('replace', True) if request.json else True
 
-    # Bulk Upsert Logic
+    if replace:
+        CatalogoItem.query.filter_by(tenant_id=tenant.id).delete()
+
     for item in items:
-        sku = item.get('sku')
-        if not sku: continue
+        # Flexible key access
+        sku = item.get('sku') or item.get('SKU')
+        title = item.get('title') or item.get('nombre') or item.get('Producto')
+        price = item.get('price') or item.get('precio') or item.get('Precio')
+
+        if not title: continue # minimal requirement
+
+        if not sku:
+             sku = f"GEN-{uuid.uuid4().hex[:8]}"
 
         item_obj = None
-        # Check existing
         existing = CatalogoItem.query.filter_by(tenant_id=tenant.id, sku=sku).first()
-        # Fallback to user_id ownership if tenant_id is ambiguous (legacy)
         if not existing and tenant.pyme_id:
              existing = CatalogoItem.query.filter_by(user_id=tenant.pyme_id, sku=sku).first()
 
@@ -149,58 +173,49 @@ def commit_import_session(current_user, upload_id):
             item_obj = existing
         else:
             new_item = CatalogoItem(
-                user_id=tenant.pyme_id or current_user.id, # Fallback
+                user_id=tenant.pyme_id or current_user.id,
                 tenant_id=tenant.id,
-                sku=sku,
-                nombre=item.get('title'),
-                precio=str(item.get('price')),
-                precio_monetario=float(item.get('price', 0)),
-                categoria=item.get('category'),
+                sku=str(sku),
+                nombre=str(title),
+                precio=str(price),
+                precio_monetario=0.0,
                 modalidad="venta",
                 disponible=True
             )
             db.session.add(new_item)
             item_obj = new_item
 
-        item_obj.nombre = item.get('title', item_obj.nombre)
-        item_obj.precio = str(item.get('price', item_obj.precio))
-        item_obj.precio_monetario = float(item.get('price', 0))
-        item_obj.categoria = item.get('category', item_obj.categoria)
-        item_obj.moneda = item.get('currency', item_obj.moneda)
-        item_obj.marca = item.get('brand') or item.get('marca') or item_obj.marca
-        item_obj.unidad = item.get('unit') or item_obj.unidad
-        item_obj.descripcion_corta = item.get('pack') or item_obj.descripcion_corta
-        item_obj.precio_por_caja = item.get('precio_por_caja') or item_obj.precio_por_caja
-        item_obj.unidad_por_caja = item.get('unidad_por_caja') or item_obj.unidad_por_caja
-        extra_metadata = item_obj.extra_metadata or {}
-        for key in ("varietal", "anada", "pallet", "presentacion"):
-            value = item.get(key)
-            if value:
-                extra_metadata[key] = value
-        if extra_metadata:
-            item_obj.extra_metadata = extra_metadata
+        item_obj.nombre = str(title)
+        item_obj.precio = str(price)
+        try:
+             import re
+             clean_price = re.sub(r'[^\d\.,]', '', str(price))
+             clean_price = clean_price.replace(',', '.')
+             item_obj.precio_monetario = float(clean_price)
+        except:
+             item_obj.precio_monetario = 0.0
 
-        # Flush to generate ID for indexing
+        item_obj.categoria = item.get('category') or item.get('categoria')
+        item_obj.moneda = item.get('currency') or item.get('moneda') or 'ARS'
+        item_obj.marca = item.get('brand') or item.get('marca')
+
         db.session.flush()
 
-        # Trigger Indexing (Sync for P0, should be async job)
         try:
-            # Generate embedding on the fly (expensive but correct for P0)
-            text_to_embed = f"{item.get('title')} {item.get('category')} {item.get('price')}"
+            text_to_embed = f"{item_obj.nombre} {item_obj.categoria or ''} {item_obj.precio}"
             embedding_list = embed_textos_llm([text_to_embed])
             if embedding_list and embedding_list[0]:
                 rubro_nombre = "general"
                 if tenant.pyme and tenant.pyme.rubro:
                     rubro_nombre = tenant.pyme.rubro.nombre
 
-                # Prepare item dict for indexing service
                 item_data = {
-                    "id": item_obj.id, # Now available after flush
-                    "nombre": item.get('title'),
+                    "id": item_obj.id,
+                    "nombre": item_obj.nombre,
                     "descripcion": "",
-                    "precio": float(item.get('price', 0)),
+                    "precio": float(item_obj.precio_monetario or 0),
                     "rubro": rubro_nombre,
-                    "stock": item.get('stock', 0)
+                    "stock": 0
                 }
                 index_catalog_item(tenant.id, item_data, embedding_list[0])
 

@@ -45,7 +45,7 @@ VISION_SCHEMA = {
 }
 
 
-def _openai_model(default_model: str = "gpt-4.1") -> str:
+def _openai_model(default_model: str = "gpt-4o") -> str:
     return os.getenv("OPENAI_MODEL", default_model)
 
 def _ensure_json_prompt(prompt: str) -> str:
@@ -154,7 +154,7 @@ def _call_openai(
                             {"type": "input_image", "image": {"data": b64, "mime_type": "image/jpeg"}},
                         ],
                     }],
-                    max_output_tokens=300,
+                    max_output_tokens=4096,
                     temperature=0,
                     text={
                         "format": {
@@ -179,7 +179,7 @@ def _call_openai(
                         {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
                     ],
                 }],
-                max_tokens=300,
+                max_tokens=4096,
                 temperature=0,
                 response_format={
                     "type": "json_schema",
@@ -241,7 +241,7 @@ def _call_openai_image_text(image_bytes: bytes, custom_prompt: Optional[str] = N
                             {"type": "input_image", "image": {"data": b64, "mime_type": "image/jpeg"}},
                         ],
                     }],
-                    max_output_tokens=800,
+                    max_output_tokens=4096,
                 )
                 text = getattr(response, "output_text", "") or response.output[0].content[0].text
             except Exception as exc:
@@ -257,7 +257,7 @@ def _call_openai_image_text(image_bytes: bytes, custom_prompt: Optional[str] = N
                         {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
                     ],
                 }],
-                max_tokens=800,
+                max_tokens=4096,
             )
             message = completion.choices[0].message
             content = message.get("content") if isinstance(message, dict) else getattr(message, "content", None)
@@ -299,7 +299,7 @@ def _call_openai_text(
                     "role": "user",
                     "content": [{"type": "input_text", "text": f"{prompt}\n\n{str(text)}"}],
                 }],
-                max_output_tokens=600,
+                max_output_tokens=4096,
                 temperature=0,
                 text={
                     "format": {
@@ -318,7 +318,7 @@ def _call_openai_text(
                     "role": "user",
                     "content": f"{prompt}\n\n{str(text)}",
                 }],
-                max_tokens=600,
+                max_tokens=4096,
                 temperature=0,
                 response_format={
                     "type": "json_schema",
