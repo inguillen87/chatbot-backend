@@ -3,6 +3,7 @@ from models import TenantProfile, TenantConfig, WidgetSettings, db
 from routes.auth import token_requerido
 from services.pymes import tiene_archivo_catalogo, url_descargar_catalogo_pyme
 from middleware.tenant_context import require_tenant
+from services.catalog_seed import ensure_seed_catalog
 
 public_tenant_bp = Blueprint('public_tenant_bp', __name__)
 

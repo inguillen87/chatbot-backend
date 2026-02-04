@@ -7,6 +7,7 @@ from models import MunicipioPost, CatalogoItem, TenantTicket, MarketOrder, Marke
 from extensions import db
 from services.tenant_resolver import resolve_tenant_only, TenantResolutionError
 from services.rewards import recompensas_service
+from routes.public_resolver import _build_widget_embed_payload, _canonical_widget_token
 from utils.auth_decorators import require_auth_optional, require_auth
 from routes.catalogo import _formatear_producto
 from services.encuestas_service import list_public_encuestas_for_tenant, serialize_public_encuesta, get_public_encuesta_by_id
@@ -605,18 +606,21 @@ def get_integration_info(tenant_slug):
     This helps the 'Integration' page in the frontend populate its data.
     """
     tenant = _resolve_context(tenant_slug)
-    owner = _get_owner_id(tenant)
+    owner = tenant.municipio or tenant.pyme
 
     # Base URL for catalog/portal
     # Logic similar to pwa_public but simpler
     portal_url = f"https://chatboc.ar/{tenant.slug}"
-    widget_script = '<script src="https://chatboc.ar/widget.js" data-tenant="{}"></script>'.format(tenant.slug)
+    widget_token = _canonical_widget_token(tenant, None)
+    widget_payload = _build_widget_embed_payload(tenant, widget_token)
+    widget_script = widget_payload.get("embed_snippet")
 
     return jsonify({
         "slug": tenant.slug,
         "name": tenant.nombre,
         "portalUrl": portal_url,
         "widgetScript": widget_script,
+        "widget": widget_payload,
         "catalogUrl": f"{portal_url}/market",
         "qrCodeUrl": f"https://api.qrserver.com/v1/create-qr-code/?size=150x150&data={portal_url}",
         "whatsappLink": f"https://wa.me/{owner.telefono if owner and owner.telefono else ''}"
