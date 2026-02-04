@@ -6,6 +6,8 @@ from qdrant_client import QdrantClient
 from qdrant_client.http import models as qdrant_models
 from typing import List, Optional, Dict, Any, Iterable, Tuple
 
+from services.common_utils import parse_precio_flexible
+
 logger = logging.getLogger(__name__)
 
 # Configuración de Colecciones (Solo 2 principales)
@@ -108,13 +110,16 @@ def index_catalog_item(tenant_id: str, item_data: Dict[str, Any], embedding: Lis
     if not client: return False
 
     point_id = item_data.get("id") # Assuming robust ID or hash
+    _, precio_float, _ = parse_precio_flexible(item_data.get("precio", 0))
+    if precio_float is None:
+        precio_float = 0.0
     payload = {
         "tenant_id": str(tenant_id),
         "tenant_type": "pyme", # Default for catalog
         "rubro": item_data.get("rubro", "general"),
         "title": item_data.get("nombre"),
         "description": item_data.get("descripcion"),
-        "price": float(item_data.get("precio", 0)),
+        "price": float(precio_float),
         "stock": int(item_data.get("stock", 0)),
         "source": "manual",
         "updated_at": datetime.utcnow().isoformat()
