@@ -18,6 +18,7 @@ from models import (
 from routes.catalogo import _formatear_producto
 from routes.carrito import _product_query_for_tenant
 from services.catalog_seed import ensure_seed_catalog
+from services.pymes import tiene_archivo_catalogo
 from services.tenant_factory import create_tenant_from_template, assign_number_to_tenant
 from services.tenant_resolver import apply_tenant_alias
 
