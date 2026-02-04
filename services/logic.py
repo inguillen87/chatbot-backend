@@ -85,6 +85,7 @@ from services.constants import CONTEXTO_MUNICIPIO
 # ... otras funciones que ya tengas en logic.py (como responder_chatboc)
 from utils.db_utils import safe_flag_modified
 from utils.response_utils import normalize_response_payload
+from services.catalog_share import maybe_handle_catalog_share
 
 def responder_chatboc(
     pregunta,
@@ -149,6 +150,14 @@ def responder_chatboc(
 
     if not effective_owner_user:
         logger.warning(f"[responder_chatboc] 'effective_owner_user' could not be determined. This is critical for context-specific logic (e.g., for /ask/municipio). Check if a valid entity token is being passed for the bot instance.")
+
+    catalog_share_response = maybe_handle_catalog_share(
+        pregunta=pregunta,
+        owner_user=effective_owner_user,
+        channel=channel,
+    )
+    if catalog_share_response:
+        return catalog_share_response
 
     # 2. Detectar nombre de rubro (universal)
     rubro_nombre = ""
