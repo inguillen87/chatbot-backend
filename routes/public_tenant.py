@@ -1,10 +1,7 @@
-from flask import Blueprint, request, jsonify, g, current_app
-from sqlalchemy import func
-
-from models import CatalogoItem, TenantProfile, TenantConfig, WidgetSettings, db
+from flask import Blueprint, request, jsonify, g, current_app, redirect
+from models import TenantProfile, TenantConfig, WidgetSettings, db
 from routes.auth import token_requerido
-from routes.catalogo import _formatear_producto
-from routes.carrito import _product_query_for_tenant
+from services.pymes import tiene_archivo_catalogo, url_descargar_catalogo_pyme
 from middleware.tenant_context import require_tenant
 from services.catalog_seed import ensure_seed_catalog
 
@@ -29,6 +26,8 @@ def _get_tenant_from_request(slug: str):
         tenant = TenantProfile.query.filter_by(slug=fallback_slug).first()
 
     return tenant
+
+
 
 @public_tenant_bp.route('/api/public/tenants/<slug>/menu', methods=['GET', 'OPTIONS'])
 def get_menu(slug):
@@ -106,7 +105,7 @@ def get_widget_config(slug):
 
 
 @public_tenant_bp.route('/api/public/tenants/<slug>/catalog', methods=['GET', 'OPTIONS'])
-def get_catalog(slug):
+def get_public_catalog(slug):
     if request.method == 'OPTIONS':
         return _add_cors_headers(jsonify({"ok": True}))
 
@@ -114,68 +113,35 @@ def get_catalog(slug):
     if not tenant:
         return jsonify({"error": "Tenant not found"}), 404
 
-    owner = tenant.municipio or tenant.pyme
-    if not owner:
-        return jsonify({"error": "Tenant owner not found"}), 404
-
-    ensure_seed_catalog(owner, tenant)
-    categoria = request.args.get("categoria")
-    search_text = request.args.get("q")
-
-    query = _product_query_for_tenant(owner, tenant)
-    if categoria:
-        categoria_norm = categoria.strip().lower()
-        if categoria_norm:
-            query = query.filter(func.lower(CatalogoItem.categoria) == categoria_norm)
-
-    items = query.order_by(func.lower(CatalogoItem.nombre)).all()
-
-    productos = []
-    for item in items:
-        prod = _formatear_producto(
-            {
-                "nombre": item.nombre,
-                "categoria": item.categoria,
-                "descripcion": item.descripcion,
-                "sku": item.sku,
-                "unidad": item.unidad,
-                "precio_str": item.precio,
-                "cantidad": item.cantidad,
-                "marca": item.marca,
-                "imagen_url": item.imagen_url,
-                "descripcion_corta": item.descripcion_corta,
-                "promocion_info": item.promocion_info,
-                "precio_por_caja": item.precio_por_caja,
-                "unidad_por_caja": item.unidad_por_caja,
-                "moneda": item.moneda,
-                "precio_float": item.precio_monetario,
-                "extra_metadata": item.extra_metadata,
-            }
-        )
-        prod["catalogo_item_id"] = item.id
-        prod["tenant_id"] = tenant.id
-        productos.append(prod)
-
-    if search_text:
-        term = search_text.strip().lower()
-        if term:
-            filtrados = []
-            for prod in productos:
-                texto_busqueda = " ".join(
-                    str(value or "")
-                    for value in (
-                        prod.get("nombre"),
-                        prod.get("descripcion"),
-                        prod.get("categoria"),
-                        prod.get("promocion_info"),
-                    )
-                ).lower()
-                if term in texto_busqueda:
-                    filtrados.append(prod)
-            productos = filtrados
-
-    response = jsonify(productos)
+    base_web = current_app.config.get("APP_BASE_URL", "https://chatboc.ar")
+    base_api = current_app.config.get("API_BASE_URL", "https://api.chatboc.ar")
+    response = jsonify({
+        "tenant_slug": tenant.slug,
+        "view_url": f"{base_web}/{tenant.slug}/catalogo",
+        "download_url": f"{base_api}/api/public/tenants/{tenant.slug}/catalog/download?format=pdf",
+        "download_url_json": f"{base_api}/api/public/tenants/{tenant.slug}/catalog/download?format=json",
+    })
     return _add_cors_headers(response)
+
+
+@public_tenant_bp.route('/api/public/tenants/<slug>/catalog/download', methods=['GET', 'OPTIONS'])
+def download_public_catalog(slug):
+    if request.method == 'OPTIONS':
+        return _add_cors_headers(jsonify({"ok": True}))
+
+    tenant = _get_tenant_from_request(slug)
+    if not tenant:
+        return jsonify({"error": "Tenant not found"}), 404
+
+    fmt = (request.args.get("format") or "pdf").lower()
+    if fmt != "pdf":
+        return jsonify({"error": "format_not_supported"}), 400
+
+    owner = tenant.municipio or tenant.pyme
+    if not owner or not tiene_archivo_catalogo(owner.id):
+        return jsonify({"error": "not_found"}), 404
+
+    return redirect(url_descargar_catalogo_pyme(owner.id), code=302)
 
 # --- Fix for missing /api/tenant/config endpoint ---
 
