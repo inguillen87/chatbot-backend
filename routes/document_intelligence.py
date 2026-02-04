@@ -1,4 +1,5 @@
 import io
+import logging
 import re
 import uuid
 from typing import Any, List, Optional
@@ -17,6 +18,8 @@ from services.vision_fallback_service import (
     analyze_image_text,
     analyze_text_structured,
 )
+
+logger = logging.getLogger(__name__)
 
 
 document_intelligence_bp = Blueprint(
@@ -592,19 +595,25 @@ def document_intelligence_commit(current_user, pyme_id: int):
 
         embedding = embeddings[idx] if idx < len(embeddings) else None
         if embedding:
-            index_catalog_item(
-                tenant_id or current_user.id,
-                {
-                    "id": catalog_item.id,
-                    "nombre": catalog_item.nombre,
-                    "descripcion": catalog_item.descripcion,
-                    "precio": catalog_item.precio,
-                    "rubro": rubro_hint or "general",
-                    "stock": item.get("stock") or 0,
-                    "extra_metadata": item.get("extra_metadata") or {},
-                },
-                embedding,
-            )
+            try:
+                index_catalog_item(
+                    tenant_id or current_user.id,
+                    {
+                        "id": catalog_item.id,
+                        "nombre": catalog_item.nombre,
+                        "descripcion": catalog_item.descripcion,
+                        "precio": catalog_item.precio,
+                        "rubro": rubro_hint or "general",
+                        "stock": item.get("stock") or 0,
+                        "extra_metadata": item.get("extra_metadata") or {},
+                    },
+                    embedding,
+                )
+            except Exception:
+                logger.exception(
+                    "No se pudo indexar el item %s en Qdrant. Se continuará con el commit.",
+                    catalog_item.id,
+                )
         count += 1
 
     if upload_id:

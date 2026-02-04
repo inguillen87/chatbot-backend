@@ -110,8 +110,10 @@ def index_catalog_item(tenant_id: str, item_data: Dict[str, Any], embedding: Lis
     if not client: return False
 
     point_id = item_data.get("id") # Assuming robust ID or hash
-    _, precio_float, _ = parse_precio_flexible(item_data.get("precio", 0))
+    precio_raw = item_data.get("precio", 0)
+    _, precio_float, _ = parse_precio_flexible(precio_raw)
     if precio_float is None:
+        logger.warning("Precio inválido para indexar en Qdrant: %s", precio_raw)
         precio_float = 0.0
     payload = {
         "tenant_id": str(tenant_id),
