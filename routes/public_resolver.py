@@ -188,6 +188,25 @@ def _theme_from_tenant(tenant: TenantProfile) -> dict:
     }
 
 
+def _resolve_widget_api_base(tenant: TenantProfile, cfg: dict) -> str:
+    """Return the API base URL that widget embeds should target."""
+
+    candidates = [
+        cfg.get("widget_api_base_url"),
+        cfg.get("widget_api_base"),
+        cfg.get("api_base_url"),
+        cfg.get("api_base"),
+        current_app.config.get("PUBLIC_API_BASE_URL"),
+        current_app.config.get("BACKEND_URL"),
+    ]
+
+    for candidate in candidates:
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.rstrip("/")
+
+    return "https://api.chatboc.ar"
+
+
 def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | None) -> dict:
     """Expose a rich embed configuration so `integracion.tsx` can render a SaaS builder."""
 
@@ -200,6 +219,7 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
     ).first()
 
     cfg = _normalize_widget_config(tenant.configuracion, settings)
+    api_base_url = _resolve_widget_api_base(tenant, cfg)
 
     welcome_title = cfg.get("widget_welcome_title") or cfg.get("welcome_title") or tenant.nombre
     welcome_subtitle = cfg.get("widget_welcome_subtitle") or cfg.get("welcome_subtitle") or "Asistente Virtual"
@@ -246,7 +266,8 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
         "data-allow-attachments": str(cfg.get("widget_allow_attachments", True)).lower(),
         "data-allow-location": str(cfg.get("widget_allow_location", True)).lower(),
         "data-allow-audio": str(cfg.get("widget_allow_audio", True)).lower(),
-        "data-domain": tenant.dominio or None,
+        "data-domain": api_base_url,
+        "data-api-base": api_base_url,
         "data-shadow-dom": "true",  # Ensure styles don't leak/conflict with host page
     }
     if str(position).lower() == "left":
@@ -279,6 +300,7 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
         "channels": cfg.get("channels") or {},
         "preview": cfg.get("preview") or {},
         "embed_snippet": embed_snippet,
+        "api_base_url": api_base_url,
         "attributes": attrs,
         "layout": {
             "position": position or "right",
@@ -293,6 +315,7 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
         "script_url": script_url,
         "attributes": attrs,
         "embed_snippet": embed_snippet,
+        "api_base_url": api_base_url,
         "theme": theme,
         "builder_config": builder_config,
         "marketplace": marketplace,
