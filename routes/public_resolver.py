@@ -162,9 +162,15 @@ def _theme_from_tenant(tenant: TenantProfile) -> dict:
 
     tema = tenant.tema or {}
     cfg = tenant.configuracion or {}
+    widget_settings = getattr(tenant, "widget_settings", None)
+    theme_config = {}
+    if widget_settings and getattr(widget_settings, "theme_config", None):
+        theme_config = widget_settings.theme_config or {}
 
     def pick(*keys, default=None):
         for key in keys:
+            if isinstance(theme_config, dict) and theme_config.get(key):
+                return theme_config[key]
             if isinstance(tema, dict) and tema.get(key):
                 return tema[key]
             if isinstance(cfg, dict) and cfg.get(key):
