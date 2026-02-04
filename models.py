@@ -2153,6 +2153,9 @@ class CatalogUpload(db.Model):
 
     preview_data = db.Column(JSONType, nullable=True) # Normalized preview for frontend validation
     warnings = db.Column(JSONType, nullable=True) # List of warnings (e.g. missing prices)
+    file_hash = db.Column(db.String(64), nullable=True)
+    engine_used = db.Column(db.String(50), nullable=True)
+    errors = db.Column(JSONType, nullable=True)
 
     def to_dict(self):
         return {
@@ -2163,6 +2166,9 @@ class CatalogUpload(db.Model):
             "stats": self.stats,
             "preview_data": self.preview_data,
             "warnings": self.warnings,
+            "engine_used": self.engine_used,
+            "errors": self.errors,
+            "file_hash": self.file_hash,
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }
 
