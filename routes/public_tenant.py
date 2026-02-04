@@ -1,8 +1,12 @@
 from flask import Blueprint, request, jsonify, g, current_app
-from models import TenantProfile, TenantConfig, WidgetSettings, db
+from sqlalchemy import func
+
+from models import CatalogoItem, TenantProfile, TenantConfig, WidgetSettings, db
 from routes.auth import token_requerido
-from services.tenant_resolver import resolve_tenant_only
+from routes.catalogo import _formatear_producto
+from routes.carrito import _product_query_for_tenant
 from middleware.tenant_context import require_tenant
+from services.catalog_seed import ensure_seed_catalog
 
 public_tenant_bp = Blueprint('public_tenant_bp', __name__)
 
@@ -99,6 +103,79 @@ def get_widget_config(slug):
     except Exception as e:
         current_app.logger.error(f"Error fetching widget config: {e}")
         return jsonify({"error": "Internal Error"}), 500
+
+
+@public_tenant_bp.route('/api/public/tenants/<slug>/catalog', methods=['GET', 'OPTIONS'])
+def get_catalog(slug):
+    if request.method == 'OPTIONS':
+        return _add_cors_headers(jsonify({"ok": True}))
+
+    tenant = _get_tenant_from_request(slug)
+    if not tenant:
+        return jsonify({"error": "Tenant not found"}), 404
+
+    owner = tenant.municipio or tenant.pyme
+    if not owner:
+        return jsonify({"error": "Tenant owner not found"}), 404
+
+    ensure_seed_catalog(owner, tenant)
+    categoria = request.args.get("categoria")
+    search_text = request.args.get("q")
+
+    query = _product_query_for_tenant(owner, tenant)
+    if categoria:
+        categoria_norm = categoria.strip().lower()
+        if categoria_norm:
+            query = query.filter(func.lower(CatalogoItem.categoria) == categoria_norm)
+
+    items = query.order_by(func.lower(CatalogoItem.nombre)).all()
+
+    productos = []
+    for item in items:
+        prod = _formatear_producto(
+            {
+                "nombre": item.nombre,
+                "categoria": item.categoria,
+                "descripcion": item.descripcion,
+                "sku": item.sku,
+                "unidad": item.unidad,
+                "precio_str": item.precio,
+                "cantidad": item.cantidad,
+                "marca": item.marca,
+                "imagen_url": item.imagen_url,
+                "descripcion_corta": item.descripcion_corta,
+                "promocion_info": item.promocion_info,
+                "precio_por_caja": item.precio_por_caja,
+                "unidad_por_caja": item.unidad_por_caja,
+                "moneda": item.moneda,
+                "precio_float": item.precio_monetario,
+                "extra_metadata": item.extra_metadata,
+            }
+        )
+        prod["catalogo_item_id"] = item.id
+        prod["tenant_id"] = tenant.id
+        productos.append(prod)
+
+    if search_text:
+        term = search_text.strip().lower()
+        if term:
+            filtrados = []
+            for prod in productos:
+                texto_busqueda = " ".join(
+                    str(value or "")
+                    for value in (
+                        prod.get("nombre"),
+                        prod.get("descripcion"),
+                        prod.get("categoria"),
+                        prod.get("promocion_info"),
+                    )
+                ).lower()
+                if term in texto_busqueda:
+                    filtrados.append(prod)
+            productos = filtrados
+
+    response = jsonify(productos)
+    return _add_cors_headers(response)
 
 # --- Fix for missing /api/tenant/config endpoint ---
 

@@ -58,7 +58,13 @@ from routes.pedidos import (
 from routes.pwa_app import follow_tenant, list_followed_tenants, unfollow_tenant
 from routes.pwa_misc import provide_anon_id
 from routes.public_resolver import tenant_profile
-from routes.public_tenant import get_contacts, get_links, get_menu, get_widget_config
+from routes.public_tenant import (
+    get_catalog,
+    get_contacts,
+    get_links,
+    get_menu,
+    get_widget_config,
+)
 from routes.pwa_public import public_events, public_news
 
 
@@ -722,6 +728,15 @@ def root_public_tenant_widget_config(slug: str):
     if request.method == "OPTIONS":
         return _options_ok()
     return get_widget_config(slug)
+
+
+@public_aliases_bp.route(
+    "/public/tenants/<slug>/catalog", methods=["GET", "OPTIONS"], strict_slashes=False
+)
+def root_public_tenant_catalog(slug: str):
+    if request.method == "OPTIONS":
+        return _options_ok()
+    return get_catalog(slug)
 
 
 # --- Alias sin prefijo /api para news/events públicos ---
