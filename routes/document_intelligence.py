@@ -516,6 +516,14 @@ def document_intelligence_commit(current_user, pyme_id: int):
         )
 
     payload = request.get_json(silent=True) or {}
+    if isinstance(payload, str):
+        import json
+        try:
+            payload = json.loads(payload)
+        except:
+            payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
     columns = payload.get("columns") or []
     rows = payload.get("rows") or []
     if not columns or not rows:
