@@ -667,6 +667,10 @@ def public_tenant_widget_config(tenant_slug: str):
         "embed_snippet": widget_payload.get("embed_snippet"),
         "builder_config": widget_payload.get("builder_config", {}),
         "embed_attributes": widget_payload.get("attributes", {}),
+        "owner_token": entity_token,
+        "entity_token": entity_token,
+        "widget_token": entity_token,
+        "token": entity_token,
         "entityToken": entity_token, # Added for frontend socket initialization
         "widgetToken": entity_token  # Alias for compatibility
     })
