@@ -262,6 +262,11 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
     closed_size = cfg.get("widget_closed_size") or "108px"
 
     script_url = current_app.config.get("WIDGET_SCRIPT_URL", "https://www.chatboc.ar/widget.js")
+    iframe_url = (
+        current_app.config.get("WIDGET_IFRAME_URL")
+        or cfg.get("widget_iframe_url")
+        or "https://www.chatboc.ar/iframe"
+    )
 
     right_offset = cfg.get("widget_right", "20px")
     left_offset = cfg.get("widget_left", right_offset)
@@ -300,6 +305,9 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
         "data-domain": api_base_url,
         "data-api-base": api_base_url,
         "data-shadow-dom": "true",  # Ensure styles don't leak/conflict with host page
+        # Keep iframe source absolute so embeds work on external origins.
+        "data-iframe-url": iframe_url,
+        "data-iframe-src": iframe_url,
     }
     if str(position).lower() == "left":
         attrs["data-left"] = left_offset
@@ -332,6 +340,7 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
         "preview": cfg.get("preview") or {},
         "embed_snippet": embed_snippet,
         "api_base_url": api_base_url,
+        "iframe_url": iframe_url,
         "attributes": attrs,
         "layout": {
             "position": position or "right",
@@ -347,6 +356,7 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
         "attributes": attrs,
         "embed_snippet": embed_snippet,
         "api_base_url": api_base_url,
+        "iframe_url": iframe_url,
         "theme": theme,
         "builder_config": builder_config,
         "marketplace": marketplace,
