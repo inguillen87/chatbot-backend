@@ -1,7 +1,7 @@
 from flask import Blueprint, jsonify, request, g, current_app
 from flask_cors import cross_origin
 
-from models import TenantProfile, WidgetSettings
+from models import TenantProfile, WidgetSettings, db
 from services.tenant_resolver import (
     RESERVED_TENANT_SLUGS,
     TenantResolutionError,
@@ -217,6 +217,27 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
     """Expose a rich embed configuration so `integracion.tsx` can render a SaaS builder."""
 
     canonical_token = _canonical_widget_token(tenant, provided_token)
+    if canonical_token:
+        cfg = tenant.configuracion or {}
+        tokens_cfg = cfg.get("widget_tokens")
+        tokens: list[str] = []
+        if isinstance(tokens_cfg, str):
+            tokens = [tokens_cfg]
+        elif isinstance(tokens_cfg, list):
+            tokens = [t for t in tokens_cfg if t]
+        if canonical_token not in tokens:
+            tokens.append(canonical_token)
+            cfg["widget_tokens"] = tokens
+            tenant.configuracion = cfg
+            try:
+                db.session.add(tenant)
+                db.session.commit()
+            except Exception:
+                db.session.rollback()
+                current_app.logger.exception(
+                    "[widget] Failed to persist canonical widget token for tenant %s",
+                    tenant.id,
+                )
     theme = _theme_from_tenant(tenant)
     marketplace = _marketplace_meta(tenant)
 
@@ -241,6 +262,11 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
     closed_size = cfg.get("widget_closed_size") or "108px"
 
     script_url = current_app.config.get("WIDGET_SCRIPT_URL", "https://www.chatboc.ar/widget.js")
+    iframe_url = (
+        current_app.config.get("WIDGET_IFRAME_URL")
+        or cfg.get("widget_iframe_url")
+        or "https://www.chatboc.ar/iframe"
+    )
 
     right_offset = cfg.get("widget_right", "20px")
     left_offset = cfg.get("widget_left", right_offset)
@@ -279,6 +305,9 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
         "data-domain": api_base_url,
         "data-api-base": api_base_url,
         "data-shadow-dom": "true",  # Ensure styles don't leak/conflict with host page
+        # Keep iframe source absolute so embeds work on external origins.
+        "data-iframe-url": iframe_url,
+        "data-iframe-src": iframe_url,
     }
     if str(position).lower() == "left":
         attrs["data-left"] = left_offset
@@ -311,6 +340,7 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
         "preview": cfg.get("preview") or {},
         "embed_snippet": embed_snippet,
         "api_base_url": api_base_url,
+        "iframe_url": iframe_url,
         "attributes": attrs,
         "layout": {
             "position": position or "right",
@@ -326,6 +356,7 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
         "attributes": attrs,
         "embed_snippet": embed_snippet,
         "api_base_url": api_base_url,
+        "iframe_url": iframe_url,
         "theme": theme,
         "builder_config": builder_config,
         "marketplace": marketplace,
