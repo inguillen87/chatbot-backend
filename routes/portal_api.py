@@ -621,6 +621,9 @@ def get_integration_info(tenant_slug):
         "portalUrl": portal_url,
         "widgetScript": widget_script,
         "widget": widget_payload,
+        "embed_snippet": widget_script,
+        "builder_config": widget_payload.get("builder_config", {}),
+        "embed_attributes": widget_payload.get("attributes", {}),
         "catalogUrl": f"{portal_url}/market",
         "qrCodeUrl": f"https://api.qrserver.com/v1/create-qr-code/?size=150x150&data={portal_url}",
         "whatsappLink": f"https://wa.me/{owner.telefono if owner and owner.telefono else ''}"
