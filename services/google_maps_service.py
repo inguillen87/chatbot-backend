@@ -6,6 +6,12 @@ from geopy.geocoders import GoogleV3, Nominatim, MapTiler
 
 logger = logging.getLogger(__name__)
 
+# Placeholder class for backward compatibility or future expansion
+class GoogleMapsService:
+    def __init__(self):
+        self.api_key = os.getenv("GOOGLE_API_KEY")
+
+servicio_google_maps = GoogleMapsService()
 
 def _get_geolocators():
     """Return geolocators ordered by priority for geocoding calls."""
