@@ -17,137 +17,74 @@ import secrets
 from services.demo_registry import demo_rubro_for_token
 from utils.user_query import _safe_user_query
 
+# Cache to avoid spamming DB queries for missing demo tokens
+_DEMO_TOKEN_WARNED = set()
 
-_WIDGET_ALLOWED_PREFIXES: Tuple[str, ...] = (
-    "/auth/widget/",
-    "/api/market/",
-    "/market/",
-)
-_WIDGET_ALLOWED_GET_PATHS: Set[str] = {
-    "/auth/me",
-    "/auth/perfil",
-    "/auth/profile",
-    "/auth/token-info",
-    "/me",
-    "/perfil",
-    "/profile",
-    "/api/me",
-    "/api/perfil",
-    "/api/profile",
-    "/pwa/tenant-info",
-    "/api/pwa/tenant-info",
-    "/public/tenant",
-    "/api/public/tenant",
-    "/api/public/tenant-profile",
-    "/notifications",
-    "/api/notifications",
-}
-
-_WIDGET_ALLOWED_ANY_METHOD_PATHS: Set[str] = {
-    "/ask",
-    "/ask/pyme",
-    "/ask/municipio",
-    "/api/ask",
-    "/api/ask/pyme",
-    "/api/ask/municipio",
-}
-
-_DEMO_TOKEN_WARNED: Set[str] = set()
-
-
-def _normalize_path(path: Optional[str]) -> str:
-    """Return a normalized absolute path used for widget access checks."""
-
-    if not path:
-        return "/"
-
-    normalized = path.strip()
-    if not normalized.startswith("/"):
-        normalized = f"/{normalized}"
-
-    if "?" in normalized:
-        normalized = normalized.split("?", 1)[0]
-
-    if normalized != "/":
-        normalized = normalized.rstrip("/") or "/"
-
-    return normalized
-
+def _rubro_aliases(rubro: Rubro) -> Set[str]:
+    """Helper to extract comparable aliases for a Rubro."""
+    aliases = set()
+    if rubro.clave:
+        aliases.add(rubro.clave.lower())
+    if rubro.nombre:
+        normalized = (
+            unicodedata.normalize("NFKD", rubro.nombre)
+            .encode("ascii", "ignore")
+            .decode("utf-8")
+            .lower()
+        )
+        aliases.add(normalized)
+    return aliases
 
 def _is_jwt_token(token: Optional[str]) -> bool:
-    """Return True if the token string looks like a JWT."""
-
+    """Check if the string looks like a JWT (three parts separated by dots)."""
     if not token or not isinstance(token, str):
         return False
-    return token.count(".") == 2
+    parts = token.split(".")
+    return len(parts) == 3
 
+def _widget_session_allowed(path: str, method: str) -> bool:
+    """Determine if a widget session token is allowed for the given request.
 
-def _widget_session_allowed(path: Optional[str], method: Optional[str]) -> bool:
-    """Return True if a widget session token can access the given request."""
+    Widget sessions are restricted to specific public endpoints (chat, profile name,
+    widget config) to prevent privilege escalation to administrative APIs.
+    """
+    path_lower = path.lower()
 
-    normalized_path = _normalize_path(path)
-    method = (method or "GET").upper()
+    allowed_prefixes = (
+        "/api/ask",
+        "/api/profile-name",
+        "/api/widget",
+        "/api/live-chat",
+        "/api/pwa/tenant-info",
+        "/api/pwa/anon-id",
+        "/api/public/tenants",
+    )
 
-    if method == "OPTIONS":
+    if any(path_lower.startswith(p) for p in allowed_prefixes):
         return True
 
-    if normalized_path in _WIDGET_ALLOWED_ANY_METHOD_PATHS:
-        return True
-
-    for prefix in _WIDGET_ALLOWED_PREFIXES:
-        if normalized_path.startswith(prefix.rstrip("/")):
-            return True
-
-    if method == "GET" and normalized_path in _WIDGET_ALLOWED_GET_PATHS:
+    # Allow legacy non-api routes just in case
+    legacy_prefixes = (
+        "/ask",
+        "/widget/attention",
+        "/widget/config",
+        "/live-chat/schedule",
+    )
+    if any(path_lower.startswith(p) for p in legacy_prefixes):
         return True
 
     return False
 
 
-def _normalize_alias_value(value: Optional[object]) -> Optional[str]:
-    """Normalize a string value into a slug-ish token."""
+def _demo_token_fallback_owner(token: Optional[str]) -> Optional[User]:
+    """Resolve a demo token using heuristics if strict DB lookup fails."""
 
-    if value is None:
+    if not token:
         return None
-
-    text = str(value).strip().lower()
-    if not text:
-        return None
-
-    decomposed = unicodedata.normalize("NFKD", text)
-    sanitized = "".join(ch for ch in decomposed if not unicodedata.combining(ch))
-    sanitized = re.sub(r"[^a-z0-9]+", "_", sanitized)
-    sanitized = sanitized.strip("_")
-    return sanitized or None
-
-
-def _rubro_aliases(rubro: Rubro) -> Set[str]:
-    """Return the normalized aliases associated with a Rubro."""
-
-    aliases: Set[str] = set()
-
-    for value in (getattr(rubro, "clave", None), getattr(rubro, "nombre", None)):
-        normalized = _normalize_alias_value(value)
-        if not normalized:
-            continue
-        aliases.add(normalized)
-        collapsed = normalized.replace("_", "")
-        if collapsed:
-            aliases.add(collapsed)
-        parts = [part for part in normalized.split("_") if part]
-        aliases.update(parts)
-
-    return {alias for alias in aliases if alias}
-
-
-def _demo_token_fallback_owner(token: str) -> Optional[User]:
-    """Attempt to resolve demo tokens even if the registry is misconfigured."""
 
     user_query = _safe_user_query()
-    normalized_token = _normalize_alias_value(token)
-    if not normalized_token or not normalized_token.startswith("demo"):
-        return None
 
+    normalized_token = token.strip().lower()
     slug = normalized_token
     for prefix in (
         "demo_token_",
@@ -582,10 +519,10 @@ def user_from_token(token: str) -> Optional[User]:
 def _resolve_owner_user(user: Optional[User]) -> Optional[User]:
     """Return the owner entity for a given authenticated user.
 
-    Employees store the company owner ID in ``empresa_id``. Administrators (for
-    both pymes and municipios) have ``empresa_id`` set to ``None`` so the owner
+    Employees store the company owner ID in empresa_id. Administrators (for
+    both pymes and municipios) have empresa_id set to None so the owner
     is the user itself. This helper centralises the lookup so other modules can
-    rely on ``g.owner_user`` being populated consistently.
+    rely on g.owner_user being populated consistently.
     """
 
     if not user:
@@ -602,6 +539,34 @@ def _resolve_owner_user(user: Optional[User]) -> Optional[User]:
 def obtener_token():
     """Extrae el token desde header, query string o payload."""
     current_app.logger.debug(f"[obtener_token] Checking for token. Path: {request.path}")
+
+    # Security Fix: Prevent public widget from reading auth_token cookie
+    # If Origin is public landing (chatboc.ar) OR request has entityToken (widget mode),
+    # strictly ignore auth_token cookie.
+    origin = request.headers.get("Origin", "").lower()
+    is_public_landing = "chatboc.ar" in origin and "app.chatboc.ar" not in origin
+
+    # Check if request has explicit entityToken (widget context)
+    has_entity_token = (
+        request.args.get("entityToken")
+        or request.headers.get("X-Entity-Token")
+        or (request.is_json and (request.get_json(silent=True) or {}).get("entityToken"))
+    )
+
+    allow_cookie_auth = True
+    if is_public_landing or has_entity_token:
+        # Check if we are in a protected app/admin route where cookies might still be needed
+        # But if it's the public widget endpoints, force disable cookie auth
+        path_lower = request.path.lower()
+        if (
+            path_lower.startswith("/api/ask")
+            or path_lower.startswith("/api/public")
+            or path_lower.startswith("/api/widget")
+            or path_lower.startswith("/api/pwa")
+        ):
+            allow_cookie_auth = False
+            current_app.logger.info(f"[obtener_token] Cookie auth DISABLED for public/widget request. Origin: {origin}, Path: {request.path}")
+
 
     checked_static_tokens: Dict[str, Optional[User]] = {}
 
@@ -658,15 +623,16 @@ def obtener_token():
         current_app.logger.debug(f"[obtener_token] Found X-Entity-Token header: '{token_x_entity_token[:10]}...'")
         return _finalize_token_candidate(token_x_entity_token)
 
-    # Fallback: intentar recuperar el token desde una cookie específica
-    cookie_name = current_app.config.get("AUTH_TOKEN_COOKIE_NAME", "auth_token")
-    token_cookie = request.cookies.get(cookie_name)
-    if token_cookie:
-        token_cookie = token_cookie.strip()
-        current_app.logger.debug(
-            f"[obtener_token] Found token in cookie '{cookie_name}': '{token_cookie[:10]}...'"
-        )
-        return _finalize_token_candidate(token_cookie)
+    if allow_cookie_auth:
+        # Fallback: intentar recuperar el token desde una cookie específica
+        cookie_name = current_app.config.get("AUTH_TOKEN_COOKIE_NAME", "auth_token")
+        token_cookie = request.cookies.get(cookie_name)
+        if token_cookie:
+            token_cookie = token_cookie.strip()
+            current_app.logger.debug(
+                f"[obtener_token] Found token in cookie '{cookie_name}': '{token_cookie[:10]}...'"
+            )
+            return _finalize_token_candidate(token_cookie)
 
     widget_cookie_name = current_app.config.get("WIDGET_TOKEN_COOKIE_NAME")
     if widget_cookie_name:
@@ -684,7 +650,7 @@ def obtener_token():
         current_app.logger.debug(f"[obtener_token] Found token in query args: '{token_args[:10]}...'")
         return _finalize_token_candidate(token_args)
 
-    # Algunas integraciones envían el token como ``entityToken`` en la query
+    # Algunas integraciones envían el token como entityToken en la query
     entity_token_arg = request.args.get("entityToken") or request.args.get("entity_token")
     if entity_token_arg:
         entity_token_arg = entity_token_arg.strip()
@@ -887,7 +853,7 @@ def token_requerido(f):
             return _finalize_response('', status_code)
 
         def _auth_error(message: str, status_code: int = 401, code: str = "token_expired"):
-            payload = {"error": code, "message": message}
+            payload = {"error": {"code": status_code, "message": message}}
             return _finalize_response(jsonify(payload), status_code)
 
         # Siempre intentar recuperar el token para exponerlo a las vistas que lo necesiten.
@@ -1054,6 +1020,21 @@ def anon_o_token_requerido(f):
             resp.headers.setdefault("Anon-Id", anon_id)
             return _set_anon_cookie(resp, anon_id)
 
+        # Enforce Origin validation for widget calls
+        # If origin is public landing (chatboc.ar), deny auth_token cookies/headers
+        origin = request.headers.get("Origin", "").lower()
+        is_public_landing = "chatboc.ar" in origin and "app.chatboc.ar" not in origin
+
+        # Check explicit entity token presence to confirm "widget mode"
+        has_entity_token = (
+            request.args.get("entityToken")
+            or request.headers.get("X-Entity-Token")
+            or (request.is_json and (request.get_json(silent=True) or {}).get("entityToken"))
+        )
+
+        # Force anonymous/public logic if strictly on public landing and no valid user intent
+        # (Though we still call obtener_token to see if there's a bearer token for widget login)
+
         token = obtener_token()
         current_user = None  # El usuario final que chatea (el "viewer")
         owner_user = None    # El dueño del bot (la "entidad", ej: municipio)
@@ -1068,7 +1049,7 @@ def anon_o_token_requerido(f):
             if jwt_user:
                 current_app.logger.info(f"Request authenticated via JWT. User ID: {jwt_user.id}")
                 current_user = jwt_user
-                # Si un usuario logueado tiene un `empresa_id`, el owner es esa empresa.
+                # Si un usuario logueado tiene un , el owner es esa empresa.
                 if jwt_user.empresa_id:
                     owner_user = User.query.get(jwt_user.empresa_id)
                 else:
@@ -1111,6 +1092,15 @@ def anon_o_token_requerido(f):
                 owner_user = entity_owner
                 g.widget_owner_user = entity_owner
 
+        # Double check: If on public landing, and token was a cookie JWT (not bearer),
+        # ensure current_user is WIPED to enforce anonymous mode.
+        # This handles the case where obtener_token() logic might have been bypassed or race conditions.
+        if is_public_landing and current_user and not request.headers.get("Authorization"):
+             # It likely came from cookie. Force Anon.
+             current_app.logger.warning(f"[auth] Public origin detected with Cookie JWT. Forcing Anonymous. User was: {current_user.id}")
+             current_user = None
+             # Owner user remains if resolved from entity token
+
         # Si después de todo no hay owner (ej. request anónima sin token),
         # cargar el owner por defecto para el municipio.
         if not owner_user and 'municipio' in request.path and not demo_token_detected:
@@ -1146,6 +1136,10 @@ def anon_o_token_requerido(f):
             and (not existing_cookie_value or existing_cookie_value != token)
         )
 
+        # Security Fix: Only set auth_token cookie if NOT on public landing
+        if should_set_cookie and is_public_landing and target_cookie == default_cookie_name:
+             should_set_cookie = False
+
         if should_set_cookie:
             resp = make_response(response)
             cookie_args = {
@@ -1158,6 +1152,10 @@ def anon_o_token_requerido(f):
             cookie_domain = current_app.config.get("SESSION_COOKIE_DOMAIN")
             if cookie_domain:
                 cookie_args["domain"] = cookie_domain
+
+            # Future improvement: Set Path=/app for auth_token to physically isolate it
+            # if target_cookie == default_cookie_name:
+            #    cookie_args["path"] = "/app"
 
             resp.set_cookie(**cookie_args)
             resp.headers.setdefault("X-Anon-Id", anon_id)
