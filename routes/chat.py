@@ -2578,7 +2578,15 @@ def ask(current_user=None, anon_id=None, owner_user=None):
 @anon_o_token_requerido
 def ask_pyme(current_user=None, anon_id=None, owner_user=None):
     user = owner_user or current_user
-    response = _procesar_chat("pyme", current_user=current_user, owner_user=user, anon_id=anon_id)
+
+    # Fix: Frontend sends /ask/pyme even for municipalities (tenant-forced).
+    # Redirect to municipio logic if the owner is a municipality.
+    tipo_chat_efectivo = "pyme"
+    if user and getattr(user, 'tipo_chat', None) == 'municipio':
+        current_app.logger.info(f"Redirecting /ask/pyme request to municipio logic for user {user.id}")
+        tipo_chat_efectivo = "municipio"
+
+    response = _procesar_chat(tipo_chat_efectivo, current_user=current_user, owner_user=user, anon_id=anon_id)
     return _log_widget_request(response, user)
 
 @chat_bp.route("/ask/municipio", methods=["POST", "OPTIONS"])
