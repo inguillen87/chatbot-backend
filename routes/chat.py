@@ -1562,6 +1562,23 @@ def _procesar_chat(
             or request.args.get("tenant")
             or ""
         ).strip().lower()
+
+        # Fix #4: Tenant Mismatch Check
+        if owner_user and tenant_slug_hint:
+            expected_slug = (getattr(owner_user, "tenant_slug", "") or "").strip().lower()
+            if expected_slug and tenant_slug_hint != expected_slug:
+                 # Check if the token was a demo token which might allow flexibility?
+                 # Assuming strict check as requested.
+                 current_app.logger.warning(
+                     f"Tenant mismatch: expected '{expected_slug}', got '{tenant_slug_hint}'. Returning 409."
+                 )
+                 return jsonify({
+                    "error": "tenant_mismatch",
+                    "expected_tenant": expected_slug,
+                    "received_tenant": tenant_slug_hint,
+                    "message": f"El token corresponde al tenant '{expected_slug}', pero se solicitó '{tenant_slug_hint}'."
+                 }), 409
+
         force_demo_selector_flow = (
             not actor_principal
             and tenant_slug_hint in {"municipio", "pyme"}
@@ -1876,7 +1893,15 @@ def _procesar_chat(
         if owner_del_bot and not demo_flow_active and not is_init_request:
             from utils.plan_limits import limite_para_usuario
             limite = limite_para_usuario(owner_del_bot)
-            if limite is not None and owner_del_bot.preguntas_usadas >= limite:
+
+            # Allow municipalities to bypass limits if their plan configuration is somehow incorrect
+            owner_type = (getattr(owner_del_bot, "tipo_chat", "") or "").strip().lower()
+            is_municipio = owner_type == "municipio"
+
+            if not is_municipio and limite is not None and owner_del_bot.preguntas_usadas >= limite:
+                current_app.logger.warning(
+                    f"Blocking chat request. Bot owner {owner_del_bot.id} reached limit: {owner_del_bot.preguntas_usadas}/{limite}"
+                )
                 return jsonify({
                     "error": f"El bot ha alcanzado el límite de preguntas de su plan ({limite})."
                 }), 403
