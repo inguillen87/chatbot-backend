@@ -1549,7 +1549,18 @@ def _procesar_chat(
         else:
             _update_tipo_flags()
 
-        if is_municipal_request and isinstance(contexto_chat, dict):
+        tenant_slug_hint = (
+            request.args.get("tenant_slug")
+            or request.args.get("tenant")
+            or ""
+        ).strip().lower()
+        force_demo_selector_flow = (
+            not actor_principal
+            and tenant_slug_hint in {"municipio", "pyme"}
+            and not demo_session_activa
+        )
+
+        if is_municipal_request and not force_demo_selector_flow and isinstance(contexto_chat, dict):
             demo_keys_to_clear = (
                 "demo_session",
                 "demo_owner_user_id",
@@ -1676,7 +1687,7 @@ def _procesar_chat(
 
         # Recuperar el owner de una demo previamente seleccionada si no vino en la request
         if (
-            not is_municipal_request
+            (not is_municipal_request or force_demo_selector_flow)
             and not owner_del_bot
             and isinstance(contexto_chat, dict)
         ):
@@ -1718,7 +1729,7 @@ def _procesar_chat(
                     flag_modified(chat_context_obj, "context_data")
                 _sync_demo_session_flag()
 
-        if not is_municipal_request:
+        if not is_municipal_request or force_demo_selector_flow:
             demo_key = _extract_demo_key(action_id)
             if not demo_key and isinstance(original_user_payload, dict):
                 demo_key = _extract_demo_key(original_user_payload.get("action") or original_user_payload.get("action_id"))
