@@ -1,6 +1,7 @@
 import logging
 import os
 import re
+import uuid
 from datetime import datetime
 from functools import lru_cache
 from qdrant_client import QdrantClient
@@ -141,6 +142,19 @@ def _parse_stock_value(raw_value: Any) -> int:
     return 0
 
 
+def _normalize_qdrant_point_id(raw_point_id: Any, tenant_id: str) -> Any:
+    """Return a Qdrant-compatible point id (unsigned int or UUID string)."""
+    if isinstance(raw_point_id, int) and raw_point_id >= 0:
+        return raw_point_id
+
+    point_as_text = str(raw_point_id or "").strip()
+    if point_as_text.isdigit():
+        return int(point_as_text)
+
+    namespace = uuid.uuid5(uuid.NAMESPACE_DNS, f"chatboc:{tenant_id}")
+    return str(uuid.uuid5(namespace, point_as_text or "sin-id"))
+
+
 def index_catalog_item(tenant_id: str, item_data: Dict[str, Any], embedding: List[float]):
     """Index a catalog item into the Qdrant catalog collections."""
     client = get_qdrant_utils_client()
@@ -157,6 +171,7 @@ def index_catalog_item(tenant_id: str, item_data: Dict[str, Any], embedding: Lis
         return False
 
     point_id = item_data.get("id")
+    qdrant_point_id = _normalize_qdrant_point_id(point_id, str(tenant_id))
     precio_raw = item_data.get("precio", 0)
     _, precio_float, _ = parse_precio_flexible(precio_raw)
     if precio_float is None:
@@ -211,7 +226,7 @@ def index_catalog_item(tenant_id: str, item_data: Dict[str, Any], embedding: Lis
         collection_name=coleccion,
         points=[
             qdrant_models.PointStruct(
-                id=str(point_id),
+                id=qdrant_point_id,
                 vector=embedding,
                 payload=payload,
             )
