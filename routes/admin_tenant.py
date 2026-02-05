@@ -517,8 +517,8 @@ def update_tenant_config_bundle(current_user, slug):
     if not tenant:
         return jsonify({"error": "Tenant not found"}), 404
 
-    # IDOR Check
-    if current_user.tenant_id != tenant.id and current_user.rol != 'platform_admin':
+    # IDOR Check (same logic as GET and other admin tenant endpoints)
+    if not _is_authorized_for_tenant(current_user, tenant):
          return jsonify({'error': 'Unauthorized'}), 403
 
     data = request.json or {}
