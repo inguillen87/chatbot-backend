@@ -455,6 +455,9 @@ def resolve_tenant_endpoint():
         return jsonify({"error": str(exc)}), 404
 
     tenant_info = tenant.to_public_dict()
+    tenant_info["tipo_chat"] = tenant.tipo
+    if (tenant.tipo or "").lower() == "municipio":
+        tenant_info["rubro_publico"] = "municipios"
     tenant_info.setdefault(
         "config", _normalize_widget_config(tenant.configuracion, tenant.widget_settings)
     )
@@ -650,6 +653,9 @@ def tenant_profile():
         )
 
     tenant_info = tenant.to_public_dict()
+    tenant_info["tipo_chat"] = tenant.tipo
+    if (tenant.tipo or "").lower() == "municipio":
+        tenant_info["rubro_publico"] = "municipios"
     tenant_info.setdefault(
         "config", _normalize_widget_config(tenant.configuracion, tenant.widget_settings)
     )
