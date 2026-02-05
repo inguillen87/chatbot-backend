@@ -544,6 +544,7 @@ def list_news():
 @cross_origin(**_cors_kwargs(["GET"]))
 def public_tenant_widget_config(tenant_slug: str):
     from services.tenant_resolver import resolve_tenant_only, TenantResolutionError
+    from routes.public_resolver import _build_widget_embed_payload
 
     try:
         tenant = resolve_tenant_only(tenant_slug=tenant_slug, require_explicit_slug=False)
@@ -650,6 +651,8 @@ def public_tenant_widget_config(tenant_slug: str):
     if not entity_token:
         entity_token = tenant.slug
 
+    widget_payload = _build_widget_embed_payload(tenant, entity_token)
+
     return jsonify({
         "slug": tenant.slug,
         "name": tenant.nombre,
@@ -661,6 +664,9 @@ def public_tenant_widget_config(tenant_slug: str):
         "interaction": interaction,
         "cta_messages": cta_messages,
         "default_open": default_open,
+        "embed_snippet": widget_payload.get("embed_snippet"),
+        "builder_config": widget_payload.get("builder_config", {}),
+        "embed_attributes": widget_payload.get("attributes", {}),
         "entityToken": entity_token, # Added for frontend socket initialization
         "widgetToken": entity_token  # Alias for compatibility
     })
