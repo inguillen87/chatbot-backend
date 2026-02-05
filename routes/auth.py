@@ -2289,3 +2289,9 @@ def admin_login():
             "tenant_slug": tenant_slug
         }
     })
+
+# Alias exported for app.py compatibility
+login_view_func = login
+
+# Alias for app.py
+me_perfil_view_func = me_perfil

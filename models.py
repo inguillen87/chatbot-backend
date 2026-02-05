@@ -2331,3 +2331,36 @@ class OrderItem(db.Model):
             "unit_price": float(self.unit_price),
             "total_price": float(self.total_price)
         }
+
+class TenantWidgetConfig(db.Model, TimestampMixin):
+    """
+    SaaS Configuration for the Chat Widget.
+    Supports a Draft/Live workflow where admins edit the 'draft'
+    and publish it to 'live'.
+    """
+    __tablename__ = "tenant_widget_config"
+
+    id = db.Column(db.Integer, primary_key=True)
+    tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=False, unique=True, index=True)
+
+    # The active configuration used by the public widget
+    config_live = db.Column(JSONType, nullable=False, default=dict)
+
+    # The working copy for the admin panel
+    config_draft = db.Column(JSONType, nullable=False, default=dict)
+
+    last_published_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    published_by = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+
+    tenant = db.relationship("TenantProfile", backref=db.backref("saas_widget_config", uselist=False))
+    publisher = db.relationship("User")
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "tenant_id": self.tenant_id,
+            "config_live": self.config_live or {},
+            "config_draft": self.config_draft or {},
+            "last_published_at": self.last_published_at.isoformat() if self.last_published_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }

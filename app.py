@@ -104,11 +104,11 @@ def create_app(config_class=Config):
     from routes.analytics import analytics_bp
     from routes.analytics_routes import analytics_v2_bp
     from routes.gov_analytics import gov_analytics_bp
-    from routes.archivos import archivos_bp, upload_bp
+    from routes.archivos import archivos_bp
     from routes.metricas import metricas_bp
     from routes.rubros import rubros_bp
-    from routes.public_resolver import public_resolver_bp
-    from routes.municipio_api import public_municipios_bp, municipio_api_bp
+    from routes.public_resolver import public_resolver_bp, public_municipios_bp
+    from routes.municipio_api import municipio_api_bp
     from routes.subastas import subastas_bp
     from routes.puntos import puntos_public_bp, puntos_bp
     from routes.rewards_rules import rewards_rules_bp
@@ -116,14 +116,16 @@ def create_app(config_class=Config):
     from routes.pedidos_from_file import pedidos_from_file_bp
     from routes.kits import kits_bp
     from routes.checkout import checkout_bp, pedidos_checkout_bp
-    from routes.estadisticas import estadisticas_bp, bp as bp_est
+    from routes.estadisticas import estadisticas_bp
     from routes.empleados import empleados_bp
     from routes.categorias import categorias_bp
-    from routes.municipal_legacy import legacy_public_v2_bp
-    from routes.admin_market import market_admin_bp
-    from routes.market import market_bp
-    from routes.pwa_app import pwa_app_bp, pwa_app_legacy_bp, pwa_misc_bp, me_perfil_view_func
-    from routes.pwa_public import pwa_public_bp
+    from routes.municipio_api import legacy_public_v2_bp, widget_public_bp, public_market_bp
+    from routes.municipal_legacy import municipal_bp
+    from routes.admin_market import admin_market_bp
+    from routes.market import market_bp, market_admin_bp
+    from routes.pwa_app import pwa_app_bp, pwa_app_legacy_bp
+    from routes.pwa_misc import pwa_misc_bp
+    from routes.pwa_public import pwa_public_bp, pwa_tenant_info_bp, public_api_bp
     from routes.webauthn import webauthn_bp
     from routes.admin_tenant import admin_tenant_bp
     from routes.public_tenant import public_tenant_bp
@@ -131,24 +133,22 @@ def create_app(config_class=Config):
     from routes.recordatorios import recordatorios_bp
     from routes.historial import historial_bp
     from routes.notifications import notifications_bp
-    from routes.municipal_legacy import municipal_bp
     from routes.reacciones import reacciones_bp
     from routes.ai_templates import ai_templates_bp
-    from routes.ai import ai_suggest_bp
+    from routes.ai import ai_bp
     from routes.promociones import promociones_bp
     from routes.catalog_mappings import catalog_mappings_bp, catalog_mappings_public_bp
     from routes.document_intelligence import document_intelligence_bp, document_intelligence_public_bp
     from routes.catalog_vector_sync import catalog_vector_sync_bp
-    from routes.widget_settings import integracion_widget_bp, widget_settings_bp, widget_public_bp
-    from routes.whatsapp_webhook import whatsapp_webhook_bp
+    from routes.widget_settings import integracion_widget_bp, widget_settings_bp
+    from routes.whatsapp_webhook import webhook_bp as whatsapp_webhook_bp
     from routes.whatsapp_promocionar import whatsapp_promocionar_bp
     from routes.omnichannel import omnichannel_bp
     from routes.mercadopago_webhook import mp_bp
     from routes.media import media_bp
     from routes.accessibility import accessibility_bp
-    from routes.api_aliases import api_aliases_bp, public_aliases_bp, public_market_bp
-    from routes.public_resolver import pwa_tenant_info_bp
-    from routes.portal_api import portal_api_bp, public_api_bp
+    from routes.api_aliases import api_aliases_bp, public_aliases_bp
+    from routes.portal_api import portal_api_bp
     from routes.pyme_catalog_fixes import pyme_catalog_fix_bp
     from routes.pyme_api import pyme_api_bp
     from routes.health import health_bp
@@ -156,6 +156,7 @@ def create_app(config_class=Config):
     from routes.catalog_routes import catalog_bp as catalog_v2_bp
     from routes.orders import orders_bp
     from routes.admin_fulfillment import admin_fulfillment_bp
+    from routes.widget_config_routes import widget_config_bp
     from cli_commands import register_commands
 
     # Import survey blueprints conditionally or always, keeping imports consistent
@@ -206,6 +207,7 @@ def create_app(config_class=Config):
         return login_view_func()
 
     # Aliases /perfil
+    from routes.auth import me_perfil_view_func
     @app.route('/perfil', methods=['GET', 'PUT', 'OPTIONS'])
     def perfil_alias():
         if request.method == "OPTIONS":
@@ -221,7 +223,7 @@ def create_app(config_class=Config):
     app.register_blueprint(analytics_bp)
     app.register_blueprint(analytics_v2_bp)
     app.register_blueprint(gov_analytics_bp)
-    app.register_blueprint(upload_bp)
+    # app.register_blueprint(upload_bp)
     app.register_blueprint(archivos_bp)
 
     # Mount Rubros BP flexibly
@@ -260,7 +262,7 @@ def create_app(config_class=Config):
     app.register_blueprint(municipal_bp)
     app.register_blueprint(reacciones_bp)
     app.register_blueprint(ai_templates_bp)
-    app.register_blueprint(ai_suggest_bp)
+    app.register_blueprint(ai_bp)
     app.register_blueprint(promociones_bp)
     app.register_blueprint(catalog_mappings_bp)
     app.register_blueprint(catalog_mappings_public_bp)
@@ -273,7 +275,7 @@ def create_app(config_class=Config):
     app.register_blueprint(whatsapp_promocionar_bp)
     app.register_blueprint(omnichannel_bp)
     app.register_blueprint(mp_bp)
-    app.register_blueprint(bp_est)
+    # app.register_blueprint(bp_est)
     app.register_blueprint(media_bp)
     app.register_blueprint(accessibility_bp)
     app.register_blueprint(api_aliases_bp)
@@ -320,6 +322,7 @@ def create_app(config_class=Config):
     app.register_blueprint(catalog_v2_bp)
     app.register_blueprint(orders_bp)
     app.register_blueprint(admin_fulfillment_bp)
+    app.register_blueprint(widget_config_bp)
 
     from routes.super_admin import super_admin_bp
     app.register_blueprint(super_admin_bp)
@@ -409,3 +412,7 @@ if __name__ == '__main__':
     else:
         # Fallback simple si alguien ejecuta con FLASK_MIGRATIONS_ONLY=1 localmente
         app.run(debug=True, host='0.0.0.0', port=8080)
+
+# Fix Proxy headers for Render/Gunicorn
+from werkzeug.middleware.proxy_fix import ProxyFix
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
