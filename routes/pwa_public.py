@@ -653,6 +653,8 @@ def public_tenant_widget_config(tenant_slug: str):
 
     widget_payload = _build_widget_embed_payload(tenant, entity_token)
 
+    public_token = widget_payload.get("widget_token") or entity_token
+
     return jsonify({
         "slug": tenant.slug,
         "name": tenant.nombre,
@@ -667,12 +669,12 @@ def public_tenant_widget_config(tenant_slug: str):
         "embed_snippet": widget_payload.get("embed_snippet"),
         "builder_config": widget_payload.get("builder_config", {}),
         "embed_attributes": widget_payload.get("attributes", {}),
-        "owner_token": entity_token,
-        "entity_token": entity_token,
-        "widget_token": entity_token,
-        "token": entity_token,
-        "entityToken": entity_token, # Added for frontend socket initialization
-        "widgetToken": entity_token  # Alias for compatibility
+        "owner_token": public_token,
+        "entity_token": public_token,
+        "widget_token": public_token,
+        "token": public_token,
+        "entityToken": public_token, # Added for frontend socket initialization
+        "widgetToken": public_token  # Alias for compatibility
     })
 
 
