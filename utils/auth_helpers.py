@@ -505,16 +505,27 @@ def obtener_entity_token() -> Optional[str]:
 
     candidate_sources: list[Optional[str]] = []
 
-    # Headers take priority because the widget can set X-Entity-Token directly.
+    # Headers take priority because the widget can set token context explicitly.
     candidate_sources.append(request.headers.get("X-Entity-Token"))
+    candidate_sources.append(request.headers.get("X-Owner-Token"))
+    candidate_sources.append(request.headers.get("X-Widget-Token"))
 
     # Cookies (ej. WIDGET_TOKEN_COOKIE_NAME) are next, useful after an iframe load.
     widget_cookie_name = current_app.config.get("WIDGET_TOKEN_COOKIE_NAME")
     if widget_cookie_name:
         candidate_sources.append(request.cookies.get(widget_cookie_name))
 
-    # Query params (entityToken/empresa_token) and JSON/body fallbacks
-    entity_keys = ("entityToken", "entity_token", "empresa_token")
+    # Query params and body fallbacks used by legacy + new widget contracts.
+    entity_keys = (
+        "entityToken",
+        "entity_token",
+        "empresa_token",
+        "ownerToken",
+        "owner_token",
+        "widgetToken",
+        "widget_token",
+        "token",
+    )
     for key in entity_keys:
         candidate_sources.append(request.args.get(key))
     candidate_sources.extend(_extract_from_json(entity_keys))
