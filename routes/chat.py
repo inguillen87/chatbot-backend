@@ -1450,6 +1450,8 @@ def _procesar_chat(
             current_app.logger.warning("anon_id no fue provisto a _procesar_chat para un usuario anónimo. El decorador podría no estar funcionando como se espera.")
             return jsonify({"error": "No se pudo identificar la sesión anónima."}), 401
 
+        is_init_request = _is_init_payload(original_user_payload)
+
         if is_anonymous:
             # Lógica para usuarios anónimos
             max_messages = current_app.config.get("ANONYMOUS_MAX_MESSAGES_PER_SESSION", 10)
@@ -1473,7 +1475,7 @@ def _procesar_chat(
 
                 current_app.logger.info(f"Usuario anónimo {anon_id}: {message_count_this_session} mensajes en la sesión actual (límite: {max_messages}).")
 
-                if message_count_this_session >= max_messages:
+                if message_count_this_session >= max_messages and not is_init_request:
                     return jsonify({
                         "error": "Alcanzaste el límite de mensajes para usuarios invitados.",
                         "respuesta": "Alcanzaste el límite de mensajes para usuarios invitados. Para continuar, por favor inicia sesión o regístrate.",
@@ -1850,7 +1852,7 @@ def _procesar_chat(
         ):
             demo_flow_active = True
 
-        if owner_del_bot and not demo_flow_active:
+        if owner_del_bot and not demo_flow_active and not is_init_request:
             from utils.plan_limits import limite_para_usuario
             limite = limite_para_usuario(owner_del_bot)
             if limite is not None and owner_del_bot.preguntas_usadas >= limite:
@@ -2655,6 +2657,7 @@ def widget_config():
     return jsonify(config)
 
 @chat_bp.route("/live-chat/schedule", methods=["GET"])
+@chat_bp.route("/api/live-chat/schedule", methods=["GET"])
 def live_chat_schedule():
     return jsonify(build_live_chat_status())
 
