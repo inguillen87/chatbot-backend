@@ -1,7 +1,7 @@
 from flask import Blueprint, jsonify, request, g, current_app
 from flask_cors import cross_origin
 
-from models import TenantProfile, WidgetSettings
+from models import TenantProfile, WidgetSettings, db
 from services.tenant_resolver import (
     RESERVED_TENANT_SLUGS,
     TenantResolutionError,
@@ -217,6 +217,27 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
     """Expose a rich embed configuration so `integracion.tsx` can render a SaaS builder."""
 
     canonical_token = _canonical_widget_token(tenant, provided_token)
+    if canonical_token:
+        cfg = tenant.configuracion or {}
+        tokens_cfg = cfg.get("widget_tokens")
+        tokens: list[str] = []
+        if isinstance(tokens_cfg, str):
+            tokens = [tokens_cfg]
+        elif isinstance(tokens_cfg, list):
+            tokens = [t for t in tokens_cfg if t]
+        if canonical_token not in tokens:
+            tokens.append(canonical_token)
+            cfg["widget_tokens"] = tokens
+            tenant.configuracion = cfg
+            try:
+                db.session.add(tenant)
+                db.session.commit()
+            except Exception:
+                db.session.rollback()
+                current_app.logger.exception(
+                    "[widget] Failed to persist canonical widget token for tenant %s",
+                    tenant.id,
+                )
     theme = _theme_from_tenant(tenant)
     marketplace = _marketplace_meta(tenant)
 
