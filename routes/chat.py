@@ -1538,6 +1538,14 @@ def _procesar_chat(
             _update_tipo_flags()
 
         owner_tipo_chat = (getattr(owner_user, "tipo_chat", None) or "").strip().lower()
+        if tipo_chat_fijo and owner_tipo_chat and tipo_chat_fijo != owner_tipo_chat:
+            if owner_tipo_chat == "municipio" and tipo_chat_fijo == "pyme":
+                return jsonify({
+                    "error": "endpoint_mismatch",
+                    "message": "Este tenant es un municipio. Use /ask/municipio",
+                    "expected_endpoint": "/ask/municipio",
+                    "actual_tipo_chat": "municipio"
+                }), 409
         if owner_tipo_chat in {"pyme", "municipio"} and owner_tipo_chat != tipo_chat_normalized:
             current_app.logger.info(
                 "[CHAT] Ajustando tipo_chat a '%s' basado en owner_user %s (valor previo: '%s')",
@@ -1840,6 +1848,8 @@ def _procesar_chat(
             current_app.logger.info(f"Usando Rubro ID {rubro_obj_global.id} ('{nombre_rubro_log}') perteneciente a User ID {owner_id_log} para la lógica del bot.")
         else:
             current_app.logger.info("No se pudo determinar un rubro/owner específico para la lógica del bot. Se usará lógica genérica si aplica (ej. para rubros públicos por defecto).")
+            if tipo_chat == "pyme" and not demo_session_activa:
+                 return jsonify({"error": "rubro_required", "message": "No se especificó un rubro válido para la PyME."}), 400
 
         if isinstance(contexto_chat, dict) and contexto_chat.get("demo_key") and not contexto_chat.get("demo_session"):
             contexto_chat["demo_session"] = True

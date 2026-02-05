@@ -658,6 +658,8 @@ def public_tenant_widget_config(tenant_slug: str):
     return jsonify({
         "slug": tenant.slug,
         "name": tenant.nombre,
+        "tipo_chat": tenant.tipo,
+        "endpoint": tenant.tipo or "municipio",
         "logo_url": tenant.logo_url or (widget_cfg.logo_url if widget_cfg else "") or "",
         "theme": theme,
         "theme_config": theme_config,
@@ -687,6 +689,7 @@ def public_tenant_info():
         "nombre": tenant.nombre,
         "logo_url": tenant.logo_url,
         "tipo": tenant.tipo,
+        "tipo_chat": tenant.tipo,
         "tema": tenant.tema or {}
     })
 
