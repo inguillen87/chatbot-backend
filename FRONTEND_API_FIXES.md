@@ -32,17 +32,19 @@ The PDF/Excel catalog processor has been significantly enhanced:
 ## 4. Order Listing (Alias)
 *   **`GET /api/orders`** is now an alias for the admin order list, requiring authentication. This resolves the 405 error if the frontend was hitting this route.
 
-## Security & Auth Hardening (Feb 2026)
+## 5. Security & Auth Hardening (Critical for Public Widget)
 
-### 1. Token Isolation on Public Landing
-The backend now enforces strict origin checks for the public landing page ().
-- **Behavior:** If  is  (or ), any  cookie sent by the browser is **ignored** by the backend.
-- **Impact:** This prevents "leaked" admin sessions (e.g., from ) from accidentally loading a private tenant context (like Junín) on the public marketing site.
-- **Frontend Action:** Ensure the public widget uses  for its initial  calls to avoid sending unnecessary cookies, though the backend now handles this safely.
+### Token Isolation on Public Landing
+The backend now enforces strict origin checks for the public landing page (`chatboc.ar`).
+- **Behavior:** If Origin is `https://chatboc.ar` (or `www.chatboc.ar`), any `auth_token` cookie sent by the browser is **ignored** by the backend.
+- **Impact:** This prevents "leaked" admin sessions (e.g., from `app.chatboc.ar`) from accidentally loading a private tenant context (like Junín) on the public marketing site.
+- **Frontend Action:**
+    - Ensure the public widget uses `credentials: "omit"` for its initial fetch calls to avoid sending unnecessary cookies.
+    - If the user is logged in as an admin but visiting the public site, the backend will treat them as anonymous. This is intended behavior.
 
-### 2. JSON Error Contract
+### JSON Error Contract
 All API errors now follow a unified JSON structure.
-**Old:**  or
+**Old:** `{"error": "bad_request", "detail": "..."}` or `{"error": "message"}`
 **New:**
 ```json
 {
@@ -52,44 +54,43 @@ All API errors now follow a unified JSON structure.
   }
 }
 ```
-- **Frontend Action:** Update error handling logic to read  as the primary error text.
+- **Frontend Action:** Update error handling logic to read `response.data.error.message` as the primary error text.
 
-### 3. Payload Normalization
-- The backend now explicitly returns  if  or  are missing in .
-- **Frontend Action:** Ensure  always includes a fallback  field (plain text) even if sending a complex  array, to prevent "Normalized payload produced no messages" errors.
+### Payload Normalization
+- The backend now explicitly returns `400 Bad Request` if `question` or `messages` are missing in `/api/ask`.
+- **Frontend Action:** Ensure `sendMessage` always includes a fallback `question` field (plain text) even if sending a complex `messages` array, to prevent "Normalized payload produced no messages" errors.
 
-### 4. Tenant Widget Config
-- **Endpoint:** `GET /api/public/tenants/{tenant_slug}/widget-config`
-- **Safety:** Returns only public styling (colors, texts). No internal IDs.
-- **Usage:** Use this to hydrate the widget's theme before the chat session starts.
+## 6. SaaS Widget Configuration (Draft/Live Workflow)
 
-## Security & Auth Hardening (Feb 2026)
+The system now supports a "Draft vs Live" workflow for widget customization, allowing admins to preview changes before publishing.
 
-### 1. Token Isolation on Public Landing
-The backend now enforces strict origin checks for the public landing page (chatboc.ar).
-- **Behavior:** If Origin is https://chatboc.ar (or www.chatboc.ar), any auth_token cookie sent by the browser is **ignored** by the backend.
-- **Impact:** This prevents "leaked" admin sessions (e.g., from app.chatboc.ar) from accidentally loading a private tenant context (like Junín) on the public marketing site.
-- **Frontend Action:** Ensure the public widget uses credentials: "omit" for its initial fetch calls to avoid sending unnecessary cookies, though the backend now handles this safely.
+### Public Endpoint (Live Config)
+*   **`GET /api/public/tenants/<slug>/saas-config`**
+    *   **Usage:** Used by the widget to load the active configuration (colors, texts, logo).
+    *   **Response:**
+        ```json
+        {
+          "appearance": {
+            "primaryColor": "#007aff",
+            "welcomeTitle": "Hola!"
+          },
+          "behavior": { "defaultOpen": false }
+        }
+        ```
 
-### 2. JSON Error Contract
-All API errors now follow a unified JSON structure.
-**Old:** {"error": "bad_request", "detail": "..."} or {"error": "message"}
-**New:**
-```json
-{
-  "error": {
-    "code": 400,
-    "message": "Detailed error description here"
-  }
-}
-```
-- **Frontend Action:** Update error handling logic to read response.data.error.message as the primary error text.
+### Admin Endpoints (Draft Management)
+*   **`GET /api/admin/tenants/<slug>/widget-config`**
+    *   Returns both `draft` and `live` configurations.
+*   **`PUT /api/admin/tenants/<slug>/widget-config`**
+    *   Updates the **Draft** configuration. Does not affect the live widget.
+*   **`POST /api/admin/tenants/<slug>/widget-config/publish`**
+    *   Promotes the current Draft to Live.
+*   **`POST /api/admin/tenants/<slug>/widget-config/preview`**
+    *   Accepts a config payload and returns a sanitized version for previewing without saving.
 
-### 3. Payload Normalization
-- The backend now explicitly returns 400 Bad Request if question or messages are missing in /api/ask.
-- **Frontend Action:** Ensure sendMessage always includes a fallback question field (plain text) even if sending a complex messages array, to prevent "Normalized payload produced no messages" errors.
+## 7. Widget Authentication Headers
+When making requests from the widget (e.g., `/api/ask`, `/api/upload`), ensure the following headers are set if available:
 
-### 4. Tenant Widget Config
-- **Endpoint:** GET /api/public/tenants/{tenant_slug}/widget-config
-- **Safety:** Returns only public styling (colors, texts). No internal IDs.
-- **Usage:** Use this to hydrate the widget's theme before the chat session starts.
+*   `X-Anon-Id`: The anonymous session ID (UUID) generated by the frontend.
+*   `X-Entity-Token`: The public token of the tenant (if using a specific widget integration).
+*   `X-Chat-Session-Id`: The active chat session ID.

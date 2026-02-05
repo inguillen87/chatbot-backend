@@ -425,7 +425,8 @@ def create_app(config_class=Config):
     from routes.analytics import analytics_bp
     from routes.analytics_routes import analytics_v2_bp
     from routes.gov_analytics import gov_analytics_bp
-    from routes.archivos import archivos_bp # upload_bp REMOVED to avoid ImportError
+    from services.upload_processor import upload_bp
+    from routes.archivos import archivos_bp
     from routes.rubros import rubros_bp
     from routes.metricas import metricas_bp
     from routes.municipio_api import municipio_api_bp, public_market_bp, widget_public_bp, legacy_public_v2_bp
@@ -459,7 +460,7 @@ def create_app(config_class=Config):
     from routes.whatsapp_promocionar import whatsapp_promocionar_bp
     from routes.omnichannel import omnichannel_bp
     from routes.mercadopago_webhook import mp_bp
-    # from routes.estacionamiento import bp_est # REMOVED (ImportError: cannot import name 'bp_est')
+    from routes.estacionamiento import bp_est
     from routes.media import media_bp
     from routes.accessibility import accessibility_bp
 
@@ -557,7 +558,7 @@ def create_app(config_class=Config):
     app.register_blueprint(analytics_bp)
     app.register_blueprint(analytics_v2_bp)
     app.register_blueprint(gov_analytics_bp)
-    # app.register_blueprint(upload_bp)
+    app.register_blueprint(upload_bp)
     app.register_blueprint(archivos_bp)
 
     # Mount Rubros BP flexibly
@@ -609,7 +610,7 @@ def create_app(config_class=Config):
     app.register_blueprint(whatsapp_promocionar_bp)
     app.register_blueprint(omnichannel_bp)
     app.register_blueprint(mp_bp)
-    # app.register_blueprint(bp_est) # Removed
+    app.register_blueprint(bp_est)
     app.register_blueprint(media_bp)
     app.register_blueprint(accessibility_bp)
     app.register_blueprint(api_aliases_bp)
