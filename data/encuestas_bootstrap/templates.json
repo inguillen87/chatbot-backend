@@ -771,6 +771,86 @@
           "obligatoria": false
         }
       ]
+    },
+    {
+      "slug": "satisfaccion-cliente-pyme",
+      "titulo": "Tu opinión nos ayuda a mejorar",
+      "descripcion": "Contanos cómo fue tu experiencia de compra para que podamos ofrecerte un mejor servicio.",
+      "tipo": "satisfaccion",
+      "politica_unicidad": "libre",
+      "anonimato": true,
+      "requiere_datos_contacto": false,
+      "tags": [
+        "Clientes",
+        "Feedback",
+        "PyME"
+      ],
+      "preguntas": [
+        {
+          "orden": 1,
+          "tipo": "opcion_unica",
+          "texto": "¿Cómo calificarías tu experiencia general de compra?",
+          "obligatoria": true,
+          "opciones": [
+            { "orden": 1, "texto": "Excelente" },
+            { "orden": 2, "texto": "Muy buena" },
+            { "orden": 3, "texto": "Regular" },
+            { "orden": 4, "texto": "Mala" }
+          ]
+        },
+        {
+          "orden": 2,
+          "tipo": "opcion_unica",
+          "texto": "¿Recomendarías nuestros productos/servicios a un amigo?",
+          "obligatoria": true,
+          "opciones": [
+            { "orden": 1, "texto": "Sí, seguro" },
+            { "orden": 2, "texto": "Probablemente" },
+            { "orden": 3, "texto": "No creo" },
+            { "orden": 4, "texto": "Definitivamente no" }
+          ]
+        },
+        {
+          "orden": 3,
+          "tipo": "abierta",
+          "texto": "¿Qué podríamos mejorar para tu próxima visita?",
+          "obligatoria": false
+        }
+      ]
+    },
+    {
+      "slug": "lanzamiento-producto-pyme",
+      "titulo": "¡Ayudanos a elegir nuestro próximo lanzamiento!",
+      "descripcion": "Queremos traer lo que más te gusta. Votá por tu favorito.",
+      "tipo": "opinion",
+      "politica_unicidad": "libre",
+      "anonimato": true,
+      "requiere_datos_contacto": false,
+      "tags": [
+        "Novedades",
+        "Productos",
+        "PyME"
+      ],
+      "preguntas": [
+        {
+          "orden": 1,
+          "tipo": "opcion_unica",
+          "texto": "¿Qué tipo de producto te gustaría ver en nuestra tienda próximamente?",
+          "obligatoria": true,
+          "opciones": [
+            { "orden": 1, "texto": "Nuevas variedades/sabores" },
+            { "orden": 2, "texto": "Promociones especiales y packs" },
+            { "orden": 3, "texto": "Productos exclusivos/premium" },
+            { "orden": 4, "texto": "Accesorios complementarios" }
+          ]
+        },
+        {
+          "orden": 2,
+          "tipo": "abierta",
+          "texto": "¿Tenés alguna sugerencia específica de marca o modelo?",
+          "obligatoria": false
+        }
+      ]
     }
   ],
   "profiles": [

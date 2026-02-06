@@ -206,6 +206,80 @@ class AnalyticsService:
             {"text": "Posible problema de stock en 'Malbec Reserva'.", "severity": "med", "confidence": 0.72}
         ]
 
+    def get_municipio_analytics(self, tenant_id: int, start_date: datetime, end_date: datetime) -> Dict[str, Any]:
+        """
+        Dedicated analytics for Municipios: Claims (Reclamos), Suggestions, Zones, Categories.
+        """
+        # 1. Claims Overview (MunicipioTicket)
+        tickets_query = db.session.query(MunicipioTicket).filter(
+            MunicipioTicket.tenant_id == tenant_id,
+            MunicipioTicket.fecha >= start_date,
+            MunicipioTicket.fecha <= end_date
+        )
+
+        total_tickets = tickets_query.count()
+        resolved_tickets = tickets_query.filter(MunicipioTicket.estado == 'resuelto').count()
+        resolution_rate = (resolved_tickets / total_tickets * 100) if total_tickets > 0 else 0
+
+        # 2. Claims by Category
+        cat_query = db.session.query(
+            MunicipioTicket.categoria, func.count(MunicipioTicket.id)
+        ).filter(
+             MunicipioTicket.tenant_id == tenant_id,
+             MunicipioTicket.fecha >= start_date,
+             MunicipioTicket.fecha <= end_date
+        ).group_by(MunicipioTicket.categoria).order_by(desc(func.count(MunicipioTicket.id))).limit(8)
+
+        claims_by_category = [{"category": row[0] or "Otros", "count": row[1]} for row in cat_query.all()]
+
+        # 3. Claims by Zone (District/Barrio) - Heatmap Logic
+        # Assuming 'distrito' or 'direccion' field. If using lat/lng we assume Heatmap route handles that.
+        # Here we aggregate by named zones if available.
+        zone_query = db.session.query(
+             MunicipioTicket.distrito, func.count(MunicipioTicket.id)
+        ).filter(
+             MunicipioTicket.tenant_id == tenant_id,
+             MunicipioTicket.fecha >= start_date,
+             MunicipioTicket.fecha <= end_date,
+             MunicipioTicket.distrito.isnot(None)
+        ).group_by(MunicipioTicket.distrito).order_by(desc(func.count(MunicipioTicket.id))).limit(10)
+
+        claims_by_zone = [{"zone": row[0], "count": row[1]} for row in zone_query.all()]
+
+        # 4. Citizen Suggestions
+        # Assuming 'SugerenciaCiudadano' or simply filtering tickets by type/category if applicable.
+        # For now, let's look at tickets with category 'Sugerencia' or similar if distinct model doesn't exist widely used.
+        # Ideally, use the SugerenciaCiudadano model if populated.
+        suggestions_count = tickets_query.filter(
+            (MunicipioTicket.categoria.ilike('%sugerencia%')) | (MunicipioTicket.tipo_ticket == 'sugerencia')
+        ).count() if hasattr(MunicipioTicket, 'tipo_ticket') else tickets_query.filter(MunicipioTicket.categoria.ilike('%sugerencia%')).count()
+
+        # 5. Peak Hours (Heatmap of time) for Claims
+        if db.engine.dialect.name == 'sqlite':
+            hour_func = func.strftime('%H', MunicipioTicket.fecha)
+        else:
+            hour_func = func.extract('hour', MunicipioTicket.fecha)
+
+        peak_hours_query = db.session.query(
+            hour_func.label('hour'), func.count().label('count')
+        ).filter(
+            MunicipioTicket.tenant_id == tenant_id,
+            MunicipioTicket.fecha >= start_date,
+            MunicipioTicket.fecha <= end_date
+        ).group_by('hour').all()
+
+        claims_by_hour = [{"hour": int(row.hour), "count": row.count} for row in peak_hours_query]
+
+        return {
+            "total_claims": total_tickets,
+            "resolved_claims": resolved_tickets,
+            "resolution_rate": round(resolution_rate, 1),
+            "suggestions_count": suggestions_count,
+            "claims_by_category": claims_by_category,
+            "claims_by_zone": claims_by_zone,
+            "claims_by_hour": claims_by_hour
+        }
+
     def get_commerce_analytics(self, tenant_id: int, start_date: datetime, end_date: datetime) -> Dict[str, Any]:
         """
         Dedicated analytics for PyMEs: revenue, AOV, sales by product, heatmap.

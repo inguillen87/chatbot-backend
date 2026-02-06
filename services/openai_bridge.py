@@ -154,17 +154,32 @@ def generate_analytics_report(stats: dict, tenant_type: str = "pyme") -> dict:
 
     try:
         # Construct specific system prompt for the analyst persona
-        system_prompt = (
-            "You are a Senior Business Analyst & Data Consultant. "
-            f"Analyze the provided JSON statistics for a {('local government (Municipio)' if tenant_type == 'municipio' else 'small business (PyME)')}. "
-            "Output a JSON object with keys: "
-            "'summary' (Executive summary of performance, max 50 words), "
-            "'opportunities' (List of 3 specific growth/efficiency opportunities), "
-            "'threats' (List of 3 potential risks or negative trends), "
-            "'tone' (Must be 'Professional' or 'Consultative'). "
-            "Be specific, citing numbers from the data. "
-            "Reply strictly in JSON."
-        )
+        if tenant_type == 'municipio':
+            system_prompt = (
+                "You are a Senior Smart City Consultant & Public Administration Analyst. "
+                "Analyze the provided JSON statistics for a Local Government (Municipio). "
+                "The data includes Claims (Reclamos), Citizen Suggestions, Resolution Rates, and Zone/District activity. "
+                "Output a JSON object with keys: "
+                "'summary' (Executive summary of citizen satisfaction and operational efficiency, max 50 words), "
+                "'opportunities' (List of 3 specific actions to improve public services, infrastructure, or citizen engagement in specific zones), "
+                "'threats' (List of 3 potential risks: rising complaints in specific districts, unprocessed claims, or negative sentiment trends), "
+                "'tone' (Must be 'Professional', 'Civic', and 'Constructive'). "
+                "Be specific, citing categories (e.g., 'Alumbrado'), zones, and percentages from the data. "
+                "Reply strictly in JSON."
+            )
+        else:
+            system_prompt = (
+                "You are a Senior Retail Business Consultant & Data Analyst. "
+                "Analyze the provided JSON statistics for a Small Business (PyME). "
+                "The data includes Sales Revenue, Product Performance, Peak Hours, and Customer Conversion. "
+                "Output a JSON object with keys: "
+                "'summary' (Executive summary of financial performance and sales trends, max 50 words), "
+                "'opportunities' (List of 3 specific growth strategies: inventory adjustments, marketing during peak hours, or product bundling), "
+                "'threats' (List of 3 potential risks: revenue drops, low conversion rates, or dependency on few products), "
+                "'tone' (Must be 'Professional', 'Strategic', and 'Action-Oriented'). "
+                "Be specific, citing product names, revenue figures, and conversion rates from the data. "
+                "Reply strictly in JSON."
+            )
 
         user_message = f"Here is the data for the selected period: {json.dumps(stats, default=str)}"
 
