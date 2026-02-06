@@ -68,7 +68,7 @@ def get_summary():
         )
         return jsonify(data)
     except Exception as e:
-        print(f"Analytics Error: {e}")
+        current_app.logger.error(f"Analytics Error: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
 
 @analytics_v2_bp.route('/heatmap', methods=['GET'])
@@ -97,6 +97,7 @@ def get_heatmap():
         )
         return jsonify({"points": points})
     except Exception as e:
+        current_app.logger.error(f"Analytics Error: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
 
 @analytics_v2_bp.route('/surveys/summary', methods=['GET'])
@@ -116,6 +117,7 @@ def get_survey_summary():
         data = analytics_service.get_survey_summary(tenant_id=int(tenant_id))
         return jsonify(data)
     except Exception as e:
+        current_app.logger.error(f"Analytics Error: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
 
 @analytics_v2_bp.route('/surveys/sentiment', methods=['GET'])
@@ -150,6 +152,7 @@ def get_survey_sentiment():
 
         return jsonify(analysis)
     except Exception as e:
+        current_app.logger.error(f"Analytics Error: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
 
 @analytics_v2_bp.route('/surveys/geo', methods=['GET'])
@@ -169,6 +172,7 @@ def get_survey_geo():
         points = analytics_service.get_survey_geo(tenant_id=int(tenant_id))
         return jsonify({"points": points})
     except Exception as e:
+        current_app.logger.error(f"Analytics Error: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
 
 @analytics_v2_bp.route('/insights', methods=['GET'])
@@ -188,6 +192,7 @@ def get_insights():
         insights = analytics_service.get_insights(tenant_id=int(tenant_id))
         return jsonify({"insights": insights})
     except Exception as e:
+        current_app.logger.error(f"Analytics Error: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
 
 @analytics_v2_bp.route('/sales', methods=['GET'])
@@ -213,6 +218,7 @@ def get_sales_analytics():
         )
         return jsonify(data)
     except Exception as e:
+        current_app.logger.error(f"Analytics Error: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
 
 @analytics_v2_bp.route('/benchmarks', methods=['GET'])
@@ -238,6 +244,7 @@ def get_benchmarks():
         )
         return jsonify(data)
     except Exception as e:
+        current_app.logger.error(f"Analytics Error: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
 
 @analytics_v2_bp.route('/funnel', methods=['GET'])
@@ -263,6 +270,7 @@ def get_funnel():
         )
         return jsonify(data)
     except Exception as e:
+        current_app.logger.error(f"Analytics Error: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
 
 @analytics_v2_bp.route('/report/latest', methods=['GET'])
@@ -383,4 +391,5 @@ def generate_report():
         return jsonify(report)
 
     except Exception as e:
+        current_app.logger.error(f"Analytics Error: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
