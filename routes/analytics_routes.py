@@ -81,6 +81,9 @@ def get_heatmap():
         else:
             return jsonify({"error": "Missing tenant_id"}), 400
 
+    if current_user.tenant_id and str(current_user.tenant_id) != str(tenant_id) and current_user.rol != "admin":
+        return jsonify({"error": "Unauthorized"}), 403
+
     if current_user.tenant_id and str(current_user.tenant_id) != str(tenant_id) and current_user.rol != 'admin':
         return jsonify({"error": "Unauthorized"}), 403
 
@@ -106,6 +109,9 @@ def get_survey_summary():
         else:
             return jsonify({"error": "Missing tenant_id"}), 400
 
+    if current_user.tenant_id and str(current_user.tenant_id) != str(tenant_id) and current_user.rol != "admin":
+        return jsonify({"error": "Unauthorized"}), 403
+
     try:
         data = analytics_service.get_survey_summary(tenant_id=int(tenant_id))
         return jsonify(data)
@@ -121,6 +127,9 @@ def get_survey_sentiment():
             tenant_id = current_user.tenant_id
         else:
             return jsonify({"error": "Missing tenant_id"}), 400
+
+    if current_user.tenant_id and str(current_user.tenant_id) != str(tenant_id) and current_user.rol != "admin":
+        return jsonify({"error": "Unauthorized"}), 403
 
     tid = int(tenant_id)
 
@@ -153,6 +162,9 @@ def get_survey_geo():
         else:
             return jsonify({"error": "Missing tenant_id"}), 400
 
+    if current_user.tenant_id and str(current_user.tenant_id) != str(tenant_id) and current_user.rol != "admin":
+        return jsonify({"error": "Unauthorized"}), 403
+
     try:
         points = analytics_service.get_survey_geo(tenant_id=int(tenant_id))
         return jsonify({"points": points})
@@ -168,6 +180,9 @@ def get_insights():
             tenant_id = current_user.tenant_id
         else:
             return jsonify({"error": "Missing tenant_id"}), 400
+
+    if current_user.tenant_id and str(current_user.tenant_id) != str(tenant_id) and current_user.rol != "admin":
+        return jsonify({"error": "Unauthorized"}), 403
 
     try:
         insights = analytics_service.get_insights(tenant_id=int(tenant_id))
@@ -210,6 +225,9 @@ def get_benchmarks():
         else:
             return jsonify({"error": "Missing tenant_id"}), 400
 
+    if current_user.tenant_id and str(current_user.tenant_id) != str(tenant_id) and current_user.rol != "admin":
+        return jsonify({"error": "Unauthorized"}), 403
+
     start_date, end_date = _get_date_range()
 
     try:
@@ -231,6 +249,9 @@ def get_funnel():
             tenant_id = current_user.tenant_id
         else:
             return jsonify({"error": "Missing tenant_id"}), 400
+
+    if current_user.tenant_id and str(current_user.tenant_id) != str(tenant_id) and current_user.rol != "admin":
+        return jsonify({"error": "Unauthorized"}), 403
 
     start_date, end_date = _get_date_range()
 

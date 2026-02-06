@@ -1168,7 +1168,7 @@ def _procesar_chat(
 
         if is_anonymous:
             # Lógica para usuarios anónimos
-            max_messages = current_app.config.get("ANONYMOUS_MAX_MESSAGES_PER_SESSION", 10)
+            max_messages = current_app.config.get("ANONYMOUS_MAX_MESSAGES_PER_SESSION", 50)
             session_timeout_minutes = current_app.config.get("ANONYMOUS_SESSION_TIMEOUT_MINUTES", 15)
 
             last_message_time = db.session.query(func.max(Conversacion.timestamp))                 .filter(Conversacion.session_id == anon_id)                 .scalar()

@@ -318,6 +318,7 @@ def create_app(config_class=Config):
             r"/pwa/*": {"origins": "*"},
             r"/api/pwa/*": {"origins": "*"},
             r"/api/public/*": {"origins": "*"},
+            r"/api/analytics/*": {"origins": "*"},
             r"/api/rubros": {"origins": "*"},
             r"/api/rubros/*": {"origins": "*"},
             r"/admin/*": {
