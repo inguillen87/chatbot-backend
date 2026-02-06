@@ -157,18 +157,20 @@ class NotificationDispatcher:
             except Exception as e:
                 logger.error(f"Failed to send dispatch email for order {order_ref}: {e}")
 
-        # WhatsApp to Warehouse
+        # WhatsApp to Warehouse (supports multiple comma-separated numbers)
         if getattr(tenant, 'dispatch_phone', None) and getattr(tenant, 'send_dispatch_whatsapp', True):
-            try:
-                enviar_notificacion_whatsapp_con_plantilla(
-                    tenant.dispatch_phone,
-                    "Depósito",
-                    str(order_ref),
-                    "Nuevo Pedido a Preparar"
-                )
-                logger.info(f"Dispatch WhatsApp sent to {tenant.dispatch_phone} for order {order_ref}")
-            except Exception as e:
-                logger.error(f"Failed to send dispatch WhatsApp for order {order_ref}: {e}")
+            phones = [p.strip() for p in tenant.dispatch_phone.split(',') if p.strip()]
+            for phone in phones:
+                try:
+                    enviar_notificacion_whatsapp_con_plantilla(
+                        phone,
+                        "Depósito",
+                        str(order_ref),
+                        "Nuevo Pedido a Preparar"
+                    )
+                    logger.info(f"Dispatch WhatsApp sent to {phone} for order {order_ref}")
+                except Exception as e:
+                    logger.error(f"Failed to send dispatch WhatsApp to {phone} for order {order_ref}: {e}")
 
     def _notify_admin(self, pedido: PymePedido, pdf_bytes: Optional[bytes]):
         # This is the legacy "owner" notification
