@@ -138,3 +138,59 @@ def llamar_openai(app, mensaje_usuario: str, usuario: dict, historial: list, cha
         logger.error(f"Error calling OpenAI API: {e}", exc_info=True)
         # Re-raise the exception to trigger the fallback mechanism.
         raise
+
+def generate_analytics_report(stats: dict, tenant_type: str = "pyme") -> dict:
+    """
+    Generates a consultancy report based on analytics stats using GPT-4.
+    """
+    if not client:
+        # Fallback if OpenAI not configured
+        return {
+            "summary": "AI Consultant is offline (Check API Key).",
+            "opportunities": [],
+            "threats": [],
+            "tone": "System"
+        }
+
+    try:
+        # Construct specific system prompt for the analyst persona
+        system_prompt = (
+            "You are a Senior Business Analyst & Data Consultant. "
+            f"Analyze the provided JSON statistics for a {('local government (Municipio)' if tenant_type == 'municipio' else 'small business (PyME)')}. "
+            "Output a JSON object with keys: "
+            "'summary' (Executive summary of performance, max 50 words), "
+            "'opportunities' (List of 3 specific growth/efficiency opportunities), "
+            "'threats' (List of 3 potential risks or negative trends), "
+            "'tone' (Must be 'Professional' or 'Consultative'). "
+            "Be specific, citing numbers from the data. "
+            "Reply strictly in JSON."
+        )
+
+        user_message = f"Here is the data for the selected period: {json.dumps(stats, default=str)}"
+
+        logger.info(f"Generating AI Report for {tenant_type}...")
+
+        response = client.chat.completions.create(
+            model="gpt-4o", # Use GPT-4 as requested for 'Senior' analysis
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message}
+            ],
+            temperature=0.4,
+            response_format={"type": "json_object"},
+        )
+
+        raw_response_text = response.choices[0].message.content.strip()
+        logger.info(f"AI Report Response: {raw_response_text}")
+
+        parsed_response = json.loads(raw_response_text)
+        return parsed_response
+
+    except Exception as e:
+        logger.error(f"Error generating AI report: {e}", exc_info=True)
+        return {
+            "summary": "Could not generate report due to an error.",
+            "opportunities": [],
+            "threats": [],
+            "tone": "Error"
+        }

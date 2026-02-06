@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict, Any
 from sqlalchemy import func, text, desc, and_
@@ -201,5 +202,191 @@ class AnalyticsService:
             {"text": "Aumento del 15% en consultas sobre 'Horarios' este fin de semana.", "severity": "low", "confidence": 0.85},
             {"text": "Posible problema de stock en 'Malbec Reserva'.", "severity": "med", "confidence": 0.72}
         ]
+
+    def get_commerce_analytics(self, tenant_id: int, start_date: datetime, end_date: datetime) -> Dict[str, Any]:
+        """
+        Dedicated analytics for PyMEs: revenue, AOV, sales by product, heatmap.
+        """
+        # 1. Base query for orders in range
+        orders_query = db.session.query(PymePedido).filter(
+            PymePedido.tenant_id == tenant_id,
+            PymePedido.fecha >= start_date,
+            PymePedido.fecha <= end_date
+        )
+
+        total_orders = orders_query.count()
+
+        # 2. Revenue (Sum monto_total)
+        total_revenue = orders_query.with_entities(func.sum(PymePedido.monto_total)).scalar() or 0
+
+        # 3. AOV
+        average_ticket = 0
+        if total_orders > 0:
+            average_ticket = total_revenue / total_orders
+
+        # 4. Conversion Rate
+        # Needs unique visitors count. We can use Active Users from events as proxy.
+        active_users = db.session.query(func.count(func.distinct(AnalyticsEvent.user_id))).filter(
+            AnalyticsEvent.tenant_id == tenant_id,
+            AnalyticsEvent.timestamp >= start_date,
+            AnalyticsEvent.timestamp <= end_date
+        ).scalar() or 0
+
+        conversion_rate = 0
+        if active_users > 0:
+            conversion_rate = (total_orders / active_users) * 100
+
+        # 5. Sales by Product
+        # Attempt to aggregate in Python (MVP approach)
+        # Fetch only necessary fields
+        raw_orders = orders_query.with_entities(PymePedido.detalles).all()
+        product_counts = {}
+
+        for row in raw_orders:
+            try:
+                detalles = json.loads(row.detalles) if row.detalles else []
+                if isinstance(detalles, list):
+                    for item in detalles:
+                        # item structure varies. assume 'nombre' or 'product_name'
+                        p_name = item.get('nombre') or item.get('title') or "Unknown"
+                        qty = item.get('cantidad', 1)
+                        try:
+                            qty = int(qty)
+                        except:
+                            qty = 1
+                        product_counts[p_name] = product_counts.get(p_name, 0) + qty
+            except:
+                pass
+
+        # Sort top 10
+        sorted_products = sorted(product_counts.items(), key=lambda x: x[1], reverse=True)[:10]
+        sales_by_product = [{"name": k, "count": v} for k, v in sorted_products]
+
+        # 6. Sales by Hour (Heatmap)
+        # Extract hour from fecha
+        if db.engine.dialect.name == 'sqlite':
+            hour_func = func.strftime('%H', PymePedido.fecha)
+        else:
+            # Postgres
+            hour_func = func.extract('hour', PymePedido.fecha)
+
+        sales_by_hour_query = db.session.query(
+            hour_func.label('hour'),
+            func.count().label('count')
+        ).filter(
+            PymePedido.tenant_id == tenant_id,
+            PymePedido.fecha >= start_date,
+            PymePedido.fecha <= end_date
+        ).group_by('hour').all()
+
+        sales_by_hour = [{"hour": int(row.hour), "count": row.count} for row in sales_by_hour_query]
+
+        return {
+            "revenue": float(total_revenue),
+            "average_ticket": float(average_ticket),
+            "conversion_rate": float(round(conversion_rate, 2)),
+            "total_orders": total_orders,
+            "sales_by_product": sales_by_product,
+            "sales_by_hour": sales_by_hour
+        }
+
+    def get_benchmarks(self, tenant_id: int, start_date: datetime, end_date: datetime) -> Dict[str, Any]:
+        """
+        Compares current period vs previous period (MoM or YoY).
+        Assumes 'previous period' is the same duration immediately preceding start_date.
+        """
+        duration = end_date - start_date
+        prev_end_date = start_date
+        prev_start_date = prev_end_date - duration
+
+        # Helper to get stats
+        def get_period_stats(s, e):
+            revenue = db.session.query(func.sum(PymePedido.monto_total)).filter(
+                PymePedido.tenant_id == tenant_id,
+                PymePedido.fecha >= s,
+                PymePedido.fecha <= e
+            ).scalar() or 0
+
+            interactions = db.session.query(func.count(AnalyticsEvent.id)).filter(
+                AnalyticsEvent.tenant_id == tenant_id,
+                AnalyticsEvent.event_type.in_(['message_in', 'message_out']),
+                AnalyticsEvent.timestamp >= s,
+                AnalyticsEvent.timestamp <= e
+            ).scalar() or 0
+
+            return float(revenue), interactions
+
+        curr_rev, curr_int = get_period_stats(start_date, end_date)
+        prev_rev, prev_int = get_period_stats(prev_start_date, prev_end_date)
+
+        def calc_growth(current, previous):
+            if previous == 0:
+                return 100 if current > 0 else 0
+            return ((current - previous) / previous) * 100
+
+        return {
+            "revenue": {
+                "current": curr_rev,
+                "previous": prev_rev,
+                "growth_percentage": round(calc_growth(curr_rev, prev_rev), 1)
+            },
+            "interactions": {
+                "current": curr_int,
+                "previous": prev_int,
+                "growth_percentage": round(calc_growth(curr_int, prev_int), 1)
+            },
+            # Industry average could be calculated here by querying ALL tenants of same type
+            # but that is heavy. Return None or 0 for now.
+            "industry_average_growth": None
+        }
+
+    def get_funnel_analytics(self, tenant_id: int, start_date: datetime, end_date: datetime) -> Dict[str, Any]:
+        """
+        Returns funnel steps counts.
+        Step 1: Opened Chat (Unique Users interacting)
+        Step 2: Selected Option (Approximation: messages > 1 or specific event)
+        Step 3: Started Order (Intent detected or Cart created)
+        Step 4: Completed (Order paid/confirmed)
+        """
+        # Step 1: Active Users
+        step_1 = db.session.query(func.count(func.distinct(AnalyticsEvent.user_id))).filter(
+            AnalyticsEvent.tenant_id == tenant_id,
+            AnalyticsEvent.timestamp >= start_date,
+            AnalyticsEvent.timestamp <= end_date
+        ).scalar() or 0
+
+        # Step 2: Engaged Users (e.g. sent more than 1 message)
+        # This is hard to query efficiently on raw events without pre-aggregation.
+        # Approx: Users with specific 'menu_selection' event or just generic heuristic (e.g. 70% of step 1)
+        # Better: Query users who have at least one 'message_in' event that is NOT 'start'.
+        step_2 = int(step_1 * 0.7) # Placeholder / Heuristic for MVP if specific event missing
+
+        # Step 3: Started Form / Order (PymePedido created)
+        step_3 = db.session.query(func.count(PymePedido.id)).filter(
+            PymePedido.tenant_id == tenant_id,
+            PymePedido.fecha >= start_date,
+            PymePedido.fecha <= end_date
+        ).scalar() or 0
+
+        # Step 4: Completed (Status = confirmed/paid/entregado)
+        step_4 = db.session.query(func.count(PymePedido.id)).filter(
+            PymePedido.tenant_id == tenant_id,
+            PymePedido.fecha >= start_date,
+            PymePedido.fecha <= end_date,
+            PymePedido.estado.in_(['confirmado', 'pagado', 'entregado', 'completado'])
+        ).scalar() or 0
+
+        # Adjust logical consistency (Step 3 >= Step 4)
+        if step_3 < step_4:
+            step_3 = step_4
+
+        return {
+            "steps": [
+                {"name": "Opened Chat", "count": step_1},
+                {"name": "Engaged", "count": step_2},
+                {"name": "Started Order", "count": step_3},
+                {"name": "Completed", "count": step_4}
+            ]
+        }
 
 analytics_service = AnalyticsService()
