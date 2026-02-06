@@ -1704,16 +1704,18 @@ def _procesar_chat(
         # --- Core Chat Logic Execution ---
         resultado = responder_chatboc(
             pregunta,
-            user=actor_principal,
+            owner_user=owner_del_bot,
+            current_user=actor_principal,
             contexto_previo=contexto_previo,
             tipo_chat=tipo_chat,
             rubro_id=rubro_id,
             rubro_clave=rubro_clave,
             rubro_obj=rubro_obj_global,
-            attachment_info=uploaded_file_info,
+            uploaded_file_info=uploaded_file_info,
             location=location,
-            chat_context_obj=chat_context_obj,
-            action_id=action_id
+            chat_db_context=chat_context_obj,
+            action_id=action_id,
+            anon_id=anon_id
         )
 
         # Después de que responder_chatboc y sus sub-funciones hayan modificado chat_context_obj.context_data,
