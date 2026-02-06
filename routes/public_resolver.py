@@ -1,7 +1,7 @@
 from flask import Blueprint, jsonify, request, g, current_app
 from flask_cors import cross_origin
 
-from models import TenantProfile, WidgetSettings, db
+from models import TenantProfile, WidgetSettings, Rubro, db
 from services.tenant_resolver import (
     RESERVED_TENANT_SLUGS,
     TenantResolutionError,
@@ -602,12 +602,22 @@ def tenant_profile():
                     .first()
                 )
 
-            if not fallback_tenant:
+            if not fallback_tenant and normalized_slug in {"municipio", "pyme"}:
                 fallback_tenant = TenantProfile.query.order_by(TenantProfile.id.asc()).first()
 
-            tenant = fallback_tenant
-
         if not tenant:
+            # Fetch public rubros for the demo selector
+            public_rubros = Rubro.query.filter_by(es_publico=True).order_by(Rubro.nombre.asc()).all()
+            rubros_list = [
+                {
+                    "id": r.id,
+                    "nombre": r.nombre,
+                    "clave": r.clave,
+                    "descripcion": r.descripcion,
+                    "padre_id": r.padre_id
+                } for r in public_rubros
+            ]
+
             placeholder = {
                 "id": None,
                 "slug": "default",
@@ -617,6 +627,8 @@ def tenant_profile():
                 "dominio": request.host,
                 "tema": {},
                 "config": {},
+                "rubros": rubros_list, # Injected for generic demo
+                "is_demo_placeholder": True
             }
             payload = {
                 "tenant": placeholder,

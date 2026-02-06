@@ -438,7 +438,7 @@ class Config:
     REMEMBER_COOKIE_SECURE = (ENV == "prod") or IS_HTTPS
 
     SESSION_TYPE = 'sqlalchemy'
-    SESSION_SQLALCHEMY_TABLE = 'sessions'
+    SESSION_SQLALCHEMY_TABLE = 'flask_sessions'
     # Nombre del cookie adicional que almacena el token de acceso como
     # respaldo en caso de que la sesión basada en cookies falle
     AUTH_TOKEN_COOKIE_NAME = os.getenv("AUTH_TOKEN_COOKIE_NAME", "auth_token")
