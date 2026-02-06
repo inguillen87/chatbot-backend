@@ -358,7 +358,7 @@ def generate_report():
             context=segment
         )
 
-        # 2. Get extra stats if PyME
+        # 2. Get extra stats based on segment
         if segment == 'pyme':
             commerce = analytics_service.get_commerce_analytics(
                 tenant_id=tid,
@@ -366,6 +366,13 @@ def generate_report():
                 end_date=end_date
             )
             summary.update(commerce)
+        elif segment == 'municipio':
+            municipio_stats = analytics_service.get_municipio_analytics(
+                tenant_id=tid,
+                start_date=start_date,
+                end_date=end_date
+            )
+            summary.update(municipio_stats)
 
         # 3. Call OpenAI
         report = generate_analytics_report(summary, tenant_type=segment)
