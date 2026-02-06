@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 from services.analytics_service import analytics_service
 from services.openai_bridge import generate_analytics_report, analyze_sentiment
 from models import TenantProfile
+from extensions import limiter
 
 analytics_v2_bp = Blueprint('analytics_v2_bp', __name__, url_prefix='/api/analytics')
 
@@ -271,16 +272,19 @@ def get_latest_report():
 
 @analytics_v2_bp.route('/report/generate', methods=['POST'])
 @login_required
+@limiter.limit("1 per hour", key_func=lambda: str(current_user.id))
 def trigger_generate_report():
     """
     Explicit endpoint to generate a report.
     Wraps the logic of `generate_report` but dedicated routing.
+    Rate limited to 1 per hour per admin.
     """
     # Simply forward to the existing function logic
     return generate_report()
 
 @analytics_v2_bp.route('/generate-report', methods=['POST'])
 @login_required
+@limiter.limit("1 per hour", key_func=lambda: str(current_user.id))
 def generate_report():
     data = request.get_json()
     tenant_id = data.get('tenant_id')
