@@ -2,6 +2,7 @@ from flask import Blueprint, request, jsonify
 from flask_login import login_required, current_user
 from datetime import datetime, timedelta
 from services.analytics_service import analytics_service
+from services.openai_bridge import generate_analytics_report
 from models import TenantProfile
 
 analytics_v2_bp = Blueprint('analytics_v2_bp', __name__, url_prefix='/api/analytics')
@@ -107,5 +108,132 @@ def get_insights():
     try:
         insights = analytics_service.get_insights(tenant_id=int(tenant_id))
         return jsonify({"insights": insights})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@analytics_v2_bp.route('/sales', methods=['GET'])
+@login_required
+def get_sales_analytics():
+    tenant_id = request.args.get('tenant_id')
+    if not tenant_id:
+        if current_user.tenant_id:
+            tenant_id = current_user.tenant_id
+        else:
+            return jsonify({"error": "Missing tenant_id"}), 400
+
+    if current_user.tenant_id and str(current_user.tenant_id) != str(tenant_id) and current_user.rol != 'admin':
+        return jsonify({"error": "Unauthorized"}), 403
+
+    start_date, end_date = _get_date_range()
+
+    try:
+        data = analytics_service.get_commerce_analytics(
+            tenant_id=int(tenant_id),
+            start_date=start_date,
+            end_date=end_date
+        )
+        return jsonify(data)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@analytics_v2_bp.route('/benchmarks', methods=['GET'])
+@login_required
+def get_benchmarks():
+    tenant_id = request.args.get('tenant_id')
+    if not tenant_id:
+        if current_user.tenant_id:
+            tenant_id = current_user.tenant_id
+        else:
+            return jsonify({"error": "Missing tenant_id"}), 400
+
+    start_date, end_date = _get_date_range()
+
+    try:
+        data = analytics_service.get_benchmarks(
+            tenant_id=int(tenant_id),
+            start_date=start_date,
+            end_date=end_date
+        )
+        return jsonify(data)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@analytics_v2_bp.route('/funnel', methods=['GET'])
+@login_required
+def get_funnel():
+    tenant_id = request.args.get('tenant_id')
+    if not tenant_id:
+        if current_user.tenant_id:
+            tenant_id = current_user.tenant_id
+        else:
+            return jsonify({"error": "Missing tenant_id"}), 400
+
+    start_date, end_date = _get_date_range()
+
+    try:
+        data = analytics_service.get_funnel_analytics(
+            tenant_id=int(tenant_id),
+            start_date=start_date,
+            end_date=end_date
+        )
+        return jsonify(data)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@analytics_v2_bp.route('/generate-report', methods=['POST'])
+@login_required
+def generate_report():
+    data = request.get_json()
+    tenant_id = data.get('tenant_id')
+    segment = data.get('segment', 'pyme') # pyme or municipio
+
+    if not tenant_id:
+        if current_user.tenant_id:
+            tenant_id = current_user.tenant_id
+        else:
+             return jsonify({"error": "Missing tenant_id"}), 400
+
+    if current_user.tenant_id and str(current_user.tenant_id) != str(tenant_id) and current_user.rol != 'admin':
+        return jsonify({"error": "Unauthorized"}), 403
+
+    from_str = data.get('from')
+    to_str = data.get('to')
+
+    now = datetime.utcnow()
+    start_date = now - timedelta(days=7)
+    end_date = now
+
+    if from_str:
+        try:
+             start_date = datetime.fromisoformat(from_str.replace('Z', '+00:00'))
+        except: pass
+    if to_str:
+        try:
+             end_date = datetime.fromisoformat(to_str.replace('Z', '+00:00'))
+        except: pass
+
+    try:
+        # 1. Aggregate stats
+        summary = analytics_service.get_summary(
+            tenant_id=int(tenant_id),
+            start_date=start_date,
+            end_date=end_date,
+            context=segment
+        )
+
+        # 2. Get extra stats if PyME
+        if segment == 'pyme':
+            commerce = analytics_service.get_commerce_analytics(
+                tenant_id=int(tenant_id),
+                start_date=start_date,
+                end_date=end_date
+            )
+            summary.update(commerce)
+
+        # 3. Call OpenAI
+        report = generate_analytics_report(summary, tenant_type=segment)
+
+        return jsonify(report)
+
     except Exception as e:
         return jsonify({"error": str(e)}), 500
