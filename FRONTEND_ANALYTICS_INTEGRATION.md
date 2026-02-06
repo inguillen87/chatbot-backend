@@ -4,13 +4,22 @@ This guide details the new endpoints available for the "Consultancy-Grade" Analy
 
 ## 1. AI Consultant (Business Reports)
 
-**Endpoint:** `POST /api/analytics/generate-report`
+The AI Consultant analyzes sales, interactions, and sentiment to provide actionable business advice.
+
+### A. Check for Latest Report (Cache)
+**Endpoint:** `GET /api/analytics/report/latest`
+
+*   **Objective:** Check if a fresh report already exists to avoid AI costs.
+*   **Query Params:** `tenant_id`, `segment` (pyme/municipio).
+*   **Response (200 OK):** JSON of the report content.
+*   **Response (404 Not Found):** No valid cached report. UI should prompt user to "Generate New Report".
+
+### B. Generate Fresh Report
+**Endpoint:** `POST /api/analytics/report/generate`
 
 *   **Description:** Generates a strategic analysis using GPT-4.
-*   **Behavior:** The backend **caches** the result for 7 days to prevent excessive costs. If a cached report exists, it returns immediately.
-*   **Trigger:** Call this when the user visits the "AI Insights" tab or clicks "Generate Report".
-
-**Request Payload:**
+*   **Behavior:** The backend **caches** the result for 7 days. If a cached report exists (and `force=false`), it returns immediately.
+*   **Request Payload:**
 ```json
 {
   "tenant_id": 1,
@@ -50,8 +59,13 @@ This guide details the new endpoints available for the "Consultancy-Grade" Analy
 {
   "revenue": 1500000.00,
   "average_ticket": 12500.50,
-  "conversion_rate": 3.5, // Percentage
+  "chat_conversion": 3.5, // % of chats leading to orders
   "total_orders": 120,
+  "lead_source": [
+    {"source": "whatsapp", "count": 800},
+    {"source": "web_widget", "count": 200},
+    {"source": "instagram", "count": 50}
+  ],
   "sales_by_product": [
     {"name": "Taladro", "count": 15},
     {"name": "Martillo", "count": 10}

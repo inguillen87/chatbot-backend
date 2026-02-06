@@ -209,6 +209,7 @@ class AnalyticsService:
     def get_commerce_analytics(self, tenant_id: int, start_date: datetime, end_date: datetime) -> Dict[str, Any]:
         """
         Dedicated analytics for PyMEs: revenue, AOV, sales by product, heatmap.
+        Also includes Lead Source and Chat Conversion.
         """
         # 1. Base query for orders in range
         orders_query = db.session.query(PymePedido).filter(
@@ -227,17 +228,32 @@ class AnalyticsService:
         if total_orders > 0:
             average_ticket = total_revenue / total_orders
 
-        # 4. Conversion Rate
-        # Needs unique visitors count. We can use Active Users from events as proxy.
-        active_users = db.session.query(func.count(func.distinct(AnalyticsEvent.user_id))).filter(
+        # 4. Conversion Rate (Chat Conversion) & Lead Source
+        # Base active users query
+        events_query = db.session.query(AnalyticsEvent).filter(
             AnalyticsEvent.tenant_id == tenant_id,
             AnalyticsEvent.timestamp >= start_date,
             AnalyticsEvent.timestamp <= end_date
-        ).scalar() or 0
+        )
+
+        active_users = events_query.with_entities(func.count(func.distinct(AnalyticsEvent.user_id))).scalar() or 0
 
         conversion_rate = 0
         if active_users > 0:
             conversion_rate = (total_orders / active_users) * 100
+
+        # Lead Source (Breakdown by Channel)
+        # Using 'channel' from AnalyticsEvent (message_in/start events)
+        channel_stats = db.session.query(
+            AnalyticsEvent.channel, func.count(func.distinct(AnalyticsEvent.user_id))
+        ).filter(
+            AnalyticsEvent.tenant_id == tenant_id,
+            AnalyticsEvent.timestamp >= start_date,
+            AnalyticsEvent.timestamp <= end_date,
+            AnalyticsEvent.channel.isnot(None)
+        ).group_by(AnalyticsEvent.channel).all()
+
+        lead_source = [{"source": row.channel or "unknown", "count": row[1]} for row in channel_stats]
 
         # 5. Sales by Product
         # Attempt to aggregate in Python (MVP approach)
@@ -288,9 +304,11 @@ class AnalyticsService:
             "revenue": float(total_revenue),
             "average_ticket": float(average_ticket),
             "conversion_rate": float(round(conversion_rate, 2)),
+            "chat_conversion": float(round(conversion_rate, 2)), # Alias
             "total_orders": total_orders,
             "sales_by_product": sales_by_product,
-            "sales_by_hour": sales_by_hour
+            "sales_by_hour": sales_by_hour,
+            "lead_source": lead_source
         }
 
     def get_benchmarks(self, tenant_id: int, start_date: datetime, end_date: datetime) -> Dict[str, Any]:

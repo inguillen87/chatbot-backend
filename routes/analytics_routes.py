@@ -243,6 +243,42 @@ def get_funnel():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@analytics_v2_bp.route('/report/latest', methods=['GET'])
+@login_required
+def get_latest_report():
+    """
+    Returns the most recent valid cached report without triggering generation.
+    """
+    tenant_id = request.args.get('tenant_id')
+    if not tenant_id:
+        if current_user.tenant_id:
+            tenant_id = current_user.tenant_id
+        else:
+            return jsonify({"error": "Missing tenant_id"}), 400
+
+    if current_user.tenant_id and str(current_user.tenant_id) != str(tenant_id) and current_user.rol != 'admin':
+        return jsonify({"error": "Unauthorized"}), 403
+
+    segment = request.args.get('segment', 'pyme') # pyme or municipio
+
+    cached = analytics_service.get_cached_report(int(tenant_id), f"consultant_{segment}", max_age_hours=24*7)
+
+    if cached:
+        cached['_cached'] = True
+        return jsonify(cached)
+
+    return jsonify({"error": "No cached report found", "code": 404}), 404
+
+@analytics_v2_bp.route('/report/generate', methods=['POST'])
+@login_required
+def trigger_generate_report():
+    """
+    Explicit endpoint to generate a report.
+    Wraps the logic of `generate_report` but dedicated routing.
+    """
+    # Simply forward to the existing function logic
+    return generate_report()
+
 @analytics_v2_bp.route('/generate-report', methods=['POST'])
 @login_required
 def generate_report():
