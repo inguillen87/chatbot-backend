@@ -563,6 +563,12 @@ class PedidoService:
             except Exception as e:
                 logger.error(f"Error dispatching notifications for cart order {nuevo_pedido_obj.nro_pedido}: {e}")
 
+            # Sync to new Order model (for Admin Panel compatibility)
+            try:
+                self.sync_order_model_from_pyme(nuevo_pedido_obj, channel="web_widget")
+            except Exception as e:
+                logger.error(f"Error syncing to Order model for {nuevo_pedido_obj.nro_pedido}: {e}", exc_info=True)
+
             return nuevo_pedido_obj
 
         except Exception as e:
