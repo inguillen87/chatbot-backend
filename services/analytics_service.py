@@ -3,7 +3,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict, Any
 from sqlalchemy import func, text, desc, and_
 from database import db
-from models import AnalyticsEvent, User, MunicipioTicket, PymePedido, MarketOrder
+from models import (
+    AnalyticsEvent, User, MunicipioTicket, PymePedido, MarketOrder,
+    EncEncuesta, EncRespuesta, EncRespuestaDetalle, EncPregunta, EncOpcion
+)
 
 try:
     import pygeohash as pgh
@@ -388,5 +391,114 @@ class AnalyticsService:
                 {"name": "Completed", "count": step_4}
             ]
         }
+
+    def get_survey_summary(self, tenant_id: int) -> Dict[str, Any]:
+        """
+        Returns summary for active surveys: total votes, estimated participation rate,
+        and results histograms.
+        """
+        # Find active survey(s) or just the most recent one for now
+        # Assuming one active public survey for simplicity in dashboard summary
+        survey = db.session.query(EncEncuesta).filter(
+            EncEncuesta.tenant_id == tenant_id,
+            EncEncuesta.estado == 'publicada'
+        ).order_by(desc(EncEncuesta.id)).first()
+
+        if not survey:
+            return {"active_survey": None, "stats": {}}
+
+        # Total votes
+        total_votes = db.session.query(func.count(EncRespuesta.id)).filter(
+            EncRespuesta.encuesta_id == survey.id
+        ).scalar() or 0
+
+        # Results by option (Histogram)
+        # Join Response -> Detalle -> Opcion
+        results = db.session.query(
+            EncOpcion.texto, func.count(EncRespuestaDetalle.id)
+        ).join(
+            EncRespuestaDetalle, EncRespuestaDetalle.opcion_id == EncOpcion.id
+        ).filter(
+            EncOpcion.pregunta_id.in_([p.id for p in survey.preguntas]), # Just to be safe
+            EncRespuestaDetalle.respuesta_id.in_(
+                db.session.query(EncRespuesta.id).filter(EncRespuesta.encuesta_id == survey.id)
+            )
+        ).group_by(EncOpcion.texto).all()
+
+        histogram = [{"option": r[0], "count": r[1]} for r in results]
+
+        # Estimated Population (Active Users in last 30 days as proxy)
+        active_users_30d = db.session.query(func.count(func.distinct(AnalyticsEvent.user_id))).filter(
+            AnalyticsEvent.tenant_id == tenant_id,
+            AnalyticsEvent.timestamp >= datetime.now(timezone.utc) - timedelta(days=30)
+        ).scalar() or 1 # Avoid div by zero
+
+        participation_rate = (total_votes / active_users_30d) * 100
+        if participation_rate > 100: participation_rate = 100
+
+        return {
+            "active_survey": {"title": survey.titulo, "id": survey.id},
+            "stats": {
+                "total_votes": total_votes,
+                "participation_rate": round(participation_rate, 2),
+                "results_by_option": histogram
+            }
+        }
+
+    def get_survey_sentiment_texts(self, tenant_id: int, limit: int = 50) -> List[str]:
+        """
+        Fetches open-ended text responses from surveys for sentiment analysis.
+        """
+        # Get recent text answers
+        texts = db.session.query(EncRespuestaDetalle.texto_libre).join(
+            EncRespuesta, EncRespuestaDetalle.respuesta_id == EncRespuesta.id
+        ).filter(
+            EncRespuesta.tenant_id == tenant_id,
+            EncRespuestaDetalle.texto_libre.isnot(None),
+            EncRespuestaDetalle.texto_libre != ""
+        ).order_by(desc(EncRespuesta.submitted_at)).limit(limit).all()
+
+        return [t[0] for t in texts]
+
+    def get_survey_geo(self, tenant_id: int) -> List[Dict]:
+        """
+        Returns geo-tagged votes.
+        """
+        votes = db.session.query(
+            EncRespuesta.lat, EncRespuesta.lng
+        ).filter(
+            EncRespuesta.tenant_id == tenant_id,
+            EncRespuesta.lat.isnot(None),
+            EncRespuesta.lng.isnot(None)
+        ).limit(500).all()
+
+        return [{"lat": v.lat, "lng": v.lng, "weight": 1} for v in votes]
+
+    def get_cached_report(self, tenant_id: int, report_type: str, max_age_hours: int = 24) -> Optional[Dict]:
+        """
+        Retrieves a valid cached AI report from AnalyticsEvent.
+        """
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=max_age_hours)
+
+        event = db.session.query(AnalyticsEvent).filter(
+            AnalyticsEvent.tenant_id == tenant_id,
+            AnalyticsEvent.event_type == f"ai_report_{report_type}",
+            AnalyticsEvent.timestamp >= cutoff
+        ).order_by(desc(AnalyticsEvent.timestamp)).first()
+
+        if event and event.payload:
+            return event.payload
+        return None
+
+    def cache_report(self, tenant_id: int, report_type: str, data: Dict):
+        """
+        Saves an AI report to AnalyticsEvent for caching.
+        """
+        self.log_event(
+            tenant_id=tenant_id,
+            event_type=f"ai_report_{report_type}",
+            channel="system",
+            payload=data
+        )
 
 analytics_service = AnalyticsService()
