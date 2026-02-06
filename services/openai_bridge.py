@@ -194,3 +194,51 @@ def generate_analytics_report(stats: dict, tenant_type: str = "pyme") -> dict:
             "threats": [],
             "tone": "Error"
         }
+
+def analyze_sentiment(texts: List[str]) -> dict:
+    """
+    Analyzes a list of texts (open-ended survey answers) to return a sentiment score and keywords.
+    """
+    if not client or not texts:
+        return {
+            "sentiment_score": 0.0,
+            "keywords": []
+        }
+
+    try:
+        # Limit input to avoid token limits
+        sample = texts[:50] # Analyze max 50 recent answers
+        combined_text = "\n".join([f"- {t}" for t in sample])
+
+        system_prompt = (
+            "You are a Sentiment Analysis AI. "
+            "Analyze the following list of user opinions. "
+            "Return a JSON object with: "
+            "'sentiment_score' (float between -1.0 for negative and 1.0 for positive), "
+            "'keywords' (list of top 5 recurring topics/words as objects {word: str, count: int}). "
+            "Reply strictly in JSON."
+        )
+
+        logger.info("Analyzing sentiment for survey answers...")
+
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": combined_text}
+            ],
+            temperature=0.3,
+            response_format={"type": "json_object"},
+        )
+
+        raw_response_text = response.choices[0].message.content.strip()
+        parsed = json.loads(raw_response_text)
+
+        return parsed
+
+    except Exception as e:
+        logger.error(f"Error analyzing sentiment: {e}", exc_info=True)
+        return {
+            "sentiment_score": 0.0,
+            "keywords": []
+        }

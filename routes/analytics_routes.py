@@ -2,7 +2,7 @@ from flask import Blueprint, request, jsonify
 from flask_login import login_required, current_user
 from datetime import datetime, timedelta
 from services.analytics_service import analytics_service
-from services.openai_bridge import generate_analytics_report
+from services.openai_bridge import generate_analytics_report, analyze_sentiment
 from models import TenantProfile
 
 analytics_v2_bp = Blueprint('analytics_v2_bp', __name__, url_prefix='/api/analytics')
@@ -91,6 +91,69 @@ def get_heatmap():
             start_date=start_date,
             end_date=end_date
         )
+        return jsonify({"points": points})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@analytics_v2_bp.route('/surveys/summary', methods=['GET'])
+@login_required
+def get_survey_summary():
+    tenant_id = request.args.get('tenant_id')
+    if not tenant_id:
+        if current_user.tenant_id:
+            tenant_id = current_user.tenant_id
+        else:
+            return jsonify({"error": "Missing tenant_id"}), 400
+
+    try:
+        data = analytics_service.get_survey_summary(tenant_id=int(tenant_id))
+        return jsonify(data)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@analytics_v2_bp.route('/surveys/sentiment', methods=['GET'])
+@login_required
+def get_survey_sentiment():
+    tenant_id = request.args.get('tenant_id')
+    if not tenant_id:
+        if current_user.tenant_id:
+            tenant_id = current_user.tenant_id
+        else:
+            return jsonify({"error": "Missing tenant_id"}), 400
+
+    tid = int(tenant_id)
+
+    # 0. Check Cache (e.g. 24h)
+    cached = analytics_service.get_cached_report(tid, "survey_sentiment", max_age_hours=24)
+    if cached:
+        return jsonify(cached)
+
+    try:
+        # 1. Fetch text data
+        texts = analytics_service.get_survey_sentiment_texts(tenant_id=tid)
+
+        # 2. Analyze with AI
+        analysis = analyze_sentiment(texts)
+
+        # 3. Cache Result
+        analytics_service.cache_report(tid, "survey_sentiment", analysis)
+
+        return jsonify(analysis)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@analytics_v2_bp.route('/surveys/geo', methods=['GET'])
+@login_required
+def get_survey_geo():
+    tenant_id = request.args.get('tenant_id')
+    if not tenant_id:
+        if current_user.tenant_id:
+            tenant_id = current_user.tenant_id
+        else:
+            return jsonify({"error": "Missing tenant_id"}), 400
+
+    try:
+        points = analytics_service.get_survey_geo(tenant_id=int(tenant_id))
         return jsonify({"points": points})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -196,6 +259,19 @@ def generate_report():
     if current_user.tenant_id and str(current_user.tenant_id) != str(tenant_id) and current_user.rol != 'admin':
         return jsonify({"error": "Unauthorized"}), 403
 
+    tid = int(tenant_id)
+
+    # 0. Check Cache (e.g. 7 days for weekly reports)
+    # The cache key should ideally include date range, but for simplicity we check if *any* report was generated recently
+    # to prevent spamming.
+    cached = analytics_service.get_cached_report(tid, f"consultant_{segment}", max_age_hours=24*7)
+    force_refresh = data.get('force', False)
+
+    if cached and not force_refresh:
+        # Add metadata to indicate it's cached
+        cached['_cached'] = True
+        return jsonify(cached)
+
     from_str = data.get('from')
     to_str = data.get('to')
 
@@ -215,7 +291,7 @@ def generate_report():
     try:
         # 1. Aggregate stats
         summary = analytics_service.get_summary(
-            tenant_id=int(tenant_id),
+            tenant_id=tid,
             start_date=start_date,
             end_date=end_date,
             context=segment
@@ -224,7 +300,7 @@ def generate_report():
         # 2. Get extra stats if PyME
         if segment == 'pyme':
             commerce = analytics_service.get_commerce_analytics(
-                tenant_id=int(tenant_id),
+                tenant_id=tid,
                 start_date=start_date,
                 end_date=end_date
             )
@@ -232,6 +308,9 @@ def generate_report():
 
         # 3. Call OpenAI
         report = generate_analytics_report(summary, tenant_type=segment)
+
+        # 4. Cache Result
+        analytics_service.cache_report(tid, f"consultant_{segment}", report)
 
         return jsonify(report)
 
