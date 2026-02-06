@@ -17,74 +17,152 @@ import secrets
 from services.demo_registry import demo_rubro_for_token
 from utils.user_query import _safe_user_query
 
-# Cache to avoid spamming DB queries for missing demo tokens
-_DEMO_TOKEN_WARNED = set()
 
-def _rubro_aliases(rubro: Rubro) -> Set[str]:
-    """Helper to extract comparable aliases for a Rubro."""
-    aliases = set()
-    if rubro.clave:
-        aliases.add(rubro.clave.lower())
-    if rubro.nombre:
-        normalized = (
-            unicodedata.normalize("NFKD", rubro.nombre)
-            .encode("ascii", "ignore")
-            .decode("utf-8")
-            .lower()
-        )
-        aliases.add(normalized)
-    return aliases
+_WIDGET_ALLOWED_PREFIXES: Tuple[str, ...] = (
+    "/auth/widget/",
+    "/api/market/",
+    "/market/",
+    "/api/ask",
+    "/api/profile-name",
+    "/api/widget",
+    "/api/live-chat",
+    "/api/pwa/tenant-info",
+    "/api/pwa/anon-id",
+    "/api/public/tenants",
+)
+
+_WIDGET_ALLOWED_GET_PATHS: Set[str] = {
+    "/auth/me",
+    "/auth/perfil",
+    "/auth/profile",
+    "/auth/token-info",
+    "/me",
+    "/perfil",
+    "/profile",
+    "/api/me",
+    "/api/perfil",
+    "/api/profile",
+    "/pwa/tenant-info",
+    "/api/pwa/tenant-info",
+    "/public/tenant",
+    "/api/public/tenant",
+    "/api/public/tenant-profile",
+    "/notifications",
+    "/api/notifications",
+    "/widget/attention",
+    "/widget/config",
+    "/live-chat/schedule",
+}
+
+_WIDGET_ALLOWED_ANY_METHOD_PATHS: Set[str] = {
+    "/ask",
+    "/ask/pyme",
+    "/ask/municipio",
+    "/api/ask",
+    "/api/ask/pyme",
+    "/api/ask/municipio",
+}
+
+_DEMO_TOKEN_WARNED: Set[str] = set()
+
+
+def _normalize_path(path: Optional[str]) -> str:
+    """Return a normalized absolute path used for widget access checks."""
+
+    if not path:
+        return "/"
+
+    normalized = path.strip()
+    if not normalized.startswith("/"):
+        normalized = f"/{normalized}"
+
+    if "?" in normalized:
+        normalized = normalized.split("?", 1)[0]
+
+    if normalized != "/":
+        normalized = normalized.rstrip("/") or "/"
+
+    return normalized
+
 
 def _is_jwt_token(token: Optional[str]) -> bool:
-    """Check if the string looks like a JWT (three parts separated by dots)."""
+    """Return True if the token string looks like a JWT."""
+
     if not token or not isinstance(token, str):
         return False
-    parts = token.split(".")
-    return len(parts) == 3
+    return token.count(".") == 2
 
-def _widget_session_allowed(path: str, method: str) -> bool:
-    """Determine if a widget session token is allowed for the given request.
 
-    Widget sessions are restricted to specific public endpoints (chat, profile name,
-    widget config) to prevent privilege escalation to administrative APIs.
-    """
-    path_lower = path.lower()
+def _widget_session_allowed(path: Optional[str], method: Optional[str]) -> bool:
+    """Return True if a widget session token can access the given request."""
 
-    allowed_prefixes = (
-        "/api/ask",
-        "/api/profile-name",
-        "/api/widget",
-        "/api/live-chat",
-        "/api/pwa/tenant-info",
-        "/api/pwa/anon-id",
-        "/api/public/tenants",
-    )
+    normalized_path = _normalize_path(path)
+    method = (method or "GET").upper()
 
-    if any(path_lower.startswith(p) for p in allowed_prefixes):
+    if method == "OPTIONS":
         return True
 
-    # Allow legacy non-api routes just in case
-    legacy_prefixes = (
-        "/ask",
-        "/widget/attention",
-        "/widget/config",
-        "/live-chat/schedule",
-    )
-    if any(path_lower.startswith(p) for p in legacy_prefixes):
+    if normalized_path in _WIDGET_ALLOWED_ANY_METHOD_PATHS:
+        return True
+
+    for prefix in _WIDGET_ALLOWED_PREFIXES:
+        if normalized_path.startswith(prefix.rstrip("/")):
+            return True
+
+    if method == "GET" and normalized_path in _WIDGET_ALLOWED_GET_PATHS:
         return True
 
     return False
 
 
+def _normalize_alias_value(value: Optional[object]) -> Optional[str]:
+    """Normalize a string value into a slug-ish token."""
+
+    if value is None:
+        return None
+
+    text = str(value).strip().lower()
+    if not text:
+        return None
+
+    decomposed = unicodedata.normalize("NFKD", text)
+    sanitized = "".join(ch for ch in decomposed if not unicodedata.combining(ch))
+    sanitized = re.sub(r"[^a-z0-9]+", "_", sanitized)
+    sanitized = sanitized.strip("_")
+    return sanitized or None
+
+
+def _rubro_aliases(rubro: Rubro) -> Set[str]:
+    """Return the normalized aliases associated with a Rubro."""
+
+    aliases: Set[str] = set()
+
+    for value in (getattr(rubro, "clave", None), getattr(rubro, "nombre", None)):
+        normalized = _normalize_alias_value(value)
+        if not normalized:
+            continue
+        aliases.add(normalized)
+        collapsed = normalized.replace("_", "")
+        if collapsed:
+            aliases.add(collapsed)
+        parts = [part for part in normalized.split("_") if part]
+        aliases.update(parts)
+
+    return {alias for alias in aliases if alias}
+
+
 def _demo_token_fallback_owner(token: Optional[str]) -> Optional[User]:
-    """Resolve a demo token using heuristics if strict DB lookup fails."""
+    """Attempt to resolve demo tokens even if the registry is misconfigured."""
 
     if not token:
         return None
 
     user_query = _safe_user_query()
+    normalized_token = _normalize_alias_value(token)
+    if not normalized_token:
+        # Fallback to simple strip/lower if normalization fails (shouldn't happen)
+        normalized_token = token.strip().lower()
 
-    normalized_token = token.strip().lower()
     slug = normalized_token
     for prefix in (
         "demo_token_",
@@ -1049,7 +1127,7 @@ def anon_o_token_requerido(f):
             if jwt_user:
                 current_app.logger.info(f"Request authenticated via JWT. User ID: {jwt_user.id}")
                 current_user = jwt_user
-                # Si un usuario logueado tiene un , el owner es esa empresa.
+                # Si un usuario logueado tiene un empresa_id, el owner es esa empresa.
                 if jwt_user.empresa_id:
                     owner_user = User.query.get(jwt_user.empresa_id)
                 else:
@@ -1152,10 +1230,6 @@ def anon_o_token_requerido(f):
             cookie_domain = current_app.config.get("SESSION_COOKIE_DOMAIN")
             if cookie_domain:
                 cookie_args["domain"] = cookie_domain
-
-            # Future improvement: Set Path=/app for auth_token to physically isolate it
-            # if target_cookie == default_cookie_name:
-            #    cookie_args["path"] = "/app"
 
             resp.set_cookie(**cookie_args)
             resp.headers.setdefault("X-Anon-Id", anon_id)
