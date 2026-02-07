@@ -1,5 +1,5 @@
 from flask import Blueprint, request, jsonify, current_app
-from models import User, PymePedido, db
+from models import User, PymePedido, db, TenantProfile
 from utils.auth_helpers import token_requerido, admin_o_empleado_requerido
 from services.logic import es_rubro_publico
 from services.email_service import enviar_email_pedido_admin
@@ -128,8 +128,25 @@ def crear_pedido_pyme(current_user: User):
         return jsonify({"error": "Formato de 'detalles' inválido. Debe ser un JSON serializable."}), 400
 
     pyme_id_context = current_user.empresa_id or current_user.id
+
+    # Resolve tenant_id to ensure order visibility in Admin Panel
+    tenant_id = current_user.tenant_id
+    if not tenant_id:
+        # Check if pyme owner has tenant_id
+        if current_user.empresa_id:
+             owner = db.session.get(User, current_user.empresa_id)
+             if owner and owner.tenant_id:
+                 tenant_id = owner.tenant_id
+
+    if not tenant_id:
+        # Find tenant linked to this pyme
+        tenant = TenantProfile.query.filter_by(pyme_id=pyme_id_context).first()
+        if tenant:
+            tenant_id = tenant.id
+
     nuevo_pedido = PymePedido(
         pyme_id=pyme_id_context,
+        tenant_id=tenant_id,
         asunto=data.get('asunto', f'Pedido de {data.get("nombre_cliente", "cliente")}'),
         detalles=detalles_str,
         monto_total=data.get('monto_total'),
