@@ -153,10 +153,12 @@ class IntelligentCatalogProcessor:
             **Instrucciones Específicas para VINOS y BEBIDAS:**
             1. **Marca (Bodega/Línea):** Debes inferir la 'marca' basándote en el nombre de la botella o el contexto.
                - Si el nombre dice "Rutini Malbec", Marca: "Rutini".
-               - Si no es obvio, busca nombres de bodegas comunes.
+               - Si el nombre es "Luigi Bosca Cabernet", Marca: "Luigi Bosca".
+               - IMPORTANTE: Si la marca no está explícita como columna, extráela del comienzo del nombre del producto.
             2. **Varietal:** Extrae el varietal (ej: Malbec, Cabernet, Blend).
-            3. **Presentación:** Extrae el tamaño o formato (ej: "750ml", "Caja x6").
-            4. **Campos requeridos:** nombre, precio, marca, varietal, categoria, descripcion, unidad, presentacion.
+            3. **Presentación:** Extrae el tamaño o formato (ej: "750ml", "Caja x6"). Si es una caja, indícalo claramente.
+            4. **Descripción:** Si no hay descripción, genera una breve basada en el varietal y marca (ej: "Vino tinto de cuerpo medio...").
+            5. **Campos requeridos:** nombre, precio, marca, varietal, categoria, descripcion, unidad, presentacion.
             """
         elif is_food_sector:
             specific_instructions = """
@@ -179,7 +181,8 @@ class IntelligentCatalogProcessor:
 
         response_json = llamar_llm_para_json_estructurado(
             system_prompt=system_prompt,
-            user_prompt=user_prompt
+            user_prompt=user_prompt,
+            model="gpt-4o"
         )
 
         if not response_json or not isinstance(response_json, list):

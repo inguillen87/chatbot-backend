@@ -33,7 +33,7 @@ from services.logic import es_rubro_publico
 from services.ticket_service import servicio_tickets
 from services.ticket_utils import formatear_ticket_respuesta, remove_buttons_with_urls_in_message
 from services.webinfo import obtener_info_web
-from .common_utils import construir_respuesta_sugerir_registro # <--- NUEVA IMPORTACIÓN
+from .common_utils import construir_respuesta_sugerir_registro, parse_precio_flexible # <--- NUEVA IMPORTACIÓN
 from services.preferences import add_preference
 from services.pedido_service import servicio_pedidos
 from services import cart as cart_service
@@ -1149,6 +1149,17 @@ class CatalogoHandler(BaseHandler):
         body = respuesta_texto
         options = []
 
+        # Determine safe truncation length based on potential message type
+        # List messages (interactive_list) support up to 24 chars for title.
+        # Reply buttons (interactive_buttons) support up to 20 chars.
+        # If we have > 3 items + system buttons, we likely force a list.
+        # Estimate count: catalog items + fixed buttons (Buscar otra + Hablar agent)
+        estimated_count = len(botones_catalogo) + 2
+        if tiene_archivo_catalogo(self.pyme_id_actual) and self.context.get("channel") != "whatsapp":
+            estimated_count += 1
+
+        truncate_len = 24 if estimated_count > 3 else 20
+
         # Add buttons from botones_catalogo
         for btn_cat_original in botones_catalogo:
             if btn_cat_original.get("type") == "url":
@@ -1159,10 +1170,10 @@ class CatalogoHandler(BaseHandler):
 
                 options.append({
                     "id": f"pedir_item_pyme_{id_suffix}",
-                    "texto": btn_cat_original.get("texto", "Pedir producto")[:20]
+                    "texto": btn_cat_original.get("texto", "Pedir producto")[:truncate_len]
                 })
 
-            if len(options) >= 7 and self.context.get("channel") == 'whatsapp':
+            if len(options) >= 8 and self.context.get("channel") == 'whatsapp':
                 break
 
         # Add general action buttons
@@ -1171,7 +1182,7 @@ class CatalogoHandler(BaseHandler):
         if tiene_archivo_catalogo(self.pyme_id_actual):
             url_cat = url_descargar_catalogo_pyme(self.pyme_id_actual)
             if self.context.get("channel") == "whatsapp":
-                body += f"\n\nTambién puedes descargar nuestro catálogo completo en: {url_cat}"
+                body += f"\n\n📂 También puedes descargar nuestro catálogo completo aquí: {url_cat}"
             else: # For web, add as a URL button
                 options.append({
                     "id": "descargar_catalogo_pyme_pdf",

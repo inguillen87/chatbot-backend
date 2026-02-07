@@ -823,9 +823,15 @@ def analyse_image_for_products(image_url: str) -> List[Dict[str, Any]]:
     if not image_url:
         return []
     try:
+        prompt = (
+            "Analiza esta imagen. Si es una lista de pedido manuscrita o impresa, extrae los productos y cantidades en JSON. "
+            "Si es una etiqueta de producto, extrae nombre, marca y detalles. "
+            "Si es un documento médico o técnico, extrae el concepto principal. "
+            "Formato: {\"items\": [{\"nombre\": \"...\", \"cantidad\": 1, \"descripcion\": \"...\"}]}"
+        )
         result = analizar_imagen_con_fallback(
             image_url,
-            "Detecta productos de catálogo o etiquetas legibles. Devuelve JSON con 'items'.",
+            prompt,
         )
     except Exception as exc:  # pragma: no cover - defensive logging
         logger.warning("OpenAI vision fallback failed: %s", exc)
@@ -850,55 +856,69 @@ def handle_image_payload(
 ) -> Optional[PymeFlowResult]:
     image_url = image_info.get("url")
     detected = analyse_image_for_products(image_url)
+
     if not detected:
         return PymeFlowResult(
-            message_body="No pude reconocer el producto de la foto. ¿Me confirmás el nombre?",
+            message_body="Recibí la imagen pero no pude leer el contenido claramente. ¿Podrías decirme qué necesitás?",
             source="pyme_imagen_sin_match",
         )
 
     matched: List[Tuple[Dict[str, Any], int]] = []
+    items_to_confirm: List[str] = []
+
     for candidate in detected:
-        sku = candidate.get("sku") or candidate.get("nombre")
-        qty = int(candidate.get("qty") or candidate.get("cantidad") or 1)
-        if not sku:
-            continue
-        catalog_match = match_catalog_items(sku, catalog, max_results=1)
+        raw_name = candidate.get("nombre") or candidate.get("sku") or "Producto desconocido"
+        qty = int(candidate.get("cantidad") or candidate.get("qty") or 1)
+
+        # Try exact match first
+        catalog_match = match_catalog_items(raw_name, catalog, max_results=1)
         if catalog_match:
-            matched.append((catalog_match[0], qty))
+            item = catalog_match[0]
+            matched.append((item, qty))
+            items_to_confirm.append(f"- {qty} x {item.get('nombre')} (${_format_money(_parse_price(item.get('precio')))})")
+        else:
+            # Item not found in catalog, add as generic/unpriced item to cart (or ask for confirmation)
+            # For now, we add it with 0 price and let the user know, or confirm first.
+            # Let's add it but flag it for confirmation in the message.
+            placeholder_item = {
+                "sku": f"GENERIC_{raw_name[:10].replace(' ', '_')}",
+                "nombre": raw_name,
+                "precio": 0.0,
+                "moneda": "ARS",
+                "descripcion": candidate.get("descripcion", "Item detectado en imagen"),
+                "presentacion": "unidad"
+            }
+            matched.append((placeholder_item, qty))
+            items_to_confirm.append(f"- {qty} x {raw_name} (Precio a confirmar)")
 
     if not matched:
         return PymeFlowResult(
-            message_body="Recibí la foto pero no encuentro coincidencias en el catálogo. ¿La cargamos manualmente?",
+            message_body="Entendí la lista pero no encontré coincidencias exactas en el catálogo. ¿Te gustaría que lo revise un humano?",
             source="pyme_imagen_catalogo_sin_match",
         )
 
+    # Add to cart tentatively
     logger.info(
-        "[PYME_FLOW] catalog_hit",
+        "[PYME_FLOW] image_order_extracted",
         extra={
             "request_id": request_id,
-            "intent": "imagen_catalogo",
+            "intent": "imagen_pedido",
             "matches": [
-                {"sku": item.get("sku"), "qty": qty} for item, qty in matched if item.get("sku")
+                {"sku": item.get("sku"), "qty": qty} for item, qty in matched
             ],
         },
     )
-    cart_updates = add_items_to_cart(state, matched)
-    if cart_updates:
-        logger.info(
-            "[PYME_FLOW] cart_updated",
-            extra={
-                "request_id": request_id,
-                "updates": cart_updates,
-                "subtotal": state.cart.get("subtotal"),
-            },
-        )
-    summary = render_cart_summary(state)
+
+    add_items_to_cart(state, matched)
+
+    msg = "Leí tu pedido de la imagen:\n\n" + "\n".join(items_to_confirm) + "\n\n¿Es correcto? Confirmame para procesarlo."
+
     return PymeFlowResult(
-        message_body=summary,
+        message_body=msg,
         source="pyme_imagen_items_agregados",
         options_list=[
-            {"texto": "Pedir presupuesto", "action_id": "armar_presupuesto"},
             {"texto": "Confirmar pedido", "action_id": "confirmar_pedido"},
+            {"texto": "Modificar", "action_id": "ver_carrito_pyme"},
         ],
     )
 
@@ -943,20 +963,42 @@ def handle_pdf_payload(
         text_blocks.append(pdf_info["texto_extraido"])
 
     matches: List[Tuple[Dict[str, Any], int]] = []
+    items_to_confirm: List[str] = []
+
+    # First pass: structured items from PDF analysis
     for raw_item in extracted_items:
         if not isinstance(raw_item, dict):
             continue
-        sku = raw_item.get("sku") or raw_item.get("nombre")
-        if not sku:
+        raw_name = raw_item.get("nombre") or raw_item.get("sku")
+        if not raw_name:
             continue
-        qty = int(raw_item.get("qty") or raw_item.get("cantidad") or 1)
-        catalog_match = match_catalog_items(sku, catalog, max_results=1)
-        if catalog_match:
-            matches.append((catalog_match[0], max(1, qty)))
+        qty = int(raw_item.get("cantidad") or raw_item.get("qty") or 1)
 
+        catalog_match = match_catalog_items(raw_name, catalog, max_results=1)
+        if catalog_match:
+            item = catalog_match[0]
+            matches.append((item, max(1, qty)))
+            items_to_confirm.append(f"- {qty} x {item.get('nombre')} (${_format_money(_parse_price(item.get('precio')))})")
+        else:
+             # Add generic placeholder for unknown items in PDF
+            placeholder_item = {
+                "sku": f"PDF_{raw_name[:10].replace(' ', '_')}",
+                "nombre": raw_name,
+                "precio": 0.0,
+                "moneda": "ARS",
+                "descripcion": "Item detectado en PDF",
+                "presentacion": "unidad"
+            }
+            matches.append((placeholder_item, qty))
+            items_to_confirm.append(f"- {qty} x {raw_name} (Precio a confirmar)")
+
+    # Second pass: Free text matching if structured extraction failed
     if not matches and text_blocks:
         for block in text_blocks:
-            matches.extend(_match_catalog_from_free_text(block, catalog))
+            found = _match_catalog_from_free_text(block, catalog)
+            for item, qty in found:
+                matches.append((item, qty))
+                items_to_confirm.append(f"- {qty} x {item.get('nombre')}")
 
     if not matches:
         if not text_blocks and not extracted_items:
@@ -969,40 +1011,32 @@ def handle_pdf_payload(
             )
         return PymeFlowResult(
             message_body=(
-                "Analicé la lista de precios pero no encontré coincidencias exactas. ¿Me confirmás "
-                "qué producto te interesa?"
+                "Analicé el documento pero no encontré coincidencias exactas en el catálogo. "
+                "¿Me confirmás qué productos te interesan?"
             ),
             source="pyme_pdf_sin_match",
         )
 
     logger.info(
-        "[PYME_FLOW] catalog_hit",
+        "[PYME_FLOW] pdf_order_extracted",
         extra={
             "request_id": request_id,
-            "intent": "pdf_catalogo",
+            "intent": "pdf_pedido",
             "matches": [
                 {"sku": item.get("sku"), "qty": qty} for item, qty in matches if item.get("sku")
             ],
         },
     )
-    cart_updates = add_items_to_cart(state, matches)
-    if cart_updates:
-        logger.info(
-            "[PYME_FLOW] cart_updated",
-            extra={
-                "request_id": request_id,
-                "updates": cart_updates,
-                "subtotal": state.cart.get("subtotal"),
-            },
-        )
+    add_items_to_cart(state, matches)
 
-    summary = render_cart_summary(state)
+    msg = "Procesé el pedido del archivo:\n\n" + "\n".join(items_to_confirm) + "\n\n¿Confirmamos?"
+
     return PymeFlowResult(
-        message_body=summary,
+        message_body=msg,
         source="pyme_pdf_items_agregados",
         options_list=[
-            {"texto": "Pedir presupuesto", "action_id": "armar_presupuesto"},
             {"texto": "Confirmar pedido", "action_id": "confirmar_pedido"},
+            {"texto": "Modificar", "action_id": "ver_carrito_pyme"},
         ],
     )
 
