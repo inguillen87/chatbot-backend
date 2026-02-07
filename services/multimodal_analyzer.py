@@ -2,6 +2,8 @@ import os
 import base64
 import requests
 import logging
+import json
+import re
 from openai import OpenAI
 
 logger = logging.getLogger(__name__)
@@ -25,6 +27,7 @@ def encode_image_to_base64(image_path_or_url: str) -> str | None:
 def analizar_imagen_openai(image_path_or_url: str, prompt: str) -> dict | None:
     """
     Analyzes an image using OpenAI's Vision API and returns a structured response.
+    Parses JSON from the LLM output.
     """
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
@@ -39,12 +42,16 @@ def analizar_imagen_openai(image_path_or_url: str, prompt: str) -> dict | None:
 
     try:
         response = client.chat.completions.create(
-            model="gpt-4-turbo",
+            model="gpt-4o",  # Upgraded to gpt-4o for better vision capabilities
             messages=[
+                {
+                    "role": "system",
+                    "content": "You are a helpful assistant that analyzes images and outputs strict JSON."
+                },
                 {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": prompt},
+                        {"type": "text", "text": prompt + "\n\nReturn ONLY valid JSON without markdown formatting."},
                         {
                             "type": "image_url",
                             "image_url": {
@@ -54,51 +61,44 @@ def analizar_imagen_openai(image_path_or_url: str, prompt: str) -> dict | None:
                     ],
                 }
             ],
-            max_tokens=300,
+            max_tokens=1000,
+            response_format={"type": "json_object"}, # Force JSON mode
         )
         message_content = response.choices[0].message.content
-        logger.info(f"OpenAI Vision API response: {message_content}")
-        # Further processing to extract JSON from the response would go here
-        return {"raw_response": message_content}
+        logger.info(f"OpenAI Vision API response: {message_content[:200]}...")
+
+        # Clean potential markdown
+        cleaned_content = message_content.replace("```json", "").replace("```", "").strip()
+
+        try:
+            return json.loads(cleaned_content)
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse JSON from OpenAI response: {e}. Content: {cleaned_content}")
+            return {"raw_response": cleaned_content}
+
     except Exception as e:
         logger.error(f"Error calling OpenAI Vision API: {e}", exc_info=True)
         return None
 
 def analizar_imagen_con_fallback(image_path_or_url: str, prompt: str) -> dict | None:
     """
-    Analyzes an image using a fallback mechanism: OpenAI first, then Google Vision.
+    Analyzes an image using a fallback mechanism: OpenAI first, then others if needed.
     """
-    logger.info(f"Analyzing image with fallback: {image_path_or_url}")
+    logger.info(f"Analyzing image: {image_path_or_url}")
 
     # 1. Try OpenAI
     try:
-        logger.info("Attempting analysis with OpenAI Vision...")
         result = analizar_imagen_openai(image_path_or_url, prompt)
         if result:
-            logger.info("OpenAI Vision analysis successful.")
             return result
     except Exception as e:
         logger.error(f"OpenAI Vision analysis failed: {e}", exc_info=True)
 
-    # 2. Fallback to Google Vision (Placeholder)
-    logger.warning("Falling back to Google Vision...")
-    # TODO: Implement Google Vision analysis logic here
-    # google_vision_result = analizar_imagen_google(image_path_or_url)
-    # if google_vision_result:
-    #     # This would likely require a second LLM call to interpret the labels
-    #     return interpret_google_vision_labels(google_vision_result)
-
-    logger.error("All image analysis providers failed.")
+    # 2. Fallback (Placeholder for future)
+    logger.warning("Falling back to placeholder/legacy logic...")
     return None
 
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)
-    # This test requires a valid image URL or local path and API keys.
-    # test_image = "https://www.lahoralibre.com.ar/wp-content/uploads/2022/04/bache-de-calle-tierra-1.jpg" # Example of a pothole
-    # test_prompt = "Analyze this image from a municipality's point of view. Identify the main issue. Return a JSON object with 'intent' and 'data' keys. The intent should be a specific action like 'crear_reclamo'. The data object should contain a 'categoria' and a 'descripcion'."
-    # result = analizar_imagen_con_fallback(test_image, test_prompt)
-    # if result:
-    #     print("Analysis result:", result)
-    # else:
-    #     print("Analysis failed.")
-    print("Multimodal analyzer structure created.")
+    # Testing stub
+    print("Multimodal analyzer structure updated.")

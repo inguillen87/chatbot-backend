@@ -651,26 +651,28 @@ def _sanitize_llm_text_output(text: str) -> str:
     return stripped.strip('"').strip()
 
 
-def llamar_llm_para_json_estructurado(system_prompt: str, user_prompt: str) -> Optional[Dict | List]:
+def llamar_llm_para_json_estructurado(system_prompt: str, user_prompt: str, model: str = "gpt-4o-mini") -> Optional[Dict | List]:
     """
     Calls the LLM requesting a JSON output and parses it safely.
 
     Args:
         system_prompt: The system prompt guiding the LLM's task.
         user_prompt: The user prompt, containing the data to be processed.
+        model: The model to use (default: gpt-4o-mini).
 
     Returns:
         A dictionary or list parsed from the LLM's JSON response, or None on error.
     """
     from services.llm_bridge import llamar_llm_para_generacion_texto
 
-    logger.info("Calling LLM for structured JSON output.")
+    logger.info(f"Calling LLM for structured JSON output using model: {model}")
     try:
         response_text = llamar_llm_para_generacion_texto(
             system_prompt_especifico=system_prompt,
             user_prompt=user_prompt,
             temperature=0.1,  # Lower temp for more deterministic JSON extraction
-            json_output=True
+            json_output=True,
+            model=model
         )
 
         if not response_text:
