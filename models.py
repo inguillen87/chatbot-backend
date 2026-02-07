@@ -1102,6 +1102,11 @@ class CatalogoItem(db.Model):
     external_url = db.Column(db.String(500), nullable=True)
     timestamp = db.Column(db.DateTime(timezone=True), default=get_local_now)
 
+    # Added fields for detailed item info (deferred for legacy support)
+    varietal = deferred(db.Column(db.String(100), nullable=True))
+    anada = deferred(db.Column(db.String(20), nullable=True))
+    presentacion = deferred(db.Column(db.String(100), nullable=True))
+
     def __repr__(self):
         return f"<CatalogoItem {self.id} para user {self.user_id}>"
 
@@ -1143,6 +1148,9 @@ class CatalogoItem(db.Model):
             defer(cls.unidad_por_caja),
             defer(cls.precio_monetario),
             defer(cls.pdf_url),
+            defer(cls.varietal),
+            defer(cls.anada),
+            defer(cls.presentacion),
         ]
 
         if not include_availability:
