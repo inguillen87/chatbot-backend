@@ -249,8 +249,14 @@ class PedidoService:
             if not tenant_id:
                 # Try to resolve from pyme_id
                 pyme_user = db.session.get(User, pyme_id)
-                if pyme_user:
+                if pyme_user and pyme_user.tenant_id:
                     tenant_id = pyme_user.tenant_id
+
+                # Fallback: Find TenantProfile linked to this pyme_id
+                if not tenant_id:
+                    tenant_linked = TenantProfile.query.filter_by(pyme_id=pyme_id).first()
+                    if tenant_linked:
+                        tenant_id = tenant_linked.id
 
             nuevo_pedido = PymePedido(
                 pyme_id=pyme_id,
@@ -531,8 +537,19 @@ class PedidoService:
                 logger.error("pyme_id es requerido para crear el pedido desde carrito")
                 return None
 
+            # Resolve tenant_id for robustness
+            tenant_id = None
+            pyme_user = db.session.get(User, pyme_id)
+            if pyme_user and pyme_user.tenant_id:
+                tenant_id = pyme_user.tenant_id
+            if not tenant_id:
+                 tenant_linked = TenantProfile.query.filter_by(pyme_id=pyme_id).first()
+                 if tenant_linked:
+                     tenant_id = tenant_linked.id
+
             nuevo_pedido_obj = PymePedido(
                 pyme_id=pyme_id,
+                tenant_id=tenant_id,
                 asunto=pedido_data["asunto"],
                 detalles=pedido_data["detalles"],
                 monto_total=monto_total_calculado,

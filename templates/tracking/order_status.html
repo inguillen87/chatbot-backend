@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Seguimiento de Pedido</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        .step-active .step-icon { @apply bg-blue-600 text-white border-blue-600; }
+        .step-completed .step-icon { @apply bg-green-500 text-white border-green-500; }
+        .step-line-completed { @apply bg-green-500; }
+        .step-line-active { @apply bg-blue-600; }
+    </style>
+</head>
+<body class="bg-gray-50 min-h-screen font-sans">
+
+    <!-- Header / Branding -->
+    <header class="bg-white shadow-sm sticky top-0 z-50">
+        <div class="max-w-4xl mx-auto px-4 py-4 flex items-center justify-between">
+            <div class="flex items-center space-x-3">
+                {% if tenant.logo_url %}
+                <img src="{{ tenant.logo_url }}" alt="{{ tenant.nombre }}" class="h-10 w-10 rounded-full object-cover">
+                {% else %}
+                <div class="h-10 w-10 rounded-full bg-blue-100 flex items-center justify-center text-blue-600 font-bold">
+                    {{ tenant.nombre[:1] }}
+                </div>
+                {% endif %}
+                <div>
+                    <h1 class="text-lg font-bold text-gray-900 leading-tight">{{ tenant.nombre }}</h1>
+                    <p class="text-xs text-gray-500">Seguimiento de tu compra</p>
+                </div>
+            </div>
+            <a href="https://wa.me/{{ tenant.whatsapp_sender_id }}?text=Hola,%20tengo%20una%20consulta%20sobre%20mi%20pedido%20{{ pedido.nro_pedido }}"
+               target="_blank"
+               class="flex items-center space-x-2 text-green-600 hover:text-green-700 bg-green-50 px-3 py-1.5 rounded-full text-sm font-medium transition-colors">
+                <i class="fab fa-whatsapp text-lg"></i>
+                <span class="hidden sm:inline">Soporte</span>
+            </a>
+        </div>
+    </header>
+
+    <main class="max-w-4xl mx-auto px-4 py-8 space-y-6">
+
+        <!-- Status Card -->
+        <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6 relative overflow-hidden">
+            <div class="absolute top-0 right-0 p-4 opacity-10">
+                <i class="fas fa-box-open text-9xl"></i>
+            </div>
+
+            <div class="relative z-10">
+                <div class="flex flex-col sm:flex-row sm:items-center justify-between mb-6">
+                    <div>
+                        <p class="text-sm text-gray-500 uppercase tracking-wide font-semibold">Nro. de Pedido</p>
+                        <h2 class="text-2xl font-bold text-gray-900 tracking-tight">{{ pedido.nro_pedido }}</h2>
+                        <p class="text-sm text-gray-400 mt-1">Realizado el {{ pedido.fecha.strftime('%d/%m/%Y %H:%M') }}</p>
+                    </div>
+                    <div class="mt-4 sm:mt-0">
+                        <span class="inline-flex items-center px-4 py-2 rounded-full text-sm font-bold uppercase tracking-wide
+                            {% if pedido.estado == 'pendiente' %} bg-yellow-100 text-yellow-800
+                            {% elif pedido.estado == 'confirmado' %} bg-blue-100 text-blue-800
+                            {% elif pedido.estado == 'en_proceso' %} bg-indigo-100 text-indigo-800
+                            {% elif pedido.estado == 'enviado' %} bg-purple-100 text-purple-800
+                            {% elif pedido.estado == 'entregado' %} bg-green-100 text-green-800
+                            {% elif pedido.estado == 'cancelado' %} bg-red-100 text-red-800
+                            {% else %} bg-gray-100 text-gray-800 {% endif %}">
+                            <i class="fas fa-circle text-[0.6rem] mr-2"></i>
+                            {{ pedido.estado | replace('_', ' ') }}
+                        </span>
+                    </div>
+                </div>
+
+                <!-- Timeline -->
+                <div class="mt-8 relative">
+                    <!-- Progress Bar Background -->
+                    <div class="absolute top-1/2 left-0 w-full h-1 bg-gray-200 -translate-y-1/2 rounded-full hidden sm:block"></div>
+
+                    <!-- Steps -->
+                    <div class="flex flex-col sm:flex-row justify-between relative space-y-6 sm:space-y-0">
+                        {% set steps = [
+                            ('pendiente', 'Recibido', 'fas fa-clipboard-check'),
+                            ('confirmado', 'Confirmado', 'fas fa-thumbs-up'),
+                            ('en_proceso', 'Preparación', 'fas fa-box'),
+                            ('enviado', 'En Camino', 'fas fa-truck'),
+                            ('entregado', 'Entregado', 'fas fa-home')
+                        ] %}
+
+                        {% set current_index = -1 %}
+                        {% for s_key, s_label, s_icon in steps %}
+                            {% if s_key == pedido.estado %}
+                                {% set current_index = loop.index0 %}
+                            {% endif %}
+                        {% endfor %}
+
+                        {% for s_key, s_label, s_icon in steps %}
+                            {% set is_completed = loop.index0 <= current_index %}
+                            {% set is_current = loop.index0 == current_index %}
+
+                            <div class="flex items-center sm:flex-col sm:justify-center relative group z-10">
+                                <!-- Mobile Line -->
+                                <div class="absolute left-4 top-8 bottom-0 w-0.5 bg-gray-200 sm:hidden
+                                    {% if not loop.last %} block {% else %} hidden {% endif %}"></div>
+
+                                <div class="w-8 h-8 sm:w-10 sm:h-10 rounded-full flex items-center justify-center border-2 transition-all duration-300
+                                    {% if is_completed %} bg-green-500 border-green-500 text-white shadow-lg shadow-green-200
+                                    {% elif is_current %} bg-blue-600 border-blue-600 text-white ring-4 ring-blue-100
+                                    {% else %} bg-white border-gray-300 text-gray-400 {% endif %}">
+                                    <i class="{{ s_icon }} text-xs sm:text-sm"></i>
+                                </div>
+                                <div class="ml-4 sm:ml-0 sm:mt-3 text-left sm:text-center">
+                                    <p class="text-sm font-semibold
+                                        {% if is_completed or is_current %} text-gray-900 {% else %} text-gray-400 {% endif %}">
+                                        {{ s_label }}
+                                    </p>
+                                    {% if is_current %}
+                                    <p class="text-xs text-blue-600 font-medium sm:block hidden">Actual</p>
+                                    {% endif %}
+                                </div>
+                            </div>
+                        {% endfor %}
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <!-- Order Details -->
+            <div class="lg:col-span-2 space-y-6">
+                <!-- Items -->
+                <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+                    <h3 class="text-lg font-bold text-gray-900 mb-4 flex items-center">
+                        <i class="fas fa-shopping-bag text-gray-400 mr-2"></i> Detalle del Pedido
+                    </h3>
+                    <div class="space-y-4 divide-y divide-gray-100">
+                        {% for item in detalles %}
+                        <div class="flex justify-between items-start pt-4 first:pt-0">
+                            <div class="flex-1">
+                                <p class="text-gray-900 font-medium">{{ item.nombre }}</p>
+                                <p class="text-sm text-gray-500">x{{ item.cantidad }} · SKU: {{ item.sku or '-' }}</p>
+                            </div>
+                            <div class="text-right">
+                                <p class="text-gray-900 font-medium">${{ "{:,.2f}".format(item.subtotal) }}</p>
+                            </div>
+                        </div>
+                        {% endfor %}
+                    </div>
+                    <div class="mt-6 pt-4 border-t border-gray-100 flex justify-between items-center">
+                        <span class="text-gray-500 font-medium">Total a Pagar</span>
+                        <span class="text-2xl font-bold text-blue-600">${{ "{:,.2f}".format(pedido.monto_total) }}</span>
+                    </div>
+                </div>
+
+                <!-- Shipping Address -->
+                {% if pedido.direccion %}
+                <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+                    <h3 class="text-lg font-bold text-gray-900 mb-4 flex items-center">
+                        <i class="fas fa-map-marker-alt text-gray-400 mr-2"></i> Dirección de Envío
+                    </h3>
+                    <p class="text-gray-700">{{ pedido.direccion }}</p>
+                    {% if pedido.latitud and pedido.longitud %}
+                    <div class="mt-4 rounded-lg overflow-hidden h-48 bg-gray-100 relative">
+                        <!-- Mock Map / Static Map Placeholder -->
+                        <img src="https://maps.googleapis.com/maps/api/staticmap?center={{ pedido.latitud }},{{ pedido.longitud }}&zoom=15&size=600x300&markers=color:red%7C{{ pedido.latitud }},{{ pedido.longitud }}&key={{ google_maps_key }}"
+                             alt="Mapa" class="w-full h-full object-cover">
+                        <a href="https://www.google.com/maps/search/?api=1&query={{ pedido.latitud }},{{ pedido.longitud }}"
+                           target="_blank"
+                           class="absolute bottom-2 right-2 bg-white px-3 py-1 rounded-md shadow text-xs font-bold text-blue-600 hover:bg-gray-50">
+                            Abrir en Maps
+                        </a>
+                    </div>
+                    {% endif %}
+                </div>
+                {% endif %}
+            </div>
+
+            <!-- Actions / Sidebar -->
+            <div class="space-y-6">
+                <!-- Support Action -->
+                <div class="bg-blue-50 rounded-xl p-6 border border-blue-100 text-center">
+                    <div class="w-12 h-12 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-3 text-blue-600">
+                        <i class="fas fa-headset text-xl"></i>
+                    </div>
+                    <h3 class="text-lg font-bold text-gray-900 mb-2">¿Necesitas ayuda?</h3>
+                    <p class="text-sm text-gray-600 mb-4">Estamos aquí para resolver cualquier duda sobre tu pedido.</p>
+                    <button onclick="openChat()" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg transition-colors shadow-sm shadow-blue-200">
+                        Chatear con Soporte
+                    </button>
+                    <a href="https://wa.me/{{ tenant.whatsapp_sender_id }}?text=Consulta%20Pedido%20{{ pedido.nro_pedido }}"
+                       target="_blank"
+                       class="block mt-3 w-full bg-white hover:bg-gray-50 text-gray-700 font-bold py-2 px-4 rounded-lg border border-gray-200 transition-colors">
+                       <i class="fab fa-whatsapp text-green-500 mr-2"></i> WhatsApp
+                    </a>
+                </div>
+
+                <!-- Observations Form -->
+                <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+                    <h3 class="text-md font-bold text-gray-900 mb-3">Dejar una Observación</h3>
+                    <form id="observationForm" class="space-y-3">
+                        <textarea id="observationText" rows="3"
+                                  class="w-full rounded-lg border-gray-200 text-sm focus:ring-blue-500 focus:border-blue-500"
+                                  placeholder="Ej: El timbre no funciona, llamar al celular..."></textarea>
+                        <button type="submit"
+                                class="w-full bg-gray-900 hover:bg-gray-800 text-white font-medium py-2 px-4 rounded-lg text-sm transition-colors">
+                            Enviar Mensaje
+                        </button>
+                    </form>
+                    <p id="obsSuccess" class="hidden text-xs text-green-600 mt-2 font-medium text-center">
+                        <i class="fas fa-check-circle mr-1"></i> Mensaje enviado correctamente.
+                    </p>
+                </div>
+            </div>
+        </div>
+
+    </main>
+
+    <footer class="max-w-4xl mx-auto px-4 py-6 text-center text-gray-400 text-xs">
+        <p>&copy; {{ current_year }} {{ tenant.nombre }}. Powered by Chatboc.</p>
+    </footer>
+
+    <!-- Chat Widget Embed Script (Hidden by default, triggered by button) -->
+    <script>
+        // Simple chat trigger logic
+        function openChat() {
+            // Check if Chatboc widget is present
+            if (window.ChatbocWidget) {
+                window.ChatbocWidget.open();
+            } else {
+                alert('Iniciando chat...');
+                // Fallback to reload or load script if not present
+            }
+        }
+
+        // Observation Form Handler
+        document.getElementById('observationForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const text = document.getElementById('observationText').value;
+            if (!text.trim()) return;
+
+            const btn = e.target.querySelector('button');
+            const originalText = btn.innerText;
+            btn.innerText = 'Enviando...';
+            btn.disabled = true;
+
+            try {
+                const response = await fetch('/tracking/api/send-message', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        nro_pedido: "{{ pedido.nro_pedido }}",
+                        mensaje: text
+                    })
+                });
+
+                if (response.ok) {
+                    document.getElementById('observationText').value = '';
+                    document.getElementById('obsSuccess').classList.remove('hidden');
+                    setTimeout(() => document.getElementById('obsSuccess').classList.add('hidden'), 3000);
+                } else {
+                    alert('Error al enviar el mensaje. Intente nuevamente.');
+                }
+            } catch (err) {
+                console.error(err);
+                alert('Error de conexión.');
+            } finally {
+                btn.innerText = originalText;
+                btn.disabled = false;
+            }
+        });
+    </script>
+
+    <!-- Optional: Embed Chatboc Widget if configured -->
+    {% if widget_token %}
+    <script src="https://chatboc.ar/widget/loader.js"
+            data-token="{{ widget_token }}"
+            data-auto-open="false"></script>
+    {% endif %}
+
+</body>
+</html>
