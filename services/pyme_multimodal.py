@@ -23,6 +23,7 @@ from services.multimodal_analyzer import analizar_imagen_con_fallback
 from services.pyme_menu import get_pyme_menu_payload
 from services.config_loader import cargar_configuracion_pyme
 from services.document_processing_service import document_processing_service
+from services.qdrant_search import buscar_catalogo_qdrant, CATALOGO_PYME
 from utils.money_ar import format_ars, parse_ars
 
 logger = logging.getLogger(__name__)
@@ -870,18 +871,43 @@ def handle_image_payload(
         raw_name = candidate.get("nombre") or candidate.get("sku") or "Producto desconocido"
         qty = int(candidate.get("cantidad") or candidate.get("qty") or 1)
 
-        # Try exact match first
+        # 1. Try deterministic/exact match first (fastest/safest)
         catalog_match = match_catalog_items(raw_name, catalog, max_results=1)
+
+        # 2. If no exact match, try Semantic Vector Search (Qdrant)
+        if not catalog_match and state.pyme_id:
+            try:
+                hits = buscar_catalogo_qdrant(
+                    user_id=state.pyme_id,
+                    pregunta=raw_name,
+                    limite=1,
+                    coleccion=CATALOGO_PYME
+                )
+                if hits:
+                    payload = getattr(hits[0], "payload", {})
+                    # Convert payload back to serialised format used by this module
+                    item_qdrant = {
+                        "sku": payload.get("sku") or payload.get("nombre"),
+                        "nombre": payload.get("nombre"),
+                        "descripcion": payload.get("descripcion"),
+                        "precio": _parse_price(payload.get("precio_str") or payload.get("precio")),
+                        "moneda": "ARS",
+                        "presentacion": payload.get("cantidad") or "unidad",
+                        # We trust semantic match score > 0.8 usually, but here we take top 1
+                    }
+                    catalog_match = [item_qdrant]
+                    logger.info(f"[PYME_MULTIMODAL] Qdrant match for '{raw_name}' -> '{item_qdrant.get('nombre')}'")
+            except Exception as e:
+                logger.warning(f"[PYME_MULTIMODAL] Qdrant search failed for '{raw_name}': {e}")
+
         if catalog_match:
             item = catalog_match[0]
             matched.append((item, qty))
             items_to_confirm.append(f"- {qty} x {item.get('nombre')} (${_format_money(_parse_price(item.get('precio')))})")
         else:
-            # Item not found in catalog, add as generic/unpriced item to cart (or ask for confirmation)
-            # For now, we add it with 0 price and let the user know, or confirm first.
-            # Let's add it but flag it for confirmation in the message.
+            # 3. Item truly not found: add as generic placeholder
             placeholder_item = {
-                "sku": f"GENERIC_{raw_name[:10].replace(' ', '_')}",
+                "sku": f"GENERIC_{_normalise(raw_name)[:10].replace(' ', '_')}",
                 "nombre": raw_name,
                 "precio": 0.0,
                 "moneda": "ARS",
