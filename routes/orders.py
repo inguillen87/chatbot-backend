@@ -133,17 +133,64 @@ def list_admin_orders(current_user):
     per_page = request.args.get('per_page', 20, type=int)
     status = request.args.get('status')
 
-    query = Order.query.filter_by(tenant_id=tenant.id)
+    # Unified Query Logic (Order + PymePedido)
+    from models import PymePedido
 
+    # 1. New Orders
+    query_new = Order.query.filter_by(tenant_id=tenant.id)
     if status:
-        query = query.filter_by(status=status)
+        query_new = query_new.filter_by(status=status)
+    new_orders = query_new.order_by(Order.created_at.desc()).limit(per_page * page).all()
 
-    pagination = query.order_by(Order.created_at.desc()).paginate(page=page, per_page=per_page, error_out=False)
+    # 2. Legacy Orders
+    # Handle optional pyme_id fallback
+    pyme_id_filter = tenant.pyme_id if tenant.pyme_id else -1
+    query_legacy = PymePedido.query.filter(
+        (PymePedido.tenant_id == tenant.id) | (PymePedido.pyme_id == pyme_id_filter)
+    )
+    if status:
+        query_legacy = query_legacy.filter(PymePedido.estado == status)
+    legacy_orders = query_legacy.order_by(PymePedido.fecha.desc()).limit(per_page * page).all()
+
+    # 3. Merge & Sort
+    combined = []
+    for o in new_orders:
+        d = o.to_dict()
+        d['_sort_date'] = o.created_at
+        d['source_type'] = 'new'
+        # Ensure total is at root for table consistency
+        if 'total' not in d and 'totals' in d and 'total' in d['totals']:
+            d['total'] = d['totals']['total']
+        combined.append(d)
+
+    for o in legacy_orders:
+        d = o.to_dict()
+        d['_sort_date'] = o.fecha
+        d['source_type'] = 'legacy'
+        # Map legacy fields to match new frontend expectations if needed
+        if 'total' not in d and 'monto_total' in d:
+             d['total'] = d['monto_total']
+        if 'status' not in d and 'estado' in d:
+             d['status'] = d['estado']
+        combined.append(d)
+
+    # Sort descending
+    combined.sort(key=lambda x: x['_sort_date'] or datetime.min, reverse=True)
+
+    # 4. Manual Pagination Slice
+    start = (page - 1) * per_page
+    end = start + per_page
+    sliced_items = combined[start:end]
+
+    # Rough total count estimate (sum of counts would be better but expensive)
+    total_count = len(combined)
+    import math
+    total_pages = math.ceil(total_count / per_page) if per_page else 1
 
     return jsonify({
-        "items": [o.to_dict() for o in pagination.items],
-        "total": pagination.total,
-        "pages": pagination.pages,
+        "items": sliced_items,
+        "total": total_count,
+        "pages": total_pages,
         "current_page": page
     })
 

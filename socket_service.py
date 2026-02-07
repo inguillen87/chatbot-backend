@@ -158,6 +158,10 @@ def emit_ticket_comment(data: Any) -> None:
     """Broadcast a new comment without altering the legacy ticket_update payloads."""
     _emit_to_ticket_room('new_comment', data)
 
+def emit_new_chat_message(data: Any) -> None:
+    """Broadcast a new chat message to the live chat room."""
+    _emit_to_ticket_room('new_chat_message', data)
+
 
 def emit_survey_update(slug_publico: str, data: Any) -> None:
     """Emit a live update for a specific survey/poll."""

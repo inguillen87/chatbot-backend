@@ -518,11 +518,24 @@ def formatear_ticket_respuesta(
             })
 
     if id_ticket and base_chat_url:
-        if base_chat_url.endswith('/'):
-            base_chat_url = base_chat_url[:-1]
+        # Determine tracking path based on type
+        tracking_path = "/chat" # Default fallback
+        if tipo == "reclamo":
+            tracking_path = "/tracking/claim"
+        elif tipo == "pedido":
+            tracking_path = "/tracking/order"
+
+        # Ensure base URL is clean (strip /chat if present in legacy config to get root)
+        base_url_clean = base_chat_url
+        if "/chat" in base_chat_url and tracking_path != "/chat":
+             base_url_clean = base_chat_url.replace("/chat", "")
+
+        if base_url_clean.endswith('/'):
+            base_url_clean = base_url_clean[:-1]
 
         ticket_id_numeric = id_ticket.replace('M-', '').replace('S-', '')
-        chat_url = f"{base_chat_url}/{ticket_id_numeric}"
+        chat_url = f"{base_url_clean}{tracking_path}/{ticket_id_numeric}"
+
         if consulta_pin:
             # Ensure no trailing punctuation is accidentally added
             # We aggressively strip non-digit characters from the pin just in case
@@ -530,9 +543,14 @@ def formatear_ticket_respuesta(
             clean_pin = re.sub(r"[^0-9]", "", clean_pin)
             # Limit to 6 digits to avoid capturing trailing garbage if regex failed somehow (redundant but safe)
             clean_pin = clean_pin[:6]
-            chat_url += f"?pin={clean_pin}"
+            # For tracking pages, we might not need the pin in URL if not supported yet,
+            # but let's keep it compatible or maybe the tracking page doesn't require it?
+            # The tracking page lookup uses just nro_ticket.
+            # We can append it as query param just in case we add auth later.
+            pass
+
         botones.append({
-            "texto": "💬 Ver mi Ticket",
+            "texto": "💬 Ver Estado",
             "url": chat_url,
             "type": "url"
         })
