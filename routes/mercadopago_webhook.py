@@ -14,7 +14,7 @@ import requests
 from flask import Blueprint, jsonify, request
 
 from extensions import db
-from models import PedidoConversacional, User
+from models import PedidoConversacional, User, TenantProfile
 from socket_service import socketio
 
 from services.plan_config import (
@@ -30,6 +30,32 @@ def _resolve_access_token_for_pedido(pedido: PedidoConversacional) -> Optional[s
     tenant_cfg = getattr(getattr(pedido, "tenant", None), "configuracion", None) or {}
     return tenant_cfg.get("mercadopago_access_token") or os.getenv("MERCADOPAGO_ACCESS_TOKEN")
 
+
+
+
+def _resolve_access_token_from_payload(payload: dict) -> Optional[str]:
+    tenant_hint = (
+        payload.get("tenant_id")
+        or payload.get("tenantId")
+        or ((payload.get("metadata") or {}).get("tenant_id"))
+    )
+    tenant_slug = (
+        payload.get("tenant_slug")
+        or payload.get("tenantSlug")
+        or ((payload.get("metadata") or {}).get("tenant_slug"))
+    )
+
+    tenant = None
+    if tenant_hint:
+        try:
+            tenant = TenantProfile.query.get(int(tenant_hint))
+        except Exception:
+            tenant = None
+    if not tenant and tenant_slug:
+        tenant = TenantProfile.query.filter_by(slug=str(tenant_slug)).first()
+
+    cfg = getattr(tenant, "configuracion", None) or {}
+    return cfg.get("mercadopago_access_token")
 
 def _emit_payment_notification(pedido: PedidoConversacional) -> None:
     payload = {
@@ -57,11 +83,13 @@ def mercadopago_webhook():
         payment_id = data.get("data", {}).get("id")
         url = f"https://api.mercadopago.com/v1/payments/{payment_id}"
         default_token = os.getenv("MERCADOPAGO_ACCESS_TOKEN")
-        if not default_token:
-            logging.warning("MercadoPago token global faltante para webhook de pago %s", payment_id)
+        payload_token = _resolve_access_token_from_payload(data or {})
+        active_token = payload_token or default_token
+        if not active_token:
+            logging.warning("MercadoPago token faltante para webhook de pago %s", payment_id)
             return jsonify({"error": "MercadoPago no configurado"}), 503
 
-        headers = {"Authorization": f"Bearer {default_token}"}
+        headers = {"Authorization": f"Bearer {active_token}"}
         resp = requests.get(url, headers=headers)
         if resp.status_code != 200:
             logging.warning("Pago no encontrado: %s", payment_id)
@@ -88,7 +116,7 @@ def mercadopago_webhook():
                 tenant_cfg = getattr(order.tenant, "configuracion", None) or {}
                 tenant_token = tenant_cfg.get("mercadopago_access_token")
 
-                if tenant_token and tenant_token != default_token:
+                if tenant_token and tenant_token != active_token:
                     headers = {"Authorization": f"Bearer {tenant_token}"}
                     retry_resp = requests.get(url, headers=headers)
                     if retry_resp.ok:
@@ -123,7 +151,7 @@ def mercadopago_webhook():
             return jsonify({"error": "Pedido no encontrado"}), 404
 
         tenant_token = _resolve_access_token_for_pedido(pedido)
-        if tenant_token and tenant_token != default_token:
+        if tenant_token and tenant_token != active_token:
             headers = {"Authorization": f"Bearer {tenant_token}"}
             retry_resp = requests.get(url, headers=headers)
             if retry_resp.ok:
