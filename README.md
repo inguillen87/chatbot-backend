@@ -334,9 +334,9 @@ These endpoints are intended for authenticated backoffice roles (`operador`/`adm
 - `POST /admin/ai/order-draft-from-document`
   - `multipart/form-data` with `tenant_id` and `file` (PDF/image).
   - Returns a preliminary order draft with catalog matching status per extracted line.
-- `GET /admin/bot/settings?tenant_id=<int>`
+- `GET /admin/bot/settings?tenant_id=<int>` (alias: `/api/admin/bot/settings`)
   - Returns tenant bot customization (`name`, `tone`, `system_prompt`, `fallback_behavior`, `branding`).
-- `PUT /admin/bot/settings`
+- `PUT /admin/bot/settings` (alias: `/api/admin/bot/settings`)
   - Body: `{ "tenant_id": <int>, "name": "...", "tone": "...", "system_prompt": "...", "fallback_behavior": "derivar_humano|auto_reply|silent", "branding": {"logo_url": "...", "primary_color": "#...", "secondary_color": "#..."} }`
   - Persists settings under `TenantProfile.configuracion.bot_settings` and keeps `logo_url` synced in `TenantProfile.logo_url` for backward compatibility.
 

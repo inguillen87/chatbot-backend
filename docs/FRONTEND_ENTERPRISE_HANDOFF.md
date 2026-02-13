@@ -29,8 +29,8 @@ Este documento resume **lo ya implementado en backend** y el plan de trabajo rec
 - `POST /admin/tickets/<ticket_id>/ai-summary`
 - `POST /admin/ai/product-recommendations`
 - `POST /admin/ai/order-draft-from-document` (OCR/PDF/image -> draft)
-- `GET /admin/bot/settings?tenant_id=<id>`
-- `PUT /admin/bot/settings`
+- `GET /admin/bot/settings?tenant_id=<id>` (alias: `/api/admin/bot/settings`)
+- `PUT /admin/bot/settings` (alias: `/api/admin/bot/settings`)
 
 ### 1.5 Checkout / MercadoPago / guardrails
 - Integración MercadoPago por tenant (credenciales + test + webhook tenant-aware).

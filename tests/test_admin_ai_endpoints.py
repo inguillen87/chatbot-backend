@@ -339,3 +339,32 @@ def test_bot_settings_rejects_invalid_payload(client):
         headers={"X-Debug-Role": "operador", "X-Debug-Tenant": str(tenant.id)},
     )
     assert response.status_code == 400
+
+
+def test_bot_settings_api_admin_alias(client):
+    tenant_id = 50
+    owner = _ensure_user(tenant_id, "pyme")
+    tenant = TenantProfile(
+        slug="tenant-bot-alias",
+        nombre="Tenant Alias",
+        tipo="pyme",
+        pyme_id=owner.id,
+    )
+    db.session.add(tenant)
+    db.session.commit()
+
+    get_response = client.get(
+        "/api/admin/bot/settings",
+        query_string={"tenant_id": tenant.id},
+        headers={"X-Debug-Role": "operador", "X-Debug-Tenant": str(tenant.id)},
+    )
+    assert get_response.status_code == 200
+
+    put_response = client.put(
+        "/api/admin/bot/settings",
+        json={"tenant_id": tenant.id, "name": "Alias Bot"},
+        headers={"X-Debug-Role": "operador", "X-Debug-Tenant": str(tenant.id)},
+    )
+    assert put_response.status_code == 200
+    payload = put_response.get_json()
+    assert payload["settings"]["name"] == "Alias Bot"

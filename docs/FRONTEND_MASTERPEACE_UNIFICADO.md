@@ -34,8 +34,8 @@ Este es el **documento único** para frontend con:
 - `POST /admin/ai/order-draft-from-document`
 
 ### 1.5 Bot IA personalizable por tenant
-- `GET /admin/bot/settings?tenant_id=<id>`
-- `PUT /admin/bot/settings`
+- `GET /admin/bot/settings?tenant_id=<id>` (alias: `/api/admin/bot/settings`)
+- `PUT /admin/bot/settings` (alias: `/api/admin/bot/settings`)
 - Persistencia en `TenantProfile.configuracion.bot_settings`.
 - Compatibilidad legacy: `branding.logo_url` sincroniza con `TenantProfile.logo_url`.
 
