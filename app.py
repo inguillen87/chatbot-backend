@@ -424,6 +424,7 @@ def create_app(config_class=Config):
     from routes.ticket import ticket_bp
     from routes.crm.routes import crm_bp
     from routes.analytics import analytics_bp
+    from routes.admin_analytics import admin_analytics_bp
     from routes.analytics_routes import analytics_v2_bp
     from routes.gov_analytics import gov_analytics_bp
     from services.upload_processor import upload_bp
@@ -558,6 +559,7 @@ def create_app(config_class=Config):
     app.register_blueprint(ticket_bp)
     app.register_blueprint(crm_bp)
     app.register_blueprint(analytics_bp)
+    app.register_blueprint(admin_analytics_bp)
     app.register_blueprint(analytics_v2_bp)
     app.register_blueprint(gov_analytics_bp)
     app.register_blueprint(upload_bp)
