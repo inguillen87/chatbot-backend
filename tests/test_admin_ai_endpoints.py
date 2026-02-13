@@ -1,3 +1,4 @@
+import io
 from datetime import datetime, timedelta
 
 from extensions import db
@@ -159,3 +160,90 @@ def test_product_recommendations_tenant_scoped(client):
         headers={"X-Debug-Role": "operador", "X-Debug-Tenant": "999"},
     )
     assert forbidden.status_code == 403
+
+
+def test_order_draft_from_document_matches_catalog(client, monkeypatch):
+    tenant_id = 44
+    owner = _ensure_user(tenant_id, "pyme")
+
+    item = CatalogoItem(
+        user_id=owner.id,
+        tenant_id=tenant_id,
+        nombre="Taladro Pro",
+        categoria="herramientas",
+        modalidad="venta",
+        precio="150000",
+        disponible=True,
+    )
+    db.session.add(item)
+    db.session.commit()
+
+    monkeypatch.setattr(
+        "routes.admin_ai.analyze_text_structured",
+        lambda text, prompt: {"items": [{"nombre": "Taladro Pro", "cantidad": 2}]},
+    )
+    monkeypatch.setattr("routes.admin_ai.analyze_image_text", lambda content: "Taladro Pro x2")
+
+    response = client.post(
+        "/admin/ai/order-draft-from-document",
+        data={
+            "tenant_id": str(tenant_id),
+            "file": (io.BytesIO(b"fake-image"), "nota.png"),
+        },
+        content_type="multipart/form-data",
+        headers={"X-Debug-Role": "operador", "X-Debug-Tenant": str(tenant_id)},
+    )
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["draft_items"]
+    assert payload["draft_items"][0]["match_status"] == "matched"
+    assert payload["draft_items"][0]["catalogo_item_id"] == item.id
+    assert payload["matched_count"] == 1
+    assert payload["unmatched_count"] == 0
+
+    forbidden = client.post(
+        "/admin/ai/order-draft-from-document",
+        data={
+            "tenant_id": str(tenant_id),
+            "file": (io.BytesIO(b"fake-image"), "nota.png"),
+        },
+        content_type="multipart/form-data",
+        headers={"X-Debug-Role": "operador", "X-Debug-Tenant": "999"},
+    )
+    assert forbidden.status_code == 403
+
+
+def test_order_draft_rejects_unsupported_file_type(client):
+    tenant_id = 45
+    _ensure_user(tenant_id, "pyme")
+
+    response = client.post(
+        "/admin/ai/order-draft-from-document",
+        data={
+            "tenant_id": str(tenant_id),
+            "file": (io.BytesIO(b"hello"), "nota.txt"),
+        },
+        content_type="multipart/form-data",
+        headers={"X-Debug-Role": "operador", "X-Debug-Tenant": str(tenant_id)},
+    )
+    assert response.status_code == 400
+
+
+def test_executive_summary_reports_insufficient_data_without_ai_call(client, monkeypatch):
+    def _boom(*args, **kwargs):
+        raise AssertionError("AI should not be called for empty periods")
+
+    monkeypatch.setattr("routes.admin_ai.generate_analytics_report", _boom)
+
+    tenant_id = 46
+    _ensure_user(tenant_id, "municipio")
+    db.session.commit()
+
+    response = client.post(
+        "/admin/ai/executive-summary",
+        json={"tenant_id": tenant_id, "scope": "municipio", "from": "2024-01-01", "to": "2024-01-02", "strict_no_data_message": True},
+        headers={"X-Debug-Role": "operador", "X-Debug-Tenant": str(tenant_id)},
+    )
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["ai"]["tone"] == "Data-Insufficient"

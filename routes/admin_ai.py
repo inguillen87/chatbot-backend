@@ -3,29 +3,38 @@
 from __future__ import annotations
 
 import json
+import io
 from collections import Counter
 from datetime import datetime
 from flask import Blueprint, abort, jsonify, request
+import pdfplumber
 
 from models import CatalogoItem, MunicipioTicket, PymePedido, PymeTicket, TicketComentario
 from services.analytics import get_summary
 from services.analytics.filters import parse_filters
 from services.analytics.rbac import require_access
 from services.openai_bridge import generate_analytics_report, generate_ticket_summary
+from services.vision_fallback_service import analyze_image_text, analyze_text_structured
 
 admin_ai_bp = Blueprint("admin_ai_bp", __name__, url_prefix="/admin")
+
+_ALLOWED_ORDER_DRAFT_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg", ".webp"}
+_MAX_ORDER_DRAFT_BYTES = 5 * 1024 * 1024
+
+
+def _parse_tenant_id(value):
+    if value is None:
+        abort(400, description="tenant_id is required")
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        abort(400, description="tenant_id must be an integer")
 
 
 @admin_ai_bp.post("/ai/executive-summary")
 def executive_summary():
     payload = request.get_json(silent=True) or {}
-    tenant_id = payload.get("tenant_id")
-    if tenant_id is None:
-        abort(400, description="tenant_id is required")
-    try:
-        tenant_id = int(tenant_id)
-    except (TypeError, ValueError):
-        abort(400, description="tenant_id must be an integer")
+    tenant_id = _parse_tenant_id(payload.get("tenant_id"))
 
     filters = parse_filters(
         {
@@ -38,7 +47,17 @@ def executive_summary():
     require_access(filters.tenant_id, "operador")
 
     metrics = get_summary(filters)
-    report = generate_analytics_report(metrics, tenant_type=filters.scope)
+    totals = metrics.get("totals") if isinstance(metrics, dict) else {}
+    strict_no_data = bool(payload.get("strict_no_data_message"))
+    if strict_no_data and isinstance(totals, dict) and all((totals.get(k) in {0, None, 0.0}) for k in ("tickets", "pedidos")):
+        report = {
+            "summary": "No hay datos suficientes para generar un resumen ejecutivo en el período seleccionado.",
+            "opportunities": [],
+            "threats": [],
+            "tone": "Data-Insufficient",
+        }
+    else:
+        report = generate_analytics_report(metrics, tenant_type=filters.scope)
 
     return jsonify({
         "tenant_id": tenant_id,
@@ -106,13 +125,7 @@ def ticket_ai_summary(ticket_id: int):
 @admin_ai_bp.post("/ai/product-recommendations")
 def product_recommendations():
     payload = request.get_json(silent=True) or {}
-    tenant_id = payload.get("tenant_id")
-    if tenant_id is None:
-        abort(400, description="tenant_id is required")
-    try:
-        tenant_id = int(tenant_id)
-    except (TypeError, ValueError):
-        abort(400, description="tenant_id must be an integer")
+    tenant_id = _parse_tenant_id(payload.get("tenant_id"))
 
     require_access(str(tenant_id), "operador")
     limit = payload.get("limit", 5)
@@ -193,5 +206,102 @@ def product_recommendations():
             "tenant_id": tenant_id,
             "orders_analyzed": len(orders),
             "recommendations": recommendations,
+        }
+    )
+
+
+@admin_ai_bp.post("/ai/order-draft-from-document")
+def order_draft_from_document():
+    """Build a preliminary order draft from uploaded PDF/image and tenant catalog."""
+    tenant_id = _parse_tenant_id(request.form.get("tenant_id") or request.args.get("tenant_id"))
+
+    require_access(str(tenant_id), "operador")
+
+    uploaded = request.files.get("file")
+    if not uploaded:
+        abort(400, description="file is required")
+
+    filename = (uploaded.filename or "").lower()
+    if not any(filename.endswith(ext) for ext in _ALLOWED_ORDER_DRAFT_EXTENSIONS):
+        abort(400, description="unsupported file type")
+
+    content = uploaded.read() or b""
+    if not content:
+        abort(400, description="file is empty")
+    if len(content) > _MAX_ORDER_DRAFT_BYTES:
+        abort(413, description="file too large")
+    extracted_text = ""
+
+    if filename.endswith(".pdf"):
+        try:
+            with pdfplumber.open(io.BytesIO(content)) as pdf:
+                chunks = []
+                for page in pdf.pages[:5]:
+                    chunks.append(page.extract_text() or "")
+                extracted_text = "\n".join(chunks).strip()
+        except Exception:  # noqa: BLE001
+            extracted_text = ""
+    else:
+        try:
+            extracted_text = (analyze_image_text(content) or "").strip()
+        except Exception:  # noqa: BLE001
+            extracted_text = ""
+
+    if not extracted_text:
+        return jsonify({"tenant_id": tenant_id, "draft_items": [], "reason": "no_text_extracted"}), 200
+
+    structured = analyze_text_structured(
+        extracted_text,
+        (
+            "Extrae una lista de items de pedido en JSON con clave 'items'. "
+            "Cada item debe incluir nombre, cantidad y precio si existe."
+        ),
+    )
+    items = []
+    if isinstance(structured, dict):
+        maybe_items = structured.get("items") or structured.get("rows") or structured.get("productos") or []
+        if isinstance(maybe_items, list):
+            items = maybe_items
+
+    catalog = CatalogoItem.query.filter(CatalogoItem.tenant_id == tenant_id).all()
+    catalog_by_name = {((c.nombre or "").strip().lower()): c for c in catalog}
+
+    draft_items = []
+    for item in items[:50]:
+        if not isinstance(item, dict):
+            continue
+        raw_name = str(item.get("nombre") or item.get("producto") or "").strip()
+        if not raw_name:
+            continue
+        name_key = raw_name.lower()
+        match = catalog_by_name.get(name_key)
+        if not match:
+            # fuzzy contains fallback
+            match = next((c for c in catalog if name_key in (c.nombre or "").lower()), None)
+
+        qty = item.get("cantidad") or item.get("qty") or 1
+        try:
+            qty = float(qty)
+        except (TypeError, ValueError):
+            qty = 1.0
+
+        draft_items.append(
+            {
+                "input_name": raw_name,
+                "cantidad": qty,
+                "catalogo_item_id": match.id if match else None,
+                "catalog_name": match.nombre if match else None,
+                "match_status": "matched" if match else "unmatched",
+            }
+        )
+
+    matched_count = sum(1 for row in draft_items if row.get("match_status") == "matched")
+    return jsonify(
+        {
+            "tenant_id": tenant_id,
+            "source_text_preview": extracted_text[:500],
+            "draft_items": draft_items,
+            "matched_count": matched_count,
+            "unmatched_count": max(len(draft_items) - matched_count, 0),
         }
     )
