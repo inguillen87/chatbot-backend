@@ -20,10 +20,10 @@ Este documento resume **lo ya implementado en backend** y el plan de trabajo rec
 
 ### 1.3 Analytics enterprise
 - `POST /analytics/event` (ingest tenant-scoped).
-- `GET /admin/analytics/overview`
-- `GET /admin/analytics/heatmap`
-- `GET /admin/analytics/export.csv`
-- `GET /admin/analytics/export.pdf`
+- `GET /admin/analytics/overview (alias: /api/admin/analytics/overview)`
+- `GET /admin/analytics/heatmap (alias: /api/admin/analytics/heatmap)`
+- `GET /admin/analytics/export.csv (alias: /api/admin/analytics/export.csv)`
+- `GET /admin/analytics/export.pdf (alias: /api/admin/analytics/export.pdf)`
 
 ### 1.4 IA enterprise (admin)
 - `POST /admin/ai/executive-summary`
@@ -104,15 +104,15 @@ Respuesta esperada (shape orientativo):
 
 ### 2.2 Analytics Dashboard
 
-## `GET /admin/analytics/overview?tenant_id=<id>&scope=municipio&from=YYYY-MM-DD&to=YYYY-MM-DD`
+## `GET /admin/analytics/overview (alias: /api/admin/analytics/overview)?tenant_id=<id>&scope=municipio&from=YYYY-MM-DD&to=YYYY-MM-DD`
 - Úsese para KPIs/cards/totales.
 
-## `GET /admin/analytics/heatmap?tenant_id=<id>&scope=municipio&from=...&to=...&tz=America/Argentina/Cordoba`
+## `GET /admin/analytics/heatmap (alias: /api/admin/analytics/heatmap)?tenant_id=<id>&scope=municipio&from=...&to=...&tz=America/Argentina/Cordoba`
 - Devuelve bloque geográfico + bloque temporal (día/hora) para heatmap.
 
 ## Export
-- CSV: `GET /admin/analytics/export.csv?tenant_id=<id>&scope=municipio&from=...&to=...`
-- PDF: `GET /admin/analytics/export.pdf?tenant_id=<id>&scope=municipio&from=...&to=...`
+- CSV: `GET /admin/analytics/export.csv (alias: /api/admin/analytics/export.csv)?tenant_id=<id>&scope=municipio&from=...&to=...`
+- PDF: `GET /admin/analytics/export.pdf (alias: /api/admin/analytics/export.pdf)?tenant_id=<id>&scope=municipio&from=...&to=...`
 
 ### 2.3 Event tracking frontend
 

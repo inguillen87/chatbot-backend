@@ -23,10 +23,10 @@ Este es el **documento único** para frontend con:
 
 ### 1.3 Analytics enterprise
 - `POST /analytics/event`
-- `GET /admin/analytics/overview`
-- `GET /admin/analytics/heatmap`
-- `GET /admin/analytics/export.csv`
-- `GET /admin/analytics/export.pdf`
+- `GET /admin/analytics/overview (alias: /api/admin/analytics/overview)`
+- `GET /admin/analytics/heatmap (alias: /api/admin/analytics/heatmap)`
+- `GET /admin/analytics/export.csv (alias: /api/admin/analytics/export.csv)`
+- `GET /admin/analytics/export.pdf (alias: /api/admin/analytics/export.pdf)`
 
 ### 1.4 IA enterprise
 - `POST /admin/ai/executive-summary`
@@ -122,10 +122,10 @@ Validaciones FE recomendadas:
 - Demo login: `POST /auth/demo`
 
 ### Analytics
-- KPIs: `GET /admin/analytics/overview`
-- Heatmap: `GET /admin/analytics/heatmap`
-- Export CSV: `GET /admin/analytics/export.csv`
-- Export PDF: `GET /admin/analytics/export.pdf`
+- KPIs: `GET /admin/analytics/overview (alias: /api/admin/analytics/overview)`
+- Heatmap: `GET /admin/analytics/heatmap (alias: /api/admin/analytics/heatmap)`
+- Export CSV: `GET /admin/analytics/export.csv (alias: /api/admin/analytics/export.csv)`
+- Export PDF: `GET /admin/analytics/export.pdf (alias: /api/admin/analytics/export.pdf)`
 - Tracking FE: `POST /analytics/event`
 
 ### IA

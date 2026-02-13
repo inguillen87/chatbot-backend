@@ -410,3 +410,31 @@ def test_admin_analytics_heatmap_rejects_non_numeric_tenant_id(client):
         headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': 'abc'},
     )
     assert response.status_code == 400
+
+
+def test_api_alias_admin_analytics_overview_and_heatmap(client):
+    tenant_id = 12
+    _create_municipio_ticket(tenant_id)
+    db.session.add(
+        AnalyticsEventV2(
+            tenant_id=tenant_id,
+            event_name='alias_view',
+            tenant_type='municipio',
+            ts=datetime.utcnow(),
+        )
+    )
+    db.session.commit()
+
+    overview = client.get(
+        '/api/admin/analytics/overview',
+        query_string={'tenant_id': tenant_id, 'scope': 'municipio'},
+        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
+    )
+    assert overview.status_code == 200
+
+    heatmap = client.get(
+        '/api/admin/analytics/heatmap',
+        query_string={'tenant_id': tenant_id, 'scope': 'municipio'},
+        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
+    )
+    assert heatmap.status_code == 200
