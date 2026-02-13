@@ -317,3 +317,29 @@ python script_filter_logs.py logs/chatbot.log --level ERROR --contains reclamo -
 # Inspect a specific chat session/anon id and show level counts
 python script_filter_logs.py app.log --session 7d282ef0-ea35-4524-a934-50c5427898b5 --stats
 ```
+
+## Admin AI Module (tenant-scoped)
+
+These endpoints are intended for authenticated backoffice roles (`operador`/`admin`) and enforce tenant scoping using RBAC.
+
+- `POST /admin/ai/executive-summary`
+  - Body: `{ "tenant_id": <int>, "scope": "municipio|pyme|operaciones", "from": "YYYY-MM-DD", "to": "YYYY-MM-DD" }`
+  - Returns period metrics + AI executive summary.
+- `POST /admin/tickets/<ticket_id>/ai-summary`
+  - Body: `{ "scope": "municipio|pyme" }`
+  - Returns timeline-based AI summary for a tenant-owned ticket.
+- `POST /admin/ai/product-recommendations`
+  - Body: `{ "tenant_id": <int>, "limit": <int> }`
+  - Returns ranked catalog recommendations based on tenant order history + catalog coverage.
+- `POST /admin/ai/order-draft-from-document`
+  - `multipart/form-data` with `tenant_id` and `file` (PDF/image).
+  - Returns a preliminary order draft with catalog matching status per extracted line.
+- `GET /admin/bot/settings?tenant_id=<int>`
+  - Returns tenant bot customization (`name`, `tone`, `system_prompt`, `fallback_behavior`, `branding`).
+- `PUT /admin/bot/settings`
+  - Body: `{ "tenant_id": <int>, "name": "...", "tone": "...", "system_prompt": "...", "fallback_behavior": "derivar_humano|auto_reply|silent", "branding": {"logo_url": "...", "primary_color": "#...", "secondary_color": "#..."} }`
+  - Persists settings under `TenantProfile.configuracion.bot_settings` and keeps `logo_url` synced in `TenantProfile.logo_url` for backward compatibility.
+
+> Notes:
+> - Cross-tenant access is denied with `403`.
+> - Missing or invalid tenant inputs return `400`.
