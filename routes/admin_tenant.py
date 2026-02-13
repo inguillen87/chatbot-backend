@@ -1,5 +1,7 @@
 from flask import Blueprint, request, jsonify, g, current_app
+import requests
 from sqlalchemy import func
+from datetime import datetime, timezone
 
 from utils.auth_helpers import token_requerido
 from middleware.tenant_context import require_tenant
@@ -905,6 +907,123 @@ def connect_integration(current_user, slug, integration_type):
         return jsonify({"redirect_url": auth_url})
 
     return jsonify({"error": "Integration type not supported"}), 400
+
+
+
+def _mask_token(raw: str | None) -> str | None:
+    if not raw:
+        return None
+    value = str(raw)
+    if len(value) <= 8:
+        return "*" * len(value)
+    return f"{value[:4]}...{value[-4:]}"
+
+
+@admin_tenant_bp.route('/api/admin/tenants/<slug>/integrations/mercadopago', methods=['GET'])
+@token_requerido
+@require_tenant
+def get_mercadopago_credentials(current_user, slug):
+    tenant = _resolve_admin_tenant(current_user, slug)
+    if not tenant:
+        return jsonify({"error": "Tenant not found"}), 404
+
+    if not _is_authorized_for_tenant(current_user, tenant):
+        return jsonify({'error': 'Unauthorized'}), 403
+
+    cfg = tenant.configuracion or {}
+    token = cfg.get('mercadopago_access_token')
+    status = cfg.get('mercadopago_status')
+    tested_at = cfg.get('mercadopago_tested_at')
+
+    return jsonify({
+        "provider": "mercadopago",
+        "configured": bool(token),
+        "access_token_masked": _mask_token(token),
+        "status": status or ("configured" if token else "missing"),
+        "tested_at": tested_at,
+    })
+
+
+@admin_tenant_bp.route('/api/admin/tenants/<slug>/integrations/mercadopago', methods=['POST'])
+@token_requerido
+@require_tenant
+def set_mercadopago_credentials(current_user, slug):
+    tenant = _resolve_admin_tenant(current_user, slug)
+    if not tenant:
+        return jsonify({"error": "Tenant not found"}), 404
+
+    if not _is_authorized_for_tenant(current_user, tenant):
+        return jsonify({'error': 'Unauthorized'}), 403
+
+    payload = request.get_json(silent=True) or {}
+    access_token = (payload.get('access_token') or payload.get('token') or '').strip()
+    if not access_token:
+        return jsonify({"error": "access_token es requerido"}), 400
+
+    cfg = tenant.configuracion or {}
+    cfg['mercadopago_access_token'] = access_token
+    cfg['mercadopago_status'] = 'configured'
+    cfg['mercadopago_tested_at'] = None
+    tenant.configuracion = cfg
+    db.session.commit()
+
+    return jsonify({
+        "provider": "mercadopago",
+        "configured": True,
+        "access_token_masked": _mask_token(access_token),
+        "status": "configured",
+    })
+
+
+@admin_tenant_bp.route('/api/admin/tenants/<slug>/integrations/mercadopago/test', methods=['POST'])
+@token_requerido
+@require_tenant
+def test_mercadopago_credentials(current_user, slug):
+    tenant = _resolve_admin_tenant(current_user, slug)
+    if not tenant:
+        return jsonify({"error": "Tenant not found"}), 404
+
+    if not _is_authorized_for_tenant(current_user, tenant):
+        return jsonify({'error': 'Unauthorized'}), 403
+
+    cfg = tenant.configuracion or {}
+    token = cfg.get('mercadopago_access_token')
+    if not token:
+        return jsonify({"error": "No hay token configurado"}), 400
+
+    ok = False
+    details = None
+    try:
+        resp = requests.get(
+            'https://api.mercadopago.com/v1/account',
+            headers={'Authorization': f'Bearer {token}'},
+            timeout=10,
+        )
+        ok = bool(resp.ok)
+        if resp.ok:
+            body = resp.json()
+            details = {
+                "id": body.get("id"),
+                "site_id": body.get("site_id"),
+                "email": body.get("email"),
+            }
+        else:
+            details = {"status_code": resp.status_code}
+    except Exception as exc:
+        details = {"error": str(exc)}
+
+    cfg['mercadopago_status'] = 'ok' if ok else 'error'
+    cfg['mercadopago_tested_at'] = datetime.now(timezone.utc).isoformat()
+    tenant.configuracion = cfg
+    db.session.commit()
+
+    return jsonify({
+        "provider": "mercadopago",
+        "ok": ok,
+        "status": cfg['mercadopago_status'],
+        "tested_at": cfg['mercadopago_tested_at'],
+        "details": details,
+    }), 200 if ok else 502
 
 @admin_tenant_bp.route('/api/admin/tenants/<slug>/employees', methods=['GET'])
 @token_requerido
