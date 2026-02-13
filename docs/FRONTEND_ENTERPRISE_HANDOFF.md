@@ -1,0 +1,208 @@
+# Frontend Handoff — Enterprise SaaS Iteration (Backend Ready)
+
+Este documento resume **lo ya implementado en backend** y el plan de trabajo recomendado para frontend, para que puedan avanzar en paralelo sin bloquearse.
+
+---
+
+## 1) Estado backend (listo para integrar)
+
+### 1.1 Multi-tenant + RBAC (base)
+- Tenant scoping activo en endpoints enterprise de analytics e IA.
+- Validación de acceso por rol/tenant vía `require_access`.
+- Respuesta esperada cuando hay cruce de tenant: `403`.
+
+### 1.2 Demo / onboarding
+- `POST /auth/demo` disponible para ingreso demo por rubro/tenant (flujo ya integrado en backend).
+- Token demo incluye `demo_mode` para condicionar UX y acciones sensibles.
+
+### 1.3 Analytics enterprise
+- `POST /analytics/event` (ingest tenant-scoped).
+- `GET /admin/analytics/overview`
+- `GET /admin/analytics/heatmap`
+- `GET /admin/analytics/export.csv`
+- `GET /admin/analytics/export.pdf`
+
+### 1.4 IA enterprise (admin)
+- `POST /admin/ai/executive-summary`
+- `POST /admin/tickets/<ticket_id>/ai-summary`
+- `POST /admin/ai/product-recommendations`
+- `POST /admin/ai/order-draft-from-document` (OCR/PDF/image -> draft)
+
+### 1.5 Checkout / MercadoPago / guardrails
+- Integración MercadoPago por tenant (credenciales + test + webhook tenant-aware).
+- Checkout demo-mode para evitar cobros reales en demos.
+- Guardrails de puntos/tenant para evitar fallback inseguro.
+
+---
+
+## 2) Contratos de endpoints para frontend
+
+> Nota: todos los endpoints admin deben enviar auth token de usuario backoffice con permisos (`operador` o `admin`) y contexto tenant correcto.
+
+### 2.1 Demo Login
+
+## `POST /auth/demo`
+Body sugerido:
+```json
+{
+  "rubro": "municipio"
+}
+```
+Respuesta esperada (shape orientativo):
+```json
+{
+  "token": "...jwt...",
+  "demo_mode": true,
+  "tenant": {
+    "id": 123,
+    "slug": "municipio-demo",
+    "nombre": "Municipio Demo"
+  },
+  "user": {
+    "id": 999,
+    "rol": "admin"
+  }
+}
+```
+
+### 2.2 Analytics Dashboard
+
+## `GET /admin/analytics/overview?tenant_id=<id>&scope=municipio&from=YYYY-MM-DD&to=YYYY-MM-DD`
+- Úsese para KPIs/cards/totales.
+
+## `GET /admin/analytics/heatmap?tenant_id=<id>&scope=municipio&from=...&to=...&tz=America/Argentina/Cordoba`
+- Devuelve bloque geográfico + bloque temporal (día/hora) para heatmap.
+
+## Export
+- CSV: `GET /admin/analytics/export.csv?tenant_id=<id>&scope=municipio&from=...&to=...`
+- PDF: `GET /admin/analytics/export.pdf?tenant_id=<id>&scope=municipio&from=...&to=...`
+
+### 2.3 Event tracking frontend
+
+## `POST /analytics/event`
+Body:
+```json
+{
+  "tenant_id": 123,
+  "event_name": "dashboard_view",
+  "payload": {
+    "path": "/panel/analytics",
+    "source": "web"
+  },
+  "channel": "web_widget",
+  "session_id": "sess_abc"
+}
+```
+
+### 2.4 Admin AI
+
+## Executive summary
+`POST /admin/ai/executive-summary`
+```json
+{
+  "tenant_id": 123,
+  "scope": "municipio",
+  "from": "2026-01-01",
+  "to": "2026-01-31",
+  "strict_no_data_message": true
+}
+```
+
+## Ticket summary
+`POST /admin/tickets/<ticket_id>/ai-summary`
+```json
+{
+  "scope": "municipio"
+}
+```
+
+## Product recommendations
+`POST /admin/ai/product-recommendations`
+```json
+{
+  "tenant_id": 123,
+  "limit": 8
+}
+```
+
+## OCR / order draft
+`POST /admin/ai/order-draft-from-document` (`multipart/form-data`)
+- fields: `tenant_id`, `file`
+- extensiones permitidas: `.pdf`, `.png`, `.jpg`, `.jpeg`, `.webp`
+- tamaño máximo: `5MB`
+
+Respuesta incluye:
+- `draft_items[]` con `match_status`,
+- `matched_count`, `unmatched_count`.
+
+---
+
+## 3) Tareas frontend prioritarias (modo “ninja”)
+
+## Sprint FE-1 (impacto inmediato)
+1. **Login/Landing demo**
+   - Botón “Probar Demo”.
+   - Selector de rubro.
+   - Invocar `POST /auth/demo`.
+   - Persistir token/session + tenant actual.
+2. **Banner demo global**
+   - Mostrar “Estás en demo”.
+   - Botón “Reset demo” (si aplica al flujo FE).
+3. **Dashboard analytics**
+   - Cards desde `/admin/analytics/overview`.
+   - Heatmap temporal/geográfico desde `/admin/analytics/heatmap`.
+   - Botones export CSV/PDF.
+4. **Tracking básico**
+   - Emitir `dashboard_view`, `tab_click`, `export_click` a `/analytics/event`.
+
+## Sprint FE-2 (IA visible para negocio)
+1. Botón “Resumen ejecutivo IA” en analíticas.
+2. Botón “Resumen IA” en detalle de ticket.
+3. Bloque “Productos recomendados” en panel catálogo/comercial.
+4. Carga de PDF/imagen para “Borrador de pedido” con tabla editable de matches.
+
+## Sprint FE-3 (robustez productiva)
+1. Error boundaries por módulo.
+2. Loading + empty + retry states.
+3. Toasts de éxito/error homogéneos.
+4. Smoke tests FE:
+   - login demo,
+   - dashboard render,
+   - navegación base,
+   - export actions.
+
+---
+
+## 4) Recomendaciones de implementación FE
+
+- Crear un `tenantContext` en frontend con `{tenantId, tenantSlug, demoMode}`.
+- Incluir `tenant_id` explícito en todas las llamadas admin enterprise.
+- Estándar de errores:
+  - `400`: input inválido => mensaje orientado a corrección,
+  - `403`: sin acceso tenant => redirigir a selector tenant/sesión,
+  - `404`: recurso no encontrado => empty state.
+- Mantener capa API tipada (DTOs) para evitar drift de contratos.
+
+---
+
+## 5) Checklist de integración FE/BE
+
+- [ ] Demo login consume `/auth/demo` y setea contexto.
+- [ ] Analytics dashboard funcional con filtros fecha + tz.
+- [ ] Export CSV/PDF descargando archivos correctos.
+- [ ] Tracking de eventos visible en backend.
+- [ ] Resumen IA ejecutivo y ticket integrados.
+- [ ] Recomendaciones de productos renderizadas.
+- [ ] OCR draft sube archivo y muestra matched/unmatched.
+- [ ] Manejo consistente de 400/403/404/500.
+
+---
+
+## 6) Nota de coordinación
+
+Si el frontend vive en otro repositorio, tomar este documento como contrato de trabajo y abrir PR paralelo con:
+- wiring de endpoints,
+- UI demo/analytics/IA,
+- smoke tests.
+
+Con esto, backend y frontend convergen a cierre enterprise sin fricción.
