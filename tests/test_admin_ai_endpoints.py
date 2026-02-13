@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta
 
 from extensions import db
-from models import MunicipioTicket, PymeTicket, TicketComentario, User
+from models import CatalogoItem, MunicipioTicket, PymePedido, PymeTicket, TicketComentario, User
 
 
 def _ensure_user(tenant_id: int, scope: str) -> User:
@@ -102,6 +102,60 @@ def test_ticket_ai_summary_tenant_scoped(client, monkeypatch):
     forbidden = client.post(
         f"/admin/tickets/{ticket.id}/ai-summary",
         json={"scope": "pyme"},
+        headers={"X-Debug-Role": "operador", "X-Debug-Tenant": "999"},
+    )
+    assert forbidden.status_code == 403
+
+
+def test_product_recommendations_tenant_scoped(client):
+    tenant_id = 43
+    owner = _ensure_user(tenant_id, "pyme")
+
+    item_fast = CatalogoItem(
+        user_id=owner.id,
+        tenant_id=tenant_id,
+        nombre="Malbec Reserva",
+        categoria="vinos",
+        modalidad="venta",
+        precio="10000",
+        disponible=True,
+    )
+    item_other = CatalogoItem(
+        user_id=owner.id,
+        tenant_id=tenant_id,
+        nombre="Cabernet",
+        categoria="vinos",
+        modalidad="canje",
+        precio_puntos=500,
+        disponible=True,
+    )
+    db.session.add_all([item_fast, item_other])
+    db.session.flush()
+
+    db.session.add(
+        PymePedido(
+            pyme_id=owner.id,
+            tenant_id=tenant_id,
+            asunto="Pedido pruebas",
+            detalles='[{"nombre": "Malbec Reserva", "qty": 2}]',
+            monto_total=20000,
+        )
+    )
+    db.session.commit()
+
+    response = client.post(
+        "/admin/ai/product-recommendations",
+        json={"tenant_id": tenant_id, "limit": 2},
+        headers={"X-Debug-Role": "operador", "X-Debug-Tenant": str(tenant_id)},
+    )
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["recommendations"]
+    assert payload["recommendations"][0]["nombre"] == "Malbec Reserva"
+
+    forbidden = client.post(
+        "/admin/ai/product-recommendations",
+        json={"tenant_id": tenant_id},
         headers={"X-Debug-Role": "operador", "X-Debug-Tenant": "999"},
     )
     assert forbidden.status_code == 403
