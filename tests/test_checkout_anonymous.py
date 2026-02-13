@@ -31,10 +31,18 @@ def tenant_with_catalog(init_database):
         moneda="ARS",
         modalidad="donacion",
     )
-    db.session.add_all([product, donation])
+    points_item = CatalogoItem(
+        user_id=owner.id,
+        tenant_id=tenant.id,
+        nombre="Puntos Test",
+        precio_puntos=120,
+        moneda="PTS",
+        modalidad="canje",
+    )
+    db.session.add_all([product, donation, points_item])
     db.session.commit()
 
-    return tenant, product, donation
+    return tenant, product, donation, points_item
 
 
 def _build_cart(session, tenant_id, catalogo_item_id, cantidad=1):
@@ -45,7 +53,7 @@ def _build_cart(session, tenant_id, catalogo_item_id, cantidad=1):
 
 @pytest.mark.usefixtures("client")
 def test_anonymous_checkout_requires_contact(client, tenant_with_catalog):
-    tenant, product, _ = tenant_with_catalog
+    tenant, product, _, _ = tenant_with_catalog
 
     with client.session_transaction() as sess:
         _build_cart(sess, tenant.id, product.id)
@@ -65,7 +73,7 @@ def test_anonymous_checkout_requires_contact(client, tenant_with_catalog):
 
 @pytest.mark.usefixtures("client")
 def test_donation_checkout_confirms_without_payment(client, tenant_with_catalog):
-    tenant, _, donation = tenant_with_catalog
+    tenant, _, donation, _ = tenant_with_catalog
 
     with client.session_transaction() as sess:
         _build_cart(sess, tenant.id, donation.id)
@@ -94,7 +102,7 @@ def test_donation_checkout_confirms_without_payment(client, tenant_with_catalog)
 
 @pytest.mark.usefixtures("client")
 def test_checkout_rejects_when_mercadopago_missing(client, tenant_with_catalog, monkeypatch):
-    tenant, product, _ = tenant_with_catalog
+    tenant, product, _, _ = tenant_with_catalog
 
     # Ensure no global token leaks
     monkeypatch.delenv("MERCADOPAGO_ACCESS_TOKEN", raising=False)
@@ -120,7 +128,7 @@ def test_checkout_rejects_when_mercadopago_missing(client, tenant_with_catalog, 
 
 @pytest.mark.usefixtures("client")
 def test_checkout_uses_tenant_token_for_payment(client, tenant_with_catalog, monkeypatch):
-    tenant, product, _ = tenant_with_catalog
+    tenant, product, _, _ = tenant_with_catalog
 
     captured = {}
 
@@ -153,3 +161,113 @@ def test_checkout_uses_tenant_token_for_payment(client, tenant_with_catalog, mon
     data = resp.get_json()
     assert data["preference_id"] == "pref-1"
     assert captured["auth"] == "Bearer tenant-token"
+
+
+@pytest.mark.usefixtures("client")
+def test_points_checkout_rejects_when_insufficient_balance(client, tenant_with_catalog, monkeypatch):
+    tenant, _, _, points_item = tenant_with_catalog
+
+    class DummyUser:
+        id = 999
+        anon_id = None
+        saldo_puntos = 10
+
+    def fake_resolve(**kwargs):
+        return tenant, DummyUser(), False
+
+    monkeypatch.setattr("routes.checkout.resolve_tenant_and_user", lambda **kwargs: fake_resolve(**kwargs))
+
+    with client.session_transaction() as sess:
+        _build_cart(sess, tenant.id, points_item.id)
+
+    resp = client.post(
+        "/api/checkout/crear-preferencia",
+        data=json.dumps({}),
+        content_type="application/json",
+        headers={"X-Tenant": tenant.slug},
+    )
+
+    assert resp.status_code == 400
+    data = resp.get_json()
+    assert data["codigo"] == "SALDO_INSUFICIENTE"
+
+
+@pytest.mark.usefixtures("client")
+def test_money_checkout_ignores_client_demo_mode_flag(client, tenant_with_catalog, monkeypatch):
+    tenant, product, _, _ = tenant_with_catalog
+
+    tenant.configuracion = {"mercadopago_access_token": "test-token"}
+    db.session.commit()
+
+    called = {"mp": 0}
+
+    class FakeResp:
+        ok = True
+
+        @staticmethod
+        def json():
+            return {"id": "pref_123", "init_point": "https://mp.test/pref_123"}
+
+    def fake_post(*args, **kwargs):
+        called["mp"] += 1
+        return FakeResp()
+
+    monkeypatch.setattr("routes.checkout.requests.post", fake_post)
+
+    with client.session_transaction() as sess:
+        _build_cart(sess, tenant.id, product.id)
+
+    resp = client.post(
+        "/api/checkout/crear-preferencia",
+        data=json.dumps({"nombre": "Demo", "email": "demo@example.com", "demo_mode": True}),
+        content_type="application/json",
+        headers={"X-Tenant": tenant.slug},
+    )
+
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["estado"] == "pendiente_pago"
+    assert data.get("demo_mode") is not True
+    assert data["preference_id"] == "pref_123"
+    assert called["mp"] == 1
+
+
+@pytest.mark.usefixtures("client")
+def test_points_checkout_confirms_and_deducts_balance(client, tenant_with_catalog, monkeypatch):
+    from models import User
+
+    tenant, _, _, points_item = tenant_with_catalog
+
+    user = User(
+        name="Puntos User",
+        email="puntos-user@example.com",
+        password_hash="hash",
+        saldo_puntos=500,
+        tenant_id=tenant.id,
+    )
+    db.session.add(user)
+    db.session.commit()
+
+    def fake_resolve(**kwargs):
+        return tenant, user, False
+
+    monkeypatch.setattr("routes.checkout.resolve_tenant_and_user", lambda **kwargs: fake_resolve(**kwargs))
+
+    with client.session_transaction() as sess:
+        _build_cart(sess, tenant.id, points_item.id, cantidad=2)
+
+    resp = client.post(
+        "/api/checkout/crear-preferencia",
+        data=json.dumps({}),
+        content_type="application/json",
+        headers={"X-Tenant": tenant.slug},
+    )
+
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["tipo"] == "canje"
+    assert data["total_puntos"] == 240
+    assert data["estado"] == "confirmado"
+
+    refreshed = User.query.get(user.id)
+    assert refreshed.saldo_puntos == 260
