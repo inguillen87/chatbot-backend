@@ -401,3 +401,12 @@ def test_admin_analytics_heatmap_returns_temporal_matrix(client):
     data = response.get_json()
     assert data['tz'] == 'America/Argentina/Cordoba'
     assert isinstance(data['temporal'], list)
+
+
+def test_admin_analytics_heatmap_rejects_non_numeric_tenant_id(client):
+    response = client.get(
+        '/admin/analytics/heatmap',
+        query_string={'tenant_id': 'abc', 'scope': 'municipio'},
+        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': 'abc'},
+    )
+    assert response.status_code == 400

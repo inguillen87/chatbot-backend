@@ -7,6 +7,7 @@ os.environ.setdefault("FLASK_SKIP_GLOBAL_APP", "1")
 
 from app import create_app, db
 from config import Config
+from models import TenantProfile, User
 
 
 class TestConfig(Config):
@@ -29,6 +30,21 @@ class AuthDemoLoginTest(unittest.TestCase):
         db.drop_all()
         self.ctx.pop()
 
+
+    def test_demo_login_uses_isolated_demo_user_not_owner(self):
+        resp = self.client.post("/auth/demo", json={"rubro": "municipio"})
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.get_json()
+
+        tenant = TenantProfile.query.filter_by(slug=payload.get("tenant_slug")).first()
+        self.assertIsNotNone(tenant)
+        owner = User.query.get(getattr(tenant, "municipio_id", None) or getattr(tenant, "pyme_id", None))
+
+        self.assertTrue((payload.get("email") or "").startswith("demo."))
+        if owner is not None:
+            self.assertNotEqual(payload.get("id"), owner.id)
+            self.assertNotEqual(payload.get("email"), owner.email)
+
     def test_demo_login_returns_token_and_demo_mode(self):
         resp = self.client.post("/auth/demo", json={"rubro": "municipio"})
         self.assertEqual(resp.status_code, 200)
@@ -43,6 +59,29 @@ class AuthDemoLoginTest(unittest.TestCase):
 
     def test_demo_login_rejects_unknown_rubro(self):
         resp = self.client.post("/auth/demo", json={"rubro": "no-existe-xyz"})
+        self.assertEqual(resp.status_code, 404)
+
+    def test_demo_login_rejects_existing_non_demo_tenant_slug(self):
+        owner = User(
+            email="owner-private@test.com",
+            name="Owner Private",
+            rol="admin",
+            tipo_chat="pyme",
+        )
+        owner.set_password("password")
+        db.session.add(owner)
+        db.session.commit()
+
+        tenant = TenantProfile(
+            slug="private-tenant",
+            nombre="Private Tenant",
+            tipo="pyme",
+            pyme_id=owner.id,
+        )
+        db.session.add(tenant)
+        db.session.commit()
+
+        resp = self.client.post("/auth/demo", json={"rubro": "private-tenant"})
         self.assertEqual(resp.status_code, 404)
 
 

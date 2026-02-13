@@ -19,6 +19,7 @@ Este es el **documento único** para frontend con:
 ### 1.2 Demo y onboarding
 - `POST /auth/demo` disponible para entrada demo por rubro.
 - Respuesta con `demo_mode` para condicionar UX (acciones sensibles, badges, etc.).
+- Seguridad: el backend usa usuarios demo **aislados** por tenant (no reutiliza owner/admin real), útil para auditoría y trazabilidad en demos.
 
 ### 1.3 Analytics enterprise
 - `POST /analytics/event`

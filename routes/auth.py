@@ -785,8 +785,18 @@ def widget_refresh():
 
 
 
-def _resolve_demo_tenant_slug(rubro_raw: Optional[str]) -> str:
+def _resolve_demo_tenant_slug(rubro_raw: Optional[str]) -> Optional[str]:
     normalized = (rubro_raw or "").strip().lower()
+    if not normalized:
+        normalized = "municipio"
+
+    demos = load_demo_rubros(require_owner=False)
+    allowed_keys = {
+        (demo.key or "").strip().lower()
+        for demo in demos
+        if (demo.key or "").strip()
+    }
+
     alias_map = {
         "municipio": "municipio",
         "gobierno": "municipio",
@@ -796,12 +806,17 @@ def _resolve_demo_tenant_slug(rubro_raw: Optional[str]) -> str:
         "bodega": "bodega",
         "ferreteria": "ferreteria",
     }
-    if normalized in alias_map:
-        return alias_map[normalized]
 
-    for demo in load_demo_rubros(require_owner=False):
+    candidate = alias_map.get(normalized)
+    if candidate and candidate in allowed_keys:
+        return candidate
+
+    for demo in demos:
+        key = (demo.key or "").strip().lower()
+        if not key:
+            continue
         if normalized in {
-            (demo.key or "").lower(),
+            key,
             (demo.rubro_clave or "").lower() if demo.rubro_clave else "",
             (demo.label or "").strip().lower().replace(" ", "_"),
         }:
@@ -809,28 +824,29 @@ def _resolve_demo_tenant_slug(rubro_raw: Optional[str]) -> str:
         if normalized in {(a or "").lower() for a in (demo.aliases or [])}:
             return demo.key
 
-    return normalized or "municipio"
+    return None
 
 
 def _get_or_create_demo_user_for_tenant(tenant: TenantProfile) -> User:
-    owner = _tenant_owner(tenant)
-    if owner:
-        return owner
+    """Return an isolated demo admin account for the tenant.
 
-    existing = User.query.filter_by(tenant_id=tenant.id, rol="admin").order_by(User.id.asc()).first()
-    if existing:
-        return existing
+    We intentionally avoid reusing tenant owner/admin accounts to prevent demo
+    logins from inheriting real operator identities.
+    """
 
     demo_email = f"demo.{tenant.slug}@chatboc.ar"
     user = _user_query().filter_by(email=demo_email).first()
     if user:
         _attach_user_to_tenant(user, tenant)
+        if user.rol != "admin":
+            user.rol = "admin"
+            db.session.add(user)
+            db.session.commit()
         return user
 
     user = User(
         name=f"Demo {tenant.nombre}",
         email=demo_email,
-        password_hash="demo",
         rol="admin",
         tipo_chat=(tenant.tipo or "pyme").lower(),
         tenant_slug=tenant.slug,
@@ -838,6 +854,7 @@ def _get_or_create_demo_user_for_tenant(tenant: TenantProfile) -> User:
         pyme_id=tenant.pyme_id,
         municipio_id=tenant.municipio_id,
     )
+    user.set_password("demo")
     db.session.add(user)
     db.session.commit()
     return user
@@ -853,6 +870,8 @@ def login_demo():
     data = request.get_json(silent=True) or {}
     rubro = data.get('rubro') or data.get('segmento') or data.get('demo')
     demo_slug = _resolve_demo_tenant_slug(rubro)
+    if not demo_slug:
+        return jsonify({"error": f"Rubro demo '{rubro or ''}' no válido"}), 404
 
     try:
         tenant_obj = resolve_tenant_only(tenant_slug=demo_slug, require_explicit_slug=True)

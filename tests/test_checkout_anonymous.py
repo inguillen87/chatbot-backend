@@ -193,14 +193,24 @@ def test_points_checkout_rejects_when_insufficient_balance(client, tenant_with_c
 
 
 @pytest.mark.usefixtures("client")
-def test_money_checkout_demo_mode_skips_mercadopago(client, tenant_with_catalog, monkeypatch):
+def test_money_checkout_ignores_client_demo_mode_flag(client, tenant_with_catalog, monkeypatch):
     tenant, product, _, _ = tenant_with_catalog
+
+    tenant.configuracion = {"mercadopago_access_token": "test-token"}
+    db.session.commit()
 
     called = {"mp": 0}
 
+    class FakeResp:
+        ok = True
+
+        @staticmethod
+        def json():
+            return {"id": "pref_123", "init_point": "https://mp.test/pref_123"}
+
     def fake_post(*args, **kwargs):
         called["mp"] += 1
-        raise AssertionError("MercadoPago should not be called in demo_mode")
+        return FakeResp()
 
     monkeypatch.setattr("routes.checkout.requests.post", fake_post)
 
@@ -216,9 +226,10 @@ def test_money_checkout_demo_mode_skips_mercadopago(client, tenant_with_catalog,
 
     assert resp.status_code == 200
     data = resp.get_json()
-    assert data["demo_mode"] is True
-    assert data["estado"] == "confirmado"
-    assert called["mp"] == 0
+    assert data["estado"] == "pendiente_pago"
+    assert data.get("demo_mode") is not True
+    assert data["preference_id"] == "pref_123"
+    assert called["mp"] == 1
 
 
 @pytest.mark.usefixtures("client")

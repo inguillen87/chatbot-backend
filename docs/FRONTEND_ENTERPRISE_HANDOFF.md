@@ -16,6 +16,7 @@ Este documento resume **lo ya implementado en backend** y el plan de trabajo rec
 ### 1.2 Demo / onboarding
 - `POST /auth/demo` disponible para ingreso demo por rubro/tenant (flujo ya integrado en backend).
 - Token demo incluye `demo_mode` para condicionar UX y acciones sensibles.
+- Seguridad: login demo usa usuario demo aislado por tenant (no owner/admin real).
 
 ### 1.3 Analytics enterprise
 - `POST /analytics/event` (ingest tenant-scoped).

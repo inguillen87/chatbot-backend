@@ -6,7 +6,7 @@ import csv
 import io
 from datetime import datetime
 
-from flask import Blueprint, Response, jsonify, request
+from flask import Blueprint, Response, abort, jsonify, request
 from sqlalchemy import func
 
 from models import AnalyticsEventV2
@@ -23,6 +23,13 @@ def _json(payload: dict, status: int = 200):
     return response
 
 
+def _tenant_id_as_int(value: str) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        abort(400, description="tenant_id must be numeric")
+
+
 @admin_analytics_bp.get("/overview")
 def admin_analytics_overview():
     filters = parse_filters(request.args)
@@ -37,7 +44,8 @@ def admin_analytics_heatmap():
     tz = request.args.get("tz") or "UTC"
     base = get_geo_heatmap(filters)
 
-    query = AnalyticsEventV2.query.filter(AnalyticsEventV2.tenant_id == int(filters.tenant_id))
+    tenant_id = _tenant_id_as_int(filters.tenant_id)
+    query = AnalyticsEventV2.query.filter(AnalyticsEventV2.tenant_id == tenant_id)
     if filters.date_from:
         query = query.filter(AnalyticsEventV2.ts >= filters.date_from)
     if filters.date_to:

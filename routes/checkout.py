@@ -277,7 +277,7 @@ def _crear_pedido(payload: dict):
     access_token = tenant_cfg.get("mercadopago_access_token") or os.getenv("MERCADOPAGO_ACCESS_TOKEN")
     init_point = None
     preference_id = None
-    demo_mode = bool((getattr(g, "token_payload", {}) or {}).get("demo_mode") or payload.get("demo_mode"))
+    demo_mode = bool((getattr(g, "token_payload", {}) or {}).get("demo_mode"))
 
     if total_money > 0 and demo_mode:
         pedido.estado = "confirmado"
