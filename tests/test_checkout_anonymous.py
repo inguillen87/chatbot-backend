@@ -126,6 +126,31 @@ def test_checkout_rejects_when_mercadopago_missing(client, tenant_with_catalog, 
     assert "MercadoPago" in data["error"]
 
 
+
+
+@pytest.mark.usefixtures("client")
+def test_checkout_ignores_global_mercadopago_token_without_tenant_token(client, tenant_with_catalog, monkeypatch):
+    tenant, product, _, _ = tenant_with_catalog
+
+    monkeypatch.setenv("MERCADOPAGO_ACCESS_TOKEN", "global-token")
+    tenant.configuracion = {}
+    db.session.commit()
+
+    with client.session_transaction() as sess:
+        _build_cart(sess, tenant.id, product.id)
+
+    resp = client.post(
+        "/api/checkout/crear-preferencia",
+        data=json.dumps({"nombre": "Anon", "email": "anon@example.com"}),
+        content_type="application/json",
+        headers={"X-Tenant": tenant.slug},
+    )
+
+    assert resp.status_code == 503
+    data = resp.get_json()
+    assert data["mercadopago_ready"] is False
+    assert "no configurado" in data["error"].lower()
+
 @pytest.mark.usefixtures("client")
 def test_checkout_uses_tenant_token_for_payment(client, tenant_with_catalog, monkeypatch):
     tenant, product, _, _ = tenant_with_catalog

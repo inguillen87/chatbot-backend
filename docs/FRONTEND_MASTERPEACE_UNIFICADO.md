@@ -42,6 +42,7 @@ Este es el **documento único** para frontend con:
 
 ### 1.6 Checkout / MercadoPago / puntos
 - Integración MP por tenant (incluye flujo admin y validación).
+- Checkout monetario requiere token MP del tenant (sin fallback global).
 - Webhook tenant-aware.
 - Guardrails de puntos y resolución de tenant más estricta.
 - Demo-mode para evitar efectos reales en entornos de prueba.

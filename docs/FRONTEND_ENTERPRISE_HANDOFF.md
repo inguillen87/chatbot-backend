@@ -35,6 +35,7 @@ Este documento resume **lo ya implementado en backend** y el plan de trabajo rec
 
 ### 1.5 Checkout / MercadoPago / guardrails
 - Integración MercadoPago por tenant (credenciales + test + webhook tenant-aware).
+- Checkout monetario exige token MercadoPago configurado en el tenant (sin fallback global).
 - Checkout demo-mode para evitar cobros reales en demos.
 - Guardrails de puntos/tenant para evitar fallback inseguro.
 

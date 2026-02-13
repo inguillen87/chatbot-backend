@@ -1,5 +1,4 @@
 import logging
-import os
 from typing import List, Optional
 
 import requests
@@ -274,7 +273,7 @@ def _crear_pedido(payload: dict):
     db.session.commit()
 
     tenant_cfg = tenant.configuracion or {}
-    access_token = tenant_cfg.get("mercadopago_access_token") or os.getenv("MERCADOPAGO_ACCESS_TOKEN")
+    access_token = tenant_cfg.get("mercadopago_access_token")
     init_point = None
     preference_id = None
     demo_mode = bool((getattr(g, "token_payload", {}) or {}).get("demo_mode"))
