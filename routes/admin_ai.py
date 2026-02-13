@@ -9,7 +9,8 @@ from datetime import datetime
 from flask import Blueprint, abort, jsonify, request
 import pdfplumber
 
-from models import CatalogoItem, MunicipioTicket, PymePedido, PymeTicket, TicketComentario
+from extensions import db
+from models import CatalogoItem, MunicipioTicket, PymePedido, PymeTicket, TenantProfile, TicketComentario
 from services.analytics import get_summary
 from services.analytics.filters import parse_filters
 from services.analytics.rbac import require_access
@@ -20,6 +21,11 @@ admin_ai_bp = Blueprint("admin_ai_bp", __name__, url_prefix="/admin")
 
 _ALLOWED_ORDER_DRAFT_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg", ".webp"}
 _MAX_ORDER_DRAFT_BYTES = 5 * 1024 * 1024
+_BOT_CONFIG_KEY = "bot_settings"
+_ALLOWED_BOT_FALLBACK_BEHAVIORS = {"derivar_humano", "auto_reply", "silent"}
+_MAX_BOT_NAME_LEN = 80
+_MAX_BOT_TONE_LEN = 50
+_MAX_BOT_SYSTEM_PROMPT_LEN = 5000
 
 
 def _parse_tenant_id(value):
@@ -29,6 +35,129 @@ def _parse_tenant_id(value):
         return int(value)
     except (TypeError, ValueError):
         abort(400, description="tenant_id must be an integer")
+
+
+def _ensure_tenant_bot_settings(tenant):
+    config = tenant.configuracion if isinstance(tenant.configuracion, dict) else {}
+    raw_bot_settings = config.get(_BOT_CONFIG_KEY)
+    bot_settings = raw_bot_settings if isinstance(raw_bot_settings, dict) else {}
+
+    return {
+        "name": bot_settings.get("name"),
+        "tone": bot_settings.get("tone"),
+        "system_prompt": bot_settings.get("system_prompt"),
+        "fallback_behavior": bot_settings.get("fallback_behavior"),
+        "branding": {
+            "logo_url": tenant.logo_url,
+            "primary_color": bot_settings.get("branding", {}).get("primary_color") if isinstance(bot_settings.get("branding"), dict) else None,
+            "secondary_color": bot_settings.get("branding", {}).get("secondary_color") if isinstance(bot_settings.get("branding"), dict) else None,
+        },
+    }
+
+
+def _validate_optional_string(payload: dict, key: str, max_len: int):
+    if key not in payload:
+        return None
+    value = payload.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        abort(400, description=f"{key} must be a string")
+    trimmed = value.strip()
+    if len(trimmed) > max_len:
+        abort(400, description=f"{key} too long")
+    return trimmed or None
+
+
+def _validated_branding(payload: dict):
+    if payload is None:
+        return None
+    if not isinstance(payload, dict):
+        abort(400, description="branding must be an object")
+
+    allowed = {"logo_url", "primary_color", "secondary_color"}
+    unknown = set(payload.keys()) - allowed
+    if unknown:
+        abort(400, description="branding contains unknown fields")
+
+    branding = {}
+    for field in allowed:
+        if field in payload:
+            value = payload.get(field)
+            if value is not None and not isinstance(value, str):
+                abort(400, description=f"branding.{field} must be a string")
+            branding[field] = (value or "").strip() or None
+    return branding
+
+
+@admin_ai_bp.get("/bot/settings")
+def get_bot_settings():
+    tenant_id = _parse_tenant_id(request.args.get("tenant_id"))
+    require_access(str(tenant_id), "operador")
+
+    tenant = TenantProfile.query.get(tenant_id)
+    if not tenant:
+        abort(404, description="tenant not found")
+
+    return jsonify({"tenant_id": tenant.id, "settings": _ensure_tenant_bot_settings(tenant)})
+
+
+@admin_ai_bp.put("/bot/settings")
+def update_bot_settings():
+    payload = request.get_json(silent=True) or {}
+    tenant_id = _parse_tenant_id(payload.get("tenant_id"))
+    require_access(str(tenant_id), "operador")
+
+    tenant = TenantProfile.query.get(tenant_id)
+    if not tenant:
+        abort(404, description="tenant not found")
+
+    allowed_top_level = {"tenant_id", "name", "tone", "system_prompt", "fallback_behavior", "branding"}
+    unknown_fields = set(payload.keys()) - allowed_top_level
+    if unknown_fields:
+        abort(400, description="payload contains unknown fields")
+
+    name = _validate_optional_string(payload, "name", _MAX_BOT_NAME_LEN)
+    tone = _validate_optional_string(payload, "tone", _MAX_BOT_TONE_LEN)
+    system_prompt = _validate_optional_string(payload, "system_prompt", _MAX_BOT_SYSTEM_PROMPT_LEN)
+
+    fallback_behavior = None
+    if "fallback_behavior" in payload:
+        fallback_behavior = payload.get("fallback_behavior")
+        if fallback_behavior is not None:
+            if not isinstance(fallback_behavior, str):
+                abort(400, description="fallback_behavior must be a string")
+            fallback_behavior = fallback_behavior.strip().lower()
+            if fallback_behavior not in _ALLOWED_BOT_FALLBACK_BEHAVIORS:
+                abort(400, description="invalid fallback_behavior")
+
+    branding = _validated_branding(payload.get("branding")) if "branding" in payload else None
+
+    config = dict(tenant.configuracion) if isinstance(tenant.configuracion, dict) else {}
+    current_bot_settings = config.get(_BOT_CONFIG_KEY)
+    bot_settings = dict(current_bot_settings) if isinstance(current_bot_settings, dict) else {}
+
+    if "name" in payload:
+        bot_settings["name"] = name
+    if "tone" in payload:
+        bot_settings["tone"] = tone
+    if "system_prompt" in payload:
+        bot_settings["system_prompt"] = system_prompt
+    if "fallback_behavior" in payload:
+        bot_settings["fallback_behavior"] = fallback_behavior
+    if branding is not None:
+        bot_settings["branding"] = {
+            "primary_color": branding.get("primary_color"),
+            "secondary_color": branding.get("secondary_color"),
+        }
+        if "logo_url" in branding:
+            tenant.logo_url = branding.get("logo_url")
+
+    config[_BOT_CONFIG_KEY] = bot_settings
+    tenant.configuracion = config
+    db.session.commit()
+
+    return jsonify({"tenant_id": tenant.id, "settings": _ensure_tenant_bot_settings(tenant)})
 
 
 @admin_ai_bp.post("/ai/executive-summary")

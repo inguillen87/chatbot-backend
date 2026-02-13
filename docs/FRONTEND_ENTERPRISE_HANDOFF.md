@@ -1,5 +1,7 @@
 # Frontend Handoff — Enterprise SaaS Iteration (Backend Ready)
 
+> 📌 **Documento principal actualizado**: usar `docs/FRONTEND_MASTERPEACE_UNIFICADO.md` como fuente única (estado actual + hecho + pendiente).
+
 Este documento resume **lo ya implementado en backend** y el plan de trabajo recomendado para frontend, para que puedan avanzar en paralelo sin bloquearse.
 
 ---
@@ -27,6 +29,8 @@ Este documento resume **lo ya implementado en backend** y el plan de trabajo rec
 - `POST /admin/tickets/<ticket_id>/ai-summary`
 - `POST /admin/ai/product-recommendations`
 - `POST /admin/ai/order-draft-from-document` (OCR/PDF/image -> draft)
+- `GET /admin/bot/settings?tenant_id=<id>` (alias: `/api/admin/bot/settings`)
+- `PUT /admin/bot/settings` (alias: `/api/admin/bot/settings`)
 
 ### 1.5 Checkout / MercadoPago / guardrails
 - Integración MercadoPago por tenant (credenciales + test + webhook tenant-aware).
@@ -34,6 +38,38 @@ Este documento resume **lo ya implementado en backend** y el plan de trabajo rec
 - Guardrails de puntos/tenant para evitar fallback inseguro.
 
 ---
+
+## 1.6 Bot IA personalizable por tenant
+
+### `GET /admin/bot/settings?tenant_id=<id>`
+- Respuesta: `{ "tenant_id": <id>, "settings": { "name": "...", "tone": "...", "system_prompt": "...", "fallback_behavior": "...", "branding": { "logo_url": "...", "primary_color": "...", "secondary_color": "..." } } }`
+
+### `PUT /admin/bot/settings`
+- Body permitido:
+```json
+{
+  "tenant_id": 123,
+  "name": "Asistente de Ventas",
+  "tone": "profesional",
+  "system_prompt": "Ayudá a cerrar pedidos y responder estado de órdenes",
+  "fallback_behavior": "derivar_humano",
+  "branding": {
+    "logo_url": "https://cdn.example.com/logo.png",
+    "primary_color": "#123456",
+    "secondary_color": "#654321"
+  }
+}
+```
+- Validaciones:
+  - `tenant_id` obligatorio e integer (`400` si falta/inválido).
+  - `fallback_behavior` ∈ `derivar_humano|auto_reply|silent` (`400` si inválido).
+  - campos desconocidos en top-level o `branding` -> `400`.
+- Seguridad:
+  - acceso cross-tenant devuelve `403`.
+- Persistencia:
+  - `name/tone/system_prompt/fallback_behavior/branding` se guardan en `TenantProfile.configuracion.bot_settings`.
+  - `branding.logo_url` sincroniza además `TenantProfile.logo_url` para compatibilidad con clientes legacy.
+
 
 ## 2) Contratos de endpoints para frontend
 

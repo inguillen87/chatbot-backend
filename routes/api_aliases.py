@@ -9,6 +9,7 @@ behavior remain consistent with the original endpoints.
 from flask import Blueprint, jsonify, request
 from flask_cors import cross_origin
 
+from routes.admin_ai import get_bot_settings, update_bot_settings
 from routes.auth import (
     chatuser_login_panel,
     chatuser_register_panel,
@@ -167,6 +168,16 @@ def ask_municipio_alias():
 
 def _options_ok():
     return jsonify({"ok": True})
+
+
+@api_aliases_bp.route("/admin/bot/settings", methods=["GET"], strict_slashes=False)
+def admin_bot_settings_get_alias():
+    return get_bot_settings()
+
+
+@api_aliases_bp.route("/admin/bot/settings", methods=["PUT"], strict_slashes=False)
+def admin_bot_settings_put_alias():
+    return update_bot_settings()
 
 
 @api_aliases_bp.route(

@@ -2,7 +2,7 @@ import io
 from datetime import datetime, timedelta
 
 from extensions import db
-from models import CatalogoItem, MunicipioTicket, PymePedido, PymeTicket, TicketComentario, User
+from models import CatalogoItem, MunicipioTicket, PymePedido, PymeTicket, TenantProfile, TicketComentario, User
 
 
 def _ensure_user(tenant_id: int, scope: str) -> User:
@@ -247,3 +247,124 @@ def test_executive_summary_reports_insufficient_data_without_ai_call(client, mon
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["ai"]["tone"] == "Data-Insufficient"
+
+
+def test_bot_settings_get_and_put_tenant_scoped(client):
+    tenant_id = 47
+    owner = _ensure_user(tenant_id, "pyme")
+    tenant = TenantProfile(
+        slug="tenant-bot-settings",
+        nombre="Tenant Bot Settings",
+        tipo="pyme",
+        pyme_id=owner.id,
+        configuracion={},
+    )
+    db.session.add(tenant)
+    db.session.commit()
+
+    get_response = client.get(
+        "/admin/bot/settings",
+        query_string={"tenant_id": tenant.id},
+        headers={"X-Debug-Role": "operador", "X-Debug-Tenant": str(tenant.id)},
+    )
+    assert get_response.status_code == 200
+    initial_payload = get_response.get_json()
+    assert initial_payload["settings"]["name"] is None
+
+    update_response = client.put(
+        "/admin/bot/settings",
+        json={
+            "tenant_id": tenant.id,
+            "name": "Asistente Bodega",
+            "tone": "profesional",
+            "system_prompt": "Ayuda con pedidos y postventa.",
+            "fallback_behavior": "derivar_humano",
+            "branding": {
+                "logo_url": "https://example.com/logo.png",
+                "primary_color": "#123456",
+                "secondary_color": "#654321",
+            },
+        },
+        headers={"X-Debug-Role": "operador", "X-Debug-Tenant": str(tenant.id)},
+    )
+    assert update_response.status_code == 200
+    updated_payload = update_response.get_json()
+    assert updated_payload["settings"]["name"] == "Asistente Bodega"
+    assert updated_payload["settings"]["fallback_behavior"] == "derivar_humano"
+    assert updated_payload["settings"]["branding"]["logo_url"] == "https://example.com/logo.png"
+
+    refreshed_tenant = TenantProfile.query.get(tenant.id)
+    assert refreshed_tenant.logo_url == "https://example.com/logo.png"
+    assert refreshed_tenant.configuracion["bot_settings"]["tone"] == "profesional"
+
+
+def test_bot_settings_forbidden_cross_tenant(client):
+    tenant_id = 48
+    owner = _ensure_user(tenant_id, "pyme")
+    tenant = TenantProfile(
+        slug="tenant-bot-forbidden",
+        nombre="Tenant Forbidden",
+        tipo="pyme",
+        pyme_id=owner.id,
+    )
+    db.session.add(tenant)
+    db.session.commit()
+
+    response = client.get(
+        "/admin/bot/settings",
+        query_string={"tenant_id": tenant.id},
+        headers={"X-Debug-Role": "operador", "X-Debug-Tenant": "999"},
+    )
+    assert response.status_code == 403
+
+
+def test_bot_settings_rejects_invalid_payload(client):
+    tenant_id = 49
+    owner = _ensure_user(tenant_id, "pyme")
+    tenant = TenantProfile(
+        slug="tenant-bot-invalid",
+        nombre="Tenant Invalid",
+        tipo="pyme",
+        pyme_id=owner.id,
+    )
+    db.session.add(tenant)
+    db.session.commit()
+
+    response = client.put(
+        "/admin/bot/settings",
+        json={
+            "tenant_id": tenant.id,
+            "fallback_behavior": "invalid_behavior",
+        },
+        headers={"X-Debug-Role": "operador", "X-Debug-Tenant": str(tenant.id)},
+    )
+    assert response.status_code == 400
+
+
+def test_bot_settings_api_admin_alias(client):
+    tenant_id = 50
+    owner = _ensure_user(tenant_id, "pyme")
+    tenant = TenantProfile(
+        slug="tenant-bot-alias",
+        nombre="Tenant Alias",
+        tipo="pyme",
+        pyme_id=owner.id,
+    )
+    db.session.add(tenant)
+    db.session.commit()
+
+    get_response = client.get(
+        "/api/admin/bot/settings",
+        query_string={"tenant_id": tenant.id},
+        headers={"X-Debug-Role": "operador", "X-Debug-Tenant": str(tenant.id)},
+    )
+    assert get_response.status_code == 200
+
+    put_response = client.put(
+        "/api/admin/bot/settings",
+        json={"tenant_id": tenant.id, "name": "Alias Bot"},
+        headers={"X-Debug-Role": "operador", "X-Debug-Tenant": str(tenant.id)},
+    )
+    assert put_response.status_code == 200
+    payload = put_response.get_json()
+    assert payload["settings"]["name"] == "Alias Bot"
