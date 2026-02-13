@@ -1,9 +1,7 @@
 from flask import Blueprint, jsonify, request, g
 from flask_cors import cross_origin
 
-from models import TenantProfile
 from services.rewards import recompensas_service
-from routes.productos import _resolve_public_owner
 from services.tenant_resolver import TenantResolutionError, resolve_tenant_and_user
 from config import ALLOWED_ORIGINS
 
@@ -59,6 +57,8 @@ def saldo():
         or request.headers.get("token")
         or getattr(g, "user", None)
     )
+    if not has_hint:
+        return jsonify({"error": "Tenant no encontrado para el contexto dado"}), 404
     try:
         tenant, user, _ = resolve_tenant_and_user(
             whatsapp_destination_number=request.headers.get("X-Whatsapp-Dst"),
@@ -66,19 +66,13 @@ def saldo():
             tenant_slug=tenant_arg,
             tenant_id=tenant_id,
             current_user=getattr(g, "user", None),
+            allow_fallback=False,
         )
     except TenantResolutionError as exc:
-        tenant, user = _resolve_public_owner()
-        if tenant is None:
-            tenant = TenantProfile.query.order_by(TenantProfile.id.asc()).first()
-        if user is None:
-            return (
-                jsonify({"tenant_id": getattr(tenant, "id", None), "saldo": 0, "error": str(exc)}),
-                200,
-            )
+        return jsonify({"error": str(exc)}), 404
 
     if tenant is None:
-        return jsonify({"tenant_id": None, "saldo": 0, "anonId": getattr(user, "anon_id", None)})
+        return jsonify({"error": "Tenant no encontrado"}), 404
 
     saldo_actual = recompensas_service().obtener_saldo(user)
     limit = request.args.get("limit", type=int) or 5
@@ -135,6 +129,8 @@ def historial():
         or request.headers.get("token")
         or getattr(g, "user", None)
     )
+    if not has_hint:
+        return jsonify({"error": "Tenant no encontrado para el contexto dado"}), 404
     try:
         tenant, user, _ = resolve_tenant_and_user(
             whatsapp_destination_number=request.headers.get("X-Whatsapp-Dst"),
@@ -142,19 +138,13 @@ def historial():
             tenant_slug=tenant_arg,
             tenant_id=tenant_id,
             current_user=getattr(g, "user", None),
+            allow_fallback=False,
         )
     except TenantResolutionError as exc:
-        tenant, user = _resolve_public_owner()
-        if tenant is None:
-            tenant = TenantProfile.query.order_by(TenantProfile.id.asc()).first()
-        if user is None:
-            return (
-                jsonify({"tenant_id": getattr(tenant, "id", None), "historial": [], "error": str(exc)}),
-                200,
-            )
+        return jsonify({"error": str(exc)}), 404
 
     if tenant is None:
-        return jsonify({"tenant_id": None, "historial": [], "error": "Tenant no encontrado"}), 200
+        return jsonify({"error": "Tenant no encontrado"}), 404
 
     limit = request.args.get("limit", type=int) or 50
     page = request.args.get("page", type=int) or 1
@@ -215,4 +205,3 @@ def movimientos_public():
     """Alias público para /api/puntos/movimientos."""
 
     return historial()
-
