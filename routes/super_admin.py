@@ -38,6 +38,75 @@ LEGACY_TENANT_SEEDS = {
 }
 
 
+
+
+_SUPPORTED_FRANCHISE_LANGUAGES = {"es", "en", "pt"}
+
+
+def _default_franchise_profile(tenant: TenantProfile) -> dict:
+    return {
+        "white_label_enabled": True,
+        "reseller_enabled": True,
+        "target_markets": ["latam"],
+        "default_language": "es",
+        "supported_languages": ["es", "en", "pt"],
+        "timezone": "America/Argentina/Buenos_Aires",
+        "currency": "ARS",
+        "country": "AR",
+        "legal_entity_name": tenant.nombre,
+        "partner_program": "standard",
+    }
+
+
+def _sanitize_franchise_profile(payload: dict, tenant: TenantProfile) -> tuple[dict, list[str]]:
+    base = _default_franchise_profile(tenant)
+    errors: list[str] = []
+
+    if not isinstance(payload, dict):
+        return base, ["Payload inválido"]
+
+    for flag in ("white_label_enabled", "reseller_enabled"):
+        if flag in payload:
+            base[flag] = bool(payload.get(flag))
+
+    if "target_markets" in payload:
+        markets = payload.get("target_markets")
+        if isinstance(markets, list):
+            cleaned = [str(item).strip().lower() for item in markets if str(item).strip()]
+            base["target_markets"] = list(dict.fromkeys(cleaned))[:12]
+
+    if "default_language" in payload:
+        lang = str(payload.get("default_language") or "").strip().lower()
+        if lang in _SUPPORTED_FRANCHISE_LANGUAGES:
+            base["default_language"] = lang
+        else:
+            errors.append("default_language inválido (usar es|en|pt)")
+
+    if "supported_languages" in payload:
+        langs = payload.get("supported_languages")
+        if isinstance(langs, list) and langs:
+            cleaned = []
+            for item in langs:
+                code = str(item).strip().lower()
+                if code in _SUPPORTED_FRANCHISE_LANGUAGES:
+                    cleaned.append(code)
+            cleaned = list(dict.fromkeys(cleaned))
+            if cleaned:
+                base["supported_languages"] = cleaned
+            else:
+                errors.append("supported_languages inválido (usar es|en|pt)")
+
+    for key in ("timezone", "currency", "country", "legal_entity_name", "partner_program"):
+        if key in payload:
+            value = str(payload.get(key) or "").strip()
+            if value:
+                base[key] = value
+
+    if base.get("default_language") not in set(base.get("supported_languages") or []):
+        base["supported_languages"] = list(dict.fromkeys([base.get("default_language")] + list(base.get("supported_languages") or [])))
+
+    return base, errors
+
 def _normalize_plan_key(raw_plan: str | None) -> str:
     if not raw_plan:
         return "gratis"
@@ -331,6 +400,51 @@ def list_tenants(current_user):
         "pages": pagination.pages,
         "current_page": page
     })
+
+@super_admin_bp.route('/tenants/<string:slug>/franchise-profile', methods=['GET'])
+@token_requerido
+@super_admin_required
+def get_tenant_franchise_profile(current_user, slug):
+    tenant = TenantProfile.query.filter_by(slug=slug).first_or_404()
+    config = tenant.configuracion if isinstance(tenant.configuracion, dict) else {}
+    profile = config.get("franchise_profile") if isinstance(config.get("franchise_profile"), dict) else None
+    if not profile:
+        profile = _default_franchise_profile(tenant)
+
+    return jsonify({
+        "tenant": {
+            "id": tenant.id,
+            "slug": tenant.slug,
+            "nombre": tenant.nombre,
+            "tipo": tenant.tipo,
+            "plan": tenant.plan,
+        },
+        "franchise_profile": profile,
+        "supported_language_codes": sorted(_SUPPORTED_FRANCHISE_LANGUAGES),
+    })
+
+
+@super_admin_bp.route('/tenants/<string:slug>/franchise-profile', methods=['PUT'])
+@token_requerido
+@super_admin_required
+def update_tenant_franchise_profile(current_user, slug):
+    tenant = TenantProfile.query.filter_by(slug=slug).first_or_404()
+    payload = request.get_json(silent=True) or {}
+
+    profile, errors = _sanitize_franchise_profile(payload, tenant)
+    if errors:
+        return jsonify({"error": "; ".join(errors)}), 400
+
+    config = tenant.configuracion if isinstance(tenant.configuracion, dict) else {}
+    config["franchise_profile"] = profile
+    tenant.configuracion = config
+    db.session.add(tenant)
+
+    _log_admin_action(current_user.id, "update_franchise_profile", slug, {"profile": profile})
+    db.session.commit()
+
+    return jsonify({"ok": True, "franchise_profile": profile})
+
 
 @super_admin_bp.route('/tenants/<string:slug>/metrics', methods=['GET'])
 @token_requerido
