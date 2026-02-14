@@ -1,5 +1,7 @@
 from flask import Blueprint, request, jsonify, g, current_app
+import requests
 from sqlalchemy import func
+from datetime import datetime, timezone
 
 from utils.auth_helpers import token_requerido
 from middleware.tenant_context import require_tenant
@@ -34,6 +36,76 @@ def _cors_preflight_response():
     response.headers.add("Access-Control-Allow-Headers", "Content-Type,Authorization")
     response.headers.add("Access-Control-Allow-Methods", "GET,POST,OPTIONS,PUT,DELETE,PATCH")
     return response
+
+
+def _sanitize_personalization_options_for_storage(raw_options):
+    if raw_options is None:
+        return None
+    if not isinstance(raw_options, list):
+        raise ValueError("personalization_options must be a list")
+
+    sanitized = []
+    allowed_types = {"text", "select", "multiselect", "number", "boolean"}
+    for idx, option in enumerate(raw_options):
+        if not isinstance(option, dict):
+            raise ValueError("personalization_options entries must be objects")
+
+        option_id = str(option.get("id") or option.get("key") or f"opt_{idx+1}").strip()
+        label = str(option.get("label") or option.get("nombre") or "").strip()
+        if not option_id or not label:
+            raise ValueError("personalization options require id and label")
+
+        option_type = str(option.get("type") or option.get("tipo") or "text").strip().lower()
+        if option_type not in allowed_types:
+            raise ValueError("invalid personalization option type")
+
+        values = option.get("values") or option.get("opciones") or []
+        values_out = []
+        if values is not None:
+            if not isinstance(values, list):
+                raise ValueError("personalization option values must be a list")
+            for value in values:
+                if isinstance(value, dict):
+                    value_text = str(value.get("value") or value.get("label") or "").strip()
+                    if not value_text:
+                        continue
+                    try:
+                        price_delta = float(value.get("price_delta", 0) or 0)
+                    except (TypeError, ValueError):
+                        raise ValueError("invalid price_delta in personalization option")
+                    values_out.append({"value": value_text[:120], "price_delta": price_delta})
+                else:
+                    value_text = str(value).strip()
+                    if value_text:
+                        values_out.append({"value": value_text[:120], "price_delta": 0.0})
+
+        out = {
+            "id": option_id[:60],
+            "label": label[:120],
+            "type": option_type,
+            "required": bool(option.get("required", False)),
+            "values": values_out[:50],
+        }
+
+        if option.get("max_length") is not None:
+            try:
+                out["max_length"] = max(1, min(int(option.get("max_length")), 500))
+            except (TypeError, ValueError):
+                raise ValueError("invalid max_length in personalization option")
+
+        if option.get("max_select") is not None:
+            try:
+                out["max_select"] = max(1, min(int(option.get("max_select")), 20))
+            except (TypeError, ValueError):
+                raise ValueError("invalid max_select in personalization option")
+
+        help_text = str(option.get("help_text") or "").strip()
+        if help_text:
+            out["help_text"] = help_text[:200]
+
+        sanitized.append(out)
+
+    return sanitized
 
 
 def _is_authorized_for_tenant(current_user: User, tenant: TenantProfile) -> bool:
@@ -295,6 +367,15 @@ def admin_update_catalog_item(current_user, slug, item_id: int):
         item.disponible = bool(payload.get("disponible"))
     if "extra_metadata" in payload and isinstance(payload.get("extra_metadata"), dict):
         item.extra_metadata = payload.get("extra_metadata")
+
+    if "personalization_options" in payload:
+        try:
+            sanitized_options = _sanitize_personalization_options_for_storage(payload.get("personalization_options"))
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        metadata = item.extra_metadata if isinstance(item.extra_metadata, dict) else {}
+        metadata["personalization_options"] = sanitized_options
+        item.extra_metadata = metadata
 
     if "precio" in payload:
         precio_raw = payload.get("precio")
@@ -905,6 +986,123 @@ def connect_integration(current_user, slug, integration_type):
         return jsonify({"redirect_url": auth_url})
 
     return jsonify({"error": "Integration type not supported"}), 400
+
+
+
+def _mask_token(raw: str | None) -> str | None:
+    if not raw:
+        return None
+    value = str(raw)
+    if len(value) <= 8:
+        return "*" * len(value)
+    return f"{value[:4]}...{value[-4:]}"
+
+
+@admin_tenant_bp.route('/api/admin/tenants/<slug>/integrations/mercadopago', methods=['GET'])
+@token_requerido
+@require_tenant
+def get_mercadopago_credentials(current_user, slug):
+    tenant = _resolve_admin_tenant(current_user, slug)
+    if not tenant:
+        return jsonify({"error": "Tenant not found"}), 404
+
+    if not _is_authorized_for_tenant(current_user, tenant):
+        return jsonify({'error': 'Unauthorized'}), 403
+
+    cfg = tenant.configuracion or {}
+    token = cfg.get('mercadopago_access_token')
+    status = cfg.get('mercadopago_status')
+    tested_at = cfg.get('mercadopago_tested_at')
+
+    return jsonify({
+        "provider": "mercadopago",
+        "configured": bool(token),
+        "access_token_masked": _mask_token(token),
+        "status": status or ("configured" if token else "missing"),
+        "tested_at": tested_at,
+    })
+
+
+@admin_tenant_bp.route('/api/admin/tenants/<slug>/integrations/mercadopago', methods=['POST'])
+@token_requerido
+@require_tenant
+def set_mercadopago_credentials(current_user, slug):
+    tenant = _resolve_admin_tenant(current_user, slug)
+    if not tenant:
+        return jsonify({"error": "Tenant not found"}), 404
+
+    if not _is_authorized_for_tenant(current_user, tenant):
+        return jsonify({'error': 'Unauthorized'}), 403
+
+    payload = request.get_json(silent=True) or {}
+    access_token = (payload.get('access_token') or payload.get('token') or '').strip()
+    if not access_token:
+        return jsonify({"error": "access_token es requerido"}), 400
+
+    cfg = tenant.configuracion or {}
+    cfg['mercadopago_access_token'] = access_token
+    cfg['mercadopago_status'] = 'configured'
+    cfg['mercadopago_tested_at'] = None
+    tenant.configuracion = cfg
+    db.session.commit()
+
+    return jsonify({
+        "provider": "mercadopago",
+        "configured": True,
+        "access_token_masked": _mask_token(access_token),
+        "status": "configured",
+    })
+
+
+@admin_tenant_bp.route('/api/admin/tenants/<slug>/integrations/mercadopago/test', methods=['POST'])
+@token_requerido
+@require_tenant
+def test_mercadopago_credentials(current_user, slug):
+    tenant = _resolve_admin_tenant(current_user, slug)
+    if not tenant:
+        return jsonify({"error": "Tenant not found"}), 404
+
+    if not _is_authorized_for_tenant(current_user, tenant):
+        return jsonify({'error': 'Unauthorized'}), 403
+
+    cfg = tenant.configuracion or {}
+    token = cfg.get('mercadopago_access_token')
+    if not token:
+        return jsonify({"error": "No hay token configurado"}), 400
+
+    ok = False
+    details = None
+    try:
+        resp = requests.get(
+            'https://api.mercadopago.com/v1/account',
+            headers={'Authorization': f'Bearer {token}'},
+            timeout=10,
+        )
+        ok = bool(resp.ok)
+        if resp.ok:
+            body = resp.json()
+            details = {
+                "id": body.get("id"),
+                "site_id": body.get("site_id"),
+                "email": body.get("email"),
+            }
+        else:
+            details = {"status_code": resp.status_code}
+    except Exception as exc:
+        details = {"error": str(exc)}
+
+    cfg['mercadopago_status'] = 'ok' if ok else 'error'
+    cfg['mercadopago_tested_at'] = datetime.now(timezone.utc).isoformat()
+    tenant.configuracion = cfg
+    db.session.commit()
+
+    return jsonify({
+        "provider": "mercadopago",
+        "ok": ok,
+        "status": cfg['mercadopago_status'],
+        "tested_at": cfg['mercadopago_tested_at'],
+        "details": details,
+    }), 200 if ok else 502
 
 @admin_tenant_bp.route('/api/admin/tenants/<slug>/employees', methods=['GET'])
 @token_requerido

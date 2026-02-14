@@ -61,7 +61,15 @@ class RecompensasService:
         db.session.commit()
         return locked_user.saldo_puntos
 
-    def canjear_puntos(self, user: User, tenant: Optional[TenantProfile], puntos_necesarios: int) -> bool:
+    def canjear_puntos(
+        self,
+        user: User,
+        tenant: Optional[TenantProfile],
+        puntos_necesarios: int,
+        *,
+        tipo: str = "canje",
+        metadata: Optional[dict] = None,
+    ) -> bool:
         if puntos_necesarios <= 0:
             return True
         with db.session.begin_nested():
@@ -75,9 +83,10 @@ class RecompensasService:
             tx = PointsTransaction(
                 user_id=locked_user.id,
                 tenant_id=getattr(tenant, "id", None),
-                tipo="canje",
+                tipo=tipo,
                 delta=-puntos_necesarios,
                 saldo_final=locked_user.saldo_puntos,
+                metadata_payload=metadata or None,
             )
             db.session.add(tx)
         db.session.commit()
@@ -107,4 +116,3 @@ class RecompensasService:
 
 def recompensas_service() -> RecompensasService:
     return RecompensasService()
-
