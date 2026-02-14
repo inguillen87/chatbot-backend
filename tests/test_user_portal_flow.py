@@ -126,6 +126,12 @@ def test_full_flow(client):
     db.session.flush()
     db.session.add(EncRespuesta(encuesta_id=encuesta.id, tenant_id=tenant.id, user_id=user_id, canal="portal"))
     db.session.add(PointsTransaction(user_id=user_id, tenant_id=tenant.id, tipo="compra", delta=50, saldo_final=50, metadata_payload={"detalle": "Puntos por compra"}))
+
+    encuesta_followed = EncEncuesta(tenant_id=tenant_followed.id, slug="encuesta-followed", titulo="Votacion de barrio", tipo="votacion", estado="publicada", es_votacion_envivo=True)
+    db.session.add(encuesta_followed)
+    db.session.flush()
+    db.session.add(EncRespuesta(encuesta_id=encuesta_followed.id, tenant_id=tenant_followed.id, user_id=user_id, canal="portal"))
+    db.session.add(PointsTransaction(user_id=user_id, tenant_id=tenant_followed.id, tipo="encuesta", delta=30, saldo_final=80, metadata_payload={"detalle": "Puntos por encuesta"}))
     db.session.commit()
 
     # 12. Benefits list
@@ -179,3 +185,28 @@ def test_full_flow(client):
     assert history["summary"]["counts"]["suggestions"] == 1
     timeline_types = {item["type"] for item in history["timeline"]}
     assert {"order", "points", "survey", "suggestion"}.issubset(timeline_types)
+
+    # 17. Cross-tenant history scope
+    network_history_resp = client.get(f"/api/v1/portal/demo-flow/history?include_network=true", headers=headers)
+    assert network_history_resp.status_code == 200
+    network_history = network_history_resp.json
+    assert network_history["scope"]["include_network"] is True
+    assert "demo-followed" in network_history["scope"]["tenant_slugs"]
+    assert any(item.get("tenant_slug") == "demo-followed" for item in network_history["surveys"])
+
+    # 18. Surveys history now implemented (single + network)
+    surveys_only = client.get(f"/api/v1/portal/demo-flow/surveys/history", headers=headers)
+    assert surveys_only.status_code == 200
+    assert len(surveys_only.json) >= 1
+
+    surveys_network = client.get(f"/api/v1/portal/demo-flow/surveys/history?include_network=true", headers=headers)
+    assert surveys_network.status_code == 200
+    assert any(item.get("tenant_id") == tenant_followed.id for item in surveys_network.json)
+
+    # 19. Dashboard contract
+    dashboard_resp = client.get(f"/api/v1/portal/demo-flow/dashboard?include_network=true", headers=headers)
+    assert dashboard_resp.status_code == 200
+    dashboard = dashboard_resp.json
+    assert dashboard["scope"]["include_network"] is True
+    assert dashboard["tenants_followed"] >= 1
+    assert dashboard["summary"]["orders"] >= 1

@@ -150,7 +150,7 @@ Body:
   - `tracking.timeline[]` (eventos `created`, `status_changed`, etc.)
 
 `GET /api/v1/portal/<tenant_slug>/history`
-- Historial unificado para portal autenticado:
+- Historial unificado para portal autenticado (`?include_network=true` para incluir tenants seguidos):
   - `claims[]` (reclamos del usuario)
   - `orders[]` (pedidos)
   - `points[]` (movimientos de puntos)
@@ -159,6 +159,18 @@ Body:
   - `summary.counts` + `summary.points_breakdown` (puntos por fuente: compras/encuestas/votaciones/sugerencias/reclamos/canjes/etc.)
   - `timeline[]` (feed combinado descendente por fecha, incluye `suggestion`)
 
+
+
+`GET /api/v1/portal/<tenant_slug>/surveys/history`
+- Historial de encuestas del usuario.
+- Soporta `?include_network=true` para incluir respuestas en tenants seguidos.
+
+`GET /api/v1/portal/<tenant_slug>/dashboard`
+- Snapshot resumido para Home del portal:
+  - `summary` (`claims`, `orders`, `surveys`)
+  - `points.current` + `points.breakdown`
+  - `tenants_followed`
+- Soporta `?include_network=true` para visión multi-tenant.
 
 `GET /api/v1/portal/<tenant_slug>/network/feed`
 - Feed transversal con noticias/eventos del tenant actual + tenants seguidos por el usuario:
