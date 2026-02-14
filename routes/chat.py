@@ -113,6 +113,25 @@ def _anonymous_message_count(session_id: str, window_minutes: int) -> int:
     )
 
 
+
+
+def _should_enforce_owner_plan_limit(*, demo_flow_active: bool, is_init_request: bool, is_public_landing: bool, is_anonymous: bool, has_entity_token: bool) -> bool:
+    """Return whether owner plan-limit checks should be applied.
+
+    Public landing demo/widget sessions authenticated via entity token should not
+    be blocked by owner plan limits; otherwise prospects hit 403 on first
+    interactions and cannot complete the trial experience.
+    """
+
+    if demo_flow_active or is_init_request:
+        return False
+
+    if is_public_landing and is_anonymous and has_entity_token:
+        return False
+
+    return True
+
+
 def _log_widget_request(response, user):
     """Log widget chat requests with tenant and token context."""
 
@@ -1634,7 +1653,14 @@ def _procesar_chat(
         ):
             demo_flow_active = True
 
-        if owner_del_bot and not demo_flow_active and not is_init_request:
+        has_entity_token = bool(request.args.get("entityToken") or request.headers.get("X-Entity-Token") or request.headers.get("X-Owner-Token"))
+        if owner_del_bot and _should_enforce_owner_plan_limit(
+            demo_flow_active=demo_flow_active,
+            is_init_request=is_init_request,
+            is_public_landing=is_public_landing,
+            is_anonymous=is_anonymous,
+            has_entity_token=has_entity_token,
+        ):
             from utils.plan_limits import limite_para_usuario
             limite = limite_para_usuario(owner_del_bot)
             if limite is not None and owner_del_bot.preguntas_usadas >= limite:
