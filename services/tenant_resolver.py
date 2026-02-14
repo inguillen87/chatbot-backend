@@ -249,6 +249,7 @@ def resolve_tenant_and_user(
     tenant_slug: Optional[str] = None,
     tenant_id: Optional[int] = None,
     current_user: Optional[User] = None,
+    allow_fallback: bool = True,
 ) -> Tuple[TenantProfile, User, bool]:
     explicit_tenant = None
     if tenant_id:
@@ -286,12 +287,14 @@ def resolve_tenant_and_user(
         slug_match = _tenant_by_slug(preferred_slug)
         if slug_match:
             tenant = slug_match
+        elif not allow_fallback:
+            raise TenantResolutionError(f"Tenant '{preferred_slug}' no encontrado")
 
-    if not tenant:
+    if not tenant and allow_fallback:
         fallback_slug = current_app.config.get("PUBLIC_CATALOG_DEFAULT_TENANT")
         tenant = _tenant_by_slug(fallback_slug)
 
-    if not tenant:
+    if not tenant and allow_fallback:
         tenant = TenantProfile.query.order_by(TenantProfile.id.asc()).first()
 
     if not tenant:
