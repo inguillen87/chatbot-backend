@@ -221,6 +221,69 @@ def _moneda_desde_texto(precio_str: str | None) -> str | None:
     return None
 
 
+
+
+def _sanitize_personalization_options(raw_options) -> list[dict]:
+    """Normalize product personalization options for API responses."""
+
+    if not isinstance(raw_options, list):
+        return []
+
+    sanitized: list[dict] = []
+    for idx, option in enumerate(raw_options):
+        if not isinstance(option, dict):
+            continue
+
+        option_id = str(option.get("id") or option.get("key") or f"opt_{idx+1}").strip()
+        label = str(option.get("label") or option.get("nombre") or option_id).strip()
+        option_type = str(option.get("type") or option.get("tipo") or "text").strip().lower()
+        if option_type not in {"text", "select", "multiselect", "number", "boolean"}:
+            option_type = "text"
+
+        values = option.get("values") or option.get("opciones") or []
+        values_out = []
+        if isinstance(values, list):
+            for value in values:
+                if isinstance(value, dict):
+                    value_label = str(value.get("label") or value.get("value") or "").strip()
+                    if not value_label:
+                        continue
+                    try:
+                        price_delta = float(value.get("price_delta", 0) or 0)
+                    except (TypeError, ValueError):
+                        price_delta = 0.0
+                    values_out.append({"value": value_label, "price_delta": price_delta})
+                else:
+                    value_label = str(value).strip()
+                    if value_label:
+                        values_out.append({"value": value_label, "price_delta": 0.0})
+
+        try:
+            max_length = int(option.get("max_length")) if option.get("max_length") is not None else None
+        except (TypeError, ValueError):
+            max_length = None
+
+        try:
+            max_select = int(option.get("max_select")) if option.get("max_select") is not None else None
+        except (TypeError, ValueError):
+            max_select = None
+
+        sanitized.append(
+            {
+                "id": option_id[:60],
+                "label": label[:120],
+                "type": option_type,
+                "required": bool(option.get("required", False)),
+                "values": values_out[:50],
+                "max_length": max_length,
+                "max_select": max_select,
+                "help_text": str(option.get("help_text") or "").strip()[:200] or None,
+            }
+        )
+
+    return sanitized
+
+
 def _formatear_producto(data: dict) -> dict:
     """Normaliza un diccionario de producto al formato universal."""
     precio_pack = None
@@ -328,6 +391,10 @@ def _formatear_producto(data: dict) -> dict:
     ).value
 
     unidad_display = data.get("unidad") or data.get("presentacion", "") or data.get("unidad_original","") or "u"
+    personalization_options = _sanitize_personalization_options(
+        extra_metadata.get("personalization_options")
+        or extra_metadata.get("opciones_personalizacion")
+    )
 
     return {
         "nombre": data.get("nombre", ""),
@@ -361,6 +428,8 @@ def _formatear_producto(data: dict) -> dict:
         "imagen_url": imagen_url,
         "external_url": data.get("external_url"),
         "checkout_type": data.get("checkout_type", "chatboc"),
+        "personalization_options": personalization_options,
+        "personalization_enabled": bool(personalization_options),
         # Podríamos añadir aquí una lista de acciones sugeridas para el bot
         # "acciones_sugeridas": ["agregar_carrito", "mas_detalles"] # Ejemplo
     }
