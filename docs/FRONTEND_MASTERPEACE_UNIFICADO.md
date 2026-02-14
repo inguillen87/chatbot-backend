@@ -138,7 +138,8 @@ Validaciones FE recomendadas:
 ### Portal usuario (historial, tracking y fidelización)
 - `GET /api/v1/portal/<tenant_slug>/orders` incluye `status_label`, `tracking.stage`, `tracking.eta` y `tracking.latest_event`.
 - `GET /api/v1/portal/<tenant_slug>/orders/<order_id>` devuelve detalle con `tracking.timeline` y `items[]`.
-- `GET /api/v1/portal/<tenant_slug>/history` expone historial unificado (`claims`, `orders`, `points`, `surveys`, `timeline`).
+- `GET /api/v1/portal/<tenant_slug>/history` expone historial unificado (`claims`, `orders`, `points`, `surveys`, `suggestions`, `summary`, `timeline`).
+- `GET /api/v1/portal/<tenant_slug>/network/feed` devuelve noticias/eventos del tenant actual + tenants seguidos por el usuario.
 - `GET /api/v1/portal/<tenant_slug>/benefits` entrega beneficios canjeables + elegibilidad por puntos.
 - `POST /api/v1/portal/<tenant_slug>/redeem` registra canje real (débito de puntos + metadata).
 - `GET /api/v1/portal/<tenant_slug>/redeems` devuelve historial de canjes realizados.

@@ -3,7 +3,7 @@ from flask import Blueprint, jsonify, request, g, abort, current_app, url_for
 from sqlalchemy import or_, and_
 from datetime import datetime, timezone, timedelta
 
-from models import MunicipioPost, CatalogoItem, TenantTicket, MarketOrder, MarketOrderItem, OrderEvent, User, TenantProfile, WidgetConfig, EncEncuesta, EncRespuesta, PointsTransaction
+from models import MunicipioPost, CatalogoItem, TenantTicket, MarketOrder, MarketOrderItem, OrderEvent, User, TenantProfile, TenantFollower, WidgetConfig, EncEncuesta, EncRespuesta, PointsTransaction, SugerenciaCiudadano
 from extensions import db
 from services.tenant_resolver import resolve_tenant_only, TenantResolutionError
 from services.rewards import recompensas_service
@@ -111,6 +111,55 @@ def _normalize_limit(raw_value, default=20, max_limit=100) -> int:
         return default
     return max(1, min(value, max_limit))
 
+
+
+
+def _classify_points_source(tipo: str | None) -> str:
+    key = (tipo or "").strip().lower()
+    if not key:
+        return "otros"
+    if "compra" in key or "order" in key or "pedido" in key:
+        return "compras"
+    if "encuesta" in key:
+        return "encuestas"
+    if "vot" in key:
+        return "votaciones"
+    if "suger" in key:
+        return "sugerencias"
+    if "reclamo" in key or "ticket" in key:
+        return "reclamos"
+    if "redeem" in key or "canje" in key:
+        return "canjes"
+    return "participacion"
+
+
+def _build_points_breakdown(points_tx: list[PointsTransaction]) -> dict:
+    breakdown = {
+        "participacion": 0,
+        "compras": 0,
+        "encuestas": 0,
+        "votaciones": 0,
+        "sugerencias": 0,
+        "reclamos": 0,
+        "canjes": 0,
+        "otros": 0,
+    }
+    for tx in points_tx:
+        bucket = _classify_points_source(getattr(tx, "tipo", None))
+        breakdown[bucket] = breakdown.get(bucket, 0) + int(tx.delta or 0)
+    return breakdown
+
+
+def _resolve_followed_tenants(user: User, current_tenant: TenantProfile) -> list[TenantProfile]:
+    followed_ids = [
+        follower.tenant_id
+        for follower in TenantFollower.query.filter_by(user_id=user.id).all()
+        if follower.tenant_id
+    ]
+    tenant_ids = list(dict.fromkeys([current_tenant.id] + followed_ids))
+    if not tenant_ids:
+        return [current_tenant]
+    return TenantProfile.query.filter(TenantProfile.id.in_(tenant_ids)).all()
 
 def _serialize_portal_order(order: MarketOrder, include_timeline: bool = False) -> dict:
     items = [
@@ -788,6 +837,16 @@ def get_portal_history(tenant_slug):
         .all()
     )
 
+    owner_id = _get_owner_id(tenant)
+    sugerencias = []
+    if owner_id:
+        sugerencias = SugerenciaCiudadano.query.filter_by(
+            user_id=user.id,
+            municipio_id=owner_id,
+         ).order_by(SugerenciaCiudadano.fecha.desc()).limit(limit).all()
+
+    points_breakdown = _build_points_breakdown(points_tx)
+
     timeline = []
     for t in claims:
         timeline.append({
@@ -843,6 +902,19 @@ def get_portal_history(tenant_slug):
             },
         })
 
+
+    for sug in sugerencias:
+        timeline.append({
+            "type": "suggestion",
+            "id": sug.id,
+            "title": sug.categoria or "Sugerencia",
+            "status": sug.estado,
+            "at": _to_iso(sug.fecha),
+            "payload": {
+                "texto": sug.texto_sugerencia,
+            },
+        })
+
     timeline.sort(key=lambda item: item.get("at") or "", reverse=True)
 
     return jsonify({
@@ -872,7 +944,79 @@ def get_portal_history(tenant_slug):
             "es_votacion": bool(encuesta.es_votacion_envivo) if encuesta else False,
             "submitted_at": _to_iso(respuesta.submitted_at),
         } for respuesta, encuesta in encuestas],
-        "timeline": timeline[: max(limit * 4, 20)],
+        "suggestions": [{
+            "id": str(sug.id),
+            "categoria": sug.categoria,
+            "estado": sug.estado,
+            "texto": sug.texto_sugerencia,
+            "submitted_at": _to_iso(sug.fecha),
+        } for sug in sugerencias],
+        "summary": {
+            "counts": {
+                "claims": len(claims),
+                "orders": len(orders),
+                "surveys": len(encuestas),
+                "suggestions": len(sugerencias),
+                "points_movements": len(points_tx),
+            },
+            "points_breakdown": points_breakdown,
+        },
+        "timeline": timeline[: max(limit * 5, 25)],
+    })
+
+
+@portal_api_bp.route('/network/feed', methods=['GET'])
+@require_auth
+def get_portal_network_feed(tenant_slug):
+    tenant = _resolve_context(tenant_slug)
+    user = g.viewer
+    limit = _normalize_limit(request.args.get('limit'), default=20, max_limit=100)
+
+    tenants = _resolve_followed_tenants(user, tenant)
+    owner_ids = [
+        _get_owner_id(t)
+        for t in tenants
+        if _get_owner_id(t)
+    ]
+    if not owner_ids:
+        return jsonify({"items": [], "tenants": []})
+
+    posts = MunicipioPost.query.filter(
+        MunicipioPost.municipio_id.in_(owner_ids)
+    ).order_by(MunicipioPost.fecha_publicacion.desc()).limit(limit).all()
+
+    tenant_by_owner = { _get_owner_id(t): t for t in tenants if _get_owner_id(t) }
+
+    items = []
+    for post in posts:
+        source_tenant = tenant_by_owner.get(post.municipio_id)
+        post_type = "event" if post.tipo_post == "evento" else "news"
+        items.append({
+            "id": post.id,
+            "type": post_type,
+            "title": post.titulo,
+            "summary": post.subtitulo or (post.descripcion[:120] if post.descripcion else ""),
+            "date": _to_iso(post.fecha_publicacion),
+            "tenant": {
+                "id": source_tenant.id if source_tenant else None,
+                "slug": source_tenant.slug if source_tenant else None,
+                "name": source_tenant.nombre if source_tenant else None,
+                "tipo": source_tenant.tipo if source_tenant else None,
+            },
+            "link": f"/{source_tenant.slug}/{'eventos' if post_type == 'event' else 'noticias'}/{post.id}" if source_tenant else None,
+        })
+
+    return jsonify({
+        "items": items,
+        "tenants": [
+            {
+                "id": t.id,
+                "slug": t.slug,
+                "name": t.nombre,
+                "tipo": t.tipo,
+            }
+            for t in tenants
+        ],
     })
 
 

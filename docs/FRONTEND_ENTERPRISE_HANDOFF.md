@@ -155,7 +155,15 @@ Body:
   - `orders[]` (pedidos)
   - `points[]` (movimientos de puntos)
   - `surveys[]` (respuestas a encuestas/votaciones)
-  - `timeline[]` (feed combinado descendente por fecha)
+  - `suggestions[]` (sugerencias enviadas por el usuario)
+  - `summary.counts` + `summary.points_breakdown` (puntos por fuente: compras/encuestas/votaciones/sugerencias/reclamos/canjes/etc.)
+  - `timeline[]` (feed combinado descendente por fecha, incluye `suggestion`)
+
+
+`GET /api/v1/portal/<tenant_slug>/network/feed`
+- Feed transversal con noticias/eventos del tenant actual + tenants seguidos por el usuario:
+  - `items[]` con `type: news|event`, `tenant{...}` y `link`
+  - `tenants[]` fuentes incluidas en el feed
 
 `GET /api/v1/portal/<tenant_slug>/benefits`
 - Beneficios disponibles de canje en portal:
