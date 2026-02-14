@@ -17,6 +17,7 @@ from models import (
     MarketCartItem,
     MarketOrder,
     MarketOrderItem,
+    OrderEvent,
     TenantProfile,
     User,
 )
@@ -1030,7 +1031,19 @@ def admin_update_order(current_user, order_id):
 
     new_status = payload.get('status')
     if new_status:
+        previous_status = order.status
         order.status = new_status
+        db.session.add(
+            OrderEvent(
+                market_order_id=order.id,
+                type="status_changed",
+                payload={
+                    "previous_status": previous_status,
+                    "status": new_status,
+                    "message": f"Estado actualizado de {previous_status} a {new_status}",
+                },
+            )
+        )
         # Hook for notification
         dispatch_order_update(order, f"Tu pedido #{order.id} cambió a estado: {new_status}")
 

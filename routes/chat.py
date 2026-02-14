@@ -92,6 +92,27 @@ def _is_init_payload(payload) -> bool:
     return False
 
 
+
+
+def _anonymous_message_count(session_id: str, window_minutes: int) -> int:
+    """Count billable anonymous messages in the active window.
+
+    Excludes synthetic init payloads so a frontend handshake (`__INIT__`) does
+    not consume quota and immediately block the first real message.
+    """
+
+    if not session_id:
+        return 0
+
+    return (
+        Conversacion.query
+        .filter(Conversacion.session_id == session_id)
+        .filter(Conversacion.timestamp >= datetime.utcnow() - timedelta(minutes=window_minutes))
+        .filter(~Conversacion.pregunta.in_(["", "__INIT__"]))
+        .count()
+    )
+
+
 def _log_widget_request(response, user):
     """Log widget chat requests with tenant and token context."""
 
@@ -1180,7 +1201,10 @@ def _procesar_chat(
                     current_app.logger.info(f"Sesión anónima {anon_id} expirada. Reiniciando conteo de mensajes.")
 
             if not session_expired:
-                message_count_this_session = Conversacion.query                     .filter(Conversacion.session_id == anon_id)                     .filter(Conversacion.timestamp >= datetime.utcnow() - timedelta(minutes=session_timeout_minutes))                     .count()
+                message_count_this_session = _anonymous_message_count(
+                    anon_id,
+                    session_timeout_minutes,
+                )
 
                 current_app.logger.info(f"Usuario anónimo {anon_id}: {message_count_this_session} mensajes en la sesión actual (límite: {max_messages}).")
 
