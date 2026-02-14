@@ -24,7 +24,14 @@ def _add_cors_headers(response):
     return response
 
 def _get_tenant_from_request(slug: str):
-    """Resolve a tenant using the path slug with a querystring fallback."""
+    """Resolve tenant by slug, query fallback, or well-known type aliases.
+
+    Some legacy widgets call /public/tenants/pyme/catalog or
+    /public/tenants/municipio/catalog using the tenant type instead of a real
+    tenant slug. When that happens, pick an active tenant of that type as a
+    compatibility fallback.
+    """
+
     tenant = TenantProfile.query.filter_by(slug=slug).first()
     if tenant:
         return tenant
@@ -32,8 +39,19 @@ def _get_tenant_from_request(slug: str):
     fallback_slug = request.args.get("tenant") or request.args.get("tenant_slug")
     if fallback_slug and fallback_slug != slug:
         tenant = TenantProfile.query.filter_by(slug=fallback_slug).first()
+        if tenant:
+            return tenant
 
-    return tenant
+    alias_tipo = str(slug or "").strip().lower()
+    if alias_tipo in {"pyme", "municipio"}:
+        return (
+            TenantProfile.query.filter_by(tipo=alias_tipo)
+            .filter(TenantProfile.is_active.is_(True))
+            .order_by(TenantProfile.created_at.asc(), TenantProfile.id.asc())
+            .first()
+        )
+
+    return None
 
 
 
