@@ -123,3 +123,43 @@ def test_super_admin_franchise_readiness(client, app):
     assert readiness["status"] in {"ready", "in_progress", "basic"}
     assert readiness["score"] >= 85
     assert readiness["checks"]["payments_configured"] is True
+
+
+def test_super_admin_franchise_playbook(client, app):
+    sa = User(email="sa4@test.com", name="SA4", rol="super_admin", tipo_chat="admin")
+    sa.set_password("pass")
+    owner = User(email="owner4@test.com", name="Owner4", rol="admin", tipo_chat="pyme")
+    owner.set_password("pass")
+    db.session.add_all([sa, owner])
+    db.session.commit()
+
+    tenant = TenantProfile(
+        slug="tenant-fr-4",
+        nombre="Tenant FR 4",
+        tipo="pyme",
+        pyme_id=owner.id,
+        configuracion={
+            "franchise_profile": {
+                "white_label_enabled": False,
+                "reseller_enabled": False,
+                "default_language": "es",
+                "supported_languages": ["es"],
+                "currency": "",
+                "country": "",
+                "timezone": "",
+                "partner_program": "",
+            },
+        },
+    )
+    db.session.add(tenant)
+    db.session.commit()
+
+    headers = _sa_headers(app, sa)
+    resp = client.get('/api/admin/tenants/tenant-fr-4/franchise-playbook', headers=headers)
+    assert resp.status_code == 200
+    payload = resp.get_json()
+    playbook = payload['playbook']
+    assert isinstance(playbook['next_actions'], list)
+    assert len(playbook['next_actions']) >= 3
+    assert playbook['next_actions'][0]['priority'] in {'high', 'medium', 'low'}
+    assert 'phase_1' in playbook['estimated_phases']

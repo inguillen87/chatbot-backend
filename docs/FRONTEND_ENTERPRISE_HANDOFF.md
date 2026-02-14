@@ -125,6 +125,10 @@ Respuesta esperada (shape orientativo):
 - Score de preparación comercial internacional (0-100) para venta/franquicia.
 - Devuelve `readiness.status` (`basic|in_progress|ready`) + checklist detallado `checks` y `missing`.
 
+## `GET /api/admin/tenants/<slug>/franchise-playbook`
+- Plan de acción priorizado para llevar el tenant a estado comercial vendible/franquiciable.
+- Devuelve `next_actions[]` + `estimated_phases` para roadmap operativo/comercial.
+
 ## `GET /admin/analytics/overview (alias: /api/admin/analytics/overview)?tenant_id=<id>&scope=municipio&from=YYYY-MM-DD&to=YYYY-MM-DD`
 - Úsese para KPIs/cards/totales.
 

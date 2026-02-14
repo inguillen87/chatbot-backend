@@ -143,6 +143,107 @@ def _compute_franchise_readiness(tenant: TenantProfile) -> dict:
         "profile": profile,
     }
 
+
+
+_PLAYBOOK_TASKS_BY_CHECK = {
+    "white_label_enabled": {
+        "title": "Activar modo white-label",
+        "description": "Habilitar branding white-label y revisión legal/comercial para subdistribución.",
+        "priority": "high",
+        "owner": "producto",
+    },
+    "reseller_enabled": {
+        "title": "Activar canal reseller",
+        "description": "Definir esquema de partners, márgenes y gobierno operativo.",
+        "priority": "high",
+        "owner": "comercial",
+    },
+    "languages_configured": {
+        "title": "Configurar idiomas comerciales",
+        "description": "Completar catálogo de idiomas objetivo (es/en/pt) para portal y panel.",
+        "priority": "high",
+        "owner": "producto",
+    },
+    "default_language_valid": {
+        "title": "Corregir idioma por defecto",
+        "description": "Alinear default_language con supported_languages del tenant.",
+        "priority": "medium",
+        "owner": "producto",
+    },
+    "currency_defined": {
+        "title": "Definir moneda operativa",
+        "description": "Configurar currency para pricing y reportes del país objetivo.",
+        "priority": "high",
+        "owner": "finanzas",
+    },
+    "country_defined": {
+        "title": "Definir país objetivo",
+        "description": "Configurar country para localización, compliance y go-to-market.",
+        "priority": "high",
+        "owner": "comercial",
+    },
+    "timezone_defined": {
+        "title": "Definir zona horaria",
+        "description": "Configurar timezone para SLA, turnos y analítica local.",
+        "priority": "medium",
+        "owner": "operaciones",
+    },
+    "partner_program_defined": {
+        "title": "Definir partner program",
+        "description": "Seleccionar programa de partnership/franquicia para este tenant.",
+        "priority": "high",
+        "owner": "comercial",
+    },
+    "brand_domain_configured": {
+        "title": "Configurar dominio de marca",
+        "description": "Asignar dominio productivo del tenant para despliegue white-label.",
+        "priority": "high",
+        "owner": "infra",
+    },
+    "logo_configured": {
+        "title": "Subir identidad visual",
+        "description": "Configurar logo oficial y lineamientos de marca.",
+        "priority": "medium",
+        "owner": "marketing",
+    },
+    "payments_configured": {
+        "title": "Conectar pagos por tenant",
+        "description": "Configurar token de pagos (MercadoPago u otro proveedor) y validarlo.",
+        "priority": "high",
+        "owner": "finanzas",
+    },
+    "whatsapp_sender_configured": {
+        "title": "Configurar canal WhatsApp",
+        "description": "Asignar sender oficial para operaciones omnicanal del tenant.",
+        "priority": "medium",
+        "owner": "operaciones",
+    },
+}
+
+
+def _build_franchise_playbook(tenant: TenantProfile) -> dict:
+    readiness = _compute_franchise_readiness(tenant)
+    tasks = []
+    for check_key in readiness.get("missing") or []:
+        template = _PLAYBOOK_TASKS_BY_CHECK.get(check_key)
+        if not template:
+            continue
+        tasks.append({"check": check_key, **template})
+
+    priority_order = {"high": 0, "medium": 1, "low": 2}
+    tasks.sort(key=lambda item: priority_order.get(item.get("priority"), 99))
+
+    return {
+        "status": readiness.get("status"),
+        "score": readiness.get("score"),
+        "next_actions": tasks,
+        "estimated_phases": {
+            "phase_1": [t for t in tasks if t.get("priority") == "high"],
+            "phase_2": [t for t in tasks if t.get("priority") == "medium"],
+            "phase_3": [t for t in tasks if t.get("priority") == "low"],
+        },
+    }
+
 def _normalize_plan_key(raw_plan: str | None) -> str:
     if not raw_plan:
         return "gratis"
@@ -497,6 +598,24 @@ def get_tenant_franchise_readiness(current_user, slug):
             "plan": tenant.plan,
         },
         "readiness": readiness,
+    })
+
+
+@super_admin_bp.route('/tenants/<string:slug>/franchise-playbook', methods=['GET'])
+@token_requerido
+@super_admin_required
+def get_tenant_franchise_playbook(current_user, slug):
+    tenant = TenantProfile.query.filter_by(slug=slug).first_or_404()
+    playbook = _build_franchise_playbook(tenant)
+    return jsonify({
+        "tenant": {
+            "id": tenant.id,
+            "slug": tenant.slug,
+            "nombre": tenant.nombre,
+            "tipo": tenant.tipo,
+            "plan": tenant.plan,
+        },
+        "playbook": playbook,
     })
 
 
