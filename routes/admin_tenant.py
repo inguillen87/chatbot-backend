@@ -38,6 +38,76 @@ def _cors_preflight_response():
     return response
 
 
+def _sanitize_personalization_options_for_storage(raw_options):
+    if raw_options is None:
+        return None
+    if not isinstance(raw_options, list):
+        raise ValueError("personalization_options must be a list")
+
+    sanitized = []
+    allowed_types = {"text", "select", "multiselect", "number", "boolean"}
+    for idx, option in enumerate(raw_options):
+        if not isinstance(option, dict):
+            raise ValueError("personalization_options entries must be objects")
+
+        option_id = str(option.get("id") or option.get("key") or f"opt_{idx+1}").strip()
+        label = str(option.get("label") or option.get("nombre") or "").strip()
+        if not option_id or not label:
+            raise ValueError("personalization options require id and label")
+
+        option_type = str(option.get("type") or option.get("tipo") or "text").strip().lower()
+        if option_type not in allowed_types:
+            raise ValueError("invalid personalization option type")
+
+        values = option.get("values") or option.get("opciones") or []
+        values_out = []
+        if values is not None:
+            if not isinstance(values, list):
+                raise ValueError("personalization option values must be a list")
+            for value in values:
+                if isinstance(value, dict):
+                    value_text = str(value.get("value") or value.get("label") or "").strip()
+                    if not value_text:
+                        continue
+                    try:
+                        price_delta = float(value.get("price_delta", 0) or 0)
+                    except (TypeError, ValueError):
+                        raise ValueError("invalid price_delta in personalization option")
+                    values_out.append({"value": value_text[:120], "price_delta": price_delta})
+                else:
+                    value_text = str(value).strip()
+                    if value_text:
+                        values_out.append({"value": value_text[:120], "price_delta": 0.0})
+
+        out = {
+            "id": option_id[:60],
+            "label": label[:120],
+            "type": option_type,
+            "required": bool(option.get("required", False)),
+            "values": values_out[:50],
+        }
+
+        if option.get("max_length") is not None:
+            try:
+                out["max_length"] = max(1, min(int(option.get("max_length")), 500))
+            except (TypeError, ValueError):
+                raise ValueError("invalid max_length in personalization option")
+
+        if option.get("max_select") is not None:
+            try:
+                out["max_select"] = max(1, min(int(option.get("max_select")), 20))
+            except (TypeError, ValueError):
+                raise ValueError("invalid max_select in personalization option")
+
+        help_text = str(option.get("help_text") or "").strip()
+        if help_text:
+            out["help_text"] = help_text[:200]
+
+        sanitized.append(out)
+
+    return sanitized
+
+
 def _is_authorized_for_tenant(current_user: User, tenant: TenantProfile) -> bool:
     """Return True if ``current_user`` can manage the given tenant.
 
@@ -297,6 +367,15 @@ def admin_update_catalog_item(current_user, slug, item_id: int):
         item.disponible = bool(payload.get("disponible"))
     if "extra_metadata" in payload and isinstance(payload.get("extra_metadata"), dict):
         item.extra_metadata = payload.get("extra_metadata")
+
+    if "personalization_options" in payload:
+        try:
+            sanitized_options = _sanitize_personalization_options_for_storage(payload.get("personalization_options"))
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        metadata = item.extra_metadata if isinstance(item.extra_metadata, dict) else {}
+        metadata["personalization_options"] = sanitized_options
+        item.extra_metadata = metadata
 
     if "precio" in payload:
         precio_raw = payload.get("precio")

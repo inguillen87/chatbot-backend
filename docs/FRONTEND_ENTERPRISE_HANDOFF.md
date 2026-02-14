@@ -134,6 +134,75 @@ Body:
 
 ### 2.4 Admin AI
 
+### 2.6 Portal usuario: historial unificado + tracking + canjes
+
+`GET /api/v1/portal/<tenant_slug>/orders`
+- Cada pedido incluye:
+  - `status`, `status_label`, `total`, `items_count`
+  - `tracking.stage` (`preparing|shipped|delivered|cancelled`)
+  - `tracking.eta` (estimado o timestamp final)
+  - `tracking.latest_event` (si existe)
+
+`GET /api/v1/portal/<tenant_slug>/orders/<order_id>`
+- Devuelve detalle con:
+  - `items[]`
+  - `tracking.has_timeline`
+  - `tracking.timeline[]` (eventos `created`, `status_changed`, etc.)
+
+`GET /api/v1/portal/<tenant_slug>/history`
+- Historial unificado para portal autenticado:
+  - `claims[]` (reclamos del usuario)
+  - `orders[]` (pedidos)
+  - `points[]` (movimientos de puntos)
+  - `surveys[]` (respuestas a encuestas/votaciones)
+  - `timeline[]` (feed combinado descendente por fecha)
+
+`GET /api/v1/portal/<tenant_slug>/benefits`
+- Beneficios disponibles de canje en portal:
+  - `current_points`
+  - `benefits[]` con `eligible` y `points_missing`
+
+`POST /api/v1/portal/<tenant_slug>/redeem`
+- Canjea un beneficio por `benefit_id`.
+- Registra movimiento de puntos (`tipo: portal_redeem`) con metadata para trazabilidad.
+
+`GET /api/v1/portal/<tenant_slug>/redeems`
+- Historial de canjes del usuario (solo débitos de puntos), con `benefit_id` y `benefit_title`.
+
+
+### 2.5 Catálogo personalizable (nuevo)
+
+En la carga/listado de catálogo ahora pueden venir estos campos en cada producto:
+- `personalization_enabled: boolean`
+- `personalization_options: [{ id, label, type, required, values, max_length, max_select, help_text }]`
+
+Para guardar configuración de personalización por producto:
+- `PATCH /api/admin/tenants/<slug>/catalog/items/<item_id>`
+- Body adicional soportado:
+```json
+{
+  "personalization_options": [
+    {
+      "id": "grabado",
+      "label": "Texto grabado",
+      "type": "text",
+      "required": true,
+      "max_length": 30
+    },
+    {
+      "id": "packaging",
+      "label": "Packaging",
+      "type": "select",
+      "values": [
+        {"value": "Estándar", "price_delta": 0},
+        {"value": "Premium", "price_delta": 500}
+      ]
+    }
+  ]
+}
+```
+
+
 ## Executive summary
 `POST /admin/ai/executive-summary`
 ```json

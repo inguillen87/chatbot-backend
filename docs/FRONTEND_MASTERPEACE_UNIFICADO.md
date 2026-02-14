@@ -47,6 +47,12 @@ Este es el **documento único** para frontend con:
 - Guardrails de puntos y resolución de tenant más estricta.
 - Demo-mode para evitar efectos reales en entornos de prueba.
 
+### 1.7 Catálogo avanzado y personalización de producto
+- Backend expone `personalization_options` en productos de catálogo cuando existen en `extra_metadata`.
+- Admin puede actualizar `personalization_options` via `PATCH /api/admin/tenants/<slug>/catalog/items/<item_id>`.
+- Tipos soportados: `text`, `select`, `multiselect`, `number`, `boolean`.
+- Cada opción puede incluir `required`, `values[]`, `max_length`, `max_select`, `help_text` y `price_delta` por valor.
+
 ---
 
 ## 2) Qué debe hacer frontend YA (plan de ejecución inmediato)
@@ -128,6 +134,14 @@ Validaciones FE recomendadas:
 - Export CSV: `GET /admin/analytics/export.csv (alias: /api/admin/analytics/export.csv)`
 - Export PDF: `GET /admin/analytics/export.pdf (alias: /api/admin/analytics/export.pdf)`
 - Tracking FE: `POST /analytics/event`
+
+### Portal usuario (historial, tracking y fidelización)
+- `GET /api/v1/portal/<tenant_slug>/orders` incluye `status_label`, `tracking.stage`, `tracking.eta` y `tracking.latest_event`.
+- `GET /api/v1/portal/<tenant_slug>/orders/<order_id>` devuelve detalle con `tracking.timeline` y `items[]`.
+- `GET /api/v1/portal/<tenant_slug>/history` expone historial unificado (`claims`, `orders`, `points`, `surveys`, `timeline`).
+- `GET /api/v1/portal/<tenant_slug>/benefits` entrega beneficios canjeables + elegibilidad por puntos.
+- `POST /api/v1/portal/<tenant_slug>/redeem` registra canje real (débito de puntos + metadata).
+- `GET /api/v1/portal/<tenant_slug>/redeems` devuelve historial de canjes realizados.
 
 ### IA
 - Resumen ejecutivo: `POST /admin/ai/executive-summary`

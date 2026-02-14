@@ -1,9 +1,9 @@
 from __future__ import annotations
 from flask import Blueprint, jsonify, request, g, abort, current_app, url_for
-from sqlalchemy import or_
+from sqlalchemy import or_, and_
 from datetime import datetime, timezone, timedelta
 
-from models import MunicipioPost, CatalogoItem, TenantTicket, MarketOrder, MarketOrderItem, User, TenantProfile, WidgetConfig, EncEncuesta, PointsTransaction
+from models import MunicipioPost, CatalogoItem, TenantTicket, MarketOrder, MarketOrderItem, OrderEvent, User, TenantProfile, WidgetConfig, EncEncuesta, EncRespuesta, PointsTransaction
 from extensions import db
 from services.tenant_resolver import resolve_tenant_only, TenantResolutionError
 from services.rewards import recompensas_service
@@ -27,6 +27,134 @@ def _resolve_context(tenant_slug):
 def _get_owner_id(tenant):
     owner = tenant.municipio or tenant.pyme
     return owner.id if owner else None
+
+
+def _order_status_label(status: str | None) -> str:
+    mapping = {
+        "pending": "Pendiente",
+        "confirmed": "Confirmado",
+        "paid": "Pagado",
+        "preparing": "En preparación",
+        "ready": "Listo para retirar",
+        "shipped": "En camino",
+        "delivered": "Entregado",
+        "cancelled": "Cancelado",
+    }
+    key = (status or "pending").strip().lower()
+    return mapping.get(key, key.replace("_", " ").capitalize())
+
+
+def _serialize_order_event(event: OrderEvent) -> dict:
+    payload = event.payload if isinstance(event.payload, dict) else {}
+    return {
+        "id": event.id,
+        "type": event.type,
+        "label": payload.get("label") or _order_status_label(payload.get("status") if event.type == "status_changed" else event.type),
+        "status": payload.get("status"),
+        "message": payload.get("message"),
+        "at": event.created_at.isoformat() if event.created_at else None,
+    }
+
+
+def _to_iso(value):
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return None
+
+
+def _resolve_tracking_stage(status: str | None) -> str:
+    key = (status or "pending").strip().lower()
+    if key in {"delivered"}:
+        return "delivered"
+    if key in {"shipped", "ready"}:
+        return "shipped"
+    if key in {"cancelled"}:
+        return "cancelled"
+    return "preparing"
+
+
+def _estimate_eta(order: MarketOrder, stage: str, timeline: list[dict]) -> str | None:
+    if stage == "delivered":
+        delivered = [ev for ev in timeline if (ev.get("status") or "").strip().lower() == "delivered"]
+        if delivered:
+            return delivered[-1].get("at")
+        return _to_iso(order.updated_at) or _to_iso(order.created_at)
+
+    if stage == "cancelled":
+        return None
+
+    if order.metadata_payload and isinstance(order.metadata_payload, dict):
+        eta = order.metadata_payload.get("eta") or order.metadata_payload.get("estimated_delivery_at")
+        if isinstance(eta, str) and eta.strip():
+            return eta
+
+    base = order.created_at or datetime.now(timezone.utc)
+    delta = timedelta(hours=2) if stage == "shipped" else timedelta(hours=24)
+    return (base + delta).isoformat()
+
+
+def _portal_benefits(tenant: TenantProfile) -> list[dict]:
+    slug = (tenant.slug or "").replace("-", " ").title() or "Comunidad"
+    return [
+        {"id": "free_shipping", "title": "Envío gratis", "description": f"Envío bonificado en compras de {slug}", "cost_points": 400, "type": "shipping"},
+        {"id": "discount_10", "title": "10% OFF", "description": "Descuento aplicable en tu próximo pedido", "cost_points": 700, "type": "discount"},
+        {"id": "gift_pack", "title": "Pack regalo", "description": "Canjeá un kit promocional sujeto a stock", "cost_points": 1200, "type": "gift"},
+    ]
+
+
+def _normalize_limit(raw_value, default=20, max_limit=100) -> int:
+    try:
+        value = int(raw_value)
+    except (TypeError, ValueError):
+        return default
+    return max(1, min(value, max_limit))
+
+
+def _serialize_portal_order(order: MarketOrder, include_timeline: bool = False) -> dict:
+    items = [
+        {
+            "id": item.id,
+            "product_id": item.product_id,
+            "name": item.name_snapshot or (item.product.nombre if item.product else None),
+            "quantity": item.quantity,
+            "price_monetary": float(item.price_monetary or 0),
+            "price_points": item.price_points,
+            "currency": item.currency,
+            "modalidad": item.modalidad,
+        }
+        for item in (order.items or [])
+    ]
+
+    latest_event = order.events.order_by(OrderEvent.created_at.desc()).first() if hasattr(order, "events") else None
+    timeline = []
+    if include_timeline and hasattr(order, "events"):
+        timeline = [
+            _serialize_order_event(ev)
+            for ev in order.events.order_by(OrderEvent.created_at.asc()).all()
+        ]
+
+    stage = _resolve_tracking_stage(order.status)
+
+    return {
+        "id": order.id,
+        "status": order.status,
+        "status_label": _order_status_label(order.status),
+        "total": float(order.total_monetary or 0),
+        "total_points": int(order.total_points or 0),
+        "currency": order.currency or "ARS",
+        "date": order.created_at.isoformat() if order.created_at else None,
+        "items_count": len(items),
+        "items": items if include_timeline else None,
+        "tracking": {
+            "stage": stage,
+            "eta": _estimate_eta(order, stage, timeline),
+            "has_timeline": bool(timeline),
+            "latest_event": _serialize_order_event(latest_event) if latest_event else None,
+            "timeline": timeline,
+        },
+    }
 
 def _generate_notifications(user, tenant, limit=10):
     notifications = []
@@ -528,13 +656,24 @@ def get_orders(tenant_slug):
         user_id=user.id
     ).order_by(MarketOrder.created_at.desc()).all()
 
-    return jsonify([{
-        "id": o.id,
-        "status": o.status,
-        "total": float(o.total_monetary or 0),
-        "date": o.created_at.isoformat(),
-        "items_count": len(o.items)
-    } for o in orders])
+    status_filter = (request.args.get("status") or "").strip().lower()
+    if status_filter:
+        orders = [o for o in orders if (o.status or "").strip().lower() == status_filter]
+
+    return jsonify([_serialize_portal_order(o, include_timeline=False) for o in orders])
+
+@portal_api_bp.route('/orders/<int:order_id>', methods=['GET'])
+@require_auth
+def get_order_detail(tenant_slug, order_id: int):
+    tenant = _resolve_context(tenant_slug)
+    user = g.viewer
+
+    order = MarketOrder.query.filter_by(tenant_id=tenant.id, user_id=user.id, id=order_id).first()
+    if not order:
+        return jsonify({"error": "Order not found"}), 404
+
+    return jsonify(_serialize_portal_order(order, include_timeline=True))
+
 
 @portal_api_bp.route('/orders', methods=['POST'])
 @require_auth
@@ -565,8 +704,21 @@ def create_order(tenant_slug):
             price_monetary=item.get("price")
         ))
 
+    db.session.flush()
+    db.session.add(
+        OrderEvent(
+            market_order_id=order.id,
+            type="created",
+            payload={
+                "status": order.status,
+                "label": _order_status_label(order.status),
+                "message": "Pedido creado",
+                "channel": "portal",
+            },
+        )
+    )
     db.session.commit()
-    return jsonify({"id": order.id, "status": order.status}), 201
+    return jsonify({"id": order.id, "status": order.status, "status_label": _order_status_label(order.status)}), 201
 
 @portal_api_bp.route('/claims', methods=['GET'])
 @require_auth
@@ -597,6 +749,179 @@ def get_surveys_history(tenant_slug):
     # Not implemented: tracking user survey completions in a dedicated table.
     # For now returning empty list.
     return jsonify([])
+
+
+@portal_api_bp.route('/history', methods=['GET'])
+@require_auth
+def get_portal_history(tenant_slug):
+    tenant = _resolve_context(tenant_slug)
+    user = g.viewer
+
+    limit = _normalize_limit(request.args.get('limit'), default=20, max_limit=100)
+
+    claims = TenantTicket.query.filter_by(
+        user_id=user.id,
+        tenant_id=tenant.id
+    ).order_by(TenantTicket.updated_at.desc()).limit(limit).all()
+
+    orders = MarketOrder.query.filter_by(
+        tenant_id=tenant.id,
+        user_id=user.id
+    ).order_by(MarketOrder.created_at.desc()).limit(limit).all()
+
+    points_tx = PointsTransaction.query.filter_by(
+        user_id=user.id,
+        tenant_id=tenant.id
+    ).order_by(PointsTransaction.created_at.desc()).limit(limit).all()
+
+    encuestas = (
+        db.session.query(EncRespuesta, EncEncuesta)
+        .join(EncEncuesta, EncEncuesta.id == EncRespuesta.encuesta_id)
+        .filter(
+            and_(
+                EncRespuesta.user_id == user.id,
+                EncRespuesta.tenant_id == tenant.id,
+            )
+        )
+        .order_by(EncRespuesta.submitted_at.desc())
+        .limit(limit)
+        .all()
+    )
+
+    timeline = []
+    for t in claims:
+        timeline.append({
+            "type": "claim",
+            "id": t.id,
+            "title": t.categoria or "Reclamo",
+            "status": t.estado,
+            "at": _to_iso(t.updated_at) or _to_iso(t.created_at),
+            "payload": {
+                "description": t.descripcion,
+                "created_at": _to_iso(t.created_at),
+            },
+        })
+
+    for order in orders:
+        serialized = _serialize_portal_order(order, include_timeline=False)
+        timeline.append({
+            "type": "order",
+            "id": order.id,
+            "title": f"Pedido #{order.id}",
+            "status": serialized.get("status"),
+            "at": serialized.get("date"),
+            "payload": serialized,
+        })
+
+    for tx in points_tx:
+        timeline.append({
+            "type": "points",
+            "id": tx.id,
+            "title": (tx.metadata_payload or {}).get("benefit_title") or tx.tipo,
+            "status": "earned" if (tx.delta or 0) >= 0 else "redeemed",
+            "at": _to_iso(tx.created_at),
+            "payload": {
+                "tipo": tx.tipo,
+                "delta": tx.delta,
+                "saldo_final": tx.saldo_final,
+                "detalle": (tx.metadata_payload or {}).get("detalle", tx.tipo),
+            },
+        })
+
+    for respuesta, encuesta in encuestas:
+        timeline.append({
+            "type": "survey",
+            "id": respuesta.id,
+            "title": encuesta.titulo if encuesta else "Encuesta",
+            "status": "submitted",
+            "at": _to_iso(respuesta.submitted_at),
+            "payload": {
+                "encuesta_id": respuesta.encuesta_id,
+                "encuesta_slug": encuesta.slug if encuesta else None,
+                "encuesta_tipo": encuesta.tipo if encuesta else None,
+                "es_votacion": bool(encuesta.es_votacion_envivo) if encuesta else False,
+            },
+        })
+
+    timeline.sort(key=lambda item: item.get("at") or "", reverse=True)
+
+    return jsonify({
+        "claims": [{
+            "id": str(t.id),
+            "title": t.categoria or "Reclamo",
+            "description": t.descripcion,
+            "status": t.estado,
+            "date": _to_iso(t.created_at),
+            "updated_at": _to_iso(t.updated_at),
+        } for t in claims],
+        "orders": [_serialize_portal_order(o, include_timeline=False) for o in orders],
+        "points": [{
+            "id": tx.id,
+            "fecha": _to_iso(tx.created_at),
+            "tipo": tx.tipo,
+            "delta": tx.delta,
+            "saldo_final": tx.saldo_final,
+            "detalle": (tx.metadata_payload or {}).get("detalle", tx.tipo),
+        } for tx in points_tx],
+        "surveys": [{
+            "id": str(respuesta.id),
+            "encuesta_id": respuesta.encuesta_id,
+            "encuesta_slug": encuesta.slug if encuesta else None,
+            "titulo": encuesta.titulo if encuesta else None,
+            "tipo": encuesta.tipo if encuesta else None,
+            "es_votacion": bool(encuesta.es_votacion_envivo) if encuesta else False,
+            "submitted_at": _to_iso(respuesta.submitted_at),
+        } for respuesta, encuesta in encuestas],
+        "timeline": timeline[: max(limit * 4, 20)],
+    })
+
+
+@portal_api_bp.route('/benefits', methods=['GET'])
+@require_auth
+def get_portal_benefits(tenant_slug):
+    tenant = _resolve_context(tenant_slug)
+    user = g.viewer
+
+    balance = recompensas_service().obtener_saldo(user)
+    benefits = []
+    for benefit in _portal_benefits(tenant):
+        benefits.append({
+            **benefit,
+            "eligible": balance >= benefit["cost_points"],
+            "points_missing": max(0, benefit["cost_points"] - balance),
+        })
+
+    return jsonify({
+        "current_points": balance,
+        "benefits": benefits,
+    })
+
+
+@portal_api_bp.route('/redeems', methods=['GET'])
+@require_auth
+def get_portal_redeems(tenant_slug):
+    tenant = _resolve_context(tenant_slug)
+    user = g.viewer
+
+    limit = _normalize_limit(request.args.get('limit'), default=20, max_limit=100)
+    history = PointsTransaction.query.filter_by(
+        user_id=user.id,
+        tenant_id=tenant.id
+    ).filter(PointsTransaction.delta < 0).order_by(PointsTransaction.created_at.desc()).limit(limit).all()
+
+    return jsonify([
+        {
+            "id": tx.id,
+            "fecha": _to_iso(tx.created_at),
+            "tipo": tx.tipo,
+            "delta": tx.delta,
+            "saldo_final": tx.saldo_final,
+            "benefit_id": (tx.metadata_payload or {}).get("benefit_id"),
+            "benefit_title": (tx.metadata_payload or {}).get("benefit_title"),
+            "detalle": (tx.metadata_payload or {}).get("detalle", tx.tipo),
+        }
+        for tx in history
+    ])
 
 
 @portal_api_bp.route('/integration', methods=['GET'])
@@ -636,22 +961,39 @@ def redeem_points(tenant_slug):
     user = g.viewer
     data = request.get_json(silent=True) or {}
 
-    benefit_id = data.get('benefit_id')
+    benefit_id = (data.get('benefit_id') or '').strip()
     if not benefit_id:
         return jsonify({"error": "Benefit ID required"}), 400
 
-    # Logic to redeem: check points, deduct, create transaction
-    # Stub logic:
-    current_points = recompensas_service().obtener_saldo(user)
-    cost = 500 # Mock cost
+    benefits_map = {benefit["id"]: benefit for benefit in _portal_benefits(tenant)}
+    benefit = benefits_map.get(benefit_id)
+    if not benefit:
+        return jsonify({"error": "Benefit not found"}), 404
 
-    if current_points < cost:
-        return jsonify({"error": "Insufficient points"}), 400
+    rewards = recompensas_service()
+    cost = int(benefit["cost_points"])
+    ok = rewards.canjear_puntos(
+        user,
+        tenant,
+        cost,
+        tipo="portal_redeem",
+        metadata={
+            "benefit_id": benefit_id,
+            "benefit_title": benefit["title"],
+            "detalle": f"Canje portal: {benefit['title']}",
+        },
+    )
+    if not ok:
+        current_points = rewards.obtener_saldo(user)
+        return jsonify({"error": "Insufficient points", "current_points": current_points, "required_points": cost}), 400
 
-    # Deduct
-    # recompensas_service().deduct(user, cost, f"Redeemed benefit {benefit_id}")
-
-    return jsonify({"success": True, "message": "Benefit redeemed", "new_balance": current_points - cost})
+    db.session.refresh(user)
+    return jsonify({
+        "success": True,
+        "message": "Benefit redeemed",
+        "benefit": benefit,
+        "new_balance": rewards.obtener_saldo(user)
+    })
 
 @portal_api_bp.route('/loyalty', methods=['GET'])
 @require_auth
