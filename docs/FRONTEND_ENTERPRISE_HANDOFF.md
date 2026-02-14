@@ -121,6 +121,10 @@ Respuesta esperada (shape orientativo):
 - Actualiza perfil franquicia del tenant.
 - Validaciones actuales: idiomas soportados `es|en|pt`.
 
+## `GET /api/admin/tenants/<slug>/franchise-readiness`
+- Score de preparación comercial internacional (0-100) para venta/franquicia.
+- Devuelve `readiness.status` (`basic|in_progress|ready`) + checklist detallado `checks` y `missing`.
+
 ## `GET /admin/analytics/overview (alias: /api/admin/analytics/overview)?tenant_id=<id>&scope=municipio&from=YYYY-MM-DD&to=YYYY-MM-DD`
 - Úsese para KPIs/cards/totales.
 

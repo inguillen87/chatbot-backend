@@ -107,6 +107,42 @@ def _sanitize_franchise_profile(payload: dict, tenant: TenantProfile) -> tuple[d
 
     return base, errors
 
+
+
+def _compute_franchise_readiness(tenant: TenantProfile) -> dict:
+    config = tenant.configuracion if isinstance(tenant.configuracion, dict) else {}
+    profile = config.get("franchise_profile") if isinstance(config.get("franchise_profile"), dict) else _default_franchise_profile(tenant)
+
+    checks = {
+        "white_label_enabled": bool(profile.get("white_label_enabled")),
+        "reseller_enabled": bool(profile.get("reseller_enabled")),
+        "languages_configured": bool(profile.get("supported_languages")),
+        "default_language_valid": str(profile.get("default_language") or "") in set(profile.get("supported_languages") or []),
+        "currency_defined": bool(str(profile.get("currency") or "").strip()),
+        "country_defined": bool(str(profile.get("country") or "").strip()),
+        "timezone_defined": bool(str(profile.get("timezone") or "").strip()),
+        "partner_program_defined": bool(str(profile.get("partner_program") or "").strip()),
+        "brand_domain_configured": bool(str(tenant.dominio or "").strip()),
+        "logo_configured": bool(str(tenant.logo_url or "").strip()),
+        "payments_configured": bool(str((config.get("mercadopago_access_token") or "")).strip()),
+        "whatsapp_sender_configured": bool(str(tenant.whatsapp_sender_id or "").strip()),
+    }
+
+    total = len(checks)
+    passed = sum(1 for value in checks.values() if value)
+    score = round((passed / total) * 100, 2) if total else 0.0
+
+    missing = [key for key, value in checks.items() if not value]
+    status = "ready" if score >= 85 else "in_progress" if score >= 60 else "basic"
+
+    return {
+        "score": score,
+        "status": status,
+        "checks": checks,
+        "missing": missing,
+        "profile": profile,
+    }
+
 def _normalize_plan_key(raw_plan: str | None) -> str:
     if not raw_plan:
         return "gratis"
@@ -444,6 +480,24 @@ def update_tenant_franchise_profile(current_user, slug):
     db.session.commit()
 
     return jsonify({"ok": True, "franchise_profile": profile})
+
+
+@super_admin_bp.route('/tenants/<string:slug>/franchise-readiness', methods=['GET'])
+@token_requerido
+@super_admin_required
+def get_tenant_franchise_readiness(current_user, slug):
+    tenant = TenantProfile.query.filter_by(slug=slug).first_or_404()
+    readiness = _compute_franchise_readiness(tenant)
+    return jsonify({
+        "tenant": {
+            "id": tenant.id,
+            "slug": tenant.slug,
+            "nombre": tenant.nombre,
+            "tipo": tenant.tipo,
+            "plan": tenant.plan,
+        },
+        "readiness": readiness,
+    })
 
 
 @super_admin_bp.route('/tenants/<string:slug>/metrics', methods=['GET'])

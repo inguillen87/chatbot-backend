@@ -78,3 +78,48 @@ def test_super_admin_franchise_profile_rejects_invalid_language(client, app):
         json={"default_language": "de"},
     )
     assert resp.status_code == 400
+
+
+def test_super_admin_franchise_readiness(client, app):
+    sa = User(email="sa3@test.com", name="SA3", rol="super_admin", tipo_chat="admin")
+    sa.set_password("pass")
+    owner = User(email="owner3@test.com", name="Owner3", rol="admin", tipo_chat="pyme")
+    owner.set_password("pass")
+    db.session.add_all([sa, owner])
+    db.session.commit()
+
+    tenant = TenantProfile(
+        slug="tenant-fr-3",
+        nombre="Tenant FR 3",
+        tipo="pyme",
+        pyme_id=owner.id,
+        dominio="tenant-fr-3.example.com",
+        logo_url="https://cdn.example.com/logo.png",
+        whatsapp_sender_id="5491112345678",
+        configuracion={
+            "mercadopago_access_token": "TEST-123",
+            "franchise_profile": {
+                "white_label_enabled": True,
+                "reseller_enabled": True,
+                "target_markets": ["latam", "na"],
+                "default_language": "en",
+                "supported_languages": ["en", "es", "pt"],
+                "timezone": "America/New_York",
+                "currency": "USD",
+                "country": "US",
+                "legal_entity_name": "Tenant FR 3 LLC",
+                "partner_program": "global_partner",
+            },
+        },
+    )
+    db.session.add(tenant)
+    db.session.commit()
+
+    headers = _sa_headers(app, sa)
+    resp = client.get("/api/admin/tenants/tenant-fr-3/franchise-readiness", headers=headers)
+    assert resp.status_code == 200
+    payload = resp.get_json()
+    readiness = payload["readiness"]
+    assert readiness["status"] in {"ready", "in_progress", "basic"}
+    assert readiness["score"] >= 85
+    assert readiness["checks"]["payments_configured"] is True

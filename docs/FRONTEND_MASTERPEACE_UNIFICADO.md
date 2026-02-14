@@ -131,6 +131,7 @@ Validaciones FE recomendadas:
 
 ### Analytics
 - Franquicia/white-label profile: `GET/PUT /api/admin/tenants/<slug>/franchise-profile`
+- Franquicia readiness score: `GET /api/admin/tenants/<slug>/franchise-readiness`
 - KPIs: `GET /admin/analytics/overview (alias: /api/admin/analytics/overview)`
 - Heatmap: `GET /admin/analytics/heatmap (alias: /api/admin/analytics/heatmap)`
 - Export CSV: `GET /admin/analytics/export.csv (alias: /api/admin/analytics/export.csv)`
