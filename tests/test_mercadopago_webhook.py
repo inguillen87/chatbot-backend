@@ -102,3 +102,45 @@ def test_webhook_fails_without_global_token(client, tenant_with_pedido, monkeypa
     data = resp.get_json()
     assert "MercadoPago" in data.get("error", "")
 
+
+
+@pytest.mark.usefixtures("client")
+def test_webhook_works_with_payload_tenant_token_without_global(client, tenant_with_pedido, monkeypatch):
+    tenant, pedido = tenant_with_pedido
+
+    captured = {}
+
+    def fake_get(url, headers=None, **_kwargs):
+        captured.setdefault("auth_calls", []).append((headers or {}).get("Authorization"))
+
+        class DummyResp:
+            status_code = 200
+
+            def json(self):
+                return {"external_reference": str(pedido.id), "status": "approved"}
+
+            @property
+            def ok(self):
+                return True
+
+        return DummyResp()
+
+    monkeypatch.delenv("MERCADOPAGO_ACCESS_TOKEN", raising=False)
+    monkeypatch.setattr("routes.mercadopago_webhook.requests.get", fake_get)
+
+    resp = client.post(
+        "/mercadopago_webhook",
+        data=json.dumps(
+            {
+                "type": "payment",
+                "tenant_id": tenant.id,
+                "data": {"id": "pay-2"},
+            }
+        ),
+        content_type="application/json",
+    )
+
+    assert resp.status_code == 200
+    payload = resp.get_json()
+    assert payload["estado"] == "pagado"
+    assert captured["auth_calls"][0] == "Bearer tenant-token"

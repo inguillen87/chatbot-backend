@@ -4,7 +4,15 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 from extensions import db
-from models import MunicipioTicket, PymePedido, PymeTicket, TicketComentario, TicketSatisfaccion, User
+from models import (
+    AnalyticsEventV2,
+    MunicipioTicket,
+    PymePedido,
+    PymeTicket,
+    TicketComentario,
+    TicketSatisfaccion,
+    User,
+)
 
 
 def _ensure_user(tenant_id: int, scope: str) -> User:
@@ -290,3 +298,143 @@ def test_operations_requires_operator_role(client):
         headers={'X-Debug-Role': 'visor', 'X-Debug-Tenant': str(tenant_id)},
     )
     assert response.status_code == 403
+
+
+def test_event_ingest_requires_tenant_and_event_name(client):
+    response = client.post(
+        '/analytics/event',
+        json={'event_name': 'page_view'},
+        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': '8'},
+    )
+    assert response.status_code == 400
+
+    response = client.post(
+        '/analytics/event',
+        json={'tenant_id': 8},
+        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': '8'},
+    )
+    assert response.status_code == 400
+
+
+def test_event_ingest_is_tenant_scoped(client):
+    tenant_id = 9
+    response = client.post(
+        '/analytics/event',
+        json={
+            'tenant_id': tenant_id,
+            'event_name': 'checkout_started',
+            'payload': {'step': 'shipping'},
+            'channel': 'web_widget',
+            'session_id': 'sess_123',
+        },
+        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
+    )
+    assert response.status_code == 202
+    saved = AnalyticsEventV2.query.filter_by(tenant_id=tenant_id, event_name='checkout_started').first()
+    assert saved is not None
+    assert saved.metadata_payload.get('step') == 'shipping'
+
+    forbidden = client.post(
+        '/analytics/event',
+        json={'tenant_id': tenant_id, 'event_name': 'page_view'},
+        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': '999'},
+    )
+    assert forbidden.status_code == 403
+
+
+def test_admin_analytics_overview_and_exports_are_tenant_scoped(client):
+    tenant_id = 10
+    _create_municipio_ticket(tenant_id)
+    db.session.commit()
+
+    overview = client.get(
+        '/admin/analytics/overview',
+        query_string={'tenant_id': tenant_id, 'scope': 'municipio'},
+        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
+    )
+    assert overview.status_code == 200
+    assert 'totals' in overview.get_json()
+
+    csv_export = client.get(
+        '/admin/analytics/export.csv',
+        query_string={'tenant_id': tenant_id, 'scope': 'municipio'},
+        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
+    )
+    assert csv_export.status_code == 200
+    assert csv_export.mimetype == 'text/csv'
+
+    pdf_export = client.get(
+        '/admin/analytics/export.pdf',
+        query_string={'tenant_id': tenant_id, 'scope': 'municipio'},
+        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
+    )
+    assert pdf_export.status_code == 200
+    assert pdf_export.mimetype == 'application/pdf'
+
+    forbidden = client.get(
+        '/admin/analytics/overview',
+        query_string={'tenant_id': tenant_id, 'scope': 'municipio'},
+        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': '999'},
+    )
+    assert forbidden.status_code == 403
+
+
+def test_admin_analytics_heatmap_returns_temporal_matrix(client):
+    tenant_id = 11
+    now = datetime.utcnow()
+    db.session.add(
+        AnalyticsEventV2(
+            tenant_id=tenant_id,
+            event_name='page_view',
+            tenant_type='pyme',
+            ts=now,
+        )
+    )
+    db.session.commit()
+
+    response = client.get(
+        '/admin/analytics/heatmap',
+        query_string={'tenant_id': tenant_id, 'scope': 'municipio', 'tz': 'America/Argentina/Cordoba'},
+        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
+    )
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data['tz'] == 'America/Argentina/Cordoba'
+    assert isinstance(data['temporal'], list)
+
+
+def test_admin_analytics_heatmap_rejects_non_numeric_tenant_id(client):
+    response = client.get(
+        '/admin/analytics/heatmap',
+        query_string={'tenant_id': 'abc', 'scope': 'municipio'},
+        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': 'abc'},
+    )
+    assert response.status_code == 400
+
+
+def test_api_alias_admin_analytics_overview_and_heatmap(client):
+    tenant_id = 12
+    _create_municipio_ticket(tenant_id)
+    db.session.add(
+        AnalyticsEventV2(
+            tenant_id=tenant_id,
+            event_name='alias_view',
+            tenant_type='municipio',
+            ts=datetime.utcnow(),
+        )
+    )
+    db.session.commit()
+
+    overview = client.get(
+        '/api/admin/analytics/overview',
+        query_string={'tenant_id': tenant_id, 'scope': 'municipio'},
+        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
+    )
+    assert overview.status_code == 200
+
+    heatmap = client.get(
+        '/api/admin/analytics/heatmap',
+        query_string={'tenant_id': tenant_id, 'scope': 'municipio'},
+        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
+    )
+    assert heatmap.status_code == 200
