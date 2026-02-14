@@ -1,5 +1,4 @@
 import logging
-import os
 from typing import List, Optional
 
 import requests
@@ -196,7 +195,7 @@ def _resolve_tenant_user(payload: dict) -> tuple[TenantProfile, User]:
             tenant_id=tenant_id,
             widget_token=widget_token,
             whatsapp_destination_number=request.headers.get("X-Whatsapp-Dst"),
-            current_user=getattr(g, "user", None),
+            current_user=(getattr(g, "user", None) or getattr(g, "viewer", None)),
         )
     except TenantResolutionError as exc:
         raise
@@ -274,9 +273,27 @@ def _crear_pedido(payload: dict):
     db.session.commit()
 
     tenant_cfg = tenant.configuracion or {}
-    access_token = tenant_cfg.get("mercadopago_access_token") or os.getenv("MERCADOPAGO_ACCESS_TOKEN")
+    access_token = tenant_cfg.get("mercadopago_access_token")
     init_point = None
     preference_id = None
+    demo_mode = bool((getattr(g, "token_payload", {}) or {}).get("demo_mode"))
+
+    if total_money > 0 and demo_mode:
+        pedido.estado = "confirmado"
+        pedido.mp_status = "demo_skipped"
+        db.session.commit()
+        return jsonify(
+            {
+                "pedido_id": pedido.id,
+                "preference_id": None,
+                "init_point": None,
+                "total_monetario": total_money,
+                "total_puntos": total_points,
+                "estado": pedido.estado,
+                "tipo": pedido.tipo,
+                "demo_mode": True,
+            }
+        )
 
     if total_money > 0 and not access_token:
         pedido.estado = "pendiente_pago"
@@ -308,6 +325,11 @@ def _crear_pedido(payload: dict):
                 for it in cart_entries
             ],
             "external_reference": str(pedido.id),
+            "metadata": {
+                "tenant_id": tenant.id,
+                "tenant_slug": tenant.slug,
+                "pedido_id": pedido.id,
+            },
         }
         resp = requests.post(
             "https://api.mercadopago.com/checkout/preferences",
