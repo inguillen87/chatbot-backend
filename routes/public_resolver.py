@@ -2,6 +2,7 @@ from flask import Blueprint, jsonify, request, g, current_app
 from flask_cors import cross_origin
 
 from models import TenantProfile, WidgetSettings, Rubro, db
+from services.live_chat_schedule import build_live_chat_status
 from services.tenant_resolver import (
     RESERVED_TENANT_SLUGS,
     TenantResolutionError,
@@ -213,6 +214,34 @@ def _resolve_widget_api_base(tenant: TenantProfile, cfg: dict) -> str:
     return "https://api.chatboc.ar"
 
 
+
+
+def _support_channels_payload(tenant: TenantProfile, cfg: dict) -> dict:
+    owner = tenant.pyme or tenant.municipio
+    whatsapp_number = (
+        cfg.get("support_whatsapp")
+        or cfg.get("whatsapp_phone")
+        or getattr(tenant, "whatsapp_sender_id", None)
+        or getattr(owner, "telefono", None)
+    )
+
+    return {
+        "live_chat": {
+            **build_live_chat_status(),
+            "channel": "ticket_chat",
+            "realtime": True,
+            "media": {"text": True, "image": True, "audio": True, "file": True},
+        },
+        "whatsapp": {
+            "enabled": bool(whatsapp_number),
+            "number": whatsapp_number,
+            "channel": "whatsapp",
+            "realtime_bridge": True,
+            "media": {"text": True, "image": True, "audio": True, "file": True},
+        },
+    }
+
+
 def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | None) -> dict:
     """Expose a rich embed configuration so `integracion.tsx` can render a SaaS builder."""
 
@@ -271,6 +300,21 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
     right_offset = cfg.get("widget_right", "20px")
     left_offset = cfg.get("widget_left", right_offset)
 
+    ux = cfg.get("ux") if isinstance(cfg.get("ux"), dict) else {}
+    motion_level = ux.get("motion_level") or cfg.get("widget_motion_level") or "balanced"
+    widget_preset = ux.get("preset") or cfg.get("widget_preset") or "premium"
+    gradient_start = ux.get("gradient_start") or cfg.get("widget_gradient_start")
+    gradient_end = ux.get("gradient_end") or cfg.get("widget_gradient_end")
+    glassmorphism = bool(ux.get("glassmorphism", cfg.get("widget_glassmorphism", True)))
+    logo_ring = bool(ux.get("logo_ring", cfg.get("widget_logo_ring", True)))
+    typing_animation = ux.get("typing_animation") or cfg.get("widget_typing_animation") or "wave-dots"
+    bubble_animation = ux.get("bubble_animation") or cfg.get("widget_bubble_animation") or "soft-rise"
+    launcher_animation = ux.get("launcher_animation") or cfg.get("widget_launcher_animation") or "pulse-glow"
+    message_enter_animation = ux.get("message_enter_animation") or cfg.get("widget_message_enter_animation") or "fade-up"
+    logo_badge_style = ux.get("logo_badge_style") or cfg.get("widget_logo_badge_style") or "ring"
+    cursor_trail = bool(ux.get("cursor_trail", cfg.get("widget_cursor_trail", False)))
+    ambient_particles = bool(ux.get("ambient_particles", cfg.get("widget_ambient_particles", False)))
+
     attrs = {
         "data-owner-token": canonical_token,
         "data-widget-token": canonical_token,
@@ -294,6 +338,19 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
         "data-launcher-color": theme.get("launcher"),
         "data-logo-url": cfg.get("avatar_url") or theme.get("logo"),
         "data-logo-animation": cfg.get("widget_logo_animation") or theme.get("animation"),
+        "data-widget-preset": widget_preset,
+        "data-motion-level": motion_level,
+        "data-glassmorphism": str(glassmorphism).lower(),
+        "data-logo-ring": str(logo_ring).lower(),
+        "data-gradient-start": gradient_start,
+        "data-gradient-end": gradient_end,
+        "data-typing-animation": typing_animation,
+        "data-bubble-animation": bubble_animation,
+        "data-launcher-animation": launcher_animation,
+        "data-message-enter-animation": message_enter_animation,
+        "data-logo-badge-style": logo_badge_style,
+        "data-cursor-trail": str(cursor_trail).lower(),
+        "data-ambient-particles": str(ambient_particles).lower(),
         "data-font-family": cfg.get("font_family") or "inherit",
         "data-bubble-shape": cfg.get("bubble_shape") or "round",
         "data-singleton": "true",
@@ -331,6 +388,8 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
     attr_snippet = " ".join(f"{k}='{v}'" for k, v in attrs.items())
     embed_snippet = f"<script src='{script_url}' async {attr_snippet}></script>"
 
+    support_channels = _support_channels_payload(tenant, cfg)
+
     builder_config = {
         "welcome_title": welcome_title,
         "welcome_subtitle": welcome_subtitle,
@@ -338,10 +397,26 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
         "theme_config": cfg.get("theme_config") or {},
         "channels": cfg.get("channels") or {},
         "preview": cfg.get("preview") or {},
+        "ux": {
+            "preset": widget_preset,
+            "motion_level": motion_level,
+            "glassmorphism": glassmorphism,
+            "logo_ring": logo_ring,
+            "gradient_start": gradient_start,
+            "gradient_end": gradient_end,
+            "typing_animation": typing_animation,
+            "bubble_animation": bubble_animation,
+            "launcher_animation": launcher_animation,
+            "message_enter_animation": message_enter_animation,
+            "logo_badge_style": logo_badge_style,
+            "cursor_trail": cursor_trail,
+            "ambient_particles": ambient_particles,
+        },
         "embed_snippet": embed_snippet,
         "api_base_url": api_base_url,
         "iframe_url": iframe_url,
         "attributes": attrs,
+        "support_channels": support_channels,
         "layout": {
             "position": position or "right",
             "width": width,
@@ -360,6 +435,7 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
         "theme": theme,
         "builder_config": builder_config,
         "marketplace": marketplace,
+        "support_channels": support_channels,
         "widget_token": canonical_token,
         "widget_token_cookie_name": current_app.config.get("WIDGET_TOKEN_COOKIE_NAME", "widget_token"),
     }
@@ -433,6 +509,22 @@ def _normalize_widget_config(config: dict | None, widget_settings=None) -> dict:
     preview_config.setdefault("alignment", "right")
     preview_config.setdefault("card_density", "comfortable")
     cfg["preview"] = preview_config
+
+    ux_config = cfg.get("ux") if isinstance(cfg.get("ux"), dict) else {}
+    ux_config.setdefault("preset", cfg.get("widget_preset") or "premium")
+    ux_config.setdefault("motion_level", cfg.get("widget_motion_level") or "balanced")
+    ux_config.setdefault("glassmorphism", bool(cfg.get("widget_glassmorphism", True)))
+    ux_config.setdefault("logo_ring", bool(cfg.get("widget_logo_ring", True)))
+    ux_config.setdefault("gradient_start", cfg.get("widget_gradient_start") or cfg.get("primary_color"))
+    ux_config.setdefault("gradient_end", cfg.get("widget_gradient_end") or cfg.get("secondary_color"))
+    ux_config.setdefault("typing_animation", cfg.get("widget_typing_animation") or "wave-dots")
+    ux_config.setdefault("bubble_animation", cfg.get("widget_bubble_animation") or "soft-rise")
+    ux_config.setdefault("launcher_animation", cfg.get("widget_launcher_animation") or "pulse-glow")
+    ux_config.setdefault("message_enter_animation", cfg.get("widget_message_enter_animation") or "fade-up")
+    ux_config.setdefault("logo_badge_style", cfg.get("widget_logo_badge_style") or "ring")
+    ux_config.setdefault("cursor_trail", bool(cfg.get("widget_cursor_trail", False)))
+    ux_config.setdefault("ambient_particles", bool(cfg.get("widget_ambient_particles", False)))
+    cfg["ux"] = ux_config
 
     return cfg
 
