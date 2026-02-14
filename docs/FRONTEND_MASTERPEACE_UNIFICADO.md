@@ -126,6 +126,7 @@ Validaciones FE recomendadas:
 ## 4) Matriz pantalla → endpoint (para implementación rápida)
 
 ### Auth / demo
+- Demo bootstrap/catalog: `GET /auth/demo/catalog`
 - Demo login: `POST /auth/demo`
 
 ### Analytics
@@ -141,6 +142,7 @@ Validaciones FE recomendadas:
 - `GET /api/v1/portal/<tenant_slug>/history` expone historial unificado (`claims`, `orders`, `points`, `surveys`, `suggestions`, `summary`, `timeline`) y soporta `include_network=true`.
 - `GET /api/v1/portal/<tenant_slug>/surveys/history` devuelve historial de encuestas (single-tenant o multi-tenant).
 - `GET /api/v1/portal/<tenant_slug>/dashboard` entrega snapshot de Home (summary + puntos + follows).
+- `GET /api/v1/portal/<tenant_slug>/i18n` expone idioma actual y catálogo (`es`, `en`, `pt`).
 - `GET /api/v1/portal/<tenant_slug>/network/feed` devuelve noticias/eventos del tenant actual + tenants seguidos por el usuario.
 - `GET /api/v1/portal/<tenant_slug>/benefits` entrega beneficios canjeables + elegibilidad por puntos.
 - `POST /api/v1/portal/<tenant_slug>/redeem` registra canje real (débito de puntos + metadata).

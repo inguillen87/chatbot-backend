@@ -85,5 +85,25 @@ class AuthDemoLoginTest(unittest.TestCase):
         self.assertEqual(resp.status_code, 404)
 
 
+    def test_demo_catalog_returns_superadmin_and_languages(self):
+        resp = self.client.get('/auth/demo/catalog')
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.get_json()
+        self.assertIn('super_admin_demo', payload)
+        self.assertEqual(payload['super_admin_demo']['role'], 'super_admin')
+        languages = payload.get('supported_languages') or []
+        codes = {item.get('code') for item in languages}
+        self.assertTrue({'es', 'en', 'pt'}.issubset(codes))
+
+    def test_demo_catalog_can_bootstrap_superadmin(self):
+        resp = self.client.get('/auth/demo/catalog?ensure_users=true')
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.get_json()
+        email = payload['super_admin_demo']['email']
+        user = User.query.filter_by(email=email).first()
+        self.assertIsNotNone(user)
+        self.assertIn(user.rol, {'super_admin', 'superadmin'})
+
+
 if __name__ == "__main__":
     unittest.main()

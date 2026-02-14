@@ -210,3 +210,18 @@ def test_full_flow(client):
     assert dashboard["scope"]["include_network"] is True
     assert dashboard["tenants_followed"] >= 1
     assert dashboard["summary"]["orders"] >= 1
+
+    # 20. i18n profile/settings contract
+    settings_put = client.put(
+        f"/api/v1/portal/demo-flow/settings",
+        headers=headers,
+        json={"language": "en"},
+    )
+    assert settings_put.status_code == 200
+    assert settings_put.json["preferences"]["language"] == "en"
+
+    i18n_resp = client.get(f"/api/v1/portal/demo-flow/i18n", headers=headers)
+    assert i18n_resp.status_code == 200
+    assert i18n_resp.json["current_language"] == "en"
+    language_codes = {item["code"] for item in i18n_resp.json["available_languages"]}
+    assert {"es", "en", "pt"}.issubset(language_codes)

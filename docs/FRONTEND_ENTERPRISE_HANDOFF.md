@@ -79,6 +79,10 @@ Este documento resume **lo ya implementado en backend** y el plan de trabajo rec
 
 ### 2.1 Demo Login
 
+## `GET /auth/demo/catalog`
+- Devuelve credenciales demo de super admin + catálogo de tenants demo + idiomas soportados (`es`, `en`, `pt`).
+- Query opcional: `?ensure_users=true` para bootstrap idempotente del usuario demo super admin.
+
 ## `POST /auth/demo`
 Body sugerido:
 ```json
@@ -171,6 +175,11 @@ Body:
   - `points.current` + `points.breakdown`
   - `tenants_followed`
 - Soporta `?include_network=true` para visión multi-tenant.
+
+`GET /api/v1/portal/<tenant_slug>/i18n`
+- Configuración de idiomas para portal autenticado:
+  - `current_language`
+  - `available_languages` (`es`, `en`, `pt`)
 
 `GET /api/v1/portal/<tenant_slug>/network/feed`
 - Feed transversal con noticias/eventos del tenant actual + tenants seguidos por el usuario:

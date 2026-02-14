@@ -827,6 +827,51 @@ def _resolve_demo_tenant_slug(rubro_raw: Optional[str]) -> Optional[str]:
     return None
 
 
+
+
+def _demo_superadmin_credentials() -> dict:
+    return {
+        "email": os.getenv("DEMO_SUPERADMIN_EMAIL", "superadmin.demo@chatboc.ar"),
+        "password": os.getenv("DEMO_SUPERADMIN_PASSWORD", "demo1234"),
+    }
+
+
+def _ensure_demo_superadmin() -> User:
+    creds = _demo_superadmin_credentials()
+    email = (creds.get("email") or "").strip().lower()
+    user = _user_query().filter(func.lower(User.email) == email).first() if email else None
+    if user:
+        updated = False
+        if user.rol not in {"super_admin", "superadmin"}:
+            user.rol = "super_admin"
+            updated = True
+        if user.tipo_chat != "admin":
+            user.tipo_chat = "admin"
+            updated = True
+        if updated:
+            db.session.add(user)
+            db.session.commit()
+        return user
+
+    user = User(
+        name="Super Admin Demo",
+        email=creds["email"],
+        rol="super_admin",
+        tipo_chat="admin",
+    )
+    user.set_password(creds["password"])
+    db.session.add(user)
+    db.session.commit()
+    return user
+
+
+def _supported_demo_languages() -> list[dict[str, str]]:
+    return [
+        {"code": "es", "label": "Español", "locale": "es-AR"},
+        {"code": "en", "label": "English", "locale": "en-US"},
+        {"code": "pt", "label": "Português", "locale": "pt-BR"},
+    ]
+
 def _get_or_create_demo_user_for_tenant(tenant: TenantProfile) -> User:
     """Return an isolated demo admin account for the tenant.
 
@@ -858,6 +903,39 @@ def _get_or_create_demo_user_for_tenant(tenant: TenantProfile) -> User:
     db.session.add(user)
     db.session.commit()
     return user
+
+
+@auth_bp.route('/demo/catalog', methods=['GET', 'OPTIONS'])
+@cross_origin(supports_credentials=True)
+def demo_catalog():
+    if request.method == 'OPTIONS':
+        return '', 204
+
+    ensure_users = str(request.args.get('ensure_users') or '').strip().lower() in {'1', 'true', 'yes', 'on'}
+    if ensure_users:
+        _ensure_demo_superadmin()
+
+    demos = load_demo_rubros(require_owner=False)
+    demo_items = []
+    for demo in demos:
+        tenant_slug = _resolve_demo_tenant_slug(demo.key) or _resolve_demo_tenant_slug(demo.rubro_clave)
+        demo_items.append({
+            "key": demo.key,
+            "label": demo.label,
+            "tipo_chat": demo.tipo_chat,
+            "tenant_slug": tenant_slug,
+            "login_payload": {"rubro": demo.key},
+        })
+
+    return jsonify({
+        "super_admin_demo": {
+            **_demo_superadmin_credentials(),
+            "role": "super_admin",
+            "login_endpoint": "/auth/login",
+        },
+        "tenant_demos": demo_items,
+        "supported_languages": _supported_demo_languages(),
+    })
 
 
 @auth_bp.route('/demo', methods=['POST', 'OPTIONS'])
