@@ -1180,6 +1180,274 @@ def get_portal_redeems(tenant_slug):
     ])
 
 
+@portal_api_bp.route('/history', methods=['GET'])
+@require_auth
+def get_portal_history(tenant_slug):
+    tenant = _resolve_context(tenant_slug)
+    user = g.viewer
+
+    limit = _normalize_limit(request.args.get('limit'), default=20, max_limit=100)
+
+    claims = TenantTicket.query.filter_by(
+        user_id=user.id,
+        tenant_id=tenant.id
+    ).order_by(TenantTicket.updated_at.desc()).limit(limit).all()
+
+    orders = MarketOrder.query.filter_by(
+        tenant_id=tenant.id,
+        user_id=user.id
+    ).order_by(MarketOrder.created_at.desc()).limit(limit).all()
+
+    points_tx = PointsTransaction.query.filter_by(
+        user_id=user.id,
+        tenant_id=tenant.id
+    ).order_by(PointsTransaction.created_at.desc()).limit(limit).all()
+
+    encuestas = (
+        db.session.query(EncRespuesta, EncEncuesta)
+        .join(EncEncuesta, EncEncuesta.id == EncRespuesta.encuesta_id)
+        .filter(
+            and_(
+                EncRespuesta.user_id == user.id,
+                EncRespuesta.tenant_id == tenant.id,
+            )
+        )
+        .order_by(EncRespuesta.submitted_at.desc())
+        .limit(limit)
+        .all()
+    )
+
+    owner_id = _get_owner_id(tenant)
+    sugerencias = []
+    if owner_id:
+        sugerencias = SugerenciaCiudadano.query.filter_by(
+            user_id=user.id,
+            municipio_id=owner_id,
+         ).order_by(SugerenciaCiudadano.fecha.desc()).limit(limit).all()
+
+    points_breakdown = _build_points_breakdown(points_tx)
+
+    timeline = []
+    for t in claims:
+        timeline.append({
+            "type": "claim",
+            "id": t.id,
+            "title": t.categoria or "Reclamo",
+            "status": t.estado,
+            "at": _to_iso(t.updated_at) or _to_iso(t.created_at),
+            "payload": {
+                "description": t.descripcion,
+                "created_at": _to_iso(t.created_at),
+            },
+        })
+
+    for order in orders:
+        serialized = _serialize_portal_order(order, include_timeline=False)
+        timeline.append({
+            "type": "order",
+            "id": order.id,
+            "title": f"Pedido #{order.id}",
+            "status": serialized.get("status"),
+            "at": serialized.get("date"),
+            "payload": serialized,
+        })
+
+    for tx in points_tx:
+        timeline.append({
+            "type": "points",
+            "id": tx.id,
+            "title": (tx.metadata_payload or {}).get("benefit_title") or tx.tipo,
+            "status": "earned" if (tx.delta or 0) >= 0 else "redeemed",
+            "at": _to_iso(tx.created_at),
+            "payload": {
+                "tipo": tx.tipo,
+                "delta": tx.delta,
+                "saldo_final": tx.saldo_final,
+                "detalle": (tx.metadata_payload or {}).get("detalle", tx.tipo),
+            },
+        })
+
+    for respuesta, encuesta in encuestas:
+        timeline.append({
+            "type": "survey",
+            "id": respuesta.id,
+            "title": encuesta.titulo if encuesta else "Encuesta",
+            "status": "submitted",
+            "at": _to_iso(respuesta.submitted_at),
+            "payload": {
+                "encuesta_id": respuesta.encuesta_id,
+                "encuesta_slug": encuesta.slug if encuesta else None,
+                "encuesta_tipo": encuesta.tipo if encuesta else None,
+                "es_votacion": bool(encuesta.es_votacion_envivo) if encuesta else False,
+            },
+        })
+
+
+    for sug in sugerencias:
+        timeline.append({
+            "type": "suggestion",
+            "id": sug.id,
+            "title": sug.categoria or "Sugerencia",
+            "status": sug.estado,
+            "at": _to_iso(sug.fecha),
+            "payload": {
+                "texto": sug.texto_sugerencia,
+            },
+        })
+
+    timeline.sort(key=lambda item: item.get("at") or "", reverse=True)
+
+    return jsonify({
+        "claims": [{
+            "id": str(t.id),
+            "title": t.categoria or "Reclamo",
+            "description": t.descripcion,
+            "status": t.estado,
+            "date": _to_iso(t.created_at),
+            "updated_at": _to_iso(t.updated_at),
+        } for t in claims],
+        "orders": [_serialize_portal_order(o, include_timeline=False) for o in orders],
+        "points": [{
+            "id": tx.id,
+            "fecha": _to_iso(tx.created_at),
+            "tipo": tx.tipo,
+            "delta": tx.delta,
+            "saldo_final": tx.saldo_final,
+            "detalle": (tx.metadata_payload or {}).get("detalle", tx.tipo),
+        } for tx in points_tx],
+        "surveys": [{
+            "id": str(respuesta.id),
+            "encuesta_id": respuesta.encuesta_id,
+            "encuesta_slug": encuesta.slug if encuesta else None,
+            "titulo": encuesta.titulo if encuesta else None,
+            "tipo": encuesta.tipo if encuesta else None,
+            "es_votacion": bool(encuesta.es_votacion_envivo) if encuesta else False,
+            "submitted_at": _to_iso(respuesta.submitted_at),
+        } for respuesta, encuesta in encuestas],
+        "suggestions": [{
+            "id": str(sug.id),
+            "categoria": sug.categoria,
+            "estado": sug.estado,
+            "texto": sug.texto_sugerencia,
+            "submitted_at": _to_iso(sug.fecha),
+        } for sug in sugerencias],
+        "summary": {
+            "counts": {
+                "claims": len(claims),
+                "orders": len(orders),
+                "surveys": len(encuestas),
+                "suggestions": len(sugerencias),
+                "points_movements": len(points_tx),
+            },
+            "points_breakdown": points_breakdown,
+        },
+        "timeline": timeline[: max(limit * 5, 25)],
+    })
+
+
+@portal_api_bp.route('/network/feed', methods=['GET'])
+@require_auth
+def get_portal_network_feed(tenant_slug):
+    tenant = _resolve_context(tenant_slug)
+    user = g.viewer
+    limit = _normalize_limit(request.args.get('limit'), default=20, max_limit=100)
+
+    tenants = _resolve_followed_tenants(user, tenant)
+    owner_ids = [
+        _get_owner_id(t)
+        for t in tenants
+        if _get_owner_id(t)
+    ]
+    if not owner_ids:
+        return jsonify({"items": [], "tenants": []})
+
+    posts = MunicipioPost.query.filter(
+        MunicipioPost.municipio_id.in_(owner_ids)
+    ).order_by(MunicipioPost.fecha_publicacion.desc()).limit(limit).all()
+
+    tenant_by_owner = { _get_owner_id(t): t for t in tenants if _get_owner_id(t) }
+
+    items = []
+    for post in posts:
+        source_tenant = tenant_by_owner.get(post.municipio_id)
+        post_type = "event" if post.tipo_post == "evento" else "news"
+        items.append({
+            "id": post.id,
+            "type": post_type,
+            "title": post.titulo,
+            "summary": post.subtitulo or (post.descripcion[:120] if post.descripcion else ""),
+            "date": _to_iso(post.fecha_publicacion),
+            "tenant": {
+                "id": source_tenant.id if source_tenant else None,
+                "slug": source_tenant.slug if source_tenant else None,
+                "name": source_tenant.nombre if source_tenant else None,
+                "tipo": source_tenant.tipo if source_tenant else None,
+            },
+            "link": f"/{source_tenant.slug}/{'eventos' if post_type == 'event' else 'noticias'}/{post.id}" if source_tenant else None,
+        })
+
+    return jsonify({
+        "items": items,
+        "tenants": [
+            {
+                "id": t.id,
+                "slug": t.slug,
+                "name": t.nombre,
+                "tipo": t.tipo,
+            }
+            for t in tenants
+        ],
+    })
+
+
+@portal_api_bp.route('/benefits', methods=['GET'])
+@require_auth
+def get_portal_benefits(tenant_slug):
+    tenant = _resolve_context(tenant_slug)
+    user = g.viewer
+
+    balance = recompensas_service().obtener_saldo(user)
+    benefits = []
+    for benefit in _portal_benefits(tenant):
+        benefits.append({
+            **benefit,
+            "eligible": balance >= benefit["cost_points"],
+            "points_missing": max(0, benefit["cost_points"] - balance),
+        })
+
+    return jsonify({
+        "current_points": balance,
+        "benefits": benefits,
+    })
+
+
+@portal_api_bp.route('/redeems', methods=['GET'])
+@require_auth
+def get_portal_redeems(tenant_slug):
+    tenant = _resolve_context(tenant_slug)
+    user = g.viewer
+
+    limit = _normalize_limit(request.args.get('limit'), default=20, max_limit=100)
+    history = PointsTransaction.query.filter_by(
+        user_id=user.id,
+        tenant_id=tenant.id
+    ).filter(PointsTransaction.delta < 0).order_by(PointsTransaction.created_at.desc()).limit(limit).all()
+
+    return jsonify([
+        {
+            "id": tx.id,
+            "fecha": _to_iso(tx.created_at),
+            "tipo": tx.tipo,
+            "delta": tx.delta,
+            "saldo_final": tx.saldo_final,
+            "benefit_id": (tx.metadata_payload or {}).get("benefit_id"),
+            "benefit_title": (tx.metadata_payload or {}).get("benefit_title"),
+            "detalle": (tx.metadata_payload or {}).get("detalle", tx.tipo),
+        }
+        for tx in history
+    ])
+
+
 @portal_api_bp.route('/integration', methods=['GET'])
 def get_integration_info(tenant_slug):
     """
