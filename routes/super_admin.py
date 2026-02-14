@@ -38,6 +38,225 @@ LEGACY_TENANT_SEEDS = {
 }
 
 
+
+
+_SUPPORTED_FRANCHISE_LANGUAGES = {"es", "en", "pt"}
+
+
+def _default_franchise_profile(tenant: TenantProfile) -> dict:
+    return {
+        "white_label_enabled": True,
+        "reseller_enabled": True,
+        "target_markets": ["latam"],
+        "default_language": "es",
+        "supported_languages": ["es", "en", "pt"],
+        "timezone": "America/Argentina/Buenos_Aires",
+        "currency": "ARS",
+        "country": "AR",
+        "legal_entity_name": tenant.nombre,
+        "partner_program": "standard",
+    }
+
+
+def _sanitize_franchise_profile(payload: dict, tenant: TenantProfile) -> tuple[dict, list[str]]:
+    base = _default_franchise_profile(tenant)
+    errors: list[str] = []
+
+    if not isinstance(payload, dict):
+        return base, ["Payload inválido"]
+
+    for flag in ("white_label_enabled", "reseller_enabled"):
+        if flag in payload:
+            base[flag] = bool(payload.get(flag))
+
+    if "target_markets" in payload:
+        markets = payload.get("target_markets")
+        if isinstance(markets, list):
+            cleaned = [str(item).strip().lower() for item in markets if str(item).strip()]
+            base["target_markets"] = list(dict.fromkeys(cleaned))[:12]
+
+    if "default_language" in payload:
+        lang = str(payload.get("default_language") or "").strip().lower()
+        if lang in _SUPPORTED_FRANCHISE_LANGUAGES:
+            base["default_language"] = lang
+        else:
+            errors.append("default_language inválido (usar es|en|pt)")
+
+    if "supported_languages" in payload:
+        langs = payload.get("supported_languages")
+        if isinstance(langs, list) and langs:
+            cleaned = []
+            for item in langs:
+                code = str(item).strip().lower()
+                if code in _SUPPORTED_FRANCHISE_LANGUAGES:
+                    cleaned.append(code)
+            cleaned = list(dict.fromkeys(cleaned))
+            if cleaned:
+                base["supported_languages"] = cleaned
+            else:
+                errors.append("supported_languages inválido (usar es|en|pt)")
+
+    for key in ("timezone", "currency", "country", "legal_entity_name", "partner_program"):
+        if key in payload:
+            value = str(payload.get(key) or "").strip()
+            if value:
+                base[key] = value
+
+    if base.get("default_language") not in set(base.get("supported_languages") or []):
+        base["supported_languages"] = list(dict.fromkeys([base.get("default_language")] + list(base.get("supported_languages") or [])))
+
+    return base, errors
+
+
+
+def _compute_franchise_readiness(tenant: TenantProfile) -> dict:
+    config = tenant.configuracion if isinstance(tenant.configuracion, dict) else {}
+    profile = config.get("franchise_profile") if isinstance(config.get("franchise_profile"), dict) else _default_franchise_profile(tenant)
+
+    checks = {
+        "white_label_enabled": bool(profile.get("white_label_enabled")),
+        "reseller_enabled": bool(profile.get("reseller_enabled")),
+        "languages_configured": bool(profile.get("supported_languages")),
+        "default_language_valid": str(profile.get("default_language") or "") in set(profile.get("supported_languages") or []),
+        "currency_defined": bool(str(profile.get("currency") or "").strip()),
+        "country_defined": bool(str(profile.get("country") or "").strip()),
+        "timezone_defined": bool(str(profile.get("timezone") or "").strip()),
+        "partner_program_defined": bool(str(profile.get("partner_program") or "").strip()),
+        "brand_domain_configured": bool(str(tenant.dominio or "").strip()),
+        "logo_configured": bool(str(tenant.logo_url or "").strip()),
+        "payments_configured": bool(str((config.get("mercadopago_access_token") or "")).strip()),
+        "whatsapp_sender_configured": bool(str(tenant.whatsapp_sender_id or "").strip()),
+    }
+
+    total = len(checks)
+    passed = sum(1 for value in checks.values() if value)
+    score = round((passed / total) * 100, 2) if total else 0.0
+
+    missing = [key for key, value in checks.items() if not value]
+    status = "ready" if score >= 85 else "in_progress" if score >= 60 else "basic"
+
+    return {
+        "score": score,
+        "status": status,
+        "checks": checks,
+        "missing": missing,
+        "profile": profile,
+    }
+
+
+
+_PLAYBOOK_TASKS_BY_CHECK = {
+    "white_label_enabled": {
+        "title": "Activar modo white-label",
+        "description": "Habilitar branding white-label y revisión legal/comercial para subdistribución.",
+        "priority": "high",
+        "owner": "producto",
+    },
+    "reseller_enabled": {
+        "title": "Activar canal reseller",
+        "description": "Definir esquema de partners, márgenes y gobierno operativo.",
+        "priority": "high",
+        "owner": "comercial",
+    },
+    "languages_configured": {
+        "title": "Configurar idiomas comerciales",
+        "description": "Completar catálogo de idiomas objetivo (es/en/pt) para portal y panel.",
+        "priority": "high",
+        "owner": "producto",
+    },
+    "default_language_valid": {
+        "title": "Corregir idioma por defecto",
+        "description": "Alinear default_language con supported_languages del tenant.",
+        "priority": "medium",
+        "owner": "producto",
+    },
+    "currency_defined": {
+        "title": "Definir moneda operativa",
+        "description": "Configurar currency para pricing y reportes del país objetivo.",
+        "priority": "high",
+        "owner": "finanzas",
+    },
+    "country_defined": {
+        "title": "Definir país objetivo",
+        "description": "Configurar country para localización, compliance y go-to-market.",
+        "priority": "high",
+        "owner": "comercial",
+    },
+    "timezone_defined": {
+        "title": "Definir zona horaria",
+        "description": "Configurar timezone para SLA, turnos y analítica local.",
+        "priority": "medium",
+        "owner": "operaciones",
+    },
+    "partner_program_defined": {
+        "title": "Definir partner program",
+        "description": "Seleccionar programa de partnership/franquicia para este tenant.",
+        "priority": "high",
+        "owner": "comercial",
+    },
+    "brand_domain_configured": {
+        "title": "Configurar dominio de marca",
+        "description": "Asignar dominio productivo del tenant para despliegue white-label.",
+        "priority": "high",
+        "owner": "infra",
+    },
+    "logo_configured": {
+        "title": "Subir identidad visual",
+        "description": "Configurar logo oficial y lineamientos de marca.",
+        "priority": "medium",
+        "owner": "marketing",
+    },
+    "payments_configured": {
+        "title": "Conectar pagos por tenant",
+        "description": "Configurar token de pagos (MercadoPago u otro proveedor) y validarlo.",
+        "priority": "high",
+        "owner": "finanzas",
+    },
+    "whatsapp_sender_configured": {
+        "title": "Configurar canal WhatsApp",
+        "description": "Asignar sender oficial para operaciones omnicanal del tenant.",
+        "priority": "medium",
+        "owner": "operaciones",
+    },
+}
+
+
+def _build_franchise_playbook(tenant: TenantProfile) -> dict:
+    readiness = _compute_franchise_readiness(tenant)
+    tasks = []
+    for check_key in readiness.get("missing") or []:
+        template = _PLAYBOOK_TASKS_BY_CHECK.get(check_key)
+        if not template:
+            continue
+        tasks.append({"check": check_key, **template})
+
+    priority_order = {"high": 0, "medium": 1, "low": 2}
+    tasks.sort(key=lambda item: priority_order.get(item.get("priority"), 99))
+
+    return {
+        "status": readiness.get("status"),
+        "score": readiness.get("score"),
+        "next_actions": tasks,
+        "estimated_phases": {
+            "phase_1": [t for t in tasks if t.get("priority") == "high"],
+            "phase_2": [t for t in tasks if t.get("priority") == "medium"],
+            "phase_3": [t for t in tasks if t.get("priority") == "low"],
+        },
+    }
+
+
+def _critical_readiness_gaps(readiness: dict) -> list[str]:
+    missing = readiness.get("missing") if isinstance(readiness, dict) else []
+    if not isinstance(missing, list):
+        return []
+
+    critical = []
+    for check in missing:
+        task = _PLAYBOOK_TASKS_BY_CHECK.get(check)
+        if task and task.get("priority") == "high":
+            critical.append(check)
+    return critical
+
 def _normalize_plan_key(raw_plan: str | None) -> str:
     if not raw_plan:
         return "gratis"
@@ -331,6 +550,130 @@ def list_tenants(current_user):
         "pages": pagination.pages,
         "current_page": page
     })
+
+@super_admin_bp.route('/tenants/<string:slug>/franchise-profile', methods=['GET'])
+@token_requerido
+@super_admin_required
+def get_tenant_franchise_profile(current_user, slug):
+    tenant = TenantProfile.query.filter_by(slug=slug).first_or_404()
+    config = tenant.configuracion if isinstance(tenant.configuracion, dict) else {}
+    profile = config.get("franchise_profile") if isinstance(config.get("franchise_profile"), dict) else None
+    if not profile:
+        profile = _default_franchise_profile(tenant)
+
+    return jsonify({
+        "tenant": {
+            "id": tenant.id,
+            "slug": tenant.slug,
+            "nombre": tenant.nombre,
+            "tipo": tenant.tipo,
+            "plan": tenant.plan,
+        },
+        "franchise_profile": profile,
+        "supported_language_codes": sorted(_SUPPORTED_FRANCHISE_LANGUAGES),
+    })
+
+
+@super_admin_bp.route('/tenants/<string:slug>/franchise-profile', methods=['PUT'])
+@token_requerido
+@super_admin_required
+def update_tenant_franchise_profile(current_user, slug):
+    tenant = TenantProfile.query.filter_by(slug=slug).first_or_404()
+    payload = request.get_json(silent=True) or {}
+
+    profile, errors = _sanitize_franchise_profile(payload, tenant)
+    if errors:
+        return jsonify({"error": "; ".join(errors)}), 400
+
+    config = tenant.configuracion if isinstance(tenant.configuracion, dict) else {}
+    config["franchise_profile"] = profile
+    tenant.configuracion = config
+    db.session.add(tenant)
+
+    _log_admin_action(current_user.id, "update_franchise_profile", slug, {"profile": profile})
+    db.session.commit()
+
+    return jsonify({"ok": True, "franchise_profile": profile})
+
+
+@super_admin_bp.route('/tenants/<string:slug>/franchise-readiness', methods=['GET'])
+@token_requerido
+@super_admin_required
+def get_tenant_franchise_readiness(current_user, slug):
+    tenant = TenantProfile.query.filter_by(slug=slug).first_or_404()
+    readiness = _compute_franchise_readiness(tenant)
+    return jsonify({
+        "tenant": {
+            "id": tenant.id,
+            "slug": tenant.slug,
+            "nombre": tenant.nombre,
+            "tipo": tenant.tipo,
+            "plan": tenant.plan,
+        },
+        "readiness": readiness,
+    })
+
+
+@super_admin_bp.route('/tenants/<string:slug>/franchise-playbook', methods=['GET'])
+@token_requerido
+@super_admin_required
+def get_tenant_franchise_playbook(current_user, slug):
+    tenant = TenantProfile.query.filter_by(slug=slug).first_or_404()
+    playbook = _build_franchise_playbook(tenant)
+    return jsonify({
+        "tenant": {
+            "id": tenant.id,
+            "slug": tenant.slug,
+            "nombre": tenant.nombre,
+            "tipo": tenant.tipo,
+            "plan": tenant.plan,
+        },
+        "playbook": playbook,
+    })
+
+
+@super_admin_bp.route('/tenants/franchise-compare', methods=['GET'])
+@token_requerido
+@super_admin_required
+def compare_tenants_franchise_readiness(current_user):
+    tenant_type = str(request.args.get("tipo") or "").strip().lower()
+    status_filter = str(request.args.get("status") or "").strip().lower()
+
+    query = TenantProfile.query.filter(TenantProfile.is_active.is_(True))
+    if tenant_type in {"pyme", "municipio"}:
+        query = query.filter(TenantProfile.tipo == tenant_type)
+
+    ranking = []
+    for tenant in query.all():
+        readiness = _compute_franchise_readiness(tenant)
+        if status_filter and readiness.get("status") != status_filter:
+            continue
+
+        ranking.append({
+            "tenant": {
+                "id": tenant.id,
+                "slug": tenant.slug,
+                "nombre": tenant.nombre,
+                "tipo": tenant.tipo,
+                "plan": tenant.plan,
+            },
+            "score": readiness.get("score"),
+            "status": readiness.get("status"),
+            "critical_gaps": _critical_readiness_gaps(readiness),
+            "missing": readiness.get("missing") or [],
+        })
+
+    ranking.sort(key=lambda item: (-(item.get("score") or 0), item["tenant"].get("slug") or ""))
+
+    return jsonify({
+        "items": ranking,
+        "total": len(ranking),
+        "filters": {
+            "tipo": tenant_type or None,
+            "status": status_filter or None,
+        },
+    })
+
 
 @super_admin_bp.route('/tenants/<string:slug>/metrics', methods=['GET'])
 @token_requerido

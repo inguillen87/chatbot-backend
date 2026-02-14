@@ -17,7 +17,7 @@ from models import (
     User,
     generate_token,
 )
-from extensions import db
+from extensions import db, limiter
 from functools import wraps
 import uuid
 import json
@@ -27,6 +27,7 @@ import base64
 from services.google_auth import login_o_crear_usuario
 from services.pymes import get_or_create_pyme_user_by_token
 from services.tenant_resolver import resolve_tenant_only
+from services.demo_registry import load_demo_rubros
 from typing import Any, Callable, Dict, Optional
 import secrets
 
@@ -781,6 +782,220 @@ def widget_refresh():
         return resp, 401
     return _add_cors(jsonify({"token": ntok, "expires_in": minutes * 60}))
 
+
+
+
+def _resolve_demo_tenant_slug(rubro_raw: Optional[str]) -> Optional[str]:
+    normalized = (rubro_raw or "").strip().lower()
+    if not normalized:
+        normalized = "municipio"
+
+    demos = load_demo_rubros(require_owner=False)
+    allowed_keys = {
+        (demo.key or "").strip().lower()
+        for demo in demos
+        if (demo.key or "").strip()
+    }
+
+    alias_map = {
+        "municipio": "municipio",
+        "gobierno": "municipio",
+        "retail": "local_comercial_general",
+        "comercio": "local_comercial_general",
+        "mayorista": "bodega",
+        "bodega": "bodega",
+        "ferreteria": "ferreteria",
+    }
+
+    candidate = alias_map.get(normalized)
+    if candidate and candidate in allowed_keys:
+        return candidate
+
+    for demo in demos:
+        key = (demo.key or "").strip().lower()
+        if not key:
+            continue
+        if normalized in {
+            key,
+            (demo.rubro_clave or "").lower() if demo.rubro_clave else "",
+            (demo.label or "").strip().lower().replace(" ", "_"),
+        }:
+            return demo.key
+        if normalized in {(a or "").lower() for a in (demo.aliases or [])}:
+            return demo.key
+
+    return None
+
+
+
+
+def _demo_superadmin_credentials() -> dict:
+    return {
+        "email": os.getenv("DEMO_SUPERADMIN_EMAIL", "superadmin.demo@chatboc.ar"),
+        "password": os.getenv("DEMO_SUPERADMIN_PASSWORD", "demo1234"),
+    }
+
+
+def _ensure_demo_superadmin() -> User:
+    creds = _demo_superadmin_credentials()
+    email = (creds.get("email") or "").strip().lower()
+    user = _user_query().filter(func.lower(User.email) == email).first() if email else None
+    if user:
+        updated = False
+        if user.rol not in {"super_admin", "superadmin"}:
+            user.rol = "super_admin"
+            updated = True
+        if user.tipo_chat != "admin":
+            user.tipo_chat = "admin"
+            updated = True
+        if updated:
+            db.session.add(user)
+            db.session.commit()
+        return user
+
+    user = User(
+        name="Super Admin Demo",
+        email=creds["email"],
+        rol="super_admin",
+        tipo_chat="admin",
+    )
+    user.set_password(creds["password"])
+    db.session.add(user)
+    db.session.commit()
+    return user
+
+
+def _supported_demo_languages() -> list[dict[str, str]]:
+    return [
+        {"code": "es", "label": "Español", "locale": "es-AR"},
+        {"code": "en", "label": "English", "locale": "en-US"},
+        {"code": "pt", "label": "Português", "locale": "pt-BR"},
+    ]
+
+def _get_or_create_demo_user_for_tenant(tenant: TenantProfile) -> User:
+    """Return an isolated demo admin account for the tenant.
+
+    We intentionally avoid reusing tenant owner/admin accounts to prevent demo
+    logins from inheriting real operator identities.
+    """
+
+    demo_email = f"demo.{tenant.slug}@chatboc.ar"
+    user = _user_query().filter_by(email=demo_email).first()
+    if user:
+        _attach_user_to_tenant(user, tenant)
+        if user.rol != "admin":
+            user.rol = "admin"
+            db.session.add(user)
+            db.session.commit()
+        return user
+
+    user = User(
+        name=f"Demo {tenant.nombre}",
+        email=demo_email,
+        rol="admin",
+        tipo_chat=(tenant.tipo or "pyme").lower(),
+        tenant_slug=tenant.slug,
+        tenant_id=getattr(tenant, "id", None),
+        pyme_id=tenant.pyme_id,
+        municipio_id=tenant.municipio_id,
+    )
+    user.set_password("demo")
+    db.session.add(user)
+    db.session.commit()
+    return user
+
+
+@auth_bp.route('/demo/catalog', methods=['GET', 'OPTIONS'])
+@cross_origin(supports_credentials=True)
+def demo_catalog():
+    if request.method == 'OPTIONS':
+        return '', 204
+
+    ensure_users = str(request.args.get('ensure_users') or '').strip().lower() in {'1', 'true', 'yes', 'on'}
+    if ensure_users:
+        _ensure_demo_superadmin()
+
+    demos = load_demo_rubros(require_owner=False)
+    demo_items = []
+    for demo in demos:
+        tenant_slug = _resolve_demo_tenant_slug(demo.key) or _resolve_demo_tenant_slug(demo.rubro_clave)
+        demo_items.append({
+            "key": demo.key,
+            "label": demo.label,
+            "tipo_chat": demo.tipo_chat,
+            "tenant_slug": tenant_slug,
+            "login_payload": {"rubro": demo.key},
+        })
+
+    return jsonify({
+        "super_admin_demo": {
+            **_demo_superadmin_credentials(),
+            "role": "super_admin",
+            "login_endpoint": "/auth/login",
+        },
+        "tenant_demos": demo_items,
+        "supported_languages": _supported_demo_languages(),
+    })
+
+
+@auth_bp.route('/demo', methods=['POST', 'OPTIONS'])
+@cross_origin(supports_credentials=True)
+@limiter.limit("10 per minute")
+def login_demo():
+    if request.method == 'OPTIONS':
+        return '', 204
+
+    data = request.get_json(silent=True) or {}
+    rubro = data.get('rubro') or data.get('segmento') or data.get('demo')
+    demo_slug = _resolve_demo_tenant_slug(rubro)
+    if not demo_slug:
+        return jsonify({"error": f"Rubro demo '{rubro or ''}' no válido"}), 404
+
+    try:
+        tenant_obj = resolve_tenant_only(tenant_slug=demo_slug, require_explicit_slug=True)
+    except Exception:
+        return jsonify({"error": f"Rubro demo '{rubro or demo_slug}' no válido"}), 404
+
+    demo_user = _get_or_create_demo_user_for_tenant(tenant_obj)
+    _attach_user_to_tenant(demo_user, tenant_obj)
+    db.session.commit()
+
+    tipo_chat = _resolve_tipo_chat(demo_user, tenant_obj=tenant_obj)
+    jwt_payload = {
+        'user_id': demo_user.id,
+        'rol': demo_user.rol,
+        'tipo_chat': tipo_chat,
+        'empresa_id': demo_user.empresa_id,
+        'municipio_id': demo_user.municipio_id,
+        'tenant_slug': tenant_obj.slug,
+        'demo_mode': True,
+        'exp': datetime.utcnow() + timedelta(hours=12),
+    }
+    jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm='HS256')
+
+    response = jsonify({
+        "mensaje": "Demo login exitoso",
+        "id": demo_user.id,
+        "token": jwt_token,
+        "email": demo_user.email,
+        "name": demo_user.name,
+        "rol": demo_user.rol,
+        "tipo_chat": tipo_chat,
+        "tenant_slug": tenant_obj.slug,
+        "tenantSlug": tenant_obj.slug,
+        "demo_mode": True,
+        "rubro": rubro or tenant_obj.slug,
+    })
+
+    cookie_name = current_app.config.get("AUTH_TOKEN_COOKIE_NAME", "auth_token")
+    response.set_cookie(
+        key=cookie_name,
+        value=jwt_token,
+        secure=current_app.config.get("SESSION_COOKIE_SECURE", True),
+        httponly=True,
+        samesite=current_app.config.get("SESSION_COOKIE_SAMESITE", "None"),
+    )
+    return response
 
 def solo_admin_requerido(f):
     """Permite solo a usuarios administradores (empresa_id None)."""

@@ -7,6 +7,37 @@ from services.demo_registry import load_demo_rubros
 rubros_bp = Blueprint("rubros", __name__)
 
 
+def _widget_preview_for_rubro(item: dict) -> dict:
+    """Return UX/branding presets so frontend can render premium widget cards."""
+
+    demo = item.get("demo") if isinstance(item.get("demo"), dict) else {}
+    tipo = str((demo.get("tipo_chat") or item.get("tipo_chat") or "pyme")).strip().lower()
+    segment = str((demo.get("segment") or "")).strip().lower()
+
+    if tipo == "municipio" or "gob" in segment:
+        return {
+            "preset": "civic-premium",
+            "primary_color": "#006CFF",
+            "accent_color": "#00C2FF",
+            "gradient_start": "#0B1F66",
+            "gradient_end": "#006CFF",
+            "logo_animation": "orbit-glow",
+            "motion_level": "pro",
+            "glassmorphism": True,
+        }
+
+    return {
+        "preset": "commerce-neon",
+        "primary_color": "#7C3AED",
+        "accent_color": "#22D3EE",
+        "gradient_start": "#0F172A",
+        "gradient_end": "#7C3AED",
+        "logo_animation": "pulse-ring",
+        "motion_level": "pro",
+        "glassmorphism": True,
+    }
+
+
 @rubros_bp.route("/", methods=["GET"], strict_slashes=False)
 def get_all_rubros():
     """Return the list of rubros."""
@@ -35,6 +66,7 @@ def get_all_rubros():
             if demo_meta:
                 item["demo"] = demo_meta.to_public_dict()
 
+            item["widget_preview"] = _widget_preview_for_rubro(item)
             lista_rubros.append(item)
 
         matched_demo_keys = {
@@ -63,8 +95,7 @@ def get_all_rubros():
             elif demo.segment == "Empresas":
                 padre_id = 2
 
-            lista_rubros.append(
-                {
+            virtual_item = {
                     "id": demo.rubro_id, # Might be None
                     "nombre": demo.label,
                     "clave": demo.rubro_clave or demo.key,
@@ -74,7 +105,8 @@ def get_all_rubros():
                     "demo": demo.to_public_dict(),
                     "is_virtual": True
                 }
-            )
+            virtual_item["widget_preview"] = _widget_preview_for_rubro(virtual_item)
+            lista_rubros.append(virtual_item)
 
         # Ensure roots exist if we have orphans and list was empty or partial
         has_roots = any(r['id'] in (1, 2) for r in lista_rubros if r.get('id'))

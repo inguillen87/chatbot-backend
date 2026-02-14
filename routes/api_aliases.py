@@ -9,6 +9,13 @@ behavior remain consistent with the original endpoints.
 from flask import Blueprint, jsonify, request
 from flask_cors import cross_origin
 
+from routes.admin_ai import get_bot_settings, update_bot_settings
+from routes.admin_analytics import (
+    admin_analytics_export_csv,
+    admin_analytics_export_pdf,
+    admin_analytics_heatmap,
+    admin_analytics_overview,
+)
 from routes.auth import (
     chatuser_login_panel,
     chatuser_register_panel,
@@ -167,6 +174,36 @@ def ask_municipio_alias():
 
 def _options_ok():
     return jsonify({"ok": True})
+
+
+@api_aliases_bp.route("/admin/analytics/overview", methods=["GET"], strict_slashes=False)
+def admin_analytics_overview_alias():
+    return admin_analytics_overview()
+
+
+@api_aliases_bp.route("/admin/analytics/heatmap", methods=["GET"], strict_slashes=False)
+def admin_analytics_heatmap_alias():
+    return admin_analytics_heatmap()
+
+
+@api_aliases_bp.route("/admin/analytics/export.csv", methods=["GET"], strict_slashes=False)
+def admin_analytics_export_csv_alias():
+    return admin_analytics_export_csv()
+
+
+@api_aliases_bp.route("/admin/analytics/export.pdf", methods=["GET"], strict_slashes=False)
+def admin_analytics_export_pdf_alias():
+    return admin_analytics_export_pdf()
+
+
+@api_aliases_bp.route("/admin/bot/settings", methods=["GET"], strict_slashes=False)
+def admin_bot_settings_get_alias():
+    return get_bot_settings()
+
+
+@api_aliases_bp.route("/admin/bot/settings", methods=["PUT"], strict_slashes=False)
+def admin_bot_settings_put_alias():
+    return update_bot_settings()
 
 
 @api_aliases_bp.route(

@@ -22,6 +22,7 @@ from services.analytics import (
     get_top,
     get_whatsapp_templates,
 )
+from services.analytics.ingestor import analytics_ingestor
 from services.analytics.models import AnalyticsModuleStatus
 from services.analytics.rbac import require_access
 
@@ -142,6 +143,39 @@ def analytics_health():
         "metadata": latest.metadata if latest else {},
     }
     return _json_response(payload)
+
+
+@analytics_bp.route("/event", methods=["POST"])
+def analytics_event_ingest():
+    payload = request.get_json(silent=True) or {}
+    tenant_raw = payload.get("tenant_id")
+    if tenant_raw is None:
+        abort(400, description="tenant_id is required")
+
+    try:
+        tenant_id = int(tenant_raw)
+    except (TypeError, ValueError):
+        abort(400, description="tenant_id must be an integer")
+
+    event_name = (payload.get("event_name") or "").strip()
+    if not event_name:
+        abort(400, description="event_name is required")
+
+    require_access(str(tenant_id), "operador")
+    analytics_ingestor.track(
+        tenant_id=tenant_id,
+        event_name=event_name,
+        payload=payload.get("payload") if isinstance(payload.get("payload"), dict) else {},
+        user_id=payload.get("user_id"),
+        anon_id=payload.get("anon_id"),
+        channel=payload.get("channel"),
+        session_id=payload.get("session_id"),
+        lat=payload.get("lat"),
+        lng=payload.get("lng"),
+        entity_ref=payload.get("entity_ref"),
+        tenant_type=payload.get("tenant_type"),
+    )
+    return _json_response({"ok": True}, status=202)
 
 
 @analytics_bp.route("/ui", methods=["GET"])
