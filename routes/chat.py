@@ -32,6 +32,7 @@ from utils.auth_helpers import (
     anon_o_token_requerido,
     obtener_token,
     user_from_token,
+    _is_jwt_token,
 )
 from utils.map_config import get_map_config
 from utils.response_utils import normalize_response_payload
@@ -90,6 +91,80 @@ def _is_init_payload(payload) -> bool:
         if isinstance(inner, str) and inner.strip() in ("", "__INIT__"):
             return True
     return False
+
+
+
+
+def _anonymous_message_count(session_id: str, window_minutes: int) -> int:
+    """Count billable anonymous messages in the active window.
+
+    Excludes synthetic init payloads so a frontend handshake (`__INIT__`) does
+    not consume quota and immediately block the first real message.
+    """
+
+    if not session_id:
+        return 0
+
+    return (
+        Conversacion.query
+        .filter(Conversacion.session_id == session_id)
+        .filter(Conversacion.timestamp >= datetime.utcnow() - timedelta(minutes=window_minutes))
+        .filter(~Conversacion.pregunta.in_(["", "__INIT__"]))
+        .count()
+    )
+
+
+
+
+def _should_enforce_owner_plan_limit(*, demo_flow_active: bool, is_init_request: bool, is_public_landing: bool, is_anonymous: bool, has_entity_token: bool) -> bool:
+    """Return whether owner plan-limit checks should be applied.
+
+    Public landing demo/widget sessions authenticated via entity token should not
+    be blocked by owner plan limits; otherwise prospects hit 403 on first
+    interactions and cannot complete the trial experience.
+    """
+
+    if demo_flow_active or is_init_request:
+        return False
+
+    if is_public_landing and is_anonymous and has_entity_token:
+        return False
+
+    return True
+
+
+
+
+def _extract_entity_token_hint() -> str | None:
+    """Best-effort extraction of static entity/widget token from request.
+
+    Public embeds often authenticate with X-Token (static owner/entity token),
+    not JWT. We must detect that to avoid applying owner plan-limit guards to
+    demo/public prospect sessions.
+    """
+
+    candidates = [
+        request.args.get("entityToken"),
+        request.args.get("owner_token") or request.args.get("ownerToken"),
+        request.args.get("widget_token"),
+        request.args.get("token"),
+        request.headers.get("X-Entity-Token"),
+        request.headers.get("X-Owner-Token"),
+        request.headers.get("X-Widget-Token"),
+        request.headers.get("X-Token"),
+    ]
+
+    auth_header = request.headers.get("Authorization") or ""
+    if auth_header.lower().startswith("bearer "):
+        bearer_token = auth_header.split(None, 1)[1]
+        if bearer_token and not _is_jwt_token(bearer_token):
+            candidates.append(bearer_token)
+
+    for candidate in candidates:
+        if candidate and str(candidate).strip():
+            return str(candidate).strip()
+
+    return None
 
 
 def _log_widget_request(response, user):
@@ -1180,7 +1255,10 @@ def _procesar_chat(
                     current_app.logger.info(f"Sesión anónima {anon_id} expirada. Reiniciando conteo de mensajes.")
 
             if not session_expired:
-                message_count_this_session = Conversacion.query                     .filter(Conversacion.session_id == anon_id)                     .filter(Conversacion.timestamp >= datetime.utcnow() - timedelta(minutes=session_timeout_minutes))                     .count()
+                message_count_this_session = _anonymous_message_count(
+                    anon_id,
+                    session_timeout_minutes,
+                )
 
                 current_app.logger.info(f"Usuario anónimo {anon_id}: {message_count_this_session} mensajes en la sesión actual (límite: {max_messages}).")
 
@@ -1610,7 +1688,14 @@ def _procesar_chat(
         ):
             demo_flow_active = True
 
-        if owner_del_bot and not demo_flow_active and not is_init_request:
+        has_entity_token = bool(_extract_entity_token_hint())
+        if owner_del_bot and _should_enforce_owner_plan_limit(
+            demo_flow_active=demo_flow_active,
+            is_init_request=is_init_request,
+            is_public_landing=is_public_landing,
+            is_anonymous=is_anonymous,
+            has_entity_token=has_entity_token,
+        ):
             from utils.plan_limits import limite_para_usuario
             limite = limite_para_usuario(owner_del_bot)
             if limite is not None and owner_del_bot.preguntas_usadas >= limite:
