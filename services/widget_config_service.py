@@ -30,6 +30,14 @@ class WidgetConfigService:
             "soundEnabled": True,
             "showTyping": True
         },
+        "ux": {
+            "preset": "premium",
+            "motion_level": "balanced",
+            "glassmorphism": True,
+            "logo_ring": True,
+            "gradient_start": "#0f172a",
+            "gradient_end": "#007aff",
+        },
         "domains": [],  # Allowed domains for CORS/Security (future use)
         "channels": {
             "whatsapp": {"enabled": False, "number": ""},
@@ -160,8 +168,23 @@ class WidgetConfigService:
                 if k in clean["behavior"]:
                     clean["behavior"][k] = bool(v)
 
+        if "ux" in config and isinstance(config["ux"], dict):
+            for k, v in config["ux"].items():
+                if k not in clean["ux"]:
+                    continue
+                if k in {"glassmorphism", "logo_ring"}:
+                    clean["ux"][k] = bool(v)
+                elif k in {"gradient_start", "gradient_end"}:
+                    if re.match(r"^#[0-9a-fA-F]{3,8}$", str(v)):
+                        clean["ux"][k] = str(v)
+                else:
+                    clean["ux"][k] = str(v).strip()
+
         if "domains" in config and isinstance(config["domains"], list):
             clean["domains"] = [str(d) for d in config["domains"]]
+
+        if "channels" in config and isinstance(config["channels"], dict):
+            clean["channels"].update(config["channels"])
 
         return clean
 
@@ -181,8 +204,12 @@ class WidgetConfigService:
             merged["appearance"].update(config["appearance"])
         if "behavior" in config:
             merged["behavior"].update(config["behavior"])
+        if "ux" in config:
+            merged["ux"].update(config["ux"])
         if "domains" in config:
             merged["domains"] = config["domains"]
+        if "channels" in config:
+            merged["channels"].update(config["channels"])
 
         return merged
 
