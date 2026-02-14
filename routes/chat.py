@@ -32,6 +32,7 @@ from utils.auth_helpers import (
     anon_o_token_requerido,
     obtener_token,
     user_from_token,
+    _is_jwt_token,
 )
 from utils.map_config import get_map_config
 from utils.response_utils import normalize_response_payload
@@ -130,6 +131,40 @@ def _should_enforce_owner_plan_limit(*, demo_flow_active: bool, is_init_request:
         return False
 
     return True
+
+
+
+
+def _extract_entity_token_hint() -> str | None:
+    """Best-effort extraction of static entity/widget token from request.
+
+    Public embeds often authenticate with X-Token (static owner/entity token),
+    not JWT. We must detect that to avoid applying owner plan-limit guards to
+    demo/public prospect sessions.
+    """
+
+    candidates = [
+        request.args.get("entityToken"),
+        request.args.get("owner_token") or request.args.get("ownerToken"),
+        request.args.get("widget_token"),
+        request.args.get("token"),
+        request.headers.get("X-Entity-Token"),
+        request.headers.get("X-Owner-Token"),
+        request.headers.get("X-Widget-Token"),
+        request.headers.get("X-Token"),
+    ]
+
+    auth_header = request.headers.get("Authorization") or ""
+    if auth_header.lower().startswith("bearer "):
+        bearer_token = auth_header.split(None, 1)[1]
+        if bearer_token and not _is_jwt_token(bearer_token):
+            candidates.append(bearer_token)
+
+    for candidate in candidates:
+        if candidate and str(candidate).strip():
+            return str(candidate).strip()
+
+    return None
 
 
 def _log_widget_request(response, user):
@@ -1653,7 +1688,7 @@ def _procesar_chat(
         ):
             demo_flow_active = True
 
-        has_entity_token = bool(request.args.get("entityToken") or request.headers.get("X-Entity-Token") or request.headers.get("X-Owner-Token"))
+        has_entity_token = bool(_extract_entity_token_hint())
         if owner_del_bot and _should_enforce_owner_plan_limit(
             demo_flow_active=demo_flow_active,
             is_init_request=is_init_request,
