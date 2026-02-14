@@ -109,6 +109,18 @@ Respuesta esperada (shape orientativo):
 
 ### 2.2 Analytics Dashboard
 
+
+## `GET /api/admin/tenants/<slug>/franchise-profile`
+- Perfil franquicia/white-label por tenant (para expansión internacional):
+  - `white_label_enabled`, `reseller_enabled`
+  - `default_language`, `supported_languages`
+  - `country`, `currency`, `timezone`
+  - `target_markets`, `partner_program`
+
+## `PUT /api/admin/tenants/<slug>/franchise-profile`
+- Actualiza perfil franquicia del tenant.
+- Validaciones actuales: idiomas soportados `es|en|pt`.
+
 ## `GET /admin/analytics/overview (alias: /api/admin/analytics/overview)?tenant_id=<id>&scope=municipio&from=YYYY-MM-DD&to=YYYY-MM-DD`
 - Úsese para KPIs/cards/totales.
 
