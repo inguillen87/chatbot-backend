@@ -91,6 +91,21 @@ class WidgetSettingsTests(unittest.TestCase):
         self.assertEqual(attrs["data-font-family"], payload["font_family"])
         self.assertEqual(attrs["data-bubble-shape"], payload["bubble_shape"])
         self.assertEqual(attrs["data-default-open"], "true")
+        self.assertIn("data-widget-preset", attrs)
+        self.assertIn("data-motion-level", attrs)
+        self.assertIn("data-glassmorphism", attrs)
+        self.assertIn("data-logo-ring", attrs)
+        self.assertIn("data-typing-animation", attrs)
+        self.assertIn("data-bubble-animation", attrs)
+        self.assertIn("data-launcher-animation", attrs)
+        self.assertIn("data-message-enter-animation", attrs)
+        self.assertIn("data-logo-badge-style", attrs)
+        self.assertIn("data-cursor-trail", attrs)
+        self.assertIn("data-ambient-particles", attrs)
+        self.assertIn("ux", widget_data["builder_config"])
+        self.assertIn("support_channels", widget_data["widget"])
+        self.assertIn("live_chat", widget_data["widget"]["support_channels"])
+        self.assertIn("whatsapp", widget_data["widget"]["support_channels"])
 
     def test_public_widget_config_allows_querystring_tenant_fallback(self):
         resp = self.client.get(

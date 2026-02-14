@@ -1,7 +1,10 @@
+from datetime import datetime, timezone
 from flask import Blueprint, jsonify, request, g, current_app
 from flask_cors import cross_origin
+from sqlalchemy import desc
 
-from models import TenantProfile, WidgetSettings, Rubro, db
+from models import ChatSessionContext, Conversacion, TenantProfile, User, WidgetSettings, Rubro, db
+from services.live_chat_schedule import build_live_chat_status
 from services.tenant_resolver import (
     RESERVED_TENANT_SLUGS,
     TenantResolutionError,
@@ -213,6 +216,34 @@ def _resolve_widget_api_base(tenant: TenantProfile, cfg: dict) -> str:
     return "https://api.chatboc.ar"
 
 
+
+
+def _support_channels_payload(tenant: TenantProfile, cfg: dict) -> dict:
+    owner = tenant.pyme or tenant.municipio
+    whatsapp_number = (
+        cfg.get("support_whatsapp")
+        or cfg.get("whatsapp_phone")
+        or getattr(tenant, "whatsapp_sender_id", None)
+        or getattr(owner, "telefono", None)
+    )
+
+    return {
+        "live_chat": {
+            **build_live_chat_status(),
+            "channel": "ticket_chat",
+            "realtime": True,
+            "media": {"text": True, "image": True, "audio": True, "file": True},
+        },
+        "whatsapp": {
+            "enabled": bool(whatsapp_number),
+            "number": whatsapp_number,
+            "channel": "whatsapp",
+            "realtime_bridge": True,
+            "media": {"text": True, "image": True, "audio": True, "file": True},
+        },
+    }
+
+
 def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | None) -> dict:
     """Expose a rich embed configuration so `integracion.tsx` can render a SaaS builder."""
 
@@ -271,6 +302,21 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
     right_offset = cfg.get("widget_right", "20px")
     left_offset = cfg.get("widget_left", right_offset)
 
+    ux = cfg.get("ux") if isinstance(cfg.get("ux"), dict) else {}
+    motion_level = ux.get("motion_level") or cfg.get("widget_motion_level") or "balanced"
+    widget_preset = ux.get("preset") or cfg.get("widget_preset") or "premium"
+    gradient_start = ux.get("gradient_start") or cfg.get("widget_gradient_start")
+    gradient_end = ux.get("gradient_end") or cfg.get("widget_gradient_end")
+    glassmorphism = bool(ux.get("glassmorphism", cfg.get("widget_glassmorphism", True)))
+    logo_ring = bool(ux.get("logo_ring", cfg.get("widget_logo_ring", True)))
+    typing_animation = ux.get("typing_animation") or cfg.get("widget_typing_animation") or "wave-dots"
+    bubble_animation = ux.get("bubble_animation") or cfg.get("widget_bubble_animation") or "soft-rise"
+    launcher_animation = ux.get("launcher_animation") or cfg.get("widget_launcher_animation") or "pulse-glow"
+    message_enter_animation = ux.get("message_enter_animation") or cfg.get("widget_message_enter_animation") or "fade-up"
+    logo_badge_style = ux.get("logo_badge_style") or cfg.get("widget_logo_badge_style") or "ring"
+    cursor_trail = bool(ux.get("cursor_trail", cfg.get("widget_cursor_trail", False)))
+    ambient_particles = bool(ux.get("ambient_particles", cfg.get("widget_ambient_particles", False)))
+
     attrs = {
         "data-owner-token": canonical_token,
         "data-widget-token": canonical_token,
@@ -294,6 +340,19 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
         "data-launcher-color": theme.get("launcher"),
         "data-logo-url": cfg.get("avatar_url") or theme.get("logo"),
         "data-logo-animation": cfg.get("widget_logo_animation") or theme.get("animation"),
+        "data-widget-preset": widget_preset,
+        "data-motion-level": motion_level,
+        "data-glassmorphism": str(glassmorphism).lower(),
+        "data-logo-ring": str(logo_ring).lower(),
+        "data-gradient-start": gradient_start,
+        "data-gradient-end": gradient_end,
+        "data-typing-animation": typing_animation,
+        "data-bubble-animation": bubble_animation,
+        "data-launcher-animation": launcher_animation,
+        "data-message-enter-animation": message_enter_animation,
+        "data-logo-badge-style": logo_badge_style,
+        "data-cursor-trail": str(cursor_trail).lower(),
+        "data-ambient-particles": str(ambient_particles).lower(),
         "data-font-family": cfg.get("font_family") or "inherit",
         "data-bubble-shape": cfg.get("bubble_shape") or "round",
         "data-singleton": "true",
@@ -331,6 +390,8 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
     attr_snippet = " ".join(f"{k}='{v}'" for k, v in attrs.items())
     embed_snippet = f"<script src='{script_url}' async {attr_snippet}></script>"
 
+    support_channels = _support_channels_payload(tenant, cfg)
+
     builder_config = {
         "welcome_title": welcome_title,
         "welcome_subtitle": welcome_subtitle,
@@ -338,10 +399,26 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
         "theme_config": cfg.get("theme_config") or {},
         "channels": cfg.get("channels") or {},
         "preview": cfg.get("preview") or {},
+        "ux": {
+            "preset": widget_preset,
+            "motion_level": motion_level,
+            "glassmorphism": glassmorphism,
+            "logo_ring": logo_ring,
+            "gradient_start": gradient_start,
+            "gradient_end": gradient_end,
+            "typing_animation": typing_animation,
+            "bubble_animation": bubble_animation,
+            "launcher_animation": launcher_animation,
+            "message_enter_animation": message_enter_animation,
+            "logo_badge_style": logo_badge_style,
+            "cursor_trail": cursor_trail,
+            "ambient_particles": ambient_particles,
+        },
         "embed_snippet": embed_snippet,
         "api_base_url": api_base_url,
         "iframe_url": iframe_url,
         "attributes": attrs,
+        "support_channels": support_channels,
         "layout": {
             "position": position or "right",
             "width": width,
@@ -360,6 +437,7 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
         "theme": theme,
         "builder_config": builder_config,
         "marketplace": marketplace,
+        "support_channels": support_channels,
         "widget_token": canonical_token,
         "widget_token_cookie_name": current_app.config.get("WIDGET_TOKEN_COOKIE_NAME", "widget_token"),
     }
@@ -433,6 +511,22 @@ def _normalize_widget_config(config: dict | None, widget_settings=None) -> dict:
     preview_config.setdefault("alignment", "right")
     preview_config.setdefault("card_density", "comfortable")
     cfg["preview"] = preview_config
+
+    ux_config = cfg.get("ux") if isinstance(cfg.get("ux"), dict) else {}
+    ux_config.setdefault("preset", cfg.get("widget_preset") or "premium")
+    ux_config.setdefault("motion_level", cfg.get("widget_motion_level") or "balanced")
+    ux_config.setdefault("glassmorphism", bool(cfg.get("widget_glassmorphism", True)))
+    ux_config.setdefault("logo_ring", bool(cfg.get("widget_logo_ring", True)))
+    ux_config.setdefault("gradient_start", cfg.get("widget_gradient_start") or cfg.get("primary_color"))
+    ux_config.setdefault("gradient_end", cfg.get("widget_gradient_end") or cfg.get("secondary_color"))
+    ux_config.setdefault("typing_animation", cfg.get("widget_typing_animation") or "wave-dots")
+    ux_config.setdefault("bubble_animation", cfg.get("widget_bubble_animation") or "soft-rise")
+    ux_config.setdefault("launcher_animation", cfg.get("widget_launcher_animation") or "pulse-glow")
+    ux_config.setdefault("message_enter_animation", cfg.get("widget_message_enter_animation") or "fade-up")
+    ux_config.setdefault("logo_badge_style", cfg.get("widget_logo_badge_style") or "ring")
+    ux_config.setdefault("cursor_trail", bool(cfg.get("widget_cursor_trail", False)))
+    ux_config.setdefault("ambient_particles", bool(cfg.get("widget_ambient_particles", False)))
+    cfg["ux"] = ux_config
 
     return cfg
 
@@ -789,6 +883,45 @@ def widget_config():
     return _log_widget_public_request(response, tenant, entity_token=widget_token)
 
 
+
+
+def _resolve_tenant_for_lead_capture(payload: dict) -> TenantProfile | None:
+    tenant_slug = (
+        payload.get("tenant_slug")
+        or payload.get("tenant")
+        or request.args.get("tenant_slug")
+        or request.args.get("tenant")
+    )
+    tenant_slug = str(tenant_slug or "").strip().lower()
+
+    if tenant_slug in {"pyme", "municipio"}:
+        return (
+            TenantProfile.query.filter_by(tipo=tenant_slug)
+            .filter(TenantProfile.is_active.is_(True))
+            .order_by(TenantProfile.created_at.asc(), TenantProfile.id.asc())
+            .first()
+        )
+
+    if tenant_slug:
+        try:
+            return resolve_tenant_only(tenant_slug=tenant_slug, require_explicit_slug=True)
+        except TenantResolutionError:
+            return None
+
+    return None
+
+
+def _build_lead_capture_ack(tenant: TenantProfile | None) -> dict:
+    tenant_name = getattr(tenant, "nombre", None) or "nuestro equipo"
+    return {
+        "ok": True,
+        "message_body": f"¡Gracias! Ya registramos tu interés. En breve estaremos en contacto desde {tenant_name}.",
+        "respuesta": f"¡Gracias! Ya registramos tu interés. En breve estaremos en contacto desde {tenant_name}.",
+        "message_type": "text",
+        "fuente": "lead_capture",
+    }
+
+
 def _municipios_response():
     if request.method == "OPTIONS":
         return jsonify({"ok": True})
@@ -835,3 +968,115 @@ def list_municipios_root():
     """Alias sin prefijo para clientes legacy que llaman ``/municipios``."""
 
     return _municipios_response()
+
+
+@public_resolver_bp.route("/lead-capture", methods=["POST", "OPTIONS"], provide_automatic_options=False)
+@cross_origin(origins="*", automatic_options=False)
+def capture_public_lead():
+    if request.method == "OPTIONS":
+        return jsonify({"ok": True})
+
+    payload = request.get_json(silent=True) or {}
+    tenant = _resolve_tenant_for_lead_capture(payload)
+
+    nombre = str(payload.get("nombre") or payload.get("name") or "").strip()
+    email = str(payload.get("email") or "").strip().lower()
+    telefono = str(payload.get("telefono") or payload.get("phone") or "").strip()
+    mensaje = str(payload.get("mensaje") or payload.get("message") or "").strip()
+    interes = str(payload.get("interes") or payload.get("interest") or "").strip()
+
+    if not (nombre or email or telefono):
+        return jsonify({"error": "nombre/email/telefono requerido"}), 400
+
+    anon_id = (
+        str(payload.get("anon_id") or "").strip()
+        or str(request.headers.get("X-Anon-Id") or "").strip()
+        or str(request.cookies.get("chatboc_anon_id") or "").strip()
+    )
+
+    user = User.create_or_get_by_anon(anon_id or None, display_name=nombre or "Interesado")
+    if nombre:
+        user.name = nombre
+    if email:
+        user.email = email
+    if telefono:
+        user.telefono = telefono
+    if tenant:
+        user.tenant_id = tenant.id
+        user.tenant_slug = tenant.slug
+        if not user.tipo_chat:
+            user.tipo_chat = (tenant.tipo or "pyme").lower()
+
+    db.session.add(user)
+    db.session.flush()
+
+    session_id = (
+        str(payload.get("chat_session_id") or "").strip()
+        or str(request.headers.get("X-Chat-Session-Id") or "").strip()
+    )
+
+    context_obj = None
+    if session_id:
+        context_obj = ChatSessionContext.query.get(session_id)
+        if not context_obj:
+            context_obj = ChatSessionContext(chat_session_id=session_id, anon_id=anon_id or user.anon_id, user_id=user.id)
+    elif anon_id:
+        context_obj = (
+            ChatSessionContext.query
+            .filter(ChatSessionContext.anon_id == anon_id)
+            .order_by(desc(ChatSessionContext.last_updated))
+            .first()
+        )
+
+    if context_obj:
+        if not context_obj.user_id:
+            context_obj.user_id = user.id
+        if anon_id and not context_obj.anon_id:
+            context_obj.anon_id = anon_id
+        if tenant and not context_obj.tenant_id:
+            context_obj.tenant_id = tenant.id
+
+        data = context_obj.context_data if isinstance(context_obj.context_data, dict) else {}
+        lead_profile = data.get("lead_profile") if isinstance(data.get("lead_profile"), dict) else {}
+        if nombre:
+            lead_profile["nombre"] = nombre
+        if email:
+            lead_profile["email"] = email
+        if telefono:
+            lead_profile["telefono"] = telefono
+        if interes:
+            lead_profile["interes"] = interes
+        if mensaje:
+            lead_profile["mensaje"] = mensaje
+        if tenant:
+            lead_profile["tenant_slug"] = tenant.slug
+            lead_profile["tenant_id"] = tenant.id
+            lead_profile["tenant_tipo"] = tenant.tipo
+        lead_profile["updated_at"] = datetime.now(timezone.utc).isoformat()
+        data["lead_profile"] = lead_profile
+
+        events = data.get("lead_events") if isinstance(data.get("lead_events"), list) else []
+        events.append({
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "mensaje": mensaje,
+            "interes": interes,
+            "tenant_slug": tenant.slug if tenant else None,
+        })
+        data["lead_events"] = events[-20:]
+        context_obj.context_data = data
+        db.session.add(context_obj)
+
+    lead_question = mensaje or f"Lead capturado ({interes or 'sin_interes'})"
+    conv = Conversacion(
+        user_id=user.id,
+        pyme_id=(tenant.pyme_id if tenant else None) or (tenant.municipio_id if tenant else None),
+        pregunta=lead_question,
+        respuesta="Lead registrado",
+        fuente="lead_capture",
+        rubro=(tenant.tipo if tenant else None),
+        session_id=anon_id or user.anon_id or str(user.id),
+    )
+    db.session.add(conv)
+    db.session.commit()
+
+    return jsonify(_build_lead_capture_ack(tenant))

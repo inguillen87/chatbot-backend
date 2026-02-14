@@ -257,3 +257,49 @@ def analyze_sentiment(texts: List[str]) -> dict:
             "sentiment_score": 0.0,
             "keywords": []
         }
+
+
+def generate_ticket_summary(ticket_data: dict) -> dict:
+    """Generate a concise AI summary for a ticket timeline."""
+    timeline = ticket_data.get("timeline") or []
+    if not client:
+        return {
+            "summary": "AI offline: resumen generado en modo fallback.",
+            "next_steps": [
+                "Validar datos faltantes del caso",
+                "Confirmar responsable y ETA con el solicitante",
+                "Cerrar cuando exista evidencia de resolución",
+            ],
+            "confidence": "low",
+        }
+
+    try:
+        system_prompt = (
+            "You are a senior support operations analyst. "
+            "Summarize the provided ticket history without inventing facts. "
+            "Return strict JSON with keys: summary (string, <=80 words), "
+            "next_steps (array of 3 concrete actions), confidence (low|medium|high)."
+        )
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": json.dumps(ticket_data, default=str)},
+            ],
+            temperature=0.2,
+            response_format={"type": "json_object"},
+        )
+        return json.loads(response.choices[0].message.content.strip())
+    except Exception as e:
+        logger.error(f"Error generating ticket summary: {e}", exc_info=True)
+        base = ticket_data.get("pregunta") or ticket_data.get("asunto") or "Caso sin descripción"
+        last_state = ticket_data.get("estado") or "sin estado"
+        return {
+            "summary": f"Caso: {base}. Estado actual: {last_state}. Historial analizado: {len(timeline)} eventos.",
+            "next_steps": [
+                "Confirmar prioridad y responsable",
+                "Actualizar al usuario con estado actual",
+                "Definir criterio de cierre y seguimiento",
+            ],
+            "confidence": "medium",
+        }
