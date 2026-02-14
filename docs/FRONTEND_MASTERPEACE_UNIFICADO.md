@@ -210,3 +210,18 @@ Se considera listo cuando frontend cumpla:
 
 > “Backend enterprise ya está listo para demo, analytics, IA admin y personalización del bot por tenant. Priorizamos en frontend: demo entry + dashboard + features IA + pantalla de bot settings + hardening de errores/scope tenant. Con eso cerramos el paquete comercial enterprise de punta a punta.”
 
+
+
+## 9) Bloque final para pasar al frontend (portal usuario)
+
+Implementar en este orden:
+1. **Home portal** con 4 widgets: actividad, puntos, pedidos, red de noticias.
+2. **Timeline unificado** consumiendo `GET /api/v1/portal/<tenant_slug>/history`.
+3. **Feed transversal** consumiendo `GET /api/v1/portal/<tenant_slug>/network/feed`.
+4. **Canjes** (`benefits`, `redeem`, `redeems`) con feedback inmediato de saldo.
+
+Criterio de calidad UX:
+- estados vacíos elegantes,
+- skeletons de carga,
+- filtros por tipo en timeline,
+- consistencia visual de badges de estado.

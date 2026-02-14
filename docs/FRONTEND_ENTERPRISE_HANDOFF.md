@@ -321,3 +321,64 @@ Si el frontend vive en otro repositorio, tomar este documento como contrato de t
 - smoke tests.
 
 Con esto, backend y frontend convergen a cierre enterprise sin fricción.
+
+
+## 2.7 Portal UX de referencia (implementación frontend)
+
+### Cards sugeridas para Home del portal
+- **Mi actividad**: resumen de `summary.counts` (`orders`, `claims`, `surveys`, `suggestions`).
+- **Mis puntos**: saldo actual + `summary.points_breakdown`.
+- **Seguimiento de pedidos**: últimos `orders[]` usando `tracking.stage` + `tracking.eta`.
+- **Novedades de mi red**: `network/feed` (tenant actual + tenants seguidos).
+
+### Contrato sugerido para Timeline unificado
+Normalizar visualmente `timeline[]` por `type`:
+- `order`: badge por estado (`pending/preparing/shipped/delivered/cancelled`)
+- `claim`: badge por estado del reclamo
+- `points`: badge `earned/redeemed` + color por signo de `delta`
+- `survey`: badge `submitted`
+- `suggestion`: badge por `estado` (`nueva/revisada/implementada`)
+
+### Ejemplo de payload (`GET /history`)
+```json
+{
+  "summary": {
+    "counts": {"orders": 3, "claims": 2, "surveys": 1, "suggestions": 1, "points_movements": 7},
+    "points_breakdown": {
+      "compras": 120,
+      "encuestas": 50,
+      "votaciones": 0,
+      "sugerencias": 30,
+      "reclamos": 20,
+      "canjes": -70,
+      "participacion": 0,
+      "otros": 0
+    }
+  },
+  "timeline": [
+    {"type": "order", "status": "shipped", "at": "2026-02-14T12:00:00+00:00"},
+    {"type": "points", "status": "earned", "at": "2026-02-14T11:30:00+00:00"},
+    {"type": "suggestion", "status": "nueva", "at": "2026-02-13T18:00:00+00:00"}
+  ]
+}
+```
+
+### Ejemplo de payload (`GET /network/feed`)
+```json
+{
+  "items": [
+    {
+      "id": 101,
+      "type": "news",
+      "title": "Nueva obra de pavimentación",
+      "date": "2026-02-14T10:00:00+00:00",
+      "tenant": {"slug": "mi-ciudad", "name": "Municipio X", "tipo": "municipio"},
+      "link": "/mi-ciudad/noticias/101"
+    }
+  ],
+  "tenants": [
+    {"slug": "mi-ciudad", "name": "Municipio X", "tipo": "municipio"},
+    {"slug": "pyme-favorita", "name": "Pyme Favorita", "tipo": "pyme"}
+  ]
+}
+```
