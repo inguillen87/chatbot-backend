@@ -37,6 +37,13 @@ class WidgetConfigService:
             "logo_ring": True,
             "gradient_start": "#0f172a",
             "gradient_end": "#007aff",
+            "typing_animation": "wave-dots",
+            "bubble_animation": "soft-rise",
+            "launcher_animation": "pulse-glow",
+            "message_enter_animation": "fade-up",
+            "logo_badge_style": "ring",
+            "cursor_trail": False,
+            "ambient_particles": False,
         },
         "domains": [],  # Allowed domains for CORS/Security (future use)
         "channels": {
@@ -172,7 +179,7 @@ class WidgetConfigService:
             for k, v in config["ux"].items():
                 if k not in clean["ux"]:
                     continue
-                if k in {"glassmorphism", "logo_ring"}:
+                if k in {"glassmorphism", "logo_ring", "cursor_trail", "ambient_particles"}:
                     clean["ux"][k] = bool(v)
                 elif k in {"gradient_start", "gradient_end"}:
                     if re.match(r"^#[0-9a-fA-F]{3,8}$", str(v)):
