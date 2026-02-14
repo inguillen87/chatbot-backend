@@ -271,6 +271,14 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
     right_offset = cfg.get("widget_right", "20px")
     left_offset = cfg.get("widget_left", right_offset)
 
+    ux = cfg.get("ux") if isinstance(cfg.get("ux"), dict) else {}
+    motion_level = ux.get("motion_level") or cfg.get("widget_motion_level") or "balanced"
+    widget_preset = ux.get("preset") or cfg.get("widget_preset") or "premium"
+    gradient_start = ux.get("gradient_start") or cfg.get("widget_gradient_start")
+    gradient_end = ux.get("gradient_end") or cfg.get("widget_gradient_end")
+    glassmorphism = bool(ux.get("glassmorphism", cfg.get("widget_glassmorphism", True)))
+    logo_ring = bool(ux.get("logo_ring", cfg.get("widget_logo_ring", True)))
+
     attrs = {
         "data-owner-token": canonical_token,
         "data-widget-token": canonical_token,
@@ -294,6 +302,12 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
         "data-launcher-color": theme.get("launcher"),
         "data-logo-url": cfg.get("avatar_url") or theme.get("logo"),
         "data-logo-animation": cfg.get("widget_logo_animation") or theme.get("animation"),
+        "data-widget-preset": widget_preset,
+        "data-motion-level": motion_level,
+        "data-glassmorphism": str(glassmorphism).lower(),
+        "data-logo-ring": str(logo_ring).lower(),
+        "data-gradient-start": gradient_start,
+        "data-gradient-end": gradient_end,
         "data-font-family": cfg.get("font_family") or "inherit",
         "data-bubble-shape": cfg.get("bubble_shape") or "round",
         "data-singleton": "true",
@@ -338,6 +352,14 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
         "theme_config": cfg.get("theme_config") or {},
         "channels": cfg.get("channels") or {},
         "preview": cfg.get("preview") or {},
+        "ux": {
+            "preset": widget_preset,
+            "motion_level": motion_level,
+            "glassmorphism": glassmorphism,
+            "logo_ring": logo_ring,
+            "gradient_start": gradient_start,
+            "gradient_end": gradient_end,
+        },
         "embed_snippet": embed_snippet,
         "api_base_url": api_base_url,
         "iframe_url": iframe_url,
@@ -433,6 +455,15 @@ def _normalize_widget_config(config: dict | None, widget_settings=None) -> dict:
     preview_config.setdefault("alignment", "right")
     preview_config.setdefault("card_density", "comfortable")
     cfg["preview"] = preview_config
+
+    ux_config = cfg.get("ux") if isinstance(cfg.get("ux"), dict) else {}
+    ux_config.setdefault("preset", cfg.get("widget_preset") or "premium")
+    ux_config.setdefault("motion_level", cfg.get("widget_motion_level") or "balanced")
+    ux_config.setdefault("glassmorphism", bool(cfg.get("widget_glassmorphism", True)))
+    ux_config.setdefault("logo_ring", bool(cfg.get("widget_logo_ring", True)))
+    ux_config.setdefault("gradient_start", cfg.get("widget_gradient_start") or cfg.get("primary_color"))
+    ux_config.setdefault("gradient_end", cfg.get("widget_gradient_end") or cfg.get("secondary_color"))
+    cfg["ux"] = ux_config
 
     return cfg
 

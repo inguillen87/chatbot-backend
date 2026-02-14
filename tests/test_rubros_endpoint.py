@@ -67,6 +67,17 @@ class RubrosEndpointTestCase(unittest.TestCase):
         self.assertTrue(ferre_items)
         self.assertIn("demo", ferre_items[0])
         self.assertEqual(ferre_items[0]["demo"].get("segment"), "Empresas")
+        self.assertIn("widget_preview", ferre_items[0])
+        self.assertIn("preset", ferre_items[0]["widget_preview"])
+
+
+    def test_virtual_demo_entries_include_widget_preview(self):
+        response = self.client.get("/rubros/")
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        virtual_items = [item for item in payload if item.get("is_virtual") and item.get("demo")]
+        self.assertTrue(virtual_items)
+        self.assertTrue(all("widget_preview" in item for item in virtual_items))
 
 
 if __name__ == "__main__":
