@@ -163,3 +163,77 @@ def test_super_admin_franchise_playbook(client, app):
     assert len(playbook['next_actions']) >= 3
     assert playbook['next_actions'][0]['priority'] in {'high', 'medium', 'low'}
     assert 'phase_1' in playbook['estimated_phases']
+
+
+def test_super_admin_franchise_compare_ranking_and_filters(client, app):
+    sa = User(email="sa5@test.com", name="SA5", rol="super_admin", tipo_chat="admin")
+    sa.set_password("pass")
+    owner1 = User(email="owner5a@test.com", name="Owner5A", rol="admin", tipo_chat="pyme")
+    owner1.set_password("pass")
+    owner2 = User(email="owner5b@test.com", name="Owner5B", rol="admin", tipo_chat="pyme")
+    owner2.set_password("pass")
+    db.session.add_all([sa, owner1, owner2])
+    db.session.commit()
+
+    tenant_ready = TenantProfile(
+        slug="tenant-fr-ready",
+        nombre="Tenant Ready",
+        tipo="pyme",
+        pyme_id=owner1.id,
+        dominio="ready.example.com",
+        logo_url="https://cdn.example.com/ready.png",
+        whatsapp_sender_id="5491111111111",
+        configuracion={
+            "mercadopago_access_token": "TOKEN-READY",
+            "franchise_profile": {
+                "white_label_enabled": True,
+                "reseller_enabled": True,
+                "target_markets": ["latam", "na"],
+                "default_language": "en",
+                "supported_languages": ["en", "es", "pt"],
+                "timezone": "America/New_York",
+                "currency": "USD",
+                "country": "US",
+                "legal_entity_name": "Tenant Ready LLC",
+                "partner_program": "global_partner",
+            },
+        },
+    )
+
+    tenant_basic = TenantProfile(
+        slug="tenant-fr-basic",
+        nombre="Tenant Basic",
+        tipo="pyme",
+        pyme_id=owner2.id,
+        configuracion={
+            "franchise_profile": {
+                "white_label_enabled": False,
+                "reseller_enabled": False,
+                "default_language": "es",
+                "supported_languages": ["es"],
+                "currency": "",
+                "country": "",
+                "timezone": "",
+                "partner_program": "",
+            },
+        },
+    )
+
+    db.session.add_all([tenant_ready, tenant_basic])
+    db.session.commit()
+
+    headers = _sa_headers(app, sa)
+
+    resp = client.get('/api/admin/tenants/franchise-compare', headers=headers)
+    assert resp.status_code == 200
+    payload = resp.get_json()
+    assert payload['total'] >= 2
+    assert payload['items'][0]['tenant']['slug'] == 'tenant-fr-ready'
+    assert payload['items'][0]['score'] >= payload['items'][1]['score']
+
+    filtered = client.get('/api/admin/tenants/franchise-compare?status=basic', headers=headers)
+    assert filtered.status_code == 200
+    filtered_payload = filtered.get_json()
+    assert filtered_payload['total'] >= 1
+    assert all(item['status'] == 'basic' for item in filtered_payload['items'])
+    assert any('currency_defined' in item['critical_gaps'] for item in filtered_payload['items'])

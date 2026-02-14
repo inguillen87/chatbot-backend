@@ -244,6 +244,19 @@ def _build_franchise_playbook(tenant: TenantProfile) -> dict:
         },
     }
 
+
+def _critical_readiness_gaps(readiness: dict) -> list[str]:
+    missing = readiness.get("missing") if isinstance(readiness, dict) else []
+    if not isinstance(missing, list):
+        return []
+
+    critical = []
+    for check in missing:
+        task = _PLAYBOOK_TASKS_BY_CHECK.get(check)
+        if task and task.get("priority") == "high":
+            critical.append(check)
+    return critical
+
 def _normalize_plan_key(raw_plan: str | None) -> str:
     if not raw_plan:
         return "gratis"
@@ -616,6 +629,49 @@ def get_tenant_franchise_playbook(current_user, slug):
             "plan": tenant.plan,
         },
         "playbook": playbook,
+    })
+
+
+@super_admin_bp.route('/tenants/franchise-compare', methods=['GET'])
+@token_requerido
+@super_admin_required
+def compare_tenants_franchise_readiness(current_user):
+    tenant_type = str(request.args.get("tipo") or "").strip().lower()
+    status_filter = str(request.args.get("status") or "").strip().lower()
+
+    query = TenantProfile.query.filter(TenantProfile.is_active.is_(True))
+    if tenant_type in {"pyme", "municipio"}:
+        query = query.filter(TenantProfile.tipo == tenant_type)
+
+    ranking = []
+    for tenant in query.all():
+        readiness = _compute_franchise_readiness(tenant)
+        if status_filter and readiness.get("status") != status_filter:
+            continue
+
+        ranking.append({
+            "tenant": {
+                "id": tenant.id,
+                "slug": tenant.slug,
+                "nombre": tenant.nombre,
+                "tipo": tenant.tipo,
+                "plan": tenant.plan,
+            },
+            "score": readiness.get("score"),
+            "status": readiness.get("status"),
+            "critical_gaps": _critical_readiness_gaps(readiness),
+            "missing": readiness.get("missing") or [],
+        })
+
+    ranking.sort(key=lambda item: (-(item.get("score") or 0), item["tenant"].get("slug") or ""))
+
+    return jsonify({
+        "items": ranking,
+        "total": len(ranking),
+        "filters": {
+            "tipo": tenant_type or None,
+            "status": status_filter or None,
+        },
     })
 
 
