@@ -2,6 +2,7 @@ from flask import Blueprint, jsonify, request, g, current_app
 from flask_cors import cross_origin
 
 from models import TenantProfile, WidgetSettings, Rubro, db
+from services.live_chat_schedule import build_live_chat_status
 from services.tenant_resolver import (
     RESERVED_TENANT_SLUGS,
     TenantResolutionError,
@@ -213,6 +214,34 @@ def _resolve_widget_api_base(tenant: TenantProfile, cfg: dict) -> str:
     return "https://api.chatboc.ar"
 
 
+
+
+def _support_channels_payload(tenant: TenantProfile, cfg: dict) -> dict:
+    owner = tenant.pyme or tenant.municipio
+    whatsapp_number = (
+        cfg.get("support_whatsapp")
+        or cfg.get("whatsapp_phone")
+        or getattr(tenant, "whatsapp_sender_id", None)
+        or getattr(owner, "telefono", None)
+    )
+
+    return {
+        "live_chat": {
+            **build_live_chat_status(),
+            "channel": "ticket_chat",
+            "realtime": True,
+            "media": {"text": True, "image": True, "audio": True, "file": True},
+        },
+        "whatsapp": {
+            "enabled": bool(whatsapp_number),
+            "number": whatsapp_number,
+            "channel": "whatsapp",
+            "realtime_bridge": True,
+            "media": {"text": True, "image": True, "audio": True, "file": True},
+        },
+    }
+
+
 def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | None) -> dict:
     """Expose a rich embed configuration so `integracion.tsx` can render a SaaS builder."""
 
@@ -359,6 +388,8 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
     attr_snippet = " ".join(f"{k}='{v}'" for k, v in attrs.items())
     embed_snippet = f"<script src='{script_url}' async {attr_snippet}></script>"
 
+    support_channels = _support_channels_payload(tenant, cfg)
+
     builder_config = {
         "welcome_title": welcome_title,
         "welcome_subtitle": welcome_subtitle,
@@ -385,6 +416,7 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
         "api_base_url": api_base_url,
         "iframe_url": iframe_url,
         "attributes": attrs,
+        "support_channels": support_channels,
         "layout": {
             "position": position or "right",
             "width": width,
@@ -403,6 +435,7 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
         "theme": theme,
         "builder_config": builder_config,
         "marketplace": marketplace,
+        "support_channels": support_channels,
         "widget_token": canonical_token,
         "widget_token_cookie_name": current_app.config.get("WIDGET_TOKEN_COOKIE_NAME", "widget_token"),
     }

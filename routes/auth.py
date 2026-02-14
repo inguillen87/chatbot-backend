@@ -785,6 +785,20 @@ def widget_refresh():
 
 
 
+
+
+def _default_demo_key_for_tipo(tipo_chat: str) -> Optional[str]:
+    normalized = (tipo_chat or "").strip().lower()
+    if normalized not in {"pyme", "municipio"}:
+        return None
+
+    demos = load_demo_rubros(require_owner=False)
+    for demo in demos:
+        if (demo.tipo_chat or "").strip().lower() == normalized and (demo.key or "").strip():
+            return demo.key
+    return None
+
+
 def _resolve_demo_tenant_slug(rubro_raw: Optional[str]) -> Optional[str]:
     normalized = (rubro_raw or "").strip().lower()
     if not normalized:
@@ -798,10 +812,15 @@ def _resolve_demo_tenant_slug(rubro_raw: Optional[str]) -> Optional[str]:
     }
 
     alias_map = {
-        "municipio": "municipio",
-        "gobierno": "municipio",
+        "municipio": _default_demo_key_for_tipo("municipio") or "municipio",
+        "municipal": _default_demo_key_for_tipo("municipio") or "municipio",
+        "gobierno": _default_demo_key_for_tipo("municipio") or "municipio",
+        "government": _default_demo_key_for_tipo("municipio") or "municipio",
+        "pyme": _default_demo_key_for_tipo("pyme") or "local_comercial_general",
+        "empresa": _default_demo_key_for_tipo("pyme") or "local_comercial_general",
+        "empresas": _default_demo_key_for_tipo("pyme") or "local_comercial_general",
+        "comercio": _default_demo_key_for_tipo("pyme") or "local_comercial_general",
         "retail": "local_comercial_general",
-        "comercio": "local_comercial_general",
         "mayorista": "bodega",
         "bodega": "bodega",
         "ferreteria": "ferreteria",
@@ -928,6 +947,10 @@ def demo_catalog():
         })
 
     return jsonify({
+        "entry_points": [
+            {"key": "municipio", "label": "Demo Municipio", "login_payload": {"rubro": "municipio", "tipo_chat": "municipio"}},
+            {"key": "pyme", "label": "Demo PyME", "login_payload": {"rubro": "pyme", "tipo_chat": "pyme"}},
+        ],
         "super_admin_demo": {
             **_demo_superadmin_credentials(),
             "role": "super_admin",
@@ -946,7 +969,7 @@ def login_demo():
         return '', 204
 
     data = request.get_json(silent=True) or {}
-    rubro = data.get('rubro') or data.get('segmento') or data.get('demo')
+    rubro = data.get('rubro') or data.get('segmento') or data.get('demo') or data.get('tipo_chat') or data.get('tenant_slug')
     demo_slug = _resolve_demo_tenant_slug(rubro)
     if not demo_slug:
         return jsonify({"error": f"Rubro demo '{rubro or ''}' no válido"}), 404
@@ -954,7 +977,26 @@ def login_demo():
     try:
         tenant_obj = resolve_tenant_only(tenant_slug=demo_slug, require_explicit_slug=True)
     except Exception:
-        return jsonify({"error": f"Rubro demo '{rubro or demo_slug}' no válido"}), 404
+        requested_tipo = str(data.get("tipo_chat") or rubro or "").strip().lower()
+        if requested_tipo in {"pyme", "empresa", "empresas", "comercio"}:
+            tenant_obj = (
+                TenantProfile.query.filter_by(tipo="pyme")
+                .filter(TenantProfile.is_active.is_(True))
+                .order_by(TenantProfile.created_at.asc(), TenantProfile.id.asc())
+                .first()
+            )
+        elif requested_tipo in {"municipio", "gobierno", "municipal"}:
+            tenant_obj = (
+                TenantProfile.query.filter_by(tipo="municipio")
+                .filter(TenantProfile.is_active.is_(True))
+                .order_by(TenantProfile.created_at.asc(), TenantProfile.id.asc())
+                .first()
+            )
+        else:
+            tenant_obj = None
+
+        if not tenant_obj:
+            return jsonify({"error": f"Rubro demo '{rubro or demo_slug}' no válido"}), 404
 
     demo_user = _get_or_create_demo_user_for_tenant(tenant_obj)
     _attach_user_to_tenant(demo_user, tenant_obj)

@@ -41,3 +41,19 @@ Este documento resume los nuevos tokens UX expuestos por backend para lograr una
 
 ## Compatibilidad
 Si el tenant no configuró nada, backend entrega defaults seguros para evitar UI rota.
+
+
+## Soporte humano omnicanal (nuevo)
+El payload también incluye `widget.support_channels` con dos canales:
+- `live_chat` (ticket chat admin en tiempo real + media)
+- `whatsapp` (bridge bidireccional + media)
+
+Ejemplo:
+```json
+{
+  "support_channels": {
+    "live_chat": {"realtime": true, "media": {"text": true, "image": true, "audio": true, "file": true}},
+    "whatsapp": {"enabled": true, "realtime_bridge": true, "media": {"text": true, "image": true, "audio": true, "file": true}}
+  }
+}
+```

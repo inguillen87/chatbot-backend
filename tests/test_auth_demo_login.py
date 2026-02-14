@@ -105,5 +105,22 @@ class AuthDemoLoginTest(unittest.TestCase):
         self.assertIn(user.rol, {'super_admin', 'superadmin'})
 
 
+    def test_demo_login_accepts_generic_pyme_entrypoint(self):
+        resp = self.client.post("/auth/demo", json={"rubro": "pyme"})
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.get_json()
+        self.assertEqual(payload.get("tipo_chat"), "pyme")
+        self.assertTrue(payload.get("demo_mode"))
+
+    def test_demo_catalog_exposes_generic_entry_points(self):
+        resp = self.client.get('/auth/demo/catalog')
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.get_json()
+        entry_points = payload.get('entry_points') or []
+        keys = {item.get('key') for item in entry_points}
+        self.assertIn('municipio', keys)
+        self.assertIn('pyme', keys)
+
+
 if __name__ == "__main__":
     unittest.main()

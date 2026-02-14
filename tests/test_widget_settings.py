@@ -103,6 +103,9 @@ class WidgetSettingsTests(unittest.TestCase):
         self.assertIn("data-cursor-trail", attrs)
         self.assertIn("data-ambient-particles", attrs)
         self.assertIn("ux", widget_data["builder_config"])
+        self.assertIn("support_channels", widget_data["widget"])
+        self.assertIn("live_chat", widget_data["widget"]["support_channels"])
+        self.assertIn("whatsapp", widget_data["widget"]["support_channels"])
 
     def test_public_widget_config_allows_querystring_tenant_fallback(self):
         resp = self.client.get(
