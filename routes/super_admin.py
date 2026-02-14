@@ -8,6 +8,10 @@ from models import (
     Rubro,
     AdminAuditLog,
     TwilioNumber,
+    ChatSessionContext,
+    Conversacion,
+    MunicipioTicket,
+    PymeTicket,
 )
 from utils.auth_helpers import token_requerido
 from utils.admin_decorators import super_admin_required
@@ -256,6 +260,39 @@ def _critical_readiness_gaps(readiness: dict) -> list[str]:
         if task and task.get("priority") == "high":
             critical.append(check)
     return critical
+
+
+
+_LEAD_URGENT_KEYWORDS = {
+    "urgente", "emergencia", "incendio", "explosion", "accidente", "fuga", "gas", "inseguridad"
+}
+
+
+def _lead_relevance_score(*, open_tickets: int, latest_message: str, last_seen: datetime | None, has_contact: bool) -> int:
+    score = 0
+    if open_tickets > 0:
+        score += min(open_tickets * 20, 60)
+
+    text = str(latest_message or "").strip().lower()
+    if any(k in text for k in _LEAD_URGENT_KEYWORDS):
+        score += 30
+
+    if has_contact:
+        score += 15
+
+    if last_seen:
+        now = datetime.now(timezone.utc)
+        last_dt = last_seen if last_seen.tzinfo else last_seen.replace(tzinfo=timezone.utc)
+        age_hours = max(0, (now - last_dt).total_seconds() / 3600)
+        if age_hours <= 1:
+            score += 25
+        elif age_hours <= 24:
+            score += 15
+        elif age_hours <= 72:
+            score += 8
+
+    return int(score)
+
 
 def _normalize_plan_key(raw_plan: str | None) -> str:
     if not raw_plan:
@@ -1364,3 +1401,98 @@ def register_external_whatsapp_number(current_user):
         "whatsapp_sender_id": tenant.whatsapp_sender_id,
         "number": _serialize_twilio_number(twilio_number),
     })
+
+
+@super_admin_bp.route('/leads/interactions', methods=['GET'])
+@token_requerido
+@super_admin_required
+def list_leads_interactions(current_user):
+    limit = max(1, min(int(request.args.get('limit', 50) or 50), 200))
+    tenant_slug_filter = str(request.args.get('tenant_slug') or '').strip().lower()
+
+    contexts = ChatSessionContext.query.order_by(desc(ChatSessionContext.last_updated)).limit(600).all()
+    items = []
+
+    for ctx in contexts:
+        context_data = ctx.context_data if isinstance(ctx.context_data, dict) else {}
+        lead_profile = context_data.get('lead_profile') if isinstance(context_data.get('lead_profile'), dict) else {}
+
+        profile_name = (lead_profile.get('nombre') or context_data.get('profile_name') or '').strip()
+        profile_email = (lead_profile.get('email') or '').strip().lower()
+        profile_phone = (lead_profile.get('telefono') or '').strip()
+        tenant_slug = (lead_profile.get('tenant_slug') or '').strip().lower()
+
+        if tenant_slug_filter and tenant_slug_filter != tenant_slug:
+            continue
+
+        if not (profile_name or profile_email or profile_phone or ctx.anon_id):
+            continue
+
+        conv_query = Conversacion.query
+        if ctx.user_id:
+            conv_query = conv_query.filter(Conversacion.user_id == ctx.user_id)
+        elif ctx.anon_id:
+            conv_query = conv_query.filter(Conversacion.session_id == ctx.anon_id)
+        else:
+            continue
+
+        recent_conversations = conv_query.order_by(desc(Conversacion.timestamp)).limit(5).all()
+        latest_question = recent_conversations[0].pregunta if recent_conversations else (lead_profile.get('mensaje') or '')
+
+        mt_query = MunicipioTicket.query
+        pt_query = PymeTicket.query
+        if ctx.user_id:
+            mt_query = mt_query.filter(MunicipioTicket.user_id == ctx.user_id)
+            pt_query = pt_query.filter(PymeTicket.user_id == ctx.user_id)
+        elif ctx.anon_id:
+            mt_query = mt_query.filter(MunicipioTicket.anon_id == ctx.anon_id)
+            pt_query = pt_query.filter(PymeTicket.anon_id == ctx.anon_id)
+
+        open_statuses = {'nuevo', 'abierto', 'pendiente', 'en_proceso'}
+        open_tickets = mt_query.filter(MunicipioTicket.estado.in_(list(open_statuses))).count() + pt_query.filter(PymeTicket.estado.in_(list(open_statuses))).count()
+
+        last_seen = ctx.last_updated or (recent_conversations[0].timestamp if recent_conversations else None)
+        has_contact = bool(profile_email or profile_phone)
+        relevance = _lead_relevance_score(
+            open_tickets=open_tickets,
+            latest_message=latest_question,
+            last_seen=last_seen,
+            has_contact=has_contact,
+        )
+
+        items.append({
+            'chat_session_id': ctx.chat_session_id,
+            'anon_id': ctx.anon_id,
+            'user_id': ctx.user_id,
+            'tenant_slug': tenant_slug or None,
+            'lead': {
+                'nombre': profile_name or None,
+                'email': profile_email or None,
+                'telefono': profile_phone or None,
+                'interes': lead_profile.get('interes'),
+                'mensaje': lead_profile.get('mensaje'),
+            },
+            'latest_question': latest_question,
+            'recent_questions': [c.pregunta for c in recent_conversations if c.pregunta][:3],
+            'open_tickets': open_tickets,
+            'last_seen': last_seen.isoformat() if last_seen else None,
+            'relevance_score': relevance,
+        })
+
+    items.sort(key=lambda item: ((item.get('relevance_score') or 0), item.get('last_seen') or ''), reverse=True)
+    items = items[:limit]
+
+    top_questions = []
+    question_rows = (
+        db.session.query(Conversacion.pregunta, func.count(Conversacion.id).label('count'))
+        .filter(Conversacion.pregunta.isnot(None))
+        .filter(func.length(func.trim(Conversacion.pregunta)) > 2)
+        .group_by(Conversacion.pregunta)
+        .order_by(desc('count'))
+        .limit(10)
+        .all()
+    )
+    for question, count in question_rows:
+        top_questions.append({'question': question, 'count': int(count or 0)})
+
+    return jsonify({'items': items, 'total': len(items), 'top_questions': top_questions})

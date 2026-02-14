@@ -57,3 +57,14 @@ Ejemplo:
   }
 }
 ```
+
+
+## Checklist único frontend pendiente
+1. **Entry demo robusto**: usar `/auth/demo/catalog` -> `entry_points` para CTA directos Municipio/PyME.
+2. **Lead capture temprano**: enviar nombre/email/teléfono/interés a `POST /api/public/lead-capture` al detectar alta intención.
+3. **Canal humano visible**: mostrar `widget.support_channels.live_chat` + `widget.support_channels.whatsapp` en header/acciones de ayuda.
+4. **Priorizar urgencias**: cuando `live_chat.available=true` y texto urgente, sugerir “Hablar con agente ahora”.
+5. **Animaciones premium adaptativas**: aplicar tokens `builder_config.ux` con degradación por dispositivo (`motion_level`).
+6. **Timeline de interacción**: en admin tenant, consumir nuevo endpoint super-admin de leads (`/api/admin/leads/interactions`) para lista priorizada.
+
+> Objetivo: que un usuario nuevo entre, elija rubro, pruebe demo completa, deje datos y quede persistido para seguimiento comercial.
