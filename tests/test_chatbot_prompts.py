@@ -20,6 +20,8 @@ class ChatbotPromptTests(unittest.TestCase):
         self.assertIn('"target": "pyme"', prompt)
         self.assertIn("Bodega Demo", prompt)
         self.assertIn("Malbec Reserva", prompt)
+        self.assertIn("¿Buscás por precio, marca o uso?", prompt)
+        self.assertIn("Experiencia Omnicanal", prompt)
 
 
 if __name__ == "__main__":
