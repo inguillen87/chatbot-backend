@@ -13,6 +13,9 @@ from models import (
     MunicipioTicket,
     PymeTicket,
     CatalogoItem,
+    EncEncuesta,
+    EncRespuesta,
+    LlmInteractionLog,
 )
 from utils.auth_helpers import token_requerido
 from utils.admin_decorators import super_admin_required
@@ -1912,6 +1915,85 @@ def leads_strategic_overview(current_user):
         'by_tenant': list(by_tenant.values()),
     })
 
+
+
+
+@super_admin_bp.route('/analytics/realtime-ai', methods=['GET'])
+@token_requerido
+@super_admin_required
+def super_admin_realtime_ai_metrics(current_user):
+    minutes = max(5, min(int(request.args.get('minutes', 60) or 60), 24 * 60))
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=minutes)
+
+    sessions = ChatSessionContext.query.filter(ChatSessionContext.last_updated >= cutoff).all()
+    active_sessions = len(sessions)
+
+    llm_logs = LlmInteractionLog.query.filter(LlmInteractionLog.created_at >= cutoff).all()
+
+    total_llm = len(llm_logs)
+    pending = sum(1 for x in llm_logs if str(getattr(x, 'status', '')).lower() == 'pending_review')
+    converted = sum(1 for x in llm_logs if str(getattr(x, 'status', '')).lower() == 'converted_to_faq')
+    rejected = sum(1 for x in llm_logs if str(getattr(x, 'status', '')).lower() == 'rejected')
+
+    mt_total = MunicipioTicket.query.filter(MunicipioTicket.fecha >= cutoff).count()
+    pt_total = PymeTicket.query.filter(PymeTicket.fecha >= cutoff).count()
+
+    lead_rows = MunicipioTicket.query.filter(MunicipioTicket.fecha >= cutoff).all() + PymeTicket.query.filter(PymeTicket.fecha >= cutoff).all()
+    assigned = 0
+    unassigned = 0
+    for t in lead_rows:
+        assignee = getattr(t, 'assigned_to', None)
+        if assignee:
+            assigned += 1
+        else:
+            unassigned += 1
+
+    return jsonify({
+        'minutes': minutes,
+        'active_sessions': active_sessions,
+        'llm': {
+            'total': total_llm,
+            'pending_review': pending,
+            'converted_to_faq': converted,
+            'rejected': rejected,
+        },
+        'tickets': {
+            'municipio': mt_total,
+            'pyme': pt_total,
+            'total': mt_total + pt_total,
+            'assigned': assigned,
+            'unassigned': unassigned,
+        },
+    })
+
+
+@super_admin_bp.route('/encuestas/overview', methods=['GET'])
+@token_requerido
+@super_admin_required
+def super_admin_surveys_overview(current_user):
+    since_days = max(1, min(int(request.args.get('since_days', 30) or 30), 365))
+    cutoff = datetime.now(timezone.utc) - timedelta(days=since_days)
+
+    encuestas = EncEncuesta.query.filter(EncEncuesta.updated_at >= cutoff).all()
+    by_tenant = {}
+    total_responses = 0
+    for enc in encuestas:
+        count_resp = EncRespuesta.query.filter_by(encuesta_id=enc.id).count()
+        total_responses += count_resp
+        key = str(enc.tenant_id)
+        if key not in by_tenant:
+            by_tenant[key] = {'tenant_id': enc.tenant_id, 'surveys': 0, 'responses': 0, 'live_votings': 0}
+        by_tenant[key]['surveys'] += 1
+        by_tenant[key]['responses'] += count_resp
+        if enc.es_votacion_envivo:
+            by_tenant[key]['live_votings'] += 1
+
+    return jsonify({
+        'since_days': since_days,
+        'total_surveys': len(encuestas),
+        'total_responses': total_responses,
+        'by_tenant': list(by_tenant.values()),
+    })
 
 @super_admin_bp.route('/analytics/heatmap-categories-zones', methods=['GET'])
 @token_requerido

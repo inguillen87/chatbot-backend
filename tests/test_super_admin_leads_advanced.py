@@ -1,7 +1,7 @@
 import jwt
 
 from app import db
-from models import MunicipioTicket, User
+from models import ChatSessionContext, EncEncuesta, EncRespuesta, LlmInteractionLog, MunicipioTicket, TenantProfile, User
 
 
 def _sa_headers(app, user):
@@ -119,3 +119,42 @@ def test_super_admin_heatmap_categories_zones(client, app):
     assert isinstance(body['top_categories'], list)
     assert isinstance(body['top_zones'], list)
     assert isinstance(body['heatmap_points'], list)
+
+
+
+def test_super_admin_realtime_ai_and_surveys_overview(client, app):
+    sa = User(email="sa-rt@test.com", name="SA RT", rol="super_admin", tipo_chat="admin")
+    sa.set_password("pass")
+    db.session.add(sa)
+
+    tenant_owner = User(email="owner-surv@test.com", name="Owner Surv", rol="admin", tipo_chat="pyme")
+    tenant_owner.set_password("pass")
+    db.session.add(tenant_owner)
+    db.session.commit()
+
+    tenant = TenantProfile(slug="tenant-surv", nombre="Tenant Surv", tipo="pyme", pyme_id=tenant_owner.id)
+    db.session.add(tenant)
+    db.session.commit()
+
+    db.session.add(MunicipioTicket(tenant_id=tenant.id, pregunta="R1", asunto="A1", estado="nuevo"))
+    enc = EncEncuesta(tenant_id=tenant.id, slug="enc-rt", titulo="Encuesta RT", estado="publicada", tipo="opinion", es_votacion_envivo=True)
+    db.session.add(enc)
+    db.session.commit()
+
+    db.session.add(EncRespuesta(encuesta_id=enc.id, tenant_id=tenant.id, canal="web"))
+    db.session.add(ChatSessionContext(chat_session_id="session-rt-1", context_data={}))
+    db.session.commit()
+    db.session.add(LlmInteractionLog(chat_session_id="session-rt-1", user_query="hola", status="pending_review"))
+    db.session.commit()
+
+    rt_resp = client.get('/api/admin/analytics/realtime-ai?minutes=120', headers=_sa_headers(app, sa))
+    assert rt_resp.status_code == 200
+    rt_body = rt_resp.get_json()
+    assert 'llm' in rt_body
+    assert 'tickets' in rt_body
+
+    surv_resp = client.get('/api/admin/encuestas/overview?since_days=60', headers=_sa_headers(app, sa))
+    assert surv_resp.status_code == 200
+    surv_body = surv_resp.get_json()
+    assert surv_body['total_surveys'] >= 1
+    assert surv_body['total_responses'] >= 1

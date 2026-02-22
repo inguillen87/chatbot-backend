@@ -18,6 +18,8 @@ from models import (
     PymePedido,
     MunicipioTicket,
     PymeTicket,
+    EncEncuesta,
+    EncRespuesta,
 )
 from routes.catalogo import _formatear_producto
 from routes.carrito import _product_query_for_tenant
@@ -701,6 +703,19 @@ def _set_employee_scope(emp: User, *, categorias: list[str], zonas: list[str], p
     }
     emp.accesibilidad = data
 
+
+def _scope_match_score(*, categoria: str, zona: str, scope: dict) -> int:
+    score = 0
+    cats = [str(c).strip().lower() for c in (scope.get('categorias') or []) if str(c).strip()]
+    zones = [str(z).strip().lower() for z in (scope.get('zonas') or []) if str(z).strip()]
+    if categoria and categoria in cats:
+        score += 50
+    if zona and zona in zones:
+        score += 40
+    if not cats and not zones:
+        score += 10
+    return score
+
 # --- Employee Management ---
 
 @admin_tenant_bp.route('/api/admin/employees', methods=['POST'])
@@ -883,15 +898,7 @@ def suggest_assignee(current_user, slug):
     ranked = []
     for emp in employees:
         scope = _employee_scope(emp)
-        cats = [c.lower() for c in scope.get('categorias', [])]
-        zones = [z.lower() for z in scope.get('zonas', [])]
-        score = 0
-        if categoria and categoria in cats:
-            score += 50
-        if zona and zona in zones:
-            score += 40
-        if not cats and not zones:
-            score += 10
+        score = _scope_match_score(categoria=categoria, zona=zona, scope=scope)
         if score <= 0:
             continue
         ranked.append({
@@ -904,6 +911,111 @@ def suggest_assignee(current_user, slug):
 
     ranked.sort(key=lambda r: r['score'], reverse=True)
     return jsonify({'ok': True, 'suggestions': ranked[:10]})
+
+
+
+@admin_tenant_bp.route('/api/admin/tenants/<slug>/tickets/<ticket_type>/<int:ticket_id>/auto-assign', methods=['POST'])
+@token_requerido
+@require_tenant
+def auto_assign_ticket(current_user, slug, ticket_type: str, ticket_id: int):
+    tenant = _resolve_admin_tenant(current_user, slug)
+    if not tenant:
+        return jsonify({'error': 'Tenant not found'}), 404
+    if not _is_authorized_for_tenant(current_user, tenant):
+        return jsonify({'error': 'Unauthorized'}), 403
+
+    ticket = MunicipioTicket.query.get(ticket_id) if ticket_type == 'municipio' else PymeTicket.query.get(ticket_id) if ticket_type == 'pyme' else None
+    if not ticket or not _ticket_belongs_to_tenant(ticket, tenant):
+        return jsonify({'error': 'Ticket no encontrado'}), 404
+
+    categoria = str(getattr(ticket, 'categoria', None) or '').strip().lower()
+    zona = str(getattr(ticket, 'distrito', None) or getattr(ticket, 'direccion', None) or '').strip().lower()
+
+    employees = User.query.filter_by(tenant_id=tenant.id, es_empleado=True).all()
+    best = None
+    best_score = -1
+    for emp in employees:
+        scope = _employee_scope(emp)
+        score = _scope_match_score(categoria=categoria, zona=zona, scope=scope)
+        if score > best_score:
+            best_score = score
+            best = (emp, scope)
+
+    if not best or best_score <= 0:
+        return jsonify({'ok': False, 'assigned': False, 'reason': 'no_match'}), 200
+
+    emp, scope = best
+    if hasattr(ticket, 'assigned_to'):
+        ticket.assigned_to = emp.id
+
+    details = _ticket_details(ticket)
+    timeline = details.get('lead_timeline') if isinstance(details.get('lead_timeline'), list) else []
+    timeline.append({
+        'at': datetime.now(timezone.utc).isoformat(),
+        'by_user_id': current_user.id,
+        'event': 'auto_assign_employee_scope',
+        'employee_id': emp.id,
+        'employee_name': emp.name,
+        'score': best_score,
+        'categoria': categoria or None,
+        'zona': zona or None,
+    })
+    details['lead_timeline'] = timeline[-100:]
+    _save_ticket_details(ticket, details)
+    if hasattr(ticket, 'ultima_actividad'):
+        ticket.ultima_actividad = datetime.now(timezone.utc)
+    db.session.commit()
+
+    return jsonify({
+        'ok': True,
+        'assigned': True,
+        'ticket_id': ticket.id,
+        'ticket_type': ticket_type,
+        'employee': {'id': emp.id, 'name': emp.name, 'email': emp.email},
+        'score': best_score,
+        'scope': scope,
+    })
+
+
+@admin_tenant_bp.route('/api/admin/tenants/<slug>/encuestas/overview', methods=['GET'])
+@token_requerido
+@require_tenant
+def tenant_surveys_overview(current_user, slug):
+    tenant = _resolve_admin_tenant(current_user, slug)
+    if not tenant:
+        return jsonify({'error': 'Tenant not found'}), 404
+    if not _is_authorized_for_tenant(current_user, tenant):
+        return jsonify({'error': 'Unauthorized'}), 403
+
+    limit = max(1, min(int(request.args.get('limit', 50) or 50), 100))
+    rows = EncEncuesta.query.filter_by(tenant_id=tenant.id).order_by(EncEncuesta.updated_at.desc()).limit(limit).all()
+
+    items = []
+    total_responses = 0
+    for encuesta in rows:
+        responses_count = EncRespuesta.query.filter_by(encuesta_id=encuesta.id).count()
+        total_responses += responses_count
+        items.append({
+            'id': encuesta.id,
+            'slug': encuesta.slug,
+            'titulo': encuesta.titulo,
+            'estado': encuesta.estado,
+            'tipo': encuesta.tipo,
+            'es_votacion_envivo': bool(encuesta.es_votacion_envivo),
+            'mostrar_resultados_envivo': bool(encuesta.mostrar_resultados_envivo),
+            'respuestas': responses_count,
+            'inicio_at': encuesta.inicio_at.isoformat() if encuesta.inicio_at else None,
+            'fin_at': encuesta.fin_at.isoformat() if encuesta.fin_at else None,
+            'updated_at': encuesta.updated_at.isoformat() if encuesta.updated_at else None,
+        })
+
+    return jsonify({
+        'tenant_id': tenant.id,
+        'tenant_slug': tenant.slug,
+        'total_surveys': len(items),
+        'total_responses': total_responses,
+        'items': items,
+    })
 
 @admin_tenant_bp.route('/api/admin/employees', methods=['GET'])
 @token_requerido

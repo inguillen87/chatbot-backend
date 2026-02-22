@@ -216,3 +216,21 @@ Devuelve:
 ### UX FE recomendada
 - Dashboard CEO: mapa con layer heatmap + filtros por categoría/zona/tipo.
 - Cards laterales: top categorías y top zonas (click para filtrar mapa).
+
+## Paquete incremental FE (delegación, encuestas y realtime)
+
+### Nuevos endpoints backend disponibles
+- `POST /api/admin/tenants/:slug/tickets/:ticket_type/:ticket_id/auto-assign`
+  - Autoasigna empleado según scope (`categorias` + `zonas`) y devuelve `employee`, `score`, `scope`.
+- `GET /api/admin/tenants/:slug/encuestas/overview`
+  - Resumen de encuestas por tenant para tab operativo (cantidad + respuestas).
+- `GET /api/admin/encuestas/overview`
+  - Vista global CEO/superadmin con breakdown por tenant.
+- `GET /api/admin/analytics/realtime-ai?minutes=60`
+  - KPIs operativos de tiempo real: sesiones activas, estado LLM, tickets y cobertura de asignación.
+
+### Tareas FE sugeridas
+1. En detalle de ticket/reclamo/pedido agregar botón **"Autoasignar empleado"**.
+2. En panel tenant agregar sección **Encuestas** con lista resumida y CTA a detalle.
+3. En panel superadmin agregar widgets de **Realtime IA** (cards + donut assigned/unassigned).
+4. En panel superadmin agregar tabla **Encuestas por tenant** con orden por respuestas.
