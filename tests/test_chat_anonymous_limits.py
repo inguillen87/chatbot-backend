@@ -53,6 +53,17 @@ def test_should_enforce_owner_plan_limit_skips_public_widget_entity_token_flow()
     assert enforce is False
 
 
+def test_should_enforce_owner_plan_limit_skips_public_widget_even_without_entity_token():
+    enforce = _should_enforce_owner_plan_limit(
+        demo_flow_active=False,
+        is_init_request=False,
+        is_public_landing=True,
+        is_anonymous=True,
+        has_entity_token=False,
+    )
+    assert enforce is False
+
+
 def test_should_enforce_owner_plan_limit_keeps_regular_flow_guarded():
     enforce = _should_enforce_owner_plan_limit(
         demo_flow_active=False,
