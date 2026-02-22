@@ -5,6 +5,7 @@ from models import Conversacion
 from routes.chat import (
     _anonymous_message_count,
     _extract_entity_token_hint,
+    _extract_text_value,
     _is_public_landing_request,
     _should_enforce_owner_plan_limit,
 )
@@ -104,3 +105,14 @@ def test_is_public_landing_request_accepts_referer_fallback(app):
 def test_is_public_landing_request_excludes_app_subdomain(app):
     with app.test_request_context('/api/ask/municipio', headers={'Origin': 'https://app.chatboc.ar'}):
         assert _is_public_landing_request() is False
+
+
+def test_extract_text_value_supports_string_and_dict():
+    assert _extract_text_value(" hola ") == "hola"
+    assert _extract_text_value({"text": "  mundo  "}) == "mundo"
+    assert _extract_text_value({"value": "ok"}) == "ok"
+
+
+def test_extract_text_value_returns_empty_for_unknown_payload():
+    assert _extract_text_value(None) == ""
+    assert _extract_text_value({"foo": "bar"}) == ""

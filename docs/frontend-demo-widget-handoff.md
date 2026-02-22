@@ -50,3 +50,16 @@ Registrar eventos:
 - Elegir rubro => arranca demo específica (no municipio genérico).
 - No aparece 403 en primeros mensajes de demo pública.
 - Si refresca página, conserva sesión y estado de demo.
+
+
+### 6) Flujo de captación de lead (nuevo)
+Cuando usuario pulse botón `open_demo_form`:
+- enviar `action_id: "open_demo_form"`.
+- backend responde `fuente: "demo_lead_capture"` y `pedir_info` en secuencia: `nombre -> telefono -> email`.
+- UI debe renderizar input libre + botones sugeridos.
+- al finalizar, mostrar código de seguimiento (`#<nro_ticket>`) al usuario.
+
+### 7) Mapeo de botones críticos
+- `open_demo_form`: inicia captura de lead prospecto.
+- `demo_menu:home`: vuelve a acciones de demo.
+- `demo_menu:back`: vuelve a selector de rubros.
