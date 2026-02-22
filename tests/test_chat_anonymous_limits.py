@@ -2,7 +2,12 @@ from datetime import datetime, timedelta
 
 from app import db
 from models import Conversacion
-from routes.chat import _anonymous_message_count, _extract_entity_token_hint, _should_enforce_owner_plan_limit
+from routes.chat import (
+    _anonymous_message_count,
+    _extract_entity_token_hint,
+    _is_public_landing_request,
+    _should_enforce_owner_plan_limit,
+)
 
 
 def test_anonymous_message_count_excludes_init_payload(client):
@@ -84,3 +89,18 @@ def test_extract_entity_token_hint_ignores_jwt_bearer(app):
     fake_jwt = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.payload.signature'
     with app.test_request_context('/api/ask/municipio', headers={'Authorization': f'Bearer {fake_jwt}'}):
         assert _extract_entity_token_hint() is None
+
+
+def test_is_public_landing_request_accepts_origin_header(app):
+    with app.test_request_context('/api/ask/municipio', headers={'Origin': 'https://www.chatboc.ar'}):
+        assert _is_public_landing_request() is True
+
+
+def test_is_public_landing_request_accepts_referer_fallback(app):
+    with app.test_request_context('/api/ask/municipio', headers={'Referer': 'https://www.chatboc.ar/'}):
+        assert _is_public_landing_request() is True
+
+
+def test_is_public_landing_request_excludes_app_subdomain(app):
+    with app.test_request_context('/api/ask/municipio', headers={'Origin': 'https://app.chatboc.ar'}):
+        assert _is_public_landing_request() is False

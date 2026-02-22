@@ -137,6 +137,14 @@ def _should_enforce_owner_plan_limit(*, demo_flow_active: bool, is_init_request:
 
 
 
+def _is_public_landing_request() -> bool:
+    """Return True when request comes from public marketing site."""
+
+    origin = (request.headers.get("Origin") or "").lower()
+    referer = (request.headers.get("Referer") or "").lower()
+    landing_source = origin or referer
+    return "chatboc.ar" in landing_source and "app.chatboc.ar" not in landing_source
+
 
 def _extract_entity_token_hint() -> str | None:
     """Best-effort extraction of static entity/widget token from request.
@@ -1243,6 +1251,7 @@ def _procesar_chat(
             return jsonify({"error": {"code": 401, "message": "No se pudo identificar la sesión anónima."}}), 401 # NEW FORMAT
 
         is_init_request = _is_init_payload(original_user_payload)
+        message_count_this_session = 0
 
         if is_anonymous:
             # Lógica para usuarios anónimos
@@ -1349,8 +1358,7 @@ def _procesar_chat(
 
         # Enforce Demo Flow for Public Origin or Missing Auth
         # If we are on the public site and don't have a valid user context, force the demo selector
-        origin = request.headers.get("Origin", "").lower()
-        is_public_landing = "chatboc.ar" in origin and "app.chatboc.ar" not in origin
+        is_public_landing = _is_public_landing_request()
 
         # If on public landing and no explicit owner (or leaked owner context from cookie that we stripped),
         # force tenant hint to generic so demo flow triggers.
@@ -1381,7 +1389,7 @@ def _procesar_chat(
             is_public_landing
             and is_anonymous
             and not demo_session_activa
-            and is_init_request
+            and (is_init_request or message_count_this_session == 0)
         )
 
         if is_municipal_request and not force_demo_selector_flow and isinstance(contexto_chat, dict):
