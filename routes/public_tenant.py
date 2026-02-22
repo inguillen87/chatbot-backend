@@ -317,8 +317,12 @@ def public_live_chat_schedule(slug):
     # Checking source code of services/live_chat_schedule.py would be ideal, but for the fix:
     try:
         # Assuming it returns a dict
-        status = build_live_chat_status()
-        # If we need tenant specific, we'd add logic here.
+        schedule_cfg = None
+        if isinstance(tenant.configuracion, dict):
+            schedule_cfg = tenant.configuracion.get("live_chat_schedule")
+        status = build_live_chat_status(schedule_override=schedule_cfg if isinstance(schedule_cfg, dict) else None)
+        status["tenant_slug"] = tenant.slug
+        status["source"] = "tenant_config" if isinstance(schedule_cfg, dict) else "global_config"
         return _add_cors_headers(jsonify(status))
     except Exception as e:
         current_app.logger.error(f"Error getting schedule: {e}")

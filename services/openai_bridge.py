@@ -131,6 +131,16 @@ def llamar_openai(app, mensaje_usuario: str, usuario: dict, historial: list, cha
         # Ensure the response has the keys our application expects
         parsed_response.setdefault('message_body', parsed_response.get('respuesta_usuario', ''))
         parsed_response.setdefault('accion_backend', 'responder_directamente')
+        parsed_response.setdefault('pedir_info', None)
+        if not isinstance(parsed_response.get('datos_estructura'), dict):
+            parsed_response['datos_estructura'] = {}
+        if usuario and isinstance(usuario, dict):
+            tipo_entidad = usuario.get('tipo_entidad')
+            if tipo_entidad in {'pyme', 'municipio'}:
+                parsed_response['datos_estructura'].setdefault('target', tipo_entidad)
+        botones = parsed_response.get('botones')
+        if not isinstance(botones, list):
+            parsed_response['botones'] = []
 
         return parsed_response, {"usage": usage_dict, "prompt_tokens_estimate": total_prompt_tokens}
 

@@ -1183,7 +1183,9 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
         )
 
         # Envío de adjuntos por WhatsApp si aplica
-        if tipo == "municipio" and archivos_adjuntados_db and resultados_notif.get("whatsapp"):
+        if archivos_adjuntados_db and resultados_notif.get("whatsapp") and (
+            tipo == "municipio" or current_app.config.get("ENABLE_PYME_WHATSAPP_CHAT", True)
+        ):
             try:
                 from services.email_service import enviar_whatsapp_ticket_novedad
 
