@@ -30,6 +30,7 @@ from services.pymes import tiene_archivo_catalogo
 from services.qdrant_service import index_catalog_item
 from services.tenant_factory import create_tenant_from_template, assign_number_to_tenant
 from services.tenant_resolver import apply_tenant_alias
+from services.live_chat_schedule import build_live_chat_status, build_schedule_from_config
 
 admin_tenant_bp = Blueprint('admin_tenant_bp', __name__)
 
@@ -193,6 +194,53 @@ def _resolve_admin_tenant(current_user: User, slug: str) -> TenantProfile | None
         return tenant_from_user
 
     return tenant
+
+
+
+@admin_tenant_bp.route('/api/admin/tenants/<slug>/live-chat/schedule', methods=['GET', 'PUT'])
+@token_requerido
+@require_tenant
+def admin_tenant_live_chat_schedule(current_user, slug):
+    tenant = _resolve_admin_tenant(current_user, slug)
+    if not tenant:
+        return jsonify({'error': 'Tenant not found'}), 404
+    if not _is_authorized_for_tenant(current_user, tenant):
+        return jsonify({'error': 'Unauthorized'}), 403
+
+    cfg = tenant.configuracion if isinstance(tenant.configuracion, dict) else {}
+    current_schedule = cfg.get('live_chat_schedule') if isinstance(cfg.get('live_chat_schedule'), dict) else {}
+
+    if request.method == 'GET':
+        status = build_live_chat_status(schedule_override=current_schedule if current_schedule else None)
+        status['tenant_slug'] = tenant.slug
+        status['source'] = 'tenant_config' if current_schedule else 'global_config'
+        return jsonify(status)
+
+    payload = request.get_json(silent=True) or {}
+    candidate = {
+        'enabled': bool(payload.get('enabled', True)),
+        'days': payload.get('days', current_schedule.get('days', 'mon-fri')),
+        'start_time': payload.get('start_time', current_schedule.get('start_time', '09:00')),
+        'end_time': payload.get('end_time', current_schedule.get('end_time', '13:00')),
+        'timezone': payload.get('timezone', current_schedule.get('timezone', 'America/Argentina/Buenos_Aires')),
+    }
+
+    # Validate candidate schedule by building a normalized schedule object.
+    schedule_obj = build_schedule_from_config(candidate)
+    cfg['live_chat_schedule'] = {
+        'enabled': schedule_obj.enabled,
+        'days': sorted(list(schedule_obj.days)),
+        'start_time': schedule_obj.start_time.strftime('%H:%M'),
+        'end_time': schedule_obj.end_time.strftime('%H:%M'),
+        'timezone': getattr(schedule_obj.timezone, 'key', str(schedule_obj.timezone)),
+    }
+    tenant.configuracion = cfg
+    db.session.commit()
+
+    status = build_live_chat_status(schedule_override=cfg['live_chat_schedule'])
+    status['tenant_slug'] = tenant.slug
+    status['source'] = 'tenant_config'
+    return jsonify(status)
 
 
 @admin_tenant_bp.route('/api/admin/tenants/<slug>/catalog', methods=['OPTIONS'])

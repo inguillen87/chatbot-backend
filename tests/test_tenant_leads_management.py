@@ -180,3 +180,41 @@ def test_tenant_suggest_and_workload_balance(client, app):
     items = wl_resp.get_json()["items"]
     assert items[0]["employee_id"] == emp_heavy.id
     assert items[0]["workload_open_tickets"] >= 3
+
+
+
+def test_tenant_live_chat_schedule_config_and_public_status(client, app):
+    owner = User(email="owner-schedule@test.com", name="Owner Schedule", rol="admin", tipo_chat="pyme")
+    owner.set_password("pass")
+    db.session.add(owner)
+    db.session.commit()
+
+    tenant = TenantProfile(slug="tenant-schedule", nombre="Tenant Schedule", tipo="pyme", pyme_id=owner.id)
+    db.session.add(tenant)
+    db.session.commit()
+
+    put_resp = client.put(
+        f"/api/admin/tenants/{tenant.slug}/live-chat/schedule",
+        json={
+            "enabled": True,
+            "days": [0, 1, 2, 3, 4, 5],
+            "start_time": "08:00",
+            "end_time": "20:00",
+            "timezone": "America/Argentina/Buenos_Aires",
+        },
+        headers=_headers(app, owner),
+    )
+    assert put_resp.status_code == 200
+    assert put_resp.get_json()["source"] == "tenant_config"
+
+    get_resp = client.get(f"/api/admin/tenants/{tenant.slug}/live-chat/schedule", headers=_headers(app, owner))
+    assert get_resp.status_code == 200
+    body = get_resp.get_json()
+    assert body["start_time"] == "08:00"
+    assert body["end_time"] == "20:00"
+
+    public_resp = client.get(f"/api/{tenant.slug}/live-chat/schedule")
+    assert public_resp.status_code == 200
+    public_body = public_resp.get_json()
+    assert public_body["tenant_slug"] == tenant.slug
+    assert public_body["source"] == "tenant_config"

@@ -252,3 +252,25 @@ Devuelve:
 2. Mostrar columna **Carga abierta** en listado de empleados.
 3. Crear dashboard CEO **Tenant Health** (tabla ordenable + semáforo por score).
 4. En kanban de tenant mostrar badge de carga del empleado al asignar tickets.
+
+## Paquete FE omnicanal (agente humano + horarios configurables)
+
+### Endpoints backend nuevos/actualizados
+- `GET|PUT /api/admin/tenants/:slug/live-chat/schedule`
+  - Permite configurar horario de atención humana por tenant.
+- `GET /api/:slug/live-chat/schedule`
+  - Expone estado público de disponibilidad (`available`, `description`, `timezone`) para widget.
+- `GET /api/live-chat/schedule?tenant_slug=:slug`
+  - Versión API general con override tenant-aware.
+
+### Contrato sugerido FE
+- Mostrar estado de disponibilidad en widget:
+  - `available=true`: badge **"Asesores en línea"**.
+  - `available=false`: badge **"Te respondemos en horario"** + descripción.
+- En botón **Hablar con agente**:
+  - si no disponible, conservar flujo de ticket y mostrar horario activo.
+- En panel admin ticket:
+  - mantener suscripción socket `new_chat_message` para texto + `attachmentInfo`.
+  - renderizar audio/imagen/pdf según `attachmentInfo.mimeType`.
+- Notificaciones campanita:
+  - usar evento socket de comentario para incrementar contador por ticket.

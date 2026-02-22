@@ -1354,7 +1354,22 @@ class HumanHandler(BaseHandler):
         # telefono_pyme = getattr(pyme_user_obj, "telefono_contacto", "nuestro teléfono principal")
         # email_pyme = getattr(pyme_user_obj, "email_contacto", "nuestro email de soporte")
 
-        body = f"Entendido. Para hablar con un representante de {nombre_pyme}, por favor contáctanos directamente."
+        schedule_override = None
+        tenant_cfg = self.context.get("tenant_config") if isinstance(self.context.get("tenant_config"), dict) else {}
+        if isinstance(tenant_cfg.get("live_chat_schedule"), dict):
+            schedule_override = tenant_cfg.get("live_chat_schedule")
+        live_status = build_live_chat_status(schedule_override=schedule_override)
+
+        if live_status.get("available"):
+            body = (
+                f"Perfecto. Te derivo con un asesor humano de {nombre_pyme}. "
+                f"Estamos en línea ahora ({live_status.get('description')})."
+            )
+        else:
+            body = (
+                f"Perfecto. Registré tu solicitud para hablar con un asesor de {nombre_pyme}. "
+                f"Horario de atención: {live_status.get('description')}."
+            )
         # Idealmente, aquí se crearía un ticket o se notificaría a alguien.
         # Por ahora, solo damos un mensaje.
         # Crear ticket si servicio_tickets está disponible
