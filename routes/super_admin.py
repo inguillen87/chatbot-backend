@@ -24,6 +24,7 @@ from services.user_service import assign_whatsapp_numbers
 import jwt
 import re
 import unicodedata
+import json
 
 super_admin_bp = Blueprint('super_admin', __name__, url_prefix='/api/admin')
 
@@ -265,7 +266,8 @@ def _critical_readiness_gaps(readiness: dict) -> list[str]:
 
 
 _LEAD_URGENT_KEYWORDS = {
-    "urgente", "emergencia", "incendio", "explosion", "accidente", "fuga", "gas", "inseguridad"
+    "urgente", "emergencia", "incendio", "explosion", "accidente", "fuga", "gas", "inseguridad",
+    "hoy", "ya", "ahora", "rápido", "rapido", "cotizacion", "presupuesto", "comprar", "demo"
 }
 
 
@@ -293,6 +295,43 @@ def _lead_relevance_score(*, open_tickets: int, latest_message: str, last_seen: 
             score += 8
 
     return int(score)
+
+
+
+
+def _lead_priority_score(*, latest_message: str, has_email: bool, has_phone: bool, open_tickets: int, last_seen: datetime | None) -> int:
+    base = _lead_relevance_score(
+        open_tickets=open_tickets,
+        latest_message=latest_message,
+        last_seen=last_seen,
+        has_contact=bool(has_email or has_phone),
+    )
+
+    completeness = 0
+    if has_email:
+        completeness += 12
+    if has_phone:
+        completeness += 18
+
+    text = str(latest_message or '').strip().lower()
+    urgency = 0
+    if any(word in text for word in _LEAD_URGENT_KEYWORDS):
+        urgency += 20
+    if any(word in text for word in ("precio", "presupuesto", "propuesta", "contratar", "plan full", "demo")):
+        urgency += 12
+
+    recency_bonus = 0
+    if last_seen:
+        now = datetime.now(timezone.utc)
+        dt = last_seen if last_seen.tzinfo else last_seen.replace(tzinfo=timezone.utc)
+        hours = max(0, (now - dt).total_seconds() / 3600)
+        if hours <= 0.5:
+            recency_bonus += 12
+        elif hours <= 2:
+            recency_bonus += 8
+
+    score = base + completeness + urgency + recency_bonus
+    return int(min(score, 100))
 
 
 def _normalize_plan_key(raw_plan: str | None) -> str:
@@ -1530,7 +1569,7 @@ def list_leads_interactions(current_user):
             'last_seen': last_seen.isoformat() if last_seen else None,
             'relevance_score': relevance,
             'sla_breached': sla_breached,
-            'lead_score': relevance + (15 if has_contact else 0),
+            'lead_score': _lead_priority_score(latest_message=latest_question, has_email=bool(profile_email), has_phone=bool(profile_phone), open_tickets=open_tickets, last_seen=last_seen),
         })
 
     items.sort(key=lambda item: ((item.get('relevance_score') or 0), item.get('last_seen') or ''), reverse=True)
@@ -1552,165 +1591,323 @@ def list_leads_interactions(current_user):
     return jsonify({'items': items, 'total': len(items), 'top_questions': top_questions})
 
 
-def _lead_pipeline_stage(ticket: MunicipioTicket | None) -> str:
-    if not ticket:
-        return "nuevo"
-    raw = (ticket.estado or "").strip().lower()
+LEAD_STAGE_ALLOWED = {"nuevo", "contactado", "calificado", "demo_agendada", "propuesta_enviada", "ganado", "perdido"}
+
+
+def _load_ticket_for_lead(ticket_type: str, ticket_id: int):
+    if ticket_type == "municipio":
+        return MunicipioTicket.query.get(ticket_id)
+    if ticket_type == "pyme":
+        return PymeTicket.query.get(ticket_id)
+    return None
+
+
+def _map_lead_stage_to_ticket_status(stage: str) -> str:
     mapping = {
         "nuevo": "nuevo",
-        "abierto": "contactado",
-        "en_proceso": "calificado",
-        "pendiente": "calificado",
-        "cerrado": "ganado",
-        "resuelto": "ganado",
-        "cancelado": "perdido",
-        "rechazado": "perdido",
-    }
-    return mapping.get(raw, "nuevo")
-
-
-@super_admin_bp.route('/leads/pipeline', methods=['GET'])
-@token_requerido
-@super_admin_required
-def leads_pipeline(current_user):
-    tenant_slug_filter = str(request.args.get('tenant_slug') or '').strip().lower()
-    since_days = max(1, min(int(request.args.get('since_days', 30) or 30), 365))
-    cutoff = datetime.utcnow() - timedelta(days=since_days)
-
-    query = MunicipioTicket.query.filter(
-        MunicipioTicket.categoria == 'lead_demo_prospecto',
-        MunicipioTicket.fecha >= cutoff,
-    )
-
-    if tenant_slug_filter:
-        query = query.join(TenantProfile, TenantProfile.id == MunicipioTicket.tenant_id).filter(
-            func.lower(TenantProfile.slug) == tenant_slug_filter
-        )
-
-    leads = query.order_by(desc(MunicipioTicket.fecha)).limit(500).all()
-
-    by_stage = {
-        "nuevo": 0,
-        "contactado": 0,
-        "calificado": 0,
-        "demo_agendada": 0,
-        "propuesta_enviada": 0,
-        "ganado": 0,
-        "perdido": 0,
-    }
-    by_tenant: dict[str, int] = {}
-    items = []
-    response_seconds = []
-
-    for lead in leads:
-        stage = _lead_pipeline_stage(lead)
-        by_stage[stage] = by_stage.get(stage, 0) + 1
-
-        tenant_slug = None
-        if lead.tenant_id:
-            tenant_obj = TenantProfile.query.get(lead.tenant_id)
-            tenant_slug = getattr(tenant_obj, 'slug', None)
-        by_tenant[tenant_slug or 'sin_tenant'] = by_tenant.get(tenant_slug or 'sin_tenant', 0) + 1
-
-        first_touch_seconds = None
-        if lead.fecha and lead.ultima_actividad:
-            diff = (lead.ultima_actividad - lead.fecha).total_seconds()
-            if diff >= 0:
-                first_touch_seconds = int(diff)
-                response_seconds.append(first_touch_seconds)
-
-        items.append({
-            "id": lead.id,
-            "nro_ticket": lead.nro_ticket,
-            "tenant_id": lead.tenant_id,
-            "tenant_slug": tenant_slug,
-            "stage": stage,
-            "estado_raw": lead.estado,
-            "nombre": lead.nombre_vecino,
-            "email": lead.email_vecino,
-            "telefono": lead.telefono_vecino,
-            "rubro_demo": lead.asunto,
-            "created_at": lead.fecha.isoformat() if lead.fecha else None,
-            "last_activity": lead.ultima_actividad.isoformat() if lead.ultima_actividad else None,
-            "first_response_seconds": first_touch_seconds,
-        })
-
-    avg_first_response_seconds = int(sum(response_seconds) / len(response_seconds)) if response_seconds else None
-    conversion_rate = 0.0
-    if leads:
-        conversion_rate = round(((by_stage.get('ganado', 0) / len(leads)) * 100), 2)
-
-    return jsonify({
-        "since_days": since_days,
-        "total": len(leads),
-        "by_stage": by_stage,
-        "by_tenant": by_tenant,
-        "conversion_rate": conversion_rate,
-        "avg_first_response_seconds": avg_first_response_seconds,
-        "items": items,
-    })
-
-
-@super_admin_bp.route('/leads/<int:ticket_id>/stage', methods=['PATCH'])
-@token_requerido
-@super_admin_required
-def update_lead_stage(current_user, ticket_id: int):
-    data = request.get_json(silent=True) or {}
-    stage = str(data.get('stage') or '').strip().lower()
-    note = str(data.get('note') or '').strip()
-
-    stage_to_estado = {
-        "nuevo": "nuevo",
-        "contactado": "abierto",
+        "contactado": "en_proceso",
         "calificado": "en_proceso",
-        "demo_agendada": "en_proceso",
+        "demo_agendada": "pendiente",
         "propuesta_enviada": "pendiente",
         "ganado": "cerrado",
         "perdido": "cancelado",
     }
+    return mapping.get(stage, "en_proceso")
 
-    if stage not in stage_to_estado:
-        return jsonify({
-            "error": "stage inválido",
-            "allowed": list(stage_to_estado.keys()),
-        }), 400
 
-    lead = MunicipioTicket.query.filter_by(id=ticket_id, categoria='lead_demo_prospecto').first()
-    if not lead:
+def _ensure_ticket_details_dict(ticket) -> dict:
+    details = ticket.detalles
+    if isinstance(details, dict):
+        return dict(details)
+    if isinstance(details, str) and details.strip():
+        try:
+            parsed = json.loads(details)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
+    return {}
+
+
+@super_admin_bp.route('/leads/<ticket_type>/<int:ticket_id>/stage', methods=['PATCH'])
+@token_requerido
+@super_admin_required
+def super_admin_update_lead_stage(current_user, ticket_type: str, ticket_id: int):
+    payload = request.get_json(silent=True) or {}
+    stage = str(payload.get('stage') or '').strip().lower()
+    note = str(payload.get('note') or '').strip()
+
+    if stage not in LEAD_STAGE_ALLOWED:
+        return jsonify({"error": "stage inválido"}), 400
+
+    ticket = _load_ticket_for_lead(ticket_type, ticket_id)
+    if not ticket:
         return jsonify({"error": "Lead no encontrado"}), 404
 
-    previous_estado = lead.estado
-    lead.estado = stage_to_estado[stage]
-    lead.ultima_actividad = datetime.utcnow()
+    details = _ensure_ticket_details_dict(ticket)
+    timeline = details.get('lead_timeline') if isinstance(details.get('lead_timeline'), list) else []
+    previous_stage = details.get('lead_stage') or ticket.estado or 'nuevo'
 
-    if note:
-        existing = (lead.detalles or '').strip()
-        ts = datetime.utcnow().isoformat()
-        log_line = f"[{ts}] stage={stage} note={note}"
-        lead.detalles = f"{existing}\n{log_line}".strip()
+    details['lead_stage'] = stage
+    timeline.append({
+        'at': datetime.now(timezone.utc).isoformat(),
+        'by_user_id': current_user.id,
+        'event': 'stage_update',
+        'from': previous_stage,
+        'to': stage,
+        'note': note or None,
+    })
+    details['lead_timeline'] = timeline[-100:]
 
-    _log_admin_action(
-        current_user.id,
-        "update_lead_stage",
-        f"lead:{lead.id}",
-        {
-            "ticket_id": lead.id,
-            "nro_ticket": lead.nro_ticket,
-            "stage": stage,
-            "previous_estado": previous_estado,
-            "new_estado": lead.estado,
-            "tenant_id": lead.tenant_id,
-            "note": note or None,
-        },
-    )
+    ticket.estado = _map_lead_stage_to_ticket_status(stage)
+    ticket.detalles = json.dumps(details, ensure_ascii=False)
+    ticket.ultima_actividad = datetime.now(timezone.utc)
 
+    _log_admin_action(current_user.id, 'lead_stage_update', f'{ticket_type}:{ticket_id}', {
+        'stage': stage,
+        'previous_stage': previous_stage,
+        'note': note or None,
+    })
     db.session.commit()
+    return jsonify({'ok': True, 'ticket_id': ticket.id, 'ticket_type': ticket_type, 'lead_stage': stage, 'ticket_status': ticket.estado})
+
+
+@super_admin_bp.route('/leads/bulk-stage', methods=['PATCH'])
+@token_requerido
+@super_admin_required
+def super_admin_bulk_stage(current_user):
+    payload = request.get_json(silent=True) or {}
+    stage = str(payload.get('stage') or '').strip().lower()
+    updates = payload.get('updates') if isinstance(payload.get('updates'), list) else []
+
+    if stage not in LEAD_STAGE_ALLOWED:
+        return jsonify({"error": "stage inválido"}), 400
+    if not updates:
+        return jsonify({"error": "updates requerido"}), 400
+
+    changed = 0
+    errors = []
+    for row in updates[:200]:
+        if not isinstance(row, dict):
+            continue
+        t_type = str(row.get('ticket_type') or '').strip().lower()
+        t_id = row.get('ticket_id')
+        note = str(row.get('note') or '').strip()
+        try:
+            t_id = int(t_id)
+        except Exception:
+            errors.append({'ticket_type': t_type, 'ticket_id': row.get('ticket_id'), 'error': 'ticket_id inválido'})
+            continue
+
+        ticket = _load_ticket_for_lead(t_type, t_id)
+        if not ticket:
+            errors.append({'ticket_type': t_type, 'ticket_id': t_id, 'error': 'no encontrado'})
+            continue
+
+        details = _ensure_ticket_details_dict(ticket)
+        timeline = details.get('lead_timeline') if isinstance(details.get('lead_timeline'), list) else []
+        prev = details.get('lead_stage') or ticket.estado or 'nuevo'
+        details['lead_stage'] = stage
+        timeline.append({
+            'at': datetime.now(timezone.utc).isoformat(),
+            'by_user_id': current_user.id,
+            'event': 'bulk_stage_update',
+            'from': prev,
+            'to': stage,
+            'note': note or None,
+        })
+        details['lead_timeline'] = timeline[-100:]
+        ticket.estado = _map_lead_stage_to_ticket_status(stage)
+        ticket.detalles = json.dumps(details, ensure_ascii=False)
+        ticket.ultima_actividad = datetime.now(timezone.utc)
+        changed += 1
+
+    _log_admin_action(current_user.id, 'lead_bulk_stage_update', 'bulk', {'stage': stage, 'changed': changed, 'errors': len(errors)})
+    db.session.commit()
+    return jsonify({'ok': True, 'changed': changed, 'errors': errors})
+
+
+@super_admin_bp.route('/leads/<ticket_type>/<int:ticket_id>/timeline', methods=['GET', 'POST'])
+@token_requerido
+@super_admin_required
+def super_admin_lead_timeline(current_user, ticket_type: str, ticket_id: int):
+    ticket = _load_ticket_for_lead(ticket_type, ticket_id)
+    if not ticket:
+        return jsonify({"error": "Lead no encontrado"}), 404
+
+    details = _ensure_ticket_details_dict(ticket)
+    timeline = details.get('lead_timeline') if isinstance(details.get('lead_timeline'), list) else []
+
+    if request.method == 'GET':
+        return jsonify({'ticket_id': ticket.id, 'ticket_type': ticket_type, 'timeline': timeline[-100:]})
+
+    payload = request.get_json(silent=True) or {}
+    note = str(payload.get('note') or '').strip()
+    if not note:
+        return jsonify({'error': 'note requerido'}), 400
+
+    timeline.append({
+        'at': datetime.now(timezone.utc).isoformat(),
+        'by_user_id': current_user.id,
+        'event': 'note',
+        'note': note[:1000],
+    })
+    details['lead_timeline'] = timeline[-100:]
+    ticket.detalles = json.dumps(details, ensure_ascii=False)
+    ticket.ultima_actividad = datetime.now(timezone.utc)
+
+    _log_admin_action(current_user.id, 'lead_note_add', f'{ticket_type}:{ticket_id}', {'note': note[:200]})
+    db.session.commit()
+    return jsonify({'ok': True, 'ticket_id': ticket.id, 'ticket_type': ticket_type, 'timeline': details['lead_timeline']})
+
+
+@super_admin_bp.route('/leads/playbooks/run', methods=['POST'])
+@token_requerido
+@super_admin_required
+def run_lead_playbooks(current_user):
+    payload = request.get_json(silent=True) or {}
+    only_sla_breached = bool(payload.get('only_sla_breached', True))
+    limit = max(1, min(int(payload.get('limit', 50) or 50), 200))
+    dry_run = bool(payload.get('dry_run', False))
+
+    now = datetime.now(timezone.utc)
+    candidates = []
+
+    m_tickets = MunicipioTicket.query.order_by(desc(MunicipioTicket.ultima_actividad)).limit(limit * 4).all()
+    p_tickets = PymeTicket.query.order_by(desc(PymeTicket.fecha)).limit(limit * 4).all()
+
+    for ticket_type, rows in (("municipio", m_tickets), ("pyme", p_tickets)):
+        for t in rows:
+            last_seen = getattr(t, 'ultima_actividad', None) or getattr(t, 'fecha', None)
+            if not last_seen:
+                continue
+            dt = last_seen if last_seen.tzinfo else last_seen.replace(tzinfo=timezone.utc)
+            age_seconds = (now - dt).total_seconds()
+            if only_sla_breached and age_seconds <= 1800:
+                continue
+
+            details = _ensure_ticket_details_dict(t)
+            stage = str(details.get('lead_stage') or t.estado or 'nuevo').lower()
+            if stage in {'ganado', 'perdido'}:
+                continue
+
+            name = getattr(t, 'nombre_vecino', None) or getattr(t, 'nombre_cliente', None) or 'Cliente'
+            phone = getattr(t, 'telefono_vecino', None) or getattr(t, 'telefono_cliente', None)
+            email = getattr(t, 'email_vecino', None) or getattr(t, 'email_cliente', None)
+            categoria = getattr(t, 'categoria', None) or 'servicio'
+
+            actions = []
+            if phone:
+                actions.append({
+                    'channel': 'whatsapp',
+                    'message': f"Hola {name}, soy del equipo comercial de Chatboc. Vimos tu interés en {categoria}. ¿Te comparto propuesta y próximos pasos?",
+                    'status': 'queued' if not dry_run else 'preview',
+                })
+            if email:
+                actions.append({
+                    'channel': 'email',
+                    'subject': 'Seguimiento de tu interés en Chatboc',
+                    'message': f"Hola {name}, gracias por tu interés en Chatboc para {categoria}. ¿Coordinamos una demo de 15 minutos?",
+                    'status': 'queued' if not dry_run else 'preview',
+                })
+
+            if not actions:
+                continue
+
+            if not dry_run:
+                timeline = details.get('lead_timeline') if isinstance(details.get('lead_timeline'), list) else []
+                timeline.append({
+                    'at': now.isoformat(),
+                    'by_user_id': current_user.id,
+                    'event': 'playbook_followup_queued',
+                    'channels': [a['channel'] for a in actions],
+                    'sla_breached': age_seconds > 1800,
+                })
+                details['lead_timeline'] = timeline[-100:]
+                t.detalles = json.dumps(details, ensure_ascii=False)
+
+            candidates.append({
+                'ticket_type': ticket_type,
+                'ticket_id': t.id,
+                'stage': stage,
+                'sla_breached': age_seconds > 1800,
+                'actions': actions,
+            })
+            if len(candidates) >= limit:
+                break
+        if len(candidates) >= limit:
+            break
+
+    if not dry_run:
+        _log_admin_action(current_user.id, 'lead_playbooks_run', 'playbooks', {
+            'count': len(candidates),
+            'only_sla_breached': only_sla_breached,
+        })
+        db.session.commit()
+
+    return jsonify({'ok': True, 'dry_run': dry_run, 'count': len(candidates), 'items': candidates})
+
+
+@super_admin_bp.route('/leads/strategic-overview', methods=['GET'])
+@token_requerido
+@super_admin_required
+def leads_strategic_overview(current_user):
+    since_days = max(1, min(int(request.args.get('since_days', 30) or 30), 365))
+    cutoff = datetime.now(timezone.utc) - timedelta(days=since_days)
+
+    mt_rows = MunicipioTicket.query.filter(MunicipioTicket.fecha >= cutoff).all()
+    pt_rows = PymeTicket.query.filter(PymeTicket.fecha >= cutoff).all()
+    all_rows = [("municipio", t) for t in mt_rows] + [("pyme", t) for t in pt_rows]
+
+    by_stage = {}
+    by_tenant = {}
+    sla_breached = 0
+
+    now = datetime.now(timezone.utc)
+    for ticket_type, t in all_rows:
+        details = _ensure_ticket_details_dict(t)
+        stage = str(details.get('lead_stage') or t.estado or 'nuevo').lower()
+        by_stage[stage] = by_stage.get(stage, 0) + 1
+
+        tenant_key = str(getattr(t, 'tenant_id', None) or 'sin_tenant')
+        if tenant_key not in by_tenant:
+            by_tenant[tenant_key] = {
+                'tenant_id': None if tenant_key == 'sin_tenant' else int(tenant_key),
+                'total': 0,
+                'won': 0,
+                'lost': 0,
+                'open': 0,
+            }
+        by_tenant[tenant_key]['total'] += 1
+        if stage == 'ganado':
+            by_tenant[tenant_key]['won'] += 1
+        elif stage == 'perdido':
+            by_tenant[tenant_key]['lost'] += 1
+        else:
+            by_tenant[tenant_key]['open'] += 1
+
+        last_seen = getattr(t, 'ultima_actividad', None) or getattr(t, 'fecha', None)
+        if last_seen:
+            dt = last_seen if last_seen.tzinfo else last_seen.replace(tzinfo=timezone.utc)
+            if (now - dt).total_seconds() > 1800 and stage not in {'ganado', 'perdido'}:
+                sla_breached += 1
+
+    total = len(all_rows)
+    won = by_stage.get('ganado', 0)
+    lost = by_stage.get('perdido', 0)
+    open_total = max(total - won - lost, 0)
+    win_rate = round((won / total) * 100, 2) if total else 0.0
+
     return jsonify({
-        "ok": True,
-        "ticket_id": lead.id,
-        "nro_ticket": lead.nro_ticket,
-        "stage": stage,
-        "estado": lead.estado,
-        "tenant_id": lead.tenant_id,
-        "updated_at": lead.ultima_actividad.isoformat() if lead.ultima_actividad else None,
+        'since_days': since_days,
+        'totals': {
+            'total_leads': total,
+            'open_leads': open_total,
+            'won': won,
+            'lost': lost,
+            'sla_breached': sla_breached,
+            'win_rate': win_rate,
+        },
+        'by_stage': by_stage,
+        'by_tenant': list(by_tenant.values()),
     })
