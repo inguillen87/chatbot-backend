@@ -2039,7 +2039,19 @@ def widget_config():
 @chat_bp.route("/live-chat/schedule", methods=["GET"])
 @chat_bp.route("/api/live-chat/schedule", methods=["GET"])
 def live_chat_schedule():
-    return jsonify(build_live_chat_status())
+    tenant_slug = str(request.args.get("tenant_slug") or request.args.get("tenant") or "").strip().lower()
+    if tenant_slug:
+        tenant = TenantProfile.query.filter_by(slug=tenant_slug).first()
+        if tenant and isinstance(tenant.configuracion, dict):
+            schedule_cfg = tenant.configuracion.get("live_chat_schedule")
+            if isinstance(schedule_cfg, dict):
+                status = build_live_chat_status(schedule_override=schedule_cfg)
+                status["tenant_slug"] = tenant.slug
+                status["source"] = "tenant_config"
+                return jsonify(status)
+    status = build_live_chat_status()
+    status["source"] = "global_config"
+    return jsonify(status)
 
 @chat_bp.route("/config/google-maps-key", methods=["GET"])
 def google_maps_key():

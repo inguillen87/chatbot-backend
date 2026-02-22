@@ -155,6 +155,21 @@ def handle_voice_interaction(user_speech, user_phone, bot_phone, call_sid):
         # 4. Process Response for Voice
         message_body = response_dict.get('message_body', "No tengo respuesta.")
 
+        # Universal slot-based confirmation before execution-sensitive actions
+        accion_backend = response_dict.get("accion_backend")
+        datos = response_dict.get("datos_estructura") if isinstance(response_dict.get("datos_estructura"), dict) else {}
+        needs_confirmation = accion_backend in {"crear_reclamo", "iniciar_reclamo", "crear_pedido", "finalizar_pedido_pyme"}
+        if needs_confirmation and not bool(datos.get("confirmado_por_usuario")):
+            categoria = datos.get("categoria") or "sin categoría"
+            ubicacion = datos.get("ubicacion") or datos.get("direccion") or "sin ubicación"
+            telefono = datos.get("telefono") or "sin teléfono"
+            message_body = (
+                f"Confirmo los datos: categoría {categoria}, ubicación {ubicacion}, teléfono {telefono}. "
+                "¿Está correcto para continuar?"
+            )
+            response_dict["pedir_info"] = "confirmacion"
+
+
         # --- Detect URLs to send via Message (Out-of-band delivery) ---
         # Voice cannot convey URLs effectively. If the response contains links (e.g. payment, ticket),
         # we send them via WhatsApp/SMS and notify the user.

@@ -229,7 +229,9 @@ def _support_channels_payload(tenant: TenantProfile, cfg: dict) -> dict:
 
     return {
         "live_chat": {
-            **build_live_chat_status(),
+            **build_live_chat_status(
+                schedule_override=(cfg.get("live_chat_schedule") if isinstance(cfg.get("live_chat_schedule"), dict) else None)
+            ),
             "channel": "ticket_chat",
             "realtime": True,
             "media": {"text": True, "image": True, "audio": True, "file": True},
