@@ -716,6 +716,26 @@ def _scope_match_score(*, categoria: str, zona: str, scope: dict) -> int:
         score += 10
     return score
 
+
+def _employee_open_workload(tenant_id: int, employee_id: int) -> int:
+    active_states = {'nuevo', 'pendiente', 'en_proceso'}
+    m_count = MunicipioTicket.query.filter(
+        MunicipioTicket.tenant_id == tenant_id,
+        MunicipioTicket.asignado_a_id == employee_id,
+        MunicipioTicket.estado.in_(list(active_states)),
+    ).count()
+    p_count = PymeTicket.query.filter(
+        PymeTicket.tenant_id == tenant_id,
+        PymeTicket.asignado_a_id == employee_id,
+        PymeTicket.estado.in_(list(active_states)),
+    ).count()
+    return int(m_count + p_count)
+
+
+def _scope_has_permission(scope: dict, permission: str) -> bool:
+    permisos = [str(p).strip().lower() for p in (scope.get('permisos') or []) if str(p).strip()]
+    return permission.lower() in permisos
+
 # --- Employee Management ---
 
 @admin_tenant_bp.route('/api/admin/employees', methods=['POST'])
@@ -894,22 +914,29 @@ def suggest_assignee(current_user, slug):
     categoria = str(payload.get('categoria') or '').strip().lower()
     zona = str(payload.get('zona') or payload.get('distrito') or '').strip().lower()
 
+    required_permission = str(payload.get('required_permission') or payload.get('permiso') or '').strip().lower()
     employees = User.query.filter_by(tenant_id=tenant.id, es_empleado=True).all()
     ranked = []
     for emp in employees:
         scope = _employee_scope(emp)
-        score = _scope_match_score(categoria=categoria, zona=zona, scope=scope)
-        if score <= 0:
+        if required_permission and not _scope_has_permission(scope, required_permission):
             continue
+        base_score = _scope_match_score(categoria=categoria, zona=zona, scope=scope)
+        if base_score <= 0:
+            continue
+        workload = _employee_open_workload(tenant.id, emp.id)
+        final_score = max(base_score - min(workload * 5, 30), 1)
         ranked.append({
             'employee_id': emp.id,
             'name': emp.name,
             'email': emp.email,
-            'score': score,
+            'score': final_score,
+            'base_score': base_score,
+            'workload_open_tickets': workload,
             'scope': scope,
         })
 
-    ranked.sort(key=lambda r: r['score'], reverse=True)
+    ranked.sort(key=lambda r: (r['score'], -r['workload_open_tickets']), reverse=True)
     return jsonify({'ok': True, 'suggestions': ranked[:10]})
 
 
@@ -934,19 +961,27 @@ def auto_assign_ticket(current_user, slug, ticket_type: str, ticket_id: int):
     employees = User.query.filter_by(tenant_id=tenant.id, es_empleado=True).all()
     best = None
     best_score = -1
+    payload = request.get_json(silent=True) or {}
+    required_permission = str(payload.get('required_permission') or '').strip().lower()
+
     for emp in employees:
         scope = _employee_scope(emp)
-        score = _scope_match_score(categoria=categoria, zona=zona, scope=scope)
+        if required_permission and not _scope_has_permission(scope, required_permission):
+            continue
+        base_score = _scope_match_score(categoria=categoria, zona=zona, scope=scope)
+        workload = _employee_open_workload(tenant.id, emp.id)
+        score = max(base_score - min(workload * 5, 30), 0)
         if score > best_score:
             best_score = score
-            best = (emp, scope)
+            best = (emp, scope, workload)
 
     if not best or best_score <= 0:
         return jsonify({'ok': False, 'assigned': False, 'reason': 'no_match'}), 200
 
-    emp, scope = best
-    if hasattr(ticket, 'assigned_to'):
-        ticket.assigned_to = emp.id
+    emp, scope, workload = best
+    if hasattr(ticket, 'asignado_a_id'):
+        ticket.asignado_a_id = emp.id
+        ticket.asignado_en = datetime.now(timezone.utc)
 
     details = _ticket_details(ticket)
     timeline = details.get('lead_timeline') if isinstance(details.get('lead_timeline'), list) else []
@@ -957,6 +992,7 @@ def auto_assign_ticket(current_user, slug, ticket_type: str, ticket_id: int):
         'employee_id': emp.id,
         'employee_name': emp.name,
         'score': best_score,
+        'workload_open_tickets': workload,
         'categoria': categoria or None,
         'zona': zona or None,
     })
@@ -973,6 +1009,7 @@ def auto_assign_ticket(current_user, slug, ticket_type: str, ticket_id: int):
         'ticket_type': ticket_type,
         'employee': {'id': emp.id, 'name': emp.name, 'email': emp.email},
         'score': best_score,
+        'workload_open_tickets': workload,
         'scope': scope,
     })
 
@@ -1016,6 +1053,33 @@ def tenant_surveys_overview(current_user, slug):
         'total_responses': total_responses,
         'items': items,
     })
+
+
+
+@admin_tenant_bp.route('/api/admin/tenants/<slug>/employees/workload', methods=['GET'])
+@token_requerido
+@require_tenant
+def tenant_employees_workload(current_user, slug):
+    tenant = _resolve_admin_tenant(current_user, slug)
+    if not tenant:
+        return jsonify({'error': 'Tenant not found'}), 404
+    if not _is_authorized_for_tenant(current_user, tenant):
+        return jsonify({'error': 'Unauthorized'}), 403
+
+    employees = User.query.filter_by(tenant_id=tenant.id, es_empleado=True).all()
+    items = []
+    for emp in employees:
+        scope = _employee_scope(emp)
+        items.append({
+            'employee_id': emp.id,
+            'name': emp.name,
+            'email': emp.email,
+            'workload_open_tickets': _employee_open_workload(tenant.id, emp.id),
+            'scope': scope,
+        })
+
+    items.sort(key=lambda x: x['workload_open_tickets'], reverse=True)
+    return jsonify({'tenant_id': tenant.id, 'tenant_slug': tenant.slug, 'items': items})
 
 @admin_tenant_bp.route('/api/admin/employees', methods=['GET'])
 @token_requerido

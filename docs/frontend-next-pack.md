@@ -234,3 +234,21 @@ Devuelve:
 2. En panel tenant agregar sección **Encuestas** con lista resumida y CTA a detalle.
 3. En panel superadmin agregar widgets de **Realtime IA** (cards + donut assigned/unassigned).
 4. En panel superadmin agregar tabla **Encuestas por tenant** con orden por respuestas.
+
+## Paquete FE adicional (balanceo y health score)
+
+### Endpoints nuevos
+- `GET /api/admin/tenants/:slug/employees/workload`
+  - Lista empleados con `workload_open_tickets` y scope.
+- `POST /api/admin/tenants/:slug/employees/suggest-assignee`
+  - Ahora acepta `required_permission` para filtrar sugerencias por permiso.
+- `POST /api/admin/tenants/:slug/tickets/:ticket_type/:ticket_id/auto-assign`
+  - Ahora acepta `required_permission` y devuelve `workload_open_tickets` del asignado.
+- `GET /api/admin/analytics/tenant-health?since_days=30`
+  - Ranking por tenant con `health_score`, `win_rate`, `sla_breached`, `survey_responses`.
+
+### Tareas FE
+1. En modal de asignación agregar toggle **"Balancear carga"** y selector de permiso requerido.
+2. Mostrar columna **Carga abierta** en listado de empleados.
+3. Crear dashboard CEO **Tenant Health** (tabla ordenable + semáforo por score).
+4. En kanban de tenant mostrar badge de carga del empleado al asignar tickets.
