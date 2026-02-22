@@ -16,6 +16,10 @@ from models import (
     CategoriaTicket,
     IntegrationAccount,
     PymePedido,
+    MunicipioTicket,
+    PymeTicket,
+    EncEncuesta,
+    EncRespuesta,
 )
 from routes.catalogo import _formatear_producto
 from routes.carrito import _product_query_for_tenant
@@ -675,6 +679,43 @@ def assign_whatsapp_number(current_user, slug):
         "sender_id": number.sender_id
     })
 
+
+
+def _employee_scope(emp: User) -> dict:
+    data = emp.accesibilidad if isinstance(emp.accesibilidad, dict) else {}
+    scope = data.get('employee_scope') if isinstance(data.get('employee_scope'), dict) else {}
+    categorias = scope.get('categorias') if isinstance(scope.get('categorias'), list) else []
+    zonas = scope.get('zonas') if isinstance(scope.get('zonas'), list) else []
+    permisos = scope.get('permisos') if isinstance(scope.get('permisos'), list) else []
+    return {
+        'categorias': [str(c).strip() for c in categorias if str(c).strip()][:30],
+        'zonas': [str(z).strip() for z in zonas if str(z).strip()][:30],
+        'permisos': [str(p).strip() for p in permisos if str(p).strip()][:30],
+    }
+
+
+def _set_employee_scope(emp: User, *, categorias: list[str], zonas: list[str], permisos: list[str]) -> None:
+    data = emp.accesibilidad if isinstance(emp.accesibilidad, dict) else {}
+    data['employee_scope'] = {
+        'categorias': categorias,
+        'zonas': zonas,
+        'permisos': permisos,
+    }
+    emp.accesibilidad = data
+
+
+def _scope_match_score(*, categoria: str, zona: str, scope: dict) -> int:
+    score = 0
+    cats = [str(c).strip().lower() for c in (scope.get('categorias') or []) if str(c).strip()]
+    zones = [str(z).strip().lower() for z in (scope.get('zonas') or []) if str(z).strip()]
+    if categoria and categoria in cats:
+        score += 50
+    if zona and zona in zones:
+        score += 40
+    if not cats and not zones:
+        score += 10
+    return score
+
 # --- Employee Management ---
 
 @admin_tenant_bp.route('/api/admin/employees', methods=['POST'])
@@ -737,6 +778,14 @@ def create_employee(current_user):
             CategoriaTicket.tenant_id == tenant.id
         ).all()
         user.categorias_ticket = valid_cats
+
+    scope_raw = data.get('scope') if isinstance(data.get('scope'), dict) else {}
+    _set_employee_scope(
+        user,
+        categorias=[str(v).strip() for v in (scope_raw.get('categorias') or []) if str(v).strip()][:30],
+        zonas=[str(v).strip() for v in (scope_raw.get('zonas') or []) if str(v).strip()][:30],
+        permisos=[str(v).strip() for v in (scope_raw.get('permisos') or []) if str(v).strip()][:30],
+    )
 
     db.session.commit()
 
@@ -805,6 +854,169 @@ def assign_categories(current_user, user_id):
     db.session.commit()
 
     return jsonify({'message': 'Categories updated', 'count': len(valid_cats)}), 200
+
+
+@admin_tenant_bp.route('/api/admin/employees/<int:user_id>/scope', methods=['PUT'])
+@token_requerido
+@require_tenant
+def update_employee_scope(current_user, user_id):
+    tenant = g.tenant_profile
+    if not tenant:
+        return jsonify({'error': 'No tenant context'}), 400
+    if not _is_authorized_for_tenant(current_user, tenant):
+        return jsonify({'error': 'Unauthorized'}), 403
+
+    user = User.query.get(user_id)
+    if not user or user.tenant_id != tenant.id or not user.es_empleado:
+        return jsonify({'error': 'Employee not found'}), 404
+
+    data = request.get_json(silent=True) or {}
+    categorias = [str(v).strip() for v in (data.get('categorias') or []) if str(v).strip()][:30]
+    zonas = [str(v).strip() for v in (data.get('zonas') or []) if str(v).strip()][:30]
+    permisos = [str(v).strip() for v in (data.get('permisos') or []) if str(v).strip()][:30]
+
+    _set_employee_scope(user, categorias=categorias, zonas=zonas, permisos=permisos)
+    db.session.commit()
+    return jsonify({'ok': True, 'employee_id': user.id, 'scope': _employee_scope(user)})
+
+
+@admin_tenant_bp.route('/api/admin/tenants/<slug>/employees/suggest-assignee', methods=['POST'])
+@token_requerido
+@require_tenant
+def suggest_assignee(current_user, slug):
+    tenant = _resolve_admin_tenant(current_user, slug)
+    if not tenant:
+        return jsonify({'error': 'Tenant not found'}), 404
+    if not _is_authorized_for_tenant(current_user, tenant):
+        return jsonify({'error': 'Unauthorized'}), 403
+
+    payload = request.get_json(silent=True) or {}
+    categoria = str(payload.get('categoria') or '').strip().lower()
+    zona = str(payload.get('zona') or payload.get('distrito') or '').strip().lower()
+
+    employees = User.query.filter_by(tenant_id=tenant.id, es_empleado=True).all()
+    ranked = []
+    for emp in employees:
+        scope = _employee_scope(emp)
+        score = _scope_match_score(categoria=categoria, zona=zona, scope=scope)
+        if score <= 0:
+            continue
+        ranked.append({
+            'employee_id': emp.id,
+            'name': emp.name,
+            'email': emp.email,
+            'score': score,
+            'scope': scope,
+        })
+
+    ranked.sort(key=lambda r: r['score'], reverse=True)
+    return jsonify({'ok': True, 'suggestions': ranked[:10]})
+
+
+
+@admin_tenant_bp.route('/api/admin/tenants/<slug>/tickets/<ticket_type>/<int:ticket_id>/auto-assign', methods=['POST'])
+@token_requerido
+@require_tenant
+def auto_assign_ticket(current_user, slug, ticket_type: str, ticket_id: int):
+    tenant = _resolve_admin_tenant(current_user, slug)
+    if not tenant:
+        return jsonify({'error': 'Tenant not found'}), 404
+    if not _is_authorized_for_tenant(current_user, tenant):
+        return jsonify({'error': 'Unauthorized'}), 403
+
+    ticket = MunicipioTicket.query.get(ticket_id) if ticket_type == 'municipio' else PymeTicket.query.get(ticket_id) if ticket_type == 'pyme' else None
+    if not ticket or not _ticket_belongs_to_tenant(ticket, tenant):
+        return jsonify({'error': 'Ticket no encontrado'}), 404
+
+    categoria = str(getattr(ticket, 'categoria', None) or '').strip().lower()
+    zona = str(getattr(ticket, 'distrito', None) or getattr(ticket, 'direccion', None) or '').strip().lower()
+
+    employees = User.query.filter_by(tenant_id=tenant.id, es_empleado=True).all()
+    best = None
+    best_score = -1
+    for emp in employees:
+        scope = _employee_scope(emp)
+        score = _scope_match_score(categoria=categoria, zona=zona, scope=scope)
+        if score > best_score:
+            best_score = score
+            best = (emp, scope)
+
+    if not best or best_score <= 0:
+        return jsonify({'ok': False, 'assigned': False, 'reason': 'no_match'}), 200
+
+    emp, scope = best
+    if hasattr(ticket, 'assigned_to'):
+        ticket.assigned_to = emp.id
+
+    details = _ticket_details(ticket)
+    timeline = details.get('lead_timeline') if isinstance(details.get('lead_timeline'), list) else []
+    timeline.append({
+        'at': datetime.now(timezone.utc).isoformat(),
+        'by_user_id': current_user.id,
+        'event': 'auto_assign_employee_scope',
+        'employee_id': emp.id,
+        'employee_name': emp.name,
+        'score': best_score,
+        'categoria': categoria or None,
+        'zona': zona or None,
+    })
+    details['lead_timeline'] = timeline[-100:]
+    _save_ticket_details(ticket, details)
+    if hasattr(ticket, 'ultima_actividad'):
+        ticket.ultima_actividad = datetime.now(timezone.utc)
+    db.session.commit()
+
+    return jsonify({
+        'ok': True,
+        'assigned': True,
+        'ticket_id': ticket.id,
+        'ticket_type': ticket_type,
+        'employee': {'id': emp.id, 'name': emp.name, 'email': emp.email},
+        'score': best_score,
+        'scope': scope,
+    })
+
+
+@admin_tenant_bp.route('/api/admin/tenants/<slug>/encuestas/overview', methods=['GET'])
+@token_requerido
+@require_tenant
+def tenant_surveys_overview(current_user, slug):
+    tenant = _resolve_admin_tenant(current_user, slug)
+    if not tenant:
+        return jsonify({'error': 'Tenant not found'}), 404
+    if not _is_authorized_for_tenant(current_user, tenant):
+        return jsonify({'error': 'Unauthorized'}), 403
+
+    limit = max(1, min(int(request.args.get('limit', 50) or 50), 100))
+    rows = EncEncuesta.query.filter_by(tenant_id=tenant.id).order_by(EncEncuesta.updated_at.desc()).limit(limit).all()
+
+    items = []
+    total_responses = 0
+    for encuesta in rows:
+        responses_count = EncRespuesta.query.filter_by(encuesta_id=encuesta.id).count()
+        total_responses += responses_count
+        items.append({
+            'id': encuesta.id,
+            'slug': encuesta.slug,
+            'titulo': encuesta.titulo,
+            'estado': encuesta.estado,
+            'tipo': encuesta.tipo,
+            'es_votacion_envivo': bool(encuesta.es_votacion_envivo),
+            'mostrar_resultados_envivo': bool(encuesta.mostrar_resultados_envivo),
+            'respuestas': responses_count,
+            'inicio_at': encuesta.inicio_at.isoformat() if encuesta.inicio_at else None,
+            'fin_at': encuesta.fin_at.isoformat() if encuesta.fin_at else None,
+            'updated_at': encuesta.updated_at.isoformat() if encuesta.updated_at else None,
+        })
+
+    return jsonify({
+        'tenant_id': tenant.id,
+        'tenant_slug': tenant.slug,
+        'total_surveys': len(items),
+        'total_responses': total_responses,
+        'items': items,
+    })
+
 @admin_tenant_bp.route('/api/admin/employees', methods=['GET'])
 @token_requerido
 @require_tenant
@@ -833,7 +1045,8 @@ def list_current_tenant_employees(current_user):
             "name": emp.name,
             "email": emp.email,
             "roles": role_names,
-            "created_at": emp.fecha_creacion.isoformat() if emp.fecha_creacion else None
+            "created_at": emp.fecha_creacion.isoformat() if emp.fecha_creacion else None,
+            "scope": _employee_scope(emp),
         })
 
     return jsonify(results)
@@ -1131,7 +1344,8 @@ def list_employees_by_slug(current_user, slug):
             "name": emp.name,
             "email": emp.email,
             "roles": role_names,
-            "created_at": emp.fecha_creacion.isoformat() if emp.fecha_creacion else None
+            "created_at": emp.fecha_creacion.isoformat() if emp.fecha_creacion else None,
+            "scope": _employee_scope(emp),
         })
 
     return jsonify(results)
@@ -1282,3 +1496,239 @@ def list_tenant_orders(current_user, slug):
         "orders": results,
         "count": len(results)
     })
+
+
+
+def _ticket_belongs_to_tenant(ticket, tenant: TenantProfile) -> bool:
+    if not ticket or not tenant:
+        return False
+    if getattr(ticket, 'tenant_id', None) and ticket.tenant_id == tenant.id:
+        return True
+    owner = tenant.municipio or tenant.pyme
+    owner_id = getattr(owner, 'id', None)
+    if owner_id and getattr(ticket, 'municipio_id', None) == owner_id:
+        return True
+    if owner_id and getattr(ticket, 'pyme_id', None) == owner_id:
+        return True
+    return False
+
+
+def _ticket_details(ticket) -> dict:
+    import json
+    details = getattr(ticket, 'detalles', None)
+    if isinstance(details, dict):
+        return dict(details)
+    if isinstance(details, str) and details.strip():
+        try:
+            parsed = json.loads(details)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
+    return {}
+
+
+def _save_ticket_details(ticket, details: dict):
+    import json
+    ticket.detalles = json.dumps(details, ensure_ascii=False)
+
+
+@admin_tenant_bp.route('/api/admin/tenants/<slug>/leads', methods=['GET'])
+@token_requerido
+@require_tenant
+def tenant_list_leads(current_user, slug):
+    tenant = _resolve_admin_tenant(current_user, slug)
+    if not tenant:
+        return jsonify({"error": "Tenant not found"}), 404
+    if not _is_authorized_for_tenant(current_user, tenant):
+        return jsonify({"error": "Unauthorized"}), 403
+
+    limit = max(1, min(int(request.args.get('limit', 100) or 100), 250))
+    stage_filter = str(request.args.get('stage') or '').strip().lower()
+
+    m_query = MunicipioTicket.query.filter_by(tenant_id=tenant.id)
+    p_query = PymeTicket.query.filter_by(tenant_id=tenant.id)
+    rows = []
+    for t in m_query.order_by(MunicipioTicket.ultima_actividad.desc()).limit(limit).all():
+        rows.append(('municipio', t))
+    for t in p_query.order_by(PymeTicket.fecha.desc()).limit(limit).all():
+        rows.append(('pyme', t))
+
+    items = []
+    now = datetime.now(timezone.utc)
+    for t_type, ticket in rows:
+        details = _ticket_details(ticket)
+        stage = str(details.get('lead_stage') or ticket.estado or 'nuevo').lower()
+        if stage_filter and stage_filter != stage:
+            continue
+        last_seen = getattr(ticket, 'ultima_actividad', None) or ticket.fecha
+        last_dt = last_seen if (last_seen and last_seen.tzinfo) else (last_seen.replace(tzinfo=timezone.utc) if last_seen else None)
+        sla_breached = bool(last_dt and (now - last_dt).total_seconds() > 1800 and stage not in {'ganado', 'perdido'})
+        items.append({
+            'ticket_type': t_type,
+            'ticket_id': ticket.id,
+            'nro': getattr(ticket, 'nro_ticket', None) or getattr(ticket, 'nro_pedido', None),
+            'nombre': getattr(ticket, 'nombre_vecino', None) or getattr(ticket, 'nombre_cliente', None),
+            'telefono': getattr(ticket, 'telefono_vecino', None) or getattr(ticket, 'telefono_cliente', None),
+            'email': getattr(ticket, 'email_vecino', None) or getattr(ticket, 'email_cliente', None),
+            'categoria': getattr(ticket, 'categoria', None),
+            'stage': stage,
+            'status': ticket.estado,
+            'sla_breached': sla_breached,
+            'last_seen': last_seen.isoformat() if last_seen else None,
+        })
+
+    items.sort(key=lambda it: ((it.get('sla_breached') is True), it.get('last_seen') or ''), reverse=True)
+    return jsonify({'tenant_slug': tenant.slug, 'total': len(items), 'items': items[:limit]})
+
+
+@admin_tenant_bp.route('/api/admin/tenants/<slug>/leads/<ticket_type>/<int:ticket_id>/stage', methods=['PATCH'])
+@token_requerido
+@require_tenant
+def tenant_update_lead_stage(current_user, slug, ticket_type: str, ticket_id: int):
+    tenant = _resolve_admin_tenant(current_user, slug)
+    if not tenant:
+        return jsonify({"error": "Tenant not found"}), 404
+    if not _is_authorized_for_tenant(current_user, tenant):
+        return jsonify({"error": "Unauthorized"}), 403
+
+    payload = request.get_json(silent=True) or {}
+    stage = str(payload.get('stage') or '').strip().lower()
+    note = str(payload.get('note') or '').strip()
+    allowed = {"nuevo", "contactado", "calificado", "demo_agendada", "propuesta_enviada", "ganado", "perdido"}
+    if stage not in allowed:
+        return jsonify({'error': 'stage inválido'}), 400
+
+    ticket = MunicipioTicket.query.get(ticket_id) if ticket_type == 'municipio' else PymeTicket.query.get(ticket_id) if ticket_type == 'pyme' else None
+    if not ticket or not _ticket_belongs_to_tenant(ticket, tenant):
+        return jsonify({'error': 'Lead no encontrado'}), 404
+
+    details = _ticket_details(ticket)
+    timeline = details.get('lead_timeline') if isinstance(details.get('lead_timeline'), list) else []
+    prev = details.get('lead_stage') or ticket.estado or 'nuevo'
+    details['lead_stage'] = stage
+    timeline.append({
+        'at': datetime.now(timezone.utc).isoformat(),
+        'by_user_id': current_user.id,
+        'event': 'tenant_stage_update',
+        'from': prev,
+        'to': stage,
+        'note': note or None,
+    })
+    details['lead_timeline'] = timeline[-100:]
+    _save_ticket_details(ticket, details)
+
+    status_map = {
+        'nuevo': 'nuevo', 'contactado': 'en_proceso', 'calificado': 'en_proceso',
+        'demo_agendada': 'pendiente', 'propuesta_enviada': 'pendiente',
+        'ganado': 'cerrado', 'perdido': 'cancelado',
+    }
+    ticket.estado = status_map.get(stage, 'en_proceso')
+    if hasattr(ticket, 'ultima_actividad'):
+        ticket.ultima_actividad = datetime.now(timezone.utc)
+    db.session.commit()
+    return jsonify({'ok': True, 'ticket_id': ticket.id, 'ticket_type': ticket_type, 'lead_stage': stage, 'status': ticket.estado})
+
+
+@admin_tenant_bp.route('/api/admin/tenants/<slug>/leads/bulk-stage', methods=['PATCH'])
+@token_requerido
+@require_tenant
+def tenant_bulk_stage(current_user, slug):
+    tenant = _resolve_admin_tenant(current_user, slug)
+    if not tenant:
+        return jsonify({"error": "Tenant not found"}), 404
+    if not _is_authorized_for_tenant(current_user, tenant):
+        return jsonify({"error": "Unauthorized"}), 403
+
+    payload = request.get_json(silent=True) or {}
+    stage = str(payload.get('stage') or '').strip().lower()
+    updates = payload.get('updates') if isinstance(payload.get('updates'), list) else []
+    allowed = {"nuevo", "contactado", "calificado", "demo_agendada", "propuesta_enviada", "ganado", "perdido"}
+    if stage not in allowed:
+        return jsonify({'error': 'stage inválido'}), 400
+    if not updates:
+        return jsonify({'error': 'updates requerido'}), 400
+
+    status_map = {
+        'nuevo': 'nuevo', 'contactado': 'en_proceso', 'calificado': 'en_proceso',
+        'demo_agendada': 'pendiente', 'propuesta_enviada': 'pendiente',
+        'ganado': 'cerrado', 'perdido': 'cancelado',
+    }
+    changed = 0
+    errors = []
+    for row in updates[:200]:
+        if not isinstance(row, dict):
+            continue
+        ticket_type = str(row.get('ticket_type') or '').strip().lower()
+        note = str(row.get('note') or '').strip()
+        try:
+            ticket_id = int(row.get('ticket_id'))
+        except Exception:
+            errors.append({'ticket_type': ticket_type, 'ticket_id': row.get('ticket_id'), 'error': 'ticket_id inválido'})
+            continue
+
+        ticket = MunicipioTicket.query.get(ticket_id) if ticket_type == 'municipio' else PymeTicket.query.get(ticket_id) if ticket_type == 'pyme' else None
+        if not ticket or not _ticket_belongs_to_tenant(ticket, tenant):
+            errors.append({'ticket_type': ticket_type, 'ticket_id': ticket_id, 'error': 'no encontrado'})
+            continue
+
+        details = _ticket_details(ticket)
+        timeline = details.get('lead_timeline') if isinstance(details.get('lead_timeline'), list) else []
+        prev = details.get('lead_stage') or ticket.estado or 'nuevo'
+        details['lead_stage'] = stage
+        timeline.append({
+            'at': datetime.now(timezone.utc).isoformat(),
+            'by_user_id': current_user.id,
+            'event': 'tenant_bulk_stage_update',
+            'from': prev,
+            'to': stage,
+            'note': note or None,
+        })
+        details['lead_timeline'] = timeline[-100:]
+        _save_ticket_details(ticket, details)
+        ticket.estado = status_map.get(stage, 'en_proceso')
+        if hasattr(ticket, 'ultima_actividad'):
+            ticket.ultima_actividad = datetime.now(timezone.utc)
+        changed += 1
+
+    db.session.commit()
+    return jsonify({'ok': True, 'changed': changed, 'errors': errors})
+
+
+@admin_tenant_bp.route('/api/admin/tenants/<slug>/leads/<ticket_type>/<int:ticket_id>/timeline', methods=['GET', 'POST'])
+@token_requerido
+@require_tenant
+def tenant_lead_timeline(current_user, slug, ticket_type: str, ticket_id: int):
+    tenant = _resolve_admin_tenant(current_user, slug)
+    if not tenant:
+        return jsonify({"error": "Tenant not found"}), 404
+    if not _is_authorized_for_tenant(current_user, tenant):
+        return jsonify({"error": "Unauthorized"}), 403
+
+    ticket = MunicipioTicket.query.get(ticket_id) if ticket_type == 'municipio' else PymeTicket.query.get(ticket_id) if ticket_type == 'pyme' else None
+    if not ticket or not _ticket_belongs_to_tenant(ticket, tenant):
+        return jsonify({'error': 'Lead no encontrado'}), 404
+
+    details = _ticket_details(ticket)
+    timeline = details.get('lead_timeline') if isinstance(details.get('lead_timeline'), list) else []
+
+    if request.method == 'GET':
+        return jsonify({'ticket_id': ticket.id, 'ticket_type': ticket_type, 'timeline': timeline[-100:]})
+
+    payload = request.get_json(silent=True) or {}
+    note = str(payload.get('note') or '').strip()
+    if not note:
+        return jsonify({'error': 'note requerido'}), 400
+
+    timeline.append({
+        'at': datetime.now(timezone.utc).isoformat(),
+        'by_user_id': current_user.id,
+        'event': 'tenant_note',
+        'note': note[:1000],
+    })
+    details['lead_timeline'] = timeline[-100:]
+    _save_ticket_details(ticket, details)
+    if hasattr(ticket, 'ultima_actividad'):
+        ticket.ultima_actividad = datetime.now(timezone.utc)
+    db.session.commit()
+    return jsonify({'ok': True, 'ticket_id': ticket.id, 'ticket_type': ticket_type, 'timeline': details['lead_timeline']})

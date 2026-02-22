@@ -1024,6 +1024,27 @@ class SaludoHandler(BaseHandler):
         return menu_payload
 
 class CatalogoHandler(BaseHandler):
+    def _build_structured_catalog_response(self, pregunta: str, resultados_qdrant: list, channel: str) -> tuple[str, list[dict]]:
+        summary = "Te comparto una selección recomendada para tu consulta."
+        cards: list[dict] = []
+        for hit in resultados_qdrant[:3]:
+            payload = getattr(hit, "payload", {}) or {}
+            nombre = str(payload.get("nombre") or "Producto").strip()
+            precio = str(payload.get("precio_str") or payload.get("precio") or "").strip()
+            categoria = str(payload.get("categoria") or "General").strip()
+            cards.append({"nombre": nombre, "precio": precio, "categoria": categoria})
+
+        if cards:
+            lines = [summary, "", "Productos recomendados:"]
+            for card in cards:
+                price_txt = f" - ${card['precio']}" if card.get("precio") else ""
+                lines.append(f"• {card['nombre']}{price_txt} ({card['categoria']})")
+            lines.append("")
+            lines.append("¿Buscás por precio, marca o uso? Te ayudo a afinar la búsqueda.")
+            lines.append("CTA: puedes agregar al carrito, pedir presupuesto o hablar con asesor.")
+            return "\n".join(lines), cards
+        return "", []
+
     def execute(self, action_data):
         pregunta = action_data.get("pregunta", "")
         if not self.pyme_id_actual: return {"respuesta": "No puedo identificar la tienda.", "fuente": "catalogo_sin_pyme_id_v2"}
@@ -1137,12 +1158,46 @@ class CatalogoHandler(BaseHandler):
                     botones_catalogo.append({"texto": f"Pedir {nombre[:20]}", "action": f"pedir_item_{identificador_accion}"})
 
             if productos_formateados:
-                respuesta_texto = f"{intro_text}\n\n" + "\n".join(productos_formateados)
-                respuesta_texto += "\n\nSi quieres alguno, usa los botones o dime (ej: 'quiero 2 [nombre]')."
+                structured_text, _ = self._build_structured_catalog_response(
+                    pregunta=pregunta,
+                    resultados_qdrant=resultados_qdrant,
+                    channel=self.context.get("channel") or "web",
+                )
+                if structured_text:
+                    respuesta_texto = structured_text
+                else:
+                    respuesta_texto = f"{intro_text}\n\n" + "\n".join(productos_formateados)
+                    respuesta_texto += "\n\nSi quieres alguno, usa los botones o dime (ej: 'quiero 2 [nombre]')."
                 fuente_catalogo = "catalogo_qdrant_con_promos_v2"
         
         if not respuesta_texto:
-            respuesta_texto = f"No encontré productos para '{pregunta}'. Intenta con otras palabras."
+            resultados_faq = buscar_en_faq_spacy(
+                pregunta,
+                self.pyme_id_actual,
+                self.context.get("rubro_nombre") or "general",
+                top_n=1,
+                umbral_similitud=0.68,
+            )
+            if resultados_faq:
+                mejor_match = resultados_faq[0]
+                respuesta_texto = (
+                    f"Resumen: {mejor_match.get('respuesta', 'Encontré una respuesta útil.')}\n\n"
+                    "¿Buscás por precio, marca o uso?"
+                )
+                fuente_catalogo = "catalogo_fallback_faq"
+            else:
+                owner_obj = db.session.get(models.User, self.pyme_id_actual)
+                website_url = getattr(owner_obj, "link_web", None) if owner_obj else None
+                web_info = obtener_info_web(self.pyme_id_actual, website_url) if website_url else {}
+                if web_info:
+                    respuesta_texto = (
+                        f"Resumen: {str(web_info)[:320]}\n\n"
+                        "No encontré el producto exacto en el catálogo local. "
+                        "¿Te muestro alternativas por precio, marca o uso?"
+                    )
+                    fuente_catalogo = "catalogo_fallback_web"
+                else:
+                    respuesta_texto = f"No encontré productos para '{pregunta}'. Intenta con otras palabras."
             # No product-specific buttons if nothing found
             botones_catalogo = []
 
@@ -1191,6 +1246,7 @@ class CatalogoHandler(BaseHandler):
                     "type": "url" # For formatter to handle for web
                 })
 
+        options.append({"id": "pedir_presupuesto_pyme", "texto": "Pedir presupuesto"})
         options.append({"id": "hablar_con_agente_pyme_catalogo", "texto": "Hablar con un agente"})
 
         interactive_options_count = sum(1 for opt in options if opt.get("type") != "url")
