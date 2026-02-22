@@ -1496,3 +1496,167 @@ def list_leads_interactions(current_user):
         top_questions.append({'question': question, 'count': int(count or 0)})
 
     return jsonify({'items': items, 'total': len(items), 'top_questions': top_questions})
+
+
+def _lead_pipeline_stage(ticket: MunicipioTicket | None) -> str:
+    if not ticket:
+        return "nuevo"
+    raw = (ticket.estado or "").strip().lower()
+    mapping = {
+        "nuevo": "nuevo",
+        "abierto": "contactado",
+        "en_proceso": "calificado",
+        "pendiente": "calificado",
+        "cerrado": "ganado",
+        "resuelto": "ganado",
+        "cancelado": "perdido",
+        "rechazado": "perdido",
+    }
+    return mapping.get(raw, "nuevo")
+
+
+@super_admin_bp.route('/leads/pipeline', methods=['GET'])
+@token_requerido
+@super_admin_required
+def leads_pipeline(current_user):
+    tenant_slug_filter = str(request.args.get('tenant_slug') or '').strip().lower()
+    since_days = max(1, min(int(request.args.get('since_days', 30) or 30), 365))
+    cutoff = datetime.utcnow() - timedelta(days=since_days)
+
+    query = MunicipioTicket.query.filter(
+        MunicipioTicket.categoria == 'lead_demo_prospecto',
+        MunicipioTicket.fecha >= cutoff,
+    )
+
+    if tenant_slug_filter:
+        query = query.join(TenantProfile, TenantProfile.id == MunicipioTicket.tenant_id).filter(
+            func.lower(TenantProfile.slug) == tenant_slug_filter
+        )
+
+    leads = query.order_by(desc(MunicipioTicket.fecha)).limit(500).all()
+
+    by_stage = {
+        "nuevo": 0,
+        "contactado": 0,
+        "calificado": 0,
+        "demo_agendada": 0,
+        "propuesta_enviada": 0,
+        "ganado": 0,
+        "perdido": 0,
+    }
+    by_tenant: dict[str, int] = {}
+    items = []
+    response_seconds = []
+
+    for lead in leads:
+        stage = _lead_pipeline_stage(lead)
+        by_stage[stage] = by_stage.get(stage, 0) + 1
+
+        tenant_slug = None
+        if lead.tenant_id:
+            tenant_obj = TenantProfile.query.get(lead.tenant_id)
+            tenant_slug = getattr(tenant_obj, 'slug', None)
+        by_tenant[tenant_slug or 'sin_tenant'] = by_tenant.get(tenant_slug or 'sin_tenant', 0) + 1
+
+        first_touch_seconds = None
+        if lead.fecha and lead.ultima_actividad:
+            diff = (lead.ultima_actividad - lead.fecha).total_seconds()
+            if diff >= 0:
+                first_touch_seconds = int(diff)
+                response_seconds.append(first_touch_seconds)
+
+        items.append({
+            "id": lead.id,
+            "nro_ticket": lead.nro_ticket,
+            "tenant_id": lead.tenant_id,
+            "tenant_slug": tenant_slug,
+            "stage": stage,
+            "estado_raw": lead.estado,
+            "nombre": lead.nombre_vecino,
+            "email": lead.email_vecino,
+            "telefono": lead.telefono_vecino,
+            "rubro_demo": lead.asunto,
+            "created_at": lead.fecha.isoformat() if lead.fecha else None,
+            "last_activity": lead.ultima_actividad.isoformat() if lead.ultima_actividad else None,
+            "first_response_seconds": first_touch_seconds,
+        })
+
+    avg_first_response_seconds = int(sum(response_seconds) / len(response_seconds)) if response_seconds else None
+    conversion_rate = 0.0
+    if leads:
+        conversion_rate = round(((by_stage.get('ganado', 0) / len(leads)) * 100), 2)
+
+    return jsonify({
+        "since_days": since_days,
+        "total": len(leads),
+        "by_stage": by_stage,
+        "by_tenant": by_tenant,
+        "conversion_rate": conversion_rate,
+        "avg_first_response_seconds": avg_first_response_seconds,
+        "items": items,
+    })
+
+
+@super_admin_bp.route('/leads/<int:ticket_id>/stage', methods=['PATCH'])
+@token_requerido
+@super_admin_required
+def update_lead_stage(current_user, ticket_id: int):
+    data = request.get_json(silent=True) or {}
+    stage = str(data.get('stage') or '').strip().lower()
+    note = str(data.get('note') or '').strip()
+
+    stage_to_estado = {
+        "nuevo": "nuevo",
+        "contactado": "abierto",
+        "calificado": "en_proceso",
+        "demo_agendada": "en_proceso",
+        "propuesta_enviada": "pendiente",
+        "ganado": "cerrado",
+        "perdido": "cancelado",
+    }
+
+    if stage not in stage_to_estado:
+        return jsonify({
+            "error": "stage inválido",
+            "allowed": list(stage_to_estado.keys()),
+        }), 400
+
+    lead = MunicipioTicket.query.filter_by(id=ticket_id, categoria='lead_demo_prospecto').first()
+    if not lead:
+        return jsonify({"error": "Lead no encontrado"}), 404
+
+    previous_estado = lead.estado
+    lead.estado = stage_to_estado[stage]
+    lead.ultima_actividad = datetime.utcnow()
+
+    if note:
+        existing = (lead.detalles or '').strip()
+        ts = datetime.utcnow().isoformat()
+        log_line = f"[{ts}] stage={stage} note={note}"
+        lead.detalles = f"{existing}\n{log_line}".strip()
+
+    _log_admin_action(
+        current_user.id,
+        "update_lead_stage",
+        f"lead:{lead.id}",
+        {
+            "ticket_id": lead.id,
+            "nro_ticket": lead.nro_ticket,
+            "stage": stage,
+            "previous_estado": previous_estado,
+            "new_estado": lead.estado,
+            "tenant_id": lead.tenant_id,
+            "note": note or None,
+        },
+    )
+
+    db.session.commit()
+    return jsonify({
+        "ok": True,
+        "ticket_id": lead.id,
+        "nro_ticket": lead.nro_ticket,
+        "stage": stage,
+        "estado": lead.estado,
+        "tenant_id": lead.tenant_id,
+        "updated_at": lead.ultima_actividad.isoformat() if lead.ultima_actividad else None,
+    })
