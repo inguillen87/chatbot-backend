@@ -127,7 +127,10 @@ def _should_enforce_owner_plan_limit(*, demo_flow_active: bool, is_init_request:
     if demo_flow_active or is_init_request:
         return False
 
-    if is_public_landing and is_anonymous and has_entity_token:
+    # Public anonymous web visitors should never be blocked by owner plan
+    # counters during discovery. Entity token detection can fail depending on
+    # proxy/header transformations, so we intentionally do not require it.
+    if is_public_landing and is_anonymous:
         return False
 
     return True
@@ -1374,6 +1377,13 @@ def _procesar_chat(
             and not demo_session_activa
         )
 
+        should_show_public_demo_selector = (
+            is_public_landing
+            and is_anonymous
+            and not demo_session_activa
+            and is_init_request
+        )
+
         if is_municipal_request and not force_demo_selector_flow and isinstance(contexto_chat, dict):
             demo_keys_to_clear = (
                 "demo_session",
@@ -1552,7 +1562,7 @@ def _procesar_chat(
                     flag_modified(chat_context_obj, "context_data")
                 _sync_demo_session_flag()
 
-        if not is_municipal_request or force_demo_selector_flow:
+        if not is_municipal_request or force_demo_selector_flow or should_show_public_demo_selector:
             demo_key = _extract_demo_key(action_id)
             if not demo_key and isinstance(original_user_payload, dict):
                 demo_key = _extract_demo_key(original_user_payload.get("action") or original_user_payload.get("action_id"))
@@ -1621,7 +1631,7 @@ def _procesar_chat(
                 action_id = None
                 is_demo_selection_event = True
 
-            if not owner_del_bot:
+            if not owner_del_bot or should_show_public_demo_selector:
                 demo_options = demo_options or _load_demo_rubros()
                 if demo_options:
                     contexto_chat["demo_session"] = True
