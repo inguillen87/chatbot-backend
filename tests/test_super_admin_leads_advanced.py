@@ -158,3 +158,34 @@ def test_super_admin_realtime_ai_and_surveys_overview(client, app):
     surv_body = surv_resp.get_json()
     assert surv_body['total_surveys'] >= 1
     assert surv_body['total_responses'] >= 1
+
+
+
+def test_super_admin_tenant_health(client, app):
+    sa = User(email="sa-health@test.com", name="SA Health", rol="super_admin", tipo_chat="admin")
+    sa.set_password("pass")
+    db.session.add(sa)
+
+    owner = User(email="owner-health@test.com", name="Owner Health", rol="admin", tipo_chat="pyme")
+    owner.set_password("pass")
+    db.session.add(owner)
+    db.session.commit()
+
+    tenant = TenantProfile(slug="tenant-health", nombre="Tenant Health", tipo="pyme", pyme_id=owner.id)
+    db.session.add(tenant)
+    db.session.commit()
+
+    db.session.add(MunicipioTicket(tenant_id=tenant.id, pregunta="a", asunto="a", estado="nuevo"))
+    db.session.add(MunicipioTicket(tenant_id=tenant.id, pregunta="b", asunto="b", estado="cerrado", detalles='{"lead_stage":"ganado"}'))
+    encuesta = EncEncuesta(tenant_id=tenant.id, slug="enc-health", titulo="Encuesta Health", estado="publicada", tipo="opinion")
+    db.session.add(encuesta)
+    db.session.commit()
+
+    db.session.add(EncRespuesta(encuesta_id=encuesta.id, tenant_id=tenant.id, canal="web"))
+    db.session.commit()
+
+    resp = client.get('/api/admin/analytics/tenant-health?since_days=60', headers=_sa_headers(app, sa))
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body['total_tenants'] >= 1
+    assert any(item['tenant_slug'] == tenant.slug for item in body['items'])

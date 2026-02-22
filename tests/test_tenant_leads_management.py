@@ -137,3 +137,46 @@ def test_tenant_auto_assign_and_surveys_overview(client, app):
     body = overview_resp.get_json()
     assert body["total_surveys"] >= 1
     assert body["total_responses"] >= 1
+
+
+
+def test_tenant_suggest_and_workload_balance(client, app):
+    owner = User(email="owner-work@test.com", name="Owner Work", rol="admin", tipo_chat="pyme")
+    owner.set_password("pass")
+    db.session.add(owner)
+    db.session.commit()
+
+    tenant = TenantProfile(slug="tenant-workload", nombre="Tenant Workload", tipo="pyme", pyme_id=owner.id)
+    db.session.add(tenant)
+    db.session.commit()
+
+    emp_heavy = User(email="emp-heavy@test.com", name="Emp Heavy", rol="empleado", es_empleado=True, tenant_id=tenant.id)
+    emp_heavy.set_password("pass")
+    emp_heavy.accesibilidad = {"employee_scope": {"categorias": ["luminaria"], "zonas": ["centro"], "permisos": ["tickets_assign"]}}
+
+    emp_light = User(email="emp-light@test.com", name="Emp Light", rol="empleado", es_empleado=True, tenant_id=tenant.id)
+    emp_light.set_password("pass")
+    emp_light.accesibilidad = {"employee_scope": {"categorias": ["luminaria"], "zonas": ["centro"], "permisos": ["tickets_assign"]}}
+
+    db.session.add(emp_heavy)
+    db.session.add(emp_light)
+    db.session.commit()
+
+    for i in range(3):
+        db.session.add(MunicipioTicket(tenant_id=tenant.id, asunto=f"H{i}", pregunta="x", categoria="luminaria", distrito="centro", estado="nuevo", asignado_a_id=emp_heavy.id))
+    db.session.commit()
+
+    suggest_resp = client.post(
+        f"/api/admin/tenants/{tenant.slug}/employees/suggest-assignee",
+        json={"categoria": "luminaria", "zona": "centro", "required_permission": "tickets_assign"},
+        headers=_headers(app, owner),
+    )
+    assert suggest_resp.status_code == 200
+    suggestions = suggest_resp.get_json()["suggestions"]
+    assert suggestions[0]["employee_id"] == emp_light.id
+
+    wl_resp = client.get(f"/api/admin/tenants/{tenant.slug}/employees/workload", headers=_headers(app, owner))
+    assert wl_resp.status_code == 200
+    items = wl_resp.get_json()["items"]
+    assert items[0]["employee_id"] == emp_heavy.id
+    assert items[0]["workload_open_tickets"] >= 3

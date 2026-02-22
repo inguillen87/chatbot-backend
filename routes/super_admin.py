@@ -1942,7 +1942,7 @@ def super_admin_realtime_ai_metrics(current_user):
     assigned = 0
     unassigned = 0
     for t in lead_rows:
-        assignee = getattr(t, 'assigned_to', None)
+        assignee = getattr(t, 'asignado_a_id', None)
         if assignee:
             assigned += 1
         else:
@@ -1994,6 +1994,67 @@ def super_admin_surveys_overview(current_user):
         'total_responses': total_responses,
         'by_tenant': list(by_tenant.values()),
     })
+
+
+
+@super_admin_bp.route('/analytics/tenant-health', methods=['GET'])
+@token_requerido
+@super_admin_required
+def super_admin_tenant_health(current_user):
+    since_days = max(1, min(int(request.args.get('since_days', 30) or 30), 365))
+    cutoff = datetime.now(timezone.utc) - timedelta(days=since_days)
+
+    tenants = TenantProfile.query.all()
+    rows = []
+    for tenant in tenants:
+        m_tickets = MunicipioTicket.query.filter(MunicipioTicket.tenant_id == tenant.id, MunicipioTicket.fecha >= cutoff).all()
+        p_tickets = PymeTicket.query.filter(PymeTicket.tenant_id == tenant.id, PymeTicket.fecha >= cutoff).all()
+        tickets = m_tickets + p_tickets
+
+        total = len(tickets)
+        won = 0
+        lost = 0
+        sla_breached = 0
+        now = datetime.now(timezone.utc)
+        for t in tickets:
+            details = _ensure_ticket_details_dict(t)
+            stage = str(details.get('lead_stage') or t.estado or 'nuevo').lower()
+            if stage == 'ganado':
+                won += 1
+            elif stage == 'perdido':
+                lost += 1
+
+            last_seen = getattr(t, 'ultima_actividad', None) or getattr(t, 'fecha', None)
+            if last_seen and stage not in {'ganado', 'perdido'}:
+                dt = last_seen if last_seen.tzinfo else last_seen.replace(tzinfo=timezone.utc)
+                if (now - dt).total_seconds() > 1800:
+                    sla_breached += 1
+
+        surveys = EncEncuesta.query.filter(EncEncuesta.tenant_id == tenant.id, EncEncuesta.updated_at >= cutoff).all()
+        survey_count = len(surveys)
+        survey_responses = 0
+        for s in surveys:
+            survey_responses += EncRespuesta.query.filter_by(encuesta_id=s.id).count()
+
+        win_rate = round((won / total) * 100, 2) if total else 0.0
+        health_score = max(0.0, min(100.0, round((win_rate * 0.6) + (min(survey_responses, 50) * 0.4) - (sla_breached * 2), 2)))
+
+        rows.append({
+            'tenant_id': tenant.id,
+            'tenant_slug': tenant.slug,
+            'tenant_tipo': tenant.tipo,
+            'total_tickets': total,
+            'won': won,
+            'lost': lost,
+            'sla_breached': sla_breached,
+            'win_rate': win_rate,
+            'survey_count': survey_count,
+            'survey_responses': survey_responses,
+            'health_score': health_score,
+        })
+
+    rows.sort(key=lambda r: (r['health_score'], -r['sla_breached']), reverse=True)
+    return jsonify({'since_days': since_days, 'total_tenants': len(rows), 'items': rows})
 
 @super_admin_bp.route('/analytics/heatmap-categories-zones', methods=['GET'])
 @token_requerido
