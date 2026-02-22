@@ -100,3 +100,22 @@ def test_super_admin_strategic_overview(client, app):
     assert body['totals']['total_leads'] >= 2
     assert 'by_stage' in body
     assert 'by_tenant' in body
+
+
+def test_super_admin_heatmap_categories_zones(client, app):
+    sa = User(email="sa-heat@test.com", name="SA Heat", rol="super_admin", tipo_chat="admin")
+    sa.set_password("pass")
+    db.session.add(sa)
+    db.session.commit()
+
+    db.session.add(MunicipioTicket(pregunta="R1", asunto="A1", categoria="luminaria", distrito="centro", latitud=-32.9, longitud=-68.8))
+    db.session.add(MunicipioTicket(pregunta="R2", asunto="A2", categoria="basura", distrito="norte", latitud=-32.91, longitud=-68.81))
+    db.session.commit()
+
+    resp = client.get('/api/admin/analytics/heatmap-categories-zones?since_days=90', headers=_sa_headers(app, sa))
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body['total'] >= 2
+    assert isinstance(body['top_categories'], list)
+    assert isinstance(body['top_zones'], list)
+    assert isinstance(body['heatmap_points'], list)

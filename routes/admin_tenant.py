@@ -677,6 +677,30 @@ def assign_whatsapp_number(current_user, slug):
         "sender_id": number.sender_id
     })
 
+
+
+def _employee_scope(emp: User) -> dict:
+    data = emp.accesibilidad if isinstance(emp.accesibilidad, dict) else {}
+    scope = data.get('employee_scope') if isinstance(data.get('employee_scope'), dict) else {}
+    categorias = scope.get('categorias') if isinstance(scope.get('categorias'), list) else []
+    zonas = scope.get('zonas') if isinstance(scope.get('zonas'), list) else []
+    permisos = scope.get('permisos') if isinstance(scope.get('permisos'), list) else []
+    return {
+        'categorias': [str(c).strip() for c in categorias if str(c).strip()][:30],
+        'zonas': [str(z).strip() for z in zonas if str(z).strip()][:30],
+        'permisos': [str(p).strip() for p in permisos if str(p).strip()][:30],
+    }
+
+
+def _set_employee_scope(emp: User, *, categorias: list[str], zonas: list[str], permisos: list[str]) -> None:
+    data = emp.accesibilidad if isinstance(emp.accesibilidad, dict) else {}
+    data['employee_scope'] = {
+        'categorias': categorias,
+        'zonas': zonas,
+        'permisos': permisos,
+    }
+    emp.accesibilidad = data
+
 # --- Employee Management ---
 
 @admin_tenant_bp.route('/api/admin/employees', methods=['POST'])
@@ -739,6 +763,14 @@ def create_employee(current_user):
             CategoriaTicket.tenant_id == tenant.id
         ).all()
         user.categorias_ticket = valid_cats
+
+    scope_raw = data.get('scope') if isinstance(data.get('scope'), dict) else {}
+    _set_employee_scope(
+        user,
+        categorias=[str(v).strip() for v in (scope_raw.get('categorias') or []) if str(v).strip()][:30],
+        zonas=[str(v).strip() for v in (scope_raw.get('zonas') or []) if str(v).strip()][:30],
+        permisos=[str(v).strip() for v in (scope_raw.get('permisos') or []) if str(v).strip()][:30],
+    )
 
     db.session.commit()
 
@@ -807,6 +839,72 @@ def assign_categories(current_user, user_id):
     db.session.commit()
 
     return jsonify({'message': 'Categories updated', 'count': len(valid_cats)}), 200
+
+
+@admin_tenant_bp.route('/api/admin/employees/<int:user_id>/scope', methods=['PUT'])
+@token_requerido
+@require_tenant
+def update_employee_scope(current_user, user_id):
+    tenant = g.tenant_profile
+    if not tenant:
+        return jsonify({'error': 'No tenant context'}), 400
+    if not _is_authorized_for_tenant(current_user, tenant):
+        return jsonify({'error': 'Unauthorized'}), 403
+
+    user = User.query.get(user_id)
+    if not user or user.tenant_id != tenant.id or not user.es_empleado:
+        return jsonify({'error': 'Employee not found'}), 404
+
+    data = request.get_json(silent=True) or {}
+    categorias = [str(v).strip() for v in (data.get('categorias') or []) if str(v).strip()][:30]
+    zonas = [str(v).strip() for v in (data.get('zonas') or []) if str(v).strip()][:30]
+    permisos = [str(v).strip() for v in (data.get('permisos') or []) if str(v).strip()][:30]
+
+    _set_employee_scope(user, categorias=categorias, zonas=zonas, permisos=permisos)
+    db.session.commit()
+    return jsonify({'ok': True, 'employee_id': user.id, 'scope': _employee_scope(user)})
+
+
+@admin_tenant_bp.route('/api/admin/tenants/<slug>/employees/suggest-assignee', methods=['POST'])
+@token_requerido
+@require_tenant
+def suggest_assignee(current_user, slug):
+    tenant = _resolve_admin_tenant(current_user, slug)
+    if not tenant:
+        return jsonify({'error': 'Tenant not found'}), 404
+    if not _is_authorized_for_tenant(current_user, tenant):
+        return jsonify({'error': 'Unauthorized'}), 403
+
+    payload = request.get_json(silent=True) or {}
+    categoria = str(payload.get('categoria') or '').strip().lower()
+    zona = str(payload.get('zona') or payload.get('distrito') or '').strip().lower()
+
+    employees = User.query.filter_by(tenant_id=tenant.id, es_empleado=True).all()
+    ranked = []
+    for emp in employees:
+        scope = _employee_scope(emp)
+        cats = [c.lower() for c in scope.get('categorias', [])]
+        zones = [z.lower() for z in scope.get('zonas', [])]
+        score = 0
+        if categoria and categoria in cats:
+            score += 50
+        if zona and zona in zones:
+            score += 40
+        if not cats and not zones:
+            score += 10
+        if score <= 0:
+            continue
+        ranked.append({
+            'employee_id': emp.id,
+            'name': emp.name,
+            'email': emp.email,
+            'score': score,
+            'scope': scope,
+        })
+
+    ranked.sort(key=lambda r: r['score'], reverse=True)
+    return jsonify({'ok': True, 'suggestions': ranked[:10]})
+
 @admin_tenant_bp.route('/api/admin/employees', methods=['GET'])
 @token_requerido
 @require_tenant
@@ -835,7 +933,8 @@ def list_current_tenant_employees(current_user):
             "name": emp.name,
             "email": emp.email,
             "roles": role_names,
-            "created_at": emp.fecha_creacion.isoformat() if emp.fecha_creacion else None
+            "created_at": emp.fecha_creacion.isoformat() if emp.fecha_creacion else None,
+            "scope": _employee_scope(emp),
         })
 
     return jsonify(results)
@@ -1133,7 +1232,8 @@ def list_employees_by_slug(current_user, slug):
             "name": emp.name,
             "email": emp.email,
             "roles": role_names,
-            "created_at": emp.fecha_creacion.isoformat() if emp.fecha_creacion else None
+            "created_at": emp.fecha_creacion.isoformat() if emp.fecha_creacion else None,
+            "scope": _employee_scope(emp),
         })
 
     return jsonify(results)

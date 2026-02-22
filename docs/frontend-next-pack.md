@@ -176,3 +176,43 @@ Respuesta:
 - Superadmin dashboard: cards KPI + gráfico por stage + ranking por tenant.
 - Tenant board: acciones masivas de stage + panel lateral de timeline por lead.
 - Agregar vista de "ejecución playbook" con preview/confirm y resultados por canal.
+
+
+---
+
+## 11) Empleados por categoría/zona + delegación inteligente
+
+Nuevos endpoints tenant:
+- `PUT /api/admin/employees/<user_id>/scope`
+  - body:
+    ```json
+    {
+      "categorias": ["luminaria", "baches"],
+      "zonas": ["centro", "norte"],
+      "permisos": ["tickets_update", "tickets_assign"]
+    }
+    ```
+- `POST /api/admin/tenants/<slug>/employees/suggest-assignee`
+  - body: `{ "categoria": "luminaria", "zona": "centro" }`
+  - devuelve ranking de empleados sugeridos por score.
+
+### UX FE recomendada
+- En pantalla de empleado: editor de scope (chips categoría + chips zona + permisos por rol).
+- En detalle ticket/pedido: botón `Sugerir responsable` que llame al endpoint y muestre top 3.
+- En asignación manual: mostrar badge de match por categoría/zona.
+
+---
+
+## 12) Mapa de calor estratégico global (CEO)
+
+Nuevo endpoint superadmin:
+- `GET /api/admin/analytics/heatmap-categories-zones?since_days=30`
+
+Devuelve:
+- `top_categories`
+- `top_zones`
+- `heatmap_points` (lat/lon + categoría + zona + tipo)
+
+### UX FE recomendada
+- Dashboard CEO: mapa con layer heatmap + filtros por categoría/zona/tipo.
+- Cards laterales: top categorías y top zonas (click para filtrar mapa).

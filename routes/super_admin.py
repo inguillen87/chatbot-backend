@@ -1911,3 +1911,59 @@ def leads_strategic_overview(current_user):
         'by_stage': by_stage,
         'by_tenant': list(by_tenant.values()),
     })
+
+
+@super_admin_bp.route('/analytics/heatmap-categories-zones', methods=['GET'])
+@token_requerido
+@super_admin_required
+def super_admin_heatmap_categories_zones(current_user):
+    since_days = max(1, min(int(request.args.get('since_days', 30) or 30), 365))
+    cutoff = datetime.now(timezone.utc) - timedelta(days=since_days)
+
+    rows = []
+    for t in MunicipioTicket.query.filter(MunicipioTicket.fecha >= cutoff).all():
+        rows.append({
+            'tenant_id': t.tenant_id,
+            'categoria': (t.categoria or 'sin_categoria').strip().lower(),
+            'zona': (t.distrito or 'sin_zona').strip().lower(),
+            'lat': t.latitud,
+            'lon': t.longitud,
+            'tipo': 'municipio',
+        })
+    for t in PymeTicket.query.filter(PymeTicket.fecha >= cutoff).all():
+        rows.append({
+            'tenant_id': t.tenant_id,
+            'categoria': (t.categoria or 'sin_categoria').strip().lower(),
+            'zona': (getattr(t, 'direccion', None) or 'sin_zona').strip().lower(),
+            'lat': t.latitud,
+            'lon': t.longitud,
+            'tipo': 'pyme',
+        })
+
+    by_categoria = {}
+    by_zona = {}
+    points = []
+    for r in rows:
+        by_categoria[r['categoria']] = by_categoria.get(r['categoria'], 0) + 1
+        by_zona[r['zona']] = by_zona.get(r['zona'], 0) + 1
+        if r['lat'] is not None and r['lon'] is not None:
+            points.append({
+                'lat': r['lat'],
+                'lon': r['lon'],
+                'weight': 1,
+                'categoria': r['categoria'],
+                'zona': r['zona'],
+                'tipo': r['tipo'],
+                'tenant_id': r['tenant_id'],
+            })
+
+    top_categories = sorted(by_categoria.items(), key=lambda it: it[1], reverse=True)[:20]
+    top_zones = sorted(by_zona.items(), key=lambda it: it[1], reverse=True)[:20]
+
+    return jsonify({
+        'since_days': since_days,
+        'total': len(rows),
+        'top_categories': [{'categoria': k, 'count': v} for k, v in top_categories],
+        'top_zones': [{'zona': k, 'count': v} for k, v in top_zones],
+        'heatmap_points': points[:3000],
+    })
