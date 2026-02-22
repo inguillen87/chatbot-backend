@@ -2,7 +2,13 @@ from datetime import datetime, timedelta
 
 from app import db
 from models import Conversacion
-from routes.chat import _anonymous_message_count, _extract_entity_token_hint, _should_enforce_owner_plan_limit
+from routes.chat import (
+    _anonymous_message_count,
+    _extract_entity_token_hint,
+    _extract_text_value,
+    _is_public_landing_request,
+    _should_enforce_owner_plan_limit,
+)
 
 
 def test_anonymous_message_count_excludes_init_payload(client):
@@ -53,6 +59,17 @@ def test_should_enforce_owner_plan_limit_skips_public_widget_entity_token_flow()
     assert enforce is False
 
 
+def test_should_enforce_owner_plan_limit_skips_public_widget_even_without_entity_token():
+    enforce = _should_enforce_owner_plan_limit(
+        demo_flow_active=False,
+        is_init_request=False,
+        is_public_landing=True,
+        is_anonymous=True,
+        has_entity_token=False,
+    )
+    assert enforce is False
+
+
 def test_should_enforce_owner_plan_limit_keeps_regular_flow_guarded():
     enforce = _should_enforce_owner_plan_limit(
         demo_flow_active=False,
@@ -73,3 +90,29 @@ def test_extract_entity_token_hint_ignores_jwt_bearer(app):
     fake_jwt = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.payload.signature'
     with app.test_request_context('/api/ask/municipio', headers={'Authorization': f'Bearer {fake_jwt}'}):
         assert _extract_entity_token_hint() is None
+
+
+def test_is_public_landing_request_accepts_origin_header(app):
+    with app.test_request_context('/api/ask/municipio', headers={'Origin': 'https://www.chatboc.ar'}):
+        assert _is_public_landing_request() is True
+
+
+def test_is_public_landing_request_accepts_referer_fallback(app):
+    with app.test_request_context('/api/ask/municipio', headers={'Referer': 'https://www.chatboc.ar/'}):
+        assert _is_public_landing_request() is True
+
+
+def test_is_public_landing_request_excludes_app_subdomain(app):
+    with app.test_request_context('/api/ask/municipio', headers={'Origin': 'https://app.chatboc.ar'}):
+        assert _is_public_landing_request() is False
+
+
+def test_extract_text_value_supports_string_and_dict():
+    assert _extract_text_value(" hola ") == "hola"
+    assert _extract_text_value({"text": "  mundo  "}) == "mundo"
+    assert _extract_text_value({"value": "ok"}) == "ok"
+
+
+def test_extract_text_value_returns_empty_for_unknown_payload():
+    assert _extract_text_value(None) == ""
+    assert _extract_text_value({"foo": "bar"}) == ""
