@@ -110,6 +110,16 @@ def _notify_superadmin_new_lead(ticket: MunicipioTicket, *, lead_nombre: str, le
 
 
 def _create_demo_lead_ticket(*, owner_user: Optional[User], anon_id: Optional[str], chat_session_id: str, lead_nombre: str, lead_telefono: str, lead_email: str, rubro_demo: str) -> MunicipioTicket:
+    tenant_id = getattr(owner_user, "tenant_id", None)
+    if not tenant_id and owner_user is not None:
+        tenant_ref = (
+            getattr(owner_user, "tenant", None)
+            or getattr(owner_user, "tenant_profile", None)
+            or getattr(owner_user, "tenant_profile_municipio", None)
+            or getattr(owner_user, "tenant_profile_pyme", None)
+        )
+        tenant_id = getattr(tenant_ref, "id", None)
+
     ticket = MunicipioTicket(
         pregunta="Prospecto generado desde demo pública",
         asunto=f"Lead prospecto demo - {rubro_demo}",
@@ -121,6 +131,7 @@ def _create_demo_lead_ticket(*, owner_user: Optional[User], anon_id: Optional[st
         canal_ingreso="web_demo_widget",
         anon_id=anon_id,
         municipio_id=getattr(owner_user, "id", None),
+        tenant_id=tenant_id,
     )
     db.session.add(ticket)
     db.session.flush()
