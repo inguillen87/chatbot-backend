@@ -274,3 +274,11 @@ Devuelve:
   - renderizar audio/imagen/pdf según `attachmentInfo.mimeType`.
 - Notificaciones campanita:
   - usar evento socket de comentario para incrementar contador por ticket.
+
+### Notificaciones admin (campanita)
+- `GET /api/admin/tenants/:slug/tickets/unread-summary?since_minutes=60`
+  - Devuelve tickets con mensajes no-admin recientes para pintar contador global y listado rápido.
+- UX recomendado:
+  1. Polling cada 20-30s o socket-trigger + refresh incremental.
+  2. Badge con `total_tickets_with_unread`.
+  3. Dropdown con top tickets (`ticket_type`, `ticket_id`, `unread_count`, `last_message_at`).

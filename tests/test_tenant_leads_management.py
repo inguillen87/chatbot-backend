@@ -1,7 +1,7 @@
 import jwt
 
 from app import db
-from models import EncEncuesta, EncRespuesta, MunicipioTicket, TenantProfile, User
+from models import EncEncuesta, EncRespuesta, MunicipioTicket, TenantProfile, TicketComentario, User
 
 
 def _headers(app, user):
@@ -218,3 +218,29 @@ def test_tenant_live_chat_schedule_config_and_public_status(client, app):
     public_body = public_resp.get_json()
     assert public_body["tenant_slug"] == tenant.slug
     assert public_body["source"] == "tenant_config"
+
+
+
+def test_tenant_unread_ticket_summary(client, app):
+    owner = User(email="owner-unread@test.com", name="Owner Unread", rol="admin", tipo_chat="pyme")
+    owner.set_password("pass")
+    db.session.add(owner)
+    db.session.commit()
+
+    tenant = TenantProfile(slug="tenant-unread", nombre="Tenant Unread", tipo="pyme", pyme_id=owner.id)
+    db.session.add(tenant)
+    db.session.commit()
+
+    ticket = MunicipioTicket(tenant_id=tenant.id, pregunta="x", asunto="x", estado="nuevo")
+    db.session.add(ticket)
+    db.session.commit()
+
+    db.session.add(TicketComentario(municipio_ticket_id=ticket.id, comentario="hola", es_admin=False))
+    db.session.add(TicketComentario(municipio_ticket_id=ticket.id, comentario="respuesta admin", es_admin=True))
+    db.session.commit()
+
+    resp = client.get(f"/api/admin/tenants/{tenant.slug}/tickets/unread-summary?since_minutes=60", headers=_headers(app, owner))
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body["total_tickets_with_unread"] >= 1
+    assert body["items"][0]["ticket_type"] in {"municipio", "pyme"}

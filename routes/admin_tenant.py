@@ -1,7 +1,7 @@
 from flask import Blueprint, request, jsonify, g, current_app
 import requests
 from sqlalchemy import func
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from utils.auth_helpers import token_requerido
 from middleware.tenant_context import require_tenant
@@ -20,6 +20,7 @@ from models import (
     PymeTicket,
     EncEncuesta,
     EncRespuesta,
+    TicketComentario,
 )
 from routes.catalogo import _formatear_producto
 from routes.carrito import _product_query_for_tenant
@@ -1103,6 +1104,71 @@ def tenant_surveys_overview(current_user, slug):
     })
 
 
+
+
+
+@admin_tenant_bp.route('/api/admin/tenants/<slug>/tickets/unread-summary', methods=['GET'])
+@token_requerido
+@require_tenant
+def tenant_unread_ticket_summary(current_user, slug):
+    tenant = _resolve_admin_tenant(current_user, slug)
+    if not tenant:
+        return jsonify({'error': 'Tenant not found'}), 404
+    if not _is_authorized_for_tenant(current_user, tenant):
+        return jsonify({'error': 'Unauthorized'}), 403
+
+    since_minutes = max(5, min(int(request.args.get('since_minutes', 1440) or 1440), 7 * 24 * 60))
+    limit = max(1, min(int(request.args.get('limit', 30) or 30), 200))
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=since_minutes)
+
+    items = []
+
+    muni_rows = (
+        db.session.query(TicketComentario.municipio_ticket_id, func.count(TicketComentario.id), func.max(TicketComentario.fecha))
+        .join(MunicipioTicket, MunicipioTicket.id == TicketComentario.municipio_ticket_id)
+        .filter(
+            MunicipioTicket.tenant_id == tenant.id,
+            TicketComentario.es_admin.is_(False),
+            TicketComentario.fecha >= cutoff,
+        )
+        .group_by(TicketComentario.municipio_ticket_id)
+        .all()
+    )
+    for ticket_id, unread_count, last_at in muni_rows:
+        items.append({
+            'ticket_type': 'municipio',
+            'ticket_id': ticket_id,
+            'unread_count': int(unread_count or 0),
+            'last_message_at': last_at.isoformat() if last_at else None,
+        })
+
+    pyme_rows = (
+        db.session.query(TicketComentario.pyme_ticket_id, func.count(TicketComentario.id), func.max(TicketComentario.fecha))
+        .join(PymeTicket, PymeTicket.id == TicketComentario.pyme_ticket_id)
+        .filter(
+            PymeTicket.tenant_id == tenant.id,
+            TicketComentario.es_admin.is_(False),
+            TicketComentario.fecha >= cutoff,
+        )
+        .group_by(TicketComentario.pyme_ticket_id)
+        .all()
+    )
+    for ticket_id, unread_count, last_at in pyme_rows:
+        items.append({
+            'ticket_type': 'pyme',
+            'ticket_id': ticket_id,
+            'unread_count': int(unread_count or 0),
+            'last_message_at': last_at.isoformat() if last_at else None,
+        })
+
+    items.sort(key=lambda x: (x['last_message_at'] or ''), reverse=True)
+    return jsonify({
+        'tenant_id': tenant.id,
+        'tenant_slug': tenant.slug,
+        'since_minutes': since_minutes,
+        'total_tickets_with_unread': len(items),
+        'items': items[:limit],
+    })
 
 @admin_tenant_bp.route('/api/admin/tenants/<slug>/employees/workload', methods=['GET'])
 @token_requerido

@@ -12,7 +12,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.attributes import flag_modified
 from fuzzywuzzy import process
 
-from models import Conversacion, db, PymePedido, ArchivoAdjunto
+from models import Conversacion, db, PymePedido, PymeTicket, ArchivoAdjunto
 try:
     from flask import session as flask_session, current_app, request # Añadir request
 except Exception:
@@ -1393,6 +1393,23 @@ class HumanHandler(BaseHandler):
                 if ticket_creado_id:
                     body = f"He generado el ticket #{ticket_creado_id} para que un agente se ponga en contacto contigo. ¿Hay algo más en lo que pueda ayudarte mientras tanto?"
                     self.pyme_ctx["ultimo_ticket_creado"] = ticket_creado_id
+
+                    # Persist human handoff flags so WhatsApp/widget can route messages
+                    # directly to the live ticket room while the human chat is active.
+                    chat_data = self.context.get("chat_db_context_data") if isinstance(self.context.get("chat_db_context_data"), dict) else {}
+                    chat_data["human_chat_in_progress"] = True
+                    chat_data["ticket_id"] = ticket_creado_id
+                    chat_data["tipo_ticket"] = "pyme"
+                    chat_data["room"] = f"ticket_pyme_{ticket_creado_id}"
+                    self.context["chat_db_context_data"] = chat_data
+
+                    try:
+                        pyme_ticket_obj = db.session.get(PymeTicket, ticket_creado_id)
+                        if pyme_ticket_obj and pyme_ticket_obj.estado == "nuevo":
+                            pyme_ticket_obj.estado = "esperando_agente_en_vivo"
+                    except Exception:
+                        logger.exception("No se pudo actualizar estado inicial de ticket humano pyme=%s", ticket_creado_id)
+
                     self._guardar_contexto_pyme()
             except Exception as e:
                 logger.error(f"Error creando ticket en HumanHandler: {e}")
