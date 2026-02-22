@@ -12,6 +12,7 @@ from models import (
     Conversacion,
     MunicipioTicket,
     PymeTicket,
+    CatalogoItem,
 )
 from utils.auth_helpers import token_requerido
 from utils.admin_decorators import super_admin_required
@@ -1403,6 +1404,53 @@ def register_external_whatsapp_number(current_user):
     })
 
 
+
+
+@super_admin_bp.route('/catalog/quality', methods=['GET'])
+@token_requerido
+@super_admin_required
+def catalog_quality_queue(current_user):
+    tenant_slug = str(request.args.get('tenant_slug') or '').strip().lower()
+    limit = max(1, min(int(request.args.get('limit', 100) or 100), 250))
+
+    query = CatalogoItem.query
+    if tenant_slug:
+        tenant = TenantProfile.query.filter_by(slug=tenant_slug).first()
+        if not tenant:
+            return jsonify({"error": "Tenant no encontrado"}), 404
+        query = query.filter(CatalogoItem.tenant_id == tenant.id)
+
+    rows = query.order_by(desc(CatalogoItem.timestamp)).limit(limit * 3).all()
+    items = []
+    for item in rows:
+        meta = item.extra_metadata if isinstance(item.extra_metadata, dict) else {}
+        confidence = meta.get('confidence_score')
+        review_required = bool(meta.get('review_required'))
+        quality_issues = meta.get('quality_issues') if isinstance(meta.get('quality_issues'), list) else []
+        if not review_required and not quality_issues:
+            continue
+        items.append({
+            "catalog_item_id": item.id,
+            "tenant_id": item.tenant_id,
+            "user_id": item.user_id,
+            "nombre": item.nombre,
+            "categoria": item.categoria,
+            "precio": item.precio,
+            "confidence_score": confidence,
+            "review_required": review_required,
+            "quality_issues": quality_issues,
+            "updated_at": item.timestamp.isoformat() if item.timestamp else None,
+        })
+        if len(items) >= limit:
+            break
+
+    avg_conf = round(sum(float(it.get('confidence_score') or 0) for it in items) / len(items), 3) if items else 0.0
+    return jsonify({
+        "total": len(items),
+        "avg_confidence": avg_conf,
+        "items": items,
+    })
+
 @super_admin_bp.route('/leads/interactions', methods=['GET'])
 @token_requerido
 @super_admin_required
@@ -1459,6 +1507,10 @@ def list_leads_interactions(current_user):
             last_seen=last_seen,
             has_contact=has_contact,
         )
+        now = datetime.now(timezone.utc)
+        last_dt = last_seen if (last_seen and last_seen.tzinfo) else (last_seen.replace(tzinfo=timezone.utc) if last_seen else None)
+        age_seconds = (now - last_dt).total_seconds() if last_dt else 0
+        sla_breached = bool(last_dt and age_seconds > 1800 and open_tickets > 0)
 
         items.append({
             'chat_session_id': ctx.chat_session_id,
@@ -1477,6 +1529,8 @@ def list_leads_interactions(current_user):
             'open_tickets': open_tickets,
             'last_seen': last_seen.isoformat() if last_seen else None,
             'relevance_score': relevance,
+            'sla_breached': sla_breached,
+            'lead_score': relevance + (15 if has_contact else 0),
         })
 
     items.sort(key=lambda item: ((item.get('relevance_score') or 0), item.get('last_seen') or ''), reverse=True)
