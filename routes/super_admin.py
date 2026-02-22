@@ -1595,3 +1595,68 @@ def leads_pipeline(current_user):
         "avg_first_response_seconds": avg_first_response_seconds,
         "items": items,
     })
+
+
+@super_admin_bp.route('/leads/<int:ticket_id>/stage', methods=['PATCH'])
+@token_requerido
+@super_admin_required
+def update_lead_stage(current_user, ticket_id: int):
+    data = request.get_json(silent=True) or {}
+    stage = str(data.get('stage') or '').strip().lower()
+    note = str(data.get('note') or '').strip()
+
+    stage_to_estado = {
+        "nuevo": "nuevo",
+        "contactado": "abierto",
+        "calificado": "en_proceso",
+        "demo_agendada": "en_proceso",
+        "propuesta_enviada": "pendiente",
+        "ganado": "cerrado",
+        "perdido": "cancelado",
+    }
+
+    if stage not in stage_to_estado:
+        return jsonify({
+            "error": "stage inválido",
+            "allowed": list(stage_to_estado.keys()),
+        }), 400
+
+    lead = MunicipioTicket.query.filter_by(id=ticket_id, categoria='lead_demo_prospecto').first()
+    if not lead:
+        return jsonify({"error": "Lead no encontrado"}), 404
+
+    previous_estado = lead.estado
+    lead.estado = stage_to_estado[stage]
+    lead.ultima_actividad = datetime.utcnow()
+
+    if note:
+        existing = (lead.detalles or '').strip()
+        ts = datetime.utcnow().isoformat()
+        log_line = f"[{ts}] stage={stage} note={note}"
+        lead.detalles = f"{existing}\n{log_line}".strip()
+
+    _log_admin_action(
+        current_user.id,
+        "update_lead_stage",
+        f"lead:{lead.id}",
+        {
+            "ticket_id": lead.id,
+            "nro_ticket": lead.nro_ticket,
+            "stage": stage,
+            "previous_estado": previous_estado,
+            "new_estado": lead.estado,
+            "tenant_id": lead.tenant_id,
+            "note": note or None,
+        },
+    )
+
+    db.session.commit()
+    return jsonify({
+        "ok": True,
+        "ticket_id": lead.id,
+        "nro_ticket": lead.nro_ticket,
+        "stage": stage,
+        "estado": lead.estado,
+        "tenant_id": lead.tenant_id,
+        "updated_at": lead.ultima_actividad.isoformat() if lead.ultima_actividad else None,
+    })

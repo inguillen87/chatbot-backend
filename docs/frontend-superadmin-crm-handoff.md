@@ -54,3 +54,24 @@ Usar para:
 - Puede filtrar por tenant sin recargar toda la app.
 - Visualiza funnel y tasa de conversión en segundos.
 - Puede accionar contacto rápido desde cada lead.
+
+
+### 3) Cambio de etapa comercial (nuevo)
+`PATCH /api/admin/leads/<ticket_id>/stage`
+
+Body JSON:
+```json
+{
+  "stage": "contactado",
+  "note": "Llamada inicial realizada"
+}
+```
+
+Stages permitidos:
+- `nuevo`
+- `contactado`
+- `calificado`
+- `demo_agendada`
+- `propuesta_enviada`
+- `ganado`
+- `perdido`
