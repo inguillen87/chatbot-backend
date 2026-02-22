@@ -18,7 +18,7 @@ from flask import Blueprint, request, jsonify, current_app
 from sqlalchemy import func, desc
 from sqlalchemy.exc import ProgrammingError, SQLAlchemyError
 from sqlalchemy.orm.attributes import flag_modified # Importado para flag_modified
-from models import User, Rubro, Conversacion, db, ChatSessionContext # Added ChatSessionContext
+from models import User, Rubro, Conversacion, MunicipioTicket, db, ChatSessionContext # Added ChatSessionContext
 from utils.db_utils import commit_with_retry, ensure_chat_session_context_schema
 from socket_service import socketio # Import socketio
 from services.logic import (
@@ -28,6 +28,9 @@ from services.logic import (
 )
 from services.live_chat_schedule import build_live_chat_status
 from services.demo_registry import load_demo_rubros, demo_rubro_for_token
+from services.common_utils import validar_email, validar_telefono, formatear_telefono_e164
+from services.notifications import enviar_notificacion_sms, enviar_notificacion_whatsapp_con_plantilla
+from services.email_service import enviar_email
 from utils.auth_helpers import (
     anon_o_token_requerido,
     obtener_token,
@@ -45,6 +48,94 @@ DEMO_MENU_PREFIX = "demo_menu"
 DEMO_MENU_BACK_ACTION = f"{DEMO_MENU_PREFIX}:back"
 DEMO_MENU_HOME_ACTION = f"{DEMO_MENU_PREFIX}:home"
 DEMO_MENU_ROOT_ID = "demo_menu_root"
+DEMO_LEAD_ACTION_ID = "open_demo_form"
+
+
+def _extract_text_value(payload) -> str:
+    if payload is None:
+        return ""
+    if isinstance(payload, str):
+        return payload.strip()
+    if isinstance(payload, dict):
+        for key in ("texto", "text", "pregunta", "value"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return ""
+
+
+def _build_demo_lead_prompt(message_body: str, *, pedir_info: str) -> Dict[str, object]:
+    return {
+        "message_body": message_body,
+        "respuesta": message_body,
+        "message_type": "interactive_buttons",
+        "pedir_info": pedir_info,
+        "fuente": "demo_lead_capture",
+        "botones": [
+            {"texto": "Continuar demo", "action": DEMO_MENU_HOME_ACTION, "action_id": DEMO_MENU_HOME_ACTION},
+            {"texto": "Ver rubros", "action": DEMO_MENU_BACK_ACTION, "action_id": DEMO_MENU_BACK_ACTION},
+        ],
+        "generar_audio": False,
+    }
+
+
+def _notify_superadmin_new_lead(ticket: MunicipioTicket, *, lead_nombre: str, lead_telefono: str, lead_email: str, rubro_demo: str) -> None:
+    superadmin_phone = current_app.config.get("SUPERADMIN_LEAD_PHONE", "+5492613168608")
+    superadmin_email = current_app.config.get("SUPERADMIN_LEAD_EMAIL") or current_app.config.get("MAIL_FROM_ADDRESS")
+    resumen = (
+        f"Nuevo lead demo: {lead_nombre} | Tel: {lead_telefono} | Email: {lead_email} | "
+        f"Rubro: {rubro_demo} | Ticket #{ticket.nro_ticket}"
+    )
+
+    enviar_notificacion_whatsapp_con_plantilla(
+        superadmin_phone,
+        "Superadmin",
+        ticket.nro_ticket,
+        categoria="lead_demo",
+        mensaje=resumen,
+    )
+    enviar_notificacion_sms(superadmin_phone, resumen)
+
+    if superadmin_email:
+        enviar_email(
+            superadmin_email,
+            f"Nuevo lead demo #{ticket.nro_ticket}",
+            (
+                f"<p>Se registró un nuevo prospecto desde la demo pública.</p>"
+                f"<ul><li>Nombre: {lead_nombre}</li><li>Teléfono: {lead_telefono}</li>"
+                f"<li>Email: {lead_email}</li><li>Rubro: {rubro_demo}</li></ul>"
+            ),
+            resumen,
+        )
+
+
+def _create_demo_lead_ticket(*, owner_user: Optional[User], anon_id: Optional[str], chat_session_id: str, lead_nombre: str, lead_telefono: str, lead_email: str, rubro_demo: str) -> MunicipioTicket:
+    tenant_id = getattr(owner_user, "tenant_id", None)
+    if not tenant_id and owner_user is not None:
+        tenant_ref = (
+            getattr(owner_user, "tenant", None)
+            or getattr(owner_user, "tenant_profile", None)
+            or getattr(owner_user, "tenant_profile_municipio", None)
+            or getattr(owner_user, "tenant_profile_pyme", None)
+        )
+        tenant_id = getattr(tenant_ref, "id", None)
+
+    ticket = MunicipioTicket(
+        pregunta="Prospecto generado desde demo pública",
+        asunto=f"Lead prospecto demo - {rubro_demo}",
+        categoria="lead_demo_prospecto",
+        detalles=f"Sesión: {chat_session_id} | Rubro demo: {rubro_demo}",
+        nombre_vecino=lead_nombre,
+        telefono_vecino=lead_telefono,
+        email_vecino=lead_email,
+        canal_ingreso="web_demo_widget",
+        anon_id=anon_id,
+        municipio_id=getattr(owner_user, "id", None),
+        tenant_id=tenant_id,
+    )
+    db.session.add(ticket)
+    db.session.flush()
+    return ticket
 
 
 def _load_demo_rubros() -> List[Dict[str, Optional[str]]]:
@@ -127,12 +218,23 @@ def _should_enforce_owner_plan_limit(*, demo_flow_active: bool, is_init_request:
     if demo_flow_active or is_init_request:
         return False
 
-    if is_public_landing and is_anonymous and has_entity_token:
+    # Public anonymous web visitors should never be blocked by owner plan
+    # counters during discovery. Entity token detection can fail depending on
+    # proxy/header transformations, so we intentionally do not require it.
+    if is_public_landing and is_anonymous:
         return False
 
     return True
 
 
+
+def _is_public_landing_request() -> bool:
+    """Return True when request comes from public marketing site."""
+
+    origin = (request.headers.get("Origin") or "").lower()
+    referer = (request.headers.get("Referer") or "").lower()
+    landing_source = origin or referer
+    return "chatboc.ar" in landing_source and "app.chatboc.ar" not in landing_source
 
 
 def _extract_entity_token_hint() -> str | None:
@@ -1240,6 +1342,7 @@ def _procesar_chat(
             return jsonify({"error": {"code": 401, "message": "No se pudo identificar la sesión anónima."}}), 401 # NEW FORMAT
 
         is_init_request = _is_init_payload(original_user_payload)
+        message_count_this_session = 0
 
         if is_anonymous:
             # Lógica para usuarios anónimos
@@ -1346,8 +1449,7 @@ def _procesar_chat(
 
         # Enforce Demo Flow for Public Origin or Missing Auth
         # If we are on the public site and don't have a valid user context, force the demo selector
-        origin = request.headers.get("Origin", "").lower()
-        is_public_landing = "chatboc.ar" in origin and "app.chatboc.ar" not in origin
+        is_public_landing = _is_public_landing_request()
 
         # If on public landing and no explicit owner (or leaked owner context from cookie that we stripped),
         # force tenant hint to generic so demo flow triggers.
@@ -1372,6 +1474,13 @@ def _procesar_chat(
             not actor_principal
             and tenant_slug_hint in {"municipio", "pyme"}
             and not demo_session_activa
+        )
+
+        should_show_public_demo_selector = (
+            is_public_landing
+            and is_anonymous
+            and not demo_session_activa
+            and (is_init_request or message_count_this_session == 0)
         )
 
         if is_municipal_request and not force_demo_selector_flow and isinstance(contexto_chat, dict):
@@ -1552,7 +1661,7 @@ def _procesar_chat(
                     flag_modified(chat_context_obj, "context_data")
                 _sync_demo_session_flag()
 
-        if not is_municipal_request or force_demo_selector_flow:
+        if not is_municipal_request or force_demo_selector_flow or should_show_public_demo_selector:
             demo_key = _extract_demo_key(action_id)
             if not demo_key and isinstance(original_user_payload, dict):
                 demo_key = _extract_demo_key(original_user_payload.get("action") or original_user_payload.get("action_id"))
@@ -1621,7 +1730,7 @@ def _procesar_chat(
                 action_id = None
                 is_demo_selection_event = True
 
-            if not owner_del_bot:
+            if not owner_del_bot or should_show_public_demo_selector:
                 demo_options = demo_options or _load_demo_rubros()
                 if demo_options:
                     contexto_chat["demo_session"] = True
@@ -1652,6 +1761,135 @@ def _procesar_chat(
                         )
                     _emit_socket_payload(selector_payload)
                     return jsonify(selector_payload), 200
+
+        # Demo lead capture flow (prospect intake)
+        if isinstance(contexto_chat, dict):
+            lead_state = str(contexto_chat.get("demo_lead_capture_state") or "").strip().lower()
+            lead_text = _extract_text_value(original_user_payload)
+            lead_chat_session_id = request.headers.get("X-Chat-Session-Id") or str(uuid.uuid4())
+            rubro_demo_label = str(
+                contexto_chat.get("demo_display_name")
+                or rubro_para_log
+                or (getattr(rubro_obj_global, "nombre", None) if rubro_obj_global else "Demo Chatboc")
+            )
+
+            if action_id == DEMO_LEAD_ACTION_ID and not lead_state:
+                contexto_chat["demo_lead_capture_state"] = "waiting_name"
+                if chat_context_obj:
+                    flag_modified(chat_context_obj, "context_data")
+                payload = _build_demo_lead_prompt(
+                    "¡Excelente! Para que un asesor te contacte y arme una demo personalizada, ¿cuál es tu nombre?",
+                    pedir_info="nombre",
+                )
+                try:
+                    commit_with_retry(db.session)
+                except Exception as e_commit:
+                    db.session.rollback()
+                    current_app.logger.error("Error guardando estado de captura de lead demo: %s", e_commit, exc_info=True)
+                _emit_socket_payload(payload)
+                return jsonify(payload), 200
+
+            if lead_state == "waiting_name" and lead_text:
+                contexto_chat["demo_lead_nombre"] = lead_text[:150]
+                contexto_chat["demo_lead_capture_state"] = "waiting_phone"
+                if chat_context_obj:
+                    flag_modified(chat_context_obj, "context_data")
+                payload = _build_demo_lead_prompt(
+                    "¡Gracias! Ahora pasame tu teléfono con código de área (ej: +549...)",
+                    pedir_info="telefono",
+                )
+                try:
+                    commit_with_retry(db.session)
+                except Exception as e_commit:
+                    db.session.rollback()
+                    current_app.logger.error("Error guardando estado de captura de lead demo: %s", e_commit, exc_info=True)
+                _emit_socket_payload(payload)
+                return jsonify(payload), 200
+
+            if lead_state == "waiting_phone" and lead_text:
+                telefono_ok = validar_telefono(lead_text)
+                if not telefono_ok:
+                    payload = _build_demo_lead_prompt(
+                        "Ese teléfono no parece válido. ¿Podés reenviarlo incluyendo código de área?",
+                        pedir_info="telefono",
+                    )
+                    _emit_socket_payload(payload)
+                    return jsonify(payload), 200
+                contexto_chat["demo_lead_telefono"] = formatear_telefono_e164(lead_text)
+                contexto_chat["demo_lead_capture_state"] = "waiting_email"
+                if chat_context_obj:
+                    flag_modified(chat_context_obj, "context_data")
+                payload = _build_demo_lead_prompt(
+                    "Perfecto. ¿Cuál es tu email para enviarte propuesta, catálogo y seguimiento?",
+                    pedir_info="email",
+                )
+                try:
+                    commit_with_retry(db.session)
+                except Exception as e_commit:
+                    db.session.rollback()
+                    current_app.logger.error("Error guardando estado de captura de lead demo: %s", e_commit, exc_info=True)
+                _emit_socket_payload(payload)
+                return jsonify(payload), 200
+
+            if lead_state == "waiting_email" and lead_text:
+                if not validar_email(lead_text):
+                    payload = _build_demo_lead_prompt(
+                        "Ese email no parece válido. ¿Podés escribirlo nuevamente?",
+                        pedir_info="email",
+                    )
+                    _emit_socket_payload(payload)
+                    return jsonify(payload), 200
+
+                lead_nombre = str(contexto_chat.get("demo_lead_nombre") or "Prospecto Demo").strip()
+                lead_telefono = str(contexto_chat.get("demo_lead_telefono") or "").strip()
+                lead_email = lead_text.strip().lower()
+
+                lead_ticket = _create_demo_lead_ticket(
+                    owner_user=owner_del_bot,
+                    anon_id=anon_id,
+                    chat_session_id=lead_chat_session_id,
+                    lead_nombre=lead_nombre,
+                    lead_telefono=lead_telefono,
+                    lead_email=lead_email,
+                    rubro_demo=rubro_demo_label,
+                )
+                _notify_superadmin_new_lead(
+                    lead_ticket,
+                    lead_nombre=lead_nombre,
+                    lead_telefono=lead_telefono,
+                    lead_email=lead_email,
+                    rubro_demo=rubro_demo_label,
+                )
+
+                contexto_chat["demo_lead_capture_state"] = "completed"
+                contexto_chat["demo_lead_ticket_id"] = lead_ticket.id
+                if chat_context_obj:
+                    flag_modified(chat_context_obj, "context_data")
+
+                payload = {
+                    "message_body": (
+                        "¡Listo! Ya registré tus datos y un asesor te contacta a la brevedad. "
+                        f"Tu código de seguimiento es #{lead_ticket.nro_ticket}."
+                    ),
+                    "respuesta": (
+                        "¡Listo! Ya registré tus datos y un asesor te contacta a la brevedad. "
+                        f"Tu código de seguimiento es #{lead_ticket.nro_ticket}."
+                    ),
+                    "fuente": "demo_lead_capture",
+                    "message_type": "interactive_buttons",
+                    "botones": [
+                        {"texto": "Seguir explorando", "action": DEMO_MENU_HOME_ACTION, "action_id": DEMO_MENU_HOME_ACTION},
+                        {"texto": "Ver rubros", "action": DEMO_MENU_BACK_ACTION, "action_id": DEMO_MENU_BACK_ACTION},
+                    ],
+                    "generar_audio": False,
+                }
+                try:
+                    commit_with_retry(db.session)
+                except Exception as e_commit:
+                    db.session.rollback()
+                    current_app.logger.error("Error guardando estado de captura de lead demo: %s", e_commit, exc_info=True)
+                _emit_socket_payload(payload)
+                return jsonify(payload), 200
 
         if not owner_del_bot and rubro_obj_global:
             current_app.logger.warning(
