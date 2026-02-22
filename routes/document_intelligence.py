@@ -11,6 +11,7 @@ from flask import Blueprint, jsonify, request
 from models import CatalogoItem, CatalogUpload, db
 from routes.auth import token_requerido
 from services.embedding_service import embed_textos_llm
+from services.catalog_quality import evaluate_catalog_quality
 from services.llm_utils import llamar_llm_para_json_estructurado
 from services.qdrant_service import index_catalog_item
 from services.vision_fallback_service import (
@@ -570,9 +571,16 @@ def document_intelligence_commit(current_user, pyme_id: int):
         })
         texts_to_embed.append(f"{nombre} {item.get('categoria') or ''} {precio or ''}")
 
+    normalized_items = evaluate_catalog_quality(normalized_items)
+
     embeddings = embed_textos_llm(texts_to_embed) if texts_to_embed else []
     count = 0
     for idx, item in enumerate(normalized_items):
+        item_metadata = dict(item.get("extra_metadata") or {})
+        item_metadata["confidence_score"] = item.get("confidence_score")
+        item_metadata["quality_issues"] = item.get("quality_issues") or []
+        item_metadata["review_required"] = bool(item.get("review_required"))
+
         catalog_item = CatalogoItem(
             user_id=current_user.id,
             tenant_id=tenant_id,
@@ -586,7 +594,7 @@ def document_intelligence_commit(current_user, pyme_id: int):
             unidad=item.get("unidad"),
             descripcion_corta=item.get("presentacion"),
             descripcion=item.get("descripcion"),
-            extra_metadata=item.get("extra_metadata") or None,
+            extra_metadata=item_metadata,
             modalidad="venta",
             disponible=True,
         )
@@ -607,7 +615,10 @@ def document_intelligence_commit(current_user, pyme_id: int):
                         "stock": item.get("stock") or 0,
                         "user_id": current_user.id,
                         "tenant_id": tenant_id,
-                        "extra_metadata": item.get("extra_metadata") or {},
+                        "confidence_score": item.get("confidence_score"),
+                        "review_required": bool(item.get("review_required")),
+                        "quality_issues": item.get("quality_issues") or [],
+                        "extra_metadata": item_metadata,
                     },
                     embedding,
                 )
@@ -618,15 +629,24 @@ def document_intelligence_commit(current_user, pyme_id: int):
                 )
         count += 1
 
+    quality_summary = {
+        "items": count,
+        "review_required": sum(1 for item in normalized_items if item.get("review_required")),
+        "avg_confidence": round(
+            sum(float(item.get("confidence_score") or 0.0) for item in normalized_items) / len(normalized_items),
+            3,
+        ) if normalized_items else 0.0,
+    }
+
     if upload_id:
         upload_rec = _catalog_upload_from_request(upload_id)
         if upload_rec:
             upload_rec.preview_data = {"columns": columns, "rows": rows}
-            upload_rec.stats = {"items": count}
+            upload_rec.stats = quality_summary
             upload_rec.status = "committed"
     db.session.commit()
 
-    return jsonify({"success": True, "items": count})
+    return jsonify({"success": True, "items": count, "quality": quality_summary})
 
 
 @document_intelligence_public_bp.route("/preview", methods=["OPTIONS"])
