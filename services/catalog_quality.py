@@ -9,12 +9,43 @@ def _to_float(value: Any) -> float | None:
         return None
     if isinstance(value, (int, float)):
         return float(value)
+
     text = str(value).strip()
     if not text:
         return None
-    text = re.sub(r"[^\d,.-]", "", text).replace(".", "").replace(",", ".")
+
+    # Keep separators and minus sign only.
+    text = re.sub(r"[^\d,.-]", "", text)
+    if not text:
+        return None
+
+    # Heuristic to preserve decimal separator instead of stripping all dots:
+    # - if both ',' and '.' exist, the last one is treated as decimal separator.
+    # - if only one separator exists, treat it as decimal separator when it has
+    #   1-2 digits after it; otherwise treat as thousands separator.
+    if ',' in text and '.' in text:
+        last_comma = text.rfind(',')
+        last_dot = text.rfind('.')
+        decimal_sep = ',' if last_comma > last_dot else '.'
+        thousand_sep = '.' if decimal_sep == ',' else ','
+        normalized = text.replace(thousand_sep, '').replace(decimal_sep, '.')
+    elif ',' in text:
+        parts = text.split(',')
+        if len(parts[-1]) in (1, 2):
+            normalized = ''.join(parts[:-1]).replace('.', '') + '.' + parts[-1]
+        else:
+            normalized = ''.join(parts).replace('.', '')
+    elif '.' in text:
+        parts = text.split('.')
+        if len(parts[-1]) in (1, 2):
+            normalized = ''.join(parts[:-1]).replace(',', '') + '.' + parts[-1]
+        else:
+            normalized = ''.join(parts).replace(',', '')
+    else:
+        normalized = text
+
     try:
-        return float(text)
+        return float(normalized)
     except ValueError:
         return None
 

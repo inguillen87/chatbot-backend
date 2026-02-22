@@ -1,4 +1,4 @@
-from services.catalog_quality import evaluate_catalog_quality
+from services.catalog_quality import _to_float, evaluate_catalog_quality
 
 
 def test_evaluate_catalog_quality_flags_low_confidence_and_duplicates():
@@ -16,3 +16,10 @@ def test_evaluate_catalog_quality_flags_low_confidence_and_duplicates():
     assert "precio_invalido" in result[0]["quality_issues"]
     assert result[2]["review_required"] is True
     assert "duplicado_aproximado" in result[2]["quality_issues"]
+
+
+
+def test_price_parser_preserves_dot_decimals_and_localized_formats():
+    assert _to_float("12.50") == 12.5
+    assert _to_float("1.234,56") == 1234.56
+    assert _to_float("1,234.56") == 1234.56
