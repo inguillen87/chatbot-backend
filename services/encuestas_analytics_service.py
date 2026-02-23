@@ -4,13 +4,14 @@ from __future__ import annotations
 import csv
 import io
 from collections import Counter, defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from statistics import mean, median
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from sqlalchemy.orm import joinedload
 
-from models import EncEncuesta, EncRespuesta, EncPregunta
+from database import db
+from models import EncEncuesta, EncRespuesta, EncPregunta, EncRespuestaDetalle
 from services.encuestas_service import (
     EncuestaError,
     get_encuesta,
@@ -543,6 +544,339 @@ def get_timeseries(encuesta_id: int, granularity: str = "day", filtros: Optional
     return series
 
 
+
+
+def get_forecast(
+    encuesta_id: int,
+    *,
+    filtros: Optional[Dict[str, Any]] = None,
+    window_minutes: int = 10,
+    horizon_minutes: int = 60,
+) -> Dict[str, Any]:
+    """Build a lightweight short-term projection from minute-level activity."""
+
+    encuesta = get_encuesta(encuesta_id)
+    respuestas = _collect_respuestas(encuesta, filtros)
+    now = datetime.now(timezone.utc)
+
+    minute_buckets: Counter = Counter()
+    for respuesta in respuestas:
+        submitted_at = respuesta.submitted_at
+        if not submitted_at:
+            continue
+        dt = submitted_at.astimezone(timezone.utc).replace(second=0, microsecond=0)
+        minute_buckets[dt] += 1
+
+    window = max(5, min(int(window_minutes or 10), 60))
+    horizon = max(15, min(int(horizon_minutes or 60), 240))
+
+    recent_values: List[int] = []
+    for offset in range(window):
+        bucket = (now - timedelta(minutes=offset)).replace(second=0, microsecond=0)
+        recent_values.append(int(minute_buckets.get(bucket, 0)))
+
+    moving_avg = round(sum(recent_values) / len(recent_values), 3) if recent_values else 0.0
+    projected_additional = int(round(moving_avg * horizon))
+    projected_total = len(respuestas) + projected_additional
+
+    confidence = "media"
+    if len(respuestas) < 20:
+        confidence = "baja"
+    elif len(respuestas) > 200:
+        confidence = "alta"
+
+    return {
+        "encuesta_id": encuesta.id,
+        "window_minutes": window,
+        "horizon_minutes": horizon,
+        "baseline_total": len(respuestas),
+        "current_rate_per_minute": moving_avg,
+        "projected_additional": projected_additional,
+        "projected_total": projected_total,
+        "confidence": confidence,
+        "updated_at": now.isoformat(),
+    }
+
+
+def get_alerts(
+    encuesta_id: int,
+    *,
+    filtros: Optional[Dict[str, Any]] = None,
+    window_minutes: int = 10,
+    min_activity_threshold: int = 5,
+) -> Dict[str, Any]:
+    """Evaluate alert rules for campaign operations dashboards."""
+
+    encuesta = get_encuesta(encuesta_id)
+    respuestas = _collect_respuestas(encuesta, filtros)
+
+    window = max(5, min(int(window_minutes or 10), 30))
+    now = datetime.now(timezone.utc)
+    last_window = 0
+    previous_window = 0
+    for respuesta in respuestas:
+        submitted_at = respuesta.submitted_at
+        if not submitted_at:
+            continue
+        delta_seconds = (now - submitted_at.astimezone(timezone.utc)).total_seconds()
+        if delta_seconds <= window * 60:
+            last_window += 1
+        elif delta_seconds <= window * 120:
+            previous_window += 1
+
+    delta = last_window - previous_window
+    trend = "estable"
+    if delta > 0:
+        trend = "subiendo"
+    elif delta < 0:
+        trend = "bajando"
+
+    alerts: List[Dict[str, Any]] = []
+    if trend == "bajando" and previous_window >= min_activity_threshold:
+        alerts.append(
+            {
+                "code": "participacion_en_caida",
+                "severity": "high" if delta <= -max(3, min_activity_threshold // 2) else "medium",
+                "message": "La participación cayó en la ventana reciente. Recomendada activación de recordatorios.",
+                "delta": delta,
+            }
+        )
+    if trend == "subiendo" and last_window >= min_activity_threshold:
+        alerts.append(
+            {
+                "code": "momento_favorable",
+                "severity": "info",
+                "message": "La participación está acelerando. Buen momento para ampliar difusión.",
+                "delta": delta,
+            }
+        )
+
+    summary = get_summary(encuesta_id, filtros)
+    leader_payload = None
+    if summary.get("preguntas"):
+        candidate_options: List[Dict[str, Any]] = []
+        for pregunta in summary["preguntas"]:
+            opciones = pregunta.get("opciones") or []
+            if opciones:
+                sorted_options = sorted(opciones, key=lambda item: item.get("porcentaje", 0), reverse=True)
+                candidate_options.append(sorted_options[0])
+        if candidate_options:
+            leader_payload = sorted(candidate_options, key=lambda item: item.get("porcentaje", 0), reverse=True)[0]
+    if leader_payload and float(leader_payload.get("porcentaje") or 0) >= 60:
+        alerts.append(
+            {
+                "code": "liderazgo_marcado",
+                "severity": "info",
+                "message": "Se detecta un liderazgo fuerte en una opción de respuesta.",
+                "value": leader_payload.get("porcentaje"),
+            }
+        )
+
+    return {
+        "encuesta_id": encuesta.id,
+        "window_minutes": max(5, min(int(window_minutes or 10), 30)),
+        "threshold": max(1, int(min_activity_threshold or 5)),
+        "alerts": alerts,
+        "has_alerts": bool(alerts),
+        "evaluated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def get_executive_brief(encuesta_id: int, filtros: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Return an executive-ready summary object for frontend reporting."""
+
+    encuesta = get_encuesta(encuesta_id)
+    summary = get_summary(encuesta_id, filtros)
+    forecast = get_forecast(encuesta_id, filtros=filtros)
+    alerts = get_alerts(encuesta_id, filtros=filtros)
+
+    headline = (
+        f"{summary['total_respuestas']} respuestas totales con proyección a "
+        f"{forecast['projected_total']} en {forecast['horizon_minutes']} minutos."
+    )
+
+    return {
+        "encuesta_id": encuesta.id,
+        "titulo": encuesta.titulo,
+        "headline": headline,
+        "summary": {
+            "total_respuestas": summary.get("total_respuestas", 0),
+            "participantes_unicos": summary.get("participantes_unicos", 0),
+            "tasa_completitud": summary.get("tasa_completitud", 0),
+        },
+        "forecast": forecast,
+        "alerts": alerts,
+        "insights": [
+            headline,
+            "Monitorear delta de momentum para decisiones tácticas de difusión.",
+        ],
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+
+def _matches_segment(respuesta: EncRespuesta, segment: Optional[Dict[str, Any]]) -> bool:
+    if not segment:
+        return True
+    for key in ("canal", "genero", "rango_etario", "barrio", "ciudad", "provincia", "pais"):
+        expected = segment.get(key)
+        if expected is None or expected == "":
+            continue
+        value = getattr(respuesta, key, None)
+        if str(value or "").strip().lower() != str(expected).strip().lower():
+            return False
+    return True
+
+
+def _segment_distribution(
+    respuestas: Sequence[EncRespuesta],
+    encuesta: EncEncuesta,
+) -> Dict[str, Any]:
+    question_payload: List[Dict[str, Any]] = []
+    for pregunta in encuesta.preguntas:
+        normalized_tipo = _normalize_question_type(pregunta.tipo)
+        if normalized_tipo not in {"single_choice", "multiple_choice"}:
+            continue
+
+        option_counter: Counter = Counter()
+        for respuesta in respuestas:
+            for detalle in respuesta.detalles:
+                if detalle.pregunta_id != pregunta.id or not detalle.opcion_id:
+                    continue
+                option_counter[detalle.opcion_id] += 1
+
+        options = []
+        total_votes = sum(option_counter.values())
+        for opcion in pregunta.opciones:
+            votos = int(option_counter.get(opcion.id, 0))
+            pct = round((votos / total_votes * 100), 2) if total_votes else 0.0
+            options.append({
+                "opcion_id": opcion.id,
+                "label": opcion.texto,
+                "votos": votos,
+                "porcentaje": pct,
+            })
+        options.sort(key=lambda item: item["votos"], reverse=True)
+        question_payload.append(
+            {
+                "pregunta_id": pregunta.id,
+                "texto": pregunta.texto,
+                "tipo": normalized_tipo,
+                "total_votos": total_votes,
+                "opciones": options,
+            }
+        )
+
+    canales = Counter((respuesta.canal or "sin_canal") for respuesta in respuestas)
+    return {
+        "total_respuestas": len(respuestas),
+        "canales": [{"label": k, "value": v} for k, v in canales.most_common()],
+        "preguntas": question_payload,
+    }
+
+
+def get_segment_compare(
+    encuesta_id: int,
+    *,
+    filtros: Optional[Dict[str, Any]] = None,
+    segment_a: Optional[Dict[str, Any]] = None,
+    segment_b: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    encuesta = get_encuesta(encuesta_id)
+    respuestas = _collect_respuestas(encuesta, filtros)
+
+    group_a = [respuesta for respuesta in respuestas if _matches_segment(respuesta, segment_a)]
+    group_b = [respuesta for respuesta in respuestas if _matches_segment(respuesta, segment_b)]
+
+    return {
+        "encuesta_id": encuesta.id,
+        "segment_a": {
+            "filters": segment_a or {},
+            "stats": _segment_distribution(group_a, encuesta),
+        },
+        "segment_b": {
+            "filters": segment_b or {},
+            "stats": _segment_distribution(group_b, encuesta),
+        },
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def get_anomaly_report(
+    encuesta_id: int,
+    *,
+    filtros: Optional[Dict[str, Any]] = None,
+    burst_window_minutes: int = 5,
+    burst_threshold: int = 10,
+) -> Dict[str, Any]:
+    encuesta = get_encuesta(encuesta_id)
+    respuestas = _collect_respuestas(encuesta, filtros)
+
+    ip_counter = Counter((respuesta.ip or "") for respuesta in respuestas if respuesta.ip)
+    fingerprint_counter = Counter(
+        (respuesta.huella_unica or "") for respuesta in respuestas if respuesta.huella_unica
+    )
+    geo_counter = Counter(
+        (round(float(respuesta.lat), 3), round(float(respuesta.lng), 3))
+        for respuesta in respuestas
+        if respuesta.lat is not None and respuesta.lng is not None
+    )
+
+    window = max(1, min(int(burst_window_minutes or 5), 30))
+    threshold = max(3, int(burst_threshold or 10))
+    now = datetime.now(timezone.utc)
+    burst_count = 0
+    for respuesta in respuestas:
+        if not respuesta.submitted_at:
+            continue
+        if (now - respuesta.submitted_at.astimezone(timezone.utc)).total_seconds() <= window * 60:
+            burst_count += 1
+
+    suspicious_ips = [
+        {"ip": ip, "count": count}
+        for ip, count in ip_counter.most_common(5)
+        if count >= 3
+    ]
+    repeated_fingerprints = [
+        {"fingerprint": fp, "count": count}
+        for fp, count in fingerprint_counter.most_common(5)
+        if count >= 2
+    ]
+    concentrated_geo = [
+        {"lat": lat, "lng": lng, "count": count}
+        for (lat, lng), count in geo_counter.most_common(5)
+        if count >= 3
+    ]
+
+    score = 0
+    score += min(len(suspicious_ips) * 12, 36)
+    score += min(len(repeated_fingerprints) * 15, 30)
+    score += min(len(concentrated_geo) * 10, 20)
+    if burst_count >= threshold:
+        score += 20
+    score = min(score, 100)
+
+    risk_level = "bajo"
+    if score >= 65:
+        risk_level = "alto"
+    elif score >= 35:
+        risk_level = "medio"
+
+    return {
+        "encuesta_id": encuesta.id,
+        "risk_score": score,
+        "risk_level": risk_level,
+        "burst_window_minutes": window,
+        "burst_threshold": threshold,
+        "burst_count": burst_count,
+        "signals": {
+            "suspicious_ips": suspicious_ips,
+            "repeated_fingerprints": repeated_fingerprints,
+            "concentrated_geo": concentrated_geo,
+        },
+        "updated_at": now.isoformat(),
+    }
+
 def get_heatmap(
     encuesta_id: int,
     filtros: Optional[Dict[str, Any]] = None,
@@ -675,28 +1009,203 @@ def export_csv(encuesta_id: int, filtros: Optional[Dict[str, Any]] = None) -> It
         buffer.seek(0)
         buffer.truncate(0)
 
-def calculate_live_results(slug_publico: str) -> Dict[str, Any]:
+def calculate_live_results(
+    slug_publico: str,
+    *,
+    include_heatmap: bool = True,
+    max_points: int = 2000,
+    max_cells: int = 200,
+    momentum_window_minutes: int = 10,
+) -> Dict[str, Any]:
     """
     Returns simplified aggregate counts for live voting animations.
     Optimized for frequent polling.
     """
     encuesta = get_public_encuesta(slug_publico)
+    responses_count = EncRespuesta.query.filter_by(encuesta_id=encuesta.id).count()
 
-    # We can use the existing summary logic but lightweight
-    # Or write a specific query for speed.
-    # For now, reuse get_summary but strip PII/heavy data.
-    summary = get_summary(encuesta.id)
-
-    results = {
-        "total_respuestas": summary["total_respuestas"],
-        "preguntas": []
+    option_counts = {
+        (pregunta_id, opcion_id): total
+        for pregunta_id, opcion_id, total in (
+            db.session.query(
+                EncRespuestaDetalle.pregunta_id,
+                EncRespuestaDetalle.opcion_id,
+                db.func.count(EncRespuestaDetalle.id),
+            )
+            .join(EncRespuesta, EncRespuesta.id == EncRespuestaDetalle.respuesta_id)
+            .filter(
+                EncRespuesta.encuesta_id == encuesta.id,
+                EncRespuestaDetalle.opcion_id.isnot(None),
+            )
+            .group_by(EncRespuestaDetalle.pregunta_id, EncRespuestaDetalle.opcion_id)
+            .all()
+        )
     }
 
-    for p in summary["preguntas"]:
-        results["preguntas"].append({
-            "id": p["pregunta_id"],
-            "titulo": p["texto"],
-            "opciones": p.get("series", []) # {label, value}
-        })
+    preguntas: List[Dict[str, Any]] = []
+    highlights: List[str] = []
+    for pregunta in encuesta.preguntas:
+        normalized_type = _normalize_question_type(pregunta.tipo)
+        if normalized_type not in {"single_choice", "multiple_choice"}:
+            continue
 
-    return results
+        total_pregunta = 0
+        opciones_payload: List[Dict[str, Any]] = []
+        for opcion in pregunta.opciones:
+            votos = int(option_counts.get((pregunta.id, opcion.id), 0) or 0)
+            total_pregunta += votos
+            opciones_payload.append(
+                {
+                    "id": opcion.id,
+                    "label": opcion.texto,
+                    "value": votos,
+                    "votos": votos,
+                }
+            )
+
+        opciones_payload.sort(key=lambda item: item["value"], reverse=True)
+        for opcion_data in opciones_payload:
+            porcentaje = (opcion_data["value"] / total_pregunta * 100) if total_pregunta else 0.0
+            opcion_data["porcentaje"] = round(porcentaje, 2)
+
+        lider = opciones_payload[0] if opciones_payload else None
+        if lider and lider["value"] > 0:
+            highlights.append(
+                f"{pregunta.texto[:70]}: lidera '{lider['label']}' con {lider['porcentaje']}%."
+            )
+
+        preguntas.append(
+            {
+                "id": pregunta.id,
+                "titulo": pregunta.texto,
+                "tipo": normalized_type,
+                "opciones": opciones_payload,
+                "total_votos": total_pregunta,
+                "is_multi": normalized_type == "multiple_choice",
+            }
+        )
+
+    now = datetime.now(timezone.utc)
+    window = max(5, min(momentum_window_minutes, 30))
+    last_hour = now.timestamp() - 3600
+    recent_responses = (
+        EncRespuesta.query.with_entities(EncRespuesta.submitted_at)
+        .filter(EncRespuesta.encuesta_id == encuesta.id)
+        .order_by(EncRespuesta.submitted_at.desc())
+        .limit(1000)
+        .all()
+    )
+    bucket_counts: Counter = Counter()
+    last_10m = 0
+    previous_10m = 0
+    for (submitted_at,) in recent_responses:
+        if not submitted_at:
+            continue
+        dt = submitted_at.astimezone(timezone.utc)
+        ts = dt.timestamp()
+        if ts < last_hour:
+            continue
+        minute_bucket = dt.replace(second=0, microsecond=0)
+        bucket_counts[minute_bucket] += 1
+
+        delta_seconds = (now - dt).total_seconds()
+        if delta_seconds <= window * 60:
+            last_10m += 1
+        elif delta_seconds <= window * 120:
+            previous_10m += 1
+
+    trend = "estable"
+    if last_10m > previous_10m:
+        trend = "subiendo"
+    elif last_10m < previous_10m:
+        trend = "bajando"
+
+    timeline = [
+        {"timestamp": bucket.isoformat(), "total": bucket_counts[bucket]}
+        for bucket in sorted(bucket_counts.keys())
+    ]
+
+    points: List[Dict[str, Any]] = []
+    cells: List[Dict[str, Any]] = []
+    if include_heatmap:
+        points, cells = _aggregate_heatmap_cells(
+            _collect_respuestas(encuesta, filtros={"desde": (now.replace(hour=0, minute=0, second=0, microsecond=0)).isoformat()}),
+            resolution=9,
+        )
+
+    ai_summary = "Sin datos suficientes para resumen en vivo."
+    if responses_count > 0:
+        momentum_text = (
+            "participación acelerando" if trend == "subiendo" else "participación estable" if trend == "estable" else "participación desacelerando"
+        )
+        top_highlights = " ".join(highlights[:2]) if highlights else "Todavía no hay liderazgo claro por opción."
+        ai_summary = (
+            f"{responses_count} respuestas registradas, con {momentum_text} en los últimos minutos. "
+            f"{top_highlights}"
+        )
+
+    responses_last_hour = sum(bucket_counts.values())
+    participation_per_minute = round(responses_last_hour / 60.0, 3) if responses_last_hour else 0.0
+    top_question = None
+    for pregunta in preguntas:
+        if not pregunta.get("opciones"):
+            continue
+        top_option = pregunta["opciones"][0]
+        if not top_question or top_option["value"] > top_question["lider"]["value"]:
+            top_question = {
+                "pregunta_id": pregunta["id"],
+                "pregunta": pregunta["titulo"],
+                "lider": top_option,
+            }
+
+    kpis = {
+        "responses_last_hour": responses_last_hour,
+        "participation_per_minute": participation_per_minute,
+        "heatmap_coverage_cells": len(cells),
+        "leader": top_question,
+    }
+
+    ai_insights: List[str] = []
+    if top_question and top_question.get("lider"):
+        ai_insights.append(
+            f"La pregunta con mayor tracción es '{top_question['pregunta'][:70]}' y lidera '{top_question['lider']['label']}' con {top_question['lider']['porcentaje']}%."
+        )
+    if trend == "subiendo":
+        ai_insights.append("La curva reciente de participación está acelerando: conviene reforzar distribución del link ahora.")
+    elif trend == "bajando":
+        ai_insights.append("La curva reciente está desacelerando: conviene activar recordatorios o pauta segmentada.")
+    else:
+        ai_insights.append("La curva reciente se mantiene estable: se sugiere sostener frecuencia de difusión.")
+
+    return {
+        "encuesta_id": encuesta.id,
+        "slug": slug_publico,
+        "total_respuestas": responses_count,
+        "preguntas": preguntas,
+        "timeline_minute": timeline,
+        "momentum": {
+            "window_minutes": window,
+            "last_window": last_10m,
+            "previous_window": previous_10m,
+            "trend": trend,
+            "delta": last_10m - previous_10m,
+            "last_10m": last_10m,
+            "previous_10m": previous_10m,
+        },
+        "kpis": kpis,
+        "heatmap": {
+            "enabled": include_heatmap,
+            "points": points[:max_points],
+            "cells": cells[:max_cells],
+            "metadata": {
+                "resolution": 9,
+                "points_count": len(points),
+                "cells_count": len(cells),
+                "truncated_points": max(0, len(points) - max_points),
+                "truncated_cells": max(0, len(cells) - max_cells),
+            },
+        },
+        "ai_summary": ai_summary,
+        "ai_insights": ai_insights,
+        "updated_at": now.isoformat(),
+    }

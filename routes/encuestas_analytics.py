@@ -6,7 +6,12 @@ from flask import Blueprint, Response, jsonify, request
 from config.feature_flags import FEATURE_ENCUESTAS
 from services.encuestas_analytics_service import (
     export_csv as export_csv_stream,
+    get_alerts,
+    get_anomaly_report,
+    get_executive_brief,
+    get_forecast,
     get_heatmap,
+    get_segment_compare,
     get_summary,
     get_timeseries,
 )
@@ -90,6 +95,104 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
         return jsonify(data)
 
     bp.add_url_rule("/heatmap", view_func=heatmap, methods=["GET"])
+
+
+    @token_requerido
+    @require_role("admin", "empleado", "super_admin")
+    def forecast(current_user, encuesta_id: int):
+        filtros = _parse_filtros()
+        window_minutes = request.args.get("window_minutes", default=10, type=int) or 10
+        horizon_minutes = request.args.get("horizon_minutes", default=60, type=int) or 60
+        try:
+            data = get_forecast(
+                encuesta_id,
+                filtros=filtros,
+                window_minutes=window_minutes,
+                horizon_minutes=horizon_minutes,
+            )
+        except EncuestaError as err:
+            return jsonify(err.to_dict()), err.status_code
+        return jsonify(data)
+
+    bp.add_url_rule("/forecast", view_func=forecast, methods=["GET"])
+
+    @token_requerido
+    @require_role("admin", "empleado", "super_admin")
+    def alerts(current_user, encuesta_id: int):
+        filtros = _parse_filtros()
+        window_minutes = request.args.get("window_minutes", default=10, type=int) or 10
+        min_activity = request.args.get("min_activity", default=5, type=int) or 5
+        try:
+            data = get_alerts(
+                encuesta_id,
+                filtros=filtros,
+                window_minutes=window_minutes,
+                min_activity_threshold=min_activity,
+            )
+        except EncuestaError as err:
+            return jsonify(err.to_dict()), err.status_code
+        return jsonify(data)
+
+    bp.add_url_rule("/alerts", view_func=alerts, methods=["GET"])
+
+    @token_requerido
+    @require_role("admin", "empleado", "super_admin")
+    def brief(current_user, encuesta_id: int):
+        filtros = _parse_filtros()
+        try:
+            data = get_executive_brief(encuesta_id, filtros)
+        except EncuestaError as err:
+            return jsonify(err.to_dict()), err.status_code
+        return jsonify(data)
+
+    bp.add_url_rule("/brief", view_func=brief, methods=["GET"])
+
+
+    @token_requerido
+    @require_role("admin", "empleado", "super_admin")
+    def segment_compare(current_user, encuesta_id: int):
+        filtros = _parse_filtros()
+        segment_a = {
+            key: request.args.get(f"a_{key}")
+            for key in ("canal", "genero", "rango_etario", "barrio", "ciudad", "provincia", "pais")
+            if request.args.get(f"a_{key}")
+        }
+        segment_b = {
+            key: request.args.get(f"b_{key}")
+            for key in ("canal", "genero", "rango_etario", "barrio", "ciudad", "provincia", "pais")
+            if request.args.get(f"b_{key}")
+        }
+        try:
+            data = get_segment_compare(
+                encuesta_id,
+                filtros=filtros,
+                segment_a=segment_a,
+                segment_b=segment_b,
+            )
+        except EncuestaError as err:
+            return jsonify(err.to_dict()), err.status_code
+        return jsonify(data)
+
+    bp.add_url_rule("/segments/compare", view_func=segment_compare, methods=["GET"])
+
+    @token_requerido
+    @require_role("admin", "empleado", "super_admin")
+    def anomalies(current_user, encuesta_id: int):
+        filtros = _parse_filtros()
+        burst_window = request.args.get("burst_window_minutes", default=5, type=int) or 5
+        burst_threshold = request.args.get("burst_threshold", default=10, type=int) or 10
+        try:
+            data = get_anomaly_report(
+                encuesta_id,
+                filtros=filtros,
+                burst_window_minutes=burst_window,
+                burst_threshold=burst_threshold,
+            )
+        except EncuestaError as err:
+            return jsonify(err.to_dict()), err.status_code
+        return jsonify(data)
+
+    bp.add_url_rule("/anomalies", view_func=anomalies, methods=["GET"])
 
     @token_requerido
     @require_role("admin", "empleado", "super_admin")

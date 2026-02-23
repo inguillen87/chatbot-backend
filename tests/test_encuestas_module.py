@@ -2,6 +2,7 @@ import hashlib
 import json
 import sys
 import types
+from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, Sequence
 
@@ -765,3 +766,31 @@ def test_create_encuesta_generates_unique_slug(client):
         assert primera.slug == "junin-participa"
         assert segunda.slug.startswith("junin-participa-")
         assert segunda.slug != primera.slug
+
+
+
+def test_get_encuesta_allows_access_when_tenant_profile_matches(client):
+    with client.application.app_context():
+        user = DummyUser(tenant_id=4)
+        encuesta = create_encuesta(
+            {
+                "titulo": "Tenant profile access",
+                "preguntas": [
+                    {
+                        "orden": 1,
+                        "tipo": "opcion_unica",
+                        "texto": "¿Acceso?",
+                        "obligatoria": True,
+                        "opciones": [{"orden": 1, "texto": "Sí"}],
+                    }
+                ],
+            },
+            user,
+        )
+
+        alt_user = DummyUser(tenant_id=999)
+        from flask import g
+        g.tenant_profile = SimpleNamespace(id=encuesta.tenant_id)
+
+        loaded = encuestas_service_module.get_encuesta(encuesta.id, user=alt_user)
+        assert loaded.id == encuesta.id

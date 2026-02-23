@@ -352,6 +352,8 @@ def create_app(config_class=Config):
             "X-Tenant-Slug",
             "X-Tenant-Id",
             "X-Widget-Token",
+            "X-Token",
+            "x-token",
             "X-Whatsapp-Dst",
         ]
 
@@ -505,20 +507,20 @@ def create_app(config_class=Config):
     from cli_commands import register_commands
 
     if FEATURE_ENCUESTAS:
-        try:
-            from routes.encuestas_admin import (
-                encuestas_admin_api_bp,
-                encuestas_admin_bp,
-                encuestas_admin_legacy_bp,
-                encuestas_municipal_api_bp,
-            )
-            from routes.encuestas_public import (
-                encuestas_public_bp,
-                encuestas_public_legacy_bp,
-                encuestas_public_share_bp,
-            )
-        except ImportError:
-            pass
+        from routes.encuestas_admin import (
+            encuestas_admin_api_bp,
+            encuestas_admin_bp,
+            encuestas_admin_legacy_bp,
+            encuestas_admin_surveys_api_bp,
+            encuestas_admin_surveys_legacy_bp,
+            encuestas_municipal_api_bp,
+            encuestas_municipal_surveys_api_bp,
+        )
+        from routes.encuestas_public import (
+            encuestas_public_bp,
+            encuestas_public_legacy_bp,
+            encuestas_public_share_bp,
+        )
 
     from routes.encuestas_analytics import (
         encuestas_analytics_bp,
@@ -531,6 +533,9 @@ def create_app(config_class=Config):
         encuestas_anchor_legacy_bp,
         encuestas_anchor_admin_bp,
         encuestas_anchor_municipal_bp,
+        encuestas_anchor_admin_surveys_bp,
+        encuestas_anchor_legacy_surveys_bp,
+        encuestas_anchor_municipal_surveys_bp,
     )
 
     # Register
@@ -649,10 +654,7 @@ def create_app(config_class=Config):
     if encuestas_admin_publicas_bp:
         app.register_blueprint(encuestas_admin_publicas_bp)
     elif FEATURE_ENCUESTAS:
-        try:
-            app.register_blueprint(encuestas_admin_bp)
-        except Exception:
-            pass
+        app.register_blueprint(encuestas_admin_bp)
 
     app.register_blueprint(pyme_catalog_fix_bp)
     app.register_blueprint(pyme_api_bp)
@@ -677,28 +679,28 @@ def create_app(config_class=Config):
     if encuestas_public_publicas_bp:
         app.register_blueprint(encuestas_public_publicas_bp)
     elif FEATURE_ENCUESTAS:
-        try:
-            app.register_blueprint(encuestas_public_bp)
-        except Exception:
-            pass
+        app.register_blueprint(encuestas_public_bp)
 
     if FEATURE_ENCUESTAS:
-        try:
-            app.register_blueprint(encuestas_admin_api_bp)
-            app.register_blueprint(encuestas_admin_legacy_bp)
-            app.register_blueprint(encuestas_municipal_api_bp)
-            app.register_blueprint(encuestas_public_legacy_bp)
-            app.register_blueprint(encuestas_public_share_bp)
-            app.register_blueprint(encuestas_analytics_bp)
-            app.register_blueprint(encuestas_analytics_legacy_bp)
-            app.register_blueprint(encuestas_analytics_admin_bp)
-            app.register_blueprint(encuestas_analytics_municipal_bp)
-            app.register_blueprint(encuestas_anchor_bp)
-            app.register_blueprint(encuestas_anchor_legacy_bp)
-            app.register_blueprint(encuestas_anchor_admin_bp)
-            app.register_blueprint(encuestas_anchor_municipal_bp)
-        except Exception:
-            pass
+        app.register_blueprint(encuestas_admin_api_bp)
+        app.register_blueprint(encuestas_admin_legacy_bp)
+        app.register_blueprint(encuestas_admin_surveys_api_bp)
+        app.register_blueprint(encuestas_admin_surveys_legacy_bp)
+        app.register_blueprint(encuestas_municipal_api_bp)
+        app.register_blueprint(encuestas_municipal_surveys_api_bp)
+        app.register_blueprint(encuestas_public_legacy_bp)
+        app.register_blueprint(encuestas_public_share_bp)
+        app.register_blueprint(encuestas_analytics_bp)
+        app.register_blueprint(encuestas_analytics_legacy_bp)
+        app.register_blueprint(encuestas_analytics_admin_bp)
+        app.register_blueprint(encuestas_analytics_municipal_bp)
+        app.register_blueprint(encuestas_anchor_bp)
+        app.register_blueprint(encuestas_anchor_legacy_bp)
+        app.register_blueprint(encuestas_anchor_admin_bp)
+        app.register_blueprint(encuestas_anchor_municipal_bp)
+        app.register_blueprint(encuestas_anchor_admin_surveys_bp)
+        app.register_blueprint(encuestas_anchor_legacy_surveys_bp)
+        app.register_blueprint(encuestas_anchor_municipal_surveys_bp)
 
     # Comandos CLI
     register_commands(app)

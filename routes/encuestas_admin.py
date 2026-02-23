@@ -230,6 +230,7 @@ def _create_admin_blueprint(name: str, url_prefix: str) -> Blueprint:
                 return jsonify({"error": "Seed inválido"}), 400
 
         reset_data = _parse_bool(data.get("reset") or data.get("borrar"))
+        scenario = (data.get("scenario") or data.get("mode") or "balanced").strip().lower()
 
         try:
             result = seed_encuesta_respuestas_demo(
@@ -240,6 +241,7 @@ def _create_admin_blueprint(name: str, url_prefix: str) -> Blueprint:
                 municipality_label=municipality_label,
                 seed=seed_value,
                 reset_data=reset_data,
+                scenario=scenario,
             )
         except EncuestaError as err:
             return jsonify(err.to_dict()), err.status_code
@@ -316,4 +318,15 @@ encuestas_admin_api_bp = _create_admin_blueprint(
 # Alias para la integración municipal que consume /api/municipal/encuestas
 encuestas_municipal_api_bp = _create_admin_blueprint(
     "encuestas_municipal_api_bp", "/api/municipal/encuestas"
+)
+
+# Alias legacy en inglés para clientes frontend que consultan /surveys
+encuestas_admin_surveys_api_bp = _create_admin_blueprint(
+    "encuestas_admin_surveys_api_bp", "/api/admin/surveys"
+)
+encuestas_admin_surveys_legacy_bp = _create_admin_blueprint(
+    "encuestas_admin_surveys_legacy_bp", "/admin/surveys"
+)
+encuestas_municipal_surveys_api_bp = _create_admin_blueprint(
+    "encuestas_municipal_surveys_api_bp", "/api/municipal/surveys"
 )

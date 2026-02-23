@@ -434,6 +434,64 @@ def test_admin_encuestas_legacy_analytics_and_snapshots(client, monkeypatch, adm
     assert series_data
     assert {"fecha", "total"}.issubset(series_data[0].keys())
 
+
+    forecast_resp = client.get(
+        f"/admin/encuestas/{encuesta_id}/analytics/forecast",
+        query_string={"window_minutes": 15, "horizon_minutes": 90},
+        headers=headers,
+    )
+    assert forecast_resp.status_code == 200
+    forecast_data = forecast_resp.get_json()
+    assert forecast_data["encuesta_id"] == encuesta_id
+    assert forecast_data["window_minutes"] == 15
+    assert forecast_data["horizon_minutes"] == 90
+    assert "projected_total" in forecast_data
+
+    alerts_resp = client.get(
+        f"/admin/encuestas/{encuesta_id}/analytics/alerts",
+        query_string={"window_minutes": 15, "min_activity": 1},
+        headers=headers,
+    )
+    assert alerts_resp.status_code == 200
+    alerts_data = alerts_resp.get_json()
+    assert alerts_data["encuesta_id"] == encuesta_id
+    assert "alerts" in alerts_data
+    assert "has_alerts" in alerts_data
+
+    brief_resp = client.get(
+        f"/admin/encuestas/{encuesta_id}/analytics/brief",
+        headers=headers,
+    )
+    assert brief_resp.status_code == 200
+    brief_data = brief_resp.get_json()
+    assert brief_data["encuesta_id"] == encuesta_id
+    assert "headline" in brief_data
+    assert "forecast" in brief_data
+
+    segments_resp = client.get(
+        f"/admin/encuestas/{encuesta_id}/analytics/segments/compare",
+        query_string={
+            "a_canal": "web",
+            "b_canal": "whatsapp",
+        },
+        headers=headers,
+    )
+    assert segments_resp.status_code == 200
+    segments_data = segments_resp.get_json()
+    assert segments_data["encuesta_id"] == encuesta_id
+    assert "segment_a" in segments_data
+    assert "segment_b" in segments_data
+
+    anomalies_resp = client.get(
+        f"/admin/encuestas/{encuesta_id}/analytics/anomalies",
+        query_string={"burst_window_minutes": 5, "burst_threshold": 1},
+        headers=headers,
+    )
+    assert anomalies_resp.status_code == 200
+    anomalies_data = anomalies_resp.get_json()
+    assert anomalies_data["encuesta_id"] == encuesta_id
+    assert "risk_score" in anomalies_data
+    assert "signals" in anomalies_data
     heatmap_resp = client.get(f"/admin/encuestas/{encuesta_id}/analytics/heatmap", headers=headers)
     assert heatmap_resp.status_code == 200
     heatmap_data = heatmap_resp.get_json()
@@ -581,6 +639,46 @@ def test_admin_encuestas_publicada_con_respuestas_bloquea_cambio_estructura(
     assert "No se puede modificar la estructura" in data["error"]
 
 
+
+
+def test_admin_surveys_alias_routes_work(client, monkeypatch, admin_user):
+    monkeypatch.setattr(feature_flags, "FEATURE_ENCUESTAS", True)
+    monkeypatch.setattr(encuestas_admin_routes, "FEATURE_ENCUESTAS", True)
+    monkeypatch.setattr(encuestas_anchor_routes, "FEATURE_ENCUESTAS", True)
+
+    with client.application.app_context():
+        encuesta = create_encuesta(
+            {
+                "titulo": "Encuesta alias",
+                "preguntas": [
+                    {
+                        "orden": 1,
+                        "tipo": "opcion_unica",
+                        "texto": "¿Alias ok?",
+                        "obligatoria": True,
+                        "opciones": [{"orden": 1, "texto": "Sí"}],
+                    }
+                ],
+            },
+            admin_user,
+        )
+        encuesta, _ = publicar_encuesta(encuesta.id, admin_user)
+        encuesta_id = encuesta.id
+
+    headers = _auth_headers(client, admin_user)
+
+    detail_resp = client.get(f"/api/admin/surveys/{encuesta_id}", headers=headers)
+    assert detail_resp.status_code == 200
+    assert detail_resp.get_json()["id"] == encuesta_id
+
+    respuestas_resp = client.get(f"/api/admin/surveys/{encuesta_id}/respuestas", headers=headers)
+    assert respuestas_resp.status_code == 200
+    assert respuestas_resp.get_json()["encuesta_id"] == encuesta_id
+
+    snapshots_resp = client.get(f"/api/admin/surveys/{encuesta_id}/snapshots", headers=headers)
+    assert snapshots_resp.status_code == 200
+    assert snapshots_resp.get_json()["encuesta_id"] == encuesta_id
+
 def test_admin_encuestas_seed_demo_endpoint(client, monkeypatch, admin_user):
     monkeypatch.setattr(feature_flags, "FEATURE_ENCUESTAS", True)
     monkeypatch.setattr(encuestas_admin_routes, "FEATURE_ENCUESTAS", True)
@@ -611,13 +709,16 @@ def test_admin_encuestas_seed_demo_endpoint(client, monkeypatch, admin_user):
 
     seed_resp = client.post(
         f"/admin/encuestas/{encuesta_id}/seed-demo",
-        json={"cantidad": 8},
+        json={"cantidad": 8, "scenario": "realtime"},
         headers=headers,
     )
     assert seed_resp.status_code == 200
     seed_payload = seed_resp.get_json()
     assert seed_payload["creadas"] > 0
     assert "seed" in seed_payload
+    assert seed_payload["scenario"] == "realtime"
+    assert "analytics_preview" in seed_payload
+    assert "canales" in seed_payload["analytics_preview"]
 
     with client.application.app_context():
         total = EncRespuesta.query.filter_by(encuesta_id=encuesta_id).count()
@@ -626,3 +727,36 @@ def test_admin_encuestas_seed_demo_endpoint(client, monkeypatch, admin_user):
             EncRespuesta.lat.isnot(None), EncRespuesta.lng.isnot(None)
         ).count()
         assert geo_count > 0
+
+def test_admin_encuestas_seed_demo_invalid_scenario(client, monkeypatch, admin_user):
+    monkeypatch.setattr(feature_flags, "FEATURE_ENCUESTAS", True)
+    monkeypatch.setattr(encuestas_admin_routes, "FEATURE_ENCUESTAS", True)
+
+    headers = _auth_headers(client, admin_user)
+    create_resp = client.post(
+        "/admin/encuestas",
+        json={
+            "titulo": "Encuesta para validar scenario",
+            "preguntas": [
+                {
+                    "orden": 1,
+                    "tipo": "opcion_unica",
+                    "texto": "¿Respuesta?",
+                    "obligatoria": True,
+                    "opciones": [{"orden": 1, "texto": "Sí"}],
+                }
+            ],
+        },
+        headers=headers,
+    )
+    assert create_resp.status_code == 201
+    encuesta_id = create_resp.get_json()["id"]
+
+    seed_resp = client.post(
+        f"/admin/encuestas/{encuesta_id}/seed-demo",
+        json={"cantidad": 10, "scenario": "invalido"},
+        headers=headers,
+    )
+    assert seed_resp.status_code == 400
+    assert "Scenario inválido" in seed_resp.get_json()["error"]
+
