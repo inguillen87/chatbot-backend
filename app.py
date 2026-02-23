@@ -352,6 +352,8 @@ def create_app(config_class=Config):
             "X-Tenant-Slug",
             "X-Tenant-Id",
             "X-Widget-Token",
+            "X-Token",
+            "x-token",
             "X-Whatsapp-Dst",
         ]
 

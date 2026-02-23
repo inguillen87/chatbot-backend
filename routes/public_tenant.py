@@ -17,7 +17,7 @@ def _add_cors_headers(response):
         'Access-Control-Allow-Headers',
         'Content-Type,Authorization,X-Tenant,X-Requested-With,X-Anon-Id,'
         'X-Chat-Session-Id,X-Entity-Token,X-Widget-Token,X-Owner-Token,'
-        'X-Widget-Key',
+        'X-Widget-Key,X-Token,x-token',
     )
     response.headers.add('Access-Control-Allow-Methods', 'GET,POST,OPTIONS,PUT,DELETE,PATCH')
     response.headers.add('Access-Control-Allow-Credentials', 'true')
@@ -43,9 +43,16 @@ def _get_tenant_from_request(slug: str):
             return tenant
 
     alias_tipo = str(slug or "").strip().lower()
-    if alias_tipo in {"pyme", "municipio"}:
+    alias_tipo_map = {
+        "pyme": "pyme",
+        "municipio": "municipio",
+        "e": "pyme",
+        "m": "municipio",
+    }
+    resolved_tipo = alias_tipo_map.get(alias_tipo)
+    if resolved_tipo:
         return (
-            TenantProfile.query.filter_by(tipo=alias_tipo)
+            TenantProfile.query.filter_by(tipo=resolved_tipo)
             .filter(TenantProfile.is_active.is_(True))
             .order_by(TenantProfile.created_at.asc(), TenantProfile.id.asc())
             .first()
@@ -131,6 +138,7 @@ def get_widget_config(slug):
 
 
 @public_tenant_bp.route('/api/public/tenants/<slug>/catalog', methods=['GET', 'OPTIONS'])
+@public_tenant_bp.route('/public/tenants/<slug>/catalog', methods=['GET', 'OPTIONS'])
 def get_catalog(slug):
     if request.method == 'OPTIONS':
         return _add_cors_headers(jsonify({"ok": True}))
