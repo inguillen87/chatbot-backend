@@ -1,4 +1,5 @@
 import unittest
+from datetime import datetime, timedelta
 
 from app import create_app
 from config import TestingConfig
@@ -295,6 +296,87 @@ class PublicSurveyFlowTests(unittest.TestCase):
         data_501 = listado_501.get_json()["encuestas"]
         self.assertEqual(len(data_501), 1)
         self.assertEqual(data_501[0]["slug"], slug_municipio_501)
+
+
+    def test_live_results_includes_trend_heatmap_and_ai_summary(self):
+        now = datetime.now().astimezone()
+        create_payload = {
+            "titulo": "Pulso en vivo",
+            "es_votacion_envivo": True,
+            "mostrar_resultados_envivo": True,
+            "inicio_at": (now - timedelta(hours=2)).isoformat(),
+            "fin_at": (now + timedelta(days=2)).isoformat(),
+            "publicar": True,
+            "preguntas": [
+                {
+                    "titulo": "¿Qué prioridad debe liderar?",
+                    "tipo": "opcion_unica",
+                    "obligatoria": True,
+                    "opciones": [
+                        {"texto": "Seguridad", "valor": "seguridad"},
+                        {"texto": "Transporte", "valor": "transporte"},
+                    ],
+                }
+            ],
+        }
+
+        resp = self.client.post(
+            "/admin/encuestas/",
+            json=create_payload,
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(resp.status_code, 201, resp.get_json())
+        data = resp.get_json()
+        encuesta_id = data["id"]
+
+        publish_resp = self.client.post(
+            f"/admin/encuestas/{encuesta_id}/publicar",
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(publish_resp.status_code, 200, publish_resp.get_json())
+        publish_data = publish_resp.get_json()
+        slug = publish_data.get("slug_publico") or data["slug"]
+
+        with self.app.app_context():
+            encuesta = EncEncuesta.query.get(encuesta_id)
+            encuesta.inicio_at = None
+            encuesta.fin_at = None
+            db.session.commit()
+
+        pregunta = data["preguntas"][0]
+        pregunta_id = pregunta["id"]
+        seguridad_id = pregunta["opciones"][0]["id"]
+
+        for i in range(6):
+            payload = {
+                "anon_id": f"seed-live-{i}",
+                "lat": -32.889 + (i * 0.001),
+                "lng": -68.845 + (i * 0.001),
+                "respuestas": [{"pregunta_id": pregunta_id, "opcion_ids": [seguridad_id]}],
+            }
+            submit_resp = self.client.post(f"/api/public/encuestas/{slug}/responder", json=payload)
+            self.assertEqual(submit_resp.status_code, 201, submit_resp.get_json())
+
+        live_resp = self.client.get(f"/api/public/encuestas/{slug}/live-results")
+        self.assertEqual(live_resp.status_code, 200, live_resp.get_json())
+        live_data = live_resp.get_json()
+
+        self.assertEqual(live_data["slug"], slug)
+        self.assertEqual(live_data["total_respuestas"], 6)
+        self.assertIn("ai_summary", live_data)
+        self.assertTrue(live_data["ai_summary"])
+        self.assertIn("momentum", live_data)
+        self.assertIn(live_data["momentum"]["trend"], {"subiendo", "estable", "bajando"})
+
+        self.assertTrue(live_data["timeline_minute"])
+        primera_pregunta = live_data["preguntas"][0]
+        self.assertEqual(primera_pregunta["total_votos"], 6)
+        self.assertTrue(primera_pregunta["opciones"])
+        self.assertIn("porcentaje", primera_pregunta["opciones"][0])
+
+        heatmap = live_data["heatmap"]
+        self.assertIn("metadata", heatmap)
+        self.assertGreaterEqual(heatmap["metadata"]["points_count"], 1)
 
     def test_admin_no_puede_modificar_otra_municipalidad(self):
         create_resp = self.client.post(
