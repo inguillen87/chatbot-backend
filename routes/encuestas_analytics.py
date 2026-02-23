@@ -7,9 +7,11 @@ from config.feature_flags import FEATURE_ENCUESTAS
 from services.encuestas_analytics_service import (
     export_csv as export_csv_stream,
     get_alerts,
+    get_anomaly_report,
     get_executive_brief,
     get_forecast,
     get_heatmap,
+    get_segment_compare,
     get_summary,
     get_timeseries,
 )
@@ -144,6 +146,53 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
         return jsonify(data)
 
     bp.add_url_rule("/brief", view_func=brief, methods=["GET"])
+
+
+    @token_requerido
+    @require_role("admin", "empleado", "super_admin")
+    def segment_compare(current_user, encuesta_id: int):
+        filtros = _parse_filtros()
+        segment_a = {
+            key: request.args.get(f"a_{key}")
+            for key in ("canal", "genero", "rango_etario", "barrio", "ciudad", "provincia", "pais")
+            if request.args.get(f"a_{key}")
+        }
+        segment_b = {
+            key: request.args.get(f"b_{key}")
+            for key in ("canal", "genero", "rango_etario", "barrio", "ciudad", "provincia", "pais")
+            if request.args.get(f"b_{key}")
+        }
+        try:
+            data = get_segment_compare(
+                encuesta_id,
+                filtros=filtros,
+                segment_a=segment_a,
+                segment_b=segment_b,
+            )
+        except EncuestaError as err:
+            return jsonify(err.to_dict()), err.status_code
+        return jsonify(data)
+
+    bp.add_url_rule("/segments/compare", view_func=segment_compare, methods=["GET"])
+
+    @token_requerido
+    @require_role("admin", "empleado", "super_admin")
+    def anomalies(current_user, encuesta_id: int):
+        filtros = _parse_filtros()
+        burst_window = request.args.get("burst_window_minutes", default=5, type=int) or 5
+        burst_threshold = request.args.get("burst_threshold", default=10, type=int) or 10
+        try:
+            data = get_anomaly_report(
+                encuesta_id,
+                filtros=filtros,
+                burst_window_minutes=burst_window,
+                burst_threshold=burst_threshold,
+            )
+        except EncuestaError as err:
+            return jsonify(err.to_dict()), err.status_code
+        return jsonify(data)
+
+    bp.add_url_rule("/anomalies", view_func=anomalies, methods=["GET"])
 
     @token_requerido
     @require_role("admin", "empleado", "super_admin")

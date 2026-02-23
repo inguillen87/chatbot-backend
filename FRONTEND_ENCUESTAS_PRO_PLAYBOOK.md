@@ -58,6 +58,21 @@ Recomendación UX:
 - Usar brief como base de reporte descargable/compartible.
 
 
+
+## 2.3 Centro de comando territorial + anti-fraude (nuevo)
+
+Nuevos endpoints recomendados para módulo avanzado:
+
+- `GET /admin/encuestas/{id}/analytics/segments/compare?a_canal=web&b_canal=whatsapp`
+  - Compara 2 segmentos (canal/género/edad/territorio) con distribuciones por pregunta.
+- `GET /admin/encuestas/{id}/analytics/anomalies?burst_window_minutes=5&burst_threshold=10`
+  - Señales anti-fraude / calidad de muestra (`risk_score`, IPs sospechosas, concentración geo, huellas repetidas).
+
+Uso frontend sugerido:
+- Card `SegmentComparator`: panel A vs B con barras espejo.
+- Card `DataQuality`: semáforo de riesgo (`bajo|medio|alto`) y tabla de señales.
+
+
 ## 3) Arquitectura de frontend sugerida
 
 ## 3.1 Polling inteligente

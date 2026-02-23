@@ -713,6 +713,170 @@ def get_executive_brief(encuesta_id: int, filtros: Optional[Dict[str, Any]] = No
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
 
+
+
+def _matches_segment(respuesta: EncRespuesta, segment: Optional[Dict[str, Any]]) -> bool:
+    if not segment:
+        return True
+    for key in ("canal", "genero", "rango_etario", "barrio", "ciudad", "provincia", "pais"):
+        expected = segment.get(key)
+        if expected is None or expected == "":
+            continue
+        value = getattr(respuesta, key, None)
+        if str(value or "").strip().lower() != str(expected).strip().lower():
+            return False
+    return True
+
+
+def _segment_distribution(
+    respuestas: Sequence[EncRespuesta],
+    encuesta: EncEncuesta,
+) -> Dict[str, Any]:
+    question_payload: List[Dict[str, Any]] = []
+    for pregunta in encuesta.preguntas:
+        normalized_tipo = _normalize_question_type(pregunta.tipo)
+        if normalized_tipo not in {"single_choice", "multiple_choice"}:
+            continue
+
+        option_counter: Counter = Counter()
+        for respuesta in respuestas:
+            for detalle in respuesta.detalles:
+                if detalle.pregunta_id != pregunta.id or not detalle.opcion_id:
+                    continue
+                option_counter[detalle.opcion_id] += 1
+
+        options = []
+        total_votes = sum(option_counter.values())
+        for opcion in pregunta.opciones:
+            votos = int(option_counter.get(opcion.id, 0))
+            pct = round((votos / total_votes * 100), 2) if total_votes else 0.0
+            options.append({
+                "opcion_id": opcion.id,
+                "label": opcion.texto,
+                "votos": votos,
+                "porcentaje": pct,
+            })
+        options.sort(key=lambda item: item["votos"], reverse=True)
+        question_payload.append(
+            {
+                "pregunta_id": pregunta.id,
+                "texto": pregunta.texto,
+                "tipo": normalized_tipo,
+                "total_votos": total_votes,
+                "opciones": options,
+            }
+        )
+
+    canales = Counter((respuesta.canal or "sin_canal") for respuesta in respuestas)
+    return {
+        "total_respuestas": len(respuestas),
+        "canales": [{"label": k, "value": v} for k, v in canales.most_common()],
+        "preguntas": question_payload,
+    }
+
+
+def get_segment_compare(
+    encuesta_id: int,
+    *,
+    filtros: Optional[Dict[str, Any]] = None,
+    segment_a: Optional[Dict[str, Any]] = None,
+    segment_b: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    encuesta = get_encuesta(encuesta_id)
+    respuestas = _collect_respuestas(encuesta, filtros)
+
+    group_a = [respuesta for respuesta in respuestas if _matches_segment(respuesta, segment_a)]
+    group_b = [respuesta for respuesta in respuestas if _matches_segment(respuesta, segment_b)]
+
+    return {
+        "encuesta_id": encuesta.id,
+        "segment_a": {
+            "filters": segment_a or {},
+            "stats": _segment_distribution(group_a, encuesta),
+        },
+        "segment_b": {
+            "filters": segment_b or {},
+            "stats": _segment_distribution(group_b, encuesta),
+        },
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def get_anomaly_report(
+    encuesta_id: int,
+    *,
+    filtros: Optional[Dict[str, Any]] = None,
+    burst_window_minutes: int = 5,
+    burst_threshold: int = 10,
+) -> Dict[str, Any]:
+    encuesta = get_encuesta(encuesta_id)
+    respuestas = _collect_respuestas(encuesta, filtros)
+
+    ip_counter = Counter((respuesta.ip or "") for respuesta in respuestas if respuesta.ip)
+    fingerprint_counter = Counter(
+        (respuesta.huella_unica or "") for respuesta in respuestas if respuesta.huella_unica
+    )
+    geo_counter = Counter(
+        (round(float(respuesta.lat), 3), round(float(respuesta.lng), 3))
+        for respuesta in respuestas
+        if respuesta.lat is not None and respuesta.lng is not None
+    )
+
+    window = max(1, min(int(burst_window_minutes or 5), 30))
+    threshold = max(3, int(burst_threshold or 10))
+    now = datetime.now(timezone.utc)
+    burst_count = 0
+    for respuesta in respuestas:
+        if not respuesta.submitted_at:
+            continue
+        if (now - respuesta.submitted_at.astimezone(timezone.utc)).total_seconds() <= window * 60:
+            burst_count += 1
+
+    suspicious_ips = [
+        {"ip": ip, "count": count}
+        for ip, count in ip_counter.most_common(5)
+        if count >= 3
+    ]
+    repeated_fingerprints = [
+        {"fingerprint": fp, "count": count}
+        for fp, count in fingerprint_counter.most_common(5)
+        if count >= 2
+    ]
+    concentrated_geo = [
+        {"lat": lat, "lng": lng, "count": count}
+        for (lat, lng), count in geo_counter.most_common(5)
+        if count >= 3
+    ]
+
+    score = 0
+    score += min(len(suspicious_ips) * 12, 36)
+    score += min(len(repeated_fingerprints) * 15, 30)
+    score += min(len(concentrated_geo) * 10, 20)
+    if burst_count >= threshold:
+        score += 20
+    score = min(score, 100)
+
+    risk_level = "bajo"
+    if score >= 65:
+        risk_level = "alto"
+    elif score >= 35:
+        risk_level = "medio"
+
+    return {
+        "encuesta_id": encuesta.id,
+        "risk_score": score,
+        "risk_level": risk_level,
+        "burst_window_minutes": window,
+        "burst_threshold": threshold,
+        "burst_count": burst_count,
+        "signals": {
+            "suspicious_ips": suspicious_ips,
+            "repeated_fingerprints": repeated_fingerprints,
+            "concentrated_geo": concentrated_geo,
+        },
+        "updated_at": now.isoformat(),
+    }
+
 def get_heatmap(
     encuesta_id: int,
     filtros: Optional[Dict[str, Any]] = None,

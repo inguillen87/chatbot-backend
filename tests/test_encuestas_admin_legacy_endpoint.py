@@ -467,6 +467,31 @@ def test_admin_encuestas_legacy_analytics_and_snapshots(client, monkeypatch, adm
     assert brief_data["encuesta_id"] == encuesta_id
     assert "headline" in brief_data
     assert "forecast" in brief_data
+
+    segments_resp = client.get(
+        f"/admin/encuestas/{encuesta_id}/analytics/segments/compare",
+        query_string={
+            "a_canal": "web",
+            "b_canal": "whatsapp",
+        },
+        headers=headers,
+    )
+    assert segments_resp.status_code == 200
+    segments_data = segments_resp.get_json()
+    assert segments_data["encuesta_id"] == encuesta_id
+    assert "segment_a" in segments_data
+    assert "segment_b" in segments_data
+
+    anomalies_resp = client.get(
+        f"/admin/encuestas/{encuesta_id}/analytics/anomalies",
+        query_string={"burst_window_minutes": 5, "burst_threshold": 1},
+        headers=headers,
+    )
+    assert anomalies_resp.status_code == 200
+    anomalies_data = anomalies_resp.get_json()
+    assert anomalies_data["encuesta_id"] == encuesta_id
+    assert "risk_score" in anomalies_data
+    assert "signals" in anomalies_data
     heatmap_resp = client.get(f"/admin/encuestas/{encuesta_id}/analytics/heatmap", headers=headers)
     assert heatmap_resp.status_code == 200
     heatmap_data = heatmap_resp.get_json()
