@@ -4,7 +4,7 @@ from __future__ import annotations
 import csv
 import io
 from collections import Counter, defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from statistics import mean, median
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
@@ -543,6 +543,175 @@ def get_timeseries(encuesta_id: int, granularity: str = "day", filtros: Optional
     ]
     return series
 
+
+
+
+def get_forecast(
+    encuesta_id: int,
+    *,
+    filtros: Optional[Dict[str, Any]] = None,
+    window_minutes: int = 10,
+    horizon_minutes: int = 60,
+) -> Dict[str, Any]:
+    """Build a lightweight short-term projection from minute-level activity."""
+
+    encuesta = get_encuesta(encuesta_id)
+    respuestas = _collect_respuestas(encuesta, filtros)
+    now = datetime.now(timezone.utc)
+
+    minute_buckets: Counter = Counter()
+    for respuesta in respuestas:
+        submitted_at = respuesta.submitted_at
+        if not submitted_at:
+            continue
+        dt = submitted_at.astimezone(timezone.utc).replace(second=0, microsecond=0)
+        minute_buckets[dt] += 1
+
+    window = max(5, min(int(window_minutes or 10), 60))
+    horizon = max(15, min(int(horizon_minutes or 60), 240))
+
+    recent_values: List[int] = []
+    for offset in range(window):
+        bucket = (now - timedelta(minutes=offset)).replace(second=0, microsecond=0)
+        recent_values.append(int(minute_buckets.get(bucket, 0)))
+
+    moving_avg = round(sum(recent_values) / len(recent_values), 3) if recent_values else 0.0
+    projected_additional = int(round(moving_avg * horizon))
+    projected_total = len(respuestas) + projected_additional
+
+    confidence = "media"
+    if len(respuestas) < 20:
+        confidence = "baja"
+    elif len(respuestas) > 200:
+        confidence = "alta"
+
+    return {
+        "encuesta_id": encuesta.id,
+        "window_minutes": window,
+        "horizon_minutes": horizon,
+        "baseline_total": len(respuestas),
+        "current_rate_per_minute": moving_avg,
+        "projected_additional": projected_additional,
+        "projected_total": projected_total,
+        "confidence": confidence,
+        "updated_at": now.isoformat(),
+    }
+
+
+def get_alerts(
+    encuesta_id: int,
+    *,
+    filtros: Optional[Dict[str, Any]] = None,
+    window_minutes: int = 10,
+    min_activity_threshold: int = 5,
+) -> Dict[str, Any]:
+    """Evaluate alert rules for campaign operations dashboards."""
+
+    encuesta = get_encuesta(encuesta_id)
+    respuestas = _collect_respuestas(encuesta, filtros)
+
+    window = max(5, min(int(window_minutes or 10), 30))
+    now = datetime.now(timezone.utc)
+    last_window = 0
+    previous_window = 0
+    for respuesta in respuestas:
+        submitted_at = respuesta.submitted_at
+        if not submitted_at:
+            continue
+        delta_seconds = (now - submitted_at.astimezone(timezone.utc)).total_seconds()
+        if delta_seconds <= window * 60:
+            last_window += 1
+        elif delta_seconds <= window * 120:
+            previous_window += 1
+
+    delta = last_window - previous_window
+    trend = "estable"
+    if delta > 0:
+        trend = "subiendo"
+    elif delta < 0:
+        trend = "bajando"
+
+    alerts: List[Dict[str, Any]] = []
+    if trend == "bajando" and previous_window >= min_activity_threshold:
+        alerts.append(
+            {
+                "code": "participacion_en_caida",
+                "severity": "high" if delta <= -max(3, min_activity_threshold // 2) else "medium",
+                "message": "La participación cayó en la ventana reciente. Recomendada activación de recordatorios.",
+                "delta": delta,
+            }
+        )
+    if trend == "subiendo" and last_window >= min_activity_threshold:
+        alerts.append(
+            {
+                "code": "momento_favorable",
+                "severity": "info",
+                "message": "La participación está acelerando. Buen momento para ampliar difusión.",
+                "delta": delta,
+            }
+        )
+
+    summary = get_summary(encuesta_id, filtros)
+    leader_payload = None
+    if summary.get("preguntas"):
+        candidate_options: List[Dict[str, Any]] = []
+        for pregunta in summary["preguntas"]:
+            opciones = pregunta.get("opciones") or []
+            if opciones:
+                sorted_options = sorted(opciones, key=lambda item: item.get("porcentaje", 0), reverse=True)
+                candidate_options.append(sorted_options[0])
+        if candidate_options:
+            leader_payload = sorted(candidate_options, key=lambda item: item.get("porcentaje", 0), reverse=True)[0]
+    if leader_payload and float(leader_payload.get("porcentaje") or 0) >= 60:
+        alerts.append(
+            {
+                "code": "liderazgo_marcado",
+                "severity": "info",
+                "message": "Se detecta un liderazgo fuerte en una opción de respuesta.",
+                "value": leader_payload.get("porcentaje"),
+            }
+        )
+
+    return {
+        "encuesta_id": encuesta.id,
+        "window_minutes": max(5, min(int(window_minutes or 10), 30)),
+        "threshold": max(1, int(min_activity_threshold or 5)),
+        "alerts": alerts,
+        "has_alerts": bool(alerts),
+        "evaluated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def get_executive_brief(encuesta_id: int, filtros: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Return an executive-ready summary object for frontend reporting."""
+
+    encuesta = get_encuesta(encuesta_id)
+    summary = get_summary(encuesta_id, filtros)
+    forecast = get_forecast(encuesta_id, filtros=filtros)
+    alerts = get_alerts(encuesta_id, filtros=filtros)
+
+    headline = (
+        f"{summary['total_respuestas']} respuestas totales con proyección a "
+        f"{forecast['projected_total']} en {forecast['horizon_minutes']} minutos."
+    )
+
+    return {
+        "encuesta_id": encuesta.id,
+        "titulo": encuesta.titulo,
+        "headline": headline,
+        "summary": {
+            "total_respuestas": summary.get("total_respuestas", 0),
+            "participantes_unicos": summary.get("participantes_unicos", 0),
+            "tasa_completitud": summary.get("tasa_completitud", 0),
+        },
+        "forecast": forecast,
+        "alerts": alerts,
+        "insights": [
+            headline,
+            "Monitorear delta de momentum para decisiones tácticas de difusión.",
+        ],
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
 
 def get_heatmap(
     encuesta_id: int,

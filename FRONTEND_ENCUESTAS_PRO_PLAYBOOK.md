@@ -40,6 +40,24 @@ En escenarios de alto tráfico o mobile, usar versión liviana:
 > Recomendación: dashboard ejecutivo usa `include_heatmap=0`; dashboard territorial usa heatmap activo.
 
 
+
+## 2.2 Endpoints Enterprise para consultoras (nuevo)
+
+Además de `live-results`, integrar estos endpoints en el panel admin:
+
+- `GET /admin/encuestas/{id}/analytics/forecast?window_minutes=15&horizon_minutes=90`
+  - Proyección de cierre con `projected_total`, tasa actual y confianza.
+- `GET /admin/encuestas/{id}/analytics/alerts?window_minutes=15&min_activity=5`
+  - Reglas tácticas para activar alertas operativas.
+- `GET /admin/encuestas/{id}/analytics/brief`
+  - Brief ejecutivo listo para directorio/cliente.
+
+Recomendación UX:
+- Mostrar forecast en card fija de “proyección de cierre”.
+- Mostrar alerts en “centro de comando” con severidad (`high|medium|info`).
+- Usar brief como base de reporte descargable/compartible.
+
+
 ## 3) Arquitectura de frontend sugerida
 
 ## 3.1 Polling inteligente

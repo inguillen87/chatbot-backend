@@ -434,6 +434,39 @@ def test_admin_encuestas_legacy_analytics_and_snapshots(client, monkeypatch, adm
     assert series_data
     assert {"fecha", "total"}.issubset(series_data[0].keys())
 
+
+    forecast_resp = client.get(
+        f"/admin/encuestas/{encuesta_id}/analytics/forecast",
+        query_string={"window_minutes": 15, "horizon_minutes": 90},
+        headers=headers,
+    )
+    assert forecast_resp.status_code == 200
+    forecast_data = forecast_resp.get_json()
+    assert forecast_data["encuesta_id"] == encuesta_id
+    assert forecast_data["window_minutes"] == 15
+    assert forecast_data["horizon_minutes"] == 90
+    assert "projected_total" in forecast_data
+
+    alerts_resp = client.get(
+        f"/admin/encuestas/{encuesta_id}/analytics/alerts",
+        query_string={"window_minutes": 15, "min_activity": 1},
+        headers=headers,
+    )
+    assert alerts_resp.status_code == 200
+    alerts_data = alerts_resp.get_json()
+    assert alerts_data["encuesta_id"] == encuesta_id
+    assert "alerts" in alerts_data
+    assert "has_alerts" in alerts_data
+
+    brief_resp = client.get(
+        f"/admin/encuestas/{encuesta_id}/analytics/brief",
+        headers=headers,
+    )
+    assert brief_resp.status_code == 200
+    brief_data = brief_resp.get_json()
+    assert brief_data["encuesta_id"] == encuesta_id
+    assert "headline" in brief_data
+    assert "forecast" in brief_data
     heatmap_resp = client.get(f"/admin/encuestas/{encuesta_id}/analytics/heatmap", headers=headers)
     assert heatmap_resp.status_code == 200
     heatmap_data = heatmap_resp.get_json()
