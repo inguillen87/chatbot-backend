@@ -639,6 +639,46 @@ def test_admin_encuestas_publicada_con_respuestas_bloquea_cambio_estructura(
     assert "No se puede modificar la estructura" in data["error"]
 
 
+
+
+def test_admin_surveys_alias_routes_work(client, monkeypatch, admin_user):
+    monkeypatch.setattr(feature_flags, "FEATURE_ENCUESTAS", True)
+    monkeypatch.setattr(encuestas_admin_routes, "FEATURE_ENCUESTAS", True)
+    monkeypatch.setattr(encuestas_anchor_routes, "FEATURE_ENCUESTAS", True)
+
+    with client.application.app_context():
+        encuesta = create_encuesta(
+            {
+                "titulo": "Encuesta alias",
+                "preguntas": [
+                    {
+                        "orden": 1,
+                        "tipo": "opcion_unica",
+                        "texto": "¿Alias ok?",
+                        "obligatoria": True,
+                        "opciones": [{"orden": 1, "texto": "Sí"}],
+                    }
+                ],
+            },
+            admin_user,
+        )
+        encuesta, _ = publicar_encuesta(encuesta.id, admin_user)
+        encuesta_id = encuesta.id
+
+    headers = _auth_headers(client, admin_user)
+
+    detail_resp = client.get(f"/api/admin/surveys/{encuesta_id}", headers=headers)
+    assert detail_resp.status_code == 200
+    assert detail_resp.get_json()["id"] == encuesta_id
+
+    respuestas_resp = client.get(f"/api/admin/surveys/{encuesta_id}/respuestas", headers=headers)
+    assert respuestas_resp.status_code == 200
+    assert respuestas_resp.get_json()["encuesta_id"] == encuesta_id
+
+    snapshots_resp = client.get(f"/api/admin/surveys/{encuesta_id}/snapshots", headers=headers)
+    assert snapshots_resp.status_code == 200
+    assert snapshots_resp.get_json()["encuesta_id"] == encuesta_id
+
 def test_admin_encuestas_seed_demo_endpoint(client, monkeypatch, admin_user):
     monkeypatch.setattr(feature_flags, "FEATURE_ENCUESTAS", True)
     monkeypatch.setattr(encuestas_admin_routes, "FEATURE_ENCUESTAS", True)

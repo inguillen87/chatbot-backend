@@ -319,3 +319,14 @@ encuestas_admin_api_bp = _create_admin_blueprint(
 encuestas_municipal_api_bp = _create_admin_blueprint(
     "encuestas_municipal_api_bp", "/api/municipal/encuestas"
 )
+
+# Alias legacy en inglés para clientes frontend que consultan /surveys
+encuestas_admin_surveys_api_bp = _create_admin_blueprint(
+    "encuestas_admin_surveys_api_bp", "/api/admin/surveys"
+)
+encuestas_admin_surveys_legacy_bp = _create_admin_blueprint(
+    "encuestas_admin_surveys_legacy_bp", "/admin/surveys"
+)
+encuestas_municipal_surveys_api_bp = _create_admin_blueprint(
+    "encuestas_municipal_surveys_api_bp", "/api/municipal/surveys"
+)

@@ -763,8 +763,14 @@ def _determine_tenant_id(user: Any) -> int:
 
 def _ensure_tenant_access(encuesta: EncEncuesta, user: Any) -> None:
     tenant_id = _determine_tenant_id(user)
-    if encuesta.tenant_id != tenant_id:
-        raise EncuestaError("No tenés permiso para esta encuesta", status_code=403)
+    if encuesta.tenant_id == tenant_id:
+        return
+
+    tenant_profile = getattr(g, "tenant_profile", None)
+    if tenant_profile and int(getattr(tenant_profile, "id", 0) or 0) == int(encuesta.tenant_id):
+        return
+
+    raise EncuestaError("No tenés permiso para esta encuesta", status_code=403)
 
 
 def _parse_datetime(value: Optional[str]) -> Optional[datetime]:
