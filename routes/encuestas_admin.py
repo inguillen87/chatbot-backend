@@ -230,6 +230,7 @@ def _create_admin_blueprint(name: str, url_prefix: str) -> Blueprint:
                 return jsonify({"error": "Seed inválido"}), 400
 
         reset_data = _parse_bool(data.get("reset") or data.get("borrar"))
+        scenario = (data.get("scenario") or data.get("mode") or "balanced").strip().lower()
 
         try:
             result = seed_encuesta_respuestas_demo(
@@ -240,6 +241,7 @@ def _create_admin_blueprint(name: str, url_prefix: str) -> Blueprint:
                 municipality_label=municipality_label,
                 seed=seed_value,
                 reset_data=reset_data,
+                scenario=scenario,
             )
         except EncuestaError as err:
             return jsonify(err.to_dict()), err.status_code
