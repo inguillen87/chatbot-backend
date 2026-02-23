@@ -6,6 +6,9 @@ from flask import Blueprint, Response, jsonify, request
 from config.feature_flags import FEATURE_ENCUESTAS
 from services.encuestas_analytics_service import (
     export_csv as export_csv_stream,
+    get_alerts,
+    get_executive_brief,
+    get_forecast,
     get_heatmap,
     get_summary,
     get_timeseries,
@@ -90,6 +93,57 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
         return jsonify(data)
 
     bp.add_url_rule("/heatmap", view_func=heatmap, methods=["GET"])
+
+
+    @token_requerido
+    @require_role("admin", "empleado", "super_admin")
+    def forecast(current_user, encuesta_id: int):
+        filtros = _parse_filtros()
+        window_minutes = request.args.get("window_minutes", default=10, type=int) or 10
+        horizon_minutes = request.args.get("horizon_minutes", default=60, type=int) or 60
+        try:
+            data = get_forecast(
+                encuesta_id,
+                filtros=filtros,
+                window_minutes=window_minutes,
+                horizon_minutes=horizon_minutes,
+            )
+        except EncuestaError as err:
+            return jsonify(err.to_dict()), err.status_code
+        return jsonify(data)
+
+    bp.add_url_rule("/forecast", view_func=forecast, methods=["GET"])
+
+    @token_requerido
+    @require_role("admin", "empleado", "super_admin")
+    def alerts(current_user, encuesta_id: int):
+        filtros = _parse_filtros()
+        window_minutes = request.args.get("window_minutes", default=10, type=int) or 10
+        min_activity = request.args.get("min_activity", default=5, type=int) or 5
+        try:
+            data = get_alerts(
+                encuesta_id,
+                filtros=filtros,
+                window_minutes=window_minutes,
+                min_activity_threshold=min_activity,
+            )
+        except EncuestaError as err:
+            return jsonify(err.to_dict()), err.status_code
+        return jsonify(data)
+
+    bp.add_url_rule("/alerts", view_func=alerts, methods=["GET"])
+
+    @token_requerido
+    @require_role("admin", "empleado", "super_admin")
+    def brief(current_user, encuesta_id: int):
+        filtros = _parse_filtros()
+        try:
+            data = get_executive_brief(encuesta_id, filtros)
+        except EncuestaError as err:
+            return jsonify(err.to_dict()), err.status_code
+        return jsonify(data)
+
+    bp.add_url_rule("/brief", view_func=brief, methods=["GET"])
 
     @token_requerido
     @require_role("admin", "empleado", "super_admin")
