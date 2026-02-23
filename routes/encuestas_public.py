@@ -650,9 +650,20 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
         if request.method == "OPTIONS":
             return "", 204
 
+        include_heatmap = request.args.get("include_heatmap", "1").strip().lower() not in {"0", "false", "no", "off"}
+        max_points = request.args.get("max_points", default=2000, type=int) or 2000
+        max_cells = request.args.get("max_cells", default=200, type=int) or 200
+        window_minutes = request.args.get("window_minutes", default=10, type=int) or 10
+
         try:
             # Reusing existing service/analytics logic
-            results = calculate_live_results(slug)
+            results = calculate_live_results(
+                slug,
+                include_heatmap=include_heatmap,
+                max_points=max(100, min(max_points, 5000)),
+                max_cells=max(50, min(max_cells, 1000)),
+                momentum_window_minutes=window_minutes,
+            )
             return jsonify(results)
         except EncuestaError as err:
             return jsonify(err.to_dict()), err.status_code

@@ -763,8 +763,14 @@ def _determine_tenant_id(user: Any) -> int:
 
 def _ensure_tenant_access(encuesta: EncEncuesta, user: Any) -> None:
     tenant_id = _determine_tenant_id(user)
-    if encuesta.tenant_id != tenant_id:
-        raise EncuestaError("No tenés permiso para esta encuesta", status_code=403)
+    if encuesta.tenant_id == tenant_id:
+        return
+
+    tenant_profile = getattr(g, "tenant_profile", None)
+    if tenant_profile and int(getattr(tenant_profile, "id", 0) or 0) == int(encuesta.tenant_id):
+        return
+
+    raise EncuestaError("No tenés permiso para esta encuesta", status_code=403)
 
 
 def _parse_datetime(value: Optional[str]) -> Optional[datetime]:
@@ -2534,6 +2540,36 @@ def _is_encuesta_activa(encuesta: EncEncuesta) -> bool:
     return encuesta.esta_activa()
 
 
+def _pick_seed_submitted_at(
+    rng: random.Random,
+    *,
+    scenario: str,
+    now: datetime,
+) -> datetime:
+    """Build realistic timestamps for demo seeds.
+
+    ``realtime`` concentrates activity in the last hours so live dashboards look
+    active during demos; ``balanced`` keeps a broader 30-day spread.
+    """
+
+    normalized = (scenario or "balanced").strip().lower()
+    if normalized == "realtime":
+        roll = rng.random()
+        if roll < 0.7:
+            return now - timedelta(minutes=rng.randint(0, 120))
+        if roll < 0.95:
+            return now - timedelta(hours=rng.randint(2, 24), minutes=rng.randint(0, 59))
+        return now - timedelta(days=rng.randint(1, 7), hours=rng.randint(0, 23))
+
+    return now - timedelta(days=rng.randint(0, 28), minutes=rng.randint(0, 1440))
+
+
+def _seed_weighted_choice(rng: random.Random, options: Sequence[str], weights: Sequence[float]) -> str:
+    if not options:
+        return ""
+    return str(rng.choices(list(options), weights=list(weights), k=1)[0])
+
+
 def seed_encuesta_respuestas_demo(
     encuesta_id: int,
     user: Any,
@@ -2543,6 +2579,7 @@ def seed_encuesta_respuestas_demo(
     municipality_label: Optional[str] = None,
     seed: Optional[int] = None,
     reset_data: bool = False,
+    scenario: str = "balanced",
 ) -> Dict[str, Any]:
     if cantidad <= 0:
         raise EncuestaError("Debe solicitar al menos una respuesta demo")
@@ -2582,11 +2619,29 @@ def seed_encuesta_respuestas_demo(
         "Excelente iniciativa para planificar mejoras",
         "Ojalá sigan estas encuestas participativas",
         "Necesitamos más controles y presencia ciudadana",
+        "La propuesta me parece clara y necesaria",
+        "Necesitamos seguimiento y tableros públicos en tiempo real",
     ]
     generos = ["femenino", "masculino", "no_binario", None]
-    canales = ["web", "whatsapp", "presencial"]
-    utm_sources = ["web", "qr", "campana"]
-    utm_campaigns = ["demo", "lanzamiento", "presentacion", "inversionistas"]
+
+    scenario_normalized = (scenario or "balanced").strip().lower()
+    if scenario_normalized not in {"balanced", "realtime"}:
+        raise EncuestaError("Scenario inválido. Valores soportados: balanced, realtime")
+
+    if scenario_normalized == "realtime":
+        canales = ["web", "whatsapp", "presencial"]
+        canales_weights = [0.62, 0.28, 0.10]
+        utm_sources = ["web", "qr", "campana"]
+        utm_source_weights = [0.58, 0.24, 0.18]
+        utm_campaigns = ["debate", "territorio", "digital", "inversionistas"]
+        utm_campaign_weights = [0.34, 0.26, 0.22, 0.18]
+    else:
+        canales = ["web", "whatsapp", "presencial"]
+        canales_weights = [0.45, 0.35, 0.20]
+        utm_sources = ["web", "qr", "campana"]
+        utm_source_weights = [0.40, 0.35, 0.25]
+        utm_campaigns = ["demo", "lanzamiento", "presentacion", "inversionistas"]
+        utm_campaign_weights = [0.35, 0.30, 0.20, 0.15]
 
     barrios_catalogo = list((geo_metadata or {}).get("neighborhoods") or [])
     distritos_catalogo = list((geo_metadata or {}).get("districts") or [])
@@ -2595,6 +2650,13 @@ def seed_encuesta_respuestas_demo(
     created = 0
     skipped = 0
     attempts = 0
+    now = datetime.now(timezone.utc)
+    analytics_counter = {
+        "canales": Counter(),
+        "utm_source": Counter(),
+        "utm_campaign": Counter(),
+        "barrios": Counter(),
+    }
     dni_usados: set[str] = set()
     phone_usados: set[str] = set()
     fingerprints: set[str] = set()
@@ -2622,8 +2684,10 @@ def seed_encuesta_respuestas_demo(
             lat = rng.uniform(-33.2, -32.8)
             lng = rng.uniform(-68.9, -68.3)
 
-        submitted_at = datetime.now(timezone.utc) - timedelta(
-            days=rng.randint(0, 28), minutes=rng.randint(0, 1440)
+        submitted_at = _pick_seed_submitted_at(
+            rng,
+            scenario=scenario_normalized,
+            now=now,
         )
 
         respuestas_items: List[Dict[str, Any]] = []
@@ -2691,9 +2755,9 @@ def seed_encuesta_respuestas_demo(
             "ciudad": (geo_metadata or {}).get("municipality"),
             "provincia": (geo_metadata or {}).get("state"),
             "pais": (geo_metadata or {}).get("country"),
-            "utm_source": rng.choice(utm_sources),
-            "utm_campaign": rng.choice(utm_campaigns),
-            "canal": rng.choice(canales),
+            "utm_source": _seed_weighted_choice(rng, utm_sources, utm_source_weights),
+            "utm_campaign": _seed_weighted_choice(rng, utm_campaigns, utm_campaign_weights),
+            "canal": _seed_weighted_choice(rng, canales, canales_weights),
         }
 
         request_ctx = {
@@ -2765,6 +2829,11 @@ def seed_encuesta_respuestas_demo(
         if fingerprint:
             fingerprints.add(fingerprint)
         created += 1
+        analytics_counter["canales"][payload_data["canal"]] += 1
+        analytics_counter["utm_source"][payload_data["utm_source"]] += 1
+        analytics_counter["utm_campaign"][payload_data["utm_campaign"]] += 1
+        if payload_data.get("barrio"):
+            analytics_counter["barrios"][payload_data["barrio"]] += 1
 
     current_app.logger.info(
         "[encuestas] Seed demo agregó %s respuestas a la encuesta %s (saltadas=%s)",
@@ -2779,7 +2848,17 @@ def seed_encuesta_respuestas_demo(
         "omitidas": skipped,
         "objetivo": cantidad,
         "seed": seed,
+        "scenario": scenario_normalized,
         "reset": reset_summary,
+        "analytics_preview": {
+            "canales": dict(analytics_counter["canales"]),
+            "utm_source": dict(analytics_counter["utm_source"]),
+            "utm_campaign": dict(analytics_counter["utm_campaign"]),
+            "top_barrios": [
+                {"label": label, "value": value}
+                for label, value in analytics_counter["barrios"].most_common(5)
+            ],
+        },
     }
 
 
