@@ -611,13 +611,16 @@ def test_admin_encuestas_seed_demo_endpoint(client, monkeypatch, admin_user):
 
     seed_resp = client.post(
         f"/admin/encuestas/{encuesta_id}/seed-demo",
-        json={"cantidad": 8},
+        json={"cantidad": 8, "scenario": "realtime"},
         headers=headers,
     )
     assert seed_resp.status_code == 200
     seed_payload = seed_resp.get_json()
     assert seed_payload["creadas"] > 0
     assert "seed" in seed_payload
+    assert seed_payload["scenario"] == "realtime"
+    assert "analytics_preview" in seed_payload
+    assert "canales" in seed_payload["analytics_preview"]
 
     with client.application.app_context():
         total = EncRespuesta.query.filter_by(encuesta_id=encuesta_id).count()
@@ -626,3 +629,36 @@ def test_admin_encuestas_seed_demo_endpoint(client, monkeypatch, admin_user):
             EncRespuesta.lat.isnot(None), EncRespuesta.lng.isnot(None)
         ).count()
         assert geo_count > 0
+
+def test_admin_encuestas_seed_demo_invalid_scenario(client, monkeypatch, admin_user):
+    monkeypatch.setattr(feature_flags, "FEATURE_ENCUESTAS", True)
+    monkeypatch.setattr(encuestas_admin_routes, "FEATURE_ENCUESTAS", True)
+
+    headers = _auth_headers(client, admin_user)
+    create_resp = client.post(
+        "/admin/encuestas",
+        json={
+            "titulo": "Encuesta para validar scenario",
+            "preguntas": [
+                {
+                    "orden": 1,
+                    "tipo": "opcion_unica",
+                    "texto": "¿Respuesta?",
+                    "obligatoria": True,
+                    "opciones": [{"orden": 1, "texto": "Sí"}],
+                }
+            ],
+        },
+        headers=headers,
+    )
+    assert create_resp.status_code == 201
+    encuesta_id = create_resp.get_json()["id"]
+
+    seed_resp = client.post(
+        f"/admin/encuestas/{encuesta_id}/seed-demo",
+        json={"cantidad": 10, "scenario": "invalido"},
+        headers=headers,
+    )
+    assert seed_resp.status_code == 400
+    assert "Scenario inválido" in seed_resp.get_json()["error"]
+

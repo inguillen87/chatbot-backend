@@ -367,6 +367,12 @@ class PublicSurveyFlowTests(unittest.TestCase):
         self.assertTrue(live_data["ai_summary"])
         self.assertIn("momentum", live_data)
         self.assertIn(live_data["momentum"]["trend"], {"subiendo", "estable", "bajando"})
+        self.assertIn("delta", live_data["momentum"])
+        self.assertIn("window_minutes", live_data["momentum"])
+
+        self.assertIn("kpis", live_data)
+        self.assertIn("participation_per_minute", live_data["kpis"])
+        self.assertIn("responses_last_hour", live_data["kpis"])
 
         self.assertTrue(live_data["timeline_minute"])
         primera_pregunta = live_data["preguntas"][0]
@@ -375,8 +381,55 @@ class PublicSurveyFlowTests(unittest.TestCase):
         self.assertIn("porcentaje", primera_pregunta["opciones"][0])
 
         heatmap = live_data["heatmap"]
+        self.assertTrue(heatmap["enabled"])
         self.assertIn("metadata", heatmap)
         self.assertGreaterEqual(heatmap["metadata"]["points_count"], 1)
+        self.assertIn("ai_insights", live_data)
+        self.assertTrue(live_data["ai_insights"])
+
+
+    def test_live_results_supports_lightweight_query_options(self):
+        create_payload = {
+            "titulo": "Pulso liviano",
+            "publicar": True,
+            "preguntas": [
+                {
+                    "titulo": "¿Te parece útil?",
+                    "tipo": "opcion_unica",
+                    "obligatoria": True,
+                    "opciones": [
+                        {"texto": "Sí", "valor": "si"},
+                        {"texto": "No", "valor": "no"},
+                    ],
+                }
+            ],
+        }
+        resp = self.client.post("/admin/encuestas/", json=create_payload, headers=self._auth_headers())
+        self.assertEqual(resp.status_code, 201, resp.get_json())
+        data = resp.get_json()
+        encuesta_id = data["id"]
+
+        publish_resp = self.client.post(
+            f"/admin/encuestas/{encuesta_id}/publicar",
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(publish_resp.status_code, 200, publish_resp.get_json())
+        slug = publish_resp.get_json().get("slug_publico") or data["slug"]
+
+        with self.app.app_context():
+            encuesta = EncEncuesta.query.get(encuesta_id)
+            encuesta.inicio_at = None
+            encuesta.fin_at = None
+            db.session.commit()
+
+        live_resp = self.client.get(
+            f"/api/public/encuestas/{slug}/live-results?include_heatmap=0&window_minutes=20&max_points=100&max_cells=50"
+        )
+        self.assertEqual(live_resp.status_code, 200, live_resp.get_json())
+        payload = live_resp.get_json()
+        self.assertFalse(payload["heatmap"]["enabled"])
+        self.assertEqual(payload["heatmap"]["points"], [])
+        self.assertEqual(payload["momentum"]["window_minutes"], 20)
 
     def test_admin_no_puede_modificar_otra_municipalidad(self):
         create_resp = self.client.post(

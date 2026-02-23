@@ -676,7 +676,14 @@ def export_csv(encuesta_id: int, filtros: Optional[Dict[str, Any]] = None) -> It
         buffer.seek(0)
         buffer.truncate(0)
 
-def calculate_live_results(slug_publico: str) -> Dict[str, Any]:
+def calculate_live_results(
+    slug_publico: str,
+    *,
+    include_heatmap: bool = True,
+    max_points: int = 2000,
+    max_cells: int = 200,
+    momentum_window_minutes: int = 10,
+) -> Dict[str, Any]:
     """
     Returns simplified aggregate counts for live voting animations.
     Optimized for frequent polling.
@@ -746,6 +753,7 @@ def calculate_live_results(slug_publico: str) -> Dict[str, Any]:
         )
 
     now = datetime.now(timezone.utc)
+    window = max(5, min(momentum_window_minutes, 30))
     last_hour = now.timestamp() - 3600
     recent_responses = (
         EncRespuesta.query.with_entities(EncRespuesta.submitted_at)
@@ -768,9 +776,9 @@ def calculate_live_results(slug_publico: str) -> Dict[str, Any]:
         bucket_counts[minute_bucket] += 1
 
         delta_seconds = (now - dt).total_seconds()
-        if delta_seconds <= 600:
+        if delta_seconds <= window * 60:
             last_10m += 1
-        elif delta_seconds <= 1200:
+        elif delta_seconds <= window * 120:
             previous_10m += 1
 
     trend = "estable"
@@ -784,10 +792,13 @@ def calculate_live_results(slug_publico: str) -> Dict[str, Any]:
         for bucket in sorted(bucket_counts.keys())
     ]
 
-    points, cells = _aggregate_heatmap_cells(
-        _collect_respuestas(encuesta, filtros={"desde": (now.replace(hour=0, minute=0, second=0, microsecond=0)).isoformat()}),
-        resolution=9,
-    )
+    points: List[Dict[str, Any]] = []
+    cells: List[Dict[str, Any]] = []
+    if include_heatmap:
+        points, cells = _aggregate_heatmap_cells(
+            _collect_respuestas(encuesta, filtros={"desde": (now.replace(hour=0, minute=0, second=0, microsecond=0)).isoformat()}),
+            resolution=9,
+        )
 
     ai_summary = "Sin datos suficientes para resumen en vivo."
     if responses_count > 0:
@@ -800,6 +811,39 @@ def calculate_live_results(slug_publico: str) -> Dict[str, Any]:
             f"{top_highlights}"
         )
 
+    responses_last_hour = sum(bucket_counts.values())
+    participation_per_minute = round(responses_last_hour / 60.0, 3) if responses_last_hour else 0.0
+    top_question = None
+    for pregunta in preguntas:
+        if not pregunta.get("opciones"):
+            continue
+        top_option = pregunta["opciones"][0]
+        if not top_question or top_option["value"] > top_question["lider"]["value"]:
+            top_question = {
+                "pregunta_id": pregunta["id"],
+                "pregunta": pregunta["titulo"],
+                "lider": top_option,
+            }
+
+    kpis = {
+        "responses_last_hour": responses_last_hour,
+        "participation_per_minute": participation_per_minute,
+        "heatmap_coverage_cells": len(cells),
+        "leader": top_question,
+    }
+
+    ai_insights: List[str] = []
+    if top_question and top_question.get("lider"):
+        ai_insights.append(
+            f"La pregunta con mayor tracción es '{top_question['pregunta'][:70]}' y lidera '{top_question['lider']['label']}' con {top_question['lider']['porcentaje']}%."
+        )
+    if trend == "subiendo":
+        ai_insights.append("La curva reciente de participación está acelerando: conviene reforzar distribución del link ahora.")
+    elif trend == "bajando":
+        ai_insights.append("La curva reciente está desacelerando: conviene activar recordatorios o pauta segmentada.")
+    else:
+        ai_insights.append("La curva reciente se mantiene estable: se sugiere sostener frecuencia de difusión.")
+
     return {
         "encuesta_id": encuesta.id,
         "slug": slug_publico,
@@ -807,19 +851,28 @@ def calculate_live_results(slug_publico: str) -> Dict[str, Any]:
         "preguntas": preguntas,
         "timeline_minute": timeline,
         "momentum": {
+            "window_minutes": window,
+            "last_window": last_10m,
+            "previous_window": previous_10m,
+            "trend": trend,
+            "delta": last_10m - previous_10m,
             "last_10m": last_10m,
             "previous_10m": previous_10m,
-            "trend": trend,
         },
+        "kpis": kpis,
         "heatmap": {
-            "points": points[:2000],
-            "cells": cells[:200],
+            "enabled": include_heatmap,
+            "points": points[:max_points],
+            "cells": cells[:max_cells],
             "metadata": {
                 "resolution": 9,
                 "points_count": len(points),
                 "cells_count": len(cells),
+                "truncated_points": max(0, len(points) - max_points),
+                "truncated_cells": max(0, len(cells) - max_cells),
             },
         },
         "ai_summary": ai_summary,
+        "ai_insights": ai_insights,
         "updated_at": now.isoformat(),
     }
