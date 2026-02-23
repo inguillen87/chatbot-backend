@@ -10689,6 +10689,35 @@ def responder_municipio(
             if response:
                 return _finalize_response(response)
 
+        # Evita que el flujo quede "colgado" si el usuario comparte ubicación
+        # antes de escribir su nombre (caso frecuente en demos web).
+        if location:
+            nombre_fallback = "Vecino/a"
+            context["profile_name"] = nombre_fallback
+
+            chat_data = context.get("chat_db_context_data")
+            if not isinstance(chat_data, dict):
+                chat_data = {}
+                context["chat_db_context_data"] = chat_data
+
+            chat_data["profile_name"] = nombre_fallback
+            contexto_municipio_actual = chat_data.setdefault(CONTEXTO_MUNICIPIO, {})
+            contacto = contexto_municipio_actual.setdefault("contacto_usuario", {})
+            contacto.setdefault("nombre", nombre_fallback)
+
+            if chat_db_context and isinstance(chat_db_context.context_data, dict):
+                chat_db_context.context_data["profile_name"] = nombre_fallback
+                contexto_db = chat_db_context.context_data.setdefault(CONTEXTO_MUNICIPIO, {})
+                contacto_db = contexto_db.setdefault("contacto_usuario", {})
+                contacto_db.setdefault("nombre", nombre_fallback)
+
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+
+            return _finalize_response(
+                _build_proactive_location_response(location, contexto_municipio_actual)
+            )
+
         nombre_usuario = (pregunta_str or "").strip()
         if len(nombre_usuario) > 2:
             # Save the name

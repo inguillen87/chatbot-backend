@@ -122,3 +122,45 @@ def test_responder_municipio_location_continues_flow(app_context):
     flow_context = chat_db_context.context_data[CONTEXTO_MUNICIPIO]["reclamo_flow_v2"]
     assert flow_context["state"] == ReclamoState.ESPERANDO_FOTO.name
     assert "don bosco" in flow_context["datos_reclamo"].get("direccion", "").lower()
+
+
+def test_location_before_name_does_not_stall_flow(app_context):
+    """If a location arrives while waiting for name, the flow should continue with proactive options."""
+
+    owner_user = MagicMock()
+    owner_user.id = 1
+    owner_user.municipio_id = "default"
+
+    contexto = {
+        CONTEXTO_MUNICIPIO: {
+            "estado_conversacion": "ESPERANDO_NOMBRE_INICIAL",
+        }
+    }
+
+    chat_db_context = SimpleNamespace(context_data=contexto, chat_session_id="session-456")
+
+    location_payload = {
+        "latitude": "-33.0",
+        "longitude": "-68.5",
+        "address": "Don Bosco 55, Junín",
+    }
+
+    with patch('services.municipio_responder.flag_modified', lambda *args, **kwargs: None):
+        response = responder_municipio(
+            pregunta_original="",
+            owner_user=owner_user,
+            rubro_obj=MagicMock(nombre="municipio"),
+            chat_db_context=chat_db_context,
+            anon_id="anon+location",
+            channel="web",
+            location=location_payload,
+            es_ubicacion=True,
+            ubicacion_usuario=location_payload,
+        )
+
+    message = response.get("message_body", "").lower()
+    assert "ubicación" in message and "qué te gustaría hacer" in message
+    assert response.get("fuente") == "proactive_location_handler"
+
+    flow_context = chat_db_context.context_data[CONTEXTO_MUNICIPIO]
+    assert flow_context["estado_conversacion"] == "ESPERANDO_INTENCION_UBICACION"
