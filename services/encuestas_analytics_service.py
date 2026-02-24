@@ -978,6 +978,45 @@ def _build_visual_blueprint(
     }
 
 
+
+
+def _metric_number(value: Any, *, decimals: int = 2) -> float:
+    """Normalize numeric KPI values for UI payloads."""
+
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return round(numeric, decimals)
+
+
+def _build_dashboard_cards(summary: Dict[str, Any], forecast: Dict[str, Any], anomalies: Dict[str, Any]) -> List[Dict[str, Any]]:
+    total = int(summary.get("total_respuestas") or 0)
+    participantes = int(summary.get("participantes_unicos") or 0)
+    completitud = _metric_number(summary.get("tasa_completitud"), decimals=1)
+    projected = int(forecast.get("projected_total") or total)
+    risk_score = _metric_number(anomalies.get("risk_score"), decimals=3)
+
+    return [
+        {"id": "total_respuestas", "label": "Total de respuestas", "value": total, "unit": "count", "kind": "kpi"},
+        {"id": "participantes_unicos", "label": "Participantes únicos", "value": participantes, "unit": "count", "kind": "kpi"},
+        {"id": "tasa_completitud", "label": "Tasa de completitud", "value": completitud, "unit": "percent", "kind": "kpi"},
+        {"id": "projected_total", "label": "Proyección total", "value": projected, "unit": "count", "kind": "forecast"},
+        {"id": "risk_score", "label": "Riesgo operativo", "value": risk_score, "unit": "score", "kind": "anomaly"},
+    ]
+
+
+def _build_dashboard_ui_state(summary: Dict[str, Any], heatmap: Dict[str, Any], alerts: Dict[str, Any]) -> Dict[str, Any]:
+    total_respuestas = int(summary.get("total_respuestas") or 0)
+    points = heatmap.get("points") or []
+    has_points = isinstance(points, list) and len(points) > 0
+    has_alerts = bool((alerts.get("alerts") or []))
+
+    return {
+        "latest_responses": "ready" if total_respuestas > 0 else "empty",
+        "map_participation": "ready" if has_points else "empty",
+        "alerts": "attention" if has_alerts else "normal",
+    }
 def get_dashboard_bundle(
     encuesta_id: int,
     filtros: Optional[Dict[str, Any]] = None,
@@ -1002,17 +1041,33 @@ def get_dashboard_bundle(
         heatmap=heatmap,
     )
 
+    cards = _build_dashboard_cards(summary, forecast, anomalies)
+    ui_state = _build_dashboard_ui_state(summary, heatmap, alerts)
+    active_alerts = int(len(alerts.get("alerts") or []))
+
     return {
         "encuesta_id": encuesta_id,
         "executive_summary": executive_summary,
         "brief": brief,
         "kpis": {
-            "total_respuestas": summary.get("total_respuestas"),
-            "participantes_unicos": summary.get("participantes_unicos"),
-            "tasa_completitud": summary.get("tasa_completitud"),
-            "projected_total": forecast.get("projected_total"),
-            "risk_score": anomalies.get("risk_score"),
-            "active_alerts": len(alerts.get("alerts") or []),
+            "total_respuestas": int(summary.get("total_respuestas") or 0),
+            "participantes_unicos": int(summary.get("participantes_unicos") or 0),
+            "tasa_completitud": _metric_number(summary.get("tasa_completitud"), decimals=2),
+            "projected_total": int(forecast.get("projected_total") or 0),
+            "risk_score": _metric_number(anomalies.get("risk_score"), decimals=3),
+            "active_alerts": active_alerts,
+        },
+        "cards": cards,
+        "ui_state": ui_state,
+        "meta": {
+            "schema_version": "2026.03",
+            "filters": dict(filtros or {}),
+            "module_state": {
+                "summary": "ready" if int(summary.get("total_respuestas") or 0) > 0 else "empty",
+                "timeseries": "ready" if len(timeseries or []) > 0 else "empty",
+                "heatmap": "ready" if len((heatmap.get("points") or [])) > 0 else "empty",
+                "alerts": "attention" if active_alerts > 0 else "normal",
+            },
         },
         "modules": {
             "summary": summary,
