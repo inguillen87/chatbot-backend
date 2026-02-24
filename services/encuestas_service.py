@@ -1824,6 +1824,36 @@ def get_encuesta(encuesta_id: int, tenant_id: Optional[int] = None, user: Any = 
 
 
 
+
+
+def _is_bootstrap_demo_survey(encuesta: EncEncuesta) -> bool:
+    """Return True when the survey can be identified as bootstrap demo content."""
+
+    if not encuesta:
+        return False
+
+    templates = _bootstrap_templates()
+    if not templates:
+        return False
+
+    titulo = (getattr(encuesta, "titulo", "") or "").strip().lower()
+    descripcion = (getattr(encuesta, "descripcion", "") or "").strip().lower()
+
+    for template in templates:
+        if not isinstance(template, dict):
+            continue
+        template_title = str(template.get("titulo") or "").strip().lower()
+        template_desc = str(template.get("descripcion") or "").strip().lower()
+
+        if template_title and titulo == template_title:
+            return True
+        if template_title and template_title in titulo:
+            return True
+        if template_desc and descripcion and template_desc == descripcion:
+            return True
+
+    return False
+
 def _ensure_demo_public_window(encuesta: EncEncuesta) -> None:
     """Keep bootstrap demo surveys publicly accessible when their window expired."""
 
@@ -1832,6 +1862,8 @@ def _ensure_demo_public_window(encuesta: EncEncuesta) -> None:
 
     profile = _match_bootstrap_profile(getattr(encuesta, "tenant_id", None) or 0)
     if not profile:
+        return
+    if not _is_bootstrap_demo_survey(encuesta):
         return
 
     now = datetime.now(timezone.utc)

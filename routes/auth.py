@@ -1226,7 +1226,7 @@ def login():
 
     owner_token = _resolve_owner_token(user)
 
-    effective_municipio_id = getattr(tenant_obj, "municipio_id", None) or user.municipio_id
+    effective_municipio_id = getattr(owner_tenant, "municipio_id", None) or user.municipio_id
 
     # Generar el token JWT
     jwt_payload = {
@@ -1903,7 +1903,7 @@ def login_from_widget(owner_user):
     rubro_nombre = user_rubro.nombre if user_rubro else owner_rubro.nombre if owner_rubro else "General"
     tipo_chat = _resolve_tipo_chat(user, tenant_obj=owner_tenant, rubro_nombre=rubro_nombre)
 
-    effective_municipio_id = getattr(tenant_obj, "municipio_id", None) or user.municipio_id
+    effective_municipio_id = getattr(owner_tenant, "municipio_id", None) or user.municipio_id
 
     # Generar el token JWT
     jwt_payload = {
@@ -2210,7 +2210,7 @@ def chatuser_login_panel():
     rubro_nombre = user.rubro.nombre if user.rubro else owner_user.rubro.nombre if owner_user else "General"
     tipo_chat = _resolve_tipo_chat(user, tenant_obj=owner_tenant, rubro_nombre=rubro_nombre)
 
-    effective_municipio_id = getattr(tenant_obj, "municipio_id", None) or user.municipio_id
+    effective_municipio_id = getattr(owner_tenant, "municipio_id", None) or user.municipio_id
 
     # Generar el token JWT
     jwt_payload = {

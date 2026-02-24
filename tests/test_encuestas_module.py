@@ -840,3 +840,43 @@ def test_get_encuesta_allows_access_when_tenant_profile_matches(client):
 
         loaded = encuestas_service_module.get_encuesta(encuesta.id, user=alt_user)
         assert loaded.id == encuesta.id
+
+
+def test_get_public_encuesta_does_not_refresh_non_demo_surveys(client):
+    with client.application.app_context():
+        user = DummyUser(tenant_id=4)
+        payload = {
+            "titulo": "Encuesta Operativa Interna",
+            "descripcion": "Cierre de campaña",
+            "tipo": "opinion",
+            "politica_unicidad": "libre",
+            "anonimato": True,
+            "preguntas": [
+                {
+                    "orden": 1,
+                    "tipo": "opcion_unica",
+                    "texto": "¿Cómo calificás el servicio?",
+                    "obligatoria": True,
+                    "opciones": [
+                        {"orden": 1, "texto": "Bueno"},
+                        {"orden": 2, "texto": "Regular"},
+                    ],
+                }
+            ],
+        }
+        encuesta = create_encuesta(payload, user)
+        encuesta.estado = "publicada"
+        encuesta.inicio_at = datetime.now(timezone.utc) - timedelta(days=20)
+        encuesta.fin_at = datetime.now(timezone.utc) - timedelta(days=1)
+        db.session.add(encuesta)
+        db.session.commit()
+
+        with pytest.raises(EncuestaError) as exc_info:
+            get_public_encuesta(encuesta.slug)
+
+        assert exc_info.value.status_code == 403
+        db.session.refresh(encuesta)
+        fin_at = encuesta.fin_at
+        if fin_at.tzinfo is None:
+            fin_at = fin_at.replace(tzinfo=timezone.utc)
+        assert fin_at < datetime.now(timezone.utc)

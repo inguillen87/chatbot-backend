@@ -80,6 +80,17 @@ def _get_rooms_for_tenant_slug(tenant_slug: Optional[str]) -> list[str]:
         rooms.add(f"pyme_{tenant.pyme_id}")
     return list(rooms)
 
+
+
+def _merge_rooms_for_subscription(user: User, tenant_slug: Optional[str]) -> list[str]:
+    """Merge user-derived and tenant-derived rooms without dropping either scope."""
+
+    rooms = list(_get_rooms_for_user(user))
+    for room in _get_rooms_for_tenant_slug(tenant_slug):
+        if room not in rooms:
+            rooms.append(room)
+    return rooms
+
 def _resolve_ticket_room(payload: Any) -> Optional[str]:
     if not isinstance(payload, dict):
         return None
@@ -257,8 +268,7 @@ def on_connect(auth):
                 )
                 return False
 
-            tenant_rooms = _get_rooms_for_tenant_slug(tenant_slug)
-            rooms = list(tenant_rooms) if tenant_rooms else _get_rooms_for_user(user)
+            rooms = _merge_rooms_for_subscription(user, tenant_slug)
             for room in rooms:
                 join_room(room)
                 current_app.logger.debug(
@@ -299,8 +309,7 @@ def on_subscribe_ticket_updates(data):
         emit('subscription_error', {'error': 'unknown_user'})
         return
 
-    tenant_rooms = _get_rooms_for_tenant_slug(tenant_slug)
-    rooms = list(tenant_rooms) if tenant_rooms else _get_rooms_for_user(user)
+    rooms = _merge_rooms_for_subscription(user, tenant_slug)
     for room in rooms:
         join_room(room)
     emit('subscribed_ticket_updates', {'rooms': rooms or []})
