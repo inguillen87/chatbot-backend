@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
+import json
+import time
 from datetime import datetime
+from typing import Any
 
 from flask import Blueprint, Response, abort, jsonify, request
 from sqlalchemy import func
@@ -15,6 +19,9 @@ from services.analytics.filters import parse_filters
 from services.analytics.rbac import require_access
 
 admin_analytics_bp = Blueprint("admin_analytics", __name__, url_prefix="/admin/analytics")
+
+_DASHBOARD_CACHE: dict[str, dict[str, Any]] = {}
+_DASHBOARD_CACHE_TTL_SECONDS = 20.0
 
 
 def _json(payload: dict, status: int = 200):
@@ -30,11 +37,100 @@ def _tenant_id_as_int(value: str) -> int:
         abort(400, description="tenant_id must be numeric")
 
 
+def _ensure_total_interactions(payload: dict[str, Any]) -> dict[str, Any]:
+    totals = payload.setdefault("totals", {})
+    if "total_interactions" not in totals:
+        tickets = int(totals.get("tickets") or 0)
+        pedidos = int(totals.get("pedidos") or 0)
+        encuestas = int(totals.get("encuestas") or 0)
+        totals["total_interactions"] = tickets + pedidos + encuestas
+    return payload
+
+
+def _build_dashboard_payload(filters) -> dict[str, Any]:
+    overview = _ensure_total_interactions(get_summary(filters))
+    totals = overview.get("totals") or {}
+    geo = get_geo_heatmap(filters)
+
+    return {
+        "tenant_id": filters.tenant_id,
+        "scope": filters.scope,
+        "period": {
+            "from": filters.date_from.isoformat() if filters.date_from else None,
+            "to": filters.date_to.isoformat() if filters.date_to else None,
+        },
+        "sections": {
+            "general": overview,
+            "municipio": overview if filters.scope == "municipio" else {"totals": totals},
+            "ventas": overview if filters.scope == "pyme" else {"totals": totals},
+            "mapas": {"geo": geo},
+        },
+        "navigation": {
+            "primary": [
+                {"key": "analytics", "label": "Analytics & Insights", "path": "/analytics", "active": True},
+                {"key": "estadisticas", "label": "Estadísticas", "path": "/estadisticas", "active": False},
+                {"key": "encuestas", "label": "Encuestas", "path": "/admin/encuestas", "active": False},
+            ],
+            "encuestas": {
+                "admin_list_endpoint": "/api/admin/encuestas",
+                "templates_endpoint": "/api/admin/encuestas/templates",
+                "seed_demo_endpoint_template": "/api/admin/encuestas/{encuesta_id}/seed-demo",
+                "public_results_endpoint_template": "/api/public/encuestas/{slug}/live-results",
+            },
+        },
+    }
+
+
+def _dashboard_cache_key(filters) -> str:
+    return "|".join(
+        [
+            str(filters.tenant_id),
+            str(filters.scope),
+            str(filters.date_from.isoformat() if filters.date_from else ""),
+            str(filters.date_to.isoformat() if filters.date_to else ""),
+            ",".join(filters.canales),
+            ",".join(filters.categorias),
+            ",".join(filters.estados),
+            str(filters.bbox or ""),
+            str(filters.resolution),
+        ]
+    )
+
+
+def _etag_for_payload(payload: dict[str, Any]) -> str:
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
+
+def _dashboard_response(filters):
+    cache_key = _dashboard_cache_key(filters)
+    now = time.time()
+    entry = _DASHBOARD_CACHE.get(cache_key)
+    if entry and float(entry.get("expires_at") or 0.0) > now:
+        payload = entry["payload"]
+    else:
+        payload = _build_dashboard_payload(filters)
+        _DASHBOARD_CACHE[cache_key] = {
+            "payload": payload,
+            "expires_at": now + _DASHBOARD_CACHE_TTL_SECONDS,
+        }
+
+    etag = _etag_for_payload(payload)
+    if request.if_none_match and request.if_none_match.contains(etag):
+        return Response(status=304, headers={"ETag": etag, "Cache-Control": "private, max-age=20"})
+
+    response = _json(payload)
+    response.headers["ETag"] = etag
+    response.headers["Cache-Control"] = "private, max-age=20"
+    return response
+
+
 @admin_analytics_bp.get("/overview")
 def admin_analytics_overview():
     filters = parse_filters(request.args)
     require_access(filters.tenant_id, "operador")
-    return _json(get_summary(filters))
+    payload = _ensure_total_interactions(get_summary(filters))
+    return _json(payload)
 
 
 @admin_analytics_bp.get("/heatmap")
@@ -105,7 +201,6 @@ def admin_analytics_export_pdf():
     for key, value in overview.get("totals", {}).items():
         lines.append(f"{key}: {value}")
 
-    # Minimal valid PDF payload.
     text = "\\n".join(lines).replace("(", "[").replace(")", "]")
     stream = f"BT /F1 12 Tf 50 780 Td ({text}) Tj ET".encode("latin-1", errors="replace")
     body = b"%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"
@@ -123,3 +218,21 @@ def admin_analytics_export_pdf():
             "Content-Disposition": f"attachment; filename=analytics_{filters.tenant_id}.pdf"
         },
     )
+
+
+@admin_analytics_bp.get("/dashboard")
+def admin_analytics_dashboard():
+    """Unified payload for the /analytics UI tabs (general/municipio/ventas/mapas)."""
+
+    filters = parse_filters(request.args)
+    require_access(filters.tenant_id, "operador")
+    return _dashboard_response(filters)
+
+
+@admin_analytics_bp.get("/hub")
+def admin_analytics_hub():
+    """Alias endpoint to support frontend convergence on one analytics hub route."""
+
+    filters = parse_filters(request.args)
+    require_access(filters.tenant_id, "operador")
+    return _dashboard_response(filters)

@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from flask import current_app, g
-from sqlalchemy import func, or_
+from sqlalchemy import func, or_, inspect
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import joinedload, load_only
 
@@ -45,6 +45,28 @@ except ImportError:
 
 
 _BOOTSTRAP_TENANT_ID: Optional[int] = None
+_ENC_COMENTARIO_HAS_REPORT_COUNT: Optional[bool] = None
+
+
+def _enc_comentario_has_report_count() -> bool:
+    """Return whether DB schema includes enc_comentario.report_count.
+
+    Some deployments may run app code before the migration lands. Keep
+    public survey comments endpoint resilient in that window.
+    """
+
+    global _ENC_COMENTARIO_HAS_REPORT_COUNT
+    if _ENC_COMENTARIO_HAS_REPORT_COUNT is not None:
+        return _ENC_COMENTARIO_HAS_REPORT_COUNT
+
+    try:
+        inspector = inspect(db.engine)
+        columns = {col.get("name") for col in inspector.get_columns("enc_comentario")}
+        _ENC_COMENTARIO_HAS_REPORT_COUNT = "report_count" in columns
+    except Exception:
+        _ENC_COMENTARIO_HAS_REPORT_COUNT = True
+
+    return bool(_ENC_COMENTARIO_HAS_REPORT_COUNT)
 
 
 class EncuestaError(Exception):
@@ -77,6 +99,38 @@ def _parse_int(value: Optional[str]) -> Optional[int]:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _safe_text_value(value: Any, *, fallback: str = "") -> str:
+    """Normalize potentially nested/structured values into a safe string.
+
+    Frontend components should never receive dict/list objects as direct React
+    children. This helper keeps comments payloads render-safe.
+    """
+
+    if value is None:
+        return fallback
+    if isinstance(value, str):
+        text = value.strip()
+        return text or fallback
+    if isinstance(value, (int, float, bool)):
+        return str(value)
+    if isinstance(value, dict):
+        preferred_keys = ("texto", "text", "label", "nombre", "value", "pregunta", "lider")
+        for key in preferred_keys:
+            candidate = _safe_text_value(value.get(key), fallback="")
+            if candidate:
+                return candidate
+        try:
+            return json.dumps(value, ensure_ascii=False)
+        except Exception:
+            return fallback
+    if isinstance(value, (list, tuple, set)):
+        parts = [_safe_text_value(item, fallback="") for item in value]
+        parts = [part for part in parts if part]
+        return " · ".join(parts) if parts else fallback
+
+    return _safe_text_value(str(value), fallback=fallback)
 
 
 def _current_app_logger():
@@ -336,6 +390,10 @@ def _build_bootstrap_payloads(
             "inicio_at": inicio.isoformat(),
             "fin_at": fin.isoformat(),
         }
+
+        auto_seed_demo = template_copy.get("auto_seed_demo")
+        if isinstance(auto_seed_demo, dict):
+            payload["auto_seed_demo"] = deepcopy(auto_seed_demo)
 
         preguntas: List[Dict[str, Any]] = []
         for pregunta_tpl in template_copy.get("preguntas", []):
@@ -664,6 +722,7 @@ def _load_bootstrap_profiles() -> List[Dict[str, Any]]:
             "tenant_env": raw_profile.get("tenant_env"),
             "fallback_tenant_id": raw_profile.get("fallback_tenant_id"),
             "keywords": tuple(raw_profile.get("keywords", [])),
+            "template_slugs": tuple(template_slugs),
             "payload_builder": builder,
             "auto_publish": bool(raw_profile.get("auto_publish", True)),
             "tenant_id": raw_profile.get("tenant_id"),
@@ -759,6 +818,16 @@ def _determine_tenant_id(user: Any) -> int:
     if not tenant_candidate:
         raise EncuestaError("No se pudo determinar el tenant del usuario", status_code=403)
     return int(tenant_candidate)
+
+
+def determine_tenant_id_for_user(user: Any) -> int:
+    """Public helper used by routes to resolve tenant consistently.
+
+    Keeping this indirection avoids route-level drift where list/create endpoints
+    accidentally resolve different tenant IDs for the same authenticated user.
+    """
+
+    return _determine_tenant_id(user)
 
 
 def _ensure_tenant_access(encuesta: EncEncuesta, user: Any) -> None:
@@ -1817,6 +1886,86 @@ def get_encuesta(encuesta_id: int, tenant_id: Optional[int] = None, user: Any = 
     return encuesta
 
 
+
+
+
+
+def _is_bootstrap_demo_survey(encuesta: EncEncuesta) -> bool:
+    """Return True when the survey can be identified as bootstrap demo content."""
+
+    if not encuesta:
+        return False
+
+    templates = _bootstrap_templates()
+    if not templates:
+        return False
+
+    titulo = (getattr(encuesta, "titulo", "") or "").strip().lower()
+    descripcion = (getattr(encuesta, "descripcion", "") or "").strip().lower()
+
+    for template in templates:
+        if not isinstance(template, dict):
+            continue
+        template_title = str(template.get("titulo") or "").strip().lower()
+        template_desc = str(template.get("descripcion") or "").strip().lower()
+
+        if template_title and titulo == template_title:
+            return True
+        if template_title and template_title in titulo:
+            return True
+        if template_desc and descripcion and template_desc == descripcion:
+            return True
+
+    return False
+
+def _ensure_demo_public_window(encuesta: EncEncuesta) -> None:
+    """Keep bootstrap demo surveys publicly accessible when their window expired."""
+
+    if not encuesta or encuesta.estado != "publicada":
+        return
+
+    profile = _match_bootstrap_profile(getattr(encuesta, "tenant_id", None) or 0)
+    if not profile:
+        return
+    if not _is_bootstrap_demo_survey(encuesta):
+        return
+
+    now = datetime.now(timezone.utc)
+    inicio_at = encuesta.inicio_at
+    if inicio_at and inicio_at.tzinfo is None:
+        inicio_at = inicio_at.replace(tzinfo=timezone.utc)
+    elif inicio_at:
+        inicio_at = inicio_at.astimezone(timezone.utc)
+
+    fin_at = encuesta.fin_at
+    if fin_at and fin_at.tzinfo is None:
+        fin_at = fin_at.replace(tzinfo=timezone.utc)
+    elif fin_at:
+        fin_at = fin_at.astimezone(timezone.utc)
+
+    should_update = False
+    if inicio_at and inicio_at > now:
+        encuesta.inicio_at = now - timedelta(minutes=5)
+        should_update = True
+
+    if fin_at and fin_at < now:
+        encuesta.fin_at = now + timedelta(days=365)
+        should_update = True
+
+    if should_update:
+        try:
+            db.session.add(encuesta)
+            db.session.commit()
+            current_app.logger.info(
+                "[encuestas] Refreshed public window for bootstrap demo survey %s", encuesta.id
+            )
+        except Exception:
+            db.session.rollback()
+            current_app.logger.exception(
+                "[encuestas] Failed to refresh public window for bootstrap demo survey %s",
+                getattr(encuesta, "id", None),
+            )
+
 def get_public_encuesta(
     slug_publico: str, *, allow_inactive_for_user: Optional[Any] = None
 ) -> EncEncuesta:
@@ -1870,9 +2019,19 @@ def get_public_encuesta(
             return encuesta
 
     if encuesta.estado != "publicada":
-        raise EncuestaError("La encuesta no está activa", status_code=403)
+        raise EncuestaError(
+            "La encuesta no está activa",
+            status_code=403,
+            payload={"reason_code": "survey_not_published"},
+        )
+
+    _ensure_demo_public_window(encuesta)
     if not encuesta.esta_activa():
-        raise EncuestaError("La encuesta no está en su ventana de participación", status_code=403)
+        raise EncuestaError(
+            "La encuesta no está en su ventana de participación",
+            status_code=403,
+            payload={"reason_code": "survey_outside_active_window"},
+        )
     return encuesta
 
 
@@ -3416,8 +3575,8 @@ def create_comentario(encuesta_id: int, payload: Dict[str, Any], user: Optional[
             slug_publico = _resolve_public_slug(encuesta) or encuesta.slug
             data = {
                 "id": comentario.id,
-                "texto": comentario.texto,
-                "nombre_autor": comentario.nombre_autor or (user.name if user else "Anónimo"),
+                "texto": _safe_text_value(comentario.texto, fallback=""),
+                "nombre_autor": _safe_text_value(comentario.nombre_autor or (user.name if user else "Anónimo"), fallback="Anónimo"),
                 "fecha": comentario.created_at.isoformat(),
                 "user_id": comentario.user_id
             }
@@ -3429,19 +3588,71 @@ def create_comentario(encuesta_id: int, payload: Dict[str, Any], user: Optional[
 
 
 def list_comentarios(encuesta_id: int, limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
-    query = (
+    base_query = (
         EncComentario.query.filter_by(encuesta_id=encuesta_id, estado="publicado")
         .order_by(EncComentario.created_at.desc())
         .limit(limit)
         .offset(offset)
     )
 
+    try:
+        query = base_query
+        if _enc_comentario_has_report_count():
+            query = query.options(load_only(
+                EncComentario.id,
+                EncComentario.texto,
+                EncComentario.nombre_autor,
+                EncComentario.created_at,
+                EncComentario.user_id,
+                EncComentario.anon_id,
+                EncComentario.estado,
+                EncComentario.report_count,
+            ))
+        else:
+            query = query.options(load_only(
+                EncComentario.id,
+                EncComentario.texto,
+                EncComentario.nombre_autor,
+                EncComentario.created_at,
+                EncComentario.user_id,
+                EncComentario.anon_id,
+                EncComentario.estado,
+            ))
+        rows = query.all()
+    except Exception as exc:
+        logger = _current_app_logger()
+        if logger:
+            logger.warning("[encuestas] list_comentarios degraded due to schema mismatch: %s", exc)
+        rows = (
+            base_query
+            .with_entities(
+                EncComentario.id,
+                EncComentario.texto,
+                EncComentario.nombre_autor,
+                EncComentario.created_at,
+                EncComentario.user_id,
+                EncComentario.anon_id,
+            )
+            .all()
+        )
+        return [
+            {
+                "id": row.id,
+                "texto": _safe_text_value(row.texto, fallback=""),
+                "nombre_autor": _safe_text_value(row.nombre_autor, fallback="Anónimo"),
+                "fecha": row.created_at.isoformat() if row.created_at else None,
+                "user_id": row.user_id,
+                "anon_id": row.anon_id,
+            }
+            for row in rows
+        ]
+
     results = []
-    for c in query:
+    for c in rows:
         results.append({
             "id": c.id,
-            "texto": c.texto,
-            "nombre_autor": c.nombre_autor or (c.user.name if c.user else "Anónimo"),
+            "texto": _safe_text_value(c.texto, fallback=""),
+            "nombre_autor": _safe_text_value(c.nombre_autor or (c.user.name if c.user else "Anónimo"), fallback="Anónimo"),
             "fecha": c.created_at.isoformat(),
             "user_id": c.user_id,
             "anon_id": c.anon_id
@@ -3499,8 +3710,8 @@ def list_all_comentarios_admin(encuesta_id: int, user: Any, limit: int = 100, of
     for c in query:
         results.append({
             "id": c.id,
-            "texto": c.texto,
-            "nombre_autor": c.nombre_autor,
+            "texto": _safe_text_value(c.texto, fallback=""),
+            "nombre_autor": _safe_text_value(c.nombre_autor, fallback="Anónimo"),
             "fecha": c.created_at.isoformat(),
             "estado": c.estado,
             "report_count": c.report_count,
@@ -3514,5 +3725,9 @@ def get_public_encuesta_by_id(encuesta_id: int) -> EncEncuesta:
     if not encuesta:
         raise EncuestaError("Encuesta no encontrada", status_code=404)
     if encuesta.estado != "publicada":
-        raise EncuestaError("La encuesta no está activa", status_code=403)
+        raise EncuestaError(
+            "La encuesta no está activa",
+            status_code=403,
+            payload={"reason_code": "survey_not_published"},
+        )
     return encuesta
