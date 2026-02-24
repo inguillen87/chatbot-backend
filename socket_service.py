@@ -257,8 +257,8 @@ def on_connect(auth):
                 )
                 return False
 
-            rooms = _get_rooms_for_user(user)
-            rooms.extend([room for room in _get_rooms_for_tenant_slug(tenant_slug) if room not in rooms])
+            tenant_rooms = _get_rooms_for_tenant_slug(tenant_slug)
+            rooms = list(tenant_rooms) if tenant_rooms else _get_rooms_for_user(user)
             for room in rooms:
                 join_room(room)
                 current_app.logger.debug(
@@ -299,8 +299,8 @@ def on_subscribe_ticket_updates(data):
         emit('subscription_error', {'error': 'unknown_user'})
         return
 
-    rooms = _get_rooms_for_user(user)
-    rooms.extend([room for room in _get_rooms_for_tenant_slug(tenant_slug) if room not in rooms])
+    tenant_rooms = _get_rooms_for_tenant_slug(tenant_slug)
+    rooms = list(tenant_rooms) if tenant_rooms else _get_rooms_for_user(user)
     for room in rooms:
         join_room(room)
     emit('subscribed_ticket_updates', {'rooms': rooms or []})

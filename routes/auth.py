@@ -1199,13 +1199,15 @@ def login():
 
     owner_token = _resolve_owner_token(user)
 
+    effective_municipio_id = getattr(tenant_obj, "municipio_id", None) or user.municipio_id
+
     # Generar el token JWT
     jwt_payload = {
         'user_id': user.id,
         'rol': user.rol,
         'tipo_chat': tipo_chat,
         'empresa_id': user.empresa_id,
-        'municipio_id': user.municipio_id,
+        'municipio_id': effective_municipio_id,
         'exp': datetime.utcnow() + timedelta(days=current_app.config.get("JWT_EXPIRATION_DAYS", 7))
     }
     jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
@@ -1229,6 +1231,7 @@ def login():
         "empresa_id": user.empresa_id,
         "rubro": rubro_nombre,
         "tipo_chat": tipo_chat,
+        "municipio_id": effective_municipio_id,
         "categorias": getattr(user, "categorias_lista", []),
         "tenant_slug": response_slug,
         "tenantSlug": response_slug,
@@ -1873,13 +1876,15 @@ def login_from_widget(owner_user):
     rubro_nombre = user_rubro.nombre if user_rubro else owner_rubro.nombre if owner_rubro else "General"
     tipo_chat = _resolve_tipo_chat(user, tenant_obj=owner_tenant, rubro_nombre=rubro_nombre)
 
+    effective_municipio_id = getattr(tenant_obj, "municipio_id", None) or user.municipio_id
+
     # Generar el token JWT
     jwt_payload = {
         'user_id': user.id,
         'rol': user.rol,
         'tipo_chat': tipo_chat,
         'empresa_id': user.empresa_id,
-        'municipio_id': user.municipio_id,
+        'municipio_id': effective_municipio_id,
         'exp': datetime.utcnow() + timedelta(days=current_app.config.get("JWT_EXPIRATION_DAYS", 7))
     }
     jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
@@ -2178,13 +2183,15 @@ def chatuser_login_panel():
     rubro_nombre = user.rubro.nombre if user.rubro else owner_user.rubro.nombre if owner_user else "General"
     tipo_chat = _resolve_tipo_chat(user, tenant_obj=owner_tenant, rubro_nombre=rubro_nombre)
 
+    effective_municipio_id = getattr(tenant_obj, "municipio_id", None) or user.municipio_id
+
     # Generar el token JWT
     jwt_payload = {
         'user_id': user.id,
         'rol': user.rol,
         'tipo_chat': tipo_chat,
         'empresa_id': user.empresa_id,
-        'municipio_id': user.municipio_id,
+        'municipio_id': effective_municipio_id,
         'exp': datetime.utcnow() + timedelta(days=current_app.config.get("JWT_EXPIRATION_DAYS", 7))
     }
     jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
