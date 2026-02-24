@@ -157,12 +157,32 @@ def auth_login_alias():
 
 @api_aliases_bp.route("/auth/demo/catalog", methods=["GET", "OPTIONS"], strict_slashes=False)
 def auth_demo_catalog_alias():
-    return demo_catalog()
+    try:
+        return demo_catalog()
+    except Exception as exc:  # pragma: no cover - defensive fallback
+        current_app.logger.warning("[api_aliases] /auth/demo/catalog alias degraded: %s", exc)
+        return jsonify(
+            {
+                "demo_login_enabled": False,
+                "demo_login_endpoint": "/auth/demo",
+                "demo_login_methods": ["POST"],
+                "entry_points": [],
+                "quick_login_payload": {"tenant_slug": None},
+                "super_admin_demo": {},
+                "tenant_demos": [],
+                "supported_languages": [],
+                "reason_code": "demo_catalog_unavailable",
+            }
+        ), 200
 
 
 @api_aliases_bp.route("/auth/demo", methods=["POST", "OPTIONS"], strict_slashes=False)
 def auth_demo_login_alias():
-    return login_demo()
+    try:
+        return login_demo()
+    except Exception as exc:  # pragma: no cover - defensive fallback
+        current_app.logger.warning("[api_aliases] /auth/demo alias failed: %s", exc)
+        return jsonify({"error": "Demo temporalmente no disponible", "reason_code": "demo_login_unavailable"}), 503
 
 @api_aliases_bp.route("/perfil", methods=["GET", "PUT", "OPTIONS"], strict_slashes=False)
 def perfil_alias():
@@ -171,7 +191,11 @@ def perfil_alias():
 
 @api_aliases_bp.route("/me", methods=["GET", "PUT", "OPTIONS"], strict_slashes=False)
 def me_alias():
-    return perfil_view()
+    try:
+        return perfil_view()
+    except Exception as exc:  # pragma: no cover - defensive fallback
+        current_app.logger.warning("[api_aliases] /me alias degraded: %s", exc)
+        return jsonify({"error": "No se pudo obtener el perfil", "reason_code": "profile_unavailable"}), 503
 
 
 @api_aliases_bp.route("/ask", methods=["POST", "OPTIONS"], strict_slashes=False)
@@ -837,13 +861,21 @@ def tenants_alias_follow():
 @api_aliases_bp.route("/pwa/anon-id", methods=["GET", "OPTIONS"], strict_slashes=False)
 @api_aliases_bp.route("/api/pwa/anon-id", methods=["GET", "OPTIONS"], strict_slashes=False)
 def anon_id_alias():
-    return provide_anon_id()
+    try:
+        return provide_anon_id()
+    except Exception as exc:  # pragma: no cover - defensive fallback
+        current_app.logger.warning("[api_aliases] /pwa/anon-id alias degraded: %s", exc)
+        return jsonify({"anon_id": None, "reason_code": "anon_id_unavailable"}), 200
 
 
 @public_aliases_bp.route("/pwa/anon-id", methods=["GET", "OPTIONS"], strict_slashes=False)
 def root_anon_id_alias():
     """Alias without /api prefix for PWA anon-id requests."""
-    return provide_anon_id()
+    try:
+        return provide_anon_id()
+    except Exception as exc:  # pragma: no cover - defensive fallback
+        current_app.logger.warning("[api_aliases] root /pwa/anon-id alias degraded: %s", exc)
+        return jsonify({"anon_id": None, "reason_code": "anon_id_unavailable"}), 200
 
 
 @api_aliases_bp.route(
@@ -855,8 +887,11 @@ def root_anon_id_alias():
 @cross_origin(origins="*", supports_credentials=True)
 def pwa_tenant_info_alias():
     """Alias so widgets hitting /api/pwa/tenant-info receive tenant details."""
-
-    return tenant_profile()
+    try:
+        return tenant_profile()
+    except Exception as exc:  # pragma: no cover - defensive fallback
+        current_app.logger.warning("[api_aliases] /pwa/tenant-info alias degraded: %s", exc)
+        return jsonify({"tenant": None, "reason_code": "tenant_info_unavailable"}), 200
 
 
 # @api_aliases_bp.route("/public/tenant", methods=["GET", "OPTIONS"], strict_slashes=False)
@@ -869,8 +904,11 @@ def pwa_tenant_info_alias():
 @public_aliases_bp.route("/public/tenant", methods=["GET", "OPTIONS"], strict_slashes=False)
 def root_public_tenant_alias():
     """Expose public tenant info for callers that omit the /api prefix."""
-
-    return tenant_profile()
+    try:
+        return tenant_profile()
+    except Exception as exc:  # pragma: no cover - defensive fallback
+        current_app.logger.warning("[api_aliases] root /public/tenant alias degraded: %s", exc)
+        return jsonify({"tenant": None, "reason_code": "tenant_info_unavailable"}), 200
 
 
 @public_aliases_bp.route(
@@ -882,8 +920,11 @@ def root_public_tenant_alias():
 @cross_origin(origins="*", supports_credentials=True)
 def root_pwa_tenant_info_alias():
     """Alias without /api prefix for PWA tenant info requests."""
-
-    return tenant_profile()
+    try:
+        return tenant_profile()
+    except Exception as exc:  # pragma: no cover - defensive fallback
+        current_app.logger.warning("[api_aliases] root /pwa/tenant-info alias degraded: %s", exc)
+        return jsonify({"tenant": None, "reason_code": "tenant_info_unavailable"}), 200
 
 
 @public_aliases_bp.route(

@@ -8,6 +8,8 @@ from typing import Iterable, Optional, Sequence
 
 from flask import abort
 
+from models import TenantProfile
+
 
 @dataclass(frozen=True)
 class AnalyticsFilters:
@@ -78,6 +80,13 @@ def parse_filters(args) -> AnalyticsFilters:
     """Parse request args into a structured filter object."""
 
     tenant_id = args.get("tenant_id")
+    if not tenant_id:
+        tenant_slug = (args.get("tenant_slug") or args.get("tenant") or "").strip().lower()
+        if tenant_slug:
+            tenant_obj = TenantProfile.query.filter(TenantProfile.slug.ilike(tenant_slug)).first()
+            if tenant_obj:
+                tenant_id = str(tenant_obj.id)
+
     if not tenant_id:
         abort(400, description="tenant_id is required")
 

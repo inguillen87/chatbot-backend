@@ -1043,10 +1043,13 @@ def demo_catalog():
 
     for demo in demos:
         tenant_slug = _resolve_demo_tenant_slug(demo.key) or _resolve_demo_tenant_slug(demo.rubro_clave)
+        sector = "gobierno" if (demo.tipo_chat or "").strip().lower() == "municipio" else "empresas"
         demo_items.append({
             "key": demo.key,
             "label": demo.label,
             "tipo_chat": demo.tipo_chat,
+            "sector": sector,
+            "rubro_clave": demo.rubro_clave,
             "tenant_slug": tenant_slug,
             "login_payload": {"rubro": demo.key},
         })
@@ -1086,6 +1089,49 @@ def demo_catalog():
         },
         "tenant_demos": [{**item, "enabled": True, "login_endpoint": "/auth/demo"} for item in demo_items],
         "supported_languages": _supported_demo_languages(),
+        "onboarding": {
+            "requires_rubro_selection_for": ["empresas"],
+            "default_sector": "gobierno",
+            "steps": [
+                {"key": "sector", "label": "Elegí tu sector", "required": True},
+                {"key": "rubro", "label": "Elegí un rubro demo", "required": False, "required_for": ["empresas"]},
+            ],
+            "sector_options": [
+                {
+                    "key": "gobierno",
+                    "label": "Municipio / Gobierno",
+                    "default_login_payload": {"rubro": "municipio", "tipo_chat": "municipio", "sector": "gobierno"},
+                    "rubros": [
+                        {
+                            "key": "municipio",
+                            "label": "Municipio",
+                            "tipo_chat": "municipio",
+                            "login_payload": {"rubro": "municipio", "tipo_chat": "municipio", "sector": "gobierno"},
+                        }
+                    ],
+                },
+                {
+                    "key": "empresas",
+                    "label": "Empresas",
+                    "rubros": [
+                        {
+                            "key": item.get("key"),
+                            "label": item.get("label") or item.get("key"),
+                            "tipo_chat": "pyme",
+                            "tenant_slug": item.get("tenant_slug"),
+                            "login_payload": {
+                                "rubro": item.get("key"),
+                                "tipo_chat": "pyme",
+                                "tenant_slug": item.get("tenant_slug"),
+                                "sector": "empresas",
+                            },
+                        }
+                        for item in demo_items
+                        if (item.get("tipo_chat") or "").strip().lower() == "pyme"
+                    ],
+                },
+            ],
+        },
     }
 
     if not ensure_users:
@@ -1104,10 +1150,21 @@ def login_demo():
         return '', 204
 
     data = request.get_json(silent=True) or {}
-    rubro = data.get('rubro') or data.get('segmento') or data.get('demo') or data.get('tipo_chat') or data.get('tenant_slug')
-    if not rubro:
-        rubro = _resolve_default_demo_slug()
-    demo_slug = _resolve_demo_tenant_slug(rubro)
+    requested_sector = str(data.get("sector") or "").strip().lower()
+    preferred_slug = data.get('tenant_slug') or data.get('tenantSlug') or request.args.get('tenant_slug') or request.args.get('tenant')
+    rubro = data.get('rubro') or data.get('segmento') or data.get('demo') or data.get('tipo_chat')
+    if not rubro and requested_sector in {"gobierno", "municipio", "publico", "public"}:
+        rubro = "municipio"
+    if not rubro and requested_sector in {"empresa", "empresas", "pyme", "privado", "private"}:
+        try:
+            pyme_demo = next((demo for demo in load_demo_rubros(require_owner=False) if (demo.tipo_chat or "").strip().lower() == "pyme"), None)
+        except Exception:
+            pyme_demo = None
+        rubro = (pyme_demo.key if pyme_demo else "pyme")
+    candidate = preferred_slug or rubro
+    if not candidate:
+        candidate = _resolve_default_demo_slug()
+    demo_slug = _resolve_demo_tenant_slug(candidate)
 
     tenant_obj = None
     if demo_slug:
@@ -1116,18 +1173,29 @@ def login_demo():
         except Exception:
             tenant_obj = None
 
+    if tenant_obj and requested_sector in {"gobierno", "municipio", "publico", "public"}:
+        if (getattr(tenant_obj, "tipo", "") or "").strip().lower() != "municipio":
+            tenant_obj = _first_active_tenant_for_demo("municipio")
+    if tenant_obj and requested_sector in {"empresa", "empresas", "pyme", "privado", "private"}:
+        if (getattr(tenant_obj, "tipo", "") or "").strip().lower() != "pyme":
+            tenant_obj = _first_active_tenant_for_demo("pyme")
+
     if not tenant_obj:
         requested_tipo = str(data.get("tipo_chat") or rubro or "municipio").strip().lower()
         tenant_obj = _first_active_tenant_for_demo(requested_tipo)
 
     if not tenant_obj:
-        return jsonify({"error": f"Rubro demo '{rubro or demo_slug or ''}' no válido"}), 404
+        return jsonify({"error": f"Rubro demo '{candidate or demo_slug or ''}' no válido"}), 404
 
     demo_user = _get_or_create_demo_user_for_tenant(tenant_obj)
     _attach_user_to_tenant(demo_user, tenant_obj)
     db.session.commit()
 
     tipo_chat = _resolve_tipo_chat(demo_user, tenant_obj=tenant_obj)
+    if requested_sector in {"gobierno", "municipio", "publico", "public"}:
+        tipo_chat = "municipio"
+    elif requested_sector in {"empresa", "empresas", "pyme", "privado", "private"}:
+        tipo_chat = "pyme"
     jwt_payload = {
         'user_id': demo_user.id,
         'rol': demo_user.rol,
@@ -1155,7 +1223,8 @@ def login_demo():
         "tenantSlug": tenant_obj.slug,
         "marketplace": _tenant_market_payload(tenant_obj),
         "demo_mode": True,
-        "rubro": rubro or tenant_obj.slug,
+        "rubro": rubro or candidate or tenant_obj.slug,
+        "sector": requested_sector or ("gobierno" if tipo_chat == "municipio" else "empresas"),
     }
     response = jsonify(response_payload)
 

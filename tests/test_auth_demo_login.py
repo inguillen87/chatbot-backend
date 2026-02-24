@@ -157,6 +157,32 @@ class AuthDemoLoginTest(unittest.TestCase):
         self.assertIn('pyme', keys)
         self.assertTrue(all(item.get('enabled') is True for item in entry_points))
 
+    def test_demo_catalog_exposes_onboarding_by_sector(self):
+        resp = self.client.get('/auth/demo/catalog')
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.get_json()
+        onboarding = payload.get('onboarding') or {}
+        self.assertEqual(onboarding.get('default_sector'), 'gobierno')
+
+        sector_options = onboarding.get('sector_options') or []
+        sector_keys = {item.get('key') for item in sector_options}
+        self.assertIn('gobierno', sector_keys)
+        self.assertIn('empresas', sector_keys)
+
+        gobierno = next((item for item in sector_options if item.get('key') == 'gobierno'), {})
+        self.assertEqual((gobierno.get('default_login_payload') or {}).get('rubro'), 'municipio')
+
+        empresas = next((item for item in sector_options if item.get('key') == 'empresas'), {})
+        rubros = empresas.get('rubros') or []
+        self.assertTrue(all((r.get('tipo_chat') or '').lower() == 'pyme' for r in rubros))
+
+    def test_demo_login_supports_sector_gobierno_without_rubro(self):
+        resp = self.client.post('/auth/demo', json={'sector': 'gobierno'})
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.get_json()
+        self.assertEqual(payload.get('tipo_chat'), 'municipio')
+        self.assertEqual(payload.get('sector'), 'gobierno')
+
 
     def test_demo_login_works_when_demo_registry_is_empty(self):
         original = self.app.config.get('DEMO_RUBROS')
