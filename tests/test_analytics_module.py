@@ -465,3 +465,38 @@ def test_api_alias_admin_analytics_overview_accepts_tenant_slug(client):
     )
     assert overview.status_code == 200
     assert 'totals' in overview.get_json()
+
+
+def test_admin_analytics_overview_accepts_debug_tenant_without_query_tenant(client):
+    tenant_id = 31
+    _create_municipio_ticket(tenant_id)
+    db.session.commit()
+
+    response = client.get(
+        '/admin/analytics/overview',
+        query_string={'scope': 'municipio'},
+        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
+    )
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload.get('totals', {}).get('total_interactions') is not None
+
+
+def test_admin_analytics_dashboard_returns_unified_sections(client):
+    tenant_id = 32
+    _create_municipio_ticket(tenant_id)
+    db.session.commit()
+
+    response = client.get(
+        '/admin/analytics/dashboard',
+        query_string={'scope': 'municipio'},
+        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
+    )
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload.get('tenant_id') == str(tenant_id)
+    sections = payload.get('sections') or {}
+    assert {'general', 'municipio', 'ventas', 'mapas'}.issubset(set(sections.keys()))
+    nav = payload.get('navigation') or {}
+    assert isinstance(nav.get('primary'), list) and nav.get('primary')
+    assert (nav.get('encuestas') or {}).get('seed_demo_endpoint_template')
