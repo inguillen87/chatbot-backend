@@ -34,7 +34,14 @@ def _tenant_id_as_int(value: str) -> int:
 def admin_analytics_overview():
     filters = parse_filters(request.args)
     require_access(filters.tenant_id, "operador")
-    return _json(get_summary(filters))
+    payload = get_summary(filters)
+    totals = payload.setdefault("totals", {})
+    if "total_interactions" not in totals:
+        tickets = int(totals.get("tickets") or 0)
+        pedidos = int(totals.get("pedidos") or 0)
+        encuestas = int(totals.get("encuestas") or 0)
+        totals["total_interactions"] = tickets + pedidos + encuestas
+    return _json(payload)
 
 
 @admin_analytics_bp.get("/heatmap")
