@@ -15,6 +15,7 @@ def test_dashboard_bundle_includes_normalized_cards_and_states(monkeypatch):
     monkeypatch.setattr(svc, "get_alerts", lambda encuesta_id, filtros=None: {"alerts": [{"id": "a1"}]})
     monkeypatch.setattr(svc, "get_executive_brief", lambda encuesta_id, filtros=None: {"headline": "ok"})
     monkeypatch.setattr(svc, "get_anomaly_report", lambda encuesta_id, filtros=None: {"risk_score": "0.331"})
+    monkeypatch.setattr(svc, "_build_latest_responses_preview", lambda encuesta_id, filtros=None, limit=10: [{"id": 1}])
 
     bundle = svc.get_dashboard_bundle(84, {"canal": "web"})
 
@@ -26,6 +27,7 @@ def test_dashboard_bundle_includes_normalized_cards_and_states(monkeypatch):
     assert bundle["cards"][0]["id"] == "total_respuestas"
     assert isinstance(bundle["kpis"]["tasa_completitud"], float)
     assert isinstance(bundle["kpis"]["risk_score"], float)
+    assert bundle["modules"]["latest_responses"] == [{"id": 1}]
 
 
 def test_dashboard_bundle_handles_empty_states(monkeypatch):
@@ -42,6 +44,7 @@ def test_dashboard_bundle_handles_empty_states(monkeypatch):
     monkeypatch.setattr(svc, "get_alerts", lambda encuesta_id, filtros=None: {"alerts": []})
     monkeypatch.setattr(svc, "get_executive_brief", lambda encuesta_id, filtros=None: {"headline": "ok"})
     monkeypatch.setattr(svc, "get_anomaly_report", lambda encuesta_id, filtros=None: {"risk_score": None})
+    monkeypatch.setattr(svc, "_build_latest_responses_preview", lambda encuesta_id, filtros=None, limit=10: [])
 
     bundle = svc.get_dashboard_bundle(100)
 
@@ -50,4 +53,5 @@ def test_dashboard_bundle_handles_empty_states(monkeypatch):
     assert bundle["meta"]["module_state"]["heatmap"] == "empty"
     assert bundle["ui_state"]["latest_responses"] == "empty"
     assert bundle["ui_state"]["alerts"] == "normal"
+    assert bundle["modules"]["latest_responses"] == []
     assert bundle["kpis"]["risk_score"] == 0.0

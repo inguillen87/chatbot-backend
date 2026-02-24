@@ -1017,6 +1017,34 @@ def _build_dashboard_ui_state(summary: Dict[str, Any], heatmap: Dict[str, Any], 
         "map_participation": "ready" if has_points else "empty",
         "alerts": "attention" if has_alerts else "normal",
     }
+
+
+def _build_latest_responses_preview(encuesta_id: int, filtros: Optional[Dict[str, Any]] = None, *, limit: int = 10) -> List[Dict[str, Any]]:
+    """Return a compact latest responses list to keep UI summary consistent."""
+
+    encuesta = get_encuesta(encuesta_id)
+    respuestas = _collect_respuestas(encuesta, filtros)
+    ordered = sorted(
+        respuestas,
+        key=lambda item: item.submitted_at or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    )
+
+    preview: List[Dict[str, Any]] = []
+    for respuesta in ordered[: max(1, min(int(limit or 10), 50))]:
+        preview.append(
+            {
+                "id": respuesta.id,
+                "submitted_at": (respuesta.submitted_at.astimezone(timezone.utc).isoformat() if respuesta.submitted_at else None),
+                "canal": respuesta.canal,
+                "genero": respuesta.genero,
+                "rango_etario": respuesta.rango_etario,
+                "lat": respuesta.lat,
+                "lng": respuesta.lng,
+            }
+        )
+
+    return preview
 def get_dashboard_bundle(
     encuesta_id: int,
     filtros: Optional[Dict[str, Any]] = None,
@@ -1041,8 +1069,10 @@ def get_dashboard_bundle(
         heatmap=heatmap,
     )
 
+    latest_responses = _build_latest_responses_preview(encuesta_id, filtros=filtros, limit=10)
     cards = _build_dashboard_cards(summary, forecast, anomalies)
     ui_state = _build_dashboard_ui_state(summary, heatmap, alerts)
+    ui_state["latest_responses"] = "ready" if len(latest_responses) > 0 else "empty"
     active_alerts = int(len(alerts.get("alerts") or []))
 
     return {
@@ -1076,6 +1106,7 @@ def get_dashboard_bundle(
             "forecast": forecast,
             "alerts": alerts,
             "anomalies": anomalies,
+            "latest_responses": latest_responses,
         },
         "visual_blueprint": visual_blueprint,
         "updated_at": datetime.now(timezone.utc).isoformat(),

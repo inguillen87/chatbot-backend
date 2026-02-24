@@ -29,7 +29,7 @@ def _feature_guard():
 
 def _parse_filtros() -> dict:
     filtros = {}
-    for key in ("desde", "hasta", "canal", "utm_source", "utm_campaign"):
+    for key in ("desde", "hasta", "canal", "utm_source", "utm_campaign", "bbox"):
         value = request.args.get(key)
         if value:
             filtros[key] = value
@@ -155,10 +155,24 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
     def dashboard(current_user, encuesta_id: int):
         filtros = _parse_filtros()
         granularity = request.args.get("granularity", "day")
+        use_envelope = str(request.args.get("envelope") or "").strip().lower() in {"1", "true", "yes", "on"}
         try:
             data = get_dashboard_bundle(encuesta_id, filtros, granularity=granularity)
         except EncuestaError as err:
             return jsonify(err.to_dict()), err.status_code
+
+        if use_envelope:
+            return jsonify({
+                "ok": True,
+                "data": data,
+                "meta": {
+                    "encuesta_id": encuesta_id,
+                    "filters": filtros,
+                    "granularity": granularity,
+                },
+                "errors": [],
+            })
+
         return jsonify(data)
 
     bp.add_url_rule("/dashboard", view_func=dashboard, methods=["GET"])
