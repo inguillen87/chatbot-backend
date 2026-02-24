@@ -816,6 +816,217 @@ def _segment_distribution(
     }
 
 
+
+
+def _build_executive_summary_text(
+    summary: Dict[str, Any],
+    forecast: Dict[str, Any],
+    alerts: Dict[str, Any],
+    heatmap: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Compose concise executive-ready narrative from analytics signals."""
+
+    total = int(summary.get("total_respuestas") or 0)
+    completion = float(summary.get("tasa_completitud") or 0)
+    projected_total = int(forecast.get("projected_total") or total)
+    projected_additional = int(forecast.get("projected_additional") or 0)
+    alerts_list = alerts.get("alerts") or []
+
+    top_barrio = None
+    territorio = (summary.get("demografia") or {}).get("territorio_map") or {}
+    barrios = territorio.get("barrios") if isinstance(territorio, dict) else None
+    if isinstance(barrios, list) and barrios:
+        top_barrio = barrios[0].get("label")
+
+    top_hotspot = None
+    map_hotspots = ((heatmap.get("metadata") or {}).get("map") or {}).get("hotspots")
+    if isinstance(map_hotspots, list) and map_hotspots:
+        top_hotspot = map_hotspots[0].get("label")
+
+    priorities = []
+    if completion < 65:
+        priorities.append("Subir completitud: revisar fricción del formulario y recordar cierre de encuesta.")
+    if projected_additional <= 0:
+        priorities.append("Activar difusión táctica en canales de mayor conversión para recuperar ritmo.")
+    if alerts_list:
+        priorities.append("Atender alertas operativas detectadas antes de escalar pauta/publicidad.")
+    if top_hotspot or top_barrio:
+        priorities.append(
+            f"Enfocar acciones territoriales en {top_hotspot or top_barrio} y replicar aprendizaje en zonas similares."
+        )
+
+    if not priorities:
+        priorities.append("Mantener estrategia actual y escalar en los canales con mejor desempeño.")
+
+    headline = (
+        f"{total} respuestas registradas ({completion:.1f}% de completitud) "
+        f"con proyección a {projected_total} en la ventana actual."
+    )
+
+    return {
+        "headline": headline,
+        "one_liner": (
+            "La operación está en curso con señales accionables para priorizar territorio, "
+            "canales y experiencia de respuesta."
+        ),
+        "focus_points": priorities[:4],
+        "alert_count": len(alerts_list),
+        "projected_additional": projected_additional,
+    }
+
+
+def _build_visual_blueprint(
+    *,
+    encuesta_id: int,
+    summary: Dict[str, Any],
+    timeseries: Sequence[Dict[str, Any]],
+    heatmap: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Return chart/table specs so frontend can render a premium dashboard quickly."""
+
+    preguntas = summary.get("preguntas") or []
+    ranked_questions = sorted(
+        [p for p in preguntas if isinstance(p, dict)],
+        key=lambda item: int(item.get("total_respuestas") or 0),
+        reverse=True,
+    )
+
+    top_questions = [
+        {
+            "pregunta_id": q.get("pregunta_id"),
+            "texto": q.get("texto"),
+            "tipo": q.get("tipo"),
+            "series": q.get("series") or [],
+        }
+        for q in ranked_questions[:5]
+    ]
+
+    heatmap_meta = (heatmap.get("metadata") or {}).get("map") or {}
+    hotspot_data = heatmap_meta.get("hotspots") if isinstance(heatmap_meta, dict) else []
+
+    return {
+        "charts": [
+            {
+                "id": "activity_timeseries",
+                "type": "line",
+                "title": "Evolución temporal de respuestas",
+                "dataset_key": "timeseries",
+                "x": "fecha",
+                "y": "total",
+            },
+            {
+                "id": "territory_heatmap",
+                "type": "geospatial_heatmap",
+                "title": "Intensidad territorial",
+                "dataset_key": "heatmap.points",
+                "layer_key": "heatmap_layer",
+            },
+            {
+                "id": "hotspots_rank",
+                "type": "bar",
+                "title": "Top zonas calientes",
+                "dataset_key": "heatmap.hotspots",
+                "x": "label",
+                "y": "weight",
+            },
+            {
+                "id": "demography_gender",
+                "type": "donut",
+                "title": "Distribución por género",
+                "dataset_key": "summary.demografia.genero",
+                "x": "label",
+                "y": "value",
+            },
+        ],
+        "tables": [
+            {
+                "id": "questions_priority",
+                "title": "Preguntas con mayor volumen",
+                "dataset_key": "summary.top_questions",
+                "columns": ["pregunta_id", "texto", "tipo"],
+            },
+            {
+                "id": "hotspot_table",
+                "title": "Detalle de hotspots",
+                "dataset_key": "heatmap.hotspots",
+                "columns": ["rank", "label", "weight", "intensity"],
+            },
+        ],
+        "datasets": {
+            "summary": summary,
+            "timeseries": list(timeseries),
+            "heatmap": {
+                "points": heatmap.get("points") or [],
+                "cells": heatmap.get("cells") or [],
+                "hotspots": hotspot_data if isinstance(hotspot_data, list) else [],
+            },
+            "top_questions": top_questions,
+        },
+        "frontend_contract": {
+            "version": "2026.02",
+            "auth_demo": {
+                "catalog_endpoint": "/auth/demo/catalog",
+                "login_endpoint": "/auth/demo",
+                "quick_login_field": "quick_login_payload.tenant_slug",
+            },
+            "map": {
+                "preferred_provider": ((heatmap.get("metadata") or {}).get("map_config") or {}).get("provider") or "maplibre",
+                "required_fields": ["lat", "lng", "weight"],
+                "optional_layers": ["heatmap", "cells", "pulses", "hotspots"],
+            },
+        },
+    }
+
+
+def get_dashboard_bundle(
+    encuesta_id: int,
+    filtros: Optional[Dict[str, Any]] = None,
+    *,
+    granularity: str = "day",
+) -> Dict[str, Any]:
+    """Return a complete analytics payload optimized for executive dashboards."""
+
+    summary = get_summary(encuesta_id, filtros)
+    timeseries = get_timeseries(encuesta_id, granularity, filtros)
+    heatmap = get_heatmap(encuesta_id, filtros)
+    forecast = get_forecast(encuesta_id, filtros=filtros)
+    alerts = get_alerts(encuesta_id, filtros=filtros)
+    brief = get_executive_brief(encuesta_id, filtros)
+    anomalies = get_anomaly_report(encuesta_id, filtros=filtros)
+
+    executive_summary = _build_executive_summary_text(summary, forecast, alerts, heatmap)
+    visual_blueprint = _build_visual_blueprint(
+        encuesta_id=encuesta_id,
+        summary=summary,
+        timeseries=timeseries,
+        heatmap=heatmap,
+    )
+
+    return {
+        "encuesta_id": encuesta_id,
+        "executive_summary": executive_summary,
+        "brief": brief,
+        "kpis": {
+            "total_respuestas": summary.get("total_respuestas"),
+            "participantes_unicos": summary.get("participantes_unicos"),
+            "tasa_completitud": summary.get("tasa_completitud"),
+            "projected_total": forecast.get("projected_total"),
+            "risk_score": anomalies.get("risk_score"),
+            "active_alerts": len(alerts.get("alerts") or []),
+        },
+        "modules": {
+            "summary": summary,
+            "timeseries": timeseries,
+            "heatmap": heatmap,
+            "forecast": forecast,
+            "alerts": alerts,
+            "anomalies": anomalies,
+        },
+        "visual_blueprint": visual_blueprint,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 def get_segment_compare(
     encuesta_id: int,
     *,
