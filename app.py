@@ -228,7 +228,7 @@ def create_app(config_class=Config):
         # Log de headers/cookies
         @app.before_request
         def log_headers():
-            current_app.logger.info(f"--- RAW FLASK REQUEST.COOKIES: {request.cookies} ---")
+            current_app.logger.debug("--- RAW FLASK REQUEST.COOKIES: %s ---", request.cookies)
             current_app.logger.debug(f"Request Headers (complete): {dict(request.headers)}")
 
         @app.before_request

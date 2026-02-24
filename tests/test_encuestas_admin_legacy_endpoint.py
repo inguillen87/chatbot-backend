@@ -159,6 +159,59 @@ def test_admin_encuestas_allows_owner_with_tenant_context(monkeypatch, client):
     assert isinstance(public_data, list)
 
 
+def test_admin_encuestas_list_uses_same_tenant_resolution_as_create(monkeypatch, client):
+    monkeypatch.setattr(feature_flags, "FEATURE_ENCUESTAS", True)
+    monkeypatch.setattr(encuestas_admin_routes, "FEATURE_ENCUESTAS", True)
+
+    owner = User(
+        email="owner-consistency@example.com",
+        name="Owner Consistency",
+        rol="admin",
+        tipo_chat="municipio",
+    )
+    owner.set_password("demo1234")
+    db.session.add(owner)
+    db.session.flush()
+
+    tenant = TenantProfile(
+        slug="tenant-consistency",
+        nombre="Tenant Consistency",
+        tipo="municipio",
+        municipio=owner,
+    )
+    db.session.add(tenant)
+    db.session.commit()
+
+    token = generar_token(owner.id, owner.rol, owner.tipo_chat, owner.id, None)
+    headers = {"Authorization": f"Bearer {token}", "X-Tenant": tenant.slug}
+
+    create_payload = {
+        "titulo": "Encuesta coherente tenant",
+        "tipo": "opinion",
+        "preguntas": [
+            {
+                "orden": 1,
+                "tipo": "opcion_unica",
+                "texto": "¿Seguís este caso?",
+                "obligatoria": True,
+                "opciones": [
+                    {"orden": 1, "texto": "Sí"},
+                    {"orden": 2, "texto": "No"},
+                ],
+            }
+        ],
+    }
+    create_resp = client.post("/api/admin/encuestas", json=create_payload, headers=headers)
+    assert create_resp.status_code == 201
+    created_id = create_resp.get_json()["id"]
+
+    list_resp = client.get("/api/admin/encuestas", headers=headers)
+    assert list_resp.status_code == 200
+    payload = list_resp.get_json()
+    ids = [item.get("id") for item in (payload.get("encuestas") or [])]
+    assert created_id in ids
+
+
 def test_admin_templates_endpoint_returns_catalog(client, monkeypatch, admin_user):
     monkeypatch.setattr(feature_flags, "FEATURE_ENCUESTAS", True)
     monkeypatch.setattr(encuestas_admin_routes, "FEATURE_ENCUESTAS", True)
@@ -467,6 +520,19 @@ def test_admin_encuestas_legacy_analytics_and_snapshots(client, monkeypatch, adm
     assert brief_data["encuesta_id"] == encuesta_id
     assert "headline" in brief_data
     assert "forecast" in brief_data
+    dashboard_resp = client.get(
+        f"/admin/encuestas/{encuesta_id}/analytics/dashboard",
+        headers=headers,
+    )
+    assert dashboard_resp.status_code == 200
+    dashboard_data = dashboard_resp.get_json()
+    assert dashboard_data["encuesta_id"] == encuesta_id
+    assert "executive_summary" in dashboard_data
+    assert "visual_blueprint" in dashboard_data
+    assert "modules" in dashboard_data
+    assert "frontend_contract" in dashboard_data["visual_blueprint"]
+    assert dashboard_data["visual_blueprint"]["frontend_contract"]["auth_demo"]["login_endpoint"] == "/auth/demo"
+
 
     segments_resp = client.get(
         f"/admin/encuestas/{encuesta_id}/analytics/segments/compare",
@@ -759,4 +825,3 @@ def test_admin_encuestas_seed_demo_invalid_scenario(client, monkeypatch, admin_u
     )
     assert seed_resp.status_code == 400
     assert "Scenario inválido" in seed_resp.get_json()["error"]
-
