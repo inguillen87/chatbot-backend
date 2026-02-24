@@ -5,9 +5,11 @@ from models import Rubro, User
 
 
 def test_login_returns_persistent_entity_token(client):
-    rubro = Rubro(nombre="Municipio", clave="municipio", es_publico=True)
-    db.session.add(rubro)
-    db.session.flush()
+    rubro = Rubro.query.filter_by(clave="municipio").first()
+    if not rubro:
+        rubro = Rubro(nombre="Municipio", clave="municipio", es_publico=True)
+        db.session.add(rubro)
+        db.session.flush()
 
     user = User(
         name="Mauricio",
