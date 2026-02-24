@@ -6,7 +6,7 @@ from werkzeug.datastructures import MultiDict
 
 from models import EncEncuesta, EncLink, User
 from routes import encuestas_public
-from services.encuestas_service import list_public_encuestas_for_tenant
+from services.encuestas_service import get_public_encuesta, list_public_encuestas_for_tenant
 
 
 class _DummyRespuesta:
@@ -375,6 +375,47 @@ def test_list_public_encuestas_falls_back_to_slug(client):
         )
 
 
+def test_get_public_encuesta_prefers_active_published_when_link_slug_is_duplicated(client):
+    with client.application.app_context():
+        shared_public_slug = "movilidad-y-transporte-junin"
+
+        inactive = EncEncuesta(
+            tenant_id=4,
+            slug="movilidad-y-transporte-junin-legacy",
+            titulo="Encuesta vieja",
+            descripcion="Encuesta cerrada",
+            tipo="opinion",
+            estado="borrador",
+        )
+        inactive_link = EncLink(
+            encuesta=inactive,
+            slug_publico=shared_public_slug,
+            canal="web",
+        )
+
+        active = EncEncuesta(
+            tenant_id=4,
+            slug="movilidad-y-transporte-junin-vigente",
+            titulo="Encuesta vigente",
+            descripcion="Encuesta activa",
+            tipo="opinion",
+            estado="publicada",
+        )
+        active_link = EncLink(
+            encuesta=active,
+            slug_publico=shared_public_slug,
+            canal="web",
+        )
+
+        db.session.add_all([inactive, inactive_link, active, active_link])
+        db.session.commit()
+
+        resolved = get_public_encuesta(shared_public_slug)
+
+        assert resolved.id == active.id
+        assert resolved.estado == "publicada"
+
+
 def test_qr_endpoint_returns_png_for_public_encuesta(client):
     slug = "encuesta-qr-publica"
     slug_publico = f"{slug}-abcdef"
@@ -448,6 +489,8 @@ def test_qr_endpoint_allows_preview_with_session_user(client, monkeypatch):
     assert preview.status_code == 200
     assert preview.mimetype == "image/png"
     assert preview.data
+
+
 @pytest.fixture(autouse=True)
 def restore_canonical_base(client):
     original = client.application.config.get("PUBLIC_ENCUESTAS_CANONICAL_BASE_URL")
