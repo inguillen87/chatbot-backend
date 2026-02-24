@@ -957,6 +957,29 @@ def _get_or_create_demo_user_for_tenant(tenant: TenantProfile) -> User:
     return user
 
 
+def _resolve_default_demo_slug() -> Optional[str]:
+    """Return a stable demo tenant slug for one-click demo logins."""
+
+    default_slug = current_app.config.get("DEFAULT_DEMO_TENANT_SLUG")
+    if isinstance(default_slug, str) and default_slug.strip():
+        normalized = _resolve_demo_tenant_slug(default_slug.strip())
+        if normalized:
+            return normalized
+
+    demos = load_demo_rubros(require_owner=False)
+    for demo in demos:
+        slug = _resolve_demo_tenant_slug(demo.key) or _resolve_demo_tenant_slug(demo.rubro_clave)
+        if slug:
+            return slug
+
+    first_tenant = (
+        TenantProfile.query.filter(TenantProfile.is_active.is_(True))
+        .order_by(TenantProfile.created_at.asc(), TenantProfile.id.asc())
+        .first()
+    )
+    return getattr(first_tenant, "slug", None)
+
+
 @auth_bp.route('/demo/catalog', methods=['GET', 'OPTIONS'])
 @cross_origin(supports_credentials=True)
 def demo_catalog():
@@ -982,10 +1005,12 @@ def demo_catalog():
     return jsonify({
         "demo_login_enabled": True,
         "demo_login_endpoint": "/auth/demo",
+        "demo_login_methods": ["POST"],
         "entry_points": [
             {"key": "municipio", "label": "Demo Municipio", "enabled": True, "login_payload": {"rubro": "municipio", "tipo_chat": "municipio"}},
             {"key": "pyme", "label": "Demo PyME", "enabled": True, "login_payload": {"rubro": "pyme", "tipo_chat": "pyme"}},
         ],
+        "quick_login_payload": {"tenant_slug": _resolve_default_demo_slug()},
         "super_admin_demo": {
             **_demo_superadmin_credentials(),
             "role": "super_admin",
@@ -1005,6 +1030,8 @@ def login_demo():
 
     data = request.get_json(silent=True) or {}
     rubro = data.get('rubro') or data.get('segmento') or data.get('demo') or data.get('tipo_chat') or data.get('tenant_slug')
+    if not rubro:
+        rubro = _resolve_default_demo_slug()
     demo_slug = _resolve_demo_tenant_slug(rubro)
     if not demo_slug:
         return jsonify({"error": f"Rubro demo '{rubro or ''}' no válido"}), 404
