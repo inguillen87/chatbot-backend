@@ -19,6 +19,7 @@ from models import (
 )
 from extensions import db, limiter
 from functools import wraps
+import threading
 import uuid
 import json
 from datetime import datetime, timedelta, timezone
@@ -187,11 +188,11 @@ def _tenant_owner(tenant: Optional[TenantProfile]) -> Optional[User]:
 
     return None
 
-def _attach_user_to_tenant(user: User, tenant: Optional[TenantProfile]) -> None:
-    """Persist the tenant_id on the user if it's missing or outdated."""
+def _attach_user_to_tenant(user: User, tenant: Optional[TenantProfile]) -> bool:
+    """Persist tenant binding only when it changed and return whether it changed."""
 
     if not tenant or not user:
-        return
+        return False
 
     # Validar si la columna existe antes de intentar asignarla para evitar errores 500
     # si la migración no se ha aplicado.
@@ -199,11 +200,15 @@ def _attach_user_to_tenant(user: User, tenant: Optional[TenantProfile]) -> None:
         if user.tenant_id != tenant.id:
             user.tenant_id = tenant.id
             db.session.add(user)
+            return True
+        return False
     else:
         current_slug = getattr(user, "tenant_slug", None)
         if current_slug != tenant.slug:
             user.tenant_slug = tenant.slug
             db.session.add(user)
+            return True
+        return False
 
 
 def _tenant_market_payload(tenant: Optional[TenantProfile]) -> Dict[str, object]:
@@ -891,6 +896,34 @@ def _supported_demo_languages() -> list[dict[str, str]]:
         {"code": "pt", "label": "Português", "locale": "pt-BR"},
     ]
 
+
+def _run_post_login_migrations(*, app, user_id: int, tenant_id: Optional[int], anon_id: str) -> None:
+    """Move heavy anon adoption work out of the login critical path."""
+
+    with app.app_context():
+        try:
+            from services.ticket_service import servicio_tickets
+
+            servicio_tickets.migrar_tickets_de_anonimo(anon_id, user_id)
+        except Exception as exc:  # pragma: no cover - defensive logging
+            app.logger.warning("Failed to migrate anon tickets during deferred login flow: %s", exc)
+
+        try:
+            from routes.market import _get_or_create_cart_for_user
+
+            user_obj = _user_query().get(user_id)
+            if not user_obj:
+                return
+            target_tenant = None
+            if tenant_id:
+                target_tenant = TenantProfile.query.get(tenant_id)
+            if not target_tenant:
+                target_tenant = _tenant_for_user(user_obj)
+            if target_tenant:
+                _get_or_create_cart_for_user(target_tenant, user_obj, create_if_missing=False)
+        except Exception as exc:  # pragma: no cover - defensive logging
+            app.logger.warning("Failed to migrate anon cart during deferred login flow: %s", exc)
+
 def _get_or_create_demo_user_for_tenant(tenant: TenantProfile) -> User:
     """Return an isolated demo admin account for the tenant.
 
@@ -924,6 +957,29 @@ def _get_or_create_demo_user_for_tenant(tenant: TenantProfile) -> User:
     return user
 
 
+def _resolve_default_demo_slug() -> Optional[str]:
+    """Return a stable demo tenant slug for one-click demo logins."""
+
+    default_slug = current_app.config.get("DEFAULT_DEMO_TENANT_SLUG")
+    if isinstance(default_slug, str) and default_slug.strip():
+        normalized = _resolve_demo_tenant_slug(default_slug.strip())
+        if normalized:
+            return normalized
+
+    demos = load_demo_rubros(require_owner=False)
+    for demo in demos:
+        slug = _resolve_demo_tenant_slug(demo.key) or _resolve_demo_tenant_slug(demo.rubro_clave)
+        if slug:
+            return slug
+
+    first_tenant = (
+        TenantProfile.query.filter(TenantProfile.is_active.is_(True))
+        .order_by(TenantProfile.created_at.asc(), TenantProfile.id.asc())
+        .first()
+    )
+    return getattr(first_tenant, "slug", None)
+
+
 @auth_bp.route('/demo/catalog', methods=['GET', 'OPTIONS'])
 @cross_origin(supports_credentials=True)
 def demo_catalog():
@@ -947,16 +1003,20 @@ def demo_catalog():
         })
 
     return jsonify({
+        "demo_login_enabled": True,
+        "demo_login_endpoint": "/auth/demo",
+        "demo_login_methods": ["POST"],
         "entry_points": [
-            {"key": "municipio", "label": "Demo Municipio", "login_payload": {"rubro": "municipio", "tipo_chat": "municipio"}},
-            {"key": "pyme", "label": "Demo PyME", "login_payload": {"rubro": "pyme", "tipo_chat": "pyme"}},
+            {"key": "municipio", "label": "Demo Municipio", "enabled": True, "login_payload": {"rubro": "municipio", "tipo_chat": "municipio"}},
+            {"key": "pyme", "label": "Demo PyME", "enabled": True, "login_payload": {"rubro": "pyme", "tipo_chat": "pyme"}},
         ],
+        "quick_login_payload": {"tenant_slug": _resolve_default_demo_slug()},
         "super_admin_demo": {
             **_demo_superadmin_credentials(),
             "role": "super_admin",
             "login_endpoint": "/auth/login",
         },
-        "tenant_demos": demo_items,
+        "tenant_demos": [{**item, "enabled": True, "login_endpoint": "/auth/demo"} for item in demo_items],
         "supported_languages": _supported_demo_languages(),
     })
 
@@ -970,6 +1030,8 @@ def login_demo():
 
     data = request.get_json(silent=True) or {}
     rubro = data.get('rubro') or data.get('segmento') or data.get('demo') or data.get('tipo_chat') or data.get('tenant_slug')
+    if not rubro:
+        rubro = _resolve_default_demo_slug()
     demo_slug = _resolve_demo_tenant_slug(rubro)
     if not demo_slug:
         return jsonify({"error": f"Rubro demo '{rubro or ''}' no válido"}), 404
@@ -1119,31 +1181,52 @@ def login():
 
     tenant_obj = _resolve_tenant_for_user(user, tenant_obj)
     if tenant_obj:
-        _attach_user_to_tenant(user, tenant_obj)
-        try:
-            db.session.commit()
-        except Exception:
-            db.session.rollback()
-            current_app.logger.warning("Failed to attach user to tenant during login")
+        tenant_changed = _attach_user_to_tenant(user, tenant_obj)
+        if tenant_changed:
+            try:
+                db.session.commit()
+            except Exception:
+                db.session.rollback()
+                current_app.logger.warning("Failed to attach user to tenant during login")
     tipo_chat = _resolve_tipo_chat(user, tenant_obj=tenant_obj, rubro_nombre=rubro_nombre)
 
-    # Migrate anonymous data if anon_id is present
+    # Migrate anonymous data if anon_id is present.
+    # This can be expensive (ticket + cart adoption), so default to async to
+    # keep login response times fast.
     req_anon_id = request.headers.get("X-Anon-Id") or request.headers.get("Anon-Id") or data.get("anon_id")
     if req_anon_id:
+        deferred_migration = str(
+            current_app.config.get("DEFER_ANON_MIGRATION_ON_LOGIN", True)
+        ).strip().lower() not in {"0", "false", "no", "off"}
         try:
-            from services.ticket_service import servicio_tickets
-            servicio_tickets.migrar_tickets_de_anonimo(req_anon_id, user.id)
-
-            # Also migrate cart if using MarketCart logic (it handles it if session_id matches anon_id)
-            from routes.market import _get_or_create_cart_for_user
-            target_tenant = tenant_obj or _tenant_for_user(user)
-            if target_tenant:
-                # This triggers the adoption logic inside _get_or_create_cart_for_user
-                _get_or_create_cart_for_user(target_tenant, user, create_if_missing=False)
+            if deferred_migration:
+                app_obj = current_app._get_current_object()
+                tenant_id = getattr(tenant_obj, "id", None)
+                thread = threading.Thread(
+                    target=_run_post_login_migrations,
+                    kwargs={
+                        "app": app_obj,
+                        "user_id": user.id,
+                        "tenant_id": tenant_id,
+                        "anon_id": req_anon_id,
+                    },
+                    daemon=True,
+                    name=f"login-migrate-{user.id}",
+                )
+                thread.start()
+            else:
+                _run_post_login_migrations(
+                    app=current_app._get_current_object(),
+                    user_id=user.id,
+                    tenant_id=getattr(tenant_obj, "id", None),
+                    anon_id=req_anon_id,
+                )
         except Exception as e:
             current_app.logger.warning(f"Failed to migrate anon data during login: {e}")
 
     owner_token = _resolve_owner_token(user)
+
+    effective_municipio_id = getattr(owner_tenant, "municipio_id", None) or user.municipio_id
 
     # Generar el token JWT
     jwt_payload = {
@@ -1151,26 +1234,19 @@ def login():
         'rol': user.rol,
         'tipo_chat': tipo_chat,
         'empresa_id': user.empresa_id,
-        'municipio_id': user.municipio_id,
+        'municipio_id': effective_municipio_id,
         'exp': datetime.utcnow() + timedelta(days=current_app.config.get("JWT_EXPIRATION_DAYS", 7))
     }
     jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
 
-    # Prioritize the tenant owned by the user if they are a tenant owner
-    owned_tenant = _resolve_tenant_for_user(user)
-    current_app.logger.info(f"[AUTH_DEBUG] User: {user.id}, Email: {user.email}")
-    current_app.logger.info(f"[AUTH_DEBUG] Owned Tenant (from _tenant_for_user): {owned_tenant.slug if owned_tenant else 'None'}")
+    # Reuse already resolved tenant to avoid extra DB round-trips on login.
+    response_slug = getattr(user, "tenant_slug", None)
+    if tenant_obj and not response_slug:
+        response_slug = tenant_obj.slug
 
-
-    if owned_tenant:
-        response_slug = owned_tenant.slug
-    else:
-        # Fallback to the attached tenant_slug or the resolved tenant object
-        response_slug = getattr(user, "tenant_slug", None)
-        if not response_slug and tenant_obj:
-            response_slug = tenant_obj.slug
-
-    current_app.logger.info(f"[AUTH_DEBUG] Resolved tenant slug for response: {response_slug}")
+    current_app.logger.debug(
+        "[AUTH_DEBUG] Login user=%s tenant_slug=%s", user.id, response_slug
+    )
 
     response_payload = {
         "mensaje": "Login exitoso",
@@ -1182,6 +1258,7 @@ def login():
         "empresa_id": user.empresa_id,
         "rubro": rubro_nombre,
         "tipo_chat": tipo_chat,
+        "municipio_id": effective_municipio_id,
         "categorias": getattr(user, "categorias_lista", []),
         "tenant_slug": response_slug,
         "tenantSlug": response_slug,
@@ -1826,13 +1903,15 @@ def login_from_widget(owner_user):
     rubro_nombre = user_rubro.nombre if user_rubro else owner_rubro.nombre if owner_rubro else "General"
     tipo_chat = _resolve_tipo_chat(user, tenant_obj=owner_tenant, rubro_nombre=rubro_nombre)
 
+    effective_municipio_id = getattr(owner_tenant, "municipio_id", None) or user.municipio_id
+
     # Generar el token JWT
     jwt_payload = {
         'user_id': user.id,
         'rol': user.rol,
         'tipo_chat': tipo_chat,
         'empresa_id': user.empresa_id,
-        'municipio_id': user.municipio_id,
+        'municipio_id': effective_municipio_id,
         'exp': datetime.utcnow() + timedelta(days=current_app.config.get("JWT_EXPIRATION_DAYS", 7))
     }
     jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
@@ -2131,13 +2210,15 @@ def chatuser_login_panel():
     rubro_nombre = user.rubro.nombre if user.rubro else owner_user.rubro.nombre if owner_user else "General"
     tipo_chat = _resolve_tipo_chat(user, tenant_obj=owner_tenant, rubro_nombre=rubro_nombre)
 
+    effective_municipio_id = getattr(owner_tenant, "municipio_id", None) or user.municipio_id
+
     # Generar el token JWT
     jwt_payload = {
         'user_id': user.id,
         'rol': user.rol,
         'tipo_chat': tipo_chat,
         'empresa_id': user.empresa_id,
-        'municipio_id': user.municipio_id,
+        'municipio_id': effective_municipio_id,
         'exp': datetime.utcnow() + timedelta(days=current_app.config.get("JWT_EXPIRATION_DAYS", 7))
     }
     jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")

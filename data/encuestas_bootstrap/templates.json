@@ -792,10 +792,22 @@
           "texto": "¿Cómo calificarías tu experiencia general de compra?",
           "obligatoria": true,
           "opciones": [
-            { "orden": 1, "texto": "Excelente" },
-            { "orden": 2, "texto": "Muy buena" },
-            { "orden": 3, "texto": "Regular" },
-            { "orden": 4, "texto": "Mala" }
+            {
+              "orden": 1,
+              "texto": "Excelente"
+            },
+            {
+              "orden": 2,
+              "texto": "Muy buena"
+            },
+            {
+              "orden": 3,
+              "texto": "Regular"
+            },
+            {
+              "orden": 4,
+              "texto": "Mala"
+            }
           ]
         },
         {
@@ -804,10 +816,22 @@
           "texto": "¿Recomendarías nuestros productos/servicios a un amigo?",
           "obligatoria": true,
           "opciones": [
-            { "orden": 1, "texto": "Sí, seguro" },
-            { "orden": 2, "texto": "Probablemente" },
-            { "orden": 3, "texto": "No creo" },
-            { "orden": 4, "texto": "Definitivamente no" }
+            {
+              "orden": 1,
+              "texto": "Sí, seguro"
+            },
+            {
+              "orden": 2,
+              "texto": "Probablemente"
+            },
+            {
+              "orden": 3,
+              "texto": "No creo"
+            },
+            {
+              "orden": 4,
+              "texto": "Definitivamente no"
+            }
           ]
         },
         {
@@ -838,16 +862,269 @@
           "texto": "¿Qué tipo de producto te gustaría ver en nuestra tienda próximamente?",
           "obligatoria": true,
           "opciones": [
-            { "orden": 1, "texto": "Nuevas variedades/sabores" },
-            { "orden": 2, "texto": "Promociones especiales y packs" },
-            { "orden": 3, "texto": "Productos exclusivos/premium" },
-            { "orden": 4, "texto": "Accesorios complementarios" }
+            {
+              "orden": 1,
+              "texto": "Nuevas variedades/sabores"
+            },
+            {
+              "orden": 2,
+              "texto": "Promociones especiales y packs"
+            },
+            {
+              "orden": 3,
+              "texto": "Productos exclusivos/premium"
+            },
+            {
+              "orden": 4,
+              "texto": "Accesorios complementarios"
+            }
           ]
         },
         {
           "orden": 2,
           "tipo": "abierta",
           "texto": "¿Tenés alguna sugerencia específica de marca o modelo?",
+          "obligatoria": false
+        }
+      ]
+    },
+    {
+      "slug": "luis-petri-tracking-campana",
+      "titulo": "Tracking de campaña Luis Petri 2025 en {{municipality}}",
+      "descripcion": "Medición semanal de intención de voto, clima social y prioridades para ajustar mensajes de campaña en tiempo real.",
+      "tipo": "sondeo",
+      "politica_unicidad": "por_dni_o_phone",
+      "anonimato": false,
+      "requiere_datos_contacto": true,
+      "es_votacion_envivo": true,
+      "mostrar_resultados_envivo": true,
+      "permitir_comentarios": true,
+      "tags": [
+        "Luis Petri",
+        "Campaña",
+        "Tracking",
+        "Tiempo real"
+      ],
+      "auto_seed_demo": {
+        "enabled": true,
+        "cantidad": 260,
+        "geo_profile_key": "mendoza",
+        "municipality_label": "Mendoza",
+        "label": "Base de campaña inicial"
+      },
+      "preguntas": [
+        {
+          "orden": 1,
+          "tipo": "opcion_unica",
+          "texto": "Si hoy fueran las elecciones legislativas, ¿a quién apoyarías en {{municipality}}?",
+          "obligatoria": true,
+          "opciones": [
+            {
+              "orden": 1,
+              "texto": "Luis Petri"
+            },
+            {
+              "orden": 2,
+              "texto": "Principal espacio opositor"
+            },
+            {
+              "orden": 3,
+              "texto": "Otro candidato"
+            },
+            {
+              "orden": 4,
+              "texto": "Indeciso/a"
+            }
+          ]
+        },
+        {
+          "orden": 2,
+          "tipo": "multiple",
+          "texto": "¿Qué temas te hacen inclinar tu voto?",
+          "obligatoria": true,
+          "min_selecciones": 1,
+          "max_selecciones": 3,
+          "opciones": [
+            {
+              "orden": 1,
+              "texto": "Seguridad"
+            },
+            {
+              "orden": 2,
+              "texto": "Empleo"
+            },
+            {
+              "orden": 3,
+              "texto": "Inflación"
+            },
+            {
+              "orden": 4,
+              "texto": "Educación"
+            },
+            {
+              "orden": 5,
+              "texto": "Obras y servicios"
+            }
+          ]
+        },
+        {
+          "orden": 3,
+          "tipo": "abierta",
+          "texto": "Dejá un comentario sobre qué propuesta esperás para tu barrio.",
+          "obligatoria": false
+        }
+      ]
+    },
+    {
+      "slug": "luis-petri-votacion-prioridades",
+      "titulo": "Votación en vivo de prioridades de gobierno - Equipo Luis Petri",
+      "descripcion": "Tablero en vivo para actos y recorridas: muestra resultados instantáneos por distrito y comentarios ciudadanos.",
+      "tipo": "votacion",
+      "politica_unicidad": "por_cookie",
+      "anonimato": true,
+      "requiere_datos_contacto": false,
+      "es_votacion_envivo": true,
+      "mostrar_resultados_envivo": true,
+      "permitir_comentarios": true,
+      "tags": [
+        "Luis Petri",
+        "Votación en vivo",
+        "Agenda pública"
+      ],
+      "auto_seed_demo": {
+        "enabled": true,
+        "cantidad": 320,
+        "geo_profile_key": "mendoza",
+        "municipality_label": "Mendoza",
+        "label": "Simulación de acto masivo"
+      },
+      "preguntas": [
+        {
+          "orden": 1,
+          "tipo": "opcion_unica",
+          "texto": "¿Cuál debería ser la prioridad número 1 de gestión en {{municipality}}?",
+          "obligatoria": true,
+          "opciones": [
+            {
+              "orden": 1,
+              "texto": "Plan integral de seguridad"
+            },
+            {
+              "orden": 2,
+              "texto": "Plan empleo joven"
+            },
+            {
+              "orden": 3,
+              "texto": "Bajar costos municipales"
+            },
+            {
+              "orden": 4,
+              "texto": "Obras barriales urgentes"
+            }
+          ]
+        },
+        {
+          "orden": 2,
+          "tipo": "opcion_unica",
+          "texto": "¿Te gustaría recibir avances semanales de estas propuestas?",
+          "obligatoria": true,
+          "opciones": [
+            {
+              "orden": 1,
+              "texto": "Sí"
+            },
+            {
+              "orden": 2,
+              "texto": "No"
+            }
+          ]
+        },
+        {
+          "orden": 3,
+          "tipo": "abierta",
+          "texto": "¿Qué problema puntual de tu zona debe resolverse en los próximos 90 días?",
+          "obligatoria": false
+        }
+      ]
+    },
+    {
+      "slug": "luis-petri-sondeo-territorial",
+      "titulo": "Sondeo territorial por barrios - Mendoza",
+      "descripcion": "Segmenta la campaña por barrio para detectar focos, oportunidades y evolución diaria del voto.",
+      "tipo": "sondeo",
+      "politica_unicidad": "por_ip",
+      "anonimato": true,
+      "requiere_datos_contacto": false,
+      "es_votacion_envivo": true,
+      "mostrar_resultados_envivo": true,
+      "permitir_comentarios": true,
+      "tags": [
+        "Territorio",
+        "Mapa de calor",
+        "Luis Petri"
+      ],
+      "auto_seed_demo": {
+        "enabled": true,
+        "cantidad": 280,
+        "geo_profile_key": "mendoza",
+        "municipality_label": "Mendoza",
+        "label": "Muestra territorial inicial"
+      },
+      "preguntas": [
+        {
+          "orden": 1,
+          "tipo": "opcion_unica",
+          "texto": "¿Cómo describís hoy el clima social en tu barrio?",
+          "obligatoria": true,
+          "opciones": [
+            {
+              "orden": 1,
+              "texto": "Muy positivo"
+            },
+            {
+              "orden": 2,
+              "texto": "Positivo"
+            },
+            {
+              "orden": 3,
+              "texto": "Tenso"
+            },
+            {
+              "orden": 4,
+              "texto": "Muy tenso"
+            }
+          ]
+        },
+        {
+          "orden": 2,
+          "tipo": "multiple",
+          "texto": "¿Qué formato de campaña te resulta más cercano?",
+          "obligatoria": true,
+          "min_selecciones": 1,
+          "max_selecciones": 2,
+          "opciones": [
+            {
+              "orden": 1,
+              "texto": "Recorridas barriales"
+            },
+            {
+              "orden": 2,
+              "texto": "Reuniones con vecinos"
+            },
+            {
+              "orden": 3,
+              "texto": "Redes sociales"
+            },
+            {
+              "orden": 4,
+              "texto": "Propuestas por WhatsApp"
+            }
+          ]
+        },
+        {
+          "orden": 3,
+          "tipo": "abierta",
+          "texto": "Compartí un comentario o reclamo clave de tu zona.",
           "obligatoria": false
         }
       ]
@@ -889,9 +1166,18 @@
       "tenant_env": "MENDOZA_ENCUESTAS_TENANT_ID",
       "keywords": [
         "mendoza",
-        "mendoza capital"
+        "mendoza capital",
+        "luis petri"
       ],
-      "auto_publish": true
+      "auto_publish": true,
+      "template_slugs": [
+        "votacion-envivo-youtube",
+        "sondeo-intencion-voto-2025",
+        "agenda-gobierno-2026",
+        "luis-petri-tracking-campana",
+        "luis-petri-votacion-prioridades",
+        "luis-petri-sondeo-territorial"
+      ]
     },
     {
       "key": "godoy_cruz",
