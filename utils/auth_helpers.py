@@ -576,12 +576,12 @@ def user_from_token(token: str) -> Optional[User]:
     try:
         payload = jwt.decode(token, current_app.config['SECRET_KEY'], algorithms=["HS256"])
         user_id = payload.get('user_id')
-        current_app.logger.info(f"[user_from_token] Decoded payload, user_id: {user_id}")
+        current_app.logger.debug("[user_from_token] Decoded payload, user_id: %s", user_id)
         if not user_id:
             current_app.logger.warning(f"[user_from_token] No user_id in payload: {payload}")
             return None
         user = User.query.get(user_id)
-        current_app.logger.info(f"[user_from_token] Found user: {user.email if user else 'None'}")
+        current_app.logger.debug("[user_from_token] Found user: %s", user.email if user else "None")
         return user
     except jwt.ExpiredSignatureError as e:
         current_app.logger.warning(f"[user_from_token] Expired JWT token: {e}")
