@@ -1,6 +1,9 @@
 """Analytics API endpoints for surveys (REST + legacy aliases)."""
 from __future__ import annotations
 
+import hashlib
+import json
+
 from flask import Blueprint, Response, jsonify, request
 
 from config.feature_flags import FEATURE_ENCUESTAS
@@ -43,6 +46,30 @@ def _parse_filtros() -> dict:
             continue
         filtros[key] = parts if len(parts) > 1 else parts[0]
     return filtros
+
+
+
+
+def _dashboard_etag(payload: dict) -> str:
+    """Build a stable ETag for dashboard payloads (ignoring volatile timestamps)."""
+
+    canonical = dict(payload or {})
+    canonical.pop("updated_at", None)
+    encoded = json.dumps(canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
+    return hashlib.sha1(encoded.encode("utf-8")).hexdigest()
+
+
+def _json_with_etag(payload: dict):
+    etag = _dashboard_etag(payload)
+    if request.if_none_match.contains(etag):
+        response = Response(status=304)
+        response.set_etag(etag)
+        return response
+
+    response = jsonify(payload)
+    response.set_etag(etag)
+    response.headers.setdefault("Cache-Control", "private, max-age=30")
+    return response
 
 
 def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> Blueprint:
@@ -162,7 +189,7 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
             return jsonify(err.to_dict()), err.status_code
 
         if use_envelope:
-            return jsonify({
+            envelope = {
                 "ok": True,
                 "data": data,
                 "meta": {
@@ -171,9 +198,10 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
                     "granularity": granularity,
                 },
                 "errors": [],
-            })
+            }
+            return _json_with_etag(envelope)
 
-        return jsonify(data)
+        return _json_with_etag(data)
 
     bp.add_url_rule("/dashboard", view_func=dashboard, methods=["GET"])
     if spanish_aliases:

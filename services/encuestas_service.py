@@ -1972,11 +1972,19 @@ def get_public_encuesta(
             return encuesta
 
     if encuesta.estado != "publicada":
-        raise EncuestaError("La encuesta no está activa", status_code=403)
+        raise EncuestaError(
+            "La encuesta no está activa",
+            status_code=403,
+            payload={"reason_code": "survey_not_published"},
+        )
 
     _ensure_demo_public_window(encuesta)
     if not encuesta.esta_activa():
-        raise EncuestaError("La encuesta no está en su ventana de participación", status_code=403)
+        raise EncuestaError(
+            "La encuesta no está en su ventana de participación",
+            status_code=403,
+            payload={"reason_code": "survey_outside_active_window"},
+        )
     return encuesta
 
 
@@ -3618,5 +3626,9 @@ def get_public_encuesta_by_id(encuesta_id: int) -> EncEncuesta:
     if not encuesta:
         raise EncuestaError("Encuesta no encontrada", status_code=404)
     if encuesta.estado != "publicada":
-        raise EncuestaError("La encuesta no está activa", status_code=403)
+        raise EncuestaError(
+            "La encuesta no está activa",
+            status_code=403,
+            payload={"reason_code": "survey_not_published"},
+        )
     return encuesta

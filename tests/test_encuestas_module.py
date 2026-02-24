@@ -880,3 +880,63 @@ def test_get_public_encuesta_does_not_refresh_non_demo_surveys(client):
         if fin_at.tzinfo is None:
             fin_at = fin_at.replace(tzinfo=timezone.utc)
         assert fin_at < datetime.now(timezone.utc)
+
+
+def test_get_public_encuesta_returns_reason_code_for_unpublished(client):
+    with client.application.app_context():
+        user = DummyUser(tenant_id=4)
+        encuesta = create_encuesta(
+            {
+                "titulo": "Encuesta no publicada",
+                "preguntas": [
+                    {
+                        "orden": 1,
+                        "tipo": "opcion_unica",
+                        "texto": "¿ok?",
+                        "obligatoria": True,
+                        "opciones": [{"orden": 1, "texto": "Sí"}],
+                    }
+                ],
+            },
+            user,
+        )
+        encuesta.estado = "borrador"
+        db.session.add(encuesta)
+        db.session.commit()
+
+        with pytest.raises(EncuestaError) as exc_info:
+            get_public_encuesta(encuesta.slug)
+
+        assert exc_info.value.status_code == 403
+        assert exc_info.value.to_dict().get("reason_code") == "survey_not_published"
+
+
+def test_get_public_encuesta_returns_reason_code_for_window(client):
+    with client.application.app_context():
+        user = DummyUser(tenant_id=4)
+        encuesta = create_encuesta(
+            {
+                "titulo": "Encuesta fuera de ventana",
+                "preguntas": [
+                    {
+                        "orden": 1,
+                        "tipo": "opcion_unica",
+                        "texto": "¿ok?",
+                        "obligatoria": True,
+                        "opciones": [{"orden": 1, "texto": "Sí"}],
+                    }
+                ],
+            },
+            user,
+        )
+        encuesta.estado = "publicada"
+        encuesta.inicio_at = datetime.now(timezone.utc) + timedelta(days=1)
+        encuesta.fin_at = datetime.now(timezone.utc) + timedelta(days=10)
+        db.session.add(encuesta)
+        db.session.commit()
+
+        with pytest.raises(EncuestaError) as exc_info:
+            get_public_encuesta(encuesta.slug)
+
+        assert exc_info.value.status_code == 403
+        assert exc_info.value.to_dict().get("reason_code") == "survey_outside_active_window"
