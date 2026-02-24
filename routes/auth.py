@@ -23,6 +23,7 @@ import threading
 import uuid
 import json
 from datetime import datetime, timedelta, timezone
+import time
 import jwt
 import base64
 from services.google_auth import login_o_crear_usuario
@@ -31,6 +32,16 @@ from services.tenant_resolver import resolve_tenant_only
 from services.demo_registry import load_demo_rubros
 from typing import Any, Callable, Dict, Optional
 import secrets
+
+_DEMO_CATALOG_CACHE: dict[str, Any] = {"payload": None, "expires_at": 0.0, "fingerprint": ""}
+
+
+def _demo_catalog_fingerprint() -> str:
+    """Return a stable cache fingerprint for config-sensitive demo catalog data."""
+
+    demo_rubros = current_app.config.get("DEMO_RUBROS")
+    default_slug = current_app.config.get("DEFAULT_DEMO_TENANT_SLUG")
+    return f"{repr(demo_rubros)}|{default_slug or ''}"
 
 
 def _looks_like_jwt(token: Optional[str]) -> bool:
@@ -984,6 +995,26 @@ def _resolve_default_demo_slug() -> Optional[str]:
     return getattr(first_tenant, "slug", None)
 
 
+
+
+def _first_active_tenant_for_demo(tipo: Optional[str]) -> Optional[TenantProfile]:
+    """Return the first active tenant for demo fallback by tipo."""
+
+    normalized = (tipo or "").strip().lower()
+    query = TenantProfile.query.filter(TenantProfile.is_active.is_(True))
+    if normalized in {"municipio", "gobierno", "municipal", ""}:
+        tenant = query.filter_by(tipo="municipio").order_by(TenantProfile.created_at.asc(), TenantProfile.id.asc()).first()
+        if tenant:
+            return tenant
+        return query.order_by(TenantProfile.created_at.asc(), TenantProfile.id.asc()).first()
+    elif normalized in {"pyme", "empresa", "empresas", "comercio"}:
+        tenant = query.filter_by(tipo="pyme").order_by(TenantProfile.created_at.asc(), TenantProfile.id.asc()).first()
+        if tenant:
+            return tenant
+        return query.order_by(TenantProfile.created_at.asc(), TenantProfile.id.asc()).first()
+    else:
+        return None
+
 @auth_bp.route('/demo/catalog', methods=['GET', 'OPTIONS'])
 @cross_origin(supports_credentials=True)
 def demo_catalog():
@@ -991,6 +1022,15 @@ def demo_catalog():
         return '', 204
 
     ensure_users = str(request.args.get('ensure_users') or '').strip().lower() in {'1', 'true', 'yes', 'on'}
+    now = time.time()
+    if not ensure_users:
+        cache_key = _demo_catalog_fingerprint()
+        cached_payload = _DEMO_CATALOG_CACHE.get("payload")
+        cached_expires = float(_DEMO_CATALOG_CACHE.get("expires_at") or 0.0)
+        cached_fingerprint = str(_DEMO_CATALOG_CACHE.get("fingerprint") or "")
+        if cached_payload and cached_expires > now and cached_fingerprint == cache_key:
+            return jsonify(cached_payload)
+
     if ensure_users:
         _ensure_demo_superadmin()
 
@@ -1011,13 +1051,26 @@ def demo_catalog():
             "login_payload": {"rubro": demo.key},
         })
 
+    if not demo_items:
+        for tipo, label in (("municipio", "Demo Municipio"), ("pyme", "Demo PyME")):
+            tenant = _first_active_tenant_for_demo(tipo)
+            if not tenant:
+                continue
+            demo_items.append({
+                "key": tipo,
+                "label": label,
+                "tipo_chat": tipo,
+                "tenant_slug": tenant.slug,
+                "login_payload": {"rubro": tipo},
+            })
+
     quick_login_slug = None
     try:
         quick_login_slug = _resolve_default_demo_slug()
     except Exception as exc:
         current_app.logger.warning("[demo_catalog] unable to resolve default demo slug: %s", exc)
 
-    return jsonify({
+    payload = {
         "demo_login_enabled": True,
         "demo_login_endpoint": "/auth/demo",
         "demo_login_methods": ["POST"],
@@ -1033,7 +1086,14 @@ def demo_catalog():
         },
         "tenant_demos": [{**item, "enabled": True, "login_endpoint": "/auth/demo"} for item in demo_items],
         "supported_languages": _supported_demo_languages(),
-    })
+    }
+
+    if not ensure_users:
+        _DEMO_CATALOG_CACHE["fingerprint"] = _demo_catalog_fingerprint()
+        _DEMO_CATALOG_CACHE["payload"] = payload
+        _DEMO_CATALOG_CACHE["expires_at"] = time.time() + 60.0
+
+    return jsonify(payload)
 
 
 @auth_bp.route('/demo', methods=['POST', 'OPTIONS'])
@@ -1048,32 +1108,20 @@ def login_demo():
     if not rubro:
         rubro = _resolve_default_demo_slug()
     demo_slug = _resolve_demo_tenant_slug(rubro)
-    if not demo_slug:
-        return jsonify({"error": f"Rubro demo '{rubro or ''}' no válido"}), 404
 
-    try:
-        tenant_obj = resolve_tenant_only(tenant_slug=demo_slug, require_explicit_slug=True)
-    except Exception:
-        requested_tipo = str(data.get("tipo_chat") or rubro or "").strip().lower()
-        if requested_tipo in {"pyme", "empresa", "empresas", "comercio"}:
-            tenant_obj = (
-                TenantProfile.query.filter_by(tipo="pyme")
-                .filter(TenantProfile.is_active.is_(True))
-                .order_by(TenantProfile.created_at.asc(), TenantProfile.id.asc())
-                .first()
-            )
-        elif requested_tipo in {"municipio", "gobierno", "municipal"}:
-            tenant_obj = (
-                TenantProfile.query.filter_by(tipo="municipio")
-                .filter(TenantProfile.is_active.is_(True))
-                .order_by(TenantProfile.created_at.asc(), TenantProfile.id.asc())
-                .first()
-            )
-        else:
+    tenant_obj = None
+    if demo_slug:
+        try:
+            tenant_obj = resolve_tenant_only(tenant_slug=demo_slug, require_explicit_slug=True)
+        except Exception:
             tenant_obj = None
 
-        if not tenant_obj:
-            return jsonify({"error": f"Rubro demo '{rubro or demo_slug}' no válido"}), 404
+    if not tenant_obj:
+        requested_tipo = str(data.get("tipo_chat") or rubro or "municipio").strip().lower()
+        tenant_obj = _first_active_tenant_for_demo(requested_tipo)
+
+    if not tenant_obj:
+        return jsonify({"error": f"Rubro demo '{rubro or demo_slug or ''}' no válido"}), 404
 
     demo_user = _get_or_create_demo_user_for_tenant(tenant_obj)
     _attach_user_to_tenant(demo_user, tenant_obj)
@@ -2624,10 +2672,7 @@ def admin_login():
         # Fallback to the tenant_slug attached to the user if no owned tenant is found.
         tenant_slug = getattr(user, "tenant_slug", None)
 
-    current_app.logger.info(f"[ADMIN_LOGIN_DEBUG] User: {user.id}, Email: {user.email}")
-    current_app.logger.info(f"[ADMIN_LOGIN_DEBUG] Owned Tenant: {owned_tenant.slug if owned_tenant else 'None'}")
-    current_app.logger.info(f"[ADMIN_LOGIN_DEBUG] Fallback tenant_slug on user: {getattr(user, 'tenant_slug', None)}")
-    current_app.logger.info(f"[ADMIN_LOGIN_DEBUG] Final resolved tenant slug: {tenant_slug}")
+    current_app.logger.debug("[ADMIN_LOGIN_DEBUG] user=%s tenant=%s fallback_tenant_slug=%s final_slug=%s", user.id, getattr(owned_tenant, "slug", None), getattr(user, "tenant_slug", None), tenant_slug)
 
     tipo_chat = _resolve_tipo_chat(user, tenant_obj=owned_tenant)
     jwt_payload = {

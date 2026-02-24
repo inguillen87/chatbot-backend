@@ -158,5 +158,32 @@ class AuthDemoLoginTest(unittest.TestCase):
         self.assertTrue(all(item.get('enabled') is True for item in entry_points))
 
 
+    def test_demo_login_works_when_demo_registry_is_empty(self):
+        original = self.app.config.get('DEMO_RUBROS')
+        self.app.config['DEMO_RUBROS'] = []
+        try:
+            resp = self.client.post('/auth/demo', json={'rubro': 'municipio'})
+            self.assertEqual(resp.status_code, 200)
+            payload = resp.get_json()
+            self.assertTrue(payload.get('tipo_chat') in {'municipio', 'pyme'})
+            self.assertTrue(payload.get('tenant_slug'))
+        finally:
+            self.app.config['DEMO_RUBROS'] = original
+
+    def test_demo_catalog_exposes_fallback_entries_when_registry_empty(self):
+        original = self.app.config.get('DEMO_RUBROS')
+        self.app.config['DEMO_RUBROS'] = []
+        try:
+            resp = self.client.get('/auth/demo/catalog')
+            self.assertEqual(resp.status_code, 200)
+            payload = resp.get_json()
+            tenant_demos = payload.get('tenant_demos') or []
+            keys = {item.get('key') for item in tenant_demos}
+            self.assertTrue(keys)
+            self.assertIn('pyme', keys)
+        finally:
+            self.app.config['DEMO_RUBROS'] = original
+
+
 if __name__ == "__main__":
     unittest.main()
