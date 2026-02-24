@@ -1074,6 +1074,7 @@ def demo_catalog():
         current_app.logger.warning("[demo_catalog] unable to resolve default demo slug: %s", exc)
 
     payload = {
+        "frontend_contract_version": "2026-02-demo-onboarding-v2",
         "demo_login_enabled": True,
         "demo_login_endpoint": "/auth/demo",
         "demo_login_methods": ["POST"],
@@ -1130,6 +1131,19 @@ def demo_catalog():
                         if (item.get("tipo_chat") or "").strip().lower() == "pyme"
                     ],
                 },
+            ],
+        },
+        "frontend": {
+            "demo_selector": {
+                "mode": "sector_first",
+                "default_sector": "gobierno",
+                "require_rubro_for_sector": {"gobierno": False, "empresas": True},
+                "tenant_slug_field": "login_payload.tenant_slug",
+            },
+            "preload_before_login": [
+                {"name": "demo_catalog", "method": "GET", "endpoint": "/auth/demo/catalog"},
+                {"name": "tenant_info", "method": "GET", "endpoint": "/api/pwa/tenant-info", "query": ["tenant", "tenant_slug"]},
+                {"name": "anon_id", "method": "GET", "endpoint": "/api/pwa/anon-id", "query": ["tenant"]},
             ],
         },
     }

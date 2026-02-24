@@ -161,6 +161,7 @@ class AuthDemoLoginTest(unittest.TestCase):
         resp = self.client.get('/auth/demo/catalog')
         self.assertEqual(resp.status_code, 200)
         payload = resp.get_json()
+        self.assertEqual(payload.get('frontend_contract_version'), '2026-02-demo-onboarding-v2')
         onboarding = payload.get('onboarding') or {}
         self.assertEqual(onboarding.get('default_sector'), 'gobierno')
 
@@ -175,6 +176,13 @@ class AuthDemoLoginTest(unittest.TestCase):
         empresas = next((item for item in sector_options if item.get('key') == 'empresas'), {})
         rubros = empresas.get('rubros') or []
         self.assertTrue(all((r.get('tipo_chat') or '').lower() == 'pyme' for r in rubros))
+
+        frontend = payload.get('frontend') or {}
+        selector = frontend.get('demo_selector') or {}
+        self.assertEqual(selector.get('mode'), 'sector_first')
+        self.assertEqual((selector.get('require_rubro_for_sector') or {}).get('empresas'), True)
+        preload_names = {item.get('name') for item in (frontend.get('preload_before_login') or [])}
+        self.assertTrue({'demo_catalog', 'tenant_info', 'anon_id'}.issubset(preload_names))
 
     def test_demo_login_supports_sector_gobierno_without_rubro(self):
         resp = self.client.post('/auth/demo', json={'sector': 'gobierno'})
