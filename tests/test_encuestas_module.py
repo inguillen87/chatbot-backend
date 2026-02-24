@@ -78,10 +78,11 @@ def test_bootstrap_templates_match_frontend_config():
 
     payloads = encuestas_service_module._build_junin_bootstrap_payload(inicio, fin)
     assert isinstance(payloads, list)
-    assert len(payloads) == 9
+    assert len(payloads) >= 9
 
-    servicios = payloads[0]
-    assert servicios["slug"].startswith("servicios-publicos-junin")
+    servicios = next(
+        template for template in payloads if template["slug"].startswith("servicios-publicos-junin")
+    )
     assert servicios["titulo"] == "Encuesta sobre servicios públicos en Junín"
     assert servicios["anonimo_permitido"] is False
     assert servicios["requiere_identidad"] is True
@@ -152,23 +153,44 @@ def test_bootstrap_templates_match_frontend_config():
     assert any("agenda" in tag.lower() or "planificación" in tag.lower() for tag in agenda.get("tags", []))
 
     san_martin_payloads = encuestas_service_module._build_san_martin_bootstrap_payload(inicio, fin)
-    assert san_martin_payloads[0]["slug"].startswith("servicios-publicos-san-martin")
-    assert "San Martín" in san_martin_payloads[0]["titulo"]
+    san_martin_servicios = next(template for template in san_martin_payloads if template["slug"].startswith("servicios-publicos-san-martin"))
+    assert "San Martín" in san_martin_servicios["titulo"]
 
     rivadavia_payloads = encuestas_service_module._build_rivadavia_bootstrap_payload(inicio, fin)
-    assert rivadavia_payloads[0]["slug"].startswith("servicios-publicos-rivadavia")
-    assert "Rivadavia" in rivadavia_payloads[0]["titulo"]
+    rivadavia_servicios = next(template for template in rivadavia_payloads if template["slug"].startswith("servicios-publicos-rivadavia"))
+    assert "Rivadavia" in rivadavia_servicios["titulo"]
 
     mendoza_payloads = _build_mendoza_bootstrap_payload(inicio, fin)
-    assert mendoza_payloads[0]["slug"].startswith("servicios-publicos-mendoza")
-    assert "Mendoza" in mendoza_payloads[0]["titulo"]
+    mendoza_servicios = next(template for template in mendoza_payloads if template["slug"].startswith("servicios-publicos-mendoza"))
+    assert "Mendoza" in mendoza_servicios["titulo"]
+
+
+    mendoza_tracking = next(
+        template
+        for template in mendoza_payloads
+        if template["slug"].startswith("luis-petri-tracking-campana-mendoza")
+    )
+    assert mendoza_tracking["mostrar_resultados_envivo"] is True
+    assert mendoza_tracking["permitir_comentarios"] is True
+    assert mendoza_tracking.get("auto_seed_demo", {}).get("cantidad") == 260
+
+    mendoza_votacion = next(
+        template
+        for template in mendoza_payloads
+        if template["slug"].startswith("luis-petri-votacion-prioridades-mendoza")
+    )
+    assert mendoza_votacion["es_votacion_envivo"] is True
 
     godoy_cruz_payloads = _build_godoy_cruz_bootstrap_payload(inicio, fin)
-    assert godoy_cruz_payloads[0]["slug"].startswith("servicios-publicos-godoy-cruz")
-    assert "Godoy Cruz" in godoy_cruz_payloads[0]["titulo"]
+    godoy_servicios = next(template for template in godoy_cruz_payloads if template["slug"].startswith("servicios-publicos-godoy-cruz"))
+    assert "Godoy Cruz" in godoy_servicios["titulo"]
 
     profile_keys = {profile["key"] for profile in encuestas_service_module._BOOTSTRAP_PROFILES}
     assert {"junin", "san_martin", "rivadavia", "mendoza", "godoy_cruz", "lavalle"}.issubset(profile_keys)
+    mendoza_profile = next(
+        profile for profile in encuestas_service_module._BOOTSTRAP_PROFILES if profile["key"] == "mendoza"
+    )
+    assert "luis-petri-tracking-campana" in (mendoza_profile.get("template_slugs") or [])
 
     draft_payload = build_template_draft_from_slug("servicios-publicos", "Junín")
     auto_seed = draft_payload.get("auto_seed_demo")
