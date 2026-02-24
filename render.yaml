@@ -4,7 +4,7 @@ services:
     name: chatboc-backend
     env: python
     buildCommand: "./build.sh"
-    startCommand: "gunicorn app:app"
+    startCommand: "gunicorn --worker-class eventlet --workers 1 --bind 0.0.0.0:$PORT app:app"
     plan: starter
     envVars:
       - key: PYTHON_VERSION

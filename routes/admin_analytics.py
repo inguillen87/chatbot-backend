@@ -34,7 +34,14 @@ def _tenant_id_as_int(value: str) -> int:
 def admin_analytics_overview():
     filters = parse_filters(request.args)
     require_access(filters.tenant_id, "operador")
-    return _json(get_summary(filters))
+    payload = get_summary(filters)
+    totals = payload.setdefault("totals", {})
+    if "total_interactions" not in totals:
+        tickets = int(totals.get("tickets") or 0)
+        pedidos = int(totals.get("pedidos") or 0)
+        encuestas = int(totals.get("encuestas") or 0)
+        totals["total_interactions"] = tickets + pedidos + encuestas
+    return _json(payload)
 
 
 @admin_analytics_bp.get("/heatmap")
@@ -123,3 +130,51 @@ def admin_analytics_export_pdf():
             "Content-Disposition": f"attachment; filename=analytics_{filters.tenant_id}.pdf"
         },
     )
+
+
+@admin_analytics_bp.get("/dashboard")
+def admin_analytics_dashboard():
+    """Unified payload for the /analytics UI tabs (general/municipio/ventas/mapas)."""
+
+    filters = parse_filters(request.args)
+    require_access(filters.tenant_id, "operador")
+
+    overview = get_summary(filters)
+    totals = overview.setdefault("totals", {})
+    if "total_interactions" not in totals:
+        tickets = int(totals.get("tickets") or 0)
+        pedidos = int(totals.get("pedidos") or 0)
+        encuestas = int(totals.get("encuestas") or 0)
+        totals["total_interactions"] = tickets + pedidos + encuestas
+
+    geo = get_geo_heatmap(filters)
+
+    payload = {
+        "tenant_id": filters.tenant_id,
+        "scope": filters.scope,
+        "period": {
+            "from": filters.date_from.isoformat() if filters.date_from else None,
+            "to": filters.date_to.isoformat() if filters.date_to else None,
+        },
+        "sections": {
+            "general": overview,
+            "municipio": overview if filters.scope == "municipio" else {"totals": totals},
+            "ventas": overview if filters.scope == "pyme" else {"totals": totals},
+            "mapas": {"geo": geo},
+        },
+        "navigation": {
+            "primary": [
+                {"key": "analytics", "label": "Analytics & Insights", "path": "/analytics", "active": True},
+                {"key": "estadisticas", "label": "Estadísticas", "path": "/estadisticas", "active": False},
+                {"key": "encuestas", "label": "Encuestas", "path": "/admin/encuestas", "active": False},
+            ],
+            "encuestas": {
+                "admin_list_endpoint": "/api/admin/encuestas",
+                "templates_endpoint": "/api/admin/encuestas/templates",
+                "seed_demo_endpoint_template": "/api/admin/encuestas/{encuesta_id}/seed-demo",
+                "public_results_endpoint_template": "/api/public/encuestas/{slug}/live-results",
+            },
+        },
+    }
+
+    return _json(payload)

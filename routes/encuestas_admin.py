@@ -17,6 +17,7 @@ from services.encuestas_service import (
     serialize_encuesta,
     serialize_respuesta,
     build_admin_list_payload,
+    determine_tenant_id_for_user,
     list_template_catalog,
     build_template_draft_from_slug,
     seed_encuesta_respuestas_demo,
@@ -120,20 +121,10 @@ def _create_admin_blueprint(name: str, url_prefix: str) -> Blueprint:
 
         try:
             tenant_profile = getattr(g, "tenant_profile", None)
-            tenant_id = None
+            if tenant_profile and not _is_authorized_for_tenant(current_user, tenant_profile):
+                return jsonify({"error": "No autorizado para este tenant"}), 403
 
-            if tenant_profile:
-                if not _is_authorized_for_tenant(current_user, tenant_profile):
-                    return jsonify({"error": "No autorizado para este tenant"}), 403
-                tenant_id = tenant_profile.id
-
-            if not tenant_id:
-                tenant_id = (
-                    getattr(current_user, "tenant_id", None)
-                    or getattr(current_user, "municipio_id", None)
-                    or getattr(current_user, "empresa_id", None)
-                    or current_user.id
-                )
+            tenant_id = determine_tenant_id_for_user(current_user)
 
             encuestas = list_encuestas(tenant_id, estado)
         except EncuestaError as err:

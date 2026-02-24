@@ -346,7 +346,12 @@ def _resolve_tenant_profile() -> Optional[TenantProfile]:
 def tenant_middleware(app) -> None:
     @app.before_request
     def attach_tenant_profile() -> None:
-        tenant = _resolve_tenant_profile()
+        try:
+            tenant = _resolve_tenant_profile()
+        except Exception as exc:
+            current_app.logger.warning("[tenant_context] failed to resolve tenant context: %s", exc)
+            tenant = None
+
         g.tenant_profile = tenant
         g.tenant_profile_slug = tenant.slug if tenant else None
         if tenant:
