@@ -25,6 +25,8 @@ from routes.auth import (
     me_perfil as perfil_view,
     google_login,
     admin_login,
+    demo_catalog,
+    login_demo,
 )
 from routes.chat import ask, ask_municipio, ask_pyme
 from routes.carrito import agregar, carrito_root, eliminar, vaciar, actualizar
@@ -146,6 +148,17 @@ def carrito_alias_vaciar():
 def auth_login_alias():
     return login_view()
 
+
+
+
+@api_aliases_bp.route("/auth/demo/catalog", methods=["GET", "OPTIONS"], strict_slashes=False)
+def auth_demo_catalog_alias():
+    return demo_catalog()
+
+
+@api_aliases_bp.route("/auth/demo", methods=["POST", "OPTIONS"], strict_slashes=False)
+def auth_demo_login_alias():
+    return login_demo()
 
 @api_aliases_bp.route("/perfil", methods=["GET", "PUT", "OPTIONS"], strict_slashes=False)
 def perfil_alias():

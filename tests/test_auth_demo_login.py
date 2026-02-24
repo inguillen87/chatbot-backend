@@ -90,10 +90,17 @@ class AuthDemoLoginTest(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         payload = resp.get_json()
         self.assertIn('super_admin_demo', payload)
+        self.assertTrue(payload.get('demo_login_enabled'))
+        self.assertEqual(payload.get('demo_login_endpoint'), '/auth/demo')
+        self.assertEqual(payload.get('demo_login_methods'), ['POST'])
+        self.assertTrue((payload.get('quick_login_payload') or {}).get('tenant_slug'))
         self.assertEqual(payload['super_admin_demo']['role'], 'super_admin')
         languages = payload.get('supported_languages') or []
         codes = {item.get('code') for item in languages}
         self.assertTrue({'es', 'en', 'pt'}.issubset(codes))
+        tenant_demos = payload.get('tenant_demos') or []
+        self.assertTrue(all(item.get('enabled') is True for item in tenant_demos))
+        self.assertTrue(all(item.get('login_endpoint') == '/auth/demo' for item in tenant_demos))
 
     def test_demo_catalog_can_bootstrap_superadmin(self):
         resp = self.client.get('/auth/demo/catalog?ensure_users=true')
@@ -105,12 +112,40 @@ class AuthDemoLoginTest(unittest.TestCase):
         self.assertIn(user.rol, {'super_admin', 'superadmin'})
 
 
+
     def test_demo_login_accepts_generic_pyme_entrypoint(self):
         resp = self.client.post("/auth/demo", json={"rubro": "pyme"})
         self.assertEqual(resp.status_code, 200)
         payload = resp.get_json()
         self.assertEqual(payload.get("tipo_chat"), "pyme")
         self.assertTrue(payload.get("demo_mode"))
+
+    def test_demo_catalog_exposes_quick_login_payload(self):
+        resp = self.client.get('/auth/demo/catalog')
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.get_json()
+        self.assertEqual(payload.get('demo_login_methods'), ['POST'])
+        quick = payload.get('quick_login_payload') or {}
+        self.assertIsInstance(quick.get('tenant_slug'), str)
+        self.assertTrue(quick.get('tenant_slug'))
+
+    def test_demo_login_works_without_explicit_rubro(self):
+        resp = self.client.post('/auth/demo', json={})
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.get_json()
+        self.assertTrue(payload.get('demo_mode'))
+        self.assertTrue(payload.get('tenant_slug'))
+
+
+    def test_demo_login_includes_admin_dashboard_fields_and_cookie(self):
+        resp = self.client.post('/auth/demo', json={"rubro": "municipio"})
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.get_json()
+        self.assertIn('tenant_id', payload)
+        self.assertIn('municipio_id', payload)
+        self.assertIn('marketplace', payload)
+        set_cookie_header = resp.headers.get('Set-Cookie', '')
+        self.assertIn('auth_token=', set_cookie_header)
 
     def test_demo_catalog_exposes_generic_entry_points(self):
         resp = self.client.get('/auth/demo/catalog')
@@ -120,6 +155,7 @@ class AuthDemoLoginTest(unittest.TestCase):
         keys = {item.get('key') for item in entry_points}
         self.assertIn('municipio', keys)
         self.assertIn('pyme', keys)
+        self.assertTrue(all(item.get('enabled') is True for item in entry_points))
 
 
 if __name__ == "__main__":
