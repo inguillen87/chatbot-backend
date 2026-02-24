@@ -500,3 +500,44 @@ def test_admin_analytics_dashboard_returns_unified_sections(client):
     nav = payload.get('navigation') or {}
     assert isinstance(nav.get('primary'), list) and nav.get('primary')
     assert (nav.get('encuestas') or {}).get('seed_demo_endpoint_template')
+
+
+def test_admin_analytics_dashboard_etag_returns_304(client):
+    tenant_id = 33
+    _create_municipio_ticket(tenant_id)
+    db.session.commit()
+
+    first = client.get(
+        '/admin/analytics/dashboard',
+        query_string={'scope': 'municipio'},
+        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
+    )
+    assert first.status_code == 200
+    etag = first.headers.get('ETag')
+    assert etag
+
+    second = client.get(
+        '/admin/analytics/dashboard',
+        query_string={'scope': 'municipio'},
+        headers={
+            'X-Debug-Role': 'operador',
+            'X-Debug-Tenant': str(tenant_id),
+            'If-None-Match': etag,
+        },
+    )
+    assert second.status_code == 304
+
+
+def test_api_alias_admin_analytics_hub_available(client):
+    tenant_id = 34
+    _create_municipio_ticket(tenant_id)
+    db.session.commit()
+
+    response = client.get(
+        '/api/admin/analytics/hub',
+        query_string={'scope': 'municipio'},
+        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
+    )
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert (payload.get('sections') or {}).get('general') is not None

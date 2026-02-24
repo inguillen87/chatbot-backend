@@ -15,6 +15,8 @@ from routes.admin_analytics import (
     admin_analytics_export_pdf,
     admin_analytics_heatmap,
     admin_analytics_overview,
+    admin_analytics_dashboard,
+    admin_analytics_hub,
 )
 from routes.auth import (
     chatuser_login_panel,
@@ -226,6 +228,17 @@ def admin_analytics_overview_alias():
 def admin_analytics_heatmap_alias():
     return admin_analytics_heatmap()
 
+
+
+
+@api_aliases_bp.route("/admin/analytics/dashboard", methods=["GET"], strict_slashes=False)
+def admin_analytics_dashboard_alias():
+    return admin_analytics_dashboard()
+
+
+@api_aliases_bp.route("/admin/analytics/hub", methods=["GET"], strict_slashes=False)
+def admin_analytics_hub_alias():
+    return admin_analytics_hub()
 
 @api_aliases_bp.route("/admin/analytics/export.csv", methods=["GET"], strict_slashes=False)
 def admin_analytics_export_csv_alias():

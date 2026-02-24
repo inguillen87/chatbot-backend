@@ -10,8 +10,6 @@ from flask import abort, current_app, g, request
 
 from models import TenantProfile
 
-from models import TenantProfile
-
 
 @dataclass(frozen=True)
 class AnalyticsFilters:
