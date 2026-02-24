@@ -337,6 +337,10 @@ def _build_bootstrap_payloads(
             "fin_at": fin.isoformat(),
         }
 
+        auto_seed_demo = template_copy.get("auto_seed_demo")
+        if isinstance(auto_seed_demo, dict):
+            payload["auto_seed_demo"] = deepcopy(auto_seed_demo)
+
         preguntas: List[Dict[str, Any]] = []
         for pregunta_tpl in template_copy.get("preguntas", []):
             pregunta_tipo = pregunta_tpl.get("tipo", "opcion_unica")
@@ -664,6 +668,7 @@ def _load_bootstrap_profiles() -> List[Dict[str, Any]]:
             "tenant_env": raw_profile.get("tenant_env"),
             "fallback_tenant_id": raw_profile.get("fallback_tenant_id"),
             "keywords": tuple(raw_profile.get("keywords", [])),
+            "template_slugs": tuple(template_slugs),
             "payload_builder": builder,
             "auto_publish": bool(raw_profile.get("auto_publish", True)),
             "tenant_id": raw_profile.get("tenant_id"),

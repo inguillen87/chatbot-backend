@@ -90,10 +90,15 @@ class AuthDemoLoginTest(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         payload = resp.get_json()
         self.assertIn('super_admin_demo', payload)
+        self.assertTrue(payload.get('demo_login_enabled'))
+        self.assertEqual(payload.get('demo_login_endpoint'), '/auth/demo')
         self.assertEqual(payload['super_admin_demo']['role'], 'super_admin')
         languages = payload.get('supported_languages') or []
         codes = {item.get('code') for item in languages}
         self.assertTrue({'es', 'en', 'pt'}.issubset(codes))
+        tenant_demos = payload.get('tenant_demos') or []
+        self.assertTrue(all(item.get('enabled') is True for item in tenant_demos))
+        self.assertTrue(all(item.get('login_endpoint') == '/auth/demo' for item in tenant_demos))
 
     def test_demo_catalog_can_bootstrap_superadmin(self):
         resp = self.client.get('/auth/demo/catalog?ensure_users=true')
@@ -120,6 +125,7 @@ class AuthDemoLoginTest(unittest.TestCase):
         keys = {item.get('key') for item in entry_points}
         self.assertIn('municipio', keys)
         self.assertIn('pyme', keys)
+        self.assertTrue(all(item.get('enabled') is True for item in entry_points))
 
 
 if __name__ == "__main__":
