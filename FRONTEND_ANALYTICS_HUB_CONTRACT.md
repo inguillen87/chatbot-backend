@@ -51,3 +51,10 @@ Objetivo: reducir fragmentación de UX/UI en `/analytics` y evitar pantallas col
 2. Render tabs desde `sections` sin hacer 4 requests iniciales.
 3. Mostrar CTA de seed demo de encuestas usando `seed_demo_endpoint_template`.
 4. Fallback de tenant: si no hay `tenant_id`, intentar con `tenant_slug`; backend ahora infiere por contexto en la mayoría de flujos autenticados.
+
+
+## Observability y SLA UI
+- Respuesta incluye `meta.contract_version`, `meta.generated_at`, `meta.request_id`, `meta.cache` para trazabilidad de UX.
+- Headers: `X-Analytics-Request-Id` y `X-Analytics-Contract-Version` para correlación entre frontend, backend y logs.
+- Frontend debería propagar `X-Request-Id` en cada request de analytics para debugging enterprise.
+- Con `If-None-Match` + `304`, el frontend puede refrescar cada 15-30s sin recargar toda la UI.

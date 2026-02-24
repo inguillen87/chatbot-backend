@@ -7,7 +7,8 @@ import hashlib
 import io
 import json
 import time
-from datetime import datetime
+import uuid
+from datetime import datetime, timezone
 from typing import Any
 
 from flask import Blueprint, Response, abort, jsonify, request
@@ -22,6 +23,7 @@ admin_analytics_bp = Blueprint("admin_analytics", __name__, url_prefix="/admin/a
 
 _DASHBOARD_CACHE: dict[str, dict[str, Any]] = {}
 _DASHBOARD_CACHE_TTL_SECONDS = 20.0
+_ANALYTICS_HUB_CONTRACT_VERSION = "2026-analytics-hub-v2"
 
 
 def _json(payload: dict, status: int = 200):
@@ -102,26 +104,65 @@ def _etag_for_payload(payload: dict[str, Any]) -> str:
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()
 
 
+def _request_id() -> str:
+    inbound = (request.headers.get("X-Request-Id") or request.headers.get("X-Correlation-Id") or "").strip()
+    return inbound or uuid.uuid4().hex
+
+
 def _dashboard_response(filters):
     cache_key = _dashboard_cache_key(filters)
     now = time.time()
+    req_id = _request_id()
     entry = _DASHBOARD_CACHE.get(cache_key)
-    if entry and float(entry.get("expires_at") or 0.0) > now:
+    cache_hit = bool(entry and float(entry.get("expires_at") or 0.0) > now)
+
+    if cache_hit:
         payload = entry["payload"]
+        expires_at = float(entry.get("expires_at") or now)
     else:
         payload = _build_dashboard_payload(filters)
+        expires_at = now + _DASHBOARD_CACHE_TTL_SECONDS
         _DASHBOARD_CACHE[cache_key] = {
             "payload": payload,
-            "expires_at": now + _DASHBOARD_CACHE_TTL_SECONDS,
+            "expires_at": expires_at,
         }
 
-    etag = _etag_for_payload(payload)
-    if request.if_none_match and request.if_none_match.contains(etag):
-        return Response(status=304, headers={"ETag": etag, "Cache-Control": "private, max-age=20"})
+    generated_at = entry.get("generated_at") if entry else None
+    if not generated_at:
+        generated_at = datetime.now(timezone.utc).isoformat()
+        if cache_key in _DASHBOARD_CACHE:
+            _DASHBOARD_CACHE[cache_key]["generated_at"] = generated_at
 
-    response = _json(payload)
-    response.headers["ETag"] = etag
-    response.headers["Cache-Control"] = "private, max-age=20"
+    enriched_payload = dict(payload)
+    enriched_payload["meta"] = {
+        "contract_version": _ANALYTICS_HUB_CONTRACT_VERSION,
+        "generated_at": generated_at,
+        "request_id": req_id,
+        "cache": {
+            "hit": cache_hit,
+            "ttl_seconds": max(0, int(round(expires_at - now))),
+        },
+    }
+
+    etag_source = dict(enriched_payload)
+    etag_source["meta"] = {
+        "contract_version": _ANALYTICS_HUB_CONTRACT_VERSION,
+        "generated_at": generated_at,
+    }
+    etag = _etag_for_payload(etag_source)
+    headers = {
+        "ETag": etag,
+        "Cache-Control": "private, max-age=20",
+        "X-Analytics-Request-Id": req_id,
+        "X-Analytics-Contract-Version": _ANALYTICS_HUB_CONTRACT_VERSION,
+    }
+
+    if request.if_none_match and request.if_none_match.contains(etag):
+        return Response(status=304, headers=headers)
+
+    response = _json(enriched_payload)
+    for key, value in headers.items():
+        response.headers[key] = value
     return response
 
 

@@ -541,3 +541,46 @@ def test_api_alias_admin_analytics_hub_available(client):
     assert response.status_code == 200
     payload = response.get_json()
     assert (payload.get('sections') or {}).get('general') is not None
+
+
+def test_admin_analytics_hub_includes_meta_and_contract_headers(client):
+    tenant_id = 35
+    _create_municipio_ticket(tenant_id)
+    db.session.commit()
+
+    response = client.get(
+        '/admin/analytics/hub',
+        query_string={'scope': 'municipio'},
+        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
+    )
+    assert response.status_code == 200
+    assert response.headers.get('X-Analytics-Request-Id')
+    assert response.headers.get('X-Analytics-Contract-Version')
+
+    payload = response.get_json()
+    meta = payload.get('meta') or {}
+    assert meta.get('contract_version')
+    assert meta.get('generated_at')
+    assert meta.get('request_id')
+    cache = meta.get('cache') or {}
+    assert isinstance(cache.get('hit'), bool)
+
+
+def test_admin_analytics_hub_honors_custom_request_id(client):
+    tenant_id = 36
+    _create_municipio_ticket(tenant_id)
+    db.session.commit()
+
+    response = client.get(
+        '/admin/analytics/hub',
+        query_string={'scope': 'municipio'},
+        headers={
+            'X-Debug-Role': 'operador',
+            'X-Debug-Tenant': str(tenant_id),
+            'X-Request-Id': 'req-demo-123',
+        },
+    )
+    assert response.status_code == 200
+    assert response.headers.get('X-Analytics-Request-Id') == 'req-demo-123'
+    payload = response.get_json()
+    assert (payload.get('meta') or {}).get('request_id') == 'req-demo-123'
