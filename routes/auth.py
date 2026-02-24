@@ -188,11 +188,11 @@ def _tenant_owner(tenant: Optional[TenantProfile]) -> Optional[User]:
 
     return None
 
-def _attach_user_to_tenant(user: User, tenant: Optional[TenantProfile]) -> None:
-    """Persist the tenant_id on the user if it's missing or outdated."""
+def _attach_user_to_tenant(user: User, tenant: Optional[TenantProfile]) -> bool:
+    """Persist tenant binding only when it changed and return whether it changed."""
 
     if not tenant or not user:
-        return
+        return False
 
     # Validar si la columna existe antes de intentar asignarla para evitar errores 500
     # si la migración no se ha aplicado.
@@ -200,11 +200,15 @@ def _attach_user_to_tenant(user: User, tenant: Optional[TenantProfile]) -> None:
         if user.tenant_id != tenant.id:
             user.tenant_id = tenant.id
             db.session.add(user)
+            return True
+        return False
     else:
         current_slug = getattr(user, "tenant_slug", None)
         if current_slug != tenant.slug:
             user.tenant_slug = tenant.slug
             db.session.add(user)
+            return True
+        return False
 
 
 def _tenant_market_payload(tenant: Optional[TenantProfile]) -> Dict[str, object]:
@@ -1150,12 +1154,13 @@ def login():
 
     tenant_obj = _resolve_tenant_for_user(user, tenant_obj)
     if tenant_obj:
-        _attach_user_to_tenant(user, tenant_obj)
-        try:
-            db.session.commit()
-        except Exception:
-            db.session.rollback()
-            current_app.logger.warning("Failed to attach user to tenant during login")
+        tenant_changed = _attach_user_to_tenant(user, tenant_obj)
+        if tenant_changed:
+            try:
+                db.session.commit()
+            except Exception:
+                db.session.rollback()
+                current_app.logger.warning("Failed to attach user to tenant during login")
     tipo_chat = _resolve_tipo_chat(user, tenant_obj=tenant_obj, rubro_nombre=rubro_nombre)
 
     # Migrate anonymous data if anon_id is present.
@@ -1205,21 +1210,14 @@ def login():
     }
     jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
 
-    # Prioritize the tenant owned by the user if they are a tenant owner
-    owned_tenant = _resolve_tenant_for_user(user)
-    current_app.logger.info(f"[AUTH_DEBUG] User: {user.id}, Email: {user.email}")
-    current_app.logger.info(f"[AUTH_DEBUG] Owned Tenant (from _tenant_for_user): {owned_tenant.slug if owned_tenant else 'None'}")
+    # Reuse already resolved tenant to avoid extra DB round-trips on login.
+    response_slug = getattr(user, "tenant_slug", None)
+    if tenant_obj and not response_slug:
+        response_slug = tenant_obj.slug
 
-
-    if owned_tenant:
-        response_slug = owned_tenant.slug
-    else:
-        # Fallback to the attached tenant_slug or the resolved tenant object
-        response_slug = getattr(user, "tenant_slug", None)
-        if not response_slug and tenant_obj:
-            response_slug = tenant_obj.slug
-
-    current_app.logger.info(f"[AUTH_DEBUG] Resolved tenant slug for response: {response_slug}")
+    current_app.logger.debug(
+        "[AUTH_DEBUG] Login user=%s tenant_slug=%s", user.id, response_slug
+    )
 
     response_payload = {
         "mensaje": "Login exitoso",
