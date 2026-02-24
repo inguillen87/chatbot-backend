@@ -52,6 +52,7 @@ from services.encuestas_service import (
     list_respuestas,
     serialize_respuesta,
     serialize_public_encuesta,
+    get_public_encuesta,
     delete_encuesta,
     list_encuestas,
     _build_mendoza_bootstrap_payload,
@@ -200,6 +201,29 @@ def test_bootstrap_templates_match_frontend_config():
     assert auto_seed["geo_profile_key"] == "junin"
     assert any(action["key"] == "demo_seed" for action in draft_payload.get("quick_actions", []))
 
+
+
+
+def test_get_public_encuesta_refreshes_expired_bootstrap_window(client):
+    with client.application.app_context():
+        user = DummyUser(tenant_id=4)
+        draft_payload = build_template_draft_from_slug("movilidad-y-transporte", "Junín")
+        encuesta = create_encuesta(draft_payload, user)
+
+        encuesta.estado = "publicada"
+        encuesta.inicio_at = datetime.now(timezone.utc) - timedelta(days=30)
+        encuesta.fin_at = datetime.now(timezone.utc) - timedelta(days=2)
+        db.session.add(encuesta)
+        db.session.commit()
+
+        fetched = get_public_encuesta(encuesta.slug)
+        assert fetched.id == encuesta.id
+        assert fetched.esta_activa() is True
+        assert fetched.fin_at is not None
+        fin_at = fetched.fin_at
+        if fin_at.tzinfo is None:
+            fin_at = fin_at.replace(tzinfo=timezone.utc)
+        assert fin_at > datetime.now(timezone.utc)
 
 def test_list_template_payloads_scope_all_returns_catalog(client):
     with client.application.app_context():
