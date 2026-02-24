@@ -467,6 +467,19 @@ def test_admin_encuestas_legacy_analytics_and_snapshots(client, monkeypatch, adm
     assert brief_data["encuesta_id"] == encuesta_id
     assert "headline" in brief_data
     assert "forecast" in brief_data
+    dashboard_resp = client.get(
+        f"/admin/encuestas/{encuesta_id}/analytics/dashboard",
+        headers=headers,
+    )
+    assert dashboard_resp.status_code == 200
+    dashboard_data = dashboard_resp.get_json()
+    assert dashboard_data["encuesta_id"] == encuesta_id
+    assert "executive_summary" in dashboard_data
+    assert "visual_blueprint" in dashboard_data
+    assert "modules" in dashboard_data
+    assert "frontend_contract" in dashboard_data["visual_blueprint"]
+    assert dashboard_data["visual_blueprint"]["frontend_contract"]["auth_demo"]["login_endpoint"] == "/auth/demo"
+
 
     segments_resp = client.get(
         f"/admin/encuestas/{encuesta_id}/analytics/segments/compare",

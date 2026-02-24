@@ -212,6 +212,62 @@ def _demo_heatmap(scope: str) -> list[dict]:
     return heatmap
 
 
+
+
+def _build_showcase_metrics(points: list[dict[str, object]]) -> dict[str, object]:
+    """Build front-end friendly KPI and animation hints for premium dashboards."""
+
+    if not points:
+        return {
+            "events_total": 0,
+            "active_zones": 0,
+            "top_hotspots": [],
+            "sparkline": [],
+            "animation": {"enabled": False},
+        }
+
+    total_events = 0.0
+    hotspots: dict[str, float] = {}
+    sparkline: list[float] = []
+
+    for idx, point in enumerate(points):
+        weight = float(point.get("weight", 1) or 1)
+        total_events += weight
+        location = point.get("location") if isinstance(point.get("location"), dict) else {}
+        label = (
+            point.get("barrio")
+            or point.get("distrito")
+            or location.get("barrio")
+            or location.get("ciudad")
+            or f"Zona {idx + 1}"
+        )
+        hotspots[label] = hotspots.get(label, 0.0) + weight
+        sparkline.append(round(weight, 2))
+
+    top_hotspots = sorted(
+        ({"label": label, "weight": round(value, 2)} for label, value in hotspots.items()),
+        key=lambda item: item["weight"],
+        reverse=True,
+    )[:6]
+
+    # Keep sparkline compact and deterministic for UI cards
+    if len(sparkline) > 24:
+        step = max(1, len(sparkline) // 24)
+        sparkline = sparkline[::step][:24]
+
+    return {
+        "events_total": int(round(total_events)),
+        "active_zones": len(hotspots),
+        "top_hotspots": top_hotspots,
+        "sparkline": sparkline,
+        "animation": {
+            "enabled": True,
+            "pulse_interval_ms": 3200,
+            "toast_lifetime_ms": 4200,
+            "recommended_layers": ["heatmap", "clusters", "pulses", "arcs"],
+        },
+    }
+
 def _augment_heatmap_payload(payload: dict[str, object], *, key: str = "heatmap") -> None:
     """Attach shared heatmap representations, metadata and provider hints."""
 
@@ -275,6 +331,12 @@ def _augment_heatmap_payload(payload: dict[str, object], *, key: str = "heatmap"
             "provider_hint": provider_hint,
             "source_keys": {"points": key, "geojson": f"{key}_geojson"},
         }
+        layers[f"{key}_pulses"] = {
+            "kind": "pulses",
+            "provider_hint": provider_hint,
+            "source_keys": {"points": key},
+            "style": {"radius": 8, "glow": 0.85},
+        }
 
     # Aggregate the points into grid cells so that MapLibre/MapTiler can render
     # either a heatmap or clustered overlays without relying on the deprecated
@@ -285,7 +347,23 @@ def _augment_heatmap_payload(payload: dict[str, object], *, key: str = "heatmap"
     )
 
     if cells:
+        pulses = []
+        for idx, cell in enumerate(cells[:25]):
+            if not isinstance(cell, dict):
+                continue
+            location = cell.get("location") or {}
+            pulses.append(
+                {
+                    "id": f"{key}_pulse_{idx+1}",
+                    "lat": location.get("lat"),
+                    "lng": location.get("lng"),
+                    "intensity": cell.get("intensity"),
+                    "weight": cell.get("count"),
+                }
+            )
         payload[f"{key}_cells"] = cells
+        if pulses:
+            payload[f"{key}_pulses"] = pulses
         cells_geojson = build_feature_collection(cells)
         if cells_geojson:
             payload[f"{key}_cells_geojson"] = cells_geojson
@@ -301,11 +379,48 @@ def _augment_heatmap_payload(payload: dict[str, object], *, key: str = "heatmap"
                     "geojson": f"{key}_cells_geojson",
                 },
             }
+            if payload.get(f"{key}_pulses"):
+                layers[f"{key}_pulses"] = {
+                    "kind": "pulse",
+                    "supported_formats": ["points"],
+                    "preferred_format": "points",
+                    "provider_hint": provider_hint,
+                    "source_keys": {"points": f"{key}_pulses"},
+                }
 
     metadata = payload.setdefault("metadata", {})
     if isinstance(metadata, dict):
         map_metadata = metadata.setdefault("map", {})
         if isinstance(map_metadata, dict):
+            top_cells = sorted(
+                cells,
+                key=lambda cell: float(cell.get("count", 0.0) or 0.0),
+                reverse=True,
+            )[:5]
+            cinematic_events = []
+            for idx, cell in enumerate(top_cells, start=1):
+                if not isinstance(cell, dict):
+                    continue
+                loc = cell.get("location") or {}
+                cinematic_events.append(
+                    {
+                        "rank": idx,
+                        "lat": loc.get("lat"),
+                        "lng": loc.get("lng"),
+                        "label": cell.get("barrio") or cell.get("distrito") or f"Zona {idx}",
+                        "weight": cell.get("count"),
+                        "intensity": cell.get("intensity"),
+                        "pulse_ms": 1200 + idx * 180,
+                    }
+                )
+
+            showcase = _build_showcase_metrics(points)
+            if isinstance(showcase, dict):
+                anim = showcase.setdefault("animation", {})
+                if isinstance(anim, dict):
+                    anim.setdefault("enabled", bool(points))
+                    anim.setdefault("default", "pulse")
+
             map_metadata[key] = {
                 "point_count": cells_metadata.get("point_count"),
                 "cell_count": cells_metadata.get("cell_count"),
@@ -317,6 +432,14 @@ def _augment_heatmap_payload(payload: dict[str, object], *, key: str = "heatmap"
                 "centroid": cells_metadata.get("centroid"),
                 "provider_hint": provider_hint,
                 "style": _style_hint(points),
+                "showcase": showcase,
+                "hotspots": cinematic_events,
+                "rendering": {
+                    "recommended_engine": "maplibre-gl",
+                    "supports_animations": True,
+                    "supports_clusters": True,
+                    "supports_heatmap": True,
+                },
             }
 
     if isinstance(metadata, dict):
@@ -347,6 +470,32 @@ def _augment_heatmap_payload(payload: dict[str, object], *, key: str = "heatmap"
                     {"label": "Últimos 90 días", "days": 90},
                 ],
             )
+
+    if isinstance(metadata, dict):
+        analytics_meta = metadata.setdefault("analytics", {})
+        if isinstance(analytics_meta, dict):
+            sorted_points = sorted(
+                [p for p in points if isinstance(p, dict)],
+                key=lambda item: float(item.get("weight", 0.0) or 0.0),
+                reverse=True,
+            )
+            analytics_meta[key] = {
+                "top_points": [
+                    {
+                        "rank": idx + 1,
+                        "lat": (pt.get("location") or {}).get("lat", pt.get("lat")),
+                        "lng": (pt.get("location") or {}).get("lng", pt.get("lng")),
+                        "weight": pt.get("weight"),
+                        "categoria": pt.get("categoria"),
+                        "estado": pt.get("estado"),
+                    }
+                    for idx, pt in enumerate(sorted_points[:10])
+                ],
+                "kpi": {
+                    "coverage_score": round(min(100.0, float(cells_metadata.get("cell_count", 0) or 0) * 2.75), 2),
+                    "activity_score": round(min(100.0, float(cells_metadata.get("total_weight", 0.0) or 0.0) * 1.5), 2),
+                },
+            }
 
 
 def _parse_date_param(value: str | None, *, name: str, is_end: bool = False) -> datetime | None:
