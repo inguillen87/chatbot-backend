@@ -52,6 +52,7 @@ from services.encuestas_service import (
     list_respuestas,
     serialize_respuesta,
     serialize_public_encuesta,
+    get_public_encuesta,
     delete_encuesta,
     list_encuestas,
     _build_mendoza_bootstrap_payload,
@@ -78,10 +79,11 @@ def test_bootstrap_templates_match_frontend_config():
 
     payloads = encuestas_service_module._build_junin_bootstrap_payload(inicio, fin)
     assert isinstance(payloads, list)
-    assert len(payloads) == 9
+    assert len(payloads) >= 9
 
-    servicios = payloads[0]
-    assert servicios["slug"].startswith("servicios-publicos-junin")
+    servicios = next(
+        template for template in payloads if template["slug"].startswith("servicios-publicos-junin")
+    )
     assert servicios["titulo"] == "Encuesta sobre servicios públicos en Junín"
     assert servicios["anonimo_permitido"] is False
     assert servicios["requiere_identidad"] is True
@@ -152,23 +154,44 @@ def test_bootstrap_templates_match_frontend_config():
     assert any("agenda" in tag.lower() or "planificación" in tag.lower() for tag in agenda.get("tags", []))
 
     san_martin_payloads = encuestas_service_module._build_san_martin_bootstrap_payload(inicio, fin)
-    assert san_martin_payloads[0]["slug"].startswith("servicios-publicos-san-martin")
-    assert "San Martín" in san_martin_payloads[0]["titulo"]
+    san_martin_servicios = next(template for template in san_martin_payloads if template["slug"].startswith("servicios-publicos-san-martin"))
+    assert "San Martín" in san_martin_servicios["titulo"]
 
     rivadavia_payloads = encuestas_service_module._build_rivadavia_bootstrap_payload(inicio, fin)
-    assert rivadavia_payloads[0]["slug"].startswith("servicios-publicos-rivadavia")
-    assert "Rivadavia" in rivadavia_payloads[0]["titulo"]
+    rivadavia_servicios = next(template for template in rivadavia_payloads if template["slug"].startswith("servicios-publicos-rivadavia"))
+    assert "Rivadavia" in rivadavia_servicios["titulo"]
 
     mendoza_payloads = _build_mendoza_bootstrap_payload(inicio, fin)
-    assert mendoza_payloads[0]["slug"].startswith("servicios-publicos-mendoza")
-    assert "Mendoza" in mendoza_payloads[0]["titulo"]
+    mendoza_servicios = next(template for template in mendoza_payloads if template["slug"].startswith("servicios-publicos-mendoza"))
+    assert "Mendoza" in mendoza_servicios["titulo"]
+
+
+    mendoza_tracking = next(
+        template
+        for template in mendoza_payloads
+        if template["slug"].startswith("luis-petri-tracking-campana-mendoza")
+    )
+    assert mendoza_tracking["mostrar_resultados_envivo"] is True
+    assert mendoza_tracking["permitir_comentarios"] is True
+    assert mendoza_tracking.get("auto_seed_demo", {}).get("cantidad") == 260
+
+    mendoza_votacion = next(
+        template
+        for template in mendoza_payloads
+        if template["slug"].startswith("luis-petri-votacion-prioridades-mendoza")
+    )
+    assert mendoza_votacion["es_votacion_envivo"] is True
 
     godoy_cruz_payloads = _build_godoy_cruz_bootstrap_payload(inicio, fin)
-    assert godoy_cruz_payloads[0]["slug"].startswith("servicios-publicos-godoy-cruz")
-    assert "Godoy Cruz" in godoy_cruz_payloads[0]["titulo"]
+    godoy_servicios = next(template for template in godoy_cruz_payloads if template["slug"].startswith("servicios-publicos-godoy-cruz"))
+    assert "Godoy Cruz" in godoy_servicios["titulo"]
 
     profile_keys = {profile["key"] for profile in encuestas_service_module._BOOTSTRAP_PROFILES}
     assert {"junin", "san_martin", "rivadavia", "mendoza", "godoy_cruz", "lavalle"}.issubset(profile_keys)
+    mendoza_profile = next(
+        profile for profile in encuestas_service_module._BOOTSTRAP_PROFILES if profile["key"] == "mendoza"
+    )
+    assert "luis-petri-tracking-campana" in (mendoza_profile.get("template_slugs") or [])
 
     draft_payload = build_template_draft_from_slug("servicios-publicos", "Junín")
     auto_seed = draft_payload.get("auto_seed_demo")
@@ -178,6 +201,29 @@ def test_bootstrap_templates_match_frontend_config():
     assert auto_seed["geo_profile_key"] == "junin"
     assert any(action["key"] == "demo_seed" for action in draft_payload.get("quick_actions", []))
 
+
+
+
+def test_get_public_encuesta_refreshes_expired_bootstrap_window(client):
+    with client.application.app_context():
+        user = DummyUser(tenant_id=4)
+        draft_payload = build_template_draft_from_slug("movilidad-y-transporte", "Junín")
+        encuesta = create_encuesta(draft_payload, user)
+
+        encuesta.estado = "publicada"
+        encuesta.inicio_at = datetime.now(timezone.utc) - timedelta(days=30)
+        encuesta.fin_at = datetime.now(timezone.utc) - timedelta(days=2)
+        db.session.add(encuesta)
+        db.session.commit()
+
+        fetched = get_public_encuesta(encuesta.slug)
+        assert fetched.id == encuesta.id
+        assert fetched.esta_activa() is True
+        assert fetched.fin_at is not None
+        fin_at = fetched.fin_at
+        if fin_at.tzinfo is None:
+            fin_at = fin_at.replace(tzinfo=timezone.utc)
+        assert fin_at > datetime.now(timezone.utc)
 
 def test_list_template_payloads_scope_all_returns_catalog(client):
     with client.application.app_context():
@@ -794,3 +840,43 @@ def test_get_encuesta_allows_access_when_tenant_profile_matches(client):
 
         loaded = encuestas_service_module.get_encuesta(encuesta.id, user=alt_user)
         assert loaded.id == encuesta.id
+
+
+def test_get_public_encuesta_does_not_refresh_non_demo_surveys(client):
+    with client.application.app_context():
+        user = DummyUser(tenant_id=4)
+        payload = {
+            "titulo": "Encuesta Operativa Interna",
+            "descripcion": "Cierre de campaña",
+            "tipo": "opinion",
+            "politica_unicidad": "libre",
+            "anonimato": True,
+            "preguntas": [
+                {
+                    "orden": 1,
+                    "tipo": "opcion_unica",
+                    "texto": "¿Cómo calificás el servicio?",
+                    "obligatoria": True,
+                    "opciones": [
+                        {"orden": 1, "texto": "Bueno"},
+                        {"orden": 2, "texto": "Regular"},
+                    ],
+                }
+            ],
+        }
+        encuesta = create_encuesta(payload, user)
+        encuesta.estado = "publicada"
+        encuesta.inicio_at = datetime.now(timezone.utc) - timedelta(days=20)
+        encuesta.fin_at = datetime.now(timezone.utc) - timedelta(days=1)
+        db.session.add(encuesta)
+        db.session.commit()
+
+        with pytest.raises(EncuestaError) as exc_info:
+            get_public_encuesta(encuesta.slug)
+
+        assert exc_info.value.status_code == 403
+        db.session.refresh(encuesta)
+        fin_at = encuesta.fin_at
+        if fin_at.tzinfo is None:
+            fin_at = fin_at.replace(tzinfo=timezone.utc)
+        assert fin_at < datetime.now(timezone.utc)
