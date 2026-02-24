@@ -1909,27 +1909,44 @@ def get_public_encuesta(
     if not normalized_slug:
         raise EncuestaError("Encuesta no encontrada", status_code=404)
 
-    link = (
-        EncLink.query.filter(func.lower(EncLink.slug_publico) == normalized_slug)
-        .first()
-    )
-    encuesta: Optional[EncEncuesta]
+    def _pick_best_candidate(items: Sequence[Optional[EncEncuesta]]) -> Optional[EncEncuesta]:
+        """Prefer currently active public surveys when multiple rows share a slug."""
 
-    if link:
-        encuesta = link.encuesta
+        fallback: Optional[EncEncuesta] = None
+        for candidate in items:
+            if candidate is None:
+                continue
+            if fallback is None:
+                fallback = candidate
+            if candidate.estado == "publicada" and candidate.esta_activa():
+                return candidate
+        return fallback
+
+    encuesta: Optional[EncEncuesta] = None
+    matching_links = (
+        EncLink.query.filter(func.lower(EncLink.slug_publico) == normalized_slug)
+        .order_by(EncLink.id.desc())
+        .all()
+    )
+    if matching_links:
+        encuesta = _pick_best_candidate([link.encuesta for link in matching_links])
     else:
-        encuesta = (
+        slug_matches = (
             EncEncuesta.query.filter(func.lower(EncEncuesta.slug) == normalized_slug)
-            .first()
+            .order_by(EncEncuesta.id.desc())
+            .all()
         )
+        encuesta = _pick_best_candidate(slug_matches)
         if encuesta is None:
             alias_match = _PUBLIC_SLUG_ALIAS_RE.match(normalized_slug)
             if alias_match:
                 base_slug = alias_match.group("base")
-                encuesta = (
+                base_slug_matches = (
                     EncEncuesta.query.filter(func.lower(EncEncuesta.slug) == base_slug)
-                    .first()
+                    .order_by(EncEncuesta.id.desc())
+                    .all()
                 )
+                encuesta = _pick_best_candidate(base_slug_matches)
 
     if encuesta is None and re.fullmatch(r"[0-9a-z]{5,12}", normalized_slug):
         short_link = (
