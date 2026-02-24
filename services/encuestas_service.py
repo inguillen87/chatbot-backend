@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from flask import current_app, g
-from sqlalchemy import func, or_
+from sqlalchemy import func, or_, inspect
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import joinedload, load_only
 
@@ -45,6 +45,28 @@ except ImportError:
 
 
 _BOOTSTRAP_TENANT_ID: Optional[int] = None
+_ENC_COMENTARIO_HAS_REPORT_COUNT: Optional[bool] = None
+
+
+def _enc_comentario_has_report_count() -> bool:
+    """Return whether DB schema includes enc_comentario.report_count.
+
+    Some deployments may run app code before the migration lands. Keep
+    public survey comments endpoint resilient in that window.
+    """
+
+    global _ENC_COMENTARIO_HAS_REPORT_COUNT
+    if _ENC_COMENTARIO_HAS_REPORT_COUNT is not None:
+        return _ENC_COMENTARIO_HAS_REPORT_COUNT
+
+    try:
+        inspector = inspect(db.engine)
+        columns = {col.get("name") for col in inspector.get_columns("enc_comentario")}
+        _ENC_COMENTARIO_HAS_REPORT_COUNT = "report_count" in columns
+    except Exception:
+        _ENC_COMENTARIO_HAS_REPORT_COUNT = True
+
+    return bool(_ENC_COMENTARIO_HAS_REPORT_COUNT)
 
 
 class EncuestaError(Exception):
@@ -3541,15 +3563,67 @@ def create_comentario(encuesta_id: int, payload: Dict[str, Any], user: Optional[
 
 
 def list_comentarios(encuesta_id: int, limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
-    query = (
+    base_query = (
         EncComentario.query.filter_by(encuesta_id=encuesta_id, estado="publicado")
         .order_by(EncComentario.created_at.desc())
         .limit(limit)
         .offset(offset)
     )
 
+    try:
+        query = base_query
+        if _enc_comentario_has_report_count():
+            query = query.options(load_only(
+                EncComentario.id,
+                EncComentario.texto,
+                EncComentario.nombre_autor,
+                EncComentario.created_at,
+                EncComentario.user_id,
+                EncComentario.anon_id,
+                EncComentario.estado,
+                EncComentario.report_count,
+            ))
+        else:
+            query = query.options(load_only(
+                EncComentario.id,
+                EncComentario.texto,
+                EncComentario.nombre_autor,
+                EncComentario.created_at,
+                EncComentario.user_id,
+                EncComentario.anon_id,
+                EncComentario.estado,
+            ))
+        rows = query.all()
+    except Exception as exc:
+        logger = _current_app_logger()
+        if logger:
+            logger.warning("[encuestas] list_comentarios degraded due to schema mismatch: %s", exc)
+        rows = (
+            base_query
+            .with_entities(
+                EncComentario.id,
+                EncComentario.texto,
+                EncComentario.nombre_autor,
+                EncComentario.created_at,
+                EncComentario.user_id,
+                EncComentario.anon_id,
+            )
+            .all()
+        )
+        return [
+            {
+                "id": row.id,
+                "texto": row.texto,
+                "nombre_autor": row.nombre_autor or "Anónimo",
+                "fecha": row.created_at.isoformat() if row.created_at else None,
+                "user_id": row.user_id,
+                "anon_id": row.anon_id,
+            }
+            for row in rows
+        ]
+
     results = []
-    for c in query:
+    for c in rows:
         results.append({
             "id": c.id,
             "texto": c.texto,

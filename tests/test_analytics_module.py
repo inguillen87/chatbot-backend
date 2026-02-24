@@ -353,7 +353,9 @@ def test_admin_analytics_overview_and_exports_are_tenant_scoped(client):
         headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
     )
     assert overview.status_code == 200
-    assert 'totals' in overview.get_json()
+    payload = overview.get_json()
+    assert 'totals' in payload
+    assert 'total_interactions' in (payload.get('totals') or {})
 
     csv_export = client.get(
         '/admin/analytics/export.csv',
