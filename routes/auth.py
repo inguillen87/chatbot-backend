@@ -19,9 +19,11 @@ from models import (
 )
 from extensions import db, limiter
 from functools import wraps
+import threading
 import uuid
 import json
 from datetime import datetime, timedelta, timezone
+import time
 import jwt
 import base64
 from services.google_auth import login_o_crear_usuario
@@ -30,6 +32,41 @@ from services.tenant_resolver import resolve_tenant_only
 from services.demo_registry import load_demo_rubros
 from typing import Any, Callable, Dict, Optional
 import secrets
+
+_DEMO_CATALOG_CACHE: dict[str, Any] = {"payload": None, "expires_at": 0.0, "fingerprint": ""}
+_DEMO_RUBROS_CACHE: dict[str, Any] = {
+    "items": None,
+    "expires_at": 0.0,
+    "fingerprint": "",
+}
+
+
+def _demo_catalog_fingerprint() -> str:
+    """Return a stable cache fingerprint for config-sensitive demo catalog data."""
+
+    demo_rubros = current_app.config.get("DEMO_RUBROS")
+    default_slug = current_app.config.get("DEFAULT_DEMO_TENANT_SLUG")
+    return f"{repr(demo_rubros)}|{default_slug or ''}"
+
+
+def _load_demo_rubros_cached(*, ttl_seconds: float = 30.0) -> list[Any]:
+    """Return demo rubros with short-lived caching to reduce login latency."""
+
+    now = time.time()
+    fingerprint = _demo_catalog_fingerprint()
+    cached_items = _DEMO_RUBROS_CACHE.get("items")
+    if (
+        cached_items is not None
+        and _DEMO_RUBROS_CACHE.get("expires_at", 0.0) > now
+        and _DEMO_RUBROS_CACHE.get("fingerprint") == fingerprint
+    ):
+        return list(cached_items)
+
+    items = list(load_demo_rubros(require_owner=False))
+    _DEMO_RUBROS_CACHE["items"] = items
+    _DEMO_RUBROS_CACHE["expires_at"] = now + max(1.0, float(ttl_seconds))
+    _DEMO_RUBROS_CACHE["fingerprint"] = fingerprint
+    return list(items)
 
 
 def _looks_like_jwt(token: Optional[str]) -> bool:
@@ -187,11 +224,11 @@ def _tenant_owner(tenant: Optional[TenantProfile]) -> Optional[User]:
 
     return None
 
-def _attach_user_to_tenant(user: User, tenant: Optional[TenantProfile]) -> None:
-    """Persist the tenant_id on the user if it's missing or outdated."""
+def _attach_user_to_tenant(user: User, tenant: Optional[TenantProfile]) -> bool:
+    """Persist tenant binding only when it changed and return whether it changed."""
 
     if not tenant or not user:
-        return
+        return False
 
     # Validar si la columna existe antes de intentar asignarla para evitar errores 500
     # si la migración no se ha aplicado.
@@ -199,11 +236,15 @@ def _attach_user_to_tenant(user: User, tenant: Optional[TenantProfile]) -> None:
         if user.tenant_id != tenant.id:
             user.tenant_id = tenant.id
             db.session.add(user)
+            return True
+        return False
     else:
         current_slug = getattr(user, "tenant_slug", None)
         if current_slug != tenant.slug:
             user.tenant_slug = tenant.slug
             db.session.add(user)
+            return True
+        return False
 
 
 def _tenant_market_payload(tenant: Optional[TenantProfile]) -> Dict[str, object]:
@@ -787,13 +828,13 @@ def widget_refresh():
 
 
 
-def _default_demo_key_for_tipo(tipo_chat: str) -> Optional[str]:
+def _default_demo_key_for_tipo(tipo_chat: str, demos: Optional[list[Any]] = None) -> Optional[str]:
     normalized = (tipo_chat or "").strip().lower()
     if normalized not in {"pyme", "municipio"}:
         return None
 
-    demos = load_demo_rubros(require_owner=False)
-    for demo in demos:
+    source = demos if demos is not None else _load_demo_rubros_cached()
+    for demo in source:
         if (demo.tipo_chat or "").strip().lower() == normalized and (demo.key or "").strip():
             return demo.key
     return None
@@ -804,7 +845,7 @@ def _resolve_demo_tenant_slug(rubro_raw: Optional[str]) -> Optional[str]:
     if not normalized:
         normalized = "municipio"
 
-    demos = load_demo_rubros(require_owner=False)
+    demos = _load_demo_rubros_cached()
     allowed_keys = {
         (demo.key or "").strip().lower()
         for demo in demos
@@ -812,14 +853,14 @@ def _resolve_demo_tenant_slug(rubro_raw: Optional[str]) -> Optional[str]:
     }
 
     alias_map = {
-        "municipio": _default_demo_key_for_tipo("municipio") or "municipio",
-        "municipal": _default_demo_key_for_tipo("municipio") or "municipio",
-        "gobierno": _default_demo_key_for_tipo("municipio") or "municipio",
-        "government": _default_demo_key_for_tipo("municipio") or "municipio",
-        "pyme": _default_demo_key_for_tipo("pyme") or "local_comercial_general",
-        "empresa": _default_demo_key_for_tipo("pyme") or "local_comercial_general",
-        "empresas": _default_demo_key_for_tipo("pyme") or "local_comercial_general",
-        "comercio": _default_demo_key_for_tipo("pyme") or "local_comercial_general",
+        "municipio": _default_demo_key_for_tipo("municipio", demos=demos) or "municipio",
+        "municipal": _default_demo_key_for_tipo("municipio", demos=demos) or "municipio",
+        "gobierno": _default_demo_key_for_tipo("municipio", demos=demos) or "municipio",
+        "government": _default_demo_key_for_tipo("municipio", demos=demos) or "municipio",
+        "pyme": _default_demo_key_for_tipo("pyme", demos=demos) or "local_comercial_general",
+        "empresa": _default_demo_key_for_tipo("pyme", demos=demos) or "local_comercial_general",
+        "empresas": _default_demo_key_for_tipo("pyme", demos=demos) or "local_comercial_general",
+        "comercio": _default_demo_key_for_tipo("pyme", demos=demos) or "local_comercial_general",
         "retail": "local_comercial_general",
         "mayorista": "bodega",
         "bodega": "bodega",
@@ -891,6 +932,34 @@ def _supported_demo_languages() -> list[dict[str, str]]:
         {"code": "pt", "label": "Português", "locale": "pt-BR"},
     ]
 
+
+def _run_post_login_migrations(*, app, user_id: int, tenant_id: Optional[int], anon_id: str) -> None:
+    """Move heavy anon adoption work out of the login critical path."""
+
+    with app.app_context():
+        try:
+            from services.ticket_service import servicio_tickets
+
+            servicio_tickets.migrar_tickets_de_anonimo(anon_id, user_id)
+        except Exception as exc:  # pragma: no cover - defensive logging
+            app.logger.warning("Failed to migrate anon tickets during deferred login flow: %s", exc)
+
+        try:
+            from routes.market import _get_or_create_cart_for_user
+
+            user_obj = _user_query().get(user_id)
+            if not user_obj:
+                return
+            target_tenant = None
+            if tenant_id:
+                target_tenant = TenantProfile.query.get(tenant_id)
+            if not target_tenant:
+                target_tenant = _tenant_for_user(user_obj)
+            if target_tenant:
+                _get_or_create_cart_for_user(target_tenant, user_obj, create_if_missing=False)
+        except Exception as exc:  # pragma: no cover - defensive logging
+            app.logger.warning("Failed to migrate anon cart during deferred login flow: %s", exc)
+
 def _get_or_create_demo_user_for_tenant(tenant: TenantProfile) -> User:
     """Return an isolated demo admin account for the tenant.
 
@@ -924,6 +993,53 @@ def _get_or_create_demo_user_for_tenant(tenant: TenantProfile) -> User:
     return user
 
 
+def _resolve_default_demo_slug() -> Optional[str]:
+    """Return a stable demo tenant slug for one-click demo logins."""
+
+    default_slug = current_app.config.get("DEFAULT_DEMO_TENANT_SLUG")
+    if isinstance(default_slug, str) and default_slug.strip():
+        normalized = _resolve_demo_tenant_slug(default_slug.strip())
+        if normalized:
+            return normalized
+
+    try:
+        demos = _load_demo_rubros_cached()
+    except Exception:
+        demos = []
+
+    for demo in demos:
+        slug = _resolve_demo_tenant_slug(demo.key) or _resolve_demo_tenant_slug(demo.rubro_clave)
+        if slug:
+            return slug
+
+    first_tenant = (
+        TenantProfile.query.filter(TenantProfile.is_active.is_(True))
+        .order_by(TenantProfile.created_at.asc(), TenantProfile.id.asc())
+        .first()
+    )
+    return getattr(first_tenant, "slug", None)
+
+
+
+
+def _first_active_tenant_for_demo(tipo: Optional[str]) -> Optional[TenantProfile]:
+    """Return the first active tenant for demo fallback by tipo."""
+
+    normalized = (tipo or "").strip().lower()
+    query = TenantProfile.query.filter(TenantProfile.is_active.is_(True))
+    if normalized in {"municipio", "gobierno", "municipal", ""}:
+        tenant = query.filter_by(tipo="municipio").order_by(TenantProfile.created_at.asc(), TenantProfile.id.asc()).first()
+        if tenant:
+            return tenant
+        return query.order_by(TenantProfile.created_at.asc(), TenantProfile.id.asc()).first()
+    elif normalized in {"pyme", "empresa", "empresas", "comercio"}:
+        tenant = query.filter_by(tipo="pyme").order_by(TenantProfile.created_at.asc(), TenantProfile.id.asc()).first()
+        if tenant:
+            return tenant
+        return query.order_by(TenantProfile.created_at.asc(), TenantProfile.id.asc()).first()
+    else:
+        return None
+
 @auth_bp.route('/demo/catalog', methods=['GET', 'OPTIONS'])
 @cross_origin(supports_credentials=True)
 def demo_catalog():
@@ -931,34 +1047,138 @@ def demo_catalog():
         return '', 204
 
     ensure_users = str(request.args.get('ensure_users') or '').strip().lower() in {'1', 'true', 'yes', 'on'}
+    now = time.time()
+    if not ensure_users:
+        cache_key = _demo_catalog_fingerprint()
+        cached_payload = _DEMO_CATALOG_CACHE.get("payload")
+        cached_expires = float(_DEMO_CATALOG_CACHE.get("expires_at") or 0.0)
+        cached_fingerprint = str(_DEMO_CATALOG_CACHE.get("fingerprint") or "")
+        if cached_payload and cached_expires > now and cached_fingerprint == cache_key:
+            return jsonify(cached_payload)
+
     if ensure_users:
         _ensure_demo_superadmin()
 
-    demos = load_demo_rubros(require_owner=False)
     demo_items = []
+    try:
+        demos = _load_demo_rubros_cached()
+    except Exception as exc:
+        current_app.logger.warning("[demo_catalog] fallback to static demo catalog: %s", exc)
+        demos = []
+
     for demo in demos:
         tenant_slug = _resolve_demo_tenant_slug(demo.key) or _resolve_demo_tenant_slug(demo.rubro_clave)
+        sector = "gobierno" if (demo.tipo_chat or "").strip().lower() == "municipio" else "empresas"
         demo_items.append({
             "key": demo.key,
             "label": demo.label,
             "tipo_chat": demo.tipo_chat,
+            "sector": sector,
+            "rubro_clave": demo.rubro_clave,
             "tenant_slug": tenant_slug,
             "login_payload": {"rubro": demo.key},
         })
 
-    return jsonify({
+    if not demo_items:
+        for tipo, label in (("municipio", "Demo Municipio"), ("pyme", "Demo PyME")):
+            tenant = _first_active_tenant_for_demo(tipo)
+            if not tenant:
+                continue
+            demo_items.append({
+                "key": tipo,
+                "label": label,
+                "tipo_chat": tipo,
+                "tenant_slug": tenant.slug,
+                "login_payload": {"rubro": tipo},
+            })
+
+    quick_login_slug = None
+    try:
+        quick_login_slug = _resolve_default_demo_slug()
+    except Exception as exc:
+        current_app.logger.warning("[demo_catalog] unable to resolve default demo slug: %s", exc)
+
+    payload = {
+        "frontend_contract_version": "2026-02-demo-onboarding-v2",
+        "demo_login_enabled": True,
+        "demo_login_endpoint": "/auth/demo",
+        "demo_login_methods": ["POST"],
         "entry_points": [
-            {"key": "municipio", "label": "Demo Municipio", "login_payload": {"rubro": "municipio", "tipo_chat": "municipio"}},
-            {"key": "pyme", "label": "Demo PyME", "login_payload": {"rubro": "pyme", "tipo_chat": "pyme"}},
+            {"key": "municipio", "label": "Demo Municipio", "enabled": True, "login_payload": {"rubro": "municipio", "tipo_chat": "municipio"}},
+            {"key": "pyme", "label": "Demo PyME", "enabled": True, "login_payload": {"rubro": "pyme", "tipo_chat": "pyme"}},
         ],
+        "quick_login_payload": {"tenant_slug": quick_login_slug},
         "super_admin_demo": {
             **_demo_superadmin_credentials(),
             "role": "super_admin",
             "login_endpoint": "/auth/login",
         },
-        "tenant_demos": demo_items,
+        "tenant_demos": [{**item, "enabled": True, "login_endpoint": "/auth/demo"} for item in demo_items],
         "supported_languages": _supported_demo_languages(),
-    })
+        "onboarding": {
+            "requires_rubro_selection_for": ["empresas"],
+            "default_sector": "gobierno",
+            "steps": [
+                {"key": "sector", "label": "Elegí tu sector", "required": True},
+                {"key": "rubro", "label": "Elegí un rubro demo", "required": False, "required_for": ["empresas"]},
+            ],
+            "sector_options": [
+                {
+                    "key": "gobierno",
+                    "label": "Municipio / Gobierno",
+                    "default_login_payload": {"rubro": "municipio", "tipo_chat": "municipio", "sector": "gobierno"},
+                    "rubros": [
+                        {
+                            "key": "municipio",
+                            "label": "Municipio",
+                            "tipo_chat": "municipio",
+                            "login_payload": {"rubro": "municipio", "tipo_chat": "municipio", "sector": "gobierno"},
+                        }
+                    ],
+                },
+                {
+                    "key": "empresas",
+                    "label": "Empresas",
+                    "rubros": [
+                        {
+                            "key": item.get("key"),
+                            "label": item.get("label") or item.get("key"),
+                            "tipo_chat": "pyme",
+                            "tenant_slug": item.get("tenant_slug"),
+                            "login_payload": {
+                                "rubro": item.get("key"),
+                                "tipo_chat": "pyme",
+                                "tenant_slug": item.get("tenant_slug"),
+                                "sector": "empresas",
+                            },
+                        }
+                        for item in demo_items
+                        if (item.get("tipo_chat") or "").strip().lower() == "pyme"
+                    ],
+                },
+            ],
+        },
+        "frontend": {
+            "demo_selector": {
+                "mode": "sector_first",
+                "default_sector": "gobierno",
+                "require_rubro_for_sector": {"gobierno": False, "empresas": True},
+                "tenant_slug_field": "login_payload.tenant_slug",
+            },
+            "preload_before_login": [
+                {"name": "demo_catalog", "method": "GET", "endpoint": "/auth/demo/catalog"},
+                {"name": "tenant_info", "method": "GET", "endpoint": "/api/pwa/tenant-info", "query": ["tenant", "tenant_slug"]},
+                {"name": "anon_id", "method": "GET", "endpoint": "/api/pwa/anon-id", "query": ["tenant"]},
+            ],
+        },
+    }
+
+    if not ensure_users:
+        _DEMO_CATALOG_CACHE["fingerprint"] = _demo_catalog_fingerprint()
+        _DEMO_CATALOG_CACHE["payload"] = payload
+        _DEMO_CATALOG_CACHE["expires_at"] = time.time() + 60.0
+
+    return jsonify(payload)
 
 
 @auth_bp.route('/demo', methods=['POST', 'OPTIONS'])
@@ -969,40 +1189,52 @@ def login_demo():
         return '', 204
 
     data = request.get_json(silent=True) or {}
-    rubro = data.get('rubro') or data.get('segmento') or data.get('demo') or data.get('tipo_chat') or data.get('tenant_slug')
-    demo_slug = _resolve_demo_tenant_slug(rubro)
-    if not demo_slug:
-        return jsonify({"error": f"Rubro demo '{rubro or ''}' no válido"}), 404
+    requested_sector = str(data.get("sector") or "").strip().lower()
+    preferred_slug = data.get('tenant_slug') or data.get('tenantSlug') or request.args.get('tenant_slug') or request.args.get('tenant')
+    rubro = data.get('rubro') or data.get('segmento') or data.get('demo') or data.get('tipo_chat')
+    if not rubro and requested_sector in {"gobierno", "municipio", "publico", "public"}:
+        rubro = "municipio"
+    if not rubro and requested_sector in {"empresa", "empresas", "pyme", "privado", "private"}:
+        try:
+            pyme_demo = next((demo for demo in _load_demo_rubros_cached() if (demo.tipo_chat or "").strip().lower() == "pyme"), None)
+        except Exception:
+            pyme_demo = None
+        rubro = (pyme_demo.key if pyme_demo else "pyme")
+    candidate = preferred_slug or rubro
+    if not candidate:
+        candidate = _resolve_default_demo_slug()
+    demo_slug = _resolve_demo_tenant_slug(candidate)
 
-    try:
-        tenant_obj = resolve_tenant_only(tenant_slug=demo_slug, require_explicit_slug=True)
-    except Exception:
-        requested_tipo = str(data.get("tipo_chat") or rubro or "").strip().lower()
-        if requested_tipo in {"pyme", "empresa", "empresas", "comercio"}:
-            tenant_obj = (
-                TenantProfile.query.filter_by(tipo="pyme")
-                .filter(TenantProfile.is_active.is_(True))
-                .order_by(TenantProfile.created_at.asc(), TenantProfile.id.asc())
-                .first()
-            )
-        elif requested_tipo in {"municipio", "gobierno", "municipal"}:
-            tenant_obj = (
-                TenantProfile.query.filter_by(tipo="municipio")
-                .filter(TenantProfile.is_active.is_(True))
-                .order_by(TenantProfile.created_at.asc(), TenantProfile.id.asc())
-                .first()
-            )
-        else:
+    tenant_obj = None
+    if demo_slug:
+        try:
+            tenant_obj = resolve_tenant_only(tenant_slug=demo_slug, require_explicit_slug=True)
+        except Exception:
             tenant_obj = None
 
-        if not tenant_obj:
-            return jsonify({"error": f"Rubro demo '{rubro or demo_slug}' no válido"}), 404
+    if tenant_obj and requested_sector in {"gobierno", "municipio", "publico", "public"}:
+        if (getattr(tenant_obj, "tipo", "") or "").strip().lower() != "municipio":
+            tenant_obj = _first_active_tenant_for_demo("municipio")
+    if tenant_obj and requested_sector in {"empresa", "empresas", "pyme", "privado", "private"}:
+        if (getattr(tenant_obj, "tipo", "") or "").strip().lower() != "pyme":
+            tenant_obj = _first_active_tenant_for_demo("pyme")
+
+    if not tenant_obj:
+        requested_tipo = str(data.get("tipo_chat") or rubro or "municipio").strip().lower()
+        tenant_obj = _first_active_tenant_for_demo(requested_tipo)
+
+    if not tenant_obj:
+        return jsonify({"error": f"Rubro demo '{candidate or demo_slug or ''}' no válido"}), 404
 
     demo_user = _get_or_create_demo_user_for_tenant(tenant_obj)
     _attach_user_to_tenant(demo_user, tenant_obj)
     db.session.commit()
 
     tipo_chat = _resolve_tipo_chat(demo_user, tenant_obj=tenant_obj)
+    if requested_sector in {"gobierno", "municipio", "publico", "public"}:
+        tipo_chat = "municipio"
+    elif requested_sector in {"empresa", "empresas", "pyme", "privado", "private"}:
+        tipo_chat = "pyme"
     jwt_payload = {
         'user_id': demo_user.id,
         'rol': demo_user.rol,
@@ -1015,28 +1247,38 @@ def login_demo():
     }
     jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm='HS256')
 
-    response = jsonify({
+    response_payload = {
         "mensaje": "Demo login exitoso",
         "id": demo_user.id,
         "token": jwt_token,
         "email": demo_user.email,
         "name": demo_user.name,
         "rol": demo_user.rol,
+        "empresa_id": demo_user.empresa_id,
+        "municipio_id": demo_user.municipio_id,
         "tipo_chat": tipo_chat,
+        "tenant_id": tenant_obj.id,
         "tenant_slug": tenant_obj.slug,
         "tenantSlug": tenant_obj.slug,
+        "marketplace": _tenant_market_payload(tenant_obj),
         "demo_mode": True,
-        "rubro": rubro or tenant_obj.slug,
-    })
+        "rubro": rubro or candidate or tenant_obj.slug,
+        "sector": requested_sector or ("gobierno" if tipo_chat == "municipio" else "empresas"),
+    }
+    response = jsonify(response_payload)
 
     cookie_name = current_app.config.get("AUTH_TOKEN_COOKIE_NAME", "auth_token")
-    response.set_cookie(
-        key=cookie_name,
-        value=jwt_token,
-        secure=current_app.config.get("SESSION_COOKIE_SECURE", True),
-        httponly=True,
-        samesite=current_app.config.get("SESSION_COOKIE_SAMESITE", "None"),
-    )
+    cookie_args = {
+        "key": cookie_name,
+        "value": jwt_token,
+        "secure": current_app.config.get("SESSION_COOKIE_SECURE", True),
+        "httponly": True,
+        "samesite": current_app.config.get("SESSION_COOKIE_SAMESITE", "None"),
+    }
+    cookie_domain = current_app.config.get("SESSION_COOKIE_DOMAIN")
+    if cookie_domain:
+        cookie_args["domain"] = cookie_domain
+    response.set_cookie(**cookie_args)
     return response
 
 def solo_admin_requerido(f):
@@ -1119,31 +1361,52 @@ def login():
 
     tenant_obj = _resolve_tenant_for_user(user, tenant_obj)
     if tenant_obj:
-        _attach_user_to_tenant(user, tenant_obj)
-        try:
-            db.session.commit()
-        except Exception:
-            db.session.rollback()
-            current_app.logger.warning("Failed to attach user to tenant during login")
+        tenant_changed = _attach_user_to_tenant(user, tenant_obj)
+        if tenant_changed:
+            try:
+                db.session.commit()
+            except Exception:
+                db.session.rollback()
+                current_app.logger.warning("Failed to attach user to tenant during login")
     tipo_chat = _resolve_tipo_chat(user, tenant_obj=tenant_obj, rubro_nombre=rubro_nombre)
 
-    # Migrate anonymous data if anon_id is present
+    # Migrate anonymous data if anon_id is present.
+    # This can be expensive (ticket + cart adoption), so default to async to
+    # keep login response times fast.
     req_anon_id = request.headers.get("X-Anon-Id") or request.headers.get("Anon-Id") or data.get("anon_id")
     if req_anon_id:
+        deferred_migration = str(
+            current_app.config.get("DEFER_ANON_MIGRATION_ON_LOGIN", True)
+        ).strip().lower() not in {"0", "false", "no", "off"}
         try:
-            from services.ticket_service import servicio_tickets
-            servicio_tickets.migrar_tickets_de_anonimo(req_anon_id, user.id)
-
-            # Also migrate cart if using MarketCart logic (it handles it if session_id matches anon_id)
-            from routes.market import _get_or_create_cart_for_user
-            target_tenant = tenant_obj or _tenant_for_user(user)
-            if target_tenant:
-                # This triggers the adoption logic inside _get_or_create_cart_for_user
-                _get_or_create_cart_for_user(target_tenant, user, create_if_missing=False)
+            if deferred_migration:
+                app_obj = current_app._get_current_object()
+                tenant_id = getattr(tenant_obj, "id", None)
+                thread = threading.Thread(
+                    target=_run_post_login_migrations,
+                    kwargs={
+                        "app": app_obj,
+                        "user_id": user.id,
+                        "tenant_id": tenant_id,
+                        "anon_id": req_anon_id,
+                    },
+                    daemon=True,
+                    name=f"login-migrate-{user.id}",
+                )
+                thread.start()
+            else:
+                _run_post_login_migrations(
+                    app=current_app._get_current_object(),
+                    user_id=user.id,
+                    tenant_id=getattr(tenant_obj, "id", None),
+                    anon_id=req_anon_id,
+                )
         except Exception as e:
             current_app.logger.warning(f"Failed to migrate anon data during login: {e}")
 
     owner_token = _resolve_owner_token(user)
+
+    effective_municipio_id = getattr(tenant_obj, "municipio_id", None) or user.municipio_id
 
     # Generar el token JWT
     jwt_payload = {
@@ -1151,26 +1414,19 @@ def login():
         'rol': user.rol,
         'tipo_chat': tipo_chat,
         'empresa_id': user.empresa_id,
-        'municipio_id': user.municipio_id,
+        'municipio_id': effective_municipio_id,
         'exp': datetime.utcnow() + timedelta(days=current_app.config.get("JWT_EXPIRATION_DAYS", 7))
     }
     jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
 
-    # Prioritize the tenant owned by the user if they are a tenant owner
-    owned_tenant = _resolve_tenant_for_user(user)
-    current_app.logger.info(f"[AUTH_DEBUG] User: {user.id}, Email: {user.email}")
-    current_app.logger.info(f"[AUTH_DEBUG] Owned Tenant (from _tenant_for_user): {owned_tenant.slug if owned_tenant else 'None'}")
+    # Reuse already resolved tenant to avoid extra DB round-trips on login.
+    response_slug = getattr(user, "tenant_slug", None)
+    if tenant_obj and not response_slug:
+        response_slug = tenant_obj.slug
 
-
-    if owned_tenant:
-        response_slug = owned_tenant.slug
-    else:
-        # Fallback to the attached tenant_slug or the resolved tenant object
-        response_slug = getattr(user, "tenant_slug", None)
-        if not response_slug and tenant_obj:
-            response_slug = tenant_obj.slug
-
-    current_app.logger.info(f"[AUTH_DEBUG] Resolved tenant slug for response: {response_slug}")
+    current_app.logger.debug(
+        "[AUTH_DEBUG] Login user=%s tenant_slug=%s", user.id, response_slug
+    )
 
     response_payload = {
         "mensaje": "Login exitoso",
@@ -1182,6 +1438,7 @@ def login():
         "empresa_id": user.empresa_id,
         "rubro": rubro_nombre,
         "tipo_chat": tipo_chat,
+        "municipio_id": effective_municipio_id,
         "categorias": getattr(user, "categorias_lista", []),
         "tenant_slug": response_slug,
         "tenantSlug": response_slug,
@@ -1826,13 +2083,15 @@ def login_from_widget(owner_user):
     rubro_nombre = user_rubro.nombre if user_rubro else owner_rubro.nombre if owner_rubro else "General"
     tipo_chat = _resolve_tipo_chat(user, tenant_obj=owner_tenant, rubro_nombre=rubro_nombre)
 
+    effective_municipio_id = getattr(owner_tenant, "municipio_id", None) or user.municipio_id
+
     # Generar el token JWT
     jwt_payload = {
         'user_id': user.id,
         'rol': user.rol,
         'tipo_chat': tipo_chat,
         'empresa_id': user.empresa_id,
-        'municipio_id': user.municipio_id,
+        'municipio_id': effective_municipio_id,
         'exp': datetime.utcnow() + timedelta(days=current_app.config.get("JWT_EXPIRATION_DAYS", 7))
     }
     jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
@@ -2131,13 +2390,15 @@ def chatuser_login_panel():
     rubro_nombre = user.rubro.nombre if user.rubro else owner_user.rubro.nombre if owner_user else "General"
     tipo_chat = _resolve_tipo_chat(user, tenant_obj=owner_tenant, rubro_nombre=rubro_nombre)
 
+    effective_municipio_id = getattr(owner_tenant, "municipio_id", None) or user.municipio_id
+
     # Generar el token JWT
     jwt_payload = {
         'user_id': user.id,
         'rol': user.rol,
         'tipo_chat': tipo_chat,
         'empresa_id': user.empresa_id,
-        'municipio_id': user.municipio_id,
+        'municipio_id': effective_municipio_id,
         'exp': datetime.utcnow() + timedelta(days=current_app.config.get("JWT_EXPIRATION_DAYS", 7))
     }
     jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
@@ -2519,10 +2780,7 @@ def admin_login():
         # Fallback to the tenant_slug attached to the user if no owned tenant is found.
         tenant_slug = getattr(user, "tenant_slug", None)
 
-    current_app.logger.info(f"[ADMIN_LOGIN_DEBUG] User: {user.id}, Email: {user.email}")
-    current_app.logger.info(f"[ADMIN_LOGIN_DEBUG] Owned Tenant: {owned_tenant.slug if owned_tenant else 'None'}")
-    current_app.logger.info(f"[ADMIN_LOGIN_DEBUG] Fallback tenant_slug on user: {getattr(user, 'tenant_slug', None)}")
-    current_app.logger.info(f"[ADMIN_LOGIN_DEBUG] Final resolved tenant slug: {tenant_slug}")
+    current_app.logger.debug("[ADMIN_LOGIN_DEBUG] user=%s tenant=%s fallback_tenant_slug=%s final_slug=%s", user.id, getattr(owned_tenant, "slug", None), getattr(user, "tenant_slug", None), tenant_slug)
 
     tipo_chat = _resolve_tipo_chat(user, tenant_obj=owned_tenant)
     jwt_payload = {
