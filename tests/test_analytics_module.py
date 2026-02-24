@@ -438,3 +438,28 @@ def test_api_alias_admin_analytics_overview_and_heatmap(client):
         headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
     )
     assert heatmap.status_code == 200
+
+
+def test_api_alias_admin_analytics_overview_accepts_tenant_slug(client):
+    tenant_id = 21
+    _create_municipio_ticket(tenant_id)
+    db.session.flush()
+
+    from models import TenantProfile
+
+    tenant = TenantProfile(
+        slug='tenant-analytics-slug',
+        nombre='Tenant Analytics Slug',
+        tipo='municipio',
+        municipio_id=tenant_id,
+    )
+    db.session.add(tenant)
+    db.session.commit()
+
+    overview = client.get(
+        '/api/admin/analytics/overview',
+        query_string={'tenant_slug': 'tenant-analytics-slug', 'scope': 'municipio'},
+        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant.id)},
+    )
+    assert overview.status_code == 200
+    assert 'totals' in overview.get_json()

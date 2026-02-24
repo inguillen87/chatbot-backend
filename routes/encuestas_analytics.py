@@ -1,6 +1,9 @@
 """Analytics API endpoints for surveys (REST + legacy aliases)."""
 from __future__ import annotations
 
+import hashlib
+import json
+
 from flask import Blueprint, Response, jsonify, request
 
 from config.feature_flags import FEATURE_ENCUESTAS
@@ -8,6 +11,7 @@ from services.encuestas_analytics_service import (
     export_csv as export_csv_stream,
     get_alerts,
     get_anomaly_report,
+    get_dashboard_bundle,
     get_executive_brief,
     get_forecast,
     get_heatmap,
@@ -28,7 +32,7 @@ def _feature_guard():
 
 def _parse_filtros() -> dict:
     filtros = {}
-    for key in ("desde", "hasta", "canal", "utm_source", "utm_campaign"):
+    for key in ("desde", "hasta", "canal", "utm_source", "utm_campaign", "bbox"):
         value = request.args.get(key)
         if value:
             filtros[key] = value
@@ -42,6 +46,30 @@ def _parse_filtros() -> dict:
             continue
         filtros[key] = parts if len(parts) > 1 else parts[0]
     return filtros
+
+
+
+
+def _dashboard_etag(payload: dict) -> str:
+    """Build a stable ETag for dashboard payloads (ignoring volatile timestamps)."""
+
+    canonical = dict(payload or {})
+    canonical.pop("updated_at", None)
+    encoded = json.dumps(canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
+    return hashlib.sha1(encoded.encode("utf-8")).hexdigest()
+
+
+def _json_with_etag(payload: dict):
+    etag = _dashboard_etag(payload)
+    if request.if_none_match.contains(etag):
+        response = Response(status=304)
+        response.set_etag(etag)
+        return response
+
+    response = jsonify(payload)
+    response.set_etag(etag)
+    response.headers.setdefault("Cache-Control", "private, max-age=30")
+    return response
 
 
 def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> Blueprint:
@@ -147,6 +175,37 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
 
     bp.add_url_rule("/brief", view_func=brief, methods=["GET"])
 
+
+
+    @token_requerido
+    @require_role("admin", "empleado", "super_admin")
+    def dashboard(current_user, encuesta_id: int):
+        filtros = _parse_filtros()
+        granularity = request.args.get("granularity", "day")
+        use_envelope = str(request.args.get("envelope") or "").strip().lower() in {"1", "true", "yes", "on"}
+        try:
+            data = get_dashboard_bundle(encuesta_id, filtros, granularity=granularity)
+        except EncuestaError as err:
+            return jsonify(err.to_dict()), err.status_code
+
+        if use_envelope:
+            envelope = {
+                "ok": True,
+                "data": data,
+                "meta": {
+                    "encuesta_id": encuesta_id,
+                    "filters": filtros,
+                    "granularity": granularity,
+                },
+                "errors": [],
+            }
+            return _json_with_etag(envelope)
+
+        return _json_with_etag(data)
+
+    bp.add_url_rule("/dashboard", view_func=dashboard, methods=["GET"])
+    if spanish_aliases:
+        bp.add_url_rule("/tablero", view_func=dashboard, methods=["GET"], endpoint="dashboard_tablero")
 
     @token_requerido
     @require_role("admin", "empleado", "super_admin")

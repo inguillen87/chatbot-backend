@@ -337,6 +337,10 @@ def _build_bootstrap_payloads(
             "fin_at": fin.isoformat(),
         }
 
+        auto_seed_demo = template_copy.get("auto_seed_demo")
+        if isinstance(auto_seed_demo, dict):
+            payload["auto_seed_demo"] = deepcopy(auto_seed_demo)
+
         preguntas: List[Dict[str, Any]] = []
         for pregunta_tpl in template_copy.get("preguntas", []):
             pregunta_tipo = pregunta_tpl.get("tipo", "opcion_unica")
@@ -664,6 +668,7 @@ def _load_bootstrap_profiles() -> List[Dict[str, Any]]:
             "tenant_env": raw_profile.get("tenant_env"),
             "fallback_tenant_id": raw_profile.get("fallback_tenant_id"),
             "keywords": tuple(raw_profile.get("keywords", [])),
+            "template_slugs": tuple(template_slugs),
             "payload_builder": builder,
             "auto_publish": bool(raw_profile.get("auto_publish", True)),
             "tenant_id": raw_profile.get("tenant_id"),
@@ -1817,6 +1822,86 @@ def get_encuesta(encuesta_id: int, tenant_id: Optional[int] = None, user: Any = 
     return encuesta
 
 
+
+
+
+
+def _is_bootstrap_demo_survey(encuesta: EncEncuesta) -> bool:
+    """Return True when the survey can be identified as bootstrap demo content."""
+
+    if not encuesta:
+        return False
+
+    templates = _bootstrap_templates()
+    if not templates:
+        return False
+
+    titulo = (getattr(encuesta, "titulo", "") or "").strip().lower()
+    descripcion = (getattr(encuesta, "descripcion", "") or "").strip().lower()
+
+    for template in templates:
+        if not isinstance(template, dict):
+            continue
+        template_title = str(template.get("titulo") or "").strip().lower()
+        template_desc = str(template.get("descripcion") or "").strip().lower()
+
+        if template_title and titulo == template_title:
+            return True
+        if template_title and template_title in titulo:
+            return True
+        if template_desc and descripcion and template_desc == descripcion:
+            return True
+
+    return False
+
+def _ensure_demo_public_window(encuesta: EncEncuesta) -> None:
+    """Keep bootstrap demo surveys publicly accessible when their window expired."""
+
+    if not encuesta or encuesta.estado != "publicada":
+        return
+
+    profile = _match_bootstrap_profile(getattr(encuesta, "tenant_id", None) or 0)
+    if not profile:
+        return
+    if not _is_bootstrap_demo_survey(encuesta):
+        return
+
+    now = datetime.now(timezone.utc)
+    inicio_at = encuesta.inicio_at
+    if inicio_at and inicio_at.tzinfo is None:
+        inicio_at = inicio_at.replace(tzinfo=timezone.utc)
+    elif inicio_at:
+        inicio_at = inicio_at.astimezone(timezone.utc)
+
+    fin_at = encuesta.fin_at
+    if fin_at and fin_at.tzinfo is None:
+        fin_at = fin_at.replace(tzinfo=timezone.utc)
+    elif fin_at:
+        fin_at = fin_at.astimezone(timezone.utc)
+
+    should_update = False
+    if inicio_at and inicio_at > now:
+        encuesta.inicio_at = now - timedelta(minutes=5)
+        should_update = True
+
+    if fin_at and fin_at < now:
+        encuesta.fin_at = now + timedelta(days=365)
+        should_update = True
+
+    if should_update:
+        try:
+            db.session.add(encuesta)
+            db.session.commit()
+            current_app.logger.info(
+                "[encuestas] Refreshed public window for bootstrap demo survey %s", encuesta.id
+            )
+        except Exception:
+            db.session.rollback()
+            current_app.logger.exception(
+                "[encuestas] Failed to refresh public window for bootstrap demo survey %s",
+                getattr(encuesta, "id", None),
+            )
+
 def get_public_encuesta(
     slug_publico: str, *, allow_inactive_for_user: Optional[Any] = None
 ) -> EncEncuesta:
@@ -1870,9 +1955,19 @@ def get_public_encuesta(
             return encuesta
 
     if encuesta.estado != "publicada":
-        raise EncuestaError("La encuesta no está activa", status_code=403)
+        raise EncuestaError(
+            "La encuesta no está activa",
+            status_code=403,
+            payload={"reason_code": "survey_not_published"},
+        )
+
+    _ensure_demo_public_window(encuesta)
     if not encuesta.esta_activa():
-        raise EncuestaError("La encuesta no está en su ventana de participación", status_code=403)
+        raise EncuestaError(
+            "La encuesta no está en su ventana de participación",
+            status_code=403,
+            payload={"reason_code": "survey_outside_active_window"},
+        )
     return encuesta
 
 
@@ -3514,5 +3609,9 @@ def get_public_encuesta_by_id(encuesta_id: int) -> EncEncuesta:
     if not encuesta:
         raise EncuestaError("Encuesta no encontrada", status_code=404)
     if encuesta.estado != "publicada":
-        raise EncuestaError("La encuesta no está activa", status_code=403)
+        raise EncuestaError(
+            "La encuesta no está activa",
+            status_code=403,
+            payload={"reason_code": "survey_not_published"},
+        )
     return encuesta
