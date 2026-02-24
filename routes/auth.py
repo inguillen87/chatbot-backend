@@ -966,7 +966,11 @@ def _resolve_default_demo_slug() -> Optional[str]:
         if normalized:
             return normalized
 
-    demos = load_demo_rubros(require_owner=False)
+    try:
+        demos = load_demo_rubros(require_owner=False)
+    except Exception:
+        demos = []
+
     for demo in demos:
         slug = _resolve_demo_tenant_slug(demo.key) or _resolve_demo_tenant_slug(demo.rubro_clave)
         if slug:
@@ -1077,28 +1081,37 @@ def login_demo():
     }
     jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm='HS256')
 
-    response = jsonify({
+    response_payload = {
         "mensaje": "Demo login exitoso",
         "id": demo_user.id,
         "token": jwt_token,
         "email": demo_user.email,
         "name": demo_user.name,
         "rol": demo_user.rol,
+        "empresa_id": demo_user.empresa_id,
+        "municipio_id": demo_user.municipio_id,
         "tipo_chat": tipo_chat,
+        "tenant_id": tenant_obj.id,
         "tenant_slug": tenant_obj.slug,
         "tenantSlug": tenant_obj.slug,
+        "marketplace": _tenant_market_payload(tenant_obj),
         "demo_mode": True,
         "rubro": rubro or tenant_obj.slug,
-    })
+    }
+    response = jsonify(response_payload)
 
     cookie_name = current_app.config.get("AUTH_TOKEN_COOKIE_NAME", "auth_token")
-    response.set_cookie(
-        key=cookie_name,
-        value=jwt_token,
-        secure=current_app.config.get("SESSION_COOKIE_SECURE", True),
-        httponly=True,
-        samesite=current_app.config.get("SESSION_COOKIE_SAMESITE", "None"),
-    )
+    cookie_args = {
+        "key": cookie_name,
+        "value": jwt_token,
+        "secure": current_app.config.get("SESSION_COOKIE_SECURE", True),
+        "httponly": True,
+        "samesite": current_app.config.get("SESSION_COOKIE_SAMESITE", "None"),
+    }
+    cookie_domain = current_app.config.get("SESSION_COOKIE_DOMAIN")
+    if cookie_domain:
+        cookie_args["domain"] = cookie_domain
+    response.set_cookie(**cookie_args)
     return response
 
 def solo_admin_requerido(f):

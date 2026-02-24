@@ -136,6 +136,17 @@ class AuthDemoLoginTest(unittest.TestCase):
         self.assertTrue(payload.get('demo_mode'))
         self.assertTrue(payload.get('tenant_slug'))
 
+
+    def test_demo_login_includes_admin_dashboard_fields_and_cookie(self):
+        resp = self.client.post('/auth/demo', json={"rubro": "municipio"})
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.get_json()
+        self.assertIn('tenant_id', payload)
+        self.assertIn('municipio_id', payload)
+        self.assertIn('marketplace', payload)
+        set_cookie_header = resp.headers.get('Set-Cookie', '')
+        self.assertIn('auth_token=', set_cookie_header)
+
     def test_demo_catalog_exposes_generic_entry_points(self):
         resp = self.client.get('/auth/demo/catalog')
         self.assertEqual(resp.status_code, 200)
