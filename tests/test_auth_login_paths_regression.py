@@ -85,6 +85,16 @@ class AuthLoginPathRegressionTest(unittest.TestCase):
         payload = resp.get_json()
         self.assertIn("token", payload)
 
+    def test_standard_login_uses_resolved_tenant_for_municipio_id(self):
+        resp = self.client.post(
+            "/auth/login",
+            json={"email": self.owner.email, "password": "secret", "tenant_slug": self.tenant.slug},
+        )
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.get_json()
+        self.assertEqual(payload.get("tenant_slug"), self.tenant.slug)
+        self.assertEqual(payload.get("municipio_id"), self.owner.id)
+
     def test_chatuser_login_panel_uses_owner_tenant_for_municipio_scope(self):
         resp = self.client.post(
             "/auth/chatuserloginpanel",

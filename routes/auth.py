@@ -994,8 +994,13 @@ def demo_catalog():
     if ensure_users:
         _ensure_demo_superadmin()
 
-    demos = load_demo_rubros(require_owner=False)
     demo_items = []
+    try:
+        demos = load_demo_rubros(require_owner=False)
+    except Exception as exc:
+        current_app.logger.warning("[demo_catalog] fallback to static demo catalog: %s", exc)
+        demos = []
+
     for demo in demos:
         tenant_slug = _resolve_demo_tenant_slug(demo.key) or _resolve_demo_tenant_slug(demo.rubro_clave)
         demo_items.append({
@@ -1006,6 +1011,12 @@ def demo_catalog():
             "login_payload": {"rubro": demo.key},
         })
 
+    quick_login_slug = None
+    try:
+        quick_login_slug = _resolve_default_demo_slug()
+    except Exception as exc:
+        current_app.logger.warning("[demo_catalog] unable to resolve default demo slug: %s", exc)
+
     return jsonify({
         "demo_login_enabled": True,
         "demo_login_endpoint": "/auth/demo",
@@ -1014,7 +1025,7 @@ def demo_catalog():
             {"key": "municipio", "label": "Demo Municipio", "enabled": True, "login_payload": {"rubro": "municipio", "tipo_chat": "municipio"}},
             {"key": "pyme", "label": "Demo PyME", "enabled": True, "login_payload": {"rubro": "pyme", "tipo_chat": "pyme"}},
         ],
-        "quick_login_payload": {"tenant_slug": _resolve_default_demo_slug()},
+        "quick_login_payload": {"tenant_slug": quick_login_slug},
         "super_admin_demo": {
             **_demo_superadmin_credentials(),
             "role": "super_admin",
@@ -1239,7 +1250,7 @@ def login():
 
     owner_token = _resolve_owner_token(user)
 
-    effective_municipio_id = getattr(owner_tenant, "municipio_id", None) or user.municipio_id
+    effective_municipio_id = getattr(tenant_obj, "municipio_id", None) or user.municipio_id
 
     # Generar el token JWT
     jwt_payload = {
