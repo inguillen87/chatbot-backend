@@ -1,5 +1,6 @@
 import os
 import unittest
+from types import SimpleNamespace
 
 import jwt
 
@@ -8,6 +9,7 @@ os.environ.setdefault("FLASK_SKIP_GLOBAL_APP", "1")
 from app import create_app, db
 from config import Config
 from models import TenantProfile, User
+from routes import auth as auth_routes
 
 
 class TestConfig(Config):
@@ -203,6 +205,34 @@ class AuthDemoLoginTest(unittest.TestCase):
             self.assertTrue(payload.get('tenant_slug'))
         finally:
             self.app.config['DEMO_RUBROS'] = original
+
+    def test_demo_slug_resolution_uses_cached_demo_registry(self):
+        auth_routes._DEMO_RUBROS_CACHE.update({"items": None, "expires_at": 0.0, "fingerprint": ""})
+        calls = {"count": 0}
+
+        def _fake_loader(require_owner=False):
+            calls["count"] += 1
+            return [
+                SimpleNamespace(
+                    key="municipio",
+                    tipo_chat="municipio",
+                    rubro_clave="municipio",
+                    label="Municipio",
+                    aliases=["gobierno"],
+                )
+            ]
+
+        original_loader = auth_routes.load_demo_rubros
+        auth_routes.load_demo_rubros = _fake_loader
+        try:
+            first = auth_routes._resolve_demo_tenant_slug("gobierno")
+            second = auth_routes._resolve_demo_tenant_slug("municipio")
+        finally:
+            auth_routes.load_demo_rubros = original_loader
+
+        self.assertEqual(first, "municipio")
+        self.assertEqual(second, "municipio")
+        self.assertEqual(calls["count"], 1)
 
     def test_demo_catalog_exposes_fallback_entries_when_registry_empty(self):
         original = self.app.config.get('DEMO_RUBROS')

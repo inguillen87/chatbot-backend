@@ -820,6 +820,16 @@ def _determine_tenant_id(user: Any) -> int:
     return int(tenant_candidate)
 
 
+def determine_tenant_id_for_user(user: Any) -> int:
+    """Public helper used by routes to resolve tenant consistently.
+
+    Keeping this indirection avoids route-level drift where list/create endpoints
+    accidentally resolve different tenant IDs for the same authenticated user.
+    """
+
+    return _determine_tenant_id(user)
+
+
 def _ensure_tenant_access(encuesta: EncEncuesta, user: Any) -> None:
     tenant_id = _determine_tenant_id(user)
     if encuesta.tenant_id == tenant_id:

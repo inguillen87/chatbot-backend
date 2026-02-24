@@ -34,6 +34,11 @@ from typing import Any, Callable, Dict, Optional
 import secrets
 
 _DEMO_CATALOG_CACHE: dict[str, Any] = {"payload": None, "expires_at": 0.0, "fingerprint": ""}
+_DEMO_RUBROS_CACHE: dict[str, Any] = {
+    "items": None,
+    "expires_at": 0.0,
+    "fingerprint": "",
+}
 
 
 def _demo_catalog_fingerprint() -> str:
@@ -42,6 +47,26 @@ def _demo_catalog_fingerprint() -> str:
     demo_rubros = current_app.config.get("DEMO_RUBROS")
     default_slug = current_app.config.get("DEFAULT_DEMO_TENANT_SLUG")
     return f"{repr(demo_rubros)}|{default_slug or ''}"
+
+
+def _load_demo_rubros_cached(*, ttl_seconds: float = 30.0) -> list[Any]:
+    """Return demo rubros with short-lived caching to reduce login latency."""
+
+    now = time.time()
+    fingerprint = _demo_catalog_fingerprint()
+    cached_items = _DEMO_RUBROS_CACHE.get("items")
+    if (
+        cached_items is not None
+        and _DEMO_RUBROS_CACHE.get("expires_at", 0.0) > now
+        and _DEMO_RUBROS_CACHE.get("fingerprint") == fingerprint
+    ):
+        return list(cached_items)
+
+    items = list(load_demo_rubros(require_owner=False))
+    _DEMO_RUBROS_CACHE["items"] = items
+    _DEMO_RUBROS_CACHE["expires_at"] = now + max(1.0, float(ttl_seconds))
+    _DEMO_RUBROS_CACHE["fingerprint"] = fingerprint
+    return list(items)
 
 
 def _looks_like_jwt(token: Optional[str]) -> bool:
@@ -803,13 +828,13 @@ def widget_refresh():
 
 
 
-def _default_demo_key_for_tipo(tipo_chat: str) -> Optional[str]:
+def _default_demo_key_for_tipo(tipo_chat: str, demos: Optional[list[Any]] = None) -> Optional[str]:
     normalized = (tipo_chat or "").strip().lower()
     if normalized not in {"pyme", "municipio"}:
         return None
 
-    demos = load_demo_rubros(require_owner=False)
-    for demo in demos:
+    source = demos if demos is not None else _load_demo_rubros_cached()
+    for demo in source:
         if (demo.tipo_chat or "").strip().lower() == normalized and (demo.key or "").strip():
             return demo.key
     return None
@@ -820,7 +845,7 @@ def _resolve_demo_tenant_slug(rubro_raw: Optional[str]) -> Optional[str]:
     if not normalized:
         normalized = "municipio"
 
-    demos = load_demo_rubros(require_owner=False)
+    demos = _load_demo_rubros_cached()
     allowed_keys = {
         (demo.key or "").strip().lower()
         for demo in demos
@@ -828,14 +853,14 @@ def _resolve_demo_tenant_slug(rubro_raw: Optional[str]) -> Optional[str]:
     }
 
     alias_map = {
-        "municipio": _default_demo_key_for_tipo("municipio") or "municipio",
-        "municipal": _default_demo_key_for_tipo("municipio") or "municipio",
-        "gobierno": _default_demo_key_for_tipo("municipio") or "municipio",
-        "government": _default_demo_key_for_tipo("municipio") or "municipio",
-        "pyme": _default_demo_key_for_tipo("pyme") or "local_comercial_general",
-        "empresa": _default_demo_key_for_tipo("pyme") or "local_comercial_general",
-        "empresas": _default_demo_key_for_tipo("pyme") or "local_comercial_general",
-        "comercio": _default_demo_key_for_tipo("pyme") or "local_comercial_general",
+        "municipio": _default_demo_key_for_tipo("municipio", demos=demos) or "municipio",
+        "municipal": _default_demo_key_for_tipo("municipio", demos=demos) or "municipio",
+        "gobierno": _default_demo_key_for_tipo("municipio", demos=demos) or "municipio",
+        "government": _default_demo_key_for_tipo("municipio", demos=demos) or "municipio",
+        "pyme": _default_demo_key_for_tipo("pyme", demos=demos) or "local_comercial_general",
+        "empresa": _default_demo_key_for_tipo("pyme", demos=demos) or "local_comercial_general",
+        "empresas": _default_demo_key_for_tipo("pyme", demos=demos) or "local_comercial_general",
+        "comercio": _default_demo_key_for_tipo("pyme", demos=demos) or "local_comercial_general",
         "retail": "local_comercial_general",
         "mayorista": "bodega",
         "bodega": "bodega",
@@ -978,7 +1003,7 @@ def _resolve_default_demo_slug() -> Optional[str]:
             return normalized
 
     try:
-        demos = load_demo_rubros(require_owner=False)
+        demos = _load_demo_rubros_cached()
     except Exception:
         demos = []
 
@@ -1036,7 +1061,7 @@ def demo_catalog():
 
     demo_items = []
     try:
-        demos = load_demo_rubros(require_owner=False)
+        demos = _load_demo_rubros_cached()
     except Exception as exc:
         current_app.logger.warning("[demo_catalog] fallback to static demo catalog: %s", exc)
         demos = []
@@ -1171,7 +1196,7 @@ def login_demo():
         rubro = "municipio"
     if not rubro and requested_sector in {"empresa", "empresas", "pyme", "privado", "private"}:
         try:
-            pyme_demo = next((demo for demo in load_demo_rubros(require_owner=False) if (demo.tipo_chat or "").strip().lower() == "pyme"), None)
+            pyme_demo = next((demo for demo in _load_demo_rubros_cached() if (demo.tipo_chat or "").strip().lower() == "pyme"), None)
         except Exception:
             pyme_demo = None
         rubro = (pyme_demo.key if pyme_demo else "pyme")
