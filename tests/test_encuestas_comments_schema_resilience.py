@@ -29,3 +29,10 @@ def test_list_comentarios_degrades_when_report_count_column_missing(client, monk
     assert isinstance(items, list)
     assert items
     assert items[0]["texto"] == "Comentario demo"
+
+
+def test_safe_text_value_normalizes_structured_payload():
+    raw = {"lider": "Ana", "pregunta": "Apoyo", "pregunta_id": 9}
+    normalized = encuestas_service._safe_text_value(raw, fallback="")
+    assert isinstance(normalized, str)
+    assert normalized in {"Apoyo", "Ana"}

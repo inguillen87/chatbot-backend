@@ -101,6 +101,38 @@ def _parse_int(value: Optional[str]) -> Optional[int]:
         return None
 
 
+def _safe_text_value(value: Any, *, fallback: str = "") -> str:
+    """Normalize potentially nested/structured values into a safe string.
+
+    Frontend components should never receive dict/list objects as direct React
+    children. This helper keeps comments payloads render-safe.
+    """
+
+    if value is None:
+        return fallback
+    if isinstance(value, str):
+        text = value.strip()
+        return text or fallback
+    if isinstance(value, (int, float, bool)):
+        return str(value)
+    if isinstance(value, dict):
+        preferred_keys = ("texto", "text", "label", "nombre", "value", "pregunta", "lider")
+        for key in preferred_keys:
+            candidate = _safe_text_value(value.get(key), fallback="")
+            if candidate:
+                return candidate
+        try:
+            return json.dumps(value, ensure_ascii=False)
+        except Exception:
+            return fallback
+    if isinstance(value, (list, tuple, set)):
+        parts = [_safe_text_value(item, fallback="") for item in value]
+        parts = [part for part in parts if part]
+        return " · ".join(parts) if parts else fallback
+
+    return _safe_text_value(str(value), fallback=fallback)
+
+
 def _current_app_logger():
     try:
         return current_app.logger
@@ -3550,8 +3582,8 @@ def create_comentario(encuesta_id: int, payload: Dict[str, Any], user: Optional[
             slug_publico = _resolve_public_slug(encuesta) or encuesta.slug
             data = {
                 "id": comentario.id,
-                "texto": comentario.texto,
-                "nombre_autor": comentario.nombre_autor or (user.name if user else "Anónimo"),
+                "texto": _safe_text_value(comentario.texto, fallback=""),
+                "nombre_autor": _safe_text_value(comentario.nombre_autor or (user.name if user else "Anónimo"), fallback="Anónimo"),
                 "fecha": comentario.created_at.isoformat(),
                 "user_id": comentario.user_id
             }
@@ -3613,8 +3645,8 @@ def list_comentarios(encuesta_id: int, limit: int = 50, offset: int = 0) -> List
         return [
             {
                 "id": row.id,
-                "texto": row.texto,
-                "nombre_autor": row.nombre_autor or "Anónimo",
+                "texto": _safe_text_value(row.texto, fallback=""),
+                "nombre_autor": _safe_text_value(row.nombre_autor, fallback="Anónimo"),
                 "fecha": row.created_at.isoformat() if row.created_at else None,
                 "user_id": row.user_id,
                 "anon_id": row.anon_id,
@@ -3626,8 +3658,8 @@ def list_comentarios(encuesta_id: int, limit: int = 50, offset: int = 0) -> List
     for c in rows:
         results.append({
             "id": c.id,
-            "texto": c.texto,
-            "nombre_autor": c.nombre_autor or (c.user.name if c.user else "Anónimo"),
+            "texto": _safe_text_value(c.texto, fallback=""),
+            "nombre_autor": _safe_text_value(c.nombre_autor or (c.user.name if c.user else "Anónimo"), fallback="Anónimo"),
             "fecha": c.created_at.isoformat(),
             "user_id": c.user_id,
             "anon_id": c.anon_id
@@ -3685,8 +3717,8 @@ def list_all_comentarios_admin(encuesta_id: int, user: Any, limit: int = 100, of
     for c in query:
         results.append({
             "id": c.id,
-            "texto": c.texto,
-            "nombre_autor": c.nombre_autor,
+            "texto": _safe_text_value(c.texto, fallback=""),
+            "nombre_autor": _safe_text_value(c.nombre_autor, fallback="Anónimo"),
             "fecha": c.created_at.isoformat(),
             "estado": c.estado,
             "report_count": c.report_count,
