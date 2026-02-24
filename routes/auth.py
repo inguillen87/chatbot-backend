@@ -19,6 +19,7 @@ from models import (
 )
 from extensions import db, limiter
 from functools import wraps
+import threading
 import uuid
 import json
 from datetime import datetime, timedelta, timezone
@@ -891,6 +892,34 @@ def _supported_demo_languages() -> list[dict[str, str]]:
         {"code": "pt", "label": "Português", "locale": "pt-BR"},
     ]
 
+
+def _run_post_login_migrations(*, app, user_id: int, tenant_id: Optional[int], anon_id: str) -> None:
+    """Move heavy anon adoption work out of the login critical path."""
+
+    with app.app_context():
+        try:
+            from services.ticket_service import servicio_tickets
+
+            servicio_tickets.migrar_tickets_de_anonimo(anon_id, user_id)
+        except Exception as exc:  # pragma: no cover - defensive logging
+            app.logger.warning("Failed to migrate anon tickets during deferred login flow: %s", exc)
+
+        try:
+            from routes.market import _get_or_create_cart_for_user
+
+            user_obj = _user_query().get(user_id)
+            if not user_obj:
+                return
+            target_tenant = None
+            if tenant_id:
+                target_tenant = TenantProfile.query.get(tenant_id)
+            if not target_tenant:
+                target_tenant = _tenant_for_user(user_obj)
+            if target_tenant:
+                _get_or_create_cart_for_user(target_tenant, user_obj, create_if_missing=False)
+        except Exception as exc:  # pragma: no cover - defensive logging
+            app.logger.warning("Failed to migrate anon cart during deferred login flow: %s", exc)
+
 def _get_or_create_demo_user_for_tenant(tenant: TenantProfile) -> User:
     """Return an isolated demo admin account for the tenant.
 
@@ -947,16 +976,18 @@ def demo_catalog():
         })
 
     return jsonify({
+        "demo_login_enabled": True,
+        "demo_login_endpoint": "/auth/demo",
         "entry_points": [
-            {"key": "municipio", "label": "Demo Municipio", "login_payload": {"rubro": "municipio", "tipo_chat": "municipio"}},
-            {"key": "pyme", "label": "Demo PyME", "login_payload": {"rubro": "pyme", "tipo_chat": "pyme"}},
+            {"key": "municipio", "label": "Demo Municipio", "enabled": True, "login_payload": {"rubro": "municipio", "tipo_chat": "municipio"}},
+            {"key": "pyme", "label": "Demo PyME", "enabled": True, "login_payload": {"rubro": "pyme", "tipo_chat": "pyme"}},
         ],
         "super_admin_demo": {
             **_demo_superadmin_credentials(),
             "role": "super_admin",
             "login_endpoint": "/auth/login",
         },
-        "tenant_demos": demo_items,
+        "tenant_demos": [{**item, "enabled": True, "login_endpoint": "/auth/demo"} for item in demo_items],
         "supported_languages": _supported_demo_languages(),
     })
 
@@ -1127,19 +1158,37 @@ def login():
             current_app.logger.warning("Failed to attach user to tenant during login")
     tipo_chat = _resolve_tipo_chat(user, tenant_obj=tenant_obj, rubro_nombre=rubro_nombre)
 
-    # Migrate anonymous data if anon_id is present
+    # Migrate anonymous data if anon_id is present.
+    # This can be expensive (ticket + cart adoption), so default to async to
+    # keep login response times fast.
     req_anon_id = request.headers.get("X-Anon-Id") or request.headers.get("Anon-Id") or data.get("anon_id")
     if req_anon_id:
+        deferred_migration = str(
+            current_app.config.get("DEFER_ANON_MIGRATION_ON_LOGIN", True)
+        ).strip().lower() not in {"0", "false", "no", "off"}
         try:
-            from services.ticket_service import servicio_tickets
-            servicio_tickets.migrar_tickets_de_anonimo(req_anon_id, user.id)
-
-            # Also migrate cart if using MarketCart logic (it handles it if session_id matches anon_id)
-            from routes.market import _get_or_create_cart_for_user
-            target_tenant = tenant_obj or _tenant_for_user(user)
-            if target_tenant:
-                # This triggers the adoption logic inside _get_or_create_cart_for_user
-                _get_or_create_cart_for_user(target_tenant, user, create_if_missing=False)
+            if deferred_migration:
+                app_obj = current_app._get_current_object()
+                tenant_id = getattr(tenant_obj, "id", None)
+                thread = threading.Thread(
+                    target=_run_post_login_migrations,
+                    kwargs={
+                        "app": app_obj,
+                        "user_id": user.id,
+                        "tenant_id": tenant_id,
+                        "anon_id": req_anon_id,
+                    },
+                    daemon=True,
+                    name=f"login-migrate-{user.id}",
+                )
+                thread.start()
+            else:
+                _run_post_login_migrations(
+                    app=current_app._get_current_object(),
+                    user_id=user.id,
+                    tenant_id=getattr(tenant_obj, "id", None),
+                    anon_id=req_anon_id,
+                )
         except Exception as e:
             current_app.logger.warning(f"Failed to migrate anon data during login: {e}")
 

@@ -146,6 +146,47 @@ def _counter_to_list(counter: Counter) -> List[Dict[str, Any]]:
 DEFAULT_HEATMAP_RESOLUTION = 8
 
 
+def _build_synthetic_heatmap_points(
+    encuesta: EncEncuesta,
+    respuestas: Sequence[EncRespuesta],
+) -> List[Dict[str, Any]]:
+    """Build fallback heatmap points when responses lack explicit coordinates."""
+
+    tenant_geo = _resolve_geo_metadata_for_tenant(encuesta.tenant_id)
+    center = (tenant_geo or {}).get("center") if isinstance(tenant_geo, dict) else None
+    if not center or len(center) < 2:
+        center = [-58.3816, -34.6037]
+
+    base_lng = float(center[0])
+    base_lat = float(center[1])
+    synthetic_points: List[Dict[str, Any]] = []
+
+    for idx, respuesta in enumerate(respuestas):
+        if respuesta.lat is not None and respuesta.lng is not None:
+            continue
+
+        # deterministic spread around tenant center so repeated requests are stable
+        lat = base_lat + (((idx % 7) - 3) * 0.0025)
+        lng = base_lng + (((idx % 11) - 5) * 0.0025)
+        submitted_at = respuesta.submitted_at
+        synthetic_points.append(
+            {
+                "lat": round(lat, 6),
+                "lng": round(lng, 6),
+                "w": 0.5,
+                "barrio": respuesta.barrio,
+                "ciudad": respuesta.ciudad,
+                "provincia": respuesta.provincia,
+                "pais": respuesta.pais,
+                "canal": respuesta.canal,
+                "synthetic": True,
+                "submitted_at": submitted_at.isoformat() if submitted_at else None,
+            }
+        )
+
+    return synthetic_points
+
+
 def _aggregate_heatmap_cells(
     respuestas: Sequence[EncRespuesta],
     *,
@@ -886,6 +927,12 @@ def get_heatmap(
     encuesta = get_encuesta(encuesta_id)
     respuestas = _collect_respuestas(encuesta, filtros)
     points, cells = _aggregate_heatmap_cells(respuestas, resolution=resolution)
+    used_synthetic_points = False
+    if not points and respuestas:
+        synthetic_points = _build_synthetic_heatmap_points(encuesta, respuestas)
+        if synthetic_points:
+            points = synthetic_points
+            used_synthetic_points = True
     metadata = _build_heatmap_metadata(encuesta, points)
     map_filter = _build_map_filter(points)
     metadata.update(
@@ -893,6 +940,7 @@ def get_heatmap(
             "resolution": resolution or DEFAULT_HEATMAP_RESOLUTION,
             "unique_cells": len(cells),
             "has_coordinates": bool(points),
+            "using_synthetic_points": used_synthetic_points,
         }
     )
     points_geojson = build_feature_collection(points)
