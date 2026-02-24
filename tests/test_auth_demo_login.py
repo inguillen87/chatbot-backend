@@ -90,10 +90,17 @@ class AuthDemoLoginTest(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         payload = resp.get_json()
         self.assertIn('super_admin_demo', payload)
+        self.assertTrue(payload.get('demo_login_enabled'))
+        self.assertEqual(payload.get('demo_login_endpoint'), '/auth/demo')
+        self.assertEqual(payload.get('demo_login_methods'), ['POST'])
+        self.assertTrue((payload.get('quick_login_payload') or {}).get('tenant_slug'))
         self.assertEqual(payload['super_admin_demo']['role'], 'super_admin')
         languages = payload.get('supported_languages') or []
         codes = {item.get('code') for item in languages}
         self.assertTrue({'es', 'en', 'pt'}.issubset(codes))
+        tenant_demos = payload.get('tenant_demos') or []
+        self.assertTrue(all(item.get('enabled') is True for item in tenant_demos))
+        self.assertTrue(all(item.get('login_endpoint') == '/auth/demo' for item in tenant_demos))
 
     def test_demo_catalog_can_bootstrap_superadmin(self):
         resp = self.client.get('/auth/demo/catalog?ensure_users=true')
@@ -105,12 +112,40 @@ class AuthDemoLoginTest(unittest.TestCase):
         self.assertIn(user.rol, {'super_admin', 'superadmin'})
 
 
+
     def test_demo_login_accepts_generic_pyme_entrypoint(self):
         resp = self.client.post("/auth/demo", json={"rubro": "pyme"})
         self.assertEqual(resp.status_code, 200)
         payload = resp.get_json()
         self.assertEqual(payload.get("tipo_chat"), "pyme")
         self.assertTrue(payload.get("demo_mode"))
+
+    def test_demo_catalog_exposes_quick_login_payload(self):
+        resp = self.client.get('/auth/demo/catalog')
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.get_json()
+        self.assertEqual(payload.get('demo_login_methods'), ['POST'])
+        quick = payload.get('quick_login_payload') or {}
+        self.assertIsInstance(quick.get('tenant_slug'), str)
+        self.assertTrue(quick.get('tenant_slug'))
+
+    def test_demo_login_works_without_explicit_rubro(self):
+        resp = self.client.post('/auth/demo', json={})
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.get_json()
+        self.assertTrue(payload.get('demo_mode'))
+        self.assertTrue(payload.get('tenant_slug'))
+
+
+    def test_demo_login_includes_admin_dashboard_fields_and_cookie(self):
+        resp = self.client.post('/auth/demo', json={"rubro": "municipio"})
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.get_json()
+        self.assertIn('tenant_id', payload)
+        self.assertIn('municipio_id', payload)
+        self.assertIn('marketplace', payload)
+        set_cookie_header = resp.headers.get('Set-Cookie', '')
+        self.assertIn('auth_token=', set_cookie_header)
 
     def test_demo_catalog_exposes_generic_entry_points(self):
         resp = self.client.get('/auth/demo/catalog')
@@ -120,6 +155,68 @@ class AuthDemoLoginTest(unittest.TestCase):
         keys = {item.get('key') for item in entry_points}
         self.assertIn('municipio', keys)
         self.assertIn('pyme', keys)
+        self.assertTrue(all(item.get('enabled') is True for item in entry_points))
+
+    def test_demo_catalog_exposes_onboarding_by_sector(self):
+        resp = self.client.get('/auth/demo/catalog')
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.get_json()
+        self.assertEqual(payload.get('frontend_contract_version'), '2026-02-demo-onboarding-v2')
+        onboarding = payload.get('onboarding') or {}
+        self.assertEqual(onboarding.get('default_sector'), 'gobierno')
+
+        sector_options = onboarding.get('sector_options') or []
+        sector_keys = {item.get('key') for item in sector_options}
+        self.assertIn('gobierno', sector_keys)
+        self.assertIn('empresas', sector_keys)
+
+        gobierno = next((item for item in sector_options if item.get('key') == 'gobierno'), {})
+        self.assertEqual((gobierno.get('default_login_payload') or {}).get('rubro'), 'municipio')
+
+        empresas = next((item for item in sector_options if item.get('key') == 'empresas'), {})
+        rubros = empresas.get('rubros') or []
+        self.assertTrue(all((r.get('tipo_chat') or '').lower() == 'pyme' for r in rubros))
+
+        frontend = payload.get('frontend') or {}
+        selector = frontend.get('demo_selector') or {}
+        self.assertEqual(selector.get('mode'), 'sector_first')
+        self.assertEqual((selector.get('require_rubro_for_sector') or {}).get('empresas'), True)
+        preload_names = {item.get('name') for item in (frontend.get('preload_before_login') or [])}
+        self.assertTrue({'demo_catalog', 'tenant_info', 'anon_id'}.issubset(preload_names))
+
+    def test_demo_login_supports_sector_gobierno_without_rubro(self):
+        resp = self.client.post('/auth/demo', json={'sector': 'gobierno'})
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.get_json()
+        self.assertEqual(payload.get('tipo_chat'), 'municipio')
+        self.assertEqual(payload.get('sector'), 'gobierno')
+
+
+    def test_demo_login_works_when_demo_registry_is_empty(self):
+        original = self.app.config.get('DEMO_RUBROS')
+        self.app.config['DEMO_RUBROS'] = []
+        try:
+            resp = self.client.post('/auth/demo', json={'rubro': 'municipio'})
+            self.assertEqual(resp.status_code, 200)
+            payload = resp.get_json()
+            self.assertTrue(payload.get('tipo_chat') in {'municipio', 'pyme'})
+            self.assertTrue(payload.get('tenant_slug'))
+        finally:
+            self.app.config['DEMO_RUBROS'] = original
+
+    def test_demo_catalog_exposes_fallback_entries_when_registry_empty(self):
+        original = self.app.config.get('DEMO_RUBROS')
+        self.app.config['DEMO_RUBROS'] = []
+        try:
+            resp = self.client.get('/auth/demo/catalog')
+            self.assertEqual(resp.status_code, 200)
+            payload = resp.get_json()
+            tenant_demos = payload.get('tenant_demos') or []
+            keys = {item.get('key') for item in tenant_demos}
+            self.assertTrue(keys)
+            self.assertIn('pyme', keys)
+        finally:
+            self.app.config['DEMO_RUBROS'] = original
 
 
 if __name__ == "__main__":
