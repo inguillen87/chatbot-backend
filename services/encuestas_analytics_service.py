@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import csv
 import io
+import json
+import logging
 from collections import Counter, defaultdict
 from datetime import datetime, timezone, timedelta
 from statistics import mean, median
@@ -12,6 +14,7 @@ from sqlalchemy.orm import joinedload
 
 from database import db
 from models import EncEncuesta, EncRespuesta, EncPregunta, EncRespuestaDetalle
+from services.openai_bridge import client as openai_client
 from services.encuestas_service import (
     EncuestaError,
     get_encuesta,
@@ -50,6 +53,9 @@ _MULTIPLE_CHOICE_TYPES = {
     "multiselect",
 }
 
+
+
+logger = logging.getLogger(__name__)
 _TEXT_TYPES = {
     "abierta",
     "text",
@@ -723,6 +729,68 @@ def get_alerts(
     }
 
 
+def _generate_openai_executive_brief(
+    encuesta: EncEncuesta,
+    summary: Dict[str, Any],
+    forecast: Dict[str, Any],
+    alerts: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """Optionally enrich executive brief with OpenAI when credentials are configured."""
+
+    if not openai_client:
+        return None
+
+    payload = {
+        "encuesta_id": encuesta.id,
+        "titulo": encuesta.titulo,
+        "summary": {
+            "total_respuestas": summary.get("total_respuestas", 0),
+            "participantes_unicos": summary.get("participantes_unicos", 0),
+            "tasa_completitud": summary.get("tasa_completitud", 0),
+        },
+        "forecast": {
+            "projected_total": forecast.get("projected_total", 0),
+            "horizon_minutes": forecast.get("horizon_minutes", 0),
+            "momentum": forecast.get("momentum", "stable"),
+        },
+        "alerts": alerts.get("alerts", []),
+    }
+
+    system_prompt = (
+        "Eres un consultor senior de analítica cívica y experiencia ciudadana. "
+        "Devuelve SOLO JSON con campos: headline (string <= 35 palabras), "
+        "insights (array de 2 strings accionables), risk_level (low|medium|high)."
+    )
+
+    try:
+        response = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            temperature=0.2,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+            ],
+        )
+        raw = (response.choices[0].message.content or "").strip()
+        parsed = json.loads(raw)
+        headline = str(parsed.get("headline") or "").strip()
+        insights = parsed.get("insights") if isinstance(parsed.get("insights"), list) else []
+        insights = [str(item).strip() for item in insights if str(item).strip()][:2]
+        risk_level = str(parsed.get("risk_level") or "").strip().lower()
+
+        if not headline:
+            return None
+
+        if risk_level not in {"low", "medium", "high"}:
+            risk_level = "medium"
+
+        return {"headline": headline, "insights": insights, "risk_level": risk_level}
+    except Exception:
+        logger.warning("[encuestas_analytics] OpenAI brief enrichment failed", exc_info=True)
+        return None
+
+
 def get_executive_brief(encuesta_id: int, filtros: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Return an executive-ready summary object for frontend reporting."""
 
@@ -736,10 +804,17 @@ def get_executive_brief(encuesta_id: int, filtros: Optional[Dict[str, Any]] = No
         f"{forecast['projected_total']} en {forecast['horizon_minutes']} minutos."
     )
 
+    ai_brief = _generate_openai_executive_brief(encuesta, summary, forecast, alerts)
+    final_headline = ai_brief.get("headline") if ai_brief else headline
+    final_insights = (ai_brief.get("insights") if ai_brief else None) or [
+        headline,
+        "Monitorear delta de momentum para decisiones tácticas de difusión.",
+    ]
+
     return {
         "encuesta_id": encuesta.id,
         "titulo": encuesta.titulo,
-        "headline": headline,
+        "headline": final_headline,
         "summary": {
             "total_respuestas": summary.get("total_respuestas", 0),
             "participantes_unicos": summary.get("participantes_unicos", 0),
@@ -747,10 +822,9 @@ def get_executive_brief(encuesta_id: int, filtros: Optional[Dict[str, Any]] = No
         },
         "forecast": forecast,
         "alerts": alerts,
-        "insights": [
-            headline,
-            "Monitorear delta de momentum para decisiones tácticas de difusión.",
-        ],
+        "insights": final_insights,
+        "ai_enhanced": bool(ai_brief),
+        "risk_level": (ai_brief or {}).get("risk_level", "medium"),
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
 
