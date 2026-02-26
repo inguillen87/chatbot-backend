@@ -55,6 +55,7 @@ from routes.municipio_api import (
     listar_categorias_pedidos,
     listar_categorias_ticket,
     listar_empleados_multitenant,
+    crear_empleado_multitenant,
     obtener_carrito_publico,
     producto_publico,
     productos_publicos,
@@ -433,11 +434,13 @@ def municipal_pedidos_categorias_alias_v2():
 
 
 @api_aliases_bp.route(
-    "/municipal/empleados", methods=["GET", "OPTIONS"], strict_slashes=False
+    "/municipal/empleados", methods=["GET", "POST", "OPTIONS"], strict_slashes=False
 )
 def municipal_empleados_alias_v2():
     if request.method == "OPTIONS":
         return _options_ok()
+    if request.method == "POST":
+        return crear_empleado_multitenant(tenant_slug=_alias_tenant_slug())
     return listar_empleados_multitenant(tenant_slug=_alias_tenant_slug())
 
 
@@ -534,9 +537,13 @@ def municipio_alias_pedidos_categorias():
 
 
 @api_aliases_bp.route(
-    "/municipio/municipio/empleados", methods=["GET", "OPTIONS"], strict_slashes=False
+    "/municipio/municipio/empleados", methods=["GET", "POST", "OPTIONS"], strict_slashes=False
 )
 def municipio_alias_empleados():
+    if request.method == "OPTIONS":
+        return _options_ok()
+    if request.method == "POST":
+        return crear_empleado_multitenant(tenant_slug="municipio")
     return listar_empleados_multitenant(tenant_slug="municipio")
 
 
@@ -575,11 +582,13 @@ def municipal_alias_pedidos_categorias():
 
 
 @api_aliases_bp.route(
-    "/municipal/municipio/empleados", methods=["GET", "OPTIONS"], strict_slashes=False
+    "/municipal/municipio/empleados", methods=["GET", "POST", "OPTIONS"], strict_slashes=False
 )
 def municipal_alias_empleados():
     if request.method == "OPTIONS":
         return _options_ok()
+    if request.method == "POST":
+        return crear_empleado_multitenant(tenant_slug="municipio")
     return listar_empleados_multitenant(tenant_slug="municipio")
 
 
@@ -618,11 +627,13 @@ def root_municipio_alias_pedidos_categorias():
 
 
 @public_aliases_bp.route(
-    "/municipio/municipio/empleados", methods=["GET", "OPTIONS"], strict_slashes=False
+    "/municipio/municipio/empleados", methods=["GET", "POST", "OPTIONS"], strict_slashes=False
 )
 def root_municipio_alias_empleados():
     if request.method == "OPTIONS":
         return _options_ok()
+    if request.method == "POST":
+        return crear_empleado_multitenant(tenant_slug="municipio")
     return listar_empleados_multitenant(tenant_slug="municipio")
 
 
@@ -658,11 +669,13 @@ def root_municipal_alias_pedidos_categorias():
 
 
 @public_aliases_bp.route(
-    "/municipal/municipio/empleados", methods=["GET", "OPTIONS"], strict_slashes=False
+    "/municipal/municipio/empleados", methods=["GET", "POST", "OPTIONS"], strict_slashes=False
 )
 def root_municipal_alias_empleados():
     if request.method == "OPTIONS":
         return _options_ok()
+    if request.method == "POST":
+        return crear_empleado_multitenant(tenant_slug="municipio")
     return listar_empleados_multitenant(tenant_slug="municipio")
 
 @public_aliases_bp.route(
@@ -693,11 +706,13 @@ def root_municipal_pedidos_categorias_alias_v2():
 
 
 @public_aliases_bp.route(
-    "/municipal/empleados", methods=["GET", "OPTIONS"], strict_slashes=False
+    "/municipal/empleados", methods=["GET", "POST", "OPTIONS"], strict_slashes=False
 )
 def root_municipal_empleados_alias_v2():
     if request.method == "OPTIONS":
         return _options_ok()
+    if request.method == "POST":
+        return crear_empleado_multitenant(tenant_slug=_alias_tenant_slug())
     return listar_empleados_multitenant(tenant_slug=_alias_tenant_slug())
 
 

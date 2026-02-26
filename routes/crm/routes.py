@@ -5,14 +5,34 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from flask import Blueprint, jsonify, g, request
+from sqlalchemy import or_
 
 from utils.auth_helpers import token_requerido
+from utils.auth_helpers import admin_o_empleado_requerido
 from middleware.tenant_context import require_tenant
 from models_memory import Contact, ContactSnapshot, InteractionEvent
-from models import Order
+from models import Order, User
 from extensions import db
 
 crm_bp = Blueprint('crm_bp', __name__)
+
+
+def _serialize_cliente(cliente: User) -> dict:
+    return {
+        "id": cliente.id,
+        "name": cliente.name or "",
+        "email": cliente.email or "",
+        "telefono": cliente.telefono or "",
+        "acepta_marketing": bool(cliente.acepta_marketing),
+        "latitud": cliente.latitud,
+        "longitud": cliente.longitud,
+        "tags": cliente.tags.split(',') if cliente.tags else [],
+    }
+
+
+def _query_clientes_tenant(current_user: User):
+    owner_id = current_user.empresa_id or current_user.id
+    return User.query.filter_by(empresa_id=owner_id)
 
 
 def _parse_scheduled_for(raw_value: str | None, tz_name: str | None) -> datetime | None:
@@ -52,6 +72,52 @@ def _campaign_sends_last_days(tenant_id: int, contact_id: str, days: int = 7) ->
         InteractionEvent.metadata_payload["event_type"].astext == "campaign_send",
         InteractionEvent.created_at >= since,
     ).count()
+
+
+@crm_bp.route('/api/crm/clientes', methods=['GET'])
+@crm_bp.route('/crm/clientes', methods=['GET'])
+@token_requerido
+@admin_o_empleado_requerido
+def list_legacy_clients(current_user):
+    """Compatibilidad para frontends legacy que consultan /crm/clientes."""
+    query = _query_clientes_tenant(current_user)
+
+    tag = request.args.get('tag')
+    if tag:
+        query = query.filter(User.tags.ilike(f"%{tag}%"))
+
+    text_query = request.args.get('q')
+    if text_query:
+        like = f"%{text_query}%"
+        query = query.filter(
+            or_(
+                User.name.ilike(like),
+                User.email.ilike(like),
+                User.telefono.ilike(like),
+            )
+        )
+
+    sort = request.args.get('sort')
+    order = (request.args.get('order') or 'asc').lower()
+    if sort not in {"name", "email", "telefono", "id"}:
+        sort = "name"
+    column = getattr(User, sort)
+    query = query.order_by(column.desc() if order == 'desc' else column.asc())
+
+    limit = request.args.get('limit')
+    offset = request.args.get('offset')
+    try:
+        if offset is not None and int(offset) >= 0:
+            query = query.offset(int(offset))
+    except (TypeError, ValueError):
+        pass
+    try:
+        if limit is not None and int(limit) >= 0:
+            query = query.limit(int(limit))
+    except (TypeError, ValueError):
+        pass
+
+    return jsonify([_serialize_cliente(cliente) for cliente in query.all()])
 
 
 @crm_bp.route('/api/admin/tenants/<slug>/contacts', methods=['GET'])
