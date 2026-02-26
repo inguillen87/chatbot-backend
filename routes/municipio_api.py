@@ -200,35 +200,6 @@ def crear_empleado_multitenant(current_user: User, tenant_slug: str):
     tenant = _resolve_tenant_or_404(tenant_slug)
     _require_tenant_admin(current_user, tenant)
 
-
-@municipio_api_bp.route("/empleados", methods=["GET", "OPTIONS"])
-@token_requerido
-def listar_empleados_multitenant(current_user: User, tenant_slug: str):
-    tenant = _resolve_tenant_or_404(tenant_slug)
-    if request.method == "OPTIONS":
-        return "", 204
-
-    _require_tenant_admin(current_user, tenant)
-
-    empleados = (
-        User.query.filter_by(tenant_id=tenant.id, es_empleado=True)
-        .order_by(User.id.asc())
-        .all()
-    )
-    payload = [_serialize_empleado(e) for e in empleados]
-    return jsonify({"empleados": payload, "total": len(payload)})
-
-
-@municipio_api_bp.route("/pedidos/categorias", methods=["GET", "OPTIONS"])
-@token_requerido
-def listar_categorias_pedidos(current_user: User, tenant_slug: str):
-    if request.method == "OPTIONS":
-        return "", 204
-
-    tenant = _resolve_tenant_or_404(tenant_slug)
-    categorias = _categorias_para_tenant(tenant)
-    return jsonify({"categorias": categorias, "categories": categorias})
-
     data = request.get_json(silent=True) or {}
     nombre = (data.get("nombre") or data.get("name") or "").strip()
     email = (data.get("email") or "").strip().lower()
@@ -276,6 +247,35 @@ def listar_categorias_pedidos(current_user: User, tenant_slug: str):
             "categorias": [c.to_dict() for c in categorias],
         }
     ), 201
+
+
+@municipio_api_bp.route("/empleados", methods=["GET", "OPTIONS"])
+@token_requerido
+def listar_empleados_multitenant(current_user: User, tenant_slug: str):
+    tenant = _resolve_tenant_or_404(tenant_slug)
+    if request.method == "OPTIONS":
+        return "", 204
+
+    _require_tenant_admin(current_user, tenant)
+
+    empleados = (
+        User.query.filter_by(tenant_id=tenant.id, es_empleado=True)
+        .order_by(User.id.asc())
+        .all()
+    )
+    payload = [_serialize_empleado(e) for e in empleados]
+    return jsonify({"empleados": payload, "total": len(payload)})
+
+
+@municipio_api_bp.route("/pedidos/categorias", methods=["GET", "OPTIONS"])
+@token_requerido
+def listar_categorias_pedidos(current_user: User, tenant_slug: str):
+    if request.method == "OPTIONS":
+        return "", 204
+
+    tenant = _resolve_tenant_or_404(tenant_slug)
+    categorias = _categorias_para_tenant(tenant)
+    return jsonify({"categorias": categorias, "categories": categorias})
 
 
 @municipio_api_bp.route("/empleados/<int:empleado_id>", methods=["PUT"])
