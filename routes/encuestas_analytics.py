@@ -16,6 +16,7 @@ from services.encuestas_analytics_service import (
     get_forecast,
     get_heatmap,
     get_segment_compare,
+    get_segment_suggestions,
     get_summary,
     get_timeseries,
 )
@@ -211,13 +212,22 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
     @require_role("admin", "empleado", "super_admin")
     def segment_compare(current_user, encuesta_id: int):
         filtros = _parse_filtros()
+
+        def _parse_segment_value(raw_value: str | None):
+            if not raw_value:
+                return None
+            parts = [part.strip() for part in str(raw_value).split(",") if part.strip()]
+            if not parts:
+                return None
+            return parts if len(parts) > 1 else parts[0]
+
         segment_a = {
-            key: request.args.get(f"a_{key}")
+            key: _parse_segment_value(request.args.get(f"a_{key}"))
             for key in ("canal", "genero", "rango_etario", "barrio", "ciudad", "provincia", "pais")
             if request.args.get(f"a_{key}")
         }
         segment_b = {
-            key: request.args.get(f"b_{key}")
+            key: _parse_segment_value(request.args.get(f"b_{key}"))
             for key in ("canal", "genero", "rango_etario", "barrio", "ciudad", "provincia", "pais")
             if request.args.get(f"b_{key}")
         }
@@ -233,6 +243,19 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
         return jsonify(data)
 
     bp.add_url_rule("/segments/compare", view_func=segment_compare, methods=["GET"])
+
+    @token_requerido
+    @require_role("admin", "empleado", "super_admin")
+    def segment_suggestions(current_user, encuesta_id: int):
+        filtros = _parse_filtros()
+        limit = request.args.get("limit", default=5, type=int) or 5
+        try:
+            data = get_segment_suggestions(encuesta_id, filtros=filtros, limit=limit)
+        except EncuestaError as err:
+            return jsonify(err.to_dict()), err.status_code
+        return jsonify(data)
+
+    bp.add_url_rule("/segments/suggestions", view_func=segment_suggestions, methods=["GET"])
 
     @token_requerido
     @require_role("admin", "empleado", "super_admin")

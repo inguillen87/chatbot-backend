@@ -10,6 +10,7 @@ from flask import Blueprint, current_app, jsonify, request
 from flask_cors import cross_origin
 
 from routes.admin_ai import get_bot_settings, update_bot_settings
+from routes.analytics import analytics_event_ingest
 from routes.admin_analytics import (
     admin_analytics_export_csv,
     admin_analytics_export_pdf,
@@ -69,7 +70,7 @@ from routes.pedidos import (
 )
 from routes.pwa_app import follow_tenant, list_followed_tenants, unfollow_tenant
 from routes.pwa_misc import provide_anon_id
-from routes.public_resolver import tenant_profile
+from routes.public_resolver import tenant_profile, widget_config as public_widget_config
 from routes.public_tenant import (
     get_catalog,
     get_contacts,
@@ -218,6 +219,13 @@ def ask_municipio_alias():
 
 def _options_ok():
     return jsonify({"ok": True})
+
+
+@api_aliases_bp.route("/analytics/event", methods=["POST", "OPTIONS"], strict_slashes=False)
+def analytics_event_alias():
+    if request.method == "OPTIONS":
+        return _options_ok()
+    return analytics_event_ingest()
 
 
 @api_aliases_bp.route("/admin/analytics/overview", methods=["GET"], strict_slashes=False)
@@ -799,6 +807,14 @@ def root_public_market_checkout_alias(tenant_slug: str):
 
 # --- Alias sin prefijo /api para configuraciones de tenant público ---
 
+
+
+
+@api_aliases_bp.route("/public/widget-config", methods=["GET", "OPTIONS"], strict_slashes=False)
+def public_widget_config_alias():
+    if request.method == "OPTIONS":
+        return _options_ok()
+    return public_widget_config()
 
 @public_aliases_bp.route(
     "/public/tenants/<slug>/menu", methods=["GET", "OPTIONS"], strict_slashes=False
