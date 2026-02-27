@@ -313,7 +313,9 @@ def test_event_ingest_requires_tenant_and_event_name(client):
         json={'tenant_id': 8},
         headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': '8'},
     )
-    assert response.status_code == 400
+    assert response.status_code == 202
+    payload = response.get_json()
+    assert payload.get('event_name') == 'frontend_analytics_event'
 
 
 def test_event_ingest_is_tenant_scoped(client):
@@ -584,3 +586,45 @@ def test_admin_analytics_hub_honors_custom_request_id(client):
     assert response.headers.get('X-Analytics-Request-Id') == 'req-demo-123'
     payload = response.get_json()
     assert (payload.get('meta') or {}).get('request_id') == 'req-demo-123'
+
+
+def test_event_ingest_accepts_query_tenant_slug(client):
+    tenant_id = 34
+    _ensure_user(tenant_id, 'municipio')
+
+    from models import TenantProfile
+
+    tenant = TenantProfile(
+        slug='junin-1',
+        nombre='Junín',
+        tipo='municipio',
+        municipio_id=tenant_id,
+    )
+    db.session.add(tenant)
+    db.session.commit()
+
+    response = client.post(
+        '/analytics/event',
+        query_string={'tenant_slug': 'junin-1', 'tenant': 'junin-1'},
+        json={'event_name': 'page_view'},
+        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant.id)},
+    )
+
+    assert response.status_code == 202
+    payload = response.get_json()
+    assert payload.get('event_name') == 'page_view'
+    assert payload.get('tenant_id') == tenant.id
+
+
+def test_api_alias_analytics_event_maps_to_ingestor(client):
+    tenant_id = 35
+    _ensure_user(tenant_id, 'municipio')
+
+    response = client.post(
+        '/api/analytics/event',
+        json={'tenant_id': tenant_id, 'event_name': 'dashboard_open'},
+        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
+    )
+
+    assert response.status_code == 202
+    assert AnalyticsEventV2.query.filter_by(tenant_id=tenant_id, event_name='dashboard_open').first() is not None
