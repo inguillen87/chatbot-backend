@@ -838,7 +838,22 @@ def _matches_segment(respuesta: EncRespuesta, segment: Optional[Dict[str, Any]])
         if expected is None or expected == "":
             continue
         value = getattr(respuesta, key, None)
-        if str(value or "").strip().lower() != str(expected).strip().lower():
+        normalized_value = str(value or "").strip().lower()
+        if isinstance(expected, (list, tuple, set)):
+            candidates = {str(item or "").strip().lower() for item in expected if str(item or "").strip()}
+            if normalized_value not in candidates:
+                return False
+            continue
+        if "," in str(expected):
+            candidates = {
+                chunk.strip().lower()
+                for chunk in str(expected).split(",")
+                if chunk.strip()
+            }
+            if normalized_value not in candidates:
+                return False
+            continue
+        if normalized_value != str(expected).strip().lower():
             return False
     return True
 
@@ -887,6 +902,46 @@ def _segment_distribution(
         "total_respuestas": len(respuestas),
         "canales": [{"label": k, "value": v} for k, v in canales.most_common()],
         "preguntas": question_payload,
+    }
+
+
+def get_segment_suggestions(
+    encuesta_id: int,
+    *,
+    filtros: Optional[Dict[str, Any]] = None,
+    limit: int = 5,
+) -> Dict[str, Any]:
+    """Return dynamic A/B segmentation suggestions from available survey data."""
+
+    encuesta = get_encuesta(encuesta_id)
+    respuestas = _collect_respuestas(encuesta, filtros)
+    total = max(len(respuestas), 1)
+    effective_limit = max(2, min(int(limit or 5), 10))
+
+    suggestions: Dict[str, List[Dict[str, Any]]] = {}
+    for key in ("canal", "genero", "rango_etario", "barrio", "ciudad", "provincia", "pais"):
+        counter = Counter(str(getattr(respuesta, key) or "").strip() for respuesta in respuestas)
+        options: List[Dict[str, Any]] = []
+        for label, count in counter.most_common(effective_limit):
+            if not label:
+                continue
+            coverage = round((count / total) * 100, 2)
+            options.append(
+                {
+                    "label": label,
+                    "filters": {key: label},
+                    "count": count,
+                    "coverage": coverage,
+                }
+            )
+        if options:
+            suggestions[key] = options
+
+    return {
+        "encuesta_id": encuesta.id,
+        "total_respuestas": len(respuestas),
+        "dimensions": suggestions,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
     }
 
 
@@ -1119,6 +1174,336 @@ def _build_latest_responses_preview(encuesta_id: int, filtros: Optional[Dict[str
         )
 
     return preview
+
+
+def _build_geo_rankings(points: Sequence[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+    """Aggregate heatmap points by geo dimensions for executive drilldowns."""
+
+    counters: Dict[str, Counter] = {
+        "barrio": Counter(),
+        "ciudad": Counter(),
+        "provincia": Counter(),
+    }
+
+    for point in points:
+        if not isinstance(point, Mapping):
+            continue
+        for key in counters:
+            value = point.get(key)
+            if value is None:
+                continue
+            label = str(value).strip()
+            if label:
+                counters[key][label] += 1
+
+    return {
+        key: [{"label": label, "value": value} for label, value in counter.most_common(10)]
+        for key, counter in counters.items()
+    }
+
+
+def _build_heatmap_territorial_aggregations(
+    points: Sequence[Dict[str, Any]],
+    *,
+    total_respuestas: int,
+    baseline_rate: float,
+) -> Dict[str, List[Dict[str, Any]]]:
+    """Aggregate territorial metrics for barrio/distrito(ciudad)/ciudad views."""
+
+    dimensions = {
+        "by_barrio": "barrio",
+        "by_distrito": "ciudad",
+        "by_ciudad": "ciudad",
+    }
+    payload: Dict[str, List[Dict[str, Any]]] = {}
+    safe_total = max(total_respuestas, 1)
+    safe_baseline = baseline_rate if baseline_rate > 0 else 1.0
+
+    for output_key, attr_key in dimensions.items():
+        grouped: Dict[str, Dict[str, Any]] = {}
+        for point in points:
+            if not isinstance(point, Mapping):
+                continue
+            label = str(point.get(attr_key) or "").strip()
+            if not label:
+                continue
+            item = grouped.setdefault(label, {"respuestas": 0, "lat_sum": 0.0, "lng_sum": 0.0})
+            item["respuestas"] += 1
+            item["lat_sum"] += float(point.get("lat") or 0.0)
+            item["lng_sum"] += float(point.get("lng") or 0.0)
+
+        rows: List[Dict[str, Any]] = []
+        for label, item in sorted(grouped.items(), key=lambda x: x[1]["respuestas"], reverse=True)[:20]:
+            respuestas = int(item["respuestas"])
+            participacion = round((respuestas / safe_total) * 100, 2)
+            tasa_crecimiento = round((respuestas / safe_baseline), 3)
+            normalized_density = round(participacion / 100, 4)
+            centroid_lat = round(item["lat_sum"] / respuestas, 6) if respuestas else None
+            centroid_lng = round(item["lng_sum"] / respuestas, 6) if respuestas else None
+            rows.append(
+                {
+                    "label": label,
+                    "respuestas": respuestas,
+                    "participacion": participacion,
+                    "tasa_crecimiento": tasa_crecimiento,
+                    "riesgo": "high" if participacion >= 30 else "medium" if participacion >= 15 else "low",
+                    "normalized_density": normalized_density,
+                    "centroid": {"lat": centroid_lat, "lng": centroid_lng},
+                }
+            )
+        payload[output_key] = rows
+
+    return payload
+
+
+def _build_visual_module_contract(
+    module_id: str,
+    *,
+    title: str,
+    description: str,
+    empty_state: str,
+    units: str,
+    decimals: int,
+    sort: str,
+    thresholds: Optional[Dict[str, Any]] = None,
+    palette: Optional[List[str]] = None,
+    min_width: int = 280,
+    min_height: int = 220,
+    aspect_ratio: Optional[float] = None,
+) -> Dict[str, Any]:
+    return {
+        "id": module_id,
+        "title": title,
+        "description": description,
+        "empty_state": empty_state,
+        "units": units,
+        "decimals": decimals,
+        "sort": sort,
+        "thresholds": thresholds or {},
+        "palette": palette or ["#1D4ED8", "#2563EB", "#38BDF8"],
+        "container": {
+            "min_width": int(min_width),
+            "min_height": int(min_height),
+            "aspect_ratio": aspect_ratio,
+        },
+    }
+
+
+def _build_category_rankings(summary: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Build category-like ranking from survey questions/options distribution."""
+
+    category_counter: Counter = Counter()
+    for pregunta in summary.get("preguntas") or []:
+        for opcion in pregunta.get("opciones") or []:
+            label = str(opcion.get("texto") or "").strip()
+            value = int(opcion.get("conteo") or opcion.get("value") or 0)
+            if label and value > 0:
+                category_counter[label] += value
+
+    return [{"label": label, "value": value} for label, value in category_counter.most_common(12)]
+
+
+def _build_admin_decision_cards(
+    summary: Dict[str, Any],
+    forecast: Dict[str, Any],
+    alerts: Dict[str, Any],
+    geo_rankings: Dict[str, List[Dict[str, Any]]],
+    category_rankings: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Return concise decision cards for municipality and business operators."""
+
+    top_barrio = (geo_rankings.get("barrio") or [{}])[0]
+    top_city = (geo_rankings.get("ciudad") or [{}])[0]
+    top_category = (category_rankings or [{}])[0]
+    active_alerts = len(alerts.get("alerts") or [])
+
+    return [
+        {
+            "id": "territory_focus",
+            "title": "Foco territorial",
+            "priority": "high" if top_barrio.get("label") else "medium",
+            "message": (
+                f"{top_barrio.get('label')} concentra mayor actividad"
+                if top_barrio.get("label")
+                else "No hay suficientes datos geográficos para priorizar barrios"
+            ),
+            "evidence": {
+                "barrio": top_barrio,
+                "ciudad": top_city,
+            },
+        },
+        {
+            "id": "category_focus",
+            "title": "Categoría con mayor demanda",
+            "priority": "medium",
+            "message": (
+                f"{top_category.get('label')} lidera las respuestas"
+                if top_category.get("label")
+                else "No se detectó una categoría dominante"
+            ),
+            "evidence": {
+                "category": top_category,
+                "total_respuestas": int(summary.get("total_respuestas") or 0),
+            },
+        },
+        {
+            "id": "operational_pulse",
+            "title": "Pulso operativo",
+            "priority": "high" if active_alerts > 0 else "low",
+            "message": (
+                f"{active_alerts} alertas activas: revisar campañas y soporte"
+                if active_alerts > 0
+                else "Sin alertas críticas activas"
+            ),
+            "evidence": {
+                "projected_total": int(forecast.get("projected_total") or 0),
+                "alerts": active_alerts,
+            },
+        },
+    ]
+
+
+def _build_admin_analytics_template(
+    summary: Dict[str, Any],
+    timeseries: Sequence[Dict[str, Any]],
+    heatmap: Dict[str, Any],
+    forecast: Dict[str, Any],
+    alerts: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Build a frontend-friendly advanced layout contract for survey analytics."""
+
+    points = heatmap.get("points") or []
+    geo_rankings = _build_geo_rankings(points)
+    category_rankings = _build_category_rankings(summary)
+    age_distribution = ((summary.get("demografia") or {}).get("rango_etario") or [])
+    total_respuestas = int(summary.get("total_respuestas") or 0)
+    territorial_aggregations = _build_heatmap_territorial_aggregations(
+        points,
+        total_respuestas=total_respuestas,
+        baseline_rate=float(forecast.get("current_rate_per_minute") or 0.0),
+    )
+
+    return {
+        "layout_version": "2026.04",
+        "tabs": [
+            {"id": "overview", "label": "Resumen ejecutivo", "default": True},
+            {"id": "territory", "label": "Mapa territorial"},
+            {"id": "categories", "label": "Categorías"},
+            {"id": "demography", "label": "Demografía"},
+            {"id": "ai_copilot", "label": "Copiloto IA"},
+        ],
+        "chart_stack": {
+            "recommended": ["echarts", "plotly", "maplibre"],
+            "notes": "Usar ECharts para KPIs/series y MapLibre para heatmaps por barrio, distrito y ciudad.",
+        },
+        "datasets": {
+            "geo_rankings": geo_rankings,
+            "category_rankings": category_rankings,
+            "age_distribution": age_distribution,
+            "activity_timeseries": list(timeseries),
+            "heatmap_points": points,
+            **territorial_aggregations,
+        },
+        "decision_cards": _build_admin_decision_cards(
+            summary=summary,
+            forecast=forecast,
+            alerts=alerts,
+            geo_rankings=geo_rankings,
+            category_rankings=category_rankings,
+        ),
+        "ux_guardrails": {
+            "chart_container": {
+                "default_min_width": 280,
+                "default_min_height": 220,
+                "render_when_visible": True,
+            },
+            "telemetry": {
+                "event_endpoint_preferred": "/api/analytics/event",
+                "event_endpoint_legacy": "/analytics/event",
+                "requires_tenant": True,
+                "fallback_event_name": "frontend_analytics_event",
+            },
+            "widget": {
+                "config_endpoint_preferred": "/api/public/widget-config",
+                "config_endpoint_legacy": "/public/widget-config",
+                "retry_recommended": True,
+            },
+        },
+        "visual_modules": [
+            _build_visual_module_contract(
+                "kpi_total",
+                title="Participación total",
+                description="Respuestas acumuladas en el período filtrado.",
+                empty_state="Sin respuestas todavía.",
+                units="count",
+                decimals=0,
+                sort="desc",
+            ),
+            _build_visual_module_contract(
+                "heatmap_territory",
+                title="Mapa territorial",
+                description="Concentración por barrio, distrito y ciudad.",
+                empty_state="No hay geodatos para el rango actual.",
+                units="density",
+                decimals=4,
+                sort="desc",
+                thresholds={"low": 0.1, "medium": 0.2, "high": 0.3},
+            ),
+            _build_visual_module_contract(
+                "anomalies",
+                title="Anomalías operativas",
+                description="Detección de patrones de riesgo y manipulación.",
+                empty_state="No se detectaron anomalías relevantes.",
+                units="score",
+                decimals=2,
+                sort="desc",
+                thresholds={"medium": 35, "high": 65, "critical": 80},
+                palette=["#16A34A", "#F59E0B", "#EF4444", "#991B1B"],
+            ),
+        ],
+    }
+
+
+
+
+def _build_executive_kpis(
+    summary: Dict[str, Any],
+    forecast: Dict[str, Any],
+    anomalies: Dict[str, Any],
+    heatmap: Dict[str, Any],
+    segment_compare: Dict[str, Any],
+    timeseries: Sequence[Dict[str, Any]],
+) -> Dict[str, Dict[str, Any]]:
+    """Return sales-ready KPI objects with trend/status/explanation."""
+
+    total = int(summary.get("total_respuestas") or 0)
+    unique_participants = int(summary.get("participantes_unicos") or 0)
+    points = heatmap.get("points") or []
+    unique_geo = len({(round(float(item.get("lat") or 0), 3), round(float(item.get("lng") or 0), 3)) for item in points if isinstance(item, Mapping)})
+    territorial = round((unique_geo / max(len(points), 1)) * 100, 2) if points else 0.0
+
+    segment_a_total = int((((segment_compare.get("segment_a") or {}).get("stats") or {}).get("total_respuestas") or 0))
+    segment_b_total = int((((segment_compare.get("segment_b") or {}).get("stats") or {}).get("total_respuestas") or 0))
+    brecha_segmento = abs(segment_a_total - segment_b_total)
+
+    risk_score = _metric_number(anomalies.get("risk_score"), decimals=2)
+    confidence_index = round(max(0.0, 100.0 - risk_score), 2)
+    avg_response_time = 0.0
+    if len(timeseries) >= 2:
+        avg_response_time = round(1440 / max((sum(item.get("total", 0) for item in timeseries) / len(timeseries)), 1), 2)
+
+    trend_7d = _metric_number(forecast.get("current_rate_per_minute"), decimals=3)
+    trend_30d = _metric_number((forecast.get("projected_additional") or 0) / max(forecast.get("horizon_minutes") or 1, 1), decimals=3)
+
+    return {
+        "participacion_total": {"value": total, "trend": trend_7d, "status": "good" if total > 0 else "neutral", "explanation": "Respuestas acumuladas en el período seleccionado."},
+        "representatividad_territorial": {"value": territorial, "trend": 0.0, "status": "good" if territorial >= 40 else "watch", "explanation": "Cobertura geográfica en base a puntos únicos relevados."},
+        "brecha_segmento_max": {"value": brecha_segmento, "trend": 0.0, "status": "good" if brecha_segmento <= max(unique_participants * 0.2, 5) else "watch", "explanation": "Diferencia absoluta de participación entre segmentos A/B."},
+        "indice_confianza_datos": {"value": confidence_index, "trend": 0.0, "status": "good" if confidence_index >= 70 else "risk", "explanation": "Índice inverso al riesgo de anomalías detectadas."},
+        "tiempo_respuesta_medio": {"value": avg_response_time, "trend": 0.0, "status": "good" if avg_response_time <= 60 else "watch", "explanation": "Minutos promedio estimados entre bloques de respuestas."},
+        "tendencia_7d": {"value": trend_7d, "trend": trend_7d, "status": "good" if trend_7d >= 0.05 else "neutral", "explanation": "Tasa actual de participación por minuto (proxy 7d)."},
+        "tendencia_30d": {"value": trend_30d, "trend": trend_30d, "status": "good" if trend_30d >= 0.05 else "neutral", "explanation": "Proyección media por minuto para horizonte extendido (proxy 30d)."},
+    }
 def get_dashboard_bundle(
     encuesta_id: int,
     filtros: Optional[Dict[str, Any]] = None,
@@ -1134,6 +1519,12 @@ def get_dashboard_bundle(
     alerts = get_alerts(encuesta_id, filtros=filtros)
     brief = get_executive_brief(encuesta_id, filtros)
     anomalies = get_anomaly_report(encuesta_id, filtros=filtros)
+    segment_compare_default = get_segment_compare(
+        encuesta_id,
+        filtros=filtros,
+        segment_a={"canal": "web"},
+        segment_b={"canal": "whatsapp"},
+    )
 
     executive_summary = _build_executive_summary_text(summary, forecast, alerts, heatmap)
     visual_blueprint = _build_visual_blueprint(
@@ -1142,12 +1533,27 @@ def get_dashboard_bundle(
         timeseries=timeseries,
         heatmap=heatmap,
     )
+    admin_template = _build_admin_analytics_template(
+        summary=summary,
+        timeseries=timeseries,
+        heatmap=heatmap,
+        forecast=forecast,
+        alerts=alerts,
+    )
 
     latest_responses = _build_latest_responses_preview(encuesta_id, filtros=filtros, limit=10)
     cards = _build_dashboard_cards(summary, forecast, anomalies)
     ui_state = _build_dashboard_ui_state(summary, heatmap, alerts)
     ui_state["latest_responses"] = "ready" if len(latest_responses) > 0 else "empty"
     active_alerts = int(len(alerts.get("alerts") or []))
+    executive_kpis = _build_executive_kpis(
+        summary=summary,
+        forecast=forecast,
+        anomalies=anomalies,
+        heatmap=heatmap,
+        segment_compare=segment_compare_default,
+        timeseries=timeseries,
+    )
 
     return {
         "encuesta_id": encuesta_id,
@@ -1162,6 +1568,7 @@ def get_dashboard_bundle(
             "active_alerts": active_alerts,
         },
         "cards": cards,
+        "kpis_executive": executive_kpis,
         "ui_state": ui_state,
         "meta": {
             "schema_version": "2026.03",
@@ -1183,6 +1590,7 @@ def get_dashboard_bundle(
             "latest_responses": latest_responses,
         },
         "visual_blueprint": visual_blueprint,
+        "admin_template": admin_template,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -1200,15 +1608,33 @@ def get_segment_compare(
     group_a = [respuesta for respuesta in respuestas if _matches_segment(respuesta, segment_a)]
     group_b = [respuesta for respuesta in respuestas if _matches_segment(respuesta, segment_b)]
 
+    total_base = max(len(respuestas), 1)
+
+    def _segment_meta(name: str, filters_payload: Optional[Dict[str, Any]], group: Sequence[EncRespuesta]) -> Dict[str, Any]:
+        count = len(group)
+        return {
+            "name": name,
+            "label": f"Segmento {name.upper()}",
+            "filters": filters_payload or {},
+            "count": count,
+            "coverage": round((count / total_base) * 100, 2),
+        }
+
     return {
         "encuesta_id": encuesta.id,
         "segment_a": {
+            "meta": _segment_meta("a", segment_a, group_a),
             "filters": segment_a or {},
             "stats": _segment_distribution(group_a, encuesta),
         },
         "segment_b": {
+            "meta": _segment_meta("b", segment_b, group_b),
             "filters": segment_b or {},
             "stats": _segment_distribution(group_b, encuesta),
+        },
+        "comparison_meta": {
+            "base_total": len(respuestas),
+            "gap_respuestas": len(group_a) - len(group_b),
         },
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -1274,10 +1700,87 @@ def get_anomaly_report(
     elif score >= 35:
         risk_level = "medio"
 
+    def _severity_from_score(value: int) -> str:
+        if value >= 80:
+            return "critical"
+        if value >= 60:
+            return "high"
+        if value >= 35:
+            return "medium"
+        return "low"
+
+    def _confidence_from_count(count: int) -> str:
+        if count >= 10:
+            return "high"
+        if count >= 4:
+            return "medium"
+        return "low"
+
+    anomaly_signals: List[Dict[str, Any]] = []
+    for item in suspicious_ips:
+        anomaly_signals.append(
+            {
+                "type": "suspicious_ip",
+                "detail": f"IP con repetición inusual ({item['count']} respuestas)",
+                "score": min(100, item["count"] * 10),
+                "why_it_matters": "Puede indicar automatización o manipulación de votos.",
+                "recommended_action": "Aplicar verificación adicional (captcha/validación humana).",
+                "affected_segment": {"ip": item["ip"]},
+                "confidence": _confidence_from_count(item["count"]),
+                "severity": _severity_from_score(min(100, item["count"] * 10)),
+                "timestamp": now.isoformat(),
+            }
+        )
+    for item in repeated_fingerprints:
+        anomaly_signals.append(
+            {
+                "type": "repeated_fingerprint",
+                "detail": f"Huella repetida ({item['count']} veces)",
+                "score": min(100, item["count"] * 12),
+                "why_it_matters": "Puede reflejar cuentas duplicadas o abuso desde mismo dispositivo.",
+                "recommended_action": "Revisar reglas de unicidad y limitar múltiples envíos.",
+                "affected_segment": {"fingerprint": item["fingerprint"]},
+                "confidence": _confidence_from_count(item["count"]),
+                "severity": _severity_from_score(min(100, item["count"] * 12)),
+                "timestamp": now.isoformat(),
+            }
+        )
+    for item in concentrated_geo:
+        anomaly_signals.append(
+            {
+                "type": "geo_concentration",
+                "detail": f"Concentración geográfica alta ({item['count']} respuestas en un punto)",
+                "score": min(100, item["count"] * 8),
+                "why_it_matters": "Concentraciones extremas sesgan representatividad territorial.",
+                "recommended_action": "Comparar con histórico y abrir revisión territorial.",
+                "affected_segment": {"lat": item["lat"], "lng": item["lng"]},
+                "confidence": _confidence_from_count(item["count"]),
+                "severity": _severity_from_score(min(100, item["count"] * 8)),
+                "timestamp": now.isoformat(),
+            }
+        )
+    if burst_count >= threshold:
+        anomaly_signals.append(
+            {
+                "type": "burst_activity",
+                "detail": f"Pico abrupto de actividad ({burst_count} respuestas en {window} min)",
+                "score": min(100, burst_count * 3),
+                "why_it_matters": "Picos repentinos pueden requerir moderación y capacidad operativa.",
+                "recommended_action": "Escalar monitoreo en tiempo real y revisar fuentes de tráfico.",
+                "affected_segment": {"window_minutes": window},
+                "confidence": _confidence_from_count(burst_count),
+                "severity": _severity_from_score(min(100, burst_count * 3)),
+                "timestamp": now.isoformat(),
+            }
+        )
+
+    anomaly_signals.sort(key=lambda signal: signal.get("score", 0), reverse=True)
+
     return {
         "encuesta_id": encuesta.id,
         "risk_score": score,
         "risk_level": risk_level,
+        "severity": _severity_from_score(score),
         "burst_window_minutes": window,
         "burst_threshold": threshold,
         "burst_count": burst_count,
@@ -1286,6 +1789,7 @@ def get_anomaly_report(
             "repeated_fingerprints": repeated_fingerprints,
             "concentrated_geo": concentrated_geo,
         },
+        "top_anomalies": anomaly_signals[:10],
         "updated_at": now.isoformat(),
     }
 

@@ -1,6 +1,6 @@
 # Frontend Contract — Encuestas Pro (Public + Admin + Live)
 
-Última actualización backend: 2026-02-24
+Última actualización backend: 2026-02-27
 
 Este documento es el contrato operativo para que el frontend quede sincronizado con backend en demo, analytics y encuestas sin pantallas blancas.
 
@@ -133,3 +133,119 @@ Nota: backend tiene degradación temporal si falta columna, pero la corrección 
 5. Validar UX:
    - Login demo municipio -> analytics sin white-screen.
    - Encuesta pública -> comentarios renderizan sin React #31.
+
+
+---
+
+## 7) Comunicado formal para Frontend — Analytics Ejecutivo (obligatorio)
+
+> **Objetivo:** evitar pérdida funcional en UI y asegurar que todo lo entregado por backend se renderice de forma consistente en modo white-label (gobierno/empresa).
+
+### 7.1 Endpoints nuevos y/o ampliados
+
+1. **Dashboard bundle ejecutivo**
+   - `GET /api/encuestas/<encuesta_id>/analytics/dashboard`
+   - Campos nuevos relevantes:
+     - `admin_template`
+     - `kpis_executive`
+
+2. **Sugerencias dinámicas de segmentos**
+   - `GET /api/encuestas/<encuesta_id>/analytics/segments/suggestions?limit=5`
+   - Devuelve `dimensions` por `canal`, `genero`, `rango_etario`, `barrio`, `ciudad`, `provincia`, `pais` con:
+     - `label`
+     - `filters`
+     - `count`
+     - `coverage`
+
+3. **Comparación A/B flexible**
+   - `GET /api/encuestas/<encuesta_id>/analytics/segments/compare?...`
+   - Acepta `a_*` y `b_*` en formato simple o múltiple (CSV):
+     - Ejemplo: `a_canal=web,whatsapp&b_ciudad=Junin`
+   - Campos nuevos:
+     - `segment_a.meta`, `segment_b.meta`
+     - `comparison_meta`
+
+4. **Anomalías accionables**
+   - `GET /api/encuestas/<encuesta_id>/analytics/anomalies`
+   - Campos nuevos:
+     - `severity` (top-level: `low|medium|high|critical`)
+     - `top_anomalies[]` priorizadas por score
+
+### 7.2 Contrato mínimo que Frontend debe consumir
+
+#### A) `admin_template`
+- `layout_version`
+- `tabs[]`
+- `chart_stack.recommended[]`
+- `datasets`:
+  - `geo_rankings`
+  - `category_rankings`
+  - `age_distribution`
+  - `activity_timeseries`
+  - `heatmap_points`
+  - `by_barrio`, `by_distrito`, `by_ciudad`
+- `decision_cards[]`
+- `visual_modules[]` (backend-driven UI spec):
+  - `title`, `description`, `empty_state`, `units`, `decimals`, `sort`, `thresholds`, `palette`
+
+#### B) `kpis_executive`
+Cada KPI incluye:
+- `value`
+- `trend`
+- `status`
+- `explanation`
+
+KPIs disponibles:
+- `participacion_total`
+- `representatividad_territorial`
+- `brecha_segmento_max`
+- `indice_confianza_datos`
+- `tiempo_respuesta_medio`
+- `tendencia_7d`
+- `tendencia_30d`
+
+#### C) `top_anomalies[]`
+Cada entrada incluye:
+- `type`, `detail`, `score`
+- `why_it_matters`
+- `recommended_action`
+- `affected_segment`
+- `confidence`
+- `severity`
+- `timestamp`
+
+### 7.3 Reglas de implementación frontend (para no perder información)
+
+1. **No hardcodear tabs ni labels**: renderizar tabs desde `admin_template.tabs`.
+2. **No hardcodear umbrales ni colores**: usar `visual_modules.thresholds` y `visual_modules.palette`.
+3. **No hardcodear segmentos A/B**: construir selector desde `segments/suggestions`.
+4. **No descartar fields desconocidos**: mantener estrategia forward-compatible.
+5. **Fail-safe visual**: si falta un módulo, mostrar `empty_state` y no romper pantalla.
+
+### 7.4 Checklist de aceptación frontend
+
+- [ ] Dashboard renderiza `admin_template.tabs` sin white-screen.
+- [ ] Mapa territorial usa `by_barrio/by_distrito/by_ciudad` y `normalized_density`.
+- [ ] Vista de anomalías consume `top_anomalies` completo (incluyendo recomendación).
+- [ ] Selector A/B usa `segments/suggestions` (sin valores hardcodeados).
+- [ ] KPIs ejecutivos se muestran desde `kpis_executive` con `status` y `explanation`.
+
+### 7.5 Mensaje corto sugerido para Product/Frontend
+
+"A partir de esta versión, el dashboard de encuestas expone contrato ejecutivo backend-driven (`admin_template`, `kpis_executive`, segmentos dinámicos y anomalías accionables). Para preservar la experiencia premium y evitar pérdidas funcionales, frontend debe mapear visualización y decisiones desde payload, sin hardcodes de tabs, segmentos, thresholds ni paletas."
+
+### 7.6 Guardrails UX/UI para evitar errores de gráficos y widget
+
+Consumir también desde `admin_template.ux_guardrails`:
+- `chart_container.default_min_width` (usar como `min-width` del contenedor de charts)
+- `chart_container.default_min_height` (usar como `min-height` del contenedor de charts)
+- `chart_container.render_when_visible` (evitar mount de chart en tabs/paneles ocultos)
+- `telemetry.event_endpoint_preferred` (`/api/analytics/event`)
+- `telemetry.fallback_event_name` (`frontend_analytics_event`)
+- `widget.config_endpoint_preferred` (`/api/public/widget-config`)
+
+Checklist técnico frontend adicional:
+- [ ] No renderizar Recharts/ECharts si el contenedor mide 0x0.
+- [ ] Aplicar `min-width >= 280` y `min-height >= 220` por card de gráfico.
+- [ ] Reintentar bootstrap de widget con backoff corto (2-3 intentos).
+- [ ] En fallback de telemetría, enviar al menos tenant + evento por defecto.
