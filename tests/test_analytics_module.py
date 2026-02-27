@@ -313,7 +313,9 @@ def test_event_ingest_requires_tenant_and_event_name(client):
         json={'tenant_id': 8},
         headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': '8'},
     )
-    assert response.status_code == 400
+    assert response.status_code == 202
+    payload = response.get_json()
+    assert payload.get('event_name') == 'frontend_analytics_event'
 
 
 def test_event_ingest_is_tenant_scoped(client):
@@ -611,6 +613,7 @@ def test_event_ingest_accepts_query_tenant_slug(client):
     assert response.status_code == 202
     payload = response.get_json()
     assert payload.get('event_name') == 'page_view'
+    assert payload.get('tenant_id') == tenant.id
 
 
 def test_api_alias_analytics_event_maps_to_ingestor(client):

@@ -76,7 +76,9 @@ def _resolve_event_name(payload: dict) -> str:
         text = str(value or "").strip()
         if text:
             return text
-    return ""
+    # Keep ingest resilient for frontend telemetry beacons that omit the event
+    # name while still sending tenant context.
+    return "frontend_analytics_event"
 
 def _json_response(payload, status: int = 200):
     response = jsonify(payload)
@@ -195,8 +197,6 @@ def analytics_event_ingest():
         abort(400, description="tenant_id is required")
 
     event_name = _resolve_event_name(payload)
-    if not event_name:
-        abort(400, description="event_name is required")
 
     require_access(str(tenant_id), "operador")
     analytics_ingestor.track(
