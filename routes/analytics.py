@@ -194,11 +194,17 @@ def analytics_event_ingest():
     payload = request.get_json(silent=True) or {}
     tenant_id = _resolve_tenant_id_from_event_payload(payload)
     if tenant_id is None:
-        abort(400, description="tenant_id is required")
+        current_app.logger.info("[analytics] ignored event without tenant context")
+        return _json_response({"ok": True, "ignored": True, "reason": "tenant_unresolved"}, status=202)
 
     event_name = _resolve_event_name(payload)
 
-    require_access(str(tenant_id), "operador")
+    try:
+        require_access(str(tenant_id), "operador")
+    except Exception:
+        current_app.logger.info("[analytics] ignored event due to access guard tenant_id=%s", tenant_id)
+        return _json_response({"ok": True, "ignored": True, "reason": "access_denied"}, status=202)
+
     analytics_ingestor.track(
         tenant_id=tenant_id,
         event_name=event_name,
