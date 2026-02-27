@@ -1267,6 +1267,9 @@ def _build_visual_module_contract(
     sort: str,
     thresholds: Optional[Dict[str, Any]] = None,
     palette: Optional[List[str]] = None,
+    min_width: int = 280,
+    min_height: int = 220,
+    aspect_ratio: Optional[float] = None,
 ) -> Dict[str, Any]:
     return {
         "id": module_id,
@@ -1278,6 +1281,11 @@ def _build_visual_module_contract(
         "sort": sort,
         "thresholds": thresholds or {},
         "palette": palette or ["#1D4ED8", "#2563EB", "#38BDF8"],
+        "container": {
+            "min_width": int(min_width),
+            "min_height": int(min_height),
+            "aspect_ratio": aspect_ratio,
+        },
     }
 
 
@@ -1403,6 +1411,24 @@ def _build_admin_analytics_template(
             geo_rankings=geo_rankings,
             category_rankings=category_rankings,
         ),
+        "ux_guardrails": {
+            "chart_container": {
+                "default_min_width": 280,
+                "default_min_height": 220,
+                "render_when_visible": True,
+            },
+            "telemetry": {
+                "event_endpoint_preferred": "/api/analytics/event",
+                "event_endpoint_legacy": "/analytics/event",
+                "requires_tenant": True,
+                "fallback_event_name": "frontend_analytics_event",
+            },
+            "widget": {
+                "config_endpoint_preferred": "/api/public/widget-config",
+                "config_endpoint_legacy": "/public/widget-config",
+                "retry_recommended": True,
+            },
+        },
         "visual_modules": [
             _build_visual_module_contract(
                 "kpi_total",

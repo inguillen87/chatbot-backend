@@ -32,6 +32,9 @@ def test_dashboard_bundle_includes_normalized_cards_and_states(monkeypatch):
     assert bundle["admin_template"]["layout_version"] == "2026.04"
     assert bundle["admin_template"]["tabs"][0]["id"] == "overview"
     assert bundle["admin_template"]["decision_cards"][0]["id"] == "territory_focus"
+    assert bundle["admin_template"]["ux_guardrails"]["chart_container"]["default_min_width"] == 280
+    assert bundle["admin_template"]["ux_guardrails"]["telemetry"]["event_endpoint_preferred"] == "/api/analytics/event"
+    assert bundle["admin_template"]["visual_modules"][0]["container"]["min_height"] == 220
     assert "kpis_executive" in bundle
     assert "participacion_total" in bundle["kpis_executive"]
 

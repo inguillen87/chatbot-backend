@@ -233,3 +233,19 @@ Cada entrada incluye:
 ### 7.5 Mensaje corto sugerido para Product/Frontend
 
 "A partir de esta versión, el dashboard de encuestas expone contrato ejecutivo backend-driven (`admin_template`, `kpis_executive`, segmentos dinámicos y anomalías accionables). Para preservar la experiencia premium y evitar pérdidas funcionales, frontend debe mapear visualización y decisiones desde payload, sin hardcodes de tabs, segmentos, thresholds ni paletas."
+
+### 7.6 Guardrails UX/UI para evitar errores de gráficos y widget
+
+Consumir también desde `admin_template.ux_guardrails`:
+- `chart_container.default_min_width` (usar como `min-width` del contenedor de charts)
+- `chart_container.default_min_height` (usar como `min-height` del contenedor de charts)
+- `chart_container.render_when_visible` (evitar mount de chart en tabs/paneles ocultos)
+- `telemetry.event_endpoint_preferred` (`/api/analytics/event`)
+- `telemetry.fallback_event_name` (`frontend_analytics_event`)
+- `widget.config_endpoint_preferred` (`/api/public/widget-config`)
+
+Checklist técnico frontend adicional:
+- [ ] No renderizar Recharts/ECharts si el contenedor mide 0x0.
+- [ ] Aplicar `min-width >= 280` y `min-height >= 220` por card de gráfico.
+- [ ] Reintentar bootstrap de widget con backoff corto (2-3 intentos).
+- [ ] En fallback de telemetría, enviar al menos tenant + evento por defecto.
