@@ -63,6 +63,23 @@ class PublicAliasTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertIsInstance(resp.get_json(), dict)
 
+
+    def test_api_public_widget_config_alias(self):
+        options = self.client.options(
+            "/api/public/widget-config",
+            query_string={"tenant": self.tenant.slug},
+        )
+        self.assertEqual(options.status_code, 200)
+
+        resp = self.client.get(
+            "/api/public/widget-config",
+            query_string={"tenant": self.tenant.slug},
+        )
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.get_json()
+        self.assertIn("widget", payload)
+        self.assertIn("tenant", payload)
+
     def test_public_news_and_events_aliases(self):
         post = MunicipioPost(
             municipio_id=self.owner.id,
