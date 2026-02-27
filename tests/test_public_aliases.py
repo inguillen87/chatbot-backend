@@ -64,6 +64,15 @@ class PublicAliasTests(unittest.TestCase):
         self.assertIsInstance(resp.get_json(), dict)
 
 
+
+    def test_public_catalog_default_slug_falls_back_to_active_tenant(self):
+        resp = self.client.get(
+            "/api/public/tenants/default/catalog",
+            query_string={"tenant": "default", "tenant_slug": "default"},
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertIsInstance(resp.get_json(), list)
+
     def test_api_public_widget_config_alias(self):
         options = self.client.options(
             "/api/public/widget-config",
