@@ -15,6 +15,7 @@ def test_dashboard_bundle_includes_normalized_cards_and_states(monkeypatch):
     monkeypatch.setattr(svc, "get_alerts", lambda encuesta_id, filtros=None: {"alerts": [{"id": "a1"}]})
     monkeypatch.setattr(svc, "get_executive_brief", lambda encuesta_id, filtros=None: {"headline": "ok"})
     monkeypatch.setattr(svc, "get_anomaly_report", lambda encuesta_id, filtros=None: {"risk_score": "0.331"})
+    monkeypatch.setattr(svc, "get_segment_compare", lambda encuesta_id, filtros=None, segment_a=None, segment_b=None: {"segment_a": {"stats": {"total_respuestas": 7}}, "segment_b": {"stats": {"total_respuestas": 5}}})
     monkeypatch.setattr(svc, "_build_latest_responses_preview", lambda encuesta_id, filtros=None, limit=10: [{"id": 1}])
 
     bundle = svc.get_dashboard_bundle(84, {"canal": "web"})
@@ -31,6 +32,8 @@ def test_dashboard_bundle_includes_normalized_cards_and_states(monkeypatch):
     assert bundle["admin_template"]["layout_version"] == "2026.04"
     assert bundle["admin_template"]["tabs"][0]["id"] == "overview"
     assert bundle["admin_template"]["decision_cards"][0]["id"] == "territory_focus"
+    assert "kpis_executive" in bundle
+    assert "participacion_total" in bundle["kpis_executive"]
 
 
 def test_dashboard_bundle_handles_empty_states(monkeypatch):
@@ -47,6 +50,7 @@ def test_dashboard_bundle_handles_empty_states(monkeypatch):
     monkeypatch.setattr(svc, "get_alerts", lambda encuesta_id, filtros=None: {"alerts": []})
     monkeypatch.setattr(svc, "get_executive_brief", lambda encuesta_id, filtros=None: {"headline": "ok"})
     monkeypatch.setattr(svc, "get_anomaly_report", lambda encuesta_id, filtros=None: {"risk_score": None})
+    monkeypatch.setattr(svc, "get_segment_compare", lambda encuesta_id, filtros=None, segment_a=None, segment_b=None: {"segment_a": {"stats": {"total_respuestas": 0}}, "segment_b": {"stats": {"total_respuestas": 0}}})
     monkeypatch.setattr(svc, "_build_latest_responses_preview", lambda encuesta_id, filtros=None, limit=10: [])
 
     bundle = svc.get_dashboard_bundle(100)
