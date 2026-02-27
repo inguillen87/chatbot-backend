@@ -1119,6 +1119,152 @@ def _build_latest_responses_preview(encuesta_id: int, filtros: Optional[Dict[str
         )
 
     return preview
+
+
+def _build_geo_rankings(points: Sequence[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+    """Aggregate heatmap points by geo dimensions for executive drilldowns."""
+
+    counters: Dict[str, Counter] = {
+        "barrio": Counter(),
+        "ciudad": Counter(),
+        "provincia": Counter(),
+    }
+
+    for point in points:
+        if not isinstance(point, Mapping):
+            continue
+        for key in counters:
+            value = point.get(key)
+            if value is None:
+                continue
+            label = str(value).strip()
+            if label:
+                counters[key][label] += 1
+
+    return {
+        key: [{"label": label, "value": value} for label, value in counter.most_common(10)]
+        for key, counter in counters.items()
+    }
+
+
+def _build_category_rankings(summary: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Build category-like ranking from survey questions/options distribution."""
+
+    category_counter: Counter = Counter()
+    for pregunta in summary.get("preguntas") or []:
+        for opcion in pregunta.get("opciones") or []:
+            label = str(opcion.get("texto") or "").strip()
+            value = int(opcion.get("conteo") or opcion.get("value") or 0)
+            if label and value > 0:
+                category_counter[label] += value
+
+    return [{"label": label, "value": value} for label, value in category_counter.most_common(12)]
+
+
+def _build_admin_decision_cards(
+    summary: Dict[str, Any],
+    forecast: Dict[str, Any],
+    alerts: Dict[str, Any],
+    geo_rankings: Dict[str, List[Dict[str, Any]]],
+    category_rankings: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Return concise decision cards for municipality and business operators."""
+
+    top_barrio = (geo_rankings.get("barrio") or [{}])[0]
+    top_city = (geo_rankings.get("ciudad") or [{}])[0]
+    top_category = (category_rankings or [{}])[0]
+    active_alerts = len(alerts.get("alerts") or [])
+
+    return [
+        {
+            "id": "territory_focus",
+            "title": "Foco territorial",
+            "priority": "high" if top_barrio.get("label") else "medium",
+            "message": (
+                f"{top_barrio.get('label')} concentra mayor actividad"
+                if top_barrio.get("label")
+                else "No hay suficientes datos geográficos para priorizar barrios"
+            ),
+            "evidence": {
+                "barrio": top_barrio,
+                "ciudad": top_city,
+            },
+        },
+        {
+            "id": "category_focus",
+            "title": "Categoría con mayor demanda",
+            "priority": "medium",
+            "message": (
+                f"{top_category.get('label')} lidera las respuestas"
+                if top_category.get("label")
+                else "No se detectó una categoría dominante"
+            ),
+            "evidence": {
+                "category": top_category,
+                "total_respuestas": int(summary.get("total_respuestas") or 0),
+            },
+        },
+        {
+            "id": "operational_pulse",
+            "title": "Pulso operativo",
+            "priority": "high" if active_alerts > 0 else "low",
+            "message": (
+                f"{active_alerts} alertas activas: revisar campañas y soporte"
+                if active_alerts > 0
+                else "Sin alertas críticas activas"
+            ),
+            "evidence": {
+                "projected_total": int(forecast.get("projected_total") or 0),
+                "alerts": active_alerts,
+            },
+        },
+    ]
+
+
+def _build_admin_analytics_template(
+    summary: Dict[str, Any],
+    timeseries: Sequence[Dict[str, Any]],
+    heatmap: Dict[str, Any],
+    forecast: Dict[str, Any],
+    alerts: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Build a frontend-friendly advanced layout contract for survey analytics."""
+
+    points = heatmap.get("points") or []
+    geo_rankings = _build_geo_rankings(points)
+    category_rankings = _build_category_rankings(summary)
+    age_distribution = ((summary.get("demografia") or {}).get("rango_etario") or [])
+
+    return {
+        "layout_version": "2026.04",
+        "tabs": [
+            {"id": "overview", "label": "Resumen ejecutivo", "default": True},
+            {"id": "territory", "label": "Mapa territorial"},
+            {"id": "categories", "label": "Categorías"},
+            {"id": "demography", "label": "Demografía"},
+            {"id": "ai_copilot", "label": "Copiloto IA"},
+        ],
+        "chart_stack": {
+            "recommended": ["echarts", "plotly", "maplibre"],
+            "notes": "Usar ECharts para KPIs/series y MapLibre para heatmaps por barrio, distrito y ciudad.",
+        },
+        "datasets": {
+            "geo_rankings": geo_rankings,
+            "category_rankings": category_rankings,
+            "age_distribution": age_distribution,
+            "activity_timeseries": list(timeseries),
+            "heatmap_points": points,
+        },
+        "decision_cards": _build_admin_decision_cards(
+            summary=summary,
+            forecast=forecast,
+            alerts=alerts,
+            geo_rankings=geo_rankings,
+            category_rankings=category_rankings,
+        ),
+    }
+
+
 def get_dashboard_bundle(
     encuesta_id: int,
     filtros: Optional[Dict[str, Any]] = None,
@@ -1141,6 +1287,13 @@ def get_dashboard_bundle(
         summary=summary,
         timeseries=timeseries,
         heatmap=heatmap,
+    )
+    admin_template = _build_admin_analytics_template(
+        summary=summary,
+        timeseries=timeseries,
+        heatmap=heatmap,
+        forecast=forecast,
+        alerts=alerts,
     )
 
     latest_responses = _build_latest_responses_preview(encuesta_id, filtros=filtros, limit=10)
@@ -1183,6 +1336,7 @@ def get_dashboard_bundle(
             "latest_responses": latest_responses,
         },
         "visual_blueprint": visual_blueprint,
+        "admin_template": admin_template,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
 

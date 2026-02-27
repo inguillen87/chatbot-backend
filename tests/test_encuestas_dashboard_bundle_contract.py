@@ -28,6 +28,9 @@ def test_dashboard_bundle_includes_normalized_cards_and_states(monkeypatch):
     assert isinstance(bundle["kpis"]["tasa_completitud"], float)
     assert isinstance(bundle["kpis"]["risk_score"], float)
     assert bundle["modules"]["latest_responses"] == [{"id": 1}]
+    assert bundle["admin_template"]["layout_version"] == "2026.04"
+    assert bundle["admin_template"]["tabs"][0]["id"] == "overview"
+    assert bundle["admin_template"]["decision_cards"][0]["id"] == "territory_focus"
 
 
 def test_dashboard_bundle_handles_empty_states(monkeypatch):
@@ -55,3 +58,4 @@ def test_dashboard_bundle_handles_empty_states(monkeypatch):
     assert bundle["ui_state"]["alerts"] == "normal"
     assert bundle["modules"]["latest_responses"] == []
     assert bundle["kpis"]["risk_score"] == 0.0
+    assert bundle["admin_template"]["datasets"]["geo_rankings"]["barrio"] == []
