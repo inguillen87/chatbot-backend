@@ -630,6 +630,17 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
         try:
             respuesta = save_respuesta(slug, payload, request_ctx)
         except EncuestaError as err:
+            if err.status_code == 409:
+                return (
+                    jsonify(
+                        {
+                            "ok": True,
+                            "duplicate": True,
+                            "message": "Ya registramos tu participación",
+                        }
+                    ),
+                    200,
+                )
             return jsonify(err.to_dict()), err.status_code
         return jsonify({"ok": True, "respuesta_id": respuesta.id}), 201
 
