@@ -1415,7 +1415,18 @@ def _build_admin_analytics_template(
             "chart_container": {
                 "default_min_width": 280,
                 "default_min_height": 220,
+                "mobile_min_height": 240,
                 "render_when_visible": True,
+                "require_non_zero_parent_size": True,
+            },
+            "responsive": {
+                "mobile_breakpoint_px": 768,
+                "card_gap_mobile": 12,
+                "stack_cards_on_mobile": True,
+            },
+            "maps": {
+                "prefer_interactive_providers": ["maplibre", "google"],
+                "fallback_to_static_geo_table": True,
             },
             "telemetry": {
                 "event_endpoint_preferred": "/api/analytics/event",
@@ -1509,6 +1520,7 @@ def get_dashboard_bundle(
     filtros: Optional[Dict[str, Any]] = None,
     *,
     granularity: str = "day",
+    fast_mode: bool = False,
 ) -> Dict[str, Any]:
     """Return a complete analytics payload optimized for executive dashboards."""
 
@@ -1518,13 +1530,26 @@ def get_dashboard_bundle(
     forecast = get_forecast(encuesta_id, filtros=filtros)
     alerts = get_alerts(encuesta_id, filtros=filtros)
     brief = get_executive_brief(encuesta_id, filtros)
-    anomalies = get_anomaly_report(encuesta_id, filtros=filtros)
-    segment_compare_default = get_segment_compare(
-        encuesta_id,
-        filtros=filtros,
-        segment_a={"canal": "web"},
-        segment_b={"canal": "whatsapp"},
-    )
+    anomalies = {
+        "encuesta_id": encuesta_id,
+        "risk_score": 0.0,
+        "risk_level": "low",
+        "severity": "low",
+        "signals": {},
+        "top_anomalies": [],
+    }
+    segment_compare_default = {
+        "segment_a": {"stats": {"total_respuestas": 0}},
+        "segment_b": {"stats": {"total_respuestas": 0}},
+    }
+    if not fast_mode:
+        anomalies = get_anomaly_report(encuesta_id, filtros=filtros)
+        segment_compare_default = get_segment_compare(
+            encuesta_id,
+            filtros=filtros,
+            segment_a={"canal": "web"},
+            segment_b={"canal": "whatsapp"},
+        )
 
     executive_summary = _build_executive_summary_text(summary, forecast, alerts, heatmap)
     visual_blueprint = _build_visual_blueprint(
@@ -1541,10 +1566,11 @@ def get_dashboard_bundle(
         alerts=alerts,
     )
 
-    latest_responses = _build_latest_responses_preview(encuesta_id, filtros=filtros, limit=10)
+    latest_responses = [] if fast_mode else _build_latest_responses_preview(encuesta_id, filtros=filtros, limit=10)
     cards = _build_dashboard_cards(summary, forecast, anomalies)
     ui_state = _build_dashboard_ui_state(summary, heatmap, alerts)
     ui_state["latest_responses"] = "ready" if len(latest_responses) > 0 else "empty"
+    ui_state["render_strategy"] = "fast" if fast_mode else "full"
     active_alerts = int(len(alerts.get("alerts") or []))
     executive_kpis = _build_executive_kpis(
         summary=summary,
@@ -1573,6 +1599,7 @@ def get_dashboard_bundle(
         "meta": {
             "schema_version": "2026.03",
             "filters": dict(filtros or {}),
+            "fast_mode": fast_mode,
             "module_state": {
                 "summary": "ready" if int(summary.get("total_respuestas") or 0) > 0 else "empty",
                 "timeseries": "ready" if len(timeseries or []) > 0 else "empty",
