@@ -3,6 +3,8 @@ import random
 from datetime import datetime, timedelta
 from typing import Optional
 
+import pytest
+
 from extensions import db
 from models import (
     AnalyticsEventV2,
@@ -306,7 +308,8 @@ def test_event_ingest_requires_tenant_and_event_name(client):
         json={'event_name': 'page_view'},
         headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': '8'},
     )
-    assert response.status_code == 400
+    assert response.status_code == 202
+    assert response.get_json().get('reason') == 'tenant_unresolved'
 
     response = client.post(
         '/analytics/event',
@@ -341,7 +344,8 @@ def test_event_ingest_is_tenant_scoped(client):
         json={'tenant_id': tenant_id, 'event_name': 'page_view'},
         headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': '999'},
     )
-    assert forbidden.status_code == 403
+    assert forbidden.status_code == 202
+    assert forbidden.get_json().get('reason') == 'access_denied'
 
 
 def test_admin_analytics_overview_and_exports_are_tenant_scoped(client):
@@ -463,7 +467,7 @@ def test_api_alias_admin_analytics_overview_accepts_tenant_slug(client):
     overview = client.get(
         '/api/admin/analytics/overview',
         query_string={'tenant_slug': 'tenant-analytics-slug', 'scope': 'municipio'},
-        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant.id)},
+        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
     )
     assert overview.status_code == 200
     assert 'totals' in overview.get_json()
@@ -607,13 +611,13 @@ def test_event_ingest_accepts_query_tenant_slug(client):
         '/analytics/event',
         query_string={'tenant_slug': 'junin-1', 'tenant': 'junin-1'},
         json={'event_name': 'page_view'},
-        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant.id)},
+        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
     )
 
     assert response.status_code == 202
     payload = response.get_json()
     assert payload.get('event_name') == 'page_view'
-    assert payload.get('tenant_id') == tenant.id
+    assert payload.get('tenant_id') == tenant_id
 
 
 def test_api_alias_analytics_event_maps_to_ingestor(client):
@@ -628,3 +632,29 @@ def test_api_alias_analytics_event_maps_to_ingestor(client):
 
     assert response.status_code == 202
     assert AnalyticsEventV2.query.filter_by(tenant_id=tenant_id, event_name='dashboard_open').first() is not None
+
+
+def test_event_ingest_does_not_hide_unexpected_access_errors(client, monkeypatch):
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("routes.analytics.require_access", _boom)
+
+    with pytest.raises(RuntimeError):
+        client.post(
+            '/analytics/event',
+            json={'tenant_id': 8, 'event_name': 'page_view'},
+            headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': '8'},
+        )
+
+
+def test_api_alias_analytics_event_honors_feature_gate(client):
+    client.application.config["ANALYTICS_ENABLED"] = False
+
+    response = client.post(
+        '/api/analytics/event',
+        json={'tenant_id': 35, 'event_name': 'dashboard_open'},
+        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': '35'},
+    )
+
+    assert response.status_code == 404

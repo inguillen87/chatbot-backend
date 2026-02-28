@@ -184,8 +184,9 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
         filtros = _parse_filtros()
         granularity = request.args.get("granularity", "day")
         use_envelope = str(request.args.get("envelope") or "").strip().lower() in {"1", "true", "yes", "on"}
+        fast_mode = str(request.args.get("fast") or request.args.get("lite") or "").strip().lower() in {"1", "true", "yes", "on"}
         try:
-            data = get_dashboard_bundle(encuesta_id, filtros, granularity=granularity)
+            data = get_dashboard_bundle(encuesta_id, filtros, granularity=granularity, fast_mode=fast_mode)
         except EncuestaError as err:
             return jsonify(err.to_dict()), err.status_code
 
@@ -197,6 +198,7 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
                     "encuesta_id": encuesta_id,
                     "filters": filtros,
                     "granularity": granularity,
+                    "fast_mode": fast_mode,
                 },
                 "errors": [],
             }

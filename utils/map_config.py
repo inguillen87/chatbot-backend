@@ -79,21 +79,31 @@ def get_map_config() -> Dict[str, str]:
     )
 
     provider = "none"
-    if preferred_provider in {"google", "maptiler"}:
+    available_providers = []
+
+    if google_key:
+        available_providers.append("google")
+
+    # MapLibre can run with a public style even when MAPTILER_API_KEY is absent,
+    # so we advertise it as available whenever we have a style URL.
+    if style_url:
+        available_providers.append("maplibre")
+
+    if preferred_provider in {"google", "maptiler", "maplibre"}:
         if preferred_provider == "google" and google_key:
             provider = "google"
-        elif preferred_provider == "maptiler":
-            provider = "maptiler"
+        elif preferred_provider in {"maptiler", "maplibre"} and style_url:
+            provider = "maplibre"
     else:
         if google_key:
             provider = "google"
-        else:
-            # Always fallback to maptiler/maplibre if Google is not available.
-            # The open Carto style allows rendering without an API key.
-            provider = "maptiler"
+        elif style_url:
+            provider = "maplibre"
 
     return {
         "provider": provider,
+        "provider_aliases": {"maptiler": "maplibre"},
+        "available_providers": available_providers,
         "google_maps_key": google_key,
         "maptiler_key": maptiler_key,
         "style_url": style_url,

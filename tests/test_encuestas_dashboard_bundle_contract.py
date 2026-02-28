@@ -33,6 +33,8 @@ def test_dashboard_bundle_includes_normalized_cards_and_states(monkeypatch):
     assert bundle["admin_template"]["tabs"][0]["id"] == "overview"
     assert bundle["admin_template"]["decision_cards"][0]["id"] == "territory_focus"
     assert bundle["admin_template"]["ux_guardrails"]["chart_container"]["default_min_width"] == 280
+    assert bundle["admin_template"]["ux_guardrails"]["chart_container"]["require_non_zero_parent_size"] is True
+    assert bundle["admin_template"]["ux_guardrails"]["responsive"]["mobile_breakpoint_px"] == 768
     assert bundle["admin_template"]["ux_guardrails"]["telemetry"]["event_endpoint_preferred"] == "/api/analytics/event"
     assert bundle["admin_template"]["visual_modules"][0]["container"]["min_height"] == 220
     assert "kpis_executive" in bundle
@@ -66,3 +68,32 @@ def test_dashboard_bundle_handles_empty_states(monkeypatch):
     assert bundle["modules"]["latest_responses"] == []
     assert bundle["kpis"]["risk_score"] == 0.0
     assert bundle["admin_template"]["datasets"]["geo_rankings"]["barrio"] == []
+
+
+def test_dashboard_bundle_fast_mode_skips_heavy_modules(monkeypatch):
+    monkeypatch.setattr(svc, "get_summary", lambda encuesta_id, filtros=None: {
+        "total_respuestas": 4,
+        "participantes_unicos": 4,
+        "tasa_completitud": "100",
+        "demografia": {},
+        "preguntas": [],
+    })
+    monkeypatch.setattr(svc, "get_timeseries", lambda encuesta_id, granularity="day", filtros=None: [{"fecha": "2026-01-01", "total": 4}])
+    monkeypatch.setattr(svc, "get_heatmap", lambda encuesta_id, filtros=None: {"points": [], "metadata": {"map": {"hotspots": []}}})
+    monkeypatch.setattr(svc, "get_forecast", lambda encuesta_id, filtros=None: {"projected_total": 6})
+    monkeypatch.setattr(svc, "get_alerts", lambda encuesta_id, filtros=None: {"alerts": []})
+    monkeypatch.setattr(svc, "get_executive_brief", lambda encuesta_id, filtros=None: {"headline": "ok"})
+
+    def _must_not_run(*args, **kwargs):
+        raise AssertionError("heavy module should not run in fast mode")
+
+    monkeypatch.setattr(svc, "get_anomaly_report", _must_not_run)
+    monkeypatch.setattr(svc, "get_segment_compare", _must_not_run)
+    monkeypatch.setattr(svc, "_build_latest_responses_preview", _must_not_run)
+
+    bundle = svc.get_dashboard_bundle(77, {"canal": "web"}, fast_mode=True)
+
+    assert bundle["meta"]["fast_mode"] is True
+    assert bundle["ui_state"]["render_strategy"] == "fast"
+    assert bundle["modules"]["latest_responses"] == []
+    assert bundle["kpis"]["risk_score"] == 0.0

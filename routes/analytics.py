@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from flask import Blueprint, abort, current_app, jsonify, render_template, request
+from werkzeug.exceptions import HTTPException
 
 from extensions import db
 
@@ -64,6 +65,9 @@ def _resolve_tenant_id_from_event_payload(payload: dict) -> int | None:
                 .first()
             )
             if tenant is not None:
+                owner_tenant_id = tenant.municipio_id or tenant.pyme_id
+                if owner_tenant_id is not None:
+                    return int(owner_tenant_id)
                 return int(tenant.id)
     return None
 
@@ -201,8 +205,14 @@ def analytics_event_ingest():
 
     try:
         require_access(str(tenant_id), "operador")
-    except Exception:
-        current_app.logger.info("[analytics] ignored event due to access guard tenant_id=%s", tenant_id)
+    except HTTPException as exc:
+        if exc.code not in {401, 403}:
+            raise
+        current_app.logger.info(
+            "[analytics] ignored event due to access guard tenant_id=%s status=%s",
+            tenant_id,
+            exc.code,
+        )
         return _json_response({"ok": True, "ignored": True, "reason": "access_denied"}, status=202)
 
     analytics_ingestor.track(
