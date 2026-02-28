@@ -6,11 +6,12 @@ paths while the canonical blueprints live under non-/api prefixes (e.g.,
 behavior remain consistent with the original endpoints.
 """
 
-from flask import Blueprint, current_app, jsonify, request
+from flask import Blueprint, abort, current_app, jsonify, request
 from flask_cors import cross_origin
 
 from routes.admin_ai import get_bot_settings, update_bot_settings
 from routes.analytics import analytics_event_ingest
+from services.analytics.config import get_config
 from routes.admin_analytics import (
     admin_analytics_export_csv,
     admin_analytics_export_pdf,
@@ -225,6 +226,8 @@ def _options_ok():
 def analytics_event_alias():
     if request.method == "OPTIONS":
         return _options_ok()
+    if not get_config().feature_enabled:
+        abort(404)
     return analytics_event_ingest()
 
 

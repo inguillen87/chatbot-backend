@@ -467,7 +467,7 @@ def test_api_alias_admin_analytics_overview_accepts_tenant_slug(client):
     overview = client.get(
         '/api/admin/analytics/overview',
         query_string={'tenant_slug': 'tenant-analytics-slug', 'scope': 'municipio'},
-        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant.id)},
+        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
     )
     assert overview.status_code == 200
     assert 'totals' in overview.get_json()
@@ -611,13 +611,13 @@ def test_event_ingest_accepts_query_tenant_slug(client):
         '/analytics/event',
         query_string={'tenant_slug': 'junin-1', 'tenant': 'junin-1'},
         json={'event_name': 'page_view'},
-        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant.id)},
+        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
     )
 
     assert response.status_code == 202
     payload = response.get_json()
     assert payload.get('event_name') == 'page_view'
-    assert payload.get('tenant_id') == tenant.id
+    assert payload.get('tenant_id') == tenant_id
 
 
 def test_api_alias_analytics_event_maps_to_ingestor(client):
@@ -646,3 +646,15 @@ def test_event_ingest_does_not_hide_unexpected_access_errors(client, monkeypatch
             json={'tenant_id': 8, 'event_name': 'page_view'},
             headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': '8'},
         )
+
+
+def test_api_alias_analytics_event_honors_feature_gate(client):
+    client.application.config["ANALYTICS_ENABLED"] = False
+
+    response = client.post(
+        '/api/analytics/event',
+        json={'tenant_id': 35, 'event_name': 'dashboard_open'},
+        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': '35'},
+    )
+
+    assert response.status_code == 404

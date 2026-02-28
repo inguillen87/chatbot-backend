@@ -65,6 +65,9 @@ def _resolve_tenant_id_from_event_payload(payload: dict) -> int | None:
                 .first()
             )
             if tenant is not None:
+                owner_tenant_id = tenant.municipio_id or tenant.pyme_id
+                if owner_tenant_id is not None:
+                    return int(owner_tenant_id)
                 return int(tenant.id)
     return None
 
