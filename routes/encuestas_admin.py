@@ -193,10 +193,7 @@ def _create_admin_blueprint(name: str, url_prefix: str) -> Blueprint:
             return jsonify(err.to_dict()), err.status_code
         return jsonify(serialize_encuesta(encuesta)), 200
 
-    @bp.route("/<int:encuesta_id>/seed-demo", methods=["POST"])
-    @token_requerido
-    @require_role("admin", "super_admin")
-    def seed_demo_endpoint(current_user, encuesta_id: int):
+    def _run_seed_demo(current_user, encuesta_id: int, data: dict):
         def _parse_bool(value):
             if isinstance(value, bool):
                 return value
@@ -204,7 +201,6 @@ def _create_admin_blueprint(name: str, url_prefix: str) -> Blueprint:
                 return False
             return str(value).strip().lower() in {"1", "true", "yes", "si", "on"}
 
-        data = request.get_json(silent=True) or {}
         cantidad = data.get("cantidad") or 100
         try:
             cantidad_int = int(cantidad)
@@ -237,6 +233,25 @@ def _create_admin_blueprint(name: str, url_prefix: str) -> Blueprint:
         except EncuestaError as err:
             return jsonify(err.to_dict()), err.status_code
         return jsonify(result), 200
+
+    @bp.route("/<int:encuesta_id>/seed-demo", methods=["POST"])
+    @token_requerido
+    @require_role("admin", "super_admin")
+    def seed_demo_endpoint(current_user, encuesta_id: int):
+        data = request.get_json(silent=True) or {}
+        return _run_seed_demo(current_user, encuesta_id, data)
+
+    @bp.route("/<int:encuesta_id>/seed-demo/bulk", methods=["POST"])
+    @token_requerido
+    @require_role("admin", "super_admin")
+    def seed_demo_bulk_endpoint(current_user, encuesta_id: int):
+        """Dedicated admin bulk seeding endpoint (avoids public dedupe/conflict flows)."""
+
+        data = request.get_json(silent=True) or {}
+        if "cantidad" not in data and "count" in data:
+            data["cantidad"] = data.get("count")
+        data.setdefault("reset", False)
+        return _run_seed_demo(current_user, encuesta_id, data)
 
     @bp.route("/<int:encuesta_id>/respuestas", methods=["GET"])
     @token_requerido
