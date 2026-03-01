@@ -41,3 +41,11 @@ def test_get_anomaly_report_includes_top_anomalies_metadata(monkeypatch):
     assert "recommended_action" in first
     assert "confidence" in first
     assert "timestamp" in first
+
+
+def test_is_demo_respuesta_detects_seed_metadata():
+    demo = SimpleNamespace(metadata_payload={"is_demo_seed": True})
+    regular = SimpleNamespace(metadata_payload={"is_demo_seed": False})
+
+    assert svc._is_demo_respuesta(demo) is True
+    assert svc._is_demo_respuesta(regular) is False

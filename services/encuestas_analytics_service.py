@@ -82,6 +82,26 @@ def _normalize_question_type(raw: Optional[str]) -> str:
     return text
 
 
+def _as_bool(value: Any) -> Optional[bool]:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on", "si"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    return None
+
+
+def _is_demo_respuesta(respuesta: EncRespuesta) -> bool:
+    metadata = getattr(respuesta, "metadata_payload", None)
+    if isinstance(metadata, dict):
+        return bool(metadata.get("is_demo_seed") or metadata.get("demo") or metadata.get("synthetic"))
+    return False
+
+
 def _apply_filters(query, filtros: Optional[Dict[str, Any]]):
     if not filtros:
         return query
@@ -127,7 +147,20 @@ def _apply_filters(query, filtros: Optional[Dict[str, Any]]):
 def _collect_respuestas(encuesta: EncEncuesta, filtros: Optional[Dict[str, Any]]):
     query = EncRespuesta.query.options(joinedload(EncRespuesta.detalles)).filter_by(encuesta_id=encuesta.id)
     query = _apply_filters(query, filtros)
-    return query.order_by(EncRespuesta.submitted_at.asc()).all()
+    respuestas = query.order_by(EncRespuesta.submitted_at.asc()).all()
+
+    include_demo = True
+    if filtros:
+        if _as_bool(filtros.get("exclude_demo")) is True:
+            include_demo = False
+        parsed_include_demo = _as_bool(filtros.get("include_demo"))
+        if parsed_include_demo is not None:
+            include_demo = parsed_include_demo
+
+    if include_demo:
+        return respuestas
+
+    return [respuesta for respuesta in respuestas if not _is_demo_respuesta(respuesta)]
 
 
 def _top_counter(counter: Counter, limit: int = 10) -> List[Dict[str, Any]]:

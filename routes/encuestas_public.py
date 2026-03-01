@@ -637,6 +637,7 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
                             "ok": True,
                             "duplicate": True,
                             "message": "Ya registramos tu participación",
+                            "suggested_admin_endpoint_template": "/admin/encuestas/{encuesta_id}/seed-demo/bulk",
                         }
                     ),
                     200,

@@ -214,6 +214,7 @@ def test_responder_duplicate_conflict_is_idempotent_success(client, monkeypatch)
         "ok": True,
         "duplicate": True,
         "message": "Ya registramos tu participación",
+        "suggested_admin_endpoint_template": "/admin/encuestas/{encuesta_id}/seed-demo/bulk",
     }
 
 def test_share_redirects_to_canonical(client):

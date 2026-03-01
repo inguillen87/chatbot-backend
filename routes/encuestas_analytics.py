@@ -33,7 +33,7 @@ def _feature_guard():
 
 def _parse_filtros() -> dict:
     filtros = {}
-    for key in ("desde", "hasta", "canal", "utm_source", "utm_campaign", "bbox"):
+    for key in ("desde", "hasta", "canal", "utm_source", "utm_campaign", "bbox", "include_demo", "exclude_demo"):
         value = request.args.get(key)
         if value:
             filtros[key] = value
