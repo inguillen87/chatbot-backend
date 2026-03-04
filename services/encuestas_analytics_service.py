@@ -1168,14 +1168,16 @@ def _build_dashboard_cards(summary: Dict[str, Any], forecast: Dict[str, Any], an
     ]
 
 
-def _build_dashboard_ui_state(summary: Dict[str, Any], heatmap: Dict[str, Any], alerts: Dict[str, Any]) -> Dict[str, Any]:
+def _build_dashboard_ui_state(summary: Dict[str, Any], heatmap: Dict[str, Any], alerts: Dict[str, Any], *, latest_responses_state: Optional[str] = None) -> Dict[str, Any]:
     total_respuestas = int(summary.get("total_respuestas") or 0)
     points = heatmap.get("points") or []
     has_points = isinstance(points, list) and len(points) > 0
     has_alerts = bool((alerts.get("alerts") or []))
 
+    latest_state = latest_responses_state or ("ready" if total_respuestas > 0 else "empty")
+
     return {
-        "latest_responses": "ready" if total_respuestas > 0 else "empty",
+        "latest_responses": latest_state,
         "map_participation": "ready" if has_points else "empty",
         "alerts": "attention" if has_alerts else "normal",
     }
@@ -1599,10 +1601,22 @@ def get_dashboard_bundle(
         alerts=alerts,
     )
 
-    latest_responses = [] if fast_mode else _build_latest_responses_preview(encuesta_id, filtros=filtros, limit=10)
+    latest_responses: List[Dict[str, Any]] = []
+    latest_responses_error: Optional[str] = None
+    latest_responses_state = "empty"
+    if fast_mode:
+        latest_responses_state = "deferred"
+    else:
+        try:
+            latest_responses = _build_latest_responses_preview(encuesta_id, filtros=filtros, limit=10)
+            latest_responses_state = "ready" if len(latest_responses) > 0 else "empty"
+        except Exception as exc:  # pragma: no cover - defensive guard for dashboard stability
+            logger.exception("[encuestas.analytics] latest responses preview failed encuesta_id=%s", encuesta_id)
+            latest_responses_error = str(exc)
+            latest_responses_state = "degraded"
+
     cards = _build_dashboard_cards(summary, forecast, anomalies)
-    ui_state = _build_dashboard_ui_state(summary, heatmap, alerts)
-    ui_state["latest_responses"] = "ready" if len(latest_responses) > 0 else "empty"
+    ui_state = _build_dashboard_ui_state(summary, heatmap, alerts, latest_responses_state=latest_responses_state)
     ui_state["render_strategy"] = "fast" if fast_mode else "full"
     active_alerts = int(len(alerts.get("alerts") or []))
     executive_kpis = _build_executive_kpis(
@@ -1638,6 +1652,7 @@ def get_dashboard_bundle(
                 "timeseries": "ready" if len(timeseries or []) > 0 else "empty",
                 "heatmap": "ready" if len((heatmap.get("points") or [])) > 0 else "empty",
                 "alerts": "attention" if active_alerts > 0 else "normal",
+                "latest_responses": latest_responses_state,
             },
         },
         "modules": {
@@ -1648,6 +1663,10 @@ def get_dashboard_bundle(
             "alerts": alerts,
             "anomalies": anomalies,
             "latest_responses": latest_responses,
+            "latest_responses_meta": {
+                "state": latest_responses_state,
+                "error": latest_responses_error,
+            },
         },
         "visual_blueprint": visual_blueprint,
         "admin_template": admin_template,

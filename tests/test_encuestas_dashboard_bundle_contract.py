@@ -97,3 +97,32 @@ def test_dashboard_bundle_fast_mode_skips_heavy_modules(monkeypatch):
     assert bundle["ui_state"]["render_strategy"] == "fast"
     assert bundle["modules"]["latest_responses"] == []
     assert bundle["kpis"]["risk_score"] == 0.0
+
+
+def test_dashboard_bundle_marks_latest_responses_degraded_on_error(monkeypatch):
+    monkeypatch.setattr(svc, "get_summary", lambda encuesta_id, filtros=None: {
+        "total_respuestas": 9,
+        "participantes_unicos": 8,
+        "tasa_completitud": "89",
+        "demografia": {},
+        "preguntas": [],
+    })
+    monkeypatch.setattr(svc, "get_timeseries", lambda encuesta_id, granularity="day", filtros=None: [{"fecha": "2026-01-01", "total": 2}])
+    monkeypatch.setattr(svc, "get_heatmap", lambda encuesta_id, filtros=None: {"points": [], "metadata": {"map": {"hotspots": []}}})
+    monkeypatch.setattr(svc, "get_forecast", lambda encuesta_id, filtros=None: {"projected_total": 10})
+    monkeypatch.setattr(svc, "get_alerts", lambda encuesta_id, filtros=None: {"alerts": []})
+    monkeypatch.setattr(svc, "get_executive_brief", lambda encuesta_id, filtros=None: {"headline": "ok"})
+    monkeypatch.setattr(svc, "get_anomaly_report", lambda encuesta_id, filtros=None: {"risk_score": 0.2})
+    monkeypatch.setattr(svc, "get_segment_compare", lambda encuesta_id, filtros=None, segment_a=None, segment_b=None: {"segment_a": {"stats": {"total_respuestas": 3}}, "segment_b": {"stats": {"total_respuestas": 2}}})
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("latest broken")
+
+    monkeypatch.setattr(svc, "_build_latest_responses_preview", _boom)
+
+    bundle = svc.get_dashboard_bundle(99, {"canal": "web"})
+
+    assert bundle["ui_state"]["latest_responses"] == "degraded"
+    assert bundle["modules"]["latest_responses"] == []
+    assert bundle["modules"]["latest_responses_meta"]["state"] == "degraded"
+    assert "latest broken" in (bundle["modules"]["latest_responses_meta"].get("error") or "")

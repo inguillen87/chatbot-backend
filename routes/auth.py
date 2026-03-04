@@ -1459,6 +1459,9 @@ def login():
             ],
             "request_id": request_id,
         },
+        "ui": {
+            "panels": _dashboard_panels_for_user(user, tipo_chat),
+        },
         "timing": {
             "db_lookup_ms": db_lookup_ms,
             "mode": "shell_first",
@@ -1487,7 +1490,16 @@ def login():
 
         response.set_cookie(**cookie_args)
 
-    response, _ = _finalize_auth_response(response)
+    response, elapsed_ms = _finalize_auth_response(response)
+    current_app.logger.info(
+        "[auth.login] request_id=%s user_id=%s role=%s tenant_slug=%s db_lookup_ms=%s total_ms=%s",
+        request_id,
+        user.id,
+        user.rol,
+        response_slug,
+        db_lookup_ms,
+        elapsed_ms,
+    )
     if entity_token_value:
         response.headers.setdefault("X-Entity-Token", entity_token_value)
     return response
@@ -2541,6 +2553,13 @@ def session_bootstrap(user: User):
     response = jsonify(payload)
     response.headers.setdefault("X-Request-Id", request_id)
     response.headers.setdefault("Server-Timing", f"bootstrap_total;dur={elapsed_ms}")
+    current_app.logger.info(
+        "[auth.bootstrap] request_id=%s user_id=%s panels=%s total_ms=%s",
+        request_id,
+        user.id,
+        len(panels),
+        elapsed_ms,
+    )
     return response
 
 

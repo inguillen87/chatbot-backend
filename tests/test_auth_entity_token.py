@@ -32,6 +32,7 @@ def test_login_returns_persistent_entity_token(client):
     payload = response.get_json()
     assert payload["entity_token"] == "static-entity-token"
     assert payload["widget_embed_token"] == "static-entity-token"
+    assert isinstance((payload.get("ui") or {}).get("panels"), list)
     assert response.headers.get("X-Entity-Token") == "static-entity-token"
 
 
