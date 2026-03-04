@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
+import uuid
 
-from flask import Blueprint, Response, jsonify, request
+from flask import Blueprint, Response, current_app, jsonify, request
 
 from config.feature_flags import FEATURE_ENCUESTAS
 from services.encuestas_analytics_service import (
@@ -115,13 +117,28 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
     @token_requerido
     @require_role("admin", "empleado", "super_admin")
     def heatmap(current_user, encuesta_id: int):
+        request_started = time.perf_counter()
+        request_id = request.headers.get("X-Request-Id") or uuid.uuid4().hex
         filtros = _parse_filtros()
         resolution = request.args.get("resolution", type=int)
         try:
             data = get_heatmap(encuesta_id, filtros, resolution=resolution)
         except EncuestaError as err:
             return jsonify(err.to_dict()), err.status_code
-        return jsonify(data)
+        response = jsonify(data)
+        elapsed_ms = round((time.perf_counter() - request_started) * 1000.0, 2)
+        response.headers.setdefault("X-Request-Id", request_id)
+        response.headers.setdefault("Server-Timing", f"encuestas_heatmap;dur={elapsed_ms}")
+        current_app.logger.info(
+            "[encuestas.analytics.heatmap] request_id=%s encuesta_id=%s points=%s cells=%s state=%s total_ms=%s",
+            request_id,
+            encuesta_id,
+            len(data.get("points") or []),
+            len(data.get("cells") or []),
+            (data.get("render_contract") or {}).get("state"),
+            elapsed_ms,
+        )
+        return response
 
     bp.add_url_rule("/heatmap", view_func=heatmap, methods=["GET"])
 
@@ -181,6 +198,8 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
     @token_requerido
     @require_role("admin", "empleado", "super_admin")
     def dashboard(current_user, encuesta_id: int):
+        request_started = time.perf_counter()
+        request_id = request.headers.get("X-Request-Id") or uuid.uuid4().hex
         filtros = _parse_filtros()
         granularity = request.args.get("granularity", "day")
         use_envelope = str(request.args.get("envelope") or "").strip().lower() in {"1", "true", "yes", "on"}
@@ -202,9 +221,35 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
                 },
                 "errors": [],
             }
-            return _json_with_etag(envelope)
+            response = _json_with_etag(envelope)
+            elapsed_ms = round((time.perf_counter() - request_started) * 1000.0, 2)
+            response.headers.setdefault("X-Request-Id", request_id)
+            response.headers.setdefault("Server-Timing", f"encuestas_dashboard;dur={elapsed_ms}")
+            current_app.logger.info(
+                "[encuestas.analytics.dashboard] request_id=%s encuesta_id=%s fast_mode=%s heatmap=%s latest_responses=%s total_ms=%s",
+                request_id,
+                encuesta_id,
+                fast_mode,
+                ((data.get("meta") or {}).get("module_state") or {}).get("heatmap"),
+                ((data.get("meta") or {}).get("module_state") or {}).get("latest_responses"),
+                elapsed_ms,
+            )
+            return response
 
-        return _json_with_etag(data)
+        response = _json_with_etag(data)
+        elapsed_ms = round((time.perf_counter() - request_started) * 1000.0, 2)
+        response.headers.setdefault("X-Request-Id", request_id)
+        response.headers.setdefault("Server-Timing", f"encuestas_dashboard;dur={elapsed_ms}")
+        current_app.logger.info(
+            "[encuestas.analytics.dashboard] request_id=%s encuesta_id=%s fast_mode=%s heatmap=%s latest_responses=%s total_ms=%s",
+            request_id,
+            encuesta_id,
+            fast_mode,
+            ((data.get("meta") or {}).get("module_state") or {}).get("heatmap"),
+            ((data.get("meta") or {}).get("module_state") or {}).get("latest_responses"),
+            elapsed_ms,
+        )
+        return response
 
     bp.add_url_rule("/dashboard", view_func=dashboard, methods=["GET"])
     if spanish_aliases:

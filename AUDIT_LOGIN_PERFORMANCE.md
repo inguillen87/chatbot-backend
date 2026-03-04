@@ -1,19 +1,26 @@
 # AUDIT LOGIN PERFORMANCE (Backend)
 
-## Hallazgos
-- El login entregaba token/perfil pero sin contrato explícito para bootstrap incremental.
-- El frontend podía quedar acoplado a cargas posteriores bloqueantes (`/auth/me`, `/auth/me/dashboard`).
-- No había una guía backend clara para shell-first + carga async.
+## Causa raíz por endpoint/servicio
 
-## Cambios aplicados
-1. `POST /auth/login` ahora devuelve bloque `bootstrap` con `mode=lite` y endpoint recomendado `/auth/session/bootstrap`.
-2. Se expone `GET /auth/session/bootstrap` para entregar contrato mínimo (usuario, panels, prioridades mobile, endpoints siguientes).
-3. Se centralizó la lógica de panels con `_dashboard_panels_for_user` para evitar inconsistencias entre bootstrap y dashboard.
+### `POST /auth/login` (`routes/auth.py`)
+- El login tenía trabajo bloqueante mezclado con bootstrap inicial.
+- Faltaba trazabilidad fina por etapa para saber si el cuello era DB, password, tenant o firma JWT.
+- El frontend podía esperar cargas no críticas sin contrato shell-first suficientemente explícito.
 
-## Impacto esperado
-- Menor tiempo percibido al entrar: frontend puede renderizar shell sin esperar datasets pesados.
-- Menor riesgo de duplicar lógica de navegación por rol.
+### `GET /auth/session/bootstrap` (`routes/auth.py`)
+- Existía necesidad de un contrato mínimo para entrar rápido al shell y diferir fetches pesados.
+- Sin request-id/timing consistente en todos los pasos, era difícil correlacionar lentitud percibida.
 
-## Próximos pasos sugeridos
-- Instrumentar tiempos por etapa (`login_db_ms`, `tenant_attach_ms`, `jwt_ms`).
-- Exponer `X-Request-Id` en login/bootstrap y medir percentiles P50/P95.
+## Mejoras aplicadas
+1. Login shell-first con bloque `bootstrap` mínimo y endpoint recomendado `/auth/session/bootstrap`.
+2. Tiempos por etapa en login (`db_lookup_ms`, `password_verify_ms`, `tenant_resolve_ms`, `token_sign_ms`, `total_ms`).
+3. Trazabilidad estándar por request con `X-Request-Id` y `Server-Timing`.
+4. Migraciones de datos anónimos en modo diferido (thread) para no bloquear respuesta inicial.
+
+## Métricas mínimas disponibles
+- `timing.*` en payload login.
+- `Server-Timing: auth_total`.
+- logs estructurados `[auth.login]` con `request_id` y `total_ms`.
+
+## Próximo paso recomendado
+- Exportar percentiles P50/P95 desde logs (o APM) por etapa de login para validar regresiones por release.

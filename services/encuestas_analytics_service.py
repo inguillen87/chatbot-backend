@@ -1183,6 +1183,55 @@ def _build_dashboard_ui_state(summary: Dict[str, Any], heatmap: Dict[str, Any], 
     }
 
 
+def _build_frontend_render_contract(
+    *,
+    heatmap: Dict[str, Any],
+    timeseries: Sequence[Dict[str, Any]],
+    latest_responses_state: str,
+    fast_mode: bool,
+) -> Dict[str, Any]:
+    """Return explicit FE orchestration hints to keep charts/maps stable.
+
+    This contract is consumed by the analytics frontend so it can prioritize
+    chart engines, apply deterministic fallbacks and avoid mounting maps/charts
+    when required datasets are absent.
+    """
+
+    map_config = ((heatmap.get("metadata") or {}).get("map_config") or {})
+    preferred_provider = map_config.get("provider") or "maplibre"
+    if preferred_provider == "none":
+        preferred_provider = "maplibre"
+
+    map_ready = bool(heatmap.get("points") or heatmap.get("cells"))
+    timeseries_ready = bool(timeseries)
+
+    return {
+        "version": "2026.04",
+        "hierarchy": {
+            "chart_engines": ["echarts", "recharts", "plotly"],
+            "map_engines": [preferred_provider, "maplibre", "google"],
+        },
+        "modules": {
+            "timeseries": {
+                "state": "ready" if timeseries_ready else "empty",
+                "dataset_key": "modules.timeseries",
+            },
+            "heatmap": {
+                "state": "ready" if map_ready else "empty",
+                "dataset_key": "modules.heatmap.points",
+                "fallback_dataset_key": "modules.heatmap.cells",
+                "preferred_provider": preferred_provider,
+                "fallback_provider": "maplibre",
+            },
+            "latest_responses": {
+                "state": latest_responses_state,
+                "dataset_key": "modules.latest_responses",
+            },
+        },
+        "render_strategy": "fast" if fast_mode else "full",
+    }
+
+
 def _build_latest_responses_preview(encuesta_id: int, filtros: Optional[Dict[str, Any]] = None, *, limit: int = 10) -> List[Dict[str, Any]]:
     """Return a compact latest responses list to keep UI summary consistent."""
 
@@ -1627,6 +1676,12 @@ def get_dashboard_bundle(
         segment_compare=segment_compare_default,
         timeseries=timeseries,
     )
+    frontend_render_contract = _build_frontend_render_contract(
+        heatmap=heatmap,
+        timeseries=timeseries,
+        latest_responses_state=latest_responses_state,
+        fast_mode=fast_mode,
+    )
 
     return {
         "encuesta_id": encuesta_id,
@@ -1670,6 +1725,7 @@ def get_dashboard_bundle(
         },
         "visual_blueprint": visual_blueprint,
         "admin_template": admin_template,
+        "frontend_render_contract": frontend_render_contract,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -1927,7 +1983,21 @@ def get_heatmap(
     metadata["heatmap_layer"] = heatmap_layer
     metadata["map_layers"] = {"heatmap": heatmap_layer}
     metadata["map_filter"] = map_filter
-    return {"points": points, "cells": cells, "metadata": metadata}
+    render_contract = {
+        "module": "heatmap",
+        "state": "ready" if bool(points or cells) else "empty",
+        "dataset_key": "points",
+        "fallback_dataset_key": "cells",
+        "source_keys": ["points", "cells", "metadata.map_layers.heatmap"],
+        "chart_hierarchy": ["echarts", "recharts", "plotly"],
+        "map_hierarchy": [provider_hint, "maplibre", "google"],
+    }
+    return {
+        "points": points,
+        "cells": cells,
+        "metadata": metadata,
+        "render_contract": render_contract,
+    }
 
 
 def _mask_ip(ip: Optional[str]) -> str:

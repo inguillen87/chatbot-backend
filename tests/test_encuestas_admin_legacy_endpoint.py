@@ -530,6 +530,8 @@ def test_admin_encuestas_legacy_analytics_and_snapshots(client, monkeypatch, adm
     assert "executive_summary" in dashboard_data
     assert "visual_blueprint" in dashboard_data
     assert "modules" in dashboard_data
+    assert dashboard_resp.headers.get("X-Request-Id")
+    assert "encuestas_dashboard" in (dashboard_resp.headers.get("Server-Timing") or "")
     assert "frontend_contract" in dashboard_data["visual_blueprint"]
     assert dashboard_data["visual_blueprint"]["frontend_contract"]["auth_demo"]["login_endpoint"] == "/auth/demo"
 
@@ -560,6 +562,8 @@ def test_admin_encuestas_legacy_analytics_and_snapshots(client, monkeypatch, adm
     assert "signals" in anomalies_data
     heatmap_resp = client.get(f"/admin/encuestas/{encuesta_id}/analytics/heatmap", headers=headers)
     assert heatmap_resp.status_code == 200
+    assert heatmap_resp.headers.get("X-Request-Id")
+    assert "encuestas_heatmap" in (heatmap_resp.headers.get("Server-Timing") or "")
     heatmap_data = heatmap_resp.get_json()
     assert "points" in heatmap_data
     assert "cells" in heatmap_data
@@ -572,6 +576,8 @@ def test_admin_encuestas_legacy_analytics_and_snapshots(client, monkeypatch, adm
     heatmap_layer = metadata["heatmap_layer"]
     assert "provider_hint" in heatmap_layer
     assert "filter_keys" in heatmap_layer
+    assert heatmap_data["render_contract"]["module"] == "heatmap"
+    assert heatmap_data["render_contract"]["chart_hierarchy"][0] == "echarts"
     map_filter = metadata["map_filter"]
     assert isinstance(map_filter, dict)
     assert "options" in map_filter

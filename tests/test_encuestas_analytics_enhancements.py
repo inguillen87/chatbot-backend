@@ -49,3 +49,25 @@ def test_is_demo_respuesta_detects_seed_metadata():
 
     assert svc._is_demo_respuesta(demo) is True
     assert svc._is_demo_respuesta(regular) is False
+
+
+def test_get_heatmap_exposes_render_contract_hierarchy(monkeypatch):
+    encuesta = SimpleNamespace(id=77)
+    respuestas = [SimpleNamespace(lat=-33.1, lng=-68.8)]
+    points = [{"lat": -33.1, "lng": -68.8, "weight": 2}]
+    cells = [{"lat": -33.1, "lng": -68.8, "count": 2}]
+
+    monkeypatch.setattr(svc, "get_encuesta", lambda encuesta_id: encuesta)
+    monkeypatch.setattr(svc, "_collect_respuestas", lambda encuesta_obj, filtros=None: respuestas)
+    monkeypatch.setattr(svc, "_aggregate_heatmap_cells", lambda _respuestas, resolution=None: (points, cells))
+    monkeypatch.setattr(svc, "_build_heatmap_metadata", lambda _encuesta, _points: {"base": True})
+    monkeypatch.setattr(svc, "_build_map_filter", lambda _points: {"keys": ["barrio"]})
+    monkeypatch.setattr(svc, "build_feature_collection", lambda data: {"type": "FeatureCollection", "features": data})
+    monkeypatch.setattr(svc, "get_map_config", lambda: {"provider": "maplibre"})
+
+    payload = svc.get_heatmap(77)
+
+    assert payload["render_contract"]["module"] == "heatmap"
+    assert payload["render_contract"]["state"] == "ready"
+    assert payload["render_contract"]["chart_hierarchy"][0] == "echarts"
+    assert payload["render_contract"]["map_hierarchy"][0] == "maplibre"

@@ -1,19 +1,24 @@
-# AUDIT ANALYTICS RENDERING (Backend contract)
+# AUDIT ANALYTICS RENDERING (Backend contracts)
 
-## Hallazgos
-- Hay datos para analytics, pero render incompleto en frontend (charts/maps).
-- Faltaba control para excluir datos demo del análisis real cuando se inyectan respuestas sintéticas.
+## Causa raíz por endpoint/servicio
 
-## Cambios aplicados
-1. Se marcó seed demo con metadata estructurada en cada `EncRespuesta`:
-   - `is_demo_seed: true`
-   - `demo_batch_id`
-   - `demo_scenario`
-2. Se agregaron filtros en analytics para controlar inclusión demo:
-   - `include_demo`
-   - `exclude_demo`
-3. Se aceptan esos filtros desde `routes/encuestas_analytics.py`.
+### `GET /analytics/geo/heatmap` y `GET /analytics/geo/points` (`routes/analytics.py`, `services/analytics/service.py`)
+- Frontend no tenía señales robustas de readiness/fallback para provider de mapas.
+- Había respuestas con datos pero sin contrato explícito de render para degradar bien.
 
-## Impacto esperado
-- Dashboards ejecutivos pueden excluir demo/test y mostrar operación real.
-- Mejor trazabilidad de lotes de demo.
+### `GET /admin/encuestas/:id/analytics/dashboard` y `.../heatmap` (`routes/encuestas_analytics.py`, `services/encuestas_analytics_service.py`)
+- Faltaba una jerarquía declarativa de engines/chart-map para evitar decisiones ambiguas en FE.
+- Observabilidad insuficiente para rastrear módulos parcialmente rotos (ej. latest responses/heatmap).
+
+## Mejoras aplicadas
+1. `meta.map` enriquecido con `available_providers`, `provider_aliases`, `render_ready`, `render_reason`.
+2. `render_contract` en geo endpoints (`heatmap`/`points`) con `state`, `module`, `source_keys`.
+3. `frontend_render_contract` en dashboard de encuestas con jerarquía explícita:
+   - charts: `echarts -> recharts -> plotly`
+   - mapas: `preferred -> maplibre -> google`
+4. `render_contract` también en `get_heatmap` de encuestas (dataset key/fallback).
+5. `X-Request-Id` + `Server-Timing` + logs estructurados en heatmap/dashboard de encuestas.
+
+## Resultado esperado
+- Menos pantallas en blanco por decisiones de render inconsistentes.
+- Diagnóstico más rápido en producción por request-id y timing por endpoint.

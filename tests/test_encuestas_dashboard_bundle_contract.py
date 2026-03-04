@@ -39,6 +39,8 @@ def test_dashboard_bundle_includes_normalized_cards_and_states(monkeypatch):
     assert bundle["admin_template"]["visual_modules"][0]["container"]["min_height"] == 220
     assert "kpis_executive" in bundle
     assert "participacion_total" in bundle["kpis_executive"]
+    assert bundle["frontend_render_contract"]["hierarchy"]["chart_engines"][0] == "echarts"
+    assert bundle["frontend_render_contract"]["modules"]["heatmap"]["state"] == "ready"
 
 
 def test_dashboard_bundle_handles_empty_states(monkeypatch):
@@ -67,6 +69,7 @@ def test_dashboard_bundle_handles_empty_states(monkeypatch):
     assert bundle["ui_state"]["alerts"] == "normal"
     assert bundle["modules"]["latest_responses"] == []
     assert bundle["kpis"]["risk_score"] == 0.0
+    assert bundle["frontend_render_contract"]["modules"]["heatmap"]["state"] == "empty"
     assert bundle["admin_template"]["datasets"]["geo_rankings"]["barrio"] == []
 
 
@@ -97,6 +100,7 @@ def test_dashboard_bundle_fast_mode_skips_heavy_modules(monkeypatch):
     assert bundle["ui_state"]["render_strategy"] == "fast"
     assert bundle["modules"]["latest_responses"] == []
     assert bundle["kpis"]["risk_score"] == 0.0
+    assert bundle["frontend_render_contract"]["render_strategy"] == "fast"
 
 
 def test_dashboard_bundle_marks_latest_responses_degraded_on_error(monkeypatch):
