@@ -6,7 +6,7 @@ from werkzeug.datastructures import MultiDict
 
 from models import EncEncuesta, EncLink, User
 from routes import encuestas_public
-from services.encuestas_service import get_public_encuesta, list_public_encuestas_for_tenant
+from services.encuestas_service import EncuestaError, get_public_encuesta, list_public_encuestas_for_tenant
 
 
 class _DummyRespuesta:
@@ -197,6 +197,25 @@ def test_responder_flattens_bracketed_form_fields(client, monkeypatch):
     assert payload["metadata"]["canal"] == "web"
     assert payload["metadata"]["demographics"]["genero"] == "femenino"
 
+
+def test_responder_duplicate_conflict_is_idempotent_success(client, monkeypatch):
+    def fake_save(_slug, _payload, _ctx):
+        raise EncuestaError("Ya registramos tu participación", status_code=409)
+
+    monkeypatch.setattr("routes.encuestas_public.save_respuesta", fake_save)
+
+    response = client.post(
+        "/public/encuestas/demo-encuesta/responder",
+        json={"respuestas": [{"pregunta_id": 1, "texto_libre": "ok"}]},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "ok": True,
+        "duplicate": True,
+        "message": "Ya registramos tu participación",
+        "suggested_admin_endpoint_template": "/admin/encuestas/{encuesta_id}/seed-demo/bulk",
+    }
 
 def test_share_redirects_to_canonical(client):
     client.application.config["PUBLIC_ENCUESTAS_CANONICAL_BASE_URL"] = "https://www.chatboc.ar"

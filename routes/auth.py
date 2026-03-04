@@ -1099,6 +1099,7 @@ def demo_catalog():
         current_app.logger.warning("[demo_catalog] unable to resolve default demo slug: %s", exc)
 
     payload = {
+        "request_id": request_id,
         "frontend_contract_version": "2026-02-demo-onboarding-v2",
         "demo_login_enabled": True,
         "demo_login_endpoint": "/auth/demo",
@@ -1295,43 +1296,50 @@ def solo_admin_requerido(f):
 @cross_origin(supports_credentials=True)
 def login():
     anon_id = get_or_create_anon_id()
-    if request.method == 'OPTIONS':
-        resp = jsonify({'status': 'ok'})
+    request_started = time.perf_counter()
+    request_id = request.headers.get("X-Request-Id") or uuid.uuid4().hex
+
+    def _finalize_auth_response(resp):
+        elapsed_ms = round((time.perf_counter() - request_started) * 1000.0, 2)
+        resp.headers.setdefault("X-Request-Id", request_id)
+        resp.headers.setdefault("Server-Timing", f"auth_total;dur={elapsed_ms}")
         resp.headers.setdefault('X-Anon-Id', anon_id)
         resp.headers.setdefault('Anon-Id', anon_id)
+        return resp, elapsed_ms
+    if request.method == 'OPTIONS':
+        resp = jsonify({'status': 'ok'})
+        resp, _ = _finalize_auth_response(resp)
         return resp
     if request.method == 'GET':
         resp = jsonify({'status': 'ok'})
-        resp.headers.setdefault('X-Anon-Id', anon_id)
-        resp.headers.setdefault('Anon-Id', anon_id)
+        resp, _ = _finalize_auth_response(resp)
         return resp
     if not request.is_json:
         resp = jsonify({"error": "La solicitud debe ser de tipo JSON."})
-        resp.headers.setdefault('X-Anon-Id', anon_id)
-        resp.headers.setdefault('Anon-Id', anon_id)
+        resp, _ = _finalize_auth_response(resp)
         return resp, 400
     data = request.get_json()
     if not data or not data.get('email') or not data.get('password'):
         resp = jsonify({"error": "Email y contraseña requeridos."})
-        resp.headers.setdefault('X-Anon-Id', anon_id)
-        resp.headers.setdefault('Anon-Id', anon_id)
+        resp, _ = _finalize_auth_response(resp)
         return resp, 400
 
+    db_lookup_started = time.perf_counter()
     try:
         user = _user_query().filter_by(email=data.get("email").strip().lower()).first()
     except ProgrammingError:
         db.session.rollback()
         current_app.logger.error("[auth] DB error during login", exc_info=True)
         resp = jsonify({"error": "internal_error"})
-        resp.headers.setdefault("X-Anon-Id", anon_id)
-        resp.headers.setdefault("Anon-Id", anon_id)
+        resp, _ = _finalize_auth_response(resp)
         return resp, 500
+
+    db_lookup_ms = round((time.perf_counter() - db_lookup_started) * 1000.0, 2)
 
     if not user or not user.check_password(data.get("password")):
         current_app.logger.warning(f"Intento de login fallido para el email: {data.get('email')}")
         resp = jsonify({"error": "Email o contraseña incorrectos."})
-        resp.headers.setdefault('X-Anon-Id', anon_id)
-        resp.headers.setdefault('Anon-Id', anon_id)
+        resp, _ = _finalize_auth_response(resp)
         return resp, 401
 
     current_app.logger.info(f"Login exitoso para: {user.email}")
@@ -1442,8 +1450,25 @@ def login():
         "categorias": getattr(user, "categorias_lista", []),
         "tenant_slug": response_slug,
         "tenantSlug": response_slug,
+        "bootstrap": {
+            "mode": "lite",
+            "endpoint": "/auth/session/bootstrap",
+            "recommended_async_endpoints": [
+                "/auth/me",
+                "/auth/me/dashboard",
+            ],
+            "request_id": request_id,
+        },
+        "ui": {
+            "panels": _dashboard_panels_for_user(user, tipo_chat),
+        },
+        "timing": {
+            "db_lookup_ms": db_lookup_ms,
+            "mode": "shell_first",
+        },
     }
 
+    response_payload["timing"]["total_ms"] = round((time.perf_counter() - request_started) * 1000.0, 2)
     entity_token_value = _include_entity_token_fields(response_payload, owner_token)
 
     response = jsonify(response_payload)
@@ -1465,7 +1490,16 @@ def login():
 
         response.set_cookie(**cookie_args)
 
-    response.headers.setdefault('X-Anon-Id', anon_id)
+    response, elapsed_ms = _finalize_auth_response(response)
+    current_app.logger.info(
+        "[auth.login] request_id=%s user_id=%s role=%s tenant_slug=%s db_lookup_ms=%s total_ms=%s",
+        request_id,
+        user.id,
+        user.rol,
+        response_slug,
+        db_lookup_ms,
+        elapsed_ms,
+    )
     if entity_token_value:
         response.headers.setdefault("X-Entity-Token", entity_token_value)
     return response
@@ -2448,59 +2482,100 @@ def token_info_options():
     return resp, 204
 
 
-@auth_bp.route('/me/dashboard', methods=['GET', 'OPTIONS'])
-@token_requerido
-def dashboard_info(user: User):
-    """Devuelve las secciones disponibles para el usuario actual."""
-    rubro = user.rubro
-    tipo_chat = user.tipo_chat or ("municipio" if es_rubro_publico(rubro) else "pyme")
+def _dashboard_panels_for_user(user: User, tipo_chat: str) -> list[str]:
+    """Return a stable panel list for dashboard/bootstrap contracts."""
 
-    # Paneles base para todos los usuarios autenticados
     panels = ["perfil"]
 
-    # Paneles para roles admin, empleado y super_admin
     if user.rol in ["admin", "empleado", "super_admin"]:
         panels.extend([
             "tickets",
             "usuarios_crm",
             "estadisticas",
             "analiticas_crm",
-            "mapa_tickets"
+            "mapa_tickets",
         ])
         if tipo_chat == "pyme":
             panels.append("pedidos")
         elif tipo_chat == "municipio":
             panels.append("sugerencias_ciudadano")
 
-    # Paneles exclusivos para admin y super_admin
     if user.rol in ["admin", "super_admin"]:
         panels.append("empleados")
 
-    # Paneles exclusivos para super_admin
     if user.rol == "super_admin":
-        panels.append("tenants")  # Panel de gestión de tenants
+        panels.append("tenants")
 
-    # Eliminar duplicados por si acaso y ordenar alfabéticamente para consistencia
-    final_panels = sorted(list(set(panels)))
+    return sorted(list(set(panels)))
+
+
+@auth_bp.route('/session/bootstrap', methods=['GET'])
+@token_requerido
+def session_bootstrap(user: User):
+    """Lightweight bootstrap contract so frontend can render shell immediately."""
+
+    request_id = request.headers.get("X-Request-Id") or uuid.uuid4().hex
+    started = time.perf_counter()
+
+    rubro = user.rubro
+    tipo_chat = user.tipo_chat or ("municipio" if es_rubro_publico(rubro) else "pyme")
+    panels = _dashboard_panels_for_user(user, tipo_chat)
+
+    tenant_obj = _tenant_for_user(user)
+    tenant_slug = getattr(user, "tenant_slug", None) or getattr(tenant_obj, "slug", None)
+
+    payload = {
+        "request_id": request_id,
+        "user": {
+            "id": user.id,
+            "rol": user.rol,
+            "tipo_chat": tipo_chat,
+            "tenant_slug": tenant_slug,
+        },
+        "ui": {
+            "panels": panels,
+            "mobile_priority_panels": ["tickets", "pedidos", "estadisticas", "encuestas"],
+        },
+        "bootstrap": {
+            "mode": "lite",
+            "next": {
+                "profile": "/auth/me",
+                "dashboard": "/auth/me/dashboard",
+            },
+            "analytics": {
+                "dashboard_fast_query": "fast=1",
+                "seed_demo_endpoint_template": "/admin/encuestas/{encuesta_id}/seed-demo/bulk",
+            },
+        },
+    }
+    elapsed_ms = round((time.perf_counter() - started) * 1000.0, 2)
+    payload.setdefault("bootstrap", {})["timing_ms"] = elapsed_ms
+    response = jsonify(payload)
+    response.headers.setdefault("X-Request-Id", request_id)
+    response.headers.setdefault("Server-Timing", f"bootstrap_total;dur={elapsed_ms}")
+    current_app.logger.info(
+        "[auth.bootstrap] request_id=%s user_id=%s panels=%s total_ms=%s",
+        request_id,
+        user.id,
+        len(panels),
+        elapsed_ms,
+    )
+    return response
+
+
+@auth_bp.route('/me/dashboard', methods=['GET', 'OPTIONS'])
+@token_requerido
+def dashboard_info(user: User):
+    """Devuelve las secciones disponibles para el usuario actual."""
+    rubro = user.rubro
+    tipo_chat = user.tipo_chat or ("municipio" if es_rubro_publico(rubro) else "pyme")
+    final_panels = _dashboard_panels_for_user(user, tipo_chat)
 
     return jsonify({
         "id": user.id,
         "rol": user.rol,
         "tipo_chat": tipo_chat,
-        "panels": final_panels, # Lista de identificadores de paneles
-        # Se asume que el frontend mapeará estos identificadores a rutas y nombres visibles
-        # Ejemplo de mapeo conceptual en frontend:
-        # {
-        #   "perfil": { "label": "Mi Perfil", "route": "/perfil" },
-        #   "tickets": { "label": "Tickets", "route": "/tickets" },
-        #   "usuarios_crm": { "label": "Usuarios CRM", "route": "/crm/usuarios" },
-        #   "estadisticas": { "label": "Estadísticas", "route": "/estadisticas" },
-        #   "analiticas_crm": { "label": "Analíticas CRM", "route": "/crm/analytics" },
-        #   "mapa_tickets": { "label": "Mapa de Tickets", "route": "/tickets/mapa" }, # Asumiendo una ruta genérica o que el FE añade el tipo
-        #   "pedidos_pyme": { "label": "Pedidos", "route": "/pedidos" },
-        #   "sugerencias_ciudadano": { "label": "Sugerencias", "route": "/sugerencias/ciudadano" },
-        #   "empleados": { "label": "Empleados", "route": "/empleados" }
-        # }
+        "panels": final_panels,
     })
 
 @auth_bp.route(

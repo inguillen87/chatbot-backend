@@ -1,5 +1,5 @@
 from flask import Blueprint, request, jsonify, g, current_app
-from sqlalchemy import func
+from sqlalchemy import func, or_
 
 from models import CatalogoItem, TenantProfile, TenantConfig, WidgetSettings, db
 from routes.auth import token_requerido
@@ -24,13 +24,21 @@ def _add_cors_headers(response):
     return response
 
 def _get_tenant_from_request(slug: str):
-    """Resolve tenant by slug, query fallback, or well-known type aliases.
+    """Resolve tenant with compatibility fallbacks used by public widget/catalog routes."""
 
-    Some legacy widgets call /public/tenants/pyme/catalog or
-    /public/tenants/municipio/catalog using the tenant type instead of a real
-    tenant slug. When that happens, pick an active tenant of that type as a
-    compatibility fallback.
-    """
+    def _first_active_tenant_with_owner():
+        return (
+            TenantProfile.query
+            .filter(TenantProfile.is_active.is_(True))
+            .filter(
+                or_(
+                    TenantProfile.pyme_id.isnot(None),
+                    TenantProfile.municipio_id.isnot(None),
+                )
+            )
+            .order_by(TenantProfile.created_at.asc(), TenantProfile.id.asc())
+            .first()
+        )
 
     tenant = TenantProfile.query.filter_by(slug=slug).first()
     if tenant:
@@ -42,14 +50,27 @@ def _get_tenant_from_request(slug: str):
         if tenant:
             return tenant
 
-    alias_tipo = str(slug or "").strip().lower()
+    alias_slug = str(slug or "").strip().lower()
+    # ``default`` is used by multiple frontend widget builds when they don't
+    # have a concrete tenant yet. We degrade gracefully to a configured default
+    # tenant or first active tenant with owner to avoid 404 loops.
+    if alias_slug == "default":
+        configured_default = current_app.config.get("PUBLIC_CATALOG_DEFAULT_TENANT")
+        if configured_default:
+            tenant = TenantProfile.query.filter_by(slug=str(configured_default).strip()).first()
+            if tenant:
+                return tenant
+        tenant = _first_active_tenant_with_owner()
+        if tenant:
+            return tenant
+
     alias_tipo_map = {
         "pyme": "pyme",
         "municipio": "municipio",
         "e": "pyme",
         "m": "municipio",
     }
-    resolved_tipo = alias_tipo_map.get(alias_tipo)
+    resolved_tipo = alias_tipo_map.get(alias_slug)
     if resolved_tipo:
         return (
             TenantProfile.query.filter_by(tipo=resolved_tipo)
