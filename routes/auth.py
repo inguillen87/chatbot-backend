@@ -1324,6 +1324,13 @@ def login():
         resp, _ = _finalize_auth_response(resp)
         return resp, 400
 
+    stage_timings = {
+        "db_lookup_ms": 0.0,
+        "password_verify_ms": 0.0,
+        "tenant_resolve_ms": 0.0,
+        "token_sign_ms": 0.0,
+    }
+
     db_lookup_started = time.perf_counter()
     try:
         user = _user_query().filter_by(email=data.get("email").strip().lower()).first()
@@ -1334,9 +1341,15 @@ def login():
         resp, _ = _finalize_auth_response(resp)
         return resp, 500
 
-    db_lookup_ms = round((time.perf_counter() - db_lookup_started) * 1000.0, 2)
+    stage_timings["db_lookup_ms"] = round((time.perf_counter() - db_lookup_started) * 1000.0, 2)
 
-    if not user or not user.check_password(data.get("password")):
+    password_verify_started = time.perf_counter()
+    password_ok = bool(user and user.check_password(data.get("password")))
+    stage_timings["password_verify_ms"] = round(
+        (time.perf_counter() - password_verify_started) * 1000.0, 2
+    )
+
+    if not password_ok:
         current_app.logger.warning(f"Intento de login fallido para el email: {data.get('email')}")
         resp = jsonify({"error": "Email o contraseña incorrectos."})
         resp, _ = _finalize_auth_response(resp)
@@ -1352,6 +1365,7 @@ def login():
     current_app.logger.info(f"Usuario {user.email} logueado y sesión Flask-Login establecida.")
 
     # Ensure user is linked to their tenant if missing, to prevent permission errors
+    tenant_resolve_started = time.perf_counter()
     tenant_obj = _tenant_for_user(user)
     if not tenant_obj:
         if user.municipio_id:
@@ -1377,6 +1391,9 @@ def login():
                 db.session.rollback()
                 current_app.logger.warning("Failed to attach user to tenant during login")
     tipo_chat = _resolve_tipo_chat(user, tenant_obj=tenant_obj, rubro_nombre=rubro_nombre)
+    stage_timings["tenant_resolve_ms"] = round(
+        (time.perf_counter() - tenant_resolve_started) * 1000.0, 2
+    )
 
     # Migrate anonymous data if anon_id is present.
     # This can be expensive (ticket + cart adoption), so default to async to
@@ -1425,7 +1442,9 @@ def login():
         'municipio_id': effective_municipio_id,
         'exp': datetime.utcnow() + timedelta(days=current_app.config.get("JWT_EXPIRATION_DAYS", 7))
     }
+    token_sign_started = time.perf_counter()
     jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
+    stage_timings["token_sign_ms"] = round((time.perf_counter() - token_sign_started) * 1000.0, 2)
 
     # Reuse already resolved tenant to avoid extra DB round-trips on login.
     response_slug = getattr(user, "tenant_slug", None)
@@ -1463,7 +1482,7 @@ def login():
             "panels": _dashboard_panels_for_user(user, tipo_chat),
         },
         "timing": {
-            "db_lookup_ms": db_lookup_ms,
+            **stage_timings,
             "mode": "shell_first",
         },
     }
@@ -1497,7 +1516,7 @@ def login():
         user.id,
         user.rol,
         response_slug,
-        db_lookup_ms,
+        stage_timings["db_lookup_ms"],
         elapsed_ms,
     )
     if entity_token_value:

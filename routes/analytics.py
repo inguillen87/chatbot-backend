@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from datetime import datetime
+import time
+import uuid
 
 from flask import Blueprint, abort, current_app, jsonify, render_template, request
 from werkzeug.exceptions import HTTPException
@@ -120,19 +122,49 @@ def analytics_breakdown():
 
 @analytics_bp.route("/geo/heatmap", methods=["GET"])
 def analytics_heatmap():
+    request_started = time.perf_counter()
+    request_id = request.headers.get("X-Request-Id") or uuid.uuid4().hex
     filters = parse_filters(request.args)
     require_access(filters.tenant_id, "visor")
     data = get_geo_heatmap(filters)
-    return _json_response(data)
+    response = _json_response(data)
+    elapsed_ms = round((time.perf_counter() - request_started) * 1000.0, 2)
+    response.headers.setdefault("X-Request-Id", request_id)
+    response.headers.setdefault("Server-Timing", f"analytics_geo_heatmap;dur={elapsed_ms}")
+    current_app.logger.info(
+        "[analytics.geo.heatmap] request_id=%s tenant_id=%s scope=%s cells=%s state=%s total_ms=%s",
+        request_id,
+        filters.tenant_id,
+        filters.scope,
+        len(data.get("cells") or []),
+        (data.get("render_contract") or {}).get("state"),
+        elapsed_ms,
+    )
+    return response
 
 
 @analytics_bp.route("/geo/points", methods=["GET"])
 def analytics_points():
+    request_started = time.perf_counter()
+    request_id = request.headers.get("X-Request-Id") or uuid.uuid4().hex
     filters = parse_filters(request.args)
     require_access(filters.tenant_id, "visor")
     limit = int(request.args.get("limit", 500))
     data = get_geo_points(filters, limit=limit)
-    return _json_response(data)
+    response = _json_response(data)
+    elapsed_ms = round((time.perf_counter() - request_started) * 1000.0, 2)
+    response.headers.setdefault("X-Request-Id", request_id)
+    response.headers.setdefault("Server-Timing", f"analytics_geo_points;dur={elapsed_ms}")
+    current_app.logger.info(
+        "[analytics.geo.points] request_id=%s tenant_id=%s scope=%s points=%s state=%s total_ms=%s",
+        request_id,
+        filters.tenant_id,
+        filters.scope,
+        len(data.get("points") or []),
+        (data.get("render_contract") or {}).get("state"),
+        elapsed_ms,
+    )
+    return response
 
 
 @analytics_bp.route("/top", methods=["GET"])

@@ -65,6 +65,9 @@ def test_login_and_session_bootstrap_expose_shell_first_contract(client):
     login_payload = login_resp.get_json()
     assert (login_payload.get("bootstrap") or {}).get("endpoint") == "/auth/session/bootstrap"
     assert (login_payload.get("timing") or {}).get("db_lookup_ms") is not None
+    assert (login_payload.get("timing") or {}).get("password_verify_ms") is not None
+    assert (login_payload.get("timing") or {}).get("tenant_resolve_ms") is not None
+    assert (login_payload.get("timing") or {}).get("token_sign_ms") is not None
     assert (login_payload.get("timing") or {}).get("total_ms") is not None
     assert login_resp.headers.get("X-Request-Id") == "req-login-bootstrap"
     assert login_resp.headers.get("Server-Timing")

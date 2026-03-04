@@ -249,3 +249,23 @@ Checklist técnico frontend adicional:
 - [ ] Aplicar `min-width >= 280` y `min-height >= 220` por card de gráfico.
 - [ ] Reintentar bootstrap de widget con backoff corto (2-3 intentos).
 - [ ] En fallback de telemetría, enviar al menos tenant + evento por defecto.
+
+### 7.7 Heatmap/Geo (bloqueante para "mapas finalmente funcionando")
+
+Para evitar pantallas vacías en mapas, FE debe implementar este contrato de `/analytics/geo/heatmap` y `/analytics/geo/points`:
+
+- `meta.map.provider_hint`: proveedor recomendado por backend (`google` o `maplibre`).
+- `meta.map.fallback_provider`: siempre `maplibre` si falla el principal.
+- `meta.map.provider_aliases.maptiler = maplibre`.
+- `meta.map.available_providers[]`: lista de proveedores realmente configurados.
+- `meta.map.render_ready`: si es `false`, mostrar estado vacío con CTA de configuración (no intentar inicializar SDK).
+- `render_contract.module`: `heatmap` o `points`.
+- `render_contract.state`: `ready` o `demo_fallback`.
+- `render_contract.source_keys`: claves exactas a consumir (ej: `cells`, `meta.map`).
+
+Checklist FE específico de mapas:
+- [ ] Si `render_ready=false`, no montar mapa y mostrar empty-state operativa.
+- [ ] Si `render_contract.state=demo_fallback`, renderizar igual con badge "datos de ejemplo".
+- [ ] Si `provider_hint=google` y falla SDK, fallback automático a `fallback_provider`.
+- [ ] En MapLibre, respetar `meta.map.style.recommended_radius` y `gradient` para heatmap.
+- [ ] Para troubleshooting, propagar `X-Request-Id` de respuesta a logs del frontend.

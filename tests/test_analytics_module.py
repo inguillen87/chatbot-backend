@@ -171,6 +171,33 @@ def test_geo_heatmap(client):
     assert data['cells']
     assert 'meta' in data
     assert 'map' in data['meta']
+    assert data['meta']['map']['provider_aliases']['maptiler'] == 'maplibre'
+    assert 'available_providers' in data['meta']['map']
+    assert data['render_contract']['module'] == 'heatmap'
+    assert data['render_contract']['state'] in {'ready', 'demo_fallback'}
+    assert response.headers.get('X-Request-Id')
+    assert 'analytics_geo_heatmap' in (response.headers.get('Server-Timing') or '')
+
+
+def test_geo_points_contract_headers(client):
+    tenant_id = 22
+    _create_municipio_ticket(tenant_id)
+    db.session.commit()
+
+    response = client.get(
+        '/analytics/geo/points',
+        query_string={'tenant_id': tenant_id, 'scope': 'municipio', 'limit': 100},
+        headers={'X-Debug-Role': 'admin', 'X-Debug-Tenant': str(tenant_id)},
+    )
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data['points']
+    assert data['render_contract']['module'] == 'points'
+    assert data['render_contract']['state'] in {'ready', 'demo_fallback'}
+    assert data['meta']['map']['fallback_provider'] == 'maplibre'
+    assert response.headers.get('X-Request-Id')
+    assert 'analytics_geo_points' in (response.headers.get('Server-Timing') or '')
 
 
 def test_pyme_endpoints(client):
