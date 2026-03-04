@@ -223,11 +223,17 @@ def _map_meta(style: Dict[str, Any]) -> Dict[str, Any]:
     config = get_map_config()
     provider = config.get("provider") or "none"
     provider_hint = provider if provider != "none" else "maplibre"
+    available_providers = list(config.get("available_providers") or [])
+    render_ready = bool(available_providers)
     return {
         "provider_hint": provider_hint,
         "fallback_provider": "maplibre",
         "google_maps": bool(config.get("google_maps_key")),
         "maptiler": bool(config.get("maptiler_key") or config.get("style_url")),
+        "provider_aliases": config.get("provider_aliases") or {"maptiler": "maplibre"},
+        "available_providers": available_providers,
+        "render_ready": render_ready,
+        "render_reason": "configured" if render_ready else "missing_map_provider",
         "style": style,
     }
 
@@ -1049,11 +1055,27 @@ def _geo_heatmap_no_cache(filters: AnalyticsFilters) -> Dict[str, Any]:
             ],
         )
         meta["map"] = _map_meta(_style_hint_from_records(demo_cells, weight_key="count"))
-        return {"cells": _attach_intensity(demo_cells), "meta": meta}
+        return {
+            "cells": _attach_intensity(demo_cells),
+            "meta": meta,
+            "render_contract": {
+                "module": "heatmap",
+                "state": "demo_fallback",
+                "source_keys": ["cells", "meta.map"],
+            },
+        }
     meta["empty"] = False
     cells_with_intensity = _attach_intensity(payload)
     meta["map"] = _map_meta(_style_hint_from_records(cells_with_intensity, weight_key="count"))
-    return {"cells": cells_with_intensity, "meta": meta}
+    return {
+        "cells": cells_with_intensity,
+        "meta": meta,
+        "render_contract": {
+            "module": "heatmap",
+            "state": "ready",
+            "source_keys": ["cells", "meta.map"],
+        },
+    }
 
 
 def get_geo_points(filters: AnalyticsFilters, limit: int = 500) -> Dict[str, Any]:
@@ -1102,12 +1124,28 @@ def _geo_points_no_cache(filters: AnalyticsFilters, limit: int) -> Dict[str, Any
         )
         demo_points = generate_demo_points(scope=filters.scope, count=demo_count)
         meta["map"] = _map_meta(_style_hint_from_records(demo_points, weight_key="count"))
-        return {"points": demo_points, "meta": meta}
+        return {
+            "points": demo_points,
+            "meta": meta,
+            "render_contract": {
+                "module": "points",
+                "state": "demo_fallback",
+                "source_keys": ["points", "meta.map"],
+            },
+        }
     meta["empty"] = False
     meta["map"] = _map_meta(
         _style_hint_from_records(points, weight_key="weight" if filters.scope == "municipio" else "total")
     )
-    return {"points": points, "meta": meta}
+    return {
+        "points": points,
+        "meta": meta,
+        "render_contract": {
+            "module": "points",
+            "state": "ready",
+            "source_keys": ["points", "meta.map"],
+        },
+    }
 
 
 def get_top(filters: AnalyticsFilters, category: str = "barrios", limit: int = 10) -> Dict[str, Any]:

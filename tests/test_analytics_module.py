@@ -3,6 +3,8 @@ import random
 from datetime import datetime, timedelta
 from typing import Optional
 
+import pytest
+
 from extensions import db
 from models import (
     AnalyticsEventV2,
@@ -169,6 +171,33 @@ def test_geo_heatmap(client):
     assert data['cells']
     assert 'meta' in data
     assert 'map' in data['meta']
+    assert data['meta']['map']['provider_aliases']['maptiler'] == 'maplibre'
+    assert 'available_providers' in data['meta']['map']
+    assert data['render_contract']['module'] == 'heatmap'
+    assert data['render_contract']['state'] in {'ready', 'demo_fallback'}
+    assert response.headers.get('X-Request-Id')
+    assert 'analytics_geo_heatmap' in (response.headers.get('Server-Timing') or '')
+
+
+def test_geo_points_contract_headers(client):
+    tenant_id = 22
+    _create_municipio_ticket(tenant_id)
+    db.session.commit()
+
+    response = client.get(
+        '/analytics/geo/points',
+        query_string={'tenant_id': tenant_id, 'scope': 'municipio', 'limit': 100},
+        headers={'X-Debug-Role': 'admin', 'X-Debug-Tenant': str(tenant_id)},
+    )
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data['points']
+    assert data['render_contract']['module'] == 'points'
+    assert data['render_contract']['state'] in {'ready', 'demo_fallback'}
+    assert data['meta']['map']['fallback_provider'] == 'maplibre'
+    assert response.headers.get('X-Request-Id')
+    assert 'analytics_geo_points' in (response.headers.get('Server-Timing') or '')
 
 
 def test_pyme_endpoints(client):
@@ -306,14 +335,17 @@ def test_event_ingest_requires_tenant_and_event_name(client):
         json={'event_name': 'page_view'},
         headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': '8'},
     )
-    assert response.status_code == 400
+    assert response.status_code == 202
+    assert response.get_json().get('reason') == 'tenant_unresolved'
 
     response = client.post(
         '/analytics/event',
         json={'tenant_id': 8},
         headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': '8'},
     )
-    assert response.status_code == 400
+    assert response.status_code == 202
+    payload = response.get_json()
+    assert payload.get('event_name') == 'frontend_analytics_event'
 
 
 def test_event_ingest_is_tenant_scoped(client):
@@ -339,7 +371,8 @@ def test_event_ingest_is_tenant_scoped(client):
         json={'tenant_id': tenant_id, 'event_name': 'page_view'},
         headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': '999'},
     )
-    assert forbidden.status_code == 403
+    assert forbidden.status_code == 202
+    assert forbidden.get_json().get('reason') == 'access_denied'
 
 
 def test_admin_analytics_overview_and_exports_are_tenant_scoped(client):
@@ -461,7 +494,7 @@ def test_api_alias_admin_analytics_overview_accepts_tenant_slug(client):
     overview = client.get(
         '/api/admin/analytics/overview',
         query_string={'tenant_slug': 'tenant-analytics-slug', 'scope': 'municipio'},
-        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant.id)},
+        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
     )
     assert overview.status_code == 200
     assert 'totals' in overview.get_json()
@@ -584,3 +617,71 @@ def test_admin_analytics_hub_honors_custom_request_id(client):
     assert response.headers.get('X-Analytics-Request-Id') == 'req-demo-123'
     payload = response.get_json()
     assert (payload.get('meta') or {}).get('request_id') == 'req-demo-123'
+
+
+def test_event_ingest_accepts_query_tenant_slug(client):
+    tenant_id = 34
+    _ensure_user(tenant_id, 'municipio')
+
+    from models import TenantProfile
+
+    tenant = TenantProfile(
+        slug='junin-1',
+        nombre='Junín',
+        tipo='municipio',
+        municipio_id=tenant_id,
+    )
+    db.session.add(tenant)
+    db.session.commit()
+
+    response = client.post(
+        '/analytics/event',
+        query_string={'tenant_slug': 'junin-1', 'tenant': 'junin-1'},
+        json={'event_name': 'page_view'},
+        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
+    )
+
+    assert response.status_code == 202
+    payload = response.get_json()
+    assert payload.get('event_name') == 'page_view'
+    assert payload.get('tenant_id') == tenant_id
+
+
+def test_api_alias_analytics_event_maps_to_ingestor(client):
+    tenant_id = 35
+    _ensure_user(tenant_id, 'municipio')
+
+    response = client.post(
+        '/api/analytics/event',
+        json={'tenant_id': tenant_id, 'event_name': 'dashboard_open'},
+        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
+    )
+
+    assert response.status_code == 202
+    assert AnalyticsEventV2.query.filter_by(tenant_id=tenant_id, event_name='dashboard_open').first() is not None
+
+
+def test_event_ingest_does_not_hide_unexpected_access_errors(client, monkeypatch):
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("routes.analytics.require_access", _boom)
+
+    with pytest.raises(RuntimeError):
+        client.post(
+            '/analytics/event',
+            json={'tenant_id': 8, 'event_name': 'page_view'},
+            headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': '8'},
+        )
+
+
+def test_api_alias_analytics_event_honors_feature_gate(client):
+    client.application.config["ANALYTICS_ENABLED"] = False
+
+    response = client.post(
+        '/api/analytics/event',
+        json={'tenant_id': 35, 'event_name': 'dashboard_open'},
+        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': '35'},
+    )
+
+    assert response.status_code == 404
