@@ -115,7 +115,8 @@ def parse_filters(args) -> AnalyticsFilters:
         if tenant_slug:
             tenant_obj = TenantProfile.query.filter(TenantProfile.slug.ilike(tenant_slug)).first()
             if tenant_obj:
-                tenant_id = str(tenant_obj.id)
+                owner_tenant_id = tenant_obj.municipio_id or tenant_obj.pyme_id
+                tenant_id = str(owner_tenant_id or tenant_obj.id)
 
     if not tenant_id:
         tenant_id = _resolve_tenant_id_from_context()

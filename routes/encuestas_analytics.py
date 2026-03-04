@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
+import uuid
 
-from flask import Blueprint, Response, jsonify, request
+from flask import Blueprint, Response, current_app, jsonify, request
 
 from config.feature_flags import FEATURE_ENCUESTAS
 from services.encuestas_analytics_service import (
@@ -16,6 +18,7 @@ from services.encuestas_analytics_service import (
     get_forecast,
     get_heatmap,
     get_segment_compare,
+    get_segment_suggestions,
     get_summary,
     get_timeseries,
 )
@@ -32,7 +35,7 @@ def _feature_guard():
 
 def _parse_filtros() -> dict:
     filtros = {}
-    for key in ("desde", "hasta", "canal", "utm_source", "utm_campaign", "bbox"):
+    for key in ("desde", "hasta", "canal", "utm_source", "utm_campaign", "bbox", "include_demo", "exclude_demo"):
         value = request.args.get(key)
         if value:
             filtros[key] = value
@@ -114,13 +117,28 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
     @token_requerido
     @require_role("admin", "empleado", "super_admin")
     def heatmap(current_user, encuesta_id: int):
+        request_started = time.perf_counter()
+        request_id = request.headers.get("X-Request-Id") or uuid.uuid4().hex
         filtros = _parse_filtros()
         resolution = request.args.get("resolution", type=int)
         try:
             data = get_heatmap(encuesta_id, filtros, resolution=resolution)
         except EncuestaError as err:
             return jsonify(err.to_dict()), err.status_code
-        return jsonify(data)
+        response = jsonify(data)
+        elapsed_ms = round((time.perf_counter() - request_started) * 1000.0, 2)
+        response.headers.setdefault("X-Request-Id", request_id)
+        response.headers.setdefault("Server-Timing", f"encuestas_heatmap;dur={elapsed_ms}")
+        current_app.logger.info(
+            "[encuestas.analytics.heatmap] request_id=%s encuesta_id=%s points=%s cells=%s state=%s total_ms=%s",
+            request_id,
+            encuesta_id,
+            len(data.get("points") or []),
+            len(data.get("cells") or []),
+            (data.get("render_contract") or {}).get("state"),
+            elapsed_ms,
+        )
+        return response
 
     bp.add_url_rule("/heatmap", view_func=heatmap, methods=["GET"])
 
@@ -180,11 +198,14 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
     @token_requerido
     @require_role("admin", "empleado", "super_admin")
     def dashboard(current_user, encuesta_id: int):
+        request_started = time.perf_counter()
+        request_id = request.headers.get("X-Request-Id") or uuid.uuid4().hex
         filtros = _parse_filtros()
         granularity = request.args.get("granularity", "day")
         use_envelope = str(request.args.get("envelope") or "").strip().lower() in {"1", "true", "yes", "on"}
+        fast_mode = str(request.args.get("fast") or request.args.get("lite") or "").strip().lower() in {"1", "true", "yes", "on"}
         try:
-            data = get_dashboard_bundle(encuesta_id, filtros, granularity=granularity)
+            data = get_dashboard_bundle(encuesta_id, filtros, granularity=granularity, fast_mode=fast_mode)
         except EncuestaError as err:
             return jsonify(err.to_dict()), err.status_code
 
@@ -196,12 +217,39 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
                     "encuesta_id": encuesta_id,
                     "filters": filtros,
                     "granularity": granularity,
+                    "fast_mode": fast_mode,
                 },
                 "errors": [],
             }
-            return _json_with_etag(envelope)
+            response = _json_with_etag(envelope)
+            elapsed_ms = round((time.perf_counter() - request_started) * 1000.0, 2)
+            response.headers.setdefault("X-Request-Id", request_id)
+            response.headers.setdefault("Server-Timing", f"encuestas_dashboard;dur={elapsed_ms}")
+            current_app.logger.info(
+                "[encuestas.analytics.dashboard] request_id=%s encuesta_id=%s fast_mode=%s heatmap=%s latest_responses=%s total_ms=%s",
+                request_id,
+                encuesta_id,
+                fast_mode,
+                ((data.get("meta") or {}).get("module_state") or {}).get("heatmap"),
+                ((data.get("meta") or {}).get("module_state") or {}).get("latest_responses"),
+                elapsed_ms,
+            )
+            return response
 
-        return _json_with_etag(data)
+        response = _json_with_etag(data)
+        elapsed_ms = round((time.perf_counter() - request_started) * 1000.0, 2)
+        response.headers.setdefault("X-Request-Id", request_id)
+        response.headers.setdefault("Server-Timing", f"encuestas_dashboard;dur={elapsed_ms}")
+        current_app.logger.info(
+            "[encuestas.analytics.dashboard] request_id=%s encuesta_id=%s fast_mode=%s heatmap=%s latest_responses=%s total_ms=%s",
+            request_id,
+            encuesta_id,
+            fast_mode,
+            ((data.get("meta") or {}).get("module_state") or {}).get("heatmap"),
+            ((data.get("meta") or {}).get("module_state") or {}).get("latest_responses"),
+            elapsed_ms,
+        )
+        return response
 
     bp.add_url_rule("/dashboard", view_func=dashboard, methods=["GET"])
     if spanish_aliases:
@@ -211,13 +259,22 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
     @require_role("admin", "empleado", "super_admin")
     def segment_compare(current_user, encuesta_id: int):
         filtros = _parse_filtros()
+
+        def _parse_segment_value(raw_value: str | None):
+            if not raw_value:
+                return None
+            parts = [part.strip() for part in str(raw_value).split(",") if part.strip()]
+            if not parts:
+                return None
+            return parts if len(parts) > 1 else parts[0]
+
         segment_a = {
-            key: request.args.get(f"a_{key}")
+            key: _parse_segment_value(request.args.get(f"a_{key}"))
             for key in ("canal", "genero", "rango_etario", "barrio", "ciudad", "provincia", "pais")
             if request.args.get(f"a_{key}")
         }
         segment_b = {
-            key: request.args.get(f"b_{key}")
+            key: _parse_segment_value(request.args.get(f"b_{key}"))
             for key in ("canal", "genero", "rango_etario", "barrio", "ciudad", "provincia", "pais")
             if request.args.get(f"b_{key}")
         }
@@ -233,6 +290,19 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
         return jsonify(data)
 
     bp.add_url_rule("/segments/compare", view_func=segment_compare, methods=["GET"])
+
+    @token_requerido
+    @require_role("admin", "empleado", "super_admin")
+    def segment_suggestions(current_user, encuesta_id: int):
+        filtros = _parse_filtros()
+        limit = request.args.get("limit", default=5, type=int) or 5
+        try:
+            data = get_segment_suggestions(encuesta_id, filtros=filtros, limit=limit)
+        except EncuestaError as err:
+            return jsonify(err.to_dict()), err.status_code
+        return jsonify(data)
+
+    bp.add_url_rule("/segments/suggestions", view_func=segment_suggestions, methods=["GET"])
 
     @token_requerido
     @require_role("admin", "empleado", "super_admin")

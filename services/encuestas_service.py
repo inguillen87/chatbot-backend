@@ -2827,6 +2827,7 @@ def seed_encuesta_respuestas_demo(
     skipped = 0
     attempts = 0
     now = datetime.now(timezone.utc)
+    demo_batch_id = f"seed-{encuesta.id}-{int(now.timestamp())}"
     analytics_counter = {
         "canales": Counter(),
         "utm_source": Counter(),
@@ -2973,6 +2974,11 @@ def seed_encuesta_respuestas_demo(
         respuesta = EncRespuesta(
             encuesta_id=encuesta.id,
             tenant_id=tenant_id,
+            metadata_payload={
+                "is_demo_seed": True,
+                "demo_batch_id": demo_batch_id,
+                "demo_scenario": scenario_normalized,
+            },
             huella_unica=fingerprint,
             dni=dni,
             phone=phone,
@@ -3026,6 +3032,7 @@ def seed_encuesta_respuestas_demo(
         "seed": seed,
         "scenario": scenario_normalized,
         "reset": reset_summary,
+        "demo_batch_id": demo_batch_id,
         "analytics_preview": {
             "canales": dict(analytics_counter["canales"]),
             "utm_source": dict(analytics_counter["utm_source"]),
