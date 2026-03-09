@@ -27,6 +27,10 @@ selection instructions to maintain full visibility of all choices.
   so deployments can try OpenAI Whisper and then Cohere automatically. Customise
   the target language with `OPENAI_STT_LANGUAGE` or `COHERE_STT_LANGUAGE` to keep
   pronunciations friendly for usuarios rioplatenses.
+- Realtime voice calls (Twilio Media Streams) now use a dedicated model
+  setting: `OPENAI_REALTIME_SPEECH_MODEL` (fallback compatible with
+  `OPENAI_REALTIME_MODEL`), defaulting to `gpt-realtime-1.5`. This is scoped to
+  live speech sessions and does not change the regular chat-model defaults.
 - The sanitizer normalises common abreviaturas argentinas (por ejemplo "Av." o
   "CABA") y refuerza las pausas en puntos y comas para que la lectura sonorice de
   manera pausada y entendible.
