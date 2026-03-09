@@ -27,14 +27,15 @@ except Exception as e:
     logger.error(f"Failed to initialize OpenAI client: {e}")
     client = None
 
-def _resolve_chat_model(explicit_model: str, usuario: dict, raw_user_message: str) -> str:
-    """Resolve chat model with optional channel-aware overrides.
+def _resolve_chat_model(explicit_model: str, usuario: dict, raw_user_message: str, historial: list | None = None) -> str:
+    """Resolve chat model with channel and complexity-aware overrides.
 
     Priority:
     1) Explicit non-default model passed by caller.
-    2) Channel specific env override.
-    3) OPENAI_CHAT_MODEL_DEFAULT.
-    4) Legacy default (gpt-4o-mini).
+    2) High-complexity override for premium chat channels.
+    3) Channel specific env override.
+    4) OPENAI_CHAT_MODEL_DEFAULT.
+    5) Legacy default (gpt-4o-mini).
     """
 
     legacy_default = "gpt-4o-mini"
@@ -47,13 +48,37 @@ def _resolve_chat_model(explicit_model: str, usuario: dict, raw_user_message: st
     if isinstance(usuario, dict):
         channel = str(usuario.get("channel") or usuario.get("canal") or "").strip().lower()
 
+    parsed_message = None
     if not channel:
         try:
             parsed = json.loads(raw_user_message)
             if isinstance(parsed, dict):
+                parsed_message = parsed
                 channel = str(parsed.get("channel") or parsed.get("canal") or "").strip().lower()
         except Exception:
             channel = ""
+
+    if parsed_message is None:
+        try:
+            parsed = json.loads(raw_user_message)
+            if isinstance(parsed, dict):
+                parsed_message = parsed
+        except Exception:
+            parsed_message = None
+
+    complexity_min_chars = int(os.getenv("OPENAI_CHAT_COMPLEXITY_MIN_CHARS", "600"))
+    complexity_min_turns = int(os.getenv("OPENAI_CHAT_COMPLEXITY_MIN_TURNS", "6"))
+
+    user_text = raw_user_message or ""
+    if isinstance(parsed_message, dict):
+        user_text = str(parsed_message.get("texto") or parsed_message.get("message") or raw_user_message or "")
+
+    history_turns = len(historial or [])
+    is_high_complexity = len(user_text) >= complexity_min_chars or history_turns >= complexity_min_turns
+
+    is_premium_channel = channel == "whatsapp" or "widget" in channel or channel == "web"
+    if is_high_complexity and is_premium_channel:
+        return os.getenv("OPENAI_CHAT_MODEL_HIGH_COMPLEXITY", os.getenv("OPENAI_CHAT_MODEL_WHATSAPP", default_model))
 
     if channel == "whatsapp":
         return os.getenv("OPENAI_CHAT_MODEL_WHATSAPP", default_model)
@@ -134,7 +159,7 @@ def llamar_openai(app, mensaje_usuario: str, usuario: dict, historial: list, cha
         f"Sending to OpenAI. Message: {message[:100]}... Estimated prompt tokens: {total_prompt_tokens}"
     )
 
-    resolved_model = _resolve_chat_model(model, usuario or {}, str(mensaje_usuario))
+    resolved_model = _resolve_chat_model(model, usuario or {}, str(mensaje_usuario), historial=historial)
 
     try:
         # 3. Make the API call
@@ -181,7 +206,11 @@ def llamar_openai(app, mensaje_usuario: str, usuario: dict, historial: list, cha
         if not isinstance(botones, list):
             parsed_response['botones'] = []
 
-        return parsed_response, {"usage": usage_dict, "prompt_tokens_estimate": total_prompt_tokens}
+        return parsed_response, {
+            "usage": usage_dict,
+            "prompt_tokens_estimate": total_prompt_tokens,
+            "model_used": resolved_model,
+        }
 
     except Exception as e:
         logger.error(f"Error calling OpenAI API: {e}", exc_info=True)

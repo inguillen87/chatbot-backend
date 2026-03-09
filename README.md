@@ -34,7 +34,9 @@ selection instructions to maintain full visibility of all choices.
 - Chat model selection is now channel-aware and configurable: use
   `OPENAI_CHAT_MODEL_DEFAULT` as base, plus `OPENAI_CHAT_MODEL_WHATSAPP` and
   `OPENAI_CHAT_MODEL_WIDGET` for premium channels when desired (for example
-  `gpt-5-mini` on WhatsApp/widget).
+  `gpt-5-mini` on WhatsApp/widget). For long/complex threads you can also set
+  `OPENAI_CHAT_MODEL_HIGH_COMPLEXITY` with thresholds via
+  `OPENAI_CHAT_COMPLEXITY_MIN_CHARS` and `OPENAI_CHAT_COMPLEXITY_MIN_TURNS`.
 - Analytics and AI summaries are also configurable via
   `OPENAI_ANALYTICS_MODEL`, `OPENAI_SENTIMENT_MODEL` and
   `OPENAI_TICKET_SUMMARY_MODEL` (defaults set to `gpt-5-mini` for higher
