@@ -23,7 +23,12 @@ from services.config_loader import cargar_configuracion_municipio
 logger = logging.getLogger(__name__)
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
-OPENAI_REALTIME_MODEL = os.environ.get("OPENAI_REALTIME_MODEL", "gpt-realtime-1.5")
+# Solo para el canal de voz realtime (Twilio <-> OpenAI Realtime).
+# No impacta los modelos de chat estándar del bot.
+OPENAI_REALTIME_MODEL = os.environ.get(
+    "OPENAI_REALTIME_SPEECH_MODEL",
+    os.environ.get("OPENAI_REALTIME_MODEL", "gpt-realtime-1.5"),
+)
 OPENAI_REALTIME_URL = (
     f"wss://api.openai.com/v1/realtime?model={OPENAI_REALTIME_MODEL}"
 )
