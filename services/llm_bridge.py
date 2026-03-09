@@ -1,3 +1,4 @@
+import os
 import json
 import logging
 from typing import Any, Dict, Tuple
@@ -61,8 +62,10 @@ def llamar_llm(
         logger.info("llamar_llm: returning cached response")
         return LLM_CACHE[cache_key]
 
+    resolved_model = model or os.getenv("OPENAI_CHAT_MODEL_DEFAULT", "gpt-4o-mini")
+
     try:
-        respuesta = llamar_openai(app, user_msg, usuario or {}, historial or [], chat_session_id, model=model)
+        respuesta = llamar_openai(app, user_msg, usuario or {}, historial or [], chat_session_id, model=resolved_model)
         log_text_block(logger, "LLM OpenAI response", respuesta)
     except Exception as e:
         logger.error(f"OpenAI call failed: {e}; trying Cohere", exc_info=True)

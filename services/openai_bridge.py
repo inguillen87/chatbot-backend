@@ -27,6 +27,68 @@ except Exception as e:
     logger.error(f"Failed to initialize OpenAI client: {e}")
     client = None
 
+def _resolve_chat_model(explicit_model: str, usuario: dict, raw_user_message: str, historial: list | None = None) -> str:
+    """Resolve chat model with channel and complexity-aware overrides.
+
+    Priority:
+    1) Explicit non-default model passed by caller.
+    2) High-complexity override for premium chat channels.
+    3) Channel specific env override.
+    4) OPENAI_CHAT_MODEL_DEFAULT.
+    5) Legacy default (gpt-4o-mini).
+    """
+
+    legacy_default = "gpt-4o-mini"
+    default_model = os.getenv("OPENAI_CHAT_MODEL_DEFAULT", legacy_default)
+
+    if explicit_model and explicit_model != legacy_default:
+        return explicit_model
+
+    channel = ""
+    if isinstance(usuario, dict):
+        channel = str(usuario.get("channel") or usuario.get("canal") or "").strip().lower()
+
+    parsed_message = None
+    if not channel:
+        try:
+            parsed = json.loads(raw_user_message)
+            if isinstance(parsed, dict):
+                parsed_message = parsed
+                channel = str(parsed.get("channel") or parsed.get("canal") or "").strip().lower()
+        except Exception:
+            channel = ""
+
+    if parsed_message is None:
+        try:
+            parsed = json.loads(raw_user_message)
+            if isinstance(parsed, dict):
+                parsed_message = parsed
+        except Exception:
+            parsed_message = None
+
+    complexity_min_chars = int(os.getenv("OPENAI_CHAT_COMPLEXITY_MIN_CHARS", "600"))
+    complexity_min_turns = int(os.getenv("OPENAI_CHAT_COMPLEXITY_MIN_TURNS", "6"))
+
+    user_text = raw_user_message or ""
+    if isinstance(parsed_message, dict):
+        user_text = str(parsed_message.get("texto") or parsed_message.get("message") or raw_user_message or "")
+
+    history_turns = len(historial or [])
+    is_high_complexity = len(user_text) >= complexity_min_chars or history_turns >= complexity_min_turns
+
+    is_premium_channel = channel == "whatsapp" or "widget" in channel or channel == "web"
+    if is_high_complexity and is_premium_channel:
+        return os.getenv("OPENAI_CHAT_MODEL_HIGH_COMPLEXITY", os.getenv("OPENAI_CHAT_MODEL_WHATSAPP", default_model))
+
+    if channel == "whatsapp":
+        return os.getenv("OPENAI_CHAT_MODEL_WHATSAPP", default_model)
+
+    if "widget" in channel or channel == "web":
+        return os.getenv("OPENAI_CHAT_MODEL_WIDGET", default_model)
+
+    return default_model
+
+
 def llamar_openai(app, mensaje_usuario: str, usuario: dict, historial: list, chat_session_id: str, model: str = "gpt-4o-mini") -> tuple[dict, dict]:
     """
     Calls the OpenAI API and formats the response to be compatible with the application's structure.
@@ -97,10 +159,12 @@ def llamar_openai(app, mensaje_usuario: str, usuario: dict, historial: list, cha
         f"Sending to OpenAI. Message: {message[:100]}... Estimated prompt tokens: {total_prompt_tokens}"
     )
 
+    resolved_model = _resolve_chat_model(model, usuario or {}, str(mensaje_usuario), historial=historial)
+
     try:
         # 3. Make the API call
         response = client.chat.completions.create(
-            model=model,
+            model=resolved_model,
             messages=messages,
             temperature=0.3,
             response_format={"type": "json_object"}, # Request JSON output
@@ -142,7 +206,11 @@ def llamar_openai(app, mensaje_usuario: str, usuario: dict, historial: list, cha
         if not isinstance(botones, list):
             parsed_response['botones'] = []
 
-        return parsed_response, {"usage": usage_dict, "prompt_tokens_estimate": total_prompt_tokens}
+        return parsed_response, {
+            "usage": usage_dict,
+            "prompt_tokens_estimate": total_prompt_tokens,
+            "model_used": resolved_model,
+        }
 
     except Exception as e:
         logger.error(f"Error calling OpenAI API: {e}", exc_info=True)
@@ -195,8 +263,9 @@ def generate_analytics_report(stats: dict, tenant_type: str = "pyme") -> dict:
 
         logger.info(f"Generating AI Report for {tenant_type}...")
 
+        analytics_model = os.getenv("OPENAI_ANALYTICS_MODEL", "gpt-5-mini")
         response = client.chat.completions.create(
-            model="gpt-4o", # Use GPT-4 as requested for 'Senior' analysis
+            model=analytics_model,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message}
@@ -246,8 +315,9 @@ def analyze_sentiment(texts: List[str]) -> dict:
 
         logger.info("Analyzing sentiment for survey answers...")
 
+        sentiment_model = os.getenv("OPENAI_SENTIMENT_MODEL", "gpt-5-mini")
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=sentiment_model,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": combined_text}
@@ -290,8 +360,9 @@ def generate_ticket_summary(ticket_data: dict) -> dict:
             "Return strict JSON with keys: summary (string, <=80 words), "
             "next_steps (array of 3 concrete actions), confidence (low|medium|high)."
         )
+        summary_model = os.getenv("OPENAI_TICKET_SUMMARY_MODEL", "gpt-5-mini")
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=summary_model,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": json.dumps(ticket_data, default=str)},
