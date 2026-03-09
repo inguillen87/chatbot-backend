@@ -31,6 +31,14 @@ selection instructions to maintain full visibility of all choices.
   setting: `OPENAI_REALTIME_SPEECH_MODEL` (fallback compatible with
   `OPENAI_REALTIME_MODEL`), defaulting to `gpt-realtime-1.5`. This is scoped to
   live speech sessions and does not change the regular chat-model defaults.
+- Chat model selection is now channel-aware and configurable: use
+  `OPENAI_CHAT_MODEL_DEFAULT` as base, plus `OPENAI_CHAT_MODEL_WHATSAPP` and
+  `OPENAI_CHAT_MODEL_WIDGET` for premium channels when desired (for example
+  `gpt-5-mini` on WhatsApp/widget).
+- Analytics and AI summaries are also configurable via
+  `OPENAI_ANALYTICS_MODEL`, `OPENAI_SENTIMENT_MODEL` and
+  `OPENAI_TICKET_SUMMARY_MODEL` (defaults set to `gpt-5-mini` for higher
+  quality insights).
 - The sanitizer normalises common abreviaturas argentinas (por ejemplo "Av." o
   "CABA") y refuerza las pausas en puntos y comas para que la lectura sonorice de
   manera pausada y entendible.
