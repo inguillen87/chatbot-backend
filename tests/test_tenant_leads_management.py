@@ -218,6 +218,9 @@ def test_tenant_live_chat_schedule_config_and_public_status(client, app):
     public_body = public_resp.get_json()
     assert public_body["tenant_slug"] == tenant.slug
     assert public_body["source"] == "tenant_config"
+    assert public_body.get("socket_transport_hint") == "polling"
+    assert public_body.get("socket_transports") == ["polling"]
+    assert public_body.get("socket_fallback_enabled") is True
 
 
 
@@ -267,3 +270,4 @@ def test_tenant_unread_ticket_summary(client, app):
     body = resp.get_json()
     assert body["total_tickets_with_unread"] >= 1
     assert body["items"][0]["ticket_type"] in {"municipio", "pyme"}
+
