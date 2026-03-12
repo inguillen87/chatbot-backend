@@ -291,6 +291,7 @@ def _support_channels_payload(tenant: TenantProfile, cfg: dict) -> dict:
             },
         },
     }
+    return _log_widget_public_request(jsonify(public_payload), tenant, entity_token=widget_token)
 
 
 
