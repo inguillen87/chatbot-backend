@@ -106,6 +106,25 @@ class WidgetSettingsTests(unittest.TestCase):
         self.assertIn("support_channels", widget_data["widget"])
         self.assertIn("live_chat", widget_data["widget"]["support_channels"])
         self.assertIn("whatsapp", widget_data["widget"]["support_channels"])
+        self.assertIn("voice_call", widget_data["widget"]["support_channels"])
+        self.assertIn("video_call", widget_data["widget"]["support_channels"])
+        self.assertIn("data-realtime-model", attrs)
+        self.assertIn("data-realtime-voice-enabled", attrs)
+        self.assertIn("data-realtime-video-enabled", attrs)
+        self.assertIn("data-avatar-enabled", attrs)
+        self.assertIn("data-avatar-type", attrs)
+        self.assertIn("data-avatar-persona", attrs)
+
+
+    def test_public_realtime_session_requires_openai_key(self):
+        self.app.config["OPENAI_API_KEY"] = ""
+        response = self.client.post(
+            "/api/public/realtime/session",
+            json={"tenant_slug": self.tenant.slug, "channel": "voice"},
+        )
+        self.assertEqual(response.status_code, 503)
+        payload = response.get_json()
+        self.assertEqual(payload.get("error"), "openai_api_key_missing")
 
     def test_public_widget_config_allows_querystring_tenant_fallback(self):
         resp = self.client.get(

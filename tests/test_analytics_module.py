@@ -436,6 +436,9 @@ def test_admin_analytics_heatmap_returns_temporal_matrix(client):
     data = response.get_json()
     assert data['tz'] == 'America/Argentina/Cordoba'
     assert isinstance(data['temporal'], list)
+    assert 'segments' in data
+    assert 'categoria' in data['segments']
+    assert 'rango_edad' in data['segments']
 
 
 def test_admin_analytics_heatmap_rejects_non_numeric_tenant_id(client):
@@ -446,6 +449,42 @@ def test_admin_analytics_heatmap_rejects_non_numeric_tenant_id(client):
     )
     assert response.status_code == 400
 
+
+
+
+def test_admin_analytics_heatmap_segments_from_event_metadata(client):
+    tenant_id = 211
+    now = datetime.utcnow()
+    db.session.add(
+        AnalyticsEventV2(
+            tenant_id=tenant_id,
+            event_name='ticket_created',
+            tenant_type='municipio',
+            channel='web_widget',
+            ts=now,
+            metadata_payload={
+                'categoria': 'alumbrado',
+                'barrio': 'centro',
+                'distrito': 'norte',
+                'sexo': 'f',
+                'edad': 31,
+            },
+        )
+    )
+    db.session.commit()
+
+    response = client.get(
+        '/admin/analytics/heatmap',
+        query_string={'tenant_id': tenant_id, 'scope': 'municipio'},
+        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
+    )
+    assert response.status_code == 200
+    data = response.get_json()
+    segments = data.get('segments') or {}
+    assert (segments.get('categoria') or [])[0]['label'] == 'alumbrado'
+    assert (segments.get('barrio') or [])[0]['label'] == 'centro'
+    assert (segments.get('distrito') or [])[0]['label'] == 'norte'
+    assert (segments.get('sexo') or [])[0]['label'] == 'f'
 
 def test_api_alias_admin_analytics_overview_and_heatmap(client):
     tenant_id = 12
