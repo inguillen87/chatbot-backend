@@ -1,4 +1,8 @@
 from datetime import datetime, timezone
+import json
+import os
+from urllib import error as urllib_error
+from urllib import request as urllib_request
 from flask import Blueprint, jsonify, request, g, current_app
 from flask_cors import cross_origin
 from sqlalchemy import desc
@@ -243,7 +247,154 @@ def _support_channels_payload(tenant: TenantProfile, cfg: dict) -> dict:
             "realtime_bridge": True,
             "media": {"text": True, "image": True, "audio": True, "file": True},
         },
+        "voice_call": {
+            "enabled": bool(cfg.get("realtime_voice_enabled", True)),
+            "channel": "voice_call",
+            "realtime_bridge": True,
+            "provider": "openai_realtime",
+            "model": cfg.get("openai_realtime_model") or current_app.config.get("OPENAI_REALTIME_SPEECH_MODEL") or "gpt-realtime-1.5",
+            "media": {"audio": True, "text": True},
+            "features": {
+                "barge_in": True,
+                "dtmf_fallback": True,
+                "transfer_humano": True,
+            },
+        },
+        "video_call": {
+            "enabled": bool(cfg.get("realtime_video_enabled", False)),
+            "channel": "video_call",
+            "provider": "openai_realtime",
+            "model": cfg.get("openai_realtime_model") or current_app.config.get("OPENAI_REALTIME_SPEECH_MODEL") or "gpt-realtime-1.5",
+            "avatar": {
+                "enabled": bool(cfg.get("widget_avatar_enabled", True)),
+                "type": cfg.get("widget_avatar_type") or "robot",
+                "persona": cfg.get("widget_avatar_persona") or "chatboc_assistant",
+            },
+            "media": {"audio": True, "video": True, "text": True},
+            "features": {
+                "captions": True,
+                "accessibility": ["voice_only", "subtitles", "keyboard_navigation"],
+            },
+        },
     }
+
+
+def _build_realtime_session_payload(tenant: TenantProfile, cfg: dict, *, channel: str) -> dict:
+    """Build OpenAI Realtime session payload for widget voice/video channels."""
+
+    tenant_name = tenant.nombre or "Chatboc"
+    model = (
+        cfg.get("openai_realtime_model")
+        or current_app.config.get("OPENAI_REALTIME_SPEECH_MODEL")
+        or os.environ.get("OPENAI_REALTIME_SPEECH_MODEL")
+        or "gpt-realtime-1.5"
+    )
+
+    voice = cfg.get("openai_realtime_voice") or "alloy"
+    modalities = ["audio", "text"] if channel == "voice" else ["audio", "text", "video"]
+    avatar_enabled = bool(cfg.get("widget_avatar_enabled", True))
+
+    instructions = (
+        f"Sos un asistente inclusivo de {tenant_name}. "
+        "Atendé consultas generales, ayudá a crear reclamos municipales, crear pedidos y derivar a humano cuando corresponda. "
+        "Hablá en español rioplatense, con tono profesional, empático y directo. "
+        "Si faltan datos obligatorios para ejecutar una acción, pedilos de forma breve. "
+        "Confirmá claramente cuando una acción se completa. "
+        "Priorizá accesibilidad: frases cortas, opción de repetir, y validación de comprensión. "
+    )
+
+    return {
+        "model": model,
+        "modalities": modalities,
+        "voice": voice,
+        "instructions": instructions,
+        "input_audio_format": cfg.get("openai_realtime_input_audio_format") or "pcm16",
+        "output_audio_format": cfg.get("openai_realtime_output_audio_format") or "pcm16",
+        "turn_detection": {
+            "type": "server_vad",
+            "threshold": cfg.get("openai_realtime_vad_threshold", 0.5),
+            "prefix_padding_ms": cfg.get("openai_realtime_vad_prefix_padding_ms", 300),
+            "silence_duration_ms": cfg.get("openai_realtime_vad_silence_ms", 500),
+        },
+        "metadata": {
+            "tenant_slug": tenant.slug,
+            "tenant_type": tenant.tipo,
+            "channel": channel,
+            "avatar_enabled": avatar_enabled,
+            "avatar_type": cfg.get("widget_avatar_type") or "robot",
+            "avatar_persona": cfg.get("widget_avatar_persona") or "chatboc_assistant",
+            "business_flows": ["crear_reclamo", "crear_pedido", "consultas_generales", "derivar_humano"],
+            "realtime_profile": "web4_interactive",
+        },
+    }
+
+
+@public_resolver_bp.route("/realtime/session", methods=["POST", "OPTIONS"], provide_automatic_options=False)
+@cross_origin(origins="*", automatic_options=False)
+def create_realtime_session():
+    if request.method == "OPTIONS":
+        return jsonify({"ok": True})
+
+    payload = request.get_json(silent=True) or {}
+    tenant_slug = payload.get("tenant_slug") or request.args.get("tenant")
+    widget_token = payload.get("widget_token") or _extract_widget_token()
+
+    try:
+        tenant = resolve_tenant_only(
+            widget_token=widget_token,
+            tenant_slug=tenant_slug,
+            require_explicit_slug=bool(tenant_slug),
+        )
+    except TenantResolutionError as exc:
+        return jsonify({"error": str(exc)}), 404
+
+    cfg = _normalize_widget_config(tenant.configuracion, tenant.widget_settings)
+    requested_channel = str(payload.get("channel") or "voice").strip().lower()
+    channel = "video" if requested_channel == "video" else "voice"
+
+    if channel == "video" and not bool(cfg.get("realtime_video_enabled", False)):
+        return jsonify({"error": "video_realtime_disabled"}), 400
+    if channel == "voice" and not bool(cfg.get("realtime_voice_enabled", True)):
+        return jsonify({"error": "voice_realtime_disabled"}), 400
+
+    api_key = current_app.config.get("OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        return jsonify({"error": "openai_api_key_missing"}), 503
+
+    session_payload = _build_realtime_session_payload(tenant, cfg, channel=channel)
+
+    req = urllib_request.Request(
+        url="https://api.openai.com/v1/realtime/sessions",
+        method="POST",
+        data=json.dumps(session_payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "OpenAI-Beta": "realtime=v1",
+        },
+    )
+
+    try:
+        with urllib_request.urlopen(req, timeout=12) as response:
+            raw = response.read().decode("utf-8")
+            session_data = json.loads(raw) if raw else {}
+    except urllib_error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="ignore") if getattr(exc, "fp", None) else ""
+        current_app.logger.warning("[realtime] OpenAI session error %s: %s", exc.code, detail[:500])
+        return jsonify({"error": "openai_realtime_session_error", "status": exc.code}), 502
+    except Exception as exc:
+        current_app.logger.exception("[realtime] Failed creating realtime session: %s", exc)
+        return jsonify({"error": "openai_realtime_unavailable"}), 502
+
+    public_payload = {
+        "ok": True,
+        "tenant": tenant.slug,
+        "channel": channel,
+        "model": session_payload.get("model"),
+        "avatar": session_payload.get("metadata", {}),
+        "session": session_data,
+    }
+    return _log_widget_public_request(jsonify(public_payload), tenant, entity_token=widget_token)
 
 
 def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | None) -> dict:
@@ -355,6 +506,12 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
         "data-logo-badge-style": logo_badge_style,
         "data-cursor-trail": str(cursor_trail).lower(),
         "data-ambient-particles": str(ambient_particles).lower(),
+        "data-realtime-model": cfg.get("openai_realtime_model") or current_app.config.get("OPENAI_REALTIME_SPEECH_MODEL") or "gpt-realtime-1.5",
+        "data-realtime-voice-enabled": str(bool(cfg.get("realtime_voice_enabled", True))).lower(),
+        "data-realtime-video-enabled": str(bool(cfg.get("realtime_video_enabled", False))).lower(),
+        "data-avatar-enabled": str(bool(cfg.get("widget_avatar_enabled", True))).lower(),
+        "data-avatar-type": cfg.get("widget_avatar_type") or "robot",
+        "data-avatar-persona": cfg.get("widget_avatar_persona") or "chatboc_assistant",
         "data-font-family": cfg.get("font_family") or "inherit",
         "data-bubble-shape": cfg.get("bubble_shape") or "round",
         "data-singleton": "true",
@@ -529,6 +686,13 @@ def _normalize_widget_config(config: dict | None, widget_settings=None) -> dict:
     ux_config.setdefault("cursor_trail", bool(cfg.get("widget_cursor_trail", False)))
     ux_config.setdefault("ambient_particles", bool(cfg.get("widget_ambient_particles", False)))
     cfg["ux"] = ux_config
+
+    cfg.setdefault("realtime_voice_enabled", True)
+    cfg.setdefault("realtime_video_enabled", False)
+    cfg.setdefault("openai_realtime_model", current_app.config.get("OPENAI_REALTIME_SPEECH_MODEL") or "gpt-realtime-1.5")
+    cfg.setdefault("widget_avatar_enabled", True)
+    cfg.setdefault("widget_avatar_type", "robot")
+    cfg.setdefault("widget_avatar_persona", "chatboc_assistant")
 
     return cfg
 

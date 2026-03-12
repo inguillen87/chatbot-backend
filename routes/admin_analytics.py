@@ -109,6 +109,67 @@ def _request_id() -> str:
     return inbound or uuid.uuid4().hex
 
 
+
+
+def _bucket_age(age: int | None) -> str:
+    if age is None:
+        return "sin_dato"
+    if age < 18:
+        return "0-17"
+    if age < 25:
+        return "18-24"
+    if age < 35:
+        return "25-34"
+    if age < 45:
+        return "35-44"
+    if age < 60:
+        return "45-59"
+    return "60+"
+
+
+def _aggregate_heatmap_segments(events: list[dict[str, Any]]) -> dict[str, list[dict[str, int | str]]]:
+    counters = {
+        "categoria": {},
+        "barrio": {},
+        "distrito": {},
+        "sexo": {},
+        "rango_edad": {},
+        "canal": {},
+    }
+
+    def inc(group: str, key: str):
+        key = (key or "sin_dato").strip() or "sin_dato"
+        counters[group][key] = counters[group].get(key, 0) + 1
+
+    for event in events:
+        md = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
+        categoria = str(md.get("categoria") or md.get("category") or "sin_dato")
+        barrio = str(md.get("barrio") or md.get("neighborhood") or "sin_dato")
+        distrito = str(md.get("distrito") or md.get("district") or "sin_dato")
+        sexo = str(md.get("sexo") or md.get("genero") or md.get("gender") or "sin_dato")
+
+        edad_value = md.get("edad")
+        try:
+            edad_int = int(edad_value) if edad_value is not None else None
+        except (TypeError, ValueError):
+            edad_int = None
+
+        inc("categoria", categoria)
+        inc("barrio", barrio)
+        inc("distrito", distrito)
+        inc("sexo", sexo.lower())
+        inc("rango_edad", _bucket_age(edad_int))
+        inc("canal", str(event.get("channel") or md.get("channel") or "sin_dato"))
+
+    return {
+        group: [
+            {"label": label, "count": count}
+            for label, count in sorted(values.items(), key=lambda item: item[1], reverse=True)
+        ]
+        for group, values in counters.items()
+    }
+
+
 def _dashboard_response(filters):
     cache_key = _dashboard_cache_key(filters)
     now = time.time()
@@ -198,13 +259,21 @@ def admin_analytics_heatmap():
         .all()
     )
 
+    events = query.with_entities(
+        AnalyticsEventV2.channel.label("channel"),
+        AnalyticsEventV2.metadata_payload.label("metadata"),
+    ).all()
+
+
     temporal = [
         {"weekday": int(row.weekday), "hour": int(row.hour), "count": int(row.total)}
         for row in temporal_rows
         if row.weekday is not None and row.hour is not None
     ]
 
-    return _json({"geo": base, "temporal": temporal, "tz": tz})
+    segment_events = [{"channel": row.channel, "metadata": row.metadata} for row in events]
+
+    return _json({"geo": base, "temporal": temporal, "segments": _aggregate_heatmap_segments(segment_events), "tz": tz})
 
 
 @admin_analytics_bp.get("/export.csv")
