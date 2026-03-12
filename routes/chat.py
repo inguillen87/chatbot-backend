@@ -18,7 +18,7 @@ from flask import Blueprint, request, jsonify, current_app
 from sqlalchemy import func, desc
 from sqlalchemy.exc import ProgrammingError, SQLAlchemyError
 from sqlalchemy.orm.attributes import flag_modified # Importado para flag_modified
-from models import User, Rubro, Conversacion, MunicipioTicket, db, ChatSessionContext # Added ChatSessionContext
+from models import User, Rubro, Conversacion, MunicipioTicket, TenantProfile, db, ChatSessionContext # Added ChatSessionContext
 from utils.db_utils import commit_with_retry, ensure_chat_session_context_schema
 from socket_service import socketio # Import socketio
 from services.logic import (
@@ -1429,13 +1429,13 @@ def _procesar_chat(
 
         owner_tipo_chat = (getattr(owner_user, "tipo_chat", None) or "").strip().lower()
         if tipo_chat_fijo and owner_tipo_chat and tipo_chat_fijo != owner_tipo_chat:
-            if owner_tipo_chat == "municipio" and tipo_chat_fijo == "pyme":
-                return jsonify({
-                    "error": {"code": 409, "message": "endpoint_mismatch"}, # NEW FORMAT
-                    "message": "Este tenant es un municipio. Use /ask/municipio",
-                    "expected_endpoint": "/ask/municipio",
-                    "actual_tipo_chat": "municipio"
-                }), 409
+            current_app.logger.info(
+                "[CHAT] endpoint_mismatch auto-recovered: requested=%s owner_tipo=%s owner_id=%s",
+                tipo_chat_fijo,
+                owner_tipo_chat,
+                getattr(owner_user, "id", "N/A"),
+            )
+            _set_tipo_chat(owner_tipo_chat)
         if owner_tipo_chat in {"pyme", "municipio"} and owner_tipo_chat != tipo_chat_normalized:
             current_app.logger.info(
                 "[CHAT] Ajustando tipo_chat a '%s' basado en owner_user %s (valor previo: '%s')",
@@ -2278,17 +2278,25 @@ def widget_config():
 @chat_bp.route("/api/live-chat/schedule", methods=["GET"])
 def live_chat_schedule():
     tenant_slug = str(request.args.get("tenant_slug") or request.args.get("tenant") or "").strip().lower()
-    if tenant_slug:
-        tenant = TenantProfile.query.filter_by(slug=tenant_slug).first()
-        if tenant and isinstance(tenant.configuracion, dict):
-            schedule_cfg = tenant.configuracion.get("live_chat_schedule")
-            if isinstance(schedule_cfg, dict):
-                status = build_live_chat_status(schedule_override=schedule_cfg)
-                status["tenant_slug"] = tenant.slug
-                status["source"] = "tenant_config"
-                return jsonify(status)
+    try:
+        if tenant_slug:
+            tenant = TenantProfile.query.filter_by(slug=tenant_slug).first()
+            if tenant and isinstance(tenant.configuracion, dict):
+                schedule_cfg = tenant.configuracion.get("live_chat_schedule")
+                if isinstance(schedule_cfg, dict):
+                    status = build_live_chat_status(schedule_override=schedule_cfg)
+                    status["tenant_slug"] = tenant.slug
+                    status["source"] = "tenant_config"
+                    status.setdefault("socket_transport_hint", "polling")
+                    status.setdefault("socket_fallback_enabled", True)
+                    return jsonify(status)
+    except Exception as exc:
+        current_app.logger.warning("[live_chat_schedule] tenant lookup failed for %s: %s", tenant_slug, exc)
+
     status = build_live_chat_status()
     status["source"] = "global_config"
+    status.setdefault("socket_transport_hint", "polling")
+    status.setdefault("socket_fallback_enabled", True)
     return jsonify(status)
 
 @chat_bp.route("/config/google-maps-key", methods=["GET"])
