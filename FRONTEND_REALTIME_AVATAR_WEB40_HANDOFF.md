@@ -227,3 +227,9 @@ UX sugerida:
 - Cards de alertas para sondeos/votaciones con actividad alta
 - Tabla de comentarios en vivo (encuestas + chat)
 - Mapa de calor en tiempo real con filtro por canal/segmento
+
+
+## G. Troubleshooting rápido (producción)
+- Si el navegador muestra `socket.io websocket error` o `GET /api/socket.io ... 400`, forzar fallback de frontend a `polling` usando `socket_transport_hint` del endpoint de schedule (`/api/live-chat/schedule`).
+- Si `POST /api/ask/pyme` retorna `409`, mostrar mensaje UX claro de conflicto de sesión/flujo y ofrecer botón de reintentar con nueva sesión.
+- Si `/api/live-chat/schedule` falla, usar fallback `/api/{tenant_slug}/live-chat/schedule` y degradar en UI a estado "horario no disponible" sin romper chat.
