@@ -218,8 +218,34 @@ def test_tenant_live_chat_schedule_config_and_public_status(client, app):
     public_body = public_resp.get_json()
     assert public_body["tenant_slug"] == tenant.slug
     assert public_body["source"] == "tenant_config"
+    assert public_body.get("socket_transport_hint") == "polling"
+    assert public_body.get("socket_transports") == ["polling"]
+    assert public_body.get("socket_fallback_enabled") is True
 
 
+
+
+
+def test_public_api_live_chat_schedule_alias_includes_socket_hints(client, app):
+    owner = User(email="owner-schedule-api@test.com", name="Owner Schedule API", rol="admin", tipo_chat="pyme")
+    owner.set_password("pass")
+    db.session.add(owner)
+    db.session.commit()
+
+    tenant = TenantProfile(slug="tenant-schedule-api", nombre="Tenant Schedule API", tipo="pyme", pyme_id=owner.id)
+    db.session.add(tenant)
+    db.session.commit()
+
+    tenant.configuracion = {"live_chat_schedule": {"enabled": True, "days": [0,1,2,3,4], "start_time": "09:00", "end_time": "18:00"}}
+    db.session.add(tenant)
+    db.session.commit()
+
+    resp = client.get("/api/live-chat/schedule", query_string={"tenant_slug": tenant.slug, "tenant": tenant.slug})
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body.get("tenant_slug") == tenant.slug
+    assert body.get("socket_transport_hint") == "polling"
+    assert body.get("socket_fallback_enabled") is True
 
 def test_tenant_unread_ticket_summary(client, app):
     owner = User(email="owner-unread@test.com", name="Owner Unread", rol="admin", tipo_chat="pyme")
@@ -244,3 +270,4 @@ def test_tenant_unread_ticket_summary(client, app):
     body = resp.get_json()
     assert body["total_tickets_with_unread"] >= 1
     assert body["items"][0]["ticket_type"] in {"municipio", "pyme"}
+
