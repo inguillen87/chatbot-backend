@@ -245,6 +245,7 @@ def test_public_api_live_chat_schedule_alias_includes_socket_hints(client, app):
     body = resp.get_json()
     assert body.get("tenant_slug") == tenant.slug
     assert body.get("socket_transport_hint") == "polling"
+    assert body.get("socket_transports") == ["polling"]
     assert body.get("socket_fallback_enabled") is True
 
 def test_tenant_unread_ticket_summary(client, app):
