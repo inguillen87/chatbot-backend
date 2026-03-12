@@ -866,7 +866,7 @@ def _normalize_widget_config(config: dict | None, widget_settings=None) -> dict:
     cfg["ux"] = ux_config
 
     cfg.setdefault("realtime_voice_enabled", True)
-    cfg.setdefault("realtime_video_enabled", True)
+    cfg.setdefault("realtime_video_enabled", False)
     cfg.setdefault("openai_realtime_model", current_app.config.get("OPENAI_REALTIME_SPEECH_MODEL") or "gpt-realtime-1.5")
     cfg.setdefault("widget_avatar_enabled", True)
     cfg.setdefault("widget_avatar_type", "robot")

@@ -825,3 +825,42 @@ def test_api_alias_analytics_event_honors_feature_gate(client):
     )
 
     assert response.status_code == 404
+
+
+def test_admin_analytics_realtime_hub_accepts_invalid_window_minutes(client):
+    tenant_id = 337
+    _create_municipio_ticket(tenant_id)
+    db.session.commit()
+
+    response = client.get(
+        '/admin/analytics/realtime-hub',
+        query_string={'tenant_id': tenant_id, 'scope': 'municipio', 'window_minutes': 'abc'},
+        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
+    )
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data.get('window_minutes') == 30
+
+
+def test_admin_analytics_realtime_hub_counts_live_chat_comments_by_tenant_ticket(client):
+    tenant_id = 338
+    ticket = _create_municipio_ticket(tenant_id)
+    db.session.flush()
+    db.session.add(
+        TicketComentario(
+            municipio_ticket_id=ticket.id,
+            comentario='Seguimiento realtime',
+            user_id=999999,
+            es_admin=False,
+        )
+    )
+    db.session.commit()
+
+    response = client.get(
+        '/admin/analytics/realtime-hub',
+        query_string={'tenant_id': tenant_id, 'scope': 'municipio', 'window_minutes': 60},
+        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
+    )
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data.get('totals', {}).get('live_chat_comments') >= 1

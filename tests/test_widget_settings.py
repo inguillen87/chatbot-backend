@@ -117,6 +117,17 @@ class WidgetSettingsTests(unittest.TestCase):
         self.assertIn("data-avatar-persona", attrs)
 
 
+
+    def test_widget_config_defaults_video_realtime_disabled(self):
+        widget_resp = self.client.get(
+            f"/api/public/widget-config?tenant={self.tenant.slug}",
+        )
+        self.assertEqual(widget_resp.status_code, 200)
+        widget_data = widget_resp.get_json()
+        attrs = widget_data["widget"]["attributes"]
+        self.assertEqual(attrs.get("data-realtime-video-enabled"), "false")
+        self.assertFalse(widget_data["widget"]["support_channels"]["video_call"]["enabled"])
+
     def test_public_realtime_session_requires_openai_key(self):
         self.app.config["OPENAI_API_KEY"] = ""
         response = self.client.post(

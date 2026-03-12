@@ -12,9 +12,9 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from flask import Blueprint, Response, abort, jsonify, request
-from sqlalchemy import func
+from sqlalchemy import func, or_
 
-from models import AnalyticsEventV2, EncComentario, EncEncuesta, EncRespuesta, TicketComentario
+from models import AnalyticsEventV2, EncComentario, EncEncuesta, EncRespuesta, MunicipioTicket, PymeTicket, TicketComentario
 from services.analytics import get_geo_heatmap, get_summary
 from services.analytics.filters import parse_filters
 from services.analytics.rbac import require_access
@@ -380,9 +380,19 @@ def admin_analytics_heatmap():
 
 
 
+
+def _coerce_window_minutes(value: Any, *, default: int = 30) -> int:
+    """Parse window_minutes defensively to avoid 500s on malformed query params."""
+
+    try:
+        parsed = int(value if value is not None and value != "" else default)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(5, min(parsed, 24 * 60))
+
 def _build_realtime_hub_payload(filters, *, window_minutes: int = 30) -> dict[str, Any]:
     tenant_id = _tenant_id_as_int(filters.tenant_id)
-    window_minutes = max(5, min(int(window_minutes or 30), 24 * 60))
+    window_minutes = _coerce_window_minutes(window_minutes)
     cutoff = datetime.utcnow() - timedelta(minutes=window_minutes)
 
     query = AnalyticsEventV2.query.filter(AnalyticsEventV2.tenant_id == tenant_id).filter(AnalyticsEventV2.ts >= cutoff)
@@ -422,8 +432,17 @@ def _build_realtime_hub_payload(filters, *, window_minutes: int = 30) -> dict[st
     )
 
     live_chat_comments = (
-        TicketComentario.query.filter(TicketComentario.fecha >= cutoff)
-        .filter(TicketComentario.user_id == tenant_id)
+        TicketComentario.query
+        .outerjoin(MunicipioTicket, TicketComentario.municipio_ticket_id == MunicipioTicket.id)
+        .outerjoin(PymeTicket, TicketComentario.pyme_ticket_id == PymeTicket.id)
+        .filter(TicketComentario.fecha >= cutoff)
+        .filter(
+            or_(
+                MunicipioTicket.tenant_id == tenant_id,
+                MunicipioTicket.municipio_id == tenant_id,
+                PymeTicket.tenant_id == tenant_id,
+            )
+        )
         .count()
     )
 
