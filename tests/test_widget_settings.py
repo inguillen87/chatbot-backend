@@ -104,8 +104,83 @@ class WidgetSettingsTests(unittest.TestCase):
         self.assertIn("data-ambient-particles", attrs)
         self.assertIn("ux", widget_data["builder_config"])
         self.assertIn("support_channels", widget_data["widget"])
+        self.assertIn("enterprise_iteration", widget_data["builder_config"])
         self.assertIn("live_chat", widget_data["widget"]["support_channels"])
         self.assertIn("whatsapp", widget_data["widget"]["support_channels"])
+        self.assertIn("voice_call", widget_data["widget"]["support_channels"])
+        self.assertIn("video_call", widget_data["widget"]["support_channels"])
+        self.assertIn("data-realtime-model", attrs)
+        self.assertIn("data-realtime-voice-enabled", attrs)
+        self.assertIn("data-realtime-video-enabled", attrs)
+        self.assertIn("data-avatar-enabled", attrs)
+        self.assertIn("data-avatar-type", attrs)
+        self.assertIn("data-avatar-persona", attrs)
+
+
+
+    def test_widget_config_defaults_video_realtime_disabled(self):
+        widget_resp = self.client.get(
+            f"/api/public/widget-config?tenant={self.tenant.slug}",
+        )
+        self.assertEqual(widget_resp.status_code, 200)
+        widget_data = widget_resp.get_json()
+        attrs = widget_data["widget"]["attributes"]
+        self.assertEqual(attrs.get("data-realtime-video-enabled"), "false")
+        self.assertFalse(widget_data["widget"]["support_channels"]["video_call"]["enabled"])
+
+    def test_public_realtime_session_requires_openai_key(self):
+        self.app.config["OPENAI_API_KEY"] = ""
+        response = self.client.post(
+            "/api/public/realtime/session",
+            json={"tenant_slug": self.tenant.slug, "channel": "voice", "widget_token": self.owner.token},
+        )
+        self.assertEqual(response.status_code, 503)
+        payload = response.get_json()
+        self.assertEqual(payload.get("error"), "openai_api_key_missing")
+
+
+    def test_public_realtime_session_rejects_invalid_widget_token(self):
+        response = self.client.post(
+            "/api/public/realtime/session",
+            json={"tenant_slug": self.tenant.slug, "channel": "voice", "widget_token": "invalid-token"},
+        )
+        self.assertEqual(response.status_code, 403)
+        payload = response.get_json()
+        self.assertEqual(payload.get("error"), "widget_token_invalid")
+
+
+    def test_public_realtime_action_event_rejects_unknown_action(self):
+        response = self.client.post(
+            "/api/public/realtime/action-event",
+            json={
+                "tenant_slug": self.tenant.slug,
+                "widget_token": self.owner.token,
+                "channel": "voice",
+                "action": "hack_system",
+            },
+        )
+        self.assertEqual(response.status_code, 400)
+        payload = response.get_json()
+        self.assertEqual(payload.get("error"), "action_not_allowed")
+
+    def test_public_realtime_action_event_requires_action(self):
+        response = self.client.post(
+            "/api/public/realtime/action-event",
+            json={"tenant_slug": self.tenant.slug, "widget_token": self.owner.token, "channel": "voice"},
+        )
+        self.assertEqual(response.status_code, 400)
+        payload = response.get_json()
+        self.assertEqual(payload.get("error"), "action_required")
+
+    def test_public_realtime_session_includes_rate_limit_headers(self):
+        self.app.config["OPENAI_API_KEY"] = ""
+        response = self.client.post(
+            "/api/public/realtime/session",
+            json={"tenant_slug": self.tenant.slug, "channel": "voice", "widget_token": self.owner.token},
+        )
+        self.assertEqual(response.status_code, 503)
+        self.assertIn("X-RateLimit-Limit", response.headers)
+        self.assertIn("X-RateLimit-Window", response.headers)
 
     def test_public_widget_config_allows_querystring_tenant_fallback(self):
         resp = self.client.get(

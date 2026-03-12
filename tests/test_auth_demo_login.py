@@ -93,6 +93,7 @@ class AuthDemoLoginTest(unittest.TestCase):
         payload = resp.get_json()
         self.assertIn('super_admin_demo', payload)
         self.assertTrue(payload.get('demo_login_enabled'))
+        self.assertTrue(payload.get('request_id'))
         self.assertEqual(payload.get('demo_login_endpoint'), '/auth/demo')
         self.assertEqual(payload.get('demo_login_methods'), ['POST'])
         self.assertTrue((payload.get('quick_login_payload') or {}).get('tenant_slug'))
@@ -100,6 +101,7 @@ class AuthDemoLoginTest(unittest.TestCase):
         languages = payload.get('supported_languages') or []
         codes = {item.get('code') for item in languages}
         self.assertTrue({'es', 'en', 'pt'}.issubset(codes))
+        self.assertTrue(resp.headers.get('X-Request-Id'))
         tenant_demos = payload.get('tenant_demos') or []
         self.assertTrue(all(item.get('enabled') is True for item in tenant_demos))
         self.assertTrue(all(item.get('login_endpoint') == '/auth/demo' for item in tenant_demos))
@@ -241,6 +243,7 @@ class AuthDemoLoginTest(unittest.TestCase):
             resp = self.client.get('/auth/demo/catalog')
             self.assertEqual(resp.status_code, 200)
             payload = resp.get_json()
+            self.assertTrue(resp.headers.get('X-Request-Id'))
             tenant_demos = payload.get('tenant_demos') or []
             keys = {item.get('key') for item in tenant_demos}
             self.assertTrue(keys)
