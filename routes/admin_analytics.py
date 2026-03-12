@@ -8,13 +8,13 @@ import io
 import json
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from flask import Blueprint, Response, abort, jsonify, request
 from sqlalchemy import func
 
-from models import AnalyticsEventV2
+from models import AnalyticsEventV2, EncComentario, EncEncuesta, EncRespuesta, TicketComentario
 from services.analytics import get_geo_heatmap, get_summary
 from services.analytics.filters import parse_filters
 from services.analytics.rbac import require_access
@@ -142,24 +142,13 @@ def _aggregate_heatmap_segments(events: list[dict[str, Any]]) -> dict[str, list[
         counters[group][key] = counters[group].get(key, 0) + 1
 
     for event in events:
-        md = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
-        categoria = str(md.get("categoria") or md.get("category") or "sin_dato")
-        barrio = str(md.get("barrio") or md.get("neighborhood") or "sin_dato")
-        distrito = str(md.get("distrito") or md.get("district") or "sin_dato")
-        sexo = str(md.get("sexo") or md.get("genero") or md.get("gender") or "sin_dato")
-
-        edad_value = md.get("edad")
-        try:
-            edad_int = int(edad_value) if edad_value is not None else None
-        except (TypeError, ValueError):
-            edad_int = None
-
-        inc("categoria", categoria)
-        inc("barrio", barrio)
-        inc("distrito", distrito)
-        inc("sexo", sexo.lower())
-        inc("rango_edad", _bucket_age(edad_int))
-        inc("canal", str(event.get("channel") or md.get("channel") or "sin_dato"))
+        labels = _event_segment_labels(event)
+        inc("categoria", labels.get("categoria", "sin_dato"))
+        inc("barrio", labels.get("barrio", "sin_dato"))
+        inc("distrito", labels.get("distrito", "sin_dato"))
+        inc("sexo", labels.get("sexo", "sin_dato"))
+        inc("rango_edad", labels.get("rango_edad", "sin_dato"))
+        inc("canal", labels.get("canal", "sin_dato"))
 
     return {
         group: [
@@ -168,6 +157,108 @@ def _aggregate_heatmap_segments(events: list[dict[str, Any]]) -> dict[str, list[
         ]
         for group, values in counters.items()
     }
+
+
+
+
+def _extract_segment_filters() -> dict[str, set[str]]:
+    mapping = {
+        "categoria": {item.strip().lower() for item in (request.args.get("categoria") or request.args.get("categorias") or "").split(",") if item.strip()},
+        "barrio": {item.strip().lower() for item in (request.args.get("barrio") or "").split(",") if item.strip()},
+        "distrito": {item.strip().lower() for item in (request.args.get("distrito") or "").split(",") if item.strip()},
+        "sexo": {item.strip().lower() for item in (request.args.get("sexo") or request.args.get("genero") or "").split(",") if item.strip()},
+        "rango_edad": {item.strip().lower() for item in (request.args.get("rango_edad") or "").split(",") if item.strip()},
+        "canal": {item.strip().lower() for item in (request.args.get("canal") or "").split(",") if item.strip()},
+    }
+    return {k: v for k, v in mapping.items() if v}
+
+
+def _event_segment_labels(event: dict[str, Any]) -> dict[str, str]:
+    md = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
+    categoria = str(md.get("categoria") or md.get("category") or "sin_dato").strip().lower()
+    barrio = str(md.get("barrio") or md.get("neighborhood") or "sin_dato").strip().lower()
+    distrito = str(md.get("distrito") or md.get("district") or "sin_dato").strip().lower()
+    sexo = str(md.get("sexo") or md.get("genero") or md.get("gender") or "sin_dato").strip().lower()
+
+    edad_value = md.get("edad")
+    try:
+        edad_int = int(edad_value) if edad_value is not None else None
+    except (TypeError, ValueError):
+        edad_int = None
+
+    canal = str(event.get("channel") or md.get("channel") or "sin_dato").strip().lower()
+    return {
+        "categoria": categoria,
+        "barrio": barrio,
+        "distrito": distrito,
+        "sexo": sexo,
+        "rango_edad": _bucket_age(edad_int).lower(),
+        "canal": canal,
+    }
+
+
+def _event_matches_segment_filters(event: dict[str, Any], filters_map: dict[str, set[str]]) -> bool:
+    if not filters_map:
+        return True
+    labels = _event_segment_labels(event)
+    for key, allowed in filters_map.items():
+        if allowed and labels.get(key, "sin_dato") not in allowed:
+            return False
+    return True
+
+
+def _build_period_comparison(events: list[dict[str, Any]]) -> dict[str, Any]:
+    if not events:
+        return {"enabled": False, "reason": "no_events"}
+
+    timestamps = [event.get("ts") for event in events if isinstance(event.get("ts"), datetime)]
+    if len(timestamps) < 2:
+        return {"enabled": False, "reason": "insufficient_timespan"}
+
+    min_ts = min(timestamps)
+    max_ts = max(timestamps)
+    midpoint = min_ts + (max_ts - min_ts) / 2
+
+    current = [event for event in events if isinstance(event.get("ts"), datetime) and event["ts"] >= midpoint]
+    previous = [event for event in events if isinstance(event.get("ts"), datetime) and event["ts"] < midpoint]
+
+    current_segments = _aggregate_heatmap_segments(current)
+    previous_segments = _aggregate_heatmap_segments(previous)
+
+    return {
+        "enabled": True,
+        "window": {"from": min_ts.isoformat(), "to": max_ts.isoformat(), "split_at": midpoint.isoformat()},
+        "totals": {"current": len(current), "previous": len(previous), "delta": len(current) - len(previous)},
+        "segments": {"current": current_segments, "previous": previous_segments},
+    }
+
+
+def _build_hotspots(events: list[dict[str, Any]], limit: int = 10) -> list[dict[str, Any]]:
+    grouped: dict[tuple[str, str, str], dict[str, Any]] = {}
+
+    for event in events:
+        labels = _event_segment_labels(event)
+        key = (labels.get("categoria", "sin_dato"), labels.get("barrio", "sin_dato"), labels.get("distrito", "sin_dato"))
+        item = grouped.setdefault(
+            key,
+            {
+                "categoria": key[0],
+                "barrio": key[1],
+                "distrito": key[2],
+                "count": 0,
+                "channels": {},
+            },
+        )
+        item["count"] += 1
+        channel = labels.get("canal", "sin_dato")
+        channels = item["channels"]
+        channels[channel] = channels.get(channel, 0) + 1
+
+    ranked = sorted(grouped.values(), key=lambda value: value["count"], reverse=True)[:limit]
+    max_count = ranked[0]["count"] if ranked else 1
+    for item in ranked:
+        item["hotspot_score"] = round((item["count"] / max_count) * 100, 2)
+    return ranked
 
 
 def _dashboard_response(filters):
@@ -262,6 +353,7 @@ def admin_analytics_heatmap():
     events = query.with_entities(
         AnalyticsEventV2.channel.label("channel"),
         AnalyticsEventV2.metadata_payload.label("metadata"),
+        AnalyticsEventV2.ts.label("ts"),
     ).all()
 
 
@@ -271,9 +363,112 @@ def admin_analytics_heatmap():
         if row.weekday is not None and row.hour is not None
     ]
 
-    segment_events = [{"channel": row.channel, "metadata": row.metadata} for row in events]
+    segment_events = [{"channel": row.channel, "metadata": row.metadata, "ts": row.ts} for row in events]
+    segment_filters = _extract_segment_filters()
+    filtered_events = [event for event in segment_events if _event_matches_segment_filters(event, segment_filters)]
 
-    return _json({"geo": base, "temporal": temporal, "segments": _aggregate_heatmap_segments(segment_events), "tz": tz})
+    return _json({
+        "geo": base,
+        "temporal": temporal,
+        "segments": _aggregate_heatmap_segments(filtered_events),
+        "segments_filters_applied": {k: sorted(v) for k, v in segment_filters.items()},
+        "period_comparison": _build_period_comparison(filtered_events),
+        "hotspots": _build_hotspots(filtered_events),
+        "tz": tz,
+    })
+
+
+
+
+def _build_realtime_hub_payload(filters, *, window_minutes: int = 30) -> dict[str, Any]:
+    tenant_id = _tenant_id_as_int(filters.tenant_id)
+    window_minutes = max(5, min(int(window_minutes or 30), 24 * 60))
+    cutoff = datetime.utcnow() - timedelta(minutes=window_minutes)
+
+    query = AnalyticsEventV2.query.filter(AnalyticsEventV2.tenant_id == tenant_id).filter(AnalyticsEventV2.ts >= cutoff)
+    events = query.with_entities(
+        AnalyticsEventV2.event_name.label("event_name"),
+        AnalyticsEventV2.channel.label("channel"),
+        AnalyticsEventV2.metadata_payload.label("metadata"),
+        AnalyticsEventV2.ts.label("ts"),
+        AnalyticsEventV2.lat.label("lat"),
+        AnalyticsEventV2.lng.label("lng"),
+    ).all()
+
+    total_events = len(events)
+    channel_counts: dict[str, int] = {}
+    event_counts: dict[str, int] = {}
+    sentiment = {"positive": 0, "neutral": 0, "negative": 0}
+    points = []
+
+    for row in events:
+        ch = (row.channel or "unknown").lower()
+        channel_counts[ch] = channel_counts.get(ch, 0) + 1
+        ev = (row.event_name or "unknown").lower()
+        event_counts[ev] = event_counts.get(ev, 0) + 1
+        md = row.metadata if isinstance(row.metadata, dict) else {}
+        sent = str(md.get("sentiment") or md.get("sentimiento") or "").lower()
+        if sent in sentiment:
+            sentiment[sent] += 1
+        if row.lat is not None and row.lng is not None:
+            points.append({"lat": float(row.lat), "lng": float(row.lng), "weight": 1})
+
+    survey_responses = EncRespuesta.query.filter_by(tenant_id=tenant_id).filter(EncRespuesta.created_at >= cutoff).count()
+    survey_comments = (
+        EncComentario.query.join(EncEncuesta, EncComentario.encuesta_id == EncEncuesta.id)
+        .filter(EncEncuesta.tenant_id == tenant_id)
+        .filter(EncComentario.created_at >= cutoff)
+        .count()
+    )
+
+    live_chat_comments = (
+        TicketComentario.query.filter(TicketComentario.fecha >= cutoff)
+        .filter(TicketComentario.user_id == tenant_id)
+        .count()
+    )
+
+    top_events = [
+        {"event": name, "count": count}
+        for name, count in sorted(event_counts.items(), key=lambda item: item[1], reverse=True)[:10]
+    ]
+    top_channels = [
+        {"channel": name, "count": count}
+        for name, count in sorted(channel_counts.items(), key=lambda item: item[1], reverse=True)[:10]
+    ]
+
+    return {
+        "tenant_id": tenant_id,
+        "scope": filters.scope,
+        "window_minutes": window_minutes,
+        "cutoff": cutoff.isoformat() + "Z",
+        "totals": {
+            "events": total_events,
+            "survey_responses": survey_responses,
+            "survey_comments": survey_comments,
+            "live_chat_comments": live_chat_comments,
+        },
+        "channels": top_channels,
+        "events": top_events,
+        "sentiment": sentiment,
+        "geo": {
+            "points": points[:2000],
+            "hotspots": _build_hotspots([{"channel": e.channel, "metadata": e.metadata, "ts": e.ts} for e in events], limit=20),
+        },
+        "recommendations": [
+            "Priorizar canales con mayor volumen para staffing en vivo.",
+            "Cruzar comentarios de encuestas con eventos realtime para detectar quiebres UX.",
+            "Activar alertas cuando suban eventos negativos por barrio/canal.",
+        ],
+    }
+
+
+@admin_analytics_bp.get("/realtime-hub")
+def admin_analytics_realtime_hub():
+    filters = parse_filters(request.args)
+    require_access(filters.tenant_id, "operador")
+    window_minutes = request.args.get("window_minutes", 30)
+    payload = _build_realtime_hub_payload(filters, window_minutes=window_minutes)
+    return _json(payload)
 
 
 @admin_analytics_bp.get("/export.csv")

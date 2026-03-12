@@ -7,7 +7,7 @@ from flask import Blueprint, jsonify, request, g, current_app
 from flask_cors import cross_origin
 from sqlalchemy import desc
 
-from models import ChatSessionContext, Conversacion, TenantProfile, User, WidgetSettings, Rubro, db
+from models import AnalyticsEventV2, ChatSessionContext, Conversacion, TenantProfile, User, WidgetSettings, Rubro, db
 from services.live_chat_schedule import build_live_chat_status
 from services.tenant_resolver import (
     RESERVED_TENANT_SLUGS,
@@ -23,6 +23,20 @@ from services.demo_registry import load_demo_rubros
 
 public_resolver_bp = Blueprint("public_resolver_bp", __name__, url_prefix="/api/public")
 public_municipios_bp = Blueprint("public_municipios_bp", __name__)
+
+
+_REALTIME_SESSION_RATE_LIMIT_WINDOW_SECONDS = 60
+_REALTIME_SESSION_RATE_LIMIT_MAX_REQUESTS = 20
+_REALTIME_SESSION_RATE_BUCKETS: dict[str, list[float]] = {}
+_REALTIME_RATE_BUCKET_MAX_KEYS = 10000
+_REALTIME_ACTION_EVENT_ALLOWED = {
+    "crear_reclamo",
+    "crear_pedido",
+    "consultas_generales",
+    "derivar_humano",
+    "consulta_estado_ticket",
+    "finalizar_pedido_pyme",
+}
 
 
 def _log_widget_public_request(response, tenant=None, *, entity_token=None):
@@ -277,6 +291,91 @@ def _support_channels_payload(tenant: TenantProfile, cfg: dict) -> dict:
             },
         },
     }
+    return _log_widget_public_request(jsonify(public_payload), tenant, entity_token=widget_token)
+
+
+
+
+def _widget_token_allowed_for_tenant(tenant: TenantProfile, token: str | None) -> bool:
+    if not token:
+        return False
+
+    cfg = _normalize_widget_config(tenant.configuracion, tenant.widget_settings)
+    tokens_cfg = cfg.get("widget_tokens")
+    tokens: list[str] = []
+
+    if isinstance(tokens_cfg, str):
+        tokens = [tokens_cfg]
+    elif isinstance(tokens_cfg, list):
+        tokens = [str(item) for item in tokens_cfg if item]
+
+    owner = tenant.pyme or tenant.municipio
+    owner_token = getattr(owner, "token", None) if owner else None
+    if owner_token:
+        tokens.append(owner_token)
+
+    return token in set(tokens)
+
+
+def _check_realtime_rate_limit(*, tenant_slug: str, widget_token: str | None, ip: str | None) -> bool:
+    now = datetime.now(timezone.utc).timestamp()
+    token_fragment = (widget_token or "missing")[:24]
+    bucket_key = f"{tenant_slug}|{ip or 'unknown'}|{token_fragment}"
+
+    # Opportunistic cleanup to prevent unbounded growth in long-running workers.
+    if len(_REALTIME_SESSION_RATE_BUCKETS) > _REALTIME_RATE_BUCKET_MAX_KEYS:
+        stale_keys = [
+            key
+            for key, values in _REALTIME_SESSION_RATE_BUCKETS.items()
+            if not values or now - max(values) > (_REALTIME_SESSION_RATE_LIMIT_WINDOW_SECONDS * 2)
+        ]
+        for key in stale_keys[:2000]:
+            _REALTIME_SESSION_RATE_BUCKETS.pop(key, None)
+
+    bucket = _REALTIME_SESSION_RATE_BUCKETS.get(bucket_key, [])
+    bucket = [ts for ts in bucket if now - ts <= _REALTIME_SESSION_RATE_LIMIT_WINDOW_SECONDS]
+
+    if len(bucket) >= _REALTIME_SESSION_RATE_LIMIT_MAX_REQUESTS:
+        _REALTIME_SESSION_RATE_BUCKETS[bucket_key] = bucket
+        return False
+
+    bucket.append(now)
+    _REALTIME_SESSION_RATE_BUCKETS[bucket_key] = bucket
+    return True
+
+
+def _realtime_rate_limit_headers() -> dict[str, str]:
+    return {
+        "X-RateLimit-Limit": str(_REALTIME_SESSION_RATE_LIMIT_MAX_REQUESTS),
+        "X-RateLimit-Window": str(_REALTIME_SESSION_RATE_LIMIT_WINDOW_SECONDS),
+    }
+
+
+def _realtime_error_response(error: str, status: int, **extra):
+    payload = {"error": error}
+    payload.update(extra)
+    response = jsonify(payload)
+    response.status_code = status
+    for key, value in _realtime_rate_limit_headers().items():
+        response.headers[key] = value
+    return response
+
+
+def _audit_realtime_event(tenant: TenantProfile, *, event_name: str, channel: str, metadata: dict | None = None) -> None:
+    try:
+        db.session.add(
+            AnalyticsEventV2(
+                tenant_id=tenant.id,
+                tenant_type=tenant.tipo,
+                event_name=event_name,
+                channel=f"realtime_{channel}",
+                metadata_payload=metadata or {},
+            )
+        )
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        current_app.logger.exception("[realtime] failed auditing event=%s tenant=%s", event_name, tenant.slug)
 
 
 def _build_realtime_session_payload(tenant: TenantProfile, cfg: dict, *, channel: str) -> dict:
@@ -339,27 +438,44 @@ def create_realtime_session():
     tenant_slug = payload.get("tenant_slug") or request.args.get("tenant")
     widget_token = payload.get("widget_token") or _extract_widget_token()
 
+    if not tenant_slug:
+        return _realtime_error_response("tenant_slug_required", 400)
+
     try:
         tenant = resolve_tenant_only(
-            widget_token=widget_token,
             tenant_slug=tenant_slug,
-            require_explicit_slug=bool(tenant_slug),
+            require_explicit_slug=True,
         )
     except TenantResolutionError as exc:
         return jsonify({"error": str(exc)}), 404
+
+    if not _widget_token_allowed_for_tenant(tenant, widget_token):
+        _audit_realtime_event(tenant, event_name="realtime_session_denied", channel="unknown", metadata={"reason": "invalid_widget_token"})
+        return _realtime_error_response("widget_token_invalid", 403)
+
+    client_ip = request.headers.get("X-Forwarded-For", request.remote_addr)
+    if isinstance(client_ip, str) and "," in client_ip:
+        client_ip = client_ip.split(",", 1)[0].strip()
+
+    if not _check_realtime_rate_limit(tenant_slug=tenant.slug, widget_token=widget_token, ip=client_ip):
+        _audit_realtime_event(tenant, event_name="realtime_session_rate_limited", channel="unknown", metadata={"ip": client_ip})
+        return _realtime_error_response("rate_limit_exceeded", 429)
 
     cfg = _normalize_widget_config(tenant.configuracion, tenant.widget_settings)
     requested_channel = str(payload.get("channel") or "voice").strip().lower()
     channel = "video" if requested_channel == "video" else "voice"
 
     if channel == "video" and not bool(cfg.get("realtime_video_enabled", False)):
-        return jsonify({"error": "video_realtime_disabled"}), 400
+        _audit_realtime_event(tenant, event_name="realtime_session_denied", channel=channel, metadata={"reason": "video_disabled"})
+        return _realtime_error_response("video_realtime_disabled", 400)
     if channel == "voice" and not bool(cfg.get("realtime_voice_enabled", True)):
-        return jsonify({"error": "voice_realtime_disabled"}), 400
+        _audit_realtime_event(tenant, event_name="realtime_session_denied", channel=channel, metadata={"reason": "voice_disabled"})
+        return _realtime_error_response("voice_realtime_disabled", 400)
 
     api_key = current_app.config.get("OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY")
     if not api_key:
-        return jsonify({"error": "openai_api_key_missing"}), 503
+        _audit_realtime_event(tenant, event_name="realtime_session_failed", channel=channel, metadata={"reason": "openai_api_key_missing"})
+        return _realtime_error_response("openai_api_key_missing", 503)
 
     session_payload = _build_realtime_session_payload(tenant, cfg, channel=channel)
 
@@ -381,10 +497,14 @@ def create_realtime_session():
     except urllib_error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="ignore") if getattr(exc, "fp", None) else ""
         current_app.logger.warning("[realtime] OpenAI session error %s: %s", exc.code, detail[:500])
-        return jsonify({"error": "openai_realtime_session_error", "status": exc.code}), 502
+        _audit_realtime_event(tenant, event_name="realtime_session_failed", channel=channel, metadata={"reason": "openai_http_error", "status": exc.code})
+        return _realtime_error_response("openai_realtime_session_error", 502, upstream_status=exc.code)
     except Exception as exc:
         current_app.logger.exception("[realtime] Failed creating realtime session: %s", exc)
-        return jsonify({"error": "openai_realtime_unavailable"}), 502
+        _audit_realtime_event(tenant, event_name="realtime_session_failed", channel=channel, metadata={"reason": "openai_unavailable"})
+        return _realtime_error_response("openai_realtime_unavailable", 502)
+
+    _audit_realtime_event(tenant, event_name="realtime_session_created", channel=channel, metadata={"model": session_payload.get("model")})
 
     public_payload = {
         "ok": True,
@@ -394,7 +514,51 @@ def create_realtime_session():
         "avatar": session_payload.get("metadata", {}),
         "session": session_data,
     }
-    return _log_widget_public_request(jsonify(public_payload), tenant, entity_token=widget_token)
+    response = jsonify(public_payload)
+    for key, value in _realtime_rate_limit_headers().items():
+        response.headers[key] = value
+    return _log_widget_public_request(response, tenant, entity_token=widget_token)
+
+
+@public_resolver_bp.route("/realtime/action-event", methods=["POST", "OPTIONS"], provide_automatic_options=False)
+@cross_origin(origins="*", automatic_options=False)
+def realtime_action_event():
+    if request.method == "OPTIONS":
+        return jsonify({"ok": True})
+
+    payload = request.get_json(silent=True) or {}
+    tenant_slug = payload.get("tenant_slug") or request.args.get("tenant")
+    widget_token = payload.get("widget_token") or _extract_widget_token()
+    action_name = str(payload.get("action") or "").strip().lower()
+    channel = str(payload.get("channel") or "voice").strip().lower()
+
+    if not tenant_slug:
+        return _realtime_error_response("tenant_slug_required", 400)
+    if not action_name:
+        return jsonify({"error": "action_required"}), 400
+    if action_name not in _REALTIME_ACTION_EVENT_ALLOWED:
+        return jsonify({"error": "action_not_allowed"}), 400
+
+    try:
+        tenant = resolve_tenant_only(tenant_slug=tenant_slug, require_explicit_slug=True)
+    except TenantResolutionError as exc:
+        return jsonify({"error": str(exc)}), 404
+
+    if not _widget_token_allowed_for_tenant(tenant, widget_token):
+        return _realtime_error_response("widget_token_invalid", 403)
+
+    _audit_realtime_event(
+        tenant,
+        event_name="realtime_business_action_executed",
+        channel=channel,
+        metadata={
+            "action": action_name,
+            "session_id": payload.get("session_id"),
+            "status": payload.get("status") or "ok",
+            "details": {k: v for k, v in (payload.get("details") or {}).items() if isinstance(k, str)} if isinstance(payload.get("details"), dict) else None,
+        },
+    )
+    return jsonify({"ok": True, "action": action_name})
 
 
 def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | None) -> dict:
@@ -578,6 +742,21 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
         "iframe_url": iframe_url,
         "attributes": attrs,
         "support_channels": support_channels,
+        "enterprise_iteration": {
+            "realtime": {
+                "session_endpoint": "/api/public/realtime/session",
+                "action_event_endpoint": "/api/public/realtime/action-event",
+                "required_widget_token": True,
+                "rate_limit": {
+                    "window_seconds": _REALTIME_SESSION_RATE_LIMIT_WINDOW_SECONDS,
+                    "max_requests": _REALTIME_SESSION_RATE_LIMIT_MAX_REQUESTS,
+                },
+            },
+            "ux": {
+                "must_support": ["captions", "voice_only", "video_to_voice_fallback", "keyboard_navigation"],
+                "qa": ["a11y_contrast", "session_reconnect", "action_confirmation_cards"],
+            },
+        },
         "layout": {
             "position": position or "right",
             "width": width,

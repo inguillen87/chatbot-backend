@@ -27,6 +27,7 @@ En `widget.attributes` ahora llegan:
 - `data-avatar-persona`
 
 Con esto frontend puede activar/desactivar UX sin hardcode.
+Además, `builder_config.enterprise_iteration` expone endpoints/QA checklist para planificar releases frontend enterprise.
 
 ### 3) Nuevo endpoint backend para sesión realtime
 `POST /api/public/realtime/session`
@@ -47,6 +48,29 @@ Respuesta:
 Fallbacks:
 - Si `OPENAI_API_KEY` no está configurada => `503 openai_api_key_missing`.
 - Si `channel=video` y tenant no lo habilitó => `400 video_realtime_disabled`.
+- Si `widget_token` inválido => `403 widget_token_invalid`.
+- Si excede límite por tenant/ip/token => `429 rate_limit_exceeded`.
+- Headers de rate limit disponibles: `X-RateLimit-Limit`, `X-RateLimit-Window`.
+
+### 4) Trazabilidad de acciones en tiempo real
+`POST /api/public/realtime/action-event`
+
+Body recomendado:
+```json
+{
+  "tenant_slug": "mi-tenant",
+  "widget_token": "...",
+  "channel": "voice",
+  "action": "crear_reclamo",
+  "session_id": "rt_sess_123",
+  "status": "ok",
+  "details": {"ticket": "M-1234"}
+}
+```
+
+Uso esperado:
+- Emitir evento al confirmar acciones de negocio ejecutadas por la experiencia realtime.
+- Alimentar analytics por canal/acción para paridad chat vs voz vs video.
 
 ---
 
@@ -174,3 +198,32 @@ Payload base sugerido:
 - Hay métricas por canal y segmentación geodemográfica en analytics.
 - El modo accesible (captions + voice-only) está disponible y visible.
 
+
+## E. Sprint frontend incremental (iteración recomendada)
+1. Semana 1:
+   - Integrar `realtime/session` + UI de conexión/errores.
+   - Activar fallback automático a chat cuando falle session bootstrap.
+2. Semana 2:
+   - Integrar `realtime/action-event` al ejecutar acciones (`crear_reclamo`, `crear_pedido`, `derivar_humano`).
+   - Mostrar timeline unificado de eventos (audio + acciones).
+3. Semana 3:
+   - Completar dashboards con filtros persistentes (`categoria/barrio/distrito/sexo/rango_edad/canal`).
+   - Añadir QA automático de accesibilidad (captions, teclado, contraste).
+
+
+## F. Nuevo módulo frontend: Realtime Hub para encuestas/votaciones/sondeos
+Backend disponible:
+- `GET /admin/analytics/realtime-hub?tenant_id=<id>&scope=<municipio|pyme>&window_minutes=30`
+
+Incluye:
+- Totales realtime (`events`, `survey_responses`, `survey_comments`, `live_chat_comments`)
+- Top canales y eventos
+- Señales de sentimiento (`positive|neutral|negative`)
+- Puntos geográficos + hotspots
+- Recomendaciones ejecutivas para equipos políticos y empresarios
+
+UX sugerida:
+- Tab “Realtime Hub” dentro de Analytics
+- Cards de alertas para sondeos/votaciones con actividad alta
+- Tabla de comentarios en vivo (encuestas + chat)
+- Mapa de calor en tiempo real con filtro por canal/segmento
