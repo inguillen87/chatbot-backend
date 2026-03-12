@@ -1429,13 +1429,13 @@ def _procesar_chat(
 
         owner_tipo_chat = (getattr(owner_user, "tipo_chat", None) or "").strip().lower()
         if tipo_chat_fijo and owner_tipo_chat and tipo_chat_fijo != owner_tipo_chat:
-            if owner_tipo_chat == "municipio" and tipo_chat_fijo == "pyme":
-                return jsonify({
-                    "error": {"code": 409, "message": "endpoint_mismatch"}, # NEW FORMAT
-                    "message": "Este tenant es un municipio. Use /ask/municipio",
-                    "expected_endpoint": "/ask/municipio",
-                    "actual_tipo_chat": "municipio"
-                }), 409
+            current_app.logger.info(
+                "[CHAT] endpoint_mismatch auto-recovered: requested=%s owner_tipo=%s owner_id=%s",
+                tipo_chat_fijo,
+                owner_tipo_chat,
+                getattr(owner_user, "id", "N/A"),
+            )
+            _set_tipo_chat(owner_tipo_chat)
         if owner_tipo_chat in {"pyme", "municipio"} and owner_tipo_chat != tipo_chat_normalized:
             current_app.logger.info(
                 "[CHAT] Ajustando tipo_chat a '%s' basado en owner_user %s (valor previo: '%s')",

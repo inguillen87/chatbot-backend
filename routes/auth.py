@@ -1055,7 +1055,9 @@ def demo_catalog():
         cached_expires = float(_DEMO_CATALOG_CACHE.get("expires_at") or 0.0)
         cached_fingerprint = str(_DEMO_CATALOG_CACHE.get("fingerprint") or "")
         if cached_payload and cached_expires > now and cached_fingerprint == cache_key:
-            return jsonify(cached_payload)
+            cached_response = jsonify(cached_payload)
+            cached_response.headers.setdefault("X-Request-Id", request_id)
+            return cached_response
 
     if ensure_users:
         _ensure_demo_superadmin()
