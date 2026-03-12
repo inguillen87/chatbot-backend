@@ -233,3 +233,20 @@ UX sugerida:
 - Si el navegador muestra `socket.io websocket error` o `GET /api/socket.io ... 400`, forzar fallback de frontend a `polling` usando `socket_transport_hint` del endpoint de schedule (`/api/live-chat/schedule`).
 - Si `POST /api/ask/pyme` retorna `409`, mostrar mensaje UX claro de conflicto de sesión/flujo y ofrecer botón de reintentar con nueva sesión.
 - Si `/api/live-chat/schedule` falla, usar fallback `/api/{tenant_slug}/live-chat/schedule` y degradar en UI a estado "horario no disponible" sin romper chat.
+
+
+## Hotfix UX/Operación (marzo 2026)
+
+### Socket fallback obligatorio (Render/Gunicorn)
+- Si `/api/live-chat/schedule` o `/api/<slug>/live-chat/schedule` devuelve `socket_transport_hint: polling` o `socket_transports: ["polling"]`, inicializar Socket.IO con `transports: ["polling"]` y **no forzar websocket**.
+- Mostrar estado de conexión no bloqueante (el chat HTTP debe seguir funcionando sin socket).
+
+### Selector de demo por categorías (no lista plana)
+- Si `fuente=demo_selector` y `demo_selector_mode=segment_categories`, renderizar 2 CTAs grandes:
+  - `demo_segment:empresas`
+  - `demo_segment:gobiernos`
+- Si `demo_selector_mode=segment_rubros`, mostrar solo rubros del segmento elegido + botón `demo_segment:all` para volver.
+
+### Realtime call/video visibles por contrato
+- Mostrar botones de `call` y `video` cuando `support_channels.voice_call.enabled=true` y `support_channels.video_call.enabled=true`.
+- Leer siempre desde `widget.support_channels` y `widget.attributes (data-realtime-*)`; no hardcodear por tenant.

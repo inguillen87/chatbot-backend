@@ -48,6 +48,7 @@ DEMO_MENU_PREFIX = "demo_menu"
 DEMO_MENU_BACK_ACTION = f"{DEMO_MENU_PREFIX}:back"
 DEMO_MENU_HOME_ACTION = f"{DEMO_MENU_PREFIX}:home"
 DEMO_MENU_ROOT_ID = "demo_menu_root"
+DEMO_SEGMENT_PREFIX = "demo_segment"
 DEMO_LEAD_ACTION_ID = "open_demo_form"
 
 
@@ -169,6 +170,25 @@ def _extract_demo_key(action_id: Optional[str]) -> Optional[str]:
     candidate = candidate.strip().lower()
     return candidate or None
 
+
+
+
+def _extract_demo_segment(action_id: Optional[str]) -> Optional[str]:
+    if not action_id:
+        return None
+    value = str(action_id).strip().lower()
+    if not value:
+        return None
+
+    if value.startswith(f"{DEMO_SEGMENT_PREFIX}:"):
+        return value.split(":", 1)[1].strip() or None
+
+    if value in {"gobiernos", "gobierno", "sector_publico", "publico"}:
+        return "gobiernos"
+    if value in {"empresas", "empresa", "pyme", "pymes", "negocios"}:
+        return "empresas"
+
+    return None
 
 def _is_init_payload(payload) -> bool:
     if payload is None:
@@ -295,31 +315,104 @@ def _log_widget_request(response, user):
     return response
 
 
-def _build_demo_selector_payload(opciones: List[Dict[str, Optional[str]]]) -> Dict[str, object]:
+def _build_demo_selector_payload(
+    opciones: List[Dict[str, Optional[str]]],
+    *,
+    segment_filter: Optional[str] = None,
+) -> Dict[str, object]:
+    segment_normalized = (segment_filter or "").strip().lower() or None
+
+    def _segment_of(option: Dict[str, object]) -> str:
+        segment_raw = str(option.get("segment") or "").strip().lower()
+        if segment_raw.startswith("gob") or str(option.get("tipo_chat") or "").strip().lower() == "municipio":
+            return "gobiernos"
+        return "empresas"
+
+    groups: OrderedDict[str, List[Dict[str, object]]] = OrderedDict([("gobiernos", []), ("empresas", [])])
+    for opcion in opciones:
+        groups[_segment_of(opcion)].append(opcion)
+
+    if segment_normalized in groups:
+        filtered = groups.get(segment_normalized) or []
+        titulo_segmento = "Soluciones para Sector Público" if segment_normalized == "gobiernos" else "Soluciones para Empresas"
+        mensaje = f"Perfecto. Elegí el rubro dentro de {titulo_segmento}:"
+        botones: List[Dict[str, object]] = []
+        for opcion in filtered:
+            action_value = f"{DEMO_ACTION_PREFIX}:{opcion['key']}"
+            boton = {
+                "texto": opcion["label"],
+                "action_id": action_value,
+                "action": action_value,
+                "id": action_value,
+            }
+            if opcion.get("descripcion"):
+                boton["descripcion"] = opcion["descripcion"]
+            botones.append(boton)
+
+        back_action = f"{DEMO_SEGMENT_PREFIX}:all"
+        botones.append({
+            "texto": "⬅️ Volver a categorías",
+            "action": back_action,
+            "action_id": back_action,
+            "id": back_action,
+        })
+        return {
+            "message_body": mensaje,
+            "options_list": botones,
+            "botones": botones,
+            "message_type": "interactive_list",
+            "fuente": "demo_selector",
+            "demo_selector_mode": "segment_rubros",
+            "segment": segment_normalized,
+            "generar_audio": True,
+        }
+
     mensaje = current_app.config.get(
         "DEMO_WELCOME_MESSAGE",
         "👋 ¡Bienvenido a la demo de Chatboc! Elegí la experiencia que querés probar:",
     )
-    botones: List[Dict[str, object]] = []
-    for opcion in opciones:
-        action_value = f"{DEMO_ACTION_PREFIX}:{opcion['key']}"
-        boton = {
-            "texto": opcion["label"],
-            "action_id": action_value,
-            "action": action_value,
-            "id": action_value,
-        }
-        if opcion.get("descripcion"):
-            boton["descripcion"] = opcion["descripcion"]
-        botones.append(boton)
+    category_buttons = [
+        {
+            "texto": "Soluciones Para Empresas",
+            "action": f"{DEMO_SEGMENT_PREFIX}:empresas",
+            "action_id": f"{DEMO_SEGMENT_PREFIX}:empresas",
+            "id": f"{DEMO_SEGMENT_PREFIX}:empresas",
+            "descripcion": "Retail, salud, logística, fintech y más.",
+        },
+        {
+            "texto": "Soluciones Para Sector Público",
+            "action": f"{DEMO_SEGMENT_PREFIX}:gobiernos",
+            "action_id": f"{DEMO_SEGMENT_PREFIX}:gobiernos",
+            "id": f"{DEMO_SEGMENT_PREFIX}:gobiernos",
+            "descripcion": "Municipios, atención ciudadana y trámites.",
+        },
+    ]
 
-    message_type = "interactive_list" if len(botones) > 1 else "interactive_buttons"
+    grouped_sections = []
+    for segment_key, entries in groups.items():
+        if not entries:
+            continue
+        section_title = "Soluciones Para Sector Público" if segment_key == "gobiernos" else "Soluciones Para Empresas"
+        rows = []
+        for entry in entries:
+            row_action = f"{DEMO_ACTION_PREFIX}:{entry['key']}"
+            rows.append(
+                {
+                    "id": row_action,
+                    "title": entry.get("label") or entry.get("key"),
+                    "description": entry.get("descripcion") or "",
+                }
+            )
+        grouped_sections.append({"title": section_title, "rows": rows})
+
     return {
         "message_body": mensaje,
-        "options_list": botones,
-        "botones": botones,
-        "message_type": message_type,
+        "options_list": category_buttons,
+        "botones": category_buttons,
+        "message_type": "interactive_list",
         "fuente": "demo_selector",
+        "demo_selector_mode": "segment_categories",
+        "interactive_sections": grouped_sections,
         "generar_audio": True,
     }
 
@@ -1666,6 +1759,21 @@ def _procesar_chat(
             if not demo_key and isinstance(original_user_payload, dict):
                 demo_key = _extract_demo_key(original_user_payload.get("action") or original_user_payload.get("action_id"))
 
+            segment_key = _extract_demo_segment(action_id)
+            if not segment_key and isinstance(original_user_payload, dict):
+                segment_key = _extract_demo_segment(original_user_payload.get("action") or original_user_payload.get("action_id"))
+            if not segment_key and isinstance(original_user_payload, str):
+                segment_key = _extract_demo_segment(original_user_payload)
+
+            if segment_key:
+                demo_options = demo_options or _load_demo_rubros()
+                if segment_key == "all":
+                    selector_payload = _build_demo_selector_payload(demo_options)
+                else:
+                    selector_payload = _build_demo_selector_payload(demo_options, segment_filter=segment_key)
+                _emit_socket_payload(selector_payload)
+                return jsonify(selector_payload), 200
+
             if not demo_key and isinstance(original_user_payload, str):
                 user_text = original_user_payload.strip().lower()
                 if user_text:
@@ -2288,6 +2396,7 @@ def live_chat_schedule():
                     status["tenant_slug"] = tenant.slug
                     status["source"] = "tenant_config"
                     status.setdefault("socket_transport_hint", "polling")
+                    status.setdefault("socket_transports", ["polling"])
                     status.setdefault("socket_fallback_enabled", True)
                     return jsonify(status)
     except Exception as exc:
@@ -2296,6 +2405,7 @@ def live_chat_schedule():
     status = build_live_chat_status()
     status["source"] = "global_config"
     status.setdefault("socket_transport_hint", "polling")
+    status.setdefault("socket_transports", ["polling"])
     status.setdefault("socket_fallback_enabled", True)
     return jsonify(status)
 
