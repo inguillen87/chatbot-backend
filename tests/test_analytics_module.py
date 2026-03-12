@@ -14,6 +14,9 @@ from models import (
     TicketComentario,
     TicketSatisfaccion,
     User,
+    EncComentario,
+    EncEncuesta,
+    EncRespuesta,
 )
 
 
@@ -436,6 +439,11 @@ def test_admin_analytics_heatmap_returns_temporal_matrix(client):
     data = response.get_json()
     assert data['tz'] == 'America/Argentina/Cordoba'
     assert isinstance(data['temporal'], list)
+    assert 'segments' in data
+    assert 'categoria' in data['segments']
+    assert 'rango_edad' in data['segments']
+    assert 'period_comparison' in data
+    assert 'hotspots' in data
 
 
 def test_admin_analytics_heatmap_rejects_non_numeric_tenant_id(client):
@@ -446,6 +454,82 @@ def test_admin_analytics_heatmap_rejects_non_numeric_tenant_id(client):
     )
     assert response.status_code == 400
 
+
+
+
+def test_admin_analytics_heatmap_segments_from_event_metadata(client):
+    tenant_id = 211
+    now = datetime.utcnow()
+    db.session.add(
+        AnalyticsEventV2(
+            tenant_id=tenant_id,
+            event_name='ticket_created',
+            tenant_type='municipio',
+            channel='web_widget',
+            ts=now,
+            metadata_payload={
+                'categoria': 'alumbrado',
+                'barrio': 'centro',
+                'distrito': 'norte',
+                'sexo': 'f',
+                'edad': 31,
+            },
+        )
+    )
+    db.session.commit()
+
+    response = client.get(
+        '/admin/analytics/heatmap',
+        query_string={'tenant_id': tenant_id, 'scope': 'municipio'},
+        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
+    )
+    assert response.status_code == 200
+    data = response.get_json()
+    segments = data.get('segments') or {}
+    assert (segments.get('categoria') or [])[0]['label'] == 'alumbrado'
+    assert (segments.get('barrio') or [])[0]['label'] == 'centro'
+    assert (segments.get('distrito') or [])[0]['label'] == 'norte'
+    assert (segments.get('sexo') or [])[0]['label'] == 'f'
+
+
+
+def test_admin_analytics_heatmap_applies_segment_filters(client):
+    tenant_id = 212
+    now = datetime.utcnow()
+    db.session.add(
+        AnalyticsEventV2(
+            tenant_id=tenant_id,
+            event_name='ticket_created',
+            tenant_type='municipio',
+            channel='web_widget',
+            ts=now - timedelta(minutes=10),
+            metadata_payload={'categoria': 'alumbrado', 'barrio': 'centro', 'distrito': 'norte', 'sexo': 'f', 'edad': 31},
+        )
+    )
+    db.session.add(
+        AnalyticsEventV2(
+            tenant_id=tenant_id,
+            event_name='ticket_created',
+            tenant_type='municipio',
+            channel='whatsapp',
+            ts=now,
+            metadata_payload={'categoria': 'limpieza', 'barrio': 'sur', 'distrito': 'sur', 'sexo': 'm', 'edad': 52},
+        )
+    )
+    db.session.commit()
+
+    response = client.get(
+        '/admin/analytics/heatmap',
+        query_string={'tenant_id': tenant_id, 'scope': 'municipio', 'categoria': 'alumbrado', 'sexo': 'f'},
+        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
+    )
+    assert response.status_code == 200
+    data = response.get_json()
+    filters_applied = data.get('segments_filters_applied') or {}
+    assert filters_applied.get('categoria') == ['alumbrado']
+    assert filters_applied.get('sexo') == ['f']
+    categorias = data.get('segments', {}).get('categoria') or []
+    assert categorias and categorias[0]['label'] == 'alumbrado'
 
 def test_api_alias_admin_analytics_overview_and_heatmap(client):
     tenant_id = 12
@@ -499,6 +583,62 @@ def test_api_alias_admin_analytics_overview_accepts_tenant_slug(client):
     assert overview.status_code == 200
     assert 'totals' in overview.get_json()
 
+
+
+
+def test_admin_analytics_realtime_hub_includes_surveys_and_geo(client):
+    tenant_id = 333
+    now = datetime.utcnow()
+    db.session.add(
+        AnalyticsEventV2(
+            tenant_id=tenant_id,
+            event_name='realtime_business_action_executed',
+            tenant_type='municipio',
+            channel='realtime_voice',
+            ts=now,
+            lat=-34.61,
+            lng=-58.38,
+            metadata_payload={'categoria': 'alumbrado', 'barrio': 'centro', 'distrito': 'norte', 'sentiment': 'positive'},
+        )
+    )
+    encuesta = EncEncuesta(
+        tenant_id=tenant_id,
+        slug=f"encuesta-{tenant_id}",
+        titulo='Sondeo Express',
+        estado='publicada',
+    )
+    db.session.add(encuesta)
+    db.session.flush()
+
+    db.session.add(
+        EncRespuesta(
+            encuesta_id=encuesta.id,
+            tenant_id=tenant_id,
+            huella_unica=f"fingerprint-{tenant_id}",
+            canal='web',
+        )
+    )
+    db.session.add(
+        EncComentario(
+            encuesta_id=encuesta.id,
+            texto='Muy buena atención',
+            anon_id='anon-test',
+        )
+    )
+    db.session.commit()
+
+    response = client.get(
+        '/admin/analytics/realtime-hub',
+        query_string={'tenant_id': tenant_id, 'scope': 'municipio', 'window_minutes': 60},
+        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
+    )
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data.get('totals', {}).get('events', 0) >= 1
+    assert data.get('totals', {}).get('survey_responses', 0) >= 1
+    assert data.get('totals', {}).get('survey_comments', 0) >= 1
+    assert isinstance((data.get('geo') or {}).get('points'), list)
+    assert isinstance((data.get('recommendations') or []), list)
 
 def test_admin_analytics_overview_accepts_debug_tenant_without_query_tenant(client):
     tenant_id = 31
