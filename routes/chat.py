@@ -18,7 +18,7 @@ from flask import Blueprint, request, jsonify, current_app
 from sqlalchemy import func, desc
 from sqlalchemy.exc import ProgrammingError, SQLAlchemyError
 from sqlalchemy.orm.attributes import flag_modified # Importado para flag_modified
-from models import User, Rubro, Conversacion, MunicipioTicket, db, ChatSessionContext # Added ChatSessionContext
+from models import User, Rubro, Conversacion, MunicipioTicket, TenantProfile, db, ChatSessionContext # Added ChatSessionContext
 from utils.db_utils import commit_with_retry, ensure_chat_session_context_schema
 from socket_service import socketio # Import socketio
 from services.logic import (
@@ -2278,17 +2278,25 @@ def widget_config():
 @chat_bp.route("/api/live-chat/schedule", methods=["GET"])
 def live_chat_schedule():
     tenant_slug = str(request.args.get("tenant_slug") or request.args.get("tenant") or "").strip().lower()
-    if tenant_slug:
-        tenant = TenantProfile.query.filter_by(slug=tenant_slug).first()
-        if tenant and isinstance(tenant.configuracion, dict):
-            schedule_cfg = tenant.configuracion.get("live_chat_schedule")
-            if isinstance(schedule_cfg, dict):
-                status = build_live_chat_status(schedule_override=schedule_cfg)
-                status["tenant_slug"] = tenant.slug
-                status["source"] = "tenant_config"
-                return jsonify(status)
+    try:
+        if tenant_slug:
+            tenant = TenantProfile.query.filter_by(slug=tenant_slug).first()
+            if tenant and isinstance(tenant.configuracion, dict):
+                schedule_cfg = tenant.configuracion.get("live_chat_schedule")
+                if isinstance(schedule_cfg, dict):
+                    status = build_live_chat_status(schedule_override=schedule_cfg)
+                    status["tenant_slug"] = tenant.slug
+                    status["source"] = "tenant_config"
+                    status.setdefault("socket_transport_hint", "polling")
+                    status.setdefault("socket_fallback_enabled", True)
+                    return jsonify(status)
+    except Exception as exc:
+        current_app.logger.warning("[live_chat_schedule] tenant lookup failed for %s: %s", tenant_slug, exc)
+
     status = build_live_chat_status()
     status["source"] = "global_config"
+    status.setdefault("socket_transport_hint", "polling")
+    status.setdefault("socket_fallback_enabled", True)
     return jsonify(status)
 
 @chat_bp.route("/config/google-maps-key", methods=["GET"])
