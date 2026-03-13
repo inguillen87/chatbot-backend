@@ -119,6 +119,38 @@ def _request_id() -> str:
     return inbound or uuid.uuid4().hex
 
 
+def _pdf_escape(value: Any) -> str:
+    text = str(value or "")
+    return text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+
+
+def _build_simple_text_pdf(lines: list[str]) -> bytes:
+    y_start = 790
+    line_height = 14
+    chunks = ["BT /F1 10 Tf"]
+    current_y = y_start
+    for index, line in enumerate(lines):
+        safe_line = _pdf_escape(line)
+        if index == 0:
+            chunks.append(f"50 {current_y} Td ({safe_line}) Tj")
+        else:
+            chunks.append(f"0 -{line_height} Td ({safe_line}) Tj")
+        current_y -= line_height
+        if current_y <= 40:
+            break
+    chunks.append("ET")
+    stream = "\n".join(chunks).encode("latin-1", errors="replace")
+
+    body = b"%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"
+    body += b"2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n"
+    body += b"3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]/Resources<</Font<</F1 4 0 R>>>>/Contents 5 0 R>>endobj\n"
+    body += b"4 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj\n"
+    body += f"5 0 obj<</Length {len(stream)}>>stream\n".encode("ascii") + stream + b"\nendstream endobj\n"
+    body += b"xref\n0 6\n0000000000 65535 f \n0000000010 00000 n \n0000000060 00000 n \n0000000118 00000 n \n0000000244 00000 n \n0000000314 00000 n \n"
+    body += b"trailer<</Root 1 0 R/Size 6>>\nstartxref\n420\n%%EOF"
+    return body
+
+
 
 
 def _bucket_age(age: int | None) -> str:
@@ -617,23 +649,48 @@ def admin_analytics_export_pdf():
     require_access(filters.tenant_id, "operador")
     overview = get_summary(filters)
 
+    tenant_id = _tenant_id_as_int(filters.tenant_id)
+    query = AnalyticsEventV2.query.filter(AnalyticsEventV2.tenant_id == tenant_id)
+    if filters.date_from:
+        query = query.filter(AnalyticsEventV2.ts >= filters.date_from)
+    if filters.date_to:
+        query = query.filter(AnalyticsEventV2.ts <= filters.date_to)
+    events = query.with_entities(
+        AnalyticsEventV2.channel.label("channel"),
+        AnalyticsEventV2.metadata_payload.label("metadata"),
+        AnalyticsEventV2.ts.label("ts"),
+    ).all()
+    segment_events = [{"channel": row.channel, "metadata": row.metadata, "ts": row.ts} for row in events]
+    segments = _aggregate_heatmap_segments(segment_events)
+    hotspots = _build_hotspots(segment_events, limit=5)
+
     lines = [
         "Reporte de analytics",
         f"Tenant: {filters.tenant_id}",
+        f"Scope: {filters.scope}",
         f"Emitido: {datetime.utcnow().isoformat()}Z",
+        "",
+        "Totales:",
     ]
-    for key, value in overview.get("totals", {}).items():
-        lines.append(f"{key}: {value}")
+    for key, value in sorted((overview.get("totals") or {}).items(), key=lambda item: item[0]):
+        lines.append(f"- {key}: {value}")
 
-    text = "\\n".join(lines).replace("(", "[").replace(")", "]")
-    stream = f"BT /F1 12 Tf 50 780 Td ({text}) Tj ET".encode("latin-1", errors="replace")
-    body = b"%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"
-    body += b"2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n"
-    body += b"3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]/Resources<</Font<</F1 4 0 R>>>>/Contents 5 0 R>>endobj\n"
-    body += b"4 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj\n"
-    body += f"5 0 obj<</Length {len(stream)}>>stream\n".encode("ascii") + stream + b"\nendstream endobj\n"
-    body += b"xref\n0 6\n0000000000 65535 f \n0000000010 00000 n \n0000000060 00000 n \n0000000118 00000 n \n0000000244 00000 n \n0000000314 00000 n \n"
-    body += b"trailer<</Root 1 0 R/Size 6>>\nstartxref\n420\n%%EOF"
+    lines.extend(["", "Segmentacion principal:"])
+    for label in ("categoria", "sexo", "rango_edad", "canal"):
+        top = (segments.get(label) or [])[:3]
+        rendered = ", ".join(f"{item['label']} ({item['count']})" for item in top) if top else "sin datos"
+        lines.append(f"- {label}: {rendered}")
+
+    lines.extend(["", "Hotspots:"])
+    if hotspots:
+        for item in hotspots:
+            lines.append(
+                f"- {item.get('categoria')} | {item.get('barrio')} | {item.get('distrito')} => {item.get('count')}"
+            )
+    else:
+        lines.append("- Sin hotspots en el rango seleccionado")
+
+    body = _build_simple_text_pdf(lines)
 
     return Response(
         body,

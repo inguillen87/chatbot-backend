@@ -408,6 +408,10 @@ def test_admin_analytics_overview_and_exports_are_tenant_scoped(client):
     )
     assert pdf_export.status_code == 200
     assert pdf_export.mimetype == 'application/pdf'
+    pdf_text = pdf_export.data.decode('latin-1', errors='ignore')
+    assert 'Reporte de analytics' in pdf_text
+    assert 'Segmentacion principal' in pdf_text
+    assert 'Hotspots' in pdf_text
 
     forbidden = client.get(
         '/admin/analytics/overview',
