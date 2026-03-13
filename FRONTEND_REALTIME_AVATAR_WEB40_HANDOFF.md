@@ -280,6 +280,13 @@ Notas de integración:
 
 
 ## G. Troubleshooting rápido (producción)
+
+### Hardening recomendado para errores de consola vistos en producción
+- Si aparece `WebSocket connection ... /api/socket.io ... failed`, inicializar Socket.IO con `transports: ["polling"]` por defecto en `chatboc.ar` y solo habilitar `websocket` cuando handshake previo confirme soporte.
+- Leer siempre `socket_transport_hint`, `socket_transports` y `socket_fallback_enabled` del backend antes de conectar.
+- Si aparece `width(-1) and height(-1) of chart should be greater than 0` (charts), montar gráficos solo cuando el contenedor tenga tamaño > 0 y usar `minHeight: 240px` / `minWidth: 0` en cards responsive.
+- Si `/api/analytics/report/generate` devuelve no-JSON, tratarlo como error de autenticación/endpoint y mostrar CTA de relogin; el endpoint backend debe responder JSON (`401`) en falta de sesión.
+
 - Si el navegador muestra `socket.io websocket error` o `GET /api/socket.io ... 400`, forzar fallback de frontend a `polling` usando `socket_transport_hint` del endpoint de schedule (`/api/live-chat/schedule`).
 - Si `POST /api/ask/pyme` retorna `409`, mostrar mensaje UX claro de conflicto de sesión/flujo y ofrecer botón de reintentar con nueva sesión.
 - Si `/api/live-chat/schedule` falla, usar fallback `/api/{tenant_slug}/live-chat/schedule` y degradar en UI a estado "horario no disponible" sin romper chat.
