@@ -237,7 +237,7 @@ Para que frontend muestre **categorías, edades y género** en mapas/estadístic
 - `segments.sexo[]`
 - `segments.barrio[]`, `segments.distrito[]`, `segments.canal[]`
 - `segments_filters_applied` (eco de filtros activos)
-- `geo_layers` (capas Leaflet + OSM con color por categoría e intensidad por votos/peso)
+- `geo_layers` (capas MapLibre GL JS con heatmap + clusters + hover + time slider)
 
 Filtros soportados en query params:
 - `categoria` o `categorias`
@@ -248,11 +248,17 @@ Payload esperado (resumen):
 ```json
 {
   "geo_layers": {
-    "provider": "leaflet",
-    "tiles": {
-      "url": "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
-      "attribution": "© OpenStreetMap contributors"
+    "provider": "maplibre",
+    "engine": "maplibre-gl-js",
+    "style_url": "https://demotiles.maplibre.org/style.json",
+    "source": {"type": "FeatureCollection", "features": []},
+    "source_options": {"cluster": true, "clusterMaxZoom": 14, "clusterRadius": 45},
+    "layers": {
+      "heatmap": {"id": "events-heat", "type": "heatmap", "source": "events"},
+      "clusters": {"id": "events-clusters", "type": "circle", "source": "events"},
+      "points": {"id": "events-points", "type": "circle", "source": "events"}
     },
+    "interactions": {"hover": true, "time_slider": {"enabled": true, "field": "ts"}},
     "categories": [
       {
         "categoria": "seguridad",
@@ -276,6 +282,8 @@ Payload esperado (resumen):
 Notas de integración:
 - Usar `segments` para barras/tortas/filtros de demografía.
 - Usar `geo_layers.categories[].color` para leyenda fija por categoría en mapa.
+- Inicializar el mapa con MapLibre GL JS y enlazar `geo_layers.source` como `GeoJSONSource`.
+- Respetar `geo_layers.interactions` para hover de tooltip, clusters y time slider.
 - `total_weight` refleja volumen de votos/score (`votos`, `cantidad_votos`, `vote_count`, `puntaje`, etc.).
 
 
@@ -321,7 +329,7 @@ Para que el frontend muestre correctamente **Mapas**, **Estadísticas** y **Aná
 - `sections.mapas.heatmap.points`
 - `sections.mapas.heatmap.cells`
 - `sections.mapas.heatmap.hotspots`
-- `sections.mapas.heatmap.category_layers` (**Leaflet + OSM**, color por categoría)
+- `sections.mapas.heatmap.category_layers` (**MapLibre GL JS**, color por categoría y contrato de capas)
 - `sections.estadisticas.resumen`
 - `sections.estadisticas.categorias`
 - `sections.estadisticas.demografia.genero`
@@ -347,10 +355,14 @@ Para que el frontend muestre correctamente **Mapas**, **Estadísticas** y **Aná
 {
   "metadata": {
     "category_layers": {
-      "provider": "leaflet",
-      "tiles": {
-        "url": "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
-        "attribution": "© OpenStreetMap contributors"
+      "provider": "maplibre",
+      "engine": "maplibre-gl-js",
+      "style_url": "https://demotiles.maplibre.org/style.json",
+      "source": {"type": "FeatureCollection", "features": []},
+      "layers": {
+        "heatmap": {"id": "encuestas-heat", "type": "heatmap", "source": "encuestas"},
+        "clusters": {"id": "encuestas-clusters", "type": "circle", "source": "encuestas"},
+        "points": {"id": "encuestas-points", "type": "circle", "source": "encuestas"}
       },
       "categories": [
         {
@@ -376,3 +388,29 @@ Para que el frontend muestre correctamente **Mapas**, **Estadísticas** y **Aná
   - análisis IA (headline + insights).
 
 
+
+
+## I. Actualización frontend recomendada (MapLibre-first, enterprise)
+
+Checklist de implementación:
+- Migrar rendering de mapas de listas estáticas/ciudades a `MapLibre GL JS` como motor principal.
+- Consumir `geo_layers` y `metadata.category_layers` sin hardcode de proveedor.
+- Si `provider == "maplibre"`:
+  - usar `style_url`,
+  - registrar `source` (GeoJSON),
+  - crear capas desde `layers.heatmap|clusters|points`,
+  - aplicar interacciones (`hover`, `clusters`, `time_slider`).
+- Fallback visual: si no hay `categories`, renderizar `points/cells` y estado vacío controlado por `state`.
+- Mantener leyenda por categoría usando `color`, `event_count`, `total_weight`, `intensity`.
+
+Snippet mínimo (pseudo):
+```ts
+const cfg = data.geo_layers;
+const map = new maplibregl.Map({ container, style: cfg.style_url });
+map.on('load', () => {
+  map.addSource('events', { type: 'geojson', data: cfg.source, ...(cfg.source_options || {}) });
+  map.addLayer({ id: cfg.layers.heatmap.id, type: 'heatmap', source: 'events' });
+  map.addLayer({ id: cfg.layers.clusters.id, type: 'circle', source: 'events', filter: ['has', 'point_count'] });
+  map.addLayer({ id: cfg.layers.points.id, type: 'circle', source: 'events', filter: ['!', ['has', 'point_count']] });
+});
+```

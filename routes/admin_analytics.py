@@ -325,7 +325,7 @@ def _extract_vote_weight(metadata: dict[str, Any]) -> float:
     return 1.0
 
 
-def _build_leaflet_heatmap_layers(events: list[dict[str, Any]]) -> dict[str, Any]:
+def _build_maplibre_heatmap_layers(events: list[dict[str, Any]]) -> dict[str, Any]:
     by_category: dict[str, dict[str, Any]] = {}
 
     for event in events:
@@ -592,7 +592,7 @@ def admin_analytics_heatmap():
 
     return _json({
         "geo": base,
-        "geo_layers": _build_leaflet_heatmap_layers(filtered_events),
+        "geo_layers": _build_maplibre_heatmap_layers(filtered_events),
         "temporal": temporal,
         "segments": _aggregate_heatmap_segments(filtered_events),
         "segments_filters_applied": {k: sorted(v) for k, v in segment_filters.items()},

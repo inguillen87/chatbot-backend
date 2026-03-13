@@ -17,7 +17,7 @@ def test_dashboard_bundle_includes_normalized_cards_and_states(monkeypatch):
             "points": [{"lat": -33.1, "lng": -68.8, "weight": 1}],
             "metadata": {
                 "map": {"hotspots": []},
-                "category_layers": {"provider": "leaflet", "categories": [{"categoria": "seguridad", "total_weight": 2}]},
+                "category_layers": {"provider": "maplibre", "categories": [{"categoria": "seguridad", "total_weight": 2}]},
             },
         },
     )
@@ -55,7 +55,7 @@ def test_dashboard_bundle_includes_normalized_cards_and_states(monkeypatch):
     assert "categorias" in bundle["sections"]["estadisticas"]
     assert "demografia" in bundle["sections"]["estadisticas"]
     assert "ia" in bundle["sections"]
-    assert bundle["sections"]["mapas"]["heatmap"]["category_layers"]["provider"] == "leaflet"
+    assert bundle["sections"]["mapas"]["heatmap"]["category_layers"]["provider"] == "maplibre"
 
 
 def test_dashboard_bundle_handles_empty_states(monkeypatch):
