@@ -216,8 +216,13 @@ class DemoOnboardingTestCase(unittest.TestCase):
             options = data.get("options_list", [])
             self.assertTrue(options)
             self.assertTrue(
-                any(opt.get("action_id", "").startswith("demo_select_rubro") for opt in options)
+                any(
+                    opt.get("action_id", "").startswith("demo_segment:")
+                    or opt.get("action_id", "").startswith("demo_select_rubro")
+                    for opt in options
+                )
             )
+            self.assertIn(data.get("demo_selector_mode"), {"segment_categories", "segment_rubros"})
             cookie_header = response.headers.get("Set-Cookie", "")
             self.assertIn("chatboc_anon_id", cookie_header)
 
