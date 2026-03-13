@@ -1046,6 +1046,7 @@ def demo_catalog():
     if request.method == 'OPTIONS':
         return '', 204
 
+    request_id = request.headers.get('X-Request-Id') or uuid.uuid4().hex
     ensure_users = str(request.args.get('ensure_users') or '').strip().lower() in {'1', 'true', 'yes', 'on'}
     now = time.time()
     if not ensure_users:
@@ -1054,7 +1055,9 @@ def demo_catalog():
         cached_expires = float(_DEMO_CATALOG_CACHE.get("expires_at") or 0.0)
         cached_fingerprint = str(_DEMO_CATALOG_CACHE.get("fingerprint") or "")
         if cached_payload and cached_expires > now and cached_fingerprint == cache_key:
-            return jsonify(cached_payload)
+            cached_response = jsonify(cached_payload)
+            cached_response.headers.setdefault("X-Request-Id", request_id)
+            return cached_response
 
     if ensure_users:
         _ensure_demo_superadmin()
@@ -1179,7 +1182,9 @@ def demo_catalog():
         _DEMO_CATALOG_CACHE["payload"] = payload
         _DEMO_CATALOG_CACHE["expires_at"] = time.time() + 60.0
 
-    return jsonify(payload)
+    response = jsonify(payload)
+    response.headers.setdefault("X-Request-Id", request_id)
+    return response
 
 
 @auth_bp.route('/demo', methods=['POST', 'OPTIONS'])

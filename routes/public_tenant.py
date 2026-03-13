@@ -1,7 +1,7 @@
 from flask import Blueprint, request, jsonify, g, current_app
 from sqlalchemy import func, or_
 
-from models import CatalogoItem, TenantProfile, TenantConfig, WidgetSettings, db
+from models import CatalogoItem, TenantProfile, TenantConfig, User, WidgetSettings, db
 from routes.auth import token_requerido
 from routes.catalogo import _formatear_producto
 from routes.carrito import _product_query_for_tenant
@@ -78,6 +78,23 @@ def _get_tenant_from_request(slug: str):
             .order_by(TenantProfile.created_at.asc(), TenantProfile.id.asc())
             .first()
         )
+
+    return None
+
+
+def _resolve_catalog_owner(tenant: TenantProfile):
+    """Return tenant owner with FK fallback when ORM relationship is stale."""
+
+    if not tenant:
+        return None
+
+    owner = tenant.municipio or tenant.pyme
+    if owner:
+        return owner
+
+    owner_id = tenant.municipio_id or tenant.pyme_id
+    if owner_id:
+        return User.query.get(owner_id)
 
     return None
 
@@ -168,8 +185,14 @@ def get_catalog(slug):
     if not tenant:
         return jsonify({"error": "Tenant not found"}), 404
 
-    owner = tenant.municipio or tenant.pyme
+    owner = _resolve_catalog_owner(tenant)
     if not owner:
+        current_app.logger.warning(
+            "[public_tenant.catalog] tenant=%s has no owner binding (municipio_id=%s pyme_id=%s)",
+            tenant.slug,
+            tenant.municipio_id,
+            tenant.pyme_id,
+        )
         response = jsonify([])
         return _add_cors_headers(response)
 
@@ -352,6 +375,9 @@ def public_live_chat_schedule(slug):
         status = build_live_chat_status(schedule_override=schedule_cfg if isinstance(schedule_cfg, dict) else None)
         status["tenant_slug"] = tenant.slug
         status["source"] = "tenant_config" if isinstance(schedule_cfg, dict) else "global_config"
+        status.setdefault("socket_transport_hint", "polling")
+        status.setdefault("socket_transports", ["polling"])
+        status.setdefault("socket_fallback_enabled", True)
         return _add_cors_headers(jsonify(status))
     except Exception as e:
         current_app.logger.error(f"Error getting schedule: {e}")
