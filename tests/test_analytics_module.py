@@ -589,6 +589,42 @@ def test_admin_analytics_heatmap_includes_leaflet_layers_with_category_colors(cl
     assert geo_layers.get('legend', {}).get('max_weight') == 8
 
 
+def test_admin_analytics_heatmap_uses_persisted_lat_lng_for_geo_layers(client):
+    tenant_id = 215
+    now = datetime.utcnow()
+    db.session.add(
+        AnalyticsEventV2(
+            tenant_id=tenant_id,
+            event_name='ticket_created',
+            tenant_type='municipio',
+            channel='web_widget',
+            ts=now,
+            lat=-34.6037,
+            lng=-58.3816,
+            metadata_payload={
+                'categoria': 'seguridad',
+                'barrio': 'centro',
+                'distrito': 'norte',
+            },
+        )
+    )
+    db.session.commit()
+
+    response = client.get(
+        '/admin/analytics/heatmap',
+        query_string={'tenant_id': tenant_id, 'scope': 'municipio'},
+        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
+    )
+    assert response.status_code == 200
+    data = response.get_json()
+    categories = ((data.get('geo_layers') or {}).get('categories') or [])
+    assert categories
+    first_points = categories[0].get('points') or []
+    assert first_points
+    assert first_points[0]['lat'] == -34.6037
+    assert first_points[0]['lng'] == -58.3816
+
+
 
 def test_admin_analytics_heatmap_supports_genero_alias_and_age_bucket(client):
     tenant_id = 214

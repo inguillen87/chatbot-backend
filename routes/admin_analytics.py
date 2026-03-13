@@ -330,8 +330,12 @@ def _build_leaflet_heatmap_layers(events: list[dict[str, Any]]) -> dict[str, Any
 
     for event in events:
         md = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
-        lat = md.get("lat") if md.get("lat") is not None else md.get("latitude")
-        lng = md.get("lng") if md.get("lng") is not None else md.get("lon")
+        lat = event.get("lat")
+        lng = event.get("lng")
+        if lat is None:
+            lat = md.get("lat") if md.get("lat") is not None else md.get("latitude")
+        if lng is None:
+            lng = md.get("lng") if md.get("lng") is not None else md.get("lon")
         if lng is None:
             lng = md.get("longitude")
         try:
@@ -485,6 +489,8 @@ def admin_analytics_heatmap():
         AnalyticsEventV2.channel.label("channel"),
         AnalyticsEventV2.metadata_payload.label("metadata"),
         AnalyticsEventV2.ts.label("ts"),
+        AnalyticsEventV2.lat.label("lat"),
+        AnalyticsEventV2.lng.label("lng"),
     ).all()
 
 
@@ -494,7 +500,10 @@ def admin_analytics_heatmap():
         if row.weekday is not None and row.hour is not None
     ]
 
-    segment_events = [{"channel": row.channel, "metadata": row.metadata, "ts": row.ts} for row in events]
+    segment_events = [
+        {"channel": row.channel, "metadata": row.metadata, "ts": row.ts, "lat": row.lat, "lng": row.lng}
+        for row in events
+    ]
     segment_filters = _extract_segment_filters()
     filtered_events = [event for event in segment_events if _event_matches_segment_filters(event, segment_filters)]
 

@@ -603,6 +603,14 @@ def test_admin_encuestas_legacy_analytics_and_snapshots(client, monkeypatch, adm
     assert "Reporte analytics encuestas" in export_pdf_text
     assert r"Categorias \(estadisticas\):" in export_pdf_text
     assert "Analisis IA:" in export_pdf_text
+    assert "startxref" in export_pdf_text
+    xref_index = export_pdf_resp.data.find(b"xref\n")
+    assert xref_index > 0
+    startxref_marker = b"startxref\n"
+    marker_index = export_pdf_resp.data.rfind(startxref_marker)
+    assert marker_index > 0
+    startxref_value = export_pdf_resp.data[marker_index + len(startxref_marker):].split(b"\n", 1)[0]
+    assert int(startxref_value) == xref_index
 
 
 def test_admin_encuestas_permite_actualizar_publicada_sin_respuestas(client, monkeypatch, admin_user):
