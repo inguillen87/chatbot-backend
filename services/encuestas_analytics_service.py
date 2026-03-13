@@ -1171,15 +1171,69 @@ def _build_dashboard_cards(summary: Dict[str, Any], forecast: Dict[str, Any], an
 def _build_dashboard_ui_state(summary: Dict[str, Any], heatmap: Dict[str, Any], alerts: Dict[str, Any], *, latest_responses_state: Optional[str] = None) -> Dict[str, Any]:
     total_respuestas = int(summary.get("total_respuestas") or 0)
     points = heatmap.get("points") or []
+    cells = heatmap.get("cells") or []
     has_points = isinstance(points, list) and len(points) > 0
+    has_cells = isinstance(cells, list) and len(cells) > 0
     has_alerts = bool((alerts.get("alerts") or []))
 
     latest_state = latest_responses_state or ("ready" if total_respuestas > 0 else "empty")
 
     return {
         "latest_responses": latest_state,
-        "map_participation": "ready" if has_points else "empty",
+        "map_participation": "ready" if (has_points or has_cells) else "empty",
         "alerts": "attention" if has_alerts else "normal",
+    }
+
+
+def _build_dashboard_sections(
+    *,
+    summary: Dict[str, Any],
+    heatmap: Dict[str, Any],
+    timeseries: Sequence[Dict[str, Any]],
+    forecast: Dict[str, Any],
+    alerts: Dict[str, Any],
+    brief: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Expose explicit sections for FE tabs (mapas/estadísticas/IA)."""
+
+    demografia = summary.get("demografia") or {}
+    territorio = demografia.get("territorio") or []
+    map_meta = (heatmap.get("metadata") or {}).get("map") or {}
+
+    return {
+        "mapas": {
+            "heatmap": {
+                "points": heatmap.get("points") or [],
+                "cells": heatmap.get("cells") or [],
+                "hotspots": map_meta.get("hotspots") or [],
+                "provider_hint": ((heatmap.get("metadata") or {}).get("map_config") or {}).get("provider") or "maplibre",
+                "state": "ready" if bool((heatmap.get("points") or []) or (heatmap.get("cells") or [])) else "empty",
+            },
+            "territorio": territorio,
+        },
+        "estadisticas": {
+            "resumen": {
+                "total_respuestas": int(summary.get("total_respuestas") or 0),
+                "participantes_unicos": int(summary.get("participantes_unicos") or 0),
+                "tasa_completitud": _metric_number(summary.get("tasa_completitud"), decimals=2),
+                "projected_total": int(forecast.get("projected_total") or 0),
+            },
+            "categorias": _build_category_rankings(summary),
+            "demografia": {
+                "genero": demografia.get("genero") or [],
+                "rango_etario": demografia.get("rango_etario") or [],
+                "edad": demografia.get("edad") or {},
+            },
+            "canales": summary.get("canales") or [],
+            "series": list(timeseries or []),
+        },
+        "ia": {
+            "headline": brief.get("headline") or "",
+            "insights": brief.get("insights") or [],
+            "risk_level": brief.get("risk_level") or "medium",
+            "ai_enhanced": bool(brief.get("ai_enhanced")),
+            "alerts": alerts.get("alerts") or [],
+        },
     }
 
 
@@ -1682,6 +1736,14 @@ def get_dashboard_bundle(
         latest_responses_state=latest_responses_state,
         fast_mode=fast_mode,
     )
+    sections = _build_dashboard_sections(
+        summary=summary,
+        heatmap=heatmap,
+        timeseries=timeseries,
+        forecast=forecast,
+        alerts=alerts,
+        brief=brief,
+    )
 
     return {
         "encuesta_id": encuesta_id,
@@ -1705,7 +1767,7 @@ def get_dashboard_bundle(
             "module_state": {
                 "summary": "ready" if int(summary.get("total_respuestas") or 0) > 0 else "empty",
                 "timeseries": "ready" if len(timeseries or []) > 0 else "empty",
-                "heatmap": "ready" if len((heatmap.get("points") or [])) > 0 else "empty",
+                "heatmap": "ready" if bool((heatmap.get("points") or []) or (heatmap.get("cells") or [])) else "empty",
                 "alerts": "attention" if active_alerts > 0 else "normal",
                 "latest_responses": latest_responses_state,
             },
@@ -1726,6 +1788,7 @@ def get_dashboard_bundle(
         "visual_blueprint": visual_blueprint,
         "admin_template": admin_template,
         "frontend_render_contract": frontend_render_contract,
+        "sections": sections,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
 
