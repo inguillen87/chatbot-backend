@@ -300,3 +300,72 @@ Notas de integración:
 ### Realtime call/video visibles por contrato
 - Mostrar botones de `call` y `video` cuando `support_channels.voice_call.enabled=true` y `support_channels.video_call.enabled=true`.
 - Leer siempre desde `widget.support_channels` y `widget.attributes (data-realtime-*)`; no hardcodear por tenant.
+
+## H. Contrato frontend ENCUESTAS/VOTACIONES (implementación UX/UI obligatoria)
+
+Para que el frontend muestre correctamente **Mapas**, **Estadísticas** y **Análisis IA** en encuestas/sondeos/votaciones, integrar estos endpoints y campos:
+
+### Endpoints de consumo
+- `GET /admin/encuestas/{encuesta_id}/analytics/dashboard`
+- `GET /admin/encuestas/{encuesta_id}/analytics/heatmap`
+- `GET /admin/encuestas/{encuesta_id}/analytics/export.pdf`
+
+### Qué leer del dashboard (sin hardcode)
+- `sections.mapas.heatmap.points`
+- `sections.mapas.heatmap.cells`
+- `sections.mapas.heatmap.hotspots`
+- `sections.mapas.heatmap.category_layers` (**Leaflet + OSM**, color por categoría)
+- `sections.estadisticas.resumen`
+- `sections.estadisticas.categorias`
+- `sections.estadisticas.demografia.genero`
+- `sections.estadisticas.demografia.rango_etario`
+- `sections.ia.headline`
+- `sections.ia.insights[]`
+
+### Reglas UX recomendadas
+1. Tab **Mapas**:
+   - Si `category_layers.categories.length > 0`: renderizar capa por categoría con su `color`.
+   - Si no hay categorías, usar fallback de `points/cells`.
+   - Mostrar leyenda con `categoria`, `total_weight` y `event_count`.
+2. Tab **Estadísticas**:
+   - Usar `categorias` para ranking principal (barras).
+   - Usar `demografia.genero` + `demografia.rango_etario` en gráficos de composición.
+3. Tab **IA**:
+   - Mostrar `headline` + lista de `insights`.
+4. Estados vacíos:
+   - Basarse en `sections.mapas.heatmap.state` y `ui_state.map_participation`.
+
+### Contrato de heatmap por categorías (resumen)
+```json
+{
+  "metadata": {
+    "category_layers": {
+      "provider": "leaflet",
+      "tiles": {
+        "url": "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+        "attribution": "© OpenStreetMap contributors"
+      },
+      "categories": [
+        {
+          "categoria": "seguridad",
+          "color": "#EF4444",
+          "event_count": 120,
+          "total_weight": 350,
+          "intensity": 1.0,
+          "points": [{"lat": -34.60, "lng": -58.38, "weight": 8}]
+        }
+      ]
+    }
+  }
+}
+```
+
+### Export PDF de encuestas (para botón "Exportar")
+- Endpoint: `GET /admin/encuestas/{encuesta_id}/analytics/export.pdf`
+- El backend ya incluye contenido de:
+  - resumen,
+  - categorías,
+  - mapa por categorías,
+  - análisis IA (headline + insights).
+
+
