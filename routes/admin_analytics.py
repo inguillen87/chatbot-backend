@@ -18,12 +18,14 @@ from models import AnalyticsEventV2, EncComentario, EncEncuesta, EncRespuesta, M
 from services.analytics import get_geo_heatmap, get_summary
 from services.analytics.filters import parse_filters
 from services.analytics.rbac import require_access
+from utils.map_config import get_map_config
 
 admin_analytics_bp = Blueprint("admin_analytics", __name__, url_prefix="/admin/analytics")
 
 _DASHBOARD_CACHE: dict[str, dict[str, Any]] = {}
 _DASHBOARD_CACHE_TTL_SECONDS = 20.0
 _ANALYTICS_HUB_CONTRACT_VERSION = "2026-analytics-hub-v2"
+_MAP_CONTRACT_VERSION = "2026.04-maplibre-v1"
 _HEATMAP_CATEGORY_COLORS = [
     "#EF4444",
     "#F97316",
@@ -141,14 +143,53 @@ def _build_simple_text_pdf(lines: list[str]) -> bytes:
     chunks.append("ET")
     stream = "\n".join(chunks).encode("latin-1", errors="replace")
 
-    body = b"%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"
-    body += b"2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n"
-    body += b"3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]/Resources<</Font<</F1 4 0 R>>>>/Contents 5 0 R>>endobj\n"
-    body += b"4 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj\n"
-    body += f"5 0 obj<</Length {len(stream)}>>stream\n".encode("ascii") + stream + b"\nendstream endobj\n"
-    body += b"xref\n0 6\n0000000000 65535 f \n0000000010 00000 n \n0000000060 00000 n \n0000000118 00000 n \n0000000244 00000 n \n0000000314 00000 n \n"
-    body += b"trailer<</Root 1 0 R/Size 6>>\nstartxref\n420\n%%EOF"
-    return body
+    objects = [
+        b"<</Type/Catalog/Pages 2 0 R>>",
+        b"<</Type/Pages/Kids[3 0 R]/Count 1>>",
+        b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]/Resources<</Font<</F1 4 0 R>>>>/Contents 5 0 R>>",
+        b"<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>",
+        f"<</Length {len(stream)}>>stream\n".encode("ascii") + stream + b"\nendstream",
+    ]
+
+    body = bytearray(b"%PDF-1.4\n")
+    offsets = [0]
+    for index, obj in enumerate(objects, start=1):
+        offsets.append(len(body))
+        body.extend(f"{index} 0 obj\n".encode("ascii"))
+        body.extend(obj)
+        body.extend(b"\nendobj\n")
+
+    xref_start = len(body)
+    body.extend(f"xref\n0 {len(offsets)}\n".encode("ascii"))
+    body.extend(b"0000000000 65535 f \n")
+    for offset in offsets[1:]:
+        body.extend(f"{offset:010d} 00000 n \n".encode("ascii"))
+    body.extend(f"trailer<</Root 1 0 R/Size {len(offsets)}>>\n".encode("ascii"))
+    body.extend(f"startxref\n{xref_start}\n%%EOF".encode("ascii"))
+    return bytes(body)
+
+
+def _coerce_geo_limit(value: Any, *, default: int = 2000, min_value: int = 100, max_value: int = 10000) -> int:
+    try:
+        parsed = int(value if value is not None and value != "" else default)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(min_value, min(parsed, max_value))
+
+
+def _parse_bbox(value: str | None) -> tuple[float, float, float, float] | None:
+    if not value:
+        return None
+    parts = [item.strip() for item in value.split(",")]
+    if len(parts) != 4:
+        return None
+    try:
+        min_lng, min_lat, max_lng, max_lat = [float(item) for item in parts]
+    except (TypeError, ValueError):
+        return None
+    if min_lng > max_lng or min_lat > max_lat:
+        return None
+    return min_lng, min_lat, max_lng, max_lat
 
 
 
@@ -325,7 +366,7 @@ def _extract_vote_weight(metadata: dict[str, Any]) -> float:
     return 1.0
 
 
-def _build_maplibre_heatmap_layers(events: list[dict[str, Any]]) -> dict[str, Any]:
+def _build_maplibre_heatmap_layers(events: list[dict[str, Any]], *, style_url: str | None = None, source_limit: int = 2000, bbox: tuple[float, float, float, float] | None = None) -> dict[str, Any]:
     by_category: dict[str, dict[str, Any]] = {}
 
     for event in events:
@@ -348,6 +389,8 @@ def _build_maplibre_heatmap_layers(events: list[dict[str, Any]]) -> dict[str, An
         categoria = labels.get("categoria", "sin_dato")
         weight = _extract_vote_weight(md)
 
+        if bbox and not (bbox[0] <= lng <= bbox[2] and bbox[1] <= lat <= bbox[3]):
+            continue
         bucket = by_category.setdefault(categoria, {"count": 0, "weight": 0.0, "points": []})
         bucket["count"] += 1
         bucket["weight"] += weight
@@ -358,7 +401,11 @@ def _build_maplibre_heatmap_layers(events: list[dict[str, Any]]) -> dict[str, An
     min_ts: datetime | None = None
     max_ts: datetime | None = None
 
-    for event in events:
+    source_events = events
+    if source_limit and len(source_events) > source_limit:
+        source_events = source_events[-source_limit:]
+
+    for event in source_events:
         md = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
         lat = event.get("lat")
         lng = event.get("lng")
@@ -372,6 +419,8 @@ def _build_maplibre_heatmap_layers(events: list[dict[str, Any]]) -> dict[str, An
             lat = float(lat)
             lng = float(lng)
         except (TypeError, ValueError):
+            continue
+        if bbox and not (bbox[0] <= lng <= bbox[2] and bbox[1] <= lat <= bbox[3]):
             continue
         ts = event.get("ts")
         labels = _event_segment_labels(event)
@@ -397,18 +446,26 @@ def _build_maplibre_heatmap_layers(events: list[dict[str, Any]]) -> dict[str, An
             }
         )
 
+    resolved_style_url = style_url or "https://demotiles.maplibre.org/style.json"
+
     if not ranked:
         return {
             "provider": "maplibre",
             "engine": "maplibre-gl-js",
-            "style_url": "https://demotiles.maplibre.org/style.json",
+            "style_url": resolved_style_url,
+            "contract_version": _MAP_CONTRACT_VERSION,
             "categories": [],
             "legend": {"mode": "category_weight", "min_weight": 0, "max_weight": 0},
             "source": feature_collection,
+            "source_meta": {"limit": source_limit, "bbox": list(bbox) if bbox else None, "total_input_events": len(events)},
             "interactions": {
                 "hover": True,
                 "clusters": {"enabled": True, "max_zoom": 14, "radius": 45},
                 "time_slider": {"enabled": False, "field": "ts"},
+            },
+            "telemetry": {
+                "event_endpoint": "/api/analytics/event",
+                "events": ["map_loaded", "layer_toggle", "time_slider_changed", "cluster_click"],
             },
         }
 
@@ -431,8 +488,10 @@ def _build_maplibre_heatmap_layers(events: list[dict[str, Any]]) -> dict[str, An
     return {
         "provider": "maplibre",
         "engine": "maplibre-gl-js",
-        "style_url": "https://demotiles.maplibre.org/style.json",
+        "style_url": resolved_style_url,
+        "contract_version": _MAP_CONTRACT_VERSION,
         "source": feature_collection,
+        "source_meta": {"limit": source_limit, "bbox": list(bbox) if bbox else None, "total_input_events": len(events)},
         "source_options": {
             "cluster": True,
             "clusterMaxZoom": 14,
@@ -475,6 +534,10 @@ def _build_maplibre_heatmap_layers(events: list[dict[str, Any]]) -> dict[str, An
                 "to": max_ts.isoformat() if max_ts else None,
                 "step_minutes": 15,
             },
+        },
+        "telemetry": {
+            "event_endpoint": "/api/analytics/event",
+            "events": ["map_loaded", "layer_toggle", "time_slider_changed", "cluster_click"],
         },
     }
 
@@ -590,9 +653,14 @@ def admin_analytics_heatmap():
     segment_filters = _extract_segment_filters()
     filtered_events = [event for event in segment_events if _event_matches_segment_filters(event, segment_filters)]
 
+    map_cfg = get_map_config() or {}
+    style_url = map_cfg.get("style_url") or "https://demotiles.maplibre.org/style.json"
+    source_limit = _coerce_geo_limit(request.args.get("geo_limit"))
+    bbox = _parse_bbox(request.args.get("bbox"))
+
     return _json({
         "geo": base,
-        "geo_layers": _build_maplibre_heatmap_layers(filtered_events),
+        "geo_layers": _build_maplibre_heatmap_layers(filtered_events, style_url=style_url, source_limit=source_limit, bbox=bbox),
         "temporal": temporal,
         "segments": _aggregate_heatmap_segments(filtered_events),
         "segments_filters_applied": {k: sorted(v) for k, v in segment_filters.items()},

@@ -243,6 +243,8 @@ Filtros soportados en query params:
 - `categoria` o `categorias`
 - `sexo` o `genero`
 - `rango_edad`, `barrio`, `distrito`, `canal`
+- `geo_limit` (default 2000, recomendado móvil: 500-1500)
+- `bbox=minLng,minLat,maxLng,maxLat` (recorte server-side para zoom/viewport)
 
 Payload esperado (resumen):
 ```json
@@ -250,6 +252,7 @@ Payload esperado (resumen):
   "geo_layers": {
     "provider": "maplibre",
     "engine": "maplibre-gl-js",
+    "contract_version": "2026.04-maplibre-v1",
     "style_url": "https://demotiles.maplibre.org/style.json",
     "source": {"type": "FeatureCollection", "features": []},
     "source_options": {"cluster": true, "clusterMaxZoom": 14, "clusterRadius": 45},
@@ -259,6 +262,10 @@ Payload esperado (resumen):
       "points": {"id": "events-points", "type": "circle", "source": "events"}
     },
     "interactions": {"hover": true, "time_slider": {"enabled": true, "field": "ts"}},
+    "telemetry": {
+      "event_endpoint": "/api/analytics/event",
+      "events": ["map_loaded", "layer_toggle", "time_slider_changed", "cluster_click"]
+    },
     "categories": [
       {
         "categoria": "seguridad",
@@ -284,6 +291,7 @@ Notas de integración:
 - Usar `geo_layers.categories[].color` para leyenda fija por categoría en mapa.
 - Inicializar el mapa con MapLibre GL JS y enlazar `geo_layers.source` como `GeoJSONSource`.
 - Respetar `geo_layers.interactions` para hover de tooltip, clusters y time slider.
+- Emitir eventos de telemetría del mapa al `telemetry.event_endpoint` para trazabilidad UX.
 - `total_weight` refleja volumen de votos/score (`votos`, `cantidad_votos`, `vote_count`, `puntaje`, etc.).
 
 

@@ -412,6 +412,13 @@ def test_admin_analytics_overview_and_exports_are_tenant_scoped(client):
     assert 'Reporte de analytics' in pdf_text
     assert 'Segmentacion principal' in pdf_text
     assert 'Hotspots' in pdf_text
+    xref_index = pdf_export.data.find(b"xref\n")
+    assert xref_index > 0
+    startxref_marker = b"startxref\n"
+    marker_index = pdf_export.data.rfind(startxref_marker)
+    assert marker_index > 0
+    startxref_value = pdf_export.data[marker_index + len(startxref_marker):].split(b"\n", 1)[0]
+    assert int(startxref_value) == xref_index
 
     forbidden = client.get(
         '/admin/analytics/overview',
@@ -581,7 +588,10 @@ def test_admin_analytics_heatmap_includes_maplibre_layers_with_category_colors(c
     geo_layers = data.get('geo_layers') or {}
     assert geo_layers.get('provider') == 'maplibre'
     assert geo_layers.get('engine') == 'maplibre-gl-js'
+    assert geo_layers.get('contract_version') == '2026.04-maplibre-v1'
     assert geo_layers.get('source', {}).get('type') == 'FeatureCollection'
+    assert geo_layers.get('source_meta', {}).get('limit') == 2000
+    assert geo_layers.get('telemetry', {}).get('events')
     assert geo_layers.get('layers', {}).get('heatmap', {}).get('type') == 'heatmap'
     categories = geo_layers.get('categories') or []
     assert categories
@@ -590,6 +600,39 @@ def test_admin_analytics_heatmap_includes_maplibre_layers_with_category_colors(c
     assert categories[0].get('total_weight') == 8
     assert categories[0].get('points')
     assert geo_layers.get('legend', {}).get('max_weight') == 8
+
+
+def test_admin_analytics_heatmap_honors_maplibre_style_url_from_config(client):
+    tenant_id = 216
+    now = datetime.utcnow()
+    db.session.add(
+        AnalyticsEventV2(
+            tenant_id=tenant_id,
+            event_name='encuesta_voto',
+            tenant_type='municipio',
+            channel='web_widget',
+            ts=now,
+            metadata_payload={
+                'categoria': 'seguridad',
+                'lat': -34.6037,
+                'lng': -58.3816,
+                'votos': 4,
+            },
+        )
+    )
+    db.session.commit()
+
+    client.application.config['MAPLIBRE_STYLE_URL'] = 'https://maps.example.com/style.json'
+    response = client.get(
+        '/admin/analytics/heatmap',
+        query_string={'tenant_id': tenant_id, 'scope': 'municipio', 'geo_limit': 100, 'bbox': '-59,-35,-58,-34'},
+        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
+    )
+    assert response.status_code == 200
+    geo_layers = (response.get_json() or {}).get('geo_layers') or {}
+    assert geo_layers.get('style_url') == 'https://maps.example.com/style.json'
+    assert geo_layers.get('source_meta', {}).get('limit') == 100
+    assert geo_layers.get('source_meta', {}).get('bbox') == [-59.0, -35.0, -58.0, -34.0]
 
 
 def test_admin_analytics_heatmap_uses_persisted_lat_lng_for_geo_layers(client):

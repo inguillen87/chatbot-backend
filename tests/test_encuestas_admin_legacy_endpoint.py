@@ -581,6 +581,8 @@ def test_admin_encuestas_legacy_analytics_and_snapshots(client, monkeypatch, adm
     assert "category_layers" in metadata
     assert metadata["category_layers"].get("provider") == "maplibre"
     assert metadata["category_layers"].get("engine") == "maplibre-gl-js"
+    assert metadata["category_layers"].get("contract_version") == "2026.04-maplibre-v1"
+    assert metadata["category_layers"].get("telemetry", {}).get("events")
     map_filter = metadata["map_filter"]
     assert isinstance(map_filter, dict)
     assert "options" in map_filter

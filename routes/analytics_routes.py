@@ -11,6 +11,13 @@ from utils.auth_helpers import obtener_token, user_from_token
 
 analytics_v2_bp = Blueprint('analytics_v2_bp', __name__, url_prefix='/api/analytics')
 
+def _request_id() -> str:
+    return (request.headers.get("X-Request-Id") or request.headers.get("X-Correlation-Id") or "").strip() or "analytics-unknown"
+
+
+def _api_error(error: str, *, status: int, code: str) -> tuple:
+    return jsonify({"error": error, "code": code, "request_id": _request_id()}), status
+
 
 def api_login_required(fn):
     """API-safe auth guard that returns JSON 401 instead of HTML redirects."""
@@ -27,7 +34,7 @@ def api_login_required(fn):
                     except Exception:
                         current_app.logger.debug("[analytics_v2] token login fallback failed", exc_info=True)
         if not getattr(current_user, "is_authenticated", False):
-            return jsonify({"error": "Unauthorized", "code": "auth_required"}), 401
+            return _api_error("Unauthorized", status=401, code="auth_required")
         return fn(*args, **kwargs)
 
     return _wrapped
@@ -67,11 +74,11 @@ def get_summary():
         if current_user.tenant_id:
             tenant_id = current_user.tenant_id
         else:
-            return jsonify({"error": "Missing tenant_id"}), 400
+            return _api_error("Missing tenant_id", status=400, code="missing_tenant_id")
 
     # Simple permission check
     if current_user.tenant_id and str(current_user.tenant_id) != str(tenant_id) and current_user.rol != 'admin':
-        return jsonify({"error": "Unauthorized"}), 403
+        return _api_error("Unauthorized", status=403, code="forbidden")
 
     start_date, end_date = _get_date_range()
     context = request.args.get('context', 'overview')
@@ -93,7 +100,7 @@ def get_summary():
         return jsonify(data)
     except Exception as e:
         current_app.logger.error(f"Analytics Error: {e}", exc_info=True)
-        return jsonify({"error": str(e)}), 500
+        return _api_error(str(e), status=500, code="analytics_internal_error")
 
 @analytics_v2_bp.route('/heatmap', methods=['GET'])
 @api_login_required
@@ -103,13 +110,13 @@ def get_heatmap():
         if current_user.tenant_id:
             tenant_id = current_user.tenant_id
         else:
-            return jsonify({"error": "Missing tenant_id"}), 400
+            return _api_error("Missing tenant_id", status=400, code="missing_tenant_id")
 
     if current_user.tenant_id and str(current_user.tenant_id) != str(tenant_id) and current_user.rol != "admin":
-        return jsonify({"error": "Unauthorized"}), 403
+        return _api_error("Unauthorized", status=403, code="forbidden")
 
     if current_user.tenant_id and str(current_user.tenant_id) != str(tenant_id) and current_user.rol != 'admin':
-        return jsonify({"error": "Unauthorized"}), 403
+        return _api_error("Unauthorized", status=403, code="forbidden")
 
     start_date, end_date = _get_date_range()
 
@@ -122,7 +129,7 @@ def get_heatmap():
         return jsonify({"points": points})
     except Exception as e:
         current_app.logger.error(f"Analytics Error: {e}", exc_info=True)
-        return jsonify({"error": str(e)}), 500
+        return _api_error(str(e), status=500, code="analytics_internal_error")
 
 @analytics_v2_bp.route('/surveys/summary', methods=['GET'])
 @api_login_required
@@ -132,17 +139,17 @@ def get_survey_summary():
         if current_user.tenant_id:
             tenant_id = current_user.tenant_id
         else:
-            return jsonify({"error": "Missing tenant_id"}), 400
+            return _api_error("Missing tenant_id", status=400, code="missing_tenant_id")
 
     if current_user.tenant_id and str(current_user.tenant_id) != str(tenant_id) and current_user.rol != "admin":
-        return jsonify({"error": "Unauthorized"}), 403
+        return _api_error("Unauthorized", status=403, code="forbidden")
 
     try:
         data = analytics_service.get_survey_summary(tenant_id=int(tenant_id))
         return jsonify(data)
     except Exception as e:
         current_app.logger.error(f"Analytics Error: {e}", exc_info=True)
-        return jsonify({"error": str(e)}), 500
+        return _api_error(str(e), status=500, code="analytics_internal_error")
 
 @analytics_v2_bp.route('/surveys/sentiment', methods=['GET'])
 @api_login_required
@@ -152,10 +159,10 @@ def get_survey_sentiment():
         if current_user.tenant_id:
             tenant_id = current_user.tenant_id
         else:
-            return jsonify({"error": "Missing tenant_id"}), 400
+            return _api_error("Missing tenant_id", status=400, code="missing_tenant_id")
 
     if current_user.tenant_id and str(current_user.tenant_id) != str(tenant_id) and current_user.rol != "admin":
-        return jsonify({"error": "Unauthorized"}), 403
+        return _api_error("Unauthorized", status=403, code="forbidden")
 
     tid = int(tenant_id)
 
@@ -177,7 +184,7 @@ def get_survey_sentiment():
         return jsonify(analysis)
     except Exception as e:
         current_app.logger.error(f"Analytics Error: {e}", exc_info=True)
-        return jsonify({"error": str(e)}), 500
+        return _api_error(str(e), status=500, code="analytics_internal_error")
 
 @analytics_v2_bp.route('/surveys/geo', methods=['GET'])
 @api_login_required
@@ -187,17 +194,17 @@ def get_survey_geo():
         if current_user.tenant_id:
             tenant_id = current_user.tenant_id
         else:
-            return jsonify({"error": "Missing tenant_id"}), 400
+            return _api_error("Missing tenant_id", status=400, code="missing_tenant_id")
 
     if current_user.tenant_id and str(current_user.tenant_id) != str(tenant_id) and current_user.rol != "admin":
-        return jsonify({"error": "Unauthorized"}), 403
+        return _api_error("Unauthorized", status=403, code="forbidden")
 
     try:
         points = analytics_service.get_survey_geo(tenant_id=int(tenant_id))
         return jsonify({"points": points})
     except Exception as e:
         current_app.logger.error(f"Analytics Error: {e}", exc_info=True)
-        return jsonify({"error": str(e)}), 500
+        return _api_error(str(e), status=500, code="analytics_internal_error")
 
 @analytics_v2_bp.route('/insights', methods=['GET'])
 @api_login_required
@@ -207,17 +214,17 @@ def get_insights():
         if current_user.tenant_id:
             tenant_id = current_user.tenant_id
         else:
-            return jsonify({"error": "Missing tenant_id"}), 400
+            return _api_error("Missing tenant_id", status=400, code="missing_tenant_id")
 
     if current_user.tenant_id and str(current_user.tenant_id) != str(tenant_id) and current_user.rol != "admin":
-        return jsonify({"error": "Unauthorized"}), 403
+        return _api_error("Unauthorized", status=403, code="forbidden")
 
     try:
         insights = analytics_service.get_insights(tenant_id=int(tenant_id))
         return jsonify({"insights": insights})
     except Exception as e:
         current_app.logger.error(f"Analytics Error: {e}", exc_info=True)
-        return jsonify({"error": str(e)}), 500
+        return _api_error(str(e), status=500, code="analytics_internal_error")
 
 @analytics_v2_bp.route('/sales', methods=['GET'])
 @api_login_required
@@ -227,10 +234,10 @@ def get_sales_analytics():
         if current_user.tenant_id:
             tenant_id = current_user.tenant_id
         else:
-            return jsonify({"error": "Missing tenant_id"}), 400
+            return _api_error("Missing tenant_id", status=400, code="missing_tenant_id")
 
     if current_user.tenant_id and str(current_user.tenant_id) != str(tenant_id) and current_user.rol != 'admin':
-        return jsonify({"error": "Unauthorized"}), 403
+        return _api_error("Unauthorized", status=403, code="forbidden")
 
     start_date, end_date = _get_date_range()
 
@@ -243,7 +250,7 @@ def get_sales_analytics():
         return jsonify(data)
     except Exception as e:
         current_app.logger.error(f"Analytics Error: {e}", exc_info=True)
-        return jsonify({"error": str(e)}), 500
+        return _api_error(str(e), status=500, code="analytics_internal_error")
 
 @analytics_v2_bp.route('/benchmarks', methods=['GET'])
 @api_login_required
@@ -253,10 +260,10 @@ def get_benchmarks():
         if current_user.tenant_id:
             tenant_id = current_user.tenant_id
         else:
-            return jsonify({"error": "Missing tenant_id"}), 400
+            return _api_error("Missing tenant_id", status=400, code="missing_tenant_id")
 
     if current_user.tenant_id and str(current_user.tenant_id) != str(tenant_id) and current_user.rol != "admin":
-        return jsonify({"error": "Unauthorized"}), 403
+        return _api_error("Unauthorized", status=403, code="forbidden")
 
     start_date, end_date = _get_date_range()
 
@@ -269,7 +276,7 @@ def get_benchmarks():
         return jsonify(data)
     except Exception as e:
         current_app.logger.error(f"Analytics Error: {e}", exc_info=True)
-        return jsonify({"error": str(e)}), 500
+        return _api_error(str(e), status=500, code="analytics_internal_error")
 
 @analytics_v2_bp.route('/funnel', methods=['GET'])
 @api_login_required
@@ -279,10 +286,10 @@ def get_funnel():
         if current_user.tenant_id:
             tenant_id = current_user.tenant_id
         else:
-            return jsonify({"error": "Missing tenant_id"}), 400
+            return _api_error("Missing tenant_id", status=400, code="missing_tenant_id")
 
     if current_user.tenant_id and str(current_user.tenant_id) != str(tenant_id) and current_user.rol != "admin":
-        return jsonify({"error": "Unauthorized"}), 403
+        return _api_error("Unauthorized", status=403, code="forbidden")
 
     start_date, end_date = _get_date_range()
 
@@ -295,7 +302,7 @@ def get_funnel():
         return jsonify(data)
     except Exception as e:
         current_app.logger.error(f"Analytics Error: {e}", exc_info=True)
-        return jsonify({"error": str(e)}), 500
+        return _api_error(str(e), status=500, code="analytics_internal_error")
 
 @analytics_v2_bp.route('/report/latest', methods=['GET'])
 @api_login_required
@@ -308,10 +315,10 @@ def get_latest_report():
         if current_user.tenant_id:
             tenant_id = current_user.tenant_id
         else:
-            return jsonify({"error": "Missing tenant_id"}), 400
+            return _api_error("Missing tenant_id", status=400, code="missing_tenant_id")
 
     if current_user.tenant_id and str(current_user.tenant_id) != str(tenant_id) and current_user.rol != 'admin':
-        return jsonify({"error": "Unauthorized"}), 403
+        return _api_error("Unauthorized", status=403, code="forbidden")
 
     segment = request.args.get('segment', 'pyme') # pyme or municipio
 
@@ -321,7 +328,7 @@ def get_latest_report():
         cached['_cached'] = True
         return jsonify(cached)
 
-    return jsonify({"error": "No cached report found", "code": 404}), 404
+    return _api_error("No cached report found", status=404, code="report_not_found")
 
 @analytics_v2_bp.route('/report/generate', methods=['POST'])
 @api_login_required
@@ -347,10 +354,10 @@ def generate_report():
         if current_user.tenant_id:
             tenant_id = current_user.tenant_id
         else:
-             return jsonify({"error": "Missing tenant_id"}), 400
+             return _api_error("Missing tenant_id", status=400, code="missing_tenant_id")
 
     if current_user.tenant_id and str(current_user.tenant_id) != str(tenant_id) and current_user.rol != 'admin':
-        return jsonify({"error": "Unauthorized"}), 403
+        return _api_error("Unauthorized", status=403, code="forbidden")
 
     tid = int(tenant_id)
 
@@ -416,4 +423,4 @@ def generate_report():
 
     except Exception as e:
         current_app.logger.error(f"Analytics Error: {e}", exc_info=True)
-        return jsonify({"error": str(e)}), 500
+        return _api_error(str(e), status=500, code="analytics_internal_error")

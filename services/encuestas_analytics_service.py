@@ -56,6 +56,7 @@ _MULTIPLE_CHOICE_TYPES = {
 
 
 logger = logging.getLogger(__name__)
+_MAP_CONTRACT_VERSION = "2026.04-maplibre-v1"
 _TEXT_TYPES = {
     "abierta",
     "text",
@@ -412,14 +413,23 @@ def _build_category_heatmap_layers(points: Sequence[Dict[str, Any]]) -> Dict[str
                 }
             )
 
+    map_config = get_map_config() or {}
+    style_url = map_config.get("style_url") or "https://demotiles.maplibre.org/style.json"
+
     if not ranked:
         return {
             "provider": "maplibre",
             "engine": "maplibre-gl-js",
-            "style_url": "https://demotiles.maplibre.org/style.json",
+            "style_url": style_url,
+            "contract_version": _MAP_CONTRACT_VERSION,
             "categories": [],
             "legend": {"mode": "category_weight", "min_weight": 0, "max_weight": 0},
             "source": feature_collection,
+            "source_meta": {"total_input_points": len(points)},
+            "telemetry": {
+                "event_endpoint": "/api/analytics/event",
+                "events": ["map_loaded", "layer_toggle", "time_slider_changed", "cluster_click"],
+            },
         }
 
     max_weight = max(float(item[1]["weight"]) for item in ranked) or 1.0
@@ -439,8 +449,10 @@ def _build_category_heatmap_layers(points: Sequence[Dict[str, Any]]) -> Dict[str
     return {
         "provider": "maplibre",
         "engine": "maplibre-gl-js",
-        "style_url": "https://demotiles.maplibre.org/style.json",
+        "style_url": style_url,
+        "contract_version": _MAP_CONTRACT_VERSION,
         "source": feature_collection,
+        "source_meta": {"total_input_points": len(points)},
         "source_options": {"cluster": True, "clusterRadius": 45, "clusterMaxZoom": 14},
         "layers": {
             "heatmap": {"id": "encuestas-heat", "type": "heatmap", "source": "encuestas"},
@@ -449,6 +461,10 @@ def _build_category_heatmap_layers(points: Sequence[Dict[str, Any]]) -> Dict[str
         },
         "categories": categories,
         "legend": {"mode": "category_weight", "min_weight": 0, "max_weight": round(max_weight, 4)},
+        "telemetry": {
+            "event_endpoint": "/api/analytics/event",
+            "events": ["map_loaded", "layer_toggle", "time_slider_changed", "cluster_click"],
+        },
     }
 
 
