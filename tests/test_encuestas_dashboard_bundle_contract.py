@@ -10,7 +10,17 @@ def test_dashboard_bundle_includes_normalized_cards_and_states(monkeypatch):
         "preguntas": [],
     })
     monkeypatch.setattr(svc, "get_timeseries", lambda encuesta_id, granularity="day", filtros=None: [{"fecha": "2026-01-01", "total": 2}])
-    monkeypatch.setattr(svc, "get_heatmap", lambda encuesta_id, filtros=None: {"points": [{"lat": -33.1, "lng": -68.8, "weight": 1}], "metadata": {"map": {"hotspots": []}}})
+    monkeypatch.setattr(
+        svc,
+        "get_heatmap",
+        lambda encuesta_id, filtros=None: {
+            "points": [{"lat": -33.1, "lng": -68.8, "weight": 1}],
+            "metadata": {
+                "map": {"hotspots": []},
+                "category_layers": {"provider": "leaflet", "categories": [{"categoria": "seguridad", "total_weight": 2}]},
+            },
+        },
+    )
     monkeypatch.setattr(svc, "get_forecast", lambda encuesta_id, filtros=None: {"projected_total": 20})
     monkeypatch.setattr(svc, "get_alerts", lambda encuesta_id, filtros=None: {"alerts": [{"id": "a1"}]})
     monkeypatch.setattr(svc, "get_executive_brief", lambda encuesta_id, filtros=None: {"headline": "ok"})
@@ -45,6 +55,7 @@ def test_dashboard_bundle_includes_normalized_cards_and_states(monkeypatch):
     assert "categorias" in bundle["sections"]["estadisticas"]
     assert "demografia" in bundle["sections"]["estadisticas"]
     assert "ia" in bundle["sections"]
+    assert bundle["sections"]["mapas"]["heatmap"]["category_layers"]["provider"] == "leaflet"
 
 
 def test_dashboard_bundle_handles_empty_states(monkeypatch):

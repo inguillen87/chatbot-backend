@@ -247,6 +247,7 @@ def _aggregate_heatmap_cells(
                 "lat": lat,
                 "lng": lng,
                 "w": 1.0,
+                "categoria": _extract_response_category(respuesta),
                 "barrio": respuesta.barrio,
                 "ciudad": respuesta.ciudad,
                 "provincia": respuesta.provincia,
@@ -361,6 +362,75 @@ def _build_map_filter(points: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
         "available": bool(options),
         "keys": keys,
         "options": options,
+    }
+
+
+def _extract_response_category(respuesta: EncRespuesta) -> str:
+    """Return a category-like label for map segmentation from response details."""
+
+    for detalle in (respuesta.detalles or []):
+        opcion = getattr(detalle, "opcion", None)
+        texto_opcion = (getattr(opcion, "texto", None) or "").strip() if opcion else ""
+        if texto_opcion:
+            return texto_opcion
+        texto_libre = (getattr(detalle, "texto_libre", None) or "").strip()
+        if texto_libre:
+            return texto_libre[:80]
+    return "sin_categoria"
+
+
+def _build_category_heatmap_layers(points: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    palette = ["#EF4444", "#F97316", "#EAB308", "#22C55E", "#06B6D4", "#3B82F6", "#8B5CF6", "#EC4899"]
+    grouped: Dict[str, Dict[str, Any]] = {}
+
+    for point in points:
+        if not isinstance(point, Mapping):
+            continue
+        lat = point.get("lat")
+        lng = point.get("lng")
+        if lat is None or lng is None:
+            continue
+        categoria = str(point.get("categoria") or "sin_categoria").strip().lower() or "sin_categoria"
+        weight = float(point.get("weight") or point.get("w") or point.get("count") or 1.0)
+        bucket = grouped.setdefault(categoria, {"count": 0, "weight": 0.0, "points": []})
+        bucket["count"] += 1
+        bucket["weight"] += max(weight, 0.0)
+        bucket["points"].append({"lat": float(lat), "lng": float(lng), "weight": round(max(weight, 0.0), 4)})
+
+    ranked = sorted(grouped.items(), key=lambda item: item[1]["weight"], reverse=True)
+    if not ranked:
+        return {
+            "provider": "leaflet",
+            "tiles": {
+                "url": "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+                "attribution": "© OpenStreetMap contributors",
+            },
+            "categories": [],
+            "legend": {"mode": "category_weight", "min_weight": 0, "max_weight": 0},
+        }
+
+    max_weight = max(float(item[1]["weight"]) for item in ranked) or 1.0
+    categories = []
+    for index, (name, data) in enumerate(ranked):
+        categories.append(
+            {
+                "categoria": name,
+                "color": palette[index % len(palette)],
+                "event_count": int(data["count"]),
+                "total_weight": round(float(data["weight"]), 4),
+                "intensity": round(float(data["weight"]) / max_weight, 4),
+                "points": data["points"],
+            }
+        )
+
+    return {
+        "provider": "leaflet",
+        "tiles": {
+            "url": "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+            "attribution": "© OpenStreetMap contributors",
+        },
+        "categories": categories,
+        "legend": {"mode": "category_weight", "min_weight": 0, "max_weight": round(max_weight, 4)},
     }
 
 
@@ -1206,6 +1276,7 @@ def _build_dashboard_sections(
                 "points": heatmap.get("points") or [],
                 "cells": heatmap.get("cells") or [],
                 "hotspots": map_meta.get("hotspots") or [],
+                "category_layers": ((heatmap.get("metadata") or {}).get("category_layers") or {}),
                 "provider_hint": ((heatmap.get("metadata") or {}).get("map_config") or {}).get("provider") or "maplibre",
                 "state": "ready" if bool((heatmap.get("points") or []) or (heatmap.get("cells") or [])) else "empty",
             },
@@ -2045,6 +2116,7 @@ def get_heatmap(
     }
     metadata["heatmap_layer"] = heatmap_layer
     metadata["map_layers"] = {"heatmap": heatmap_layer}
+    metadata["category_layers"] = _build_category_heatmap_layers(points)
     metadata["map_filter"] = map_filter
     render_contract = {
         "module": "heatmap",
