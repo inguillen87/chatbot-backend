@@ -442,6 +442,59 @@ def _augment_heatmap_payload(payload: dict[str, object], *, key: str = "heatmap"
                 },
             }
 
+        category_palette = [
+            "#EF4444",
+            "#F97316",
+            "#EAB308",
+            "#22C55E",
+            "#06B6D4",
+            "#3B82F6",
+            "#8B5CF6",
+            "#EC4899",
+        ]
+        grouped_categories: dict[str, dict[str, object]] = {}
+        for point in points:
+            if not isinstance(point, dict):
+                continue
+            categoria = str(point.get("categoria") or "sin_categoria").strip().lower() or "sin_categoria"
+            lat = point.get("lat")
+            lng = point.get("lng")
+            if lat is None or lng is None:
+                continue
+            weight = float(point.get("weight") or point.get("w") or point.get("count") or 1.0)
+            bucket = grouped_categories.setdefault(categoria, {"count": 0, "weight": 0.0, "points": []})
+            bucket["count"] = int(bucket.get("count") or 0) + 1
+            bucket["weight"] = float(bucket.get("weight") or 0.0) + max(weight, 0.0)
+            point_list = bucket.setdefault("points", [])
+            if isinstance(point_list, list):
+                point_list.append({"lat": float(lat), "lng": float(lng), "weight": round(max(weight, 0.0), 4)})
+
+        ranked_categories = sorted(grouped_categories.items(), key=lambda item: float(item[1].get("weight") or 0.0), reverse=True)
+        max_weight = max((float(data.get("weight") or 0.0) for _, data in ranked_categories), default=0.0)
+        category_items = []
+        for idx, (name, data) in enumerate(ranked_categories):
+            total_weight = float(data.get("weight") or 0.0)
+            category_items.append(
+                {
+                    "categoria": name,
+                    "color": category_palette[idx % len(category_palette)],
+                    "event_count": int(data.get("count") or 0),
+                    "total_weight": round(total_weight, 4),
+                    "intensity": round((total_weight / max_weight) if max_weight > 0 else 0.0, 4),
+                    "points": data.get("points") or [],
+                }
+            )
+
+        metadata["category_layers"] = {
+            "provider": provider_hint or "maplibre",
+            "tiles": {
+                "url": "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+                "attribution": "© OpenStreetMap contributors",
+            },
+            "categories": category_items,
+            "legend": {"mode": "category_weight", "min_weight": 0, "max_weight": round(max_weight, 4)},
+        }
+
     if isinstance(metadata, dict):
         filters_meta = metadata.setdefault("filters", {})
         if isinstance(filters_meta, dict):

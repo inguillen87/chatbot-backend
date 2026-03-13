@@ -13,3 +13,11 @@ def test_api_analytics_report_latest_requires_auth_json(client):
     assert response.is_json
     payload = response.get_json() or {}
     assert payload.get('code') == 'auth_required'
+
+
+def test_api_analytics_benchmarks_requires_auth_json(client):
+    response = client.get('/api/analytics/benchmarks', query_string={'tenant_id': 1})
+    assert response.status_code == 401
+    assert response.is_json
+    payload = response.get_json() or {}
+    assert payload.get('code') == 'auth_required'
