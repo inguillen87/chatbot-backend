@@ -100,6 +100,10 @@ class EstadisticasHeatmapRouteTest(unittest.TestCase):
         self.assertIn("cell_count", heatmap_meta)
         self.assertIn("provider_hint", heatmap_meta)
         self.assertIn("style", heatmap_meta)
+        self.assertIn("category_layers", payload["metadata"])
+        category_layers = payload["metadata"]["category_layers"]
+        self.assertEqual(category_layers.get("provider"), "maplibre")
+        self.assertIn("categories", category_layers)
         filters_meta = payload["metadata"].get("filters", {})
         self.assertIn("rangos_tiempo", filters_meta)
         self.assertTrue(filters_meta.get("rangos_tiempo"))

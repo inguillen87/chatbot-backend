@@ -5,6 +5,7 @@ import hashlib
 import json
 import time
 import uuid
+from datetime import datetime, timezone
 
 from flask import Blueprint, Response, current_app, jsonify, request
 
@@ -73,6 +74,49 @@ def _json_with_etag(payload: dict):
     response.set_etag(etag)
     response.headers.setdefault("Cache-Control", "private, max-age=30")
     return response
+
+
+def _pdf_escape(value: str) -> str:
+    return str(value or "").replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+
+
+def _build_simple_pdf(lines: list[str]) -> bytes:
+    chunks = ["BT /F1 10 Tf"]
+    y = 790
+    for idx, line in enumerate(lines):
+        safe = _pdf_escape(line)
+        if idx == 0:
+            chunks.append(f"50 {y} Td ({safe}) Tj")
+        else:
+            chunks.append("0 -14 Td (" + safe + ") Tj")
+        y -= 14
+        if y < 40:
+            break
+    chunks.append("ET")
+    stream = "\n".join(chunks).encode("latin-1", errors="replace")
+
+    objects = [
+        b"1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n",
+        b"2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n",
+        b"3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]/Resources<</Font<</F1 4 0 R>>>>/Contents 5 0 R>>endobj\n",
+        b"4 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj\n",
+        f"5 0 obj<</Length {len(stream)}>>stream\n".encode("ascii") + stream + b"\nendstream endobj\n",
+    ]
+
+    body = bytearray(b"%PDF-1.4\n")
+    offsets = [0]
+    for obj in objects:
+        offsets.append(len(body))
+        body.extend(obj)
+
+    xref_start = len(body)
+    body.extend(f"xref\n0 {len(offsets)}\n".encode("ascii"))
+    body.extend(b"0000000000 65535 f \n")
+    for offset in offsets[1:]:
+        body.extend(f"{offset:010d} 00000 n \n".encode("ascii"))
+    body.extend(f"trailer<</Root 1 0 R/Size {len(offsets)}>>\n".encode("ascii"))
+    body.extend(f"startxref\n{xref_start}\n%%EOF".encode("ascii"))
+    return bytes(body)
 
 
 def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> Blueprint:
@@ -339,6 +383,63 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
         return Response(generate(), mimetype="text/csv", headers=headers)
 
     bp.add_url_rule("/export.csv", view_func=export_view, methods=["GET"])
+
+    @token_requerido
+    @require_role("admin", "empleado", "super_admin")
+    def export_pdf_view(current_user, encuesta_id: int):
+        filtros = _parse_filtros()
+        try:
+            summary = get_summary(encuesta_id, filtros)
+            heatmap = get_heatmap(encuesta_id, filtros)
+            brief_data = get_executive_brief(encuesta_id, filtros)
+        except EncuestaError as err:
+            return jsonify(err.to_dict()), err.status_code
+
+        categorias = (summary.get("preguntas") or [{}])[0].get("opciones") or []
+        top_categorias = categorias[:5]
+        category_layers = ((heatmap.get("metadata") or {}).get("category_layers") or {})
+        category_geo = (category_layers.get("categories") or [])[:5]
+
+        lines = [
+            "Reporte analytics encuestas",
+            f"Encuesta: {encuesta_id}",
+            f"Emitido: {datetime.now(timezone.utc).isoformat()}",
+            "",
+            "Resumen:",
+            f"- total_respuestas: {int(summary.get('total_respuestas') or 0)}",
+            f"- participantes_unicos: {int(summary.get('participantes_unicos') or 0)}",
+            f"- tasa_completitud: {summary.get('tasa_completitud')}",
+            "",
+            "Categorias (estadisticas):",
+        ]
+        if top_categorias:
+            for item in top_categorias:
+                lines.append(f"- {item.get('label')}: {item.get('value')}")
+        else:
+            lines.append("- Sin categorias detectadas")
+
+        lines.append("")
+        lines.append("Mapa de calor por categorias:")
+        if category_geo:
+            for item in category_geo:
+                lines.append(f"- {item.get('categoria')} | peso={item.get('total_weight')} | eventos={item.get('event_count')}")
+        else:
+            lines.append("- Sin capas geograficas por categoria")
+
+        lines.append("")
+        lines.append("Analisis IA:")
+        lines.append(f"- headline: {brief_data.get('headline') or 'N/D'}")
+        for insight in (brief_data.get("insights") or [])[:5]:
+            lines.append(f"- insight: {insight}")
+
+        pdf = _build_simple_pdf(lines)
+        return Response(
+            pdf,
+            mimetype="application/pdf",
+            headers={"Content-Disposition": f"attachment; filename=encuesta-{encuesta_id}-analytics.pdf"},
+        )
+
+    bp.add_url_rule("/export.pdf", view_func=export_pdf_view, methods=["GET"])
 
     return bp
 
