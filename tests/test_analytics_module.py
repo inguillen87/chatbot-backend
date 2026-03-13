@@ -536,7 +536,7 @@ def test_admin_analytics_heatmap_applies_segment_filters(client):
     assert categorias and categorias[0]['label'] == 'alumbrado'
 
 
-def test_admin_analytics_heatmap_includes_leaflet_layers_with_category_colors(client):
+def test_admin_analytics_heatmap_includes_maplibre_layers_with_category_colors(client):
     tenant_id = 213
     now = datetime.utcnow()
     db.session.add(
@@ -579,7 +579,10 @@ def test_admin_analytics_heatmap_includes_leaflet_layers_with_category_colors(cl
     assert response.status_code == 200
     data = response.get_json()
     geo_layers = data.get('geo_layers') or {}
-    assert geo_layers.get('provider') == 'leaflet'
+    assert geo_layers.get('provider') == 'maplibre'
+    assert geo_layers.get('engine') == 'maplibre-gl-js'
+    assert geo_layers.get('source', {}).get('type') == 'FeatureCollection'
+    assert geo_layers.get('layers', {}).get('heatmap', {}).get('type') == 'heatmap'
     categories = geo_layers.get('categories') or []
     assert categories
     assert categories[0].get('categoria') == 'seguridad'

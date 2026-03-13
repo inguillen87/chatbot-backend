@@ -579,7 +579,8 @@ def test_admin_encuestas_legacy_analytics_and_snapshots(client, monkeypatch, adm
     assert heatmap_data["render_contract"]["module"] == "heatmap"
     assert heatmap_data["render_contract"]["chart_hierarchy"][0] == "echarts"
     assert "category_layers" in metadata
-    assert metadata["category_layers"].get("provider") == "leaflet"
+    assert metadata["category_layers"].get("provider") == "maplibre"
+    assert metadata["category_layers"].get("engine") == "maplibre-gl-js"
     map_filter = metadata["map_filter"]
     assert isinstance(map_filter, dict)
     assert "options" in map_filter

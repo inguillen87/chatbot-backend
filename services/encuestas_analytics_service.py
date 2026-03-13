@@ -398,15 +398,28 @@ def _build_category_heatmap_layers(points: Sequence[Dict[str, Any]]) -> Dict[str
         bucket["points"].append({"lat": float(lat), "lng": float(lng), "weight": round(max(weight, 0.0), 4)})
 
     ranked = sorted(grouped.items(), key=lambda item: item[1]["weight"], reverse=True)
+    feature_collection: Dict[str, Any] = {"type": "FeatureCollection", "features": []}
+    for name, data in ranked:
+        for point in data.get("points") or []:
+            feature_collection["features"].append(
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": [point["lng"], point["lat"]]},
+                    "properties": {
+                        "categoria": name,
+                        "weight": point.get("weight", 1.0),
+                    },
+                }
+            )
+
     if not ranked:
         return {
-            "provider": "leaflet",
-            "tiles": {
-                "url": "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
-                "attribution": "© OpenStreetMap contributors",
-            },
+            "provider": "maplibre",
+            "engine": "maplibre-gl-js",
+            "style_url": "https://demotiles.maplibre.org/style.json",
             "categories": [],
             "legend": {"mode": "category_weight", "min_weight": 0, "max_weight": 0},
+            "source": feature_collection,
         }
 
     max_weight = max(float(item[1]["weight"]) for item in ranked) or 1.0
@@ -424,10 +437,15 @@ def _build_category_heatmap_layers(points: Sequence[Dict[str, Any]]) -> Dict[str
         )
 
     return {
-        "provider": "leaflet",
-        "tiles": {
-            "url": "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
-            "attribution": "© OpenStreetMap contributors",
+        "provider": "maplibre",
+        "engine": "maplibre-gl-js",
+        "style_url": "https://demotiles.maplibre.org/style.json",
+        "source": feature_collection,
+        "source_options": {"cluster": True, "clusterRadius": 45, "clusterMaxZoom": 14},
+        "layers": {
+            "heatmap": {"id": "encuestas-heat", "type": "heatmap", "source": "encuestas"},
+            "clusters": {"id": "encuestas-clusters", "type": "circle", "source": "encuestas", "filter": ["has", "point_count"]},
+            "points": {"id": "encuestas-points", "type": "circle", "source": "encuestas", "filter": ["!", ["has", "point_count"]]},
         },
         "categories": categories,
         "legend": {"mode": "category_weight", "min_weight": 0, "max_weight": round(max_weight, 4)},

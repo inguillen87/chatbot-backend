@@ -354,15 +354,62 @@ def _build_leaflet_heatmap_layers(events: list[dict[str, Any]]) -> dict[str, Any
         bucket["points"].append({"lat": lat, "lng": lng, "weight": round(weight, 4)})
 
     ranked = sorted(by_category.items(), key=lambda item: item[1]["weight"], reverse=True)
+    feature_collection = {"type": "FeatureCollection", "features": []}
+    min_ts: datetime | None = None
+    max_ts: datetime | None = None
+
+    for event in events:
+        md = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
+        lat = event.get("lat")
+        lng = event.get("lng")
+        if lat is None:
+            lat = md.get("lat") if md.get("lat") is not None else md.get("latitude")
+        if lng is None:
+            lng = md.get("lng") if md.get("lng") is not None else md.get("lon")
+        if lng is None:
+            lng = md.get("longitude")
+        try:
+            lat = float(lat)
+            lng = float(lng)
+        except (TypeError, ValueError):
+            continue
+        ts = event.get("ts")
+        labels = _event_segment_labels(event)
+        weight = _extract_vote_weight(md)
+        if isinstance(ts, datetime):
+            min_ts = ts if min_ts is None else min(min_ts, ts)
+            max_ts = ts if max_ts is None else max(max_ts, ts)
+            ts_value = int(ts.timestamp())
+        else:
+            ts_value = None
+        feature_collection["features"].append(
+            {
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [lng, lat]},
+                "properties": {
+                    "categoria": labels.get("categoria", "sin_dato"),
+                    "barrio": labels.get("barrio", "sin_dato"),
+                    "distrito": labels.get("distrito", "sin_dato"),
+                    "canal": labels.get("canal", "sin_dato"),
+                    "weight": round(weight, 4),
+                    "ts": ts_value,
+                },
+            }
+        )
+
     if not ranked:
         return {
-            "provider": "leaflet",
-            "tiles": {
-                "url": "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
-                "attribution": "© OpenStreetMap contributors",
-            },
+            "provider": "maplibre",
+            "engine": "maplibre-gl-js",
+            "style_url": "https://demotiles.maplibre.org/style.json",
             "categories": [],
             "legend": {"mode": "category_weight", "min_weight": 0, "max_weight": 0},
+            "source": feature_collection,
+            "interactions": {
+                "hover": True,
+                "clusters": {"enabled": True, "max_zoom": 14, "radius": 45},
+                "time_slider": {"enabled": False, "field": "ts"},
+            },
         }
 
     max_weight = max(item[1]["weight"] for item in ranked) or 1.0
@@ -382,16 +429,52 @@ def _build_leaflet_heatmap_layers(events: list[dict[str, Any]]) -> dict[str, Any
         )
 
     return {
-        "provider": "leaflet",
-        "tiles": {
-            "url": "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
-            "attribution": "© OpenStreetMap contributors",
+        "provider": "maplibre",
+        "engine": "maplibre-gl-js",
+        "style_url": "https://demotiles.maplibre.org/style.json",
+        "source": feature_collection,
+        "source_options": {
+            "cluster": True,
+            "clusterMaxZoom": 14,
+            "clusterRadius": 45,
+        },
+        "layers": {
+            "heatmap": {
+                "id": "events-heat",
+                "source": "events",
+                "type": "heatmap",
+                "weight_field": "weight",
+            },
+            "clusters": {
+                "id": "events-clusters",
+                "source": "events",
+                "type": "circle",
+                "filter": ["has", "point_count"],
+            },
+            "points": {
+                "id": "events-points",
+                "source": "events",
+                "type": "circle",
+                "filter": ["!", ["has", "point_count"]],
+                "color_by": "categoria",
+            },
         },
         "categories": categories,
         "legend": {
             "mode": "category_weight",
             "min_weight": 0,
             "max_weight": round(max_weight, 4),
+        },
+        "interactions": {
+            "hover": True,
+            "clusters": {"enabled": True, "max_zoom": 14, "radius": 45},
+            "time_slider": {
+                "enabled": bool(min_ts and max_ts and min_ts != max_ts),
+                "field": "ts",
+                "from": min_ts.isoformat() if min_ts else None,
+                "to": max_ts.isoformat() if max_ts else None,
+                "step_minutes": 15,
+            },
         },
     }
 
