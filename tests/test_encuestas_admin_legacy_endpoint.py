@@ -578,6 +578,8 @@ def test_admin_encuestas_legacy_analytics_and_snapshots(client, monkeypatch, adm
     assert "filter_keys" in heatmap_layer
     assert heatmap_data["render_contract"]["module"] == "heatmap"
     assert heatmap_data["render_contract"]["chart_hierarchy"][0] == "echarts"
+    assert "category_layers" in metadata
+    assert metadata["category_layers"].get("provider") == "leaflet"
     map_filter = metadata["map_filter"]
     assert isinstance(map_filter, dict)
     assert "options" in map_filter
@@ -593,6 +595,14 @@ def test_admin_encuestas_legacy_analytics_and_snapshots(client, monkeypatch, adm
     assert snapshots_data["snapshots"]
     snapshot = snapshots_data["snapshots"][0]
     assert snapshot["total_respuestas"] >= 1
+
+    export_pdf_resp = client.get(f"/admin/encuestas/{encuesta_id}/analytics/export.pdf", headers=headers)
+    assert export_pdf_resp.status_code == 200
+    assert export_pdf_resp.mimetype == "application/pdf"
+    export_pdf_text = export_pdf_resp.data.decode("latin-1", errors="ignore")
+    assert "Reporte analytics encuestas" in export_pdf_text
+    assert r"Categorias \(estadisticas\):" in export_pdf_text
+    assert "Analisis IA:" in export_pdf_text
 
 
 def test_admin_encuestas_permite_actualizar_publicada_sin_respuestas(client, monkeypatch, admin_user):
