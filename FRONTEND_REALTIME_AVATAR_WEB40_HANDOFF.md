@@ -229,6 +229,56 @@ UX sugerida:
 - Mapa de calor en tiempo real con filtro por canal/segmento
 
 
+### Contrato heatmap/segmentación para frontend (actualizado)
+Para que frontend muestre **categorías, edades y género** en mapas/estadísticas, usar `GET /admin/analytics/heatmap` y leer:
+
+- `segments.categoria[]`
+- `segments.rango_edad[]`
+- `segments.sexo[]`
+- `segments.barrio[]`, `segments.distrito[]`, `segments.canal[]`
+- `segments_filters_applied` (eco de filtros activos)
+- `geo_layers` (capas Leaflet + OSM con color por categoría e intensidad por votos/peso)
+
+Filtros soportados en query params:
+- `categoria` o `categorias`
+- `sexo` o `genero`
+- `rango_edad`, `barrio`, `distrito`, `canal`
+
+Payload esperado (resumen):
+```json
+{
+  "geo_layers": {
+    "provider": "leaflet",
+    "tiles": {
+      "url": "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+      "attribution": "© OpenStreetMap contributors"
+    },
+    "categories": [
+      {
+        "categoria": "seguridad",
+        "color": "#EF4444",
+        "event_count": 12,
+        "total_weight": 46,
+        "intensity": 1.0,
+        "points": [{"lat": -34.60, "lng": -58.38, "weight": 8}]
+      }
+    ],
+    "legend": {"mode": "category_weight", "min_weight": 0, "max_weight": 46}
+  },
+  "segments": {
+    "categoria": [{"label": "seguridad", "count": 12}],
+    "sexo": [{"label": "f", "count": 7}],
+    "rango_edad": [{"label": "25-34", "count": 5}]
+  }
+}
+```
+
+Notas de integración:
+- Usar `segments` para barras/tortas/filtros de demografía.
+- Usar `geo_layers.categories[].color` para leyenda fija por categoría en mapa.
+- `total_weight` refleja volumen de votos/score (`votos`, `cantidad_votos`, `vote_count`, `puntaje`, etc.).
+
+
 ## G. Troubleshooting rápido (producción)
 - Si el navegador muestra `socket.io websocket error` o `GET /api/socket.io ... 400`, forzar fallback de frontend a `polling` usando `socket_transport_hint` del endpoint de schedule (`/api/live-chat/schedule`).
 - Si `POST /api/ask/pyme` retorna `409`, mostrar mensaje UX claro de conflicto de sesión/flujo y ofrecer botón de reintentar con nueva sesión.

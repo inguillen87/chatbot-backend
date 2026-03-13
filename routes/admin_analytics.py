@@ -24,6 +24,16 @@ admin_analytics_bp = Blueprint("admin_analytics", __name__, url_prefix="/admin/a
 _DASHBOARD_CACHE: dict[str, dict[str, Any]] = {}
 _DASHBOARD_CACHE_TTL_SECONDS = 20.0
 _ANALYTICS_HUB_CONTRACT_VERSION = "2026-analytics-hub-v2"
+_HEATMAP_CATEGORY_COLORS = [
+    "#EF4444",
+    "#F97316",
+    "#EAB308",
+    "#22C55E",
+    "#06B6D4",
+    "#3B82F6",
+    "#8B5CF6",
+    "#EC4899",
+]
 
 
 def _json(payload: dict, status: int = 200):
@@ -261,6 +271,95 @@ def _build_hotspots(events: list[dict[str, Any]], limit: int = 10) -> list[dict[
     return ranked
 
 
+def _extract_vote_weight(metadata: dict[str, Any]) -> float:
+    candidates = (
+        metadata.get("votos"),
+        metadata.get("cantidad_votos"),
+        metadata.get("vote_count"),
+        metadata.get("peso"),
+        metadata.get("weight"),
+        metadata.get("score"),
+        metadata.get("puntaje"),
+        metadata.get("valor"),
+        metadata.get("total"),
+    )
+    for candidate in candidates:
+        try:
+            parsed = float(candidate)
+        except (TypeError, ValueError):
+            continue
+        if parsed > 0:
+            return parsed
+    return 1.0
+
+
+def _build_leaflet_heatmap_layers(events: list[dict[str, Any]]) -> dict[str, Any]:
+    by_category: dict[str, dict[str, Any]] = {}
+
+    for event in events:
+        md = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
+        lat = md.get("lat") if md.get("lat") is not None else md.get("latitude")
+        lng = md.get("lng") if md.get("lng") is not None else md.get("lon")
+        if lng is None:
+            lng = md.get("longitude")
+        try:
+            lat = float(lat)
+            lng = float(lng)
+        except (TypeError, ValueError):
+            continue
+
+        labels = _event_segment_labels(event)
+        categoria = labels.get("categoria", "sin_dato")
+        weight = _extract_vote_weight(md)
+
+        bucket = by_category.setdefault(categoria, {"count": 0, "weight": 0.0, "points": []})
+        bucket["count"] += 1
+        bucket["weight"] += weight
+        bucket["points"].append({"lat": lat, "lng": lng, "weight": round(weight, 4)})
+
+    ranked = sorted(by_category.items(), key=lambda item: item[1]["weight"], reverse=True)
+    if not ranked:
+        return {
+            "provider": "leaflet",
+            "tiles": {
+                "url": "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+                "attribution": "© OpenStreetMap contributors",
+            },
+            "categories": [],
+            "legend": {"mode": "category_weight", "min_weight": 0, "max_weight": 0},
+        }
+
+    max_weight = max(item[1]["weight"] for item in ranked) or 1.0
+    categories = []
+    for index, (categoria, payload) in enumerate(ranked):
+        color = _HEATMAP_CATEGORY_COLORS[index % len(_HEATMAP_CATEGORY_COLORS)]
+        normalized = round(float(payload["weight"]) / max_weight, 4)
+        categories.append(
+            {
+                "categoria": categoria,
+                "color": color,
+                "event_count": int(payload["count"]),
+                "total_weight": round(float(payload["weight"]), 4),
+                "intensity": normalized,
+                "points": payload["points"],
+            }
+        )
+
+    return {
+        "provider": "leaflet",
+        "tiles": {
+            "url": "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+            "attribution": "© OpenStreetMap contributors",
+        },
+        "categories": categories,
+        "legend": {
+            "mode": "category_weight",
+            "min_weight": 0,
+            "max_weight": round(max_weight, 4),
+        },
+    }
+
+
 def _dashboard_response(filters):
     cache_key = _dashboard_cache_key(filters)
     now = time.time()
@@ -369,6 +468,7 @@ def admin_analytics_heatmap():
 
     return _json({
         "geo": base,
+        "geo_layers": _build_leaflet_heatmap_layers(filtered_events),
         "temporal": temporal,
         "segments": _aggregate_heatmap_segments(filtered_events),
         "segments_filters_applied": {k: sorted(v) for k, v in segment_filters.items()},

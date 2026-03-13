@@ -531,6 +531,99 @@ def test_admin_analytics_heatmap_applies_segment_filters(client):
     categorias = data.get('segments', {}).get('categoria') or []
     assert categorias and categorias[0]['label'] == 'alumbrado'
 
+
+def test_admin_analytics_heatmap_includes_leaflet_layers_with_category_colors(client):
+    tenant_id = 213
+    now = datetime.utcnow()
+    db.session.add(
+        AnalyticsEventV2(
+            tenant_id=tenant_id,
+            event_name='encuesta_voto',
+            tenant_type='municipio',
+            channel='web_widget',
+            ts=now,
+            metadata_payload={
+                'categoria': 'seguridad',
+                'lat': -34.6037,
+                'lng': -58.3816,
+                'votos': 8,
+            },
+        )
+    )
+    db.session.add(
+        AnalyticsEventV2(
+            tenant_id=tenant_id,
+            event_name='encuesta_voto',
+            tenant_type='municipio',
+            channel='web_widget',
+            ts=now,
+            metadata_payload={
+                'categoria': 'transito',
+                'lat': -34.6118,
+                'lng': -58.4173,
+                'votos': 3,
+            },
+        )
+    )
+    db.session.commit()
+
+    response = client.get(
+        '/admin/analytics/heatmap',
+        query_string={'tenant_id': tenant_id, 'scope': 'municipio'},
+        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
+    )
+    assert response.status_code == 200
+    data = response.get_json()
+    geo_layers = data.get('geo_layers') or {}
+    assert geo_layers.get('provider') == 'leaflet'
+    categories = geo_layers.get('categories') or []
+    assert categories
+    assert categories[0].get('categoria') == 'seguridad'
+    assert categories[0].get('color')
+    assert categories[0].get('total_weight') == 8
+    assert categories[0].get('points')
+    assert geo_layers.get('legend', {}).get('max_weight') == 8
+
+
+
+def test_admin_analytics_heatmap_supports_genero_alias_and_age_bucket(client):
+    tenant_id = 214
+    now = datetime.utcnow()
+    db.session.add(
+        AnalyticsEventV2(
+            tenant_id=tenant_id,
+            event_name='encuesta_voto',
+            tenant_type='municipio',
+            channel='web_widget',
+            ts=now,
+            metadata_payload={
+                'categoria': 'salud',
+                'barrio': 'centro',
+                'distrito': 'norte',
+                'genero': 'f',
+                'edad': 22,
+                'lat': -34.60,
+                'lng': -58.39,
+                'votos': 5,
+            },
+        )
+    )
+    db.session.commit()
+
+    response = client.get(
+        '/admin/analytics/heatmap',
+        query_string={'tenant_id': tenant_id, 'scope': 'municipio', 'genero': 'f'},
+        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
+    )
+    assert response.status_code == 200
+    data = response.get_json()
+    filters_applied = data.get('segments_filters_applied') or {}
+    assert filters_applied.get('sexo') == ['f']
+
+    segments = data.get('segments') or {}
+    assert (segments.get('sexo') or [])[0]['label'] == 'f'
+    assert (segments.get('rango_edad') or [])[0]['label'] == '18-24'
+
 def test_api_alias_admin_analytics_overview_and_heatmap(client):
     tenant_id = 12
     _create_municipio_ticket(tenant_id)
