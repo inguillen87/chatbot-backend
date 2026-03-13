@@ -1,4 +1,6 @@
-from flask import Blueprint, request, jsonify
+from functools import wraps
+
+from flask import Blueprint, current_app, request, jsonify
 from flask_login import login_required, current_user
 from datetime import datetime, timedelta
 from services.analytics_service import analytics_service
@@ -7,6 +9,18 @@ from models import TenantProfile
 from extensions import limiter
 
 analytics_v2_bp = Blueprint('analytics_v2_bp', __name__, url_prefix='/api/analytics')
+
+
+def api_login_required(fn):
+    """API-safe auth guard that returns JSON 401 instead of HTML redirects."""
+
+    @wraps(fn)
+    def _wrapped(*args, **kwargs):
+        if not getattr(current_user, "is_authenticated", False):
+            return jsonify({"error": "Unauthorized", "code": "auth_required"}), 401
+        return fn(*args, **kwargs)
+
+    return _wrapped
 
 def _get_date_range():
     # Helper to parse dates
@@ -274,7 +288,7 @@ def get_funnel():
         return jsonify({"error": str(e)}), 500
 
 @analytics_v2_bp.route('/report/latest', methods=['GET'])
-@login_required
+@api_login_required
 def get_latest_report():
     """
     Returns the most recent valid cached report without triggering generation.
@@ -300,7 +314,7 @@ def get_latest_report():
     return jsonify({"error": "No cached report found", "code": 404}), 404
 
 @analytics_v2_bp.route('/report/generate', methods=['POST'])
-@login_required
+@api_login_required
 @limiter.limit("1 per hour", key_func=lambda: str(current_user.id))
 def trigger_generate_report():
     """
@@ -312,7 +326,7 @@ def trigger_generate_report():
     return generate_report()
 
 @analytics_v2_bp.route('/generate-report', methods=['POST'])
-@login_required
+@api_login_required
 @limiter.limit("1 per hour", key_func=lambda: str(current_user.id))
 def generate_report():
     data = request.get_json()
