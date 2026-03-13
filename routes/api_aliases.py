@@ -6,7 +6,9 @@ paths while the canonical blueprints live under non-/api prefixes (e.g.,
 behavior remain consistent with the original endpoints.
 """
 
-from flask import Blueprint, abort, current_app, jsonify, request
+import uuid
+
+from flask import Blueprint, abort, current_app, jsonify, make_response, request
 from flask_cors import cross_origin
 
 from routes.admin_ai import get_bot_settings, update_bot_settings
@@ -162,11 +164,12 @@ def auth_login_alias():
 
 @api_aliases_bp.route("/auth/demo/catalog", methods=["GET", "OPTIONS"], strict_slashes=False)
 def auth_demo_catalog_alias():
+    request_id = request.headers.get("X-Request-Id") or uuid.uuid4().hex
     try:
-        return demo_catalog()
+        response = demo_catalog()
     except Exception as exc:  # pragma: no cover - defensive fallback
         current_app.logger.warning("[api_aliases] /auth/demo/catalog alias degraded: %s", exc)
-        return jsonify(
+        response = jsonify(
             {
                 "demo_login_enabled": False,
                 "demo_login_endpoint": "/auth/demo",
@@ -177,8 +180,13 @@ def auth_demo_catalog_alias():
                 "tenant_demos": [],
                 "supported_languages": [],
                 "reason_code": "demo_catalog_unavailable",
+                "request_id": request_id,
             }
         ), 200
+
+    flask_response = make_response(response)
+    flask_response.headers.setdefault("X-Request-Id", request_id)
+    return flask_response
 
 
 @api_aliases_bp.route("/auth/demo", methods=["POST", "OPTIONS"], strict_slashes=False)
