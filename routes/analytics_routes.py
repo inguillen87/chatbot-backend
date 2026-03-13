@@ -1,12 +1,36 @@
-from flask import Blueprint, request, jsonify
-from flask_login import login_required, current_user
+from functools import wraps
+
+from flask import Blueprint, current_app, request, jsonify
+from flask_login import current_user, login_user
 from datetime import datetime, timedelta
 from services.analytics_service import analytics_service
 from services.openai_bridge import generate_analytics_report, analyze_sentiment
 from models import TenantProfile
 from extensions import limiter
+from utils.auth_helpers import obtener_token, user_from_token
 
 analytics_v2_bp = Blueprint('analytics_v2_bp', __name__, url_prefix='/api/analytics')
+
+
+def api_login_required(fn):
+    """API-safe auth guard that returns JSON 401 instead of HTML redirects."""
+
+    @wraps(fn)
+    def _wrapped(*args, **kwargs):
+        if not getattr(current_user, "is_authenticated", False):
+            token = obtener_token()
+            if token:
+                user = user_from_token(token)
+                if user is not None:
+                    try:
+                        login_user(user, remember=False, force=True)
+                    except Exception:
+                        current_app.logger.debug("[analytics_v2] token login fallback failed", exc_info=True)
+        if not getattr(current_user, "is_authenticated", False):
+            return jsonify({"error": "Unauthorized", "code": "auth_required"}), 401
+        return fn(*args, **kwargs)
+
+    return _wrapped
 
 def _get_date_range():
     # Helper to parse dates
@@ -35,7 +59,7 @@ def _get_date_range():
     return start_date, end_date
 
 @analytics_v2_bp.route('/summary', methods=['GET'])
-@login_required
+@api_login_required
 def get_summary():
     # Verify tenant access
     tenant_id = request.args.get('tenant_id')
@@ -72,7 +96,7 @@ def get_summary():
         return jsonify({"error": str(e)}), 500
 
 @analytics_v2_bp.route('/heatmap', methods=['GET'])
-@login_required
+@api_login_required
 def get_heatmap():
     tenant_id = request.args.get('tenant_id')
     if not tenant_id:
@@ -101,7 +125,7 @@ def get_heatmap():
         return jsonify({"error": str(e)}), 500
 
 @analytics_v2_bp.route('/surveys/summary', methods=['GET'])
-@login_required
+@api_login_required
 def get_survey_summary():
     tenant_id = request.args.get('tenant_id')
     if not tenant_id:
@@ -121,7 +145,7 @@ def get_survey_summary():
         return jsonify({"error": str(e)}), 500
 
 @analytics_v2_bp.route('/surveys/sentiment', methods=['GET'])
-@login_required
+@api_login_required
 def get_survey_sentiment():
     tenant_id = request.args.get('tenant_id')
     if not tenant_id:
@@ -156,7 +180,7 @@ def get_survey_sentiment():
         return jsonify({"error": str(e)}), 500
 
 @analytics_v2_bp.route('/surveys/geo', methods=['GET'])
-@login_required
+@api_login_required
 def get_survey_geo():
     tenant_id = request.args.get('tenant_id')
     if not tenant_id:
@@ -176,7 +200,7 @@ def get_survey_geo():
         return jsonify({"error": str(e)}), 500
 
 @analytics_v2_bp.route('/insights', methods=['GET'])
-@login_required
+@api_login_required
 def get_insights():
     tenant_id = request.args.get('tenant_id')
     if not tenant_id:
@@ -196,7 +220,7 @@ def get_insights():
         return jsonify({"error": str(e)}), 500
 
 @analytics_v2_bp.route('/sales', methods=['GET'])
-@login_required
+@api_login_required
 def get_sales_analytics():
     tenant_id = request.args.get('tenant_id')
     if not tenant_id:
@@ -222,7 +246,7 @@ def get_sales_analytics():
         return jsonify({"error": str(e)}), 500
 
 @analytics_v2_bp.route('/benchmarks', methods=['GET'])
-@login_required
+@api_login_required
 def get_benchmarks():
     tenant_id = request.args.get('tenant_id')
     if not tenant_id:
@@ -248,7 +272,7 @@ def get_benchmarks():
         return jsonify({"error": str(e)}), 500
 
 @analytics_v2_bp.route('/funnel', methods=['GET'])
-@login_required
+@api_login_required
 def get_funnel():
     tenant_id = request.args.get('tenant_id')
     if not tenant_id:
@@ -274,7 +298,7 @@ def get_funnel():
         return jsonify({"error": str(e)}), 500
 
 @analytics_v2_bp.route('/report/latest', methods=['GET'])
-@login_required
+@api_login_required
 def get_latest_report():
     """
     Returns the most recent valid cached report without triggering generation.
@@ -300,7 +324,7 @@ def get_latest_report():
     return jsonify({"error": "No cached report found", "code": 404}), 404
 
 @analytics_v2_bp.route('/report/generate', methods=['POST'])
-@login_required
+@api_login_required
 @limiter.limit("1 per hour", key_func=lambda: str(current_user.id))
 def trigger_generate_report():
     """
@@ -312,7 +336,7 @@ def trigger_generate_report():
     return generate_report()
 
 @analytics_v2_bp.route('/generate-report', methods=['POST'])
-@login_required
+@api_login_required
 @limiter.limit("1 per hour", key_func=lambda: str(current_user.id))
 def generate_report():
     data = request.get_json()

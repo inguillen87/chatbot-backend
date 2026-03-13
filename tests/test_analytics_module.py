@@ -14,6 +14,9 @@ from models import (
     TicketComentario,
     TicketSatisfaccion,
     User,
+    EncComentario,
+    EncEncuesta,
+    EncRespuesta,
 )
 
 
@@ -405,6 +408,10 @@ def test_admin_analytics_overview_and_exports_are_tenant_scoped(client):
     )
     assert pdf_export.status_code == 200
     assert pdf_export.mimetype == 'application/pdf'
+    pdf_text = pdf_export.data.decode('latin-1', errors='ignore')
+    assert 'Reporte de analytics' in pdf_text
+    assert 'Segmentacion principal' in pdf_text
+    assert 'Hotspots' in pdf_text
 
     forbidden = client.get(
         '/admin/analytics/overview',
@@ -436,6 +443,11 @@ def test_admin_analytics_heatmap_returns_temporal_matrix(client):
     data = response.get_json()
     assert data['tz'] == 'America/Argentina/Cordoba'
     assert isinstance(data['temporal'], list)
+    assert 'segments' in data
+    assert 'categoria' in data['segments']
+    assert 'rango_edad' in data['segments']
+    assert 'period_comparison' in data
+    assert 'hotspots' in data
 
 
 def test_admin_analytics_heatmap_rejects_non_numeric_tenant_id(client):
@@ -446,6 +458,211 @@ def test_admin_analytics_heatmap_rejects_non_numeric_tenant_id(client):
     )
     assert response.status_code == 400
 
+
+
+
+def test_admin_analytics_heatmap_segments_from_event_metadata(client):
+    tenant_id = 211
+    now = datetime.utcnow()
+    db.session.add(
+        AnalyticsEventV2(
+            tenant_id=tenant_id,
+            event_name='ticket_created',
+            tenant_type='municipio',
+            channel='web_widget',
+            ts=now,
+            metadata_payload={
+                'categoria': 'alumbrado',
+                'barrio': 'centro',
+                'distrito': 'norte',
+                'sexo': 'f',
+                'edad': 31,
+            },
+        )
+    )
+    db.session.commit()
+
+    response = client.get(
+        '/admin/analytics/heatmap',
+        query_string={'tenant_id': tenant_id, 'scope': 'municipio'},
+        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
+    )
+    assert response.status_code == 200
+    data = response.get_json()
+    segments = data.get('segments') or {}
+    assert (segments.get('categoria') or [])[0]['label'] == 'alumbrado'
+    assert (segments.get('barrio') or [])[0]['label'] == 'centro'
+    assert (segments.get('distrito') or [])[0]['label'] == 'norte'
+    assert (segments.get('sexo') or [])[0]['label'] == 'f'
+
+
+
+def test_admin_analytics_heatmap_applies_segment_filters(client):
+    tenant_id = 212
+    now = datetime.utcnow()
+    db.session.add(
+        AnalyticsEventV2(
+            tenant_id=tenant_id,
+            event_name='ticket_created',
+            tenant_type='municipio',
+            channel='web_widget',
+            ts=now - timedelta(minutes=10),
+            metadata_payload={'categoria': 'alumbrado', 'barrio': 'centro', 'distrito': 'norte', 'sexo': 'f', 'edad': 31},
+        )
+    )
+    db.session.add(
+        AnalyticsEventV2(
+            tenant_id=tenant_id,
+            event_name='ticket_created',
+            tenant_type='municipio',
+            channel='whatsapp',
+            ts=now,
+            metadata_payload={'categoria': 'limpieza', 'barrio': 'sur', 'distrito': 'sur', 'sexo': 'm', 'edad': 52},
+        )
+    )
+    db.session.commit()
+
+    response = client.get(
+        '/admin/analytics/heatmap',
+        query_string={'tenant_id': tenant_id, 'scope': 'municipio', 'categoria': 'alumbrado', 'sexo': 'f'},
+        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
+    )
+    assert response.status_code == 200
+    data = response.get_json()
+    filters_applied = data.get('segments_filters_applied') or {}
+    assert filters_applied.get('categoria') == ['alumbrado']
+    assert filters_applied.get('sexo') == ['f']
+    categorias = data.get('segments', {}).get('categoria') or []
+    assert categorias and categorias[0]['label'] == 'alumbrado'
+
+
+def test_admin_analytics_heatmap_includes_leaflet_layers_with_category_colors(client):
+    tenant_id = 213
+    now = datetime.utcnow()
+    db.session.add(
+        AnalyticsEventV2(
+            tenant_id=tenant_id,
+            event_name='encuesta_voto',
+            tenant_type='municipio',
+            channel='web_widget',
+            ts=now,
+            metadata_payload={
+                'categoria': 'seguridad',
+                'lat': -34.6037,
+                'lng': -58.3816,
+                'votos': 8,
+            },
+        )
+    )
+    db.session.add(
+        AnalyticsEventV2(
+            tenant_id=tenant_id,
+            event_name='encuesta_voto',
+            tenant_type='municipio',
+            channel='web_widget',
+            ts=now,
+            metadata_payload={
+                'categoria': 'transito',
+                'lat': -34.6118,
+                'lng': -58.4173,
+                'votos': 3,
+            },
+        )
+    )
+    db.session.commit()
+
+    response = client.get(
+        '/admin/analytics/heatmap',
+        query_string={'tenant_id': tenant_id, 'scope': 'municipio'},
+        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
+    )
+    assert response.status_code == 200
+    data = response.get_json()
+    geo_layers = data.get('geo_layers') or {}
+    assert geo_layers.get('provider') == 'leaflet'
+    categories = geo_layers.get('categories') or []
+    assert categories
+    assert categories[0].get('categoria') == 'seguridad'
+    assert categories[0].get('color')
+    assert categories[0].get('total_weight') == 8
+    assert categories[0].get('points')
+    assert geo_layers.get('legend', {}).get('max_weight') == 8
+
+
+def test_admin_analytics_heatmap_uses_persisted_lat_lng_for_geo_layers(client):
+    tenant_id = 215
+    now = datetime.utcnow()
+    db.session.add(
+        AnalyticsEventV2(
+            tenant_id=tenant_id,
+            event_name='ticket_created',
+            tenant_type='municipio',
+            channel='web_widget',
+            ts=now,
+            lat=-34.6037,
+            lng=-58.3816,
+            metadata_payload={
+                'categoria': 'seguridad',
+                'barrio': 'centro',
+                'distrito': 'norte',
+            },
+        )
+    )
+    db.session.commit()
+
+    response = client.get(
+        '/admin/analytics/heatmap',
+        query_string={'tenant_id': tenant_id, 'scope': 'municipio'},
+        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
+    )
+    assert response.status_code == 200
+    data = response.get_json()
+    categories = ((data.get('geo_layers') or {}).get('categories') or [])
+    assert categories
+    first_points = categories[0].get('points') or []
+    assert first_points
+    assert first_points[0]['lat'] == -34.6037
+    assert first_points[0]['lng'] == -58.3816
+
+
+
+def test_admin_analytics_heatmap_supports_genero_alias_and_age_bucket(client):
+    tenant_id = 214
+    now = datetime.utcnow()
+    db.session.add(
+        AnalyticsEventV2(
+            tenant_id=tenant_id,
+            event_name='encuesta_voto',
+            tenant_type='municipio',
+            channel='web_widget',
+            ts=now,
+            metadata_payload={
+                'categoria': 'salud',
+                'barrio': 'centro',
+                'distrito': 'norte',
+                'genero': 'f',
+                'edad': 22,
+                'lat': -34.60,
+                'lng': -58.39,
+                'votos': 5,
+            },
+        )
+    )
+    db.session.commit()
+
+    response = client.get(
+        '/admin/analytics/heatmap',
+        query_string={'tenant_id': tenant_id, 'scope': 'municipio', 'genero': 'f'},
+        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
+    )
+    assert response.status_code == 200
+    data = response.get_json()
+    filters_applied = data.get('segments_filters_applied') or {}
+    assert filters_applied.get('sexo') == ['f']
+
+    segments = data.get('segments') or {}
+    assert (segments.get('sexo') or [])[0]['label'] == 'f'
+    assert (segments.get('rango_edad') or [])[0]['label'] == '18-24'
 
 def test_api_alias_admin_analytics_overview_and_heatmap(client):
     tenant_id = 12
@@ -499,6 +716,62 @@ def test_api_alias_admin_analytics_overview_accepts_tenant_slug(client):
     assert overview.status_code == 200
     assert 'totals' in overview.get_json()
 
+
+
+
+def test_admin_analytics_realtime_hub_includes_surveys_and_geo(client):
+    tenant_id = 333
+    now = datetime.utcnow()
+    db.session.add(
+        AnalyticsEventV2(
+            tenant_id=tenant_id,
+            event_name='realtime_business_action_executed',
+            tenant_type='municipio',
+            channel='realtime_voice',
+            ts=now,
+            lat=-34.61,
+            lng=-58.38,
+            metadata_payload={'categoria': 'alumbrado', 'barrio': 'centro', 'distrito': 'norte', 'sentiment': 'positive'},
+        )
+    )
+    encuesta = EncEncuesta(
+        tenant_id=tenant_id,
+        slug=f"encuesta-{tenant_id}",
+        titulo='Sondeo Express',
+        estado='publicada',
+    )
+    db.session.add(encuesta)
+    db.session.flush()
+
+    db.session.add(
+        EncRespuesta(
+            encuesta_id=encuesta.id,
+            tenant_id=tenant_id,
+            huella_unica=f"fingerprint-{tenant_id}",
+            canal='web',
+        )
+    )
+    db.session.add(
+        EncComentario(
+            encuesta_id=encuesta.id,
+            texto='Muy buena atención',
+            anon_id='anon-test',
+        )
+    )
+    db.session.commit()
+
+    response = client.get(
+        '/admin/analytics/realtime-hub',
+        query_string={'tenant_id': tenant_id, 'scope': 'municipio', 'window_minutes': 60},
+        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
+    )
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data.get('totals', {}).get('events', 0) >= 1
+    assert data.get('totals', {}).get('survey_responses', 0) >= 1
+    assert data.get('totals', {}).get('survey_comments', 0) >= 1
+    assert isinstance((data.get('geo') or {}).get('points'), list)
+    assert isinstance((data.get('recommendations') or []), list)
 
 def test_admin_analytics_overview_accepts_debug_tenant_without_query_tenant(client):
     tenant_id = 31
@@ -685,3 +958,42 @@ def test_api_alias_analytics_event_honors_feature_gate(client):
     )
 
     assert response.status_code == 404
+
+
+def test_admin_analytics_realtime_hub_accepts_invalid_window_minutes(client):
+    tenant_id = 337
+    _create_municipio_ticket(tenant_id)
+    db.session.commit()
+
+    response = client.get(
+        '/admin/analytics/realtime-hub',
+        query_string={'tenant_id': tenant_id, 'scope': 'municipio', 'window_minutes': 'abc'},
+        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
+    )
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data.get('window_minutes') == 30
+
+
+def test_admin_analytics_realtime_hub_counts_live_chat_comments_by_tenant_ticket(client):
+    tenant_id = 338
+    ticket = _create_municipio_ticket(tenant_id)
+    db.session.flush()
+    db.session.add(
+        TicketComentario(
+            municipio_ticket_id=ticket.id,
+            comentario='Seguimiento realtime',
+            user_id=999999,
+            es_admin=False,
+        )
+    )
+    db.session.commit()
+
+    response = client.get(
+        '/admin/analytics/realtime-hub',
+        query_string={'tenant_id': tenant_id, 'scope': 'municipio', 'window_minutes': 60},
+        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
+    )
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data.get('totals', {}).get('live_chat_comments') >= 1

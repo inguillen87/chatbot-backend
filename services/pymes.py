@@ -2158,7 +2158,10 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
         elif contextual_notes:
             pregunta_str = contextual_notes[0]
         else:
-            pregunta_str = "El usuario compartió información sin texto adicional."
+            if pyme_ctx_actual.get("demo_quick_actions"):
+                pregunta_str = "menu"
+            else:
+                pregunta_str = "Necesito una guía rápida para elegir productos."
 
     mensaje_para_llm = pregunta_str.strip()
     if contextual_notes:
@@ -2314,7 +2317,10 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
         if contextual_notes:
             pregunta_str = contextual_notes[0]
         else:
-            pregunta_str = "El usuario compartió información sin texto adicional."
+            if pyme_ctx_actual.get("demo_quick_actions"):
+                pregunta_str = "menu"
+            else:
+                pregunta_str = "Necesito una guía rápida para elegir productos."
 
     mensaje_para_llm = pregunta_str.strip()
     if contextual_notes:

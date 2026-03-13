@@ -10,7 +10,17 @@ def test_dashboard_bundle_includes_normalized_cards_and_states(monkeypatch):
         "preguntas": [],
     })
     monkeypatch.setattr(svc, "get_timeseries", lambda encuesta_id, granularity="day", filtros=None: [{"fecha": "2026-01-01", "total": 2}])
-    monkeypatch.setattr(svc, "get_heatmap", lambda encuesta_id, filtros=None: {"points": [{"lat": -33.1, "lng": -68.8, "weight": 1}], "metadata": {"map": {"hotspots": []}}})
+    monkeypatch.setattr(
+        svc,
+        "get_heatmap",
+        lambda encuesta_id, filtros=None: {
+            "points": [{"lat": -33.1, "lng": -68.8, "weight": 1}],
+            "metadata": {
+                "map": {"hotspots": []},
+                "category_layers": {"provider": "leaflet", "categories": [{"categoria": "seguridad", "total_weight": 2}]},
+            },
+        },
+    )
     monkeypatch.setattr(svc, "get_forecast", lambda encuesta_id, filtros=None: {"projected_total": 20})
     monkeypatch.setattr(svc, "get_alerts", lambda encuesta_id, filtros=None: {"alerts": [{"id": "a1"}]})
     monkeypatch.setattr(svc, "get_executive_brief", lambda encuesta_id, filtros=None: {"headline": "ok"})
@@ -41,6 +51,11 @@ def test_dashboard_bundle_includes_normalized_cards_and_states(monkeypatch):
     assert "participacion_total" in bundle["kpis_executive"]
     assert bundle["frontend_render_contract"]["hierarchy"]["chart_engines"][0] == "echarts"
     assert bundle["frontend_render_contract"]["modules"]["heatmap"]["state"] == "ready"
+    assert bundle["sections"]["mapas"]["heatmap"]["state"] == "ready"
+    assert "categorias" in bundle["sections"]["estadisticas"]
+    assert "demografia" in bundle["sections"]["estadisticas"]
+    assert "ia" in bundle["sections"]
+    assert bundle["sections"]["mapas"]["heatmap"]["category_layers"]["provider"] == "leaflet"
 
 
 def test_dashboard_bundle_handles_empty_states(monkeypatch):
@@ -71,6 +86,35 @@ def test_dashboard_bundle_handles_empty_states(monkeypatch):
     assert bundle["kpis"]["risk_score"] == 0.0
     assert bundle["frontend_render_contract"]["modules"]["heatmap"]["state"] == "empty"
     assert bundle["admin_template"]["datasets"]["geo_rankings"]["barrio"] == []
+
+
+def test_dashboard_bundle_marks_map_ready_when_only_cells_available(monkeypatch):
+    monkeypatch.setattr(svc, "get_summary", lambda encuesta_id, filtros=None: {
+        "total_respuestas": 3,
+        "participantes_unicos": 3,
+        "tasa_completitud": "100",
+        "demografia": {},
+        "preguntas": [],
+        "canales": [],
+    })
+    monkeypatch.setattr(svc, "get_timeseries", lambda encuesta_id, granularity="day", filtros=None: [])
+    monkeypatch.setattr(
+        svc,
+        "get_heatmap",
+        lambda encuesta_id, filtros=None: {"points": [], "cells": [{"cell_id": "x", "count": 2}], "metadata": {"map": {"hotspots": []}}},
+    )
+    monkeypatch.setattr(svc, "get_forecast", lambda encuesta_id, filtros=None: {"projected_total": 4})
+    monkeypatch.setattr(svc, "get_alerts", lambda encuesta_id, filtros=None: {"alerts": []})
+    monkeypatch.setattr(svc, "get_executive_brief", lambda encuesta_id, filtros=None: {"headline": "ok", "insights": []})
+    monkeypatch.setattr(svc, "get_anomaly_report", lambda encuesta_id, filtros=None: {"risk_score": None})
+    monkeypatch.setattr(svc, "get_segment_compare", lambda encuesta_id, filtros=None, segment_a=None, segment_b=None: {"segment_a": {"stats": {"total_respuestas": 0}}, "segment_b": {"stats": {"total_respuestas": 0}}})
+    monkeypatch.setattr(svc, "_build_latest_responses_preview", lambda encuesta_id, filtros=None, limit=10: [])
+
+    bundle = svc.get_dashboard_bundle(101)
+
+    assert bundle["ui_state"]["map_participation"] == "ready"
+    assert bundle["meta"]["module_state"]["heatmap"] == "ready"
+    assert bundle["sections"]["mapas"]["heatmap"]["state"] == "ready"
 
 
 def test_dashboard_bundle_fast_mode_skips_heavy_modules(monkeypatch):
