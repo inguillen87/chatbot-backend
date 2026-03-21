@@ -32,6 +32,17 @@ Cuando llegue respuesta con:
 renderizar lista/botones y reenviar click como:
 - `action_id` del botón (`demo_select_rubro:<key>`)
 
+### 3.1) Consumir `ux_context` para pintar la UI correcta
+Cada respuesta del chat puede incluir:
+- `ux_context.trusted_owner`
+- `ux_context.owner_tipo_chat`
+- `ux_context.owner_name`
+- `ux_context.should_render_demo_shell`
+
+Regla recomendada:
+- si `trusted_owner=true` y `should_render_demo_shell=false`, renderizar experiencia tenant real y **no** volver a mostrar shell/showroom de demo;
+- si `trusted_owner=false`, sí mantener la experiencia demo pública.
+
 ### 4) Evitar doble init por race conditions
 Si socket + HTTP disparan saludo inicial duplicado:
 - usar flag `initSent` en cliente
@@ -44,6 +55,14 @@ Registrar eventos:
 - `demo_option_clicked` (con `demo_key`)
 - `first_real_question_sent`
 - `lead_cta_clicked`
+
+### 5.1) Telemetría de continuidad tenant
+Registrar además:
+- `tenant_context_restored`
+- `tenant_context_lost`
+- `demo_shell_render_blocked`
+
+Esto ayuda a detectar cuándo el frontend dejó de reenviar `entityToken`, `anon_id` o `pin`.
 
 ## Criterios de aceptación UX
 - Abrir widget en home pública => aparece selector de rubros.
