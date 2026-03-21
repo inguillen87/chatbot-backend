@@ -17,6 +17,8 @@ Consumir `ux_context`:
 - `owner_tipo_chat`
 - `owner_name`
 - `should_render_demo_shell`
+- `recommended_experience.supports_confirmation_cards`
+- `recommended_experience.supports_multimodal_intake`
 
 **Regla de render recomendada**
 - `trusted_owner=true` y `should_render_demo_shell=false` => shell tenant real
@@ -26,6 +28,21 @@ Consumir `ux_context`:
 - `conversation.message.created`
 - `ticket.status.changed`
 - `ticket.assignment.changed`
+
+### Nuevos payloads de confirmación que FE debe usar
+- `data.claim_confirmation`
+- `data.order_confirmation`
+- `data.confirmation_card`
+
+Si cualquiera de esos campos existe, FE debería renderizar una **confirmation card** con resumen, contacto, ubicación/entrega y CTA de confirmar/editar.
+
+### Metadata realtime / voice handoff
+Consumir también:
+- `builder_config.enterprise_iteration.realtime.model`
+- `builder_config.enterprise_iteration.realtime.voice_handoff.enabled`
+- `builder_config.enterprise_iteration.realtime.voice_handoff.supports_whatsapp_followup`
+- `builder_config.enterprise_iteration.realtime.voice_handoff.supports_confirmation_cards`
+- `builder_config.enterprise_iteration.realtime.voice_handoff.preferred_channels`
 
 ### Prioridad operativa de tickets
 Consumir:

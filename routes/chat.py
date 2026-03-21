@@ -29,6 +29,7 @@ from services.logic import (
 from services.live_chat_schedule import build_live_chat_status
 from services.demo_registry import load_demo_rubros, demo_rubro_for_token
 from services.common_utils import validar_email, validar_telefono, formatear_telefono_e164
+from services.contact_intake import missing_contact_fields, resolve_contact_snapshot
 from services.notifications import enviar_notificacion_sms, enviar_notificacion_whatsapp_con_plantilla
 from services.email_service import enviar_email
 from utils.auth_helpers import (
@@ -488,6 +489,22 @@ def _build_widget_ux_context(
         "tenant_slug": tenant_slug,
         "demo_session": bool(demo_session_activa),
         "should_render_demo_shell": bool(demo_session_activa or not trusted_owner),
+        "channel_capabilities": {
+            "supports_audio_input": True,
+            "supports_file_upload": True,
+            "supports_image_input": True,
+            "supports_location_share": True,
+            "supports_realtime": True,
+        },
+        "recommended_experience": {
+            "primary_channel": "widget",
+            "intake_mode": "guided",
+            "supports_rich_claim_intake": owner_tipo_chat == "municipio",
+            "supports_rich_order_intake": owner_tipo_chat == "pyme",
+            "supports_confirmation_cards": True,
+            "supports_multimodal_intake": True,
+            "preferred_handoff_channels": ["widget", "whatsapp", "voice"],
+        },
     }
 
 
@@ -2344,9 +2361,23 @@ def _procesar_chat(
 
         normalize_response_payload(resultado)
 
-        # Si el usuario es anónimo y la acción requiere datos personales, pedirlos
-        if is_anonymous and resultado and resultado.get("accion_backend") in ["crear_reclamo", "iniciar_reclamo"] and not (resultado.get("datos_estructura", {}).get("nombre_usuario_detectado") and resultado.get("datos_estructura", {}).get("telefono_detectado") and resultado.get("datos_estructura", {}).get("email_detectado")):
-            resultado['pedir_info'] = ["nombre", "telefono", "email"]
+        # Si el usuario es anónimo y la acción requiere datos personales, pedir solo los faltantes.
+        if is_anonymous and resultado and resultado.get("accion_backend") in ["crear_reclamo", "iniciar_reclamo"]:
+            datos_estructura = resultado.get("datos_estructura") if isinstance(resultado.get("datos_estructura"), dict) else {}
+            contacto = resolve_contact_snapshot(
+                datos=datos_estructura,
+                profile_name=(chat_context_obj.context_data or {}).get("profile_name") if chat_context_obj and isinstance(chat_context_obj.context_data, dict) else None,
+                anon_id=anon_id,
+            )
+            faltan_contactos = missing_contact_fields(contacto)
+            if faltan_contactos:
+                resultado['pedir_info'] = faltan_contactos
+                if not resultado.get("message_body"):
+                    resultado["message_body"] = (
+                        "Para continuar con tu reclamo, necesito estos datos: "
+                        + ", ".join(faltan_contactos)
+                        + "."
+                    )
 
         # Guardar datos del último mensaje para evitar duplicados
         if chat_context_obj:

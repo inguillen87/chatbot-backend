@@ -154,5 +154,46 @@ class ChatOwnerContextPersistenceTest(unittest.TestCase):
             self.assertNotEqual(second_ux_context.get("owner_resolution_source"), "session_owner_context")
 
 
+    def test_public_widget_claim_response_adds_channel_capabilities_and_only_missing_contacts(self):
+        session_id = "claim-widget-session"
+        headers = {
+            "Origin": "https://chatboc.ar",
+            "X-Chat-Session-Id": session_id,
+        }
+
+        save_resp = self.client.post(
+            "/profile-name",
+            json={"nombre_usuario": "Marcelo"},
+            headers=headers,
+        )
+        self.assertEqual(save_resp.status_code, 200)
+
+        with patch("services.logic.responder_chatboc") as mock_responder:
+            mock_responder.return_value = {
+                "message_body": "Ya tengo casi todo para tu reclamo.",
+                "accion_backend": "crear_reclamo",
+                "datos_estructura": {
+                    "target": "municipio",
+                    "telefono_detectado": "+5492615554444",
+                },
+                "pedir_info": None,
+            }
+
+            response = self.client.post(
+                "/ask/municipio",
+                json={"pregunta": "Quiero reclamar por una luminaria", "token": self.owner.token},
+                headers=headers,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload.get("pedir_info"), ["email"])
+        ux_context = payload.get("ux_context") or {}
+        self.assertEqual(ux_context.get("channel_capabilities", {}).get("supports_realtime"), True)
+        self.assertEqual(ux_context.get("recommended_experience", {}).get("primary_channel"), "widget")
+        self.assertEqual(ux_context.get("recommended_experience", {}).get("supports_confirmation_cards"), True)
+        self.assertEqual(ux_context.get("recommended_experience", {}).get("supports_multimodal_intake"), True)
+
+
 if __name__ == "__main__":
     unittest.main()
