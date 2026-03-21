@@ -345,6 +345,105 @@ def _build_tenant_dashboard_bundle_payload(
     }
 
 
+def _build_tenant_heatmap_summary_payload(tenant: TenantProfile, *, limit_points: int = 1500) -> dict:
+    rows = []
+    for ticket in MunicipioTicket.query.filter_by(tenant_id=tenant.id).all():
+        rows.append({
+            'ticket_type': 'municipio',
+            'ticket_id': ticket.id,
+            'categoria': (ticket.categoria or 'sin_categoria').strip().lower(),
+            'zona': (ticket.distrito or 'sin_zona').strip().lower(),
+            'lat': ticket.latitud,
+            'lon': ticket.longitud,
+            'status': ticket.estado,
+        })
+    for ticket in PymeTicket.query.filter_by(tenant_id=tenant.id).all():
+        rows.append({
+            'ticket_type': 'pyme',
+            'ticket_id': ticket.id,
+            'categoria': (ticket.categoria or 'sin_categoria').strip().lower(),
+            'zona': (getattr(ticket, 'direccion', None) or 'sin_zona').strip().lower(),
+            'lat': ticket.latitud,
+            'lon': ticket.longitud,
+            'status': ticket.estado,
+        })
+
+    by_categoria = {}
+    by_zona = {}
+    hotspots = {}
+    points = []
+    for row in rows:
+        by_categoria[row['categoria']] = by_categoria.get(row['categoria'], 0) + 1
+        by_zona[row['zona']] = by_zona.get(row['zona'], 0) + 1
+        hotspot_key = f"{row['categoria']}::{row['zona']}"
+        hotspots[hotspot_key] = hotspots.get(hotspot_key, 0) + 1
+        if row['lat'] is not None and row['lon'] is not None:
+            points.append({
+                'ticket_type': row['ticket_type'],
+                'ticket_id': row['ticket_id'],
+                'lat': row['lat'],
+                'lon': row['lon'],
+                'categoria': row['categoria'],
+                'zona': row['zona'],
+                'status': row['status'],
+                'weight': 1,
+            })
+
+    top_categories = sorted(by_categoria.items(), key=lambda item: item[1], reverse=True)[:10]
+    top_zones = sorted(by_zona.items(), key=lambda item: item[1], reverse=True)[:10]
+    top_hotspots = sorted(hotspots.items(), key=lambda item: item[1], reverse=True)[:10]
+
+    return {
+        'tenant_id': tenant.id,
+        'tenant_slug': tenant.slug,
+        'total': len(rows),
+        'top_categories': [{'categoria': key, 'count': value} for key, value in top_categories],
+        'top_zones': [{'zona': key, 'count': value} for key, value in top_zones],
+        'hotspots': [
+            {
+                'categoria': key.split('::', 1)[0],
+                'zona': key.split('::', 1)[1],
+                'count': value,
+            }
+            for key, value in top_hotspots
+        ],
+        'heatmap_points': points[:limit_points],
+    }
+
+
+def _build_employee_coverage_payload(tenant: TenantProfile) -> dict:
+    category_map = {}
+    zone_map = {}
+    permission_map = {}
+    employees = []
+
+    for emp in User.query.filter_by(tenant_id=tenant.id, es_empleado=True).all():
+        scope = _employee_scope(emp)
+        employees.append({
+            'employee_id': emp.id,
+            'name': emp.name,
+            'email': emp.email,
+            'scope': scope,
+        })
+        for categoria in scope.get('categorias', []):
+            category_map.setdefault(categoria, []).append({'employee_id': emp.id, 'name': emp.name})
+        for zona in scope.get('zonas', []):
+            zone_map.setdefault(zona, []).append({'employee_id': emp.id, 'name': emp.name})
+        for permiso in scope.get('permisos', []):
+            permission_map.setdefault(permiso, []).append({'employee_id': emp.id, 'name': emp.name})
+
+    return {
+        'tenant_id': tenant.id,
+        'tenant_slug': tenant.slug,
+        'employees': employees,
+        'coverage': {
+            'categorias': category_map,
+            'zonas': zone_map,
+            'permisos': permission_map,
+        },
+    }
+
+
 def _plan_allows_integrations(tenant: TenantProfile) -> bool:
     plan_key = (tenant.plan or "").strip().lower()
     return plan_key in ("pro", "full")
@@ -1033,7 +1132,24 @@ def create_employee(current_user):
 
     db.session.commit()
 
-    return jsonify({'message': 'Employee created', 'id': user.id}), 201
+    assigned_roles = []
+    for role_name in roles:
+        if str(role_name).strip():
+            assigned_roles.append(str(role_name).strip())
+
+    return jsonify({
+        'message': 'Employee created',
+        'id': user.id,
+        'employee': {
+            'id': user.id,
+            'name': user.name,
+            'email': user.email,
+            'tenant_id': tenant.id,
+            'roles': assigned_roles,
+            'categories': [cat.id for cat in getattr(user, 'categorias_ticket', [])],
+            'scope': _employee_scope(user),
+        },
+    }), 201
 
 @admin_tenant_bp.route('/api/admin/employees/<int:user_id>/roles', methods=['POST'])
 @token_requerido
@@ -1400,6 +1516,35 @@ def tenant_dashboard_bundle(current_user, slug):
         'since_minutes': since_minutes,
     }
     return jsonify(payload)
+
+
+@admin_tenant_bp.route('/api/admin/tenants/<slug>/heatmap-summary', methods=['GET'])
+@token_requerido
+@require_tenant
+def tenant_heatmap_summary(current_user, slug):
+    tenant = _resolve_admin_tenant(current_user, slug)
+    if not tenant:
+        return jsonify({'error': 'Tenant not found'}), 404
+    if not _is_authorized_for_tenant(current_user, tenant):
+        return jsonify({'error': 'Unauthorized'}), 403
+
+    limit_points = max(100, min(int(request.args.get('limit_points', 1500) or 1500), 5000))
+    payload = _build_tenant_heatmap_summary_payload(tenant, limit_points=limit_points)
+    payload['meta'] = {'limit_points': limit_points}
+    return jsonify(payload)
+
+
+@admin_tenant_bp.route('/api/admin/tenants/<slug>/employees/coverage', methods=['GET'])
+@token_requerido
+@require_tenant
+def tenant_employee_coverage(current_user, slug):
+    tenant = _resolve_admin_tenant(current_user, slug)
+    if not tenant:
+        return jsonify({'error': 'Tenant not found'}), 404
+    if not _is_authorized_for_tenant(current_user, tenant):
+        return jsonify({'error': 'Unauthorized'}), 403
+
+    return jsonify(_build_employee_coverage_payload(tenant))
 
 @admin_tenant_bp.route('/api/admin/employees', methods=['GET'])
 @token_requerido

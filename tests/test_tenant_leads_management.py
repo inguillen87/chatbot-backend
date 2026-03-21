@@ -321,3 +321,53 @@ def test_tenant_dashboard_bundle(client, app):
     assert "recommended_actions" in body
     assert body["summary"]["total_leads"] >= 1
     assert body["summary"]["tickets_with_unread"] >= 1
+
+
+def test_tenant_heatmap_summary(client, app):
+    owner = User(email="owner-heatmap@test.com", name="Owner Heatmap", rol="admin", tipo_chat="pyme")
+    owner.set_password("pass")
+    db.session.add(owner)
+    db.session.commit()
+
+    tenant = TenantProfile(slug="tenant-heatmap", nombre="Tenant Heatmap", tipo="pyme", pyme_id=owner.id)
+    db.session.add(tenant)
+    db.session.commit()
+
+    db.session.add(
+        MunicipioTicket(
+            tenant_id=tenant.id,
+            pregunta="Luminaria rota",
+            asunto="Luminaria",
+            categoria="luminaria",
+            distrito="centro",
+            latitud=-32.9,
+            longitud=-68.8,
+            estado="nuevo",
+        )
+    )
+    db.session.add(
+        MunicipioTicket(
+            tenant_id=tenant.id,
+            pregunta="Bache",
+            asunto="Bache",
+            categoria="baches",
+            distrito="norte",
+            latitud=-32.91,
+            longitud=-68.81,
+            estado="nuevo",
+        )
+    )
+    db.session.commit()
+
+    resp = client.get(
+        f"/api/admin/tenants/{tenant.slug}/heatmap-summary?limit_points=500",
+        headers=_headers(app, owner),
+    )
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body["tenant_slug"] == tenant.slug
+    assert body["total"] >= 2
+    assert isinstance(body["top_categories"], list)
+    assert isinstance(body["top_zones"], list)
+    assert isinstance(body["hotspots"], list)
+    assert isinstance(body["heatmap_points"], list)
