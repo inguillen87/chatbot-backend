@@ -117,6 +117,163 @@ def _sanitize_franchise_profile(payload: dict, tenant: TenantProfile) -> tuple[d
     return base, errors
 
 
+def _iso_datetime(value):
+    if not value:
+        return None
+    try:
+        return value.isoformat()
+    except Exception:
+        return None
+
+
+def _build_tenant_health_snapshot(tenant: TenantProfile, *, cutoff: datetime) -> dict:
+    owner = tenant.municipio or tenant.pyme
+    owner_id = getattr(owner, "id", None)
+    now = datetime.now(timezone.utc)
+
+    municipio_tickets = MunicipioTicket.query.filter(
+        MunicipioTicket.tenant_id == tenant.id,
+        MunicipioTicket.fecha >= cutoff,
+    ).all()
+    pyme_tickets = PymeTicket.query.filter(
+        PymeTicket.tenant_id == tenant.id,
+        PymeTicket.fecha >= cutoff,
+    ).all()
+    tickets = municipio_tickets + pyme_tickets
+
+    total_tickets = len(tickets)
+    won = 0
+    lost = 0
+    open_tickets = 0
+    assigned_tickets = 0
+    sla_breached = 0
+    unassigned_aging = 0
+
+    for ticket in tickets:
+        details = _ensure_ticket_details_dict(ticket)
+        stage = str(details.get('lead_stage') or ticket.estado or 'nuevo').lower()
+        if stage == 'ganado':
+            won += 1
+        elif stage == 'perdido':
+            lost += 1
+        else:
+            open_tickets += 1
+
+        if getattr(ticket, "asignado_a_id", None):
+            assigned_tickets += 1
+
+        last_seen = getattr(ticket, 'ultima_actividad', None) or getattr(ticket, 'fecha', None)
+        if last_seen and stage not in {'ganado', 'perdido'}:
+            dt = last_seen if last_seen.tzinfo else last_seen.replace(tzinfo=timezone.utc)
+            age_seconds = (now - dt).total_seconds()
+            if age_seconds > 1800:
+                sla_breached += 1
+            if not getattr(ticket, "asignado_a_id", None) and age_seconds > 8 * 3600:
+                unassigned_aging += 1
+
+    survey_rows = EncEncuesta.query.filter(
+        EncEncuesta.tenant_id == tenant.id,
+        EncEncuesta.updated_at >= cutoff,
+    ).all()
+    survey_count = len(survey_rows)
+    survey_responses = 0
+    for survey in survey_rows:
+        survey_responses += EncRespuesta.query.filter_by(encuesta_id=survey.id).count()
+
+    catalog_count = CatalogoItem.query.filter_by(tenant_id=tenant.id).count()
+    conversations = 0
+    if owner_id:
+        conversations = Conversacion.query.filter(
+            ((Conversacion.pyme_id == owner_id) | (Conversacion.user_id == owner_id)),
+            Conversacion.timestamp >= cutoff,
+        ).count()
+
+    win_rate = round((won / total_tickets) * 100, 2) if total_tickets else 0.0
+    response_rate = round(((total_tickets - sla_breached) / total_tickets) * 100, 2) if total_tickets else 0.0
+    activity_score = min(conversations, 40)
+    health_score = max(
+        0.0,
+        min(
+            100.0,
+            round(
+                (win_rate * 0.45)
+                + (min(survey_responses, 50) * 0.25)
+                + (response_rate * 0.20)
+                + (activity_score * 0.10)
+                - (unassigned_aging * 3),
+                2,
+            ),
+        ),
+    )
+
+    onboarding = {
+        "branding": bool(tenant.logo_url or tenant.tema or tenant.theme_json),
+        "widget": bool(tenant.widget_settings or tenant.widget_config or getattr(owner, "token", None)),
+        "whatsapp": bool(tenant.whatsapp_sender_id),
+        "catalog": catalog_count > 0,
+        "surveys": survey_count > 0,
+        "tracking": total_tickets > 0,
+        "analytics": bool(total_tickets or survey_responses or conversations),
+    }
+    completed_steps = sum(1 for value in onboarding.values() if value)
+
+    alerts = []
+    if sla_breached:
+        alerts.append("sla_breached")
+    if unassigned_aging:
+        alerts.append("unassigned_backlog")
+    if catalog_count == 0 and tenant.tipo == "pyme":
+        alerts.append("catalog_missing")
+    if survey_count == 0:
+        alerts.append("surveys_missing")
+    if not onboarding["whatsapp"]:
+        alerts.append("whatsapp_not_connected")
+
+    return {
+        "tenant_id": tenant.id,
+        "tenant_slug": tenant.slug,
+        "tenant_nombre": tenant.nombre,
+        "tenant_tipo": tenant.tipo,
+        "plan": tenant.plan,
+        "is_active": bool(getattr(tenant, "is_active", True)),
+        "owner": {
+            "id": owner_id,
+            "name": getattr(owner, "name", None),
+            "email": getattr(owner, "email", None),
+        },
+        "metrics": {
+            "total_tickets": total_tickets,
+            "open_tickets": open_tickets,
+            "won": won,
+            "lost": lost,
+            "assigned_tickets": assigned_tickets,
+            "unassigned_tickets": max(total_tickets - assigned_tickets, 0),
+            "sla_breached": sla_breached,
+            "unassigned_aging": unassigned_aging,
+            "survey_count": survey_count,
+            "survey_responses": survey_responses,
+            "catalog_items": catalog_count,
+            "conversations_30d": conversations,
+        },
+        "health": {
+            "score": health_score,
+            "win_rate": win_rate,
+            "response_rate": response_rate,
+            "alerts": alerts,
+        },
+        "onboarding": {
+            "completed_steps": completed_steps,
+            "total_steps": len(onboarding),
+            "checklist": onboarding,
+        },
+        "meta": {
+            "last_updated_at": _iso_datetime(getattr(tenant, "updated_at", None)),
+            "created_at": _iso_datetime(getattr(tenant, "created_at", None)),
+            "cutoff": _iso_datetime(cutoff),
+        },
+    }
+
+
 
 def _compute_franchise_readiness(tenant: TenantProfile) -> dict:
     config = tenant.configuracion if isinstance(tenant.configuracion, dict) else {}
@@ -1901,6 +2058,29 @@ def leads_strategic_overview(current_user):
     open_total = max(total - won - lost, 0)
     win_rate = round((won / total) * 100, 2) if total else 0.0
 
+    by_tenant_rows = list(by_tenant.values())
+    for item in by_tenant_rows:
+        tenant_total = item.get('total') or 0
+        tenant_won = item.get('won') or 0
+        item['win_rate'] = round((tenant_won / tenant_total) * 100, 2) if tenant_total else 0.0
+    by_tenant_rows.sort(key=lambda item: (item.get('open', 0), item.get('total', 0)), reverse=True)
+
+    alerts = []
+    if sla_breached:
+        alerts.append({
+            'kind': 'sla_breached',
+            'severity': 'high',
+            'count': sla_breached,
+            'message': 'Hay leads abiertos sin respuesta reciente.',
+        })
+    if open_total > max(won + lost, 1):
+        alerts.append({
+            'kind': 'backlog_growth',
+            'severity': 'medium',
+            'count': open_total,
+            'message': 'El backlog abierto supera a los leads cerrados del período.',
+        })
+
     return jsonify({
         'since_days': since_days,
         'totals': {
@@ -1912,7 +2092,12 @@ def leads_strategic_overview(current_user):
             'win_rate': win_rate,
         },
         'by_stage': by_stage,
-        'by_tenant': list(by_tenant.values()),
+        'by_tenant': by_tenant_rows,
+        'portfolio': {
+            'top_open_tenants': by_tenant_rows[:5],
+            'active_tenants': len([item for item in by_tenant_rows if item.get('total')]),
+        },
+        'alerts': alerts,
     })
 
 
@@ -2007,54 +2192,63 @@ def super_admin_tenant_health(current_user):
     tenants = TenantProfile.query.all()
     rows = []
     for tenant in tenants:
-        m_tickets = MunicipioTicket.query.filter(MunicipioTicket.tenant_id == tenant.id, MunicipioTicket.fecha >= cutoff).all()
-        p_tickets = PymeTicket.query.filter(PymeTicket.tenant_id == tenant.id, PymeTicket.fecha >= cutoff).all()
-        tickets = m_tickets + p_tickets
-
-        total = len(tickets)
-        won = 0
-        lost = 0
-        sla_breached = 0
-        now = datetime.now(timezone.utc)
-        for t in tickets:
-            details = _ensure_ticket_details_dict(t)
-            stage = str(details.get('lead_stage') or t.estado or 'nuevo').lower()
-            if stage == 'ganado':
-                won += 1
-            elif stage == 'perdido':
-                lost += 1
-
-            last_seen = getattr(t, 'ultima_actividad', None) or getattr(t, 'fecha', None)
-            if last_seen and stage not in {'ganado', 'perdido'}:
-                dt = last_seen if last_seen.tzinfo else last_seen.replace(tzinfo=timezone.utc)
-                if (now - dt).total_seconds() > 1800:
-                    sla_breached += 1
-
-        surveys = EncEncuesta.query.filter(EncEncuesta.tenant_id == tenant.id, EncEncuesta.updated_at >= cutoff).all()
-        survey_count = len(surveys)
-        survey_responses = 0
-        for s in surveys:
-            survey_responses += EncRespuesta.query.filter_by(encuesta_id=s.id).count()
-
-        win_rate = round((won / total) * 100, 2) if total else 0.0
-        health_score = max(0.0, min(100.0, round((win_rate * 0.6) + (min(survey_responses, 50) * 0.4) - (sla_breached * 2), 2)))
-
+        snapshot = _build_tenant_health_snapshot(tenant, cutoff=cutoff)
         rows.append({
-            'tenant_id': tenant.id,
-            'tenant_slug': tenant.slug,
-            'tenant_tipo': tenant.tipo,
-            'total_tickets': total,
-            'won': won,
-            'lost': lost,
-            'sla_breached': sla_breached,
-            'win_rate': win_rate,
-            'survey_count': survey_count,
-            'survey_responses': survey_responses,
-            'health_score': health_score,
+            'tenant_id': snapshot['tenant_id'],
+            'tenant_slug': snapshot['tenant_slug'],
+            'tenant_tipo': snapshot['tenant_tipo'],
+            'tenant_nombre': snapshot['tenant_nombre'],
+            'plan': snapshot['plan'],
+            'is_active': snapshot['is_active'],
+            'total_tickets': snapshot['metrics']['total_tickets'],
+            'open_tickets': snapshot['metrics']['open_tickets'],
+            'won': snapshot['metrics']['won'],
+            'lost': snapshot['metrics']['lost'],
+            'sla_breached': snapshot['metrics']['sla_breached'],
+            'survey_count': snapshot['metrics']['survey_count'],
+            'survey_responses': snapshot['metrics']['survey_responses'],
+            'catalog_items': snapshot['metrics']['catalog_items'],
+            'health_score': snapshot['health']['score'],
+            'win_rate': snapshot['health']['win_rate'],
+            'response_rate': snapshot['health']['response_rate'],
+            'alerts': snapshot['health']['alerts'],
+            'onboarding_completion': snapshot['onboarding']['completed_steps'],
+            'onboarding_total_steps': snapshot['onboarding']['total_steps'],
         })
 
     rows.sort(key=lambda r: (r['health_score'], -r['sla_breached']), reverse=True)
     return jsonify({'since_days': since_days, 'total_tenants': len(rows), 'items': rows})
+
+
+@super_admin_bp.route('/tenants/<string:slug>/profile-360', methods=['GET'])
+@token_requerido
+@super_admin_required
+def super_admin_tenant_profile_360(current_user, slug):
+    since_days = max(1, min(int(request.args.get('since_days', 30) or 30), 365))
+    cutoff = datetime.now(timezone.utc) - timedelta(days=since_days)
+
+    tenant = TenantProfile.query.filter_by(slug=slug).first_or_404()
+    snapshot = _build_tenant_health_snapshot(tenant, cutoff=cutoff)
+
+    return jsonify({
+        'since_days': since_days,
+        'tenant': {
+            'id': tenant.id,
+            'slug': tenant.slug,
+            'nombre': tenant.nombre,
+            'tipo': tenant.tipo,
+            'plan': tenant.plan,
+            'dominio': tenant.dominio,
+            'logo_url': tenant.logo_url,
+            'whatsapp_sender_id': tenant.whatsapp_sender_id,
+            'is_active': bool(getattr(tenant, 'is_active', True)),
+        },
+        'owner': snapshot['owner'],
+        'health': snapshot['health'],
+        'metrics': snapshot['metrics'],
+        'onboarding': snapshot['onboarding'],
+        'meta': snapshot['meta'],
+    })
 
 @super_admin_bp.route('/analytics/heatmap-categories-zones', methods=['GET'])
 @token_requerido

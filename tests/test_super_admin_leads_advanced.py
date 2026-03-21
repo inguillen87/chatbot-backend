@@ -1,7 +1,7 @@
 import jwt
 
 from app import db
-from models import ChatSessionContext, EncEncuesta, EncRespuesta, LlmInteractionLog, MunicipioTicket, TenantProfile, User
+from models import CatalogoItem, ChatSessionContext, EncEncuesta, EncRespuesta, LlmInteractionLog, MunicipioTicket, TenantProfile, User
 
 
 def _sa_headers(app, user):
@@ -100,6 +100,8 @@ def test_super_admin_strategic_overview(client, app):
     assert body['totals']['total_leads'] >= 2
     assert 'by_stage' in body
     assert 'by_tenant' in body
+    assert 'portfolio' in body
+    assert 'alerts' in body
 
 
 def test_super_admin_heatmap_categories_zones(client, app):
@@ -188,4 +190,50 @@ def test_super_admin_tenant_health(client, app):
     assert resp.status_code == 200
     body = resp.get_json()
     assert body['total_tenants'] >= 1
-    assert any(item['tenant_slug'] == tenant.slug for item in body['items'])
+    row = next(item for item in body['items'] if item['tenant_slug'] == tenant.slug)
+    assert row['health_score'] >= 0
+    assert 'alerts' in row
+    assert 'onboarding_completion' in row
+
+
+def test_super_admin_tenant_profile_360(client, app):
+    sa = User(email="sa-profile@test.com", name="SA Profile", rol="super_admin", tipo_chat="admin")
+    sa.set_password("pass")
+    db.session.add(sa)
+
+    owner = User(email="owner-profile@test.com", name="Owner Profile", rol="admin", tipo_chat="pyme", token="profile-token")
+    owner.set_password("pass")
+    db.session.add(owner)
+    db.session.commit()
+
+    tenant = TenantProfile(
+        slug="tenant-profile-360",
+        nombre="Tenant Profile 360",
+        tipo="pyme",
+        pyme_id=owner.id,
+        plan="growth",
+        dominio="tenant.example.com",
+        logo_url="https://cdn.example.com/logo.png",
+        whatsapp_sender_id="5491112345678",
+        configuracion={"analytics_enabled": True},
+    )
+    db.session.add(tenant)
+    db.session.commit()
+
+    db.session.add(CatalogoItem(user_id=owner.id, tenant_id=tenant.id, nombre="Producto", descripcion="Desc"))
+    encuesta = EncEncuesta(tenant_id=tenant.id, slug="enc-profile", titulo="Encuesta", estado="publicada", tipo="opinion")
+    db.session.add(encuesta)
+    db.session.add(MunicipioTicket(tenant_id=tenant.id, pregunta="Lead", asunto="Lead", estado="nuevo"))
+    db.session.commit()
+
+    db.session.add(EncRespuesta(encuesta_id=encuesta.id, tenant_id=tenant.id, canal="web"))
+    db.session.commit()
+
+    resp = client.get(f'/api/admin/tenants/{tenant.slug}/profile-360?since_days=60', headers=_sa_headers(app, sa))
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body['tenant']['slug'] == tenant.slug
+    assert body['owner']['email'] == owner.email
+    assert body['health']['score'] >= 0
+    assert body['metrics']['catalog_items'] >= 1
+    assert body['onboarding']['checklist']['catalog'] is True

@@ -1,5 +1,7 @@
 # Frontend Task Board – Demo UX + CRM Superadmin (Parallel Work)
 
+> Documento consolidado recomendado: `docs/FRONTEND_UNIFIED_HANDOFF.md`.
+
 ## Sprint objetivo
 Subir conversión de demo y velocidad comercial con UX consistente entre widget público y CRM superadmin.
 
@@ -82,6 +84,65 @@ Vista embudo usando `by_stage` + filtros.
 **Backend contrato sugerido:** consumir `sla_status`, `operational_badges` y `operational_metrics`.
 **Aceptación:** priorización visual inmediata en lista y detalle.
 
+### FE-403 · Layout lista + mapa en vivo
+**Descripción:** combinar inbox con mapa sincronizado para que cada filtro aplique tanto a cards como a puntos/celdas.
+**Backend contrato sugerido:** usar detalle ticket + endpoints de mapa (`/tickets/<tipo>/mapa`) + `operational_badges`.
+**Aceptación:** click en ticket centra mapa y click en zona/mapa filtra la lista.
+
+### FE-404 · Panel lateral de ticket 360
+**Descripción:** abrir drawer lateral con timeline, chat, adjuntos, ubicación, SLA y asignación sin salir del board.
+**Backend contrato sugerido:** `timeline`, `conversation.message.created`, `ticket.status.changed`, `ticket.assignment.changed`.
+**Aceptación:** operador resuelve casi todo desde el panel lateral.
+
+---
+
+## EPIC E — Paneles Operativos + Heatmaps
+
+### FE-501 · Dashboard operativo diario
+**Descripción:** cards de `backlog`, `sin asignar`, `por vencer`, `vencidos`, `primera respuesta` y `resueltos hoy`.
+**Aceptación:** permite priorizar la mañana operativa en menos de 30 segundos.
+
+### FE-502 · Heatmap por categoría y zona
+**Descripción:** vista geográfica con capas `puntos`, `clusters` y `heatmap`.
+**Backend contrato sugerido:** endpoints de mapa/analytics + filtros por `estado`, `categoria`, `zona`.
+**Aceptación:** identificar hotspots y saltar a tickets de esa área en un click.
+
+### FE-503 · Filtros ejecutivos persistentes
+**Descripción:** guardar filtros (tenant, canal, SLA, agente, zona, categoría) en querystring/local storage.
+**Aceptación:** soporte comercial y operaciones comparten links exactos con el mismo estado visual.
+
+---
+
+## EPIC F — Perfil Tenant + Health Score
+
+### FE-601 · Tenant profile 360
+**Descripción:** ficha del tenant con branding, owner, plan, canales, dominios, integraciones y métricas clave.
+**Aceptación:** superadmin entiende “estado de cuenta” sin navegar módulos sueltos.
+
+### FE-602 · Checklist de activación
+**Descripción:** onboarding visual con pasos `branding`, `widget`, `WhatsApp`, `catálogo`, `encuestas`, `tracking`, `analytics`.
+**Aceptación:** queda claro qué falta para llevar cada tenant a producción seria.
+
+### FE-603 · Health score del tenant
+**Descripción:** score compuesto con uso, conversión, SLA, actividad y completitud de setup.
+**Aceptación:** permite priorizar cuentas en riesgo o con mayor potencial.
+
+---
+
+## EPIC G — Superadmin CRM + Revenue Intelligence
+
+### FE-701 · Portfolio board de tenants
+**Descripción:** board/tablero de cuentas con ranking por `pipeline`, `win_rate`, `sla_breached`, `actividad`.
+**Aceptación:** dirección comercial detecta rápido dónde intervenir.
+
+### FE-702 · CRM account drilldown
+**Descripción:** entrar a una cuenta y ver funnel, últimos leads, health score, timeline y actividad omnicanal.
+**Aceptación:** el superadmin tiene vista “account executive” real.
+
+### FE-703 · Dashboard ejecutivo
+**Descripción:** combinar KPIs, evolución temporal, comparación entre tenants y alertas accionables.
+**Aceptación:** sirve tanto para founders como para operaciones/comercial.
+
 ---
 
 ## Dependencias backend (ya listas)
@@ -90,3 +151,5 @@ Vista embudo usando `by_stage` + filtros.
 - `GET /api/admin/leads/interactions`
 - Flujo demo lead capture: `action_id=open_demo_form`
 - Respuesta chat enriquecida con `ux_context`
+- Eventos realtime normalizados: `conversation.message.created`, `ticket.status.changed`, `ticket.assignment.changed`
+- Tickets con `sla_status`, `operational_badges`, `operational_metrics`
