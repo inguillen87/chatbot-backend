@@ -5,6 +5,7 @@ from typing import Dict, Any, List, Optional
 from .base_action_handler import BaseActionHandler
 from services.pedido_service import servicio_pedidos # For creating PymePedido
 from services.conversation_summaries import build_order_confirmation_payload
+from services.order_attachment_preview import build_order_attachment_preview
 from services.cart import (
     add_item_to_cart, remove_item_from_cart,
     update_item_quantity_in_cart, clear_pyme_cart, get_cart_summary
@@ -432,20 +433,25 @@ class ProcesarAdjuntoPedidoAction(BaseActionHandler):
         if not texto_extraido:
             return {"success": False, "message_to_user": "No se pudo extraer texto del archivo para procesar el pedido."}
 
-        # Use the LLM to parse the extracted text into a structured order
-        # This is a conceptual step. The actual implementation will require a prompt that
-        # tells the LLM to extract order items from the text.
-
-        # For now, I will just return the extracted text and ask the user to confirm.
-
-        message = f"He procesado el archivo y extraje el siguiente texto:\n\n---\n{texto_extraido[:500]}...\n\n---\n\n¿Quieres que intente crear un pedido con esta información?"
-
-        # In a real implementation, we would parse this with another LLM call,
-        # then match with catalog, and then create the order.
-        # For now, we will just confirm with the user.
+        preview = build_order_attachment_preview(
+            texto_extraido=texto_extraido,
+            pyme_id_context=self.context.get("user_id"),
+            telefono=self.context.get("telefono_usuario_contexto"),
+            email=self.context.get("email_usuario_contexto"),
+            nombre=self.context.get("nombre_usuario_contexto"),
+            direccion=self.context.get("direccion_usuario_contexto"),
+            channel=self.context.get("channel"),
+        )
 
         return {
             "success": True,
-            "message_to_user": message,
-            "data": {"adjunto_pedido_procesado": True, "texto_extraido": texto_extraido}
+            "message_to_user": preview["message"],
+            "data": {
+                "adjunto_pedido_procesado": True,
+                "texto_extraido": texto_extraido,
+                "items_detectados": preview["items_detectados"],
+                "order_confirmation": preview["order_confirmation"],
+                "confirmation_card": preview["confirmation_card"],
+            },
+            "options_list": preview["options_list"],
         }
