@@ -1,7 +1,9 @@
+from datetime import datetime, timedelta, timezone
+
 import jwt
 
 from app import db
-from models import EncEncuesta, EncRespuesta, MunicipioTicket, TenantProfile, TicketComentario, User
+from models import EncEncuesta, EncRespuesta, MunicipioTicket, TenantProfile, TicketComentario, TicketRealtimeState, User
 
 
 def _headers(app, user):
@@ -272,3 +274,169 @@ def test_tenant_unread_ticket_summary(client, app):
     assert body["total_tickets_with_unread"] >= 1
     assert body["items"][0]["ticket_type"] in {"municipio", "pyme"}
 
+
+def test_tenant_dashboard_bundle(client, app):
+    owner = User(email="owner-dashboard@test.com", name="Owner Dashboard", rol="admin", tipo_chat="pyme")
+    owner.set_password("pass")
+    db.session.add(owner)
+    db.session.commit()
+
+    tenant = TenantProfile(slug="tenant-dashboard", nombre="Tenant Dashboard", tipo="pyme", pyme_id=owner.id)
+    db.session.add(tenant)
+    db.session.commit()
+
+    employee = User(email="emp-dashboard@test.com", name="Emp Dashboard", rol="empleado", es_empleado=True, tenant_id=tenant.id)
+    employee.set_password("pass")
+    db.session.add(employee)
+    db.session.commit()
+
+    ticket = MunicipioTicket(
+        tenant_id=tenant.id,
+        pregunta="Necesito seguimiento",
+        asunto="Lead dashboard",
+        estado="nuevo",
+        nombre_vecino="Lead Dashboard",
+        asignado_a_id=employee.id,
+    )
+    db.session.add(ticket)
+
+    survey = EncEncuesta(tenant_id=tenant.id, slug="enc-dashboard", titulo="Encuesta Dashboard", estado="publicada", tipo="opinion")
+    db.session.add(survey)
+    db.session.commit()
+
+    db.session.add(EncRespuesta(encuesta_id=survey.id, tenant_id=tenant.id, canal="web"))
+    db.session.add(TicketComentario(municipio_ticket_id=ticket.id, comentario="mensaje sin leer", es_admin=False))
+    db.session.commit()
+    db.session.add(
+        TicketRealtimeState(
+            ticket_type="municipio",
+            ticket_id=ticket.id,
+            viewer_key=f"user:{employee.id}",
+            viewer_user_id=employee.id,
+            viewer_role="empleado",
+            presence_status="active",
+            last_read_comment_id=0,
+        )
+    )
+    db.session.commit()
+
+    resp = client.get(
+        f"/api/admin/tenants/{tenant.slug}/dashboard-bundle?since_minutes=60",
+        headers=_headers(app, owner),
+    )
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body["tenant"]["slug"] == tenant.slug
+    assert "summary" in body
+    assert "leads" in body
+    assert "surveys" in body
+    assert "unread" in body
+    assert "team" in body
+    assert "recommended_actions" in body
+    assert body["summary"]["total_leads"] >= 1
+    assert body["summary"]["tickets_with_unread"] >= 1
+    assert body["summary"]["active_viewers"] >= 1
+    assert body["summary"]["unread_viewers"] >= 1
+    assert body["leads"]["items"][0]["collaboration_state"]["active_viewers_count"] >= 1
+    assert body["leads"]["items"][0]["priority_score"] >= 1
+    assert body["unread"]["items"][0]["collaboration_state"]["unread_viewer_count"] >= 1
+    assert body["team"]["items"][0]["active_ticket_views"] >= 1
+    assert body["team"]["items"][0]["unread_ticket_views"] >= 1
+
+
+def test_tenant_heatmap_summary(client, app):
+    owner = User(email="owner-heatmap@test.com", name="Owner Heatmap", rol="admin", tipo_chat="pyme")
+    owner.set_password("pass")
+    db.session.add(owner)
+    db.session.commit()
+
+    tenant = TenantProfile(slug="tenant-heatmap", nombre="Tenant Heatmap", tipo="pyme", pyme_id=owner.id)
+    db.session.add(tenant)
+    db.session.commit()
+
+    db.session.add(
+        MunicipioTicket(
+            tenant_id=tenant.id,
+            pregunta="Luminaria rota",
+            asunto="Luminaria",
+            categoria="luminaria",
+            distrito="centro",
+            latitud=-32.9,
+            longitud=-68.8,
+            estado="nuevo",
+        )
+    )
+    db.session.add(
+        MunicipioTicket(
+            tenant_id=tenant.id,
+            pregunta="Bache",
+            asunto="Bache",
+            categoria="baches",
+            distrito="norte",
+            latitud=-32.91,
+            longitud=-68.81,
+            estado="nuevo",
+        )
+    )
+    db.session.commit()
+
+    resp = client.get(
+        f"/api/admin/tenants/{tenant.slug}/heatmap-summary?limit_points=500",
+        headers=_headers(app, owner),
+    )
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body["tenant_slug"] == tenant.slug
+    assert body["total"] >= 2
+    assert isinstance(body["top_categories"], list)
+    assert isinstance(body["top_zones"], list)
+    assert isinstance(body["hotspots"], list)
+    assert isinstance(body["heatmap_points"], list)
+
+
+def test_tenant_dashboard_bundle_counts_full_backlog_even_when_items_are_limited(client, app):
+    owner = User(email="owner-backlog@test.com", name="Owner Backlog", rol="admin", tipo_chat="pyme")
+    owner.set_password("pass")
+    db.session.add(owner)
+    db.session.commit()
+
+    tenant = TenantProfile(slug="tenant-backlog", nombre="Tenant Backlog", tipo="pyme", pyme_id=owner.id)
+    db.session.add(tenant)
+    db.session.commit()
+
+    now = datetime.now(timezone.utc)
+    older = now - timedelta(hours=2)
+
+    ticket_recent = MunicipioTicket(
+        tenant_id=tenant.id,
+        pregunta="Lead reciente",
+        asunto="Lead reciente",
+        estado="nuevo",
+        nombre_vecino="Lead reciente",
+        ultima_actividad=now,
+        fecha=now,
+    )
+    ticket_old_sla = MunicipioTicket(
+        tenant_id=tenant.id,
+        pregunta="Lead viejo",
+        asunto="Lead viejo",
+        estado="nuevo",
+        nombre_vecino="Lead viejo",
+        ultima_actividad=older,
+        fecha=older,
+    )
+    db.session.add_all([ticket_recent, ticket_old_sla])
+    db.session.commit()
+
+    resp = client.get(
+        f"/api/admin/tenants/{tenant.slug}/dashboard-bundle?since_minutes=180&leads_limit=1",
+        headers=_headers(app, owner),
+    )
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body["meta"]["leads_limit"] == 1
+    assert body["summary"]["total_leads"] == 2
+    assert body["leads"]["total"] == 2
+    assert body["summary"]["sla_breached"] == 1
+    assert len(body["leads"]["items"]) == 1
+    assert any(action["kind"] == "review_sla" for action in body["recommended_actions"])

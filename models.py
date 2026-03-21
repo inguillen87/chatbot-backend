@@ -1725,6 +1725,47 @@ class ChatSessionContext(db.Model):
 
 print("✅ models.py fue importado con éxito y contiene modelos.")
 
+
+class TicketRealtimeState(db.Model):
+    __tablename__ = "ticket_realtime_state"
+
+    id = db.Column(db.Integer, primary_key=True)
+    ticket_type = db.Column(db.String(20), nullable=False, index=True)
+    ticket_id = db.Column(db.Integer, nullable=False, index=True)
+    viewer_key = db.Column(db.String(140), nullable=False)
+    viewer_user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True, index=True)
+    viewer_anon_id = db.Column(db.String(80), nullable=True, index=True)
+    viewer_role = db.Column(db.String(30), nullable=True)
+    active_session_id = db.Column(db.String(64), nullable=True)
+    presence_status = db.Column(db.String(20), nullable=False, default="inactive")
+    last_presence_at = db.Column(db.DateTime(timezone=True), default=get_local_now, nullable=False)
+    last_read_comment_id = db.Column(db.Integer, nullable=True)
+    last_read_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    created_at = db.Column(db.DateTime(timezone=True), default=get_local_now, nullable=False)
+    updated_at = db.Column(db.DateTime(timezone=True), default=get_local_now, onupdate=get_local_now, nullable=False)
+
+    viewer_user = db.relationship("User", backref=db.backref("ticket_realtime_states", lazy="dynamic"))
+
+    __table_args__ = (
+        UniqueConstraint("ticket_type", "ticket_id", "viewer_key", name="uq_ticket_realtime_state_viewer"),
+        Index("ix_ticket_realtime_state_ticket_presence", "ticket_type", "ticket_id", "presence_status"),
+    )
+
+    def to_dict(self) -> dict:
+        return {
+            "ticket_type": self.ticket_type,
+            "ticket_id": self.ticket_id,
+            "viewer_key": self.viewer_key,
+            "viewer_user_id": self.viewer_user_id,
+            "viewer_anon_id": self.viewer_anon_id,
+            "viewer_role": self.viewer_role,
+            "active_session_id": self.active_session_id,
+            "presence_status": self.presence_status,
+            "last_presence_at": datetime_to_iso_utc(self.last_presence_at),
+            "last_read_comment_id": self.last_read_comment_id,
+            "last_read_at": datetime_to_iso_utc(self.last_read_at),
+        }
+
 class CatalogoCompartido(db.Model):
     __tablename__ = "catalogo_compartido"
     id = db.Column(db.Integer, primary_key=True)

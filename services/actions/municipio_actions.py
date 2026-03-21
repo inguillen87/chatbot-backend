@@ -33,6 +33,7 @@ from models import MunicipioTicket, TenantProfile, CategoriaTicket
 from services.common_utils import _get_main_menu_payload
 from services import promo_service
 from services.voice_handler import initiate_outbound_call
+from services.conversation_summaries import build_claim_confirmation_payload
 
 logger = logging.getLogger(__name__)
 
@@ -972,6 +973,16 @@ class CrearReclamoActionHandler(BaseActionHandler):
             # Delayed menu
             menu_payload = _get_main_menu_payload(self.context)
 
+            claim_confirmation = build_claim_confirmation_payload(
+                categoria=categoria_display,
+                ubicacion=ubicacion_llm,
+                descripcion=descripcion,
+                nombre=ticket_data_cleaned.get("nombre_vecino"),
+                telefono=ticket_data_cleaned.get("telefono_vecino"),
+                email=ticket_data_cleaned.get("email_vecino"),
+                channel=channel_value or self.context.get("channel"),
+            )
+
             response_payload = {
                 "success": True,
                 "message_body": mensaje_respuesta,
@@ -988,6 +999,8 @@ class CrearReclamoActionHandler(BaseActionHandler):
                     "nombre_vecino": ticket_data_cleaned.get("nombre_vecino"),
                     "contacto_especializado": contacto_especializado,
                     "promo_text": promo_text,
+                    "claim_confirmation": claim_confirmation,
+                    "confirmation_card": claim_confirmation,
                 }
             }
             tracking_url = None
