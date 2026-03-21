@@ -14,7 +14,7 @@ project_root_chat_routes = os.path.abspath(os.path.join(os.path.dirname(__file__
 if project_root_chat_routes not in sys.path:
     sys.path.insert(0, project_root_chat_routes)
 
-from flask import Blueprint, request, jsonify, current_app
+from flask import Blueprint, request, jsonify, current_app, g
 from sqlalchemy import func, desc
 from sqlalchemy.exc import ProgrammingError, SQLAlchemyError
 from sqlalchemy.orm.attributes import flag_modified # Importado para flag_modified
@@ -414,6 +414,51 @@ def _build_demo_selector_payload(
         "demo_selector_mode": "segment_categories",
         "interactive_sections": grouped_sections,
         "generar_audio": True,
+    }
+
+
+def _owner_context_is_trusted(owner_user: Optional[User], resolution_source: Optional[str]) -> bool:
+    """Return True when the owner comes from a tenant-specific context.
+
+    We only trust owners that were resolved from explicit auth/entity context or
+    that were previously persisted in the same chat session. The generic
+    fallback municipality owner used on the public landing must not disable the
+    demo selector by itself.
+    """
+
+    if not owner_user:
+        return False
+
+    return (resolution_source or "").strip().lower() in {
+        "jwt_parent_owner",
+        "jwt_self_owner",
+        "static_entity_token",
+        "explicit_entity_token",
+        "session_owner_context",
+    }
+
+
+def _build_widget_ux_context(
+    *,
+    owner_user: Optional[User],
+    resolution_source: Optional[str],
+    tipo_chat: Optional[str],
+    demo_session_activa: bool,
+) -> Dict[str, object]:
+    trusted_owner = _owner_context_is_trusted(owner_user, resolution_source)
+    owner_tipo_chat = (getattr(owner_user, "tipo_chat", None) or tipo_chat or "").strip().lower() or None
+    owner_name = getattr(owner_user, "name", None) if owner_user else None
+    tenant_slug = getattr(owner_user, "tenant_slug", None) if owner_user else None
+
+    return {
+        "trusted_owner": trusted_owner,
+        "owner_resolution_source": resolution_source or "unknown",
+        "owner_user_id": getattr(owner_user, "id", None),
+        "owner_tipo_chat": owner_tipo_chat,
+        "owner_name": owner_name,
+        "tenant_slug": tenant_slug,
+        "demo_session": bool(demo_session_activa),
+        "should_render_demo_shell": bool(demo_session_activa or not trusted_owner),
     }
 
 
@@ -1427,6 +1472,7 @@ def _procesar_chat(
         # --- User and Role Determination ---
         is_anonymous = not actor_principal
         viewer_obj = current_user # El que mira
+        owner_resolution_source = getattr(g, "owner_resolution_source", "anonymous")
 
         if is_anonymous and not anon_id:
             # This case should ideally not be reached if anon_o_token_requerido is working correctly,
@@ -1487,6 +1533,16 @@ def _procesar_chat(
             contexto_chat = {}
             if chat_context_obj:
                 chat_context_obj.context_data = contexto_chat
+
+        persisted_owner_id = contexto_chat.get("resolved_owner_user_id") if isinstance(contexto_chat, dict) else None
+        if persisted_owner_id and (
+            not owner_user
+            or owner_resolution_source == "default_municipio_owner"
+        ):
+            persisted_owner = db.session.get(User, persisted_owner_id)
+            if persisted_owner:
+                owner_user = persisted_owner
+                owner_resolution_source = "session_owner_context"
 
         demo_session_activa = bool(
             isinstance(contexto_chat, dict) and contexto_chat.get("demo_session")
@@ -1566,12 +1622,14 @@ def _procesar_chat(
         force_demo_selector_flow = (
             not actor_principal
             and tenant_slug_hint in {"municipio", "pyme"}
+            and not _owner_context_is_trusted(owner_user, owner_resolution_source)
             and not demo_session_activa
         )
 
         should_show_public_demo_selector = (
             is_public_landing
             and is_anonymous
+            and not _owner_context_is_trusted(owner_user, owner_resolution_source)
             and not demo_session_activa
             and (is_init_request or message_count_this_session == 0)
         )
@@ -1604,6 +1662,16 @@ def _procesar_chat(
             if cleared_demo_state and chat_context_obj:
                 flag_modified(chat_context_obj, "context_data")
                 _sync_demo_session_flag()
+
+        if (
+            owner_user
+            and isinstance(contexto_chat, dict)
+            and _owner_context_is_trusted(owner_user, owner_resolution_source)
+        ):
+            contexto_chat["resolved_owner_user_id"] = owner_user.id
+            contexto_chat["resolved_owner_tipo_chat"] = (getattr(owner_user, "tipo_chat", None) or tipo_chat or "").strip().lower() or None
+            if chat_context_obj:
+                flag_modified(chat_context_obj, "context_data")
 
         is_demo_selection_event = False
         demo_options: Optional[List[Dict[str, Optional[str]]]] = None
@@ -2221,6 +2289,13 @@ def _procesar_chat(
             audio_url = resultado.get("audio_url")
             if audio_url and channel == "web" and "audio" not in resultado:
                 resultado["audio"] = {"link": audio_url}
+
+            resultado["ux_context"] = _build_widget_ux_context(
+                owner_user=owner_del_bot or owner_user,
+                resolution_source=owner_resolution_source,
+                tipo_chat=tipo_chat,
+                demo_session_activa=demo_session_activa,
+            )
 
         normalize_response_payload(resultado)
 
