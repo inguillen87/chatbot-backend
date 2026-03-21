@@ -237,3 +237,33 @@ def test_super_admin_tenant_profile_360(client, app):
     assert body['health']['score'] >= 0
     assert body['metrics']['catalog_items'] >= 1
     assert body['onboarding']['checklist']['catalog'] is True
+
+
+def test_super_admin_executive_summary_bundle(client, app):
+    sa = User(email="sa-bundle@test.com", name="SA Bundle", rol="super_admin", tipo_chat="admin")
+    sa.set_password("pass")
+    db.session.add(sa)
+
+    owner = User(email="owner-bundle@test.com", name="Owner Bundle", rol="admin", tipo_chat="pyme")
+    owner.set_password("pass")
+    db.session.add(owner)
+    db.session.commit()
+
+    tenant = TenantProfile(slug="tenant-bundle", nombre="Tenant Bundle", tipo="pyme", pyme_id=owner.id)
+    db.session.add(tenant)
+    db.session.commit()
+
+    db.session.add(MunicipioTicket(tenant_id=tenant.id, pregunta="Lead bundle", asunto="Lead bundle", estado="nuevo"))
+    db.session.add(CatalogoItem(user_id=owner.id, tenant_id=tenant.id, nombre="Bundle product", descripcion="Desc"))
+    db.session.commit()
+
+    resp = client.get('/api/admin/analytics/executive-summary?since_days=60&minutes=120', headers=_sa_headers(app, sa))
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert 'strategic_overview' in body
+    assert 'tenant_health' in body
+    assert 'realtime' in body
+    assert 'heatmap' in body
+    assert 'recommended_actions' in body
+    assert body['strategic_overview']['totals']['total_leads'] >= 1
+    assert body['tenant_health']['total_tenants'] >= 1
