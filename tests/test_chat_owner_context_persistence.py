@@ -191,6 +191,8 @@ class ChatOwnerContextPersistenceTest(unittest.TestCase):
         ux_context = payload.get("ux_context") or {}
         self.assertEqual(ux_context.get("channel_capabilities", {}).get("supports_realtime"), True)
         self.assertEqual(ux_context.get("recommended_experience", {}).get("primary_channel"), "widget")
+        self.assertEqual(ux_context.get("recommended_experience", {}).get("supports_confirmation_cards"), True)
+        self.assertEqual(ux_context.get("recommended_experience", {}).get("supports_multimodal_intake"), True)
 
 
 if __name__ == "__main__":

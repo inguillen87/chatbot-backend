@@ -1000,6 +1000,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
                     "contacto_especializado": contacto_especializado,
                     "promo_text": promo_text,
                     "claim_confirmation": claim_confirmation,
+                    "confirmation_card": claim_confirmation,
                 }
             }
             tracking_url = None

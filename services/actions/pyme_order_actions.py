@@ -205,6 +205,7 @@ class CrearPedidoAction(BaseActionHandler):
                 "cliente": cliente_payload,
                 "order_summary_text": resumen_carrito,
                 "order_confirmation": order_confirmation,
+                "confirmation_card": order_confirmation,
                 "nota_pedido_pdf_generado": nota_pdf_generado,
             }
 

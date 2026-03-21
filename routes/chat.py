@@ -501,6 +501,9 @@ def _build_widget_ux_context(
             "intake_mode": "guided",
             "supports_rich_claim_intake": owner_tipo_chat == "municipio",
             "supports_rich_order_intake": owner_tipo_chat == "pyme",
+            "supports_confirmation_cards": True,
+            "supports_multimodal_intake": True,
+            "preferred_handoff_channels": ["widget", "whatsapp", "voice"],
         },
     }
 

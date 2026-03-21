@@ -83,6 +83,7 @@ Usar `ux_context` para decidir:
 - `should_render_demo_shell`
 - `channel_capabilities`
 - `recommended_experience`
+- `data.claim_confirmation` / `data.order_confirmation` / `data.confirmation_card` cuando existan
 
 ### Regla de render
 - Si `trusted_owner=true` y `should_render_demo_shell=false` → renderizar **tenant real**.
@@ -130,6 +131,7 @@ Casos típicos:
 - no resetear el flujo si backend repregunta,
 - si backend pide solo `email`, no volver a mostrar formulario completo,
 - si backend trae botones/lista, renderizar interacción rica.
+- si llega `data.confirmation_card`, renderizar una card de confirmación premium con resumen, contacto, ubicación/entrega y CTA de confirmar/editar.
 
 ---
 
@@ -294,6 +296,7 @@ Y atributos de config tipo:
 - `data-realtime-model`
 - `data-realtime-voice-enabled`
 - `data-realtime-video-enabled`
+- `builder_config.enterprise_iteration.realtime.voice_handoff`
 
 ---
 
