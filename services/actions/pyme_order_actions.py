@@ -4,6 +4,7 @@ import json
 from typing import Dict, Any, List, Optional
 from .base_action_handler import BaseActionHandler
 from services.pedido_service import servicio_pedidos # For creating PymePedido
+from services.conversation_summaries import build_order_confirmation_payload
 from services.cart import (
     add_item_to_cart, remove_item_from_cart,
     update_item_quantity_in_cart, clear_pyme_cart, get_cart_summary
@@ -189,6 +190,12 @@ class CrearPedidoAction(BaseActionHandler):
             }
 
             nota_pdf_generado = getattr(nuevo_pedido, "nota_pedido_pdf_generado", False)
+            order_confirmation = build_order_confirmation_payload(
+                cart_summary=current_cart_summary,
+                customer=cliente_payload,
+                delivery_address=direccion_entrega,
+                channel=self.context.get("channel"),
+            )
             data_payload = {
                 "nro_pedido": nuevo_pedido.nro_pedido,
                 "pedido_id": nuevo_pedido.id,
@@ -197,6 +204,7 @@ class CrearPedidoAction(BaseActionHandler):
                 "cart_summary": current_cart_summary,
                 "cliente": cliente_payload,
                 "order_summary_text": resumen_carrito,
+                "order_confirmation": order_confirmation,
                 "nota_pedido_pdf_generado": nota_pdf_generado,
             }
 
