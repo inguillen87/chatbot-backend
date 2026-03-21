@@ -1116,6 +1116,7 @@ def anon_o_token_requerido(f):
         token = obtener_token()
         current_user = None  # El usuario final que chatea (el "viewer")
         owner_user = None    # El dueño del bot (la "entidad", ej: municipio)
+        owner_resolution_source = "anonymous"
 
         demo_token_detected = False
         token_payload: Dict[str, Any] = {}
@@ -1130,9 +1131,11 @@ def anon_o_token_requerido(f):
                 # Si un usuario logueado tiene un empresa_id, el owner es esa empresa.
                 if jwt_user.empresa_id:
                     owner_user = User.query.get(jwt_user.empresa_id)
+                    owner_resolution_source = "jwt_parent_owner"
                 else:
                     # Si no, el owner es el propio usuario (ej, el admin del municipio)
                     owner_user = jwt_user
+                    owner_resolution_source = "jwt_self_owner"
             else:
                 # Si falla el JWT, tratar el token como un token de entidad estático (API Key/UUID).
                 # Esto es para el widget anónimo.
@@ -1146,6 +1149,7 @@ def anon_o_token_requerido(f):
                 if entity_user:
                     current_app.logger.info(f"Request authenticated via static entity token. Owner User ID: {entity_user.id}")
                     owner_user = entity_user
+                    owner_resolution_source = "static_entity_token"
                     # El current_user sigue siendo None porque es una sesión anónima del widget.
                 else:
                     current_app.logger.warning(f"Token '{token[:10]}...' provided but is not a valid JWT or a known entity token.")
@@ -1169,6 +1173,7 @@ def anon_o_token_requerido(f):
                     )
                 owner_user = entity_owner
                 g.widget_owner_user = entity_owner
+                owner_resolution_source = "explicit_entity_token"
 
         # Double check: If on public landing, and token was a cookie JWT (not bearer),
         # ensure current_user is WIPED to enforce anonymous mode.
@@ -1185,6 +1190,7 @@ def anon_o_token_requerido(f):
             owner_user = User.query.filter_by(tipo_chat='municipio', rol='admin').first()
             if owner_user:
                 current_app.logger.info(f"Anonymous request to '{request.path}', loaded DEFAULT municipality owner user ID: {owner_user.id}")
+                owner_resolution_source = "default_municipio_owner"
             else:
                 current_app.logger.error(f"CRITICAL: Anonymous request to '{request.path}' but no default municipality user found.")
 
@@ -1192,6 +1198,7 @@ def anon_o_token_requerido(f):
         g.auth_token = token
         g.current_user = current_user
         g.owner_user = owner_user
+        g.owner_resolution_source = owner_resolution_source
 
         # Llamar a la función de la ruta con los usuarios identificados
         response = f(

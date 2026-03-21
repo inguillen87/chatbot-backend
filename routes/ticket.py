@@ -60,6 +60,35 @@ def _validar_asignacion_empleado(ticket_obj, current_user: User):
     return None
 
 
+def _resolver_acceso_chat_ticket(ticket_obj, current_user: User, anon_id: str = None, pin: Optional[str] = None) -> dict:
+    """Normaliza los permisos de acceso al chat/timeline de tickets públicos.
+
+    Este helper evita drift entre endpoints públicos del reclamo. En especial,
+    deja explícito que el flujo con ``consulta_pin`` es un acceso ciudadano
+    legítimo aunque no exista sesión autenticada todavía, para que el tracking
+    público, el historial y la mensajería reutilicen la misma regla.
+    """
+
+    es_agente_municipal = bool(current_user and current_user.tipo_chat == "municipio")
+    es_agente_pyme = bool(
+        current_user
+        and getattr(current_user, "rubro_id", None)
+        and getattr(ticket_obj, "rubro_id", None) == current_user.rubro_id
+    )
+    es_agente = es_agente_municipal or es_agente_pyme
+    es_dueno = bool(current_user and getattr(ticket_obj, "user_id", None) == current_user.id)
+    es_anon_valido = bool(anon_id and getattr(ticket_obj, "anon_id", None) == anon_id)
+    es_pin_valido = bool(pin and str(getattr(ticket_obj, "consulta_pin", "")) == str(pin))
+
+    return {
+        "es_agente": es_agente,
+        "es_dueno": es_dueno,
+        "es_anon_valido": es_anon_valido,
+        "es_pin_valido": es_pin_valido,
+        "permitido": es_agente or es_dueno or es_anon_valido or es_pin_valido,
+    }
+
+
 def _categorias_permitidas_para_empleado(user: User) -> tuple[list[str], list[int]]:
     """Obtiene las categorías habilitadas para un empleado normalizadas en minúsculas.
 
@@ -1420,11 +1449,9 @@ def get_chat_mensajes(current_user: User, ticket_id: int, anon_id: str = None, o
         if not sala_de_chat:
             return jsonify({"error": "Sala de chat no encontrada."}), 404
 
-        es_agente_municipal = current_user and current_user.tipo_chat == "municipio"
-        es_dueño_del_ticket = current_user and sala_de_chat.user_id == current_user.id
-        es_anon_valido = anon_id and sala_de_chat.anon_id == anon_id
         pin_query = request.args.get("pin")
-        es_pin_valido = bool(pin_query and getattr(sala_de_chat, "consulta_pin", None) == pin_query)
+        access = _resolver_acceso_chat_ticket(sala_de_chat, current_user, anon_id, pin_query)
+        es_agente_municipal = access["es_agente"]
 
         if es_agente_municipal:
             error_response = _validar_asignacion_empleado(sala_de_chat, current_user)
@@ -1433,10 +1460,10 @@ def get_chat_mensajes(current_user: User, ticket_id: int, anon_id: str = None, o
 
         log_ticket_debug("get_chat_mensajes", ticket_id, anon_id, sala_de_chat)
 
-        if not (es_agente_municipal or es_dueño_del_ticket or es_anon_valido or es_pin_valido):
+        if not access["permitido"]:
             return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
 
-        if sala_de_chat.estado == "cerrado" and not es_agente_municipal and not es_pin_valido:
+        if sala_de_chat.estado == "cerrado" and not es_agente_municipal and not access["es_pin_valido"]:
             return jsonify({"error": MENSAJE_CHAT_CERRADO}), 403
 
         ultimo_mensaje_id = request.args.get('ultimo_mensaje_id', default=0, type=int)
@@ -1668,11 +1695,12 @@ def get_ticket_knowledge_base_suggestions(current_user: User, owner_user: User, 
 
 # ---------- CHAT EN VIVO: RESPONDER CIUDADANO (SOLO TOKEN) ----------
 @ticket_bp.route('/tickets/chat/<int:ticket_id>/responder_ciudadano', methods=['POST'])
-@token_requerido
-def responder_ciudadano_a_chat(current_user: User, ticket_id: int):
+@anon_o_token_requerido
+def responder_ciudadano_a_chat(current_user: User, ticket_id: int, anon_id: str = None, owner_user: User = None):
     """
     Permite al ciudadano responder en el chat de su ticket.
-    Requiere que el usuario esté autenticado.
+    Acepta sesión autenticada, ``anon_id`` válido o acceso por ``consulta_pin``
+    para no romper el portal público de seguimiento.
     """
     data = request.get_json()
     if not data or not data.get("comentario"):
@@ -1682,17 +1710,19 @@ def responder_ciudadano_a_chat(current_user: User, ticket_id: int):
     if not sala_de_chat:
         return jsonify({"error": "Sala de chat no encontrada."}), 404
 
-    es_dueño = sala_de_chat.user_id == current_user.id
+    pin_query = request.args.get("pin")
+    access = _resolver_acceso_chat_ticket(sala_de_chat, current_user, anon_id, pin_query)
 
     log_ticket_debug("responder_ciudadano", ticket_id, None, sala_de_chat)
 
-    if sala_de_chat.user_id is None or not es_dueño:
+    if not access["permitido"] or access["es_agente"]:
         return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
 
     if sala_de_chat.estado == "cerrado":
         return jsonify({"error": MENSAJE_CHAT_CERRADO}), 403
 
-    user_id_para_comentario = current_user.id if current_user else None
+    user_id_para_comentario = current_user.id if access["es_dueno"] else None
+    anon_id_para_comentario = anon_id if access["es_anon_valido"] else getattr(sala_de_chat, "anon_id", None)
 
     nuevo_comentario = servicio_tickets.crear_comentario(
         ticket_id=ticket_id,
@@ -1700,6 +1730,7 @@ def responder_ciudadano_a_chat(current_user: User, ticket_id: int):
         comentario_data={
             "comentario": data["comentario"],
             "user_id": user_id_para_comentario,
+            "anon_id": anon_id_para_comentario,
             "es_admin": False
         }
     )

@@ -24,6 +24,15 @@ Subir conversión de demo y velocidad comercial con UX consistente entre widget 
 **Descripción:** validar teléfono/email antes de enviar y mostrar errores inline.
 **Aceptación:** usuario corrige sin romper conversación.
 
+### FE-105 · Continuidad tenant real vs demo
+**Descripción:** consumir `ux_context` en la respuesta del chat para decidir si el widget debe renderizar shell demo o shell tenant real.
+**Backend contrato:** `/api/ask/{tipo}` devuelve `ux_context.trusted_owner`, `ux_context.owner_tipo_chat`, `ux_context.should_render_demo_shell`.
+**Aceptación:** si `trusted_owner=true` y `owner_tipo_chat=municipio`, nunca reaparece el showroom genérico al segundo turno.
+
+### FE-106 · Propagación fuerte de contexto
+**Descripción:** reenviar en todos los mensajes `entityToken`/`X-Entity-Token`, `X-Chat-Session-Id`, `X-Anon-Id` y `pin` cuando el usuario venga desde seguimiento de reclamo.
+**Aceptación:** no hay saltos de contexto entre saludo inicial, captura de nombre y mensajes siguientes; el seguimiento público no vuelve a `403`.
+
 ---
 
 ## EPIC B — CRM Superadmin Multitenant
@@ -61,9 +70,22 @@ Vista embudo usando `by_stage` + filtros.
 
 ---
 
+## EPIC D — Unified Inbox + SLA
+
+### FE-401 · Inbox omnicanal
+**Descripción:** unificar ticket, mensajes, estados y adjuntos en una sola vista viva.
+**Backend contrato sugerido:** usar `ux_context` + timeline canónica + sockets por ticket.
+**Aceptación:** el operador no cambia de módulo para ver chat, estado, mapa y últimos eventos.
+
+### FE-402 · Badge SLA / urgencia
+**Descripción:** mostrar badges `sin_asignar`, `por_vencer`, `vencido`, `respuesta_pendiente`.
+**Aceptación:** priorización visual inmediata en lista y detalle.
+
+---
+
 ## Dependencias backend (ya listas)
 - `GET /api/admin/leads/pipeline`
 - `PATCH /api/admin/leads/{ticket_id}/stage`
 - `GET /api/admin/leads/interactions`
 - Flujo demo lead capture: `action_id=open_demo_form`
-
+- Respuesta chat enriquecida con `ux_context`
