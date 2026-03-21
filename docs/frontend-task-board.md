@@ -74,7 +74,7 @@ Vista embudo usando `by_stage` + filtros.
 
 ### FE-401 · Inbox omnicanal
 **Descripción:** unificar ticket, mensajes, estados y adjuntos en una sola vista viva.
-**Backend contrato sugerido:** usar `ux_context` + timeline canónica + sockets por ticket (`conversation.message.created`, `ticket.status.changed`).
+**Backend contrato sugerido:** usar `ux_context` + timeline canónica + sockets por ticket (`conversation.message.created`, `ticket.status.changed`, `ticket.assignment.changed`).
 **Aceptación:** el operador no cambia de módulo para ver chat, estado, mapa y últimos eventos.
 
 ### FE-402 · Badge SLA / urgencia

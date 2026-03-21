@@ -4,7 +4,13 @@ import logging
 from typing import Optional
 from werkzeug.utils import secure_filename
 from flask import Blueprint, g, request, jsonify, current_app, send_from_directory, render_template
-from socket_service import emit_ticket_update, emit_ticket_comment, emit_new_ticket, emit_ticket_status_changed
+from socket_service import (
+    emit_ticket_update,
+    emit_ticket_comment,
+    emit_new_ticket,
+    emit_ticket_status_changed,
+    emit_ticket_assignment_changed,
+)
 from models import (
     MunicipioTicket,
     PymeTicket,
@@ -980,7 +986,19 @@ def asignar_ticket(current_user: User, tipo: str, ticket_id: int):
 
     db.session.commit()
     ticket_json = serialize_ticket_to_json(ticket_obj, tipo)
-    emit_ticket_status_changed(ticket_json)
+    assignment_payload = {
+        **ticket_json,
+        "ticket": ticket_json,
+        "ticket_id": ticket_obj.id,
+        "tipo": tipo,
+        "assigned_to": {
+            "id": empleado_asignado.id,
+            "nombre": empleado_asignado.name,
+            "email": empleado_asignado.email,
+        },
+        "actor_id": current_user.id,
+    }
+    emit_ticket_assignment_changed(assignment_payload)
 
     return jsonify({
         "ticket": ticket_json,

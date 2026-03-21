@@ -161,6 +161,12 @@ def emit_ticket_status_changed(data: Any) -> None:
     emit_ticket_update(data)
 
 
+def emit_ticket_assignment_changed(data: Any) -> None:
+    """Broadcast assignment changes with a normalized contract for new clients."""
+    _emit_standard_ticket_event('ticket.assignment.changed', data)
+    emit_ticket_update(data)
+
+
 def emit_tenant_update(tenant_slug: str, event_name: str, data: Any = None) -> None:
     """Emit an event to the tenant's specific room for real-time portal updates."""
     if tenant_slug:

@@ -1,7 +1,12 @@
 import unittest
 from unittest.mock import patch, call
 
-from socket_service import emit_new_ticket, emit_ticket_comment, emit_ticket_status_changed
+from socket_service import (
+    emit_new_ticket,
+    emit_ticket_comment,
+    emit_ticket_status_changed,
+    emit_ticket_assignment_changed,
+)
 
 
 class SocketServiceEventTests(unittest.TestCase):
@@ -40,6 +45,19 @@ class SocketServiceEventTests(unittest.TestCase):
         mock_emit.assert_has_calls(
             [
                 call('ticket.status.changed', payload, room='municipio_7'),
+                call('ticket_update', payload, room='municipio_7'),
+            ]
+        )
+
+    def test_emit_ticket_assignment_changed_emits_legacy_and_standard_events(self):
+        payload = {"socket_room": "municipio_7", "tenant_type": "municipio", "ticket_id": 11, "assigned_to": {"id": 22}}
+
+        with patch('socket_service.socketio.emit') as mock_emit:
+            emit_ticket_assignment_changed(payload)
+
+        mock_emit.assert_has_calls(
+            [
+                call('ticket.assignment.changed', payload, room='municipio_7'),
                 call('ticket_update', payload, room='municipio_7'),
             ]
         )
