@@ -1,4 +1,5 @@
 import unittest
+import json
 from unittest.mock import patch
 
 from app import create_app, db
@@ -22,7 +23,15 @@ class ChatOwnerContextPersistenceTest(unittest.TestCase):
             token="junin-static-token",
         )
         self.owner.set_password("pass")
-        db.session.add(self.owner)
+        self.default_owner = User(
+            name="Municipalidad Default",
+            email="default-owner@example.com",
+            rol="admin",
+            tipo_chat="municipio",
+            token="default-static-token",
+        )
+        self.default_owner.set_password("pass")
+        db.session.add_all([self.default_owner, self.owner])
         db.session.commit()
 
     def tearDown(self):
@@ -61,7 +70,7 @@ class ChatOwnerContextPersistenceTest(unittest.TestCase):
 
             second = self.client.post(
                 "/ask/municipio",
-                json={"pregunta": "Marcelo"},
+                json={"pregunta": "Marcelo", "token": self.owner.token},
                 headers=headers,
             )
 
@@ -74,6 +83,75 @@ class ChatOwnerContextPersistenceTest(unittest.TestCase):
         self.assertEqual(ux_context.get("owner_tipo_chat"), "municipio")
         self.assertFalse(ux_context.get("should_render_demo_shell"))
         self.assertEqual(mock_responder.call_count, 2)
+
+    def test_public_cookie_jwt_does_not_disable_demo_shell(self):
+        headers = {
+            "Origin": "https://chatboc.ar",
+            "X-Chat-Session-Id": "public-cookie-session",
+        }
+        self.client.set_cookie("auth_token", "fake.jwt.token")
+
+        with patch("utils.auth_helpers.user_from_token", return_value=self.owner), patch(
+            "services.logic.responder_chatboc",
+            return_value={"message_body": "demo", "message_type": "text", "fuente": "demo_selector"},
+        ):
+            response = self.client.post(
+                "/ask/municipio",
+                json={"pregunta": "__INIT__"},
+                headers=headers,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload.get("fuente"), "demo_selector")
+        self.assertNotIn(f'"owner_user_id": {self.owner.id}', json.dumps(payload, sort_keys=True))
+        ux_context = payload.get("ux_context") or {}
+        if ux_context:
+            self.assertTrue(ux_context.get("should_render_demo_shell"))
+            self.assertFalse(ux_context.get("trusted_owner"))
+            self.assertNotEqual(ux_context.get("owner_user_id"), self.owner.id)
+
+    def test_public_session_id_without_token_does_not_revive_persisted_owner(self):
+        session_id = "sticky-session-owner"
+        headers = {
+            "Origin": "https://chatboc.ar",
+            "X-Chat-Session-Id": session_id,
+        }
+
+        with patch("services.logic.responder_chatboc") as mock_responder:
+            mock_responder.side_effect = [
+                {
+                    "message_body": "tenant real",
+                    "message_type": "text",
+                    "fuente": "tenant_real",
+                },
+                {
+                    "message_body": "demo selector",
+                    "message_type": "text",
+                    "fuente": "demo_selector",
+                },
+            ]
+
+            first = self.client.post(
+                "/ask/municipio",
+                json={"pregunta": "__INIT__", "token": self.owner.token},
+                headers=headers,
+            )
+            second = self.client.post(
+                "/ask/municipio",
+                json={"pregunta": "__INIT__"},
+                headers=headers,
+            )
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        second_payload = second.get_json()
+        self.assertEqual(second_payload.get("fuente"), "demo_selector")
+        second_ux_context = second_payload.get("ux_context") or {}
+        if second_ux_context:
+            self.assertTrue(second_ux_context.get("should_render_demo_shell"))
+            self.assertFalse(second_ux_context.get("trusted_owner"))
+            self.assertNotEqual(second_ux_context.get("owner_resolution_source"), "session_owner_context")
 
 
 if __name__ == "__main__":

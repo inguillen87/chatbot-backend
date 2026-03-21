@@ -1179,10 +1179,15 @@ def anon_o_token_requerido(f):
         # ensure current_user is WIPED to enforce anonymous mode.
         # This handles the case where obtener_token() logic might have been bypassed or race conditions.
         if is_public_landing and current_user and not request.headers.get("Authorization"):
-             # It likely came from cookie. Force Anon.
-             current_app.logger.warning(f"[auth] Public origin detected with Cookie JWT. Forcing Anonymous. User was: {current_user.id}")
+             # It likely came from a first-party auth cookie. Force anonymous/demo
+             # mode unless an explicit entity token re-established tenant context.
+             current_app.logger.warning(
+                 f"[auth] Public origin detected with Cookie JWT. Forcing Anonymous. User was: {current_user.id}"
+             )
              current_user = None
-             # Owner user remains if resolved from entity token
+             if owner_resolution_source in {"jwt_parent_owner", "jwt_self_owner"}:
+                 owner_user = None
+                 owner_resolution_source = "anonymous"
 
         # Si después de todo no hay owner (ej. request anónima sin token),
         # cargar el owner por defecto para el municipio.

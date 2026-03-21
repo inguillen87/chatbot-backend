@@ -4,7 +4,13 @@ import logging
 from typing import Optional
 from werkzeug.utils import secure_filename
 from flask import Blueprint, g, request, jsonify, current_app, send_from_directory, render_template
-from socket_service import emit_ticket_update, emit_ticket_comment, emit_new_ticket
+from socket_service import (
+    emit_ticket_update,
+    emit_ticket_comment,
+    emit_new_ticket,
+    emit_ticket_status_changed,
+    emit_ticket_assignment_changed,
+)
 from models import (
     MunicipioTicket,
     PymeTicket,
@@ -46,6 +52,77 @@ TICKET_ALLOWED_STATES = [
     "esperando_agente_en_vivo",
     "cerrado",
 ]
+
+
+def _build_ticket_operational_badges(ticket_obj) -> dict:
+    """Compute lightweight SLA/ops hints for frontend inboxes.
+
+    No reemplaza un SLA engine formal, pero da una base consistente para pintar
+    badges de priorización (`sin_asignar`, `por_vencer`, `vencido`,
+    `respuesta_pendiente`) en paneles y vistas de tracking.
+    """
+
+    now = get_local_now()
+    created_at = getattr(ticket_obj, "fecha", None) or now
+    last_activity = getattr(ticket_obj, "ultima_actividad", None) or created_at
+
+    def _normalize_dt(value):
+        if value is None:
+            return None
+        if getattr(value, "tzinfo", None) is None:
+            return value.replace(tzinfo=now.tzinfo)
+        return value
+
+    created_at = _normalize_dt(created_at)
+    last_activity = _normalize_dt(last_activity)
+    estado = (getattr(ticket_obj, "estado", None) or "").strip().lower()
+    assigned_user_id = getattr(ticket_obj, "asignado_a_id", None)
+
+    age_hours = max((now - created_at).total_seconds() / 3600, 0)
+    inactivity_hours = max((now - last_activity).total_seconds() / 3600, 0)
+    is_closed = estado in {"cerrado", "resuelto"}
+
+    badges: list[str] = []
+    sla_status = "ok"
+
+    if is_closed:
+        return {
+            "sla_status": "resuelto",
+            "badges": ["resuelto"],
+            "age_hours": round(age_hours, 2),
+            "inactivity_hours": round(inactivity_hours, 2),
+        }
+
+    if not assigned_user_id:
+        badges.append("sin_asignar")
+        if age_hours >= 24:
+            badges.append("vencido")
+            sla_status = "vencido"
+        elif age_hours >= 8:
+            badges.append("por_vencer")
+            sla_status = "por_vencer"
+        else:
+            sla_status = "sin_asignar"
+    else:
+        if inactivity_hours >= 24:
+            badges.extend(["respuesta_pendiente", "vencido"])
+            sla_status = "vencido"
+        elif inactivity_hours >= 8:
+            badges.extend(["respuesta_pendiente", "por_vencer"])
+            sla_status = "por_vencer"
+        elif inactivity_hours >= 2:
+            badges.append("respuesta_pendiente")
+            sla_status = "seguimiento"
+
+    if not badges:
+        badges.append("ok")
+
+    return {
+        "sla_status": sla_status,
+        "badges": list(dict.fromkeys(badges)),
+        "age_hours": round(age_hours, 2),
+        "inactivity_hours": round(inactivity_hours, 2),
+    }
 
 
 def _validar_asignacion_empleado(ticket_obj, current_user: User):
@@ -297,6 +374,7 @@ def serialize_ticket_to_json(ticket, ticket_type):
         socket_room = f"{room_prefix}_{tenant_id}"
 
     assigned_user = getattr(ticket, "asignado_a", None)
+    operational_hints = _build_ticket_operational_badges(ticket)
 
     estado_original = getattr(ticket, "estado", None) or "desconocido"
     estado_serializado = "resuelto" if estado_original == "cerrado" else estado_original
@@ -345,6 +423,12 @@ def serialize_ticket_to_json(ticket, ticket_type):
             else None
         ),
         "asignado_en": datetime_to_iso_utc(getattr(ticket, "asignado_en", None)),
+        "sla_status": operational_hints["sla_status"],
+        "operational_badges": operational_hints["badges"],
+        "operational_metrics": {
+            "age_hours": operational_hints["age_hours"],
+            "inactivity_hours": operational_hints["inactivity_hours"],
+        },
     }
     return serialized_data
 
@@ -793,6 +877,7 @@ def _serialize_ticket_details(ticket, ticket_type):
     ultima_actualizacion_dt = getattr(ticket, 'ultima_actividad', None) or getattr(ticket, 'fecha', None)
 
     assigned_user = getattr(ticket, "asignado_a", None)
+    operational_hints = _build_ticket_operational_badges(ticket)
 
     ticket_data = {
         "id": ticket.id,
@@ -830,6 +915,12 @@ def _serialize_ticket_details(ticket, ticket_type):
         "timeline": timeline,
         "progreso_estados": progreso_estados,
         "ultima_actualizacion": datetime_to_iso_utc(ultima_actualizacion_dt),
+        "sla_status": operational_hints["sla_status"],
+        "operational_badges": operational_hints["badges"],
+        "operational_metrics": {
+            "age_hours": operational_hints["age_hours"],
+            "inactivity_hours": operational_hints["inactivity_hours"],
+        },
         "asignado_a": (
             {
                 "id": assigned_user.id,
@@ -980,7 +1071,19 @@ def asignar_ticket(current_user: User, tipo: str, ticket_id: int):
 
     db.session.commit()
     ticket_json = serialize_ticket_to_json(ticket_obj, tipo)
-    emit_ticket_update(ticket_json)
+    assignment_payload = {
+        **ticket_json,
+        "ticket": ticket_json,
+        "ticket_id": ticket_obj.id,
+        "tipo": tipo,
+        "assigned_to": {
+            "id": empleado_asignado.id,
+            "nombre": empleado_asignado.name,
+            "email": empleado_asignado.email,
+        },
+        "actor_id": current_user.id,
+    }
+    emit_ticket_assignment_changed(assignment_payload)
 
     return jsonify({
         "ticket": ticket_json,
@@ -1408,7 +1511,7 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
 
     # Notificación por Websocket
     ticket_json = serialize_ticket_to_json(ticket_obj, tipo)
-    emit_ticket_update(ticket_json)
+    emit_ticket_status_changed(ticket_json)
 
     comentarios = [
         {

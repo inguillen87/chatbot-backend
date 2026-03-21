@@ -33,6 +33,7 @@ from services.notifications import enviar_notificacion_sms, enviar_notificacion_
 from services.email_service import enviar_email
 from utils.auth_helpers import (
     anon_o_token_requerido,
+    obtener_entity_token,
     obtener_token,
     user_from_token,
     _is_jwt_token,
@@ -436,6 +437,34 @@ def _owner_context_is_trusted(owner_user: Optional[User], resolution_source: Opt
         "explicit_entity_token",
         "session_owner_context",
     }
+
+
+def _can_restore_session_owner_context(
+    *,
+    persisted_owner_id: Optional[object],
+    persisted_resolution_source: Optional[str],
+    is_public_landing: bool,
+    is_anonymous: bool,
+    has_entity_token: bool,
+) -> bool:
+    """Return True when a stored owner can safely be revived from chat session state."""
+
+    if not persisted_owner_id:
+        return False
+
+    normalized_source = (persisted_resolution_source or "").strip().lower()
+    if normalized_source not in {
+        "jwt_parent_owner",
+        "jwt_self_owner",
+        "static_entity_token",
+        "explicit_entity_token",
+    }:
+        return False
+
+    if is_public_landing and is_anonymous and not has_entity_token:
+        return False
+
+    return True
 
 
 def _build_widget_ux_context(
@@ -1534,10 +1563,27 @@ def _procesar_chat(
             if chat_context_obj:
                 chat_context_obj.context_data = contexto_chat
 
+        is_public_landing = _is_public_landing_request()
+        explicit_entity_token = bool(obtener_entity_token())
+
         persisted_owner_id = contexto_chat.get("resolved_owner_user_id") if isinstance(contexto_chat, dict) else None
-        if persisted_owner_id and (
+        persisted_owner_resolution_source = (
+            contexto_chat.get("resolved_owner_resolution_source")
+            if isinstance(contexto_chat, dict)
+            else None
+        )
+        if (
+            _can_restore_session_owner_context(
+                persisted_owner_id=persisted_owner_id,
+                persisted_resolution_source=persisted_owner_resolution_source,
+                is_public_landing=is_public_landing,
+                is_anonymous=is_anonymous,
+                has_entity_token=explicit_entity_token,
+            )
+            and (
             not owner_user
             or owner_resolution_source == "default_municipio_owner"
+            )
         ):
             persisted_owner = db.session.get(User, persisted_owner_id)
             if persisted_owner:
@@ -1598,8 +1644,6 @@ def _procesar_chat(
 
         # Enforce Demo Flow for Public Origin or Missing Auth
         # If we are on the public site and don't have a valid user context, force the demo selector
-        is_public_landing = _is_public_landing_request()
-
         # If on public landing and no explicit owner (or leaked owner context from cookie that we stripped),
         # force tenant hint to generic so demo flow triggers.
         if is_public_landing and not owner_user and not demo_session_activa:
@@ -1670,6 +1714,7 @@ def _procesar_chat(
         ):
             contexto_chat["resolved_owner_user_id"] = owner_user.id
             contexto_chat["resolved_owner_tipo_chat"] = (getattr(owner_user, "tipo_chat", None) or tipo_chat or "").strip().lower() or None
+            contexto_chat["resolved_owner_resolution_source"] = owner_resolution_source
             if chat_context_obj:
                 flag_modified(chat_context_obj, "context_data")
 
