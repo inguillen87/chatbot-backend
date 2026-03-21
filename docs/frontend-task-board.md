@@ -79,6 +79,7 @@ Vista embudo usando `by_stage` + filtros.
 
 ### FE-402 · Badge SLA / urgencia
 **Descripción:** mostrar badges `sin_asignar`, `por_vencer`, `vencido`, `respuesta_pendiente`.
+**Backend contrato sugerido:** consumir `sla_status`, `operational_badges` y `operational_metrics`.
 **Aceptación:** priorización visual inmediata en lista y detalle.
 
 ---
