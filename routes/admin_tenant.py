@@ -170,6 +170,181 @@ def _is_authorized_for_tenant(current_user: User, tenant: TenantProfile) -> bool
     return False
 
 
+def _build_tenant_dashboard_bundle_payload(
+    tenant: TenantProfile,
+    *,
+    leads_limit: int = 100,
+    surveys_limit: int = 20,
+    unread_limit: int = 30,
+    since_minutes: int = 1440,
+) -> dict:
+    now = datetime.now(timezone.utc)
+    cutoff_unread = now - timedelta(minutes=since_minutes)
+
+    lead_rows = []
+    for ticket in MunicipioTicket.query.filter_by(tenant_id=tenant.id).order_by(MunicipioTicket.ultima_actividad.desc()).limit(leads_limit).all():
+        lead_rows.append(("municipio", ticket))
+    for ticket in PymeTicket.query.filter_by(tenant_id=tenant.id).order_by(PymeTicket.fecha.desc()).limit(leads_limit).all():
+        lead_rows.append(("pyme", ticket))
+
+    lead_items = []
+    by_stage = {}
+    sla_breached = 0
+    for ticket_type, ticket in lead_rows:
+        details = _ticket_details(ticket)
+        stage = str(details.get('lead_stage') or ticket.estado or 'nuevo').lower()
+        by_stage[stage] = by_stage.get(stage, 0) + 1
+        last_seen = getattr(ticket, 'ultima_actividad', None) or ticket.fecha
+        last_dt = last_seen if (last_seen and last_seen.tzinfo) else (last_seen.replace(tzinfo=timezone.utc) if last_seen else None)
+        ticket_sla = bool(last_dt and (now - last_dt).total_seconds() > 1800 and stage not in {'ganado', 'perdido'})
+        if ticket_sla:
+            sla_breached += 1
+        lead_items.append({
+            'ticket_type': ticket_type,
+            'ticket_id': ticket.id,
+            'nombre': getattr(ticket, 'nombre_vecino', None) or getattr(ticket, 'nombre_cliente', None),
+            'categoria': getattr(ticket, 'categoria', None),
+            'stage': stage,
+            'status': ticket.estado,
+            'sla_breached': ticket_sla,
+            'last_seen': last_seen.isoformat() if last_seen else None,
+        })
+
+    lead_items.sort(key=lambda item: ((item.get('sla_breached') is True), item.get('last_seen') or ''), reverse=True)
+
+    survey_rows = EncEncuesta.query.filter_by(tenant_id=tenant.id).order_by(EncEncuesta.updated_at.desc()).limit(surveys_limit).all()
+    survey_items = []
+    total_responses = 0
+    for survey in survey_rows:
+        responses_count = EncRespuesta.query.filter_by(encuesta_id=survey.id).count()
+        total_responses += responses_count
+        survey_items.append({
+            'id': survey.id,
+            'slug': survey.slug,
+            'titulo': survey.titulo,
+            'estado': survey.estado,
+            'tipo': survey.tipo,
+            'respuestas': responses_count,
+            'updated_at': survey.updated_at.isoformat() if survey.updated_at else None,
+        })
+
+    unread_items = []
+    muni_unread = (
+        db.session.query(TicketComentario.municipio_ticket_id, func.count(TicketComentario.id), func.max(TicketComentario.fecha))
+        .join(MunicipioTicket, MunicipioTicket.id == TicketComentario.municipio_ticket_id)
+        .filter(
+            MunicipioTicket.tenant_id == tenant.id,
+            TicketComentario.es_admin.is_(False),
+            TicketComentario.fecha >= cutoff_unread,
+        )
+        .group_by(TicketComentario.municipio_ticket_id)
+        .all()
+    )
+    for ticket_id, unread_count, last_at in muni_unread:
+        unread_items.append({
+            'ticket_type': 'municipio',
+            'ticket_id': ticket_id,
+            'unread_count': int(unread_count or 0),
+            'last_message_at': last_at.isoformat() if last_at else None,
+        })
+
+    pyme_unread = (
+        db.session.query(TicketComentario.pyme_ticket_id, func.count(TicketComentario.id), func.max(TicketComentario.fecha))
+        .join(PymeTicket, PymeTicket.id == TicketComentario.pyme_ticket_id)
+        .filter(
+            PymeTicket.tenant_id == tenant.id,
+            TicketComentario.es_admin.is_(False),
+            TicketComentario.fecha >= cutoff_unread,
+        )
+        .group_by(TicketComentario.pyme_ticket_id)
+        .all()
+    )
+    for ticket_id, unread_count, last_at in pyme_unread:
+        unread_items.append({
+            'ticket_type': 'pyme',
+            'ticket_id': ticket_id,
+            'unread_count': int(unread_count or 0),
+            'last_message_at': last_at.isoformat() if last_at else None,
+        })
+
+    unread_items.sort(key=lambda item: item.get('last_message_at') or '', reverse=True)
+
+    workload_items = []
+    for emp in User.query.filter_by(tenant_id=tenant.id, es_empleado=True).all():
+        workload_items.append({
+            'employee_id': emp.id,
+            'name': emp.name,
+            'email': emp.email,
+            'workload_open_tickets': _employee_open_workload(tenant.id, emp.id),
+            'scope': _employee_scope(emp),
+        })
+    workload_items.sort(key=lambda item: item['workload_open_tickets'], reverse=True)
+
+    recommended_actions = []
+    if sla_breached:
+        recommended_actions.append({
+            'kind': 'review_sla',
+            'priority': 'high',
+            'message': 'Hay leads abiertos con SLA vencido o sin respuesta reciente.',
+        })
+    if unread_items:
+        recommended_actions.append({
+            'kind': 'reply_unread',
+            'priority': 'high',
+            'message': 'Hay conversaciones de tickets con mensajes sin leer.',
+        })
+    if workload_items and workload_items[0].get('workload_open_tickets', 0) >= 5:
+        recommended_actions.append({
+            'kind': 'rebalance_team',
+            'priority': 'medium',
+            'message': 'Conviene redistribuir tickets entre empleados.',
+        })
+    if not survey_items:
+        recommended_actions.append({
+            'kind': 'launch_survey',
+            'priority': 'medium',
+            'message': 'No hay encuestas recientes para medir feedback del tenant.',
+        })
+
+    return {
+        'tenant': {
+            'id': tenant.id,
+            'slug': tenant.slug,
+            'nombre': tenant.nombre,
+            'tipo': tenant.tipo,
+            'plan': tenant.plan,
+            'is_active': bool(getattr(tenant, 'is_active', True)),
+        },
+        'summary': {
+            'total_leads': len(lead_items),
+            'sla_breached': sla_breached,
+            'total_surveys': len(survey_items),
+            'total_survey_responses': total_responses,
+            'tickets_with_unread': len(unread_items),
+            'employees': len(workload_items),
+        },
+        'leads': {
+            'total': len(lead_items),
+            'by_stage': by_stage,
+            'items': lead_items[:leads_limit],
+        },
+        'surveys': {
+            'total_surveys': len(survey_items),
+            'total_responses': total_responses,
+            'items': survey_items,
+        },
+        'unread': {
+            'since_minutes': since_minutes,
+            'total_tickets_with_unread': len(unread_items),
+            'items': unread_items[:unread_limit],
+        },
+        'team': {
+            'items': workload_items,
+        },
+        'recommended_actions': recommended_actions,
+    }
+
+
 def _plan_allows_integrations(tenant: TenantProfile) -> bool:
     plan_key = (tenant.plan or "").strip().lower()
     return plan_key in ("pro", "full")
@@ -1194,6 +1369,37 @@ def tenant_employees_workload(current_user, slug):
 
     items.sort(key=lambda x: x['workload_open_tickets'], reverse=True)
     return jsonify({'tenant_id': tenant.id, 'tenant_slug': tenant.slug, 'items': items})
+
+
+@admin_tenant_bp.route('/api/admin/tenants/<slug>/dashboard-bundle', methods=['GET'])
+@token_requerido
+@require_tenant
+def tenant_dashboard_bundle(current_user, slug):
+    tenant = _resolve_admin_tenant(current_user, slug)
+    if not tenant:
+        return jsonify({'error': 'Tenant not found'}), 404
+    if not _is_authorized_for_tenant(current_user, tenant):
+        return jsonify({'error': 'Unauthorized'}), 403
+
+    leads_limit = max(1, min(int(request.args.get('leads_limit', 100) or 100), 250))
+    surveys_limit = max(1, min(int(request.args.get('surveys_limit', 20) or 20), 100))
+    unread_limit = max(1, min(int(request.args.get('unread_limit', 30) or 30), 200))
+    since_minutes = max(5, min(int(request.args.get('since_minutes', 1440) or 1440), 7 * 24 * 60))
+
+    payload = _build_tenant_dashboard_bundle_payload(
+        tenant,
+        leads_limit=leads_limit,
+        surveys_limit=surveys_limit,
+        unread_limit=unread_limit,
+        since_minutes=since_minutes,
+    )
+    payload['meta'] = {
+        'leads_limit': leads_limit,
+        'surveys_limit': surveys_limit,
+        'unread_limit': unread_limit,
+        'since_minutes': since_minutes,
+    }
+    return jsonify(payload)
 
 @admin_tenant_bp.route('/api/admin/employees', methods=['GET'])
 @token_requerido
