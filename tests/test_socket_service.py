@@ -6,6 +6,9 @@ from socket_service import (
     emit_ticket_comment,
     emit_ticket_status_changed,
     emit_ticket_assignment_changed,
+    emit_ticket_presence_changed,
+    emit_conversation_message_read,
+    emit_ticket_unread_changed,
 )
 
 
@@ -29,12 +32,14 @@ class SocketServiceEventTests(unittest.TestCase):
         with patch('socket_service.socketio.emit') as mock_emit:
             emit_ticket_comment(payload)
 
-        mock_emit.assert_has_calls(
-            [
-                call('new_comment', payload, room='pyme_3'),
-                call('conversation.message.created', payload, room='pyme_3'),
-            ]
-        )
+        assert mock_emit.call_args_list[0] == call('new_comment', payload, room='pyme_3')
+        event_name, event_payload = mock_emit.call_args_list[1].args[:2]
+        self.assertEqual(event_name, 'conversation.message.created')
+        self.assertEqual(event_payload['room'], 'pyme_3')
+        self.assertEqual(event_payload['ticket']['id'], 15)
+        self.assertEqual(event_payload['ticket']['tenant_type'], 'pyme')
+        self.assertEqual(event_payload['payload'], payload)
+        self.assertEqual(mock_emit.call_args_list[1].kwargs, {'room': 'pyme_3'})
 
     def test_emit_ticket_status_changed_emits_legacy_and_standard_events(self):
         payload = {"socket_room": "municipio_7", "tenant_type": "municipio", "ticket_id": 11, "estado": "en_proceso"}
@@ -42,12 +47,14 @@ class SocketServiceEventTests(unittest.TestCase):
         with patch('socket_service.socketio.emit') as mock_emit:
             emit_ticket_status_changed(payload)
 
-        mock_emit.assert_has_calls(
-            [
-                call('ticket.status.changed', payload, room='municipio_7'),
-                call('ticket_update', payload, room='municipio_7'),
-            ]
-        )
+        event_name, event_payload = mock_emit.call_args_list[0].args[:2]
+        self.assertEqual(event_name, 'ticket.status.changed')
+        self.assertEqual(event_payload['room'], 'municipio_7')
+        self.assertEqual(event_payload['ticket']['id'], 11)
+        self.assertEqual(event_payload['ticket']['status'], 'en_proceso')
+        self.assertEqual(event_payload['payload'], payload)
+        self.assertEqual(mock_emit.call_args_list[0].kwargs, {'room': 'municipio_7'})
+        self.assertEqual(mock_emit.call_args_list[1], call('ticket_update', payload, room='municipio_7'))
 
     def test_emit_ticket_assignment_changed_emits_legacy_and_standard_events(self):
         payload = {"socket_room": "municipio_7", "tenant_type": "municipio", "ticket_id": 11, "assigned_to": {"id": 22}}
@@ -55,12 +62,50 @@ class SocketServiceEventTests(unittest.TestCase):
         with patch('socket_service.socketio.emit') as mock_emit:
             emit_ticket_assignment_changed(payload)
 
-        mock_emit.assert_has_calls(
-            [
-                call('ticket.assignment.changed', payload, room='municipio_7'),
-                call('ticket_update', payload, room='municipio_7'),
-            ]
-        )
+        event_name, event_payload = mock_emit.call_args_list[0].args[:2]
+        self.assertEqual(event_name, 'ticket.assignment.changed')
+        self.assertEqual(event_payload['room'], 'municipio_7')
+        self.assertEqual(event_payload['ticket']['id'], 11)
+        self.assertEqual(event_payload['payload'], payload)
+        self.assertEqual(mock_emit.call_args_list[0].kwargs, {'room': 'municipio_7'})
+        self.assertEqual(mock_emit.call_args_list[1], call('ticket_update', payload, room='municipio_7'))
+
+    def test_emit_ticket_presence_changed_uses_enterprise_envelope(self):
+        payload = {"socket_room": "municipio_7", "tenant_type": "municipio", "ticket_id": 11, "presence_status": "active"}
+
+        with patch('socket_service.socketio.emit') as mock_emit:
+            emit_ticket_presence_changed(payload)
+
+        event_name, event_payload = mock_emit.call_args.args[:2]
+        self.assertEqual(event_name, 'ticket.presence.changed')
+        self.assertEqual(event_payload['ticket']['id'], 11)
+        self.assertEqual(event_payload['payload']['presence_status'], 'active')
+        self.assertEqual(mock_emit.call_args.kwargs, {'room': 'municipio_7'})
+
+    def test_emit_conversation_message_read_uses_enterprise_envelope(self):
+        payload = {"socket_room": "municipio_7", "tenant_type": "municipio", "ticket_id": 11, "last_read_comment_id": 55, "read_at": "2026-03-21T00:00:00+00:00"}
+
+        with patch('socket_service.socketio.emit') as mock_emit:
+            emit_conversation_message_read(payload)
+
+        event_name, event_payload = mock_emit.call_args.args[:2]
+        self.assertEqual(event_name, 'conversation.message.read')
+        self.assertEqual(event_payload['ticket']['id'], 11)
+        self.assertEqual(event_payload['message']['read_at'], '2026-03-21T00:00:00+00:00')
+        self.assertEqual(event_payload['payload']['last_read_comment_id'], 55)
+        self.assertEqual(mock_emit.call_args.kwargs, {'room': 'municipio_7'})
+
+    def test_emit_ticket_unread_changed_uses_enterprise_envelope(self):
+        payload = {"socket_room": "municipio_7", "tenant_type": "municipio", "ticket_id": 11, "summary": {"unread_viewer_count": 2}}
+
+        with patch('socket_service.socketio.emit') as mock_emit:
+            emit_ticket_unread_changed(payload)
+
+        event_name, event_payload = mock_emit.call_args.args[:2]
+        self.assertEqual(event_name, 'ticket.unread.changed')
+        self.assertEqual(event_payload['ticket']['id'], 11)
+        self.assertEqual(event_payload['payload']['summary']['unread_viewer_count'], 2)
+        self.assertEqual(mock_emit.call_args.kwargs, {'room': 'municipio_7'})
 
 
 if __name__ == '__main__':

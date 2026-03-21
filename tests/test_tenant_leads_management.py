@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 import jwt
 
 from app import db
-from models import EncEncuesta, EncRespuesta, MunicipioTicket, TenantProfile, TicketComentario, User
+from models import EncEncuesta, EncRespuesta, MunicipioTicket, TenantProfile, TicketComentario, TicketRealtimeState, User
 
 
 def _headers(app, user):
@@ -307,6 +307,18 @@ def test_tenant_dashboard_bundle(client, app):
     db.session.add(EncRespuesta(encuesta_id=survey.id, tenant_id=tenant.id, canal="web"))
     db.session.add(TicketComentario(municipio_ticket_id=ticket.id, comentario="mensaje sin leer", es_admin=False))
     db.session.commit()
+    db.session.add(
+        TicketRealtimeState(
+            ticket_type="municipio",
+            ticket_id=ticket.id,
+            viewer_key=f"user:{employee.id}",
+            viewer_user_id=employee.id,
+            viewer_role="empleado",
+            presence_status="active",
+            last_read_comment_id=0,
+        )
+    )
+    db.session.commit()
 
     resp = client.get(
         f"/api/admin/tenants/{tenant.slug}/dashboard-bundle?since_minutes=60",
@@ -323,6 +335,13 @@ def test_tenant_dashboard_bundle(client, app):
     assert "recommended_actions" in body
     assert body["summary"]["total_leads"] >= 1
     assert body["summary"]["tickets_with_unread"] >= 1
+    assert body["summary"]["active_viewers"] >= 1
+    assert body["summary"]["unread_viewers"] >= 1
+    assert body["leads"]["items"][0]["collaboration_state"]["active_viewers_count"] >= 1
+    assert body["leads"]["items"][0]["priority_score"] >= 1
+    assert body["unread"]["items"][0]["collaboration_state"]["unread_viewer_count"] >= 1
+    assert body["team"]["items"][0]["active_ticket_views"] >= 1
+    assert body["team"]["items"][0]["unread_ticket_views"] >= 1
 
 
 def test_tenant_heatmap_summary(client, app):

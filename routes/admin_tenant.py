@@ -21,6 +21,7 @@ from models import (
     EncEncuesta,
     EncRespuesta,
     TicketComentario,
+    TicketRealtimeState,
 )
 from routes.catalogo import _formatear_producto
 from routes.carrito import _product_query_for_tenant
@@ -32,6 +33,7 @@ from services.qdrant_service import index_catalog_item
 from services.tenant_factory import create_tenant_from_template, assign_number_to_tenant
 from services.tenant_resolver import apply_tenant_alias
 from services.live_chat_schedule import build_live_chat_status, build_schedule_from_config
+from services.ticket_realtime_state import build_ticket_collaboration_state
 
 admin_tenant_bp = Blueprint('admin_tenant_bp', __name__)
 
@@ -190,6 +192,20 @@ def _build_tenant_dashboard_bundle_payload(
     lead_items = []
     by_stage = {}
     sla_breached = 0
+    total_active_viewers = 0
+    total_unread_viewers = 0
+
+    def _operational_priority_score(*, sla_breached_flag: bool, collaboration_state: dict, stage: str) -> int:
+        score = 0
+        if sla_breached_flag:
+            score += 50
+        score += int(collaboration_state.get('unread_viewer_count', 0) or 0) * 15
+        score += int(collaboration_state.get('active_viewers_count', 0) or 0) * 10
+        score += int(collaboration_state.get('idle_viewers_count', 0) or 0) * 5
+        if stage in {'nuevo', 'contactado'}:
+            score += 10
+        return score
+
     for ticket_type, ticket in lead_rows:
         details = _ticket_details(ticket)
         stage = str(details.get('lead_stage') or ticket.estado or 'nuevo').lower()
@@ -197,8 +213,16 @@ def _build_tenant_dashboard_bundle_payload(
         last_seen = getattr(ticket, 'ultima_actividad', None) or ticket.fecha
         last_dt = last_seen if (last_seen and last_seen.tzinfo) else (last_seen.replace(tzinfo=timezone.utc) if last_seen else None)
         ticket_sla = bool(last_dt and (now - last_dt).total_seconds() > 1800 and stage not in {'ganado', 'perdido'})
+        collaboration_state = build_ticket_collaboration_state(ticket_type=ticket_type, ticket_id=ticket.id)
+        priority_score = _operational_priority_score(
+            sla_breached_flag=ticket_sla,
+            collaboration_state=collaboration_state,
+            stage=stage,
+        )
         if ticket_sla:
             sla_breached += 1
+        total_active_viewers += collaboration_state.get('active_viewers_count', 0) or 0
+        total_unread_viewers += collaboration_state.get('unread_viewer_count', 0) or 0
         lead_items.append({
             'ticket_type': ticket_type,
             'ticket_id': ticket.id,
@@ -208,9 +232,18 @@ def _build_tenant_dashboard_bundle_payload(
             'status': ticket.estado,
             'sla_breached': ticket_sla,
             'last_seen': last_seen.isoformat() if last_seen else None,
+            'collaboration_state': collaboration_state,
+            'priority_score': priority_score,
         })
 
-    lead_items.sort(key=lambda item: ((item.get('sla_breached') is True), item.get('last_seen') or ''), reverse=True)
+    lead_items.sort(
+        key=lambda item: (
+            item.get('priority_score') or 0,
+            (item.get('sla_breached') is True),
+            item.get('last_seen') or '',
+        ),
+        reverse=True,
+    )
 
     survey_rows = EncEncuesta.query.filter_by(tenant_id=tenant.id).order_by(EncEncuesta.updated_at.desc()).limit(surveys_limit).all()
     survey_items = []
@@ -241,11 +274,13 @@ def _build_tenant_dashboard_bundle_payload(
         .all()
     )
     for ticket_id, unread_count, last_at in muni_unread:
+        collaboration_state = build_ticket_collaboration_state(ticket_type='municipio', ticket_id=ticket_id)
         unread_items.append({
             'ticket_type': 'municipio',
             'ticket_id': ticket_id,
             'unread_count': int(unread_count or 0),
             'last_message_at': last_at.isoformat() if last_at else None,
+            'collaboration_state': collaboration_state,
         })
 
     pyme_unread = (
@@ -260,23 +295,46 @@ def _build_tenant_dashboard_bundle_payload(
         .all()
     )
     for ticket_id, unread_count, last_at in pyme_unread:
+        collaboration_state = build_ticket_collaboration_state(ticket_type='pyme', ticket_id=ticket_id)
         unread_items.append({
             'ticket_type': 'pyme',
             'ticket_id': ticket_id,
             'unread_count': int(unread_count or 0),
             'last_message_at': last_at.isoformat() if last_at else None,
+            'collaboration_state': collaboration_state,
         })
 
     unread_items.sort(key=lambda item: item.get('last_message_at') or '', reverse=True)
 
+    def _employee_collaboration_metrics(employee_id: int) -> dict:
+        rows = TicketRealtimeState.query.filter_by(viewer_user_id=employee_id).all()
+        active_ticket_views: set[tuple[str, int]] = set()
+        idle_ticket_views: set[tuple[str, int]] = set()
+        unread_ticket_views: set[tuple[str, int]] = set()
+        for row in rows:
+            collaboration_state = build_ticket_collaboration_state(ticket_type=row.ticket_type, ticket_id=row.ticket_id)
+            if collaboration_state.get('active_viewers_count', 0):
+                active_ticket_views.add((row.ticket_type, row.ticket_id))
+            if collaboration_state.get('idle_viewers_count', 0):
+                idle_ticket_views.add((row.ticket_type, row.ticket_id))
+            if collaboration_state.get('unread_viewer_count', 0):
+                unread_ticket_views.add((row.ticket_type, row.ticket_id))
+        return {
+            'active_ticket_views': len(active_ticket_views),
+            'idle_ticket_views': len(idle_ticket_views),
+            'unread_ticket_views': len(unread_ticket_views),
+        }
+
     workload_items = []
     for emp in User.query.filter_by(tenant_id=tenant.id, es_empleado=True).all():
+        collaboration_metrics = _employee_collaboration_metrics(emp.id)
         workload_items.append({
             'employee_id': emp.id,
             'name': emp.name,
             'email': emp.email,
             'workload_open_tickets': _employee_open_workload(tenant.id, emp.id),
             'scope': _employee_scope(emp),
+            **collaboration_metrics,
         })
     workload_items.sort(key=lambda item: item['workload_open_tickets'], reverse=True)
 
@@ -322,6 +380,8 @@ def _build_tenant_dashboard_bundle_payload(
             'total_survey_responses': total_responses,
             'tickets_with_unread': len(unread_items),
             'employees': len(workload_items),
+            'active_viewers': total_active_viewers,
+            'unread_viewers': total_unread_viewers,
         },
         'leads': {
             'total': len(lead_items),
@@ -1426,11 +1486,13 @@ def tenant_unread_ticket_summary(current_user, slug):
         .all()
     )
     for ticket_id, unread_count, last_at in muni_rows:
+        collaboration_state = build_ticket_collaboration_state(ticket_type='municipio', ticket_id=ticket_id)
         items.append({
             'ticket_type': 'municipio',
             'ticket_id': ticket_id,
             'unread_count': int(unread_count or 0),
             'last_message_at': last_at.isoformat() if last_at else None,
+            'collaboration_state': collaboration_state,
         })
 
     pyme_rows = (
@@ -1445,11 +1507,13 @@ def tenant_unread_ticket_summary(current_user, slug):
         .all()
     )
     for ticket_id, unread_count, last_at in pyme_rows:
+        collaboration_state = build_ticket_collaboration_state(ticket_type='pyme', ticket_id=ticket_id)
         items.append({
             'ticket_type': 'pyme',
             'ticket_id': ticket_id,
             'unread_count': int(unread_count or 0),
             'last_message_at': last_at.isoformat() if last_at else None,
+            'collaboration_state': collaboration_state,
         })
 
     items.sort(key=lambda x: (x['last_message_at'] or ''), reverse=True)

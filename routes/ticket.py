@@ -10,6 +10,9 @@ from socket_service import (
     emit_new_ticket,
     emit_ticket_status_changed,
     emit_ticket_assignment_changed,
+    emit_ticket_presence_changed,
+    emit_conversation_message_read,
+    emit_ticket_unread_changed,
 )
 from models import (
     MunicipioTicket,
@@ -25,6 +28,13 @@ from models import (
 )
 from datetime import datetime, timedelta
 from services.ticket_service import servicio_tickets
+from services.ticket_realtime_state import (
+    build_ticket_collaboration_state,
+    build_ticket_realtime_summary,
+    build_viewer_key,
+    mark_ticket_read,
+    upsert_ticket_presence,
+)
 from services.gcs_service import upload_to_gcs # Import the new GCS service
 from services.geo.route import obtener_ruta
 from utils.auth_helpers import token_requerido, anon_o_token_requerido, admin_o_empleado_requerido
@@ -164,6 +174,97 @@ def _resolver_acceso_chat_ticket(ticket_obj, current_user: User, anon_id: str = 
         "es_pin_valido": es_pin_valido,
         "permitido": es_agente or es_dueno or es_anon_valido or es_pin_valido,
     }
+
+
+def _resolve_ticket_with_access(ticket_type: str, ticket_id: int, current_user: User, anon_id: str = None, pin: Optional[str] = None):
+    TicketModel = MunicipioTicket if ticket_type == "municipio" else PymeTicket if ticket_type == "pyme" else None
+    if not TicketModel:
+        return None, jsonify({"error": f"Tipo de ticket no válido: {ticket_type}"}), 400, None
+
+    ticket_obj = db.session.get(TicketModel, ticket_id)
+    if not ticket_obj:
+        return None, jsonify({"error": "Ticket no encontrado."}), 404, None
+
+    if ticket_type == "municipio":
+        access = _resolver_acceso_chat_ticket(ticket_obj, current_user, anon_id, pin)
+    else:
+        es_agente = bool(current_user and current_user.rubro_id and ticket_obj.rubro_id == current_user.rubro_id)
+        es_dueno = bool(current_user and ticket_obj.user_id == current_user.id)
+        es_anon_valido = bool(anon_id and getattr(ticket_obj, "anon_id", None) == anon_id)
+        es_pin_valido = bool(pin and str(getattr(ticket_obj, "consulta_pin", "")) == str(pin))
+        access = {
+            "es_agente": es_agente,
+            "es_dueno": es_dueno,
+            "es_anon_valido": es_anon_valido,
+            "es_pin_valido": es_pin_valido,
+            "permitido": es_agente or es_dueno or es_anon_valido or es_pin_valido,
+        }
+
+    if not access["permitido"]:
+        return None, jsonify({"error": MENSAJE_SIN_PERMISOS}), 403, None
+
+    return ticket_obj, None, None, access
+
+
+def _build_realtime_actor_context(*, current_user: User, anon_id: str = None, access: Optional[dict] = None) -> tuple[str | None, str | None, str | None]:
+    access = access or {}
+    viewer_key = build_viewer_key(
+        user_id=getattr(current_user, "id", None),
+        anon_id=anon_id if access.get("es_anon_valido") else None,
+        pin=request.args.get("pin") if access.get("es_pin_valido") else None,
+    )
+    if getattr(current_user, "id", None):
+        viewer_role = getattr(current_user, "rol", None) or "user"
+    elif access.get("es_pin_valido"):
+        viewer_role = "public_pin"
+    else:
+        viewer_role = "anonymous"
+    viewer_anon_id = anon_id if access.get("es_anon_valido") else None
+    return viewer_key, viewer_role, viewer_anon_id
+
+
+def _build_ticket_unread_event_payload(ticket_obj, ticket_type: str) -> dict:
+    summary = build_ticket_realtime_summary(ticket_type=ticket_type, ticket_id=ticket_obj.id)
+    tenant_id = getattr(ticket_obj, "municipio_id", None) if ticket_type == "municipio" else getattr(ticket_obj, "rubro_id", None)
+    room = f"{'municipio' if ticket_type == 'municipio' else 'pyme'}_{tenant_id}" if tenant_id else None
+    return {
+        "ticket_id": ticket_obj.id,
+        "tipo": ticket_type,
+        "tenant_type": ticket_type,
+        "tenant_id": tenant_id,
+        "municipio_id": getattr(ticket_obj, "municipio_id", None),
+        "rubro_id": getattr(ticket_obj, "rubro_id", None),
+        "socket_room": room,
+        "summary": summary["read_state"],
+        "collaboration_state": build_ticket_collaboration_state(ticket_type=ticket_type, ticket_id=ticket_obj.id),
+    }
+
+
+def _build_unified_conversation_stream(*, timeline: list[dict] | None, historial_chat: list[dict] | None) -> list[dict]:
+    unified_items: list[dict] = []
+
+    for event in timeline or []:
+        if not isinstance(event, dict):
+            continue
+        unified_items.append({
+            "source": "timeline",
+            "stream_type": event.get("tipo") or "timeline_event",
+            "timestamp": event.get("fecha"),
+            "payload": event,
+        })
+
+    for message in historial_chat or []:
+        if not isinstance(message, dict):
+            continue
+        unified_items.append({
+            "source": "chat_history",
+            "stream_type": "message",
+            "timestamp": message.get("fecha"),
+            "payload": message,
+        })
+
+    unified_items.sort(key=lambda item: item.get("timestamp") or "")
+    return unified_items
 
 
 def _categorias_permitidas_para_empleado(user: User) -> tuple[list[str], list[int]]:
@@ -375,6 +476,7 @@ def serialize_ticket_to_json(ticket, ticket_type):
 
     assigned_user = getattr(ticket, "asignado_a", None)
     operational_hints = _build_ticket_operational_badges(ticket)
+    collaboration_state = build_ticket_collaboration_state(ticket_type=ticket_type, ticket_id=ticket.id)
 
     estado_original = getattr(ticket, "estado", None) or "desconocido"
     estado_serializado = "resuelto" if estado_original == "cerrado" else estado_original
@@ -429,6 +531,7 @@ def serialize_ticket_to_json(ticket, ticket_type):
             "age_hours": operational_hints["age_hours"],
             "inactivity_hours": operational_hints["inactivity_hours"],
         },
+        "collaboration_state": collaboration_state,
     }
     return serialized_data
 
@@ -1357,6 +1460,7 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
                     ticket_snapshot=ticket_json,
                 )
                 emit_ticket_comment(comment_payload)
+                emit_ticket_unread_changed(_build_ticket_unread_event_payload(ticket_obj, tipo))
             except Exception as socket_exc:  # pragma: no cover - defensive log
                 current_app.logger.exception(
                     "Error emitting comment event for ticket %s: %s",
@@ -1592,6 +1696,7 @@ def get_chat_mensajes(current_user: User, ticket_id: int, anon_id: str = None, o
         respuesta_final = {
             "estado_chat": sala_de_chat.estado,
             "mensajes": mensajes_formateados,
+            "realtime_state": build_ticket_realtime_summary(ticket_type="municipio", ticket_id=ticket_id),
         }
         return jsonify(respuesta_final)
     except Exception as e:
@@ -1652,6 +1757,7 @@ def get_chat_mensajes_pyme(current_user: User, ticket_id: int):
         respuesta_final = {
             "estado_chat": sala_de_chat.estado,
             "mensajes": mensajes_formateados,
+            "realtime_state": build_ticket_realtime_summary(ticket_type="pyme", ticket_id=ticket_id),
         }
         return jsonify(respuesta_final)
     except Exception as e:
@@ -1742,7 +1848,109 @@ def get_ticket_timeline(current_user: User, tipo: str, ticket_id: int, anon_id: 
         "estado_chat": ticket_obj.estado,
         "timeline": timeline,
         "historial_chat": historial_chat,
+        "unified_conversation_stream": _build_unified_conversation_stream(
+            timeline=timeline,
+            historial_chat=historial_chat,
+        ),
+        "realtime_state": build_ticket_realtime_summary(ticket_type=tipo, ticket_id=ticket_id),
     })
+
+
+@ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/presence', methods=['POST'])
+@anon_o_token_requerido
+def update_ticket_presence(current_user: User, tipo: str, ticket_id: int, anon_id: str = None, owner_user: User = None):
+    pin = request.args.get("pin")
+    ticket_obj, error_response, status_code, access = _resolve_ticket_with_access(tipo, ticket_id, current_user, anon_id, pin)
+    if error_response:
+        return error_response, status_code
+
+    payload = request.get_json(silent=True) or {}
+    presence_status = str(payload.get("presence_status") or "active").strip().lower()
+    if presence_status not in {"active", "idle", "inactive"}:
+        return jsonify({"error": "presence_status inválido."}), 400
+
+    viewer_key, viewer_role, viewer_anon_id = _build_realtime_actor_context(current_user=current_user, anon_id=anon_id, access=access)
+    if not viewer_key:
+        return jsonify({"error": "No se pudo identificar el viewer."}), 400
+
+    state = upsert_ticket_presence(
+        ticket_type=tipo,
+        ticket_id=ticket_id,
+        viewer_key=viewer_key,
+        viewer_user_id=getattr(current_user, "id", None),
+        viewer_anon_id=viewer_anon_id,
+        viewer_role=viewer_role,
+        active_session_id=request.headers.get("X-Chat-Session-Id"),
+        presence_status=presence_status,
+    )
+    db.session.commit()
+
+    summary = build_ticket_realtime_summary(ticket_type=tipo, ticket_id=ticket_id)
+    event_payload = {
+        "ticket_id": ticket_id,
+        "tipo": tipo,
+        "tenant_type": tipo,
+        "tenant_id": getattr(ticket_obj, "municipio_id", None) if tipo == "municipio" else getattr(ticket_obj, "rubro_id", None),
+        "municipio_id": getattr(ticket_obj, "municipio_id", None),
+        "rubro_id": getattr(ticket_obj, "rubro_id", None),
+        "socket_room": f"{'municipio' if tipo == 'municipio' else 'pyme'}_{getattr(ticket_obj, 'municipio_id', None) if tipo == 'municipio' else getattr(ticket_obj, 'rubro_id', None)}" if (getattr(ticket_obj, "municipio_id", None) if tipo == "municipio" else getattr(ticket_obj, "rubro_id", None)) else None,
+        "presence_status": presence_status,
+        "viewer": state.to_dict(),
+        "summary": summary["presence"],
+    }
+    emit_ticket_presence_changed(event_payload)
+    return jsonify({"ok": True, "presence": state.to_dict(), "realtime_state": summary})
+
+
+@ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/read-state', methods=['POST'])
+@anon_o_token_requerido
+def update_ticket_read_state(current_user: User, tipo: str, ticket_id: int, anon_id: str = None, owner_user: User = None):
+    pin = request.args.get("pin")
+    ticket_obj, error_response, status_code, access = _resolve_ticket_with_access(tipo, ticket_id, current_user, anon_id, pin)
+    if error_response:
+        return error_response, status_code
+
+    payload = request.get_json(silent=True) or {}
+    last_read_comment_id = payload.get("last_read_comment_id")
+    if last_read_comment_id is not None:
+        try:
+            last_read_comment_id = int(last_read_comment_id)
+        except (TypeError, ValueError):
+            return jsonify({"error": "last_read_comment_id inválido."}), 400
+
+    viewer_key, viewer_role, viewer_anon_id = _build_realtime_actor_context(current_user=current_user, anon_id=anon_id, access=access)
+    if not viewer_key:
+        return jsonify({"error": "No se pudo identificar el viewer."}), 400
+
+    state = mark_ticket_read(
+        ticket_type=tipo,
+        ticket_id=ticket_id,
+        viewer_key=viewer_key,
+        last_read_comment_id=last_read_comment_id,
+        viewer_user_id=getattr(current_user, "id", None),
+        viewer_anon_id=viewer_anon_id,
+        viewer_role=viewer_role,
+        active_session_id=request.headers.get("X-Chat-Session-Id"),
+    )
+    db.session.commit()
+
+    summary = build_ticket_realtime_summary(ticket_type=tipo, ticket_id=ticket_id)
+    event_payload = {
+        "ticket_id": ticket_id,
+        "tipo": tipo,
+        "tenant_type": tipo,
+        "tenant_id": getattr(ticket_obj, "municipio_id", None) if tipo == "municipio" else getattr(ticket_obj, "rubro_id", None),
+        "municipio_id": getattr(ticket_obj, "municipio_id", None),
+        "rubro_id": getattr(ticket_obj, "rubro_id", None),
+        "socket_room": f"{'municipio' if tipo == 'municipio' else 'pyme'}_{getattr(ticket_obj, 'municipio_id', None) if tipo == 'municipio' else getattr(ticket_obj, 'rubro_id', None)}" if (getattr(ticket_obj, "municipio_id", None) if tipo == "municipio" else getattr(ticket_obj, "rubro_id", None)) else None,
+        "read_at": state.to_dict().get("last_read_at"),
+        "last_read_comment_id": state.last_read_comment_id,
+        "viewer": state.to_dict(),
+        "summary": summary["read_state"],
+    }
+    emit_conversation_message_read(event_payload)
+    emit_ticket_unread_changed(_build_ticket_unread_event_payload(ticket_obj, tipo))
+    return jsonify({"ok": True, "read_state": state.to_dict(), "realtime_state": summary})
 
 
 @ticket_bp.route('/tickets/<int:ticket_id>/knowledge-base/suggestions', methods=['GET', 'POST'])
@@ -1857,6 +2065,7 @@ def responder_ciudadano_a_chat(current_user: User, ticket_id: int, anon_id: str 
                 ticket_snapshot=ticket_snapshot,
             )
             emit_ticket_comment(comment_payload)
+            emit_ticket_unread_changed(_build_ticket_unread_event_payload(sala_de_chat, "municipio"))
         except Exception as socket_exc:  # pragma: no cover - defensive log
             current_app.logger.exception(
                 "Error emitting citizen comment event for ticket %s: %s",
@@ -1918,6 +2127,7 @@ def responder_cliente_a_chat(current_user: User, ticket_id: int):
                 ticket_snapshot=ticket_snapshot,
             )
             emit_ticket_comment(comment_payload)
+            emit_ticket_unread_changed(_build_ticket_unread_event_payload(sala_de_chat, "pyme"))
         except Exception as socket_exc:  # pragma: no cover - defensive log
             current_app.logger.exception(
                 "Error emitting pyme comment event for ticket %s: %s",

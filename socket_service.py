@@ -5,6 +5,7 @@ from models import User, TenantProfile, db, TicketComentario, MunicipioTicket, P
 import jwt
 from services.ticket_service import servicio_tickets # Reutilizamos el servicio de tickets
 from services.tts_orchestrator import generar_audio
+from services.conversation_stream import build_realtime_envelope
 from utils.response_utils import ensure_buttons_compatibility
 from typing import Any, Optional, Set
 
@@ -147,7 +148,12 @@ def _emit_to_ticket_room(event_name: str, data: Any) -> None:
 def _emit_standard_ticket_event(event_name: str, data: Any) -> None:
     """Emit normalized enterprise-style events alongside legacy socket payloads."""
     payload = data if isinstance(data, dict) else {"payload": data}
-    _emit_to_ticket_room(event_name, payload)
+    room = _resolve_ticket_room(payload)
+    envelope = build_realtime_envelope(event_name=event_name, payload=payload, room=room)
+    if room:
+        socketio.emit(event_name, envelope, room=room)
+    else:
+        socketio.emit(event_name, envelope)
 
 
 def emit_ticket_update(data: Any) -> None:
@@ -165,6 +171,21 @@ def emit_ticket_assignment_changed(data: Any) -> None:
     """Broadcast assignment changes with a normalized contract for new clients."""
     _emit_standard_ticket_event('ticket.assignment.changed', data)
     emit_ticket_update(data)
+
+
+def emit_ticket_presence_changed(data: Any) -> None:
+    """Broadcast ticket presence updates for collaborative inbox experiences."""
+    _emit_standard_ticket_event('ticket.presence.changed', data)
+
+
+def emit_conversation_message_read(data: Any) -> None:
+    """Broadcast read-state updates for enterprise inbox clients."""
+    _emit_standard_ticket_event('conversation.message.read', data)
+
+
+def emit_ticket_unread_changed(data: Any) -> None:
+    """Broadcast unread-summary deltas for inbox list reconciliation."""
+    _emit_standard_ticket_event('ticket.unread.changed', data)
 
 
 def emit_tenant_update(tenant_slug: str, event_name: str, data: Any = None) -> None:

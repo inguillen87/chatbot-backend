@@ -63,6 +63,34 @@ class TicketPublicChatReplyTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 403)
 
+    def test_ticket_timeline_includes_unified_conversation_stream(self):
+        ticket = MunicipioTicket(
+            municipio_id=self.admin.id,
+            pregunta="bache en la calle",
+            estado="nuevo",
+            nro_ticket="123456",
+            consulta_pin="654321",
+        )
+        db.session.add(ticket)
+        db.session.commit()
+
+        db.session.add(
+            TicketComentario(
+                municipio_ticket_id=ticket.id,
+                comentario="Seguimos esperando novedades",
+                es_admin=False,
+            )
+        )
+        db.session.commit()
+
+        response = self.client.get(f"/tickets/municipio/{ticket.id}/timeline?pin=654321")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertIn("unified_conversation_stream", payload)
+        self.assertGreaterEqual(len(payload["unified_conversation_stream"]), 2)
+        self.assertEqual(payload["unified_conversation_stream"][0]["source"], "timeline")
+
 
 if __name__ == "__main__":
     unittest.main()
