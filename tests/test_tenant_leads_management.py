@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta, timezone
+
 import jwt
 
 from app import db
@@ -371,3 +373,51 @@ def test_tenant_heatmap_summary(client, app):
     assert isinstance(body["top_zones"], list)
     assert isinstance(body["hotspots"], list)
     assert isinstance(body["heatmap_points"], list)
+
+
+def test_tenant_dashboard_bundle_counts_full_backlog_even_when_items_are_limited(client, app):
+    owner = User(email="owner-backlog@test.com", name="Owner Backlog", rol="admin", tipo_chat="pyme")
+    owner.set_password("pass")
+    db.session.add(owner)
+    db.session.commit()
+
+    tenant = TenantProfile(slug="tenant-backlog", nombre="Tenant Backlog", tipo="pyme", pyme_id=owner.id)
+    db.session.add(tenant)
+    db.session.commit()
+
+    now = datetime.now(timezone.utc)
+    older = now - timedelta(hours=2)
+
+    ticket_recent = MunicipioTicket(
+        tenant_id=tenant.id,
+        pregunta="Lead reciente",
+        asunto="Lead reciente",
+        estado="nuevo",
+        nombre_vecino="Lead reciente",
+        ultima_actividad=now,
+        fecha=now,
+    )
+    ticket_old_sla = MunicipioTicket(
+        tenant_id=tenant.id,
+        pregunta="Lead viejo",
+        asunto="Lead viejo",
+        estado="nuevo",
+        nombre_vecino="Lead viejo",
+        ultima_actividad=older,
+        fecha=older,
+    )
+    db.session.add_all([ticket_recent, ticket_old_sla])
+    db.session.commit()
+
+    resp = client.get(
+        f"/api/admin/tenants/{tenant.slug}/dashboard-bundle?since_minutes=180&leads_limit=1",
+        headers=_headers(app, owner),
+    )
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body["meta"]["leads_limit"] == 1
+    assert body["summary"]["total_leads"] == 2
+    assert body["leads"]["total"] == 2
+    assert body["summary"]["sla_breached"] == 1
+    assert len(body["leads"]["items"]) == 1
+    assert any(action["kind"] == "review_sla" for action in body["recommended_actions"])

@@ -111,7 +111,7 @@ class ChatOwnerContextPersistenceTest(unittest.TestCase):
             self.assertFalse(ux_context.get("trusted_owner"))
             self.assertNotEqual(ux_context.get("owner_user_id"), self.owner.id)
 
-    def test_public_session_id_without_token_does_not_revive_persisted_owner(self):
+    def test_public_session_id_without_token_keeps_restored_owner_context_across_turns(self):
         session_id = "sticky-session-owner"
         headers = {
             "Origin": "https://chatboc.ar",
@@ -126,9 +126,14 @@ class ChatOwnerContextPersistenceTest(unittest.TestCase):
                     "fuente": "tenant_real",
                 },
                 {
-                    "message_body": "demo selector",
+                    "message_body": "tenant restored",
                     "message_type": "text",
-                    "fuente": "demo_selector",
+                    "fuente": "tenant_restored",
+                },
+                {
+                    "message_body": "tenant restored again",
+                    "message_type": "text",
+                    "fuente": "tenant_restored_again",
                 },
             ]
 
@@ -142,16 +147,28 @@ class ChatOwnerContextPersistenceTest(unittest.TestCase):
                 json={"pregunta": "__INIT__"},
                 headers=headers,
             )
+            third = self.client.post(
+                "/ask/municipio",
+                json={"pregunta": "Necesito seguir con el reclamo"},
+                headers=headers,
+            )
 
         self.assertEqual(first.status_code, 200)
         self.assertEqual(second.status_code, 200)
+        self.assertEqual(third.status_code, 200)
         second_payload = second.get_json()
-        self.assertEqual(second_payload.get("fuente"), "demo_selector")
+        self.assertEqual(second_payload.get("fuente"), "tenant_restored")
         second_ux_context = second_payload.get("ux_context") or {}
-        if second_ux_context:
-            self.assertTrue(second_ux_context.get("should_render_demo_shell"))
-            self.assertFalse(second_ux_context.get("trusted_owner"))
-            self.assertNotEqual(second_ux_context.get("owner_resolution_source"), "session_owner_context")
+        self.assertTrue(second_ux_context.get("trusted_owner"))
+        self.assertFalse(second_ux_context.get("should_render_demo_shell"))
+        self.assertEqual(second_ux_context.get("owner_resolution_source"), "session_owner_context")
+
+        third_payload = third.get_json()
+        self.assertEqual(third_payload.get("fuente"), "tenant_restored_again")
+        third_ux_context = third_payload.get("ux_context") or {}
+        self.assertTrue(third_ux_context.get("trusted_owner"))
+        self.assertFalse(third_ux_context.get("should_render_demo_shell"))
+        self.assertEqual(third_ux_context.get("owner_resolution_source"), "session_owner_context")
 
 
     def test_public_widget_claim_response_adds_channel_capabilities_and_only_missing_contacts(self):

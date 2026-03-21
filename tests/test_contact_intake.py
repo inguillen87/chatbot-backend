@@ -31,3 +31,7 @@ def test_resolve_contact_snapshot_ignores_placeholder_email():
 
 def test_infer_phone_from_prefixed_anon_id():
     assert infer_phone_from_anon_id("whatsapp_4_+5492617778888") == "+5492617778888"
+
+
+def test_infer_phone_from_uuid_like_anon_id_returns_none():
+    assert infer_phone_from_anon_id("550e8400-e29b-41d4-a716-446655440000") is None

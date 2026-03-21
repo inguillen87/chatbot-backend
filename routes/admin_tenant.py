@@ -182,9 +182,9 @@ def _build_tenant_dashboard_bundle_payload(
     cutoff_unread = now - timedelta(minutes=since_minutes)
 
     lead_rows = []
-    for ticket in MunicipioTicket.query.filter_by(tenant_id=tenant.id).order_by(MunicipioTicket.ultima_actividad.desc()).limit(leads_limit).all():
+    for ticket in MunicipioTicket.query.filter_by(tenant_id=tenant.id).order_by(MunicipioTicket.ultima_actividad.desc()).all():
         lead_rows.append(("municipio", ticket))
-    for ticket in PymeTicket.query.filter_by(tenant_id=tenant.id).order_by(PymeTicket.fecha.desc()).limit(leads_limit).all():
+    for ticket in PymeTicket.query.filter_by(tenant_id=tenant.id).order_by(PymeTicket.fecha.desc()).all():
         lead_rows.append(("pyme", ticket))
 
     lead_items = []

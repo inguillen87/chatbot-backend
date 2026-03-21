@@ -46,10 +46,18 @@ def infer_phone_from_anon_id(anon_id: Any) -> str | None:
     if explicit_match:
         return explicit_match.group(0)
 
+    normalized = raw.lower()
     cleaned = "".join(ch for ch in raw if ch.isdigit())
-    if len(cleaned) < 8:
+    if len(cleaned) < 8 or len(cleaned) > 15:
         return None
-    return f"+{cleaned}"
+
+    if normalized.startswith(("whatsapp", "wa:", "tel:", "phone:")):
+        return f"+{cleaned}"
+
+    if re.fullmatch(r"\+?[\d\s().-]{8,}", raw):
+        return f"+{cleaned}"
+
+    return None
 
 
 def resolve_contact_snapshot(*, datos: dict | None = None, profile_name: Any = None, telefono_contexto: Any = None, email_contexto: Any = None, anon_id: Any = None) -> dict[str, str | None]:

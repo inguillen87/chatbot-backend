@@ -459,10 +459,8 @@ def _can_restore_session_owner_context(
         "jwt_self_owner",
         "static_entity_token",
         "explicit_entity_token",
+        "session_owner_context",
     }:
-        return False
-
-    if is_public_landing and is_anonymous and not has_entity_token:
         return False
 
     return True
