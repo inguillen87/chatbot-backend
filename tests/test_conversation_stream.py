@@ -1,5 +1,6 @@
 from services.conversation_stream import (
     CONVERSATION_STREAM_SCHEMA_VERSION,
+    build_unified_conversation_stream,
     build_realtime_envelope,
 )
 
@@ -54,3 +55,32 @@ def test_build_realtime_envelope_preserves_explicit_conversation_id():
     assert envelope["conversation"]["id"] == "conv-123"
     assert envelope["ticket"]["id"] == 88
     assert envelope["ticket"]["status"] == "nuevo"
+
+
+def test_build_unified_conversation_stream_normalizes_render_contract():
+    stream = build_unified_conversation_stream(
+        timeline=[
+            {"tipo": "ticket_creado", "fecha": "2026-03-21T10:00:00+00:00"},
+            {"tipo": "estado", "estado": "en_proceso", "fecha": "2026-03-21T10:01:00+00:00"},
+        ],
+        historial_chat=[
+            {
+                "id": 44,
+                "texto": "Necesito ayuda",
+                "fecha": "2026-03-21T10:02:00+00:00",
+                "autor": "vecino",
+                "autor_nombre": "Ana",
+                "es_admin": False,
+            }
+        ],
+        latest_comment_id=44,
+    )
+
+    assert [item["source"] for item in stream] == ["timeline", "timeline", "chat_history"]
+    assert stream[0]["actor_type"] == "system"
+    assert stream[0]["preview_text"] == "Ticket creado"
+    assert stream[1]["status"] == "en_proceso"
+    assert stream[1]["badge"] == "status_change"
+    assert stream[2]["id"] == "chat_history:44"
+    assert stream[2]["actor_type"] == "citizen"
+    assert stream[2]["is_unread"] is True

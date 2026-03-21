@@ -90,6 +90,9 @@ class TicketPublicChatReplyTest(unittest.TestCase):
         self.assertIn("unified_conversation_stream", payload)
         self.assertGreaterEqual(len(payload["unified_conversation_stream"]), 2)
         self.assertEqual(payload["unified_conversation_stream"][0]["source"], "timeline")
+        self.assertIn("id", payload["unified_conversation_stream"][0])
+        self.assertIn("actor_type", payload["unified_conversation_stream"][0])
+        self.assertIn("preview_text", payload["unified_conversation_stream"][0])
 
 
 if __name__ == "__main__":

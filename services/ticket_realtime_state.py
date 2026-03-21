@@ -9,6 +9,7 @@ from utils.time_utils import get_local_now, datetime_to_iso_utc
 
 PRESENCE_ACTIVE_WINDOW_MINUTES = 5
 PRESENCE_IDLE_WINDOW_MINUTES = 15
+PRESENCE_STALE_RETENTION_HOURS = 24
 
 
 def build_viewer_key(*, user_id: Any = None, anon_id: Any = None, pin: Any = None) -> str | None:
@@ -22,6 +23,7 @@ def build_viewer_key(*, user_id: Any = None, anon_id: Any = None, pin: Any = Non
 
 
 def upsert_ticket_presence(*, ticket_type: str, ticket_id: int, viewer_key: str, viewer_user_id: int | None = None, viewer_anon_id: str | None = None, viewer_role: str | None = None, active_session_id: str | None = None, presence_status: str = "active") -> TicketRealtimeState:
+    prune_stale_ticket_realtime_states()
     state = TicketRealtimeState.query.filter_by(
         ticket_type=ticket_type,
         ticket_id=ticket_id,
@@ -81,10 +83,49 @@ def _derive_effective_presence_status(*, stored_status: str | None, last_presenc
     return "active"
 
 
+def prune_stale_ticket_realtime_states(*, now=None, retention_hours: int = PRESENCE_STALE_RETENTION_HOURS) -> int:
+    now = now or get_local_now()
+    cutoff = now - timedelta(hours=max(int(retention_hours or PRESENCE_STALE_RETENTION_HOURS), 1))
+    deleted = (
+        TicketRealtimeState.query
+        .filter(
+            TicketRealtimeState.last_presence_at.isnot(None),
+            TicketRealtimeState.last_presence_at < cutoff,
+        )
+        .delete(synchronize_session=False)
+    )
+    return int(deleted or 0)
+
+
+def _viewer_identity_key(row: TicketRealtimeState) -> tuple[str, str | int]:
+    if row.viewer_user_id:
+        return ("user", row.viewer_user_id)
+    if row.viewer_anon_id:
+        return ("anon", row.viewer_anon_id)
+    return ("viewer_key", row.viewer_key)
+
+
+def _dedupe_rows(rows: list[TicketRealtimeState]) -> list[TicketRealtimeState]:
+    selected: dict[tuple[str, str | int], TicketRealtimeState] = {}
+    for row in rows:
+        identity = _viewer_identity_key(row)
+        current = selected.get(identity)
+        if current is None:
+            selected[identity] = row
+            continue
+        current_dt = _normalize_presence_dt(current.last_presence_at or current.updated_at, get_local_now())
+        row_dt = _normalize_presence_dt(row.last_presence_at or row.updated_at, get_local_now())
+        if (row_dt or get_local_now()) >= (current_dt or get_local_now()):
+            selected[identity] = row
+    return list(selected.values())
+
+
 def build_ticket_realtime_summary(*, ticket_type: str, ticket_id: int) -> dict[str, Any]:
     now = get_local_now()
     active_cutoff = now - timedelta(minutes=PRESENCE_ACTIVE_WINDOW_MINUTES)
+    prune_stale_ticket_realtime_states(now=now)
     rows = TicketRealtimeState.query.filter_by(ticket_type=ticket_type, ticket_id=ticket_id).all()
+    rows = _dedupe_rows(rows)
     latest_comment_id = (
         db.session.query(db.func.max(TicketComentario.id))
         .filter(
@@ -141,12 +182,21 @@ def build_ticket_realtime_summary(*, ticket_type: str, ticket_id: int) -> dict[s
         },
         "meta": {
             "generated_at": datetime_to_iso_utc(now),
+            "viewer_rows_considered": len(rows),
+            "stale_retention_hours": PRESENCE_STALE_RETENTION_HOURS,
         },
     }
 
 
 def build_ticket_collaboration_state(*, ticket_type: str, ticket_id: int) -> dict[str, Any]:
     summary = build_ticket_realtime_summary(ticket_type=ticket_type, ticket_id=ticket_id)
+    unread_count = summary["read_state"]["unread_viewer_count"]
+    active_count = summary["presence"]["active_count"]
+    status = "healthy"
+    if unread_count > 0:
+        status = "attention_needed"
+    if unread_count > 0 and active_count > 0:
+        status = "actively_managed"
     return {
         "active_viewers_count": summary["presence"]["active_count"],
         "idle_viewers_count": summary["presence"]["idle_count"],
@@ -155,4 +205,6 @@ def build_ticket_collaboration_state(*, ticket_type: str, ticket_id: int) -> dic
         "latest_read_at": summary["read_state"]["latest_read_at"],
         "active_window_minutes": summary["presence"]["active_window_minutes"],
         "idle_window_minutes": summary["presence"]["idle_window_minutes"],
+        "operational_status": status,
+        "collaboration_hint": f"{active_count} activos · {summary['presence']['idle_count']} idle · {unread_count} unread",
     }

@@ -339,6 +339,9 @@ def test_tenant_dashboard_bundle(client, app):
     assert body["summary"]["unread_viewers"] >= 1
     assert body["leads"]["items"][0]["collaboration_state"]["active_viewers_count"] >= 1
     assert body["leads"]["items"][0]["priority_score"] >= 1
+    assert body["leads"]["items"][0]["priority_breakdown"]["active_viewers"] >= 1
+    assert len(body["leads"]["items"][0]["priority_reasons"]) >= 1
+    assert body["leads"]["items"][0]["collaboration_state"]["operational_status"] in {"attention_needed", "actively_managed"}
     assert body["unread"]["items"][0]["collaboration_state"]["unread_viewer_count"] >= 1
     assert body["team"]["items"][0]["active_ticket_views"] >= 1
     assert body["team"]["items"][0]["unread_ticket_views"] >= 1

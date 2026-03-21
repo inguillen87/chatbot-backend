@@ -6,7 +6,7 @@ from app import create_app, db
 from config import TestConfig
 from models import MunicipioTicket, TicketComentario, TicketRealtimeState, User
 from routes.ticket import serialize_ticket_to_json
-from services.ticket_realtime_state import build_ticket_realtime_summary
+from services.ticket_realtime_state import build_ticket_realtime_summary, prune_stale_ticket_realtime_states
 from utils.time_utils import get_local_now
 
 
@@ -95,6 +95,8 @@ def test_ticket_presence_and_read_state_endpoints():
         assert ticket_payload["collaboration_state"]["idle_viewers_count"] == 0
         assert ticket_payload["collaboration_state"]["latest_comment_id"] == second_comment.id
         assert ticket_payload["collaboration_state"]["unread_viewer_count"] == 1
+        assert ticket_payload["collaboration_state"]["operational_status"] == "actively_managed"
+        assert "collaboration_hint" in ticket_payload["collaboration_state"]
 
         realtime_state = TicketRealtimeState.query.first()
         realtime_state.last_presence_at = get_local_now() - timedelta(minutes=10)
@@ -103,5 +105,74 @@ def test_ticket_presence_and_read_state_endpoints():
         assert summary_idle["presence"]["active_count"] == 0
         assert summary_idle["presence"]["idle_count"] == 1
         assert summary_idle["read_state"]["viewers"][0]["effective_presence_status"] == "idle"
+        assert summary_idle["meta"]["viewer_rows_considered"] == 1
 
         assert TicketRealtimeState.query.count() == 1
+
+
+def test_realtime_summary_dedupes_viewers_and_prunes_stale_rows():
+    app = create_app(TestConfig)
+    with app.app_context():
+        db.create_all()
+        owner = User(email="owner-rt-dedupe@test.com", name="Owner RT", rol="admin", tipo_chat="municipio", municipio_id=90)
+        owner.set_password("pass")
+        db.session.add(owner)
+        db.session.commit()
+
+        ticket = MunicipioTicket(
+            municipio_id=90,
+            user_id=owner.id,
+            pregunta="Necesito ayuda",
+            asunto="Realtime stale",
+            estado="nuevo",
+            nombre_vecino="Vecino RT",
+        )
+        db.session.add(ticket)
+        db.session.commit()
+
+        now = get_local_now()
+        db.session.add(
+            TicketRealtimeState(
+                ticket_type="municipio",
+                ticket_id=ticket.id,
+                viewer_key=f"user:{owner.id}:old",
+                viewer_user_id=owner.id,
+                viewer_role="admin",
+                active_session_id="old-session",
+                presence_status="idle",
+                last_presence_at=now - timedelta(minutes=12),
+                last_read_comment_id=0,
+            )
+        )
+        db.session.add(
+            TicketRealtimeState(
+                ticket_type="municipio",
+                ticket_id=ticket.id,
+                viewer_key=f"user:{owner.id}:new",
+                viewer_user_id=owner.id,
+                viewer_role="admin",
+                active_session_id="new-session",
+                presence_status="active",
+                last_presence_at=now,
+                last_read_comment_id=0,
+            )
+        )
+        db.session.add(
+            TicketRealtimeState(
+                ticket_type="municipio",
+                ticket_id=ticket.id,
+                viewer_key="anon:stale",
+                viewer_anon_id="stale",
+                viewer_role="anonymous",
+                presence_status="inactive",
+                last_presence_at=now - timedelta(hours=48),
+                last_read_comment_id=0,
+            )
+        )
+        db.session.commit()
+
+        deleted = prune_stale_ticket_realtime_states(now=now)
+        assert deleted == 1
+        summary = build_ticket_realtime_summary(ticket_type="municipio", ticket_id=ticket.id)
+        assert summary["presence"]["active_count"] == 1
+        assert summary["meta"]["viewer_rows_considered"] == 1

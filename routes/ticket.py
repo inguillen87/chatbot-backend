@@ -35,6 +35,7 @@ from services.ticket_realtime_state import (
     mark_ticket_read,
     upsert_ticket_presence,
 )
+from services.conversation_stream import build_unified_conversation_stream
 from services.gcs_service import upload_to_gcs # Import the new GCS service
 from services.geo.route import obtener_ruta
 from utils.auth_helpers import token_requerido, anon_o_token_requerido, admin_o_empleado_requerido
@@ -238,34 +239,6 @@ def _build_ticket_unread_event_payload(ticket_obj, ticket_type: str) -> dict:
         "summary": summary["read_state"],
         "collaboration_state": build_ticket_collaboration_state(ticket_type=ticket_type, ticket_id=ticket_obj.id),
     }
-
-
-def _build_unified_conversation_stream(*, timeline: list[dict] | None, historial_chat: list[dict] | None) -> list[dict]:
-    unified_items: list[dict] = []
-
-    for event in timeline or []:
-        if not isinstance(event, dict):
-            continue
-        unified_items.append({
-            "source": "timeline",
-            "stream_type": event.get("tipo") or "timeline_event",
-            "timestamp": event.get("fecha"),
-            "payload": event,
-        })
-
-    for message in historial_chat or []:
-        if not isinstance(message, dict):
-            continue
-        unified_items.append({
-            "source": "chat_history",
-            "stream_type": "message",
-            "timestamp": message.get("fecha"),
-            "payload": message,
-        })
-
-    unified_items.sort(key=lambda item: item.get("timestamp") or "")
-    return unified_items
-
 
 def _categorias_permitidas_para_empleado(user: User) -> tuple[list[str], list[int]]:
     """Obtiene las categorías habilitadas para un empleado normalizadas en minúsculas.
@@ -1848,9 +1821,10 @@ def get_ticket_timeline(current_user: User, tipo: str, ticket_id: int, anon_id: 
         "estado_chat": ticket_obj.estado,
         "timeline": timeline,
         "historial_chat": historial_chat,
-        "unified_conversation_stream": _build_unified_conversation_stream(
+        "unified_conversation_stream": build_unified_conversation_stream(
             timeline=timeline,
             historial_chat=historial_chat,
+            latest_comment_id=build_ticket_realtime_summary(ticket_type=tipo, ticket_id=ticket_id)["read_state"]["latest_comment_id"],
         ),
         "realtime_state": build_ticket_realtime_summary(ticket_type=tipo, ticket_id=ticket_id),
     })

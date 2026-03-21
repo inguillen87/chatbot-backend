@@ -18,6 +18,7 @@ from models import (
     LlmInteractionLog,
 )
 from utils.auth_helpers import token_requerido
+from services.operational_scoring import build_lead_portfolio_score
 from utils.admin_decorators import super_admin_required
 from sqlalchemy import desc, func
 from datetime import datetime, timezone, timedelta
@@ -667,41 +668,6 @@ def _lead_relevance_score(*, open_tickets: int, latest_message: str, last_seen: 
     return int(score)
 
 
-
-
-def _lead_priority_score(*, latest_message: str, has_email: bool, has_phone: bool, open_tickets: int, last_seen: datetime | None) -> int:
-    base = _lead_relevance_score(
-        open_tickets=open_tickets,
-        latest_message=latest_message,
-        last_seen=last_seen,
-        has_contact=bool(has_email or has_phone),
-    )
-
-    completeness = 0
-    if has_email:
-        completeness += 12
-    if has_phone:
-        completeness += 18
-
-    text = str(latest_message or '').strip().lower()
-    urgency = 0
-    if any(word in text for word in _LEAD_URGENT_KEYWORDS):
-        urgency += 20
-    if any(word in text for word in ("precio", "presupuesto", "propuesta", "contratar", "plan full", "demo")):
-        urgency += 12
-
-    recency_bonus = 0
-    if last_seen:
-        now = datetime.now(timezone.utc)
-        dt = last_seen if last_seen.tzinfo else last_seen.replace(tzinfo=timezone.utc)
-        hours = max(0, (now - dt).total_seconds() / 3600)
-        if hours <= 0.5:
-            recency_bonus += 12
-        elif hours <= 2:
-            recency_bonus += 8
-
-    score = base + completeness + urgency + recency_bonus
-    return int(min(score, 100))
 
 
 def _normalize_plan_key(raw_plan: str | None) -> str:
@@ -1920,6 +1886,13 @@ def list_leads_interactions(current_user):
         last_dt = last_seen if (last_seen and last_seen.tzinfo) else (last_seen.replace(tzinfo=timezone.utc) if last_seen else None)
         age_seconds = (now - last_dt).total_seconds() if last_dt else 0
         sla_breached = bool(last_dt and age_seconds > 1800 and open_tickets > 0)
+        lead_priority = build_lead_portfolio_score(
+            latest_message=latest_question,
+            has_email=bool(profile_email),
+            has_phone=bool(profile_phone),
+            open_tickets=open_tickets,
+            last_seen=last_seen,
+        )
 
         items.append({
             'chat_session_id': ctx.chat_session_id,
@@ -1939,7 +1912,9 @@ def list_leads_interactions(current_user):
             'last_seen': last_seen.isoformat() if last_seen else None,
             'relevance_score': relevance,
             'sla_breached': sla_breached,
-            'lead_score': _lead_priority_score(latest_message=latest_question, has_email=bool(profile_email), has_phone=bool(profile_phone), open_tickets=open_tickets, last_seen=last_seen),
+            'lead_score': lead_priority['score'],
+            'lead_score_breakdown': lead_priority['breakdown'],
+            'lead_score_reasons': lead_priority['reasons'],
         })
 
     items.sort(key=lambda item: ((item.get('relevance_score') or 0), item.get('last_seen') or ''), reverse=True)

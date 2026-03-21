@@ -33,6 +33,7 @@ from services.qdrant_service import index_catalog_item
 from services.tenant_factory import create_tenant_from_template, assign_number_to_tenant
 from services.tenant_resolver import apply_tenant_alias
 from services.live_chat_schedule import build_live_chat_status, build_schedule_from_config
+from services.operational_scoring import build_ticket_priority_score
 from services.ticket_realtime_state import build_ticket_collaboration_state
 
 admin_tenant_bp = Blueprint('admin_tenant_bp', __name__)
@@ -195,17 +196,6 @@ def _build_tenant_dashboard_bundle_payload(
     total_active_viewers = 0
     total_unread_viewers = 0
 
-    def _operational_priority_score(*, sla_breached_flag: bool, collaboration_state: dict, stage: str) -> int:
-        score = 0
-        if sla_breached_flag:
-            score += 50
-        score += int(collaboration_state.get('unread_viewer_count', 0) or 0) * 15
-        score += int(collaboration_state.get('active_viewers_count', 0) or 0) * 10
-        score += int(collaboration_state.get('idle_viewers_count', 0) or 0) * 5
-        if stage in {'nuevo', 'contactado'}:
-            score += 10
-        return score
-
     for ticket_type, ticket in lead_rows:
         details = _ticket_details(ticket)
         stage = str(details.get('lead_stage') or ticket.estado or 'nuevo').lower()
@@ -214,11 +204,12 @@ def _build_tenant_dashboard_bundle_payload(
         last_dt = last_seen if (last_seen and last_seen.tzinfo) else (last_seen.replace(tzinfo=timezone.utc) if last_seen else None)
         ticket_sla = bool(last_dt and (now - last_dt).total_seconds() > 1800 and stage not in {'ganado', 'perdido'})
         collaboration_state = build_ticket_collaboration_state(ticket_type=ticket_type, ticket_id=ticket.id)
-        priority_score = _operational_priority_score(
+        priority_meta = build_ticket_priority_score(
             sla_breached_flag=ticket_sla,
             collaboration_state=collaboration_state,
             stage=stage,
         )
+        priority_score = priority_meta["score"]
         if ticket_sla:
             sla_breached += 1
         total_active_viewers += collaboration_state.get('active_viewers_count', 0) or 0
@@ -234,6 +225,8 @@ def _build_tenant_dashboard_bundle_payload(
             'last_seen': last_seen.isoformat() if last_seen else None,
             'collaboration_state': collaboration_state,
             'priority_score': priority_score,
+            'priority_breakdown': priority_meta['breakdown'],
+            'priority_reasons': priority_meta['reasons'],
         })
 
     lead_items.sort(

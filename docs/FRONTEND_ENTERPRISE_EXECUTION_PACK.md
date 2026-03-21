@@ -175,12 +175,20 @@ type EnterpriseRealtimeEnvelope = {
 - `dashboard-bundle.summary.unread_viewers`
 - `dashboard-bundle.leads.items[*].collaboration_state`
 - `dashboard-bundle.leads.items[*].priority_score`
+- `dashboard-bundle.leads.items[*].priority_breakdown`
+- `dashboard-bundle.leads.items[*].priority_reasons`
 - `tickets/unread-summary.items[*].collaboration_state`
 - realtime delta: `ticket.unread.changed`
 - `dashboard-bundle.team.items[*].active_ticket_views`
 - `dashboard-bundle.team.items[*].idle_ticket_views`
 - `dashboard-bundle.team.items[*].unread_ticket_views`
 - `tickets/<tipo>/<id>/timeline.unified_conversation_stream`
+- `tickets/<tipo>/<id>/timeline.unified_conversation_stream[*].id`
+- `tickets/<tipo>/<id>/timeline.unified_conversation_stream[*].actor_type`
+- `tickets/<tipo>/<id>/timeline.unified_conversation_stream[*].preview_text`
+- `tickets/<tipo>/<id>/timeline.unified_conversation_stream[*].status`
+- `tickets/<tipo>/<id>/timeline.unified_conversation_stream[*].badge`
+- `tickets/<tipo>/<id>/timeline.unified_conversation_stream[*].is_unread`
 
 ### Regla de UI recomendada
 - si `collaboration_state.unread_viewer_count > 0` => mostrar badge de unread
@@ -189,3 +197,5 @@ type EnterpriseRealtimeEnvelope = {
 - si `effective_presence_status == "idle"` => mostrar presencia atenuada, no como online fuerte
 - ordenar listas de inbox/admin por `priority_score` cuando exista
 - usar `unified_conversation_stream` como fuente principal en ticket detail/tracking nuevo
+- mostrar tooltip/modal de explicabilidad usando `priority_breakdown` y `priority_reasons`
+- usar `collaboration_state.operational_status` + `collaboration_state.collaboration_hint` para pintar cabecera del ticket
