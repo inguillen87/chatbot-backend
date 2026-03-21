@@ -4,7 +4,13 @@ import logging
 from typing import Optional
 from werkzeug.utils import secure_filename
 from flask import Blueprint, g, request, jsonify, current_app, send_from_directory, render_template
-from socket_service import emit_ticket_update, emit_ticket_comment, emit_new_ticket
+from socket_service import (
+    emit_ticket_update,
+    emit_ticket_comment,
+    emit_new_ticket,
+    emit_ticket_status_changed,
+    emit_ticket_assignment_changed,
+)
 from models import (
     MunicipioTicket,
     PymeTicket,
@@ -48,6 +54,77 @@ TICKET_ALLOWED_STATES = [
 ]
 
 
+def _build_ticket_operational_badges(ticket_obj) -> dict:
+    """Compute lightweight SLA/ops hints for frontend inboxes.
+
+    No reemplaza un SLA engine formal, pero da una base consistente para pintar
+    badges de priorización (`sin_asignar`, `por_vencer`, `vencido`,
+    `respuesta_pendiente`) en paneles y vistas de tracking.
+    """
+
+    now = get_local_now()
+    created_at = getattr(ticket_obj, "fecha", None) or now
+    last_activity = getattr(ticket_obj, "ultima_actividad", None) or created_at
+
+    def _normalize_dt(value):
+        if value is None:
+            return None
+        if getattr(value, "tzinfo", None) is None:
+            return value.replace(tzinfo=now.tzinfo)
+        return value
+
+    created_at = _normalize_dt(created_at)
+    last_activity = _normalize_dt(last_activity)
+    estado = (getattr(ticket_obj, "estado", None) or "").strip().lower()
+    assigned_user_id = getattr(ticket_obj, "asignado_a_id", None)
+
+    age_hours = max((now - created_at).total_seconds() / 3600, 0)
+    inactivity_hours = max((now - last_activity).total_seconds() / 3600, 0)
+    is_closed = estado in {"cerrado", "resuelto"}
+
+    badges: list[str] = []
+    sla_status = "ok"
+
+    if is_closed:
+        return {
+            "sla_status": "resuelto",
+            "badges": ["resuelto"],
+            "age_hours": round(age_hours, 2),
+            "inactivity_hours": round(inactivity_hours, 2),
+        }
+
+    if not assigned_user_id:
+        badges.append("sin_asignar")
+        if age_hours >= 24:
+            badges.append("vencido")
+            sla_status = "vencido"
+        elif age_hours >= 8:
+            badges.append("por_vencer")
+            sla_status = "por_vencer"
+        else:
+            sla_status = "sin_asignar"
+    else:
+        if inactivity_hours >= 24:
+            badges.extend(["respuesta_pendiente", "vencido"])
+            sla_status = "vencido"
+        elif inactivity_hours >= 8:
+            badges.extend(["respuesta_pendiente", "por_vencer"])
+            sla_status = "por_vencer"
+        elif inactivity_hours >= 2:
+            badges.append("respuesta_pendiente")
+            sla_status = "seguimiento"
+
+    if not badges:
+        badges.append("ok")
+
+    return {
+        "sla_status": sla_status,
+        "badges": list(dict.fromkeys(badges)),
+        "age_hours": round(age_hours, 2),
+        "inactivity_hours": round(inactivity_hours, 2),
+    }
+
+
 def _validar_asignacion_empleado(ticket_obj, current_user: User):
     """Devuelve una respuesta de error si el empleado no está asignado al ticket."""
 
@@ -58,6 +135,35 @@ def _validar_asignacion_empleado(ticket_obj, current_user: User):
         return jsonify({"error": "Ticket no asignado a este empleado."}), 403
 
     return None
+
+
+def _resolver_acceso_chat_ticket(ticket_obj, current_user: User, anon_id: str = None, pin: Optional[str] = None) -> dict:
+    """Normaliza los permisos de acceso al chat/timeline de tickets públicos.
+
+    Este helper evita drift entre endpoints públicos del reclamo. En especial,
+    deja explícito que el flujo con ``consulta_pin`` es un acceso ciudadano
+    legítimo aunque no exista sesión autenticada todavía, para que el tracking
+    público, el historial y la mensajería reutilicen la misma regla.
+    """
+
+    es_agente_municipal = bool(current_user and current_user.tipo_chat == "municipio")
+    es_agente_pyme = bool(
+        current_user
+        and getattr(current_user, "rubro_id", None)
+        and getattr(ticket_obj, "rubro_id", None) == current_user.rubro_id
+    )
+    es_agente = es_agente_municipal or es_agente_pyme
+    es_dueno = bool(current_user and getattr(ticket_obj, "user_id", None) == current_user.id)
+    es_anon_valido = bool(anon_id and getattr(ticket_obj, "anon_id", None) == anon_id)
+    es_pin_valido = bool(pin and str(getattr(ticket_obj, "consulta_pin", "")) == str(pin))
+
+    return {
+        "es_agente": es_agente,
+        "es_dueno": es_dueno,
+        "es_anon_valido": es_anon_valido,
+        "es_pin_valido": es_pin_valido,
+        "permitido": es_agente or es_dueno or es_anon_valido or es_pin_valido,
+    }
 
 
 def _categorias_permitidas_para_empleado(user: User) -> tuple[list[str], list[int]]:
@@ -268,6 +374,7 @@ def serialize_ticket_to_json(ticket, ticket_type):
         socket_room = f"{room_prefix}_{tenant_id}"
 
     assigned_user = getattr(ticket, "asignado_a", None)
+    operational_hints = _build_ticket_operational_badges(ticket)
 
     estado_original = getattr(ticket, "estado", None) or "desconocido"
     estado_serializado = "resuelto" if estado_original == "cerrado" else estado_original
@@ -316,6 +423,12 @@ def serialize_ticket_to_json(ticket, ticket_type):
             else None
         ),
         "asignado_en": datetime_to_iso_utc(getattr(ticket, "asignado_en", None)),
+        "sla_status": operational_hints["sla_status"],
+        "operational_badges": operational_hints["badges"],
+        "operational_metrics": {
+            "age_hours": operational_hints["age_hours"],
+            "inactivity_hours": operational_hints["inactivity_hours"],
+        },
     }
     return serialized_data
 
@@ -764,6 +877,7 @@ def _serialize_ticket_details(ticket, ticket_type):
     ultima_actualizacion_dt = getattr(ticket, 'ultima_actividad', None) or getattr(ticket, 'fecha', None)
 
     assigned_user = getattr(ticket, "asignado_a", None)
+    operational_hints = _build_ticket_operational_badges(ticket)
 
     ticket_data = {
         "id": ticket.id,
@@ -801,6 +915,12 @@ def _serialize_ticket_details(ticket, ticket_type):
         "timeline": timeline,
         "progreso_estados": progreso_estados,
         "ultima_actualizacion": datetime_to_iso_utc(ultima_actualizacion_dt),
+        "sla_status": operational_hints["sla_status"],
+        "operational_badges": operational_hints["badges"],
+        "operational_metrics": {
+            "age_hours": operational_hints["age_hours"],
+            "inactivity_hours": operational_hints["inactivity_hours"],
+        },
         "asignado_a": (
             {
                 "id": assigned_user.id,
@@ -951,7 +1071,19 @@ def asignar_ticket(current_user: User, tipo: str, ticket_id: int):
 
     db.session.commit()
     ticket_json = serialize_ticket_to_json(ticket_obj, tipo)
-    emit_ticket_update(ticket_json)
+    assignment_payload = {
+        **ticket_json,
+        "ticket": ticket_json,
+        "ticket_id": ticket_obj.id,
+        "tipo": tipo,
+        "assigned_to": {
+            "id": empleado_asignado.id,
+            "nombre": empleado_asignado.name,
+            "email": empleado_asignado.email,
+        },
+        "actor_id": current_user.id,
+    }
+    emit_ticket_assignment_changed(assignment_payload)
 
     return jsonify({
         "ticket": ticket_json,
@@ -1379,7 +1511,7 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
 
     # Notificación por Websocket
     ticket_json = serialize_ticket_to_json(ticket_obj, tipo)
-    emit_ticket_update(ticket_json)
+    emit_ticket_status_changed(ticket_json)
 
     comentarios = [
         {
@@ -1420,11 +1552,9 @@ def get_chat_mensajes(current_user: User, ticket_id: int, anon_id: str = None, o
         if not sala_de_chat:
             return jsonify({"error": "Sala de chat no encontrada."}), 404
 
-        es_agente_municipal = current_user and current_user.tipo_chat == "municipio"
-        es_dueño_del_ticket = current_user and sala_de_chat.user_id == current_user.id
-        es_anon_valido = anon_id and sala_de_chat.anon_id == anon_id
         pin_query = request.args.get("pin")
-        es_pin_valido = bool(pin_query and getattr(sala_de_chat, "consulta_pin", None) == pin_query)
+        access = _resolver_acceso_chat_ticket(sala_de_chat, current_user, anon_id, pin_query)
+        es_agente_municipal = access["es_agente"]
 
         if es_agente_municipal:
             error_response = _validar_asignacion_empleado(sala_de_chat, current_user)
@@ -1433,10 +1563,10 @@ def get_chat_mensajes(current_user: User, ticket_id: int, anon_id: str = None, o
 
         log_ticket_debug("get_chat_mensajes", ticket_id, anon_id, sala_de_chat)
 
-        if not (es_agente_municipal or es_dueño_del_ticket or es_anon_valido or es_pin_valido):
+        if not access["permitido"]:
             return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
 
-        if sala_de_chat.estado == "cerrado" and not es_agente_municipal and not es_pin_valido:
+        if sala_de_chat.estado == "cerrado" and not es_agente_municipal and not access["es_pin_valido"]:
             return jsonify({"error": MENSAJE_CHAT_CERRADO}), 403
 
         ultimo_mensaje_id = request.args.get('ultimo_mensaje_id', default=0, type=int)
@@ -1668,11 +1798,12 @@ def get_ticket_knowledge_base_suggestions(current_user: User, owner_user: User, 
 
 # ---------- CHAT EN VIVO: RESPONDER CIUDADANO (SOLO TOKEN) ----------
 @ticket_bp.route('/tickets/chat/<int:ticket_id>/responder_ciudadano', methods=['POST'])
-@token_requerido
-def responder_ciudadano_a_chat(current_user: User, ticket_id: int):
+@anon_o_token_requerido
+def responder_ciudadano_a_chat(current_user: User, ticket_id: int, anon_id: str = None, owner_user: User = None):
     """
     Permite al ciudadano responder en el chat de su ticket.
-    Requiere que el usuario esté autenticado.
+    Acepta sesión autenticada, ``anon_id`` válido o acceso por ``consulta_pin``
+    para no romper el portal público de seguimiento.
     """
     data = request.get_json()
     if not data or not data.get("comentario"):
@@ -1682,17 +1813,19 @@ def responder_ciudadano_a_chat(current_user: User, ticket_id: int):
     if not sala_de_chat:
         return jsonify({"error": "Sala de chat no encontrada."}), 404
 
-    es_dueño = sala_de_chat.user_id == current_user.id
+    pin_query = request.args.get("pin")
+    access = _resolver_acceso_chat_ticket(sala_de_chat, current_user, anon_id, pin_query)
 
     log_ticket_debug("responder_ciudadano", ticket_id, None, sala_de_chat)
 
-    if sala_de_chat.user_id is None or not es_dueño:
+    if not access["permitido"] or access["es_agente"]:
         return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
 
     if sala_de_chat.estado == "cerrado":
         return jsonify({"error": MENSAJE_CHAT_CERRADO}), 403
 
-    user_id_para_comentario = current_user.id if current_user else None
+    user_id_para_comentario = current_user.id if access["es_dueno"] else None
+    anon_id_para_comentario = anon_id if access["es_anon_valido"] else getattr(sala_de_chat, "anon_id", None)
 
     nuevo_comentario = servicio_tickets.crear_comentario(
         ticket_id=ticket_id,
@@ -1700,6 +1833,7 @@ def responder_ciudadano_a_chat(current_user: User, ticket_id: int):
         comentario_data={
             "comentario": data["comentario"],
             "user_id": user_id_para_comentario,
+            "anon_id": anon_id_para_comentario,
             "es_admin": False
         }
     )
