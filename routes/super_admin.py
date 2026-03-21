@@ -2304,37 +2304,6 @@ def super_admin_tenant_profile_360(current_user, slug):
         'meta': snapshot['meta'],
     })
 
-
-@super_admin_bp.route('/tenants/<string:slug>/profile-360', methods=['GET'])
-@token_requerido
-@super_admin_required
-def super_admin_tenant_profile_360(current_user, slug):
-    since_days = max(1, min(int(request.args.get('since_days', 30) or 30), 365))
-    cutoff = datetime.now(timezone.utc) - timedelta(days=since_days)
-
-    tenant = TenantProfile.query.filter_by(slug=slug).first_or_404()
-    snapshot = _build_tenant_health_snapshot(tenant, cutoff=cutoff)
-
-    return jsonify({
-        'since_days': since_days,
-        'tenant': {
-            'id': tenant.id,
-            'slug': tenant.slug,
-            'nombre': tenant.nombre,
-            'tipo': tenant.tipo,
-            'plan': tenant.plan,
-            'dominio': tenant.dominio,
-            'logo_url': tenant.logo_url,
-            'whatsapp_sender_id': tenant.whatsapp_sender_id,
-            'is_active': bool(getattr(tenant, 'is_active', True)),
-        },
-        'owner': snapshot['owner'],
-        'health': snapshot['health'],
-        'metrics': snapshot['metrics'],
-        'onboarding': snapshot['onboarding'],
-        'meta': snapshot['meta'],
-    })
-
 @super_admin_bp.route('/analytics/heatmap-categories-zones', methods=['GET'])
 @token_requerido
 @super_admin_required
