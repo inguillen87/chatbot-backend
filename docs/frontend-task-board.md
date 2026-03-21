@@ -70,6 +70,19 @@ Vista embudo usando `by_stage` + filtros.
 
 ---
 
+## EPIC D — Unified Inbox + SLA
+
+### FE-401 · Inbox omnicanal
+**Descripción:** unificar ticket, mensajes, estados y adjuntos en una sola vista viva.
+**Backend contrato sugerido:** usar `ux_context` + timeline canónica + sockets por ticket.
+**Aceptación:** el operador no cambia de módulo para ver chat, estado, mapa y últimos eventos.
+
+### FE-402 · Badge SLA / urgencia
+**Descripción:** mostrar badges `sin_asignar`, `por_vencer`, `vencido`, `respuesta_pendiente`.
+**Aceptación:** priorización visual inmediata en lista y detalle.
+
+---
+
 ## Dependencias backend (ya listas)
 - `GET /api/admin/leads/pipeline`
 - `PATCH /api/admin/leads/{ticket_id}/stage`
