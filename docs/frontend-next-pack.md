@@ -1,5 +1,17 @@
 # Frontend Next Pack (Widget + CRM)
 
+> Documento consolidado recomendado: `docs/FRONTEND_UNIFIED_HANDOFF.md`.
+
+## 0) Prioridad real para enviarle ya al frontend
+
+Si hay que pasar solo lo más importante, mandar esto:
+
+- **Widget**: reenviar siempre `X-Chat-Session-Id`, `entityToken/X-Entity-Token`, `X-Anon-Id` y `pin` si existe.
+- **Render gate**: usar `ux_context.should_render_demo_shell` como decisión principal entre demo shell y tenant real.
+- **Realtime**: escuchar `conversation.message.created`, `ticket.status.changed`, `ticket.assignment.changed`.
+- **Prioridad tickets**: pintar `sla_status`, `operational_badges`, `operational_metrics`.
+- **Siguiente UX pro**: inbox omnicanal con panel lateral + layout lista/mapa + KPI strip superior.
+
 ## 1) Widget: respuesta comercial estructurada
 
 Cuando `fuente` sea `catalogo_qdrant_con_promos_v2`, `catalogo_fallback_faq` o `catalogo_fallback_web`:

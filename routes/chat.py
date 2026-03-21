@@ -14,7 +14,7 @@ project_root_chat_routes = os.path.abspath(os.path.join(os.path.dirname(__file__
 if project_root_chat_routes not in sys.path:
     sys.path.insert(0, project_root_chat_routes)
 
-from flask import Blueprint, request, jsonify, current_app
+from flask import Blueprint, request, jsonify, current_app, g
 from sqlalchemy import func, desc
 from sqlalchemy.exc import ProgrammingError, SQLAlchemyError
 from sqlalchemy.orm.attributes import flag_modified # Importado para flag_modified
@@ -29,10 +29,12 @@ from services.logic import (
 from services.live_chat_schedule import build_live_chat_status
 from services.demo_registry import load_demo_rubros, demo_rubro_for_token
 from services.common_utils import validar_email, validar_telefono, formatear_telefono_e164
+from services.contact_intake import missing_contact_fields, resolve_contact_snapshot
 from services.notifications import enviar_notificacion_sms, enviar_notificacion_whatsapp_con_plantilla
 from services.email_service import enviar_email
 from utils.auth_helpers import (
     anon_o_token_requerido,
+    obtener_entity_token,
     obtener_token,
     user_from_token,
     _is_jwt_token,
@@ -414,6 +416,92 @@ def _build_demo_selector_payload(
         "demo_selector_mode": "segment_categories",
         "interactive_sections": grouped_sections,
         "generar_audio": True,
+    }
+
+
+def _owner_context_is_trusted(owner_user: Optional[User], resolution_source: Optional[str]) -> bool:
+    """Return True when the owner comes from a tenant-specific context.
+
+    We only trust owners that were resolved from explicit auth/entity context or
+    that were previously persisted in the same chat session. The generic
+    fallback municipality owner used on the public landing must not disable the
+    demo selector by itself.
+    """
+
+    if not owner_user:
+        return False
+
+    return (resolution_source or "").strip().lower() in {
+        "jwt_parent_owner",
+        "jwt_self_owner",
+        "static_entity_token",
+        "explicit_entity_token",
+        "session_owner_context",
+    }
+
+
+def _can_restore_session_owner_context(
+    *,
+    persisted_owner_id: Optional[object],
+    persisted_resolution_source: Optional[str],
+    is_public_landing: bool,
+    is_anonymous: bool,
+    has_entity_token: bool,
+) -> bool:
+    """Return True when a stored owner can safely be revived from chat session state."""
+
+    if not persisted_owner_id:
+        return False
+
+    normalized_source = (persisted_resolution_source or "").strip().lower()
+    if normalized_source not in {
+        "jwt_parent_owner",
+        "jwt_self_owner",
+        "static_entity_token",
+        "explicit_entity_token",
+    }:
+        return False
+
+    if is_public_landing and is_anonymous and not has_entity_token:
+        return False
+
+    return True
+
+
+def _build_widget_ux_context(
+    *,
+    owner_user: Optional[User],
+    resolution_source: Optional[str],
+    tipo_chat: Optional[str],
+    demo_session_activa: bool,
+) -> Dict[str, object]:
+    trusted_owner = _owner_context_is_trusted(owner_user, resolution_source)
+    owner_tipo_chat = (getattr(owner_user, "tipo_chat", None) or tipo_chat or "").strip().lower() or None
+    owner_name = getattr(owner_user, "name", None) if owner_user else None
+    tenant_slug = getattr(owner_user, "tenant_slug", None) if owner_user else None
+
+    return {
+        "trusted_owner": trusted_owner,
+        "owner_resolution_source": resolution_source or "unknown",
+        "owner_user_id": getattr(owner_user, "id", None),
+        "owner_tipo_chat": owner_tipo_chat,
+        "owner_name": owner_name,
+        "tenant_slug": tenant_slug,
+        "demo_session": bool(demo_session_activa),
+        "should_render_demo_shell": bool(demo_session_activa or not trusted_owner),
+        "channel_capabilities": {
+            "supports_audio_input": True,
+            "supports_file_upload": True,
+            "supports_image_input": True,
+            "supports_location_share": True,
+            "supports_realtime": True,
+        },
+        "recommended_experience": {
+            "primary_channel": "widget",
+            "intake_mode": "guided",
+            "supports_rich_claim_intake": owner_tipo_chat == "municipio",
+            "supports_rich_order_intake": owner_tipo_chat == "pyme",
+        },
     }
 
 
@@ -1427,6 +1515,7 @@ def _procesar_chat(
         # --- User and Role Determination ---
         is_anonymous = not actor_principal
         viewer_obj = current_user # El que mira
+        owner_resolution_source = getattr(g, "owner_resolution_source", "anonymous")
 
         if is_anonymous and not anon_id:
             # This case should ideally not be reached if anon_o_token_requerido is working correctly,
@@ -1488,6 +1577,33 @@ def _procesar_chat(
             if chat_context_obj:
                 chat_context_obj.context_data = contexto_chat
 
+        is_public_landing = _is_public_landing_request()
+        explicit_entity_token = bool(obtener_entity_token())
+
+        persisted_owner_id = contexto_chat.get("resolved_owner_user_id") if isinstance(contexto_chat, dict) else None
+        persisted_owner_resolution_source = (
+            contexto_chat.get("resolved_owner_resolution_source")
+            if isinstance(contexto_chat, dict)
+            else None
+        )
+        if (
+            _can_restore_session_owner_context(
+                persisted_owner_id=persisted_owner_id,
+                persisted_resolution_source=persisted_owner_resolution_source,
+                is_public_landing=is_public_landing,
+                is_anonymous=is_anonymous,
+                has_entity_token=explicit_entity_token,
+            )
+            and (
+            not owner_user
+            or owner_resolution_source == "default_municipio_owner"
+            )
+        ):
+            persisted_owner = db.session.get(User, persisted_owner_id)
+            if persisted_owner:
+                owner_user = persisted_owner
+                owner_resolution_source = "session_owner_context"
+
         demo_session_activa = bool(
             isinstance(contexto_chat, dict) and contexto_chat.get("demo_session")
         )
@@ -1542,8 +1658,6 @@ def _procesar_chat(
 
         # Enforce Demo Flow for Public Origin or Missing Auth
         # If we are on the public site and don't have a valid user context, force the demo selector
-        is_public_landing = _is_public_landing_request()
-
         # If on public landing and no explicit owner (or leaked owner context from cookie that we stripped),
         # force tenant hint to generic so demo flow triggers.
         if is_public_landing and not owner_user and not demo_session_activa:
@@ -1566,12 +1680,14 @@ def _procesar_chat(
         force_demo_selector_flow = (
             not actor_principal
             and tenant_slug_hint in {"municipio", "pyme"}
+            and not _owner_context_is_trusted(owner_user, owner_resolution_source)
             and not demo_session_activa
         )
 
         should_show_public_demo_selector = (
             is_public_landing
             and is_anonymous
+            and not _owner_context_is_trusted(owner_user, owner_resolution_source)
             and not demo_session_activa
             and (is_init_request or message_count_this_session == 0)
         )
@@ -1604,6 +1720,17 @@ def _procesar_chat(
             if cleared_demo_state and chat_context_obj:
                 flag_modified(chat_context_obj, "context_data")
                 _sync_demo_session_flag()
+
+        if (
+            owner_user
+            and isinstance(contexto_chat, dict)
+            and _owner_context_is_trusted(owner_user, owner_resolution_source)
+        ):
+            contexto_chat["resolved_owner_user_id"] = owner_user.id
+            contexto_chat["resolved_owner_tipo_chat"] = (getattr(owner_user, "tipo_chat", None) or tipo_chat or "").strip().lower() or None
+            contexto_chat["resolved_owner_resolution_source"] = owner_resolution_source
+            if chat_context_obj:
+                flag_modified(chat_context_obj, "context_data")
 
         is_demo_selection_event = False
         demo_options: Optional[List[Dict[str, Optional[str]]]] = None
@@ -2222,11 +2349,32 @@ def _procesar_chat(
             if audio_url and channel == "web" and "audio" not in resultado:
                 resultado["audio"] = {"link": audio_url}
 
+            resultado["ux_context"] = _build_widget_ux_context(
+                owner_user=owner_del_bot or owner_user,
+                resolution_source=owner_resolution_source,
+                tipo_chat=tipo_chat,
+                demo_session_activa=demo_session_activa,
+            )
+
         normalize_response_payload(resultado)
 
-        # Si el usuario es anónimo y la acción requiere datos personales, pedirlos
-        if is_anonymous and resultado and resultado.get("accion_backend") in ["crear_reclamo", "iniciar_reclamo"] and not (resultado.get("datos_estructura", {}).get("nombre_usuario_detectado") and resultado.get("datos_estructura", {}).get("telefono_detectado") and resultado.get("datos_estructura", {}).get("email_detectado")):
-            resultado['pedir_info'] = ["nombre", "telefono", "email"]
+        # Si el usuario es anónimo y la acción requiere datos personales, pedir solo los faltantes.
+        if is_anonymous and resultado and resultado.get("accion_backend") in ["crear_reclamo", "iniciar_reclamo"]:
+            datos_estructura = resultado.get("datos_estructura") if isinstance(resultado.get("datos_estructura"), dict) else {}
+            contacto = resolve_contact_snapshot(
+                datos=datos_estructura,
+                profile_name=(chat_context_obj.context_data or {}).get("profile_name") if chat_context_obj and isinstance(chat_context_obj.context_data, dict) else None,
+                anon_id=anon_id,
+            )
+            faltan_contactos = missing_contact_fields(contacto)
+            if faltan_contactos:
+                resultado['pedir_info'] = faltan_contactos
+                if not resultado.get("message_body"):
+                    resultado["message_body"] = (
+                        "Para continuar con tu reclamo, necesito estos datos: "
+                        + ", ".join(faltan_contactos)
+                        + "."
+                    )
 
         # Guardar datos del último mensaje para evitar duplicados
         if chat_context_obj:
