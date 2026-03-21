@@ -3,8 +3,17 @@ from unittest.mock import patch
 from services.order_attachment_preview import build_order_attachment_preview
 
 
+@patch('services.order_attachment_preview.buscar_item_en_catalogo')
 @patch('services.order_attachment_preview.extraer_lista_pedido_de_texto_con_llm')
-def test_build_order_attachment_preview_returns_structured_preview(mock_extract):
+def test_build_order_attachment_preview_returns_structured_preview(mock_extract, mock_match):
+    class _Match:
+        id = 11
+        nombre = 'Malbec Reserva Catálogo'
+        sku = 'MALB-01'
+        precio = '12500'
+        cantidad = 8
+
+    mock_match.side_effect = [_Match(), None]
     mock_extract.return_value = [
         {'nombre_producto_ocr': 'Malbec Reserva', 'cantidad_ocr': 2},
         {'nombre_producto_ocr': 'Cabernet', 'cantidad_ocr': 1},
@@ -21,11 +30,15 @@ def test_build_order_attachment_preview_returns_structured_preview(mock_extract)
     assert 'pedido preliminar' in preview['message'].lower()
     assert len(preview['items_detectados']) == 2
     assert preview['confirmation_card']['items_count'] == 2
+    assert preview['items_detectados'][0]['catalog_match']['sku'] == 'MALB-01'
+    assert preview['catalog_match_summary']['matched'] == 1
     assert preview['options_list'][0]['action_id'] == 'finalizar_pedido_pyme'
 
 
+@patch('services.order_attachment_preview.buscar_item_en_catalogo')
 @patch('services.order_attachment_preview.extraer_lista_pedido_de_texto_con_llm')
-def test_build_order_attachment_preview_falls_back_when_items_are_not_detected(mock_extract):
+def test_build_order_attachment_preview_falls_back_when_items_are_not_detected(mock_extract, mock_match):
+    mock_match.return_value = None
     mock_extract.return_value = []
 
     preview = build_order_attachment_preview(

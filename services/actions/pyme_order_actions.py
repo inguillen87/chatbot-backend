@@ -450,6 +450,7 @@ class ProcesarAdjuntoPedidoAction(BaseActionHandler):
                 "adjunto_pedido_procesado": True,
                 "texto_extraido": texto_extraido,
                 "items_detectados": preview["items_detectados"],
+                "catalog_match_summary": preview["catalog_match_summary"],
                 "order_confirmation": preview["order_confirmation"],
                 "confirmation_card": preview["confirmation_card"],
             },
