@@ -3,7 +3,7 @@ from flask import Blueprint, jsonify, request, g, abort, current_app, url_for
 from sqlalchemy import or_, and_, func
 from datetime import datetime, timezone, timedelta
 
-from models import MunicipioPost, CatalogoItem, TenantTicket, MarketOrder, MarketOrderItem, OrderEvent, User, TenantProfile, TenantFollower, WidgetConfig, EncEncuesta, EncRespuesta, PointsTransaction, SugerenciaCiudadano
+from models import MunicipioPost, CatalogoItem, TenantTicket, MarketOrder, MarketOrderItem, OrderEvent, User, TenantProfile, TenantFollower, WidgetConfig, EncEncuesta, EncRespuesta, PointsTransaction, Promocion, SugerenciaCiudadano
 from extensions import db
 from services.tenant_resolver import resolve_tenant_only, TenantResolutionError
 from services.rewards import recompensas_service
@@ -227,6 +227,159 @@ def _serialize_portal_order(order: MarketOrder, include_timeline: bool = False) 
             "timeline": timeline,
         },
     }
+
+
+def _serialize_portal_claim(ticket: TenantTicket) -> dict:
+    datos_extra = ticket.datos_extra if isinstance(ticket.datos_extra, dict) else {}
+    return {
+        "id": str(ticket.id),
+        "title": ticket.categoria or "Reclamo",
+        "description": ticket.descripcion,
+        "status": ticket.estado,
+        "channel": ticket.origen,
+        "priority": datos_extra.get("priority") or datos_extra.get("sla_status") or "normal",
+        "date": _to_iso(ticket.created_at),
+        "updated_at": _to_iso(ticket.updated_at),
+    }
+
+
+def _serialize_points_transaction(tx: PointsTransaction) -> dict:
+    metadata = tx.metadata_payload if isinstance(tx.metadata_payload, dict) else {}
+    return {
+        "id": tx.id,
+        "fecha": _to_iso(tx.created_at),
+        "tipo": tx.tipo,
+        "delta": tx.delta,
+        "saldo_final": tx.saldo_final,
+        "benefit_id": metadata.get("benefit_id"),
+        "benefit_title": metadata.get("benefit_title"),
+        "detalle": metadata.get("detalle", tx.tipo),
+    }
+
+
+def _portal_membership_tier(balance: int) -> dict:
+    if balance >= 2500:
+        return {
+            "id": "black",
+            "label": "Black",
+            "theme": "obsidian",
+            "next_tier_points": None,
+        }
+    if balance >= 1200:
+        return {
+            "id": "gold",
+            "label": "Gold",
+            "theme": "gold",
+            "next_tier_points": 2500 - balance,
+        }
+    if balance >= 400:
+        return {
+            "id": "silver",
+            "label": "Silver",
+            "theme": "graphite",
+            "next_tier_points": 1200 - balance,
+        }
+    return {
+        "id": "starter",
+        "label": "Starter",
+        "theme": "indigo",
+        "next_tier_points": 400 - balance,
+    }
+
+
+def _portal_promotions(tenant: TenantProfile, *, limit: int = 6) -> list[dict]:
+    owner = tenant.municipio or tenant.pyme
+    owner_id = getattr(owner, "id", None)
+    cards: list[dict] = []
+
+    if owner_id:
+        promos = (
+            Promocion.query.filter_by(pyme_user_id=owner_id, is_active=True)
+            .order_by(Promocion.updated_at.desc())
+            .limit(limit)
+            .all()
+        )
+        for promo in promos:
+            cards.append(
+                {
+                    "id": promo.id,
+                    "title": promo.nombre_promocion,
+                    "description": promo.descripcion_publica or promo.tipo_promocion,
+                    "type": "structured",
+                    "discount_type": promo.tipo_promocion,
+                    "discount_value": promo.valor_descuento,
+                    "starts_at": _to_iso(promo.fecha_inicio),
+                    "ends_at": _to_iso(promo.fecha_fin),
+                    "code": promo.codigo_promocion,
+                }
+            )
+
+    remaining = max(0, limit - len(cards))
+    if remaining:
+        items = (
+            CatalogoItem.query.filter(
+                CatalogoItem.tenant_id == tenant.id,
+                CatalogoItem.promocion_info.isnot(None),
+            )
+            .order_by(CatalogoItem.timestamp.desc())
+            .limit(remaining * 2)
+            .all()
+        )
+        seen_titles = {card["title"] for card in cards}
+        for item in items:
+            if item.nombre in seen_titles:
+                continue
+            cards.append(
+                {
+                    "id": f"catalog:{item.id}",
+                    "title": item.nombre,
+                    "description": item.promocion_info,
+                    "type": "catalog",
+                    "category": item.categoria,
+                    "image_url": item.imagen_url,
+                    "price_label": item.precio,
+                }
+            )
+            seen_titles.add(item.nombre)
+            if len(cards) >= limit:
+                break
+
+    return cards[:limit]
+
+
+def _portal_available_surveys(tenant: TenantProfile, user: User, *, limit: int = 6) -> list[dict]:
+    if not tenant.encuestas_tenant_id:
+        return []
+    surveys = list_public_encuestas_for_tenant(tenant.encuestas_tenant_id, limit=max(limit * 2, 10))
+    answered_ids = {
+        enc_id
+        for (enc_id,) in db.session.query(EncRespuesta.encuesta_id)
+        .filter(
+            EncRespuesta.user_id == user.id,
+            EncRespuesta.tenant_id == tenant.id,
+        )
+        .all()
+    }
+
+    items: list[dict] = []
+    for encuesta, slug in surveys:
+        if encuesta.id in answered_ids:
+            continue
+        serialized = serialize_public_encuesta(encuesta)
+        items.append(
+            {
+                "id": encuesta.id,
+                "slug": slug,
+                "title": serialized.get("titulo") or encuesta.titulo,
+                "description": serialized.get("descripcion") or encuesta.descripcion,
+                "kind": serialized.get("tipo") or encuesta.tipo,
+                "estimated_reward_points": 150 if not getattr(encuesta, "es_votacion_envivo", False) else 75,
+                "link": f"/portal/encuestas/{slug}",
+            }
+        )
+        if len(items) >= limit:
+            break
+    return items
 
 def _generate_notifications(user, tenant, limit=10):
     notifications = []
@@ -1094,6 +1247,263 @@ def get_portal_dashboard(tenant_slug):
         },
         "tenants_followed": max(0, len(tenant_ids) - 1),
     })
+
+
+@portal_api_bp.route('/premium-bundle', methods=['GET'])
+@portal_api_bp.route('/dashboard-bundle', methods=['GET'])
+@require_auth
+def get_portal_premium_bundle(tenant_slug):
+    tenant = _resolve_context(tenant_slug)
+    user = g.viewer
+    include_network = _is_truthy(request.args.get('include_network'))
+    limit = _normalize_limit(request.args.get('limit'), default=6, max_limit=20)
+    tenants, tenant_ids, owner_ids = _resolve_portal_scope(user, tenant, include_network)
+    tenant_by_id = {item.id: item for item in tenants}
+
+    claims = (
+        TenantTicket.query.filter(
+            TenantTicket.user_id == user.id,
+            TenantTicket.tenant_id.in_(tenant_ids),
+        )
+        .order_by(TenantTicket.updated_at.desc())
+        .limit(limit)
+        .all()
+    )
+    orders = (
+        MarketOrder.query.filter(
+            MarketOrder.user_id == user.id,
+            MarketOrder.tenant_id.in_(tenant_ids),
+        )
+        .order_by(MarketOrder.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    points_tx = (
+        PointsTransaction.query.filter(
+            PointsTransaction.user_id == user.id,
+            PointsTransaction.tenant_id.in_(tenant_ids),
+        )
+        .order_by(PointsTransaction.created_at.desc())
+        .limit(max(limit * 4, 20))
+        .all()
+    )
+    survey_history = (
+        db.session.query(EncRespuesta, EncEncuesta)
+        .join(EncEncuesta, EncEncuesta.id == EncRespuesta.encuesta_id)
+        .filter(
+            and_(
+                EncRespuesta.user_id == user.id,
+                EncRespuesta.tenant_id.in_(tenant_ids),
+            )
+        )
+        .order_by(EncRespuesta.submitted_at.desc())
+        .limit(limit)
+        .all()
+    )
+    redeems = [tx for tx in points_tx if (tx.delta or 0) < 0][:limit]
+    suggestions = []
+    if owner_ids:
+        suggestions = (
+            SugerenciaCiudadano.query.filter(
+                SugerenciaCiudadano.user_id == user.id,
+                SugerenciaCiudadano.municipio_id.in_(owner_ids),
+            )
+            .order_by(SugerenciaCiudadano.fecha.desc())
+            .limit(limit)
+            .all()
+        )
+
+    available_surveys = _portal_available_surveys(tenant, user, limit=limit)
+    rewards_balance = recompensas_service().obtener_saldo(user)
+    tier = _portal_membership_tier(int(rewards_balance or 0))
+    points_breakdown = _build_points_breakdown(points_tx)
+    benefits = []
+    for benefit in _portal_benefits(tenant):
+        benefits.append(
+            {
+                **benefit,
+                "eligible": rewards_balance >= benefit["cost_points"],
+                "points_missing": max(0, benefit["cost_points"] - rewards_balance),
+            }
+        )
+    promotions = _portal_promotions(tenant, limit=limit)
+
+    total_spent = sum(float(order.total_monetary or 0) for order in orders)
+    pending_claims = sum(1 for claim in claims if (claim.estado or "").lower() not in {"resuelto", "cerrado", "closed"})
+    active_orders = sum(1 for order in orders if (order.status or "").lower() not in {"delivered", "cancelled"})
+    timeline = []
+    for order in orders:
+        serialized = _serialize_portal_order(order, include_timeline=False)
+        timeline.append(
+            {
+                "type": "order",
+                "at": serialized.get("date"),
+                "title": f"Pedido #{order.id}",
+                "status": serialized.get("status"),
+                "tenant_slug": tenant_by_id.get(order.tenant_id).slug if tenant_by_id.get(order.tenant_id) else None,
+                "payload": serialized,
+            }
+        )
+    for claim in claims:
+        timeline.append(
+            {
+                "type": "claim",
+                "at": _to_iso(claim.updated_at) or _to_iso(claim.created_at),
+                "title": claim.categoria or "Reclamo",
+                "status": claim.estado,
+                "tenant_slug": tenant_by_id.get(claim.tenant_id).slug if tenant_by_id.get(claim.tenant_id) else None,
+                "payload": _serialize_portal_claim(claim),
+            }
+        )
+    for tx in points_tx[:limit]:
+        timeline.append(
+            {
+                "type": "points",
+                "at": _to_iso(tx.created_at),
+                "title": (tx.metadata_payload or {}).get("detalle", tx.tipo),
+                "status": "earned" if (tx.delta or 0) >= 0 else "redeemed",
+                "tenant_slug": tenant_by_id.get(tx.tenant_id).slug if tenant_by_id.get(tx.tenant_id) else None,
+                "payload": _serialize_points_transaction(tx),
+            }
+        )
+    for respuesta, encuesta in survey_history:
+        timeline.append(
+            {
+                "type": "survey",
+                "at": _to_iso(respuesta.submitted_at),
+                "title": encuesta.titulo if encuesta else "Encuesta",
+                "status": "submitted",
+                "tenant_slug": tenant_by_id.get(respuesta.tenant_id).slug if tenant_by_id.get(respuesta.tenant_id) else None,
+                "payload": {
+                    "encuesta_id": respuesta.encuesta_id,
+                    "encuesta_slug": encuesta.slug if encuesta else None,
+                    "kind": encuesta.tipo if encuesta else None,
+                },
+            }
+        )
+    timeline.sort(key=lambda item: item.get("at") or "", reverse=True)
+
+    return jsonify(
+        {
+            "scope": {
+                "include_network": include_network,
+                "tenant_ids": tenant_ids,
+                "tenant_slugs": [item.slug for item in tenants],
+            },
+            "member": {
+                "id": str(user.id),
+                "name": user.name,
+                "email": user.email,
+                "telefono": user.telefono,
+                "tenant_slug": tenant.slug,
+                "tenant_name": tenant.nombre,
+                "segment": tenant.tipo,
+            },
+            "club": {
+                "style": "private_club",
+                "label": "Portal Privado",
+                "tier": tier,
+                "current_points": rewards_balance,
+                "points_breakdown": points_breakdown,
+                "tenants_followed": max(0, len(tenant_ids) - 1),
+            },
+            "orders": {
+                "items": [_serialize_portal_order(order, include_timeline=False) for order in orders],
+                "active_count": active_orders,
+                "total_count": len(orders),
+                "total_spent": round(total_spent, 2),
+            },
+            "claims": {
+                "items": [_serialize_portal_claim(claim) for claim in claims],
+                "open_count": pending_claims,
+                "total_count": len(claims),
+            },
+            "promotions": {
+                "items": promotions,
+                "benefits_preview": benefits[:3],
+            },
+            "surveys": {
+                "available": available_surveys,
+                "history": [
+                    {
+                        "id": str(respuesta.id),
+                        "tenant_id": respuesta.tenant_id,
+                        "tenant_slug": tenant_by_id.get(respuesta.tenant_id).slug if tenant_by_id.get(respuesta.tenant_id) else None,
+                        "encuesta_id": respuesta.encuesta_id,
+                        "encuesta_slug": encuesta.slug if encuesta else None,
+                        "title": encuesta.titulo if encuesta else None,
+                        "kind": encuesta.tipo if encuesta else None,
+                        "submitted_at": _to_iso(respuesta.submitted_at),
+                    }
+                    for respuesta, encuesta in survey_history
+                ],
+                "pending_count": len(available_surveys),
+                "answered_count": len(survey_history),
+            },
+            "rewards": {
+                "benefits": benefits,
+                "redeems": [_serialize_points_transaction(tx) for tx in redeems],
+                "wallet": {
+                    "current_points": rewards_balance,
+                    "earned_total": sum(max(0, int(tx.delta or 0)) for tx in points_tx),
+                    "redeemed_total": abs(sum(min(0, int(tx.delta or 0)) for tx in points_tx)),
+                },
+            },
+            "suggestions": [
+                {
+                    "id": str(item.id),
+                    "categoria": item.categoria,
+                    "estado": item.estado,
+                    "texto": item.texto_sugerencia,
+                    "submitted_at": _to_iso(item.fecha),
+                }
+                for item in suggestions
+            ],
+            "history": {
+                "timeline": timeline[: max(limit * 4, 20)],
+                "counts": {
+                    "orders": len(orders),
+                    "claims": len(claims),
+                    "points": len(points_tx),
+                    "surveys": len(survey_history),
+                    "suggestions": len(suggestions),
+                },
+            },
+            "highlights": [
+                {
+                    "id": "orders",
+                    "title": "Compras activas",
+                    "value": active_orders,
+                    "tone": "brand",
+                },
+                {
+                    "id": "claims",
+                    "title": "Reclamos abiertos",
+                    "value": pending_claims,
+                    "tone": "warning" if pending_claims else "success",
+                },
+                {
+                    "id": "points",
+                    "title": "Puntos disponibles",
+                    "value": rewards_balance,
+                    "tone": "accent",
+                },
+            ],
+            "quick_actions": [
+                {"id": "go_orders", "label": "Ver pedidos", "href": "/portal/pedidos", "icon": "package"},
+                {"id": "go_claims", "label": "Ver reclamos", "href": "/portal/reclamos", "icon": "life-buoy"},
+                {"id": "go_rewards", "label": "Canjear puntos", "href": "/portal/puntos", "icon": "gift"},
+                {"id": "go_surveys", "label": "Responder encuestas", "href": "/portal/encuestas", "icon": "clipboard"},
+            ],
+            "modules": [
+                {"id": "orders", "title": "Compras", "badge_count": active_orders, "cta": "/portal/pedidos"},
+                {"id": "claims", "title": "Reclamos", "badge_count": pending_claims, "cta": "/portal/reclamos"},
+                {"id": "promotions", "title": "Promos", "badge_count": len(promotions), "cta": "/portal/promociones"},
+                {"id": "rewards", "title": "Puntos y canjes", "badge_count": rewards_balance, "cta": "/portal/puntos"},
+                {"id": "surveys", "title": "Encuestas", "badge_count": len(available_surveys), "cta": "/portal/encuestas"},
+            ],
+        }
+    )
 
 
 @portal_api_bp.route('/i18n', methods=['GET'])

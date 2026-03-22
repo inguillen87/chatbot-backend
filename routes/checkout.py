@@ -8,8 +8,9 @@ from sqlalchemy import func
 
 from config import ALLOWED_ORIGINS
 from database import db
-from models import CatalogoItem, CatalogoModalidad, PedidoConversacional, TenantProfile, User
+from models import CatalogoItem, CatalogoModalidad, MarketOrder, MarketOrderItem, OrderEvent, PedidoConversacional, TenantProfile, User
 from routes.catalogo import _formatear_producto
+from services.commerce_contracts import build_customer_profile, resolve_order_contact_payload
 from services.rewards import recompensas_service
 from services.tenant_resolver import TenantResolutionError, resolve_tenant_and_user
 
@@ -98,13 +99,20 @@ def _build_items(cart_entries: List[dict], tenant: TenantProfile, owner: Optiona
                 "imagen_url": item.imagen_url,
             }
         )
+        modalidad = formatted.get("modalidad") or item.modalidad_enum.value
+        currency = formatted.get("moneda") or item.moneda or ("PTS" if item.precio_puntos else "ARS")
+        unit_price = formatted.get("precio_unitario") or formatted.get("precio_pack")
+        if (currency == "PTS" or modalidad == CatalogoModalidad.CANJE.value) and item.precio_puntos is not None:
+            unit_price = int(item.precio_puntos)
+        elif unit_price in (None, 0) and item.precio_monetario is not None:
+            unit_price = float(item.precio_monetario)
         items.append(
             {
                 "title": formatted.get("nombre"),
                 "quantity": cantidad,
-                "unit_price": formatted.get("precio_unitario") or formatted.get("precio_pack") or 0,
-                "currency_id": formatted.get("moneda") or item.moneda or "ARS",
-                "modalidad": formatted.get("modalidad"),
+                "unit_price": unit_price or 0,
+                "currency_id": currency,
+                "modalidad": modalidad,
                 "catalogo_item_id": item.id,
                 "tenant_id": tenant.id,
                 "categoria": formatted.get("categoria"),
@@ -181,6 +189,56 @@ def _pedido_tipo(total_money: float, total_points: int, has_donation: bool) -> s
     return "compra"
 
 
+def _support_channels(tenant: TenantProfile, owner: Optional[User], channel: str) -> dict:
+    phone = getattr(owner, "telefono", None)
+    return {
+        "preferred": "whatsapp" if phone else (channel or "web"),
+        "whatsapp": f"https://wa.me/{''.join(ch for ch in str(phone or '') if ch.isdigit())}" if phone else None,
+        "phone": phone,
+        "portal": f"/{tenant.slug}/portal" if getattr(tenant, "slug", None) else None,
+    }
+
+
+def _checkout_next_steps(*, tenant: TenantProfile, owner: Optional[User], market_order: MarketOrder, payment_required: bool, payment_ready: bool, channel: str) -> list[dict]:
+    support = _support_channels(tenant, owner, channel)
+    steps: list[dict] = [
+        {
+            "id": "track_order",
+            "label": "Seguir pedido",
+            "status": "ready",
+            "href": f"/{tenant.slug}/portal/pedidos/{market_order.id}" if getattr(tenant, "slug", None) else None,
+        }
+    ]
+    if payment_required:
+        steps.append(
+            {
+                "id": "complete_payment",
+                "label": "Completar pago",
+                "status": "ready" if payment_ready else "pending_configuration",
+                "href": None,
+            }
+        )
+    else:
+        steps.append(
+            {
+                "id": "await_confirmation",
+                "label": "Esperar confirmación",
+                "status": "ready",
+                "href": support.get("portal"),
+            }
+        )
+    if support.get("whatsapp"):
+        steps.append(
+            {
+                "id": "handoff_whatsapp",
+                "label": "Seguir por WhatsApp",
+                "status": "ready",
+                "href": support.get("whatsapp"),
+            }
+        )
+    return steps
+
+
 def _resolve_tenant_user(payload: dict) -> tuple[TenantProfile, User]:
     tenant_arg = payload.get("tenant_slug") or request.args.get("tenant_slug")
     tenant_arg = tenant_arg or request.args.get("tenant") or request.headers.get("X-Tenant")
@@ -250,6 +308,20 @@ def _crear_pedido(payload: dict):
             )
         rewards.canjear_puntos(user, tenant, total_points)
 
+    session_identifier = request.headers.get("X-Chat-Session-Id") or request.headers.get("X-Anon-Id")
+    contact = resolve_order_contact_payload(
+        user=user,
+        payload=payload,
+        session_id=session_identifier,
+        channel=payload.get("channel") or request.headers.get("X-Sales-Channel") or request.headers.get("X-Channel"),
+    )
+    customer_profile = build_customer_profile(
+        user=user,
+        payload=payload,
+        session_id=session_identifier,
+        channel=payload.get("channel") or request.headers.get("X-Sales-Channel") or request.headers.get("X-Channel"),
+    )
+
     if is_anonymous:
         contact_error = _ensure_contact(user, payload)
         if contact_error:
@@ -266,10 +338,68 @@ def _crear_pedido(payload: dict):
         origen=payload.get("origen")
         or request.headers.get("X-Checkout-Origin")
         or request.args.get("origen")
+        or contact.get("channel")
         or "web",
         anon_id=getattr(user, "anon_id", None),
     )
+    pedido.metadata_payload = {
+        "contact_key": contact.get("contact_key"),
+        "contacto": {
+            "nombre": contact.get("name"),
+            "telefono": contact.get("phone"),
+            "email": contact.get("email"),
+        },
+        "customer_profile": customer_profile,
+        "commercial_state": {
+            "stage": "confirmed" if pedido_tipo == "donacion" else ("awaiting_payment" if total_money > 0 else "awaiting_confirmation"),
+            "channel": contact.get("channel") or "web",
+            "source": "checkout_api",
+        },
+    }
     db.session.add(pedido)
+    db.session.flush()
+
+    market_order = MarketOrder(
+        tenant_id=tenant.id,
+        user_id=user.id,
+        status="confirmed" if pedido_tipo == "donacion" else ("pending" if total_money > 0 else "confirmed"),
+        contact_name=contact.get("name"),
+        contact_phone=contact.get("phone"),
+        contact_email=contact.get("email"),
+        contact_key=contact.get("contact_key"),
+        channel=contact.get("channel") or "web",
+        session_id=session_identifier,
+        total_monetary=total_money or None,
+        total_points=total_points or None,
+        currency="ARS",
+        note=(payload.get("nota") or payload.get("note") or "").strip() or None,
+        external_provider="pedido_conversacional",
+        external_order_id=str(pedido.id),
+        metadata_payload={
+            "pedido_conversacional_id": pedido.id,
+            "customer_profile": customer_profile,
+            "checkout_origin": payload.get("origen") or request.headers.get("X-Checkout-Origin"),
+        },
+    )
+    db.session.add(market_order)
+    db.session.flush()
+    for item in cart_entries:
+        db.session.add(MarketOrderItem(
+            order_id=market_order.id,
+            product_id=item.get("catalogo_item_id"),
+            quantity=_normalize_quantity(item.get("quantity") or item.get("cantidad") or 1),
+            price_monetary=item.get("unit_price") if item.get("currency_id") != "PTS" else None,
+            price_points=int(item.get("unit_price") or 0) if item.get("currency_id") == "PTS" else None,
+            currency=item.get("currency_id") or "ARS",
+            modalidad=item.get("modalidad"),
+            name_snapshot=item.get("title"),
+            extra={"tenant_id": tenant.id, "categoria": item.get("categoria")},
+        ))
+    db.session.add(OrderEvent(market_order_id=market_order.id, type="checkout.created", payload={
+        "pedido_conversacional_id": pedido.id,
+        "channel": contact.get("channel") or "web",
+        "contact_key": contact.get("contact_key"),
+    }))
     db.session.commit()
 
     tenant_cfg = tenant.configuracion or {}
@@ -277,6 +407,7 @@ def _crear_pedido(payload: dict):
     init_point = None
     preference_id = None
     demo_mode = bool((getattr(g, "token_payload", {}) or {}).get("demo_mode"))
+    support_channels = _support_channels(tenant, owner, contact.get("channel") or "web")
 
     if total_money > 0 and demo_mode:
         pedido.estado = "confirmado"
@@ -285,6 +416,7 @@ def _crear_pedido(payload: dict):
         return jsonify(
             {
                 "pedido_id": pedido.id,
+                "market_order_id": market_order.id,
                 "preference_id": None,
                 "init_point": None,
                 "total_monetario": total_money,
@@ -292,6 +424,20 @@ def _crear_pedido(payload: dict):
                 "estado": pedido.estado,
                 "tipo": pedido.tipo,
                 "demo_mode": True,
+                "tracking": {
+                    "market_order_id": market_order.id,
+                    "portal_path": f"/{tenant.slug}/portal/pedidos/{market_order.id}",
+                    "status_label": "Confirmado",
+                },
+                "next_steps": _checkout_next_steps(
+                    tenant=tenant,
+                    owner=owner,
+                    market_order=market_order,
+                    payment_required=False,
+                    payment_ready=False,
+                    channel=contact.get("channel") or "web",
+                ),
+                "support_channels": support_channels,
             }
         )
 
@@ -302,12 +448,27 @@ def _crear_pedido(payload: dict):
             jsonify(
                 {
                     "pedido_id": pedido.id,
+                    "market_order_id": market_order.id,
                     "total_monetario": total_money,
                     "total_puntos": total_points,
                     "estado": pedido.estado,
                     "tipo": pedido.tipo,
                     "mercadopago_ready": False,
                     "error": "MercadoPago no configurado para este tenant",
+                    "tracking": {
+                        "market_order_id": market_order.id,
+                        "portal_path": f"/{tenant.slug}/portal/pedidos/{market_order.id}",
+                        "status_label": "Pendiente de pago",
+                    },
+                    "next_steps": _checkout_next_steps(
+                        tenant=tenant,
+                        owner=owner,
+                        market_order=market_order,
+                        payment_required=True,
+                        payment_ready=False,
+                        channel=contact.get("channel") or "web",
+                    ),
+                    "support_channels": support_channels,
                 }
             ),
             503,
@@ -361,12 +522,27 @@ def _crear_pedido(payload: dict):
     return jsonify(
         {
             "pedido_id": pedido.id,
+            "market_order_id": market_order.id,
             "preference_id": preference_id,
             "init_point": init_point,
             "total_monetario": total_money,
             "total_puntos": total_points,
             "estado": pedido.estado,
             "tipo": pedido.tipo,
+            "tracking": {
+                "market_order_id": market_order.id,
+                "portal_path": f"/{tenant.slug}/portal/pedidos/{market_order.id}",
+                "status_label": "Pendiente de pago" if total_money > 0 else "Confirmado",
+            },
+            "next_steps": _checkout_next_steps(
+                tenant=tenant,
+                owner=owner,
+                market_order=market_order,
+                payment_required=total_money > 0,
+                payment_ready=bool(preference_id or total_money == 0),
+                channel=contact.get("channel") or "web",
+            ),
+            "support_channels": support_channels,
         }
     )
 
@@ -380,4 +556,3 @@ def crear_preferencia():
 
     payload = request.get_json(silent=True) or {}
     return _crear_pedido(payload)
-
