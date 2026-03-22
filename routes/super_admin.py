@@ -18,6 +18,7 @@ from models import (
     LlmInteractionLog,
 )
 from utils.auth_helpers import token_requerido
+from services.operational_scoring import build_lead_portfolio_score
 from utils.admin_decorators import super_admin_required
 from sqlalchemy import desc, func
 from datetime import datetime, timezone, timedelta
@@ -115,6 +116,373 @@ def _sanitize_franchise_profile(payload: dict, tenant: TenantProfile) -> tuple[d
         base["supported_languages"] = list(dict.fromkeys([base.get("default_language")] + list(base.get("supported_languages") or [])))
 
     return base, errors
+
+
+def _iso_datetime(value):
+    if not value:
+        return None
+    try:
+        return value.isoformat()
+    except Exception:
+        return None
+
+
+def _build_tenant_health_snapshot(tenant: TenantProfile, *, cutoff: datetime) -> dict:
+    owner = tenant.municipio or tenant.pyme
+    owner_id = getattr(owner, "id", None)
+    now = datetime.now(timezone.utc)
+
+    municipio_tickets = MunicipioTicket.query.filter(
+        MunicipioTicket.tenant_id == tenant.id,
+        MunicipioTicket.fecha >= cutoff,
+    ).all()
+    pyme_tickets = PymeTicket.query.filter(
+        PymeTicket.tenant_id == tenant.id,
+        PymeTicket.fecha >= cutoff,
+    ).all()
+    tickets = municipio_tickets + pyme_tickets
+
+    total_tickets = len(tickets)
+    won = 0
+    lost = 0
+    open_tickets = 0
+    assigned_tickets = 0
+    sla_breached = 0
+    unassigned_aging = 0
+
+    for ticket in tickets:
+        details = _ensure_ticket_details_dict(ticket)
+        stage = str(details.get('lead_stage') or ticket.estado or 'nuevo').lower()
+        if stage == 'ganado':
+            won += 1
+        elif stage == 'perdido':
+            lost += 1
+        else:
+            open_tickets += 1
+
+        if getattr(ticket, "asignado_a_id", None):
+            assigned_tickets += 1
+
+        last_seen = getattr(ticket, 'ultima_actividad', None) or getattr(ticket, 'fecha', None)
+        if last_seen and stage not in {'ganado', 'perdido'}:
+            dt = last_seen if last_seen.tzinfo else last_seen.replace(tzinfo=timezone.utc)
+            age_seconds = (now - dt).total_seconds()
+            if age_seconds > 1800:
+                sla_breached += 1
+            if not getattr(ticket, "asignado_a_id", None) and age_seconds > 8 * 3600:
+                unassigned_aging += 1
+
+    survey_rows = EncEncuesta.query.filter(
+        EncEncuesta.tenant_id == tenant.id,
+        EncEncuesta.updated_at >= cutoff,
+    ).all()
+    survey_count = len(survey_rows)
+    survey_responses = 0
+    for survey in survey_rows:
+        survey_responses += EncRespuesta.query.filter_by(encuesta_id=survey.id).count()
+
+    catalog_count = CatalogoItem.query.filter_by(tenant_id=tenant.id).count()
+    conversations = 0
+    if owner_id:
+        conversations = Conversacion.query.filter(
+            ((Conversacion.pyme_id == owner_id) | (Conversacion.user_id == owner_id)),
+            Conversacion.timestamp >= cutoff,
+        ).count()
+
+    win_rate = round((won / total_tickets) * 100, 2) if total_tickets else 0.0
+    response_rate = round(((total_tickets - sla_breached) / total_tickets) * 100, 2) if total_tickets else 0.0
+    activity_score = min(conversations, 40)
+    health_score = max(
+        0.0,
+        min(
+            100.0,
+            round(
+                (win_rate * 0.45)
+                + (min(survey_responses, 50) * 0.25)
+                + (response_rate * 0.20)
+                + (activity_score * 0.10)
+                - (unassigned_aging * 3),
+                2,
+            ),
+        ),
+    )
+
+    onboarding = {
+        "branding": bool(tenant.logo_url or tenant.tema or tenant.theme_json),
+        "widget": bool(tenant.widget_settings or tenant.widget_config or getattr(owner, "token", None)),
+        "whatsapp": bool(tenant.whatsapp_sender_id),
+        "catalog": catalog_count > 0,
+        "surveys": survey_count > 0,
+        "tracking": total_tickets > 0,
+        "analytics": bool(total_tickets or survey_responses or conversations),
+    }
+    completed_steps = sum(1 for value in onboarding.values() if value)
+
+    alerts = []
+    if sla_breached:
+        alerts.append("sla_breached")
+    if unassigned_aging:
+        alerts.append("unassigned_backlog")
+    if catalog_count == 0 and tenant.tipo == "pyme":
+        alerts.append("catalog_missing")
+    if survey_count == 0:
+        alerts.append("surveys_missing")
+    if not onboarding["whatsapp"]:
+        alerts.append("whatsapp_not_connected")
+
+    return {
+        "tenant_id": tenant.id,
+        "tenant_slug": tenant.slug,
+        "tenant_nombre": tenant.nombre,
+        "tenant_tipo": tenant.tipo,
+        "plan": tenant.plan,
+        "is_active": bool(getattr(tenant, "is_active", True)),
+        "owner": {
+            "id": owner_id,
+            "name": getattr(owner, "name", None),
+            "email": getattr(owner, "email", None),
+        },
+        "metrics": {
+            "total_tickets": total_tickets,
+            "open_tickets": open_tickets,
+            "won": won,
+            "lost": lost,
+            "assigned_tickets": assigned_tickets,
+            "unassigned_tickets": max(total_tickets - assigned_tickets, 0),
+            "sla_breached": sla_breached,
+            "unassigned_aging": unassigned_aging,
+            "survey_count": survey_count,
+            "survey_responses": survey_responses,
+            "catalog_items": catalog_count,
+            "conversations_30d": conversations,
+        },
+        "health": {
+            "score": health_score,
+            "win_rate": win_rate,
+            "response_rate": response_rate,
+            "alerts": alerts,
+        },
+        "onboarding": {
+            "completed_steps": completed_steps,
+            "total_steps": len(onboarding),
+            "checklist": onboarding,
+        },
+        "meta": {
+            "last_updated_at": _iso_datetime(getattr(tenant, "updated_at", None)),
+            "created_at": _iso_datetime(getattr(tenant, "created_at", None)),
+            "cutoff": _iso_datetime(cutoff),
+        },
+    }
+
+
+def _build_strategic_overview_payload(*, since_days: int) -> dict:
+    cutoff = datetime.now(timezone.utc) - timedelta(days=since_days)
+
+    mt_rows = MunicipioTicket.query.filter(MunicipioTicket.fecha >= cutoff).all()
+    pt_rows = PymeTicket.query.filter(PymeTicket.fecha >= cutoff).all()
+    all_rows = [("municipio", t) for t in mt_rows] + [("pyme", t) for t in pt_rows]
+
+    by_stage = {}
+    by_tenant = {}
+    sla_breached = 0
+
+    now = datetime.now(timezone.utc)
+    for _ticket_type, ticket in all_rows:
+        details = _ensure_ticket_details_dict(ticket)
+        stage = str(details.get('lead_stage') or ticket.estado or 'nuevo').lower()
+        by_stage[stage] = by_stage.get(stage, 0) + 1
+
+        tenant_key = str(getattr(ticket, 'tenant_id', None) or 'sin_tenant')
+        if tenant_key not in by_tenant:
+            by_tenant[tenant_key] = {
+                'tenant_id': None if tenant_key == 'sin_tenant' else int(tenant_key),
+                'total': 0,
+                'won': 0,
+                'lost': 0,
+                'open': 0,
+            }
+        by_tenant[tenant_key]['total'] += 1
+        if stage == 'ganado':
+            by_tenant[tenant_key]['won'] += 1
+        elif stage == 'perdido':
+            by_tenant[tenant_key]['lost'] += 1
+        else:
+            by_tenant[tenant_key]['open'] += 1
+
+        last_seen = getattr(ticket, 'ultima_actividad', None) or getattr(ticket, 'fecha', None)
+        if last_seen:
+            dt = last_seen if last_seen.tzinfo else last_seen.replace(tzinfo=timezone.utc)
+            if (now - dt).total_seconds() > 1800 and stage not in {'ganado', 'perdido'}:
+                sla_breached += 1
+
+    total = len(all_rows)
+    won = by_stage.get('ganado', 0)
+    lost = by_stage.get('perdido', 0)
+    open_total = max(total - won - lost, 0)
+    win_rate = round((won / total) * 100, 2) if total else 0.0
+
+    by_tenant_rows = list(by_tenant.values())
+    for item in by_tenant_rows:
+        tenant_total = item.get('total') or 0
+        tenant_won = item.get('won') or 0
+        item['win_rate'] = round((tenant_won / tenant_total) * 100, 2) if tenant_total else 0.0
+    by_tenant_rows.sort(key=lambda item: (item.get('open', 0), item.get('total', 0)), reverse=True)
+
+    alerts = []
+    if sla_breached:
+        alerts.append({
+            'kind': 'sla_breached',
+            'severity': 'high',
+            'count': sla_breached,
+            'message': 'Hay leads abiertos sin respuesta reciente.',
+        })
+    if open_total > max(won + lost, 1):
+        alerts.append({
+            'kind': 'backlog_growth',
+            'severity': 'medium',
+            'count': open_total,
+            'message': 'El backlog abierto supera a los leads cerrados del período.',
+        })
+
+    return {
+        'since_days': since_days,
+        'totals': {
+            'total_leads': total,
+            'open_leads': open_total,
+            'won': won,
+            'lost': lost,
+            'sla_breached': sla_breached,
+            'win_rate': win_rate,
+        },
+        'by_stage': by_stage,
+        'by_tenant': by_tenant_rows,
+        'portfolio': {
+            'top_open_tenants': by_tenant_rows[:5],
+            'active_tenants': len([item for item in by_tenant_rows if item.get('total')]),
+        },
+        'alerts': alerts,
+    }
+
+
+def _build_realtime_ai_payload(*, minutes: int) -> dict:
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=minutes)
+
+    sessions = ChatSessionContext.query.filter(ChatSessionContext.last_updated >= cutoff).all()
+    llm_logs = LlmInteractionLog.query.filter(LlmInteractionLog.created_at >= cutoff).all()
+
+    total_llm = len(llm_logs)
+    pending = sum(1 for x in llm_logs if str(getattr(x, 'status', '')).lower() == 'pending_review')
+    converted = sum(1 for x in llm_logs if str(getattr(x, 'status', '')).lower() == 'converted_to_faq')
+    rejected = sum(1 for x in llm_logs if str(getattr(x, 'status', '')).lower() == 'rejected')
+
+    mt_total = MunicipioTicket.query.filter(MunicipioTicket.fecha >= cutoff).count()
+    pt_total = PymeTicket.query.filter(PymeTicket.fecha >= cutoff).count()
+
+    lead_rows = MunicipioTicket.query.filter(MunicipioTicket.fecha >= cutoff).all() + PymeTicket.query.filter(PymeTicket.fecha >= cutoff).all()
+    assigned = sum(1 for ticket in lead_rows if getattr(ticket, 'asignado_a_id', None))
+    unassigned = max(len(lead_rows) - assigned, 0)
+
+    return {
+        'minutes': minutes,
+        'active_sessions': len(sessions),
+        'llm': {
+            'total': total_llm,
+            'pending_review': pending,
+            'converted_to_faq': converted,
+            'rejected': rejected,
+        },
+        'tickets': {
+            'municipio': mt_total,
+            'pyme': pt_total,
+            'total': mt_total + pt_total,
+            'assigned': assigned,
+            'unassigned': unassigned,
+        },
+    }
+
+
+def _build_tenant_health_payload(*, since_days: int) -> dict:
+    cutoff = datetime.now(timezone.utc) - timedelta(days=since_days)
+
+    rows = []
+    for tenant in TenantProfile.query.all():
+        snapshot = _build_tenant_health_snapshot(tenant, cutoff=cutoff)
+        rows.append({
+            'tenant_id': snapshot['tenant_id'],
+            'tenant_slug': snapshot['tenant_slug'],
+            'tenant_tipo': snapshot['tenant_tipo'],
+            'tenant_nombre': snapshot['tenant_nombre'],
+            'plan': snapshot['plan'],
+            'is_active': snapshot['is_active'],
+            'total_tickets': snapshot['metrics']['total_tickets'],
+            'open_tickets': snapshot['metrics']['open_tickets'],
+            'won': snapshot['metrics']['won'],
+            'lost': snapshot['metrics']['lost'],
+            'sla_breached': snapshot['metrics']['sla_breached'],
+            'survey_count': snapshot['metrics']['survey_count'],
+            'survey_responses': snapshot['metrics']['survey_responses'],
+            'catalog_items': snapshot['metrics']['catalog_items'],
+            'health_score': snapshot['health']['score'],
+            'win_rate': snapshot['health']['win_rate'],
+            'response_rate': snapshot['health']['response_rate'],
+            'alerts': snapshot['health']['alerts'],
+            'onboarding_completion': snapshot['onboarding']['completed_steps'],
+            'onboarding_total_steps': snapshot['onboarding']['total_steps'],
+        })
+
+    rows.sort(key=lambda r: (r['health_score'], -r['sla_breached']), reverse=True)
+    return {'since_days': since_days, 'total_tenants': len(rows), 'items': rows}
+
+
+def _build_heatmap_categories_payload(*, since_days: int) -> dict:
+    cutoff = datetime.now(timezone.utc) - timedelta(days=since_days)
+
+    rows = []
+    for ticket in MunicipioTicket.query.filter(MunicipioTicket.fecha >= cutoff).all():
+        rows.append({
+            'tenant_id': ticket.tenant_id,
+            'categoria': (ticket.categoria or 'sin_categoria').strip().lower(),
+            'zona': (ticket.distrito or 'sin_zona').strip().lower(),
+            'lat': ticket.latitud,
+            'lon': ticket.longitud,
+            'tipo': 'municipio',
+        })
+    for ticket in PymeTicket.query.filter(PymeTicket.fecha >= cutoff).all():
+        rows.append({
+            'tenant_id': ticket.tenant_id,
+            'categoria': (ticket.categoria or 'sin_categoria').strip().lower(),
+            'zona': (getattr(ticket, 'direccion', None) or 'sin_zona').strip().lower(),
+            'lat': ticket.latitud,
+            'lon': ticket.longitud,
+            'tipo': 'pyme',
+        })
+
+    by_categoria = {}
+    by_zona = {}
+    points = []
+    for row in rows:
+        by_categoria[row['categoria']] = by_categoria.get(row['categoria'], 0) + 1
+        by_zona[row['zona']] = by_zona.get(row['zona'], 0) + 1
+        if row['lat'] is not None and row['lon'] is not None:
+            points.append({
+                'lat': row['lat'],
+                'lon': row['lon'],
+                'weight': 1,
+                'categoria': row['categoria'],
+                'zona': row['zona'],
+                'tipo': row['tipo'],
+                'tenant_id': row['tenant_id'],
+            })
+
+    top_categories = sorted(by_categoria.items(), key=lambda it: it[1], reverse=True)[:20]
+    top_zones = sorted(by_zona.items(), key=lambda it: it[1], reverse=True)[:20]
+    return {
+        'since_days': since_days,
+        'total': len(rows),
+        'top_categories': [{'categoria': k, 'count': v} for k, v in top_categories],
+        'top_zones': [{'zona': k, 'count': v} for k, v in top_zones],
+        'heatmap_points': points[:3000],
+    }
 
 
 
@@ -300,41 +668,6 @@ def _lead_relevance_score(*, open_tickets: int, latest_message: str, last_seen: 
     return int(score)
 
 
-
-
-def _lead_priority_score(*, latest_message: str, has_email: bool, has_phone: bool, open_tickets: int, last_seen: datetime | None) -> int:
-    base = _lead_relevance_score(
-        open_tickets=open_tickets,
-        latest_message=latest_message,
-        last_seen=last_seen,
-        has_contact=bool(has_email or has_phone),
-    )
-
-    completeness = 0
-    if has_email:
-        completeness += 12
-    if has_phone:
-        completeness += 18
-
-    text = str(latest_message or '').strip().lower()
-    urgency = 0
-    if any(word in text for word in _LEAD_URGENT_KEYWORDS):
-        urgency += 20
-    if any(word in text for word in ("precio", "presupuesto", "propuesta", "contratar", "plan full", "demo")):
-        urgency += 12
-
-    recency_bonus = 0
-    if last_seen:
-        now = datetime.now(timezone.utc)
-        dt = last_seen if last_seen.tzinfo else last_seen.replace(tzinfo=timezone.utc)
-        hours = max(0, (now - dt).total_seconds() / 3600)
-        if hours <= 0.5:
-            recency_bonus += 12
-        elif hours <= 2:
-            recency_bonus += 8
-
-    score = base + completeness + urgency + recency_bonus
-    return int(min(score, 100))
 
 
 def _normalize_plan_key(raw_plan: str | None) -> str:
@@ -788,7 +1121,7 @@ def get_tenant_metrics(current_user, slug):
 
     # 2. Orders (MarketOrder)
     from models import MarketOrder
-    order_count = MarketOrder.query.filter_by(tenant_id=tenant.id).filter(
+    order_count = MarketOrder.legacy_safe_query().filter_by(tenant_id=tenant.id).filter(
         MarketOrder.created_at >= since
     ).count()
 
@@ -1553,6 +1886,13 @@ def list_leads_interactions(current_user):
         last_dt = last_seen if (last_seen and last_seen.tzinfo) else (last_seen.replace(tzinfo=timezone.utc) if last_seen else None)
         age_seconds = (now - last_dt).total_seconds() if last_dt else 0
         sla_breached = bool(last_dt and age_seconds > 1800 and open_tickets > 0)
+        lead_priority = build_lead_portfolio_score(
+            latest_message=latest_question,
+            has_email=bool(profile_email),
+            has_phone=bool(profile_phone),
+            open_tickets=open_tickets,
+            last_seen=last_seen,
+        )
 
         items.append({
             'chat_session_id': ctx.chat_session_id,
@@ -1572,7 +1912,9 @@ def list_leads_interactions(current_user):
             'last_seen': last_seen.isoformat() if last_seen else None,
             'relevance_score': relevance,
             'sla_breached': sla_breached,
-            'lead_score': _lead_priority_score(latest_message=latest_question, has_email=bool(profile_email), has_phone=bool(profile_phone), open_tickets=open_tickets, last_seen=last_seen),
+            'lead_score': lead_priority['score'],
+            'lead_score_breakdown': lead_priority['breakdown'],
+            'lead_score_reasons': lead_priority['reasons'],
         })
 
     items.sort(key=lambda item: ((item.get('relevance_score') or 0), item.get('last_seen') or ''), reverse=True)
@@ -1856,64 +2198,7 @@ def run_lead_playbooks(current_user):
 @super_admin_required
 def leads_strategic_overview(current_user):
     since_days = max(1, min(int(request.args.get('since_days', 30) or 30), 365))
-    cutoff = datetime.now(timezone.utc) - timedelta(days=since_days)
-
-    mt_rows = MunicipioTicket.query.filter(MunicipioTicket.fecha >= cutoff).all()
-    pt_rows = PymeTicket.query.filter(PymeTicket.fecha >= cutoff).all()
-    all_rows = [("municipio", t) for t in mt_rows] + [("pyme", t) for t in pt_rows]
-
-    by_stage = {}
-    by_tenant = {}
-    sla_breached = 0
-
-    now = datetime.now(timezone.utc)
-    for ticket_type, t in all_rows:
-        details = _ensure_ticket_details_dict(t)
-        stage = str(details.get('lead_stage') or t.estado or 'nuevo').lower()
-        by_stage[stage] = by_stage.get(stage, 0) + 1
-
-        tenant_key = str(getattr(t, 'tenant_id', None) or 'sin_tenant')
-        if tenant_key not in by_tenant:
-            by_tenant[tenant_key] = {
-                'tenant_id': None if tenant_key == 'sin_tenant' else int(tenant_key),
-                'total': 0,
-                'won': 0,
-                'lost': 0,
-                'open': 0,
-            }
-        by_tenant[tenant_key]['total'] += 1
-        if stage == 'ganado':
-            by_tenant[tenant_key]['won'] += 1
-        elif stage == 'perdido':
-            by_tenant[tenant_key]['lost'] += 1
-        else:
-            by_tenant[tenant_key]['open'] += 1
-
-        last_seen = getattr(t, 'ultima_actividad', None) or getattr(t, 'fecha', None)
-        if last_seen:
-            dt = last_seen if last_seen.tzinfo else last_seen.replace(tzinfo=timezone.utc)
-            if (now - dt).total_seconds() > 1800 and stage not in {'ganado', 'perdido'}:
-                sla_breached += 1
-
-    total = len(all_rows)
-    won = by_stage.get('ganado', 0)
-    lost = by_stage.get('perdido', 0)
-    open_total = max(total - won - lost, 0)
-    win_rate = round((won / total) * 100, 2) if total else 0.0
-
-    return jsonify({
-        'since_days': since_days,
-        'totals': {
-            'total_leads': total,
-            'open_leads': open_total,
-            'won': won,
-            'lost': lost,
-            'sla_breached': sla_breached,
-            'win_rate': win_rate,
-        },
-        'by_stage': by_stage,
-        'by_tenant': list(by_tenant.values()),
-    })
+    return jsonify(_build_strategic_overview_payload(since_days=since_days))
 
 
 
@@ -1923,48 +2208,7 @@ def leads_strategic_overview(current_user):
 @super_admin_required
 def super_admin_realtime_ai_metrics(current_user):
     minutes = max(5, min(int(request.args.get('minutes', 60) or 60), 24 * 60))
-    cutoff = datetime.now(timezone.utc) - timedelta(minutes=minutes)
-
-    sessions = ChatSessionContext.query.filter(ChatSessionContext.last_updated >= cutoff).all()
-    active_sessions = len(sessions)
-
-    llm_logs = LlmInteractionLog.query.filter(LlmInteractionLog.created_at >= cutoff).all()
-
-    total_llm = len(llm_logs)
-    pending = sum(1 for x in llm_logs if str(getattr(x, 'status', '')).lower() == 'pending_review')
-    converted = sum(1 for x in llm_logs if str(getattr(x, 'status', '')).lower() == 'converted_to_faq')
-    rejected = sum(1 for x in llm_logs if str(getattr(x, 'status', '')).lower() == 'rejected')
-
-    mt_total = MunicipioTicket.query.filter(MunicipioTicket.fecha >= cutoff).count()
-    pt_total = PymeTicket.query.filter(PymeTicket.fecha >= cutoff).count()
-
-    lead_rows = MunicipioTicket.query.filter(MunicipioTicket.fecha >= cutoff).all() + PymeTicket.query.filter(PymeTicket.fecha >= cutoff).all()
-    assigned = 0
-    unassigned = 0
-    for t in lead_rows:
-        assignee = getattr(t, 'asignado_a_id', None)
-        if assignee:
-            assigned += 1
-        else:
-            unassigned += 1
-
-    return jsonify({
-        'minutes': minutes,
-        'active_sessions': active_sessions,
-        'llm': {
-            'total': total_llm,
-            'pending_review': pending,
-            'converted_to_faq': converted,
-            'rejected': rejected,
-        },
-        'tickets': {
-            'municipio': mt_total,
-            'pyme': pt_total,
-            'total': mt_total + pt_total,
-            'assigned': assigned,
-            'unassigned': unassigned,
-        },
-    })
+    return jsonify(_build_realtime_ai_payload(minutes=minutes))
 
 
 @super_admin_bp.route('/encuestas/overview', methods=['GET'])
@@ -2002,111 +2246,99 @@ def super_admin_surveys_overview(current_user):
 @super_admin_required
 def super_admin_tenant_health(current_user):
     since_days = max(1, min(int(request.args.get('since_days', 30) or 30), 365))
+    return jsonify(_build_tenant_health_payload(since_days=since_days))
+
+
+@super_admin_bp.route('/tenants/<string:slug>/profile-360', methods=['GET'])
+@token_requerido
+@super_admin_required
+def super_admin_tenant_profile_360(current_user, slug):
+    since_days = max(1, min(int(request.args.get('since_days', 30) or 30), 365))
     cutoff = datetime.now(timezone.utc) - timedelta(days=since_days)
 
-    tenants = TenantProfile.query.all()
-    rows = []
-    for tenant in tenants:
-        m_tickets = MunicipioTicket.query.filter(MunicipioTicket.tenant_id == tenant.id, MunicipioTicket.fecha >= cutoff).all()
-        p_tickets = PymeTicket.query.filter(PymeTicket.tenant_id == tenant.id, PymeTicket.fecha >= cutoff).all()
-        tickets = m_tickets + p_tickets
+    tenant = TenantProfile.query.filter_by(slug=slug).first_or_404()
+    snapshot = _build_tenant_health_snapshot(tenant, cutoff=cutoff)
 
-        total = len(tickets)
-        won = 0
-        lost = 0
-        sla_breached = 0
-        now = datetime.now(timezone.utc)
-        for t in tickets:
-            details = _ensure_ticket_details_dict(t)
-            stage = str(details.get('lead_stage') or t.estado or 'nuevo').lower()
-            if stage == 'ganado':
-                won += 1
-            elif stage == 'perdido':
-                lost += 1
-
-            last_seen = getattr(t, 'ultima_actividad', None) or getattr(t, 'fecha', None)
-            if last_seen and stage not in {'ganado', 'perdido'}:
-                dt = last_seen if last_seen.tzinfo else last_seen.replace(tzinfo=timezone.utc)
-                if (now - dt).total_seconds() > 1800:
-                    sla_breached += 1
-
-        surveys = EncEncuesta.query.filter(EncEncuesta.tenant_id == tenant.id, EncEncuesta.updated_at >= cutoff).all()
-        survey_count = len(surveys)
-        survey_responses = 0
-        for s in surveys:
-            survey_responses += EncRespuesta.query.filter_by(encuesta_id=s.id).count()
-
-        win_rate = round((won / total) * 100, 2) if total else 0.0
-        health_score = max(0.0, min(100.0, round((win_rate * 0.6) + (min(survey_responses, 50) * 0.4) - (sla_breached * 2), 2)))
-
-        rows.append({
-            'tenant_id': tenant.id,
-            'tenant_slug': tenant.slug,
-            'tenant_tipo': tenant.tipo,
-            'total_tickets': total,
-            'won': won,
-            'lost': lost,
-            'sla_breached': sla_breached,
-            'win_rate': win_rate,
-            'survey_count': survey_count,
-            'survey_responses': survey_responses,
-            'health_score': health_score,
-        })
-
-    rows.sort(key=lambda r: (r['health_score'], -r['sla_breached']), reverse=True)
-    return jsonify({'since_days': since_days, 'total_tenants': len(rows), 'items': rows})
+    return jsonify({
+        'since_days': since_days,
+        'tenant': {
+            'id': tenant.id,
+            'slug': tenant.slug,
+            'nombre': tenant.nombre,
+            'tipo': tenant.tipo,
+            'plan': tenant.plan,
+            'dominio': tenant.dominio,
+            'logo_url': tenant.logo_url,
+            'whatsapp_sender_id': tenant.whatsapp_sender_id,
+            'is_active': bool(getattr(tenant, 'is_active', True)),
+        },
+        'owner': snapshot['owner'],
+        'health': snapshot['health'],
+        'metrics': snapshot['metrics'],
+        'onboarding': snapshot['onboarding'],
+        'meta': snapshot['meta'],
+    })
 
 @super_admin_bp.route('/analytics/heatmap-categories-zones', methods=['GET'])
 @token_requerido
 @super_admin_required
 def super_admin_heatmap_categories_zones(current_user):
     since_days = max(1, min(int(request.args.get('since_days', 30) or 30), 365))
-    cutoff = datetime.now(timezone.utc) - timedelta(days=since_days)
+    return jsonify(_build_heatmap_categories_payload(since_days=since_days))
 
-    rows = []
-    for t in MunicipioTicket.query.filter(MunicipioTicket.fecha >= cutoff).all():
-        rows.append({
-            'tenant_id': t.tenant_id,
-            'categoria': (t.categoria or 'sin_categoria').strip().lower(),
-            'zona': (t.distrito or 'sin_zona').strip().lower(),
-            'lat': t.latitud,
-            'lon': t.longitud,
-            'tipo': 'municipio',
+
+@super_admin_bp.route('/analytics/executive-summary', methods=['GET'])
+@token_requerido
+@super_admin_required
+def super_admin_executive_summary(current_user):
+    since_days = max(1, min(int(request.args.get('since_days', 30) or 30), 365))
+    minutes = max(5, min(int(request.args.get('minutes', 60) or 60), 24 * 60))
+
+    strategic = _build_strategic_overview_payload(since_days=since_days)
+    tenant_health = _build_tenant_health_payload(since_days=since_days)
+    realtime = _build_realtime_ai_payload(minutes=minutes)
+    heatmap = _build_heatmap_categories_payload(since_days=since_days)
+
+    risky_tenants = [
+        item for item in tenant_health.get('items', [])
+        if item.get('sla_breached') or item.get('health_score', 0) < 50
+    ][:5]
+    healthiest_tenants = tenant_health.get('items', [])[:5]
+
+    recommended_actions = []
+    if strategic.get('alerts'):
+        recommended_actions.append({
+            'kind': 'review_backlog',
+            'priority': 'high',
+            'message': 'Revisar backlog/SLA desde strategic-overview.',
         })
-    for t in PymeTicket.query.filter(PymeTicket.fecha >= cutoff).all():
-        rows.append({
-            'tenant_id': t.tenant_id,
-            'categoria': (t.categoria or 'sin_categoria').strip().lower(),
-            'zona': (getattr(t, 'direccion', None) or 'sin_zona').strip().lower(),
-            'lat': t.latitud,
-            'lon': t.longitud,
-            'tipo': 'pyme',
+    if realtime.get('tickets', {}).get('unassigned'):
+        recommended_actions.append({
+            'kind': 'assign_unassigned_tickets',
+            'priority': 'high',
+            'message': 'Hay tickets recientes sin asignar en el monitoreo realtime.',
         })
-
-    by_categoria = {}
-    by_zona = {}
-    points = []
-    for r in rows:
-        by_categoria[r['categoria']] = by_categoria.get(r['categoria'], 0) + 1
-        by_zona[r['zona']] = by_zona.get(r['zona'], 0) + 1
-        if r['lat'] is not None and r['lon'] is not None:
-            points.append({
-                'lat': r['lat'],
-                'lon': r['lon'],
-                'weight': 1,
-                'categoria': r['categoria'],
-                'zona': r['zona'],
-                'tipo': r['tipo'],
-                'tenant_id': r['tenant_id'],
-            })
-
-    top_categories = sorted(by_categoria.items(), key=lambda it: it[1], reverse=True)[:20]
-    top_zones = sorted(by_zona.items(), key=lambda it: it[1], reverse=True)[:20]
+    if risky_tenants:
+        recommended_actions.append({
+            'kind': 'contact_risky_tenants',
+            'priority': 'medium',
+            'message': 'Hay tenants con health score bajo o SLA roto.',
+        })
 
     return jsonify({
         'since_days': since_days,
-        'total': len(rows),
-        'top_categories': [{'categoria': k, 'count': v} for k, v in top_categories],
-        'top_zones': [{'zona': k, 'count': v} for k, v in top_zones],
-        'heatmap_points': points[:3000],
+        'minutes': minutes,
+        'strategic_overview': strategic,
+        'tenant_health': {
+            'total_tenants': tenant_health.get('total_tenants', 0),
+            'top_healthy': healthiest_tenants,
+            'top_risky': risky_tenants,
+        },
+        'realtime': realtime,
+        'heatmap': {
+            'top_categories': heatmap.get('top_categories', [])[:5],
+            'top_zones': heatmap.get('top_zones', [])[:5],
+            'total_points': len(heatmap.get('heatmap_points', [])),
+        },
+        'recommended_actions': recommended_actions,
     })

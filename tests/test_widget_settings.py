@@ -115,6 +115,7 @@ class WidgetSettingsTests(unittest.TestCase):
         self.assertIn("data-avatar-enabled", attrs)
         self.assertIn("data-avatar-type", attrs)
         self.assertIn("data-avatar-persona", attrs)
+        self.assertEqual(widget_data["widget"]["builder_config"]["enterprise_iteration"]["realtime"]["voice_handoff"]["supports_whatsapp_followup"], True)
 
 
 

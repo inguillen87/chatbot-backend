@@ -3,7 +3,7 @@ import json
 import pytest
 
 from app import db
-from models import CatalogoItem, TenantProfile
+from models import CatalogoItem, MarketOrder, OrderEvent, TenantProfile
 
 
 @pytest.fixture
@@ -91,6 +91,9 @@ def test_donation_checkout_confirms_without_payment(client, tenant_with_catalog)
     assert data["total_puntos"] == 0
     assert data["tipo"] == "donacion"
     assert data["estado"] == "confirmado"
+    assert data["tracking"]["market_order_id"] == data["market_order_id"]
+    assert isinstance(data["next_steps"], list) and len(data["next_steps"]) >= 1
+    assert "support_channels" in data
 
     from models import PedidoConversacional
 
@@ -98,6 +101,13 @@ def test_donation_checkout_confirms_without_payment(client, tenant_with_catalog)
     assert pedido is not None
     assert pedido.tipo == "donacion"
     assert pedido.estado == "confirmado"
+
+    market_order = MarketOrder.query.get(data["market_order_id"])
+    assert market_order is not None
+    assert market_order.external_provider == "pedido_conversacional"
+    assert market_order.status == "confirmed"
+    assert market_order.metadata_payload["customer_profile"]["email"] == "donor@example.com"
+    assert OrderEvent.query.filter_by(market_order_id=market_order.id, type="checkout.created").count() == 1
 
 
 @pytest.mark.usefixtures("client")
@@ -124,6 +134,12 @@ def test_checkout_rejects_when_mercadopago_missing(client, tenant_with_catalog, 
     assert data["estado"] == "pendiente_pago"
     assert data["mercadopago_ready"] is False
     assert "MercadoPago" in data["error"]
+    assert data["tracking"]["market_order_id"] == data["market_order_id"]
+    assert any(step["id"] == "complete_payment" for step in data["next_steps"])
+
+    market_order = MarketOrder.query.get(data["market_order_id"])
+    assert market_order is not None
+    assert market_order.status == "pending_payment"
 
 
 
@@ -150,6 +166,8 @@ def test_checkout_ignores_global_mercadopago_token_without_tenant_token(client, 
     data = resp.get_json()
     assert data["mercadopago_ready"] is False
     assert "no configurado" in data["error"].lower()
+
+
 
 @pytest.mark.usefixtures("client")
 def test_checkout_uses_tenant_token_for_payment(client, tenant_with_catalog, monkeypatch):
@@ -255,6 +273,10 @@ def test_money_checkout_ignores_client_demo_mode_flag(client, tenant_with_catalo
     assert data.get("demo_mode") is not True
     assert data["preference_id"] == "pref_123"
     assert called["mp"] == 1
+
+    market_order = MarketOrder.query.get(data["market_order_id"])
+    assert market_order is not None
+    assert market_order.status == "pending_payment"
 
 
 @pytest.mark.usefixtures("client")

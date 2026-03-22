@@ -107,7 +107,7 @@ def mercadopago_webhook():
 
             try:
                 order_id = int(str(external_reference).replace("MO-", ""))
-                order = MarketOrder.query.get(order_id)
+                order = MarketOrder.legacy_safe_query().get(order_id)
             except ValueError:
                 order = None
 

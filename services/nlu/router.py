@@ -9,13 +9,11 @@ from fuzzywuzzy import fuzz
 
 logger = logging.getLogger(__name__)
 
-try:  # pragma: no cover - spaCy model might be missing in some environments
-    import spacy
+from services.spacy_loader import get_spacy_model
 
-    _nlp = spacy.load("es_core_news_md", disable=["parser", "ner"])
-except Exception:  # pragma: no cover - handled gracefully when model not present
-    logger.warning("spaCy model 'es_core_news_md' not available. Lemmatization disabled.")
-    _nlp = None
+_nlp = get_spacy_model()
+if _nlp is not None and _nlp.vocab.vectors.shape[0] == 0:  # pragma: no cover - env-dependent
+    logger.warning("spaCy vectors unavailable; lemmatization fallback remains enabled without embeddings.")
 
 
 def normalize_text(text: str) -> str:
