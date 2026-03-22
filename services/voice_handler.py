@@ -160,13 +160,30 @@ def handle_voice_interaction(user_speech, user_phone, bot_phone, call_sid):
         datos = response_dict.get("datos_estructura") if isinstance(response_dict.get("datos_estructura"), dict) else {}
         needs_confirmation = accion_backend in {"crear_reclamo", "iniciar_reclamo", "crear_pedido", "finalizar_pedido_pyme"}
         if needs_confirmation and not bool(datos.get("confirmado_por_usuario")):
-            categoria = datos.get("categoria") or "sin categoría"
-            ubicacion = datos.get("ubicacion") or datos.get("direccion") or "sin ubicación"
-            telefono = datos.get("telefono") or "sin teléfono"
-            message_body = (
-                f"Confirmo los datos: categoría {categoria}, ubicación {ubicacion}, teléfono {telefono}. "
-                "¿Está correcto para continuar?"
-            )
+            if accion_backend in {"crear_reclamo", "iniciar_reclamo"}:
+                confirmation = build_claim_confirmation_payload(
+                    categoria=datos.get("categoria"),
+                    ubicacion=datos.get("ubicacion") or datos.get("direccion"),
+                    descripcion=datos.get("descripcion"),
+                    nombre=datos.get("nombre") or datos.get("nombre_usuario_detectado"),
+                    telefono=datos.get("telefono") or datos.get("telefono_detectado"),
+                    email=datos.get("email") or datos.get("email_detectado"),
+                    channel="voice",
+                )
+            else:
+                confirmation = build_order_confirmation_payload(
+                    cart_summary=datos.get("cart_summary") if isinstance(datos.get("cart_summary"), dict) else {},
+                    customer={
+                        "nombre": datos.get("nombre") or datos.get("nombre_usuario_detectado"),
+                        "telefono": datos.get("telefono") or datos.get("telefono_detectado"),
+                        "email": datos.get("email") or datos.get("email_detectado"),
+                        "direccion": datos.get("ubicacion") or datos.get("direccion"),
+                    },
+                    delivery_address=datos.get("ubicacion") or datos.get("direccion"),
+                    channel="voice",
+                )
+            message_body = confirmation.get("summary_voice", message_body) + " ¿Está correcto para continuar?"
+            response_dict.setdefault("data", {})["voice_confirmation"] = confirmation
             response_dict["pedir_info"] = "confirmacion"
 
 

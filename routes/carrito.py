@@ -29,7 +29,9 @@ from routes.productos import (
     _tenant_slug_from_url,
 )
 from services.catalog_seed import ensure_seed_catalog
+from services.commerce_contracts import build_customer_profile, normalize_sales_channel, resolve_order_contact_payload
 from services.common_utils import parse_precio_flexible
+from services.promocion_service import promocion_service
 from services.rewards_demo import reward_profile_for_tenant
 from services.tenant_resolver import TenantResolutionError, resolve_tenant_only
 from utils.tenant import get_current_tenant_profile
@@ -123,6 +125,14 @@ def _resolve_session_identifier() -> str:
         session.modified = True
     return session_id
 
+
+def _request_channel() -> str:
+    return normalize_sales_channel(
+        request.headers.get("X-Sales-Channel")
+        or request.headers.get("X-Channel")
+        or request.args.get("channel")
+    )
+
 def _get_or_create_db_cart(
     tenant: TenantProfile,
     user: Optional[User] = None,
@@ -167,6 +177,9 @@ def _get_or_create_db_cart(
             session_id=session_id,
             contact_phone=getattr(user, "telefono", None) if user else None,
             contact_name=getattr(user, "name", None) if user else None,
+            contact_email=getattr(user, "email", None) if user else None,
+            contact_key=resolve_order_contact_payload(user=user, session_id=session_id, channel=_request_channel()).get("contact_key"),
+            channel=_request_channel(),
         )
         db.session.add(cart)
         db.session.commit()
@@ -178,6 +191,16 @@ def _get_or_create_db_cart(
             modified = True
         if user_id and cart.user_id is None:
             cart.user_id = user_id
+            modified = True
+        resolved_contact = resolve_order_contact_payload(user=user, session_id=session_id, channel=_request_channel())
+        if resolved_contact.get("contact_key") and cart.contact_key != resolved_contact.get("contact_key"):
+            cart.contact_key = resolved_contact.get("contact_key")
+            modified = True
+        if resolved_contact.get("email") and not cart.contact_email:
+            cart.contact_email = resolved_contact.get("email")
+            modified = True
+        if resolved_contact.get("channel") and cart.channel != resolved_contact.get("channel"):
+            cart.channel = resolved_contact.get("channel")
             modified = True
         if modified:
             db.session.commit()
@@ -232,6 +255,41 @@ def _pricing_snapshot(product: CatalogoItem) -> Dict[str, object]:
         "modalidad": modalidad,
         "formatted": formatted,
     }
+
+def _cart_recommendations(owner: User, tenant: TenantProfile, *, exclude_ids: list[int], limit: int = 3) -> List[Dict[str, object]]:
+    query = _product_query_for_tenant(owner, tenant)
+    if exclude_ids:
+        query = query.filter(~CatalogoItem.id.in_(exclude_ids))
+    rows = query.order_by(
+        CatalogoItem.promocion_info.isnot(None).desc(),
+        CatalogoItem.timestamp.desc().nullslast(),
+        func.lower(CatalogoItem.nombre),
+    ).limit(limit * 2).all()
+
+    recommendations: List[Dict[str, object]] = []
+    for item in rows:
+        formatted = _formatear_producto({
+            "nombre": item.nombre,
+            "descripcion": item.descripcion,
+            "categoria": item.categoria,
+            "precio_str": item.precio,
+            "moneda": item.moneda,
+            "modalidad": item.modalidad,
+            "imagen_url": item.imagen_url,
+            "promocion_info": item.promocion_info,
+        })
+        recommendations.append({
+            "catalogo_item_id": item.id,
+            "title": item.nombre,
+            "category": item.categoria,
+            "price_label": formatted.get("precio_texto") or item.precio,
+            "promotion": item.promocion_info,
+            "image_url": item.imagen_url,
+            "cta": {"action": "add_to_cart", "product_id": item.id},
+        })
+        if len(recommendations) >= limit:
+            break
+    return recommendations
 
 def _db_cart_summary(cart: MarketCart, owner: User, *, event: Optional[str] = None) -> Dict[str, object]:
     items = list(cart.items.all())
@@ -314,10 +372,54 @@ def _db_cart_summary(cart: MarketCart, owner: User, *, event: Optional[str] = No
 
         enriched.append(item_data)
 
+    promotion_summary = None
+    promo_input = [
+        {
+            "catalogo_item_id": item.get("catalogo_item_id"),
+            "cantidad": item.get("cantidad"),
+            "nombre_producto": item.get("nombre"),
+            "precio_unitario_original": item.get("precio_unitario"),
+            "moneda": item.get("moneda"),
+        }
+        for item in enriched
+        if item.get("catalogo_item_id")
+    ]
+    if promo_input and getattr(owner, "id", None):
+        try:
+            promotion_summary = promocion_service.aplicar_promociones_al_carrito(
+                owner.id,
+                promo_input,
+                cliente_user_id=cart.user_id,
+            )
+        except Exception:
+            promotion_summary = None
+
+    customer_profile = build_customer_profile(
+        user=cart.user,
+        payload={
+            "contacto": {
+                "nombre": cart.contact_name,
+                "telefono": cart.contact_phone,
+                "email": cart.contact_email,
+            },
+            "anon_id": cart.session_id if str(cart.session_id or "").startswith(("anon:", "wa:", "whatsapp", "+")) else None,
+        },
+        session_id=cart.session_id,
+        channel=cart.channel,
+    )
+    recommendations = _cart_recommendations(
+        owner,
+        cart.tenant,
+        exclude_ids=[item.product_id for item in items if item.product_id],
+    )
+    support_phone = getattr(owner, "telefono", None)
+
     # Legacy fields + New fields
     resumen = {
         "tenant_id": cart.tenant_id,
         "cart_id": cart.id,
+        "contact_key": cart.contact_key,
+        "channel": cart.channel or "web",
         "items": enriched,
         "items_count": total_count,
         "totales_monedas": {k: round(v, 2) for k, v in totals_by_currency.items()},
@@ -330,6 +432,34 @@ def _db_cart_summary(cart: MarketCart, owner: User, *, event: Optional[str] = No
             "gateway_hint": "Mercado Pago preference/token flow listo para demo",
             "points_enabled": total_points > 0,
         },
+        "contacto": {
+            "nombre": cart.contact_name,
+            "telefono": cart.contact_phone,
+            "email": cart.contact_email,
+        },
+        "customer_profile": customer_profile,
+        "commercial_state": {
+            "stage": "cart_active" if total_count else "cart_empty",
+            "channel": cart.channel or "web",
+            "has_contact": bool(cart.contact_name or cart.contact_phone or cart.contact_email),
+            "supports_handoff": (cart.channel or "web") in {"whatsapp", "phone", "manual_admin"},
+        },
+        "continuity": {
+            "resume_key": cart.contact_key or cart.session_id,
+            "portal_path": f"/{cart.tenant.slug}/portal" if getattr(cart.tenant, "slug", None) else None,
+            "preferred_handoff_channel": "whatsapp" if support_phone else (cart.channel or "web"),
+        },
+        "suggested_actions": [
+            {"id": "checkout", "label": "Finalizar compra", "variant": "primary", "enabled": total_count > 0},
+            {"id": "view_rewards", "label": "Ver puntos", "variant": "secondary", "enabled": True},
+            {"id": "handoff_whatsapp", "label": "Seguir por WhatsApp", "variant": "ghost", "enabled": bool(support_phone)},
+        ],
+        "recommendations": recommendations,
+        "checkout_preview": {
+            "state": "ready" if total_count > 0 else "empty",
+            "supports_points": total_points > 0,
+            "next_step_label": "Continuar al checkout" if total_count > 0 else "Agregá productos para avanzar",
+        },
         "ui_signals": {
             "event": event or "refresh",
             "animation": "cart-burst" if event else "soft-pulse",
@@ -337,6 +467,14 @@ def _db_cart_summary(cart: MarketCart, owner: User, *, event: Optional[str] = No
             "toast": "Carrito actualizado",
         },
     }
+    if promotion_summary:
+        resumen["promotions"] = {
+            "items_detalle": promotion_summary.get("items_detalle", []),
+            "total_ahorrado": promotion_summary.get("total_ahorrado_final", 0),
+            "total_con_descuento": promotion_summary.get("total_final_con_descuento", resumen["total_estimado"]),
+            "promociones_aplicadas": promotion_summary.get("promociones_aplicadas_nombres", []),
+            "promo_total_carrito": promotion_summary.get("promo_total_carrito_aplicada_info"),
+        }
 
     resumen["recompensas_demo"] = reward_profile_for_tenant(cart.tenant_id, total_points)
     return resumen

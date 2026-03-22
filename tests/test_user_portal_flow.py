@@ -1,5 +1,5 @@
 import pytest
-from models import TenantProfile, TenantFollower, User, MunicipioPost, OrderEvent, EncEncuesta, EncRespuesta, PointsTransaction, SugerenciaCiudadano
+from models import CatalogoItem, Promocion, TenantProfile, TenantFollower, TenantTicket, User, MunicipioPost, OrderEvent, EncEncuesta, EncRespuesta, PointsTransaction, SugerenciaCiudadano
 from app import db
 from datetime import datetime, timezone
 
@@ -132,6 +132,32 @@ def test_full_flow(client):
     db.session.flush()
     db.session.add(EncRespuesta(encuesta_id=encuesta_followed.id, tenant_id=tenant_followed.id, user_id=user_id, canal="portal"))
     db.session.add(PointsTransaction(user_id=user_id, tenant_id=tenant_followed.id, tipo="encuesta", delta=30, saldo_final=80, metadata_payload={"detalle": "Puntos por encuesta"}))
+    db.session.add(TenantTicket(
+        tenant_id=tenant.id,
+        user_id=user_id,
+        categoria="Alumbrado",
+        descripcion="Falta luz en la plaza",
+        estado="en_proceso",
+        origen="portal",
+        datos_extra={"priority": "high"},
+    ))
+    db.session.add(CatalogoItem(
+        user_id=owner.id,
+        tenant_id=tenant.id,
+        nombre="Caja Reserva",
+        descripcion="Selección premium",
+        precio="25000",
+        categoria="Club",
+        promocion_info="15% OFF socios",
+    ))
+    db.session.add(Promocion(
+        pyme_user_id=owner.id,
+        nombre_promocion="Promo Vendimia",
+        descripcion_publica="20% OFF en seleccionados",
+        tipo_promocion="TOTAL_CARRITO_DESCUENTO_PORCENTAJE",
+        valor_descuento=20,
+        is_active=True,
+    ))
     db.session.commit()
 
     # 12. Benefits list
@@ -179,12 +205,12 @@ def test_full_flow(client):
     assert history_resp.status_code == 200
     history = history_resp.json
     assert len(history["orders"]) == 1
-    assert len(history["claims"]) == 0
+    assert len(history["claims"]) == 1
     assert len(history["surveys"]) == 1
     assert len(history["suggestions"]) == 1
     assert history["summary"]["counts"]["suggestions"] == 1
     timeline_types = {item["type"] for item in history["timeline"]}
-    assert {"order", "points", "survey", "suggestion"}.issubset(timeline_types)
+    assert {"order", "claim", "points", "survey", "suggestion"}.issubset(timeline_types)
 
     # 17. Cross-tenant history scope
     network_history_resp = client.get(f"/api/v1/portal/demo-flow/history?include_network=true", headers=headers)
@@ -211,7 +237,26 @@ def test_full_flow(client):
     assert dashboard["tenants_followed"] >= 1
     assert dashboard["summary"]["orders"] >= 1
 
-    # 20. i18n profile/settings contract
+    # 20. Premium private portal bundle
+    premium_resp = client.get(f"/api/v1/portal/demo-flow/premium-bundle?include_network=true", headers=headers)
+    assert premium_resp.status_code == 200
+    premium = premium_resp.json
+    assert premium["club"]["style"] == "private_club"
+    assert premium["orders"]["total_count"] >= 1
+    assert premium["claims"]["open_count"] >= 1
+    assert len(premium["promotions"]["items"]) >= 1
+    assert premium["surveys"]["answered_count"] >= 1
+    assert any(module["id"] == "rewards" for module in premium["modules"])
+    assert any(action["id"] == "go_rewards" for action in premium["quick_actions"])
+    assert any(highlight["id"] == "points" for highlight in premium["highlights"])
+    premium_types = {item["type"] for item in premium["history"]["timeline"]}
+    assert {"order", "claim", "points", "survey"}.issubset(premium_types)
+
+    dashboard_bundle_resp = client.get(f"/api/v1/portal/demo-flow/dashboard-bundle?include_network=true", headers=headers)
+    assert dashboard_bundle_resp.status_code == 200
+    assert dashboard_bundle_resp.json["club"]["style"] == "private_club"
+
+    # 21. i18n profile/settings contract
     settings_put = client.put(
         f"/api/v1/portal/demo-flow/settings",
         headers=headers,
