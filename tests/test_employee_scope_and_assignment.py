@@ -45,3 +45,43 @@ def test_employee_scope_update_and_suggest_assignee(client, app):
     payload = suggest.get_json()
     assert payload["ok"] is True
     assert payload["suggestions"][0]["employee_id"] == emp.id
+
+
+def test_employee_creation_returns_scope_and_coverage(client, app):
+    owner = User(email="owner-scope-create@test.com", name="Owner Create", rol="admin", tipo_chat="pyme")
+    owner.set_password("pass")
+    db.session.add(owner)
+    db.session.commit()
+
+    tenant = TenantProfile(slug="tenant-scope", nombre="Tenant Scope", tipo="pyme", pyme_id=owner.id)
+    db.session.add(tenant)
+    db.session.commit()
+
+    create_resp = client.post(
+        "/api/admin/employees",
+        json={
+            "email": "emp-create@test.com",
+            "name": "Emp Create",
+            "password": "pass",
+            "scope": {
+                "categorias": ["luminaria", "baches"],
+                "zonas": ["centro"],
+                "permisos": ["tickets_assign"],
+            },
+            "roles": ["empleado", "analista"],
+        },
+        headers=_headers(app, owner),
+    )
+    assert create_resp.status_code == 201
+    create_body = create_resp.get_json()
+    assert create_body["employee"]["scope"]["categorias"] == ["luminaria", "baches"]
+    assert "analista" in create_body["employee"]["roles"]
+
+    coverage_resp = client.get(
+        f"/api/admin/tenants/{tenant.slug}/employees/coverage",
+        headers=_headers(app, owner),
+    )
+    assert coverage_resp.status_code == 200
+    coverage = coverage_resp.get_json()
+    assert "luminaria" in coverage["coverage"]["categorias"]
+    assert "centro" in coverage["coverage"]["zonas"]

@@ -16,14 +16,19 @@ from models import (
     CategoriaTicket,
     IntegrationAccount,
     PymePedido,
+    MarketOrder,
+    PedidoConversacional,
+    Order,
     MunicipioTicket,
     PymeTicket,
     EncEncuesta,
     EncRespuesta,
     TicketComentario,
+    TicketRealtimeState,
 )
 from routes.catalogo import _formatear_producto
 from routes.carrito import _product_query_for_tenant
+from services.commerce_unified import serialize_unified_order
 from services.common_utils import parse_precio_flexible
 from services.catalog_seed import ensure_seed_catalog
 from services.embedding_service import embed_textos_llm
@@ -32,6 +37,8 @@ from services.qdrant_service import index_catalog_item
 from services.tenant_factory import create_tenant_from_template, assign_number_to_tenant
 from services.tenant_resolver import apply_tenant_alias
 from services.live_chat_schedule import build_live_chat_status, build_schedule_from_config
+from services.operational_scoring import build_ticket_priority_score
+from services.ticket_realtime_state import build_ticket_collaboration_state
 
 admin_tenant_bp = Blueprint('admin_tenant_bp', __name__)
 
@@ -168,6 +175,330 @@ def _is_authorized_for_tenant(current_user: User, tenant: TenantProfile) -> bool
                 return True
 
     return False
+
+
+def _build_tenant_dashboard_bundle_payload(
+    tenant: TenantProfile,
+    *,
+    leads_limit: int = 100,
+    surveys_limit: int = 20,
+    unread_limit: int = 30,
+    since_minutes: int = 1440,
+) -> dict:
+    now = datetime.now(timezone.utc)
+    cutoff_unread = now - timedelta(minutes=since_minutes)
+
+    lead_rows = []
+    for ticket in MunicipioTicket.query.filter_by(tenant_id=tenant.id).order_by(MunicipioTicket.ultima_actividad.desc()).all():
+        lead_rows.append(("municipio", ticket))
+    for ticket in PymeTicket.query.filter_by(tenant_id=tenant.id).order_by(PymeTicket.fecha.desc()).all():
+        lead_rows.append(("pyme", ticket))
+
+    lead_items = []
+    by_stage = {}
+    sla_breached = 0
+    total_active_viewers = 0
+    total_unread_viewers = 0
+
+    for ticket_type, ticket in lead_rows:
+        details = _ticket_details(ticket)
+        stage = str(details.get('lead_stage') or ticket.estado or 'nuevo').lower()
+        by_stage[stage] = by_stage.get(stage, 0) + 1
+        last_seen = getattr(ticket, 'ultima_actividad', None) or ticket.fecha
+        last_dt = last_seen if (last_seen and last_seen.tzinfo) else (last_seen.replace(tzinfo=timezone.utc) if last_seen else None)
+        ticket_sla = bool(last_dt and (now - last_dt).total_seconds() > 1800 and stage not in {'ganado', 'perdido'})
+        collaboration_state = build_ticket_collaboration_state(ticket_type=ticket_type, ticket_id=ticket.id)
+        priority_meta = build_ticket_priority_score(
+            sla_breached_flag=ticket_sla,
+            collaboration_state=collaboration_state,
+            stage=stage,
+        )
+        priority_score = priority_meta["score"]
+        if ticket_sla:
+            sla_breached += 1
+        total_active_viewers += collaboration_state.get('active_viewers_count', 0) or 0
+        total_unread_viewers += collaboration_state.get('unread_viewer_count', 0) or 0
+        lead_items.append({
+            'ticket_type': ticket_type,
+            'ticket_id': ticket.id,
+            'nombre': getattr(ticket, 'nombre_vecino', None) or getattr(ticket, 'nombre_cliente', None),
+            'categoria': getattr(ticket, 'categoria', None),
+            'stage': stage,
+            'status': ticket.estado,
+            'sla_breached': ticket_sla,
+            'last_seen': last_seen.isoformat() if last_seen else None,
+            'collaboration_state': collaboration_state,
+            'priority_score': priority_score,
+            'priority_breakdown': priority_meta['breakdown'],
+            'priority_reasons': priority_meta['reasons'],
+        })
+
+    lead_items.sort(
+        key=lambda item: (
+            item.get('priority_score') or 0,
+            (item.get('sla_breached') is True),
+            item.get('last_seen') or '',
+        ),
+        reverse=True,
+    )
+
+    survey_rows = EncEncuesta.query.filter_by(tenant_id=tenant.id).order_by(EncEncuesta.updated_at.desc()).limit(surveys_limit).all()
+    survey_items = []
+    total_responses = 0
+    for survey in survey_rows:
+        responses_count = EncRespuesta.query.filter_by(encuesta_id=survey.id).count()
+        total_responses += responses_count
+        survey_items.append({
+            'id': survey.id,
+            'slug': survey.slug,
+            'titulo': survey.titulo,
+            'estado': survey.estado,
+            'tipo': survey.tipo,
+            'respuestas': responses_count,
+            'updated_at': survey.updated_at.isoformat() if survey.updated_at else None,
+        })
+
+    unread_items = []
+    muni_unread = (
+        db.session.query(TicketComentario.municipio_ticket_id, func.count(TicketComentario.id), func.max(TicketComentario.fecha))
+        .join(MunicipioTicket, MunicipioTicket.id == TicketComentario.municipio_ticket_id)
+        .filter(
+            MunicipioTicket.tenant_id == tenant.id,
+            TicketComentario.es_admin.is_(False),
+            TicketComentario.fecha >= cutoff_unread,
+        )
+        .group_by(TicketComentario.municipio_ticket_id)
+        .all()
+    )
+    for ticket_id, unread_count, last_at in muni_unread:
+        collaboration_state = build_ticket_collaboration_state(ticket_type='municipio', ticket_id=ticket_id)
+        unread_items.append({
+            'ticket_type': 'municipio',
+            'ticket_id': ticket_id,
+            'unread_count': int(unread_count or 0),
+            'last_message_at': last_at.isoformat() if last_at else None,
+            'collaboration_state': collaboration_state,
+        })
+
+    pyme_unread = (
+        db.session.query(TicketComentario.pyme_ticket_id, func.count(TicketComentario.id), func.max(TicketComentario.fecha))
+        .join(PymeTicket, PymeTicket.id == TicketComentario.pyme_ticket_id)
+        .filter(
+            PymeTicket.tenant_id == tenant.id,
+            TicketComentario.es_admin.is_(False),
+            TicketComentario.fecha >= cutoff_unread,
+        )
+        .group_by(TicketComentario.pyme_ticket_id)
+        .all()
+    )
+    for ticket_id, unread_count, last_at in pyme_unread:
+        collaboration_state = build_ticket_collaboration_state(ticket_type='pyme', ticket_id=ticket_id)
+        unread_items.append({
+            'ticket_type': 'pyme',
+            'ticket_id': ticket_id,
+            'unread_count': int(unread_count or 0),
+            'last_message_at': last_at.isoformat() if last_at else None,
+            'collaboration_state': collaboration_state,
+        })
+
+    unread_items.sort(key=lambda item: item.get('last_message_at') or '', reverse=True)
+
+    def _employee_collaboration_metrics(employee_id: int) -> dict:
+        rows = TicketRealtimeState.query.filter_by(viewer_user_id=employee_id).all()
+        active_ticket_views: set[tuple[str, int]] = set()
+        idle_ticket_views: set[tuple[str, int]] = set()
+        unread_ticket_views: set[tuple[str, int]] = set()
+        for row in rows:
+            collaboration_state = build_ticket_collaboration_state(ticket_type=row.ticket_type, ticket_id=row.ticket_id)
+            if collaboration_state.get('active_viewers_count', 0):
+                active_ticket_views.add((row.ticket_type, row.ticket_id))
+            if collaboration_state.get('idle_viewers_count', 0):
+                idle_ticket_views.add((row.ticket_type, row.ticket_id))
+            if collaboration_state.get('unread_viewer_count', 0):
+                unread_ticket_views.add((row.ticket_type, row.ticket_id))
+        return {
+            'active_ticket_views': len(active_ticket_views),
+            'idle_ticket_views': len(idle_ticket_views),
+            'unread_ticket_views': len(unread_ticket_views),
+        }
+
+    workload_items = []
+    for emp in User.query.filter_by(tenant_id=tenant.id, es_empleado=True).all():
+        collaboration_metrics = _employee_collaboration_metrics(emp.id)
+        workload_items.append({
+            'employee_id': emp.id,
+            'name': emp.name,
+            'email': emp.email,
+            'workload_open_tickets': _employee_open_workload(tenant.id, emp.id),
+            'scope': _employee_scope(emp),
+            **collaboration_metrics,
+        })
+    workload_items.sort(key=lambda item: item['workload_open_tickets'], reverse=True)
+
+    recommended_actions = []
+    if sla_breached:
+        recommended_actions.append({
+            'kind': 'review_sla',
+            'priority': 'high',
+            'message': 'Hay leads abiertos con SLA vencido o sin respuesta reciente.',
+        })
+    if unread_items:
+        recommended_actions.append({
+            'kind': 'reply_unread',
+            'priority': 'high',
+            'message': 'Hay conversaciones de tickets con mensajes sin leer.',
+        })
+    if workload_items and workload_items[0].get('workload_open_tickets', 0) >= 5:
+        recommended_actions.append({
+            'kind': 'rebalance_team',
+            'priority': 'medium',
+            'message': 'Conviene redistribuir tickets entre empleados.',
+        })
+    if not survey_items:
+        recommended_actions.append({
+            'kind': 'launch_survey',
+            'priority': 'medium',
+            'message': 'No hay encuestas recientes para medir feedback del tenant.',
+        })
+
+    return {
+        'tenant': {
+            'id': tenant.id,
+            'slug': tenant.slug,
+            'nombre': tenant.nombre,
+            'tipo': tenant.tipo,
+            'plan': tenant.plan,
+            'is_active': bool(getattr(tenant, 'is_active', True)),
+        },
+        'summary': {
+            'total_leads': len(lead_items),
+            'sla_breached': sla_breached,
+            'total_surveys': len(survey_items),
+            'total_survey_responses': total_responses,
+            'tickets_with_unread': len(unread_items),
+            'employees': len(workload_items),
+            'active_viewers': total_active_viewers,
+            'unread_viewers': total_unread_viewers,
+        },
+        'leads': {
+            'total': len(lead_items),
+            'by_stage': by_stage,
+            'items': lead_items[:leads_limit],
+        },
+        'surveys': {
+            'total_surveys': len(survey_items),
+            'total_responses': total_responses,
+            'items': survey_items,
+        },
+        'unread': {
+            'since_minutes': since_minutes,
+            'total_tickets_with_unread': len(unread_items),
+            'items': unread_items[:unread_limit],
+        },
+        'team': {
+            'items': workload_items,
+        },
+        'recommended_actions': recommended_actions,
+    }
+
+
+def _build_tenant_heatmap_summary_payload(tenant: TenantProfile, *, limit_points: int = 1500) -> dict:
+    rows = []
+    for ticket in MunicipioTicket.query.filter_by(tenant_id=tenant.id).all():
+        rows.append({
+            'ticket_type': 'municipio',
+            'ticket_id': ticket.id,
+            'categoria': (ticket.categoria or 'sin_categoria').strip().lower(),
+            'zona': (ticket.distrito or 'sin_zona').strip().lower(),
+            'lat': ticket.latitud,
+            'lon': ticket.longitud,
+            'status': ticket.estado,
+        })
+    for ticket in PymeTicket.query.filter_by(tenant_id=tenant.id).all():
+        rows.append({
+            'ticket_type': 'pyme',
+            'ticket_id': ticket.id,
+            'categoria': (ticket.categoria or 'sin_categoria').strip().lower(),
+            'zona': (getattr(ticket, 'direccion', None) or 'sin_zona').strip().lower(),
+            'lat': ticket.latitud,
+            'lon': ticket.longitud,
+            'status': ticket.estado,
+        })
+
+    by_categoria = {}
+    by_zona = {}
+    hotspots = {}
+    points = []
+    for row in rows:
+        by_categoria[row['categoria']] = by_categoria.get(row['categoria'], 0) + 1
+        by_zona[row['zona']] = by_zona.get(row['zona'], 0) + 1
+        hotspot_key = f"{row['categoria']}::{row['zona']}"
+        hotspots[hotspot_key] = hotspots.get(hotspot_key, 0) + 1
+        if row['lat'] is not None and row['lon'] is not None:
+            points.append({
+                'ticket_type': row['ticket_type'],
+                'ticket_id': row['ticket_id'],
+                'lat': row['lat'],
+                'lon': row['lon'],
+                'categoria': row['categoria'],
+                'zona': row['zona'],
+                'status': row['status'],
+                'weight': 1,
+            })
+
+    top_categories = sorted(by_categoria.items(), key=lambda item: item[1], reverse=True)[:10]
+    top_zones = sorted(by_zona.items(), key=lambda item: item[1], reverse=True)[:10]
+    top_hotspots = sorted(hotspots.items(), key=lambda item: item[1], reverse=True)[:10]
+
+    return {
+        'tenant_id': tenant.id,
+        'tenant_slug': tenant.slug,
+        'total': len(rows),
+        'top_categories': [{'categoria': key, 'count': value} for key, value in top_categories],
+        'top_zones': [{'zona': key, 'count': value} for key, value in top_zones],
+        'hotspots': [
+            {
+                'categoria': key.split('::', 1)[0],
+                'zona': key.split('::', 1)[1],
+                'count': value,
+            }
+            for key, value in top_hotspots
+        ],
+        'heatmap_points': points[:limit_points],
+    }
+
+
+def _build_employee_coverage_payload(tenant: TenantProfile) -> dict:
+    category_map = {}
+    zone_map = {}
+    permission_map = {}
+    employees = []
+
+    for emp in User.query.filter_by(tenant_id=tenant.id, es_empleado=True).all():
+        scope = _employee_scope(emp)
+        employees.append({
+            'employee_id': emp.id,
+            'name': emp.name,
+            'email': emp.email,
+            'scope': scope,
+        })
+        for categoria in scope.get('categorias', []):
+            category_map.setdefault(categoria, []).append({'employee_id': emp.id, 'name': emp.name})
+        for zona in scope.get('zonas', []):
+            zone_map.setdefault(zona, []).append({'employee_id': emp.id, 'name': emp.name})
+        for permiso in scope.get('permisos', []):
+            permission_map.setdefault(permiso, []).append({'employee_id': emp.id, 'name': emp.name})
+
+    return {
+        'tenant_id': tenant.id,
+        'tenant_slug': tenant.slug,
+        'employees': employees,
+        'coverage': {
+            'categorias': category_map,
+            'zonas': zone_map,
+            'permisos': permission_map,
+        },
+    }
 
 
 def _plan_allows_integrations(tenant: TenantProfile) -> bool:
@@ -566,8 +897,8 @@ def get_tenant_config_bundle(current_user, slug):
     return jsonify(response)
 
 
-@admin_tenant_bp.route('/api/admin/tenants/<slug>/catalog', methods=['GET', 'OPTIONS'])
-@admin_tenant_bp.route('/admin/tenants/<slug>/catalog', methods=['GET', 'OPTIONS'])
+@admin_tenant_bp.route('/api/admin/tenants/<slug>/catalog/items', methods=['GET', 'OPTIONS'])
+@admin_tenant_bp.route('/admin/tenants/<slug>/catalog/items', methods=['GET', 'OPTIONS'])
 @token_requerido
 @require_tenant
 def admin_tenant_catalog(current_user, slug):
@@ -588,6 +919,12 @@ def admin_tenant_catalog(current_user, slug):
     ensure_seed_catalog(owner, tenant)
     categoria = request.args.get("categoria")
     search_text = request.args.get("q")
+    modalidad = (request.args.get("modalidad") or "").strip().lower()
+    only_available = request.args.get("disponible")
+    promo_only = request.args.get("en_promocion")
+    sort_key = (request.args.get("sort") or "nombre").strip().lower()
+    price_min = request.args.get("precio_min")
+    price_max = request.args.get("precio_max")
 
     query = _product_query_for_tenant(owner, tenant)
     if categoria:
@@ -595,7 +932,33 @@ def admin_tenant_catalog(current_user, slug):
         if categoria_norm:
             query = query.filter(func.lower(CatalogoItem.categoria) == categoria_norm)
 
-    items = query.order_by(func.lower(CatalogoItem.nombre)).all()
+    if modalidad:
+        query = query.filter(func.lower(CatalogoItem.modalidad) == modalidad)
+
+    if only_available is not None:
+        query = query.filter(CatalogoItem.disponible.is_(str(only_available).strip().lower() in {"1", "true", "si", "yes"}))
+
+    if promo_only is not None and str(promo_only).strip().lower() in {"1", "true", "si", "yes"}:
+        query = query.filter(CatalogoItem.promocion_info.isnot(None))
+
+    try:
+        if price_min not in (None, ""):
+            query = query.filter(CatalogoItem.precio_monetario >= float(price_min))
+        if price_max not in (None, ""):
+            query = query.filter(CatalogoItem.precio_monetario <= float(price_max))
+    except (TypeError, ValueError):
+        return jsonify({"error": "Filtro de precio inválido"}), 400
+
+    if sort_key == "precio_asc":
+        query = query.order_by(CatalogoItem.precio_monetario.asc().nullslast(), func.lower(CatalogoItem.nombre))
+    elif sort_key == "precio_desc":
+        query = query.order_by(CatalogoItem.precio_monetario.desc().nullslast(), func.lower(CatalogoItem.nombre))
+    elif sort_key == "updated_desc":
+        query = query.order_by(CatalogoItem.timestamp.desc().nullslast(), func.lower(CatalogoItem.nombre))
+    else:
+        query = query.order_by(func.lower(CatalogoItem.nombre))
+
+    items = query.all()
 
     productos = []
     for item in items:
@@ -621,6 +984,13 @@ def admin_tenant_catalog(current_user, slug):
         )
         prod["catalogo_item_id"] = item.id
         prod["tenant_id"] = tenant.id
+        prod["available"] = bool(item.disponible is not False)
+        prod["price_numeric"] = float(item.precio_monetario) if item.precio_monetario is not None else None
+        prod["channel_availability"] = {
+            "widget": True,
+            "whatsapp": True,
+            "phone": True,
+        }
         productos.append(prod)
 
     if search_text:
@@ -858,7 +1228,24 @@ def create_employee(current_user):
 
     db.session.commit()
 
-    return jsonify({'message': 'Employee created', 'id': user.id}), 201
+    assigned_roles = []
+    for role_name in roles:
+        if str(role_name).strip():
+            assigned_roles.append(str(role_name).strip())
+
+    return jsonify({
+        'message': 'Employee created',
+        'id': user.id,
+        'employee': {
+            'id': user.id,
+            'name': user.name,
+            'email': user.email,
+            'tenant_id': tenant.id,
+            'roles': assigned_roles,
+            'categories': [cat.id for cat in getattr(user, 'categorias_ticket', [])],
+            'scope': _employee_scope(user),
+        },
+    }), 201
 
 @admin_tenant_bp.route('/api/admin/employees/<int:user_id>/roles', methods=['POST'])
 @token_requerido
@@ -1135,11 +1522,13 @@ def tenant_unread_ticket_summary(current_user, slug):
         .all()
     )
     for ticket_id, unread_count, last_at in muni_rows:
+        collaboration_state = build_ticket_collaboration_state(ticket_type='municipio', ticket_id=ticket_id)
         items.append({
             'ticket_type': 'municipio',
             'ticket_id': ticket_id,
             'unread_count': int(unread_count or 0),
             'last_message_at': last_at.isoformat() if last_at else None,
+            'collaboration_state': collaboration_state,
         })
 
     pyme_rows = (
@@ -1154,11 +1543,13 @@ def tenant_unread_ticket_summary(current_user, slug):
         .all()
     )
     for ticket_id, unread_count, last_at in pyme_rows:
+        collaboration_state = build_ticket_collaboration_state(ticket_type='pyme', ticket_id=ticket_id)
         items.append({
             'ticket_type': 'pyme',
             'ticket_id': ticket_id,
             'unread_count': int(unread_count or 0),
             'last_message_at': last_at.isoformat() if last_at else None,
+            'collaboration_state': collaboration_state,
         })
 
     items.sort(key=lambda x: (x['last_message_at'] or ''), reverse=True)
@@ -1194,6 +1585,66 @@ def tenant_employees_workload(current_user, slug):
 
     items.sort(key=lambda x: x['workload_open_tickets'], reverse=True)
     return jsonify({'tenant_id': tenant.id, 'tenant_slug': tenant.slug, 'items': items})
+
+
+@admin_tenant_bp.route('/api/admin/tenants/<slug>/dashboard-bundle', methods=['GET'])
+@token_requerido
+@require_tenant
+def tenant_dashboard_bundle(current_user, slug):
+    tenant = _resolve_admin_tenant(current_user, slug)
+    if not tenant:
+        return jsonify({'error': 'Tenant not found'}), 404
+    if not _is_authorized_for_tenant(current_user, tenant):
+        return jsonify({'error': 'Unauthorized'}), 403
+
+    leads_limit = max(1, min(int(request.args.get('leads_limit', 100) or 100), 250))
+    surveys_limit = max(1, min(int(request.args.get('surveys_limit', 20) or 20), 100))
+    unread_limit = max(1, min(int(request.args.get('unread_limit', 30) or 30), 200))
+    since_minutes = max(5, min(int(request.args.get('since_minutes', 1440) or 1440), 7 * 24 * 60))
+
+    payload = _build_tenant_dashboard_bundle_payload(
+        tenant,
+        leads_limit=leads_limit,
+        surveys_limit=surveys_limit,
+        unread_limit=unread_limit,
+        since_minutes=since_minutes,
+    )
+    payload['meta'] = {
+        'leads_limit': leads_limit,
+        'surveys_limit': surveys_limit,
+        'unread_limit': unread_limit,
+        'since_minutes': since_minutes,
+    }
+    return jsonify(payload)
+
+
+@admin_tenant_bp.route('/api/admin/tenants/<slug>/heatmap-summary', methods=['GET'])
+@token_requerido
+@require_tenant
+def tenant_heatmap_summary(current_user, slug):
+    tenant = _resolve_admin_tenant(current_user, slug)
+    if not tenant:
+        return jsonify({'error': 'Tenant not found'}), 404
+    if not _is_authorized_for_tenant(current_user, tenant):
+        return jsonify({'error': 'Unauthorized'}), 403
+
+    limit_points = max(100, min(int(request.args.get('limit_points', 1500) or 1500), 5000))
+    payload = _build_tenant_heatmap_summary_payload(tenant, limit_points=limit_points)
+    payload['meta'] = {'limit_points': limit_points}
+    return jsonify(payload)
+
+
+@admin_tenant_bp.route('/api/admin/tenants/<slug>/employees/coverage', methods=['GET'])
+@token_requerido
+@require_tenant
+def tenant_employee_coverage(current_user, slug):
+    tenant = _resolve_admin_tenant(current_user, slug)
+    if not tenant:
+        return jsonify({'error': 'Tenant not found'}), 404
+    if not _is_authorized_for_tenant(current_user, tenant):
+        return jsonify({'error': 'Unauthorized'}), 403
+
+    return jsonify(_build_employee_coverage_payload(tenant))
 
 @admin_tenant_bp.route('/api/admin/employees', methods=['GET'])
 @token_requerido
@@ -1635,44 +2086,40 @@ def list_tenant_orders(current_user, slug):
          return jsonify({'error': 'Unauthorized'}), 403
 
     # Fetch orders linked to this tenant (Unified View)
-    from models import Order
+    status_filter = (request.args.get('status') or '').strip().lower() or None
+    limit = max(1, min(int(request.args.get('limit', 50) or 50), 200))
 
-    # 1. Legacy Orders
+    order_records = []
+
     legacy_query = PymePedido.query.filter(
         (PymePedido.tenant_id == tenant.id) | (PymePedido.pyme_id == tenant.pyme_id)
     )
-    if request.args.get('status'):
-        legacy_query = legacy_query.filter(PymePedido.estado == request.args.get('status'))
+    if status_filter:
+        legacy_query = legacy_query.filter(func.lower(PymePedido.estado) == status_filter)
+    order_records.extend(legacy_query.order_by(PymePedido.fecha.desc()).limit(limit).all())
 
-    legacy_orders = legacy_query.order_by(PymePedido.fecha.desc()).limit(50).all()
+    market_query = MarketOrder.query.filter(MarketOrder.tenant_id == tenant.id)
+    if status_filter:
+        market_query = market_query.filter(func.lower(MarketOrder.status) == status_filter)
+    order_records.extend(market_query.order_by(MarketOrder.created_at.desc()).limit(limit).all())
 
-    # 2. New Orders
-    new_query = Order.query.filter(Order.tenant_id == tenant.id)
-    if request.args.get('status'):
-        new_query = new_query.filter(Order.status == request.args.get('status'))
+    conversational_query = PedidoConversacional.query.filter(PedidoConversacional.tenant_id == tenant.id)
+    if status_filter:
+        conversational_query = conversational_query.filter(func.lower(PedidoConversacional.estado) == status_filter)
+    order_records.extend(conversational_query.order_by(PedidoConversacional.created_at.desc()).limit(limit).all())
 
-    new_orders = new_query.order_by(Order.created_at.desc()).limit(50).all()
+    canonical_query = Order.query.filter(Order.tenant_id == tenant.id)
+    if status_filter:
+        canonical_query = canonical_query.filter(func.lower(Order.status) == status_filter)
+    order_records.extend(canonical_query.order_by(Order.created_at.desc()).limit(limit).all())
 
-    # Merge and Sort
-    results = []
-    for o in legacy_orders:
-        d = o.to_dict()
-        d['source_type'] = 'legacy'
-        d['created_at_iso'] = o.fecha.isoformat() if o.fecha else None
-        results.append(d)
-
-    for o in new_orders:
-        d = o.to_dict()
-        d['source_type'] = 'new'
-        d['created_at_iso'] = o.created_at.isoformat() if o.created_at else None
-        results.append(d)
-
-    # Simple sort by date descending
-    results.sort(key=lambda x: x.get('created_at_iso') or '', reverse=True)
+    results = [serialize_unified_order(record) for record in order_records]
+    results.sort(key=lambda item: item.get('created_at') or '', reverse=True)
 
     return jsonify({
-        "orders": results,
-        "count": len(results)
+        "orders": results[:limit],
+        "count": len(results[:limit]),
+        "sources": sorted({item.get('source_model') for item in results[:limit] if item.get('source_model')}),
     })
 
 

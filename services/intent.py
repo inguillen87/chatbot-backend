@@ -1,31 +1,27 @@
 import json
-import os
 import logging
+import os
+
 from .spacy_loader import get_spacy_model
 
-try:
-    nlp = get_spacy_model()
-    if nlp is None:
-        raise RuntimeError("Modelo spaCy no cargado")
-    print("✅ spaCy cargado correctamente en intent.py")
-except Exception as e:
-    logging.error(f"❌ Error al cargar spaCy: {e}")
-    raise
+logger = logging.getLogger(__name__)
+nlp = get_spacy_model()
 
 file_path = os.path.join(os.path.dirname(__file__), "../data/intents.json")
 try:
     with open(file_path, "r", encoding="utf-8") as f:
         INTENTS = json.load(f)
 except Exception as e:
-    logging.error(f"❌ No se pudo cargar intents.json: {e}")
+    logger.error("❌ No se pudo cargar intents.json: %s", e)
     INTENTS = {}
 
+
 def buscar_en_intents(pregunta_usuario: str, rubro_nombre: str, threshold: float = 0.70):
-    if not pregunta_usuario or not rubro_nombre:
+    if not pregunta_usuario or not rubro_nombre or nlp is None:
         return None
 
     doc_user = nlp(pregunta_usuario.lower())
-    if not doc_user.vector_norm:
+    if not getattr(doc_user, "vector_norm", 0):
         return None
 
     rubro_data = INTENTS.get(rubro_nombre.lower())
@@ -38,7 +34,7 @@ def buscar_en_intents(pregunta_usuario: str, rubro_nombre: str, threshold: float
     for intent in rubro_data:
         for ejemplo in intent.get("ejemplos", []):
             doc_ejemplo = nlp(ejemplo.lower())
-            if not doc_ejemplo.vector_norm:
+            if not getattr(doc_ejemplo, "vector_norm", 0):
                 continue
             score = doc_user.similarity(doc_ejemplo)
             if score > mejor_score:

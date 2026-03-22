@@ -29,6 +29,7 @@ from utils.db_utils import ensure_chat_session_context_schema, safe_flag_modifie
 from services.gcs_service import upload_to_gcs
 from services.attachment_service import create_attachment_with_thumbnail
 from services.llm_utils import extract_multiple_contact_details_llm
+from services.contact_intake import missing_contact_fields, resolve_contact_snapshot
 from services.logic import responder_chatboc
 from services.user_service import update_user_profile
 from services.media_classifier import clasificar_adjunto_whatsapp
@@ -2146,18 +2147,16 @@ def whatsapp_webhook():
 
             normalize_response_payload(bot_response_dict)
 
-            # Si el usuario es anónimo y la acción requiere datos personales, pedirlos
+            # Si el usuario es anónimo y la acción requiere datos personales, pedir solo los faltantes.
             if not end_user and bot_response_dict.get("accion_backend") in ["crear_reclamo", "iniciar_reclamo"]:
                 contexto_actual = session_context_db_entry.context_data.get("contexto_municipio", {})
                 datos_reclamo = contexto_actual.get("datos_parciales_llm_reclamo", {})
 
-                # Extraer info del mensaje actual del usuario
                 potential_fields = ["nombre_cliente", "telefono_cliente", "email_cliente"]
                 current_app.logger.debug(f"[CONTACT_EXTRACTION] Extracting {potential_fields} from: {message_body}")
                 extracted_data = extract_multiple_contact_details_llm(message_body, potential_fields)
                 current_app.logger.debug(f"[CONTACT_EXTRACTION] Extracted: {extracted_data}")
 
-                # Actualizar datos del reclamo con la info extraída
                 if extracted_data.get("nombre_cliente"):
                     datos_reclamo["nombre_usuario_detectado"] = extracted_data["nombre_cliente"]
                 if extracted_data.get("telefono_cliente"):
@@ -2165,16 +2164,23 @@ def whatsapp_webhook():
                 if extracted_data.get("email_cliente"):
                     datos_reclamo["email_detectado"] = extracted_data["email_cliente"]
 
-                # Guardar datos actualizados en el contexto
                 contexto_actual["datos_parciales_llm_reclamo"] = datos_reclamo
                 session_context_db_entry.context_data["contexto_municipio"] = contexto_actual
 
-                # Verificar si ya tenemos toda la info
-                if not (datos_reclamo.get("nombre_usuario_detectado") and datos_reclamo.get("telefono_detectado") and datos_reclamo.get("email_detectado")):
-                    # Si falta info, volver a pedirla
+                contacto = resolve_contact_snapshot(
+                    datos=datos_reclamo,
+                    profile_name=contexto_actual.get("profile_name") or session_context_db_entry.context_data.get("profile_name"),
+                    anon_id=from_number_cleaned,
+                )
+                faltan_contactos = missing_contact_fields(contacto)
+                if faltan_contactos:
                     bot_response_dict = {
-                        "message_body": "Para poder registrar tu reclamo, necesito que me indiques tu nombre, tu número de teléfono y tu correo electrónico.",
-                        "pedir_info": ["nombre", "telefono", "email"]
+                        "message_body": (
+                            "Para poder registrar tu reclamo, necesito estos datos: "
+                            + ", ".join(faltan_contactos)
+                            + "."
+                        ),
+                        "pedir_info": faltan_contactos,
                     }
 
             print(f"Raw response from responder_chatboc: {bot_response_dict}")

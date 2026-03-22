@@ -746,6 +746,13 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
                 "session_endpoint": "/api/public/realtime/session",
                 "action_event_endpoint": "/api/public/realtime/action-event",
                 "required_widget_token": True,
+                "model": attrs.get("data-realtime-model"),
+                "voice_handoff": {
+                    "enabled": True,
+                    "supports_whatsapp_followup": True,
+                    "supports_confirmation_cards": True,
+                    "preferred_channels": ["voice", "whatsapp", "widget"],
+                },
                 "rate_limit": {
                     "window_seconds": _REALTIME_SESSION_RATE_LIMIT_WINDOW_SECONDS,
                     "max_requests": _REALTIME_SESSION_RATE_LIMIT_MAX_REQUESTS,
