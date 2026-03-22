@@ -137,6 +137,10 @@ def test_checkout_rejects_when_mercadopago_missing(client, tenant_with_catalog, 
     assert data["tracking"]["market_order_id"] == data["market_order_id"]
     assert any(step["id"] == "complete_payment" for step in data["next_steps"])
 
+    market_order = MarketOrder.query.get(data["market_order_id"])
+    assert market_order is not None
+    assert market_order.status == "pending_payment"
+
 
 
 
@@ -269,6 +273,10 @@ def test_money_checkout_ignores_client_demo_mode_flag(client, tenant_with_catalo
     assert data.get("demo_mode") is not True
     assert data["preference_id"] == "pref_123"
     assert called["mp"] == 1
+
+    market_order = MarketOrder.query.get(data["market_order_id"])
+    assert market_order is not None
+    assert market_order.status == "pending_payment"
 
 
 @pytest.mark.usefixtures("client")

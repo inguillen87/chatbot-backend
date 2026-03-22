@@ -4,7 +4,7 @@ from app import create_app, db
 from config import TestConfig
 from models import MarketOrder, MarketOrderItem, PedidoConversacional, PymePedido, TenantProfile, User
 from services.commerce_contracts import build_customer_profile
-from services.commerce_unified import serialize_unified_order
+from services.commerce_unified import dedupe_unified_orders, serialize_unified_order
 
 
 def test_build_customer_profile_normalizes_phone_channels_and_identity():
@@ -103,3 +103,35 @@ def test_market_order_legacy_safe_query_omits_deferred_columns_in_filtered_queri
         statement = str(MarketOrder.legacy_safe_query().filter_by(tenant_id=1, user_id=2).statement)
         assert "contact_key" not in statement
         assert "session_id" not in statement
+
+
+def test_dedupe_unified_orders_prefers_market_order_mirror_for_conversational_checkout():
+    orders = [
+        {
+            "source_model": "PedidoConversacional",
+            "source_id": 42,
+            "created_at": "2026-03-22T09:00:00",
+            "external_refs": {},
+            "metadata": {},
+        },
+        {
+            "source_model": "PymePedido",
+            "source_id": 99,
+            "created_at": "2026-03-22T09:01:00",
+            "external_refs": {"idempotency_key": "conv_order_42"},
+            "metadata": {"idempotency_key": "conv_order_42"},
+        },
+        {
+            "source_model": "MarketOrder",
+            "source_id": 7,
+            "created_at": "2026-03-22T09:02:00",
+            "external_refs": {"provider": "pedido_conversacional", "order_id": "42"},
+            "metadata": {},
+        },
+    ]
+
+    deduped = dedupe_unified_orders(orders)
+
+    assert len(deduped) == 1
+    assert deduped[0]["source_model"] == "MarketOrder"
+    assert deduped[0]["source_id"] == 7

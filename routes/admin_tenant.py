@@ -28,7 +28,7 @@ from models import (
 )
 from routes.catalogo import _formatear_producto
 from routes.carrito import _product_query_for_tenant
-from services.commerce_unified import serialize_unified_order
+from services.commerce_unified import dedupe_unified_orders, serialize_unified_order
 from services.common_utils import parse_precio_flexible
 from services.catalog_seed import ensure_seed_catalog
 from services.embedding_service import embed_textos_llm
@@ -2113,7 +2113,7 @@ def list_tenant_orders(current_user, slug):
         canonical_query = canonical_query.filter(func.lower(Order.status) == status_filter)
     order_records.extend(canonical_query.order_by(Order.created_at.desc()).limit(limit).all())
 
-    results = [serialize_unified_order(record) for record in order_records]
+    results = dedupe_unified_orders([serialize_unified_order(record) for record in order_records])
     results.sort(key=lambda item: item.get('created_at') or '', reverse=True)
 
     return jsonify({

@@ -189,6 +189,38 @@ def _pedido_tipo(total_money: float, total_points: int, has_donation: bool) -> s
     return "compra"
 
 
+def _sync_checkout_order_state(pedido: PedidoConversacional, market_order: MarketOrder, pedido_estado: str, *, mp_status: str | None = None) -> None:
+    pedido.estado = pedido_estado
+
+    market_status_map = {
+        "pendiente_pago": "pending_payment",
+        "confirmado": "confirmed",
+        "cancelado": "cancelled",
+    }
+    market_order.status = market_status_map.get(pedido_estado, market_order.status or "pending")
+
+    pedido_metadata = dict(pedido.metadata_payload or {})
+    pedido_state = dict(pedido_metadata.get("commercial_state") or {})
+    if pedido_estado == "pendiente_pago":
+        pedido_state["stage"] = "awaiting_payment"
+    elif pedido_estado == "confirmado":
+        pedido_state["stage"] = "confirmed"
+    elif pedido_estado == "cancelado":
+        pedido_state["stage"] = "cancelled"
+    pedido_metadata["commercial_state"] = pedido_state
+    pedido.metadata_payload = pedido_metadata
+
+    market_metadata = dict(market_order.metadata_payload or {})
+    commercial_state = dict(market_metadata.get("commercial_state") or {})
+    commercial_state["pedido_estado"] = pedido_estado
+    commercial_state["market_status"] = market_order.status
+    if mp_status is not None:
+        pedido.mp_status = mp_status
+        commercial_state["mp_status"] = mp_status
+    market_metadata["commercial_state"] = commercial_state
+    market_order.metadata_payload = market_metadata
+
+
 def _support_channels(tenant: TenantProfile, owner: Optional[User], channel: str) -> dict:
     phone = getattr(owner, "telefono", None)
     return {
@@ -362,7 +394,7 @@ def _crear_pedido(payload: dict):
     market_order = MarketOrder(
         tenant_id=tenant.id,
         user_id=user.id,
-        status="confirmed" if pedido_tipo == "donacion" else ("pending" if total_money > 0 else "confirmed"),
+        status="confirmed" if pedido_tipo == "donacion" else ("pending_payment" if total_money > 0 else "confirmed"),
         contact_name=contact.get("name"),
         contact_phone=contact.get("phone"),
         contact_email=contact.get("email"),
@@ -410,8 +442,7 @@ def _crear_pedido(payload: dict):
     support_channels = _support_channels(tenant, owner, contact.get("channel") or "web")
 
     if total_money > 0 and demo_mode:
-        pedido.estado = "confirmado"
-        pedido.mp_status = "demo_skipped"
+        _sync_checkout_order_state(pedido, market_order, "confirmado", mp_status="demo_skipped")
         db.session.commit()
         return jsonify(
             {
@@ -442,7 +473,7 @@ def _crear_pedido(payload: dict):
         )
 
     if total_money > 0 and not access_token:
-        pedido.estado = "pendiente_pago"
+        _sync_checkout_order_state(pedido, market_order, "pendiente_pago")
         db.session.commit()
         return (
             jsonify(
@@ -503,13 +534,14 @@ def _crear_pedido(payload: dict):
             init_point = data.get("init_point")
             preference_id = data.get("id")
             pedido.mp_preference_id = preference_id
+            _sync_checkout_order_state(pedido, market_order, "pendiente_pago")
             db.session.commit()
         else:
             logger.error("MercadoPago error: %s", resp.text)
-            pedido.estado = "pendiente_pago"
+            _sync_checkout_order_state(pedido, market_order, "pendiente_pago")
             db.session.commit()
     else:
-        pedido.estado = "confirmado"
+        _sync_checkout_order_state(pedido, market_order, "confirmado")
         db.session.commit()
 
         # Trigger PymePedido creation for persistence and notifications

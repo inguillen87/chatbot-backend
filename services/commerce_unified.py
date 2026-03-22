@@ -49,6 +49,57 @@ def _iso(dt: Any) -> str | None:
     return dt.isoformat() if dt else None
 
 
+def _record_timestamp(order: dict[str, Any]) -> str:
+    return str(order.get("updated_at") or order.get("created_at") or "")
+
+
+def _dedupe_key(order: dict[str, Any]) -> str:
+    source_model = str(order.get("source_model") or "")
+    external_refs = order.get("external_refs") if isinstance(order.get("external_refs"), dict) else {}
+    metadata = order.get("metadata") if isinstance(order.get("metadata"), dict) else {}
+
+    if source_model == "MarketOrder" and external_refs.get("provider") == "pedido_conversacional" and external_refs.get("order_id"):
+        return f"conv:{external_refs.get('order_id')}"
+    if source_model == "PedidoConversacional" and order.get("source_id") is not None:
+        return f"conv:{order.get('source_id')}"
+    if source_model == "PymePedido":
+        idempotency_key = str(metadata.get("idempotency_key") or external_refs.get("idempotency_key") or "")
+        if idempotency_key.startswith("conv_order_"):
+            return f"conv:{idempotency_key.split('conv_order_', 1)[1]}"
+    return f"{source_model}:{order.get('source_id')}"
+
+
+def _dedupe_priority(order: dict[str, Any]) -> int:
+    source_model = str(order.get("source_model") or "")
+    external_refs = order.get("external_refs") if isinstance(order.get("external_refs"), dict) else {}
+    metadata = order.get("metadata") if isinstance(order.get("metadata"), dict) else {}
+
+    if source_model == "MarketOrder" and external_refs.get("provider") == "pedido_conversacional":
+        return 4
+    if source_model == "PedidoConversacional":
+        return 3
+    if source_model == "PymePedido" and str(metadata.get("idempotency_key") or "").startswith("conv_order_"):
+        return 2
+    return 1
+
+
+def dedupe_unified_orders(orders: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: dict[str, dict[str, Any]] = {}
+    for order in orders:
+        key = _dedupe_key(order)
+        current = deduped.get(key)
+        if current is None:
+            deduped[key] = order
+            continue
+
+        candidate_rank = (_dedupe_priority(order), _record_timestamp(order))
+        current_rank = (_dedupe_priority(current), _record_timestamp(current))
+        if candidate_rank > current_rank:
+            deduped[key] = order
+
+    return list(deduped.values())
+
+
 def _derive_stage(status: Any) -> str:
     normalized = str(status or "").strip().lower()
     return _COMMERCIAL_STAGE_BY_STATUS.get(normalized, "in_progress")
@@ -190,7 +241,10 @@ def serialize_unified_order(record: Any) -> dict[str, Any]:
             },
             "created_at": _iso(record.created_at),
             "updated_at": _iso(record.updated_at),
-            "metadata": metadata,
+            "metadata": {
+                **metadata,
+                "idempotency_key": getattr(record, "idempotency_key", None),
+            },
         }
 
     if isinstance(record, PymePedido):
@@ -228,6 +282,7 @@ def serialize_unified_order(record: Any) -> dict[str, Any]:
             "items": _legacy_items(record.detalles),
             "external_refs": {
                 "nro_pedido": record.nro_pedido,
+                "idempotency_key": getattr(record, "idempotency_key", None),
             },
             "created_at": _iso(record.fecha),
             "updated_at": _iso(record.fecha),
