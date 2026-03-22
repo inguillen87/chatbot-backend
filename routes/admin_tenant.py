@@ -16,6 +16,9 @@ from models import (
     CategoriaTicket,
     IntegrationAccount,
     PymePedido,
+    MarketOrder,
+    PedidoConversacional,
+    Order,
     MunicipioTicket,
     PymeTicket,
     EncEncuesta,
@@ -25,6 +28,7 @@ from models import (
 )
 from routes.catalogo import _formatear_producto
 from routes.carrito import _product_query_for_tenant
+from services.commerce_unified import serialize_unified_order
 from services.common_utils import parse_precio_flexible
 from services.catalog_seed import ensure_seed_catalog
 from services.embedding_service import embed_textos_llm
@@ -893,8 +897,8 @@ def get_tenant_config_bundle(current_user, slug):
     return jsonify(response)
 
 
-@admin_tenant_bp.route('/api/admin/tenants/<slug>/catalog', methods=['GET', 'OPTIONS'])
-@admin_tenant_bp.route('/admin/tenants/<slug>/catalog', methods=['GET', 'OPTIONS'])
+@admin_tenant_bp.route('/api/admin/tenants/<slug>/catalog/items', methods=['GET', 'OPTIONS'])
+@admin_tenant_bp.route('/admin/tenants/<slug>/catalog/items', methods=['GET', 'OPTIONS'])
 @token_requerido
 @require_tenant
 def admin_tenant_catalog(current_user, slug):
@@ -915,6 +919,12 @@ def admin_tenant_catalog(current_user, slug):
     ensure_seed_catalog(owner, tenant)
     categoria = request.args.get("categoria")
     search_text = request.args.get("q")
+    modalidad = (request.args.get("modalidad") or "").strip().lower()
+    only_available = request.args.get("disponible")
+    promo_only = request.args.get("en_promocion")
+    sort_key = (request.args.get("sort") or "nombre").strip().lower()
+    price_min = request.args.get("precio_min")
+    price_max = request.args.get("precio_max")
 
     query = _product_query_for_tenant(owner, tenant)
     if categoria:
@@ -922,7 +932,33 @@ def admin_tenant_catalog(current_user, slug):
         if categoria_norm:
             query = query.filter(func.lower(CatalogoItem.categoria) == categoria_norm)
 
-    items = query.order_by(func.lower(CatalogoItem.nombre)).all()
+    if modalidad:
+        query = query.filter(func.lower(CatalogoItem.modalidad) == modalidad)
+
+    if only_available is not None:
+        query = query.filter(CatalogoItem.disponible.is_(str(only_available).strip().lower() in {"1", "true", "si", "yes"}))
+
+    if promo_only is not None and str(promo_only).strip().lower() in {"1", "true", "si", "yes"}:
+        query = query.filter(CatalogoItem.promocion_info.isnot(None))
+
+    try:
+        if price_min not in (None, ""):
+            query = query.filter(CatalogoItem.precio_monetario >= float(price_min))
+        if price_max not in (None, ""):
+            query = query.filter(CatalogoItem.precio_monetario <= float(price_max))
+    except (TypeError, ValueError):
+        return jsonify({"error": "Filtro de precio inválido"}), 400
+
+    if sort_key == "precio_asc":
+        query = query.order_by(CatalogoItem.precio_monetario.asc().nullslast(), func.lower(CatalogoItem.nombre))
+    elif sort_key == "precio_desc":
+        query = query.order_by(CatalogoItem.precio_monetario.desc().nullslast(), func.lower(CatalogoItem.nombre))
+    elif sort_key == "updated_desc":
+        query = query.order_by(CatalogoItem.timestamp.desc().nullslast(), func.lower(CatalogoItem.nombre))
+    else:
+        query = query.order_by(func.lower(CatalogoItem.nombre))
+
+    items = query.all()
 
     productos = []
     for item in items:
@@ -948,6 +984,13 @@ def admin_tenant_catalog(current_user, slug):
         )
         prod["catalogo_item_id"] = item.id
         prod["tenant_id"] = tenant.id
+        prod["available"] = bool(item.disponible is not False)
+        prod["price_numeric"] = float(item.precio_monetario) if item.precio_monetario is not None else None
+        prod["channel_availability"] = {
+            "widget": True,
+            "whatsapp": True,
+            "phone": True,
+        }
         productos.append(prod)
 
     if search_text:
@@ -2043,44 +2086,40 @@ def list_tenant_orders(current_user, slug):
          return jsonify({'error': 'Unauthorized'}), 403
 
     # Fetch orders linked to this tenant (Unified View)
-    from models import Order
+    status_filter = (request.args.get('status') or '').strip().lower() or None
+    limit = max(1, min(int(request.args.get('limit', 50) or 50), 200))
 
-    # 1. Legacy Orders
+    order_records = []
+
     legacy_query = PymePedido.query.filter(
         (PymePedido.tenant_id == tenant.id) | (PymePedido.pyme_id == tenant.pyme_id)
     )
-    if request.args.get('status'):
-        legacy_query = legacy_query.filter(PymePedido.estado == request.args.get('status'))
+    if status_filter:
+        legacy_query = legacy_query.filter(func.lower(PymePedido.estado) == status_filter)
+    order_records.extend(legacy_query.order_by(PymePedido.fecha.desc()).limit(limit).all())
 
-    legacy_orders = legacy_query.order_by(PymePedido.fecha.desc()).limit(50).all()
+    market_query = MarketOrder.query.filter(MarketOrder.tenant_id == tenant.id)
+    if status_filter:
+        market_query = market_query.filter(func.lower(MarketOrder.status) == status_filter)
+    order_records.extend(market_query.order_by(MarketOrder.created_at.desc()).limit(limit).all())
 
-    # 2. New Orders
-    new_query = Order.query.filter(Order.tenant_id == tenant.id)
-    if request.args.get('status'):
-        new_query = new_query.filter(Order.status == request.args.get('status'))
+    conversational_query = PedidoConversacional.query.filter(PedidoConversacional.tenant_id == tenant.id)
+    if status_filter:
+        conversational_query = conversational_query.filter(func.lower(PedidoConversacional.estado) == status_filter)
+    order_records.extend(conversational_query.order_by(PedidoConversacional.created_at.desc()).limit(limit).all())
 
-    new_orders = new_query.order_by(Order.created_at.desc()).limit(50).all()
+    canonical_query = Order.query.filter(Order.tenant_id == tenant.id)
+    if status_filter:
+        canonical_query = canonical_query.filter(func.lower(Order.status) == status_filter)
+    order_records.extend(canonical_query.order_by(Order.created_at.desc()).limit(limit).all())
 
-    # Merge and Sort
-    results = []
-    for o in legacy_orders:
-        d = o.to_dict()
-        d['source_type'] = 'legacy'
-        d['created_at_iso'] = o.fecha.isoformat() if o.fecha else None
-        results.append(d)
-
-    for o in new_orders:
-        d = o.to_dict()
-        d['source_type'] = 'new'
-        d['created_at_iso'] = o.created_at.isoformat() if o.created_at else None
-        results.append(d)
-
-    # Simple sort by date descending
-    results.sort(key=lambda x: x.get('created_at_iso') or '', reverse=True)
+    results = [serialize_unified_order(record) for record in order_records]
+    results.sort(key=lambda item: item.get('created_at') or '', reverse=True)
 
     return jsonify({
-        "orders": results,
-        "count": len(results)
+        "orders": results[:limit],
+        "count": len(results[:limit]),
+        "sources": sorted({item.get('source_model') for item in results[:limit] if item.get('source_model')}),
     })
 
 

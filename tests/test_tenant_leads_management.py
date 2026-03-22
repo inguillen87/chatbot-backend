@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 import jwt
 
 from app import db
-from models import EncEncuesta, EncRespuesta, MunicipioTicket, TenantProfile, TicketComentario, TicketRealtimeState, User
+from models import CatalogoItem, EncEncuesta, EncRespuesta, MunicipioTicket, TenantProfile, TicketComentario, TicketRealtimeState, User
 
 
 def _headers(app, user):
@@ -443,3 +443,54 @@ def test_tenant_dashboard_bundle_counts_full_backlog_even_when_items_are_limited
     assert body["summary"]["sla_breached"] == 1
     assert len(body["leads"]["items"]) == 1
     assert any(action["kind"] == "review_sla" for action in body["recommended_actions"])
+
+
+def test_admin_tenant_catalog_supports_commercial_filters(client, app):
+    owner = User(email="owner-catalog@test.com", name="Owner Catalog", rol="admin", tipo_chat="pyme")
+    owner.set_password("pass")
+    db.session.add(owner)
+    db.session.commit()
+
+    tenant = TenantProfile(slug="tenant-catalog", nombre="Tenant Catalog", tipo="pyme", pyme_id=owner.id)
+    db.session.add(tenant)
+    db.session.commit()
+
+    db.session.add(
+        CatalogoItem(
+            user_id=owner.id,
+            tenant_id=tenant.id,
+            nombre="Producto Promo",
+            categoria="Bebidas",
+            precio="1000",
+            precio_monetario=1000,
+            moneda="ARS",
+            modalidad="venta",
+            promocion_info="2x1",
+            disponible=True,
+        )
+    )
+    db.session.add(
+        CatalogoItem(
+            user_id=owner.id,
+            tenant_id=tenant.id,
+            nombre="Producto Sin Promo",
+            categoria="Bebidas",
+            precio="5000",
+            precio_monetario=5000,
+            moneda="ARS",
+            modalidad="venta",
+            disponible=True,
+        )
+    )
+    db.session.commit()
+
+    resp = client.get(
+        f"/api/admin/tenants/{tenant.slug}/catalog/items?en_promocion=true&precio_max=2000&sort=precio_asc",
+        headers=_headers(app, owner),
+    )
+    assert resp.status_code == 200
+    items = resp.get_json()
+    assert len(items) == 1
+    assert items[0]["nombre"] == "Producto Promo"
+    assert items[0]["channel_availability"]["whatsapp"] is True
+    assert items[0]["price_numeric"] == 1000.0

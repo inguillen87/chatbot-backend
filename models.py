@@ -1102,6 +1102,16 @@ class CatalogoItem(db.Model):
     external_url = db.Column(db.String(500), nullable=True)
     timestamp = db.Column(db.DateTime(timezone=True), default=get_local_now)
 
+    __table_args__ = (
+        db.Index("ix_catalogo_item_tenant_categoria", "tenant_id", "categoria"),
+        db.Index("ix_catalogo_item_tenant_modalidad", "tenant_id", "modalidad"),
+        db.Index("ix_catalogo_item_tenant_disponible", "tenant_id", "disponible"),
+        db.Index("ix_catalogo_item_tenant_precio_monetario", "tenant_id", "precio_monetario"),
+        db.Index("ix_catalogo_item_tenant_categoria_disponible", "tenant_id", "categoria", "disponible"),
+        db.Index("ix_catalogo_item_tenant_modalidad_disponible", "tenant_id", "modalidad", "disponible"),
+        db.Index("ix_catalogo_item_tenant_nombre", "tenant_id", "nombre"),
+    )
+
     # Added fields for detailed item info (deferred for legacy support)
     varietal = deferred(db.Column(db.String(100), nullable=True))
     anada = deferred(db.Column(db.String(20), nullable=True))
@@ -1236,6 +1246,9 @@ class MarketCart(db.Model, TimestampMixin):
     status = db.Column(db.String(20), nullable=False, default="open")
     contact_name = db.Column(db.String(255), nullable=True)
     contact_phone = db.Column(db.String(50), nullable=True)
+    contact_email = db.Column(db.String(120), nullable=True, index=True)
+    contact_key = db.Column(db.String(160), nullable=True, index=True)
+    channel = db.Column(db.String(50), nullable=True, default="web")
     metadata_payload = db.Column("metadata", JSONType, nullable=True)
 
     tenant = db.relationship("TenantProfile")
@@ -1250,6 +1263,7 @@ class MarketCart(db.Model, TimestampMixin):
 
     __table_args__ = (
         db.Index("ix_market_cart_tenant_session", "tenant_id", "session_id", "status"),
+        db.Index("ix_market_cart_tenant_contact", "tenant_id", "contact_key", "status"),
     )
 
     @property
@@ -1315,7 +1329,9 @@ class MarketOrder(db.Model, TimestampMixin):
     contact_name = db.Column(db.String(255), nullable=True)
     contact_phone = db.Column(db.String(50), nullable=True)
     contact_email = db.Column(db.String(120), nullable=True)
+    contact_key = db.Column(db.String(160), nullable=True, index=True)
     channel = db.Column(db.String(50), default="web")
+    session_id = db.Column(db.String(120), nullable=True, index=True)
     total_monetary = db.Column(db.Numeric(12, 2), nullable=True)
     total_points = db.Column(db.Integer, nullable=True)
     currency = db.Column(db.String(10), nullable=True)
@@ -1327,6 +1343,7 @@ class MarketOrder(db.Model, TimestampMixin):
 
     __table_args__ = (
         db.Index("ix_market_order_external", "tenant_id", "external_provider", "external_order_id"),
+        db.Index("ix_market_order_tenant_contact", "tenant_id", "contact_key", "status"),
     )
 
     tenant = db.relationship("TenantProfile")
@@ -1431,6 +1448,7 @@ class PedidoConversacional(db.Model, TimestampMixin):
     origen = db.Column(db.String(40), nullable=True)
     anon_id = db.Column(db.String(120), nullable=True)
     items = db.Column(JSONType, nullable=False, default=list)
+    metadata_payload = db.Column("metadata", JSONType, nullable=True)
 
     tenant = db.relationship("TenantProfile")
     user = db.relationship("User")

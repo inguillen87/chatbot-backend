@@ -189,6 +189,14 @@ type EnterpriseRealtimeEnvelope = {
 - `tickets/<tipo>/<id>/timeline.unified_conversation_stream[*].status`
 - `tickets/<tipo>/<id>/timeline.unified_conversation_stream[*].badge`
 - `tickets/<tipo>/<id>/timeline.unified_conversation_stream[*].is_unread`
+- `market.cart.contact_key`
+- `market.cart.channel`
+- `market.cart.contacto.email`
+- `market.cart.promotions`
+- `market.order.contact_key`
+- `market.order.channel`
+- `admin.catalog[*].price_numeric`
+- `admin.catalog[*].channel_availability`
 
 ### Regla de UI recomendada
 - si `collaboration_state.unread_viewer_count > 0` => mostrar badge de unread
@@ -199,3 +207,6 @@ type EnterpriseRealtimeEnvelope = {
 - usar `unified_conversation_stream` como fuente principal en ticket detail/tracking nuevo
 - mostrar tooltip/modal de explicabilidad usando `priority_breakdown` y `priority_reasons`
 - usar `collaboration_state.operational_status` + `collaboration_state.collaboration_hint` para pintar cabecera del ticket
+- mantener continuidad comercial por `contact_key` entre widget / whatsapp / teléfono
+- renderizar ahorro/beneficio comercial cuando `market.cart.promotions.total_ahorrado > 0`
+- usar `channel_availability` para deshabilitar CTAs no soportados por el producto o canal
