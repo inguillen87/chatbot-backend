@@ -130,7 +130,7 @@ def _get_or_create_cart_for_user(
     session_id = _resolve_session_identifier()
     user_id = getattr(user, "id", None)
 
-    base_query = MarketCart.query.filter(
+    base_query = MarketCart.legacy_safe_query().filter(
         MarketCart.tenant_id == tenant.id,
         MarketCart.status == "open",
     )
@@ -1173,7 +1173,7 @@ def admin_list_orders(current_user):
     payload = request.args.to_dict()
     tenant = _resolve_admin_tenant(current_user, payload)
 
-    query = MarketOrder.query.filter_by(tenant_id=tenant.id)
+    query = MarketOrder.legacy_safe_query().filter_by(tenant_id=tenant.id)
     status = payload.get('status')
     if status:
         query = query.filter(MarketOrder.status == status)
@@ -1196,7 +1196,7 @@ def admin_update_order(current_user, order_id):
     payload = request.get_json(silent=True) or {}
     tenant = _resolve_admin_tenant(current_user, payload)
 
-    order = MarketOrder.query.filter_by(id=order_id, tenant_id=tenant.id).first()
+    order = MarketOrder.legacy_safe_query().filter_by(id=order_id, tenant_id=tenant.id).first()
     if not order:
         return jsonify({"error": "Order not found"}), 404
 

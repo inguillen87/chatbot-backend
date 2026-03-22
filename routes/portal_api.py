@@ -886,7 +886,7 @@ def get_orders(tenant_slug):
     tenant = _resolve_context(tenant_slug)
     user = g.viewer
 
-    orders = MarketOrder.query.filter_by(
+    orders = MarketOrder.legacy_safe_query().filter_by(
         tenant_id=tenant.id,
         user_id=user.id
     ).order_by(MarketOrder.created_at.desc()).all()
@@ -903,7 +903,7 @@ def get_order_detail(tenant_slug, order_id: int):
     tenant = _resolve_context(tenant_slug)
     user = g.viewer
 
-    order = MarketOrder.query.filter_by(tenant_id=tenant.id, user_id=user.id, id=order_id).first()
+    order = MarketOrder.legacy_safe_query().filter_by(tenant_id=tenant.id, user_id=user.id, id=order_id).first()
     if not order:
         return jsonify({"error": "Order not found"}), 404
 
@@ -1034,7 +1034,7 @@ def get_portal_history(tenant_slug):
         TenantTicket.tenant_id.in_(tenant_ids),
     ).order_by(TenantTicket.updated_at.desc()).limit(limit).all()
 
-    orders = MarketOrder.query.filter(
+    orders = MarketOrder.legacy_safe_query().filter(
         MarketOrder.user_id == user.id,
         MarketOrder.tenant_id.in_(tenant_ids),
     ).order_by(MarketOrder.created_at.desc()).limit(limit).all()
@@ -1219,7 +1219,7 @@ def get_portal_dashboard(tenant_slug):
         TenantTicket.user_id == user.id,
         TenantTicket.tenant_id.in_(tenant_ids),
     ).count()
-    orders_count = MarketOrder.query.filter(
+    orders_count = MarketOrder.legacy_safe_query().filter(
         MarketOrder.user_id == user.id,
         MarketOrder.tenant_id.in_(tenant_ids),
     ).count()
@@ -1270,7 +1270,7 @@ def get_portal_premium_bundle(tenant_slug):
         .all()
     )
     orders = (
-        MarketOrder.query.filter(
+        MarketOrder.legacy_safe_query().filter(
             MarketOrder.user_id == user.id,
             MarketOrder.tenant_id.in_(tenant_ids),
         )
