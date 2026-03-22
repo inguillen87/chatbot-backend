@@ -1286,6 +1286,18 @@ class MarketCart(db.Model, TimestampMixin):
         }
         self.status = inverse.get(normalized, normalized or "open")
 
+    @classmethod
+    def legacy_safe_options(cls):
+        return (
+            defer(cls.session_id),
+            defer(cls.contact_email),
+            defer(cls.contact_key),
+        )
+
+    @classmethod
+    def legacy_safe_query(cls):
+        return cls.query.options(*cls.legacy_safe_options())
+
 
 class MarketCartItem(db.Model, TimestampMixin):
     __tablename__ = "market_cart_item"
@@ -1367,6 +1379,10 @@ class MarketOrder(db.Model, TimestampMixin):
             defer(cls.contact_key),
             defer(cls.session_id),
         )
+
+    @classmethod
+    def legacy_safe_query(cls):
+        return cls.query.options(*cls.legacy_safe_options())
 
 
 class MarketOrderItem(db.Model, TimestampMixin):

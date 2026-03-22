@@ -1121,7 +1121,7 @@ def get_tenant_metrics(current_user, slug):
 
     # 2. Orders (MarketOrder)
     from models import MarketOrder
-    order_count = MarketOrder.query.filter_by(tenant_id=tenant.id).filter(
+    order_count = MarketOrder.legacy_safe_query().filter_by(tenant_id=tenant.id).filter(
         MarketOrder.created_at >= since
     ).count()
 

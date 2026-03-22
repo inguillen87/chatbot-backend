@@ -30,7 +30,7 @@ def list_orders(user, slug):
         # Fallback for older users or different auth flows, but still prioritize token context over URL
         tenant_id = g.tenant_profile.id
 
-    query = MarketOrder.query.filter_by(tenant_id=tenant_id)
+    query = MarketOrder.legacy_safe_query().filter_by(tenant_id=tenant_id)
 
 
     if status:
@@ -120,7 +120,7 @@ def create_order(user, slug):
 @require_tenant
 def update_order(user, order_id, slug):
     """Update order status or notes."""
-    order = MarketOrder.query.filter_by(id=order_id, tenant_id=g.tenant_profile.id).first_or_404()
+    order = MarketOrder.legacy_safe_query().filter_by(id=order_id, tenant_id=g.tenant_profile.id).first_or_404()
     data = request.get_json()
 
     if 'status' in data:

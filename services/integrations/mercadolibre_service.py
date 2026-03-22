@@ -121,7 +121,7 @@ class MercadoLibreService:
     def _map_order(tenant_id, data):
         external_id = str(data.get("id"))
 
-        order = MarketOrder.query.filter_by(
+        order = MarketOrder.legacy_safe_query().filter_by(
             tenant_id=tenant_id,
             external_provider="mercadolibre",
             external_order_id=external_id

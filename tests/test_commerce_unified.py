@@ -95,3 +95,11 @@ def test_market_order_query_is_legacy_safe_for_deferred_columns():
         statement = str(MarketOrder.query.statement)
         assert "contact_key" not in statement
         assert "session_id" not in statement
+
+
+def test_market_order_legacy_safe_query_omits_deferred_columns_in_filtered_queries():
+    app = create_app(TestConfig)
+    with app.app_context():
+        statement = str(MarketOrder.legacy_safe_query().filter_by(tenant_id=1, user_id=2).statement)
+        assert "contact_key" not in statement
+        assert "session_id" not in statement

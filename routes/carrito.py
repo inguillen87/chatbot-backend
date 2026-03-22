@@ -144,7 +144,7 @@ def _get_or_create_db_cart(
     session_id = _resolve_session_identifier()
     user_id = getattr(user, "id", None) if user and user.is_authenticated else None
 
-    base_query = MarketCart.query.filter(
+    base_query = MarketCart.legacy_safe_query().filter(
         MarketCart.tenant_id == tenant.id,
         MarketCart.status == "open",
     )

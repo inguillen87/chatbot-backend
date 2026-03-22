@@ -2098,7 +2098,7 @@ def list_tenant_orders(current_user, slug):
         legacy_query = legacy_query.filter(func.lower(PymePedido.estado) == status_filter)
     order_records.extend(legacy_query.order_by(PymePedido.fecha.desc()).limit(limit).all())
 
-    market_query = MarketOrder.query.filter(MarketOrder.tenant_id == tenant.id)
+    market_query = MarketOrder.legacy_safe_query().filter(MarketOrder.tenant_id == tenant.id)
     if status_filter:
         market_query = market_query.filter(func.lower(MarketOrder.status) == status_filter)
     order_records.extend(market_query.order_by(MarketOrder.created_at.desc()).limit(limit).all())
