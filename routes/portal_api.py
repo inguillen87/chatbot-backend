@@ -1219,10 +1219,10 @@ def get_portal_dashboard(tenant_slug):
         TenantTicket.user_id == user.id,
         TenantTicket.tenant_id.in_(tenant_ids),
     ).count()
-    orders_count = MarketOrder.legacy_safe_query().filter(
+    orders_count = MarketOrder.legacy_safe_count(
         MarketOrder.user_id == user.id,
         MarketOrder.tenant_id.in_(tenant_ids),
-    ).count()
+    )
     surveys_count = EncRespuesta.query.filter(
         EncRespuesta.user_id == user.id,
         EncRespuesta.tenant_id.in_(tenant_ids),

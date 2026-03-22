@@ -135,3 +135,12 @@ def test_dedupe_unified_orders_prefers_market_order_mirror_for_conversational_ch
     assert len(deduped) == 1
     assert deduped[0]["source_model"] == "MarketOrder"
     assert deduped[0]["source_id"] == 7
+
+
+def test_market_order_legacy_safe_count_query_omits_deferred_columns():
+    app = create_app(TestConfig)
+    with app.app_context():
+        statement = str(MarketOrder.legacy_safe_count_query(MarketOrder.tenant_id == 1, MarketOrder.user_id == 2).statement)
+        assert "count(market_order.id)" in statement.lower()
+        assert "contact_key" not in statement
+        assert "session_id" not in statement

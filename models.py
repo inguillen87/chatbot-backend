@@ -1384,6 +1384,19 @@ class MarketOrder(db.Model, TimestampMixin):
     def legacy_safe_query(cls):
         return cls.query.options(*cls.legacy_safe_options())
 
+    @classmethod
+    def legacy_safe_count_query(cls, *criteria, **filters):
+        query = db.session.query(db.func.count(cls.id))
+        if criteria:
+            query = query.filter(*criteria)
+        if filters:
+            query = query.filter_by(**filters)
+        return query
+
+    @classmethod
+    def legacy_safe_count(cls, *criteria, **filters) -> int:
+        return int(cls.legacy_safe_count_query(*criteria, **filters).scalar() or 0)
+
 
 class MarketOrderItem(db.Model, TimestampMixin):
     __tablename__ = "market_order_item"
