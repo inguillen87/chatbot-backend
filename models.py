@@ -1102,6 +1102,16 @@ class CatalogoItem(db.Model):
     external_url = db.Column(db.String(500), nullable=True)
     timestamp = db.Column(db.DateTime(timezone=True), default=get_local_now)
 
+    __table_args__ = (
+        db.Index("ix_catalogo_item_tenant_categoria", "tenant_id", "categoria"),
+        db.Index("ix_catalogo_item_tenant_modalidad", "tenant_id", "modalidad"),
+        db.Index("ix_catalogo_item_tenant_disponible", "tenant_id", "disponible"),
+        db.Index("ix_catalogo_item_tenant_precio_monetario", "tenant_id", "precio_monetario"),
+        db.Index("ix_catalogo_item_tenant_categoria_disponible", "tenant_id", "categoria", "disponible"),
+        db.Index("ix_catalogo_item_tenant_modalidad_disponible", "tenant_id", "modalidad", "disponible"),
+        db.Index("ix_catalogo_item_tenant_nombre", "tenant_id", "nombre"),
+    )
+
     # Added fields for detailed item info (deferred for legacy support)
     varietal = deferred(db.Column(db.String(100), nullable=True))
     anada = deferred(db.Column(db.String(20), nullable=True))
@@ -1232,10 +1242,16 @@ class MarketCart(db.Model, TimestampMixin):
     id = db.Column(db.Integer, primary_key=True)
     tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=False, index=True)
     user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True, index=True)
-    session_id = db.Column(db.String(120), nullable=False, index=True)
+    # Some production deployments may still miss newer omnichannel columns.
+    # Mark them deferred so default SELECTs don't reference undefined columns
+    # until the schema catches up.
+    session_id = deferred(db.Column(db.String(120), nullable=False, index=True))
     status = db.Column(db.String(20), nullable=False, default="open")
     contact_name = db.Column(db.String(255), nullable=True)
     contact_phone = db.Column(db.String(50), nullable=True)
+    contact_email = deferred(db.Column(db.String(120), nullable=True, index=True))
+    contact_key = deferred(db.Column(db.String(160), nullable=True, index=True))
+    channel = db.Column(db.String(50), nullable=True, default="web")
     metadata_payload = db.Column("metadata", JSONType, nullable=True)
 
     tenant = db.relationship("TenantProfile")
@@ -1250,6 +1266,7 @@ class MarketCart(db.Model, TimestampMixin):
 
     __table_args__ = (
         db.Index("ix_market_cart_tenant_session", "tenant_id", "session_id", "status"),
+        db.Index("ix_market_cart_tenant_contact", "tenant_id", "contact_key", "status"),
     )
 
     @property
@@ -1268,6 +1285,18 @@ class MarketCart(db.Model, TimestampMixin):
             "cancelado": "cancelled",
         }
         self.status = inverse.get(normalized, normalized or "open")
+
+    @classmethod
+    def legacy_safe_options(cls):
+        return (
+            defer(cls.session_id),
+            defer(cls.contact_email),
+            defer(cls.contact_key),
+        )
+
+    @classmethod
+    def legacy_safe_query(cls):
+        return cls.query.options(*cls.legacy_safe_options())
 
 
 class MarketCartItem(db.Model, TimestampMixin):
@@ -1314,8 +1343,11 @@ class MarketOrder(db.Model, TimestampMixin):
     status = db.Column(db.String(20), nullable=False, default="pending")
     contact_name = db.Column(db.String(255), nullable=True)
     contact_phone = db.Column(db.String(50), nullable=True)
-    contact_email = db.Column(db.String(120), nullable=True)
+    # Legacy-safe deferred columns: some live DBs still don't have these yet.
+    contact_email = deferred(db.Column(db.String(120), nullable=True))
+    contact_key = deferred(db.Column(db.String(160), nullable=True, index=True))
     channel = db.Column(db.String(50), default="web")
+    session_id = deferred(db.Column(db.String(120), nullable=True, index=True))
     total_monetary = db.Column(db.Numeric(12, 2), nullable=True)
     total_points = db.Column(db.Integer, nullable=True)
     currency = db.Column(db.String(10), nullable=True)
@@ -1327,6 +1359,7 @@ class MarketOrder(db.Model, TimestampMixin):
 
     __table_args__ = (
         db.Index("ix_market_order_external", "tenant_id", "external_provider", "external_order_id"),
+        db.Index("ix_market_order_tenant_contact", "tenant_id", "contact_key", "status"),
     )
 
     tenant = db.relationship("TenantProfile")
@@ -1338,6 +1371,31 @@ class MarketOrder(db.Model, TimestampMixin):
         back_populates="order",
         cascade="all, delete-orphan",
     )
+
+    @classmethod
+    def legacy_safe_options(cls):
+        return (
+            defer(cls.contact_email),
+            defer(cls.contact_key),
+            defer(cls.session_id),
+        )
+
+    @classmethod
+    def legacy_safe_query(cls):
+        return cls.query.options(*cls.legacy_safe_options())
+
+    @classmethod
+    def legacy_safe_count_query(cls, *criteria, **filters):
+        query = db.session.query(db.func.count(cls.id))
+        if criteria:
+            query = query.filter(*criteria)
+        if filters:
+            query = query.filter_by(**filters)
+        return query
+
+    @classmethod
+    def legacy_safe_count(cls, *criteria, **filters) -> int:
+        return int(cls.legacy_safe_count_query(*criteria, **filters).scalar() or 0)
 
 
 class MarketOrderItem(db.Model, TimestampMixin):
@@ -1431,6 +1489,7 @@ class PedidoConversacional(db.Model, TimestampMixin):
     origen = db.Column(db.String(40), nullable=True)
     anon_id = db.Column(db.String(120), nullable=True)
     items = db.Column(JSONType, nullable=False, default=list)
+    metadata_payload = db.Column("metadata", JSONType, nullable=True)
 
     tenant = db.relationship("TenantProfile")
     user = db.relationship("User")
@@ -1724,6 +1783,47 @@ class ChatSessionContext(db.Model):
         return f"<ChatSessionContext id={self.chat_session_id} user_id={self.user_id} anon_id={self.anon_id}>"
 
 print("✅ models.py fue importado con éxito y contiene modelos.")
+
+
+class TicketRealtimeState(db.Model):
+    __tablename__ = "ticket_realtime_state"
+
+    id = db.Column(db.Integer, primary_key=True)
+    ticket_type = db.Column(db.String(20), nullable=False, index=True)
+    ticket_id = db.Column(db.Integer, nullable=False, index=True)
+    viewer_key = db.Column(db.String(140), nullable=False)
+    viewer_user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True, index=True)
+    viewer_anon_id = db.Column(db.String(80), nullable=True, index=True)
+    viewer_role = db.Column(db.String(30), nullable=True)
+    active_session_id = db.Column(db.String(64), nullable=True)
+    presence_status = db.Column(db.String(20), nullable=False, default="inactive")
+    last_presence_at = db.Column(db.DateTime(timezone=True), default=get_local_now, nullable=False)
+    last_read_comment_id = db.Column(db.Integer, nullable=True)
+    last_read_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    created_at = db.Column(db.DateTime(timezone=True), default=get_local_now, nullable=False)
+    updated_at = db.Column(db.DateTime(timezone=True), default=get_local_now, onupdate=get_local_now, nullable=False)
+
+    viewer_user = db.relationship("User", backref=db.backref("ticket_realtime_states", lazy="dynamic"))
+
+    __table_args__ = (
+        UniqueConstraint("ticket_type", "ticket_id", "viewer_key", name="uq_ticket_realtime_state_viewer"),
+        Index("ix_ticket_realtime_state_ticket_presence", "ticket_type", "ticket_id", "presence_status"),
+    )
+
+    def to_dict(self) -> dict:
+        return {
+            "ticket_type": self.ticket_type,
+            "ticket_id": self.ticket_id,
+            "viewer_key": self.viewer_key,
+            "viewer_user_id": self.viewer_user_id,
+            "viewer_anon_id": self.viewer_anon_id,
+            "viewer_role": self.viewer_role,
+            "active_session_id": self.active_session_id,
+            "presence_status": self.presence_status,
+            "last_presence_at": datetime_to_iso_utc(self.last_presence_at),
+            "last_read_comment_id": self.last_read_comment_id,
+            "last_read_at": datetime_to_iso_utc(self.last_read_at),
+        }
 
 class CatalogoCompartido(db.Model):
     __tablename__ = "catalogo_compartido"

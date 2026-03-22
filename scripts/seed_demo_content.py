@@ -154,7 +154,7 @@ def create_sample_orders(tenant):
     if not owner: return
     user = owner
 
-    existing = MarketOrder.query.filter_by(tenant_id=tenant.id, user_id=user.id).count()
+    existing = MarketOrder.legacy_safe_count(tenant_id=tenant.id, user_id=user.id)
     if existing > 0: return
 
     print(f"  + Creating sample orders for {tenant.slug}...")

@@ -39,7 +39,7 @@ class PedidoService:
         if not tenant:
             return None
 
-        existing = MarketOrder.query.filter_by(
+        existing = MarketOrder.legacy_safe_query().filter_by(
             tenant_id=tenant.id,
             external_provider="pyme_pedido",
             external_order_id=pedido.nro_pedido,
