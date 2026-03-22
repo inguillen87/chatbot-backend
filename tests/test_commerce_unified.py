@@ -87,3 +87,11 @@ def test_serialize_unified_order_supports_multiple_models():
         assert serialized_conv["contact"]["contact_key"] == "email:test@test.com"
         assert serialized_legacy["source_model"] == "PymePedido"
         assert serialized_legacy["items"][0]["title"] == "Pan"
+
+
+def test_market_order_query_is_legacy_safe_for_deferred_columns():
+    app = create_app(TestConfig)
+    with app.app_context():
+        statement = str(MarketOrder.query.statement)
+        assert "contact_key" not in statement
+        assert "session_id" not in statement

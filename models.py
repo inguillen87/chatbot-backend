@@ -1242,12 +1242,15 @@ class MarketCart(db.Model, TimestampMixin):
     id = db.Column(db.Integer, primary_key=True)
     tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=False, index=True)
     user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True, index=True)
-    session_id = db.Column(db.String(120), nullable=False, index=True)
+    # Some production deployments may still miss newer omnichannel columns.
+    # Mark them deferred so default SELECTs don't reference undefined columns
+    # until the schema catches up.
+    session_id = deferred(db.Column(db.String(120), nullable=False, index=True))
     status = db.Column(db.String(20), nullable=False, default="open")
     contact_name = db.Column(db.String(255), nullable=True)
     contact_phone = db.Column(db.String(50), nullable=True)
-    contact_email = db.Column(db.String(120), nullable=True, index=True)
-    contact_key = db.Column(db.String(160), nullable=True, index=True)
+    contact_email = deferred(db.Column(db.String(120), nullable=True, index=True))
+    contact_key = deferred(db.Column(db.String(160), nullable=True, index=True))
     channel = db.Column(db.String(50), nullable=True, default="web")
     metadata_payload = db.Column("metadata", JSONType, nullable=True)
 
@@ -1328,10 +1331,11 @@ class MarketOrder(db.Model, TimestampMixin):
     status = db.Column(db.String(20), nullable=False, default="pending")
     contact_name = db.Column(db.String(255), nullable=True)
     contact_phone = db.Column(db.String(50), nullable=True)
-    contact_email = db.Column(db.String(120), nullable=True)
-    contact_key = db.Column(db.String(160), nullable=True, index=True)
+    # Legacy-safe deferred columns: some live DBs still don't have these yet.
+    contact_email = deferred(db.Column(db.String(120), nullable=True))
+    contact_key = deferred(db.Column(db.String(160), nullable=True, index=True))
     channel = db.Column(db.String(50), default="web")
-    session_id = db.Column(db.String(120), nullable=True, index=True)
+    session_id = deferred(db.Column(db.String(120), nullable=True, index=True))
     total_monetary = db.Column(db.Numeric(12, 2), nullable=True)
     total_points = db.Column(db.Integer, nullable=True)
     currency = db.Column(db.String(10), nullable=True)
@@ -1355,6 +1359,14 @@ class MarketOrder(db.Model, TimestampMixin):
         back_populates="order",
         cascade="all, delete-orphan",
     )
+
+    @classmethod
+    def legacy_safe_options(cls):
+        return (
+            defer(cls.contact_email),
+            defer(cls.contact_key),
+            defer(cls.session_id),
+        )
 
 
 class MarketOrderItem(db.Model, TimestampMixin):
