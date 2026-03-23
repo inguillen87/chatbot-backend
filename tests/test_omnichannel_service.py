@@ -43,6 +43,10 @@ class DummyUser(SimpleNamespace):
     telefono = None
 
 
+class DummyConversation(SimpleNamespace):
+    id = "conv-123"
+
+
 class OmnichannelServiceTest(unittest.TestCase):
     def test_rechaza_tipo_ticket_invalido(self):
         result = omni.registrar_interaccion_omnicanal({"tipo_ticket": "otro"})
@@ -63,6 +67,10 @@ class OmnichannelServiceTest(unittest.TestCase):
         ), patch.object(omni, "_deduplicate_contact", return_value=DummyUser()), patch.object(
             omni, "_buscar_ticket_abierto", return_value=None
         ), patch.object(
+            omni, "resolve_or_create_conversation", return_value=DummyConversation()
+        ), patch.object(
+            omni, "append_conversation_message"
+        ), patch.object(
             omni, "servicio_tickets", autospec=True
         ) as servicio_mock:
             servicio_mock.crear_nuevo_ticket.return_value = DummyTicket()
@@ -73,6 +81,7 @@ class OmnichannelServiceTest(unittest.TestCase):
         self.assertTrue(result["nuevo_ticket"])
         self.assertEqual(result["ticket_id"], 99)
         self.assertEqual(result["canal"], "messenger")
+        self.assertEqual(result["conversation_id"], "conv-123")
 
 
 if __name__ == "__main__":

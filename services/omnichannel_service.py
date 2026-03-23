@@ -14,7 +14,11 @@ from typing import Any, Dict, Optional
 from sqlalchemy import func, or_
 
 from models import (
+    ChatSessionContext,
     MunicipioTicket,
+    OmnichannelChannelSession,
+    OmnichannelConversation,
+    OmnichannelMessage,
     PymeTicket,
     TicketComentario,
     User,
@@ -32,6 +36,216 @@ def _normalize_channel(raw: Optional[str]) -> str:
     if not raw:
         return "omnichannel"
     return str(raw).strip().lower() or "omnichannel"
+
+
+def _normalize_direction(raw: Optional[str]) -> str:
+    if not raw:
+        return "inbound"
+    direction = str(raw).strip().lower()
+    return direction if direction in {"inbound", "outbound", "internal"} else "inbound"
+
+
+def _conversation_contact_filters(user: Optional[User], anon_id: Optional[str]):
+    filters = []
+    if user and getattr(user, "id", None):
+        filters.append(OmnichannelConversation.user_id == user.id)
+    if anon_id:
+        filters.append(OmnichannelConversation.anon_id == anon_id)
+    return filters
+
+
+def resolve_or_create_conversation(
+    *,
+    tenant_id: Optional[int],
+    channel: str,
+    user: Optional[User] = None,
+    anon_id: Optional[str] = None,
+    external_key: Optional[str] = None,
+    legacy_chat_session_id: Optional[str] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+    create_if_missing: bool = True,
+) -> Optional[OmnichannelConversation]:
+    """Resolve a canonical omnichannel conversation and channel session."""
+
+    conversation: Optional[OmnichannelConversation] = None
+    channel_session: Optional[OmnichannelChannelSession] = None
+    metadata = metadata or {}
+
+    if external_key:
+        channel_session = (
+            OmnichannelChannelSession.query.filter_by(channel=channel, external_key=external_key)
+            .order_by(OmnichannelChannelSession.last_activity_at.desc())
+            .first()
+        )
+    if not channel_session and legacy_chat_session_id:
+        channel_session = (
+            OmnichannelChannelSession.query.filter_by(
+                channel=channel, legacy_chat_session_id=legacy_chat_session_id
+            )
+            .order_by(OmnichannelChannelSession.last_activity_at.desc())
+            .first()
+        )
+
+    if channel_session:
+        conversation = channel_session.conversation
+
+    if not conversation:
+        filters = _conversation_contact_filters(user, anon_id)
+        if tenant_id:
+            filters.append(OmnichannelConversation.tenant_id == tenant_id)
+        if filters:
+            conversation = (
+                OmnichannelConversation.query.filter(*filters)
+                .order_by(OmnichannelConversation.last_activity_at.desc())
+                .first()
+            )
+
+    if not conversation and legacy_chat_session_id:
+        session_ctx = ChatSessionContext.query.filter_by(chat_session_id=legacy_chat_session_id).first()
+        if session_ctx and isinstance(session_ctx.context_data, dict):
+            candidate_id = session_ctx.context_data.get("conversation_id")
+            if candidate_id:
+                conversation = OmnichannelConversation.query.get(candidate_id)
+
+    if not conversation and not create_if_missing:
+        return None
+
+    if not conversation:
+        conversation = OmnichannelConversation(
+            tenant_id=tenant_id,
+            user_id=getattr(user, "id", None),
+            anon_id=anon_id or getattr(user, "anon_id", None),
+            tags=[],
+        )
+        db.session.add(conversation)
+        db.session.flush()
+
+    if not channel_session:
+        channel_session = OmnichannelChannelSession(
+            conversation_id=conversation.id,
+            channel=channel,
+            external_key=external_key,
+            legacy_chat_session_id=legacy_chat_session_id,
+            metadata_json=metadata or {},
+        )
+        db.session.add(channel_session)
+    else:
+        merged_meta = dict(channel_session.metadata_json or {})
+        merged_meta.update(metadata or {})
+        channel_session.metadata_json = merged_meta
+        if external_key and not channel_session.external_key:
+            channel_session.external_key = external_key
+        if legacy_chat_session_id and not channel_session.legacy_chat_session_id:
+            channel_session.legacy_chat_session_id = legacy_chat_session_id
+
+    now = get_local_now()
+    channel_session.last_activity_at = now
+    conversation.last_activity_at = now
+    if tenant_id and not conversation.tenant_id:
+        conversation.tenant_id = tenant_id
+    if user and not conversation.user_id:
+        conversation.user_id = user.id
+    if anon_id and not conversation.anon_id:
+        conversation.anon_id = anon_id
+
+    if legacy_chat_session_id:
+        session_ctx = ChatSessionContext.query.filter_by(chat_session_id=legacy_chat_session_id).first()
+        if not session_ctx:
+            session_ctx = ChatSessionContext(
+                chat_session_id=legacy_chat_session_id,
+                tenant_id=tenant_id,
+                user_id=getattr(user, "id", None),
+                anon_id=anon_id or getattr(user, "anon_id", None),
+                context_data={},
+            )
+            db.session.add(session_ctx)
+        context_data = session_ctx.context_data if isinstance(session_ctx.context_data, dict) else {}
+        context_data["conversation_id"] = conversation.id
+        session_ctx.context_data = context_data
+
+    db.session.flush()
+    return conversation
+
+
+def append_conversation_message(
+    *,
+    conversation: OmnichannelConversation,
+    channel: str,
+    direction: str,
+    payload: Dict[str, Any],
+    attachments: Optional[list[dict]] = None,
+    external_message_id: Optional[str] = None,
+    external_key: Optional[str] = None,
+    legacy_chat_session_id: Optional[str] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> OmnichannelMessage:
+    """Append a normalized message to the canonical conversation timeline."""
+
+    channel_session = None
+    if external_key:
+        channel_session = (
+            OmnichannelChannelSession.query.filter_by(
+                conversation_id=conversation.id,
+                channel=channel,
+                external_key=external_key,
+            )
+            .order_by(OmnichannelChannelSession.last_activity_at.desc())
+            .first()
+        )
+    if not channel_session and legacy_chat_session_id:
+        channel_session = (
+            OmnichannelChannelSession.query.filter_by(
+                conversation_id=conversation.id,
+                channel=channel,
+                legacy_chat_session_id=legacy_chat_session_id,
+            )
+            .order_by(OmnichannelChannelSession.last_activity_at.desc())
+            .first()
+        )
+    if not channel_session:
+        channel_session = OmnichannelChannelSession(
+            conversation_id=conversation.id,
+            channel=channel,
+            external_key=external_key,
+            legacy_chat_session_id=legacy_chat_session_id,
+            metadata_json=metadata or {},
+        )
+        db.session.add(channel_session)
+        db.session.flush()
+
+    message = OmnichannelMessage(
+        conversation_id=conversation.id,
+        channel_session_id=channel_session.id,
+        direction=_normalize_direction(direction),
+        payload=payload or {},
+        attachments=attachments or [],
+        external_message_id=external_message_id,
+    )
+    now = get_local_now()
+    channel_session.last_activity_at = now
+    conversation.last_activity_at = now
+    db.session.add(message)
+    db.session.flush()
+    return message
+
+
+def get_conversation_timeline(conversation_id: str) -> Dict[str, Any] | None:
+    conversation = OmnichannelConversation.query.get(conversation_id)
+    if not conversation:
+        return None
+    channel_sessions = [
+        session.to_dict()
+        for session in conversation.channel_sessions.order_by(OmnichannelChannelSession.created_at.asc()).all()
+    ]
+    messages = [
+        message.to_dict()
+        for message in conversation.messages.order_by(OmnichannelMessage.created_at.asc()).all()
+    ]
+    return {
+        "conversation": conversation.to_dict(),
+        "channel_sessions": channel_sessions,
+        "messages": messages,
+    }
 
 
 def _deduplicate_contact(contacto: Dict[str, Any]) -> User:
@@ -123,11 +337,29 @@ def registrar_interaccion_omnicanal(payload: Dict[str, Any] | None) -> Dict[str,
     tenant_id = payload.get("tenant_id") or payload.get("municipio_id") or payload.get("rubro_id")
     contacto = payload.get("contacto") or {}
     mensaje = (payload.get("mensaje") or payload.get("transcripcion") or "").strip()
+    external_key = (
+        payload.get("external_key")
+        or contacto.get("telefono")
+        or contacto.get("phone")
+        or contacto.get("email")
+        or contacto.get("external_id")
+    )
+    legacy_chat_session_id = payload.get("chat_session_id") or payload.get("legacy_chat_session_id")
+    external_message_id = payload.get("external_message_id") or payload.get("message_id")
 
     if not mensaje and not payload.get("asunto") and not payload.get("detalles"):
         return {"exito": False, "motivo": "mensaje_requerido"}
 
     user = _deduplicate_contact(contacto)
+    conversation = resolve_or_create_conversation(
+        tenant_id=tenant_id,
+        channel=canal,
+        user=user,
+        anon_id=user.anon_id,
+        external_key=external_key,
+        legacy_chat_session_id=legacy_chat_session_id,
+        metadata={"tipo_ticket": tipo_ticket},
+    )
 
     ticket_existente = _buscar_ticket_abierto(tipo_ticket, user, tenant_id)
     nuevo_ticket = False
@@ -175,6 +407,25 @@ def registrar_interaccion_omnicanal(payload: Dict[str, Any] | None) -> Dict[str,
             comentario.pyme_ticket = ticket_existente  # type: ignore[assignment]
         db.session.add(comentario)
 
+        if conversation:
+            append_conversation_message(
+                conversation=conversation,
+                channel=canal,
+                direction=payload.get("direction") or "inbound",
+                payload={
+                    "text": mensaje,
+                    "subject": payload.get("asunto"),
+                    "details": payload.get("detalles"),
+                    "ticket_id": ticket_existente.id,
+                    "ticket_type": tipo_ticket,
+                },
+                attachments=list(payload.get("attachments") or []),
+                external_message_id=external_message_id,
+                external_key=external_key,
+                legacy_chat_session_id=legacy_chat_session_id,
+                metadata={"tipo_ticket": tipo_ticket},
+            )
+
     try:
         db.session.commit()
     except Exception as exc:  # pragma: no cover - logging only
@@ -187,4 +438,5 @@ def registrar_interaccion_omnicanal(payload: Dict[str, Any] | None) -> Dict[str,
         "nuevo_ticket": nuevo_ticket,
         "ticket_id": ticket_existente.id,
         "canal": canal,
+        "conversation_id": conversation.id if conversation else None,
     }
