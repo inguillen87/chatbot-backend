@@ -132,10 +132,14 @@ def _build_whatsapp_funnel_payload(filters, *, window_minutes: int = 60) -> dict
         AnalyticsEventV2.ts >= cutoff,
         AnalyticsEventV2.event_name.in_([stage[0] for stage in _WHATSAPP_FUNNEL_STAGES]),
     )
+    if filters.date_from:
+        query = query.filter(AnalyticsEventV2.ts >= filters.date_from)
+    if filters.date_to:
+        query = query.filter(AnalyticsEventV2.ts <= filters.date_to)
+    if filters.canales:
+        query = query.filter(AnalyticsEventV2.channel.in_(filters.canales))
     events = query.with_entities(
         AnalyticsEventV2.event_name,
-        AnalyticsEventV2.channel,
-        AnalyticsEventV2.ts,
         AnalyticsEventV2.session_id,
     ).all()
 
@@ -156,7 +160,7 @@ def _build_whatsapp_funnel_payload(filters, *, window_minutes: int = 60) -> dict
         sessions = len(unique_sessions_per_stage.get(event_name, set()))
         conversion = None
         if previous_value is not None and previous_value > 0:
-            conversion = round((total / previous_value) * 100, 2)
+            conversion = round((sessions / previous_value) * 100, 2)
         ordered.append(
             {
                 "event_name": event_name,
@@ -166,7 +170,7 @@ def _build_whatsapp_funnel_payload(filters, *, window_minutes: int = 60) -> dict
                 "conversion_from_prev_pct": conversion,
             }
         )
-        previous_value = total
+        previous_value = sessions
 
     return {
         "tenant_id": filters.tenant_id,
