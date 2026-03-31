@@ -1773,6 +1773,8 @@ class ChatSessionContext(db.Model):
     __tablename__ = "chat_session_context"
     chat_session_id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=True, index=True)
+    conversation_id = db.Column(db.String(36), db.ForeignKey("conversation.id"), nullable=True, index=True)
+    channel_session_id = db.Column(db.Integer, db.ForeignKey("channel_session.id"), nullable=True, index=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True, index=True)
     anon_id = db.Column(db.String(80), nullable=True, index=True) # Similar to MunicipioTicket.anon_id
     context_data = db.Column(JSONType, nullable=True) # Stores combined context (municipio, pyme, history, idempotency keys)
@@ -1825,6 +1827,60 @@ class TicketRealtimeState(db.Model):
             "last_read_comment_id": self.last_read_comment_id,
             "last_read_at": datetime_to_iso_utc(self.last_read_at),
         }
+
+class Conversation(db.Model):
+    __tablename__ = "conversation"
+
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=False, index=True)
+    created_by_user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True, index=True)
+    legacy_chat_session_id = db.Column(db.String(64), nullable=True, index=True)
+    status = db.Column(db.String(20), nullable=False, default="active")
+    created_at = db.Column(db.DateTime(timezone=True), default=get_local_now, nullable=False)
+    updated_at = db.Column(
+        db.DateTime(timezone=True),
+        default=get_local_now,
+        onupdate=get_local_now,
+        nullable=False,
+    )
+
+    __table_args__ = (
+        db.UniqueConstraint("tenant_id", "legacy_chat_session_id", name="uq_conversation_tenant_legacy_chat_session"),
+    )
+
+
+class ChannelSession(db.Model):
+    __tablename__ = "channel_session"
+
+    id = db.Column(db.Integer, primary_key=True)
+    conversation_id = db.Column(db.String(36), db.ForeignKey("conversation.id"), nullable=False, index=True)
+    tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=False, index=True)
+    channel = db.Column(db.String(30), nullable=False, index=True)
+    channel_identity = db.Column(db.String(120), nullable=True, index=True)
+    chat_session_id = db.Column(db.String(64), nullable=True, index=True)
+    status = db.Column(db.String(20), nullable=False, default="active")
+    created_at = db.Column(db.DateTime(timezone=True), default=get_local_now, nullable=False)
+    updated_at = db.Column(
+        db.DateTime(timezone=True),
+        default=get_local_now,
+        onupdate=get_local_now,
+        nullable=False,
+    )
+
+
+class Message(db.Model):
+    __tablename__ = "message"
+
+    id = db.Column(db.Integer, primary_key=True)
+    conversation_id = db.Column(db.String(36), db.ForeignKey("conversation.id"), nullable=False, index=True)
+    channel_session_id = db.Column(db.Integer, db.ForeignKey("channel_session.id"), nullable=True, index=True)
+    tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=False, index=True)
+    sender_type = db.Column(db.String(20), nullable=False)
+    sender_user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True, index=True)
+    direction = db.Column(db.String(10), nullable=False, default="in")
+    body = db.Column(db.Text, nullable=False)
+    meta_payload = db.Column("metadata", JSONType, nullable=True)
+    created_at = db.Column(db.DateTime(timezone=True), default=get_local_now, nullable=False, index=True)
 
 class CatalogoCompartido(db.Model):
     __tablename__ = "catalogo_compartido"
