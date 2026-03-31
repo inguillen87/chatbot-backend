@@ -51,3 +51,16 @@ Implementado en backend (fase inicial):
 ### Pendientes sugeridos
 - Integrar providers reales de envío (SMTP/Twilio/Push provider).
 - Métricas por canal y alertas sobre tasa de error.
+
+## BE-06 — Roles / org units / audit
+
+### Estado
+Implementado en backend (fase inicial):
+- Nuevas entidades: `org_unit`, `user_org_unit`, `audit_event`.
+- Endpoints admin para crear unidades, asignar roles/unidades y consultar auditoría.
+- Auditoría estructurada por tenant para cambios administrativos.
+
+### Pendientes sugeridos
+- Jerarquía de permisos por org unit (scope efectivo por recurso).
+- Políticas avanzadas RBAC (deny/allow granulares).
+- Exportación de auditoría y retención por políticas.

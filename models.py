@@ -2211,6 +2211,52 @@ class UserRole(db.Model):
     tenant = db.relationship('TenantProfile')
 
 
+class OrgUnit(db.Model):
+    __tablename__ = "org_unit"
+
+    id = db.Column(db.Integer, primary_key=True)
+    tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=False, index=True)
+    name = db.Column(db.String(120), nullable=False)
+    parent_id = db.Column(db.Integer, db.ForeignKey("org_unit.id"), nullable=True, index=True)
+    is_active = db.Column(db.Boolean, nullable=False, default=True)
+    created_at = db.Column(db.DateTime(timezone=True), default=get_local_now, nullable=False)
+    updated_at = db.Column(db.DateTime(timezone=True), default=get_local_now, onupdate=get_local_now, nullable=False)
+
+    parent = db.relationship("OrgUnit", remote_side=[id], backref=db.backref("children", lazy="dynamic"))
+
+    __table_args__ = (
+        db.UniqueConstraint("tenant_id", "name", name="uq_org_unit_tenant_name"),
+    )
+
+
+class UserOrgUnit(db.Model):
+    __tablename__ = "user_org_unit"
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
+    org_unit_id = db.Column(db.Integer, db.ForeignKey("org_unit.id"), nullable=False, index=True)
+    tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=False, index=True)
+    created_at = db.Column(db.DateTime(timezone=True), default=get_local_now, nullable=False)
+
+    __table_args__ = (
+        db.UniqueConstraint("user_id", "org_unit_id", name="uq_user_org_unit"),
+    )
+
+
+class AuditEvent(db.Model):
+    __tablename__ = "audit_event"
+
+    id = db.Column(db.Integer, primary_key=True)
+    tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=False, index=True)
+    actor_user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True, index=True)
+    event_type = db.Column(db.String(80), nullable=False, index=True)
+    resource_type = db.Column(db.String(80), nullable=True)
+    resource_id = db.Column(db.String(120), nullable=True)
+    details = db.Column(JSONType, nullable=True)
+    ip_address = db.Column(db.String(50), nullable=True)
+    created_at = db.Column(db.DateTime(timezone=True), default=get_local_now, nullable=False, index=True)
+
+
 class TenantConfig(db.Model):
     __tablename__ = "tenant_config"
 

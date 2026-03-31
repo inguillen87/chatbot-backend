@@ -85,3 +85,15 @@ Evento socket:
 - Idempotencia por `tenant_id + idempotency_key`.
 - Retry/backoff exponencial sobre fallos.
 - Quiet hours por template (`quiet_hours_start`, `quiet_hours_end`) que difieren envío.
+
+## BE-06 Roles / org units / audit
+
+### Endpoints
+- `POST /api/admin/org-units`
+- `POST /api/admin/users/<user_id>/roles`
+- `POST /api/admin/users/<user_id>/org-units`
+- `GET /api/admin/audit/events`
+
+### Reglas
+- Todos requieren `token_requerido` + `require_tenant` + control admin/tenant.
+- Cada cambio administrativo crea un `audit_event`.
