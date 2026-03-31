@@ -205,6 +205,7 @@ def _get_or_create_db_cart(
             db.session.add(cart)
             db.session.commit()
         else:
+            now_utc = datetime.now(timezone.utc)
             db.session.execute(
                 text(
                     """
@@ -215,7 +216,7 @@ def _get_or_create_db_cart(
                     ) VALUES (
                         :tenant_id, :user_id, :session_id, :status,
                         :contact_name, :contact_phone, :contact_email, :contact_key,
-                        NOW(), NOW()
+                        :created_at, :updated_at
                     )
                     """
                 ),
@@ -228,6 +229,8 @@ def _get_or_create_db_cart(
                     "contact_phone": cart_kwargs.get("contact_phone"),
                     "contact_email": cart_kwargs.get("contact_email"),
                     "contact_key": cart_kwargs.get("contact_key"),
+                    "created_at": now_utc,
+                    "updated_at": now_utc,
                 },
             )
             db.session.commit()

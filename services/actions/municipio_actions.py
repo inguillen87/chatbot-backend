@@ -40,6 +40,15 @@ logger = logging.getLogger(__name__)
 CONTEXTO_MUNICIPIO = "contexto_municipio_v2"
 
 
+def _parse_int_env(var_name: str, default: int) -> int:
+    raw_value = os.getenv(var_name, str(default))
+    try:
+        return int(raw_value)
+    except (TypeError, ValueError):
+        logger.warning("Valor inválido para %s=%r; usando %s.", var_name, raw_value, default)
+        return default
+
+
 def _normalize_url_for_comparison(raw_url: str) -> tuple[str, str]:
     """Return normalized (domain, path) for URL comparison."""
 
@@ -763,7 +772,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
         ticket_data_cleaned = {k: v for k, v in ticket_data.items() if v is not None}
         logger.info(f"Data for servicio_tickets.crear_nuevo_ticket: {ticket_data_cleaned}")
 
-        dedupe_window_seconds = int(os.getenv("CHATBOC_RECLAMO_DEDUP_WINDOW_SECONDS", "600"))
+        dedupe_window_seconds = _parse_int_env("CHATBOC_RECLAMO_DEDUP_WINDOW_SECONDS", 600)
         dedupe_fingerprint = {
             "categoria": normalizar_texto_municipio(categoria or ""),
             "descripcion": normalizar_texto_municipio(descripcion or ""),
