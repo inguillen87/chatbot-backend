@@ -18,3 +18,20 @@ Implementado en backend (fase inicial):
 - Integrar `ConversationResolver` en flujos restantes (webhook WhatsApp, voice, APIs legacy).
 - Backfill de conversaciones históricas desde `chat_session_context` y `conversacion` legacy.
 - Paginación (`limit`, `before`) en timeline.
+
+## BE-02 — Resolver omnicanal y link widget -> WhatsApp
+
+### Estado
+Implementado en backend (fase inicial):
+- `POST /api/conversations/link/whatsapp` (genera OTP + deep_link_token con expiración).
+- OTP almacenado hasheado (no en texto plano).
+- `POST /api/conversations/link/confirm` (confirma OTP/deep-link e idempotencia en repetidos).
+- Unificación de `channel_session` web + whatsapp bajo mismo `conversation_id`.
+- Emisión de evento `conversation.linked`.
+- Audit log para solicitud y confirmación de link.
+- Tests: happy path, expirado, inválido, repetido.
+
+### Pendientes sugeridos
+- Integración automática con envío real de OTP por WhatsApp provider.
+- Validación antifraude/rate limit por número destino.
+- Exponer consulta de estado de link para panel interno.

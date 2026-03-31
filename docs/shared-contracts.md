@@ -36,3 +36,34 @@
 #### Errors
 - `403` sin permisos para el tenant.
 - `404` conversación inexistente en el tenant.
+
+## BE-02 Resolver omnicanal (widget -> WhatsApp)
+
+### Crear solicitud de link
+- **POST** `/api/conversations/link/whatsapp`
+- Auth + tenant + permisos igual que BE-01.
+- Body:
+  - `conversation_id` **o** `chat_session_id`
+  - `whatsapp_number`
+  - `ttl_minutes` (opcional, default 10)
+
+Response (`201`): incluye `deep_link_token`, `expires_at`.
+- `otp_code` solo se retorna en entorno de testing/desarrollo (en producción se entrega por provider).
+
+### Confirmar link
+- **POST** `/api/conversations/link/confirm`
+- Auth + tenant + permisos igual que BE-01.
+- Body:
+  - `deep_link_token`
+  - `otp_code` (opcional si se confirma por deep-link puro)
+  - `whatsapp_chat_session_id` (opcional)
+
+Comportamiento:
+- `200 linked`: primer confirm válido.
+- `200 already_confirmed`: confirm repetido (idempotente).
+- `410`: token expirado.
+- `400`: OTP inválido.
+- `404`: solicitud de link inexistente.
+
+Evento socket:
+- `conversation.linked` con `conversation_id`, `source_channel_session_id`, `target_channel_session_id`.

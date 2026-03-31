@@ -1882,6 +1882,23 @@ class Message(db.Model):
     meta_payload = db.Column("metadata", JSONType, nullable=True)
     created_at = db.Column(db.DateTime(timezone=True), default=get_local_now, nullable=False, index=True)
 
+class ConversationLinkRequest(db.Model):
+    __tablename__ = "conversation_link_request"
+
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=False, index=True)
+    conversation_id = db.Column(db.String(36), db.ForeignKey("conversation.id"), nullable=False, index=True)
+    source_channel_session_id = db.Column(db.Integer, db.ForeignKey("channel_session.id"), nullable=True, index=True)
+    target_channel = db.Column(db.String(20), nullable=False, default="whatsapp")
+    target_identity = db.Column(db.String(120), nullable=False, index=True)
+    otp_code = db.Column(db.String(12), nullable=False)
+    deep_link_token = db.Column(db.String(64), nullable=False, unique=True, index=True)
+    status = db.Column(db.String(20), nullable=False, default="pending", index=True)
+    expires_at = db.Column(db.DateTime(timezone=True), nullable=False, index=True)
+    confirmed_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    created_by_user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True, index=True)
+    created_at = db.Column(db.DateTime(timezone=True), default=get_local_now, nullable=False)
+
 class CatalogoCompartido(db.Model):
     __tablename__ = "catalogo_compartido"
     id = db.Column(db.Integer, primary_key=True)

@@ -17,7 +17,7 @@ def _auth_headers(app, user: User, tenant_slug: str) -> dict:
     return {"Authorization": f"Bearer {token}", "X-Tenant": tenant_slug}
 
 
-def test_conversation_resolver_links_chat_session_context(app):
+def test_conversation_resolver_links_chat_session_context(client, app):
     with app.app_context():
         owner = User(email="conv-owner@test.com", name="Owner", rol="admin", tipo_chat="pyme")
         owner.set_password("pass")
