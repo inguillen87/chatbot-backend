@@ -37,6 +37,7 @@ class _FakeEventModel:
     ts = _Expr()
     event_name = _Expr()
     channel = _Expr()
+    metadata_payload = _Expr()
     session_id = _Expr()
 
     def __init__(self, rows):
@@ -73,6 +74,24 @@ class AdminWhatsappFunnelPayloadTests(unittest.TestCase):
             payload = admin_analytics._build_whatsapp_funnel_payload(self._filters(), window_minutes="invalid")
 
         self.assertEqual(payload["window_minutes"], 60)
+
+    def test_excludes_non_whatsapp_realtime_events(self):
+        rows = [
+            SimpleNamespace(event_name="realtime_session_created", channel="video", metadata_payload={}, session_id="s-out"),
+            SimpleNamespace(
+                event_name="realtime_session_created",
+                channel="video",
+                metadata_payload={"source": "whatsapp"},
+                session_id="s-in",
+            ),
+        ]
+
+        with patch.object(admin_analytics, "AnalyticsEventV2", _FakeEventModel(rows)):
+            payload = admin_analytics._build_whatsapp_funnel_payload(self._filters(), window_minutes=60)
+
+        stages = {stage["event_name"]: stage for stage in payload["stages"]}
+        self.assertEqual(stages["realtime_session_created"]["total"], 1)
+        self.assertEqual(payload["totals"]["events"], 1)
 
 
 if __name__ == "__main__":

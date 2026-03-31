@@ -44,6 +44,8 @@ _WHATSAPP_FUNNEL_STAGES: list[tuple[str, str]] = [
     ("realtime_business_action_executed", "Acción de negocio realtime"),
 ]
 
+_WHATSAPP_ATTRIBUTION_KEYS = ("source", "utm_source", "channel", "origin", "entrypoint")
+
 
 def _json(payload: dict, status: int = 200):
     response = jsonify(payload)
@@ -140,6 +142,8 @@ def _build_whatsapp_funnel_payload(filters, *, window_minutes: int = 60) -> dict
         query = query.filter(AnalyticsEventV2.channel.in_(filters.canales))
     events = query.with_entities(
         AnalyticsEventV2.event_name,
+        AnalyticsEventV2.channel,
+        AnalyticsEventV2.metadata_payload,
         AnalyticsEventV2.session_id,
     ).all()
 
@@ -148,7 +152,27 @@ def _build_whatsapp_funnel_payload(filters, *, window_minutes: int = 60) -> dict
         event_name: set() for event_name, _ in _WHATSAPP_FUNNEL_STAGES
     }
 
+    filtered_events = []
     for row in events:
+        event_name = str(row.event_name or "").strip()
+        normalized_channel = str(getattr(row, "channel", "") or "").strip().lower()
+        metadata = getattr(row, "metadata_payload", None) or {}
+        metadata_values = []
+        if isinstance(metadata, dict):
+            for key in _WHATSAPP_ATTRIBUTION_KEYS:
+                raw_value = metadata.get(key)
+                if raw_value is None:
+                    continue
+                metadata_values.append(str(raw_value).strip().lower())
+        is_whatsapp_attributed = (
+            event_name.startswith("whatsapp_")
+            or normalized_channel.startswith("whatsapp")
+            or any("whatsapp" in value for value in metadata_values)
+        )
+        if not is_whatsapp_attributed:
+            continue
+
+        filtered_events.append(row)
         stage_counts[row.event_name] = stage_counts.get(row.event_name, 0) + 1
         if row.session_id:
             unique_sessions_per_stage.setdefault(row.event_name, set()).add(str(row.session_id))
@@ -179,11 +203,11 @@ def _build_whatsapp_funnel_payload(filters, *, window_minutes: int = 60) -> dict
         "cutoff": cutoff.isoformat(),
         "stages": ordered,
         "totals": {
-            "events": len(events),
+            "events": len(filtered_events),
             "unique_sessions": len(
                 {
                     str(row.session_id)
-                    for row in events
+                    for row in filtered_events
                     if row.session_id
                 }
             ),
