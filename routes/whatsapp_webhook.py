@@ -752,7 +752,20 @@ def _ensure_welcome_audio_payload(payload: dict) -> None:
         )
 
     if text_to_speak:
-        audio_url = generar_audio(text_to_speak)
+        tts_speed = payload.get("tts_speed")
+        try:
+            tts_speed = float(tts_speed) if tts_speed is not None else None
+        except (TypeError, ValueError):
+            tts_speed = None
+
+        audio_url = generar_audio(
+            text_to_speak,
+            voice=payload.get("tts_voice"),
+            model=payload.get("tts_model"),
+            style=payload.get("tts_style"),
+            speed=tts_speed,
+            cache_namespace=payload.get("tts_cache_namespace"),
+        )
         if audio_url:
             payload["audio_url"] = audio_url
 
@@ -1234,10 +1247,10 @@ def whatsapp_webhook():
                     should_send_template = False
 
                 if should_send_template:
-                    should_send_sticker = False
+                    # Permitir template + sticker cuando el canal lo soporte.
+                    # Antes se forzaba False en ambos branches, deshabilitando
+                    # el sticker de bienvenida para municipios.
                     sticker_metadata_allowed = True
-                else:
-                    should_send_sticker = False
 
                 if client_user and getattr(client_user, "tipo_chat", None) == "pyme":
                     if "sticker_cooldown_seconds" in pyme_welcome_overrides:

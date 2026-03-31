@@ -534,7 +534,20 @@ def responder_chatboc(
             )
         if text_to_speak:
             from services.tts_orchestrator import generar_audio
-            audio_url = generar_audio(text_to_speak)
+            tts_speed = response_data.get("tts_speed")
+            try:
+                tts_speed = float(tts_speed) if tts_speed is not None else None
+            except (TypeError, ValueError):
+                tts_speed = None
+
+            audio_url = generar_audio(
+                text_to_speak,
+                voice=response_data.get("tts_voice"),
+                model=response_data.get("tts_model"),
+                style=response_data.get("tts_style"),
+                speed=tts_speed,
+                cache_namespace=response_data.get("tts_cache_namespace"),
+            )
             if audio_url:
                 response_data['audio_url'] = audio_url
                 logger.info(f"Generated audio response at {audio_url}")
