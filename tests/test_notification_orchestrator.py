@@ -101,3 +101,67 @@ def test_notification_retry_attempts(client, app):
 
     attempts = NotificationAttempt.query.filter_by(notification_id=notif_id).all()
     assert len(attempts) >= 2
+
+
+def test_notification_quiet_hours_delays_dispatch(client, app):
+    admin, tenant = _seed_admin_tenant()
+    headers = _auth_headers(app, admin, tenant.slug)
+
+    tpl_resp = client.post(
+        "/api/admin/notifications/templates",
+        headers=headers,
+        json={
+            "key": "night_ping",
+            "channel": "in_app",
+            "body_template": "Hola ${name}",
+            "quiet_hours_start": 0,
+            "quiet_hours_end": 23,
+        },
+    )
+    assert tpl_resp.status_code == 201
+
+    queued = client.post(
+        "/api/admin/notifications",
+        headers=headers,
+        json={
+            "channel": "in_app",
+            "recipient": f"user:{admin.id}",
+            "user_id": admin.id,
+            "template_key": "night_ping",
+            "template_context": {"name": "Ana"},
+            "idempotency_key": "idem-quiet-1",
+        },
+    )
+    assert queued.status_code == 201
+    notif_id = queued.get_json()["id"]
+
+    dispatch = client.post("/api/workers/notifications/dispatch", headers=headers)
+    assert dispatch.status_code == 200
+    assert dispatch.get_json()["delayed"] >= 1
+
+    notif = Notification.query.filter_by(id=notif_id).first()
+    assert notif.status == "delayed"
+    assert notif.next_retry_at is not None
+
+
+def test_notifications_endpoint_returns_user_items(client, app):
+    admin, tenant = _seed_admin_tenant()
+    headers = _auth_headers(app, admin, tenant.slug)
+
+    client.post(
+        "/api/admin/notifications",
+        headers=headers,
+        json={
+            "channel": "in_app",
+            "recipient": f"user:{admin.id}",
+            "user_id": admin.id,
+            "body": "mensaje usuario",
+            "idempotency_key": "idem-user-feed-1",
+        },
+    )
+
+    resp = client.get("/notifications", headers=headers)
+    assert resp.status_code == 200
+    payload = resp.get_json()
+    assert isinstance(payload, list)
+    assert any(item.get("body") == "mensaje usuario" for item in payload)

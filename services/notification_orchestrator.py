@@ -76,6 +76,8 @@ class NotificationOrchestrator:
         channel = (channel or "").strip().lower()
         if channel not in ALLOWED_CHANNELS:
             raise ValueError("unsupported channel")
+        if not (recipient or "").strip():
+            raise ValueError("recipient is required")
 
         idem = (idempotency_key or "").strip()
         if not idem:
@@ -152,8 +154,13 @@ class NotificationOrchestrator:
             next_time = self._next_outside_quiet_hours(now, quiet_start, quiet_end)
             notif.status = "delayed"
             notif.next_retry_at = next_time
-            notif.attempt_count += 1
-            self._create_attempt(notif, "delayed", error_message="quiet_hours", next_retry_at=next_time)
+            self._create_attempt(
+                notif,
+                "delayed",
+                error_message="quiet_hours",
+                next_retry_at=next_time,
+                attempt_number=notif.attempt_count + 1,
+            )
             return "delayed"
 
         ok, provider_id, error_msg = self._send_stub(notif)
@@ -175,11 +182,19 @@ class NotificationOrchestrator:
         self._create_attempt(notif, "failed", error_message=error_msg, next_retry_at=next_retry)
         return "failed"
 
-    def _create_attempt(self, notif: Notification, status: str, provider_message_id: str | None = None, error_message: str | None = None, next_retry_at=None):
+    def _create_attempt(
+        self,
+        notif: Notification,
+        status: str,
+        provider_message_id: str | None = None,
+        error_message: str | None = None,
+        next_retry_at=None,
+        attempt_number: int | None = None,
+    ):
         attempt = NotificationAttempt(
             notification_id=notif.id,
             tenant_id=self.tenant_id,
-            attempt_number=notif.attempt_count,
+            attempt_number=attempt_number if attempt_number is not None else notif.attempt_count,
             status=status,
             provider=notif.channel,
             provider_message_id=provider_message_id,

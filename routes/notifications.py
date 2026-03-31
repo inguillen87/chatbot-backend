@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-from flask import Blueprint, abort, current_app, g, jsonify, make_response, request
+from flask import Blueprint, abort, g, jsonify, make_response, request
 
 from models import AdminAuditLog, Notification, NotificationAttempt, NotificationTemplate, User, db
 from routes.auth import _add_cors, token_requerido
 from services.notification_orchestrator import NotificationOrchestrator
-from services.tasks import dispatch_notifications_task
 from utils.auth_decorators import _is_authorized_for_tenant
 from utils.auth_helpers import _set_anon_cookie, get_or_create_anon_id
 from utils.tenant import get_current_tenant, require_tenant
@@ -150,6 +149,8 @@ def dispatch_notifications_async(current_user: User):
     _ensure_admin_role(current_user)
     if not _is_authorized_for_tenant(current_user, tenant_id=tenant.id, tenant_slug=tenant.slug):
         abort(403, description="Acceso denegado")
+
+    from services.tasks import dispatch_notifications_task
 
     task = dispatch_notifications_task.delay(tenant.id)
     db.session.add(
