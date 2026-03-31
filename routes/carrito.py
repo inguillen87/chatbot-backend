@@ -196,10 +196,11 @@ def _get_or_create_db_cart(
             contact_email=getattr(user, "email", None) if user else None,
             contact_key=resolve_order_contact_payload(user=user, session_id=session_id, channel=_request_channel()).get("contact_key"),
         )
-        if _market_cart_has_channel_column():
+        has_channel_column = _market_cart_has_channel_column()
+        if has_channel_column:
             cart_kwargs["channel"] = _request_channel()
 
-        if _market_cart_has_channel_column():
+        if has_channel_column:
             cart = MarketCart(**cart_kwargs)
             db.session.add(cart)
             db.session.commit()

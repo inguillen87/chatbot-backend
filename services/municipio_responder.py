@@ -3140,6 +3140,7 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
         contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
         options = [
             {"texto": "📞 Llamame ahora (IA)", "action_id": "solicitar_llamada_ia"},
+            {"texto": "🎥 Videollamada IA (Beta)", "action_id": "solicitar_videollamada_ia"},
             {"texto": "📅 Agendar llamado humano", "action_id": "solicitar_llamada_agendar"},
             {"texto": "Cancelar", "action_id": "cancelar"}
         ]
@@ -3153,6 +3154,27 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
             "message_type": "interactive_buttons",
             "options_list": options,
             "fuente": "solicitar_llamada_menu"
+        }
+
+    if action_id == "solicitar_videollamada_ia":
+        video_url = _build_realtime_video_url(context)
+        return {
+            "message_body": (
+                "Perfecto. Te comparto una videollamada asistida por IA para continuar en tiempo real.\n\n"
+                f"Abrir videollamada: {video_url}"
+            ),
+            "message_type": "interactive_buttons",
+            "options_list": [
+                {"texto": "🎥 Abrir videollamada", "url": video_url, "type": "url"},
+                {"texto": "📞 Prefiero llamada", "action_id": "solicitar_llamada_ia"},
+                {"texto": "Cancelar", "action_id": "cancelar"},
+            ],
+            "fuente": "solicitar_videollamada_ia",
+            "generar_audio": True,
+            "tts_voice": "shimmer",
+            "tts_model": os.getenv("OPENAI_TTS_MENU_MODEL", "tts-1-hd"),
+            "tts_speed": 0.94,
+            "tts_cache_namespace": "video_llamada_ia",
         }
 
     if action_id == "solicitar_llamada_ia":
@@ -6821,6 +6843,23 @@ def _resolve_tenant_slug(context: Optional[dict]) -> str:
     return str(tenant_id or "default").strip()
 
 
+def _build_realtime_video_url(context: Optional[dict]) -> str:
+    context = context or {}
+    tenant_slug = _resolve_tenant_slug(context)
+    if has_app_context():
+        base = (
+            current_app.config.get("APP_BASE_URL")
+            or current_app.config.get("PUBLIC_WIDGET_BASE_URL")
+            or current_app.config.get("BACKEND_URL")
+        )
+    else:
+        base = None
+    if not isinstance(base, str) or not base.strip():
+        base = "https://www.chatboc.ar"
+    base = base.rstrip("/")
+    return f"{base}/{tenant_slug}/realtime?mode=video&source=whatsapp"
+
+
 def _filter_catalogo_items(action_id: str, context: Optional[dict]) -> list:
     action_to_tipo = {
         "catalogo_donaciones": "donaciones",
@@ -7752,7 +7791,11 @@ def _build_encuesta_share_whatsapp_pre_messages(
 def _get_encuestas_menu(context: dict) -> dict:
     """Build the participatory surveys submenu for the chatbot."""
 
+    tenant_slug = _resolve_tenant_slug(context)
+    portal_base = _resolve_encuestas_base_url(context) or "https://www.chatboc.ar"
+    portal_url = f"{portal_base.rstrip('/')}/{tenant_slug}/portal"
     base_options = [
+        {"texto": "👤 Mi Portal", "url": portal_url, "type": "url"},
         {"texto": "*Volver al inicio*", "action_id": "menu_principal"},
     ]
 
@@ -7808,7 +7851,7 @@ def _get_encuestas_menu(context: dict) -> dict:
             "generar_audio": True,
         }
 
-    base_url = _resolve_encuestas_base_url(context) or "https://chatboc.ar"
+    base_url = portal_base or "https://chatboc.ar"
     api_base_url = _resolve_encuestas_api_base_url(context)
 
     encuestas_data: list[dict] = []

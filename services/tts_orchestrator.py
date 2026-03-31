@@ -83,7 +83,15 @@ def _provider_order_from_env() -> Iterable[str]:
     return list(OrderedDict.fromkeys(normalized))
 
 
-def generar_audio(text: str) -> str | None:
+def generar_audio(
+    text: str,
+    *,
+    voice: str | None = None,
+    model: str | None = None,
+    style: str | None = None,
+    speed: float | None = None,
+    cache_namespace: str | None = None,
+) -> str | None:
     """
     Generates audio from text using OpenAI's Text-to-Speech API.
     It includes a caching mechanism to avoid re-generating audio for the same text.
@@ -99,7 +107,17 @@ def generar_audio(text: str) -> str | None:
 
     cache_dir = "static/audio_cache"
     os.makedirs(cache_dir, exist_ok=True)
-    text_hash = hashlib.md5(text.encode("utf-8")).hexdigest()
+    cache_fingerprint = "|".join(
+        [
+            cache_namespace or "default",
+            text,
+            str(voice or ""),
+            str(model or ""),
+            str(style or ""),
+            str(speed if speed is not None else ""),
+        ]
+    )
+    text_hash = hashlib.md5(cache_fingerprint.encode("utf-8")).hexdigest()
     cached_rel_path = os.path.join(cache_dir, f"{text_hash}.mp3")
     if os.path.exists(cached_rel_path):
         logger.info("TTS Service: Returning cached audio.")
@@ -136,22 +154,29 @@ def generar_audio(text: str) -> str | None:
         from services.openai_tts_bridge import generar_audio_openai
 
         def _openai_provider(clean_text: str) -> str | None:
-            speed_env = os.getenv("TTS_SPEECH_SPEED", "0.8")
-            try:
-                speech_speed = float(speed_env)
-            except (ValueError, TypeError):
-                speech_speed = 0.8
+            if speed is not None:
+                speech_speed = speed
+            else:
+                speed_env = os.getenv("TTS_SPEECH_SPEED", "0.8")
+                try:
+                    speech_speed = float(speed_env)
+                except (ValueError, TypeError):
+                    speech_speed = 0.8
 
-            voice = os.getenv("OPENAI_TTS_VOICE") or os.getenv("OPENAI_TTS_DEFAULT_VOICE")
-            model = os.getenv("OPENAI_TTS_MODEL")
-            style = os.getenv("OPENAI_TTS_STYLE")
+            selected_voice = (
+                voice
+                or os.getenv("OPENAI_TTS_VOICE")
+                or os.getenv("OPENAI_TTS_DEFAULT_VOICE")
+            )
+            selected_model = model or os.getenv("OPENAI_TTS_MODEL")
+            selected_style = style or os.getenv("OPENAI_TTS_STYLE")
 
             return generar_audio_openai(
                 clean_text,
                 speed=speech_speed,
-                voice=voice,
-                model=model,
-                style=style,
+                voice=selected_voice,
+                model=selected_model,
+                style=selected_style,
             )
 
         _register("openai", _openai_provider)

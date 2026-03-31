@@ -752,7 +752,20 @@ def _ensure_welcome_audio_payload(payload: dict) -> None:
         )
 
     if text_to_speak:
-        audio_url = generar_audio(text_to_speak)
+        tts_speed = payload.get("tts_speed")
+        try:
+            tts_speed = float(tts_speed) if tts_speed is not None else None
+        except (TypeError, ValueError):
+            tts_speed = None
+
+        audio_url = generar_audio(
+            text_to_speak,
+            voice=payload.get("tts_voice"),
+            model=payload.get("tts_model"),
+            style=payload.get("tts_style"),
+            speed=tts_speed,
+            cache_namespace=payload.get("tts_cache_namespace"),
+        )
         if audio_url:
             payload["audio_url"] = audio_url
 

@@ -763,6 +763,49 @@ class CrearReclamoActionHandler(BaseActionHandler):
         ticket_data_cleaned = {k: v for k, v in ticket_data.items() if v is not None}
         logger.info(f"Data for servicio_tickets.crear_nuevo_ticket: {ticket_data_cleaned}")
 
+        dedupe_window_seconds = int(os.getenv("CHATBOC_RECLAMO_DEDUP_WINDOW_SECONDS", "600"))
+        dedupe_fingerprint = {
+            "categoria": normalizar_texto_municipio(categoria or ""),
+            "descripcion": normalizar_texto_municipio(descripcion or ""),
+            "ubicacion": normalizar_texto_municipio(ubicacion_llm or ""),
+            "telefono": str(telefono_final or "").strip(),
+            "dni": str(dni_final or "").strip(),
+            "foto_url": str(foto_url_llm or "").strip(),
+        }
+        previous_ticket = contexto_reclamo.get("last_created_reclamo")
+        if (
+            isinstance(previous_ticket, dict)
+            and previous_ticket.get("fingerprint") == dedupe_fingerprint
+            and (time.time() - float(previous_ticket.get("ts", 0))) < max(0, dedupe_window_seconds)
+        ):
+            logger.warning(
+                "Reclamo duplicado detectado en %ss. Se evita crear nuevo ticket y se reutiliza %s.",
+                dedupe_window_seconds,
+                previous_ticket.get("ticket_nro"),
+            )
+            ticket_nro_prev = previous_ticket.get("ticket_nro")
+            pin_prev = previous_ticket.get("consulta_pin")
+            tracking_url = previous_ticket.get("tracking_url")
+            dedupe_message = (
+                "Ya habíamos registrado este reclamo hace instantes ✅\n"
+                f"• Ticket: *{ticket_nro_prev or 'N/A'}*"
+            )
+            if pin_prev:
+                dedupe_message += f"\n• PIN: *{pin_prev}*"
+            if tracking_url:
+                dedupe_message += f"\n• Seguimiento: {tracking_url}"
+            return {
+                "success": True,
+                "message_body": dedupe_message,
+                "message_type": "text",
+                "data": {
+                    "nro_ticket": ticket_nro_prev,
+                    "consulta_pin": pin_prev,
+                    "tracking_url": tracking_url,
+                    "deduplicated": True,
+                },
+            }
+
         # Enhanced logging for debugging contact info
         logger.info(f"DEBUG_CONTACT_INFO: nombre='{ticket_data_cleaned.get('nombre_vecino')}', "
                     f"telefono='{ticket_data_cleaned.get('telefono_vecino')}', "
@@ -1048,6 +1091,17 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 response_payload["options_list"] = []
                 response_payload["message_type"] = "text"
                 response_payload["image_url"] = receipt.get("media_url") or promo_image_url
+
+            tracking_url = (
+                response_payload.get("contexto_actualizado", {}) or {}
+            ).get("latest_tracking_url")
+            contexto_reclamo["last_created_reclamo"] = {
+                "ts": time.time(),
+                "fingerprint": dedupe_fingerprint,
+                "ticket_nro": nro_ticket_str,
+                "consulta_pin": pin_final,
+                "tracking_url": tracking_url,
+            }
             caption_values = {
                 "message_body": mensaje_respuesta,
                 "ticket_nro": nro_ticket_str,
