@@ -1,5 +1,6 @@
 import os
 import unittest
+from unittest.mock import patch
 
 os.environ.setdefault("FLASK_SKIP_GLOBAL_APP", "1")
 
@@ -81,6 +82,15 @@ class CarritoTenantResolutionTest(unittest.TestCase):
         self.assertIsNotNone(owner)
         self.assertEqual(tenant.id, self.tenant.id)
         self.assertEqual(owner.id, self.owner.id)
+
+    def test_get_or_create_cart_fallback_insert_works_without_channel_column(self):
+        with self.app.test_request_context("/carrito", headers={"X-Sales-Channel": "whatsapp"}):
+            with patch.object(carrito, "_market_cart_has_channel_column", return_value=False):
+                cart = carrito._get_or_create_db_cart(self.tenant, None)
+
+        self.assertIsNotNone(cart)
+        self.assertEqual(cart.tenant_id, self.tenant.id)
+        self.assertEqual(cart.status, "open")
 
 
 if __name__ == "__main__":
