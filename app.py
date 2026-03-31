@@ -504,6 +504,7 @@ def create_app(config_class=Config):
     from routes.admin_fulfillment import admin_fulfillment_bp
     from routes.widget_config_routes import widget_config_bp # NEW
     from routes.geo_routes import geo_bp
+    from routes.conversations import conversations_bp
     from cli_commands import register_commands
 
     if FEATURE_ENCUESTAS:
@@ -666,6 +667,7 @@ def create_app(config_class=Config):
     app.register_blueprint(admin_fulfillment_bp)
     app.register_blueprint(widget_config_bp) # Register new BP
     app.register_blueprint(geo_bp)
+    app.register_blueprint(conversations_bp)
 
     from routes.tracking_ui import tracking_ui_bp
     app.register_blueprint(tracking_ui_bp)

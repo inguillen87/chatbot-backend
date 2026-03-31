@@ -182,6 +182,10 @@ def emit_conversation_message_read(data: Any) -> None:
     """Broadcast read-state updates for enterprise inbox clients."""
     _emit_standard_ticket_event('conversation.message.read', data)
 
+def emit_conversation_linked(data: Any) -> None:
+    """Broadcast omnichannel link events."""
+    _emit_standard_ticket_event('conversation.linked', data)
+
 
 def emit_ticket_unread_changed(data: Any) -> None:
     """Broadcast unread-summary deltas for inbox list reconciliation."""

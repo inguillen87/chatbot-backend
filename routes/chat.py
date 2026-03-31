@@ -32,6 +32,7 @@ from services.common_utils import validar_email, validar_telefono, formatear_tel
 from services.contact_intake import missing_contact_fields, resolve_contact_snapshot
 from services.notifications import enviar_notificacion_sms, enviar_notificacion_whatsapp_con_plantilla
 from services.email_service import enviar_email
+from services.conversation_resolver import ConversationResolver
 from utils.auth_helpers import (
     anon_o_token_requerido,
     obtener_entity_token,
@@ -139,6 +140,66 @@ def _create_demo_lead_ticket(*, owner_user: Optional[User], anon_id: Optional[st
     db.session.add(ticket)
     db.session.flush()
     return ticket
+
+
+def _persist_core_conversation_messages(
+    *,
+    tenant_id: Optional[int],
+    chat_session_id: Optional[str],
+    anon_id: Optional[str],
+    actor_user: Optional[User],
+    user_message: Optional[str],
+    bot_payload: Optional[dict],
+) -> None:
+    """Persist user + assistant turns into BE-01 conversation core tables."""
+
+    if not tenant_id or not chat_session_id:
+        return
+
+    user_text = (user_message or "").strip()
+    if not user_text:
+        return
+
+    bot_payload = bot_payload or {}
+    bot_text = (
+        bot_payload.get("respuesta")
+        or bot_payload.get("message_body")
+        or bot_payload.get("texto")
+        or ""
+    )
+    if isinstance(bot_text, dict):
+        bot_text = bot_text.get("text") or bot_text.get("texto") or ""
+    bot_text = str(bot_text).strip()
+
+    resolver = ConversationResolver(int(tenant_id))
+    resolved = resolver.resolve_or_create(
+        chat_session_id=chat_session_id,
+        channel="web",
+        channel_identity=anon_id or (str(actor_user.id) if actor_user else None),
+        user_id=getattr(actor_user, "id", None),
+    )
+    resolver.append_message(
+        conversation_id=resolved.conversation.id,
+        channel_session_id=resolved.channel_session.id,
+        sender_type="user",
+        sender_user_id=getattr(actor_user, "id", None),
+        direction="in",
+        body=user_text,
+        metadata={"source": "routes.chat.ask"},
+    )
+    if bot_text:
+        resolver.append_message(
+            conversation_id=resolved.conversation.id,
+            channel_session_id=resolved.channel_session.id,
+            sender_type="assistant",
+            direction="out",
+            body=bot_text,
+            metadata={
+                "source": "routes.chat.ask",
+                "fuente": bot_payload.get("fuente"),
+                "message_type": bot_payload.get("message_type"),
+            },
+        )
 
 
 def _load_demo_rubros() -> List[Dict[str, Optional[str]]]:
@@ -2383,6 +2444,28 @@ def _procesar_chat(
             chat_context_obj.context_data["last_user_message_time"] = datetime.utcnow().isoformat()
             chat_context_obj.context_data["last_bot_response"] = resultado
             flag_modified(chat_context_obj, "context_data")
+
+        # Persistencia BE-01 conversation core (compatibilidad temporal con chat_session_id)
+        try:
+            tenant_for_conversation = (
+                getattr(chat_context_obj, "tenant_id", None)
+                or getattr(owner_del_bot, "tenant_id", None)
+                or getattr(actor_principal, "tenant_id", None)
+            )
+            _persist_core_conversation_messages(
+                tenant_id=tenant_for_conversation,
+                chat_session_id=chat_session_id_header,
+                anon_id=anon_id,
+                actor_user=actor_principal,
+                user_message=pregunta,
+                bot_payload=resultado if isinstance(resultado, dict) else {},
+            )
+        except Exception as conversation_err:
+            current_app.logger.warning(
+                "[BE01] conversation core persistence skipped for session=%s: %s",
+                chat_session_id_header,
+                conversation_err,
+            )
 
         # This commit is for User.preguntas_usadas and ChatSessionContext primarily
         try:
