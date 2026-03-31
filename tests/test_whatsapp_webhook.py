@@ -1461,7 +1461,8 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
 
         # Assert
-        self.assertEqual(response.status_code, 404) # Expect Not Found
+        self.assertEqual(response.status_code, 200) # Still handled gracefully
+        self.assertEqual(response.content_type, "application/xml")
         self.assertIn("WhatsApp number not configured", response.data.decode())
         self.mock_twilio_create.assert_not_called()
         self.mock_welcome.assert_not_called()
@@ -1488,7 +1489,8 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
 
         # Assert
-        self.assertEqual(response.status_code, 404) # Expect Not Found (as if not configured)
+        self.assertEqual(response.status_code, 200) # Still handled gracefully (as if not configured)
+        self.assertEqual(response.content_type, "application/xml")
         self.assertIn("WhatsApp number not configured", response.data.decode())
         self.mock_twilio_create.assert_not_called()
         self.mock_welcome.assert_not_called()

@@ -1,6 +1,7 @@
 from flask import Blueprint, request, jsonify, abort, current_app, g, has_app_context  # Basic Flask components
 from twilio.request_validator import RequestValidator  # For validating Twilio requests
 from twilio.rest import Client  # For sending messages via Twilio
+from twilio.twiml.messaging_response import MessagingResponse
 import os  # For accessing environment variables
 import requests
 import io
@@ -1021,7 +1022,12 @@ def whatsapp_webhook():
             looked_up,
             to_number_raw,
         )
-        return "WhatsApp number not configured for any client.", 404
+        # Respond with 200 and valid TwiML to prevent Twilio retries while
+        # still surfacing the configuration issue in the response body and
+        # logs for observability.
+        twiml_response = MessagingResponse()
+        twiml_response.message("WhatsApp number not configured for any client.")
+        return str(twiml_response), 200, {"Content-Type": "application/xml"}
 
     client_user = whatsapp_mapping.user
     if not client_user:
