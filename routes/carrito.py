@@ -8,7 +8,8 @@ import logging
 from flask import Blueprint, g, jsonify, request, session, abort, make_response
 from flask_cors import cross_origin
 from flask_login import current_user
-from sqlalchemy import func, or_
+from sqlalchemy import func, or_, text
+from sqlalchemy import inspect as sqlalchemy_inspect
 
 from config import ALLOWED_ORIGINS
 from database import db
@@ -133,6 +134,20 @@ def _request_channel() -> str:
         or request.args.get("channel")
     )
 
+
+def _market_cart_has_channel_column() -> bool:
+    """Runtime guard for deployments with partial migrations."""
+    try:
+        inspector = sqlalchemy_inspect(db.engine)
+        columns = inspector.get_columns("market_cart")
+    except Exception as exc:
+        logger.warning(
+            "No se pudo inspeccionar esquema de market_cart; compat mode desactiva channel: %s",
+            exc,
+        )
+        return False
+    return any((col.get("name") or "").lower() == "channel" for col in columns)
+
 def _get_or_create_db_cart(
     tenant: TenantProfile,
     user: Optional[User] = None,
@@ -171,7 +186,7 @@ def _get_or_create_db_cart(
         if not create_if_missing:
             return None
 
-        cart = MarketCart(
+        cart_kwargs = dict(
             tenant_id=tenant.id,
             user_id=user_id,
             session_id=session_id,
@@ -179,10 +194,46 @@ def _get_or_create_db_cart(
             contact_name=getattr(user, "name", None) if user else None,
             contact_email=getattr(user, "email", None) if user else None,
             contact_key=resolve_order_contact_payload(user=user, session_id=session_id, channel=_request_channel()).get("contact_key"),
-            channel=_request_channel(),
         )
-        db.session.add(cart)
-        db.session.commit()
+        if _market_cart_has_channel_column():
+            cart_kwargs["channel"] = _request_channel()
+
+        if _market_cart_has_channel_column():
+            cart = MarketCart(**cart_kwargs)
+            db.session.add(cart)
+            db.session.commit()
+        else:
+            db.session.execute(
+                text(
+                    """
+                    INSERT INTO market_cart (
+                        tenant_id, user_id, session_id, status,
+                        contact_name, contact_phone, contact_email, contact_key,
+                        created_at, updated_at
+                    ) VALUES (
+                        :tenant_id, :user_id, :session_id, :status,
+                        :contact_name, :contact_phone, :contact_email, :contact_key,
+                        NOW(), NOW()
+                    )
+                    """
+                ),
+                {
+                    "tenant_id": tenant.id,
+                    "user_id": user_id,
+                    "session_id": session_id,
+                    "status": "open",
+                    "contact_name": cart_kwargs.get("contact_name"),
+                    "contact_phone": cart_kwargs.get("contact_phone"),
+                    "contact_email": cart_kwargs.get("contact_email"),
+                    "contact_key": cart_kwargs.get("contact_key"),
+                },
+            )
+            db.session.commit()
+            cart = (
+                base_query.filter(MarketCart.session_id == session_id)
+                .order_by(MarketCart.updated_at.desc())
+                .first()
+            )
     else:
         # Update session/user association if needed
         modified = False
@@ -199,7 +250,11 @@ def _get_or_create_db_cart(
         if resolved_contact.get("email") and not cart.contact_email:
             cart.contact_email = resolved_contact.get("email")
             modified = True
-        if resolved_contact.get("channel") and cart.channel != resolved_contact.get("channel"):
+        if (
+            _market_cart_has_channel_column()
+            and resolved_contact.get("channel")
+            and cart.channel != resolved_contact.get("channel")
+        ):
             cart.channel = resolved_contact.get("channel")
             modified = True
         if modified:
