@@ -179,6 +179,12 @@ class NotificationOrchestrator:
             notif.last_error = None
             notif.next_retry_at = None
             self._create_attempt(notif, "success", provider_message_id=provider_id)
+            self._emit_notification_event(
+                "notification.sent",
+                notif,
+                now=now,
+                provider_message_id=provider_id,
+            )
             return "sent"
 
         remaining = notif.attempt_count < notif.max_retries
@@ -188,7 +194,44 @@ class NotificationOrchestrator:
         notif.last_error = error_msg
         notif.next_retry_at = next_retry
         self._create_attempt(notif, "failed", error_message=error_msg, next_retry_at=next_retry)
+        self._emit_notification_event(
+            "notification.failed",
+            notif,
+            now=now,
+            error_message=error_msg,
+        )
         return "failed"
+
+    def _emit_notification_event(
+        self,
+        event_name: str,
+        notif: Notification,
+        *,
+        now,
+        provider_message_id: str | None = None,
+        error_message: str | None = None,
+    ) -> None:
+        try:
+            from socket_service import emit_notification_status_changed
+
+            emit_notification_status_changed(
+                {
+                    "event": event_name,
+                    "tenant_id": self.tenant_id,
+                    "notification_id": notif.id,
+                    "channel": notif.channel,
+                    "status": notif.status,
+                    "recipient": notif.recipient,
+                    "attempt_count": notif.attempt_count,
+                    "max_retries": notif.max_retries,
+                    "occurred_at": now.isoformat() if hasattr(now, "isoformat") else str(now),
+                    "provider_message_id": provider_message_id,
+                    "error_message": error_message,
+                }
+            )
+        except Exception:
+            # Events are non-blocking and should not fail dispatch flow.
+            pass
 
     def _create_attempt(
         self,

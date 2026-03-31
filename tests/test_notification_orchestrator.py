@@ -229,6 +229,51 @@ def test_notification_quiet_hours_next_retry_outside_window(client, app):
     assert notif.next_retry_at.hour == quiet_end
 
 
+def test_notification_dispatch_emits_lifecycle_events(client, app, monkeypatch):
+    admin, tenant = _seed_admin_tenant()
+    headers = _auth_headers(app, admin, tenant.slug)
+    seen_events = []
+
+    def _fake_emit(payload):
+        seen_events.append(payload)
+
+    monkeypatch.setattr("socket_service.emit_notification_status_changed", _fake_emit)
+
+    queued_ok = client.post(
+        "/api/admin/notifications",
+        headers=headers,
+        json={
+            "channel": "in_app",
+            "recipient": f"user:{admin.id}",
+            "user_id": admin.id,
+            "body": "ok",
+            "idempotency_key": "idem-event-ok-1",
+        },
+    )
+    assert queued_ok.status_code == 201
+
+    queued_fail = client.post(
+        "/api/admin/notifications",
+        headers=headers,
+        json={
+            "channel": "email",
+            "recipient": "x@test.com",
+            "body": "fail",
+            "idempotency_key": "idem-event-fail-1",
+            "max_retries": 0,
+            "metadata": {"force_fail": True},
+        },
+    )
+    assert queued_fail.status_code == 201
+
+    dispatch = client.post("/api/workers/notifications/dispatch", headers=headers, json={"limit": 20})
+    assert dispatch.status_code == 200
+
+    event_names = {evt.get("event") for evt in seen_events}
+    assert "notification.sent" in event_names
+    assert "notification.failed" in event_names
+
+
 def test_notifications_endpoint_returns_user_items(client, app):
     admin, tenant = _seed_admin_tenant()
     headers = _auth_headers(app, admin, tenant.slug)
