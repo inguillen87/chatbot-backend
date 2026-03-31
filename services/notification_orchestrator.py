@@ -6,6 +6,7 @@ from typing import Optional
 
 from models import Notification, NotificationAttempt, NotificationTemplate, db
 from utils.time_utils import get_local_now
+from services.whatsapp_enterprise_rules import WhatsAppEnterpriseRulesService
 
 ALLOWED_CHANNELS = {"email", "whatsapp", "push", "in_app"}
 BASE_BACKOFF_SECONDS = 60
@@ -241,5 +242,12 @@ class NotificationOrchestrator:
         # MVP worker stub: consider metadata.force_fail to exercise retries in tests.
         if (notif.metadata_json or {}).get("force_fail"):
             return False, None, "forced_failure"
+        if notif.channel == "whatsapp":
+            allowed, reason = WhatsAppEnterpriseRulesService(notif.tenant_id).evaluate_outbound(
+                body=notif.body,
+                metadata=notif.metadata_json if isinstance(notif.metadata_json, dict) else {},
+            )
+            if not allowed:
+                return False, None, reason
         provider_id = f"{notif.channel}:{notif.id}:{notif.attempt_count + 1}"
         return True, provider_id, None

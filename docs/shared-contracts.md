@@ -97,3 +97,19 @@ Evento socket:
 ### Reglas
 - Todos requieren `token_requerido` + `require_tenant` + control admin/tenant.
 - Cada cambio administrativo crea un `audit_event`.
+
+## BE-04 WhatsApp enterprise rules
+
+### Endpoints
+- `GET /api/admin/whatsapp/rules`
+- `PUT /api/admin/whatsapp/rules`
+
+### Reglas
+- Políticas por tenant: `enforce_template_outside_24h`, `max_outbound_per_hour`, `blocked_keywords`.
+- Aplicación en dispatch de notificaciones WhatsApp dentro del orquestador.
+
+## BE-03 Voice refactor
+
+### Servicio
+- `services/voice_session_service.resolve_voice_chat_session_id`
+- Unifica generación de `chat_session_id` para `voice_handler` y `voice_stream_service`.

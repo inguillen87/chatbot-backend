@@ -2257,6 +2257,20 @@ class AuditEvent(db.Model):
     created_at = db.Column(db.DateTime(timezone=True), default=get_local_now, nullable=False, index=True)
 
 
+class WhatsAppEnterpriseRule(db.Model):
+    __tablename__ = "whatsapp_enterprise_rule"
+
+    id = db.Column(db.Integer, primary_key=True)
+    tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=False, unique=True, index=True)
+    enforce_template_outside_24h = db.Column(db.Boolean, nullable=False, default=True)
+    max_outbound_per_hour = db.Column(db.Integer, nullable=True)
+    quiet_hours_start = db.Column(db.Integer, nullable=True)
+    quiet_hours_end = db.Column(db.Integer, nullable=True)
+    blocked_keywords = db.Column(JSONType, nullable=True)
+    created_at = db.Column(db.DateTime(timezone=True), default=get_local_now, nullable=False)
+    updated_at = db.Column(db.DateTime(timezone=True), default=get_local_now, onupdate=get_local_now, nullable=False)
+
+
 class TenantConfig(db.Model):
     __tablename__ = "tenant_config"
 

@@ -64,3 +64,26 @@ Implementado en backend (fase inicial):
 - Jerarquía de permisos por org unit (scope efectivo por recurso).
 - Políticas avanzadas RBAC (deny/allow granulares).
 - Exportación de auditoría y retención por políticas.
+
+## BE-04 — WhatsApp enterprise rules
+
+### Estado
+Implementado en backend (fase inicial):
+- Entidad `whatsapp_enterprise_rule` por tenant.
+- Endpoints admin para lectura/actualización de políticas.
+- Enforcements en notification dispatch para canal WhatsApp.
+
+### Pendientes sugeridos
+- Conectar a ventana real de conversación por contacto (no solo metadata).
+- Reglas de plantillas aprobadas por categoría.
+
+## BE-03 — Voice refactor
+
+### Estado
+Implementado en backend (fase inicial):
+- Servicio compartido `voice_session_service` para normalizar `chat_session_id`.
+- Integración en `voice_handler` y `voice_stream_service` para evitar lógica duplicada.
+
+### Pendientes sugeridos
+- Extraer más bloques compartidos (resolución tenant/contacto/context merge).
+- Cobertura de tests de integración de flujos de llamada completos.
