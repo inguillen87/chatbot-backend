@@ -37,6 +37,13 @@ _HEATMAP_CATEGORY_COLORS = [
     "#EC4899",
 ]
 
+_WHATSAPP_FUNNEL_STAGES: list[tuple[str, str]] = [
+    ("whatsapp_portal_menu_opened", "Portal abierto"),
+    ("whatsapp_video_handoff_shared", "Videollamada compartida"),
+    ("realtime_session_created", "Sesión realtime creada"),
+    ("realtime_business_action_executed", "Acción de negocio realtime"),
+]
+
 
 def _json(payload: dict, status: int = 200):
     response = jsonify(payload)
@@ -109,6 +116,79 @@ def _dashboard_cache_key(filters) -> str:
             str(filters.resolution),
         ]
     )
+
+
+def _build_whatsapp_funnel_payload(filters, *, window_minutes: int = 60) -> dict[str, Any]:
+    tenant_id = _tenant_id_as_int(filters.tenant_id)
+    try:
+        window_minutes_int = max(1, int(window_minutes))
+    except (TypeError, ValueError):
+        window_minutes_int = 60
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(minutes=window_minutes_int)
+
+    query = AnalyticsEventV2.query.filter(
+        AnalyticsEventV2.tenant_id == tenant_id,
+        AnalyticsEventV2.ts >= cutoff,
+        AnalyticsEventV2.event_name.in_([stage[0] for stage in _WHATSAPP_FUNNEL_STAGES]),
+    )
+    events = query.with_entities(
+        AnalyticsEventV2.event_name,
+        AnalyticsEventV2.channel,
+        AnalyticsEventV2.ts,
+        AnalyticsEventV2.session_id,
+    ).all()
+
+    stage_counts = {event_name: 0 for event_name, _ in _WHATSAPP_FUNNEL_STAGES}
+    unique_sessions_per_stage: dict[str, set[str]] = {
+        event_name: set() for event_name, _ in _WHATSAPP_FUNNEL_STAGES
+    }
+
+    for row in events:
+        stage_counts[row.event_name] = stage_counts.get(row.event_name, 0) + 1
+        if row.session_id:
+            unique_sessions_per_stage.setdefault(row.event_name, set()).add(str(row.session_id))
+
+    ordered = []
+    previous_value = None
+    for event_name, label in _WHATSAPP_FUNNEL_STAGES:
+        total = stage_counts.get(event_name, 0)
+        sessions = len(unique_sessions_per_stage.get(event_name, set()))
+        conversion = None
+        if previous_value is not None and previous_value > 0:
+            conversion = round((total / previous_value) * 100, 2)
+        ordered.append(
+            {
+                "event_name": event_name,
+                "label": label,
+                "total": total,
+                "unique_sessions": sessions,
+                "conversion_from_prev_pct": conversion,
+            }
+        )
+        previous_value = total
+
+    return {
+        "tenant_id": filters.tenant_id,
+        "scope": filters.scope,
+        "window_minutes": window_minutes_int,
+        "cutoff": cutoff.isoformat(),
+        "stages": ordered,
+        "totals": {
+            "events": len(events),
+            "unique_sessions": len(
+                {
+                    str(row.session_id)
+                    for row in events
+                    if row.session_id
+                }
+            ),
+        },
+        "notes": [
+            "Funnel orientado a flujos WhatsApp → portal/realtime.",
+            "Usar junto con /admin/analytics/realtime-hub para contexto operativo.",
+        ],
+    }
 
 
 def _etag_for_payload(payload: dict[str, Any]) -> str:
@@ -779,6 +859,15 @@ def admin_analytics_realtime_hub():
     require_access(filters.tenant_id, "operador")
     window_minutes = request.args.get("window_minutes", 30)
     payload = _build_realtime_hub_payload(filters, window_minutes=window_minutes)
+    return _json(payload)
+
+
+@admin_analytics_bp.get("/whatsapp-funnel")
+def admin_analytics_whatsapp_funnel():
+    filters = parse_filters(request.args)
+    require_access(filters.tenant_id, "operador")
+    window_minutes = request.args.get("window_minutes", 60)
+    payload = _build_whatsapp_funnel_payload(filters, window_minutes=window_minutes)
     return _json(payload)
 
 

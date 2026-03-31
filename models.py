@@ -1292,6 +1292,7 @@ class MarketCart(db.Model, TimestampMixin):
             defer(cls.session_id),
             defer(cls.contact_email),
             defer(cls.contact_key),
+            defer(cls.channel),
         )
 
     @classmethod
