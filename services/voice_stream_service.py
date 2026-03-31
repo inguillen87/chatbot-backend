@@ -2,7 +2,6 @@ import os
 import json
 import time
 import logging
-import hashlib
 import re
 
 from flask import current_app
@@ -19,6 +18,7 @@ from services.contact_service import resolve_contact, sanitize_profile_name
 from services.whatsapp_receipts import render_ticket_whatsapp
 from services.whatsapp_sender import send_whatsapp_message
 from services.config_loader import cargar_configuracion_municipio
+from services.voice_session_service import resolve_voice_chat_session_id
 
 logger = logging.getLogger(__name__)
 
@@ -327,12 +327,11 @@ class VoiceStreamService:
             self.owner_user_id = getattr(self.owner_user, "id", None) if self.owner_user else None
 
             # 4) Session ID
-            empresa_id = self.owner_user.id if self.owner_user else 0
-            if call_sid and len(call_sid) <= 36:
-                chat_session_id = call_sid
-            else:
-                raw_id = f"v_{empresa_id}_{user_phone_clean}"
-                chat_session_id = hashlib.md5(raw_id.encode()).hexdigest()
+            chat_session_id = resolve_voice_chat_session_id(
+                call_sid=call_sid,
+                from_number=user_phone_clean,
+                to_number=bot_phone_clean,
+            )
 
             self.chat_session_id = chat_session_id
 

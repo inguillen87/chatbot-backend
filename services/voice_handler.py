@@ -11,6 +11,7 @@ from utils.whatsapp import enviar_mensaje_whatsapp_con_fallback
 from services.whatsapp_receipts import render_ticket_whatsapp
 from services import promo_service
 from services.config_loader import cargar_configuracion_municipio
+from services.voice_session_service import resolve_voice_chat_session_id
 
 logger = logging.getLogger(__name__)
 
@@ -98,15 +99,11 @@ def handle_voice_interaction(user_speech, user_phone, bot_phone, call_sid):
         # 2. Load/Create Chat Session
         # Use a distinct session ID for voice to avoid state conflicts with WhatsApp
         empresa_id = client_user.id
-        # FIX: Ensure ID fits in VARCHAR(36). Use CallSid directly if available (34 chars) or hash.
-        # CallSid is typically CA... (34 chars). Prefixing it breaks the limit.
-        if call_sid and len(call_sid) <= 36:
-            chat_session_id = call_sid
-        else:
-            # Fallback: truncate/hash to fit
-            import hashlib
-            raw_id = f"v_{empresa_id}_{user_phone_clean}"
-            chat_session_id = hashlib.md5(raw_id.encode()).hexdigest()
+        chat_session_id = resolve_voice_chat_session_id(
+            call_sid=call_sid,
+            from_number=user_phone_clean,
+            to_number=bot_phone_clean,
+        )
 
         session_context = ChatSessionContext.query.filter_by(chat_session_id=chat_session_id).first()
         if not session_context:
@@ -362,14 +359,11 @@ def handle_call_status(call_sid, call_status, to_number, from_number, direction)
         whatsapp_sender = whatsapp_mapping.numero_whatsapp
         empresa_id = client_user.id
 
-        # Determine chat_session_id used during voice call
-        # Logic matches handle_voice_interaction
-        if call_sid and len(call_sid) <= 36:
-            chat_session_id = call_sid
-        else:
-            import hashlib
-            raw_id = f"v_{empresa_id}_{user_phone_clean}"
-            chat_session_id = hashlib.md5(raw_id.encode()).hexdigest()
+        chat_session_id = resolve_voice_chat_session_id(
+            call_sid=call_sid,
+            from_number=user_phone_clean,
+            to_number=bot_phone_clean,
+        )
 
         # Retrieve the session context to find created ticket info
         session_context = ChatSessionContext.query.filter_by(chat_session_id=chat_session_id).first()
