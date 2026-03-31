@@ -844,18 +844,25 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 "telefono": telefono_final,
                 "direccion": direccion_contacto,
             }
-            # Limpiamos TODO el contexto del municipio para evitar "context bleed".
-            if CONTEXTO_MUNICIPIO in self.context:
-                self.context[CONTEXTO_MUNICIPIO].clear()
+            if CONTEXTO_MUNICIPIO in self.context and isinstance(self.context[CONTEXTO_MUNICIPIO], dict):
+                municipio_ctx = self.context[CONTEXTO_MUNICIPIO]
+                for stale_key in (
+                    "reclamo_flow_v2",
+                    "historial_llm_reclamo",
+                    "datos_parciales_llm_reclamo",
+                    "expected_fields_llm_reclamo",
+                ):
+                    municipio_ctx.pop(stale_key, None)
                 if user_info:
-                    self.context[CONTEXTO_MUNICIPIO]['user'] = user_info
-                self.context[CONTEXTO_MUNICIPIO]['contacto_usuario'] = {
+                    municipio_ctx["user"] = user_info
+                municipio_ctx["contacto_usuario"] = {
                     k: v for k, v in contacto_usuario.items() if v
                 }
                 from services.municipio_responder import ConversationState
-                self.context[CONTEXTO_MUNICIPIO]['estado_conversacion'] = ConversationState.CONVERSACION_GENERAL_LLM.name
+                municipio_ctx["estado_conversacion"] = ConversationState.CONVERSACION_GENERAL_LLM.name
                 logger.info(
-                    f"Contexto de reclamo limpiado. Nuevo estado: {self.context[CONTEXTO_MUNICIPIO]['estado_conversacion']}"
+                    "Contexto de reclamo limpiado. Nuevo estado: %s",
+                    municipio_ctx["estado_conversacion"],
                 )
 
 
