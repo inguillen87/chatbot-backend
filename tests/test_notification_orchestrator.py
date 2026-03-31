@@ -144,6 +144,91 @@ def test_notification_quiet_hours_delays_dispatch(client, app):
     assert notif.next_retry_at is not None
 
 
+def test_notification_terminal_failure_is_not_requeued(client, app):
+    admin, tenant = _seed_admin_tenant()
+    headers = _auth_headers(app, admin, tenant.slug)
+
+    queued = client.post(
+        "/api/admin/notifications",
+        headers=headers,
+        json={
+            "channel": "email",
+            "recipient": "x@test.com",
+            "subject": "Terminal retry",
+            "body": "will fail once",
+            "idempotency_key": "idem-terminal-fail-1",
+            "max_retries": 0,
+            "metadata": {"force_fail": True},
+        },
+    )
+    assert queued.status_code == 201
+    notif_id = queued.get_json()["id"]
+
+    dispatch1 = client.post("/api/workers/notifications/dispatch", headers=headers, json={"limit": 20})
+    assert dispatch1.status_code == 200
+    assert dispatch1.get_json()["failed"] == 1
+
+    notif = Notification.query.filter_by(id=notif_id).first()
+    assert notif is not None
+    assert notif.status == "failed"
+    assert notif.next_retry_at is None
+    assert notif.attempt_count == 1
+
+    dispatch2 = client.post("/api/workers/notifications/dispatch", headers=headers, json={"limit": 20})
+    assert dispatch2.status_code == 200
+    assert dispatch2.get_json()["processed"] == 0
+
+    notif = Notification.query.filter_by(id=notif_id).first()
+    assert notif.attempt_count == 1
+    attempts = NotificationAttempt.query.filter_by(notification_id=notif_id).all()
+    assert len(attempts) == 1
+
+
+def test_notification_quiet_hours_next_retry_outside_window(client, app):
+    admin, tenant = _seed_admin_tenant()
+    headers = _auth_headers(app, admin, tenant.slug)
+    current_hour = datetime.utcnow().hour
+    quiet_end = (current_hour + 2) % 24
+
+    tpl_resp = client.post(
+        "/api/admin/notifications/templates",
+        headers=headers,
+        json={
+            "key": "quiet_window_case",
+            "channel": "in_app",
+            "body_template": "Hola ${name}",
+            "quiet_hours_start": current_hour,
+            "quiet_hours_end": quiet_end,
+        },
+    )
+    assert tpl_resp.status_code == 201
+
+    queued = client.post(
+        "/api/admin/notifications",
+        headers=headers,
+        json={
+            "channel": "in_app",
+            "recipient": f"user:{admin.id}",
+            "user_id": admin.id,
+            "template_key": "quiet_window_case",
+            "template_context": {"name": "Ana"},
+            "idempotency_key": "idem-quiet-window-utc-1",
+        },
+    )
+    assert queued.status_code == 201
+    notif_id = queued.get_json()["id"]
+
+    dispatch = client.post("/api/workers/notifications/dispatch", headers=headers)
+    assert dispatch.status_code == 200
+    assert dispatch.get_json()["delayed"] == 1
+
+    notif = Notification.query.filter_by(id=notif_id).first()
+    assert notif is not None
+    assert notif.status == "delayed"
+    assert notif.next_retry_at is not None
+    assert notif.next_retry_at.hour == quiet_end
+
+
 def test_notifications_endpoint_returns_user_items(client, app):
     admin, tenant = _seed_admin_tenant()
     headers = _auth_headers(app, admin, tenant.slug)

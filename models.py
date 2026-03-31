@@ -1891,7 +1891,7 @@ class ConversationLinkRequest(db.Model):
     source_channel_session_id = db.Column(db.Integer, db.ForeignKey("channel_session.id"), nullable=True, index=True)
     target_channel = db.Column(db.String(20), nullable=False, default="whatsapp")
     target_identity = db.Column(db.String(120), nullable=False, index=True)
-    otp_code = db.Column(db.String(12), nullable=False)
+    otp_code = db.Column(db.String(255), nullable=False)
     deep_link_token = db.Column(db.String(64), nullable=False, unique=True, index=True)
     status = db.Column(db.String(20), nullable=False, default="pending", index=True)
     expires_at = db.Column(db.DateTime(timezone=True), nullable=False, index=True)

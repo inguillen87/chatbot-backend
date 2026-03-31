@@ -24,7 +24,7 @@ def upgrade():
         sa.Column("source_channel_session_id", sa.Integer(), nullable=True),
         sa.Column("target_channel", sa.String(length=20), nullable=False),
         sa.Column("target_identity", sa.String(length=120), nullable=False),
-        sa.Column("otp_code", sa.String(length=12), nullable=False),
+        sa.Column("otp_code", sa.String(length=255), nullable=False),
         sa.Column("deep_link_token", sa.String(length=64), nullable=False),
         sa.Column("status", sa.String(length=20), nullable=False),
         sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),

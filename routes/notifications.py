@@ -114,6 +114,7 @@ def create_notification(current_user: User):
     payload = request.get_json(silent=True) or {}
     orchestrator = NotificationOrchestrator(tenant.id)
 
+    raw_max_retries = payload.get("max_retries", 3)
     notification, created = orchestrator.queue_notification(
         channel=payload.get("channel"),
         recipient=payload.get("recipient"),
@@ -123,7 +124,7 @@ def create_notification(current_user: User):
         template_context=payload.get("template_context") if isinstance(payload.get("template_context"), dict) else None,
         subject=payload.get("subject"),
         body=payload.get("body"),
-        max_retries=int(payload.get("max_retries") or 3),
+        max_retries=int(raw_max_retries),
         metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else None,
     )
 

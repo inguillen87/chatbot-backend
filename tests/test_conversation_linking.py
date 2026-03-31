@@ -60,6 +60,7 @@ def test_link_whatsapp_happy_path(client, app, monkeypatch):
     link_row = ConversationLinkRequest.query.filter_by(id=body["id"]).first()
     assert link_row is not None
     assert link_row.otp_code != body["otp_code"]
+    assert len(link_row.otp_code) > 12
 
     confirm_resp = client.post(
         "/api/conversations/link/confirm",

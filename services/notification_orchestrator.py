@@ -4,6 +4,8 @@ from datetime import timedelta, timezone
 from string import Template
 from typing import Optional
 
+from sqlalchemy import and_, or_
+
 from models import Notification, NotificationAttempt, NotificationTemplate, db
 from utils.time_utils import get_local_now
 from services.whatsapp_enterprise_rules import WhatsAppEnterpriseRulesService
@@ -133,8 +135,13 @@ class NotificationOrchestrator:
         now = now or get_local_now()
         due = (
             Notification.query.filter(Notification.tenant_id == self.tenant_id)
-            .filter(Notification.status.in_(["queued", "failed", "delayed"]))
-            .filter((Notification.next_retry_at.is_(None)) | (Notification.next_retry_at <= now))
+            .filter(
+                or_(
+                    Notification.status.in_(["queued", "delayed"]),
+                    and_(Notification.status == "failed", Notification.next_retry_at.isnot(None)),
+                )
+            )
+            .filter(or_(Notification.status == "queued", Notification.next_retry_at <= now))
             .order_by(Notification.created_at.asc())
             .limit(limit)
             .all()
@@ -174,7 +181,7 @@ class NotificationOrchestrator:
             self._create_attempt(notif, "success", provider_message_id=provider_id)
             return "sent"
 
-        remaining = notif.attempt_count <= notif.max_retries
+        remaining = notif.attempt_count < notif.max_retries
         backoff = timedelta(seconds=BASE_BACKOFF_SECONDS * (2 ** max(0, notif.attempt_count - 1)))
         next_retry = now + backoff if remaining else None
         notif.status = "failed"
