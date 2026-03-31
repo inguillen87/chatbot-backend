@@ -1,5 +1,6 @@
 # services/common_utils.py
 import re
+import os
 import unicodedata
 import pandas as pd
 from typing import Dict, Any, Tuple, Optional, List
@@ -956,6 +957,11 @@ def _get_main_menu_payload(
     audio_parts = [audio_greeting, audio_intro, audio_prompt, *audio_options, audio_closing]
     audio_text = " ".join(part.strip() for part in audio_parts if part)
 
+    try:
+        menu_tts_speed = float(os.getenv("OPENAI_TTS_MENU_SPEED", "0.92"))
+    except (TypeError, ValueError):
+        menu_tts_speed = 0.92
+
     response = {
         "message_body": f"{welcome_message}\n\n{main_text_body}",
         "options_list": flat_buttons,
@@ -964,7 +970,12 @@ def _get_main_menu_payload(
         "fuente": "greeting_handler_structured_menu_v2",
         "categorias": categorias,
         "audio_text": audio_text,
-        "generar_audio": True
+        "generar_audio": True,
+        # Menú principal: priorizamos una voz más natural y modelo de mayor calidad.
+        "tts_voice": "shimmer",
+        "tts_model": os.getenv("OPENAI_TTS_MENU_MODEL", "tts-1-hd"),
+        "tts_speed": menu_tts_speed,
+        "tts_cache_namespace": "menu_principal",
     }
     # Do not include a header image in the initial greeting menu to keep the
     # conversation lightweight and similar to other professional bots like
