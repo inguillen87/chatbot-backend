@@ -9643,6 +9643,12 @@ def responder_municipio(
         logger_actual.info(f"Reclamo flow is active. State: {contexto_municipio_actual['reclamo_flow_v2'].get('state')}. Handing off to ReclamoFlowHandler.")
         handler = ReclamoFlowHandler(context, chat_db_context)
         response = handler.handle(pregunta_str, received_payload)
+        if response and response.get("success"):
+            contexto_municipio_actual.pop("reclamo_flow_v2", None)
+            contexto_municipio_actual["estado_conversacion"] = ConversationState.CONVERSACION_GENERAL_LLM.name
+            logger_actual.info(
+                "[RECLAMO_FLOW] Reclamo exitoso detectado. Se limpia reclamo_flow_v2 para evitar duplicados."
+            )
         safe_flag_modified(chat_db_context, "context_data")
         return _finalize_response(response)
     # --- FIN: Manejo del Flujo de Reclamos Activo ---
@@ -10484,6 +10490,13 @@ def responder_municipio(
             context["menu_opciones"] = menu_opciones
             if selected_action == "iniciar_reclamo" and pregunta_str_menu.strip().isdigit():
                 context["skip_reclamo_autodetect"] = True
+            if selected_action == "iniciar_reclamo":
+                contexto_municipio_actual.pop("reclamo_flow_v2", None)
+                contexto_municipio_actual.pop("historial_llm_reclamo", None)
+                contexto_municipio_actual.pop("datos_parciales_llm_reclamo", None)
+                logger_actual.info(
+                    "[MENU] Nuevo 'iniciar_reclamo' solicitado. Se limpia contexto de reclamo previo para evitar reutilizar datos."
+                )
             contexto_municipio_actual['estado_conversacion'] = None
             contexto_municipio_actual.pop('menu_opciones', None)
             if chat_db_context:
