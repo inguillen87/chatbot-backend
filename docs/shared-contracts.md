@@ -67,3 +67,49 @@ Comportamiento:
 
 Evento socket:
 - `conversation.linked` con `conversation_id`, `source_channel_session_id`, `target_channel_session_id`.
+
+## BE-05 Notification orchestrator
+
+### Endpoints
+- `GET /notifications`: notificaciones del usuario autenticado dentro del tenant.
+- `POST /api/admin/notifications/templates`: alta/actualización de template por `key+channel`.
+- `POST /api/admin/notifications`: enqueue de notificación con `idempotency_key`.
+- `POST /api/admin/notifications/dispatch`: encola tarea Celery para despacho.
+- `POST /api/workers/notifications/dispatch`: ejecuta despacho inmediato (worker/internal).
+- `GET /api/admin/notifications/<id>/attempts`: historial de intentos.
+
+### Canales soportados
+- `email`, `whatsapp`, `push`, `in_app`.
+
+### Reglas
+- Idempotencia por `tenant_id + idempotency_key`.
+- Retry/backoff exponencial sobre fallos.
+- Quiet hours por template (`quiet_hours_start`, `quiet_hours_end`) que difieren envío.
+
+## BE-06 Roles / org units / audit
+
+### Endpoints
+- `POST /api/admin/org-units`
+- `POST /api/admin/users/<user_id>/roles`
+- `POST /api/admin/users/<user_id>/org-units`
+- `GET /api/admin/audit/events`
+
+### Reglas
+- Todos requieren `token_requerido` + `require_tenant` + control admin/tenant.
+- Cada cambio administrativo crea un `audit_event`.
+
+## BE-04 WhatsApp enterprise rules
+
+### Endpoints
+- `GET /api/admin/whatsapp/rules`
+- `PUT /api/admin/whatsapp/rules`
+
+### Reglas
+- Políticas por tenant: `enforce_template_outside_24h`, `max_outbound_per_hour`, `blocked_keywords`.
+- Aplicación en dispatch de notificaciones WhatsApp dentro del orquestador.
+
+## BE-03 Voice refactor
+
+### Servicio
+- `services/voice_session_service.resolve_voice_chat_session_id`
+- Unifica generación de `chat_session_id` para `voice_handler` y `voice_stream_service`.
