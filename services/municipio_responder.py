@@ -33,7 +33,7 @@ flag_modified = safe_flag_modified
 
 logger = logging.getLogger(__name__)
 from twilio.rest import Client
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from services.utils_placeholders import (
     reemplazar_placeholders,
@@ -3158,6 +3158,14 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
 
     if action_id == "solicitar_videollamada_ia":
         video_url = _build_realtime_video_url(context)
+        _track_whatsapp_conversion_event(
+            context,
+            event_name="whatsapp_video_handoff_shared",
+            payload={
+                "url": video_url,
+                "entrypoint": "solicitar_llamada_menu",
+            },
+        )
         return {
             "message_body": (
                 "Perfecto. Te comparto una videollamada asistida por IA para continuar en tiempo real.\n\n"
@@ -3175,6 +3183,42 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
             "tts_model": os.getenv("OPENAI_TTS_MENU_MODEL", "tts-1-hd"),
             "tts_speed": 0.94,
             "tts_cache_namespace": "video_llamada_ia",
+        }
+
+    if action_id == "mi_portal_usuario":
+        links = _build_user_portal_links(context)
+        _track_whatsapp_conversion_event(
+            context,
+            event_name="whatsapp_portal_menu_opened",
+            payload={
+                "portal": links.get("portal"),
+                "pedidos": links.get("pedidos"),
+                "historial": links.get("historial"),
+                "encuestas": links.get("encuestas"),
+            },
+        )
+        return {
+            "message_body": (
+                "Acá tenés tu portal personal para seguir todas tus gestiones.\n\n"
+                f"👤 Portal completo: {links['portal']}\n"
+                f"🛒 Mis pedidos: {links['pedidos']}\n"
+                f"🧾 Mi historial: {links['historial']}\n"
+                f"🗳️ Mis encuestas: {links['encuestas']}"
+            ),
+            "message_type": "interactive_buttons",
+            "options_list": [
+                {"texto": "👤 Portal", "url": links["portal"], "type": "url"},
+                {"texto": "🛒 Mis pedidos", "url": links["pedidos"], "type": "url"},
+                {"texto": "🧾 Mi historial", "url": links["historial"], "type": "url"},
+                {"texto": "🗳️ Mis encuestas", "url": links["encuestas"], "type": "url"},
+                {"texto": "Volver", "action_id": "mostrar_menu_encuestas"},
+            ],
+            "fuente": "mi_portal_usuario_menu",
+            "generar_audio": True,
+            "tts_voice": "shimmer",
+            "tts_model": os.getenv("OPENAI_TTS_MENU_MODEL", "tts-1-hd"),
+            "tts_speed": 0.94,
+            "tts_cache_namespace": "mi_portal_usuario",
         }
 
     if action_id == "solicitar_llamada_ia":
@@ -6683,6 +6727,41 @@ def _append_tenant_param(
     return parsed._replace(query=new_query).geturl()
 
 
+def _append_tracking_params(
+    raw_url: Optional[str],
+    *,
+    channel: Optional[str] = None,
+    campaign: Optional[str] = None,
+    session_id: Optional[str] = None,
+) -> Optional[str]:
+    """Attach lightweight attribution params to shared links."""
+
+    if not raw_url or not isinstance(raw_url, str):
+        return raw_url
+
+    parsed = urlparse(raw_url)
+    query_params = parse_qs(parsed.query, keep_blank_values=True)
+    normalized_channel = (channel or "").strip().lower()
+
+    if normalized_channel and "source" not in query_params:
+        query_params["source"] = [normalized_channel]
+
+    if normalized_channel and "utm_source" not in query_params:
+        query_params["utm_source"] = [normalized_channel]
+
+    if "utm_medium" not in query_params:
+        query_params["utm_medium"] = ["chatbot"]
+
+    if campaign and "utm_campaign" not in query_params:
+        query_params["utm_campaign"] = [campaign]
+
+    if session_id and "chat_session_id" not in query_params:
+        query_params["chat_session_id"] = [str(session_id)]
+
+    new_query = urlencode(query_params, doseq=True)
+    return parsed._replace(query=new_query).geturl()
+
+
 def _resolve_catalogo_banner_image(context: Optional[dict]) -> Optional[str]:
     municipio_config = (context or {}).get("municipio_config_actual") or {}
     catalogo_cfg = {}
@@ -6729,6 +6808,11 @@ def _build_catalogo_link_map(context: Optional[dict]) -> Dict[str, str]:
     base_url = _resolve_catalogo_base_url(context)
     tenant_slug, tenant_id, owner_id = _resolve_tenant_identifiers(context)
     viewer_phone = _resolve_viewer_phone(context)
+    channel = (context or {}).get("channel")
+    session_id = (
+        (context or {}).get("chat_session_uuid")
+        or ((context or {}).get("chat_db_context_data", {}) or {}).get("chat_session_id")
+    )
     default_paths = {
         "catalogo_ver": "/productos",
         "catalogo_canje_puntos": "/productos?view=canje",
@@ -6753,6 +6837,12 @@ def _build_catalogo_link_map(context: Optional[dict]) -> Dict[str, str]:
             raw_url = f"{base_url}{default_path}"
         raw_url = _append_tenant_param(
             raw_url, tenant_slug, tenant_id, owner_id, viewer_phone
+        )
+        raw_url = _append_tracking_params(
+            raw_url,
+            channel=channel,
+            campaign=f"catalogo_{action_id}",
+            session_id=session_id,
         )
         normalized = _normalize_public_url(raw_url, context)
         if normalized:
@@ -6798,7 +6888,8 @@ def _get_catalogo_menu(context: Optional[dict] = None):
     header = "*Catálogo y Beneficios*"
     body_lines = [
         header,
-        "Elegí cómo querés operar con el catálogo y los beneficios del tenant:",
+        "Elegí una opción para entrar directo al marketplace del tenant.",
+        "Tip: podés tocar el botón o escribir el número/opción.",
     ]
 
     link_descriptions = []
@@ -6858,6 +6949,80 @@ def _build_realtime_video_url(context: Optional[dict]) -> str:
         base = "https://www.chatboc.ar"
     base = base.rstrip("/")
     return f"{base}/{tenant_slug}/realtime?mode=video&source=whatsapp"
+
+
+def _build_user_portal_links(context: Optional[dict]) -> Dict[str, str]:
+    context = context or {}
+    tenant_slug = _resolve_tenant_slug(context)
+    if has_app_context():
+        base = (
+            current_app.config.get("APP_BASE_URL")
+            or current_app.config.get("PUBLIC_WIDGET_BASE_URL")
+            or current_app.config.get("BACKEND_URL")
+        )
+    else:
+        base = None
+    if not isinstance(base, str) or not base.strip():
+        base = "https://www.chatboc.ar"
+    base = base.rstrip("/")
+    portal_root = f"{base}/{tenant_slug}/portal"
+    return {
+        "portal": portal_root,
+        "pedidos": f"{portal_root}?tab=pedidos",
+        "historial": f"{portal_root}?tab=historial",
+        "encuestas": f"{portal_root}?tab=encuestas",
+    }
+
+
+def _track_whatsapp_conversion_event(
+    context: Optional[dict],
+    *,
+    event_name: str,
+    payload: Optional[Dict[str, Any]] = None,
+) -> None:
+    context = context or {}
+    payload = payload or {}
+
+    chat_ctx = context.get("chat_db_context_data") or {}
+    muni_ctx = chat_ctx.setdefault(CONTEXTO_MUNICIPIO, {}) if isinstance(chat_ctx, dict) else {}
+
+    event_snapshot = {
+        "event": event_name,
+        "payload": payload,
+        "ts": datetime.now(timezone.utc).isoformat(),
+    }
+    if isinstance(muni_ctx, dict):
+        events = muni_ctx.setdefault("conversion_events", [])
+        if isinstance(events, list):
+            events.append(event_snapshot)
+            muni_ctx["conversion_events"] = events[-25:]
+
+    tenant_id = (
+        (context.get("municipio_config_actual") or {}).get("tenant_id")
+        or context.get("tenant_id")
+        or getattr(context.get("user_obj"), "tenant_id", None)
+    )
+    if not tenant_id:
+        return
+
+    try:
+        from services.analytics.ingestor import analytics_ingestor
+
+        analytics_ingestor.track(
+            tenant_id=int(tenant_id),
+            event_name=event_name,
+            payload=payload,
+            channel=context.get("channel"),
+            session_id=context.get("chat_session_uuid"),
+            anon_id=context.get("anon_id"),
+            tenant_type=(context.get("municipio_config_actual") or {}).get("tenant_type") or "municipio",
+        )
+    except Exception:
+        logger.exception(
+            "[conversion] Failed to track event=%s tenant=%s",
+            event_name,
+            tenant_id,
+        )
 
 
 def _filter_catalogo_items(action_id: str, context: Optional[dict]) -> list:
@@ -7793,15 +7958,18 @@ def _get_encuestas_menu(context: dict) -> dict:
 
     tenant_slug = _resolve_tenant_slug(context)
     portal_base = _resolve_encuestas_base_url(context) or "https://www.chatboc.ar"
-    portal_url = f"{portal_base.rstrip('/')}/{tenant_slug}/portal"
     base_options = [
-        {"texto": "👤 Mi Portal", "url": portal_url, "type": "url"},
+        {"texto": "👤 Mi Portal", "action_id": "mi_portal_usuario"},
         {"texto": "*Volver al inicio*", "action_id": "menu_principal"},
     ]
 
     channel_value = (context.get("channel") or "").strip().lower()
     is_widget_channel = "widget" in channel_value
     is_whatsapp_channel = "whatsapp" in channel_value
+    session_id = (
+        context.get("chat_session_uuid")
+        or (context.get("chat_db_context_data", {}) or {}).get("chat_session_id")
+    )
 
     tenant_id = _resolve_encuestas_tenant_id(context)
     toggle = _resolve_encuestas_toggle(context)
@@ -7917,6 +8085,19 @@ def _get_encuestas_menu(context: dict) -> dict:
             qr_url = urljoin(
                 f"{api_base_url}/", f"api/public/encuestas/{slug_publico}/qr"
             )
+        share_url = _append_tracking_params(
+            share_url,
+            channel=channel_value,
+            campaign=f"encuesta_{slug_publico}",
+            session_id=session_id,
+        )
+        share_short_url = _append_tracking_params(
+            share_short_url,
+            channel=channel_value,
+            campaign=f"encuesta_short_{slug_publico}",
+            session_id=session_id,
+        )
+
         share_message = encuesta_entry.get("share_message") or (
             f"Participá en {titulo}: {share_short_url or share_url}"
         )
@@ -8053,26 +8234,38 @@ def _get_encuestas_menu(context: dict) -> dict:
 
     message_body = message_body or header
 
-    message_body += "\n\nSeleccioná una encuesta para participar o volvé al inicio."
+    message_body += (
+        "\n\nSeleccioná una encuesta para participar."
+        "\nSi querés ver tus gestiones, tocá *👤 Mi Portal*."
+    )
 
     if is_whatsapp_channel and len(message_body) > _WHATSAPP_MENU_BODY_SOFT_LIMIT:
         selected_lines = [
             block.get("without_description", "") for block in whatsapp_blocks
         ]
         message_body = header + "\n".join(filter(None, selected_lines))
-        message_body += "\n\nSeleccioná una encuesta para participar o volvé al inicio."
+        message_body += (
+            "\n\nSeleccioná una encuesta para participar."
+            "\nSi querés ver tus gestiones, tocá *👤 Mi Portal*."
+        )
 
     if is_whatsapp_channel and len(message_body) > _WHATSAPP_MENU_BODY_SOFT_LIMIT:
         selected_lines = [
             block.get("title_and_open", "") for block in whatsapp_blocks
         ]
         message_body = header + "\n".join(filter(None, selected_lines))
-        message_body += "\n\nSeleccioná una encuesta para participar o volvé al inicio."
+        message_body += (
+            "\n\nSeleccioná una encuesta para participar."
+            "\nSi querés ver tus gestiones, tocá *👤 Mi Portal*."
+        )
 
     if is_whatsapp_channel and len(message_body) > _WHATSAPP_MENU_BODY_SOFT_LIMIT:
         selected_lines = [block.get("title_only", "") for block in whatsapp_blocks]
         message_body = header + "\n".join(filter(None, selected_lines))
-        message_body += "\n\nSeleccioná una encuesta para participar o volvé al inicio."
+        message_body += (
+            "\n\nSeleccioná una encuesta para participar."
+            "\nSi querés ver tus gestiones, tocá *👤 Mi Portal*."
+        )
 
     options = survey_buttons + base_options
     embed_whatsapp_banner = is_whatsapp_channel and bool(banner_image_url)
@@ -8469,6 +8662,49 @@ def responder_municipio(
         if cache_key is not None:
             MUNICIPIO_RESPONSE_CACHE[cache_key] = response
         if isinstance(response, dict):
+            fuente = str(response.get("fuente") or "").lower()
+            tts_profile_cfg = {}
+            if isinstance(final_municipio_config, dict):
+                tts_profile_cfg = final_municipio_config.get("tts_profiles") or {}
+                if not isinstance(tts_profile_cfg, dict):
+                    tts_profile_cfg = {}
+
+            def _resolve_message_kind() -> str:
+                if "menu" in fuente:
+                    return "menu"
+                if fuente in {"mi_portal_usuario_menu", "solicitar_videollamada_ia"}:
+                    return "handoff"
+                if "ticket" in fuente or "reclamo" in fuente:
+                    return "confirmation"
+                return "default"
+
+            message_kind = _resolve_message_kind()
+            profile_key = f"{channel}_{message_kind}"
+            profile = (
+                tts_profile_cfg.get(profile_key)
+                or tts_profile_cfg.get(message_kind)
+                or tts_profile_cfg.get(channel)
+                or tts_profile_cfg.get("default")
+                or {}
+            )
+            if not isinstance(profile, dict):
+                profile = {}
+
+            if not response.get("tts_voice"):
+                response["tts_voice"] = profile.get("voice") or final_municipio_config.get("tts_voice_default")
+            if not response.get("tts_model"):
+                response["tts_model"] = profile.get("model") or final_municipio_config.get("tts_model_default")
+            if response.get("tts_speed") is None:
+                response["tts_speed"] = profile.get("speed", final_municipio_config.get("tts_speed_default"))
+            if not response.get("tts_style"):
+                response["tts_style"] = profile.get("style") or final_municipio_config.get("tts_style_default")
+            if not response.get("tts_cache_namespace"):
+                tenant_slug_for_tts = (
+                    final_municipio_config.get("slug")
+                    or final_municipio_config.get("tenant_slug")
+                    or "municipio"
+                )
+                response["tts_cache_namespace"] = f"{tenant_slug_for_tts}:{channel}:{message_kind}"
             normalize_response_payload(response)
         return response
 
@@ -10564,11 +10800,26 @@ def responder_municipio(
             if response_dict:
                 return _finalize_response(response_dict)
             # Reenviar el mismo submenú si la opción no es válida
+            opciones_hint = [
+                f"{idx + 1}. {(op.get('texto') or op.get('action_id') or 'Opción').strip()}"
+                for idx, op in enumerate((menu_opciones or [])[:5])
+                if isinstance(op, dict)
+            ]
+            hint_text = (
+                "\n".join(opciones_hint)
+                if opciones_hint
+                else "Elegí una opción del menú o escribí *menú* para volver al inicio."
+            )
             return _finalize_response({
-                "message_body": "No reconocí esa opción. Por favor, elegí una opción del menú.",
+                "message_body": (
+                    "No pude identificar esa opción.\n\n"
+                    f"{hint_text}\n\n"
+                    "También podés escribir *menú* para volver al inicio."
+                ),
                 "message_type": "interactive_buttons",
                 "options_list": menu_opciones,
                 "fuente": "submenu_opcion_invalida",
+                "generar_audio": True,
             })
     # --- FIN: Manejo genérico de selección de submenús ---
 
