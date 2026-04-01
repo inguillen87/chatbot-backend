@@ -53,6 +53,7 @@ class ConversationLinkingService:
         target_identity = _normalize_phone(whatsapp_number)
         if not target_identity:
             raise ValueError("whatsapp_number is required")
+        self._enforce_rate_limit(target_identity=target_identity)
 
         conversation = None
         source_channel_session_id = None
@@ -84,6 +85,21 @@ class ConversationLinkingService:
         db.session.add(link_request)
         db.session.flush()
         return link_request, otp
+
+    def _enforce_rate_limit(self, *, target_identity: str) -> None:
+        # Basic anti-abuse guard for repeated link requests to the same destination.
+        since = get_local_now() - timedelta(minutes=10)
+        recent = (
+            ConversationLinkRequest.query.filter_by(
+                tenant_id=self.tenant_id,
+                target_channel="whatsapp",
+                target_identity=target_identity,
+            )
+            .filter(ConversationLinkRequest.created_at >= since)
+            .count()
+        )
+        if recent >= 3:
+            raise PermissionError("too many link requests for this number, try again later")
 
     def confirm_whatsapp_link(
         self,

@@ -2271,6 +2271,21 @@ class WhatsAppEnterpriseRule(db.Model):
     updated_at = db.Column(db.DateTime(timezone=True), default=get_local_now, onupdate=get_local_now, nullable=False)
 
 
+class WhatsAppContactState(db.Model):
+    __tablename__ = "whatsapp_contact_state"
+
+    id = db.Column(db.Integer, primary_key=True)
+    tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=False, index=True)
+    recipient = db.Column(db.String(255), nullable=False, index=True)
+    last_inbound_at = db.Column(db.DateTime(timezone=True), nullable=True, index=True)
+    created_at = db.Column(db.DateTime(timezone=True), default=get_local_now, nullable=False)
+    updated_at = db.Column(db.DateTime(timezone=True), default=get_local_now, onupdate=get_local_now, nullable=False)
+
+    __table_args__ = (
+        db.UniqueConstraint("tenant_id", "recipient", name="uq_whatsapp_contact_state_tenant_recipient"),
+    )
+
+
 class TenantConfig(db.Model):
     __tablename__ = "tenant_config"
 

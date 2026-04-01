@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from flask import Blueprint, abort, g, jsonify, request
 
-from models import AuditEvent, User, db
+from models import AuditEvent, NotificationTemplate, User, db
 from services.whatsapp_enterprise_rules import WhatsAppEnterpriseRulesService
 from utils.auth_decorators import _is_authorized_for_tenant
 from utils.auth_helpers import token_requerido
@@ -73,3 +73,130 @@ def update_rules(user: User):
     db.session.commit()
 
     return jsonify({"updated": True})
+
+
+@whatsapp_rules_bp.route("/api/admin/templates", methods=["GET"])
+@token_requerido
+@require_tenant
+def list_whatsapp_templates(user: User):
+    tenant = g.tenant_profile
+    _guard(user, tenant)
+    templates = (
+        NotificationTemplate.query.filter_by(tenant_id=tenant.id, channel="whatsapp")
+        .order_by(NotificationTemplate.created_at.desc())
+        .all()
+    )
+    out = []
+    for t in templates:
+        meta = t.metadata_json if isinstance(t.metadata_json, dict) else {}
+        out.append(
+            {
+                "id": t.id,
+                "key": t.key,
+                "channel": t.channel,
+                "body_template": t.body_template,
+                "subject_template": t.subject_template,
+                "is_active": t.is_active,
+                "health_status": meta.get("health_status", "unknown"),
+                "metadata": meta,
+            }
+        )
+    return jsonify(out)
+
+
+@whatsapp_rules_bp.route("/api/admin/templates", methods=["POST"])
+@token_requerido
+@require_tenant
+def create_whatsapp_template(user: User):
+    tenant = g.tenant_profile
+    _guard(user, tenant)
+    payload = request.get_json(silent=True) or {}
+
+    key = str(payload.get("key") or "").strip().lower()
+    body_template = str(payload.get("body_template") or "").strip()
+    if not key or not body_template:
+        abort(400, description="key y body_template son requeridos")
+
+    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    if payload.get("health_status"):
+        metadata["health_status"] = str(payload.get("health_status")).strip().lower()
+
+    template = NotificationTemplate(
+        tenant_id=tenant.id,
+        key=key,
+        channel="whatsapp",
+        body_template=body_template,
+        subject_template=payload.get("subject_template"),
+        is_active=bool(payload.get("is_active", True)),
+        metadata_json=metadata,
+    )
+    db.session.add(template)
+    db.session.flush()
+    db.session.add(
+        AuditEvent(
+            tenant_id=tenant.id,
+            actor_user_id=user.id,
+            event_type="whatsapp_template.created",
+            resource_type="notification_template",
+            resource_id=str(template.id),
+            details={"key": template.key, "channel": "whatsapp"},
+            ip_address=request.remote_addr,
+        )
+    )
+    db.session.commit()
+    return jsonify({"id": template.id, "created": True}), 201
+
+
+@whatsapp_rules_bp.route("/api/admin/templates/<template_id>", methods=["PATCH"])
+@token_requerido
+@require_tenant
+def patch_whatsapp_template(user: User, template_id: str):
+    tenant = g.tenant_profile
+    _guard(user, tenant)
+    payload = request.get_json(silent=True) or {}
+    template = NotificationTemplate.query.filter_by(id=template_id, tenant_id=tenant.id, channel="whatsapp").first()
+    if not template:
+        abort(404, description="template not found")
+
+    if "body_template" in payload:
+        template.body_template = str(payload.get("body_template") or "").strip()
+    if "subject_template" in payload:
+        template.subject_template = payload.get("subject_template")
+    if "is_active" in payload:
+        template.is_active = bool(payload.get("is_active"))
+
+    meta = template.metadata_json if isinstance(template.metadata_json, dict) else {}
+    if "health_status" in payload:
+        meta["health_status"] = str(payload.get("health_status") or "").strip().lower()
+    template.metadata_json = meta
+
+    db.session.add(
+        AuditEvent(
+            tenant_id=tenant.id,
+            actor_user_id=user.id,
+            event_type="whatsapp_template.updated",
+            resource_type="notification_template",
+            resource_id=str(template.id),
+            details=payload,
+            ip_address=request.remote_addr,
+        )
+    )
+    db.session.commit()
+    return jsonify({"updated": True, "id": template.id})
+
+
+@whatsapp_rules_bp.route("/api/notifications/whatsapp/test", methods=["POST"])
+@token_requerido
+@require_tenant
+def test_whatsapp_notification_policy(user: User):
+    tenant = g.tenant_profile
+    _guard(user, tenant)
+    payload = request.get_json(silent=True) or {}
+    recipient = payload.get("recipient")
+    body = payload.get("body") or ""
+    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    metadata["recipient"] = recipient
+    svc = WhatsAppEnterpriseRulesService(tenant.id)
+    svc.get_or_create()
+    allowed, reason = svc.evaluate_outbound(body=body, metadata=metadata)
+    return jsonify({"allowed": allowed, "reason": reason})

@@ -49,6 +49,7 @@
 
 Response (`201`): incluye `deep_link_token`, `expires_at`.
 - `otp_code` solo se retorna en entorno de testing/desarrollo (en producción se entrega por provider).
+- Rate limit anti-abuso por número destino (tenant-scoped): al exceder umbral reciente responde `429`.
 
 ### Confirmar link
 - **POST** `/api/conversations/link/confirm`
@@ -67,6 +68,12 @@ Comportamiento:
 
 Evento socket:
 - `conversation.linked` con `conversation_id`, `source_channel_session_id`, `target_channel_session_id`.
+
+### Consultar estado de link
+- **GET** `/api/conversations/link/<link_request_id>`
+- Auth + tenant + permisos igual que BE-01.
+- Response (`200`): `id`, `conversation_id`, `target_channel`, `target_identity`, `status`, `expires_at`, `confirmed_at`.
+- `404`: solicitud no encontrada en el tenant.
 
 ## BE-05 Notification orchestrator
 
@@ -103,10 +110,15 @@ Evento socket:
 ### Endpoints
 - `GET /api/admin/whatsapp/rules`
 - `PUT /api/admin/whatsapp/rules`
+- `GET /api/admin/templates` (whatsapp)
+- `POST /api/admin/templates` (whatsapp)
+- `PATCH /api/admin/templates/<id>` (whatsapp)
+- `POST /api/notifications/whatsapp/test`
 
 ### Reglas
 - Políticas por tenant: `enforce_template_outside_24h`, `max_outbound_per_hour`, `blocked_keywords`.
 - Aplicación en dispatch de notificaciones WhatsApp dentro del orquestador.
+- Soporte de estado por contacto (`whatsapp_contact_state.last_inbound_at`) para evaluación de ventana 24h.
 
 ## BE-03 Voice refactor
 

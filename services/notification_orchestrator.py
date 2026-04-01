@@ -293,9 +293,11 @@ class NotificationOrchestrator:
         if (notif.metadata_json or {}).get("force_fail"):
             return False, None, "forced_failure"
         if notif.channel == "whatsapp":
+            metadata = notif.metadata_json if isinstance(notif.metadata_json, dict) else {}
+            metadata = {**metadata, "recipient": notif.recipient}
             allowed, reason = WhatsAppEnterpriseRulesService(notif.tenant_id).evaluate_outbound(
                 body=notif.body,
-                metadata=notif.metadata_json if isinstance(notif.metadata_json, dict) else {},
+                metadata=metadata,
             )
             if not allowed:
                 return False, None, reason

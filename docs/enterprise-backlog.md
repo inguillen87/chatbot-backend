@@ -26,6 +26,8 @@ Implementado en backend (fase inicial):
 - `POST /api/conversations/link/whatsapp` (genera OTP + deep_link_token con expiración).
 - OTP almacenado hasheado (no en texto plano).
 - `POST /api/conversations/link/confirm` (confirma OTP/deep-link e idempotencia en repetidos).
+- `GET /api/conversations/link/<id>` para consultar estado de linking.
+- Rate-limit básico antifraude por número destino en creación de link.
 - Unificación de `channel_session` web + whatsapp bajo mismo `conversation_id`.
 - Emisión de evento `conversation.linked`.
 - Audit log para solicitud y confirmación de link.
@@ -33,8 +35,7 @@ Implementado en backend (fase inicial):
 
 ### Pendientes sugeridos
 - Integración automática con envío real de OTP por WhatsApp provider.
-- Validación antifraude/rate limit por número destino.
-- Exponer consulta de estado de link para panel interno.
+- Hardening antifraude avanzado (device/IP fingerprints, ventanas dinámicas).
 
 ## BE-05 — Notification orchestrator
 
@@ -70,8 +71,11 @@ Implementado en backend (fase inicial):
 ### Estado
 Implementado en backend (fase inicial):
 - Entidad `whatsapp_enterprise_rule` por tenant.
+- Entidad `whatsapp_contact_state` para persistir `last_inbound_at` por destinatario.
 - Endpoints admin para lectura/actualización de políticas.
+- Endpoints de catálogo/test: `GET/POST/PATCH /api/admin/templates` (scope whatsapp) y `POST /api/notifications/whatsapp/test`.
 - Enforcements en notification dispatch para canal WhatsApp.
+- Cálculo de ventana de 24h basado en metadata y/o `last_inbound_at` persistido.
 
 ### Pendientes sugeridos
 - Conectar a ventana real de conversación por contacto (no solo metadata).

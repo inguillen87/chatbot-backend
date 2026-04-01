@@ -171,3 +171,62 @@ def test_link_whatsapp_deeplink_without_otp(client, app):
     )
     assert confirm_resp.status_code == 200
     assert confirm_resp.get_json()["status"] == "linked"
+
+
+def test_link_whatsapp_status_endpoint(client, app):
+    owner, tenant, resolved = _seed_conversation()
+    headers = _auth_headers(app, owner, tenant.slug)
+
+    create_resp = client.post(
+        "/api/conversations/link/whatsapp",
+        headers=headers,
+        json={"conversation_id": resolved.conversation.id, "whatsapp_number": "+5491112345678"},
+    )
+    assert create_resp.status_code == 201
+    link_request = create_resp.get_json()["link_request"]
+
+    status_resp = client.get(f"/api/conversations/link/{link_request['id']}", headers=headers)
+    assert status_resp.status_code == 200
+    status_payload = status_resp.get_json()
+    assert status_payload["id"] == link_request["id"]
+    assert status_payload["status"] == "pending"
+
+    confirm_resp = client.post(
+        "/api/conversations/link/confirm",
+        headers=headers,
+        json={"deep_link_token": link_request["deep_link_token"], "otp_code": link_request["otp_code"]},
+    )
+    assert confirm_resp.status_code == 200
+
+    status_after = client.get(f"/api/conversations/link/{link_request['id']}", headers=headers)
+    assert status_after.status_code == 200
+    assert status_after.get_json()["status"] == "confirmed"
+
+
+def test_link_whatsapp_rate_limit_per_target_number(client, app):
+    owner, tenant, resolved = _seed_conversation()
+    headers = _auth_headers(app, owner, tenant.slug)
+
+    for idx in range(3):
+        resp = client.post(
+            "/api/conversations/link/whatsapp",
+            headers=headers,
+            json={
+                "conversation_id": resolved.conversation.id,
+                "whatsapp_number": "+5491112345678",
+                "ttl_minutes": 10,
+            },
+        )
+        assert resp.status_code == 201, f"unexpected status on iteration {idx + 1}"
+
+    limited = client.post(
+        "/api/conversations/link/whatsapp",
+        headers=headers,
+        json={
+            "conversation_id": resolved.conversation.id,
+            "whatsapp_number": "+5491112345678",
+            "ttl_minutes": 10,
+        },
+    )
+    assert limited.status_code == 429
+    assert "too many link requests" in limited.get_json()["error"]

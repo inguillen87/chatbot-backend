@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from flask import Blueprint, abort, current_app, g, jsonify, request
 
-from models import AdminAuditLog, ChannelSession, Conversation, Message, db
+from models import AdminAuditLog, ChannelSession, Conversation, ConversationLinkRequest, Message, db
 from services.conversation_linking import ConversationLinkingService
 from socket_service import emit_conversation_linked
 from utils.auth_decorators import _is_authorized_for_tenant
@@ -100,6 +100,8 @@ def create_whatsapp_link(user):
             requested_by_user_id=user.id,
             ttl_minutes=int(payload.get("ttl_minutes") or 10),
         )
+    except PermissionError as exc:
+        return jsonify({"error": str(exc)}), 429
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
 
@@ -210,5 +212,45 @@ def confirm_whatsapp_link(user):
             "conversation_id": link_request.conversation_id,
             "source_channel_session_id": web_session_id,
             "target_channel_session_id": linked_session.id,
+        }
+    )
+
+
+@conversations_bp.route("/api/conversations/link/<string:link_request_id>", methods=["GET"])
+@token_requerido
+@require_tenant
+def get_link_request_status(user, link_request_id: str):
+    tenant = g.tenant_profile
+    if not _is_authorized_for_tenant(user, tenant_id=tenant.id, tenant_slug=tenant.slug):
+        abort(403, description="Acceso denegado para este tenant.")
+
+    link_request = ConversationLinkRequest.query.filter_by(id=link_request_id, tenant_id=tenant.id).first()
+    if not link_request:
+        return jsonify({"error": "link request not found"}), 404
+
+    db.session.add(
+        AdminAuditLog(
+            admin_user_id=user.id,
+            action="conversation_link_whatsapp_status_view",
+            target_object=link_request.conversation_id,
+            details={
+                "tenant_id": tenant.id,
+                "link_request_id": link_request.id,
+                "status": link_request.status,
+            },
+            ip_address=request.remote_addr,
+        )
+    )
+    db.session.commit()
+
+    return jsonify(
+        {
+            "id": link_request.id,
+            "conversation_id": link_request.conversation_id,
+            "target_channel": link_request.target_channel,
+            "target_identity": link_request.target_identity,
+            "status": link_request.status,
+            "expires_at": link_request.expires_at.isoformat() if link_request.expires_at else None,
+            "confirmed_at": link_request.confirmed_at.isoformat() if link_request.confirmed_at else None,
         }
     )
