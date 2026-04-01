@@ -1773,6 +1773,8 @@ class ChatSessionContext(db.Model):
     __tablename__ = "chat_session_context"
     chat_session_id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=True, index=True)
+    conversation_id = db.Column(db.String(36), db.ForeignKey("conversation.id"), nullable=True, index=True)
+    channel_session_id = db.Column(db.Integer, db.ForeignKey("channel_session.id"), nullable=True, index=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True, index=True)
     anon_id = db.Column(db.String(80), nullable=True, index=True) # Similar to MunicipioTicket.anon_id
     context_data = db.Column(JSONType, nullable=True) # Stores combined context (municipio, pyme, history, idempotency keys)
@@ -1825,6 +1827,77 @@ class TicketRealtimeState(db.Model):
             "last_read_comment_id": self.last_read_comment_id,
             "last_read_at": datetime_to_iso_utc(self.last_read_at),
         }
+
+class Conversation(db.Model):
+    __tablename__ = "conversation"
+
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=False, index=True)
+    created_by_user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True, index=True)
+    legacy_chat_session_id = db.Column(db.String(64), nullable=True, index=True)
+    status = db.Column(db.String(20), nullable=False, default="active")
+    created_at = db.Column(db.DateTime(timezone=True), default=get_local_now, nullable=False)
+    updated_at = db.Column(
+        db.DateTime(timezone=True),
+        default=get_local_now,
+        onupdate=get_local_now,
+        nullable=False,
+    )
+
+    __table_args__ = (
+        db.UniqueConstraint("tenant_id", "legacy_chat_session_id", name="uq_conversation_tenant_legacy_chat_session"),
+    )
+
+
+class ChannelSession(db.Model):
+    __tablename__ = "channel_session"
+
+    id = db.Column(db.Integer, primary_key=True)
+    conversation_id = db.Column(db.String(36), db.ForeignKey("conversation.id"), nullable=False, index=True)
+    tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=False, index=True)
+    channel = db.Column(db.String(30), nullable=False, index=True)
+    channel_identity = db.Column(db.String(120), nullable=True, index=True)
+    chat_session_id = db.Column(db.String(64), nullable=True, index=True)
+    status = db.Column(db.String(20), nullable=False, default="active")
+    created_at = db.Column(db.DateTime(timezone=True), default=get_local_now, nullable=False)
+    updated_at = db.Column(
+        db.DateTime(timezone=True),
+        default=get_local_now,
+        onupdate=get_local_now,
+        nullable=False,
+    )
+
+
+class Message(db.Model):
+    __tablename__ = "message"
+
+    id = db.Column(db.Integer, primary_key=True)
+    conversation_id = db.Column(db.String(36), db.ForeignKey("conversation.id"), nullable=False, index=True)
+    channel_session_id = db.Column(db.Integer, db.ForeignKey("channel_session.id"), nullable=True, index=True)
+    tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=False, index=True)
+    sender_type = db.Column(db.String(20), nullable=False)
+    sender_user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True, index=True)
+    direction = db.Column(db.String(10), nullable=False, default="in")
+    body = db.Column(db.Text, nullable=False)
+    meta_payload = db.Column("metadata", JSONType, nullable=True)
+    created_at = db.Column(db.DateTime(timezone=True), default=get_local_now, nullable=False, index=True)
+
+class ConversationLinkRequest(db.Model):
+    __tablename__ = "conversation_link_request"
+
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=False, index=True)
+    conversation_id = db.Column(db.String(36), db.ForeignKey("conversation.id"), nullable=False, index=True)
+    source_channel_session_id = db.Column(db.Integer, db.ForeignKey("channel_session.id"), nullable=True, index=True)
+    target_channel = db.Column(db.String(20), nullable=False, default="whatsapp")
+    target_identity = db.Column(db.String(120), nullable=False, index=True)
+    otp_code = db.Column(db.String(255), nullable=False)
+    deep_link_token = db.Column(db.String(64), nullable=False, unique=True, index=True)
+    status = db.Column(db.String(20), nullable=False, default="pending", index=True)
+    expires_at = db.Column(db.DateTime(timezone=True), nullable=False, index=True)
+    confirmed_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    created_by_user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True, index=True)
+    created_at = db.Column(db.DateTime(timezone=True), default=get_local_now, nullable=False)
 
 class CatalogoCompartido(db.Model):
     __tablename__ = "catalogo_compartido"
@@ -2138,6 +2211,81 @@ class UserRole(db.Model):
     tenant = db.relationship('TenantProfile')
 
 
+class OrgUnit(db.Model):
+    __tablename__ = "org_unit"
+
+    id = db.Column(db.Integer, primary_key=True)
+    tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=False, index=True)
+    name = db.Column(db.String(120), nullable=False)
+    parent_id = db.Column(db.Integer, db.ForeignKey("org_unit.id"), nullable=True, index=True)
+    is_active = db.Column(db.Boolean, nullable=False, default=True)
+    created_at = db.Column(db.DateTime(timezone=True), default=get_local_now, nullable=False)
+    updated_at = db.Column(db.DateTime(timezone=True), default=get_local_now, onupdate=get_local_now, nullable=False)
+
+    parent = db.relationship("OrgUnit", remote_side=[id], backref=db.backref("children", lazy="dynamic"))
+
+    __table_args__ = (
+        db.UniqueConstraint("tenant_id", "name", name="uq_org_unit_tenant_name"),
+    )
+
+
+class UserOrgUnit(db.Model):
+    __tablename__ = "user_org_unit"
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
+    org_unit_id = db.Column(db.Integer, db.ForeignKey("org_unit.id"), nullable=False, index=True)
+    tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=False, index=True)
+    created_at = db.Column(db.DateTime(timezone=True), default=get_local_now, nullable=False)
+
+    __table_args__ = (
+        db.UniqueConstraint("user_id", "org_unit_id", name="uq_user_org_unit"),
+    )
+
+
+class AuditEvent(db.Model):
+    __tablename__ = "audit_event"
+
+    id = db.Column(db.Integer, primary_key=True)
+    tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=False, index=True)
+    actor_user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True, index=True)
+    event_type = db.Column(db.String(80), nullable=False, index=True)
+    resource_type = db.Column(db.String(80), nullable=True)
+    resource_id = db.Column(db.String(120), nullable=True)
+    details = db.Column(JSONType, nullable=True)
+    ip_address = db.Column(db.String(50), nullable=True)
+    created_at = db.Column(db.DateTime(timezone=True), default=get_local_now, nullable=False, index=True)
+
+
+class WhatsAppEnterpriseRule(db.Model):
+    __tablename__ = "whatsapp_enterprise_rule"
+
+    id = db.Column(db.Integer, primary_key=True)
+    tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=False, unique=True, index=True)
+    enforce_template_outside_24h = db.Column(db.Boolean, nullable=False, default=True)
+    max_outbound_per_hour = db.Column(db.Integer, nullable=True)
+    quiet_hours_start = db.Column(db.Integer, nullable=True)
+    quiet_hours_end = db.Column(db.Integer, nullable=True)
+    blocked_keywords = db.Column(JSONType, nullable=True)
+    created_at = db.Column(db.DateTime(timezone=True), default=get_local_now, nullable=False)
+    updated_at = db.Column(db.DateTime(timezone=True), default=get_local_now, onupdate=get_local_now, nullable=False)
+
+
+class WhatsAppContactState(db.Model):
+    __tablename__ = "whatsapp_contact_state"
+
+    id = db.Column(db.Integer, primary_key=True)
+    tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=False, index=True)
+    recipient = db.Column(db.String(255), nullable=False, index=True)
+    last_inbound_at = db.Column(db.DateTime(timezone=True), nullable=True, index=True)
+    created_at = db.Column(db.DateTime(timezone=True), default=get_local_now, nullable=False)
+    updated_at = db.Column(db.DateTime(timezone=True), default=get_local_now, onupdate=get_local_now, nullable=False)
+
+    __table_args__ = (
+        db.UniqueConstraint("tenant_id", "recipient", name="uq_whatsapp_contact_state_tenant_recipient"),
+    )
+
+
 class TenantConfig(db.Model):
     __tablename__ = "tenant_config"
 
@@ -2219,6 +2367,66 @@ class NotificationLog(db.Model, TimestampMixin):
 
     def __repr__(self):
         return f"<NotificationLog {self.channel} to {self.recipient}>"
+
+
+class NotificationTemplate(db.Model, TimestampMixin):
+    __tablename__ = "notification_template"
+
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=False, index=True)
+    key = db.Column(db.String(80), nullable=False)
+    channel = db.Column(db.String(20), nullable=False)  # email | whatsapp | push | in_app
+    subject_template = db.Column(db.String(255), nullable=True)
+    body_template = db.Column(db.Text, nullable=False)
+    is_active = db.Column(db.Boolean, nullable=False, default=True)
+    quiet_hours_start = db.Column(db.Integer, nullable=True)  # 0..23
+    quiet_hours_end = db.Column(db.Integer, nullable=True)  # 0..23
+    metadata_json = db.Column(JSONType, nullable=True)
+
+    __table_args__ = (
+        db.UniqueConstraint("tenant_id", "key", "channel", name="uq_notification_template_tenant_key_channel"),
+    )
+
+
+class Notification(db.Model, TimestampMixin):
+    __tablename__ = "notification"
+
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=False, index=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True, index=True)
+    template_id = db.Column(db.String(36), db.ForeignKey("notification_template.id"), nullable=True, index=True)
+    channel = db.Column(db.String(20), nullable=False, index=True)
+    recipient = db.Column(db.String(255), nullable=False, index=True)
+    subject = db.Column(db.String(255), nullable=True)
+    body = db.Column(db.Text, nullable=False)
+    status = db.Column(db.String(20), nullable=False, default="queued", index=True)  # queued|sending|sent|failed|delayed
+    idempotency_key = db.Column(db.String(128), nullable=False)
+    max_retries = db.Column(db.Integer, nullable=False, default=3)
+    attempt_count = db.Column(db.Integer, nullable=False, default=0)
+    next_retry_at = db.Column(db.DateTime(timezone=True), nullable=True, index=True)
+    sent_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    last_error = db.Column(db.Text, nullable=True)
+    metadata_json = db.Column(JSONType, nullable=True)
+
+    __table_args__ = (
+        db.UniqueConstraint("tenant_id", "idempotency_key", name="uq_notification_tenant_idempotency"),
+    )
+
+
+class NotificationAttempt(db.Model, TimestampMixin):
+    __tablename__ = "notification_attempt"
+
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    notification_id = db.Column(db.String(36), db.ForeignKey("notification.id"), nullable=False, index=True)
+    tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=False, index=True)
+    attempt_number = db.Column(db.Integer, nullable=False)
+    status = db.Column(db.String(20), nullable=False)  # success | failed | delayed
+    provider = db.Column(db.String(40), nullable=True)
+    provider_message_id = db.Column(db.String(120), nullable=True)
+    error_message = db.Column(db.Text, nullable=True)
+    attempted_at = db.Column(db.DateTime(timezone=True), nullable=False, default=get_local_now)
+    next_retry_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    metadata_json = db.Column(JSONType, nullable=True)
 
 
 class AdminAuditLog(db.Model, TimestampMixin):
