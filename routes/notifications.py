@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from flask import Blueprint, abort, g, jsonify, make_response, request
+from sqlalchemy import func
 
 from models import AdminAuditLog, Notification, NotificationAttempt, NotificationTemplate, User, db
 from routes.auth import _add_cors, token_requerido
@@ -100,6 +101,50 @@ def create_notification_template(current_user: User):
     db.session.commit()
 
     return jsonify({"id": template.id, "key": template.key, "channel": template.channel, "is_active": template.is_active}), 201
+
+
+@notifications_bp.route('/api/admin/notifications/templates', methods=['GET'])
+@token_requerido
+@require_tenant
+def list_notification_templates(current_user: User):
+    tenant = g.tenant_profile
+    _ensure_admin_role(current_user)
+    if not _is_authorized_for_tenant(current_user, tenant_id=tenant.id, tenant_slug=tenant.slug):
+        abort(403, description="Acceso denegado")
+
+    channel = (request.args.get("channel") or "").strip().lower()
+    q = NotificationTemplate.query.filter_by(tenant_id=tenant.id)
+    if channel:
+        q = q.filter(NotificationTemplate.channel == channel)
+    templates = q.order_by(NotificationTemplate.created_at.desc()).all()
+
+    db.session.add(
+        AdminAuditLog(
+            admin_user_id=current_user.id,
+            action="notification_templates_view",
+            target_object=str(tenant.id),
+            details={"tenant_id": tenant.id, "channel": channel or None, "count": len(templates)},
+            ip_address=request.remote_addr,
+        )
+    )
+    db.session.commit()
+
+    return jsonify(
+        [
+            {
+                "id": t.id,
+                "key": t.key,
+                "channel": t.channel,
+                "subject_template": t.subject_template,
+                "body_template": t.body_template,
+                "quiet_hours_start": t.quiet_hours_start,
+                "quiet_hours_end": t.quiet_hours_end,
+                "is_active": t.is_active,
+                "metadata": t.metadata_json if isinstance(t.metadata_json, dict) else {},
+            }
+            for t in templates
+        ]
+    )
 
 
 @notifications_bp.route('/api/admin/notifications', methods=['POST'])
@@ -214,4 +259,200 @@ def list_notification_attempts(current_user: User, notif_id: str):
             }
             for a in attempts
         ]
+    )
+
+
+@notifications_bp.route('/api/admin/notifications/<string:notif_id>', methods=['GET'])
+@token_requerido
+@require_tenant
+def get_notification_detail(current_user: User, notif_id: str):
+    tenant = g.tenant_profile
+    _ensure_admin_role(current_user)
+    if not _is_authorized_for_tenant(current_user, tenant_id=tenant.id, tenant_slug=tenant.slug):
+        abort(403, description="Acceso denegado")
+
+    notification = Notification.query.filter_by(id=notif_id, tenant_id=tenant.id).first()
+    if not notification:
+        return jsonify({"error": "notification not found"}), 404
+
+    db.session.add(
+        AdminAuditLog(
+            admin_user_id=current_user.id,
+            action="notification_detail_view",
+            target_object=notification.id,
+            details={"tenant_id": tenant.id, "channel": notification.channel},
+            ip_address=request.remote_addr,
+        )
+    )
+    db.session.commit()
+
+    return jsonify(
+        {
+            "id": notification.id,
+            "tenant_id": notification.tenant_id,
+            "user_id": notification.user_id,
+            "template_id": notification.template_id,
+            "channel": notification.channel,
+            "recipient": notification.recipient,
+            "subject": notification.subject,
+            "body": notification.body,
+            "status": notification.status,
+            "idempotency_key": notification.idempotency_key,
+            "max_retries": notification.max_retries,
+            "attempt_count": notification.attempt_count,
+            "next_retry_at": notification.next_retry_at.isoformat() if notification.next_retry_at else None,
+            "sent_at": notification.sent_at.isoformat() if notification.sent_at else None,
+            "last_error": notification.last_error,
+            "metadata": notification.metadata_json if isinstance(notification.metadata_json, dict) else {},
+            "created_at": notification.created_at.isoformat() if notification.created_at else None,
+            "updated_at": notification.updated_at.isoformat() if notification.updated_at else None,
+        }
+    )
+
+
+@notifications_bp.route('/api/admin/notifications/metrics', methods=['GET'])
+@token_requerido
+@require_tenant
+def notification_metrics(current_user: User):
+    tenant = g.tenant_profile
+    _ensure_admin_role(current_user)
+    if not _is_authorized_for_tenant(current_user, tenant_id=tenant.id, tenant_slug=tenant.slug):
+        abort(403, description="Acceso denegado")
+
+    period_days = int(request.args.get("period_days", 7) or 7)
+    period_days = max(1, min(period_days, 90))
+    from datetime import timedelta
+    from utils.time_utils import get_local_now
+
+    since = get_local_now() - timedelta(days=period_days)
+
+    rows = (
+        db.session.query(Notification.channel, Notification.status, func.count(Notification.id))
+        .filter(Notification.tenant_id == tenant.id)
+        .filter(Notification.created_at >= since)
+        .group_by(Notification.channel, Notification.status)
+        .all()
+    )
+    by_channel = {}
+    total_sent = 0
+    total_failed = 0
+    for channel, status, count in rows:
+        c = str(channel)
+        s = str(status)
+        n = int(count or 0)
+        by_channel.setdefault(c, {"sent": 0, "failed": 0, "queued": 0, "delayed": 0})
+        if s in by_channel[c]:
+            by_channel[c][s] += n
+        if s == "sent":
+            total_sent += n
+        elif s == "failed":
+            total_failed += n
+
+    denominator = total_sent + total_failed
+    success_rate = round((total_sent / denominator) * 100, 2) if denominator > 0 else 100.0
+
+    db.session.add(
+        AdminAuditLog(
+            admin_user_id=current_user.id,
+            action="notification_metrics_view",
+            target_object=str(tenant.id),
+            details={"tenant_id": tenant.id, "period_days": period_days},
+            ip_address=request.remote_addr,
+        )
+    )
+    db.session.commit()
+
+    return jsonify(
+        {
+            "tenant_id": tenant.id,
+            "period_days": period_days,
+            "since": since.isoformat() if since else None,
+            "totals": {
+                "sent": total_sent,
+                "failed": total_failed,
+                "success_rate": success_rate,
+            },
+            "by_channel": by_channel,
+        }
+    )
+
+
+@notifications_bp.route('/api/admin/notifications/alerts', methods=['GET'])
+@token_requerido
+@require_tenant
+def notification_alerts(current_user: User):
+    tenant = g.tenant_profile
+    _ensure_admin_role(current_user)
+    if not _is_authorized_for_tenant(current_user, tenant_id=tenant.id, tenant_slug=tenant.slug):
+        abort(403, description="Acceso denegado")
+
+    period_days = int(request.args.get("period_days", 7) or 7)
+    period_days = max(1, min(period_days, 90))
+    threshold_pct = float(request.args.get("threshold_pct", 5) or 5)
+    min_volume = int(request.args.get("min_volume", 5) or 5)
+
+    from datetime import timedelta
+    from utils.time_utils import get_local_now
+
+    since = get_local_now() - timedelta(days=period_days)
+    rows = (
+        db.session.query(Notification.channel, Notification.status, func.count(Notification.id))
+        .filter(Notification.tenant_id == tenant.id)
+        .filter(Notification.created_at >= since)
+        .group_by(Notification.channel, Notification.status)
+        .all()
+    )
+
+    by_channel = {}
+    for channel, status, count in rows:
+        c = str(channel)
+        s = str(status)
+        n = int(count or 0)
+        by_channel.setdefault(c, {"sent": 0, "failed": 0})
+        if s in {"sent", "failed"}:
+            by_channel[c][s] += n
+
+    alerts = []
+    for channel, data in by_channel.items():
+        volume = data["sent"] + data["failed"]
+        if volume < min_volume:
+            continue
+        failure_rate = round((data["failed"] / volume) * 100, 2) if volume > 0 else 0.0
+        if failure_rate >= threshold_pct:
+            alerts.append(
+                {
+                    "channel": channel,
+                    "volume": volume,
+                    "sent": data["sent"],
+                    "failed": data["failed"],
+                    "failure_rate": failure_rate,
+                    "threshold_pct": threshold_pct,
+                }
+            )
+
+    db.session.add(
+        AdminAuditLog(
+            admin_user_id=current_user.id,
+            action="notification_alerts_view",
+            target_object=str(tenant.id),
+            details={
+                "tenant_id": tenant.id,
+                "period_days": period_days,
+                "threshold_pct": threshold_pct,
+                "min_volume": min_volume,
+                "alerts_count": len(alerts),
+            },
+            ip_address=request.remote_addr,
+        )
+    )
+    db.session.commit()
+
+    return jsonify(
+        {
+            "tenant_id": tenant.id,
+            "period_days": period_days,
+            "threshold_pct": threshold_pct,
+            "min_volume": min_volume,
+            "alerts": alerts,
+        }
     )

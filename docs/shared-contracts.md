@@ -80,10 +80,14 @@ Evento socket:
 ### Endpoints
 - `GET /notifications`: notificaciones del usuario autenticado dentro del tenant.
 - `POST /api/admin/notifications/templates`: alta/actualización de template por `key+channel`.
+- `GET /api/admin/notifications/templates`: listado de templates (filtro opcional `channel`).
 - `POST /api/admin/notifications`: enqueue de notificación con `idempotency_key`.
 - `POST /api/admin/notifications/dispatch`: encola tarea Celery para despacho.
 - `POST /api/workers/notifications/dispatch`: ejecuta despacho inmediato (worker/internal).
+- `GET /api/admin/notifications/<id>`: detalle de notificación individual.
 - `GET /api/admin/notifications/<id>/attempts`: historial de intentos.
+- `GET /api/admin/notifications/metrics?period_days=7`: agregados de entrega por canal/estado.
+- `GET /api/admin/notifications/alerts?period_days=7&threshold_pct=5&min_volume=5`: alertas por tasa de falla.
 
 ### Canales soportados
 - `email`, `whatsapp`, `push`, `in_app`.

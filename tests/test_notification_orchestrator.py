@@ -63,6 +63,29 @@ def test_notification_idempotency(client, app):
     assert second_payload["id"] == first_payload["id"]
 
 
+def test_notification_templates_list_endpoint(client, app):
+    admin, tenant = _seed_admin_tenant()
+    headers = _auth_headers(app, admin, tenant.slug)
+
+    created = client.post(
+        "/api/admin/notifications/templates",
+        headers=headers,
+        json={
+            "key": "order_ready",
+            "channel": "email",
+            "subject_template": "Pedido listo",
+            "body_template": "Tu pedido #${order_id} está listo",
+        },
+    )
+    assert created.status_code == 201
+
+    listed = client.get("/api/admin/notifications/templates?channel=email", headers=headers)
+    assert listed.status_code == 200
+    payload = listed.get_json()
+    assert isinstance(payload, list)
+    assert any(item["key"] == "order_ready" and item["channel"] == "email" for item in payload)
+
+
 def test_notification_retry_attempts(client, app):
     admin, tenant = _seed_admin_tenant()
     headers = _auth_headers(app, admin, tenant.slug)
@@ -295,3 +318,119 @@ def test_notifications_endpoint_returns_user_items(client, app):
     payload = resp.get_json()
     assert isinstance(payload, list)
     assert any(item.get("body") == "mensaje usuario" for item in payload)
+
+
+def test_notification_metrics_endpoint_returns_channel_aggregates(client, app):
+    admin, tenant = _seed_admin_tenant()
+    headers = _auth_headers(app, admin, tenant.slug)
+
+    ok = client.post(
+        "/api/admin/notifications",
+        headers=headers,
+        json={
+            "channel": "in_app",
+            "recipient": f"user:{admin.id}",
+            "user_id": admin.id,
+            "body": "ok",
+            "idempotency_key": "idem-metrics-ok-1",
+        },
+    )
+    assert ok.status_code == 201
+
+    fail = client.post(
+        "/api/admin/notifications",
+        headers=headers,
+        json={
+            "channel": "email",
+            "recipient": "x@test.com",
+            "body": "fail",
+            "idempotency_key": "idem-metrics-fail-1",
+            "max_retries": 0,
+            "metadata": {"force_fail": True},
+        },
+    )
+    assert fail.status_code == 201
+
+    dispatch = client.post("/api/workers/notifications/dispatch", headers=headers, json={"limit": 20})
+    assert dispatch.status_code == 200
+
+    metrics = client.get("/api/admin/notifications/metrics?period_days=7", headers=headers)
+    assert metrics.status_code == 200
+    data = metrics.get_json()
+    assert data["period_days"] == 7
+    assert data["totals"]["sent"] >= 1
+    assert data["totals"]["failed"] >= 1
+    assert "in_app" in data["by_channel"]
+    assert "email" in data["by_channel"]
+
+
+def test_notification_detail_endpoint_returns_single_notification(client, app):
+    admin, tenant = _seed_admin_tenant()
+    headers = _auth_headers(app, admin, tenant.slug)
+
+    queued = client.post(
+        "/api/admin/notifications",
+        headers=headers,
+        json={
+            "channel": "in_app",
+            "recipient": f"user:{admin.id}",
+            "user_id": admin.id,
+            "body": "detalle",
+            "idempotency_key": "idem-detail-1",
+            "metadata": {"origin": "test"},
+        },
+    )
+    assert queued.status_code == 201
+    notif_id = queued.get_json()["id"]
+
+    detail = client.get(f"/api/admin/notifications/{notif_id}", headers=headers)
+    assert detail.status_code == 200
+    payload = detail.get_json()
+    assert payload["id"] == notif_id
+    assert payload["channel"] == "in_app"
+    assert payload["metadata"]["origin"] == "test"
+
+
+def test_notification_alerts_endpoint_flags_high_failure_rate(client, app):
+    admin, tenant = _seed_admin_tenant()
+    headers = _auth_headers(app, admin, tenant.slug)
+
+    for idx in range(6):
+        queued = client.post(
+            "/api/admin/notifications",
+            headers=headers,
+            json={
+                "channel": "email",
+                "recipient": f"alert-{idx}@test.com",
+                "body": "fail",
+                "idempotency_key": f"idem-alert-fail-{idx}",
+                "max_retries": 0,
+                "metadata": {"force_fail": True},
+            },
+        )
+        assert queued.status_code == 201
+
+    for idx in range(2):
+        queued = client.post(
+            "/api/admin/notifications",
+            headers=headers,
+            json={
+                "channel": "email",
+                "recipient": f"ok-{idx}@test.com",
+                "body": "ok",
+                "idempotency_key": f"idem-alert-ok-{idx}",
+            },
+        )
+        assert queued.status_code == 201
+
+    dispatch = client.post("/api/workers/notifications/dispatch", headers=headers, json={"limit": 30})
+    assert dispatch.status_code == 200
+
+    alerts_resp = client.get(
+        "/api/admin/notifications/alerts?period_days=7&threshold_pct=50&min_volume=5",
+        headers=headers,
+    )
+    assert alerts_resp.status_code == 200
+    alerts_data = alerts_resp.get_json()
+    assert isinstance(alerts_data["alerts"], list)
+    assert any(alert["channel"] == "email" and alert["failure_rate"] >= 50 for alert in alerts_data["alerts"])

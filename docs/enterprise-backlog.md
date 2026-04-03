@@ -47,11 +47,15 @@ Implementado en backend (fase inicial):
 - Idempotencia por `tenant_id + idempotency_key`.
 - Retry/backoff exponencial + quiet hours.
 - Endpoints admin y worker para enqueue/dispatch.
+- Endpoint de listado de templates `GET /api/admin/notifications/templates`.
+- Endpoint de detalle `GET /api/admin/notifications/<id>`.
 - Tarea Celery `tasks.dispatch_notifications`.
+- Endpoint de métricas `GET /api/admin/notifications/metrics` con agregados por canal/estado.
+- Endpoint de alertas `GET /api/admin/notifications/alerts` por tasa de falla configurable.
 
 ### Pendientes sugeridos
 - Integrar providers reales de envío (SMTP/Twilio/Push provider).
-- Métricas por canal y alertas sobre tasa de error.
+- Alerting activo (notificaciones internas/webhook) a partir de umbrales de error.
 
 ## BE-06 — Roles / org units / audit
 
