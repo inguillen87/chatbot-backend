@@ -8,15 +8,28 @@ from services.tts_orchestrator import generar_audio
 from services.conversation_stream import build_realtime_envelope
 from utils.response_utils import ensure_buttons_compatibility
 from typing import Any, Optional, Set
+import importlib.util
+import os
 
 SOCKET_CORS_ORIGINS = list(
     dict.fromkeys(list(ALLOWED_ORIGINS) + ["https://chatboc.ar", "https://www.chatboc.ar"])
 )
 
+def _resolve_socket_async_mode() -> str:
+    """Prefer eventlet when available, fallback to threading for stability."""
+    forced_mode = (os.getenv("SOCKETIO_ASYNC_MODE") or "").strip().lower()
+    if forced_mode:
+        return forced_mode
+
+    if importlib.util.find_spec("eventlet"):
+        return "eventlet"
+    return "threading"
+
+
 socketio = SocketIO(
     cors_allowed_origins=SOCKET_CORS_ORIGINS,
     cookie=True,
-    async_mode="eventlet",
+    async_mode=_resolve_socket_async_mode(),
     path="/api/socket.io",
 )
 

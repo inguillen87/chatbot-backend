@@ -739,18 +739,27 @@ def _get_main_menu_payload(
     elif user_name:
         welcome_message = f"👋 *¡Hola, {user_name}!*"
     else:
-        # User's name is not known, ask for it.
-        contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
-        contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_NOMBRE_INICIAL.name
+        # User's name is not known. Prioritize discoverability with a compact
+        # category-first onboarding and keep name as optional.
         assistant_name = None
         if isinstance(municipio_config, dict):
             assistant_name = municipio_config.get("assistant_name") or municipio_config.get("bot_name")
         if not assistant_name:
             assistant_name = tenant_name_text if tenant_name_text != "tu municipio" else "JUNI"
         return {
-            "message_body": f"¡Hola! Soy {assistant_name}, el asistente virtual de {tenant_name_text}. Para una atención más personalizada, ¿podrías decirme tu nombre?",
+            "message_body": (
+                f"¡Hola! Soy {assistant_name}, asistente virtual de {tenant_name_text}. "
+                "Para empezar más rápido, elegí una categoría del menú o contame directamente qué necesitás. "
+                "Si querés, también podés decirme tu nombre para personalizar la atención."
+            ),
             "message_type": "text",
-            "fuente": "pedir_nombre_inicial"
+            "botones": [
+                {"texto": "🗣️ Reclamos y Consultas", "action_id": "mostrar_menu_reclamos"},
+                {"texto": "🚗 Trámites y Turnos", "action_id": "mostrar_menu_tramites"},
+                {"texto": "📰 Información del Municipio", "action_id": "mostrar_menu_informacion"},
+                {"texto": "🛍️ Catálogo y Beneficios", "action_id": "mostrar_menu_catalogo"},
+            ],
+            "fuente": "onboarding_categorias_primero"
         }
 
     # Determine tenant name for text body
