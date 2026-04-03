@@ -8,7 +8,6 @@ from services.tts_orchestrator import generar_audio
 from services.conversation_stream import build_realtime_envelope
 from utils.response_utils import ensure_buttons_compatibility
 from typing import Any, Optional, Set
-import importlib.util
 import os
 
 SOCKET_CORS_ORIGINS = list(
@@ -16,13 +15,10 @@ SOCKET_CORS_ORIGINS = list(
 )
 
 def _resolve_socket_async_mode() -> str:
-    """Prefer eventlet when available, fallback to threading for stability."""
+    """Use threading by default; allow explicit override via env."""
     forced_mode = (os.getenv("SOCKETIO_ASYNC_MODE") or "").strip().lower()
     if forced_mode:
         return forced_mode
-
-    if importlib.util.find_spec("eventlet"):
-        return "eventlet"
     return "threading"
 
 
@@ -318,12 +314,18 @@ def on_connect(auth):
     For anonymous web connections, sends a welcome message.
     """
     current_app.logger.info(f"Socket.IO client connected: {request.sid}")
-    token = (auth or {}).get('token')
-    channel = (auth or {}).get('channel')
+    auth_payload = auth if isinstance(auth, dict) else {}
+    token = auth_payload.get('token')
+    channel = auth_payload.get('channel')
 
     if token:
         try:
-            payload = jwt.decode(token, current_app.config['SECRET_KEY'], algorithms=["HS256"])
+            secret = current_app.config.get('SECRET_KEY')
+            if not secret:
+                current_app.logger.error("Socket.IO rejected sid %s: SECRET_KEY is not configured.", request.sid)
+                return False
+
+            payload = jwt.decode(token, secret, algorithms=["HS256"])
             user_id = payload.get('user_id')
             tenant_slug = payload.get('tenant_slug')
             user = User.query.get(user_id) if user_id else None
@@ -348,6 +350,9 @@ def on_connect(auth):
             )
         except (jwt.ExpiredSignatureError, jwt.InvalidTokenError) as e:
             current_app.logger.warning(f"Socket.IO connection rejected for sid {request.sid} due to invalid token: {e}")
+            return False
+        except Exception as e:
+            current_app.logger.exception("Socket.IO unexpected connect error for sid %s: %s", request.sid, e)
             return False
     elif channel == 'web':
         # Defer the welcome message to a separate thread to not block the connection

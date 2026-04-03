@@ -67,13 +67,15 @@ Based on user feedback from production, the current widget has too many non-func
 
 ### 5.2 Remove dead CTA blocks
 - Remove the standalone `WhatsApp` button shown inside the body when no URL/action is configured.
-- Remove inactive quick actions (`Adjuntos`, `GPS`, `Smart input`) when their backend endpoints are not available for the current tenant.
-- Rule: **do not render disabled decorative actions**. If no action, no button.
+- **Do not remove composer tools from the bottom bar** (`Adjuntos`, `GPS/Ubicación`, `Audio`, `emoji`) because they are core chat inputs.
+- If a tool is not available for the tenant, show a disabled state with tooltip explaining why, instead of removing all input affordances.
+- Rule: remove decorative/duplicated CTAs, but preserve core composer actions.
 
 ### 5.3 Recover chat viewport
 - Reduce vertical chrome (header + utility bars) and reserve more height for message list.
 - Keep composer always visible, but compact.
 - Add a min usable viewport target for 768p screens so the message area remains dominant.
+- Convert the large “horario de atención” block into compact, dismissible info (`once_per_session`) or tooltip.
 
 ### 5.4 Onboarding flow copy (from backend contract)
 - Initial message should guide by categories first (reclamos / trámites / información / catálogo).
@@ -94,5 +96,5 @@ User-reported error:
 - If token is absent, connect as anonymous web channel only.
 
 ### Backend checks (already aligned in this repo)
-- Socket server now supports async-mode fallback (`eventlet` if installed, `threading` otherwise) to reduce runtime 500s due to incompatible worker setups.
+- Socket server now defaults to `threading` for safer compatibility, and supports override via `SOCKETIO_ASYNC_MODE` when infra is prepared for another worker mode.
 - Keep reverse proxy forwarding `/api/socket.io` without stripping upgrade headers.
