@@ -53,3 +53,48 @@ async function seedDemoData(encuestaId) {
   }
 }
 ```
+
+## 5. Widget UX/UI Cleanup (High Priority)
+
+Based on user feedback from production, the current widget has too many non-functional controls and leaves too little clean space for conversation.
+
+### 5.1 Remove non-functional top chips
+- Remove (or hide behind a feature flag) the chips:
+  - `widget`
+  - `whatsapp`
+  - `voice`
+- Condition to render: only show each chip when its handler is actually enabled and wired to a valid action.
+
+### 5.2 Remove dead CTA blocks
+- Remove the standalone `WhatsApp` button shown inside the body when no URL/action is configured.
+- **Do not remove composer tools from the bottom bar** (`Adjuntos`, `GPS/Ubicación`, `Audio`, `emoji`) because they are core chat inputs.
+- If a tool is not available for the tenant, show a disabled state with tooltip explaining why, instead of removing all input affordances.
+- Rule: remove decorative/duplicated CTAs, but preserve core composer actions.
+
+### 5.3 Recover chat viewport
+- Reduce vertical chrome (header + utility bars) and reserve more height for message list.
+- Keep composer always visible, but compact.
+- Add a min usable viewport target for 768p screens so the message area remains dominant.
+- Convert the large “horario de atención” block into compact, dismissible info (`once_per_session`) or tooltip.
+
+### 5.4 Onboarding flow copy (from backend contract)
+- Initial message should guide by categories first (reclamos / trámites / información / catálogo).
+- Ask for user name as optional personalization, not as a hard blocker before showing options.
+- Avoid hardcoded generic identity text (e.g. always saying `Municipio Inteligente`) when tenant-specific name exists.
+
+## 6. Socket.IO 500 Troubleshooting Checklist (Frontend + Backend)
+
+User-reported error:
+- `Socket.IO connection error: xhr poll error`
+- `GET /api/socket.io/?EIO=... 500`
+
+### Frontend checks
+- Ensure Socket.IO client uses:
+  - `path: "/api/socket.io"`
+  - Transport fallback (`polling` + `websocket`) with sane reconnect backoff.
+- Log and surface handshake payload (`channel`, `token`, `tenant_slug`) for debugging.
+- If token is absent, connect as anonymous web channel only.
+
+### Backend checks (already aligned in this repo)
+- Socket server now defaults to `threading` for safer compatibility, and supports override via `SOCKETIO_ASYNC_MODE` when infra is prepared for another worker mode.
+- Keep reverse proxy forwarding `/api/socket.io` without stripping upgrade headers.
