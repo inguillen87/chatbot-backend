@@ -24,7 +24,9 @@ def _resolve_socket_async_mode() -> str:
 
 socketio = SocketIO(
     cors_allowed_origins=SOCKET_CORS_ORIGINS,
-    cookie=True,
+    # Engine.IO expects cookie settings as None/str/dict. Using boolean True
+    # can break on newer versions when composing SID cookies.
+    cookie={"name": "io", "path": "/", "httponly": True},
     async_mode=_resolve_socket_async_mode(),
     path="/api/socket.io",
 )
