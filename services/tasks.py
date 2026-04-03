@@ -145,6 +145,7 @@ from models import ChatSessionContext
 from twilio.rest import Client
 import os
 from sqlalchemy.orm.attributes import flag_modified
+from services.notification_orchestrator import NotificationOrchestrator
 
 @celery_app.task
 def process_image_for_chat_task(user_phone_number, client_user_id, uploaded_file_info_whatsapp, chat_session_id):
@@ -200,3 +201,16 @@ def process_image_for_chat_task(user_phone_number, client_user_id, uploaded_file
             body=message_body,
             to=to_number
         )
+
+
+@celery_app.task(name="tasks.dispatch_notifications", bind=True, max_retries=2, default_retry_delay=120)
+def dispatch_notifications_task(self, tenant_id: int, limit: int = 50):
+    """Worker task to dispatch due notifications for a tenant."""
+    try:
+        orchestrator = NotificationOrchestrator(int(tenant_id))
+        result = orchestrator.dispatch_due_notifications(limit=int(limit))
+        db.session.commit()
+        return result
+    except Exception as exc:
+        db.session.rollback()
+        raise self.retry(exc=exc)

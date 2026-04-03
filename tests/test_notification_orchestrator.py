@@ -1,0 +1,436 @@
+from datetime import datetime, timedelta
+
+import jwt
+
+from app import db
+from models import Notification, NotificationAttempt, TenantProfile, User
+
+
+def _auth_headers(app, user: User, tenant_slug: str) -> dict:
+    token = jwt.encode(
+        {"user_id": user.id, "exp": datetime.utcnow() + timedelta(hours=1)},
+        app.config["SECRET_KEY"],
+        algorithm="HS256",
+    )
+    return {"Authorization": f"Bearer {token}", "X-Tenant": tenant_slug}
+
+
+def _seed_admin_tenant():
+    admin = User(email="notif-admin@test.com", name="Admin", rol="admin", tipo_chat="pyme")
+    admin.set_password("pass")
+    db.session.add(admin)
+    db.session.flush()
+
+    tenant = TenantProfile(slug="notif-tenant", nombre="Notif Tenant", tipo="pyme", pyme_id=admin.id)
+    db.session.add(tenant)
+    db.session.commit()
+    return admin, tenant
+
+
+def test_notification_idempotency(client, app):
+    admin, tenant = _seed_admin_tenant()
+    headers = _auth_headers(app, admin, tenant.slug)
+
+    first = client.post(
+        "/api/admin/notifications",
+        headers=headers,
+        json={
+            "channel": "in_app",
+            "recipient": f"user:{admin.id}",
+            "user_id": admin.id,
+            "body": "Hola",
+            "idempotency_key": "idem-1",
+        },
+    )
+    assert first.status_code == 201
+    first_payload = first.get_json()
+    assert first_payload["created"] is True
+
+    second = client.post(
+        "/api/admin/notifications",
+        headers=headers,
+        json={
+            "channel": "in_app",
+            "recipient": f"user:{admin.id}",
+            "user_id": admin.id,
+            "body": "Hola duplicado",
+            "idempotency_key": "idem-1",
+        },
+    )
+    assert second.status_code == 200
+    second_payload = second.get_json()
+    assert second_payload["created"] is False
+    assert second_payload["id"] == first_payload["id"]
+
+
+def test_notification_templates_list_endpoint(client, app):
+    admin, tenant = _seed_admin_tenant()
+    headers = _auth_headers(app, admin, tenant.slug)
+
+    created = client.post(
+        "/api/admin/notifications/templates",
+        headers=headers,
+        json={
+            "key": "order_ready",
+            "channel": "email",
+            "subject_template": "Pedido listo",
+            "body_template": "Tu pedido #${order_id} está listo",
+        },
+    )
+    assert created.status_code == 201
+
+    listed = client.get("/api/admin/notifications/templates?channel=email", headers=headers)
+    assert listed.status_code == 200
+    payload = listed.get_json()
+    assert isinstance(payload, list)
+    assert any(item["key"] == "order_ready" and item["channel"] == "email" for item in payload)
+
+
+def test_notification_retry_attempts(client, app):
+    admin, tenant = _seed_admin_tenant()
+    headers = _auth_headers(app, admin, tenant.slug)
+
+    queued = client.post(
+        "/api/admin/notifications",
+        headers=headers,
+        json={
+            "channel": "email",
+            "recipient": "x@test.com",
+            "subject": "Retry",
+            "body": "will fail",
+            "idempotency_key": "idem-retry-1",
+            "max_retries": 2,
+            "metadata": {"force_fail": True},
+        },
+    )
+    assert queued.status_code == 201
+    notif_id = queued.get_json()["id"]
+
+    dispatch1 = client.post("/api/workers/notifications/dispatch", headers=headers, json={"limit": 20})
+    assert dispatch1.status_code == 200
+    data1 = dispatch1.get_json()
+    assert data1["failed"] >= 1
+
+    notif = Notification.query.filter_by(id=notif_id).first()
+    assert notif is not None
+    assert notif.attempt_count == 1
+    assert notif.next_retry_at is not None
+
+    notif.next_retry_at = datetime.utcnow() - timedelta(seconds=1)
+    db.session.commit()
+
+    dispatch2 = client.post("/api/workers/notifications/dispatch", headers=headers, json={"limit": 20})
+    assert dispatch2.status_code == 200
+
+    attempts = NotificationAttempt.query.filter_by(notification_id=notif_id).all()
+    assert len(attempts) >= 2
+
+
+def test_notification_quiet_hours_delays_dispatch(client, app):
+    admin, tenant = _seed_admin_tenant()
+    headers = _auth_headers(app, admin, tenant.slug)
+
+    tpl_resp = client.post(
+        "/api/admin/notifications/templates",
+        headers=headers,
+        json={
+            "key": "night_ping",
+            "channel": "in_app",
+            "body_template": "Hola ${name}",
+            "quiet_hours_start": 0,
+            "quiet_hours_end": 23,
+        },
+    )
+    assert tpl_resp.status_code == 201
+
+    queued = client.post(
+        "/api/admin/notifications",
+        headers=headers,
+        json={
+            "channel": "in_app",
+            "recipient": f"user:{admin.id}",
+            "user_id": admin.id,
+            "template_key": "night_ping",
+            "template_context": {"name": "Ana"},
+            "idempotency_key": "idem-quiet-1",
+        },
+    )
+    assert queued.status_code == 201
+    notif_id = queued.get_json()["id"]
+
+    dispatch = client.post("/api/workers/notifications/dispatch", headers=headers)
+    assert dispatch.status_code == 200
+    assert dispatch.get_json()["delayed"] >= 1
+
+    notif = Notification.query.filter_by(id=notif_id).first()
+    assert notif.status == "delayed"
+    assert notif.next_retry_at is not None
+
+
+def test_notification_terminal_failure_is_not_requeued(client, app):
+    admin, tenant = _seed_admin_tenant()
+    headers = _auth_headers(app, admin, tenant.slug)
+
+    queued = client.post(
+        "/api/admin/notifications",
+        headers=headers,
+        json={
+            "channel": "email",
+            "recipient": "x@test.com",
+            "subject": "Terminal retry",
+            "body": "will fail once",
+            "idempotency_key": "idem-terminal-fail-1",
+            "max_retries": 0,
+            "metadata": {"force_fail": True},
+        },
+    )
+    assert queued.status_code == 201
+    notif_id = queued.get_json()["id"]
+
+    dispatch1 = client.post("/api/workers/notifications/dispatch", headers=headers, json={"limit": 20})
+    assert dispatch1.status_code == 200
+    assert dispatch1.get_json()["failed"] == 1
+
+    notif = Notification.query.filter_by(id=notif_id).first()
+    assert notif is not None
+    assert notif.status == "failed"
+    assert notif.next_retry_at is None
+    assert notif.attempt_count == 1
+
+    dispatch2 = client.post("/api/workers/notifications/dispatch", headers=headers, json={"limit": 20})
+    assert dispatch2.status_code == 200
+    assert dispatch2.get_json()["processed"] == 0
+
+    notif = Notification.query.filter_by(id=notif_id).first()
+    assert notif.attempt_count == 1
+    attempts = NotificationAttempt.query.filter_by(notification_id=notif_id).all()
+    assert len(attempts) == 1
+
+
+def test_notification_quiet_hours_next_retry_outside_window(client, app):
+    admin, tenant = _seed_admin_tenant()
+    headers = _auth_headers(app, admin, tenant.slug)
+    current_hour = datetime.utcnow().hour
+    quiet_end = (current_hour + 2) % 24
+
+    tpl_resp = client.post(
+        "/api/admin/notifications/templates",
+        headers=headers,
+        json={
+            "key": "quiet_window_case",
+            "channel": "in_app",
+            "body_template": "Hola ${name}",
+            "quiet_hours_start": current_hour,
+            "quiet_hours_end": quiet_end,
+        },
+    )
+    assert tpl_resp.status_code == 201
+
+    queued = client.post(
+        "/api/admin/notifications",
+        headers=headers,
+        json={
+            "channel": "in_app",
+            "recipient": f"user:{admin.id}",
+            "user_id": admin.id,
+            "template_key": "quiet_window_case",
+            "template_context": {"name": "Ana"},
+            "idempotency_key": "idem-quiet-window-utc-1",
+        },
+    )
+    assert queued.status_code == 201
+    notif_id = queued.get_json()["id"]
+
+    dispatch = client.post("/api/workers/notifications/dispatch", headers=headers)
+    assert dispatch.status_code == 200
+    assert dispatch.get_json()["delayed"] == 1
+
+    notif = Notification.query.filter_by(id=notif_id).first()
+    assert notif is not None
+    assert notif.status == "delayed"
+    assert notif.next_retry_at is not None
+    assert notif.next_retry_at.hour == quiet_end
+
+
+def test_notification_dispatch_emits_lifecycle_events(client, app, monkeypatch):
+    admin, tenant = _seed_admin_tenant()
+    headers = _auth_headers(app, admin, tenant.slug)
+    seen_events = []
+
+    def _fake_emit(payload):
+        seen_events.append(payload)
+
+    monkeypatch.setattr("socket_service.emit_notification_status_changed", _fake_emit)
+
+    queued_ok = client.post(
+        "/api/admin/notifications",
+        headers=headers,
+        json={
+            "channel": "in_app",
+            "recipient": f"user:{admin.id}",
+            "user_id": admin.id,
+            "body": "ok",
+            "idempotency_key": "idem-event-ok-1",
+        },
+    )
+    assert queued_ok.status_code == 201
+
+    queued_fail = client.post(
+        "/api/admin/notifications",
+        headers=headers,
+        json={
+            "channel": "email",
+            "recipient": "x@test.com",
+            "body": "fail",
+            "idempotency_key": "idem-event-fail-1",
+            "max_retries": 0,
+            "metadata": {"force_fail": True},
+        },
+    )
+    assert queued_fail.status_code == 201
+
+    dispatch = client.post("/api/workers/notifications/dispatch", headers=headers, json={"limit": 20})
+    assert dispatch.status_code == 200
+
+    event_names = {evt.get("event") for evt in seen_events}
+    assert "notification.sent" in event_names
+    assert "notification.failed" in event_names
+
+
+def test_notifications_endpoint_returns_user_items(client, app):
+    admin, tenant = _seed_admin_tenant()
+    headers = _auth_headers(app, admin, tenant.slug)
+
+    client.post(
+        "/api/admin/notifications",
+        headers=headers,
+        json={
+            "channel": "in_app",
+            "recipient": f"user:{admin.id}",
+            "user_id": admin.id,
+            "body": "mensaje usuario",
+            "idempotency_key": "idem-user-feed-1",
+        },
+    )
+
+    resp = client.get("/notifications", headers=headers)
+    assert resp.status_code == 200
+    payload = resp.get_json()
+    assert isinstance(payload, list)
+    assert any(item.get("body") == "mensaje usuario" for item in payload)
+
+
+def test_notification_metrics_endpoint_returns_channel_aggregates(client, app):
+    admin, tenant = _seed_admin_tenant()
+    headers = _auth_headers(app, admin, tenant.slug)
+
+    ok = client.post(
+        "/api/admin/notifications",
+        headers=headers,
+        json={
+            "channel": "in_app",
+            "recipient": f"user:{admin.id}",
+            "user_id": admin.id,
+            "body": "ok",
+            "idempotency_key": "idem-metrics-ok-1",
+        },
+    )
+    assert ok.status_code == 201
+
+    fail = client.post(
+        "/api/admin/notifications",
+        headers=headers,
+        json={
+            "channel": "email",
+            "recipient": "x@test.com",
+            "body": "fail",
+            "idempotency_key": "idem-metrics-fail-1",
+            "max_retries": 0,
+            "metadata": {"force_fail": True},
+        },
+    )
+    assert fail.status_code == 201
+
+    dispatch = client.post("/api/workers/notifications/dispatch", headers=headers, json={"limit": 20})
+    assert dispatch.status_code == 200
+
+    metrics = client.get("/api/admin/notifications/metrics?period_days=7", headers=headers)
+    assert metrics.status_code == 200
+    data = metrics.get_json()
+    assert data["period_days"] == 7
+    assert data["totals"]["sent"] >= 1
+    assert data["totals"]["failed"] >= 1
+    assert "in_app" in data["by_channel"]
+    assert "email" in data["by_channel"]
+
+
+def test_notification_detail_endpoint_returns_single_notification(client, app):
+    admin, tenant = _seed_admin_tenant()
+    headers = _auth_headers(app, admin, tenant.slug)
+
+    queued = client.post(
+        "/api/admin/notifications",
+        headers=headers,
+        json={
+            "channel": "in_app",
+            "recipient": f"user:{admin.id}",
+            "user_id": admin.id,
+            "body": "detalle",
+            "idempotency_key": "idem-detail-1",
+            "metadata": {"origin": "test"},
+        },
+    )
+    assert queued.status_code == 201
+    notif_id = queued.get_json()["id"]
+
+    detail = client.get(f"/api/admin/notifications/{notif_id}", headers=headers)
+    assert detail.status_code == 200
+    payload = detail.get_json()
+    assert payload["id"] == notif_id
+    assert payload["channel"] == "in_app"
+    assert payload["metadata"]["origin"] == "test"
+
+
+def test_notification_alerts_endpoint_flags_high_failure_rate(client, app):
+    admin, tenant = _seed_admin_tenant()
+    headers = _auth_headers(app, admin, tenant.slug)
+
+    for idx in range(6):
+        queued = client.post(
+            "/api/admin/notifications",
+            headers=headers,
+            json={
+                "channel": "email",
+                "recipient": f"alert-{idx}@test.com",
+                "body": "fail",
+                "idempotency_key": f"idem-alert-fail-{idx}",
+                "max_retries": 0,
+                "metadata": {"force_fail": True},
+            },
+        )
+        assert queued.status_code == 201
+
+    for idx in range(2):
+        queued = client.post(
+            "/api/admin/notifications",
+            headers=headers,
+            json={
+                "channel": "email",
+                "recipient": f"ok-{idx}@test.com",
+                "body": "ok",
+                "idempotency_key": f"idem-alert-ok-{idx}",
+            },
+        )
+        assert queued.status_code == 201
+
+    dispatch = client.post("/api/workers/notifications/dispatch", headers=headers, json={"limit": 30})
+    assert dispatch.status_code == 200
+
+    alerts_resp = client.get(
+        "/api/admin/notifications/alerts?period_days=7&threshold_pct=50&min_volume=5",
+        headers=headers,
+    )
+    assert alerts_resp.status_code == 200
+    alerts_data = alerts_resp.get_json()
+    assert isinstance(alerts_data["alerts"], list)
+    assert any(alert["channel"] == "email" and alert["failure_rate"] >= 50 for alert in alerts_data["alerts"])
