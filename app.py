@@ -744,7 +744,11 @@ def create_app(config_class=Config):
 
     # Inicializar SocketIO solo en runtime normal
     if socketio is not None:
-        socketio.init_app(app)
+        socketio.init_app(
+            app,
+            cookie={"name": "io", "path": "/", "httponly": True},
+            path="/api/socket.io",
+        )
 
     # Inicializar Flask-Sock
     sock.init_app(app)

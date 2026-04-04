@@ -589,6 +589,29 @@ def public_tenant_widget_config(tenant_slug: str):
     if isinstance(loyalty_enabled, bool):
         features.setdefault("loyalty_enabled", loyalty_enabled)
 
+    # UX policy contract for frontend widget (compact layout + composer tools).
+    features.setdefault("composer_tools", {
+        "emoji": True,
+        "attachments": True,
+        "location": True,
+        "audio": True,
+    })
+    features.setdefault("header_quick_chips", {
+        "widget": False,
+        "whatsapp": False,
+        "voice": False,
+    })
+    features.setdefault("live_schedule_banner", {
+        "mode": "once_per_session",
+        "collapsible": True,
+        "compact": True,
+    })
+    features.setdefault("socket", {
+        "path": "/api/socket.io",
+        "preferred_transports": ["polling"],
+        "allow_websocket": False,
+    })
+
     contact = {}
     if owner:
         if owner.telefono:

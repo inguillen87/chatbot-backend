@@ -503,6 +503,11 @@ def responder_chatboc(
             "skip_audio_generation": True,
         }
 
+    if isinstance(response_data, dict):
+        fuente_val = str(response_data.get("fuente") or "").strip().lower()
+        if fuente_val.startswith("demo_") or response_data.get("demo_selector_mode"):
+            response_data["skip_audio_generation"] = True
+
     # Always enable audio responses for accessibility
     context_data = chat_db_context.context_data if chat_db_context else {}
     if (
