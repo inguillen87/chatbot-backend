@@ -1011,6 +1011,17 @@ def _get_main_menu_payload(
         "tts_speed": menu_tts_speed,
         "tts_cache_namespace": "menu_principal",
     }
+    # Hard guard: never leak the generic placeholder identity in final greeting.
+    for key in ("message_body", "audio_text"):
+        value = response.get(key)
+        if not isinstance(value, str):
+            continue
+        normalized = value.lower()
+        if "municipio inteligente" in normalized:
+            sanitized = value.replace("Municipio Inteligente", "tu municipio")
+            sanitized = sanitized.replace("municipio inteligente", "tu municipio")
+            sanitized = sanitized.replace("de tu municipio de tu municipio", "de tu municipio")
+            response[key] = sanitized
     # Do not include a header image in the initial greeting menu to keep the
     # conversation lightweight and similar to other professional bots like
     # Boti. Removing the image avoids large headers in WhatsApp.
