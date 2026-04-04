@@ -1,4 +1,5 @@
 from database import db
+from datetime import datetime, timedelta
 import json
 
 import pytest
@@ -435,6 +436,52 @@ def test_get_public_encuesta_prefers_active_published_when_link_slug_is_duplicat
         assert resolved.estado == "publicada"
 
 
+def test_get_public_encuesta_prefers_requested_tenant_when_slug_is_shared(client):
+    with client.application.app_context():
+        shared_public_slug = "votacion-en-vivo-rio-grande"
+
+        now = datetime.utcnow()
+        wrong_tenant = EncEncuesta(
+            tenant_id=7,
+            slug="votacion-en-vivo-rio-grande-legacy",
+            titulo="Encuesta cerrada en otro tenant",
+            descripcion="No debería resolverse para tenant 4",
+            tipo="opinion",
+            estado="publicada",
+            inicio_at=now - timedelta(days=10),
+            fin_at=now - timedelta(days=1),
+        )
+        wrong_tenant_link = EncLink(
+            encuesta=wrong_tenant,
+            slug_publico=shared_public_slug,
+            canal="web",
+        )
+
+        expected = EncEncuesta(
+            tenant_id=4,
+            slug="votacion-en-vivo-rio-grande-actual",
+            titulo="Encuesta activa",
+            descripcion="Debe mostrarse para tenant 4",
+            tipo="opinion",
+            estado="publicada",
+            inicio_at=now - timedelta(days=1),
+            fin_at=now + timedelta(days=10),
+        )
+        expected_link = EncLink(
+            encuesta=expected,
+            slug_publico=shared_public_slug,
+            canal="web",
+        )
+
+        db.session.add_all([wrong_tenant, wrong_tenant_link, expected, expected_link])
+        db.session.commit()
+
+        resolved = get_public_encuesta(shared_public_slug, preferred_tenant_id=4)
+
+        assert resolved.id == expected.id
+        assert resolved.tenant_id == 4
+
+
 def test_qr_endpoint_returns_png_for_public_encuesta(client):
     slug = "encuesta-qr-publica"
     slug_publico = f"{slug}-abcdef"
@@ -515,4 +562,3 @@ def restore_canonical_base(client):
     original = client.application.config.get("PUBLIC_ENCUESTAS_CANONICAL_BASE_URL")
     yield
     client.application.config["PUBLIC_ENCUESTAS_CANONICAL_BASE_URL"] = original
-

@@ -603,8 +603,13 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
     @bp.route("/<slug>", methods=["GET"])
     def obtener_encuesta(slug: str):
         preview_user = _resolve_preview_user()
+        tenant_id = _resolve_tenant_from_request()
         try:
-            encuesta = get_public_encuesta(slug, allow_inactive_for_user=preview_user)
+            encuesta = get_public_encuesta(
+                slug,
+                allow_inactive_for_user=preview_user,
+                preferred_tenant_id=tenant_id,
+            )
         except EncuestaError as err:
             return jsonify(err.to_dict()), err.status_code
         return jsonify(serialize_public_encuesta(encuesta, slug_publico=slug))
