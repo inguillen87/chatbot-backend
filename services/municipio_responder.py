@@ -5296,6 +5296,14 @@ _augment_menu_keywords_with_tramite_buttons()
 
 from fuzzywuzzy import process
 
+DEMO_ACTION_ALIASES = {
+    "soluciones para sector publico": "mostrar_menu",
+    "soluciones para sector público": "mostrar_menu",
+    "sector publico": "mostrar_menu",
+    "sector público": "mostrar_menu",
+    "soluciones para empresas": "mostrar_menu_catalogo",
+}
+
 def find_menu_action_by_input(user_input: str, menu_buttons: list) -> str | None:
     """
     Finds a menu action based on user input, checking for exact match, number, first letter, or keywords.
@@ -5308,6 +5316,10 @@ def find_menu_action_by_input(user_input: str, menu_buttons: list) -> str | None
     # Allow emoji shortcuts regardless of menu context.
     if user_input in EMOJI_MAIN_MENU_ACTIONS:
         return EMOJI_MAIN_MENU_ACTIONS[user_input]
+
+    normalized_alias = normalizar_texto(user_input.strip())
+    if normalized_alias in DEMO_ACTION_ALIASES:
+        return DEMO_ACTION_ALIASES[normalized_alias]
 
     # 0. Direct action_id match to support clients sending the action identifier
     normalized_action = normalizar_texto(user_input.strip())

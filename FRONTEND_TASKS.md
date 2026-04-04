@@ -149,3 +149,24 @@ Goal: make `/demo` and the embeddable chat widget production-grade, clean, and s
 3. Horario compact component (`once_per_session`).
 4. `/demo` step flow simplification.
 5. Final visual QA on desktop + mobile breakpoints.
+
+## 8. Hotfixes inmediatos detectados en producción
+
+### 8.1 `ApiError is not defined`
+- Fix urgente en frontend: importar/definir `ApiError` antes de usarlo en `ChatPanel`.
+- Agregar fallback seguro:
+  - `const safeErrorName = error?.name || "Error";`
+  - `const safeMessage = error?.message || "Error inesperado";`
+
+### 8.2 Socket WebSocket warning flood
+- Si backend indica `features.socket.allow_websocket = false`, inicializar socket con `transports: ["polling"]`.
+- Mostrar warning no bloqueante (una sola vez) y continuar en polling.
+- No cortar UX por warnings de WebSocket cuando polling funciona.
+
+### 8.3 `/demo` experiencia completa (inputs ricos)
+- Asegurar que en `/demo` estén visibles y habilitados:
+  - adjuntos/imagen
+  - audio/nota de voz
+  - ubicación
+  - (opcional) videollamada si `voice_call`/`video_call` está habilitado.
+- Si una capacidad está deshabilitada por tenant, mostrar tooltip explicativo, no desaparecer toda la barra.

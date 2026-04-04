@@ -606,6 +606,11 @@ def public_tenant_widget_config(tenant_slug: str):
         "collapsible": True,
         "compact": True,
     })
+    features.setdefault("socket", {
+        "path": "/api/socket.io",
+        "preferred_transports": ["polling"],
+        "allow_websocket": False,
+    })
 
     contact = {}
     if owner:
