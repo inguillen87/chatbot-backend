@@ -98,3 +98,54 @@ User-reported error:
 ### Backend checks (already aligned in this repo)
 - Socket server now defaults to `threading` for safer compatibility, and supports override via `SOCKETIO_ASYNC_MODE` when infra is prepared for another worker mode.
 - Keep reverse proxy forwarding `/api/socket.io` without stripping upgrade headers.
+
+## 7. `/demo` + ChatWidget “World Class UX/UI” Execution Pack
+
+Goal: make `/demo` and the embeddable chat widget production-grade, clean, and stable.
+
+### 7.1 Critical behavior rules (must-pass)
+- The widget must always keep the composer visible and usable (send, emoji, attach, location, audio).
+- Socket failures must not block chat: if socket fails, fallback to HTTP-only flow with a subtle status badge.
+- No duplicate greetings on boot (`__INIT__` should be idempotent per session unless explicit reset).
+- “Horario de atención” should appear once per session (collapsible), not as a repeated large block.
+
+### 7.2 `/demo` onboarding flow
+- Step 1: show only 2 primary choices (Empresas / Sector Público) in a compact card.
+- Step 2: after selection, show a concise contextual greeting + category actions.
+- Step 3: immediately enable free text with smart placeholder (“Contame qué necesitás…”).
+- Never inject placeholder tenant identity in copy (`Municipio Inteligente`) if tenant is generic.
+
+### 7.3 Header and top-bar cleanup
+- Keep only essential header actions (close, optional sound, optional menu).
+- Hide top chips (`widget`, `whatsapp`, `voice`) unless explicitly enabled and functional for that tenant.
+- Remove decorative counters/icons with no action.
+
+### 7.4 Message area layout
+- Prioritize message list height over utility banners.
+- Clamp max bubble height with “ver completo” only when truly needed.
+- Avoid stacked cards that repeat same info (greeting duplicated twice).
+
+### 7.5 Socket reliability implementation plan
+- Client:
+  - Initialize with `path: "/api/socket.io"`.
+  - Use transports `["polling", "websocket"]`.
+  - Exponential backoff with jitter and cap (e.g. 1s → 2s → 4s → 8s up to 20s).
+  - Circuit-breaker: after N failures, pause reconnect and continue with HTTP mode.
+- Telemetry:
+  - Emit structured events: `socket_connect_attempt`, `socket_connect_ok`, `socket_connect_fail`, `socket_fallback_http`.
+  - Attach tenant slug, environment, transport, and error class.
+
+### 7.6 Acceptance checklist for frontend handoff
+- [ ] No `500` loops on `/api/socket.io` in normal browsing.
+- [ ] No repeated “Soy Municipio Inteligente…” in visible messages or TTS entry text.
+- [ ] Top chips hidden by default on `/demo` unless enabled by features.
+- [ ] Composer tools remain available (emoji, adjuntos, ubicación, audio).
+- [ ] Horario card renders compact and dismissible once per session.
+- [ ] Lighthouse mobile UX score improved vs current baseline.
+
+### 7.7 Suggested delivery order (frontend repo)
+1. Socket fallback and telemetry.
+2. Header/top-chip cleanup.
+3. Horario compact component (`once_per_session`).
+4. `/demo` step flow simplification.
+5. Final visual QA on desktop + mobile breakpoints.
