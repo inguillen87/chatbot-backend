@@ -245,6 +245,31 @@ def test_share_returns_payload_without_canonical(client, monkeypatch):
     assert response.get_json() == {"slug": "demo-slug"}
 
 
+def test_share_passes_tenant_preference_from_domain_map(client, monkeypatch):
+    client.application.config["PUBLIC_ENCUESTAS_CANONICAL_BASE_URL"] = None
+    client.application.config["PUBLIC_ENCUESTAS_DOMAIN_MAP"] = {"chatboc.ar": 77}
+
+    captured = {}
+
+    def fake_get(slug, **kwargs):
+        captured["slug"] = slug
+        captured["preferred_tenant_id"] = kwargs.get("preferred_tenant_id")
+        return {"slug": slug}
+
+    monkeypatch.setattr("routes.encuestas_public.get_public_encuesta", fake_get)
+    monkeypatch.setattr(
+        "routes.encuestas_public.serialize_public_encuesta",
+        lambda encuesta, slug_publico: {"slug": slug_publico},
+    )
+
+    response = client.get(
+        "/e/demo-tenant",
+        headers={"Accept": "application/json", "Host": "chatboc.ar"},
+    )
+    assert response.status_code == 200
+    assert captured == {"slug": "demo-tenant", "preferred_tenant_id": 77}
+
+
 def _create_public_encuesta(slug: str, slug_publico: str, estado: str = "publicada") -> EncEncuesta:
     encuesta = EncEncuesta(
         tenant_id=4,
