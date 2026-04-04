@@ -265,6 +265,15 @@ def _public_target_base_url() -> str:
     return request.host_url.rstrip("/")
 
 
+def _load_public_encuesta_for_request(slug: str, *, preview_user=None):
+    tenant_id = _resolve_tenant_from_request()
+    return get_public_encuesta(
+        slug,
+        allow_inactive_for_user=preview_user,
+        preferred_tenant_id=tenant_id,
+    )
+
+
 _SHARE_IMAGE_CANDIDATE_KEYS = (
     "share_image_url",
     "imagen_portada_url",
@@ -604,7 +613,7 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
     def obtener_encuesta(slug: str):
         preview_user = _resolve_preview_user()
         try:
-            encuesta = get_public_encuesta(slug, allow_inactive_for_user=preview_user)
+            encuesta = _load_public_encuesta_for_request(slug, preview_user=preview_user)
         except EncuestaError as err:
             return jsonify(err.to_dict()), err.status_code
         return jsonify(serialize_public_encuesta(encuesta, slug_publico=slug))
@@ -690,7 +699,7 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
 
         preview_user = _resolve_preview_user()
         try:
-            encuesta = get_public_encuesta(slug, allow_inactive_for_user=preview_user)
+            encuesta = _load_public_encuesta_for_request(slug, preview_user=preview_user)
         except EncuestaError as err:
             return jsonify(err.to_dict()), err.status_code
 
@@ -727,7 +736,7 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
 
         try:
             # We fetch encuesta just to ensure the slug is valid, though report doesn't strictly depend on it in service
-            get_public_encuesta(slug)
+            _load_public_encuesta_for_request(slug)
             reportar_comentario(comentario_id)
             return jsonify({"ok": True}), 200
         except EncuestaError as err:
@@ -738,7 +747,7 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
         preview_user = _resolve_preview_user()
 
         try:
-            encuesta = get_public_encuesta(slug, allow_inactive_for_user=preview_user)
+            encuesta = _load_public_encuesta_for_request(slug, preview_user=preview_user)
         except EncuestaError as err:
             return jsonify(err.to_dict()), err.status_code
 
@@ -792,7 +801,7 @@ def share_redirect(slug: str):
 
     preview_user = _resolve_preview_user()
     try:
-        encuesta = get_public_encuesta(slug, allow_inactive_for_user=preview_user)
+        encuesta = _load_public_encuesta_for_request(slug, preview_user=preview_user)
     except EncuestaError as err:
         if wants_json:
             return jsonify(err.to_dict()), err.status_code
