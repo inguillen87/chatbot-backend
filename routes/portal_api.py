@@ -1726,7 +1726,7 @@ def get_loyalty_info(tenant_slug):
 @portal_api_bp.route('/surveys/<slug>/responses', methods=['POST'])
 @require_auth
 def submit_portal_survey_response(tenant_slug, slug):
-    _resolve_context(tenant_slug) # Ensure tenant context
+    tenant = _resolve_context(tenant_slug) # Ensure tenant context
     # user = g.viewer # Responses logic typically uses user_id from payload or infers it
 
     from services.encuestas_service import save_respuesta, EncuestaError
@@ -1747,7 +1747,13 @@ def submit_portal_survey_response(tenant_slug, slug):
 
     try:
         # Note: save_respuesta expects PUBLIC SLUG.
-        save_respuesta(slug, data, request_ctx)
+        preferred_tenant_id = tenant.encuestas_tenant_id or tenant.id
+        save_respuesta(
+            slug,
+            data,
+            request_ctx,
+            preferred_tenant_id=preferred_tenant_id,
+        )
         return jsonify({"success": True}), 201
     except EncuestaError as e:
         return jsonify({"error": e.message}), e.status_code
