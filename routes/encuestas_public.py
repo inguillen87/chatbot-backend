@@ -620,6 +620,7 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
 
     def _handle_responder(slug: str):
         ip = _extract_ip()
+        tenant_id = _resolve_tenant_from_request()
         if not _rate_limit(ip):
             return (
                 jsonify({
@@ -637,7 +638,12 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
         }
         payload = _extract_request_payload()
         try:
-            respuesta = save_respuesta(slug, payload, request_ctx)
+            respuesta = save_respuesta(
+                slug,
+                payload,
+                request_ctx,
+                preferred_tenant_id=tenant_id,
+            )
         except EncuestaError as err:
             if err.status_code == 409:
                 return (

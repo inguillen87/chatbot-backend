@@ -94,10 +94,11 @@ def test_public_urls_honor_custom_target_base(client, monkeypatch):
 def test_respuestas_alias_reuses_handler(client, monkeypatch):
     saved_calls = {}
 
-    def fake_save(slug, payload, ctx):
+    def fake_save(slug, payload, ctx, **kwargs):
         saved_calls["slug"] = slug
         saved_calls["payload"] = payload
         saved_calls["ctx"] = ctx
+        saved_calls["preferred_tenant_id"] = kwargs.get("preferred_tenant_id")
         return _DummyRespuesta(123)
 
     monkeypatch.setattr("routes.encuestas_public.save_respuesta", fake_save)
@@ -113,15 +114,17 @@ def test_respuestas_alias_reuses_handler(client, monkeypatch):
     assert saved_calls["slug"] == "demo-encuesta"
     assert saved_calls["payload"] == {"respuesta": "ok"}
     assert saved_calls["ctx"]["ip"] == "1.1.1.1"
+    assert saved_calls["preferred_tenant_id"] == 4
 
 
 def test_responder_accepts_form_payload(client, monkeypatch):
     captured: dict = {}
 
-    def fake_save(slug, payload, ctx):
+    def fake_save(slug, payload, ctx, **kwargs):
         captured["slug"] = slug
         captured["payload"] = payload
         captured["ctx"] = ctx
+        captured["preferred_tenant_id"] = kwargs.get("preferred_tenant_id")
         return _DummyRespuesta(456)
 
     monkeypatch.setattr("routes.encuestas_public.save_respuesta", fake_save)
@@ -138,12 +141,13 @@ def test_responder_accepts_form_payload(client, monkeypatch):
     assert captured["slug"] == "demo-encuesta"
     assert captured["payload"]["respuestas"] == respuestas
     assert captured["ctx"]["ip"] == "2.2.2.2"
+    assert captured["preferred_tenant_id"] == 4
 
 
 def test_responder_parses_respuestas_field_from_form(client, monkeypatch):
     captured: dict = {}
 
-    def fake_save(slug, payload, ctx):
+    def fake_save(slug, payload, ctx, **kwargs):
         captured["payload"] = payload
         return _DummyRespuesta(789)
 
@@ -165,7 +169,7 @@ def test_responder_parses_respuestas_field_from_form(client, monkeypatch):
 def test_responder_flattens_bracketed_form_fields(client, monkeypatch):
     captured: dict = {}
 
-    def fake_save(slug, payload, ctx):
+    def fake_save(slug, payload, ctx, **kwargs):
         captured["payload"] = payload
         return _DummyRespuesta(321)
 
@@ -200,7 +204,7 @@ def test_responder_flattens_bracketed_form_fields(client, monkeypatch):
 
 
 def test_responder_duplicate_conflict_is_idempotent_success(client, monkeypatch):
-    def fake_save(_slug, _payload, _ctx):
+    def fake_save(_slug, _payload, _ctx, **kwargs):
         raise EncuestaError("Ya registramos tu participación", status_code=409)
 
     monkeypatch.setattr("routes.encuestas_public.save_respuesta", fake_save)

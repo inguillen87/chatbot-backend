@@ -2552,8 +2552,14 @@ def _coerce_respuestas_payload(value: Optional[Any]) -> List[Dict[str, Any]]:
     return []
 
 
-def save_respuesta(slug_publico: str, payload: Dict[str, Any], request_ctx: Dict[str, Any]) -> EncRespuesta:
-    encuesta = get_public_encuesta(slug_publico)
+def save_respuesta(
+    slug_publico: str,
+    payload: Dict[str, Any],
+    request_ctx: Dict[str, Any],
+    *,
+    preferred_tenant_id: Optional[int] = None,
+) -> EncRespuesta:
+    encuesta = get_public_encuesta(slug_publico, preferred_tenant_id=preferred_tenant_id)
     if not isinstance(payload, dict):
         if isinstance(payload, Mapping):
             payload = dict(payload)
