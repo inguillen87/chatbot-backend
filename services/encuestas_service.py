@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from flask import current_app, g
+from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 from sqlalchemy import func, or_, inspect
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import joinedload, load_only
@@ -51,6 +52,44 @@ except Exception:  # pragma: no cover - analytics optional in some contexts
 
 _BOOTSTRAP_TENANT_ID: Optional[int] = None
 _ENC_COMENTARIO_HAS_REPORT_COUNT: Optional[bool] = None
+
+
+def _social_comment_serializer() -> URLSafeTimedSerializer:
+    secret = (
+        current_app.config.get("SURVEY_SOCIAL_TOKEN_SECRET")
+        or current_app.config.get("SECRET_KEY")
+        or "chatboc-social-comment-secret"
+    )
+    salt = current_app.config.get("SURVEY_SOCIAL_TOKEN_SALT", "survey-social-comment")
+    return URLSafeTimedSerializer(secret_key=secret, salt=salt)
+
+
+def issue_social_comment_token(claims: Dict[str, Any]) -> str:
+    payload = {
+        "provider": str(claims.get("provider") or "").strip().lower(),
+        "auth_user_id": str(claims.get("auth_user_id") or "").strip(),
+        "auth_email": str(claims.get("auth_email") or "").strip() or None,
+        "auth_first_name": str(claims.get("auth_first_name") or "").strip() or None,
+        "auth_last_name": str(claims.get("auth_last_name") or "").strip() or None,
+    }
+    return _social_comment_serializer().dumps(payload)
+
+
+def verify_social_comment_token(token: str, *, max_age_seconds: Optional[int] = None) -> Optional[Dict[str, Any]]:
+    if not token:
+        return None
+
+    ttl = max_age_seconds
+    if ttl is None:
+        ttl = int(current_app.config.get("SURVEY_SOCIAL_TOKEN_TTL_SECONDS", 900) or 900)
+
+    try:
+        decoded = _social_comment_serializer().loads(token, max_age=max(60, ttl))
+        return decoded if isinstance(decoded, dict) else None
+    except SignatureExpired:
+        return None
+    except BadSignature:
+        return None
 
 
 def _enc_comentario_has_report_count() -> bool:
