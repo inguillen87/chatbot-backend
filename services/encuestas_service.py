@@ -3604,11 +3604,51 @@ def create_comentario(encuesta_id: int, payload: Dict[str, Any], user: Optional[
     if not texto:
         raise EncuestaError("El comentario no puede estar vacío")
 
+    comment_mode = str(payload.get("mode") or payload.get("comment_mode") or "").strip().lower()
+    comment_mode = "social" if comment_mode == "social" else "anon"
+
+    auth_provider = (
+        payload.get("auth_provider")
+        or payload.get("provider")
+        or payload.get("social_provider")
+    )
+    auth_provider = str(auth_provider or "").strip().lower() or None
+    if auth_provider and auth_provider not in {"facebook", "google", "instagram"}:
+        auth_provider = None
+
+    auth_user_id = str(payload.get("auth_user_id") or "").strip() or None
+    auth_email = str(payload.get("auth_email") or "").strip() or None
+    auth_first_name = str(payload.get("auth_first_name") or "").strip()
+    auth_last_name = str(payload.get("auth_last_name") or "").strip()
+
+    if comment_mode == "social":
+        if not auth_provider:
+            raise EncuestaError("Proveedor social requerido para comentarios registrados", status_code=400)
+        if not (auth_user_id or auth_email or (user and getattr(user, "id", None))):
+            raise EncuestaError("Identidad social incompleta para publicar comentario", status_code=400)
+
+    display_name = (
+        " ".join(part for part in [auth_first_name, auth_last_name] if part).strip()
+        if comment_mode == "social"
+        else ""
+    )
+    if not display_name:
+        display_name = (payload.get("nombre") or payload.get("nombre_autor") or "").strip()
+    if not display_name and comment_mode == "social":
+        display_name = auth_email or (f"Usuario {auth_provider.title()}" if auth_provider else "")
+
+    anon_id = payload.get("anon_id")
+    if comment_mode == "social":
+        social_identity = auth_user_id or auth_email or str(getattr(user, "id", "")).strip()
+        safe_identity = re.sub(r"[^a-zA-Z0-9_\-@.]", "", social_identity or "")[:80]
+        if safe_identity:
+            anon_id = f"social:{auth_provider}:{safe_identity}"
+
     comentario = EncComentario(
         encuesta_id=encuesta.id,
         user_id=getattr(user, "id", None) if user else None,
-        anon_id=payload.get("anon_id"),
-        nombre_autor=(payload.get("nombre") or payload.get("nombre_autor") or "").strip() or None,
+        anon_id=anon_id,
+        nombre_autor=display_name or None,
         texto=texto,
         estado="publicado"
     )
@@ -3627,6 +3667,11 @@ def create_comentario(encuesta_id: int, payload: Dict[str, Any], user: Optional[
                 "fecha": comentario.created_at.isoformat(),
                 "user_id": comentario.user_id
             }
+            if isinstance(comentario.anon_id, str) and comentario.anon_id.startswith("social:"):
+                parts = comentario.anon_id.split(":", 2)
+                if len(parts) == 3:
+                    data["comment_mode"] = "social"
+                    data["auth_provider"] = parts[1]
             emit_survey_comment(slug_publico, data)
         except Exception:
             current_app.logger.exception("[encuestas] Error al emitir comentario socket")
@@ -3696,13 +3741,27 @@ def list_comentarios(encuesta_id: int, limit: int = 50, offset: int = 0) -> List
 
     results = []
     for c in rows:
+        comment_mode = "anon"
+        auth_provider = None
+        auth_user_id = None
+        anon_ref = c.anon_id
+        if isinstance(anon_ref, str) and anon_ref.startswith("social:"):
+            parts = anon_ref.split(":", 2)
+            if len(parts) == 3:
+                comment_mode = "social"
+                auth_provider = parts[1] or None
+                auth_user_id = parts[2] or None
+
         results.append({
             "id": c.id,
             "texto": _safe_text_value(c.texto, fallback=""),
             "nombre_autor": _safe_text_value(c.nombre_autor or (c.user.name if c.user else "Anónimo"), fallback="Anónimo"),
             "fecha": c.created_at.isoformat(),
             "user_id": c.user_id,
-            "anon_id": c.anon_id
+            "anon_id": c.anon_id,
+            "comment_mode": comment_mode,
+            "auth_provider": auth_provider,
+            "auth_user_id": auth_user_id,
         })
     return results
 

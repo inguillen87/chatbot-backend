@@ -266,6 +266,41 @@ def _public_target_base_url() -> str:
     return request.host_url.rstrip("/")
 
 
+def _resolve_comment_social_providers() -> list[dict]:
+    configured = current_app.config.get("SURVEY_COMMENT_SOCIAL_PROVIDERS")
+    if isinstance(configured, list) and configured:
+        normalized = []
+        for item in configured:
+            if isinstance(item, dict):
+                provider_id = str(item.get("id") or item.get("provider") or "").strip().lower()
+                if provider_id:
+                    normalized.append(
+                        {
+                            "id": provider_id,
+                            "label": str(item.get("label") or provider_id.title()),
+                        }
+                    )
+            elif isinstance(item, str) and item.strip():
+                provider_id = item.strip().lower()
+                normalized.append({"id": provider_id, "label": provider_id.title()})
+        if normalized:
+            return normalized
+
+    return [
+        {"id": "facebook", "label": "Facebook"},
+        {"id": "google", "label": "Google"},
+        {"id": "instagram", "label": "Instagram"},
+    ]
+
+
+def _attach_comment_social_config(data: dict) -> dict:
+    if not isinstance(data, dict):
+        return data
+    if data.get("permitir_comentarios"):
+        data.setdefault("socialProviders", _resolve_comment_social_providers())
+    return data
+
+
 def _resolve_request_id() -> str:
     request_id = (
         request.headers.get("X-Request-Id")
@@ -639,7 +674,7 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
         base_url = _public_target_base_url()
         payload = []
         for encuesta, slug in encuestas:
-            data = serialize_public_encuesta(encuesta, slug_publico=slug)
+            data = _attach_comment_social_config(serialize_public_encuesta(encuesta, slug_publico=slug))
             data["url_publica"] = f"{base_url}/e/{slug}"
             payload.append(data)
 
@@ -652,7 +687,7 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
             encuesta = _load_public_encuesta_for_request(slug, preview_user=preview_user)
         except EncuestaError as err:
             return _public_error_response(err)
-        return jsonify(serialize_public_encuesta(encuesta, slug_publico=slug))
+        return jsonify(_attach_comment_social_config(serialize_public_encuesta(encuesta, slug_publico=slug)))
 
     def _handle_responder(slug: str):
         ip = _extract_ip()
@@ -764,7 +799,9 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
                         "id": comentario.id,
                         "texto": comentario.texto,
                         "nombre_autor": comentario.nombre_autor,
-                        "fecha": comentario.created_at.isoformat()
+                        "fecha": comentario.created_at.isoformat(),
+                        "comment_mode": "social" if isinstance(comentario.anon_id, str) and comentario.anon_id.startswith("social:") else "anon",
+                        "auth_provider": (comentario.anon_id.split(":", 2)[1] if isinstance(comentario.anon_id, str) and comentario.anon_id.startswith("social:") and len(comentario.anon_id.split(":", 2)) == 3 else None),
                     }
                 }), 201
             except EncuestaError as err:
@@ -868,7 +905,7 @@ def share_redirect(slug: str):
             err.status_code,
         )
 
-    data = serialize_public_encuesta(encuesta, slug_publico=slug)
+    data = _attach_comment_social_config(serialize_public_encuesta(encuesta, slug_publico=slug))
     base_url = _public_target_base_url()
     share_url = f"{base_url}/e/{slug}"
     api_base_url = _public_api_base_url()
