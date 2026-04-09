@@ -1,5 +1,5 @@
 import pytest
-from models import CatalogoItem, Promocion, TenantProfile, TenantFollower, TenantTicket, User, MunicipioPost, OrderEvent, EncEncuesta, EncRespuesta, PointsTransaction, SugerenciaCiudadano
+from models import CatalogoItem, Promocion, TenantProfile, TenantFollower, TenantTicket, User, MunicipioPost, OrderEvent, EncEncuesta, EncRespuesta, PointsTransaction, SugerenciaCiudadano, Notification, AdminAuditLog
 from app import db
 from datetime import datetime, timezone
 
@@ -8,6 +8,9 @@ def test_full_flow(client):
     owner = User(name="Owner", email="owner@demo.com", rol="admin", tipo_chat="municipio")
     owner.set_password("pass")
     db.session.add(owner)
+    super_admin = User(name="Super Admin", email="sa@chatboc.ar", rol="super_admin", tipo_chat="admin")
+    super_admin.set_password("pass")
+    db.session.add(super_admin)
     db.session.commit()
 
     # 2. Create Tenant linked to Owner
@@ -73,6 +76,53 @@ def test_full_flow(client):
     assert len(data['news']) > 0
     assert data['news'][0]['title'] == "Test News"
     assert "cover_url" in data['news'][0]
+
+    # 6b. Integration contract exposes WhatsApp trial + rubro-aware menu
+    integration_resp = client.get(f"/api/v1/portal/demo-flow/integration", headers=headers)
+    assert integration_resp.status_code == 200
+    integration = integration_resp.json
+    onboarding = integration.get("demoOnboarding") or {}
+    trial = onboarding.get("twilio_trial") or {}
+    assert trial.get("display_number") == "+1 (415) 523-8886"
+    assert trial.get("join_phrase") == "join brief-yesterday"
+    assert (trial.get("wa_deeplink") or "").startswith("https://wa.me/14155238886?text=")
+    quick_menu = onboarding.get("quick_menu") or []
+    assert any(item.get("intent") == "iniciar_reclamo" for item in quick_menu)
+    experience_blueprint = onboarding.get("experience_blueprint") or {}
+    assert experience_blueprint.get("tenant_type") == "municipio"
+    assert any(item.get("intent") == "iniciar_reclamo" for item in (experience_blueprint.get("quick_actions") or []))
+    assert (experience_blueprint.get("conversion_pitch") or {}).get("cta_label") == "Hablar con ventas"
+    assert (experience_blueprint.get("component_pack") or {}).get("layout") == "stacked_cards"
+    activation_state = onboarding.get("activation_state") or {}
+    assert activation_state.get("active") is False
+    assert activation_state.get("activation_count") == 0
+
+    activate_resp = client.post(f"/api/v1/portal/demo-flow/integration/demo/activate-whatsapp", headers=headers, json={})
+    assert activate_resp.status_code == 200
+    activate_payload = activate_resp.json
+    assert activate_payload.get("ok") is True
+    assert (activate_payload.get("activation_state") or {}).get("active") is True
+    assert (activate_payload.get("activation_state") or {}).get("activation_count") == 1
+    hot_lead_notif = Notification.query.filter_by(tenant_id=tenant.id, user_id=super_admin.id).first()
+    assert hot_lead_notif is not None
+    assert hot_lead_notif.channel == "in_app"
+    assert "Hot lead SaaS" in (hot_lead_notif.body or "")
+    audit = AdminAuditLog.query.filter_by(action="tenant_demo_whatsapp_activated", target_object=tenant.slug).first()
+    assert audit is not None
+
+    # one-time activation guard per tenant: if deactivated, cannot activate again
+    tenant.configuracion = {
+        **(tenant.configuracion or {}),
+        "demo_trial": {
+            "active": False,
+            "activation_count": 1,
+        },
+    }
+    db.session.add(tenant)
+    db.session.commit()
+    activate_again = client.post(f"/api/v1/portal/demo-flow/integration/demo/activate-whatsapp", headers=headers, json={})
+    assert activate_again.status_code == 403
+    assert (activate_again.json or {}).get("error") == "demo_activation_limit_reached"
 
     # 7. Portal API Check (Orders - Empty)
     resp = client.get(f"/api/v1/portal/demo-flow/orders", headers=headers)

@@ -3,6 +3,7 @@ import json
 import os
 from urllib import error as urllib_error
 from urllib import request as urllib_request
+from urllib.parse import quote_plus
 from flask import Blueprint, jsonify, request, g, current_app
 from flask_cors import cross_origin
 from sqlalchemy import desc
@@ -20,6 +21,7 @@ from routes.pwa_public import _build_public_cart_url
 
 from utils.auth_helpers import _is_jwt_token
 from services.demo_registry import load_demo_rubros
+from services.demo_experience_contract import build_demo_experience_contract
 
 public_resolver_bp = Blueprint("public_resolver_bp", __name__, url_prefix="/api/public")
 public_municipios_bp = Blueprint("public_municipios_bp", __name__)
@@ -291,6 +293,60 @@ def _support_channels_payload(tenant: TenantProfile, cfg: dict) -> dict:
             },
         },
     }
+
+
+def _tenant_rubro_profile(tenant: TenantProfile) -> dict:
+    owner = tenant.pyme or tenant.municipio
+    rubro = getattr(owner, "rubro", None) if owner else None
+    rubro_nombre = getattr(rubro, "nombre", None) or ((tenant.tipo or "").title())
+    rubro_slug = getattr(rubro, "nombre", None)
+    if isinstance(rubro_slug, str):
+        rubro_slug = rubro_slug.strip().lower().replace(" ", "-")
+    return {
+        "tenant_type": tenant.tipo,
+        "rubro_label": rubro_nombre,
+        "rubro_slug": rubro_slug or (tenant.tipo or "").lower(),
+    }
+
+
+def _demo_trial_payload_for_widget(tenant: TenantProfile, cfg: dict) -> dict:
+    phrase = str(cfg.get("demo_whatsapp_join_phrase") or "join brief-yesterday").strip()
+    number = str(cfg.get("demo_whatsapp_number_e164") or "+14155238886").strip() or "+14155238886"
+    max_messages = cfg.get("demo_max_messages", 10)
+    try:
+        max_messages = max(1, min(int(max_messages), 100))
+    except (TypeError, ValueError):
+        max_messages = 10
+
+    return {
+        "enabled": bool(cfg.get("demo_trial_enabled", True)),
+        "join_phrase": phrase,
+        "display_number": cfg.get("demo_whatsapp_display_number") or "+1 (415) 523-8886",
+        "number_e164": number,
+        "wa_deeplink": f"https://wa.me/{number.lstrip('+')}?text={quote_plus(phrase)}",
+        "limits": {
+            "max_messages": max_messages,
+            "upgrade_required_for": cfg.get("demo_upgrade_required_for") or ["qdrant_catalogo_completo", "automatizaciones_enterprise"],
+            "upgrade_message": cfg.get("demo_upgrade_message") or "Límite demo alcanzado. Activá plan Full para continuar.",
+        },
+    }
+
+
+def _quick_menu_for_widget(tenant: TenantProfile) -> list[dict]:
+    tipo = (tenant.tipo or "").strip().lower()
+    if tipo == "municipio":
+        return [
+            {"id": "menu_reclamo", "label": "Crear reclamo", "intent": "iniciar_reclamo"},
+            {"id": "menu_sugerencia", "label": "Crear sugerencia", "intent": "enviar_sugerencia"},
+            {"id": "menu_estado_ticket", "label": "Estado ticket", "intent": "consultar_ticket"},
+            {"id": "menu_heatmap", "label": "Mapa de calor", "intent": "analytics_heatmap"},
+        ]
+    return [
+        {"id": "menu_catalogo", "label": "Ver catálogo", "intent": "ver_catalogo"},
+        {"id": "menu_pedido", "label": "Crear pedido", "intent": "crear_pedido"},
+        {"id": "menu_estado_pedido", "label": "Estado pedido", "intent": "estado_pedido"},
+        {"id": "menu_subir_catalogo", "label": "Subir PDF/Excel", "intent": "subir_catalogo"},
+    ]
 
 
 
@@ -713,6 +769,14 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
     embed_snippet = f"<script src='{script_url}' async {attr_snippet}></script>"
 
     support_channels = _support_channels_payload(tenant, cfg)
+    rubro_profile = _tenant_rubro_profile(tenant)
+    demo_trial = _demo_trial_payload_for_widget(tenant, cfg)
+    quick_menu = _quick_menu_for_widget(tenant)
+    experience_blueprint = build_demo_experience_contract(
+        tenant_type=tenant.tipo,
+        rubro_label=rubro_profile.get("rubro_label"),
+        max_messages=(demo_trial.get("limits") or {}).get("max_messages", 10),
+    )
 
     builder_config = {
         "welcome_title": welcome_title,
@@ -770,6 +834,10 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
             "closed_size": closed_size,
             "border_radius": border_radius,
         },
+        "rubro_profile": rubro_profile,
+        "demo_trial": demo_trial,
+        "quick_menu": quick_menu,
+        "experience_blueprint": experience_blueprint,
     }
 
     return {
@@ -782,6 +850,10 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
         "builder_config": builder_config,
         "marketplace": marketplace,
         "support_channels": support_channels,
+        "rubro_profile": rubro_profile,
+        "demo_trial": demo_trial,
+        "quick_menu": quick_menu,
+        "experience_blueprint": experience_blueprint,
         "widget_token": canonical_token,
         "widget_token_cookie_name": current_app.config.get("WIDGET_TOKEN_COOKIE_NAME", "widget_token"),
     }

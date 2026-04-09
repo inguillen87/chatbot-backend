@@ -168,6 +168,23 @@ class AuthDemoLoginTest(unittest.TestCase):
         self.assertEqual(payload.get('frontend_contract_version'), '2026-02-demo-onboarding-v2')
         onboarding = payload.get('onboarding') or {}
         self.assertEqual(onboarding.get('default_sector'), 'gobierno')
+        twilio_trial = onboarding.get('twilio_trial') or {}
+        self.assertEqual(twilio_trial.get('display_number'), '+1 (415) 523-8886')
+        self.assertEqual(twilio_trial.get('join_phrase'), 'join brief-yesterday')
+        self.assertTrue((twilio_trial.get('wa_deeplink') or '').startswith('https://wa.me/14155238886?text='))
+
+        menus_by_tipo = onboarding.get('menus_by_tipo') or {}
+        self.assertTrue(any(item.get('id') == 'reclamos' for item in (menus_by_tipo.get('municipio') or [])))
+        self.assertTrue(any(item.get('id') == 'crear_pedido' for item in (menus_by_tipo.get('pyme') or [])))
+        experience_templates = onboarding.get('experience_templates') or {}
+        self.assertEqual((experience_templates.get('municipio') or {}).get('tenant_type'), 'municipio')
+        self.assertEqual((experience_templates.get('pyme') or {}).get('tenant_type'), 'pyme')
+        municipio_exp = experience_templates.get('municipio') or {}
+        whatsapp_playbook = (municipio_exp.get('channel_playbooks') or {}).get('whatsapp') or {}
+        self.assertEqual(whatsapp_playbook.get('activation_phrase'), 'join brief-yesterday')
+        self.assertIn('location', whatsapp_playbook.get('media_checks') or [])
+        component_pack = municipio_exp.get('component_pack') or {}
+        self.assertEqual(component_pack.get('layout'), 'stacked_cards')
 
         sector_options = onboarding.get('sector_options') or []
         sector_keys = {item.get('key') for item in sector_options}
@@ -180,6 +197,7 @@ class AuthDemoLoginTest(unittest.TestCase):
         empresas = next((item for item in sector_options if item.get('key') == 'empresas'), {})
         rubros = empresas.get('rubros') or []
         self.assertTrue(all((r.get('tipo_chat') or '').lower() == 'pyme' for r in rubros))
+        self.assertTrue(all(isinstance(r.get('menu_preview'), list) for r in rubros))
 
         frontend = payload.get('frontend') or {}
         selector = frontend.get('demo_selector') or {}

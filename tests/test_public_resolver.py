@@ -213,6 +213,34 @@ class PublicResolverTest(unittest.TestCase):
         payload = response.get_json()
         self.assertEqual(payload.get("widget_token"), self.owner.token)
 
+    def test_widget_config_exposes_demo_trial_and_rubro_menu(self):
+        response = self.client.get(
+            f"/api/public/widget-config?tenant={self.tenant.slug}",
+            headers={"X-Widget-Token": "demo-token"},
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json() or {}
+        widget = payload.get("widget") or {}
+        builder = payload.get("builder_config") or {}
+
+        demo_trial = widget.get("demo_trial") or {}
+        self.assertEqual(demo_trial.get("display_number"), "+1 (415) 523-8886")
+        self.assertEqual(demo_trial.get("join_phrase"), "join brief-yesterday")
+        self.assertTrue((demo_trial.get("wa_deeplink") or "").startswith("https://wa.me/14155238886?text="))
+
+        rubro_profile = widget.get("rubro_profile") or {}
+        self.assertEqual((rubro_profile.get("tenant_type") or "").lower(), "municipio")
+
+        quick_menu = widget.get("quick_menu") or []
+        self.assertTrue(any(item.get("intent") == "iniciar_reclamo" for item in quick_menu))
+        self.assertEqual(builder.get("quick_menu"), quick_menu)
+        experience = widget.get("experience_blueprint") or {}
+        self.assertEqual((experience.get("tenant_type") or "").lower(), "municipio")
+        self.assertTrue(any(item.get("intent") == "iniciar_reclamo" for item in (experience.get("quick_actions") or [])))
+        widget_playbook = (experience.get("channel_playbooks") or {}).get("widget_chat") or {}
+        self.assertIn("image", widget_playbook.get("media_checks") or [])
+        self.assertEqual((experience.get("component_pack") or {}).get("layout"), "stacked_cards")
+
 
 if __name__ == "__main__":
     unittest.main()
