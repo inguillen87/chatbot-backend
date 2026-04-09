@@ -18,8 +18,10 @@ class UploadProcessorCatalogAttachmentTests(unittest.TestCase):
 
         self.user = User(email="catalog-upload@test.com", name="Catalog Upload", rol="admin", tipo_chat="pyme")
         self.user.set_password("test")
+        self.user.token = "token-catalog-upload-test"
         db.session.add(self.user)
         db.session.commit()
+        self.client = self.app.test_client()
 
     def tearDown(self):
         db.session.remove()
@@ -53,3 +55,26 @@ class UploadProcessorCatalogAttachmentTests(unittest.TestCase):
         self.assertIsNotNone(persisted)
         self.assertEqual(persisted.url, adjunto.url)
 
+    @patch("services.upload_processor.procesar_y_embedear_catalogo")
+    @patch("services.upload_processor._store_catalog_attachment_record")
+    def test_subir_catalogo_continua_si_falla_storage_url(self, mock_store_attachment, mock_process_catalog):
+        mock_store_attachment.return_value = None
+        mock_process_catalog.return_value = 3
+
+        data = {
+            "file": (io.BytesIO(b"columna,precio\nmalbec,43200\n"), "catalogo.csv"),
+        }
+        response = self.client.post(
+            "/subir_catalogo",
+            data=data,
+            headers={"Authorization": f"Bearer {self.user.token}"},
+            content_type="multipart/form-data",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json() or {}
+        self.assertEqual(payload.get("items_count"), 3)
+        self.assertIn("upload_id", payload)
+        self.assertIsNone(payload.get("catalog_url"))
+        self.assertIsNone(payload.get("catalog_attachment_id"))
+        mock_process_catalog.assert_called_once()
