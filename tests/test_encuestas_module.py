@@ -43,7 +43,7 @@ if "qrcode" not in sys.modules:
 
 import models  # noqa: F401  # ensure models are registered
 from database import db
-from models import EncEncuesta, EncRespuesta, EncSegmento
+from models import EncEncuesta, EncLink, EncRespuesta, EncSegmento
 from services.encuestas_service import (
     EncuestaError,
     create_encuesta,
@@ -403,6 +403,34 @@ def test_respuesta_unica_por_cookie(client):
             save_respuesta(slug, payload, _request_ctx("anon-1"))
         assert error.value.status_code == 409
         assert "Ya registramos" in error.value.message or "Respuesta duplicada" in error.value.message
+
+
+def test_save_respuesta_prefers_requested_tenant_for_shared_slug(client):
+    with client.application.app_context():
+        encuesta_tenant_4, slug_tenant_4, _ = _create_active_encuesta(tenant_id=4)
+        encuesta_tenant_7, slug_tenant_7, _ = _create_active_encuesta(tenant_id=7)
+
+        link_tenant_4 = EncLink.query.filter_by(encuesta_id=encuesta_tenant_4.id, slug_publico=slug_tenant_4).first()
+        link_tenant_7 = EncLink.query.filter_by(encuesta_id=encuesta_tenant_7.id, slug_publico=slug_tenant_7).first()
+        assert link_tenant_4 is not None
+        assert link_tenant_7 is not None
+
+        shared_slug = "votacion-en-vivo-rio-grande"
+        link_tenant_4.slug_publico = shared_slug
+        link_tenant_7.slug_publico = shared_slug
+        db.session.commit()
+
+        payload = _respuesta_payload(encuesta_tenant_4, texto="Respuesta tenant 4")
+        respuesta = save_respuesta(
+            shared_slug,
+            payload,
+            _request_ctx("tenant-aware-submit"),
+            preferred_tenant_id=4,
+        )
+
+        assert respuesta.id is not None
+        assert respuesta.encuesta_id == encuesta_tenant_4.id
+        assert respuesta.tenant_id == encuesta_tenant_4.tenant_id
 
 
 def test_save_respuesta_accepts_answers_aliases(client):

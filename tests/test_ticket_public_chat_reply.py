@@ -63,6 +63,28 @@ class TicketPublicChatReplyTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 403)
 
+    def test_public_pin_can_reply_with_form_encoded_payload(self):
+        ticket = MunicipioTicket(
+            municipio_id=self.admin.id,
+            pregunta="luminaria apagada",
+            estado="nuevo",
+            nro_ticket="123457",
+            consulta_pin="654321",
+        )
+        db.session.add(ticket)
+        db.session.commit()
+
+        response = self.client.post(
+            f"/tickets/chat/{ticket.id}/responder_ciudadano?pin=654321",
+            data={"comentario": "Mensaje enviado como form"},
+            content_type="application/x-www-form-urlencoded",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        comentario = TicketComentario.query.filter_by(municipio_ticket_id=ticket.id).order_by(TicketComentario.id.desc()).first()
+        self.assertIsNotNone(comentario)
+        self.assertEqual(comentario.comentario, "Mensaje enviado como form")
+
     def test_ticket_timeline_includes_unified_conversation_stream(self):
         ticket = MunicipioTicket(
             municipio_id=self.admin.id,

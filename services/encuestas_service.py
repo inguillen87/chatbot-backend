@@ -1967,21 +1967,38 @@ def _ensure_demo_public_window(encuesta: EncEncuesta) -> None:
             )
 
 def get_public_encuesta(
-    slug_publico: str, *, allow_inactive_for_user: Optional[Any] = None
+    slug_publico: str,
+    *,
+    allow_inactive_for_user: Optional[Any] = None,
+    preferred_tenant_id: Optional[int] = None,
 ) -> EncEncuesta:
     normalized_slug = (slug_publico or "").strip().lower()
     if not normalized_slug:
         raise EncuestaError("Encuesta no encontrada", status_code=404)
 
+    preferred_tenant: Optional[int] = None
+    if preferred_tenant_id is not None:
+        try:
+            preferred_tenant = int(preferred_tenant_id)
+        except (TypeError, ValueError):
+            preferred_tenant = None
+
     def _pick_best_candidate(items: Sequence[Optional[EncEncuesta]]) -> Optional[EncEncuesta]:
         """Prefer currently active public surveys when multiple rows share a slug."""
+        normalized_items = [candidate for candidate in items if candidate is not None]
+        if not normalized_items:
+            return None
 
-        fallback: Optional[EncEncuesta] = None
-        for candidate in items:
-            if candidate is None:
-                continue
-            if fallback is None:
-                fallback = candidate
+        tenant_filtered = normalized_items
+        if preferred_tenant is not None:
+            matches = [
+                candidate for candidate in normalized_items if int(candidate.tenant_id or 0) == preferred_tenant
+            ]
+            if matches:
+                tenant_filtered = matches
+
+        fallback: Optional[EncEncuesta] = tenant_filtered[0] if tenant_filtered else None
+        for candidate in tenant_filtered:
             if candidate.estado == "publicada" and candidate.esta_activa():
                 return candidate
         return fallback
@@ -2535,8 +2552,14 @@ def _coerce_respuestas_payload(value: Optional[Any]) -> List[Dict[str, Any]]:
     return []
 
 
-def save_respuesta(slug_publico: str, payload: Dict[str, Any], request_ctx: Dict[str, Any]) -> EncRespuesta:
-    encuesta = get_public_encuesta(slug_publico)
+def save_respuesta(
+    slug_publico: str,
+    payload: Dict[str, Any],
+    request_ctx: Dict[str, Any],
+    *,
+    preferred_tenant_id: Optional[int] = None,
+) -> EncRespuesta:
+    encuesta = get_public_encuesta(slug_publico, preferred_tenant_id=preferred_tenant_id)
     if not isinstance(payload, dict):
         if isinstance(payload, Mapping):
             payload = dict(payload)

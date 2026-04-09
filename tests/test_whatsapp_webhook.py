@@ -17,7 +17,11 @@ from app import create_app, db
 from config import Config
 from models import User, Rubro, WhatsappNumero, ChatSessionContext
 from services.municipio_responder import CONTEXTO_MUNICIPIO
-from routes.whatsapp_webhook import _send_delayed_payload, _strip_duplicate_welcome_media
+from routes.whatsapp_webhook import (
+    _send_delayed_payload,
+    _strip_duplicate_welcome_media,
+    _reset_municipio_context_for_menu,
+)
 # Moved model imports after app and config to ensure they are found via sys.path
 # and to avoid potential issues if models.py itself tries to import app-context related things early.
 # However, for direct use in tests, they are typically at the top. Let's try keeping them here.
@@ -122,6 +126,36 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self.validator_patch.stop()
         self.twilio_client_patch.stop()
         self.welcome_patch.stop()
+
+    def test_reset_municipio_context_for_menu_clears_sensitive_draft_data(self):
+        session = ChatSessionContext(
+            chat_session_id="ctx-reset-test",
+            user_id=self.empresa_id_for_test,
+            anon_id=self.test_user_number_str,
+            context_data={
+                CONTEXTO_MUNICIPIO: {
+                    "estado_conversacion": "confirmando_reclamo",
+                    "reclamo_flow_v2": {"state": "confirm"},
+                    "datos_reclamo": {"categoria": "Bache"},
+                    "datos_parciales_llm_reclamo": {"descripcion": "calle rota"},
+                    "confirmation_required": True,
+                },
+                "last_options_sent": [{"texto": "Iniciar reclamo", "action_id": "iniciar_reclamo"}],
+                "pending_sensitive_action": {"action_id": "iniciar_reclamo"},
+            },
+        )
+        db.session.add(session)
+        db.session.commit()
+
+        _reset_municipio_context_for_menu(session)
+
+        municipio_ctx = session.context_data.get(CONTEXTO_MUNICIPIO, {})
+        self.assertEqual(municipio_ctx.get("estado_conversacion"), "ESPERANDO_SELECCION_MENU_PRINCIPAL")
+        self.assertNotIn("reclamo_flow_v2", municipio_ctx)
+        self.assertNotIn("datos_reclamo", municipio_ctx)
+        self.assertNotIn("datos_parciales_llm_reclamo", municipio_ctx)
+        self.assertNotIn("last_options_sent", session.context_data)
+        self.assertNotIn("pending_sensitive_action", session.context_data)
 
     @patch('routes.whatsapp_webhook.threading.Timer')
     @patch('services.response_formatter.build_interactive_response')

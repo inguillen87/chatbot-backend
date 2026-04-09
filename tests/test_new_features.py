@@ -14,6 +14,7 @@ from services.ticket_utils import (
     _remove_redundant_urls_from_message,
     remove_buttons_with_urls_in_message,
 )
+from services.whatsapp_receipts import render_ticket_whatsapp
 from services.municipio_responder import GreetingHandler
 from services.municipio_responder import responder_municipio
 from config import TestConfig
@@ -108,6 +109,48 @@ class TestNewFeatures(unittest.TestCase):
         self.assertIn("Pedido recibido", message)
         self.assertIn("PED-20241001", message)
         self.assertTrue(any(btn.get("texto") == "💬 Ver mi Ticket" for btn in buttons))
+
+    def test_formatear_ticket_respuesta_formatea_horario_json(self):
+        contacto = {
+            "nombre": "Mesa de Entrada",
+            "telefono": "+5492634519821",
+            "horario": [
+                {"dia": "Lunes", "abre": "09:00", "cierra": "20:00", "cerrado": False},
+                {"dia": "Sábado", "abre": "", "cierra": "", "cerrado": True},
+            ],
+        }
+        message, _ = formatear_ticket_respuesta(
+            "reclamo",
+            "Marcelo",
+            "Descripción",
+            "Categoria",
+            "M-12345",
+            contacto,
+        )
+        self.assertIn("Lunes: 09:00-20:00", message)
+        self.assertIn("Sábado: cerrado", message)
+        self.assertNotIn("[{\"dia\"", message)
+
+    def test_render_ticket_whatsapp_formatea_horario_json(self):
+        payload = render_ticket_whatsapp(
+            kind="reclamo",
+            nombre="Marcelo",
+            ticket_nro="M-111",
+            categoria="General",
+            descripcion="Desc",
+            contacto_especializado={
+                "nombre": "Punto Limpio",
+                "horario": [
+                    {"dia": "Martes", "abre": "10:00", "cierra": "18:00", "cerrado": False},
+                    {"dia": "Domingo", "abre": "", "cierra": "", "cerrado": True},
+                ],
+            },
+            include_menu=False,
+        )
+        body = payload["body_text"]
+        self.assertIn("Martes: 10:00-18:00", body)
+        self.assertIn("Domingo: cerrado", body)
+        self.assertNotIn("[{\"dia\"", body)
 
     def test_construir_descripcion_breve_incluye_detalle(self):
         texto = (

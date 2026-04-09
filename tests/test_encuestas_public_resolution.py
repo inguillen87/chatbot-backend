@@ -1,4 +1,5 @@
 from database import db
+from datetime import datetime, timedelta
 import json
 
 import pytest
@@ -93,10 +94,11 @@ def test_public_urls_honor_custom_target_base(client, monkeypatch):
 def test_respuestas_alias_reuses_handler(client, monkeypatch):
     saved_calls = {}
 
-    def fake_save(slug, payload, ctx):
+    def fake_save(slug, payload, ctx, **kwargs):
         saved_calls["slug"] = slug
         saved_calls["payload"] = payload
         saved_calls["ctx"] = ctx
+        saved_calls["preferred_tenant_id"] = kwargs.get("preferred_tenant_id")
         return _DummyRespuesta(123)
 
     monkeypatch.setattr("routes.encuestas_public.save_respuesta", fake_save)
@@ -112,15 +114,17 @@ def test_respuestas_alias_reuses_handler(client, monkeypatch):
     assert saved_calls["slug"] == "demo-encuesta"
     assert saved_calls["payload"] == {"respuesta": "ok"}
     assert saved_calls["ctx"]["ip"] == "1.1.1.1"
+    assert saved_calls["preferred_tenant_id"] == 4
 
 
 def test_responder_accepts_form_payload(client, monkeypatch):
     captured: dict = {}
 
-    def fake_save(slug, payload, ctx):
+    def fake_save(slug, payload, ctx, **kwargs):
         captured["slug"] = slug
         captured["payload"] = payload
         captured["ctx"] = ctx
+        captured["preferred_tenant_id"] = kwargs.get("preferred_tenant_id")
         return _DummyRespuesta(456)
 
     monkeypatch.setattr("routes.encuestas_public.save_respuesta", fake_save)
@@ -137,12 +141,13 @@ def test_responder_accepts_form_payload(client, monkeypatch):
     assert captured["slug"] == "demo-encuesta"
     assert captured["payload"]["respuestas"] == respuestas
     assert captured["ctx"]["ip"] == "2.2.2.2"
+    assert captured["preferred_tenant_id"] == 4
 
 
 def test_responder_parses_respuestas_field_from_form(client, monkeypatch):
     captured: dict = {}
 
-    def fake_save(slug, payload, ctx):
+    def fake_save(slug, payload, ctx, **kwargs):
         captured["payload"] = payload
         return _DummyRespuesta(789)
 
@@ -164,7 +169,7 @@ def test_responder_parses_respuestas_field_from_form(client, monkeypatch):
 def test_responder_flattens_bracketed_form_fields(client, monkeypatch):
     captured: dict = {}
 
-    def fake_save(slug, payload, ctx):
+    def fake_save(slug, payload, ctx, **kwargs):
         captured["payload"] = payload
         return _DummyRespuesta(321)
 
@@ -199,7 +204,7 @@ def test_responder_flattens_bracketed_form_fields(client, monkeypatch):
 
 
 def test_responder_duplicate_conflict_is_idempotent_success(client, monkeypatch):
-    def fake_save(_slug, _payload, _ctx):
+    def fake_save(_slug, _payload, _ctx, **kwargs):
         raise EncuestaError("Ya registramos tu participación", status_code=409)
 
     monkeypatch.setattr("routes.encuestas_public.save_respuesta", fake_save)
@@ -242,6 +247,68 @@ def test_share_returns_payload_without_canonical(client, monkeypatch):
     response = client.get("/e/demo-slug", headers={"Accept": "application/json"})
     assert response.status_code == 200
     assert response.get_json() == {"slug": "demo-slug"}
+
+
+def test_share_passes_tenant_preference_from_domain_map(client, monkeypatch):
+    client.application.config["PUBLIC_ENCUESTAS_CANONICAL_BASE_URL"] = None
+    client.application.config["PUBLIC_ENCUESTAS_DOMAIN_MAP"] = {"chatboc.ar": 77}
+
+    captured = {}
+
+    def fake_get(slug, **kwargs):
+        captured["slug"] = slug
+        captured["preferred_tenant_id"] = kwargs.get("preferred_tenant_id")
+        return {"slug": slug}
+
+    monkeypatch.setattr("routes.encuestas_public.get_public_encuesta", fake_get)
+    monkeypatch.setattr(
+        "routes.encuestas_public.serialize_public_encuesta",
+        lambda encuesta, slug_publico: {"slug": slug_publico},
+    )
+
+    response = client.get(
+        "/e/demo-tenant",
+        headers={"Accept": "application/json", "Host": "chatboc.ar"},
+    )
+    assert response.status_code == 200
+    assert captured == {"slug": "demo-tenant", "preferred_tenant_id": 77}
+
+
+def test_public_error_response_includes_reason_action_and_request_id(client, monkeypatch):
+    def fake_get(_slug, **_kwargs):
+        raise EncuestaError(
+            "La encuesta no está activa",
+            status_code=403,
+            payload={"reason_code": "survey_not_published"},
+        )
+
+    monkeypatch.setattr("routes.encuestas_public.get_public_encuesta", fake_get)
+
+    response = client.get(
+        "/public/encuestas/demo-error",
+        headers={"X-Request-Id": "req-123"},
+    )
+    assert response.status_code == 403
+    data = response.get_json()
+    assert data["reason_code"] == "survey_not_published"
+    assert data["retryable"] is False
+    assert data["action_hint"] == "view_other_surveys"
+    assert data["request_id"] == "req-123"
+
+
+def test_live_results_unexpected_error_returns_structured_internal_error(client, monkeypatch):
+    def explode(*_args, **_kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("routes.encuestas_public.calculate_live_results", explode)
+
+    response = client.get("/public/encuestas/demo-slug/live-results")
+    assert response.status_code == 500
+    data = response.get_json()
+    assert data["reason_code"] == "internal_error"
+    assert data["retryable"] is True
+    assert data["action_hint"] == "retry"
+    assert data.get("request_id")
 
 
 def _create_public_encuesta(slug: str, slug_publico: str, estado: str = "publicada") -> EncEncuesta:
@@ -435,6 +502,52 @@ def test_get_public_encuesta_prefers_active_published_when_link_slug_is_duplicat
         assert resolved.estado == "publicada"
 
 
+def test_get_public_encuesta_prefers_requested_tenant_when_slug_is_shared(client):
+    with client.application.app_context():
+        shared_public_slug = "votacion-en-vivo-rio-grande"
+
+        now = datetime.utcnow()
+        wrong_tenant = EncEncuesta(
+            tenant_id=7,
+            slug="votacion-en-vivo-rio-grande-legacy",
+            titulo="Encuesta cerrada en otro tenant",
+            descripcion="No debería resolverse para tenant 4",
+            tipo="opinion",
+            estado="publicada",
+            inicio_at=now - timedelta(days=10),
+            fin_at=now - timedelta(days=1),
+        )
+        wrong_tenant_link = EncLink(
+            encuesta=wrong_tenant,
+            slug_publico=shared_public_slug,
+            canal="web",
+        )
+
+        expected = EncEncuesta(
+            tenant_id=4,
+            slug="votacion-en-vivo-rio-grande-actual",
+            titulo="Encuesta activa",
+            descripcion="Debe mostrarse para tenant 4",
+            tipo="opinion",
+            estado="publicada",
+            inicio_at=now - timedelta(days=1),
+            fin_at=now + timedelta(days=10),
+        )
+        expected_link = EncLink(
+            encuesta=expected,
+            slug_publico=shared_public_slug,
+            canal="web",
+        )
+
+        db.session.add_all([wrong_tenant, wrong_tenant_link, expected, expected_link])
+        db.session.commit()
+
+        resolved = get_public_encuesta(shared_public_slug, preferred_tenant_id=4)
+
+        assert resolved.id == expected.id
+        assert resolved.tenant_id == 4
+
+
 def test_qr_endpoint_returns_png_for_public_encuesta(client):
     slug = "encuesta-qr-publica"
     slug_publico = f"{slug}-abcdef"
@@ -515,4 +628,3 @@ def restore_canonical_base(client):
     original = client.application.config.get("PUBLIC_ENCUESTAS_CANONICAL_BASE_URL")
     yield
     client.application.config["PUBLIC_ENCUESTAS_CANONICAL_BASE_URL"] = original
-
