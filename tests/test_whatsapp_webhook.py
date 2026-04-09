@@ -157,6 +157,44 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self.assertNotIn("last_options_sent", session.context_data)
         self.assertNotIn("pending_sensitive_action", session.context_data)
 
+    @patch("routes.whatsapp_webhook.responder_chatboc")
+    def test_sensitive_numeric_menu_option_requires_explicit_confirmation(self, mock_bot):
+        self._set_owner_tipo_chat("municipio")
+        self.mock_validator.validate.return_value = True
+
+        self._create_confirmed_session()
+        session = ChatSessionContext.query.filter_by(
+            chat_session_id=f"whatsapp_{self.empresa_id_for_test}_{self.test_user_number_str}"
+        ).first()
+        updated_context = dict(session.context_data or {})
+        updated_context["last_options_sent"] = [
+            {"texto": "Iniciar un Reclamo", "action_id": "iniciar_reclamo"}
+        ]
+        session.context_data = updated_context
+        db.session.add(session)
+        db.session.commit()
+
+        payload = {
+            "To": f"whatsapp:{self.test_whatsapp_number_str}",
+            "From": f"whatsapp:{self.test_user_number_str}",
+            "Body": "1",
+        }
+        headers = {"X-Twilio-Signature": "dummy_signature_valid"}
+
+        response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data.decode(), "OK")
+
+        mock_bot.assert_not_called()
+        self.assertGreaterEqual(self.mock_twilio_create.call_count, 1)
+        sent_body = self.mock_twilio_create.call_args.kwargs.get("body", "")
+        self.assertIn("confirmame por favor", sent_body.lower())
+        self.assertIn("iniciar desde cero", sent_body.lower())
+
+        db.session.refresh(session)
+        pending = session.context_data.get("pending_sensitive_action") or {}
+        self.assertEqual(pending.get("action_id"), "iniciar_reclamo")
+
     @patch('routes.whatsapp_webhook.threading.Timer')
     @patch('services.response_formatter.build_interactive_response')
     def test_send_delayed_payload_includes_audio(self, mock_build_response, mock_timer):

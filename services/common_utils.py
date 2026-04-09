@@ -1074,27 +1074,51 @@ def clean_text_for_tts(text: str) -> str:
     return text
 
 def parse_cantidad_flexible(cantidad_str: Any) -> Optional[int]:
+    """Extrae cantidad de empaque/venta desde descripciones libres.
+
+    Ejemplos esperados:
+    - "Caja x6 - 750 ml" -> 6
+    - "Pack de 12 latas" -> 12
+    - "x 24 unidades" -> 24
+    - "750 ml" -> None (volumen, no cantidad de unidades)
     """
-    PLACEHOLDER: Parses a flexible quantity string (e.g., "6 units", "12", "1 dozen") into an integer.
-    Attempts to extract the first number found.
-    Original implementation needs to be restored for more robust parsing.
-    """
-    get_logger().warning(f"Using PLACEHOLDER parse_cantidad_flexible for: {cantidad_str}")
     if cantidad_str is None:
         return None
 
-    s = str(cantidad_str)
+    s = str(cantidad_str).strip().lower()
+    if not s:
+        return None
 
-    # Try to extract first number found
-    match = re.search(r'\d+', s)
-    if match:
+    # 1) Patrones explícitos de empaque (prioridad alta)
+    explicit_patterns = [
+        r"\bx\s*(\d{1,4})\b",  # x6, x 12
+        r"\b(?:pack|caja|caj[aá]n|estuche|combo|kit)\s*(?:de)?\s*(\d{1,4})\b",
+        r"\b(\d{1,4})\s*(?:u(?:n(?:id(?:ad(?:es)?)?)?)?\.?|unidades?|botellas?|latas?|frascos?|sobres?)\b",
+    ]
+    for pattern in explicit_patterns:
+        match = re.search(pattern, s, flags=re.IGNORECASE)
+        if match:
+            try:
+                value = int(match.group(1))
+                if value > 0:
+                    return value
+            except (TypeError, ValueError):
+                continue
+
+    # 2) Evitar confundir medidas físicas con cantidad de empaque (750ml, 1kg, 2l)
+    if re.search(r"\b\d+(?:[.,]\d+)?\s*(?:ml|l|lt|lts|kg|g|gr|cm|mm)\b", s):
+        return None
+
+    # 3) Fallback conservador: único número en string y rango razonable.
+    all_numbers = re.findall(r"\d{1,4}", s)
+    if len(all_numbers) == 1:
         try:
-            return int(match.group(0))
+            value = int(all_numbers[0])
+            if 1 <= value <= 200:
+                return value
         except ValueError:
             return None
 
-    # Add more sophisticated parsing here if needed (e.g., "dozen" -> 12)
-    # For placeholder, this is basic.
     return None
 
 def validar_email(email: str) -> bool:

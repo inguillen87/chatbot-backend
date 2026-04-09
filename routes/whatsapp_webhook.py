@@ -73,6 +73,17 @@ SENSITIVE_MENU_ACTIONS = {
     "iniciar_sugerencia",
     "crear_sugerencia",
 }
+SENSITIVE_ACTION_CONFIRM_ACCEPT = {"1", "si", "sí", "confirmar", "ok", "dale"}
+SENSITIVE_ACTION_CONFIRM_REJECT = {"2", "no", "cancelar", "menu", "menú"}
+
+
+def _build_sensitive_action_confirmation_text(selected_option: dict) -> str:
+    label = (selected_option or {}).get("texto") or "esta acción"
+    return (
+        f"Antes de continuar con *{label}*, confirmame por favor:\n"
+        "1) Sí, iniciar desde cero\n"
+        "2) No, volver al menú"
+    )
 
 
 def _is_valid_media_url(url: Optional[str]) -> bool:
@@ -1982,9 +1993,44 @@ def whatsapp_webhook():
                 )
                 break
 
-    if (selected_action_id or "").strip().lower() in SENSITIVE_MENU_ACTIONS:
-        # Force a clean flow when user selects sensitive actions from a menu.
-        # This prevents accidental ticket creation with stale draft/context data.
+    pending_sensitive_action = session_context_db_entry.context_data.get("pending_sensitive_action")
+    normalized_message = (message_body or "").strip().lower()
+
+    if isinstance(pending_sensitive_action, dict) and not selected_option:
+        if normalized_message in SENSITIVE_ACTION_CONFIRM_ACCEPT:
+            selected_option = pending_sensitive_action.get("selected_option") or selected_option
+            selected_action_id = pending_sensitive_action.get("action_id") or selected_action_id
+            session_context_db_entry.context_data.pop("pending_sensitive_action", None)
+            safe_flag_modified(session_context_db_entry, "context_data")
+            db.session.commit()
+        elif normalized_message in SENSITIVE_ACTION_CONFIRM_REJECT:
+            session_context_db_entry.context_data.pop("pending_sensitive_action", None)
+            safe_flag_modified(session_context_db_entry, "context_data")
+            db.session.commit()
+            selected_action_id = "menu_principal"
+
+    if selected_option and (selected_action_id or "").strip().lower() in SENSITIVE_MENU_ACTIONS:
+        if not (
+            isinstance(pending_sensitive_action, dict)
+            and normalized_message in SENSITIVE_ACTION_CONFIRM_ACCEPT
+        ):
+            session_context_db_entry.context_data["pending_sensitive_action"] = {
+                "action_id": selected_action_id,
+                "selected_option": selected_option,
+            }
+            safe_flag_modified(session_context_db_entry, "context_data")
+            db.session.commit()
+
+            confirmation_text = _build_sensitive_action_confirmation_text(selected_option)
+            if twilio_client:
+                twilio_client.messages.create(
+                    from_=to_number_raw,
+                    to=from_number_raw,
+                    body=confirmation_text,
+                )
+            return "OK", 200
+
+        # User explicitly confirmed. Start from a clean draft.
         _reset_municipio_context_for_menu(session_context_db_entry)
 
     # --- Live Chat Routing (WhatsApp -> Admin panel) ---

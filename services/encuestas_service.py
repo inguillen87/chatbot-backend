@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from flask import current_app, g
+from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 from sqlalchemy import func, or_, inspect
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import joinedload, load_only
@@ -43,9 +44,52 @@ except ImportError:
     emit_survey_update = None
     emit_survey_comment = None
 
+try:
+    from services.analytics.ingestor import analytics_ingestor
+except Exception:  # pragma: no cover - analytics optional in some contexts
+    analytics_ingestor = None
+
 
 _BOOTSTRAP_TENANT_ID: Optional[int] = None
 _ENC_COMENTARIO_HAS_REPORT_COUNT: Optional[bool] = None
+
+
+def _social_comment_serializer() -> URLSafeTimedSerializer:
+    secret = (
+        current_app.config.get("SURVEY_SOCIAL_TOKEN_SECRET")
+        or current_app.config.get("SECRET_KEY")
+        or "chatboc-social-comment-secret"
+    )
+    salt = current_app.config.get("SURVEY_SOCIAL_TOKEN_SALT", "survey-social-comment")
+    return URLSafeTimedSerializer(secret_key=secret, salt=salt)
+
+
+def issue_social_comment_token(claims: Dict[str, Any]) -> str:
+    payload = {
+        "provider": str(claims.get("provider") or "").strip().lower(),
+        "auth_user_id": str(claims.get("auth_user_id") or "").strip(),
+        "auth_email": str(claims.get("auth_email") or "").strip() or None,
+        "auth_first_name": str(claims.get("auth_first_name") or "").strip() or None,
+        "auth_last_name": str(claims.get("auth_last_name") or "").strip() or None,
+    }
+    return _social_comment_serializer().dumps(payload)
+
+
+def verify_social_comment_token(token: str, *, max_age_seconds: Optional[int] = None) -> Optional[Dict[str, Any]]:
+    if not token:
+        return None
+
+    ttl = max_age_seconds
+    if ttl is None:
+        ttl = int(current_app.config.get("SURVEY_SOCIAL_TOKEN_TTL_SECONDS", 900) or 900)
+
+    try:
+        decoded = _social_comment_serializer().loads(token, max_age=max(60, ttl))
+        return decoded if isinstance(decoded, dict) else None
+    except SignatureExpired:
+        return None
+    except BadSignature:
+        return None
 
 
 def _enc_comentario_has_report_count() -> bool:
@@ -3604,17 +3648,98 @@ def create_comentario(encuesta_id: int, payload: Dict[str, Any], user: Optional[
     if not texto:
         raise EncuestaError("El comentario no puede estar vacío")
 
+    comment_mode = str(payload.get("mode") or payload.get("comment_mode") or "").strip().lower()
+    comment_mode = "social" if comment_mode == "social" else "anon"
+
+    auth_provider = (
+        payload.get("auth_provider")
+        or payload.get("provider")
+        or payload.get("social_provider")
+    )
+    auth_provider = str(auth_provider or "").strip().lower() or None
+    if auth_provider and auth_provider not in {"facebook", "google", "instagram"}:
+        auth_provider = None
+
+    auth_user_id = str(payload.get("auth_user_id") or "").strip() or None
+    auth_email = str(payload.get("auth_email") or "").strip() or None
+    auth_first_name = str(payload.get("auth_first_name") or "").strip()
+    auth_last_name = str(payload.get("auth_last_name") or "").strip()
+
+    if comment_mode == "social":
+        if not auth_provider:
+            raise EncuestaError("Proveedor social requerido para comentarios registrados", status_code=400)
+        if not (auth_user_id or auth_email or (user and getattr(user, "id", None))):
+            raise EncuestaError("Identidad social incompleta para publicar comentario", status_code=400)
+
+    display_name = (
+        " ".join(part for part in [auth_first_name, auth_last_name] if part).strip()
+        if comment_mode == "social"
+        else ""
+    )
+    if not display_name:
+        display_name = (payload.get("nombre") or payload.get("nombre_autor") or "").strip()
+    if not display_name and comment_mode == "social":
+        display_name = auth_email or (f"Usuario {auth_provider.title()}" if auth_provider else "")
+
+    anon_id = payload.get("anon_id")
+    if comment_mode == "social":
+        social_identity = auth_user_id or auth_email or str(getattr(user, "id", "")).strip()
+        safe_identity = re.sub(r"[^a-zA-Z0-9_\-@.]", "", social_identity or "")[:80]
+        if safe_identity:
+            anon_id = f"social:{auth_provider}:{safe_identity}"
+
     comentario = EncComentario(
         encuesta_id=encuesta.id,
         user_id=getattr(user, "id", None) if user else None,
-        anon_id=payload.get("anon_id"),
-        nombre_autor=(payload.get("nombre") or payload.get("nombre_autor") or "").strip() or None,
+        anon_id=anon_id,
+        nombre_autor=display_name or None,
         texto=texto,
         estado="publicado"
     )
 
     db.session.add(comentario)
     db.session.commit()
+
+    # Best-effort analytics instrumentation for comment UX funnel.
+    if analytics_ingestor:
+        try:
+            mode_changed_from = str(payload.get("previous_mode") or payload.get("prev_mode") or "").strip().lower()
+            base_payload = {
+                "encuesta_id": encuesta.id,
+                "slug": _resolve_public_slug(encuesta) or encuesta.slug,
+                "comment_mode": comment_mode,
+                "auth_provider": auth_provider,
+                "has_user_id": bool(getattr(user, "id", None)),
+            }
+            if mode_changed_from and mode_changed_from in {"anon", "social"} and mode_changed_from != comment_mode:
+                analytics_ingestor.track(
+                    tenant_id=encuesta.tenant_id,
+                    event_name="survey_comment_mode_changed",
+                    payload={**base_payload, "from_mode": mode_changed_from, "to_mode": comment_mode},
+                    user_id=getattr(user, "id", None),
+                    anon_id=anon_id,
+                    channel=payload.get("channel") or "public_survey",
+                    tenant_type="municipio",
+                    entity_ref=str(encuesta.id),
+                )
+
+            analytics_ingestor.track(
+                tenant_id=encuesta.tenant_id,
+                event_name="survey_comment_submitted",
+                payload=base_payload,
+                user_id=getattr(user, "id", None),
+                anon_id=anon_id,
+                channel=payload.get("channel") or "public_survey",
+                tenant_type="municipio",
+                entity_ref=str(encuesta.id),
+            )
+        except Exception:
+            logger = _current_app_logger()
+            if logger:
+                logger.exception(
+                    "[encuestas] analytics ingest failed for comment encuesta_id=%s",
+                    encuesta.id,
+                )
 
     # Emit live event
     if emit_survey_comment:
@@ -3627,6 +3752,11 @@ def create_comentario(encuesta_id: int, payload: Dict[str, Any], user: Optional[
                 "fecha": comentario.created_at.isoformat(),
                 "user_id": comentario.user_id
             }
+            if isinstance(comentario.anon_id, str) and comentario.anon_id.startswith("social:"):
+                parts = comentario.anon_id.split(":", 2)
+                if len(parts) == 3:
+                    data["comment_mode"] = "social"
+                    data["auth_provider"] = parts[1]
             emit_survey_comment(slug_publico, data)
         except Exception:
             current_app.logger.exception("[encuestas] Error al emitir comentario socket")
@@ -3696,13 +3826,27 @@ def list_comentarios(encuesta_id: int, limit: int = 50, offset: int = 0) -> List
 
     results = []
     for c in rows:
+        comment_mode = "anon"
+        auth_provider = None
+        auth_user_id = None
+        anon_ref = c.anon_id
+        if isinstance(anon_ref, str) and anon_ref.startswith("social:"):
+            parts = anon_ref.split(":", 2)
+            if len(parts) == 3:
+                comment_mode = "social"
+                auth_provider = parts[1] or None
+                auth_user_id = parts[2] or None
+
         results.append({
             "id": c.id,
             "texto": _safe_text_value(c.texto, fallback=""),
             "nombre_autor": _safe_text_value(c.nombre_autor or (c.user.name if c.user else "Anónimo"), fallback="Anónimo"),
             "fecha": c.created_at.isoformat(),
             "user_id": c.user_id,
-            "anon_id": c.anon_id
+            "anon_id": c.anon_id,
+            "comment_mode": comment_mode,
+            "auth_provider": auth_provider,
+            "auth_user_id": auth_user_id,
         })
     return results
 
