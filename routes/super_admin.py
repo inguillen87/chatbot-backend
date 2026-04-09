@@ -668,6 +668,30 @@ def _lead_relevance_score(*, open_tickets: int, latest_message: str, last_seen: 
     return int(score)
 
 
+def _parse_iso_datetime(raw_value):
+    if not raw_value or not isinstance(raw_value, str):
+        return None
+    normalized = raw_value.strip()
+    if not normalized:
+        return None
+    if normalized.endswith("Z"):
+        normalized = normalized[:-1] + "+00:00"
+    try:
+        return datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+
+
+def _serialize_sales_funnel_status(details: dict | None) -> dict:
+    payload = details if isinstance(details, dict) else {}
+    return {
+        "contact_status": payload.get("contact_status") or "pendiente",
+        "contacted_at": payload.get("contacted_at"),
+        "demo_status": payload.get("demo_status") or "no_agendada",
+        "demo_scheduled_at": payload.get("demo_scheduled_at"),
+        "close_status": payload.get("close_status") or "abierto",
+        "closed_at": payload.get("closed_at"),
+    }
 
 
 def _normalize_plan_key(raw_plan: str | None) -> str:
@@ -1935,6 +1959,114 @@ def list_leads_interactions(current_user):
         top_questions.append({'question': question, 'count': int(count or 0)})
 
     return jsonify({'items': items, 'total': len(items), 'top_questions': top_questions})
+
+
+@super_admin_bp.route('/sales/hot-leads', methods=['GET'])
+@token_requerido
+@super_admin_required
+def list_sales_hot_leads(current_user):
+    limit = max(1, min(int(request.args.get('limit', 25) or 25), 100))
+    only_open = str(request.args.get('only_open', 'true')).strip().lower() not in {'0', 'false', 'no'}
+    tenant_slug_filter = str(request.args.get('tenant_slug') or '').strip().lower()
+
+    query = AdminAuditLog.query.filter(
+        AdminAuditLog.action == 'tenant_demo_whatsapp_activated',
+    ).order_by(desc(AdminAuditLog.created_at))
+    if tenant_slug_filter:
+        query = query.filter(AdminAuditLog.target_object == tenant_slug_filter)
+
+    logs = query.limit(1000).all()
+    leads_by_tenant: dict[str, dict] = {}
+
+    for log in logs:
+        details = log.details if isinstance(log.details, dict) else {}
+        tenant_id = details.get('tenant_id')
+        target_slug = str(log.target_object or '').strip().lower()
+        if not target_slug and not tenant_id:
+            continue
+
+        tenant = None
+        if target_slug:
+            tenant = TenantProfile.query.filter_by(slug=target_slug).first()
+        elif tenant_id:
+            tenant = TenantProfile.query.get(tenant_id)
+        if not tenant:
+            continue
+
+        tenant_slug = (tenant.slug or '').strip().lower()
+        if not tenant_slug:
+            continue
+
+        activation_state = details.get('activation_state') if isinstance(details.get('activation_state'), dict) else {}
+        activated_at = _parse_iso_datetime(activation_state.get('activated_at'))
+        event_at = log.created_at or activated_at
+        if event_at and not event_at.tzinfo:
+            event_at = event_at.replace(tzinfo=timezone.utc)
+
+        days_since = 0
+        if event_at:
+            days_since = max(int((datetime.now(timezone.utc) - event_at).total_seconds() // 86400), 0)
+
+        activation_count = int(activation_state.get('activation_count') or 1)
+        intent_score = 60 + min(activation_count * 8, 20)
+        if details.get('sales_signal') == 'hot_lead':
+            intent_score += 15
+        if days_since <= 2:
+            intent_score += 12
+        elif days_since <= 7:
+            intent_score += 6
+        intent_score = max(0, min(intent_score, 100))
+
+        tenant_config = tenant.configuracion if isinstance(tenant.configuracion, dict) else {}
+        funnel_payload = tenant_config.get('sales_funnel') if isinstance(tenant_config.get('sales_funnel'), dict) else {}
+        funnel_status = _serialize_sales_funnel_status(funnel_payload)
+        close_status = str(funnel_status.get('close_status') or 'abierto').strip().lower()
+
+        lead_item = {
+            'tenant_id': tenant.id,
+            'tenant_slug': tenant.slug,
+            'tenant_nombre': tenant.nombre,
+            'tenant_tipo': tenant.tipo,
+            'plan': tenant.plan,
+            'activation': {
+                'activated_at': activation_state.get('activated_at') or (event_at.isoformat() if event_at else None),
+                'expires_at': activation_state.get('expires_at'),
+                'activation_count': activation_count,
+                'max_activations': int(activation_state.get('max_activations') or 1),
+            },
+            'intent_score': intent_score,
+            'sales_signal': details.get('sales_signal') or 'warm_lead',
+            'funnel': funnel_status,
+            'is_open': close_status not in {'cerrado_ganado', 'cerrado_perdido'},
+            'last_signal_at': event_at.isoformat() if event_at else None,
+            'actor_admin_user_id': log.admin_user_id,
+        }
+
+        previous = leads_by_tenant.get(tenant_slug)
+        if not previous:
+            leads_by_tenant[tenant_slug] = lead_item
+            continue
+
+        previous_signal = _parse_iso_datetime(previous.get('last_signal_at'))
+        if previous_signal and not previous_signal.tzinfo:
+            previous_signal = previous_signal.replace(tzinfo=timezone.utc)
+        if event_at and (not previous_signal or event_at > previous_signal):
+            leads_by_tenant[tenant_slug] = lead_item
+
+    items = list(leads_by_tenant.values())
+    if only_open:
+        items = [item for item in items if item.get('is_open')]
+    items.sort(key=lambda item: (item.get('intent_score') or 0, item.get('last_signal_at') or ''), reverse=True)
+
+    return jsonify({
+        'items': items[:limit],
+        'total': len(items),
+        'meta': {
+            'limit': limit,
+            'only_open': only_open,
+            'generated_at': datetime.now(timezone.utc).isoformat(),
+        },
+    })
 
 
 LEAD_STAGE_ALLOWED = {"nuevo", "contactado", "calificado", "demo_agendada", "propuesta_enviada", "ganado", "perdido"}

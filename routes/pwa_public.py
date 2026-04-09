@@ -485,7 +485,7 @@ def get_survey(slug: str):
     tenant = _require_tenant()
     tenant_id = _resolve_encuestas_tenant_id(tenant)
     try:
-        encuesta = get_public_encuesta(slug)
+        encuesta = get_public_encuesta(slug, preferred_tenant_id=tenant_id)
     except EncuestaError as exc:
         return jsonify(exc.to_dict()), exc.status_code
 
@@ -501,7 +501,7 @@ def respond_survey(slug: str):
     tenant = _require_tenant()
     tenant_id = _resolve_encuestas_tenant_id(tenant)
     try:
-        encuesta = get_public_encuesta(slug)
+        encuesta = get_public_encuesta(slug, preferred_tenant_id=tenant_id)
     except EncuestaError as exc:
         return jsonify(exc.to_dict()), exc.status_code
 
@@ -520,7 +520,12 @@ def respond_survey(slug: str):
         "canal": "pwa",
     }
     try:
-        respuesta = save_respuesta(slug, payload, request_ctx)
+        respuesta = save_respuesta(
+            slug,
+            payload,
+            request_ctx,
+            preferred_tenant_id=tenant_id,
+        )
     except EncuestaError as exc:
         return jsonify(exc.to_dict()), exc.status_code
 

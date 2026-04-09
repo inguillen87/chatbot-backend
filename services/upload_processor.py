@@ -23,6 +23,7 @@ from services.qdrant_utils import (
 )
 from services.qdrant_search import CATALOGO_PYME, CATALOGO_MUNICIPIO, coleccion_catalogo_para_rubro
 from services.logic import es_rubro_publico
+from services.gcs_service import upload_to_gcs
 from qdrant_client import models as qdrant_models
 from typing import List, Dict, Any, Optional
 
@@ -35,6 +36,49 @@ CATALOGO_FOLDER = os.path.join("data", "catalogos")
 
 def extension_valida(nombre_archivo: str) -> bool:
     return os.path.splitext(nombre_archivo)[1].lower() in ALLOWED_EXTENSIONS
+
+
+def _store_catalog_attachment_record(file_storage, user: User) -> Optional[ArchivoAdjunto]:
+    """Upload catalog file to configured storage (R2-first) and persist ArchivoAdjunto."""
+    if not file_storage or not user:
+        return None
+
+    try:
+        upload_meta = upload_to_gcs(file_storage, kind="attachments")
+    except Exception:
+        logger.exception("Catalog upload to storage failed.")
+        return None
+
+    if not upload_meta:
+        logger.warning("Catalog upload metadata missing; skipping ArchivoAdjunto creation.")
+        return None
+
+    public_url = (
+        upload_meta.get("public_url")
+        or upload_meta.get("url")
+        or upload_meta.get("secure_url")
+    )
+    unique_name = upload_meta.get("unique_name") or secure_filename(file_storage.filename or "")
+    original_name = upload_meta.get("original_name") or file_storage.filename
+    mimetype = upload_meta.get("mimetype") or file_storage.mimetype
+    size = upload_meta.get("size")
+
+    if not public_url:
+        return None
+
+    adjunto = ArchivoAdjunto(
+        user_id=user.id,
+        filename=unique_name or secure_filename(file_storage.filename or f"catalogo_{uuid.uuid4().hex}.pdf"),
+        nombre_original=original_name,
+        mime=mimetype,
+        tamano=size if isinstance(size, int) else None,
+        tipo="catalogo",
+        url=public_url,
+    )
+    db.session.add(adjunto)
+    db.session.flush()
+    return adjunto
+
 
 def _extract_text_raw(path_archivo: str, mime_type: str) -> str:
     """Helper to extract raw text for the processor."""
@@ -224,6 +268,9 @@ def subir_catalogo(current_user: Optional[User] = None):
     if not archivo:
         return jsonify({"error": "No file"}), 400
 
+    # Upload to R2/CDN and persist attachment record for direct catalog access
+    catalog_attachment = _store_catalog_attachment_record(archivo, user)
+
     # Save Temp
     os.makedirs(UPLOAD_FOLDER, exist_ok=True)
     filename = secure_filename(archivo.filename)
@@ -270,7 +317,9 @@ def subir_catalogo(current_user: Optional[User] = None):
         return jsonify({
             "message": "Procesado correctamente",
             "items_count": count,
-            "upload_id": upload_rec.id
+            "upload_id": upload_rec.id,
+            "catalog_url": getattr(catalog_attachment, "url", None),
+            "catalog_attachment_id": getattr(catalog_attachment, "id", None),
         })
 
     except Exception as e:

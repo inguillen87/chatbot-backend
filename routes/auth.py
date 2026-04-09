@@ -30,8 +30,10 @@ from services.google_auth import login_o_crear_usuario
 from services.pymes import get_or_create_pyme_user_by_token
 from services.tenant_resolver import resolve_tenant_only
 from services.demo_registry import load_demo_rubros
+from services.demo_experience_contract import build_demo_experience_contract
 from typing import Any, Callable, Dict, Optional
 import secrets
+from urllib.parse import quote_plus
 
 _DEMO_CATALOG_CACHE: dict[str, Any] = {"payload": None, "expires_at": 0.0, "fingerprint": ""}
 _DEMO_RUBROS_CACHE: dict[str, Any] = {
@@ -1040,6 +1042,55 @@ def _first_active_tenant_for_demo(tipo: Optional[str]) -> Optional[TenantProfile
     else:
         return None
 
+
+def _demo_menu_for_tipo(tipo_chat: str) -> list[dict[str, Any]]:
+    normalized = (tipo_chat or "").strip().lower()
+    if normalized == "municipio":
+        return [
+            {"id": "reclamos", "label": "Crear reclamo", "intent": "iniciar_reclamo"},
+            {"id": "sugerencias", "label": "Enviar sugerencia", "intent": "enviar_sugerencia"},
+            {"id": "estado_ticket", "label": "Estado del ticket", "intent": "consultar_ticket"},
+            {"id": "encuestas", "label": "Responder encuesta", "intent": "encuestas_publicas"},
+            {"id": "mapa_calor", "label": "Ver mapa de calor", "intent": "analytics_heatmap"},
+        ]
+    return [
+        {"id": "catalogo", "label": "Ver catálogo", "intent": "ver_catalogo"},
+        {"id": "crear_pedido", "label": "Crear pedido", "intent": "crear_pedido"},
+        {"id": "estado_pedido", "label": "Estado del pedido", "intent": "estado_pedido"},
+        {"id": "subir_catalogo", "label": "Subir PDF / Excel", "intent": "subir_catalogo"},
+        {"id": "consultar_producto", "label": "Consultar producto", "intent": "consulta_producto"},
+    ]
+
+
+def _build_twilio_trial_instructions() -> dict[str, Any]:
+    join_phrase = "join brief-yesterday"
+    sandbox_number = "+14155238886"
+    message_encoded = quote_plus(join_phrase)
+    return {
+        "provider": "twilio_sandbox",
+        "enabled": True,
+        "number_e164": sandbox_number,
+        "display_number": "+1 (415) 523-8886",
+        "join_phrase": join_phrase,
+        "wa_deeplink": f"https://wa.me/{sandbox_number[1:]}?text={message_encoded}",
+        "cta_label": "Activar demo en WhatsApp",
+        "steps": [
+            {"order": 1, "text": "Abrí WhatsApp y enviá el mensaje de activación al número de prueba."},
+            {"order": 2, "text": "Mensaje exacto: join brief-yesterday"},
+            {"order": 3, "text": "Volvé al panel y probá texto, audio, imagen, reclamos y pedidos en tiempo real."},
+        ],
+        "security_limits": {
+            "messages_per_session": 10,
+            "trial_mode": True,
+            "upgrade_required_for": [
+                "indexacion_catalogo_qdrant",
+                "automatizaciones_avanzadas",
+                "multiagente_en_produccion",
+            ],
+            "upgrade_copy": "Llegaste al límite de demo. Activá plan Full para continuar.",
+        },
+    }
+
 @auth_bp.route('/demo/catalog', methods=['GET', 'OPTIONS'])
 @cross_origin(supports_credentials=True)
 def demo_catalog():
@@ -1072,14 +1123,16 @@ def demo_catalog():
     for demo in demos:
         tenant_slug = _resolve_demo_tenant_slug(demo.key) or _resolve_demo_tenant_slug(demo.rubro_clave)
         sector = "gobierno" if (demo.tipo_chat or "").strip().lower() == "municipio" else "empresas"
+        tipo_chat = (demo.tipo_chat or "pyme").strip().lower()
         demo_items.append({
             "key": demo.key,
             "label": demo.label,
-            "tipo_chat": demo.tipo_chat,
+            "tipo_chat": tipo_chat,
             "sector": sector,
             "rubro_clave": demo.rubro_clave,
             "tenant_slug": tenant_slug,
             "login_payload": {"rubro": demo.key},
+            "menu_preview": _demo_menu_for_tipo(tipo_chat),
         })
 
     if not demo_items:
@@ -1093,6 +1146,7 @@ def demo_catalog():
                 "tipo_chat": tipo,
                 "tenant_slug": tenant.slug,
                 "login_payload": {"rubro": tipo},
+                "menu_preview": _demo_menu_for_tipo(tipo),
             })
 
     quick_login_slug = None
@@ -1122,9 +1176,31 @@ def demo_catalog():
         "onboarding": {
             "requires_rubro_selection_for": ["empresas"],
             "default_sector": "gobierno",
+            "twilio_trial": _build_twilio_trial_instructions(),
+            "demo_feature_access": {
+                "allow_audio": True,
+                "allow_images": True,
+                "allow_reclamos": True,
+                "allow_pedidos": True,
+                "allow_sugerencias": True,
+                "allow_heatmaps": True,
+                "allow_catalog_upload_pdf": True,
+                "allow_catalog_upload_excel": True,
+                "qdrant_demo_enabled": True,
+                "qdrant_demo_max_items": 50,
+            },
+            "menus_by_tipo": {
+                "municipio": _demo_menu_for_tipo("municipio"),
+                "pyme": _demo_menu_for_tipo("pyme"),
+            },
+            "experience_templates": {
+                "municipio": build_demo_experience_contract(tenant_type="municipio", rubro_label="Municipio", max_messages=10),
+                "pyme": build_demo_experience_contract(tenant_type="pyme", rubro_label="PyME", max_messages=10),
+            },
             "steps": [
                 {"key": "sector", "label": "Elegí tu sector", "required": True},
                 {"key": "rubro", "label": "Elegí un rubro demo", "required": False, "required_for": ["empresas"]},
+                {"key": "whatsapp_activation", "label": "Activar WhatsApp demo", "required": True},
             ],
             "sector_options": [
                 {
@@ -1149,6 +1225,7 @@ def demo_catalog():
                             "label": item.get("label") or item.get("key"),
                             "tipo_chat": "pyme",
                             "tenant_slug": item.get("tenant_slug"),
+                            "menu_preview": item.get("menu_preview") or _demo_menu_for_tipo("pyme"),
                             "login_payload": {
                                 "rubro": item.get("key"),
                                 "tipo_chat": "pyme",

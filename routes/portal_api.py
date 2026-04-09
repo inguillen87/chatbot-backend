@@ -2,11 +2,13 @@ from __future__ import annotations
 from flask import Blueprint, jsonify, request, g, abort, current_app, url_for
 from sqlalchemy import or_, and_, func
 from datetime import datetime, timezone, timedelta
+from urllib.parse import quote_plus
 
-from models import MunicipioPost, CatalogoItem, TenantTicket, MarketOrder, MarketOrderItem, OrderEvent, User, TenantProfile, TenantFollower, WidgetConfig, EncEncuesta, EncRespuesta, PointsTransaction, Promocion, SugerenciaCiudadano
+from models import MunicipioPost, CatalogoItem, TenantTicket, MarketOrder, MarketOrderItem, OrderEvent, User, TenantProfile, TenantFollower, WidgetConfig, EncEncuesta, EncRespuesta, PointsTransaction, Promocion, SugerenciaCiudadano, Notification, AdminAuditLog
 from extensions import db
 from services.tenant_resolver import resolve_tenant_only, TenantResolutionError
 from services.rewards import recompensas_service
+from services.demo_experience_contract import build_demo_experience_contract
 from routes.public_resolver import _build_widget_embed_payload, _canonical_widget_token
 from utils.auth_decorators import require_auth_optional, require_auth
 from routes.catalogo import _formatear_producto
@@ -122,6 +124,148 @@ def _supported_languages() -> list[dict]:
         {"code": "en", "label": "English", "locale": "en-US"},
         {"code": "pt", "label": "Português", "locale": "pt-BR"},
     ]
+
+
+def _portal_demo_menu_for_tenant(tenant: TenantProfile) -> list[dict]:
+    tipo = (getattr(tenant, "tipo", "") or "").strip().lower()
+    if tipo == "municipio":
+        return [
+            {"id": "demo_reclamo", "label": "Crear reclamo", "intent": "iniciar_reclamo"},
+            {"id": "demo_sugerencia", "label": "Crear sugerencia", "intent": "enviar_sugerencia"},
+            {"id": "demo_estado", "label": "Ver estado ticket", "intent": "consultar_ticket"},
+            {"id": "demo_heatmap", "label": "Ver mapa de calor", "intent": "analytics_heatmap"},
+            {"id": "demo_encuesta", "label": "Responder encuesta", "intent": "encuestas_publicas"},
+        ]
+    return [
+        {"id": "demo_catalogo", "label": "Ver catálogo", "intent": "ver_catalogo"},
+        {"id": "demo_pedido", "label": "Crear pedido", "intent": "crear_pedido"},
+        {"id": "demo_estado_pedido", "label": "Ver estado pedido", "intent": "estado_pedido"},
+        {"id": "demo_pdf", "label": "Subir PDF catálogo", "intent": "subir_catalogo_pdf"},
+        {"id": "demo_excel", "label": "Subir Excel catálogo", "intent": "subir_catalogo_excel"},
+    ]
+
+
+def _portal_twilio_trial_contract() -> dict:
+    phrase = "join brief-yesterday"
+    number_e164 = "+14155238886"
+    return {
+        "enabled": True,
+        "display_number": "+1 (415) 523-8886",
+        "number_e164": number_e164,
+        "join_phrase": phrase,
+        "wa_deeplink": f"https://wa.me/{number_e164[1:]}?text={quote_plus(phrase)}",
+        "cta_label": "Activar prueba WhatsApp",
+        "limits": {
+            "max_messages": 10,
+            "upgrade_required_for": [
+                "qdrant_catalogo_completo",
+                "automatizaciones_enterprise",
+            ],
+            "upgrade_message": "Límite demo alcanzado. Activá plan Full para continuar.",
+        },
+    }
+
+
+def _tenant_demo_activation_state(tenant: TenantProfile) -> dict:
+    cfg = tenant.configuracion or {}
+    demo_cfg = cfg.get("demo_trial") if isinstance(cfg.get("demo_trial"), dict) else {}
+    activation_count = int(demo_cfg.get("activation_count") or 0)
+    return {
+        "active": bool(demo_cfg.get("active")),
+        "activated_at": demo_cfg.get("activated_at"),
+        "expires_at": demo_cfg.get("expires_at"),
+        "activation_count": activation_count,
+        "max_activations": 1,
+        "can_activate": activation_count < 1 or bool(demo_cfg.get("active")),
+        "last_actor_user_id": demo_cfg.get("last_actor_user_id"),
+    }
+
+
+def _activate_tenant_demo_trial(tenant: TenantProfile, actor_user_id: int | None) -> dict:
+    now = datetime.now(timezone.utc)
+    cfg = tenant.configuracion.copy() if isinstance(tenant.configuracion, dict) else {}
+    demo_cfg = cfg.get("demo_trial") if isinstance(cfg.get("demo_trial"), dict) else {}
+    activation_count = int(demo_cfg.get("activation_count") or 0)
+    if activation_count >= 1 and not bool(demo_cfg.get("active")):
+        return {
+            "ok": False,
+            "error": "demo_activation_limit_reached",
+            "message": "La activación demo ya fue utilizada para este tenant.",
+            "state": _tenant_demo_activation_state(tenant),
+        }
+
+    if not bool(demo_cfg.get("active")):
+        activation_count += 1
+
+    demo_cfg.update(
+        {
+            "active": True,
+            "activated_at": now.isoformat(),
+            "expires_at": (now + timedelta(minutes=30)).isoformat(),
+            "activation_count": activation_count,
+            "last_actor_user_id": actor_user_id,
+        }
+    )
+    cfg["demo_trial"] = demo_cfg
+    tenant.configuracion = cfg
+    db.session.add(tenant)
+    db.session.commit()
+    return {"ok": True, "state": _tenant_demo_activation_state(tenant)}
+
+
+def _notify_superadmin_hot_lead(tenant: TenantProfile, actor: User | None, activation_state: dict) -> None:
+    super_admins = User.query.filter_by(rol="super_admin").all()
+    if not super_admins:
+        return
+
+    actor_name = getattr(actor, "name", None) or getattr(actor, "email", None) or "Usuario"
+    body = (
+        f"Hot lead SaaS: '{tenant.nombre}' ({tenant.slug}) activó demo WhatsApp. "
+        f"Actor: {actor_name}. Activaciones: {activation_state.get('activation_count')}/{activation_state.get('max_activations')}. "
+        f"Estado: {'activo' if activation_state.get('active') else 'inactivo'}."
+    )
+
+    for sa in super_admins:
+        idempotency_key = f"sales_hot_lead:{tenant.id}:{activation_state.get('activation_count')}:{sa.id}"
+        existing = Notification.query.filter_by(tenant_id=tenant.id, idempotency_key=idempotency_key).first()
+        if existing:
+            continue
+        db.session.add(
+            Notification(
+                tenant_id=tenant.id,
+                user_id=sa.id,
+                channel="in_app",
+                recipient=(sa.email or f"superadmin-{sa.id}@chatboc.local"),
+                subject="Lead caliente: demo activado",
+                body=body,
+                status="sent",
+                idempotency_key=idempotency_key,
+                metadata_json={
+                    "event": "tenant_demo_whatsapp_activated",
+                    "tenant_slug": tenant.slug,
+                    "tenant_type": tenant.tipo,
+                    "actor_user_id": getattr(actor, "id", None),
+                    "activation_state": activation_state,
+                },
+            )
+        )
+
+    if actor:
+        db.session.add(
+            AdminAuditLog(
+                admin_user_id=actor.id,
+                action="tenant_demo_whatsapp_activated",
+                target_object=tenant.slug,
+                details={
+                    "tenant_id": tenant.id,
+                    "tenant_type": tenant.tipo,
+                    "activation_state": activation_state,
+                    "sales_signal": "hot_lead",
+                },
+                ip_address=request.headers.get("X-Forwarded-For") or request.remote_addr,
+            )
+        )
+    db.session.commit()
 
 def _classify_points_source(tipo: str | None) -> str:
     key = (tipo or "").strip().lower()
@@ -1640,6 +1784,12 @@ def get_integration_info(tenant_slug):
     widget_payload = _build_widget_embed_payload(tenant, widget_token)
     widget_script = widget_payload.get("embed_snippet")
 
+    demo_menu = _portal_demo_menu_for_tenant(tenant)
+    demo_experience = build_demo_experience_contract(
+        tenant_type=tenant.tipo,
+        rubro_label=(tenant.nombre or tenant.tipo),
+        max_messages=10,
+    )
     return jsonify({
         "slug": tenant.slug,
         "name": tenant.nombre,
@@ -1651,8 +1801,53 @@ def get_integration_info(tenant_slug):
         "embed_attributes": widget_payload.get("attributes", {}),
         "catalogUrl": f"{portal_url}/market",
         "qrCodeUrl": f"https://api.qrserver.com/v1/create-qr-code/?size=150x150&data={portal_url}",
-        "whatsappLink": f"https://wa.me/{owner.telefono if owner and owner.telefono else ''}"
+        "whatsappLink": f"https://wa.me/{owner.telefono if owner and owner.telefono else ''}",
+        "demoOnboarding": {
+            "tenant_type": tenant.tipo,
+            "twilio_trial": _portal_twilio_trial_contract(),
+            "activation_state": _tenant_demo_activation_state(tenant),
+            "activation_endpoint": f"/api/v1/portal/{tenant.slug}/integration/demo/activate-whatsapp",
+            "quick_menu": demo_menu,
+            "experience_blueprint": demo_experience,
+            "feature_flags": {
+                "audio_enabled": True,
+                "image_enabled": True,
+                "tickets_enabled": True,
+                "orders_enabled": True,
+                "suggestions_enabled": True,
+                "heatmap_enabled": True,
+                "catalog_pdf_enabled": True,
+                "catalog_excel_enabled": True,
+                "qdrant_demo_enabled": True,
+            },
+        },
     })
+
+
+@portal_api_bp.route('/integration/demo/activate-whatsapp', methods=['POST'])
+@require_auth
+def activate_demo_whatsapp(tenant_slug):
+    tenant = _resolve_context(tenant_slug)
+    user = g.viewer
+    owner = tenant.municipio or tenant.pyme
+    owner_id = getattr(owner, "id", None)
+    if not user or (getattr(user, "tenant_id", None) != tenant.id and getattr(user, "id", None) != owner_id):
+        return jsonify({"error": "forbidden", "message": "No autorizado para activar demo en este tenant."}), 403
+
+    result = _activate_tenant_demo_trial(tenant, getattr(user, "id", None))
+    if not result.get("ok"):
+        return jsonify(result), 403
+    _notify_superadmin_hot_lead(tenant, user, result.get("state") or {})
+
+    trial = _portal_twilio_trial_contract()
+    return jsonify(
+        {
+            "ok": True,
+            "message": "Demo WhatsApp activado en tiempo real para este tenant.",
+            "twilio_trial": trial,
+            "activation_state": result.get("state"),
+        }
+    ), 200
 
 @portal_api_bp.route('/redeem', methods=['POST'])
 @require_auth
@@ -1726,7 +1921,7 @@ def get_loyalty_info(tenant_slug):
 @portal_api_bp.route('/surveys/<slug>/responses', methods=['POST'])
 @require_auth
 def submit_portal_survey_response(tenant_slug, slug):
-    _resolve_context(tenant_slug) # Ensure tenant context
+    tenant = _resolve_context(tenant_slug) # Ensure tenant context
     # user = g.viewer # Responses logic typically uses user_id from payload or infers it
 
     from services.encuestas_service import save_respuesta, EncuestaError
@@ -1747,7 +1942,13 @@ def submit_portal_survey_response(tenant_slug, slug):
 
     try:
         # Note: save_respuesta expects PUBLIC SLUG.
-        save_respuesta(slug, data, request_ctx)
+        preferred_tenant_id = tenant.encuestas_tenant_id or tenant.id
+        save_respuesta(
+            slug,
+            data,
+            request_ctx,
+            preferred_tenant_id=preferred_tenant_id,
+        )
         return jsonify({"success": True}), 201
     except EncuestaError as e:
         return jsonify({"error": e.message}), e.status_code
