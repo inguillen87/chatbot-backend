@@ -81,7 +81,11 @@ def verify_social_comment_token(token: str, *, max_age_seconds: Optional[int] = 
 
     ttl = max_age_seconds
     if ttl is None:
-        ttl = int(current_app.config.get("SURVEY_SOCIAL_TOKEN_TTL_SECONDS", 900) or 900)
+        raw_ttl = current_app.config.get("SURVEY_SOCIAL_TOKEN_TTL_SECONDS", 900)
+        try:
+            ttl = int(raw_ttl or 900)
+        except (TypeError, ValueError):
+            ttl = 900
 
     try:
         decoded = _social_comment_serializer().loads(token, max_age=max(60, ttl))

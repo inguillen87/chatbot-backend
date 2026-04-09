@@ -210,6 +210,90 @@ Esto ya está disponible desde backend y FE puede usarlo hoy:
   - `action_hint`
   - `request_id`
 
+---
+
+## 11) Handoff técnico adicional para FE (comentarios sociales)
+
+### 11.1 Contrato de configuración para UI
+
+En el payload de encuesta pública, cuando `permitir_comentarios = true`, ahora FE puede esperar:
+
+```json
+{
+  "commentConfig": {
+    "requiresSocialToken": false,
+    "acceptedModes": ["anon", "social"]
+  },
+  "socialProviders": [
+    {"id": "facebook", "label": "Facebook"},
+    {"id": "google", "label": "Google"},
+    {"id": "instagram", "label": "Instagram"}
+  ]
+}
+```
+
+Regla FE:
+
+- Si `requiresSocialToken = true`, **no permitir submit en modo social** sin `social_token` válido.
+- Si es `false`, se puede mantener fallback legacy.
+
+### 11.2 Submit de comentarios (POST `/comentarios`)
+
+Campos recomendados para modo social:
+
+```json
+{
+  "texto": "Excelente propuesta",
+  "mode": "social",
+  "social_token": "<token-firmado>"
+}
+```
+
+Notas:
+
+- El backend valida firma/TTL del token.
+- Si FE manda `auth_provider`/`auth_user_id` y no coinciden con el token => error de seguridad.
+- Si el token es válido, backend completa automáticamente identidad social.
+
+### 11.3 Reason codes que FE debe mapear (comentarios sociales)
+
+- `invalid_social_token`
+  - Copy sugerido: “Tu sesión social venció. Volvé a iniciar sesión para comentar.”
+  - CTA: “Reiniciar sesión”
+- `social_token_required`
+  - Copy sugerido: “Para comentar con tu cuenta social primero necesitás validarte.”
+  - CTA: “Conectar cuenta”
+- `social_identity_mismatch`
+  - Copy sugerido: “No pudimos validar tu identidad social. Reintentá desde cero.”
+  - CTA: “Reintentar”
+
+### 11.4 Contrato de respuesta de comentario creado
+
+Para permitir render optimista sin pedir refetch inmediato:
+
+```json
+{
+  "ok": true,
+  "comentario": {
+    "id": 123,
+    "texto": "Excelente propuesta",
+    "nombre_autor": "Nombre Apellido",
+    "fecha": "2026-04-09T03:10:00+00:00",
+    "comment_mode": "social",
+    "auth_provider": "facebook",
+    "auth_user_id": "fb_5566"
+  }
+}
+```
+
+### 11.5 Checklist FE de implementación (para no trabarse)
+
+- [ ] Leer `commentConfig` y `socialProviders` al cargar encuesta.
+- [ ] Deshabilitar submit social sin token cuando `requiresSocialToken=true`.
+- [ ] Mapear `reason_code` nuevos a toasts/modales con CTA.
+- [ ] Hacer rollback UI ante error de submit (sacar comentario optimista).
+- [ ] Guardar `request_id` en logs FE para soporte cruzado con backend.
+
 ### Ejemplo error 403 no publicada
 
 ```json

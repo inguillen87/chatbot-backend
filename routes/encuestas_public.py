@@ -39,6 +39,7 @@ from services.encuestas_service import (
     create_comentario,
     list_comentarios,
     reportar_comentario,
+    verify_social_comment_token,
 )
 from services.encuestas_analytics_service import calculate_live_results
 from utils.auth_helpers import obtener_token, user_from_token
@@ -297,8 +298,74 @@ def _attach_comment_social_config(data: dict) -> dict:
     if not isinstance(data, dict):
         return data
     if data.get("permitir_comentarios"):
+        comment_cfg = data.setdefault("commentConfig", {})
+        comment_cfg.setdefault(
+            "requiresSocialToken",
+            _coerce_bool(current_app.config.get("SURVEY_SOCIAL_COMMENT_REQUIRE_TOKEN"), default=False),
+        )
+        comment_cfg.setdefault("acceptedModes", ["anon", "social"])
         data.setdefault("socialProviders", _resolve_comment_social_providers())
     return data
+
+
+def _coerce_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return default
+
+
+def _enrich_comment_payload_with_social_token(payload: Dict[str, Any]) -> tuple[Dict[str, Any], bool, bool]:
+    """Merge verified social-token claims into comment payload.
+
+    Returns (payload, had_invalid_token, had_token).
+    """
+
+    token = (
+        payload.get("social_token")
+        or payload.get("auth_token")
+        or request.headers.get("X-Survey-Social-Token")
+    )
+    token = str(token or "").strip()
+    if not token:
+        return payload, False, False
+
+    claims = verify_social_comment_token(token)
+    if not claims:
+        return payload, True, True
+
+    mapping = {
+        "provider": "auth_provider",
+        "auth_user_id": "auth_user_id",
+        "auth_email": "auth_email",
+        "auth_first_name": "auth_first_name",
+        "auth_last_name": "auth_last_name",
+    }
+    for claim_key, payload_key in mapping.items():
+        incoming = str(payload.get(payload_key) or "").strip()
+        claim_value = str(claims.get(claim_key) or "").strip()
+        if incoming and claim_value and incoming.lower() != claim_value.lower():
+            raise EncuestaError(
+                "Los datos sociales no coinciden con el token",
+                status_code=400,
+                payload={"reason_code": "social_identity_mismatch", "retryable": False},
+            )
+        if claim_value:
+            payload[payload_key] = claim_value
+
+    current_mode = str(payload.get("mode") or payload.get("comment_mode") or "").strip().lower()
+    if not current_mode and payload.get("auth_provider"):
+        payload["mode"] = "social"
+    return payload, False, True
 
 
 def _resolve_request_id() -> str:
@@ -791,8 +858,35 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
             user = user_from_token(token) if token else None
 
             payload = _extract_request_payload()
+            if not isinstance(payload, dict):
+                payload = {}
             try:
+                payload, invalid_social_token, has_social_token = _enrich_comment_payload_with_social_token(payload)
+                requires_social_token = _coerce_bool(
+                    current_app.config.get("SURVEY_SOCIAL_COMMENT_REQUIRE_TOKEN"),
+                    default=False,
+                )
+                comment_mode = str(payload.get("mode") or payload.get("comment_mode") or "").strip().lower()
+                is_social_comment = comment_mode == "social"
+                if invalid_social_token and (is_social_comment or requires_social_token):
+                    raise EncuestaError(
+                        "Token social inválido o expirado",
+                        status_code=400,
+                        payload={"reason_code": "invalid_social_token", "retryable": False},
+                    )
+                if requires_social_token and is_social_comment and not has_social_token:
+                    raise EncuestaError(
+                        "Se requiere token social válido para comentar",
+                        status_code=400,
+                        payload={"reason_code": "social_token_required", "retryable": False},
+                    )
+
                 comentario = create_comentario(encuesta.id, payload, user)
+                auth_user_id = None
+                if isinstance(comentario.anon_id, str) and comentario.anon_id.startswith("social:"):
+                    parts = comentario.anon_id.split(":", 2)
+                    if len(parts) == 3:
+                        auth_user_id = parts[2] or None
                 return jsonify({
                     "ok": True,
                     "comentario": {
@@ -802,6 +896,7 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
                         "fecha": comentario.created_at.isoformat(),
                         "comment_mode": "social" if isinstance(comentario.anon_id, str) and comentario.anon_id.startswith("social:") else "anon",
                         "auth_provider": (comentario.anon_id.split(":", 2)[1] if isinstance(comentario.anon_id, str) and comentario.anon_id.startswith("social:") and len(comentario.anon_id.split(":", 2)) == 3 else None),
+                        "auth_user_id": auth_user_id,
                     }
                 }), 201
             except EncuestaError as err:
