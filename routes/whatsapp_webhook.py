@@ -66,6 +66,24 @@ ALLOWED_MEDIA_EXTENSIONS = {
     ".ogg",
     ".mp4",
 }
+SENSITIVE_MENU_ACTIONS = {
+    "iniciar_reclamo",
+    "crear_reclamo",
+    "enviar_sugerencia",
+    "iniciar_sugerencia",
+    "crear_sugerencia",
+}
+SENSITIVE_ACTION_CONFIRM_ACCEPT = {"1", "si", "sí", "confirmar", "ok", "dale"}
+SENSITIVE_ACTION_CONFIRM_REJECT = {"2", "no", "cancelar", "menu", "menú"}
+
+
+def _build_sensitive_action_confirmation_text(selected_option: dict) -> str:
+    label = (selected_option or {}).get("texto") or "esta acción"
+    return (
+        f"Antes de continuar con *{label}*, confirmame por favor:\n"
+        "1) Sí, iniciar desde cero\n"
+        "2) No, volver al menú"
+    )
 
 
 def _is_valid_media_url(url: Optional[str]) -> bool:
@@ -779,10 +797,19 @@ def _reset_municipio_context_for_menu(session_context: ChatSessionContext) -> No
         session_context.context_data[CONTEXTO_MUNICIPIO] = municipio_ctx
 
     municipio_ctx["estado_conversacion"] = "ESPERANDO_SELECCION_MENU_PRINCIPAL"
+    # Clear potentially stale drafts to avoid accidental auto-confirm/create when
+    # the user selects a fresh numeric menu option (e.g., "1. Iniciar reclamo").
+    municipio_ctx.pop("reclamo_flow_v2", None)
+    municipio_ctx.pop("datos_reclamo", None)
+    municipio_ctx.pop("datos_parciales_llm_reclamo", None)
+    municipio_ctx.pop("reclamo_confirmacion_pendiente", None)
+    municipio_ctx.pop("confirmation_required", None)
     municipio_ctx.pop("ubicacion_contextual", None)
     municipio_ctx.pop("ultima_consulta_poi", None)
     municipio_ctx.pop("consulta_pendiente_ubicacion", None)
     municipio_ctx.pop("menu_opciones", None)
+    session_context.context_data.pop("last_options_sent", None)
+    session_context.context_data.pop("pending_sensitive_action", None)
     safe_flag_modified(session_context, "context_data")
 
 
@@ -1965,6 +1992,46 @@ def whatsapp_webhook():
                     or option.get("texto")
                 )
                 break
+
+    pending_sensitive_action = session_context_db_entry.context_data.get("pending_sensitive_action")
+    normalized_message = (message_body or "").strip().lower()
+
+    if isinstance(pending_sensitive_action, dict) and not selected_option:
+        if normalized_message in SENSITIVE_ACTION_CONFIRM_ACCEPT:
+            selected_option = pending_sensitive_action.get("selected_option") or selected_option
+            selected_action_id = pending_sensitive_action.get("action_id") or selected_action_id
+            session_context_db_entry.context_data.pop("pending_sensitive_action", None)
+            safe_flag_modified(session_context_db_entry, "context_data")
+            db.session.commit()
+        elif normalized_message in SENSITIVE_ACTION_CONFIRM_REJECT:
+            session_context_db_entry.context_data.pop("pending_sensitive_action", None)
+            safe_flag_modified(session_context_db_entry, "context_data")
+            db.session.commit()
+            selected_action_id = "menu_principal"
+
+    if selected_option and (selected_action_id or "").strip().lower() in SENSITIVE_MENU_ACTIONS:
+        if not (
+            isinstance(pending_sensitive_action, dict)
+            and normalized_message in SENSITIVE_ACTION_CONFIRM_ACCEPT
+        ):
+            session_context_db_entry.context_data["pending_sensitive_action"] = {
+                "action_id": selected_action_id,
+                "selected_option": selected_option,
+            }
+            safe_flag_modified(session_context_db_entry, "context_data")
+            db.session.commit()
+
+            confirmation_text = _build_sensitive_action_confirmation_text(selected_option)
+            if twilio_client:
+                twilio_client.messages.create(
+                    from_=to_number_raw,
+                    to=from_number_raw,
+                    body=confirmation_text,
+                )
+            return "OK", 200
+
+        # User explicitly confirmed. Start from a clean draft.
+        _reset_municipio_context_for_menu(session_context_db_entry)
 
     # --- Live Chat Routing (WhatsApp -> Admin panel) ---
     human_chat_active = bool(

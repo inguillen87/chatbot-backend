@@ -356,8 +356,20 @@ def tiene_archivo_catalogo(user_id: int) -> bool:
     except Exception: return False
 
 def url_descargar_catalogo_pyme(pyme_id: int) -> str:
-    if not current_app or not request: # Si no hay contexto de app/request (ej. prueba unitaria)
-        return f"/catalogo/publico/{pyme_id}/descargar" # Fallback a URL relativa
+    try:
+        catalogo_adj = (
+            ArchivoAdjunto.query.filter_by(user_id=pyme_id, tipo="catalogo")
+            .order_by(ArchivoAdjunto.fecha.desc(), ArchivoAdjunto.id.desc())
+            .first()
+        )
+        raw_url = (catalogo_adj.url or "").strip() if catalogo_adj else ""
+        if raw_url and (raw_url.startswith("http://") or raw_url.startswith("https://")):
+            return raw_url
+    except Exception:
+        pass
+
+    if not current_app or not request:  # Si no hay contexto de app/request (ej. prueba unitaria)
+        return f"/catalogo/publico/{pyme_id}/descargar"  # Fallback a URL relativa
     base_url = current_app.config.get("APP_BASE_URL", request.url_root.rstrip('/'))
     return f"{base_url}/catalogo/publico/{pyme_id}/descargar"
 
