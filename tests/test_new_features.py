@@ -17,9 +17,11 @@ from services.ticket_utils import (
 from services.whatsapp_receipts import render_ticket_whatsapp
 from services.municipio_responder import GreetingHandler
 from services.municipio_responder import responder_municipio
+from services.pymes import url_descargar_catalogo_pyme
+from services.actions.pyme_order_actions import AgregarItemCarritoAction
 from config import TestConfig
 from app import create_app
-from models import db
+from models import db, User, ArchivoAdjunto
 
 class TestNewFeatures(unittest.TestCase):
 
@@ -255,6 +257,53 @@ class TestNewFeatures(unittest.TestCase):
         self.assertIn("🏗️ Obras", botones)
         self.assertIn("♻️ Punto Limpio", botones)
         self.assertEqual(len(respuesta.get("options_list", [])), 12)
+
+    def test_url_descargar_catalogo_pyme_prefiere_url_externa_del_catalogo(self):
+        owner = User(email="catalogo-owner@test.com", name="Catalogo Owner", rol="admin", tipo_chat="pyme")
+        owner.set_password("test")
+        db.session.add(owner)
+        db.session.flush()
+        db.session.add(
+            ArchivoAdjunto(
+                user_id=owner.id,
+                filename="catalogo.pdf",
+                nombre_original="catalogo.pdf",
+                tipo="catalogo",
+                url="https://cdn.cloudflare.example/catalogos/catalogo-bodega.pdf",
+                mime="application/pdf",
+            )
+        )
+        db.session.commit()
+
+        url = url_descargar_catalogo_pyme(owner.id)
+        self.assertEqual(url, "https://cdn.cloudflare.example/catalogos/catalogo-bodega.pdf")
+
+    @patch("services.actions.pyme_order_actions.buscar_catalogo_qdrant")
+    def test_agregar_item_carrito_pide_desambiguar_en_consulta_exploratoria(self, mock_qdrant):
+        class _Hit:
+            def __init__(self, payload):
+                self.payload = payload
+
+        mock_qdrant.return_value = [
+            _Hit({"nombre": "Malbec Reserva 2022", "precio_str": "43200", "sku": "MALB-RES-22"}),
+            _Hit({"nombre": "Malbec Clásico", "precio_str": "21000", "sku": "MALB-CLA"}),
+        ]
+
+        handler = AgregarItemCarritoAction(
+            {
+                "user_id": 99,
+                "pregunta_actual_usuario": "quiero comprar malbec que tenes?",
+                "chat_db_context_data": {},
+            }
+        )
+
+        response = handler.execute({"nombre_producto_mencionado": "malbec"})
+        self.assertTrue(response.get("success"))
+        self.assertIn("varias opciones", response.get("message_to_user", "").lower())
+        self.assertEqual(response.get("fuente"), "pyme_disambiguacion_producto_v1")
+        opciones = response.get("options_list") or []
+        self.assertGreaterEqual(len(opciones), 2)
+        self.assertTrue(any(str(opt.get("id_accion", "")).startswith("agregar_item_carrito__") for opt in opciones))
 
     @patch('services.llm_orchestrator.llamar_llm_con_fallback')
     def test_llm_mostrar_menu_returns_full_menu(self, mock_llamar_gemini):

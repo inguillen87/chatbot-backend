@@ -1,6 +1,7 @@
 # services/actions/pyme_order_actions.py
 import logging
 import json
+import re
 from typing import Dict, Any, List, Optional
 from .base_action_handler import BaseActionHandler
 from services.pedido_service import servicio_pedidos # For creating PymePedido
@@ -27,39 +28,78 @@ def _get_pyme_carts_data_from_context(context: Dict[str, Any]) -> Dict[int, List
     return chat_db_context_data['carritos_pymes']
 
 class AgregarItemCarritoAction(BaseActionHandler):
-    def _find_product_details(self, pyme_id: int, product_identifier: str) -> Optional[Dict[str, Any]]:
-        # This function can be expanded with more sophisticated search logic,
-        # including fuzzy matching, alias resolution, etc.
-        # For now, it relies on a direct Qdrant search.
-        qdrant_collection = CATALOGO_PYME
-        logger.info(f"Searching Qdrant '{qdrant_collection}' for '{product_identifier}' (pyme_id: {pyme_id})")
-        qdrant_results = buscar_catalogo_qdrant(user_id=pyme_id, pregunta=product_identifier, limite=1, coleccion=qdrant_collection)
-
-        if not qdrant_results or not qdrant_results[0].payload:
-            logger.warning(f"Product '{product_identifier}' not found for pyme_id {pyme_id}.")
-            return None
-
-        payload = qdrant_results[0].payload
+    def _build_product_info_from_qdrant_hit(self, payload: Dict[str, Any], fallback_name: str) -> Dict[str, Any]:
         db_id = payload.get("db_id")
         item_db = db.session.get(CatalogoItem, db_id) if db_id else None
 
         if item_db:
             _, precio_float, moneda = parse_precio_flexible(item_db.precio)
             return {
-                "catalogo_item_id": item_db.id, "nombre_producto": item_db.nombre,
-                "precio_unitario": precio_float, "moneda": moneda or "ARS", "sku": item_db.sku,
-                "presentacion": item_db.unidad, "imagen_url": item_db.imagen_url
+                "catalogo_item_id": item_db.id,
+                "nombre_producto": item_db.nombre,
+                "precio_unitario": precio_float,
+                "moneda": moneda or "ARS",
+                "sku": item_db.sku,
+                "presentacion": item_db.unidad,
+                "imagen_url": item_db.imagen_url,
             }
 
-        logger.warning(f"Qdrant found '{product_identifier}', but no corresponding DB record via db_id={db_id}. Using Qdrant payload as fallback.")
         _, precio_float, moneda = parse_precio_flexible(payload.get("precio_str", "0"))
         return {
             "catalogo_item_id": payload.get("sku") or payload.get("nombre"),
-            "nombre_producto": payload.get("nombre", product_identifier),
-            "precio_unitario": precio_float, "moneda": moneda or "ARS",
-            "sku": payload.get("sku"), "presentacion": payload.get("unidad_descripcion") or payload.get("unidad_original"),
-            "imagen_url": payload.get("imagen_url")
+            "nombre_producto": payload.get("nombre", fallback_name),
+            "precio_unitario": precio_float,
+            "moneda": moneda or "ARS",
+            "sku": payload.get("sku"),
+            "presentacion": payload.get("unidad_descripcion") or payload.get("unidad_original"),
+            "imagen_url": payload.get("imagen_url"),
         }
+
+    def _search_product_candidates(self, pyme_id: int, product_identifier: str, *, limit: int = 5) -> List[Dict[str, Any]]:
+        qdrant_collection = CATALOGO_PYME
+        logger.info(f"Searching Qdrant '{qdrant_collection}' for '{product_identifier}' (pyme_id: {pyme_id})")
+        qdrant_results = buscar_catalogo_qdrant(
+            user_id=pyme_id,
+            pregunta=product_identifier,
+            limite=max(1, int(limit or 1)),
+            coleccion=qdrant_collection,
+        )
+
+        candidates: List[Dict[str, Any]] = []
+        seen: set[str] = set()
+        for hit in qdrant_results or []:
+            payload = getattr(hit, "payload", {}) or {}
+            if not payload:
+                continue
+            candidate = self._build_product_info_from_qdrant_hit(payload, product_identifier)
+            dedupe_key = str(candidate.get("catalogo_item_id") or candidate.get("sku") or candidate.get("nombre_producto"))
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            candidates.append(candidate)
+        return candidates
+
+    def _find_product_details(self, pyme_id: int, product_identifier: str) -> Optional[Dict[str, Any]]:
+        sku_candidate = str(product_identifier or "").strip()
+        if sku_candidate:
+            exact = CatalogoItem.query.filter_by(user_id=pyme_id, sku=sku_candidate).first()
+            if exact:
+                _, precio_float, moneda = parse_precio_flexible(exact.precio)
+                return {
+                    "catalogo_item_id": exact.id,
+                    "nombre_producto": exact.nombre,
+                    "precio_unitario": precio_float,
+                    "moneda": moneda or "ARS",
+                    "sku": exact.sku,
+                    "presentacion": exact.unidad,
+                    "imagen_url": exact.imagen_url,
+                }
+
+        candidates = self._search_product_candidates(pyme_id, product_identifier, limit=1)
+        if not candidates:
+            logger.warning(f"Product '{product_identifier}' not found for pyme_id {pyme_id}.")
+            return None
+        return candidates[0]
 
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
         logger.info(f"Executing AgregarItemCarritoAction with data: {action_data}")
@@ -71,11 +111,50 @@ class AgregarItemCarritoAction(BaseActionHandler):
         if not product_identifier:
             return {"success": False, "message_to_user": "Por favor, especifica el producto que deseas agregar.", "pedir_info": "nombre_producto_mencionado"}
 
+        cantidad_raw = action_data.get("cantidad_producto_mencionado")
+        cantidad_fue_explicita = cantidad_raw is not None
         try:
-            cantidad = int(action_data.get("cantidad_producto_mencionado", 1))
+            cantidad = int(cantidad_raw if cantidad_raw is not None else 1)
             if cantidad <= 0: raise ValueError("La cantidad debe ser un número positivo.")
         except (ValueError, TypeError):
             return {"success": False, "message_to_user": "La cantidad proporcionada no es válida. Por favor, indica un número."}
+
+        pregunta_usuario = str(self.context.get("pregunta_actual_usuario") or "").strip().lower()
+        exploratory_patterns = (
+            r"\b(que|qué)\s+ten[eé]s\b",
+            r"\b(cu[aá]les?|mostrame|mostrar|opciones)\b",
+            r"\b(quiero\s+comprar|busco|tienen|ten[eé]s?)\b",
+        )
+        query_corta = len(re.findall(r"\w+", pregunta_usuario)) <= 8
+        es_consulta_exploratoria = bool(
+            pregunta_usuario
+            and query_corta
+            and any(re.search(pattern, pregunta_usuario) for pattern in exploratory_patterns)
+        )
+
+        if es_consulta_exploratoria and not cantidad_fue_explicita:
+            candidates = self._search_product_candidates(pyme_id, product_identifier, limit=4)
+            if len(candidates) > 1:
+                opciones = []
+                lineas = ["Encontré varias opciones para tu búsqueda. Decime cuál querés agregar:"]
+                for idx, candidate in enumerate(candidates[:4], start=1):
+                    nombre = candidate.get("nombre_producto") or "Producto"
+                    moneda = candidate.get("moneda") or "ARS"
+                    precio = candidate.get("precio_unitario")
+                    precio_txt = ""
+                    if isinstance(precio, (int, float)):
+                        precio_txt = f" — ${precio:,.0f} {moneda}"
+                    lineas.append(f"{idx}. {nombre}{precio_txt}")
+                    suffix = candidate.get("catalogo_item_id") or candidate.get("sku") or nombre
+                    opciones.append({"texto": f"Pedir {str(nombre)[:18]}", "id_accion": f"agregar_item_carrito__{suffix}"})
+
+                opciones.append({"texto": "Buscar otra cosa", "id_accion": "consultar_producto_pyme"})
+                return {
+                    "success": True,
+                    "message_to_user": "\n".join(lineas),
+                    "options_list": opciones,
+                    "fuente": "pyme_disambiguacion_producto_v1",
+                }
 
         producto_info = self._find_product_details(pyme_id, product_identifier)
         if not producto_info:
