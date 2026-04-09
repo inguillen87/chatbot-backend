@@ -17,7 +17,11 @@ from app import create_app, db
 from config import Config
 from models import User, Rubro, WhatsappNumero, ChatSessionContext
 from services.municipio_responder import CONTEXTO_MUNICIPIO
-from routes.whatsapp_webhook import _send_delayed_payload, _strip_duplicate_welcome_media
+from routes.whatsapp_webhook import (
+    _send_delayed_payload,
+    _strip_duplicate_welcome_media,
+    _reset_municipio_context_for_menu,
+)
 # Moved model imports after app and config to ensure they are found via sys.path
 # and to avoid potential issues if models.py itself tries to import app-context related things early.
 # However, for direct use in tests, they are typically at the top. Let's try keeping them here.
@@ -122,6 +126,74 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self.validator_patch.stop()
         self.twilio_client_patch.stop()
         self.welcome_patch.stop()
+
+    def test_reset_municipio_context_for_menu_clears_sensitive_draft_data(self):
+        session = ChatSessionContext(
+            chat_session_id="ctx-reset-test",
+            user_id=self.empresa_id_for_test,
+            anon_id=self.test_user_number_str,
+            context_data={
+                CONTEXTO_MUNICIPIO: {
+                    "estado_conversacion": "confirmando_reclamo",
+                    "reclamo_flow_v2": {"state": "confirm"},
+                    "datos_reclamo": {"categoria": "Bache"},
+                    "datos_parciales_llm_reclamo": {"descripcion": "calle rota"},
+                    "confirmation_required": True,
+                },
+                "last_options_sent": [{"texto": "Iniciar reclamo", "action_id": "iniciar_reclamo"}],
+                "pending_sensitive_action": {"action_id": "iniciar_reclamo"},
+            },
+        )
+        db.session.add(session)
+        db.session.commit()
+
+        _reset_municipio_context_for_menu(session)
+
+        municipio_ctx = session.context_data.get(CONTEXTO_MUNICIPIO, {})
+        self.assertEqual(municipio_ctx.get("estado_conversacion"), "ESPERANDO_SELECCION_MENU_PRINCIPAL")
+        self.assertNotIn("reclamo_flow_v2", municipio_ctx)
+        self.assertNotIn("datos_reclamo", municipio_ctx)
+        self.assertNotIn("datos_parciales_llm_reclamo", municipio_ctx)
+        self.assertNotIn("last_options_sent", session.context_data)
+        self.assertNotIn("pending_sensitive_action", session.context_data)
+
+    @patch("routes.whatsapp_webhook.responder_chatboc")
+    def test_sensitive_numeric_menu_option_requires_explicit_confirmation(self, mock_bot):
+        self._set_owner_tipo_chat("municipio")
+        self.mock_validator.validate.return_value = True
+
+        self._create_confirmed_session()
+        session = ChatSessionContext.query.filter_by(
+            chat_session_id=f"whatsapp_{self.empresa_id_for_test}_{self.test_user_number_str}"
+        ).first()
+        updated_context = dict(session.context_data or {})
+        updated_context["last_options_sent"] = [
+            {"texto": "Iniciar un Reclamo", "action_id": "iniciar_reclamo"}
+        ]
+        session.context_data = updated_context
+        db.session.add(session)
+        db.session.commit()
+
+        payload = {
+            "To": f"whatsapp:{self.test_whatsapp_number_str}",
+            "From": f"whatsapp:{self.test_user_number_str}",
+            "Body": "1",
+        }
+        headers = {"X-Twilio-Signature": "dummy_signature_valid"}
+
+        response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data.decode(), "OK")
+
+        mock_bot.assert_not_called()
+        self.assertGreaterEqual(self.mock_twilio_create.call_count, 1)
+        sent_body = self.mock_twilio_create.call_args.kwargs.get("body", "")
+        self.assertIn("confirmame por favor", sent_body.lower())
+        self.assertIn("iniciar desde cero", sent_body.lower())
+
+        db.session.refresh(session)
+        pending = session.context_data.get("pending_sensitive_action") or {}
+        self.assertEqual(pending.get("action_id"), "iniciar_reclamo")
 
     @patch('routes.whatsapp_webhook.threading.Timer')
     @patch('services.response_formatter.build_interactive_response')
