@@ -43,6 +43,11 @@ except ImportError:
     emit_survey_update = None
     emit_survey_comment = None
 
+try:
+    from services.analytics.ingestor import analytics_ingestor
+except Exception:  # pragma: no cover - analytics optional in some contexts
+    analytics_ingestor = None
+
 
 _BOOTSTRAP_TENANT_ID: Optional[int] = None
 _ENC_COMENTARIO_HAS_REPORT_COUNT: Optional[bool] = None
@@ -3655,6 +3660,47 @@ def create_comentario(encuesta_id: int, payload: Dict[str, Any], user: Optional[
 
     db.session.add(comentario)
     db.session.commit()
+
+    # Best-effort analytics instrumentation for comment UX funnel.
+    if analytics_ingestor:
+        try:
+            mode_changed_from = str(payload.get("previous_mode") or payload.get("prev_mode") or "").strip().lower()
+            base_payload = {
+                "encuesta_id": encuesta.id,
+                "slug": _resolve_public_slug(encuesta) or encuesta.slug,
+                "comment_mode": comment_mode,
+                "auth_provider": auth_provider,
+                "has_user_id": bool(getattr(user, "id", None)),
+            }
+            if mode_changed_from and mode_changed_from in {"anon", "social"} and mode_changed_from != comment_mode:
+                analytics_ingestor.track(
+                    tenant_id=encuesta.tenant_id,
+                    event_name="survey_comment_mode_changed",
+                    payload={**base_payload, "from_mode": mode_changed_from, "to_mode": comment_mode},
+                    user_id=getattr(user, "id", None),
+                    anon_id=anon_id,
+                    channel=payload.get("channel") or "public_survey",
+                    tenant_type="municipio",
+                    entity_ref=str(encuesta.id),
+                )
+
+            analytics_ingestor.track(
+                tenant_id=encuesta.tenant_id,
+                event_name="survey_comment_submitted",
+                payload=base_payload,
+                user_id=getattr(user, "id", None),
+                anon_id=anon_id,
+                channel=payload.get("channel") or "public_survey",
+                tenant_type="municipio",
+                entity_ref=str(encuesta.id),
+            )
+        except Exception:
+            logger = _current_app_logger()
+            if logger:
+                logger.exception(
+                    "[encuestas] analytics ingest failed for comment encuesta_id=%s",
+                    encuesta.id,
+                )
 
     # Emit live event
     if emit_survey_comment:

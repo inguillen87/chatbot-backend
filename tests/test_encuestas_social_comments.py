@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import MagicMock, patch
 
 from app import create_app
 from config import TestConfig
@@ -69,3 +70,17 @@ class EncuestasSocialCommentsTests(unittest.TestCase):
         self.assertIn("google", provider_ids)
         self.assertIn("instagram", provider_ids)
 
+    @patch("services.encuestas_service.analytics_ingestor", new_callable=MagicMock)
+    def test_create_social_comment_emits_analytics_events(self, mock_ingestor):
+        payload = {
+            "texto": "Me gustó la propuesta",
+            "mode": "social",
+            "previous_mode": "anon",
+            "auth_provider": "google",
+            "auth_user_id": "g_7788",
+        }
+        create_comentario(self.encuesta.id, payload, user=None)
+
+        event_names = [call.kwargs.get("event_name") for call in mock_ingestor.track.call_args_list]
+        self.assertIn("survey_comment_mode_changed", event_names)
+        self.assertIn("survey_comment_submitted", event_names)
