@@ -1,4 +1,38 @@
+import json
 from typing import Any, Dict, Optional
+
+
+def _format_business_hours(value: Any) -> str:
+    if value is None:
+        return ""
+    parsed = value
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return ""
+        try:
+            parsed = json.loads(stripped)
+        except (TypeError, ValueError):
+            return stripped
+    if isinstance(parsed, list):
+        items = []
+        for row in parsed:
+            if not isinstance(row, dict):
+                continue
+            dia = str(row.get("dia") or row.get("day") or "").strip()
+            if not dia:
+                continue
+            cerrado = bool(row.get("cerrado"))
+            abre = str(row.get("abre") or "").strip()
+            cierra = str(row.get("cierra") or "").strip()
+            if cerrado or (not abre and not cierra):
+                items.append(f"{dia}: cerrado")
+            elif abre and cierra:
+                items.append(f"{dia}: {abre}-{cierra}")
+            else:
+                items.append(f"{dia}: horario a confirmar")
+        return " | ".join(items)
+    return str(parsed)
 
 
 def _build_menu_text(kind: str) -> str:
@@ -45,7 +79,9 @@ def _render_contact_section(contacto: Optional[Dict[str, Any]]) -> str:
     if telefono:
         lines.append(f"* *Teléfono:* {telefono}")
     if horario:
-        lines.append(f"* *Horario:* {horario}")
+        horario_legible = _format_business_hours(horario)
+        if horario_legible:
+            lines.append(f"* *Horario:* {horario_legible}")
     return "\n".join(lines)
 
 

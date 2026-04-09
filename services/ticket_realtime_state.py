@@ -10,6 +10,8 @@ from utils.time_utils import get_local_now, datetime_to_iso_utc
 PRESENCE_ACTIVE_WINDOW_MINUTES = 5
 PRESENCE_IDLE_WINDOW_MINUTES = 15
 PRESENCE_STALE_RETENTION_HOURS = 24
+PRESENCE_PRUNE_INTERVAL_SECONDS = 60
+_last_prune_at = None
 
 
 def build_viewer_key(*, user_id: Any = None, anon_id: Any = None, pin: Any = None) -> str | None:
@@ -23,7 +25,15 @@ def build_viewer_key(*, user_id: Any = None, anon_id: Any = None, pin: Any = Non
 
 
 def upsert_ticket_presence(*, ticket_type: str, ticket_id: int, viewer_key: str, viewer_user_id: int | None = None, viewer_anon_id: str | None = None, viewer_role: str | None = None, active_session_id: str | None = None, presence_status: str = "active") -> TicketRealtimeState:
-    prune_stale_ticket_realtime_states()
+    global _last_prune_at
+    now = get_local_now()
+    should_prune = (
+        _last_prune_at is None
+        or (now - _last_prune_at).total_seconds() >= PRESENCE_PRUNE_INTERVAL_SECONDS
+    )
+    if should_prune:
+        prune_stale_ticket_realtime_states(now=now)
+        _last_prune_at = now
     state = TicketRealtimeState.query.filter_by(
         ticket_type=ticket_type,
         ticket_id=ticket_id,
