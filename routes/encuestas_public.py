@@ -5,6 +5,7 @@ import io
 import json
 import os
 import time
+import uuid
 from collections import defaultdict, deque
 import re
 from threading import Lock
@@ -263,6 +264,41 @@ def _public_target_base_url() -> str:
         return canonical.rstrip("/")
 
     return request.host_url.rstrip("/")
+
+
+def _resolve_request_id() -> str:
+    request_id = (
+        request.headers.get("X-Request-Id")
+        or request.headers.get("X-Correlation-Id")
+        or getattr(g, "request_id", None)
+    )
+    if not request_id:
+        request_id = uuid.uuid4().hex
+    g.request_id = request_id
+    return request_id
+
+
+def _public_error_response(err: EncuestaError, *, fallback_reason: Optional[str] = None):
+    payload = err.to_dict() if hasattr(err, "to_dict") else {"error": str(err)}
+    status_code = int(getattr(err, "status_code", 500) or 500)
+    reason_code = payload.get("reason_code") or fallback_reason
+    retryable = status_code >= 500
+    action_hint_map = {
+        "survey_not_published": "view_other_surveys",
+        "survey_outside_active_window": "view_other_surveys",
+        "rate_limited": "retry_later",
+    }
+    action_hint = action_hint_map.get(reason_code, "retry")
+    if status_code == 404:
+        action_hint = "go_home"
+
+    payload.setdefault("status_code", status_code)
+    if reason_code:
+        payload["reason_code"] = reason_code
+    payload.setdefault("retryable", retryable)
+    payload.setdefault("action_hint", action_hint)
+    payload.setdefault("request_id", _resolve_request_id())
+    return jsonify(payload), status_code
 
 
 def _load_public_encuesta_for_request(slug: str, *, preview_user=None):
@@ -615,7 +651,7 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
         try:
             encuesta = _load_public_encuesta_for_request(slug, preview_user=preview_user)
         except EncuestaError as err:
-            return jsonify(err.to_dict()), err.status_code
+            return _public_error_response(err)
         return jsonify(serialize_public_encuesta(encuesta, slug_publico=slug))
 
     def _handle_responder(slug: str):
@@ -693,10 +729,15 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
             )
             return jsonify(results)
         except EncuestaError as err:
-            return jsonify(err.to_dict()), err.status_code
+            return _public_error_response(err)
         except Exception as e:
             current_app.logger.error(f"Error fetching live results for {slug}: {e}")
-            return jsonify({"error": "Error interno"}), 500
+            wrapped = EncuestaError(
+                "Error interno",
+                status_code=500,
+                payload={"reason_code": "internal_error"},
+            )
+            return _public_error_response(wrapped)
 
     @bp.route("/<slug>/comentarios", methods=["GET", "POST", "OPTIONS"])
     def comentarios(slug: str):
@@ -707,7 +748,7 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
         try:
             encuesta = _load_public_encuesta_for_request(slug, preview_user=preview_user)
         except EncuestaError as err:
-            return jsonify(err.to_dict()), err.status_code
+            return _public_error_response(err)
 
         if request.method == "POST":
             # For comments, we might want to know who the user is
@@ -727,7 +768,7 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
                     }
                 }), 201
             except EncuestaError as err:
-                return jsonify(err.to_dict()), err.status_code
+                return _public_error_response(err)
 
         # GET
         limit = request.args.get("limit", default=50, type=int)
@@ -746,7 +787,7 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
             reportar_comentario(comentario_id)
             return jsonify({"ok": True}), 200
         except EncuestaError as err:
-            return jsonify(err.to_dict()), err.status_code
+            return _public_error_response(err)
 
     @bp.route("/<slug>/qr")
     def qr(slug: str):
@@ -755,7 +796,7 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
         try:
             encuesta = _load_public_encuesta_for_request(slug, preview_user=preview_user)
         except EncuestaError as err:
-            return jsonify(err.to_dict()), err.status_code
+            return _public_error_response(err)
 
         size = request.args.get("size", default=320, type=int)
         base_url = _public_target_base_url()
@@ -810,7 +851,7 @@ def share_redirect(slug: str):
         encuesta = _load_public_encuesta_for_request(slug, preview_user=preview_user)
     except EncuestaError as err:
         if wants_json:
-            return jsonify(err.to_dict()), err.status_code
+            return _public_error_response(err)
         return (
             render_template(
                 "encuestas/share.html",

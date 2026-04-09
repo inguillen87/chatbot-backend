@@ -274,6 +274,43 @@ def test_share_passes_tenant_preference_from_domain_map(client, monkeypatch):
     assert captured == {"slug": "demo-tenant", "preferred_tenant_id": 77}
 
 
+def test_public_error_response_includes_reason_action_and_request_id(client, monkeypatch):
+    def fake_get(_slug, **_kwargs):
+        raise EncuestaError(
+            "La encuesta no está activa",
+            status_code=403,
+            payload={"reason_code": "survey_not_published"},
+        )
+
+    monkeypatch.setattr("routes.encuestas_public.get_public_encuesta", fake_get)
+
+    response = client.get(
+        "/public/encuestas/demo-error",
+        headers={"X-Request-Id": "req-123"},
+    )
+    assert response.status_code == 403
+    data = response.get_json()
+    assert data["reason_code"] == "survey_not_published"
+    assert data["retryable"] is False
+    assert data["action_hint"] == "view_other_surveys"
+    assert data["request_id"] == "req-123"
+
+
+def test_live_results_unexpected_error_returns_structured_internal_error(client, monkeypatch):
+    def explode(*_args, **_kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("routes.encuestas_public.calculate_live_results", explode)
+
+    response = client.get("/public/encuestas/demo-slug/live-results")
+    assert response.status_code == 500
+    data = response.get_json()
+    assert data["reason_code"] == "internal_error"
+    assert data["retryable"] is True
+    assert data["action_hint"] == "retry"
+    assert data.get("request_id")
+
+
 def _create_public_encuesta(slug: str, slug_publico: str, estado: str = "publicada") -> EncEncuesta:
     encuesta = EncEncuesta(
         tenant_id=4,

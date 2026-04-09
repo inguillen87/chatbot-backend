@@ -196,3 +196,232 @@ Una entrega FE se considera “lista” cuando:
 
 > Equipo, backend ya resuelve correctamente encuestas públicas por tenant incluso con slugs compartidos. Necesitamos cerrar UX/UI del lado FE con prioridad en: manejo de `403` por `reason_code`, estados vacíos diferenciados, skeleton + retry transitorio, y telemetría de errores por host/slug. Este trabajo es crítico para que la experiencia de encuestas públicas sea sólida y sin fricción.
 
+---
+
+## 10) Estado backend implementado (para que FE avance sin bloqueo)
+
+Esto ya está disponible desde backend y FE puede usarlo hoy:
+
+- Resolución tenant-aware en lectura/escritura de encuestas públicas.
+- Errores estructurados en endpoints públicos con:
+  - `status_code`
+  - `reason_code` (cuando aplica)
+  - `retryable`
+  - `action_hint`
+  - `request_id`
+
+### Ejemplo error 403 no publicada
+
+```json
+{
+  "error": "La encuesta no está activa",
+  "status_code": 403,
+  "reason_code": "survey_not_published",
+  "retryable": false,
+  "action_hint": "view_other_surveys",
+  "request_id": "req-123"
+}
+```
+
+### Ejemplo error 500 inesperado en live-results
+
+```json
+{
+  "error": "Error interno",
+  "status_code": 500,
+  "reason_code": "internal_error",
+  "retryable": true,
+  "action_hint": "retry",
+  "request_id": "4f8f7c9f..."
+}
+```
+
+---
+
+## 11) Tareas FE concretas para ejecutar ahora (copiar a Jira/Trello)
+
+## FE-ENC-001 — Error mapper unificado
+
+Implementar `mapSurveyError(apiError)`:
+
+- Entrada: payload backend (`status_code`, `reason_code`, `retryable`, `action_hint`).
+- Salida: `title`, `description`, `primaryCta`, `secondaryCta`, `trackCode`.
+
+**Aceptación**
+
+- 403 `survey_not_published` muestra CTA “Ver encuestas activas”.
+- 403 `survey_outside_active_window` muestra CTA “Ver otras encuestas”.
+- 500 `internal_error` muestra CTA “Reintentar”.
+- Se registra `request_id` en logs FE/Sentry.
+
+## FE-ENC-002 — Componente `<SurveyErrorState />`
+
+Crear componente único reutilizable para:
+
+- encuesta
+- live-results
+- comentarios
+- QR panel
+
+Props mínimas:
+
+- `reasonCode`
+- `retryable`
+- `actionHint`
+- `requestId`
+- callbacks `onRetry`, `onGoHome`, `onViewOtherSurveys`
+
+## FE-ENC-003 — Retry policy inteligente
+
+- Si `retryable=true`: retry automático con backoff (700ms, 1500ms).
+- Si `retryable=false`: no retry automático; mostrar CTA contextual.
+- Siempre mostrar botón manual “Reintentar”.
+
+## FE-ENC-004 — Telemetría obligatoria
+
+Eventos:
+
+- `survey_error_rendered`
+- `survey_retry_clicked`
+- `survey_cta_clicked`
+
+Payload obligatorio del evento:
+
+- `slug`
+- `host`
+- `status_code`
+- `reason_code`
+- `action_hint`
+- `request_id`
+
+## FE-ENC-005 — QA matrix de errores
+
+Probar en staging:
+
+1. `403 + survey_not_published`
+2. `403 + survey_outside_active_window`
+3. `404`
+4. `500 + internal_error`
+
+En cada caso validar:
+
+- copy correcto
+- CTA correcto
+- evento analytics disparado
+- `request_id` visible en consola debug
+
+---
+
+## 12) Contrato rápido de CTA por `action_hint`
+
+Mapeo recomendado:
+
+- `view_other_surveys` → navegar a listado de encuestas públicas.
+- `retry_later` → mostrar “Intentá de nuevo en unos minutos”.
+- `retry` → botón “Reintentar” + retry automático si corresponde.
+- `go_home` → volver a home/landing tenant.
+
+---
+
+## 13) Checklist de release FE (obligatorio)
+
+- [ ] Todos los errores públicos usan `SurveyErrorState`.
+- [ ] Se lee y propaga `request_id` en logging FE.
+- [ ] Los eventos de error llegan al dashboard.
+- [ ] No hay mensaje genérico sin CTA.
+- [ ] Lighthouse A11y >= 90 en vista de encuesta.
+- [ ] Se validó mobile + desktop + dark mode.
+
+---
+
+## 14) Extensión cross-product (portal + marketplace + noticias + eventos)
+
+Para que “todo se vea hermoso y en armonía” más allá de encuestas:
+
+## FE-XP-001 — Diseño unificado de tarjetas de estado
+
+Aplicar un mismo patrón visual para:
+
+- reclamos/tickets
+- sugerencias
+- pedidos marketplace
+- encuestas/votaciones
+- noticias y eventos
+
+Regla: cada tarjeta debe tener `estado`, `última actualización`, `CTA principal`.
+
+## FE-XP-002 — Render semántico de datos estructurados
+
+Nunca renderizar JSON crudo en chat/widget/portal.
+
+Ejemplos a transformar:
+
+- horarios de atención (lista día/hora)
+- links de seguimiento (`PIN` + URL ticket)
+- contacto especializado
+- bloques “Más info”
+
+## FE-XP-003 — Componente único de seguimiento
+
+Crear `TrackingCard` reutilizable con:
+
+- `ticket_id`
+- `pin`
+- `tracking_url`
+- `contact_phone`
+- `contact_schedule`
+
+Uso en:
+
+- widget web
+- portal usuario
+- mensajes enriquecidos del chat
+
+## FE-XP-004 — QA journeys ejecutivos (demo para gobierno/empresa)
+
+Flujos obligatorios para demo:
+
+1. iniciar reclamo → confirmación → tracking bonito
+2. votar encuesta → ver resultados
+3. abrir portal → historial + puntos + reclamos + pedidos
+4. abrir catálogo → agregar al carrito → pedido
+5. abrir noticias/eventos → navegación limpia
+
+Medir tiempo de tarea + errores + percepción visual.
+
+---
+
+## 15) Troubleshooting FE (errores reales detectados en consola)
+
+### A) `POST /api/tickets/chat/:id/responder_ciudadano` devuelve 415
+
+**Contrato recomendado FE**
+
+- Enviar `Content-Type: application/json`
+- Body:
+
+```json
+{ "comentario": "texto del ciudadano" }
+```
+
+Backend ahora tolera también `application/x-www-form-urlencoded`, pero FE debe priorizar JSON para trazabilidad uniforme.
+
+### B) `presence` y `socket.io` con reconexiones infinitas / 502
+
+Implementar estrategia defensiva FE:
+
+1. Si falla `websocket`, permitir fallback a `polling` (engine.io).
+2. Backoff exponencial en reconexión (1s, 2s, 5s, 10s, max 30s).
+3. Circuit breaker: pausar reconnect por 60s después de N fallos consecutivos.
+4. No spamear endpoint de presence en background tab.
+5. En `document.hidden === true`, bajar frecuencia de heartbeat.
+
+### C) Errores de extensiones de navegador
+
+Mensajes como:
+
+- `SES Removing unpermitted intrinsics`
+- `No matching tab found`
+- `Disconnected from polkadot...`
+
+No son necesariamente bugs de Chatboc. Etiquetar como `browser_extension_noise` en telemetry para no contaminar métricas de producto.

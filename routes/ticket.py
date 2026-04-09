@@ -1987,8 +1987,17 @@ def responder_ciudadano_a_chat(current_user: User, ticket_id: int, anon_id: str 
     Acepta sesión autenticada, ``anon_id`` válido o acceso por ``consulta_pin``
     para no romper el portal público de seguimiento.
     """
-    data = request.get_json()
-    if not data or not data.get("comentario"):
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        data = {}
+    if request.form:
+        form_payload = request.form.to_dict(flat=True)
+        for key in ("comentario", "mensaje", "texto"):
+            if key in form_payload and key not in data:
+                data[key] = form_payload.get(key)
+
+    comentario = (data.get("comentario") or data.get("mensaje") or data.get("texto") or "").strip()
+    if not comentario:
         return jsonify({"error": "El comentario no puede estar vacío."}), 400
 
     sala_de_chat = db.session.get(MunicipioTicket, ticket_id)
@@ -2013,7 +2022,7 @@ def responder_ciudadano_a_chat(current_user: User, ticket_id: int, anon_id: str 
         ticket_id=ticket_id,
         tipo_ticket="municipio",
         comentario_data={
-            "comentario": data["comentario"],
+            "comentario": comentario,
             "user_id": user_id_para_comentario,
             "anon_id": anon_id_para_comentario,
             "es_admin": False

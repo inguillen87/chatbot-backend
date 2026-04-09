@@ -66,6 +66,13 @@ ALLOWED_MEDIA_EXTENSIONS = {
     ".ogg",
     ".mp4",
 }
+SENSITIVE_MENU_ACTIONS = {
+    "iniciar_reclamo",
+    "crear_reclamo",
+    "enviar_sugerencia",
+    "iniciar_sugerencia",
+    "crear_sugerencia",
+}
 
 
 def _is_valid_media_url(url: Optional[str]) -> bool:
@@ -779,10 +786,19 @@ def _reset_municipio_context_for_menu(session_context: ChatSessionContext) -> No
         session_context.context_data[CONTEXTO_MUNICIPIO] = municipio_ctx
 
     municipio_ctx["estado_conversacion"] = "ESPERANDO_SELECCION_MENU_PRINCIPAL"
+    # Clear potentially stale drafts to avoid accidental auto-confirm/create when
+    # the user selects a fresh numeric menu option (e.g., "1. Iniciar reclamo").
+    municipio_ctx.pop("reclamo_flow_v2", None)
+    municipio_ctx.pop("datos_reclamo", None)
+    municipio_ctx.pop("datos_parciales_llm_reclamo", None)
+    municipio_ctx.pop("reclamo_confirmacion_pendiente", None)
+    municipio_ctx.pop("confirmation_required", None)
     municipio_ctx.pop("ubicacion_contextual", None)
     municipio_ctx.pop("ultima_consulta_poi", None)
     municipio_ctx.pop("consulta_pendiente_ubicacion", None)
     municipio_ctx.pop("menu_opciones", None)
+    session_context.context_data.pop("last_options_sent", None)
+    session_context.context_data.pop("pending_sensitive_action", None)
     safe_flag_modified(session_context, "context_data")
 
 
@@ -1965,6 +1981,11 @@ def whatsapp_webhook():
                     or option.get("texto")
                 )
                 break
+
+    if (selected_action_id or "").strip().lower() in SENSITIVE_MENU_ACTIONS:
+        # Force a clean flow when user selects sensitive actions from a menu.
+        # This prevents accidental ticket creation with stale draft/context data.
+        _reset_municipio_context_for_menu(session_context_db_entry)
 
     # --- Live Chat Routing (WhatsApp -> Admin panel) ---
     human_chat_active = bool(

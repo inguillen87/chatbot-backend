@@ -1,5 +1,7 @@
+import json
 import re
 import unicodedata
+from typing import Any
 
 from services.vocabulary_loader import get_ticket_vocabulary
 
@@ -58,6 +60,49 @@ def _clean_clause_text(text: str | None) -> str:
         return ""
     cleaned = re.sub(r"\s+", " ", str(text))
     return cleaned.strip(" ,;:.\n")
+
+
+def _format_business_hours(value: Any) -> str:
+    """Format schedule payloads into a readable human string."""
+    if value is None:
+        return ""
+
+    parsed = value
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return ""
+        try:
+            parsed = json.loads(stripped)
+        except (TypeError, ValueError):
+            return stripped
+
+    if isinstance(parsed, list):
+        chunks: list[str] = []
+        for row in parsed:
+            if not isinstance(row, dict):
+                continue
+            dia = str(row.get("dia") or row.get("day") or "").strip()
+            if not dia:
+                continue
+            cerrado = bool(row.get("cerrado"))
+            abre = str(row.get("abre") or "").strip()
+            cierra = str(row.get("cierra") or "").strip()
+            if cerrado or (not abre and not cierra):
+                chunks.append(f"{dia}: cerrado")
+            elif abre and cierra:
+                chunks.append(f"{dia}: {abre}-{cierra}")
+            else:
+                chunks.append(f"{dia}: horario a confirmar")
+        return " | ".join(chunks)
+
+    if isinstance(parsed, dict):
+        abierto = str(parsed.get("abre") or "").strip()
+        cierre = str(parsed.get("cierra") or "").strip()
+        if abierto and cierre:
+            return f"{abierto}-{cierre}"
+
+    return str(parsed)
 
 
 def _pluralize_spanish_verb(verb: str, subject: str | None) -> str:
@@ -622,7 +667,9 @@ def formatear_ticket_respuesta(
         if telefono_asesor:
             respuesta_lineas.append(f"• *Teléfono:* {telefono_asesor}")
         if horario_asesor:
-            respuesta_lineas.append(f"• *Horario:* {horario_asesor}")
+            horario_legible = _format_business_hours(horario_asesor)
+            if horario_legible:
+                respuesta_lineas.append(f"• *Horario:* {horario_legible}")
 
     if tipo == "reclamo":
         respuesta_lineas.append("")
