@@ -2,6 +2,7 @@
 import logging
 import json
 import re
+from decimal import Decimal, InvalidOperation
 from typing import Dict, Any, List, Optional
 from .base_action_handler import BaseActionHandler
 from services.pedido_service import servicio_pedidos # For creating PymePedido
@@ -14,8 +15,21 @@ from services.cart import (
 from services.qdrant_search import buscar_catalogo_qdrant, CATALOGO_PYME
 from models import CatalogoItem, db, User, PymePedido # Added PymePedido
 from services.common_utils import parse_precio_flexible, validar_telefono, formatear_telefono_e164, validar_email
+from utils.money_ar import format_ars
 
 logger = logging.getLogger(__name__)
+
+
+def _format_price_for_user(value: Any, moneda: str = "ARS") -> str:
+    try:
+        dec_value = Decimal(str(value))
+    except (TypeError, ValueError, InvalidOperation):
+        return str(value)
+
+    if (moneda or "ARS").upper() == "ARS":
+        decimals = 0 if dec_value == dec_value.to_integral_value() else 2
+        return format_ars(dec_value, decimals=decimals)
+    return f"{float(dec_value):,.2f}"
 
 def _get_pyme_carts_data_from_context(context: Dict[str, Any]) -> Dict[int, List[Dict[str, Any]]]:
     chat_db_context_data = context.get("chat_db_context_data")
@@ -143,7 +157,7 @@ class AgregarItemCarritoAction(BaseActionHandler):
                     precio = candidate.get("precio_unitario")
                     precio_txt = ""
                     if isinstance(precio, (int, float)):
-                        precio_txt = f" — ${precio:,.0f} {moneda}"
+                        precio_txt = f" — ${_format_price_for_user(precio, moneda)} {moneda}"
                     lineas.append(f"{idx}. {nombre}{precio_txt}")
                     suffix = candidate.get("catalogo_item_id") or candidate.get("sku") or nombre
                     opciones.append({"texto": f"Pedir {str(nombre)[:18]}", "id_accion": f"agregar_item_carrito__{suffix}"})

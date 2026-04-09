@@ -19,6 +19,7 @@ from services.municipio_responder import GreetingHandler
 from services.municipio_responder import responder_municipio
 from services.pymes import url_descargar_catalogo_pyme
 from services.actions.pyme_order_actions import AgregarItemCarritoAction
+from services.common_utils import parse_cantidad_flexible
 from config import TestConfig
 from app import create_app
 from models import db, User, ArchivoAdjunto
@@ -300,10 +301,16 @@ class TestNewFeatures(unittest.TestCase):
         response = handler.execute({"nombre_producto_mencionado": "malbec"})
         self.assertTrue(response.get("success"))
         self.assertIn("varias opciones", response.get("message_to_user", "").lower())
+        self.assertIn("43.200", response.get("message_to_user", ""))
         self.assertEqual(response.get("fuente"), "pyme_disambiguacion_producto_v1")
         opciones = response.get("options_list") or []
         self.assertGreaterEqual(len(opciones), 2)
         self.assertTrue(any(str(opt.get("id_accion", "")).startswith("agregar_item_carrito__") for opt in opciones))
+
+    def test_parse_cantidad_flexible_prioriza_empaque_sobre_medida(self):
+        self.assertEqual(parse_cantidad_flexible("Caja x6 - 750 ml"), 6)
+        self.assertEqual(parse_cantidad_flexible("Pack de 12 latas"), 12)
+        self.assertIsNone(parse_cantidad_flexible("750 ml"))
 
     @patch('services.llm_orchestrator.llamar_llm_con_fallback')
     def test_llm_mostrar_menu_returns_full_menu(self, mock_llamar_gemini):
