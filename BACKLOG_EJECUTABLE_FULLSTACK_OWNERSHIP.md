@@ -206,3 +206,47 @@ Eventos mínimos:
 6. BE-P1 y FE-P1
 
 Este orden minimiza riesgo de drift y maximiza valor operativo temprano.
+
+---
+
+## 5) Tablero de ejecución (abril 2026)
+
+> Estado operativo para seguimiento semanal (CTO + leads BE/FE).
+
+### CT (compartido)
+
+- [x] **CT-01** · Contrato `analytics.identity_coverage.v1` publicado en docs.
+- [x] **CT-01** · Contrato de error estándar `shared.error.v1` publicado.
+- [ ] **CT-01** · OpenAPI consolidado por dominios (tickets/market/encuestas/socket).
+- [ ] **CT-02** · Matriz capability -> endpoint -> pantalla (v1 publicada en `docs/rbac.capability_matrix.v1.md`, pendiente firma BE/FE).
+- [ ] **CT-03** · Taxonomía única de eventos (parcial; falta normalizar dashboards legacy).
+- [ ] **CT-04** · Decisión final de arquitectura de portal (build aislado desplegado en prod).
+
+### Backend
+
+- [x] Identidad omnicanal base (`contact_key`, `conversation_id`, hooks request/response).
+- [x] Coverage endpoint `/analytics/identity/coverage` con `alerts`, `target_by_channel`, `emit_alert_events`.
+- [x] Funnel WhatsApp admin con `unique_contacts` + `contract_version`.
+- [ ] **BE-02** · Enforcement RBAC/ABAC completo en rutas críticas.
+- [ ] **BE-03/BE-04** · Motor de asignación + SLA con trazabilidad integral.
+- [ ] **BE-07** · Contratos de fulfillment/pedidos estabilizados como v1.
+
+### Frontend
+
+- [ ] **FE-01** · Ruta canónica tenant (`/t/:tenantSlug/*`) y redirects legacy cerrados.
+- [ ] **FE-02** · `strict` habilitado en `api` + `context` sin regressions.
+- [ ] **FE-03** · Reinyección obligatoria de `X-Contact-Key` y `X-Conversation-Id` en wrappers HTTP.
+- [ ] **FE-04** · Checkout state machine con telemetría por transición.
+- [ ] **FE-P1** · Banner de calidad de datos usando `alert_count` y `slo_status`.
+
+### Cadencia sugerida
+
+- **Semanal (lunes):** actualizar este tablero con owner y bloqueo principal.
+- **Quincenal:** revisar KPIs `% eventos con contact_key` y `% endpoints sin fallback legacy`.
+- **Mensual:** congelar un paquete de contratos nuevos (máx. 2 dominios por ciclo).
+
+### Artefactos vinculados
+
+- `docs/analytics.identity_coverage.v1.contract.md`
+- `docs/shared.error.v1.contract.md`
+- `docs/rbac.capability_matrix.v1.md`

@@ -124,6 +124,7 @@ Backend quedó preparado para una estrategia más segura en runtime:
   - pantalla 403 usable,
   - CTA para solicitar acceso,
   - registro de intento denegado (analytics).
+- Alinear `requiredCapabilities` por pantalla con `docs/rbac.capability_matrix.v1.md`.
 
 ### Criterios de aceptación
 - No hay pantallas “rotas” por denegación de permisos.
@@ -229,6 +230,7 @@ Backend quedó preparado para una estrategia más segura en runtime:
 - `/analytics/identity/coverage` acepta `target_by_channel` (JSON o `canal:valor`) para metas diferenciadas por canal.
 - `/analytics/identity/coverage` permite `emit_alert_events=1` para registrar eventos `identity_coverage_alert` cuando haya brechas.
 - `/admin/analytics/whatsapp-funnel` ahora incluye `unique_contacts` por etapa para correlación de continuidad.
+- `/admin/analytics/whatsapp-funnel` ahora incluye `contract_version` para versionar el contrato de visualización.
 
 ### Acción frontend inmediata
 1. Leer `X-Contact-Key` y `X-Conversation-Id` de responses críticas y persistir en storage seguro por tenant.
@@ -246,3 +248,62 @@ Ver `BACKLOG_EJECUTABLE_FULLSTACK_OWNERSHIP.md` para la versión operativa por o
 - `docs/shared.error.v1.contract.md`
 
 Frontend debe tipar clientes API tomando estos contratos como fuente de verdad.
+
+Además, FE-07 (permisos) debe tomar como referencia:
+- `docs/rbac.capability_matrix.v1.md`
+
+---
+
+## 9) Plan de ejecución inmediato (siguiente sprint)
+
+### 9.1 Entregables obligatorios del sprint
+
+1. Integrar almacenamiento por tenant de `X-Contact-Key` y `X-Conversation-Id`.
+2. Actualizar cliente de analytics admin para tipar:
+   - `unique_contacts` (por etapa),
+   - `contract_version` (payload funnel),
+   - `alerts`, `alert_count`, `slo_status` (coverage endpoint).
+3. Instrumentar eventos UI:
+   - `identity_context_attached`
+   - `identity_context_missing`
+   - `coverage_alert_banner_seen`
+
+### 9.2 Criterios de aceptación (QA + datos)
+
+- 100% de requests críticas desde frontend incluyen `X-Contact-Key` cuando exista identidad resuelta.
+- Pantalla de funnel rechaza payload sin `contract_version` (fallback visual controlado + log).
+- Banner de calidad de datos visible cuando `alert_count > 0`.
+- Ningún flujo crítico rompe navegación por ausencia de `conversation_id` (degradación elegante).
+
+### 9.3 Definition of Done específica del sprint
+
+- PR frontend con tests de contrato para:
+  - parser de funnel WhatsApp,
+  - parser de identity coverage.
+- Evidencia de QA manual en 3 contextos:
+  - tenant municipio,
+  - tenant pyme,
+  - sesión sin identidad previa (nuevo usuario).
+
+---
+
+## 10) Paquete de entrega para frontend (listo para compartir)
+
+- Documento resumido de implementación inmediata:
+  - `docs/frontend.stage4.handoff.packet.md`
+- Contratos base a incluir en tipado:
+  - `docs/analytics.identity_coverage.v1.contract.md`
+  - `docs/shared.error.v1.contract.md`
+  - `docs/rbac.capability_matrix.v1.md`
+
+### Checklist de envío FE (owner backend)
+
+1. Compartir packet + roadmap por canal interno.
+2. Adjuntar payloads reales de staging para:
+   - `/analytics/identity/coverage`
+   - `/admin/analytics/whatsapp-funnel`
+3. Crear tickets FE separados por bloque:
+   - identidad headers,
+   - coverage UI/banners,
+   - funnel contract validation,
+   - alineación RBAC.

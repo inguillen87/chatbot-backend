@@ -219,6 +219,26 @@ Convertir chatboc.ar en un CRM SaaS integral con estos pilares:
 
 Si se ejecuta este roadmap, chatboc.ar puede evolucionar de una plataforma con muchas piezas potentes a un **CRM omnicanal integral, consistente y escalable**, con continuidad real de identidad, operación multi-tenant robusta y experiencia de producto de nivel enterprise.
 
+---
+
+## 9) Avance de ejecución (corte abril 2026)
+
+### Cerrado
+- Endurecimiento de bootstrap runtime (flags explícitas para schema sync y tenant init).
+- Resolver central de identidad omnicanal y headers estandarizados (`X-Contact-Key`, `X-Conversation-Id`).
+- Endpoint de observabilidad `/analytics/identity/coverage` con alertas operativas.
+- Funnel WhatsApp admin enriquecido con `unique_contacts` y `contract_version`.
+- Contratos compartidos iniciales publicados:
+  - `analytics.identity_coverage.v1`
+  - `shared.error.v1`
+  - `rbac.capability_matrix.v1`
+
+### Pendiente crítico (próximo trimestre)
+- Enforcement integral RBAC/ABAC en todos los dominios operativos.
+- Consolidación de OpenAPI por dominio (fuente única de verdad para FE/BE).
+- Separación efectiva de build `portal-app` para reducir acoplamiento con admin.
+- Normalización final de eventos legacy a taxonomía única multi-canal.
+
 ## Referencia ejecutable
 
 Ver `BACKLOG_EJECUTABLE_FULLSTACK_OWNERSHIP.md` para la versión operativa por ownership (CT/BE/FE, prioridades y DoD).

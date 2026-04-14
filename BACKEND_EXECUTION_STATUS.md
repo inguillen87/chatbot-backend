@@ -28,7 +28,7 @@ Implementaciones cerradas:
 
 ## Etapa siguiente (en curso)
 
-### Etapa 3 — Integración por dominios (market/tickets/encuestas/analytics) 🔄 EN CURSO
+### Etapa 3 — Integración por dominios (market/tickets/encuestas/analytics) ✅ COMPLETADA (segundo corte)
 
 Avances implementados en este corte:
 1. Analytics ingest ahora enriquece `payload` con `contact_key`, `conversation_id`, `phone_e164` e `identity_source` cuando están disponibles.
@@ -39,15 +39,40 @@ Avances implementados en este corte:
 6. Timeline/presence/read-state de tickets usan fallback de identidad para `anon_id` y `active_session_id`.
 7. Endpoint `/analytics/identity/coverage` para medir cobertura de identidad por canal y tenant.
 8. Funnel WhatsApp en admin analytics ahora reporta `unique_contacts` por etapa y total.
-9. `/analytics/identity/coverage` ahora devuelve `alerts` y `alert_count` por canal bajo objetivo.
-10. Cobertura permite objetivos por canal (`target_by_channel`) para operación con SLAs diferenciados.
-11. Cobertura puede emitir eventos operativos (`identity_coverage_alert`) con `emit_alert_events=1`.
-12. Se publica contrato versionado `analytics.identity_coverage.v1` en docs/.
+9. Funnel WhatsApp en admin analytics expone `contract_version` para prevenir drift frontend/backend.
+10. `/analytics/identity/coverage` ahora devuelve `alerts` y `alert_count` por canal bajo objetivo.
+11. Cobertura permite objetivos por canal (`target_by_channel`) para operación con SLAs diferenciados.
+12. Cobertura puede emitir eventos operativos (`identity_coverage_alert`) con `emit_alert_events=1`.
+13. Se publica contrato versionado `analytics.identity_coverage.v1` en docs/.
 
 Siguientes tareas backend:
 1. Estandarizar contratos de respuesta con `contact_identity` opcional para depuración/observabilidad.
 2. Trazabilidad de correlación WhatsApp -> portal/market con IDs de interacción en analytics funnel.
 3. Definir alertas/SLO automáticas sobre cobertura mínima de identidad por canal (basadas en `target_pct`).
+
+## Próxima etapa priorizada (abril–junio 2026)
+
+### Etapa 4 — Operación CRM con enforcement de permisos y SLA 🔄 EN CURSO
+
+Objetivos del trimestre:
+1. Cerrar enforcement real de RBAC/ABAC en endpoints de mayor riesgo operacional.
+2. Bajar el volumen de rutas legacy que todavía consumen headers ad-hoc (`X-Anon-Id`).
+3. Activar alertas operativas de cobertura de identidad como señal de calidad de datos por tenant.
+
+Entregables comprometidos:
+- Matriz `capability -> endpoint` aplicada en rutas críticas de tickets, market y analytics admin.
+- Señales de SLA (`first_response_due_at`, `resolution_due_at`) instrumentadas en timeline/eventos.
+- Runbook operativo para incidentes de continuidad (`contact_key` faltante, `conversation_id` huérfano).
+
+Avance actual de etapa 4:
+- Publicada la matriz inicial compartida en `docs/rbac.capability_matrix.v1.md` como base de enforcement.
+- Pendiente: instrumentar `require_capability(...)` en endpoints P0 y cerrar firma BE/FE de la matriz.
+- Preparado packet de handoff frontend para ejecución del sprint: `docs/frontend.stage4.handoff.packet.md`.
+
+KPIs objetivo:
+- >95% endpoints críticos usando resolver central de identidad.
+- <3% eventos críticos sin `contact_key` por tenant activo.
+- 100% denegaciones de permisos con evento de auditoría estructurado.
 
 ## Riesgos vigentes
 - Existen rutas legacy con lógica de headers ad-hoc (`X-Anon-Id`) que deben migrarse gradualmente al resolver central.
