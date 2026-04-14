@@ -69,6 +69,8 @@ Avance actual de etapa 4:
 - Pendiente: instrumentar `require_capability(...)` en endpoints P0 y cerrar firma BE/FE de la matriz.
 - Preparado packet de handoff frontend para ejecución del sprint: `docs/frontend.stage4.handoff.packet.md`.
 - Preparados ejemplos de payload para FE (`docs/frontend.stage4.payload_examples.md`) para acelerar tipado/QA.
+- Enforcement inicial de capability aplicado en analytics (`analytics.read` / `analytics.admin`) con fallback legacy controlado.
+- Contrato de workflow de tickets publicado vía endpoint `GET /tickets/workflow/metadata` (`tickets.workflow.v1`).
 
 KPIs objetivo:
 - >95% endpoints críticos usando resolver central de identidad.

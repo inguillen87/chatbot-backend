@@ -244,3 +244,24 @@
   }
 }
 ```
+
+---
+
+## 10) GET `/tickets/workflow/metadata`
+
+### Response 200
+
+```json
+{
+  "contract_version": "tickets.workflow.v1",
+  "states": ["nuevo", "en_proceso", "en_vivo", "esperando_agente_en_vivo", "cerrado"],
+  "transitions": {
+    "nuevo": ["en_proceso", "cerrado"],
+    "en_proceso": ["en_vivo", "esperando_agente_en_vivo", "cerrado"],
+    "en_vivo": ["en_proceso", "cerrado"],
+    "esperando_agente_en_vivo": ["en_vivo", "en_proceso", "cerrado"],
+    "cerrado": []
+  },
+  "final_states": ["cerrado"]
+}
+```

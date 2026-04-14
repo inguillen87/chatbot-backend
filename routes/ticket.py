@@ -63,6 +63,15 @@ TICKET_ALLOWED_STATES = [
     "esperando_agente_en_vivo",
     "cerrado",
 ]
+TICKET_WORKFLOW_CONTRACT_VERSION = "tickets.workflow.v1"
+
+TICKET_ALLOWED_TRANSITIONS = {
+    "nuevo": ["en_proceso", "cerrado"],
+    "en_proceso": ["en_vivo", "esperando_agente_en_vivo", "cerrado"],
+    "en_vivo": ["en_proceso", "cerrado"],
+    "esperando_agente_en_vivo": ["en_vivo", "en_proceso", "cerrado"],
+    "cerrado": [],
+}
 
 
 def _build_ticket_operational_badges(ticket_obj) -> dict:
@@ -1147,6 +1156,20 @@ def get_public_ticket_status():
         {
             "contract_version": "tickets.public_status.v1",
             "ticket": _public_tracking_payload(ticket),
+        }
+    )
+
+
+@ticket_bp.route('/tickets/workflow/metadata', methods=['GET'])
+def get_ticket_workflow_metadata():
+    """Expose canonical ticket state machine metadata for FE alignment."""
+
+    return jsonify(
+        {
+            "contract_version": TICKET_WORKFLOW_CONTRACT_VERSION,
+            "states": list(TICKET_ALLOWED_STATES),
+            "transitions": TICKET_ALLOWED_TRANSITIONS,
+            "final_states": ["cerrado"],
         }
     )
 

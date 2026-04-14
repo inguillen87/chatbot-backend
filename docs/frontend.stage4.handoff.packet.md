@@ -59,6 +59,11 @@
    - Contrato: `tickets.public_status.v1`
    - Respuesta acotada para tracking público (estado, categoría, timestamps).
 
+8. **Workflow de tickets (nuevo)**
+   - `GET /tickets/workflow/metadata`
+   - Contrato: `tickets.workflow.v1`
+   - Fuente de verdad para estados y transiciones permitidas en UI.
+
 ---
 
 ## 2) Tipos TS sugeridos (copiar/pegar)
@@ -141,6 +146,13 @@ export interface PublicTicketStatusV1 {
     fecha_creacion?: string | null;
     ultima_actualizacion?: string | null;
   };
+}
+
+export interface TicketWorkflowMetadataV1 {
+  contract_version: 'tickets.workflow.v1';
+  states: string[];
+  transitions: Record<string, string[]>;
+  final_states: string[];
 }
 ```
 

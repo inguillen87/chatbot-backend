@@ -310,7 +310,7 @@ def _compute_identity_coverage(events: list[dict[str, Any]]) -> dict[str, Any]:
 @analytics_bp.route("/summary", methods=["GET"])
 def analytics_summary():
     filters = parse_filters(request.args)
-    require_access(filters.tenant_id, "visor")
+    require_access(filters.tenant_id, "visor", required_capability="analytics.read")
     current_app.logger.info("[analytics] summary %s", filters)
     data = get_summary(filters)
     return _json_response(data)
@@ -319,7 +319,7 @@ def analytics_summary():
 @analytics_bp.route("/timeseries", methods=["GET"])
 def analytics_timeseries():
     filters = parse_filters(request.args)
-    require_access(filters.tenant_id, "visor")
+    require_access(filters.tenant_id, "visor", required_capability="analytics.read")
     metric = request.args.get("metric", "tickets")
     group = request.args.get("group")
     data = get_timeseries(filters, metric=metric, group=group)
@@ -329,7 +329,7 @@ def analytics_timeseries():
 @analytics_bp.route("/breakdown", methods=["GET"])
 def analytics_breakdown():
     filters = parse_filters(request.args)
-    require_access(filters.tenant_id, "visor")
+    require_access(filters.tenant_id, "visor", required_capability="analytics.read")
     dimension = request.args.get("dimension", "categoria")
     data = get_breakdown(filters, dimension=dimension)
     return _json_response(data)
@@ -340,7 +340,7 @@ def analytics_heatmap():
     request_started = time.perf_counter()
     request_id = request.headers.get("X-Request-Id") or uuid.uuid4().hex
     filters = parse_filters(request.args)
-    require_access(filters.tenant_id, "visor")
+    require_access(filters.tenant_id, "visor", required_capability="analytics.read")
     data = get_geo_heatmap(filters)
     response = _json_response(data)
     elapsed_ms = round((time.perf_counter() - request_started) * 1000.0, 2)
@@ -363,7 +363,7 @@ def analytics_points():
     request_started = time.perf_counter()
     request_id = request.headers.get("X-Request-Id") or uuid.uuid4().hex
     filters = parse_filters(request.args)
-    require_access(filters.tenant_id, "visor")
+    require_access(filters.tenant_id, "visor", required_capability="analytics.read")
     limit = int(request.args.get("limit", 500))
     data = get_geo_points(filters, limit=limit)
     response = _json_response(data)
@@ -385,7 +385,7 @@ def analytics_points():
 @analytics_bp.route("/top", methods=["GET"])
 def analytics_top():
     filters = parse_filters(request.args)
-    require_access(filters.tenant_id, "visor")
+    require_access(filters.tenant_id, "visor", required_capability="analytics.read")
     category = request.args.get("category", "barrios")
     limit = int(request.args.get("limit", 10))
     data = get_top(filters, category=category, limit=limit)
@@ -395,7 +395,7 @@ def analytics_top():
 @analytics_bp.route("/operations", methods=["GET"])
 def analytics_operations():
     filters = parse_filters(request.args)
-    require_access(filters.tenant_id, "operador")
+    require_access(filters.tenant_id, "operador", required_capability="analytics.admin")
     data = get_operations_overview(filters)
     return _json_response(data)
 
@@ -403,7 +403,7 @@ def analytics_operations():
 @analytics_bp.route("/cohorts", methods=["GET"])
 def analytics_cohorts():
     filters = parse_filters(request.args)
-    require_access(filters.tenant_id, "visor")
+    require_access(filters.tenant_id, "visor", required_capability="analytics.read")
     data = get_cohorts(filters)
     return _json_response(data)
 
@@ -411,7 +411,7 @@ def analytics_cohorts():
 @analytics_bp.route("/whatsapp/templates", methods=["GET"])
 def analytics_templates():
     filters = parse_filters(request.args)
-    require_access(filters.tenant_id, "operador")
+    require_access(filters.tenant_id, "operador", required_capability="analytics.admin")
     data = get_whatsapp_templates(filters)
     return _json_response(data)
 
@@ -421,7 +421,7 @@ def analytics_templates():
 @analytics_bp.route("/identity/coverage", methods=["GET"])
 def analytics_identity_coverage():
     filters = parse_filters(request.args)
-    require_access(filters.tenant_id, "operador")
+    require_access(filters.tenant_id, "operador", required_capability="analytics.admin")
 
     limit = int(request.args.get("limit", 5000))
     if limit < 1:
@@ -547,7 +547,7 @@ def analytics_event_ingest():
     event_name = _resolve_event_name(payload)
 
     try:
-        require_access(str(tenant_id), "operador")
+        require_access(str(tenant_id), "operador", required_capability="analytics.admin")
     except HTTPException as exc:
         if exc.code not in {401, 403}:
             raise
@@ -601,7 +601,7 @@ def analytics_event_schema():
     except (TypeError, ValueError):
         return _json_response({"error": "tenant_id requerido y numérico"}, status=400)
 
-    require_access(str(tenant_id), "operador")
+    require_access(str(tenant_id), "operador", required_capability="analytics.read")
     return _json_response(
         {
             "contract_version": ANALYTICS_EVENT_SCHEMA_CONTRACT_VERSION,
