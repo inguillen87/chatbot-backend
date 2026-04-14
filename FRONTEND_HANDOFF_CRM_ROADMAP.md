@@ -225,9 +225,16 @@ Backend quedó preparado para una estrategia más segura en runtime:
 - `tickets/<tipo>/<id>/timeline` puede incluir `contact_key` y `anon_id` para conservar estado en UI realtime.
 - Nuevo endpoint de monitoreo: `/analytics/identity/coverage` (operador) para tablero de cobertura omnicanal.
 - `/analytics/identity/coverage` acepta `target_pct` y devuelve `slo_status` (`ok` | `below_target`).
+- `/analytics/identity/coverage` ahora incluye `alerts` y `alert_count` para disparar banners de calidad de datos.
+- `/analytics/identity/coverage` acepta `target_by_channel` (JSON o `canal:valor`) para metas diferenciadas por canal.
+- `/analytics/identity/coverage` permite `emit_alert_events=1` para registrar eventos `identity_coverage_alert` cuando haya brechas.
 - `/admin/analytics/whatsapp-funnel` ahora incluye `unique_contacts` por etapa para correlación de continuidad.
 
 ### Acción frontend inmediata
 1. Leer `X-Contact-Key` y `X-Conversation-Id` de responses críticas y persistir en storage seguro por tenant.
 2. Reinyectar esos headers en requests subsiguientes para mantener continuidad.
 3. En módulo encuestas, guardar `contact_key`/`conversation_id` devueltos para asociar siguientes interacciones del usuario.
+
+## Referencia ejecutable
+
+Ver `BACKLOG_EJECUTABLE_FULLSTACK_OWNERSHIP.md` para la versión operativa por ownership (CT/BE/FE, prioridades y DoD).

@@ -218,3 +218,7 @@ Convertir chatboc.ar en un CRM SaaS integral con estos pilares:
 ## 8) Resultado esperado
 
 Si se ejecuta este roadmap, chatboc.ar puede evolucionar de una plataforma con muchas piezas potentes a un **CRM omnicanal integral, consistente y escalable**, con continuidad real de identidad, operación multi-tenant robusta y experiencia de producto de nivel enterprise.
+
+## Referencia ejecutable
+
+Ver `BACKLOG_EJECUTABLE_FULLSTACK_OWNERSHIP.md` para la versión operativa por ownership (CT/BE/FE, prioridades y DoD).

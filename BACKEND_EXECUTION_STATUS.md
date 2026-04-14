@@ -39,6 +39,9 @@ Avances implementados en este corte:
 6. Timeline/presence/read-state de tickets usan fallback de identidad para `anon_id` y `active_session_id`.
 7. Endpoint `/analytics/identity/coverage` para medir cobertura de identidad por canal y tenant.
 8. Funnel WhatsApp en admin analytics ahora reporta `unique_contacts` por etapa y total.
+9. `/analytics/identity/coverage` ahora devuelve `alerts` y `alert_count` por canal bajo objetivo.
+10. Cobertura permite objetivos por canal (`target_by_channel`) para operación con SLAs diferenciados.
+11. Cobertura puede emitir eventos operativos (`identity_coverage_alert`) con `emit_alert_events=1`.
 
 Siguientes tareas backend:
 1. Estandarizar contratos de respuesta con `contact_identity` opcional para depuración/observabilidad.
@@ -53,3 +56,7 @@ Siguientes tareas backend:
 - >90% de endpoints críticos usando resolver central.
 - Eventos analytics clave con `contact_key` poblado.
 - Reducción de discrepancias entre sesión web y continuidad WhatsApp.
+
+## Referencia ejecutable
+
+Ver `BACKLOG_EJECUTABLE_FULLSTACK_OWNERSHIP.md` para la versión operativa por ownership (CT/BE/FE, prioridades y DoD).

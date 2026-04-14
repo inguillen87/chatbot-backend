@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import json
 from typing import Any
 import time
 import uuid
@@ -42,6 +43,14 @@ def _ensure_feature_enabled() -> None:
 
 
 
+
+
+
+def _tenant_id_from_filters(filters: AnalyticsFilters) -> int:
+    try:
+        return int(filters.tenant_id)
+    except (TypeError, ValueError):
+        return 0
 
 def _resolve_tenant_id_from_event_payload(payload: dict) -> int | None:
     """Resolve tenant id from JSON/body/query hints used by frontend trackers."""
@@ -131,12 +140,108 @@ def _event_has_contact_identity(metadata: dict[str, Any] | None, session_id: str
 
 
 
+
+
+def _parse_channel_targets(raw_value: Any, default_target: float) -> dict[str, float]:
+    if raw_value is None:
+        return {}
+
+    parsed: dict[str, Any]
+    if isinstance(raw_value, dict):
+        parsed = raw_value
+    else:
+        text = str(raw_value).strip()
+        if not text:
+            return {}
+        try:
+            loaded = json.loads(text)
+            parsed = loaded if isinstance(loaded, dict) else {}
+        except json.JSONDecodeError:
+            parsed = {}
+            for chunk in text.split(","):
+                if ":" not in chunk:
+                    continue
+                channel, value = chunk.split(":", 1)
+                parsed[channel.strip()] = value.strip()
+
+    targets: dict[str, float] = {}
+    for channel, value in parsed.items():
+        channel_key = str(channel or "").strip().lower()
+        if not channel_key:
+            continue
+        try:
+            targets[channel_key] = float(value)
+        except (TypeError, ValueError):
+            targets[channel_key] = default_target
+    return targets
+
 def _coverage_slo_status(coverage_pct: float, target_pct: float) -> str:
     try:
         target = float(target_pct)
     except (TypeError, ValueError):
         target = 90.0
     return "ok" if float(coverage_pct) >= target else "below_target"
+
+
+
+def _build_identity_alerts(
+    channels: dict[str, Any],
+    target_pct: float,
+    *,
+    channel_targets: dict[str, float] | None = None,
+) -> list[dict[str, Any]]:
+    alerts: list[dict[str, Any]] = []
+    channel_targets = channel_targets or {}
+
+    for channel, stats in (channels or {}).items():
+        normalized_channel = str(channel or "").strip().lower() or "unknown"
+        channel_target = float(channel_targets.get(normalized_channel, target_pct))
+        try:
+            coverage = float(stats.get("coverage_pct", 0.0))
+        except (TypeError, ValueError):
+            coverage = 0.0
+        if coverage >= channel_target:
+            continue
+
+        alerts.append(
+            {
+                "type": "identity_coverage_below_target",
+                "channel": normalized_channel,
+                "coverage_pct": coverage,
+                "target_pct": channel_target,
+                "gap_pct": round(channel_target - coverage, 2),
+                "recommended_action": "increase_contact_key_propagation",
+            }
+        )
+    return alerts
+
+
+
+def _build_identity_alert_event_payloads(
+    *,
+    tenant_id: int,
+    alerts: list[dict[str, Any]],
+    target_pct: float,
+    overall_coverage_pct: float,
+) -> list[dict[str, Any]]:
+    payloads: list[dict[str, Any]] = []
+    for alert in alerts:
+        payloads.append(
+            {
+                "tenant_id": tenant_id,
+                "event_name": "identity_coverage_alert",
+                "channel": alert.get("channel"),
+                "payload": {
+                    "type": alert.get("type"),
+                    "coverage_pct": alert.get("coverage_pct"),
+                    "target_pct": alert.get("target_pct", target_pct),
+                    "gap_pct": alert.get("gap_pct"),
+                    "recommended_action": alert.get("recommended_action"),
+                    "overall_coverage_pct": overall_coverage_pct,
+                },
+            }
+        )
+    return payloads
 
 def _compute_identity_coverage(events: list[dict[str, Any]]) -> dict[str, Any]:
     total = len(events)
@@ -341,6 +446,34 @@ def analytics_identity_coverage():
     except (TypeError, ValueError):
         target_pct = 90.0
 
+    channel_targets = _parse_channel_targets(request.args.get("target_by_channel"), target_pct)
+    slo_status = _coverage_slo_status(coverage.get("coverage_pct", 0.0), target_pct)
+    alerts = _build_identity_alerts(
+        coverage.get("channels") if isinstance(coverage, dict) else {},
+        target_pct,
+        channel_targets=channel_targets,
+    )
+
+    emit_alert_events = str(request.args.get("emit_alert_events", "0")).strip().lower() in {"1", "true", "yes"}
+    alert_event_count = 0
+    if emit_alert_events and alerts:
+        event_payloads = _build_identity_alert_event_payloads(
+            tenant_id=_tenant_id_from_filters(filters),
+            alerts=alerts,
+            target_pct=target_pct,
+            overall_coverage_pct=float(coverage.get("coverage_pct", 0.0)),
+        )
+        for event in event_payloads:
+            analytics_ingestor.track(
+                tenant_id=event["tenant_id"],
+                event_name=event["event_name"],
+                payload=event["payload"],
+                channel=event.get("channel") or "system",
+                session_id="identity_coverage_monitor",
+                tenant_type=filters.scope,
+            )
+        alert_event_count = len(event_payloads)
+
     coverage.update(
         {
             "tenant_id": filters.tenant_id,
@@ -349,7 +482,12 @@ def analytics_identity_coverage():
             "date_from": filters.date_from.isoformat() if filters.date_from else None,
             "date_to": filters.date_to.isoformat() if filters.date_to else None,
             "target_pct": target_pct,
-            "slo_status": _coverage_slo_status(coverage.get("coverage_pct", 0.0), target_pct),
+            "target_by_channel": channel_targets,
+            "slo_status": slo_status,
+            "alerts": alerts,
+            "alert_count": len(alerts),
+            "emit_alert_events": emit_alert_events,
+            "alert_events_emitted": alert_event_count,
         }
     )
     return _json_response(coverage)
