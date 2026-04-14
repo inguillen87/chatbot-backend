@@ -167,7 +167,9 @@
     "renew_days": 7
   },
   "jwks": {
-    "url": "https://api.chatboc.ar/auth/widget/jwks.json"
+    "url": "https://api.chatboc.ar/auth/widget/jwks.json",
+    "alg": "HS256",
+    "kid": "widget-hs256"
   }
 }
 ```

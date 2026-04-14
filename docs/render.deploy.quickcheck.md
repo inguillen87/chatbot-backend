@@ -15,6 +15,13 @@ Checklist mínimo para probar despliegue sin sorpresas.
 - `FLASK_ENABLE_RUNTIME_SCHEMA_SYNC=false`
 - `FLASK_ENABLE_RUNTIME_TENANT_INIT=false`
 
+## Variables recomendadas (widget auth hardening)
+
+- `WIDGET_JWT_ALG=RS256` (o `ES256`)
+- `WIDGET_JWT_PRIVATE_KEY=<pem>`
+- `WIDGET_JWT_PUBLIC_KEY=<pem>`
+- `WIDGET_JWT_KID=widget-rs256-v1`
+
 ## Pasos de release
 
 1. Configurar variables en Render.

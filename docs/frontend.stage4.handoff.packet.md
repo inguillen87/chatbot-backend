@@ -51,6 +51,7 @@
 
 6. **Widget auth contracts (nuevo)**
    - `GET /auth/widget/bootstrap` incluye `contract_version: auth.widget_bootstrap.v1`.
+   - `jwks.alg` y `jwks.kid` en bootstrap permiten al FE detectar estrategia de firma activa.
    - `POST /auth/widget-token` y `POST /auth/widget-refresh` incluyen `contract_version: auth.widget_token.v1`.
 
 7. **Tracking público de reclamos (nuevo)**
