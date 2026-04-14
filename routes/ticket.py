@@ -1104,6 +1104,52 @@ def get_ticket_by_number_public(current_user, owner_user, anon_id, nro_ticket: s
     ticket_data = _serialize_ticket_details(ticket, "municipio")
     return jsonify(ticket_data)
 
+
+def _public_tracking_payload(ticket: MunicipioTicket) -> dict:
+    """Return a minimal, safe payload for public status checks."""
+
+    fecha = getattr(ticket, "fecha", None)
+    ultima_actividad = getattr(ticket, "ultima_actividad", None) or fecha
+    return {
+        "nro_ticket": f"M-{ticket.nro_ticket}",
+        "estado": getattr(ticket, "estado", None),
+        "categoria": getattr(ticket, "categoria", None),
+        "subcategoria": getattr(ticket, "subcategoria", None),
+        "canal_ingreso": getattr(ticket, "canal_ingreso", None),
+        "fecha_creacion": datetime_to_iso_utc(fecha),
+        "ultima_actualizacion": datetime_to_iso_utc(ultima_actividad),
+    }
+
+
+@ticket_bp.route('/tickets/public/status', methods=['GET'])
+def get_public_ticket_status():
+    """Lookup ticket status by tracking code + PIN without exposing full details."""
+
+    code = (request.args.get("code") or request.args.get("nro_ticket") or "").strip().upper()
+    pin = (request.args.get("pin") or "").strip()
+
+    if not code:
+        return jsonify({"error": "code requerido."}), 400
+    if not pin:
+        return jsonify({"error": "pin requerido."}), 400
+
+    normalized = code[2:] if code.startswith("M-") else code
+    token = request.args.get("recaptcha_token")
+    if token and token.lower() not in ("undefined", "null"):
+        if not verify_recaptcha(token):
+            return jsonify({"error": "Verificación reCAPTCHA fallida."}), 400
+
+    ticket = MunicipioTicket.query.filter_by(nro_ticket=normalized, consulta_pin=pin).first()
+    if not ticket:
+        return jsonify({"error": "Ticket no encontrado."}), 404
+
+    return jsonify(
+        {
+            "contract_version": "tickets.public_status.v1",
+            "ticket": _public_tracking_payload(ticket),
+        }
+    )
+
 @ticket_bp.route('/tickets/municipio/<int:ticket_id>', methods=['GET'])
 @token_requerido
 def get_ticket_details(current_user: User, ticket_id: int):

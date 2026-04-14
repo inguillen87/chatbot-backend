@@ -36,6 +36,22 @@ analytics_bp = Blueprint("analytics", __name__, url_prefix="/analytics")
 
 ANALYTICS_IDENTITY_COVERAGE_CONTRACT_VERSION = "analytics.identity_coverage.v1"
 ANALYTICS_EVENT_INGEST_CONTRACT_VERSION = "analytics.event_ingest.v1"
+ANALYTICS_EVENT_SCHEMA_CONTRACT_VERSION = "analytics.event_schema.v1"
+
+ANALYTICS_CANONICAL_EVENT_NAMES = [
+    "message_received",
+    "ticket_created",
+    "ticket_assigned",
+    "ticket_resolved",
+    "survey_answer_submitted",
+    "vote_submitted",
+    "product_viewed",
+    "cart_started",
+    "order_created",
+    "location_shared",
+    "widget_session_opened",
+    "portal_session_opened",
+]
 
 
 @analytics_bp.before_request
@@ -574,6 +590,37 @@ def analytics_event_ingest():
             "identity_source": payload_with_identity.get("identity_source"),
         },
         status=202,
+    )
+
+
+@analytics_bp.route("/event/schema", methods=["GET"])
+def analytics_event_schema():
+    tenant_id_raw = request.args.get("tenant_id")
+    try:
+        tenant_id = int(str(tenant_id_raw or "").strip())
+    except (TypeError, ValueError):
+        return _json_response({"error": "tenant_id requerido y numérico"}, status=400)
+
+    require_access(str(tenant_id), "operador")
+    return _json_response(
+        {
+            "contract_version": ANALYTICS_EVENT_SCHEMA_CONTRACT_VERSION,
+            "tenant_id": tenant_id,
+            "required_dimensions": [
+                "event_name",
+                "channel",
+                "tenant_id",
+            ],
+            "recommended_dimensions": [
+                "contact_key",
+                "conversation_id",
+                "screen_name",
+                "category",
+                "lat",
+                "lng",
+            ],
+            "canonical_events": ANALYTICS_CANONICAL_EVENT_NAMES,
+        }
     )
 
 

@@ -152,6 +152,10 @@ DEFAULT_BACKEND_VERSION = _coalesce_version(
 # --- Variables de Entorno para Despliegue ---
 ENV = os.getenv("ENV", "dev")  # "dev" o "prod"
 
+
+def _is_render_runtime() -> bool:
+    return os.getenv("RENDER", "").strip().lower() == "true" or bool(os.getenv("RENDER_EXTERNAL_URL"))
+
 # Render provides the public URL of the service through RENDER_EXTERNAL_URL.
 # If BACKEND_URL is not explicitly set we fall back to that value so the
 # frontend can discover the correct origin via /api/config.
@@ -446,13 +450,14 @@ class Config:
 
     # Runtime bootstrap guards: in production, schema sync and tenant init must be explicit
     # via migrations/CLI. Local dev keeps convenience defaults enabled.
+    _runtime_bootstrap_default = ENV == "dev" and not _is_render_runtime()
     ENABLE_RUNTIME_SCHEMA_SYNC = _env_flag(
-        ENV == "dev",
+        _runtime_bootstrap_default,
         "ENABLE_RUNTIME_SCHEMA_SYNC",
         "FLASK_ENABLE_RUNTIME_SCHEMA_SYNC",
     )
     ENABLE_RUNTIME_TENANT_INIT = _env_flag(
-        ENV == "dev",
+        _runtime_bootstrap_default,
         "ENABLE_RUNTIME_TENANT_INIT",
         "FLASK_ENABLE_RUNTIME_TENANT_INIT",
     )

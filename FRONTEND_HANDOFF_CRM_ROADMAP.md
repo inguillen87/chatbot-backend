@@ -219,8 +219,10 @@ Backend quedó preparado para una estrategia más segura en runtime:
   - `contact_key`
   - `conversation_id`
   - `identity_source`
+- `/analytics/event/schema` expone catálogo canónico de eventos + dimensiones requeridas/recomendadas (`analytics.event_schema.v1`).
 - `/auth/widget/bootstrap` ahora expone `contract_version` (`auth.widget_bootstrap.v1`).
 - `/auth/widget-token` y `/auth/widget-refresh` ahora devuelven `contract_version` (`auth.widget_token.v1`).
+- Nuevo endpoint de tracking público de reclamos: `/tickets/public/status` (`tickets.public_status.v1`).
 - El backend enriquece telemetry payload con identidad omnicanal cuando está disponible.
 - `market/cart` prioriza `conversation_id` para continuidad de sesión.
 - `public/encuestas/<slug>/respuestas` ahora puede devolver:

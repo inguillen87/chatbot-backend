@@ -27,6 +27,13 @@
      - `conversation_id`
      - `identity_source`
 
+3.1 **Analytics event schema (catálogo canónico)**
+   - `GET /analytics/event/schema?tenant_id=<id>`
+   - FE puede tomar de ahí:
+     - `canonical_events`
+     - `required_dimensions`
+     - `recommended_dimensions`
+
 4. **WhatsApp funnel admin**
    - `GET /admin/analytics/whatsapp-funnel`
    - Campos mínimos por etapa:
@@ -45,6 +52,11 @@
 6. **Widget auth contracts (nuevo)**
    - `GET /auth/widget/bootstrap` incluye `contract_version: auth.widget_bootstrap.v1`.
    - `POST /auth/widget-token` y `POST /auth/widget-refresh` incluyen `contract_version: auth.widget_token.v1`.
+
+7. **Tracking público de reclamos (nuevo)**
+   - `GET /tickets/public/status?code=<M-...>&pin=<...>`
+   - Contrato: `tickets.public_status.v1`
+   - Respuesta acotada para tracking público (estado, categoría, timestamps).
 
 ---
 
@@ -108,6 +120,27 @@ export interface WidgetTokenAckV1 {
   token: string;
   expires_in: number;
 }
+
+export interface AnalyticsEventSchemaV1 {
+  contract_version: 'analytics.event_schema.v1';
+  tenant_id: number;
+  required_dimensions: string[];
+  recommended_dimensions: string[];
+  canonical_events: string[];
+}
+
+export interface PublicTicketStatusV1 {
+  contract_version: 'tickets.public_status.v1';
+  ticket: {
+    nro_ticket: string;
+    estado: string;
+    categoria?: string;
+    subcategoria?: string;
+    canal_ingreso?: string;
+    fecha_creacion?: string | null;
+    ultima_actualizacion?: string | null;
+  };
+}
 ```
 
 ---
@@ -118,6 +151,7 @@ export interface WidgetTokenAckV1 {
 - Si existe `X-Conversation-Id`, se reinyecta en market/tickets/encuestas/analytics.
 - Dashboard de coverage muestra banner cuando `alert_count > 0`.
 - Ingest de analytics valida `contract_version === 'analytics.event_ingest.v1'`.
+- Configurador de eventos valida catálogo desde `/analytics/event/schema`.
 - Vista funnel valida `contract_version` antes de renderizar.
 - Pantallas con permisos usan `requiredCapabilities` alineado a RBAC v1.
 
@@ -149,5 +183,6 @@ export interface WidgetTokenAckV1 {
   1. `identity-headers-propagation`
   2. `analytics-coverage-ui`
   3. `analytics-event-ingest-ack-v1`
-  4. `whatsapp-funnel-contract-v1`
-  5. `rbac-required-capabilities-alignment`
+  4. `analytics-event-schema-v1`
+  5. `whatsapp-funnel-contract-v1`
+  6. `rbac-required-capabilities-alignment`

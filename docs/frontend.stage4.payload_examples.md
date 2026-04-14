@@ -185,3 +185,60 @@
   "expires_in": 2700
 }
 ```
+
+---
+
+## 8) GET `/analytics/event/schema?tenant_id=42`
+
+### Response 200
+
+```json
+{
+  "contract_version": "analytics.event_schema.v1",
+  "tenant_id": 42,
+  "required_dimensions": ["event_name", "channel", "tenant_id"],
+  "recommended_dimensions": [
+    "contact_key",
+    "conversation_id",
+    "screen_name",
+    "category",
+    "lat",
+    "lng"
+  ],
+  "canonical_events": [
+    "message_received",
+    "ticket_created",
+    "ticket_assigned",
+    "ticket_resolved",
+    "survey_answer_submitted",
+    "vote_submitted",
+    "product_viewed",
+    "cart_started",
+    "order_created",
+    "location_shared",
+    "widget_session_opened",
+    "portal_session_opened"
+  ]
+}
+```
+
+---
+
+## 9) GET `/tickets/public/status?code=M-12345&pin=9999`
+
+### Response 200
+
+```json
+{
+  "contract_version": "tickets.public_status.v1",
+  "ticket": {
+    "nro_ticket": "M-12345",
+    "estado": "en_proceso",
+    "categoria": "alumbrado",
+    "subcategoria": "luminaria",
+    "canal_ingreso": "whatsapp",
+    "fecha_creacion": "2026-01-01T12:00:00Z",
+    "ultima_actualizacion": "2026-01-02T12:00:00Z"
+  }
+}
+```
