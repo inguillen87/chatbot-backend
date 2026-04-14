@@ -222,6 +222,10 @@ Backend quedó preparado para una estrategia más segura en runtime:
   - `contact_key`
   - `conversation_id`
 - Endpoints de tickets empiezan a usar identidad global para `anon_id`, reduciendo diferencias entre header legacy y contexto omnicanal.
+- `tickets/<tipo>/<id>/timeline` puede incluir `contact_key` y `anon_id` para conservar estado en UI realtime.
+- Nuevo endpoint de monitoreo: `/analytics/identity/coverage` (operador) para tablero de cobertura omnicanal.
+- `/analytics/identity/coverage` acepta `target_pct` y devuelve `slo_status` (`ok` | `below_target`).
+- `/admin/analytics/whatsapp-funnel` ahora incluye `unique_contacts` por etapa para correlación de continuidad.
 
 ### Acción frontend inmediata
 1. Leer `X-Contact-Key` y `X-Conversation-Id` de responses críticas y persistir en storage seguro por tenant.

@@ -232,6 +232,22 @@ def _request_contact_key() -> Optional[str]:
     return contact_key or None
 
 
+def _request_active_session_id() -> Optional[str]:
+    chat_session = str(request.headers.get("X-Chat-Session-Id") or "").strip()
+    if chat_session:
+        return chat_session
+
+    identity = getattr(g, "contact_identity", None)
+    if isinstance(identity, dict):
+        for key in ("conversation_id", "contact_key", "anon_id"):
+            value = str(identity.get(key) or "").strip()
+            if value:
+                return value
+
+    anon_id = _request_anon_id()
+    return anon_id
+
+
 def _build_realtime_actor_context(*, current_user: User, anon_id: str = None, access: Optional[dict] = None) -> tuple[str | None, str | None, str | None]:
     access = access or {}
     viewer_key = build_viewer_key(
@@ -1767,6 +1783,7 @@ def get_chat_mensajes_pyme(current_user: User, ticket_id: int):
 @anon_o_token_requerido
 def get_ticket_route(current_user: User, tipo: str, ticket_id: int, anon_id: str = None, owner_user: User = None):
     """Devuelve la ruta desde el municipio hasta la ubicación del ticket."""
+    anon_id = anon_id or _request_anon_id()
     if tipo != "municipio":
         return jsonify({"error": "Ruta solo disponible para tickets de municipio."}), 400
 
@@ -1812,6 +1829,7 @@ def get_ticket_timeline(current_user: User, tipo: str, ticket_id: int, anon_id: 
     ticket. Esto permite que el frontend muestre una vista completa del flujo de
     interacción del reclamo o pedido, combinando mensajes del chat y estados.
     """
+    anon_id = anon_id or _request_anon_id()
     TicketModel = MunicipioTicket if tipo == "municipio" else PymeTicket if tipo == "pyme" else None
     if not TicketModel:
         return jsonify({"error": f"Tipo de ticket no válido: {tipo}"}), 400
@@ -1842,7 +1860,7 @@ def get_ticket_timeline(current_user: User, tipo: str, ticket_id: int, anon_id: 
     timeline = servicio_tickets.obtener_timeline_ticket(ticket_obj)
     historial_chat = servicio_tickets.obtener_historial_chat(ticket_obj)
 
-    return jsonify({
+    payload = {
         "estado_chat": ticket_obj.estado,
         "timeline": timeline,
         "historial_chat": historial_chat,
@@ -1852,12 +1870,21 @@ def get_ticket_timeline(current_user: User, tipo: str, ticket_id: int, anon_id: 
             latest_comment_id=build_ticket_realtime_summary(ticket_type=tipo, ticket_id=ticket_id)["read_state"]["latest_comment_id"],
         ),
         "realtime_state": build_ticket_realtime_summary(ticket_type=tipo, ticket_id=ticket_id),
-    })
+    }
+
+    contact_key = _request_contact_key()
+    if contact_key:
+        payload["contact_key"] = contact_key
+    if anon_id:
+        payload.setdefault("anon_id", anon_id)
+
+    return jsonify(payload)
 
 
 @ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/presence', methods=['POST'])
 @anon_o_token_requerido
 def update_ticket_presence(current_user: User, tipo: str, ticket_id: int, anon_id: str = None, owner_user: User = None):
+    anon_id = anon_id or _request_anon_id()
     pin = request.args.get("pin")
     ticket_obj, error_response, status_code, access = _resolve_ticket_with_access(tipo, ticket_id, current_user, anon_id, pin)
     if error_response:
@@ -1879,7 +1906,7 @@ def update_ticket_presence(current_user: User, tipo: str, ticket_id: int, anon_i
         viewer_user_id=getattr(current_user, "id", None),
         viewer_anon_id=viewer_anon_id,
         viewer_role=viewer_role,
-        active_session_id=request.headers.get("X-Chat-Session-Id"),
+        active_session_id=_request_active_session_id(),
         presence_status=presence_status,
     )
     db.session.commit()
@@ -1904,6 +1931,7 @@ def update_ticket_presence(current_user: User, tipo: str, ticket_id: int, anon_i
 @ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/read-state', methods=['POST'])
 @anon_o_token_requerido
 def update_ticket_read_state(current_user: User, tipo: str, ticket_id: int, anon_id: str = None, owner_user: User = None):
+    anon_id = anon_id or _request_anon_id()
     pin = request.args.get("pin")
     ticket_obj, error_response, status_code, access = _resolve_ticket_with_access(tipo, ticket_id, current_user, anon_id, pin)
     if error_response:
@@ -1929,7 +1957,7 @@ def update_ticket_read_state(current_user: User, tipo: str, ticket_id: int, anon
         viewer_user_id=getattr(current_user, "id", None),
         viewer_anon_id=viewer_anon_id,
         viewer_role=viewer_role,
-        active_session_id=request.headers.get("X-Chat-Session-Id"),
+        active_session_id=_request_active_session_id(),
     )
     db.session.commit()
 

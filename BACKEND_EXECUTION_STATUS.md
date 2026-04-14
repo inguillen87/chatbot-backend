@@ -36,11 +36,14 @@ Avances implementados en este corte:
 3. Market/cart prioriza `conversation_id` y `contact_key` resueltos globalmente para continuidad de sesión.
 4. Encuestas públicas enriquecen metadata de respuestas con identidad omnicanal (`contact_key`, `conversation_id`, `phone_e164`).
 5. Tickets públicos ahora consultan `anon_id` desde resolver global antes de headers legacy.
+6. Timeline/presence/read-state de tickets usan fallback de identidad para `anon_id` y `active_session_id`.
+7. Endpoint `/analytics/identity/coverage` para medir cobertura de identidad por canal y tenant.
+8. Funnel WhatsApp en admin analytics ahora reporta `unique_contacts` por etapa y total.
 
 Siguientes tareas backend:
-1. Completar propagación de identidad en timeline/chat de tickets y eventos de lectura no leída.
-2. Estandarizar contratos de respuesta con `contact_identity` opcional para depuración/observabilidad.
-3. Trazabilidad de correlación WhatsApp -> portal/market con IDs de interacción en analytics funnel.
+1. Estandarizar contratos de respuesta con `contact_identity` opcional para depuración/observabilidad.
+2. Trazabilidad de correlación WhatsApp -> portal/market con IDs de interacción en analytics funnel.
+3. Definir alertas/SLO automáticas sobre cobertura mínima de identidad por canal (basadas en `target_pct`).
 
 ## Riesgos vigentes
 - Existen rutas legacy con lógica de headers ad-hoc (`X-Anon-Id`) que deben migrarse gradualmente al resolver central.
