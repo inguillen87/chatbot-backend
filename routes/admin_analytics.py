@@ -151,6 +151,9 @@ def _build_whatsapp_funnel_payload(filters, *, window_minutes: int = 60) -> dict
     unique_sessions_per_stage: dict[str, set[str]] = {
         event_name: set() for event_name, _ in _WHATSAPP_FUNNEL_STAGES
     }
+    unique_contacts_per_stage: dict[str, set[str]] = {
+        event_name: set() for event_name, _ in _WHATSAPP_FUNNEL_STAGES
+    }
 
     filtered_events = []
     for row in events:
@@ -177,11 +180,20 @@ def _build_whatsapp_funnel_payload(filters, *, window_minutes: int = 60) -> dict
         if row.session_id:
             unique_sessions_per_stage.setdefault(row.event_name, set()).add(str(row.session_id))
 
+        contact_key = None
+        if isinstance(metadata, dict):
+            raw_contact = metadata.get("contact_key")
+            if raw_contact is not None:
+                contact_key = str(raw_contact).strip()
+        if contact_key:
+            unique_contacts_per_stage.setdefault(row.event_name, set()).add(contact_key)
+
     ordered = []
     previous_value = None
     for event_name, label in _WHATSAPP_FUNNEL_STAGES:
         total = stage_counts.get(event_name, 0)
         sessions = len(unique_sessions_per_stage.get(event_name, set()))
+        contacts = len(unique_contacts_per_stage.get(event_name, set()))
         conversion = None
         if previous_value is not None and previous_value > 0:
             conversion = round((sessions / previous_value) * 100, 2)
@@ -191,6 +203,7 @@ def _build_whatsapp_funnel_payload(filters, *, window_minutes: int = 60) -> dict
                 "label": label,
                 "total": total,
                 "unique_sessions": sessions,
+                "unique_contacts": contacts,
                 "conversion_from_prev_pct": conversion,
             }
         )
@@ -201,6 +214,7 @@ def _build_whatsapp_funnel_payload(filters, *, window_minutes: int = 60) -> dict
         "scope": filters.scope,
         "window_minutes": window_minutes_int,
         "cutoff": cutoff.isoformat(),
+        "contract_version": WHATSAPP_FUNNEL_CONTRACT_VERSION,
         "stages": ordered,
         "totals": {
             "events": len(filtered_events),
@@ -209,6 +223,13 @@ def _build_whatsapp_funnel_payload(filters, *, window_minutes: int = 60) -> dict
                     str(row.session_id)
                     for row in filtered_events
                     if row.session_id
+                }
+            ),
+            "unique_contacts": len(
+                {
+                    str((row.metadata_payload or {}).get("contact_key")).strip()
+                    for row in filtered_events
+                    if isinstance(row.metadata_payload, dict) and (row.metadata_payload or {}).get("contact_key")
                 }
             ),
         },
