@@ -30,11 +30,16 @@ Implementaciones cerradas:
 
 ### Etapa 3 — Integración por dominios (market/tickets/encuestas/analytics) 🔄 EN CURSO
 
+Avances implementados en este corte:
+1. Analytics ingest ahora enriquece `payload` con `contact_key`, `conversation_id`, `phone_e164` e `identity_source` cuando están disponibles.
+2. Analytics ingest usa fallback de identidad para `anon_id` y `session_id` (conversation/contact key).
+3. Market/cart prioriza `conversation_id` y `contact_key` resueltos globalmente para continuidad de sesión.
+4. Encuestas públicas enriquecen metadata de respuestas con identidad omnicanal (`contact_key`, `conversation_id`, `phone_e164`).
+
 Siguientes tareas backend:
-1. Persistir `contact_key`/`conversation_id` en eventos de analytics críticos.
-2. Unificar extracción de identidad en rutas de market/checkout (evitar lógica duplicada por endpoint).
-3. Extender contratos de respuesta para incluir `contact_identity` de forma opcional y consistente.
-4. Trazabilidad de correlación WhatsApp -> portal/market con IDs de interacción.
+1. Extender la misma estrategia de identidad en tickets públicos y timeline de reclamos.
+2. Estandarizar contratos de respuesta con `contact_identity` opcional para depuración/observabilidad.
+3. Trazabilidad de correlación WhatsApp -> portal/market con IDs de interacción en analytics funnel.
 
 ## Riesgos vigentes
 - Existen rutas legacy con lógica de headers ad-hoc (`X-Anon-Id`) que deben migrarse gradualmente al resolver central.

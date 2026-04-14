@@ -6,7 +6,7 @@ from datetime import datetime
 import time
 import uuid
 
-from flask import Blueprint, abort, current_app, jsonify, render_template, request
+from flask import Blueprint, abort, current_app, g, jsonify, render_template, request
 from werkzeug.exceptions import HTTPException
 
 from extensions import db
@@ -73,6 +73,34 @@ def _resolve_tenant_id_from_event_payload(payload: dict) -> int | None:
                 return int(tenant.id)
     return None
 
+
+
+
+def _current_contact_identity() -> dict:
+    identity = getattr(g, "contact_identity", None)
+    if isinstance(identity, dict):
+        return identity
+    return {}
+
+
+def _build_event_payload_with_identity(payload: dict) -> dict:
+    event_payload = payload.get("payload") if isinstance(payload.get("payload"), dict) else {}
+    enriched_payload = dict(event_payload)
+
+    identity = _current_contact_identity()
+    if identity:
+        enriched_payload.setdefault("contact_key", identity.get("contact_key"))
+        enriched_payload.setdefault("conversation_id", identity.get("conversation_id"))
+        enriched_payload.setdefault("phone_e164", identity.get("phone_e164"))
+        enriched_payload.setdefault("identity_source", identity.get("source"))
+
+    # Also honor direct API payload hints when provided by trusted callers.
+    if payload.get("contact_key"):
+        enriched_payload["contact_key"] = payload.get("contact_key")
+    if payload.get("conversation_id"):
+        enriched_payload["conversation_id"] = payload.get("conversation_id")
+
+    return {k: v for k, v in enriched_payload.items() if v is not None}
 
 def _resolve_event_name(payload: dict) -> str:
     for key in ("event_name", "event", "name", "type"):
@@ -247,20 +275,37 @@ def analytics_event_ingest():
         )
         return _json_response({"ok": True, "ignored": True, "reason": "access_denied"}, status=202)
 
+    identity = _current_contact_identity()
+    payload_with_identity = _build_event_payload_with_identity(payload)
+
     analytics_ingestor.track(
         tenant_id=tenant_id,
         event_name=event_name,
-        payload=payload.get("payload") if isinstance(payload.get("payload"), dict) else {},
+        payload=payload_with_identity,
         user_id=payload.get("user_id"),
-        anon_id=payload.get("anon_id"),
+        anon_id=payload.get("anon_id") or identity.get("anon_id"),
         channel=payload.get("channel") or request.args.get("channel"),
-        session_id=payload.get("session_id") or request.args.get("session_id"),
+        session_id=(
+            payload.get("session_id")
+            or request.args.get("session_id")
+            or identity.get("conversation_id")
+            or identity.get("contact_key")
+        ),
         lat=payload.get("lat") if payload.get("lat") is not None else request.args.get("lat"),
         lng=payload.get("lng") if payload.get("lng") is not None else request.args.get("lng"),
         entity_ref=payload.get("entity_ref") or request.args.get("entity_ref"),
         tenant_type=payload.get("tenant_type") or request.args.get("tenant_type"),
     )
-    return _json_response({"ok": True, "tenant_id": tenant_id, "event_name": event_name}, status=202)
+    return _json_response(
+        {
+            "ok": True,
+            "tenant_id": tenant_id,
+            "event_name": event_name,
+            "contact_key": payload_with_identity.get("contact_key"),
+            "conversation_id": payload_with_identity.get("conversation_id"),
+        },
+        status=202,
+    )
 
 
 @analytics_bp.route("/ui", methods=["GET"])

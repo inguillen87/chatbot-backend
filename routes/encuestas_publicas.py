@@ -4,7 +4,7 @@ import secrets
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional
 
-from flask import Blueprint, jsonify, request, current_app
+from flask import Blueprint, g, jsonify, request, current_app
 
 from models import (
     db,
@@ -366,6 +366,40 @@ def _extract_answer_question_id(item: Dict[str, Any]) -> Optional[int]:
     return None
 
 
+
+
+def _metadata_with_contact_identity(
+    metadata: Optional[Dict[str, Any]],
+    *,
+    payload: Dict[str, Any],
+    anon_id: Optional[str],
+) -> Dict[str, Any]:
+    base_metadata = dict(metadata or {})
+    identity = getattr(g, "contact_identity", None)
+    if not isinstance(identity, dict):
+        identity = {}
+
+    contact_key = identity.get("contact_key") or payload.get("contact_key")
+    conversation_id = identity.get("conversation_id") or payload.get("conversation_id") or payload.get("conversationId")
+    phone_e164 = identity.get("phone_e164")
+
+    if contact_key:
+        base_metadata.setdefault("contact_key", contact_key)
+    if conversation_id:
+        base_metadata.setdefault("conversation_id", conversation_id)
+    if phone_e164:
+        base_metadata.setdefault("phone_e164", phone_e164)
+
+    # Keep compatibility with existing downstream processors that still read anon_id first.
+    if anon_id:
+        base_metadata.setdefault("anon_id", anon_id)
+
+    identity_source = identity.get("source")
+    if identity_source:
+        base_metadata.setdefault("identity_source", identity_source)
+
+    return base_metadata
+
 def _parse_answers(payload: Dict[str, Any], encuesta: PublicSurvey) -> List[Dict[str, Any]]:
     raw_answers = payload.get("answers") or payload.get("respuestas")
     items: List[Dict[str, Any]] = []
@@ -480,11 +514,18 @@ def enviar_respuesta(slug: str):
     payload = request.get_json(force=True, silent=True) or {}
     respuestas = _parse_answers(payload, encuesta)
 
-    anon_id = payload.get("anon_id") or payload.get("anonId") or payload.get("respondent_id")
+    identity = getattr(g, "contact_identity", None) if hasattr(g, "contact_identity") else {}
+    anon_id = (
+        payload.get("anon_id")
+        or payload.get("anonId")
+        or payload.get("respondent_id")
+        or (identity.get("anon_id") if isinstance(identity, dict) else None)
+    )
     if not anon_id:
         anon_id = get_or_create_anon_id()
 
     metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else None
+    metadata = _metadata_with_contact_identity(metadata, payload=payload, anon_id=anon_id)
 
     try:
         response = _store_answers(encuesta, respuestas, anon_id=anon_id, metadata=metadata)
@@ -493,5 +534,11 @@ def enviar_respuesta(slug: str):
         return jsonify({"error": str(exc)}), 400
 
     db.session.commit()
-    return jsonify({"success": True, "respuesta_id": response.id, "anon_id": anon_id}), 201
+    return jsonify({
+        "success": True,
+        "respuesta_id": response.id,
+        "anon_id": anon_id,
+        "contact_key": metadata.get("contact_key"),
+        "conversation_id": metadata.get("conversation_id"),
+    }), 201
 

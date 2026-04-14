@@ -208,3 +208,21 @@ Backend quedó preparado para una estrategia más segura en runtime:
 - Backend prioriza migraciones explícitas; no asumir “auto-create tables” en runtime.
 - Si aparece `5xx` en ambientes nuevos, validar primero estado de migraciones (`flask db upgrade`) antes de debug UI.
 - Cualquier endpoint nuevo debe salir con contrato versionado y ejemplo de payload para tipado inmediato en frontend.
+
+---
+
+## 8) Novedades backend (Etapa 3) para consumir en frontend
+
+- `/analytics/event` ahora devuelve también:
+  - `contact_key`
+  - `conversation_id`
+- El backend enriquece telemetry payload con identidad omnicanal cuando está disponible.
+- `market/cart` prioriza `conversation_id` para continuidad de sesión.
+- `public/encuestas/<slug>/respuestas` ahora puede devolver:
+  - `contact_key`
+  - `conversation_id`
+
+### Acción frontend inmediata
+1. Leer `X-Contact-Key` y `X-Conversation-Id` de responses críticas y persistir en storage seguro por tenant.
+2. Reinyectar esos headers en requests subsiguientes para mantener continuidad.
+3. En módulo encuestas, guardar `contact_key`/`conversation_id` devueltos para asociar siguientes interacciones del usuario.
