@@ -74,11 +74,17 @@ def _tenant_owner(tenant: TenantProfile) -> Optional[User]:
 def _resolve_session_identifier() -> str:
     """Resolve a stable identifier for the cart owner.
 
-    Prioritizes the explicit `X-Anon-Id` header (or cookie) sent by the
-    frontend, which persists across browser sessions better than the Flask
-    session cookie (often blocked or cleared). Falls back to the Flask session
-    if no anonymous ID is provided.
+    Priority:
+      1) Omnichannel conversation id (if present)
+      2) Anonymous identifiers from headers/cookies
+      3) Contact key (if already resolved upstream)
+      4) Flask session fallback
     """
+    contact_identity = getattr(g, "contact_identity", {}) if hasattr(g, "contact_identity") else {}
+    conversation_id = str((contact_identity or {}).get("conversation_id") or "").strip()
+    if conversation_id:
+        return conversation_id
+
     # 1. Try Anon-Id from headers (most reliable for PWA/Widgets)
     anon_id = (
         request.headers.get("X-Anon-Id")
@@ -94,7 +100,12 @@ def _resolve_session_identifier() -> str:
     if anon_id_cookie:
         return anon_id_cookie
 
-    # 3. Fallback to flask session (volatile if cookies blocked)
+    # 3. If available, reuse canonical contact key resolved by app middleware.
+    contact_key = str((contact_identity or {}).get("contact_key") or "").strip()
+    if contact_key:
+        return contact_key
+
+    # 4. Fallback to flask session (volatile if cookies blocked)
     session_id = session.get("market_session_id")
     if not session_id:
         import secrets
@@ -111,6 +122,21 @@ def _request_channel() -> str:
         or request.headers.get("X-Channel")
         or request.args.get("channel")
     )
+
+
+def _resolve_contact_key(user: User, session_id: str) -> Optional[str]:
+    identity = getattr(g, "contact_identity", None)
+    if isinstance(identity, dict):
+        contact_key = str(identity.get("contact_key") or "").strip()
+        if contact_key:
+            return contact_key
+
+    contact = resolve_order_contact_payload(
+        user=user,
+        session_id=session_id,
+        channel=_request_channel(),
+    )
+    return contact.get("contact_key")
 
 
 def _get_or_create_cart_for_user(
@@ -172,7 +198,7 @@ def _get_or_create_cart_for_user(
             contact_phone=getattr(user, "telefono", None),
             contact_name=getattr(user, "name", None),
             contact_email=getattr(user, "email", None),
-            contact_key=resolve_order_contact_payload(user=user, session_id=session_id, channel=_request_channel()).get("contact_key"),
+            contact_key=_resolve_contact_key(user=user, session_id=session_id),
             channel=_request_channel(),
         )
         db.session.add(cart)
@@ -189,10 +215,11 @@ def _get_or_create_cart_for_user(
             if not cart.contact_name:
                 cart.contact_name = getattr(user, "name", None)
             modified = True
-        resolved_contact = resolve_order_contact_payload(user=user, session_id=session_id, channel=_request_channel())
-        if resolved_contact.get("contact_key") and cart.contact_key != resolved_contact.get("contact_key"):
-            cart.contact_key = resolved_contact.get("contact_key")
+        resolved_contact_key = _resolve_contact_key(user=user, session_id=session_id)
+        if resolved_contact_key and cart.contact_key != resolved_contact_key:
+            cart.contact_key = resolved_contact_key
             modified = True
+        resolved_contact = resolve_order_contact_payload(user=user, session_id=session_id, channel=_request_channel())
         if resolved_contact.get("email") and not cart.contact_email:
             cart.contact_email = resolved_contact.get("email")
             modified = True

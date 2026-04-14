@@ -56,6 +56,7 @@ class WidgetTokenEndpointTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         data = resp.get_json()
         self.assertIn("token", data)
+        self.assertEqual(data.get("contract_version"), "auth.widget_token.v1")
         decoded = jwt.decode(
             data["token"], self.app.config["SECRET_KEY"], algorithms=["HS256"]
         )
@@ -90,7 +91,9 @@ class WidgetTokenEndpointTests(unittest.TestCase):
             headers={"Authorization": self.user.token, "Origin": "https://example.com"},
         )
         self.assertEqual(resp.status_code, 200)
-        self.assertIn("token", resp.get_json())
+        payload = resp.get_json()
+        self.assertIn("token", payload)
+        self.assertEqual(payload.get("contract_version"), "auth.widget_token.v1")
         self.assertEqual(
             resp.headers.get("Access-Control-Allow-Origin"), "https://example.com"
         )
@@ -116,9 +119,11 @@ class WidgetTokenEndpointTests(unittest.TestCase):
             headers={"Origin": "https://example.com"},
         )
         self.assertEqual(resp.status_code, 200)
-        self.assertIn("token", resp.get_json())
+        payload = resp.get_json()
+        self.assertIn("token", payload)
+        self.assertEqual(payload.get("contract_version"), "auth.widget_token.v1")
         refreshed = jwt.decode(
-            resp.get_json()["token"],
+            payload["token"],
             self.app.config["SECRET_KEY"],
             algorithms=["HS256"],
         )
@@ -147,7 +152,9 @@ class WidgetTokenEndpointTests(unittest.TestCase):
             headers={"Origin": "https://example.com"},
         )
         self.assertEqual(resp.status_code, 200)
-        self.assertIn("token", resp.get_json())
+        payload = resp.get_json()
+        self.assertIn("token", payload)
+        self.assertEqual(payload.get("contract_version"), "auth.widget_token.v1")
         self.assertEqual(
             resp.headers.get("Access-Control-Allow-Origin"), "https://example.com"
         )

@@ -25,6 +25,7 @@ import json
 from datetime import datetime, timedelta, timezone
 import time
 import jwt
+from jwt import algorithms as jwt_algorithms
 import base64
 from services.google_auth import login_o_crear_usuario
 from services.pymes import get_or_create_pyme_user_by_token
@@ -581,21 +582,35 @@ def _conf(k, d):
 
 
 def _sign(payload, minutes, renew_days=None):
+    widget_alg = str(current_app.config.get("WIDGET_JWT_ALG", "HS256")).upper()
+    widget_kid = current_app.config.get("WIDGET_JWT_KID", "widget-hs256")
+    widget_private_key = (
+        current_app.config.get("WIDGET_JWT_PRIVATE_KEY")
+        or current_app.config.get("WIDGET_JWT_SECRET")
+        or current_app.config.get("SECRET_KEY")
+    )
+
     payload = dict(payload)
     payload.setdefault("session_kind", "widget")
     payload.update({"iat": _now(), "exp": _now() + minutes * 60})
     if renew_days:
         payload["renew_until"] = _now() + renew_days * 86400
-    tok = jwt.encode(payload, current_app.config["SECRET_KEY"], algorithm="HS256")
+    tok = jwt.encode(payload, widget_private_key, algorithm=widget_alg, headers={"kid": widget_kid})
     return tok, payload["exp"]
 
 
 def _refresh(tok, minutes):
+    widget_alg = str(current_app.config.get("WIDGET_JWT_ALG", "HS256")).upper()
+    widget_public_key = (
+        current_app.config.get("WIDGET_JWT_PUBLIC_KEY")
+        or current_app.config.get("WIDGET_JWT_SECRET")
+        or current_app.config.get("SECRET_KEY")
+    )
     try:
         p = jwt.decode(
             tok,
-            current_app.config["SECRET_KEY"],
-            algorithms=["HS256"],
+            widget_public_key,
+            algorithms=[widget_alg],
             options={"verify_exp": False},
         )
     except Exception:
@@ -671,13 +686,35 @@ def _widget_features_for_tenant(tenant: TenantProfile) -> dict[str, object]:
     return features
 
 
+WIDGET_BOOTSTRAP_CONTRACT_VERSION = "auth.widget_bootstrap.v1"
+WIDGET_TOKEN_CONTRACT_VERSION = "auth.widget_token.v1"
+
+
 def _widget_jwks_payload() -> dict[str, list[dict[str, str]]]:
     """Expose a minimal JWKS for widget token verification."""
 
-    secret = str(current_app.config.get("WIDGET_JWT_SECRET") or current_app.config.get("SECRET_KEY", ""))
+    alg = str(current_app.config.get("WIDGET_JWT_ALG", "HS256")).upper()
     kid = current_app.config.get("WIDGET_JWT_KID", "widget-hs256")
-    encoded_secret = base64.urlsafe_b64encode(secret.encode("utf-8")).rstrip(b"=").decode("utf-8")
 
+    if alg in {"RS256", "ES256"}:
+        public_key = current_app.config.get("WIDGET_JWT_PUBLIC_KEY")
+        if not public_key:
+            current_app.logger.warning("[auth] WIDGET_JWT_PUBLIC_KEY missing for %s widget JWT.", alg)
+            return {"keys": []}
+
+        try:
+            algorithm_impl = jwt_algorithms.get_default_algorithms()[alg]
+            prepared_key = algorithm_impl.prepare_key(public_key)
+            jwk_payload = json.loads(algorithm_impl.to_jwk(prepared_key))
+        except Exception:
+            current_app.logger.exception("[auth] Failed to build JWKS payload for algorithm %s", alg)
+            return {"keys": []}
+
+        jwk_payload.update({"use": "sig", "alg": alg, "kid": kid})
+        return {"keys": [jwk_payload]}
+
+    secret = str(current_app.config.get("WIDGET_JWT_SECRET") or current_app.config.get("SECRET_KEY", ""))
+    encoded_secret = base64.urlsafe_b64encode(secret.encode("utf-8")).rstrip(b"=").decode("utf-8")
     return {
         "keys": [
             {
@@ -737,10 +774,15 @@ def widget_bootstrap():
             jwks_url = None
 
     response_payload = {
+        "contract_version": WIDGET_BOOTSTRAP_CONTRACT_VERSION,
         "tenant": tenant.to_public_dict(),
         "marketplace": market_payload,
         "features": _widget_features_for_tenant(tenant),
-        "jwks": {"url": jwks_url},
+        "jwks": {
+            "url": jwks_url,
+            "alg": str(current_app.config.get("WIDGET_JWT_ALG", "HS256")).upper(),
+            "kid": current_app.config.get("WIDGET_JWT_KID", "widget-hs256"),
+        },
         "widget": {
             "token_cookie_name": current_app.config.get("WIDGET_TOKEN_COOKIE_NAME", "widget_token"),
             "access_minutes": _conf("WIDGET_ACCESS_MINUTES", 45),
@@ -779,11 +821,17 @@ def widget_token():
     widget_cookie_name = current_app.config.get("WIDGET_TOKEN_COOKIE_NAME", "widget_token")
     existing_widget_token = request.cookies.get(widget_cookie_name)
     if existing_widget_token:
+        widget_alg = str(current_app.config.get("WIDGET_JWT_ALG", "HS256")).upper()
+        widget_public_key = (
+            current_app.config.get("WIDGET_JWT_PUBLIC_KEY")
+            or current_app.config.get("WIDGET_JWT_SECRET")
+            or current_app.config.get("SECRET_KEY")
+        )
         try:
             payload = jwt.decode(
                 existing_widget_token,
-                current_app.config["SECRET_KEY"],
-                algorithms=["HS256"],
+                widget_public_key,
+                algorithms=[widget_alg],
             )
         except Exception:
             payload = None
@@ -795,7 +843,13 @@ def widget_token():
                 remaining = int(exp_ts - datetime.utcnow().timestamp())
                 if remaining > 0:
                     return _add_cors(
-                        jsonify({"token": existing_widget_token, "expires_in": remaining})
+                        jsonify(
+                            {
+                                "contract_version": WIDGET_TOKEN_CONTRACT_VERSION,
+                                "token": existing_widget_token,
+                                "expires_in": remaining,
+                            }
+                        )
                     )
     owner = {
         "user_id": owner_user.id,
@@ -807,7 +861,15 @@ def widget_token():
     minutes = _conf("WIDGET_ACCESS_MINUTES", 45)
     renew = _conf("WIDGET_RENEW_DAYS", 7)
     tok, _ = _sign(owner, minutes, renew)
-    return _add_cors(jsonify({"token": tok, "expires_in": minutes * 60}))
+    return _add_cors(
+        jsonify(
+            {
+                "contract_version": WIDGET_TOKEN_CONTRACT_VERSION,
+                "token": tok,
+                "expires_in": minutes * 60,
+            }
+        )
+    )
 
 
 @auth_bp.route("/widget-refresh", methods=["POST", "OPTIONS"], strict_slashes=False)
@@ -823,7 +885,15 @@ def widget_refresh():
     if not ntok:
         resp = _add_cors(jsonify({"error": "renew_window_expired"}))
         return resp, 401
-    return _add_cors(jsonify({"token": ntok, "expires_in": minutes * 60}))
+    return _add_cors(
+        jsonify(
+            {
+                "contract_version": WIDGET_TOKEN_CONTRACT_VERSION,
+                "token": ntok,
+                "expires_in": minutes * 60,
+            }
+        )
+    )
 
 
 
