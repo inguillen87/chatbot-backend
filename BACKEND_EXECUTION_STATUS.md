@@ -35,9 +35,10 @@ Avances implementados en este corte:
 2. Analytics ingest usa fallback de identidad para `anon_id` y `session_id` (conversation/contact key).
 3. Market/cart prioriza `conversation_id` y `contact_key` resueltos globalmente para continuidad de sesión.
 4. Encuestas públicas enriquecen metadata de respuestas con identidad omnicanal (`contact_key`, `conversation_id`, `phone_e164`).
+5. Tickets públicos ahora consultan `anon_id` desde resolver global antes de headers legacy.
 
 Siguientes tareas backend:
-1. Extender la misma estrategia de identidad en tickets públicos y timeline de reclamos.
+1. Completar propagación de identidad en timeline/chat de tickets y eventos de lectura no leída.
 2. Estandarizar contratos de respuesta con `contact_identity` opcional para depuración/observabilidad.
 3. Trazabilidad de correlación WhatsApp -> portal/market con IDs de interacción en analytics funnel.
 

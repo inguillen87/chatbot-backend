@@ -221,6 +221,7 @@ Backend quedó preparado para una estrategia más segura en runtime:
 - `public/encuestas/<slug>/respuestas` ahora puede devolver:
   - `contact_key`
   - `conversation_id`
+- Endpoints de tickets empiezan a usar identidad global para `anon_id`, reduciendo diferencias entre header legacy y contexto omnicanal.
 
 ### Acción frontend inmediata
 1. Leer `X-Contact-Key` y `X-Conversation-Id` de responses críticas y persistir en storage seguro por tenant.

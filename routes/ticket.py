@@ -207,6 +207,31 @@ def _resolve_ticket_with_access(ticket_type: str, ticket_id: int, current_user: 
     return ticket_obj, None, None, access
 
 
+def _request_anon_id() -> Optional[str]:
+    identity = getattr(g, "contact_identity", None)
+    if isinstance(identity, dict):
+        anon_id = str(identity.get("anon_id") or "").strip()
+        if anon_id:
+            return anon_id
+
+    anon_id = (
+        request.headers.get("X-Anon-Id")
+        or request.headers.get("Anon-Id")
+        or request.headers.get("x-anon-id")
+        or request.headers.get("anon-id")
+    )
+    anon_id = str(anon_id or "").strip()
+    return anon_id or None
+
+
+def _request_contact_key() -> Optional[str]:
+    identity = getattr(g, "contact_identity", None)
+    if not isinstance(identity, dict):
+        return None
+    contact_key = str(identity.get("contact_key") or "").strip()
+    return contact_key or None
+
+
 def _build_realtime_actor_context(*, current_user: User, anon_id: str = None, access: Optional[dict] = None) -> tuple[str | None, str | None, str | None]:
     access = access or {}
     viewer_key = build_viewer_key(
@@ -1278,7 +1303,7 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
     log_ticket_debug(
         "responder_agente_con_archivos", # Acción actualizada
         ticket_id,
-        request.headers.get("X-Anon-Id") or request.headers.get("Anon-Id"),
+        _request_anon_id(),
         ticket_obj,
     )
 
@@ -1536,7 +1561,7 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
     log_ticket_debug(
         "cambiar_estado",
         ticket_id,
-        request.headers.get("X-Anon-Id") or request.headers.get("Anon-Id"),
+        _request_anon_id(),
         ticket_obj,
     )
 
@@ -2396,7 +2421,7 @@ def actualizar_ubicacion_ticket(current_user: User, tipo: str, ticket_id: int):
     if not ticket_obj:
         return jsonify({"error": "Ticket no encontrado."}), 404
 
-    anon_id_header = request.headers.get("X-Anon-Id") or request.headers.get("Anon-Id")
+    anon_id_header = _request_anon_id()
 
     # Si el ticket aún es anónimo pero coincide el X-Anon-Id, lo asignamos al usuario
     if (
