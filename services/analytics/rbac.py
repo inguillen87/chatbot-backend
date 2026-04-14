@@ -14,11 +14,23 @@ class AnalyticsViewer:
     role: str
     allowed_tenants: Set[str]
     teams: Set[int]
+    capabilities: Set[str]
 
     def can_access(self, tenant_id: str) -> bool:
         if "*" in self.allowed_tenants:
             return True
         return tenant_id in self.allowed_tenants
+
+    def can_capability(self, capability: str) -> bool:
+        normalized = (capability or "").strip().lower()
+        if not normalized:
+            return True
+        if self.role == "admin":
+            return True
+        if not self.capabilities:
+            # Legacy fallback while CT-02 rolls out progressively.
+            return True
+        return normalized in self.capabilities
 
 
 _ALLOWED_ROLES = {"admin", "operador", "visor"}
@@ -34,9 +46,19 @@ def _viewer_from_user(user) -> AnalyticsViewer:
     if getattr(user, "empresa_id", None):
         tenants.add(str(user.empresa_id))
     role = getattr(user, "rol", "visor") or "visor"
+    capabilities: Set[str] = set()
+    scope = getattr(user, "scope", None)
+    if isinstance(scope, dict):
+        raw_permissions = scope.get("permisos") or scope.get("permissions") or []
+        if isinstance(raw_permissions, (list, tuple, set)):
+            capabilities = {
+                str(permission).strip().lower()
+                for permission in raw_permissions
+                if str(permission).strip()
+            }
     if role == "admin":
         tenants.add("*")
-    return AnalyticsViewer(getattr(user, "id", None), role.lower(), tenants, teams)
+    return AnalyticsViewer(getattr(user, "id", None), role.lower(), tenants, teams, capabilities)
 
 
 class _TestingViewer(AnalyticsViewer):
@@ -60,12 +82,20 @@ def resolve_viewer() -> AnalyticsViewer:
         tenants = {tenant} if tenant else {"*"}
         if tenant == "*":
             tenants = {"*"}
-        return _TestingViewer(id=None, role=role, allowed_tenants=tenants, teams=set())
+        capabilities_header = request.headers.get("X-Debug-Capabilities", "")
+        capabilities = {
+            value.strip().lower()
+            for value in capabilities_header.split(",")
+            if value.strip()
+        }
+        if role == "admin" and not capabilities:
+            capabilities = {"*"}
+        return _TestingViewer(id=None, role=role, allowed_tenants=tenants, teams=set(), capabilities=capabilities)
 
     abort(401, description="Authentication required")
 
 
-def require_access(tenant_id: str, minimum_role: str = "visor") -> AnalyticsViewer:
+def require_access(tenant_id: str, minimum_role: str = "visor", required_capability: str | None = None) -> AnalyticsViewer:
     viewer = resolve_viewer()
     role_rank = {"visor": 0, "operador": 1, "admin": 2}
     viewer_rank = role_rank.get(viewer.role, -1)
@@ -74,4 +104,6 @@ def require_access(tenant_id: str, minimum_role: str = "visor") -> AnalyticsView
         abort(403, description="Insufficient role for analytics")
     if not viewer.can_access(tenant_id):
         abort(403, description="Viewer not authorised for tenant")
+    if required_capability and not viewer.can_capability(required_capability):
+        abort(403, description=f"Missing capability: {required_capability}")
     return viewer
