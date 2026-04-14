@@ -732,7 +732,7 @@ def _dashboard_response(filters):
 @admin_analytics_bp.get("/overview")
 def admin_analytics_overview():
     filters = parse_filters(request.args)
-    require_access(filters.tenant_id, "operador")
+    require_access(filters.tenant_id, "operador", required_capability="analytics.admin")
     payload = _ensure_total_interactions(get_summary(filters))
     return _json(payload)
 
@@ -740,7 +740,7 @@ def admin_analytics_overview():
 @admin_analytics_bp.get("/heatmap")
 def admin_analytics_heatmap():
     filters = parse_filters(request.args)
-    require_access(filters.tenant_id, "operador")
+    require_access(filters.tenant_id, "operador", required_capability="analytics.admin")
     tz = request.args.get("tz") or "UTC"
     base = get_geo_heatmap(filters)
 
@@ -906,7 +906,7 @@ def _build_realtime_hub_payload(filters, *, window_minutes: int = 30) -> dict[st
 @admin_analytics_bp.get("/realtime-hub")
 def admin_analytics_realtime_hub():
     filters = parse_filters(request.args)
-    require_access(filters.tenant_id, "operador")
+    require_access(filters.tenant_id, "operador", required_capability="analytics.admin")
     window_minutes = request.args.get("window_minutes", 30)
     payload = _build_realtime_hub_payload(filters, window_minutes=window_minutes)
     return _json(payload)
@@ -915,7 +915,7 @@ def admin_analytics_realtime_hub():
 @admin_analytics_bp.get("/whatsapp-funnel")
 def admin_analytics_whatsapp_funnel():
     filters = parse_filters(request.args)
-    require_access(filters.tenant_id, "operador")
+    require_access(filters.tenant_id, "operador", required_capability="analytics.admin")
     window_minutes = request.args.get("window_minutes", 60)
     payload = _build_whatsapp_funnel_payload(filters, window_minutes=window_minutes)
     return _json(payload)
@@ -924,7 +924,7 @@ def admin_analytics_whatsapp_funnel():
 @admin_analytics_bp.get("/export.csv")
 def admin_analytics_export_csv():
     filters = parse_filters(request.args)
-    require_access(filters.tenant_id, "operador")
+    require_access(filters.tenant_id, "operador", required_capability="analytics.admin")
     overview = get_summary(filters)
 
     buffer = io.StringIO()
@@ -945,7 +945,7 @@ def admin_analytics_export_csv():
 @admin_analytics_bp.get("/export.pdf")
 def admin_analytics_export_pdf():
     filters = parse_filters(request.args)
-    require_access(filters.tenant_id, "operador")
+    require_access(filters.tenant_id, "operador", required_capability="analytics.admin")
     overview = get_summary(filters)
 
     tenant_id = _tenant_id_as_int(filters.tenant_id)
@@ -1005,7 +1005,7 @@ def admin_analytics_dashboard():
     """Unified payload for the /analytics UI tabs (general/municipio/ventas/mapas)."""
 
     filters = parse_filters(request.args)
-    require_access(filters.tenant_id, "operador")
+    require_access(filters.tenant_id, "operador", required_capability="analytics.admin")
     return _dashboard_response(filters)
 
 
@@ -1014,5 +1014,5 @@ def admin_analytics_hub():
     """Alias endpoint to support frontend convergence on one analytics hub route."""
 
     filters = parse_filters(request.args)
-    require_access(filters.tenant_id, "operador")
+    require_access(filters.tenant_id, "operador", required_capability="analytics.admin")
     return _dashboard_response(filters)

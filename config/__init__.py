@@ -464,6 +464,11 @@ class Config:
     # Cookie aislada para los tokens emitidos al widget embebido.  Evita que
     # los tokens de corta duración del widget reemplacen la sesión del panel.
     WIDGET_TOKEN_COOKIE_NAME = os.getenv("WIDGET_TOKEN_COOKIE_NAME", "widget_token")
+    WIDGET_JWT_ALG = _env_first("WIDGET_JWT_ALG", default="HS256")
+    WIDGET_JWT_KID = _env_first("WIDGET_JWT_KID", default="widget-hs256")
+    WIDGET_JWT_SECRET = _env_first("WIDGET_JWT_SECRET", "SECRET_KEY", default=SECRET_KEY)
+    WIDGET_JWT_PRIVATE_KEY = _env_first("WIDGET_JWT_PRIVATE_KEY")
+    WIDGET_JWT_PUBLIC_KEY = _env_first("WIDGET_JWT_PUBLIC_KEY")
 
     # 4. RESTO DE LA CONFIGURACIÓN...
     ATTENTION_BUBBLE_TEXT = os.getenv("ATTENTION_BUBBLE_TEXT", "¡Hola! ¿Necesitas ayuda?")

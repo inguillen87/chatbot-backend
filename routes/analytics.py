@@ -421,7 +421,7 @@ def analytics_templates():
 @analytics_bp.route("/identity/coverage", methods=["GET"])
 def analytics_identity_coverage():
     filters = parse_filters(request.args)
-    require_access(filters.tenant_id, "operador", required_capability="analytics.admin")
+    require_access(filters.tenant_id, "visor", required_capability="analytics.read")
 
     limit = int(request.args.get("limit", 5000))
     if limit < 1:
@@ -476,6 +476,7 @@ def analytics_identity_coverage():
     emit_alert_events = str(request.args.get("emit_alert_events", "0")).strip().lower() in {"1", "true", "yes"}
     alert_event_count = 0
     if emit_alert_events and alerts:
+        require_access(filters.tenant_id, "operador", required_capability="analytics.admin")
         event_payloads = _build_identity_alert_event_payloads(
             tenant_id=_tenant_id_from_filters(filters),
             alerts=alerts,
@@ -601,7 +602,7 @@ def analytics_event_schema():
     except (TypeError, ValueError):
         return _json_response({"error": "tenant_id requerido y numérico"}, status=400)
 
-    require_access(str(tenant_id), "operador", required_capability="analytics.read")
+    require_access(str(tenant_id), "visor", required_capability="analytics.read")
     return _json_response(
         {
             "contract_version": ANALYTICS_EVENT_SCHEMA_CONTRACT_VERSION,

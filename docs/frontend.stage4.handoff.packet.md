@@ -12,6 +12,7 @@
 
 2. **Analytics coverage endpoint**
    - `GET /analytics/identity/coverage`
+   - Lectura base: `analytics.read` (si se usa `emit_alert_events=1`, requiere `analytics.admin`).
    - Campos clave de UI:
      - `contract_version`
      - `coverage_pct`
@@ -63,6 +64,11 @@
    - `GET /tickets/workflow/metadata`
    - Contrato: `tickets.workflow.v1`
    - Fuente de verdad para estados y transiciones permitidas en UI.
+
+9. **Encuestas públicas v1 (nuevo)**
+   - `GET /public/encuestas/v1/<slug>`
+   - Contrato: `encuestas.public.v1`
+   - `POST /public/encuestas/<slug>/respuestas` ahora devuelve `contract_version: encuestas.public_response.v1`.
 
 ---
 
@@ -153,6 +159,20 @@ export interface TicketWorkflowMetadataV1 {
   states: string[];
   transitions: Record<string, string[]>;
   final_states: string[];
+}
+
+export interface PublicSurveyV1 {
+  contract_version: 'encuestas.public.v1';
+  encuesta: Record<string, unknown>;
+}
+
+export interface PublicSurveyResponseAckV1 {
+  contract_version: 'encuestas.public_response.v1';
+  success: true;
+  respuesta_id: number;
+  anon_id: string;
+  contact_key?: string;
+  conversation_id?: string;
 }
 ```
 

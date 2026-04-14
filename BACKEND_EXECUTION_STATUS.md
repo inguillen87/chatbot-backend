@@ -66,11 +66,13 @@ Entregables comprometidos:
 
 Avance actual de etapa 4:
 - Publicada la matriz inicial compartida en `docs/rbac.capability_matrix.v1.md` como base de enforcement.
-- Pendiente: instrumentar `require_capability(...)` en endpoints P0 y cerrar firma BE/FE de la matriz.
+- `require_capability(...)` instrumentado en endpoints críticos de analytics (`analytics.read`/`analytics.admin`), incluyendo `admin/analytics/*`.
 - Preparado packet de handoff frontend para ejecución del sprint: `docs/frontend.stage4.handoff.packet.md`.
 - Preparados ejemplos de payload para FE (`docs/frontend.stage4.payload_examples.md`) para acelerar tipado/QA.
 - Enforcement inicial de capability aplicado en analytics (`analytics.read` / `analytics.admin`) con fallback legacy controlado.
+- `GET /analytics/identity/coverage` quedó en modo lectura (`analytics.read`) y la emisión opcional de alertas (`emit_alert_events=1`) requiere `analytics.admin`.
 - Contrato de workflow de tickets publicado vía endpoint `GET /tickets/workflow/metadata` (`tickets.workflow.v1`).
+- Contrato canónico de encuestas públicas publicado en `GET /public/encuestas/v1/<slug>` (`encuestas.public.v1`) y ack versionado en respuestas (`encuestas.public_response.v1`).
 
 KPIs objetivo:
 - >95% endpoints críticos usando resolver central de identidad.

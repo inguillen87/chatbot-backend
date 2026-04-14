@@ -147,6 +147,7 @@
 - Validar que `contract_version` exista antes de renderizar vistas críticas.
 - Soportar `conversion_from_prev_pct: null` en primera etapa del funnel.
 - Tratar `alerts` vacío como estado sano (sin banner).
+- `/analytics/identity/coverage` debe funcionar con `analytics.read`; solo `emit_alert_events=1` exige `analytics.admin`.
 
 ---
 
@@ -263,5 +264,40 @@
     "cerrado": []
   },
   "final_states": ["cerrado"]
+}
+```
+
+---
+
+## 11) GET `/public/encuestas/v1/<slug>`
+
+### Response 200
+
+```json
+{
+  "contract_version": "encuestas.public.v1",
+  "encuesta": {
+    "id": 10,
+    "slug": "satisfaccion-servicio",
+    "titulo": "Encuesta de satisfacción",
+    "descripcion": "Queremos conocer tu experiencia.",
+    "estado": "published",
+    "preguntas": []
+  }
+}
+```
+
+## 12) POST `/public/encuestas/<slug>/respuestas`
+
+### Response 201
+
+```json
+{
+  "contract_version": "encuestas.public_response.v1",
+  "success": true,
+  "respuesta_id": 501,
+  "anon_id": "anon_abc123",
+  "contact_key": "tenant:demo:+5491112345678",
+  "conversation_id": "wa_conv_123"
 }
 ```

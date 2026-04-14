@@ -23,6 +23,8 @@ from utils.auth_helpers import (
 
 encuestas_admin_bp = Blueprint("encuestas_admin", __name__, url_prefix="/admin/encuestas")
 encuestas_public_bp = Blueprint("encuestas_public", __name__, url_prefix="/public/encuestas")
+ENCUESTAS_PUBLIC_CONTRACT_VERSION = "encuestas.public.v1"
+ENCUESTAS_PUBLIC_RESPONSE_CONTRACT_VERSION = "encuestas.public_response.v1"
 
 
 @encuestas_admin_bp.route("", methods=["OPTIONS"], provide_automatic_options=False)
@@ -356,6 +358,21 @@ def encuesta_publica(slug: str):
     return jsonify(_serialize_survey(encuesta))
 
 
+def _serialize_public_survey_v1(encuesta: PublicSurvey) -> Dict[str, Any]:
+    return {
+        "contract_version": ENCUESTAS_PUBLIC_CONTRACT_VERSION,
+        "encuesta": _serialize_survey(encuesta),
+    }
+
+
+@encuestas_public_bp.route("/v1/<string:slug>", methods=["GET"])
+def encuesta_publica_v1(slug: str):
+    encuesta = PublicSurvey.query.filter_by(slug=slug, estado="published").first()
+    if not encuesta:
+        return jsonify({"error": "Encuesta no encontrada"}), 404
+    return jsonify(_serialize_public_survey_v1(encuesta))
+
+
 def _extract_answer_question_id(item: Dict[str, Any]) -> Optional[int]:
     for key in ("question_id", "pregunta_id", "id"):
         if item.get(key) is not None:
@@ -535,10 +552,10 @@ def enviar_respuesta(slug: str):
 
     db.session.commit()
     return jsonify({
+        "contract_version": ENCUESTAS_PUBLIC_RESPONSE_CONTRACT_VERSION,
         "success": True,
         "respuesta_id": response.id,
         "anon_id": anon_id,
         "contact_key": metadata.get("contact_key"),
         "conversation_id": metadata.get("conversation_id"),
     }), 201
-

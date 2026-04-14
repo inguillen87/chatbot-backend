@@ -227,6 +227,8 @@ Backend quedó preparado para una estrategia más segura en runtime:
 - `/auth/widget-token` y `/auth/widget-refresh` ahora devuelven `contract_version` (`auth.widget_token.v1`).
 - Nuevo endpoint de tracking público de reclamos: `/tickets/public/status` (`tickets.public_status.v1`).
 - Nuevo endpoint de metadata de workflow de tickets: `/tickets/workflow/metadata` (`tickets.workflow.v1`).
+- Nuevo endpoint canónico de encuesta pública: `/public/encuestas/v1/<slug>` (`encuestas.public.v1`).
+- `POST /public/encuestas/<slug>/respuestas` ahora devuelve `contract_version` (`encuestas.public_response.v1`).
 - El backend enriquece telemetry payload con identidad omnicanal cuando está disponible.
 - `market/cart` prioriza `conversation_id` para continuidad de sesión.
 - `public/encuestas/<slug>/respuestas` ahora puede devolver:
@@ -234,11 +236,11 @@ Backend quedó preparado para una estrategia más segura en runtime:
   - `conversation_id`
 - Endpoints de tickets empiezan a usar identidad global para `anon_id`, reduciendo diferencias entre header legacy y contexto omnicanal.
 - `tickets/<tipo>/<id>/timeline` puede incluir `contact_key` y `anon_id` para conservar estado en UI realtime.
-- Nuevo endpoint de monitoreo: `/analytics/identity/coverage` (operador) para tablero de cobertura omnicanal.
+- Nuevo endpoint de monitoreo: `/analytics/identity/coverage` (lectura `analytics.read`) para tablero de cobertura omnicanal.
 - `/analytics/identity/coverage` acepta `target_pct` y devuelve `slo_status` (`ok` | `below_target`).
 - `/analytics/identity/coverage` ahora incluye `alerts` y `alert_count` para disparar banners de calidad de datos.
 - `/analytics/identity/coverage` acepta `target_by_channel` (JSON o `canal:valor`) para metas diferenciadas por canal.
-- `/analytics/identity/coverage` permite `emit_alert_events=1` para registrar eventos `identity_coverage_alert` cuando haya brechas.
+- `/analytics/identity/coverage` permite `emit_alert_events=1` para registrar eventos `identity_coverage_alert` cuando haya brechas (esta emisión requiere `analytics.admin`).
 - `/admin/analytics/whatsapp-funnel` ahora incluye `unique_contacts` por etapa para correlación de continuidad.
 - `/admin/analytics/whatsapp-funnel` ahora incluye `contract_version` para versionar el contrato de visualización.
 
