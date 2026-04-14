@@ -68,6 +68,7 @@ Avance actual de etapa 4:
 - Publicada la matriz inicial compartida en `docs/rbac.capability_matrix.v1.md` como base de enforcement.
 - Pendiente: instrumentar `require_capability(...)` en endpoints P0 y cerrar firma BE/FE de la matriz.
 - Preparado packet de handoff frontend para ejecución del sprint: `docs/frontend.stage4.handoff.packet.md`.
+- Preparados ejemplos de payload para FE (`docs/frontend.stage4.payload_examples.md`) para acelerar tipado/QA.
 
 KPIs objetivo:
 - >95% endpoints críticos usando resolver central de identidad.

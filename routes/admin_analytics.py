@@ -43,6 +43,7 @@ _WHATSAPP_FUNNEL_STAGES: list[tuple[str, str]] = [
     ("realtime_session_created", "Sesión realtime creada"),
     ("realtime_business_action_executed", "Acción de negocio realtime"),
 ]
+WHATSAPP_FUNNEL_CONTRACT_VERSION = "admin.analytics.whatsapp_funnel.v1"
 
 _WHATSAPP_ATTRIBUTION_KEYS = ("source", "utm_source", "channel", "origin", "entrypoint")
 

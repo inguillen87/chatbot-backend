@@ -106,7 +106,9 @@ export interface WhatsappFunnelResponseV1 {
 ## 5) Entrega sugerida al equipo frontend
 
 - Compartir este archivo + `FRONTEND_HANDOFF_CRM_ROADMAP.md`.
-- Adjuntar ejemplo real de payload de ambos endpoints desde entorno staging.
+- Adjuntar ejemplos de payload:
+  - base de referencia: `docs/frontend.stage4.payload_examples.md`
+  - adicional: payload real de ambos endpoints desde entorno staging.
 - Abrir ticket FE por bloque:
   1. `identity-headers-propagation`
   2. `analytics-coverage-ui`
