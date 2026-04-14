@@ -53,6 +53,7 @@ from config.feature_flags import FEATURE_ENCUESTAS
 from extensions import db, migrate, login_manager, sock, limiter  # livianos + limiter
 from middleware import tenant_middleware
 from utils.errors import ApiError
+from utils.contact_identity import resolve_contact_identity_from_request
 
 
 def _mask_token(value: str | None) -> str | None:
@@ -252,6 +253,10 @@ def create_app(config_class=Config):
                     g.viewer = user
                     current_app.logger.debug(f"User {user.id} via token.")
 
+        @app.before_request
+        def attach_contact_identity():
+            g.contact_identity = resolve_contact_identity_from_request(request)
+
         tenant_middleware(app)
 
     # --- Inicialización de extensiones base (seguras para migraciones) ---
@@ -355,6 +360,8 @@ def create_app(config_class=Config):
             "X-Token",
             "x-token",
             "X-Whatsapp-Dst",
+            "X-Contact-Key",
+            "X-Conversation-Id",
         ]
 
         allow_methods = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
@@ -370,6 +377,8 @@ def create_app(config_class=Config):
                 "Authorization",
                 "X-Anon-Id",
                 "Anon-Id",
+                "X-Contact-Key",
+                "X-Conversation-Id",
             ],
         )
 
@@ -377,6 +386,22 @@ def create_app(config_class=Config):
         def add_permissions_policy(resp):
             policy = current_app.config.get("PERMISSIONS_POLICY_HEADER", "geolocation=(self)")
             resp.headers.setdefault("Permissions-Policy", policy)
+            return resp
+
+        @app.after_request
+        def expose_contact_identity(resp):
+            identity = getattr(g, "contact_identity", None)
+            if not isinstance(identity, dict):
+                return resp
+
+            contact_key = identity.get("contact_key")
+            conversation_id = identity.get("conversation_id")
+
+            if contact_key:
+                resp.headers.setdefault("X-Contact-Key", str(contact_key))
+            if conversation_id:
+                resp.headers.setdefault("X-Conversation-Id", str(conversation_id))
+
             return resp
 
         def _origin_is_allowed(origin: str | None) -> bool:
