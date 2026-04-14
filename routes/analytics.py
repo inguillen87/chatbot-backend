@@ -149,6 +149,18 @@ def _json_response(payload, status: int = 200):
     return response
 
 
+def _error_response(message: str, *, status: int, capability: str | None = None):
+    payload: dict[str, Any] = {
+        "error": {
+            "code": status,
+            "message": message,
+        }
+    }
+    if capability:
+        payload["error"]["capability"] = capability
+    return _json_response(payload, status=status)
+
+
 def _event_has_contact_identity(metadata: dict[str, Any] | None, session_id: str | None, anon_id: str | None) -> bool:
     if isinstance(metadata, dict):
         if metadata.get("contact_key") or metadata.get("conversation_id"):
@@ -423,7 +435,10 @@ def analytics_identity_coverage():
     filters = parse_filters(request.args)
     require_access(filters.tenant_id, "visor", required_capability="analytics.read")
 
-    limit = int(request.args.get("limit", 5000))
+    try:
+        limit = int(request.args.get("limit", 5000))
+    except (TypeError, ValueError):
+        return _error_response("limit debe ser numérico", status=400)
     if limit < 1:
         limit = 1
     if limit > 20000:
@@ -600,7 +615,7 @@ def analytics_event_schema():
     try:
         tenant_id = int(str(tenant_id_raw or "").strip())
     except (TypeError, ValueError):
-        return _json_response({"error": "tenant_id requerido y numérico"}, status=400)
+        return _error_response("tenant_id requerido y numérico", status=400)
 
     require_access(str(tenant_id), "visor", required_capability="analytics.read")
     return _json_response(

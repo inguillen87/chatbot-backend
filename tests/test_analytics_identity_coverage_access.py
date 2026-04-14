@@ -100,6 +100,17 @@ class AnalyticsIdentityCoverageAccessTestCase(unittest.TestCase):
             {"required_capability": "analytics.admin"},
         )
 
+    def test_identity_coverage_rejects_non_numeric_limit_with_standard_error(self):
+        with patch("routes.analytics.get_config", return_value=SimpleNamespace(feature_enabled=True)), patch(
+            "routes.analytics.parse_filters", return_value=self.filters
+        ), patch("routes.analytics.require_access", return_value=None):
+            response = self.client.get("/analytics/identity/coverage?tenant_id=10&limit=abc")
+
+        self.assertEqual(response.status_code, 400)
+        body = response.get_json()
+        self.assertEqual(body["error"]["code"], 400)
+        self.assertIn("limit", body["error"]["message"])
+
 
 if __name__ == "__main__":
     unittest.main()

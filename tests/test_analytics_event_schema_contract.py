@@ -39,7 +39,9 @@ class AnalyticsEventSchemaContractTestCase(unittest.TestCase):
             response = self.client.get("/analytics/event/schema?tenant_id=abc")
 
         self.assertEqual(response.status_code, 400)
-        self.assertIn("tenant_id", response.get_json().get("error", ""))
+        error = response.get_json().get("error", {})
+        self.assertEqual(error.get("code"), 400)
+        self.assertIn("tenant_id", error.get("message", ""))
 
 
 if __name__ == "__main__":

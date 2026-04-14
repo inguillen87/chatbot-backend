@@ -71,6 +71,7 @@ Avance actual de etapa 4:
 - Preparados ejemplos de payload para FE (`docs/frontend.stage4.payload_examples.md`) para acelerar tipado/QA.
 - Enforcement inicial de capability aplicado en analytics (`analytics.read` / `analytics.admin`) con fallback legacy controlado.
 - `GET /analytics/identity/coverage` quedó en modo lectura (`analytics.read`) y la emisión opcional de alertas (`emit_alert_events=1`) requiere `analytics.admin`.
+- Endpoints analytics críticos (`/analytics/event/schema`, `/analytics/identity/coverage`) usan envelope de error estándar (`shared.error.v1`) para validaciones 400.
 - Contrato de workflow de tickets publicado vía endpoint `GET /tickets/workflow/metadata` (`tickets.workflow.v1`).
 - Contrato canónico de encuestas públicas publicado en `GET /public/encuestas/v1/<slug>` (`encuestas.public.v1`) y ack versionado en respuestas (`encuestas.public_response.v1`).
 
