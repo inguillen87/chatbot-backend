@@ -124,8 +124,64 @@
 
 ---
 
-## 4) Notas para FE QA
+## 4) POST `/analytics/event`
+
+### Response 202
+
+```json
+{
+  "ok": true,
+  "contract_version": "analytics.event_ingest.v1",
+  "tenant_id": 42,
+  "event_name": "portal_opened",
+  "contact_key": "wa:contact:abc123",
+  "conversation_id": "conv-abc123",
+  "identity_source": "conversation_id"
+}
+```
+
+---
+
+## 5) Notas para FE QA
 
 - Validar que `contract_version` exista antes de renderizar vistas críticas.
 - Soportar `conversion_from_prev_pct: null` en primera etapa del funnel.
 - Tratar `alerts` vacío como estado sano (sin banner).
+
+---
+
+## 6) GET `/auth/widget/bootstrap`
+
+### Response 200 (extracto)
+
+```json
+{
+  "contract_version": "auth.widget_bootstrap.v1",
+  "tenant": {
+    "id": 42,
+    "slug": "demo-tenant"
+  },
+  "widget": {
+    "token_cookie_name": "widget_token",
+    "access_minutes": 45,
+    "renew_days": 7
+  },
+  "jwks": {
+    "url": "https://api.chatboc.ar/auth/widget/jwks.json"
+  }
+}
+```
+
+---
+
+## 7) POST `/auth/widget-token` y `/auth/widget-refresh`
+
+### Response 200
+
+```json
+{
+  "contract_version": "auth.widget_token.v1",
+  "token": "<jwt>",
+  "expires_in": 2700
+}
+```

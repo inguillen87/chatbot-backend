@@ -215,8 +215,12 @@ Backend quedó preparado para una estrategia más segura en runtime:
 ## 8) Novedades backend (Etapa 3) para consumir en frontend
 
 - `/analytics/event` ahora devuelve también:
+  - `contract_version` (`analytics.event_ingest.v1`)
   - `contact_key`
   - `conversation_id`
+  - `identity_source`
+- `/auth/widget/bootstrap` ahora expone `contract_version` (`auth.widget_bootstrap.v1`).
+- `/auth/widget-token` y `/auth/widget-refresh` ahora devuelven `contract_version` (`auth.widget_token.v1`).
 - El backend enriquece telemetry payload con identidad omnicanal cuando está disponible.
 - `market/cart` prioriza `conversation_id` para continuidad de sesión.
 - `public/encuestas/<slug>/respuestas` ahora puede devolver:

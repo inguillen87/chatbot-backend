@@ -35,6 +35,7 @@ from services.analytics.rbac import require_access
 analytics_bp = Blueprint("analytics", __name__, url_prefix="/analytics")
 
 ANALYTICS_IDENTITY_COVERAGE_CONTRACT_VERSION = "analytics.identity_coverage.v1"
+ANALYTICS_EVENT_INGEST_CONTRACT_VERSION = "analytics.event_ingest.v1"
 
 
 @analytics_bp.before_request
@@ -565,10 +566,12 @@ def analytics_event_ingest():
     return _json_response(
         {
             "ok": True,
+            "contract_version": ANALYTICS_EVENT_INGEST_CONTRACT_VERSION,
             "tenant_id": tenant_id,
             "event_name": event_name,
             "contact_key": payload_with_identity.get("contact_key"),
             "conversation_id": payload_with_identity.get("conversation_id"),
+            "identity_source": payload_with_identity.get("identity_source"),
         },
         status=202,
     )
