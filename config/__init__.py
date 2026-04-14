@@ -152,6 +152,10 @@ DEFAULT_BACKEND_VERSION = _coalesce_version(
 # --- Variables de Entorno para Despliegue ---
 ENV = os.getenv("ENV", "dev")  # "dev" o "prod"
 
+
+def _is_render_runtime() -> bool:
+    return os.getenv("RENDER", "").strip().lower() == "true" or bool(os.getenv("RENDER_EXTERNAL_URL"))
+
 # Render provides the public URL of the service through RENDER_EXTERNAL_URL.
 # If BACKEND_URL is not explicitly set we fall back to that value so the
 # frontend can discover the correct origin via /api/config.
@@ -443,6 +447,20 @@ class Config:
     # respaldo en caso de que la sesión basada en cookies falle
     AUTH_TOKEN_COOKIE_NAME = os.getenv("AUTH_TOKEN_COOKIE_NAME", "auth_token")
     DEFER_ANON_MIGRATION_ON_LOGIN = os.getenv("DEFER_ANON_MIGRATION_ON_LOGIN", "true").strip().lower() not in {"0", "false", "no", "off"}
+
+    # Runtime bootstrap guards: in production, schema sync and tenant init must be explicit
+    # via migrations/CLI. Local dev keeps convenience defaults enabled.
+    _runtime_bootstrap_default = ENV == "dev" and not _is_render_runtime()
+    ENABLE_RUNTIME_SCHEMA_SYNC = _env_flag(
+        _runtime_bootstrap_default,
+        "ENABLE_RUNTIME_SCHEMA_SYNC",
+        "FLASK_ENABLE_RUNTIME_SCHEMA_SYNC",
+    )
+    ENABLE_RUNTIME_TENANT_INIT = _env_flag(
+        _runtime_bootstrap_default,
+        "ENABLE_RUNTIME_TENANT_INIT",
+        "FLASK_ENABLE_RUNTIME_TENANT_INIT",
+    )
     # Cookie aislada para los tokens emitidos al widget embebido.  Evita que
     # los tokens de corta duración del widget reemplacen la sesión del panel.
     WIDGET_TOKEN_COOKIE_NAME = os.getenv("WIDGET_TOKEN_COOKIE_NAME", "widget_token")
