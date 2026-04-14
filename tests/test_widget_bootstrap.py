@@ -59,6 +59,7 @@ class WidgetBootstrapTest(unittest.TestCase):
         data = response.get_json()
 
         self.assertEqual(data["tenant"]["id"], self.tenant.id)
+        self.assertEqual(data.get("contract_version"), "auth.widget_bootstrap.v1")
         self.assertEqual(data["tenant"]["slug"], self.tenant.slug)
         self.assertTrue(data["marketplace"].get("enabled"))
         self.assertIn(self.tenant.slug, data["marketplace"].get("public_market_url", ""))
