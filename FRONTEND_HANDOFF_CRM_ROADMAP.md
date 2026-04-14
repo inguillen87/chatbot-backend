@@ -238,3 +238,11 @@ Backend quedó preparado para una estrategia más segura en runtime:
 ## Referencia ejecutable
 
 Ver `BACKLOG_EJECUTABLE_FULLSTACK_OWNERSHIP.md` para la versión operativa por ownership (CT/BE/FE, prioridades y DoD).
+
+
+## Contratos compartidos (nuevo)
+
+- `docs/analytics.identity_coverage.v1.contract.md`
+- `docs/shared.error.v1.contract.md`
+
+Frontend debe tipar clientes API tomando estos contratos como fuente de verdad.

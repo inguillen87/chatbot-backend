@@ -214,6 +214,7 @@ def _build_whatsapp_funnel_payload(filters, *, window_minutes: int = 60) -> dict
         "scope": filters.scope,
         "window_minutes": window_minutes_int,
         "cutoff": cutoff.isoformat(),
+        "contract_version": WHATSAPP_FUNNEL_CONTRACT_VERSION,
         "stages": ordered,
         "totals": {
             "events": len(filtered_events),

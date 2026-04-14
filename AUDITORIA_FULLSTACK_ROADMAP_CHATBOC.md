@@ -222,3 +222,11 @@ Si se ejecuta este roadmap, chatboc.ar puede evolucionar de una plataforma con m
 ## Referencia ejecutable
 
 Ver `BACKLOG_EJECUTABLE_FULLSTACK_OWNERSHIP.md` para la versión operativa por ownership (CT/BE/FE, prioridades y DoD).
+
+
+## Contratos versionados iniciales
+
+- `docs/analytics.identity_coverage.v1.contract.md`
+- `docs/shared.error.v1.contract.md`
+
+Estos contratos sirven como base de CT-01 (contrato compartido frontend/backend).

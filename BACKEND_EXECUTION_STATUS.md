@@ -42,6 +42,7 @@ Avances implementados en este corte:
 9. `/analytics/identity/coverage` ahora devuelve `alerts` y `alert_count` por canal bajo objetivo.
 10. Cobertura permite objetivos por canal (`target_by_channel`) para operación con SLAs diferenciados.
 11. Cobertura puede emitir eventos operativos (`identity_coverage_alert`) con `emit_alert_events=1`.
+12. Se publica contrato versionado `analytics.identity_coverage.v1` en docs/.
 
 Siguientes tareas backend:
 1. Estandarizar contratos de respuesta con `contact_identity` opcional para depuración/observabilidad.

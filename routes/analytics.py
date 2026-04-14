@@ -34,6 +34,8 @@ from services.analytics.rbac import require_access
 
 analytics_bp = Blueprint("analytics", __name__, url_prefix="/analytics")
 
+ANALYTICS_IDENTITY_COVERAGE_CONTRACT_VERSION = "analytics.identity_coverage.v1"
+
 
 @analytics_bp.before_request
 def _ensure_feature_enabled() -> None:
@@ -488,6 +490,7 @@ def analytics_identity_coverage():
             "alert_count": len(alerts),
             "emit_alert_events": emit_alert_events,
             "alert_events_emitted": alert_event_count,
+            "contract_version": ANALYTICS_IDENTITY_COVERAGE_CONTRACT_VERSION,
         }
     )
     return _json_response(coverage)

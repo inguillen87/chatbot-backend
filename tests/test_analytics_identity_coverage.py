@@ -1,6 +1,6 @@
 import unittest
 
-from routes.analytics import _build_identity_alert_event_payloads, _build_identity_alerts, _compute_identity_coverage, _coverage_slo_status, _parse_channel_targets
+from routes.analytics import ANALYTICS_IDENTITY_COVERAGE_CONTRACT_VERSION, _build_identity_alert_event_payloads, _build_identity_alerts, _compute_identity_coverage, _coverage_slo_status, _parse_channel_targets
 
 
 class AnalyticsIdentityCoverageTestCase(unittest.TestCase):
@@ -33,6 +33,9 @@ class AnalyticsIdentityCoverageTestCase(unittest.TestCase):
         self.assertEqual(result["coverage_pct"], 66.67)
         self.assertEqual(result["channels"]["whatsapp"]["coverage_pct"], 100.0)
         self.assertEqual(result["channels"]["web"]["coverage_pct"], 0.0)
+
+    def test_contract_version_constant(self):
+        self.assertEqual(ANALYTICS_IDENTITY_COVERAGE_CONTRACT_VERSION, "analytics.identity_coverage.v1")
 
     def test_coverage_slo_status(self):
         self.assertEqual(_coverage_slo_status(92.0, 90), "ok")
