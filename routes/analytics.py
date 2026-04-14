@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 import time
 import uuid
 
-from flask import Blueprint, abort, current_app, jsonify, render_template, request
+from flask import Blueprint, abort, current_app, g, jsonify, render_template, request
 from werkzeug.exceptions import HTTPException
 
 from extensions import db
@@ -27,7 +28,7 @@ from services.analytics import (
 )
 from services.analytics.ingestor import analytics_ingestor
 from services.analytics.models import AnalyticsModuleStatus
-from models import TenantProfile
+from models import AnalyticsEventV2, TenantProfile
 from services.analytics.rbac import require_access
 
 analytics_bp = Blueprint("analytics", __name__, url_prefix="/analytics")
@@ -74,6 +75,34 @@ def _resolve_tenant_id_from_event_payload(payload: dict) -> int | None:
     return None
 
 
+
+
+def _current_contact_identity() -> dict:
+    identity = getattr(g, "contact_identity", None)
+    if isinstance(identity, dict):
+        return identity
+    return {}
+
+
+def _build_event_payload_with_identity(payload: dict) -> dict:
+    event_payload = payload.get("payload") if isinstance(payload.get("payload"), dict) else {}
+    enriched_payload = dict(event_payload)
+
+    identity = _current_contact_identity()
+    if identity:
+        enriched_payload.setdefault("contact_key", identity.get("contact_key"))
+        enriched_payload.setdefault("conversation_id", identity.get("conversation_id"))
+        enriched_payload.setdefault("phone_e164", identity.get("phone_e164"))
+        enriched_payload.setdefault("identity_source", identity.get("source"))
+
+    # Also honor direct API payload hints when provided by trusted callers.
+    if payload.get("contact_key"):
+        enriched_payload["contact_key"] = payload.get("contact_key")
+    if payload.get("conversation_id"):
+        enriched_payload["conversation_id"] = payload.get("conversation_id")
+
+    return {k: v for k, v in enriched_payload.items() if v is not None}
+
 def _resolve_event_name(payload: dict) -> str:
     for key in ("event_name", "event", "name", "type"):
         value = payload.get(key)
@@ -90,6 +119,68 @@ def _json_response(payload, status: int = 200):
     response = jsonify(payload)
     response.status_code = status
     return response
+
+
+def _event_has_contact_identity(metadata: dict[str, Any] | None, session_id: str | None, anon_id: str | None) -> bool:
+    if isinstance(metadata, dict):
+        if metadata.get("contact_key") or metadata.get("conversation_id"):
+            return True
+
+    return bool(session_id or anon_id)
+
+
+
+
+def _coverage_slo_status(coverage_pct: float, target_pct: float) -> str:
+    try:
+        target = float(target_pct)
+    except (TypeError, ValueError):
+        target = 90.0
+    return "ok" if float(coverage_pct) >= target else "below_target"
+
+def _compute_identity_coverage(events: list[dict[str, Any]]) -> dict[str, Any]:
+    total = len(events)
+    if total == 0:
+        return {
+            "total_events": 0,
+            "events_with_identity": 0,
+            "coverage_pct": 0.0,
+            "channels": {},
+        }
+
+    events_with_identity = 0
+    per_channel: dict[str, dict[str, int]] = {}
+
+    for event in events:
+        channel = str(event.get("channel") or "unknown").strip().lower() or "unknown"
+        channel_stats = per_channel.setdefault(channel, {"total": 0, "with_identity": 0})
+        channel_stats["total"] += 1
+
+        has_identity = _event_has_contact_identity(
+            event.get("metadata") if isinstance(event.get("metadata"), dict) else None,
+            event.get("session_id"),
+            event.get("anon_id"),
+        )
+        if has_identity:
+            events_with_identity += 1
+            channel_stats["with_identity"] += 1
+
+    channels_payload = {}
+    for channel, stats in per_channel.items():
+        channel_total = stats.get("total", 0)
+        channel_with_identity = stats.get("with_identity", 0)
+        channels_payload[channel] = {
+            "total": channel_total,
+            "with_identity": channel_with_identity,
+            "coverage_pct": round((channel_with_identity / channel_total) * 100.0, 2) if channel_total else 0.0,
+        }
+
+    return {
+        "total_events": total,
+        "events_with_identity": events_with_identity,
+        "coverage_pct": round((events_with_identity / total) * 100.0, 2),
+        "channels": channels_payload,
+    }
 
 
 @analytics_bp.route("/summary", methods=["GET"])
@@ -201,6 +292,68 @@ def analytics_templates():
     return _json_response(data)
 
 
+
+
+@analytics_bp.route("/identity/coverage", methods=["GET"])
+def analytics_identity_coverage():
+    filters = parse_filters(request.args)
+    require_access(filters.tenant_id, "operador")
+
+    limit = int(request.args.get("limit", 5000))
+    if limit < 1:
+        limit = 1
+    if limit > 20000:
+        limit = 20000
+
+    query = AnalyticsEventV2.query.filter(AnalyticsEventV2.tenant_id == filters.tenant_id)
+    if filters.date_from:
+        query = query.filter(AnalyticsEventV2.ts >= filters.date_from)
+    if filters.date_to:
+        query = query.filter(AnalyticsEventV2.ts <= filters.date_to)
+
+    rows = (
+        query.with_entities(
+            AnalyticsEventV2.channel.label("channel"),
+            AnalyticsEventV2.metadata_payload.label("metadata"),
+            AnalyticsEventV2.session_id.label("session_id"),
+            AnalyticsEventV2.anon_id.label("anon_id"),
+        )
+        .order_by(AnalyticsEventV2.ts.desc())
+        .limit(limit)
+        .all()
+    )
+
+    events = [
+        {
+            "channel": row.channel,
+            "metadata": row.metadata if isinstance(row.metadata, dict) else {},
+            "session_id": row.session_id,
+            "anon_id": row.anon_id,
+        }
+        for row in rows
+    ]
+
+    coverage = _compute_identity_coverage(events)
+
+    target_pct_raw = request.args.get("target_pct", 90)
+    try:
+        target_pct = float(target_pct_raw)
+    except (TypeError, ValueError):
+        target_pct = 90.0
+
+    coverage.update(
+        {
+            "tenant_id": filters.tenant_id,
+            "sample_size": len(events),
+            "limit": limit,
+            "date_from": filters.date_from.isoformat() if filters.date_from else None,
+            "date_to": filters.date_to.isoformat() if filters.date_to else None,
+            "target_pct": target_pct,
+            "slo_status": _coverage_slo_status(coverage.get("coverage_pct", 0.0), target_pct),
+        }
+    )
+    return _json_response(coverage)
+
 @analytics_bp.route("/health", methods=["GET"])
 def analytics_health():
     latest = (
@@ -247,20 +400,37 @@ def analytics_event_ingest():
         )
         return _json_response({"ok": True, "ignored": True, "reason": "access_denied"}, status=202)
 
+    identity = _current_contact_identity()
+    payload_with_identity = _build_event_payload_with_identity(payload)
+
     analytics_ingestor.track(
         tenant_id=tenant_id,
         event_name=event_name,
-        payload=payload.get("payload") if isinstance(payload.get("payload"), dict) else {},
+        payload=payload_with_identity,
         user_id=payload.get("user_id"),
-        anon_id=payload.get("anon_id"),
+        anon_id=payload.get("anon_id") or identity.get("anon_id"),
         channel=payload.get("channel") or request.args.get("channel"),
-        session_id=payload.get("session_id") or request.args.get("session_id"),
+        session_id=(
+            payload.get("session_id")
+            or request.args.get("session_id")
+            or identity.get("conversation_id")
+            or identity.get("contact_key")
+        ),
         lat=payload.get("lat") if payload.get("lat") is not None else request.args.get("lat"),
         lng=payload.get("lng") if payload.get("lng") is not None else request.args.get("lng"),
         entity_ref=payload.get("entity_ref") or request.args.get("entity_ref"),
         tenant_type=payload.get("tenant_type") or request.args.get("tenant_type"),
     )
-    return _json_response({"ok": True, "tenant_id": tenant_id, "event_name": event_name}, status=202)
+    return _json_response(
+        {
+            "ok": True,
+            "tenant_id": tenant_id,
+            "event_name": event_name,
+            "contact_key": payload_with_identity.get("contact_key"),
+            "conversation_id": payload_with_identity.get("conversation_id"),
+        },
+        status=202,
+    )
 
 
 @analytics_bp.route("/ui", methods=["GET"])
