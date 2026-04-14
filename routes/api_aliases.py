@@ -48,6 +48,7 @@ from routes.municipal_legacy import (
 from routes.notifications import get_notifications, notifications_options
 from routes.ticket import (
     get_chat_mensajes,
+    get_public_ticket_status,
     get_ticket_by_number_public,
     get_ticket_details,
     get_tickets_del_usuario,
@@ -352,6 +353,17 @@ def tickets_municipio_por_numero_alias(nro_ticket: str):
     if request.method == "OPTIONS":
         return _options_ok()
     return get_ticket_by_number_public(nro_ticket=nro_ticket)
+
+
+@api_aliases_bp.route(
+    "/tickets/public/status",
+    methods=["GET", "OPTIONS"],
+    strict_slashes=False,
+)
+def tickets_public_status_alias():
+    if request.method == "OPTIONS":
+        return _options_ok()
+    return get_public_ticket_status()
 
 
 @api_aliases_bp.route(

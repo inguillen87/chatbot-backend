@@ -207,6 +207,47 @@ def _resolve_ticket_with_access(ticket_type: str, ticket_id: int, current_user: 
     return ticket_obj, None, None, access
 
 
+def _request_anon_id() -> Optional[str]:
+    identity = getattr(g, "contact_identity", None)
+    if isinstance(identity, dict):
+        anon_id = str(identity.get("anon_id") or "").strip()
+        if anon_id:
+            return anon_id
+
+    anon_id = (
+        request.headers.get("X-Anon-Id")
+        or request.headers.get("Anon-Id")
+        or request.headers.get("x-anon-id")
+        or request.headers.get("anon-id")
+    )
+    anon_id = str(anon_id or "").strip()
+    return anon_id or None
+
+
+def _request_contact_key() -> Optional[str]:
+    identity = getattr(g, "contact_identity", None)
+    if not isinstance(identity, dict):
+        return None
+    contact_key = str(identity.get("contact_key") or "").strip()
+    return contact_key or None
+
+
+def _request_active_session_id() -> Optional[str]:
+    chat_session = str(request.headers.get("X-Chat-Session-Id") or "").strip()
+    if chat_session:
+        return chat_session
+
+    identity = getattr(g, "contact_identity", None)
+    if isinstance(identity, dict):
+        for key in ("conversation_id", "contact_key", "anon_id"):
+            value = str(identity.get(key) or "").strip()
+            if value:
+                return value
+
+    anon_id = _request_anon_id()
+    return anon_id
+
+
 def _build_realtime_actor_context(*, current_user: User, anon_id: str = None, access: Optional[dict] = None) -> tuple[str | None, str | None, str | None]:
     access = access or {}
     viewer_key = build_viewer_key(
@@ -1063,6 +1104,52 @@ def get_ticket_by_number_public(current_user, owner_user, anon_id, nro_ticket: s
     ticket_data = _serialize_ticket_details(ticket, "municipio")
     return jsonify(ticket_data)
 
+
+def _public_tracking_payload(ticket: MunicipioTicket) -> dict:
+    """Return a minimal, safe payload for public status checks."""
+
+    fecha = getattr(ticket, "fecha", None)
+    ultima_actividad = getattr(ticket, "ultima_actividad", None) or fecha
+    return {
+        "nro_ticket": f"M-{ticket.nro_ticket}",
+        "estado": getattr(ticket, "estado", None),
+        "categoria": getattr(ticket, "categoria", None),
+        "subcategoria": getattr(ticket, "subcategoria", None),
+        "canal_ingreso": getattr(ticket, "canal_ingreso", None),
+        "fecha_creacion": datetime_to_iso_utc(fecha),
+        "ultima_actualizacion": datetime_to_iso_utc(ultima_actividad),
+    }
+
+
+@ticket_bp.route('/tickets/public/status', methods=['GET'])
+def get_public_ticket_status():
+    """Lookup ticket status by tracking code + PIN without exposing full details."""
+
+    code = (request.args.get("code") or request.args.get("nro_ticket") or "").strip().upper()
+    pin = (request.args.get("pin") or "").strip()
+
+    if not code:
+        return jsonify({"error": "code requerido."}), 400
+    if not pin:
+        return jsonify({"error": "pin requerido."}), 400
+
+    normalized = code[2:] if code.startswith("M-") else code
+    token = request.args.get("recaptcha_token")
+    if token and token.lower() not in ("undefined", "null"):
+        if not verify_recaptcha(token):
+            return jsonify({"error": "Verificación reCAPTCHA fallida."}), 400
+
+    ticket = MunicipioTicket.query.filter_by(nro_ticket=normalized, consulta_pin=pin).first()
+    if not ticket:
+        return jsonify({"error": "Ticket no encontrado."}), 404
+
+    return jsonify(
+        {
+            "contract_version": "tickets.public_status.v1",
+            "ticket": _public_tracking_payload(ticket),
+        }
+    )
+
 @ticket_bp.route('/tickets/municipio/<int:ticket_id>', methods=['GET'])
 @token_requerido
 def get_ticket_details(current_user: User, ticket_id: int):
@@ -1278,7 +1365,7 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
     log_ticket_debug(
         "responder_agente_con_archivos", # Acción actualizada
         ticket_id,
-        request.headers.get("X-Anon-Id") or request.headers.get("Anon-Id"),
+        _request_anon_id(),
         ticket_obj,
     )
 
@@ -1536,7 +1623,7 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
     log_ticket_debug(
         "cambiar_estado",
         ticket_id,
-        request.headers.get("X-Anon-Id") or request.headers.get("Anon-Id"),
+        _request_anon_id(),
         ticket_obj,
     )
 
@@ -1742,6 +1829,7 @@ def get_chat_mensajes_pyme(current_user: User, ticket_id: int):
 @anon_o_token_requerido
 def get_ticket_route(current_user: User, tipo: str, ticket_id: int, anon_id: str = None, owner_user: User = None):
     """Devuelve la ruta desde el municipio hasta la ubicación del ticket."""
+    anon_id = anon_id or _request_anon_id()
     if tipo != "municipio":
         return jsonify({"error": "Ruta solo disponible para tickets de municipio."}), 400
 
@@ -1787,6 +1875,7 @@ def get_ticket_timeline(current_user: User, tipo: str, ticket_id: int, anon_id: 
     ticket. Esto permite que el frontend muestre una vista completa del flujo de
     interacción del reclamo o pedido, combinando mensajes del chat y estados.
     """
+    anon_id = anon_id or _request_anon_id()
     TicketModel = MunicipioTicket if tipo == "municipio" else PymeTicket if tipo == "pyme" else None
     if not TicketModel:
         return jsonify({"error": f"Tipo de ticket no válido: {tipo}"}), 400
@@ -1817,7 +1906,7 @@ def get_ticket_timeline(current_user: User, tipo: str, ticket_id: int, anon_id: 
     timeline = servicio_tickets.obtener_timeline_ticket(ticket_obj)
     historial_chat = servicio_tickets.obtener_historial_chat(ticket_obj)
 
-    return jsonify({
+    payload = {
         "estado_chat": ticket_obj.estado,
         "timeline": timeline,
         "historial_chat": historial_chat,
@@ -1827,12 +1916,21 @@ def get_ticket_timeline(current_user: User, tipo: str, ticket_id: int, anon_id: 
             latest_comment_id=build_ticket_realtime_summary(ticket_type=tipo, ticket_id=ticket_id)["read_state"]["latest_comment_id"],
         ),
         "realtime_state": build_ticket_realtime_summary(ticket_type=tipo, ticket_id=ticket_id),
-    })
+    }
+
+    contact_key = _request_contact_key()
+    if contact_key:
+        payload["contact_key"] = contact_key
+    if anon_id:
+        payload.setdefault("anon_id", anon_id)
+
+    return jsonify(payload)
 
 
 @ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/presence', methods=['POST'])
 @anon_o_token_requerido
 def update_ticket_presence(current_user: User, tipo: str, ticket_id: int, anon_id: str = None, owner_user: User = None):
+    anon_id = anon_id or _request_anon_id()
     pin = request.args.get("pin")
     ticket_obj, error_response, status_code, access = _resolve_ticket_with_access(tipo, ticket_id, current_user, anon_id, pin)
     if error_response:
@@ -1854,7 +1952,7 @@ def update_ticket_presence(current_user: User, tipo: str, ticket_id: int, anon_i
         viewer_user_id=getattr(current_user, "id", None),
         viewer_anon_id=viewer_anon_id,
         viewer_role=viewer_role,
-        active_session_id=request.headers.get("X-Chat-Session-Id"),
+        active_session_id=_request_active_session_id(),
         presence_status=presence_status,
     )
     db.session.commit()
@@ -1879,6 +1977,7 @@ def update_ticket_presence(current_user: User, tipo: str, ticket_id: int, anon_i
 @ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/read-state', methods=['POST'])
 @anon_o_token_requerido
 def update_ticket_read_state(current_user: User, tipo: str, ticket_id: int, anon_id: str = None, owner_user: User = None):
+    anon_id = anon_id or _request_anon_id()
     pin = request.args.get("pin")
     ticket_obj, error_response, status_code, access = _resolve_ticket_with_access(tipo, ticket_id, current_user, anon_id, pin)
     if error_response:
@@ -1904,7 +2003,7 @@ def update_ticket_read_state(current_user: User, tipo: str, ticket_id: int, anon
         viewer_user_id=getattr(current_user, "id", None),
         viewer_anon_id=viewer_anon_id,
         viewer_role=viewer_role,
-        active_session_id=request.headers.get("X-Chat-Session-Id"),
+        active_session_id=_request_active_session_id(),
     )
     db.session.commit()
 
@@ -2396,7 +2495,7 @@ def actualizar_ubicacion_ticket(current_user: User, tipo: str, ticket_id: int):
     if not ticket_obj:
         return jsonify({"error": "Ticket no encontrado."}), 404
 
-    anon_id_header = request.headers.get("X-Anon-Id") or request.headers.get("Anon-Id")
+    anon_id_header = _request_anon_id()
 
     # Si el ticket aún es anónimo pero coincide el X-Anon-Id, lo asignamos al usuario
     if (

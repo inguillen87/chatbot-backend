@@ -671,6 +671,10 @@ def _widget_features_for_tenant(tenant: TenantProfile) -> dict[str, object]:
     return features
 
 
+WIDGET_BOOTSTRAP_CONTRACT_VERSION = "auth.widget_bootstrap.v1"
+WIDGET_TOKEN_CONTRACT_VERSION = "auth.widget_token.v1"
+
+
 def _widget_jwks_payload() -> dict[str, list[dict[str, str]]]:
     """Expose a minimal JWKS for widget token verification."""
 
@@ -737,6 +741,7 @@ def widget_bootstrap():
             jwks_url = None
 
     response_payload = {
+        "contract_version": WIDGET_BOOTSTRAP_CONTRACT_VERSION,
         "tenant": tenant.to_public_dict(),
         "marketplace": market_payload,
         "features": _widget_features_for_tenant(tenant),
@@ -795,7 +800,13 @@ def widget_token():
                 remaining = int(exp_ts - datetime.utcnow().timestamp())
                 if remaining > 0:
                     return _add_cors(
-                        jsonify({"token": existing_widget_token, "expires_in": remaining})
+                        jsonify(
+                            {
+                                "contract_version": WIDGET_TOKEN_CONTRACT_VERSION,
+                                "token": existing_widget_token,
+                                "expires_in": remaining,
+                            }
+                        )
                     )
     owner = {
         "user_id": owner_user.id,
@@ -807,7 +818,15 @@ def widget_token():
     minutes = _conf("WIDGET_ACCESS_MINUTES", 45)
     renew = _conf("WIDGET_RENEW_DAYS", 7)
     tok, _ = _sign(owner, minutes, renew)
-    return _add_cors(jsonify({"token": tok, "expires_in": minutes * 60}))
+    return _add_cors(
+        jsonify(
+            {
+                "contract_version": WIDGET_TOKEN_CONTRACT_VERSION,
+                "token": tok,
+                "expires_in": minutes * 60,
+            }
+        )
+    )
 
 
 @auth_bp.route("/widget-refresh", methods=["POST", "OPTIONS"], strict_slashes=False)
@@ -823,7 +842,15 @@ def widget_refresh():
     if not ntok:
         resp = _add_cors(jsonify({"error": "renew_window_expired"}))
         return resp, 401
-    return _add_cors(jsonify({"token": ntok, "expires_in": minutes * 60}))
+    return _add_cors(
+        jsonify(
+            {
+                "contract_version": WIDGET_TOKEN_CONTRACT_VERSION,
+                "token": ntok,
+                "expires_in": minutes * 60,
+            }
+        )
+    )
 
 
 
