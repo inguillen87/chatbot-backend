@@ -284,3 +284,26 @@ Además, FE-07 (permisos) debe tomar como referencia:
   - tenant municipio,
   - tenant pyme,
   - sesión sin identidad previa (nuevo usuario).
+
+---
+
+## 10) Paquete de entrega para frontend (listo para compartir)
+
+- Documento resumido de implementación inmediata:
+  - `docs/frontend.stage4.handoff.packet.md`
+- Contratos base a incluir en tipado:
+  - `docs/analytics.identity_coverage.v1.contract.md`
+  - `docs/shared.error.v1.contract.md`
+  - `docs/rbac.capability_matrix.v1.md`
+
+### Checklist de envío FE (owner backend)
+
+1. Compartir packet + roadmap por canal interno.
+2. Adjuntar payloads reales de staging para:
+   - `/analytics/identity/coverage`
+   - `/admin/analytics/whatsapp-funnel`
+3. Crear tickets FE separados por bloque:
+   - identidad headers,
+   - coverage UI/banners,
+   - funnel contract validation,
+   - alineación RBAC.
