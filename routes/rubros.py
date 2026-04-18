@@ -13,6 +13,19 @@ def _widget_preview_for_rubro(item: dict) -> dict:
     demo = item.get("demo") if isinstance(item.get("demo"), dict) else {}
     tipo = str((demo.get("tipo_chat") or item.get("tipo_chat") or "pyme")).strip().lower()
     segment = str((demo.get("segment") or "")).strip().lower()
+    education = item.get("education_profile") if isinstance(item.get("education_profile"), dict) else {}
+
+    if education.get("is_education"):
+        return {
+            "preset": "education-campus",
+            "primary_color": "#1D4ED8",
+            "accent_color": "#10B981",
+            "gradient_start": "#0F172A",
+            "gradient_end": "#1D4ED8",
+            "logo_animation": "academy-pulse",
+            "motion_level": "pro",
+            "glassmorphism": True,
+        }
 
     if tipo == "municipio" or "gob" in segment:
         return {
@@ -38,14 +51,44 @@ def _widget_preview_for_rubro(item: dict) -> dict:
     }
 
 
+def _education_profile_for_rubro(item: dict) -> dict:
+    nombre = str(item.get("nombre") or "").strip().lower()
+    clave = str(item.get("clave") or "").strip().lower()
+    descripcion = str(item.get("descripcion") or "").strip().lower()
+    text = " ".join([nombre, clave, descripcion])
+
+    keywords = ("colegio", "escuela", "educacion", "educación", "instituto", "jardin", "jardín")
+    is_education = any(keyword in text for keyword in keywords)
+    if not is_education:
+        return {"is_education": False}
+
+    institution_type = "general"
+    if "privad" in text:
+        institution_type = "private"
+    elif "public" in text or "estatal" in text:
+        institution_type = "public"
+
+    return {
+        "is_education": True,
+        "institution_type": institution_type,
+        "features": [
+            "asistencia_y_inasistencias",
+            "comunicaciones_familiares",
+            "agenda_academica",
+            "tramites_secretaria",
+        ],
+    }
+
+
 @rubros_bp.route("/", methods=["GET"], strict_slashes=False)
 def get_all_rubros():
     """Return the list of rubros."""
     try:
+        demo_mode_enabled = bool(current_app.config.get("ENABLE_DEMO_MODE", False))
         # Filter only public rubros to avoid exposing hidden legacy/test data
         # and to reduce the payload size if many hidden items exist.
         rubros = Rubro.query.filter_by(es_publico=True).order_by(Rubro.nombre.asc()).all()
-        demo_entries = load_demo_rubros(require_owner=False)
+        demo_entries = load_demo_rubros(require_owner=False) if demo_mode_enabled else []
         demo_lookup_by_id = {demo.rubro_id: demo for demo in demo_entries if demo.rubro_id}
         demo_lookup_by_clave = {demo.rubro_clave: demo for demo in demo_entries if demo.rubro_clave}
 
@@ -59,6 +102,7 @@ def get_all_rubros():
                 "es_publico": bool(rubro.es_publico),
                 "padre_id": rubro.padre_id,
             }
+            item["education_profile"] = _education_profile_for_rubro(item)
 
             demo_meta = demo_lookup_by_id.get(rubro.id) or demo_lookup_by_clave.get(
                 rubro.clave
@@ -105,17 +149,19 @@ def get_all_rubros():
                     "demo": demo.to_public_dict(),
                     "is_virtual": True
                 }
+            virtual_item["education_profile"] = _education_profile_for_rubro(virtual_item)
             virtual_item["widget_preview"] = _widget_preview_for_rubro(virtual_item)
             lista_rubros.append(virtual_item)
 
-        # Ensure roots exist if we have orphans and list was empty or partial
-        has_roots = any(r['id'] in (1, 2) for r in lista_rubros if r.get('id'))
-        if not has_roots:
-             # Virtual roots if DB is empty
-             if not any(r['id'] == 1 for r in lista_rubros):
-                 lista_rubros.append({"id": 1, "nombre": "Soluciones para Sector Público", "padre_id": None, "es_publico": True, "is_virtual": True})
-             if not any(r['id'] == 2 for r in lista_rubros):
-                 lista_rubros.append({"id": 2, "nombre": "Soluciones para Empresas", "padre_id": None, "es_publico": True, "is_virtual": True})
+        if demo_mode_enabled:
+            # Ensure roots exist if we have orphans and list was empty or partial
+            has_roots = any(r['id'] in (1, 2) for r in lista_rubros if r.get('id'))
+            if not has_roots:
+                 # Virtual roots if DB is empty
+                 if not any(r['id'] == 1 for r in lista_rubros):
+                     lista_rubros.append({"id": 1, "nombre": "Soluciones para Sector Público", "padre_id": None, "es_publico": True, "is_virtual": True})
+                 if not any(r['id'] == 2 for r in lista_rubros):
+                     lista_rubros.append({"id": 2, "nombre": "Soluciones para Empresas", "padre_id": None, "es_publico": True, "is_virtual": True})
 
         # Check for format=tree
         if request.args.get("format") == "tree":
