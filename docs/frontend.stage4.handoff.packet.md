@@ -70,6 +70,10 @@
    - Contrato: `encuestas.public.v1`
    - `POST /public/encuestas/<slug>/respuestas` ahora devuelve `contract_version: encuestas.public_response.v1`.
 
+10. **Demo mode backend (cambio operativo)**
+   - `ENABLE_DEMO_MODE=false` por defecto.
+   - Sin esta flag NO se devuelven tenants/rubros de demo placeholder.
+
 ---
 
 ## 2) Tipos TS sugeridos (copiar/pegar)

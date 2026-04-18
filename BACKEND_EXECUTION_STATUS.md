@@ -74,6 +74,7 @@ Avance actual de etapa 4:
 - Endpoints analytics críticos (`/analytics/event/schema`, `/analytics/identity/coverage`) usan envelope de error estándar (`shared.error.v1`) para validaciones 400.
 - Contrato de workflow de tickets publicado vía endpoint `GET /tickets/workflow/metadata` (`tickets.workflow.v1`).
 - Contrato canónico de encuestas públicas publicado en `GET /public/encuestas/v1/<slug>` (`encuestas.public.v1`) y ack versionado en respuestas (`encuestas.public_response.v1`).
+- Demo placeholders y rubros virtuales quedaron en modo explícito (`ENABLE_DEMO_MODE=true`); por defecto no se inyectan mocks en runtime.
 
 KPIs objetivo:
 - >95% endpoints críticos usando resolver central de identidad.

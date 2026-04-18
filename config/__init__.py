@@ -461,6 +461,12 @@ class Config:
         "ENABLE_RUNTIME_TENANT_INIT",
         "FLASK_ENABLE_RUNTIME_TENANT_INIT",
     )
+    # Demo placeholders and synthetic catalogs must be explicitly enabled.
+    ENABLE_DEMO_MODE = _env_flag(
+        False,
+        "ENABLE_DEMO_MODE",
+        "FLASK_ENABLE_DEMO_MODE",
+    )
     # Cookie aislada para los tokens emitidos al widget embebido.  Evita que
     # los tokens de corta duración del widget reemplacen la sesión del panel.
     WIDGET_TOKEN_COOKIE_NAME = os.getenv("WIDGET_TOKEN_COOKIE_NAME", "widget_token")

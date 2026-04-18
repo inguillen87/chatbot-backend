@@ -1001,6 +1001,8 @@ def resolve_tenant_endpoint():
 
 def _try_get_demo_tenant(slug):
     """Attempt to return mock tenant info for specific demo slugs if they don't exist."""
+    if not bool(current_app.config.get("ENABLE_DEMO_MODE", False)):
+        return None
     if not slug: return None
     slug = slug.strip().lower()
 
@@ -1107,7 +1109,7 @@ def tenant_profile():
 
         normalized_slug = tenant_slug_original.strip().lower() if tenant_slug_original else None
 
-        # Try Mock Demos first if explicit slug failed
+        # Try Mock Demos first if explicit slug failed and demo mode is enabled
         tenant = _try_get_demo_tenant(normalized_slug)
 
         fallback_tenant = None
@@ -1122,7 +1124,7 @@ def tenant_profile():
             if not fallback_tenant and normalized_slug in {"municipio", "pyme"}:
                 fallback_tenant = TenantProfile.query.order_by(TenantProfile.id.asc()).first()
 
-        if not tenant:
+        if not tenant and bool(current_app.config.get("ENABLE_DEMO_MODE", False)):
             # Fetch public rubros for the demo selector
             public_rubros = Rubro.query.filter_by(es_publico=True).order_by(Rubro.nombre.asc()).all()
             rubros_list = [
@@ -1155,6 +1157,17 @@ def tenant_profile():
                 },
             }
             return _log_widget_public_request(jsonify(payload), tenant)
+
+        if not tenant and not bool(current_app.config.get("ENABLE_DEMO_MODE", False)):
+            payload = {
+                "error": {
+                    "code": 404,
+                    "message": resolution_error or "Tenant no encontrado",
+                }
+            }
+            response = jsonify(payload)
+            response.status_code = 404
+            return _log_widget_public_request(response, tenant)
 
         resolved_from_fallback = True
 

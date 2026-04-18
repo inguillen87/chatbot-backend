@@ -243,6 +243,7 @@ Backend quedó preparado para una estrategia más segura en runtime:
 - `/analytics/identity/coverage` permite `emit_alert_events=1` para registrar eventos `identity_coverage_alert` cuando haya brechas (esta emisión requiere `analytics.admin`).
 - `/admin/analytics/whatsapp-funnel` ahora incluye `unique_contacts` por etapa para correlación de continuidad.
 - `/admin/analytics/whatsapp-funnel` ahora incluye `contract_version` para versionar el contrato de visualización.
+- Modo demo backend ahora es **opt-in** (`ENABLE_DEMO_MODE=true`): sin esa flag no se inyectan tenants/rubros virtuales.
 
 ### Acción frontend inmediata
 1. Leer `X-Contact-Key` y `X-Conversation-Id` de responses críticas y persistir en storage seguro por tenant.
