@@ -188,6 +188,33 @@ export interface PublicSurveyResponseAckV1 {
   contact_key?: string;
   conversation_id?: string;
 }
+
+export interface TenantEducationProfileV1 {
+  is_education: boolean;
+  institution_type: 'public' | 'private' | 'general';
+  modules: string[];
+}
+
+export interface TenantProfilePublicV1 {
+  contract_version: 'public.tenant_profile.v1';
+  tenant: {
+    slug: string;
+    tipo?: string;
+    rubro_profile?: {
+      tenant_type?: string;
+      rubro_label?: string;
+      rubro_slug?: string;
+      education_profile?: TenantEducationProfileV1;
+    };
+  };
+}
+
+export interface WidgetQuickMenuItemV1 {
+  id: string;
+  label: string;
+  intent: string;
+  institution_type?: 'public' | 'private' | 'general';
+}
 ```
 
 ---

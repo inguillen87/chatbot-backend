@@ -264,6 +264,8 @@ Ver `BACKLOG_EJECUTABLE_FULLSTACK_OWNERSHIP.md` para la versión operativa por o
 
 - `docs/analytics.identity_coverage.v1.contract.md`
 - `docs/shared.error.v1.contract.md`
+- `docs/public.tenant_profile.v1.contract.md`
+- `docs/widget.quick_menu.education.v1.contract.md`
 
 Frontend debe tipar clientes API tomando estos contratos como fuente de verdad.
 
@@ -315,6 +317,8 @@ Además, FE-07 (permisos) debe tomar como referencia:
   - `docs/analytics.identity_coverage.v1.contract.md`
   - `docs/shared.error.v1.contract.md`
   - `docs/rbac.capability_matrix.v1.md`
+  - `docs/public.tenant_profile.v1.contract.md`
+  - `docs/widget.quick_menu.education.v1.contract.md`
 
 ### Checklist de envío FE (owner backend)
 

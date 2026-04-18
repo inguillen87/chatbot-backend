@@ -79,6 +79,7 @@ Avance actual de etapa 4:
 - Rubros y tenant-profile incorporan `education_profile` para colegios públicos/privados (módulos operativos sugeridos para FE).
 - `tenant-profile` publica `contract_version: public.tenant_profile.v1` también en respuestas 404 para bootstrap robusto.
 - `widget-config` adapta `quick_menu` para educación (`asistencia`, `comunicados`, `agenda`, `trámites`) según `education_profile`.
+- Publicados contratos operativos para FE: `docs/public.tenant_profile.v1.contract.md` y `docs/widget.quick_menu.education.v1.contract.md`.
 
 KPIs objetivo:
 - >95% endpoints críticos usando resolver central de identidad.
