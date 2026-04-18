@@ -42,10 +42,11 @@ def _widget_preview_for_rubro(item: dict) -> dict:
 def get_all_rubros():
     """Return the list of rubros."""
     try:
+        demo_mode_enabled = bool(current_app.config.get("ENABLE_DEMO_MODE", False))
         # Filter only public rubros to avoid exposing hidden legacy/test data
         # and to reduce the payload size if many hidden items exist.
         rubros = Rubro.query.filter_by(es_publico=True).order_by(Rubro.nombre.asc()).all()
-        demo_entries = load_demo_rubros(require_owner=False)
+        demo_entries = load_demo_rubros(require_owner=False) if demo_mode_enabled else []
         demo_lookup_by_id = {demo.rubro_id: demo for demo in demo_entries if demo.rubro_id}
         demo_lookup_by_clave = {demo.rubro_clave: demo for demo in demo_entries if demo.rubro_clave}
 
@@ -108,14 +109,15 @@ def get_all_rubros():
             virtual_item["widget_preview"] = _widget_preview_for_rubro(virtual_item)
             lista_rubros.append(virtual_item)
 
-        # Ensure roots exist if we have orphans and list was empty or partial
-        has_roots = any(r['id'] in (1, 2) for r in lista_rubros if r.get('id'))
-        if not has_roots:
-             # Virtual roots if DB is empty
-             if not any(r['id'] == 1 for r in lista_rubros):
-                 lista_rubros.append({"id": 1, "nombre": "Soluciones para Sector Público", "padre_id": None, "es_publico": True, "is_virtual": True})
-             if not any(r['id'] == 2 for r in lista_rubros):
-                 lista_rubros.append({"id": 2, "nombre": "Soluciones para Empresas", "padre_id": None, "es_publico": True, "is_virtual": True})
+        if demo_mode_enabled:
+            # Ensure roots exist if we have orphans and list was empty or partial
+            has_roots = any(r['id'] in (1, 2) for r in lista_rubros if r.get('id'))
+            if not has_roots:
+                 # Virtual roots if DB is empty
+                 if not any(r['id'] == 1 for r in lista_rubros):
+                     lista_rubros.append({"id": 1, "nombre": "Soluciones para Sector Público", "padre_id": None, "es_publico": True, "is_virtual": True})
+                 if not any(r['id'] == 2 for r in lista_rubros):
+                     lista_rubros.append({"id": 2, "nombre": "Soluciones para Empresas", "padre_id": None, "es_publico": True, "is_virtual": True})
 
         # Check for format=tree
         if request.args.get("format") == "tree":
