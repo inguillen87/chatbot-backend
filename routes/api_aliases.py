@@ -176,7 +176,11 @@ def auth_demo_catalog_alias():
 
 @api_aliases_bp.route("/auth/demo", methods=["POST", "OPTIONS"], strict_slashes=False)
 def auth_demo_login_alias():
-    return login_demo()
+    request_id = request.headers.get("X-Request-Id") or uuid.uuid4().hex
+    response = login_demo()
+    flask_response = make_response(response)
+    flask_response.headers.setdefault("X-Request-Id", request_id)
+    return flask_response
 
 @api_aliases_bp.route("/perfil", methods=["GET", "PUT", "OPTIONS"], strict_slashes=False)
 def perfil_alias():

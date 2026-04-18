@@ -18,6 +18,15 @@ class AuthDemoModeContractTestCase(unittest.TestCase):
         body = response.get_json()
         self.assertEqual(body["contract_version"], AUTH_DEMO_CONTRACT_VERSION)
         self.assertEqual(body["error"]["code"], 404)
+        self.assertTrue(body.get("request_id"))
+        self.assertTrue(response.headers.get("X-Request-Id"))
+
+    def test_demo_catalog_preserves_request_id_when_demo_mode_disabled(self):
+        response = self.client.get("/auth/demo/catalog", headers={"X-Request-Id": "req-auth-catalog"})
+        self.assertEqual(response.status_code, 404)
+        body = response.get_json()
+        self.assertEqual(body["request_id"], "req-auth-catalog")
+        self.assertEqual(response.headers.get("X-Request-Id"), "req-auth-catalog")
 
     def test_demo_login_returns_404_contract_when_demo_mode_disabled(self):
         response = self.client.post("/auth/demo", json={"rubro": "pyme"})
@@ -25,6 +34,19 @@ class AuthDemoModeContractTestCase(unittest.TestCase):
         body = response.get_json()
         self.assertEqual(body["contract_version"], AUTH_DEMO_CONTRACT_VERSION)
         self.assertEqual(body["error"]["code"], 404)
+        self.assertTrue(body.get("request_id"))
+        self.assertTrue(response.headers.get("X-Request-Id"))
+
+    def test_demo_login_preserves_request_id_when_demo_mode_disabled(self):
+        response = self.client.post(
+            "/auth/demo",
+            json={"rubro": "pyme"},
+            headers={"X-Request-Id": "req-auth-login"},
+        )
+        self.assertEqual(response.status_code, 404)
+        body = response.get_json()
+        self.assertEqual(body["request_id"], "req-auth-login")
+        self.assertEqual(response.headers.get("X-Request-Id"), "req-auth-login")
 
 
 if __name__ == "__main__":
