@@ -398,3 +398,19 @@
   ]
 }
 ```
+
+---
+
+## 17) GET `/auth/demo/catalog` (demo mode OFF)
+
+### Response 404
+
+```json
+{
+  "contract_version": "auth.demo.v1",
+  "error": {
+    "code": 404,
+    "message": "Demo mode disabled"
+  }
+}
+```

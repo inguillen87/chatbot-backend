@@ -81,6 +81,7 @@ Avance actual de etapa 4:
 - `widget-config` adapta `quick_menu` para educación (`asistencia`, `comunicados`, `agenda`, `trámites`) según `education_profile`.
 - Publicados contratos operativos para FE: `docs/public.tenant_profile.v1.contract.md` y `docs/widget.quick_menu.education.v1.contract.md`.
 - `widget-config` publica `contract_version: public.widget_config.v1` y error envelope 404 consistente para bootstrap FE.
+- `/auth/demo/catalog` y `/auth/demo` quedan deshabilitados por defecto (404 `auth.demo.v1`) cuando `ENABLE_DEMO_MODE=false`.
 
 KPIs objetivo:
 - >95% endpoints críticos usando resolver central de identidad.
