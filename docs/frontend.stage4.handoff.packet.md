@@ -74,6 +74,7 @@
    - `ENABLE_DEMO_MODE=false` por defecto.
    - Sin esta flag NO se devuelven tenants/rubros de demo placeholder.
    - `/auth/demo/catalog` y `/auth/demo` retornan 404 con `contract_version: auth.demo.v1`.
+   - Alias `/api/auth/demo/catalog` y `/api/auth/demo` mantienen el mismo contrato 404 (sin fallback 200/503) para evitar drift por prefijos legacy.
 
 11. **Market rewards runtime (ajuste)**
    - `market/cart` conserva `recompensas_demo` para compatibilidad de FE.

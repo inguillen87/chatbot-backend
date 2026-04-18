@@ -414,3 +414,17 @@
   }
 }
 ```
+
+## 18) GET `/api/auth/demo/catalog` (alias legacy, demo mode OFF)
+
+### Response 404
+
+```json
+{
+  "contract_version": "auth.demo.v1",
+  "error": {
+    "code": 404,
+    "message": "Demo mode disabled"
+  }
+}
+```

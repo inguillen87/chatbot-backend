@@ -240,6 +240,7 @@ Backend quedó preparado para una estrategia más segura en runtime:
 - `widget-config`/bootstrap de widget prioriza quick menu educativo (`asistencia`, `comunicados`, `agenda`, `trámites`) cuando el rubro del tenant es colegio/escuela.
 - `widget-config` devuelve `contract_version: public.widget_config.v1` para validación de bootstrap.
 - `/auth/demo/catalog` y `/auth/demo` devuelven 404 contractado (`auth.demo.v1`) cuando `ENABLE_DEMO_MODE=false`.
+- Alias legacy `/api/auth/demo/catalog` y `/api/auth/demo` devuelven el mismo 404 contractado (`auth.demo.v1`) para evitar drift entre clientes con prefijos distintos.
 - Endpoints de tickets empiezan a usar identidad global para `anon_id`, reduciendo diferencias entre header legacy y contexto omnicanal.
 - `tickets/<tipo>/<id>/timeline` puede incluir `contact_key` y `anon_id` para conservar estado en UI realtime.
 - Nuevo endpoint de monitoreo: `/analytics/identity/coverage` (lectura `analytics.read`) para tablero de cobertura omnicanal.

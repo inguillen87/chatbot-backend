@@ -6,6 +6,8 @@ Contrato de disponibilidad de endpoints demo de autenticación.
 
 - `GET /auth/demo/catalog`
 - `POST /auth/demo`
+- `GET /api/auth/demo/catalog` (alias legacy)
+- `POST /api/auth/demo` (alias legacy)
 
 ## Response 404 (demo mode desactivado)
 
@@ -21,4 +23,4 @@ Contrato de disponibilidad de endpoints demo de autenticación.
 
 ## Regla operativa
 
-- Si `ENABLE_DEMO_MODE=false`, ambos endpoints deben responder 404 con este contrato.
+- Si `ENABLE_DEMO_MODE=false`, los endpoints canónicos y los alias `/api/*` deben responder 404 con este contrato.
