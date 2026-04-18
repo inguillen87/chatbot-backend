@@ -59,6 +59,7 @@ class WidgetBootstrapTest(unittest.TestCase):
         data = response.get_json()
 
         self.assertEqual(data["tenant"]["id"], self.tenant.id)
+        self.assertEqual(data.get("contract_version"), "auth.widget_bootstrap.v1")
         self.assertEqual(data["tenant"]["slug"], self.tenant.slug)
         self.assertTrue(data["marketplace"].get("enabled"))
         self.assertIn(self.tenant.slug, data["marketplace"].get("public_market_url", ""))
@@ -69,6 +70,8 @@ class WidgetBootstrapTest(unittest.TestCase):
         self.assertIn("renew_days", data.get("widget", {}))
         self.assertIn("jwks", data)
         self.assertIn("url", data["jwks"])
+        self.assertEqual(data["jwks"].get("alg"), "HS256")
+        self.assertIn("kid", data["jwks"])
 
     def test_widget_bootstrap_requires_tenant(self):
         # In an environment where default tenants exist (via init_tenants),
@@ -93,6 +96,15 @@ class WidgetBootstrapTest(unittest.TestCase):
         self.assertIn("keys", payload)
         self.assertEqual(payload["keys"][0]["kty"], "oct")
         self.assertEqual(payload["keys"][0]["use"], "sig")
+
+    def test_widget_jwks_rs256_without_public_key_returns_empty_keys(self):
+        self.app.config["WIDGET_JWT_ALG"] = "RS256"
+        self.app.config["WIDGET_JWT_PUBLIC_KEY"] = ""
+
+        response = self.client.get("/auth/widget/jwks.json")
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload.get("keys"), [])
 
 
 if __name__ == "__main__":
