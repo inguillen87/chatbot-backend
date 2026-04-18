@@ -48,6 +48,8 @@ from routes.municipal_legacy import (
 from routes.notifications import get_notifications, notifications_options
 from routes.ticket import (
     get_chat_mensajes,
+    get_public_ticket_status,
+    get_ticket_workflow_metadata,
     get_ticket_by_number_public,
     get_ticket_details,
     get_tickets_del_usuario,
@@ -165,24 +167,7 @@ def auth_login_alias():
 @api_aliases_bp.route("/auth/demo/catalog", methods=["GET", "OPTIONS"], strict_slashes=False)
 def auth_demo_catalog_alias():
     request_id = request.headers.get("X-Request-Id") or uuid.uuid4().hex
-    try:
-        response = demo_catalog()
-    except Exception as exc:  # pragma: no cover - defensive fallback
-        current_app.logger.warning("[api_aliases] /auth/demo/catalog alias degraded: %s", exc)
-        response = jsonify(
-            {
-                "demo_login_enabled": False,
-                "demo_login_endpoint": "/auth/demo",
-                "demo_login_methods": ["POST"],
-                "entry_points": [],
-                "quick_login_payload": {"tenant_slug": None},
-                "super_admin_demo": {},
-                "tenant_demos": [],
-                "supported_languages": [],
-                "reason_code": "demo_catalog_unavailable",
-                "request_id": request_id,
-            }
-        ), 200
+    response = demo_catalog()
 
     flask_response = make_response(response)
     flask_response.headers.setdefault("X-Request-Id", request_id)
@@ -191,11 +176,7 @@ def auth_demo_catalog_alias():
 
 @api_aliases_bp.route("/auth/demo", methods=["POST", "OPTIONS"], strict_slashes=False)
 def auth_demo_login_alias():
-    try:
-        return login_demo()
-    except Exception as exc:  # pragma: no cover - defensive fallback
-        current_app.logger.warning("[api_aliases] /auth/demo alias failed: %s", exc)
-        return jsonify({"error": "Demo temporalmente no disponible", "reason_code": "demo_login_unavailable"}), 503
+    return login_demo()
 
 @api_aliases_bp.route("/perfil", methods=["GET", "PUT", "OPTIONS"], strict_slashes=False)
 def perfil_alias():
@@ -352,6 +333,28 @@ def tickets_municipio_por_numero_alias(nro_ticket: str):
     if request.method == "OPTIONS":
         return _options_ok()
     return get_ticket_by_number_public(nro_ticket=nro_ticket)
+
+
+@api_aliases_bp.route(
+    "/tickets/public/status",
+    methods=["GET", "OPTIONS"],
+    strict_slashes=False,
+)
+def tickets_public_status_alias():
+    if request.method == "OPTIONS":
+        return _options_ok()
+    return get_public_ticket_status()
+
+
+@api_aliases_bp.route(
+    "/tickets/workflow/metadata",
+    methods=["GET", "OPTIONS"],
+    strict_slashes=False,
+)
+def tickets_workflow_metadata_alias():
+    if request.method == "OPTIONS":
+        return _options_ok()
+    return get_ticket_workflow_metadata()
 
 
 @api_aliases_bp.route(
