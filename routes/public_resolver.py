@@ -302,11 +302,33 @@ def _tenant_rubro_profile(tenant: TenantProfile) -> dict:
     rubro_slug = getattr(rubro, "nombre", None)
     if isinstance(rubro_slug, str):
         rubro_slug = rubro_slug.strip().lower().replace(" ", "-")
-    return {
+    text = str(rubro_nombre or "").strip().lower()
+    education_keywords = ("colegio", "escuela", "educacion", "educación", "instituto", "jardin", "jardín")
+    is_education = any(keyword in text for keyword in education_keywords)
+    institution_type = "general"
+    if is_education:
+        if "privad" in text:
+            institution_type = "private"
+        elif "public" in text or "estatal" in text:
+            institution_type = "public"
+
+    profile = {
         "tenant_type": tenant.tipo,
         "rubro_label": rubro_nombre,
         "rubro_slug": rubro_slug or (tenant.tipo or "").lower(),
     }
+    if is_education:
+        profile["education_profile"] = {
+            "is_education": True,
+            "institution_type": institution_type,
+            "modules": [
+                "asistencia",
+                "comunicados",
+                "agenda_academica",
+                "tramites_secretaria",
+            ],
+        }
+    return profile
 
 
 def _demo_trial_payload_for_widget(tenant: TenantProfile, cfg: dict) -> dict:

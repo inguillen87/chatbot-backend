@@ -14,6 +14,8 @@ Checklist mínimo para probar despliegue sin sorpresas.
 - `ENABLE_RUNTIME_TENANT_INIT=false`
 - `FLASK_ENABLE_RUNTIME_SCHEMA_SYNC=false`
 - `FLASK_ENABLE_RUNTIME_TENANT_INIT=false`
+- `ENABLE_DEMO_MODE=false`
+- `FLASK_ENABLE_DEMO_MODE=false`
 
 ## Variables recomendadas (widget auth hardening)
 
@@ -38,3 +40,4 @@ Checklist mínimo para probar despliegue sin sorpresas.
 - Logs con `Startup runtime schema sync executed (db.create_all)` en producción.
 - Logs con `Startup runtime tenant init executed` en producción.
 - Backend corriendo con SQLite en Render por falta de `DATABASE_URL`.
+- Respuestas con `is_demo_placeholder=true` en `/tenant-profile` cuando no se esperaba modo demo.

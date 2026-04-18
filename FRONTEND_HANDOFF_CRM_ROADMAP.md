@@ -231,9 +231,11 @@ Backend quedó preparado para una estrategia más segura en runtime:
 - `POST /public/encuestas/<slug>/respuestas` ahora devuelve `contract_version` (`encuestas.public_response.v1`).
 - El backend enriquece telemetry payload con identidad omnicanal cuando está disponible.
 - `market/cart` prioriza `conversation_id` para continuidad de sesión.
+- `market/cart` mantiene `recompensas_demo` por compatibilidad, pero con `mode: "disabled"` y wallet en cero cuando `ENABLE_DEMO_MODE=false`.
 - `public/encuestas/<slug>/respuestas` ahora puede devolver:
   - `contact_key`
   - `conversation_id`
+- `tenant-profile` puede incluir `rubro_profile.education_profile` para colegios públicos/privados (módulos sugeridos de asistencia/comunicados/agenda/trámites).
 - Endpoints de tickets empiezan a usar identidad global para `anon_id`, reduciendo diferencias entre header legacy y contexto omnicanal.
 - `tickets/<tipo>/<id>/timeline` puede incluir `contact_key` y `anon_id` para conservar estado en UI realtime.
 - Nuevo endpoint de monitoreo: `/analytics/identity/coverage` (lectura `analytics.read`) para tablero de cobertura omnicanal.
@@ -249,6 +251,7 @@ Backend quedó preparado para una estrategia más segura en runtime:
 1. Leer `X-Contact-Key` y `X-Conversation-Id` de responses críticas y persistir en storage seguro por tenant.
 2. Reinyectar esos headers en requests subsiguientes para mantener continuidad.
 3. En módulo encuestas, guardar `contact_key`/`conversation_id` devueltos para asociar siguientes interacciones del usuario.
+4. En bootstrap público (`/tenant-profile`), manejar `404` explícito sin fallback demo (estado vacío + CTA soporte).
 
 ## Referencia ejecutable
 

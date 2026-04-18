@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Dict, List, Optional
 
-from flask import Blueprint, abort, jsonify, make_response, request, g, session
+from flask import Blueprint, abort, current_app, jsonify, make_response, request, g, session
 from flask_login import current_user
 from sqlalchemy import func, or_
 
@@ -122,6 +122,26 @@ def _request_channel() -> str:
         or request.headers.get("X-Channel")
         or request.args.get("channel")
     )
+
+
+def _runtime_rewards_profile(tenant_id: int, puntos_en_carrito: float) -> Dict[str, object]:
+    """Return rewards payload without forcing demo fixtures in production."""
+
+    demo_mode_enabled = bool(current_app.config.get("ENABLE_DEMO_MODE", False))
+    if demo_mode_enabled:
+        payload = reward_profile_for_tenant(tenant_id, puntos_en_carrito)
+        payload["mode"] = "demo"
+        return payload
+
+    puntos = round(max(float(puntos_en_carrito or 0.0), 0.0), 2)
+    return {
+        "mode": "disabled",
+        "balance_resumen": {
+            "saldo_disponible": 0.0,
+            "puntos_en_carrito": puntos,
+            "saldo_estimado_post_compra": 0.0,
+        },
+    }
 
 
 def _resolve_contact_key(user: User, session_id: str) -> Optional[str]:
@@ -525,8 +545,8 @@ def _cart_summary(cart: MarketCart, owner: User, *, event: Optional[str] = None)
             "promo_total_carrito": promotion_summary.get("promo_total_carrito_aplicada_info"),
         }
 
-    resumen["recompensas_demo"] = reward_profile_for_tenant(cart.tenant_id, total_points)
-    resumen["wallet"] = resumen["recompensas_demo"].get("balance_resumen")
+    resumen["recompensas_demo"] = _runtime_rewards_profile(cart.tenant_id, total_points)
+    resumen["wallet"] = (resumen.get("recompensas_demo") or {}).get("balance_resumen")
     resumen["checkout_preview"] = {
         "state": "ready" if total_count > 0 else "empty",
         "supports_points": total_points > 0,
@@ -536,7 +556,7 @@ def _cart_summary(cart: MarketCart, owner: User, *, event: Optional[str] = None)
 
 
 def _empty_cart_summary(tenant: TenantProfile) -> Dict[str, object]:
-    rewards = reward_profile_for_tenant(tenant.id, 0.0)
+    rewards = _runtime_rewards_profile(tenant.id, 0.0)
     return {
         "tenant_id": tenant.id,
         "cart_id": None,

@@ -228,6 +228,7 @@ Si se ejecuta este roadmap, chatboc.ar puede evolucionar de una plataforma con m
 - Resolver central de identidad omnicanal y headers estandarizados (`X-Contact-Key`, `X-Conversation-Id`).
 - Endpoint de observabilidad `/analytics/identity/coverage` con alertas operativas.
 - Funnel WhatsApp admin enriquecido con `unique_contacts` y `contract_version`.
+- Demo placeholders/rubros virtuales en runtime desactivados por defecto (modo demo opt-in).
 - Contratos compartidos iniciales publicados:
   - `analytics.identity_coverage.v1`
   - `shared.error.v1`
@@ -238,6 +239,7 @@ Si se ejecuta este roadmap, chatboc.ar puede evolucionar de una plataforma con m
 - Consolidación de OpenAPI por dominio (fuente única de verdad para FE/BE).
 - Separación efectiva de build `portal-app` para reducir acoplamiento con admin.
 - Normalización final de eventos legacy a taxonomía única multi-canal.
+- Eliminar remanentes de demo/mock en módulos legacy (`market`, `catalogo`, resoluciones fallback no críticas).
 
 ## Referencia ejecutable
 

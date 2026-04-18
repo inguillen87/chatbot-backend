@@ -301,3 +301,76 @@
   "conversation_id": "wa_conv_123"
 }
 ```
+
+---
+
+## 13) GET `/tenant-profile` (slug inválido con demo mode OFF)
+
+### Response 404
+
+```json
+{
+  "error": {
+    "code": 404,
+    "message": "Tenant slug 'foo' not found"
+  }
+}
+```
+
+### Nota FE
+
+- Cuando `/tenant-profile` devuelve `404`, no asumir fallback demo ni rubros virtuales.
+- Mostrar estado controlado (“tenant no disponible”) y CTA de reintento/soporte.
+
+---
+
+## 14) GET `/api/market/<slug>/cart` (demo mode OFF)
+
+### Response 200 (fragmento relevante)
+
+```json
+{
+  "recompensas_demo": {
+    "mode": "disabled",
+    "balance_resumen": {
+      "saldo_disponible": 0.0,
+      "puntos_en_carrito": 120.0,
+      "saldo_estimado_post_compra": 0.0
+    }
+  },
+  "wallet": {
+    "saldo_disponible": 0.0,
+    "puntos_en_carrito": 120.0,
+    "saldo_estimado_post_compra": 0.0
+  }
+}
+```
+
+---
+
+## 15) GET `/tenant-profile` (colegio privado/público)
+
+### Response 200 (fragmento relevante)
+
+```json
+{
+  "tenant": {
+    "slug": "colegio-san-martin",
+    "rubro_profile": {
+      "tenant_type": "pyme",
+      "rubro_label": "Colegio Privado San Martín",
+      "rubro_slug": "colegio-privado-san-martín",
+      "education_profile": {
+        "is_education": true,
+        "institution_type": "private",
+        "modules": [
+          "asistencia",
+          "comunicados",
+          "agenda_academica",
+          "tramites_secretaria"
+        ]
+      }
+    }
+  }
+}
+```

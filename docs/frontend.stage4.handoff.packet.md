@@ -74,6 +74,14 @@
    - `ENABLE_DEMO_MODE=false` por defecto.
    - Sin esta flag NO se devuelven tenants/rubros de demo placeholder.
 
+11. **Market rewards runtime (ajuste)**
+   - `market/cart` conserva `recompensas_demo` para compatibilidad de FE.
+   - Con demo mode off, payload devuelve `mode: "disabled"` y wallet sin saldo sintético.
+
+12. **Rubro educación (nuevo)**
+   - `rubros` ahora puede incluir `education_profile` cuando detecta colegios/escuelas.
+   - `tenant-profile` expone `rubro_profile.education_profile` para orquestar UX de módulos educativos.
+
 ---
 
 ## 2) Tipos TS sugeridos (copiar/pegar)

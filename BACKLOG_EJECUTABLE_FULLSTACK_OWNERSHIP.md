@@ -227,6 +227,7 @@ Este orden minimiza riesgo de drift y maximiza valor operativo temprano.
 - [x] Identidad omnicanal base (`contact_key`, `conversation_id`, hooks request/response).
 - [x] Coverage endpoint `/analytics/identity/coverage` con `alerts`, `target_by_channel`, `emit_alert_events`.
 - [x] Funnel WhatsApp admin con `unique_contacts` + `contract_version`.
+- [x] Demo placeholders backend en modo explícito (`ENABLE_DEMO_MODE=true`), desactivados por defecto.
 - [ ] **BE-02** · Enforcement RBAC/ABAC completo en rutas críticas.
 - [ ] **BE-03/BE-04** · Motor de asignación + SLA con trazabilidad integral.
 - [ ] **BE-07** · Contratos de fulfillment/pedidos estabilizados como v1.

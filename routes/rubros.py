@@ -13,6 +13,19 @@ def _widget_preview_for_rubro(item: dict) -> dict:
     demo = item.get("demo") if isinstance(item.get("demo"), dict) else {}
     tipo = str((demo.get("tipo_chat") or item.get("tipo_chat") or "pyme")).strip().lower()
     segment = str((demo.get("segment") or "")).strip().lower()
+    education = item.get("education_profile") if isinstance(item.get("education_profile"), dict) else {}
+
+    if education.get("is_education"):
+        return {
+            "preset": "education-campus",
+            "primary_color": "#1D4ED8",
+            "accent_color": "#10B981",
+            "gradient_start": "#0F172A",
+            "gradient_end": "#1D4ED8",
+            "logo_animation": "academy-pulse",
+            "motion_level": "pro",
+            "glassmorphism": True,
+        }
 
     if tipo == "municipio" or "gob" in segment:
         return {
@@ -38,6 +51,35 @@ def _widget_preview_for_rubro(item: dict) -> dict:
     }
 
 
+def _education_profile_for_rubro(item: dict) -> dict:
+    nombre = str(item.get("nombre") or "").strip().lower()
+    clave = str(item.get("clave") or "").strip().lower()
+    descripcion = str(item.get("descripcion") or "").strip().lower()
+    text = " ".join([nombre, clave, descripcion])
+
+    keywords = ("colegio", "escuela", "educacion", "educación", "instituto", "jardin", "jardín")
+    is_education = any(keyword in text for keyword in keywords)
+    if not is_education:
+        return {"is_education": False}
+
+    institution_type = "general"
+    if "privad" in text:
+        institution_type = "private"
+    elif "public" in text or "estatal" in text:
+        institution_type = "public"
+
+    return {
+        "is_education": True,
+        "institution_type": institution_type,
+        "features": [
+            "asistencia_y_inasistencias",
+            "comunicaciones_familiares",
+            "agenda_academica",
+            "tramites_secretaria",
+        ],
+    }
+
+
 @rubros_bp.route("/", methods=["GET"], strict_slashes=False)
 def get_all_rubros():
     """Return the list of rubros."""
@@ -60,6 +102,7 @@ def get_all_rubros():
                 "es_publico": bool(rubro.es_publico),
                 "padre_id": rubro.padre_id,
             }
+            item["education_profile"] = _education_profile_for_rubro(item)
 
             demo_meta = demo_lookup_by_id.get(rubro.id) or demo_lookup_by_clave.get(
                 rubro.clave
@@ -106,6 +149,7 @@ def get_all_rubros():
                     "demo": demo.to_public_dict(),
                     "is_virtual": True
                 }
+            virtual_item["education_profile"] = _education_profile_for_rubro(virtual_item)
             virtual_item["widget_preview"] = _widget_preview_for_rubro(virtual_item)
             lista_rubros.append(virtual_item)
 
