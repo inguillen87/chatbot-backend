@@ -14,6 +14,7 @@ Contrato de disponibilidad de endpoints demo de autenticación.
 ```json
 {
   "contract_version": "auth.demo.v1",
+  "request_id": "uuid-or-forwarded-request-id",
   "error": {
     "code": 404,
     "message": "Demo mode disabled"
@@ -24,4 +25,4 @@ Contrato de disponibilidad de endpoints demo de autenticación.
 ## Regla operativa
 
 - Si `ENABLE_DEMO_MODE=false`, los endpoints canónicos y los alias `/api/*` deben responder 404 con este contrato.
-- Alias `/api/auth/demo/catalog` y `/api/auth/demo` deben devolver `X-Request-Id` para trazabilidad FE/BE.
+- Endpoints canónicos y alias `/api/*` deben devolver `X-Request-Id` para trazabilidad FE/BE.

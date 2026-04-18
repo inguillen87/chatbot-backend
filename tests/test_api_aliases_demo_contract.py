@@ -20,11 +20,14 @@ class ApiAliasesDemoContractTestCase(unittest.TestCase):
         body = response.get_json()
         self.assertEqual(body["contract_version"], AUTH_DEMO_CONTRACT_VERSION)
         self.assertEqual(body["error"]["code"], 404)
+        self.assertTrue(body.get("request_id"))
         self.assertTrue(response.headers.get("X-Request-Id"))
 
     def test_api_demo_catalog_alias_preserves_request_id_header(self):
         response = self.client.get("/api/auth/demo/catalog", headers={"X-Request-Id": "req-123"})
         self.assertEqual(response.status_code, 404)
+        body = response.get_json()
+        self.assertEqual(body["request_id"], "req-123")
         self.assertEqual(response.headers.get("X-Request-Id"), "req-123")
 
     def test_api_demo_login_alias_uses_same_404_contract(self):
@@ -33,6 +36,7 @@ class ApiAliasesDemoContractTestCase(unittest.TestCase):
         body = response.get_json()
         self.assertEqual(body["contract_version"], AUTH_DEMO_CONTRACT_VERSION)
         self.assertEqual(body["error"]["code"], 404)
+        self.assertTrue(body.get("request_id"))
         self.assertTrue(response.headers.get("X-Request-Id"))
 
     def test_api_demo_login_alias_preserves_request_id_header(self):
@@ -42,6 +46,8 @@ class ApiAliasesDemoContractTestCase(unittest.TestCase):
             headers={"X-Request-Id": "req-login-1"},
         )
         self.assertEqual(response.status_code, 404)
+        body = response.get_json()
+        self.assertEqual(body["request_id"], "req-login-1")
         self.assertEqual(response.headers.get("X-Request-Id"), "req-login-1")
 
 

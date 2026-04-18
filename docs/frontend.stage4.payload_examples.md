@@ -408,12 +408,17 @@
 ```json
 {
   "contract_version": "auth.demo.v1",
+  "request_id": "uuid-or-forwarded-request-id",
   "error": {
     "code": 404,
     "message": "Demo mode disabled"
   }
 }
 ```
+
+### Headers esperados
+
+- `X-Request-Id: <uuid|forwarded>`
 
 ## 18) GET `/api/auth/demo/catalog` (alias legacy, demo mode OFF)
 
@@ -422,6 +427,7 @@
 ```json
 {
   "contract_version": "auth.demo.v1",
+  "request_id": "uuid-or-forwarded-request-id",
   "error": {
     "code": 404,
     "message": "Demo mode disabled"
@@ -440,6 +446,7 @@
 ```json
 {
   "contract_version": "auth.demo.v1",
+  "request_id": "uuid-or-forwarded-request-id",
   "error": {
     "code": 404,
     "message": "Demo mode disabled"

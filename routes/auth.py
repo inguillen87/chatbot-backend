@@ -1163,29 +1163,29 @@ def _build_twilio_trial_instructions() -> dict[str, Any]:
     }
 
 
-def _demo_mode_disabled_response():
-    return (
-        jsonify(
-            {
-                "contract_version": AUTH_DEMO_CONTRACT_VERSION,
-                "error": {
-                    "code": 404,
-                    "message": "Demo mode disabled",
-                },
-            }
-        ),
-        404,
-    )
+def _demo_mode_disabled_response(request_id: str | None = None):
+    payload = {
+        "contract_version": AUTH_DEMO_CONTRACT_VERSION,
+        "error": {
+            "code": 404,
+            "message": "Demo mode disabled",
+        },
+    }
+    if request_id:
+        payload["request_id"] = request_id
+    response = make_response(jsonify(payload), 404)
+    if request_id:
+        response.headers.setdefault("X-Request-Id", request_id)
+    return response
 
 @auth_bp.route('/demo/catalog', methods=['GET', 'OPTIONS'])
 @cross_origin(supports_credentials=True)
 def demo_catalog():
     if request.method == 'OPTIONS':
         return '', 204
-    if not bool(current_app.config.get("ENABLE_DEMO_MODE", False)):
-        return _demo_mode_disabled_response()
-
     request_id = request.headers.get('X-Request-Id') or uuid.uuid4().hex
+    if not bool(current_app.config.get("ENABLE_DEMO_MODE", False)):
+        return _demo_mode_disabled_response(request_id)
     ensure_users = str(request.args.get('ensure_users') or '').strip().lower() in {'1', 'true', 'yes', 'on'}
     now = time.time()
     if not ensure_users:
@@ -1358,8 +1358,9 @@ def demo_catalog():
 def login_demo():
     if request.method == 'OPTIONS':
         return '', 204
+    request_id = request.headers.get('X-Request-Id') or uuid.uuid4().hex
     if not bool(current_app.config.get("ENABLE_DEMO_MODE", False)):
-        return _demo_mode_disabled_response()
+        return _demo_mode_disabled_response(request_id)
 
     data = request.get_json(silent=True) or {}
     requested_sector = str(data.get("sector") or "").strip().lower()
