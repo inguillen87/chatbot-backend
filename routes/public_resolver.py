@@ -26,6 +26,7 @@ from services.demo_experience_contract import build_demo_experience_contract
 public_resolver_bp = Blueprint("public_resolver_bp", __name__, url_prefix="/api/public")
 public_municipios_bp = Blueprint("public_municipios_bp", __name__)
 TENANT_PROFILE_CONTRACT_VERSION = "public.tenant_profile.v1"
+WIDGET_CONFIG_CONTRACT_VERSION = "public.widget_config.v1"
 
 
 _REALTIME_SESSION_RATE_LIMIT_WINDOW_SECONDS = 60
@@ -1335,12 +1336,21 @@ def widget_config():
         # Try Mock Demos first
         tenant = _try_get_demo_tenant(tenant_slug)
         if not tenant:
-            return jsonify({"error": str(exc)}), 404
+            return (
+                jsonify(
+                    {
+                        "contract_version": WIDGET_CONFIG_CONTRACT_VERSION,
+                        "error": {"code": 404, "message": str(exc)},
+                    }
+                ),
+                404,
+            )
 
     is_integration_preview = "/integracion" in (request.headers.get("Referer", "") or "")
 
     widget_payload = _build_widget_embed_payload(tenant, widget_token)
     payload = {
+        "contract_version": WIDGET_CONFIG_CONTRACT_VERSION,
         "tenant": tenant.to_public_dict(),
         "widget": widget_payload,
         "builder_config": widget_payload.get("builder_config", {}),

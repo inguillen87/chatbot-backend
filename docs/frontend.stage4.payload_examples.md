@@ -384,6 +384,7 @@
 
 ```json
 {
+  "contract_version": "public.widget_config.v1",
   "quick_menu": [
     { "id": "menu_asistencia", "label": "Asistencia", "intent": "asistencia_alumno" },
     { "id": "menu_comunicados", "label": "Comunicados", "intent": "comunicados_familias" },
@@ -395,5 +396,21 @@
       "institution_type": "public"
     }
   ]
+}
+```
+
+---
+
+## 17) GET `/auth/demo/catalog` (demo mode OFF)
+
+### Response 404
+
+```json
+{
+  "contract_version": "auth.demo.v1",
+  "error": {
+    "code": 404,
+    "message": "Demo mode disabled"
+  }
 }
 ```

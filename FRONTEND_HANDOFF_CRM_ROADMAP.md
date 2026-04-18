@@ -238,6 +238,8 @@ Backend quedó preparado para una estrategia más segura en runtime:
 - `tenant-profile` puede incluir `rubro_profile.education_profile` para colegios públicos/privados (módulos sugeridos de asistencia/comunicados/agenda/trámites).
 - `tenant-profile` ahora devuelve `contract_version: public.tenant_profile.v1` para tipado/validación de bootstrap.
 - `widget-config`/bootstrap de widget prioriza quick menu educativo (`asistencia`, `comunicados`, `agenda`, `trámites`) cuando el rubro del tenant es colegio/escuela.
+- `widget-config` devuelve `contract_version: public.widget_config.v1` para validación de bootstrap.
+- `/auth/demo/catalog` y `/auth/demo` devuelven 404 contractado (`auth.demo.v1`) cuando `ENABLE_DEMO_MODE=false`.
 - Endpoints de tickets empiezan a usar identidad global para `anon_id`, reduciendo diferencias entre header legacy y contexto omnicanal.
 - `tickets/<tipo>/<id>/timeline` puede incluir `contact_key` y `anon_id` para conservar estado en UI realtime.
 - Nuevo endpoint de monitoreo: `/analytics/identity/coverage` (lectura `analytics.read`) para tablero de cobertura omnicanal.
@@ -266,6 +268,8 @@ Ver `BACKLOG_EJECUTABLE_FULLSTACK_OWNERSHIP.md` para la versión operativa por o
 - `docs/shared.error.v1.contract.md`
 - `docs/public.tenant_profile.v1.contract.md`
 - `docs/widget.quick_menu.education.v1.contract.md`
+- `docs/public.widget_config.v1.contract.md`
+- `docs/auth.demo.v1.contract.md`
 
 Frontend debe tipar clientes API tomando estos contratos como fuente de verdad.
 
@@ -319,6 +323,8 @@ Además, FE-07 (permisos) debe tomar como referencia:
   - `docs/rbac.capability_matrix.v1.md`
   - `docs/public.tenant_profile.v1.contract.md`
   - `docs/widget.quick_menu.education.v1.contract.md`
+  - `docs/public.widget_config.v1.contract.md`
+  - `docs/auth.demo.v1.contract.md`
 
 ### Checklist de envío FE (owner backend)
 
