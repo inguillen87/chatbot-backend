@@ -65,7 +65,7 @@ def _education_profile_for_rubro(item: dict) -> dict:
     institution_type = "general"
     if "privad" in text:
         institution_type = "private"
-    elif "public" in text or "estatal" in text:
+    elif "public" in text or "públic" in text or "estatal" in text:
         institution_type = "public"
 
     return {

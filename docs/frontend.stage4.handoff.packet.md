@@ -81,6 +81,8 @@
 12. **Rubro educación (nuevo)**
    - `rubros` ahora puede incluir `education_profile` cuando detecta colegios/escuelas.
    - `tenant-profile` expone `rubro_profile.education_profile` para orquestar UX de módulos educativos.
+   - `tenant-profile` ahora incluye `contract_version: public.tenant_profile.v1`.
+   - `widget-config` devuelve `quick_menu` educativo cuando el tenant es colegio/escuela.
 
 ---
 

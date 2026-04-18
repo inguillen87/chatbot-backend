@@ -25,6 +25,7 @@ from services.demo_experience_contract import build_demo_experience_contract
 
 public_resolver_bp = Blueprint("public_resolver_bp", __name__, url_prefix="/api/public")
 public_municipios_bp = Blueprint("public_municipios_bp", __name__)
+TENANT_PROFILE_CONTRACT_VERSION = "public.tenant_profile.v1"
 
 
 _REALTIME_SESSION_RATE_LIMIT_WINDOW_SECONDS = 60
@@ -309,7 +310,7 @@ def _tenant_rubro_profile(tenant: TenantProfile) -> dict:
     if is_education:
         if "privad" in text:
             institution_type = "private"
-        elif "public" in text or "estatal" in text:
+        elif "public" in text or "públic" in text or "estatal" in text:
             institution_type = "public"
 
     profile = {
@@ -356,6 +357,21 @@ def _demo_trial_payload_for_widget(tenant: TenantProfile, cfg: dict) -> dict:
 
 def _quick_menu_for_widget(tenant: TenantProfile) -> list[dict]:
     tipo = (tenant.tipo or "").strip().lower()
+    rubro_profile = _tenant_rubro_profile(tenant)
+    education = rubro_profile.get("education_profile") if isinstance(rubro_profile, dict) else None
+    if isinstance(education, dict) and education.get("is_education"):
+        institution_type = education.get("institution_type") or "general"
+        return [
+            {"id": "menu_asistencia", "label": "Asistencia", "intent": "asistencia_alumno"},
+            {"id": "menu_comunicados", "label": "Comunicados", "intent": "comunicados_familias"},
+            {"id": "menu_agenda", "label": "Agenda académica", "intent": "agenda_academica"},
+            {
+                "id": "menu_tramites",
+                "label": "Trámites secretaría",
+                "intent": "tramites_secretaria",
+                "institution_type": institution_type,
+            },
+        ]
     if tipo == "municipio":
         return [
             {"id": "menu_reclamo", "label": "Crear reclamo", "intent": "iniciar_reclamo"},
@@ -1172,6 +1188,7 @@ def tenant_profile():
                 "is_demo_placeholder": True
             }
             payload = {
+                "contract_version": TENANT_PROFILE_CONTRACT_VERSION,
                 "tenant": placeholder,
                 "warning": {
                     "message": resolution_error,
@@ -1182,6 +1199,7 @@ def tenant_profile():
 
         if not tenant and not bool(current_app.config.get("ENABLE_DEMO_MODE", False)):
             payload = {
+                "contract_version": TENANT_PROFILE_CONTRACT_VERSION,
                 "error": {
                     "code": 404,
                     "message": resolution_error or "Tenant no encontrado",
@@ -1245,9 +1263,17 @@ def tenant_profile():
     canonical_widget_token = _canonical_widget_token(tenant, widget_token)
 
     if explicit_slug_failure:
-        return jsonify({"error": resolution_error}), 404
+        return jsonify(
+            {
+                "contract_version": TENANT_PROFILE_CONTRACT_VERSION,
+                "error": {"code": 404, "message": resolution_error or "Tenant no encontrado"},
+            }
+        ), 404
 
-    payload = {"tenant": tenant_info}
+    payload = {
+        "contract_version": TENANT_PROFILE_CONTRACT_VERSION,
+        "tenant": tenant_info,
+    }
     if canonical_widget_token:
         payload["widget_token"] = canonical_widget_token
         payload["widget_token_cookie_name"] = current_app.config.get(

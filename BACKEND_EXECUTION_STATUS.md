@@ -77,6 +77,8 @@ Avance actual de etapa 4:
 - Demo placeholders y rubros virtuales quedaron en modo explícito (`ENABLE_DEMO_MODE=true`); por defecto no se inyectan mocks en runtime.
 - `market/cart` evita saldo sintético por defecto: `recompensas_demo.mode="disabled"` si `ENABLE_DEMO_MODE=false`.
 - Rubros y tenant-profile incorporan `education_profile` para colegios públicos/privados (módulos operativos sugeridos para FE).
+- `tenant-profile` publica `contract_version: public.tenant_profile.v1` también en respuestas 404 para bootstrap robusto.
+- `widget-config` adapta `quick_menu` para educación (`asistencia`, `comunicados`, `agenda`, `trámites`) según `education_profile`.
 
 KPIs objetivo:
 - >95% endpoints críticos usando resolver central de identidad.

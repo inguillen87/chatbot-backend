@@ -354,6 +354,7 @@
 
 ```json
 {
+  "contract_version": "public.tenant_profile.v1",
   "tenant": {
     "slug": "colegio-san-martin",
     "rubro_profile": {
@@ -372,5 +373,27 @@
       }
     }
   }
+}
+```
+
+---
+
+## 16) GET `/api/public/widget-config` (quick menu educación)
+
+### Response 200 (fragmento relevante)
+
+```json
+{
+  "quick_menu": [
+    { "id": "menu_asistencia", "label": "Asistencia", "intent": "asistencia_alumno" },
+    { "id": "menu_comunicados", "label": "Comunicados", "intent": "comunicados_familias" },
+    { "id": "menu_agenda", "label": "Agenda académica", "intent": "agenda_academica" },
+    {
+      "id": "menu_tramites",
+      "label": "Trámites secretaría",
+      "intent": "tramites_secretaria",
+      "institution_type": "public"
+    }
+  ]
 }
 ```
