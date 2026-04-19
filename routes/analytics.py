@@ -118,13 +118,20 @@ def _build_event_payload_with_identity(payload: dict) -> dict:
 
     identity = _current_contact_identity()
     if identity:
+        def _is_missing(value) -> bool:
+            if value is None:
+                return True
+            if isinstance(value, str) and not value.strip():
+                return True
+            return False
+
         for key, source_key in (
             ("contact_key", "contact_key"),
             ("conversation_id", "conversation_id"),
             ("phone_e164", "phone_e164"),
             ("identity_source", "source"),
         ):
-            if enriched_payload.get(key) is None and identity.get(source_key) is not None:
+            if _is_missing(enriched_payload.get(key)) and identity.get(source_key) is not None:
                 enriched_payload[key] = identity.get(source_key)
 
     # Also honor direct API payload hints when provided by trusted callers.

@@ -403,7 +403,9 @@ def _metadata_with_contact_identity(
     def _set_if_missing_or_none(key: str, value: Any):
         if value is None:
             return
-        if base_metadata.get(key) is None:
+        current_value = base_metadata.get(key)
+        is_missing = current_value is None or (isinstance(current_value, str) and not current_value.strip())
+        if is_missing:
             base_metadata[key] = value
 
     _set_if_missing_or_none("contact_key", contact_key)

@@ -27,7 +27,7 @@
      - `contact_key`
      - `conversation_id`
      - `identity_source`
-   - Si FE envía `contact_key`/`conversation_id` en `null`, backend los rellena con identidad resuelta del request cuando exista.
+   - Si FE envía `contact_key`/`conversation_id` en `null` o vacío (`""`), backend los rellena con identidad resuelta del request cuando exista.
 
 3.1 **Analytics event schema (catálogo canónico)**
    - `GET /analytics/event/schema?tenant_id=<id>`
@@ -72,7 +72,7 @@
    - `GET /public/encuestas/v1/<slug>`
    - Contrato: `encuestas.public.v1`
    - `POST /public/encuestas/<slug>/respuestas` ahora devuelve `contract_version: encuestas.public_response.v1`.
-   - Metadata con `contact_key`/`conversation_id` en `null` se normaliza con identidad resuelta si está disponible.
+   - Metadata con `contact_key`/`conversation_id` en `null` o vacío (`""`) se normaliza con identidad resuelta si está disponible.
 
 10. **Demo mode backend (cambio operativo)**
    - `ENABLE_DEMO_MODE=false` por defecto.
@@ -248,7 +248,7 @@ export interface PublicWidgetConfigV1 {
 - Si existe `X-Conversation-Id`, se reinyecta en market/tickets/encuestas/analytics.
 - Dashboard de coverage muestra banner cuando `alert_count > 0`.
 - Ingest de analytics valida `contract_version === 'analytics.event_ingest.v1'`.
-- Ingest de analytics y submit de encuestas no deben persistir `contact_key`/`conversation_id` en `null` si backend resolvió identidad.
+- Ingest de analytics y submit de encuestas no deben persistir `contact_key`/`conversation_id` en `null`/`""` si backend resolvió identidad.
 - Configurador de eventos valida catálogo desde `/analytics/event/schema`.
 - Vista funnel valida `contract_version` antes de renderizar.
 - Pantalla de tracking público maneja `tickets.public_status.v1` en éxito/error (`400/404`) y muestra `request_id` en soporte.

@@ -140,7 +140,7 @@
 }
 ```
 
-> Nota: si FE envía `contact_key` o `conversation_id` en `null`, backend intenta reemplazarlos con identidad resuelta del request.
+> Nota: si FE envía `contact_key` o `conversation_id` en `null` o `""`, backend intenta reemplazarlos con identidad resuelta del request.
 
 ---
 
@@ -340,7 +340,7 @@
 }
 ```
 
-> Nota: metadata de encuesta con `contact_key`/`conversation_id` en `null` se completa con identidad resuelta cuando existe.
+> Nota: metadata de encuesta con `contact_key`/`conversation_id` en `null` o `""` se completa con identidad resuelta cuando existe.
 
 ---
 
