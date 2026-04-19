@@ -4,7 +4,7 @@ import secrets
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional
 
-from flask import Blueprint, jsonify, request, current_app
+from flask import Blueprint, g, jsonify, request, current_app
 
 from models import (
     db,
@@ -23,6 +23,8 @@ from utils.auth_helpers import (
 
 encuestas_admin_bp = Blueprint("encuestas_admin", __name__, url_prefix="/admin/encuestas")
 encuestas_public_bp = Blueprint("encuestas_public", __name__, url_prefix="/public/encuestas")
+ENCUESTAS_PUBLIC_CONTRACT_VERSION = "encuestas.public.v1"
+ENCUESTAS_PUBLIC_RESPONSE_CONTRACT_VERSION = "encuestas.public_response.v1"
 
 
 @encuestas_admin_bp.route("", methods=["OPTIONS"], provide_automatic_options=False)
@@ -356,6 +358,21 @@ def encuesta_publica(slug: str):
     return jsonify(_serialize_survey(encuesta))
 
 
+def _serialize_public_survey_v1(encuesta: PublicSurvey) -> Dict[str, Any]:
+    return {
+        "contract_version": ENCUESTAS_PUBLIC_CONTRACT_VERSION,
+        "encuesta": _serialize_survey(encuesta),
+    }
+
+
+@encuestas_public_bp.route("/v1/<string:slug>", methods=["GET"])
+def encuesta_publica_v1(slug: str):
+    encuesta = PublicSurvey.query.filter_by(slug=slug, estado="published").first()
+    if not encuesta:
+        return jsonify({"error": "Encuesta no encontrada"}), 404
+    return jsonify(_serialize_public_survey_v1(encuesta))
+
+
 def _extract_answer_question_id(item: Dict[str, Any]) -> Optional[int]:
     for key in ("question_id", "pregunta_id", "id"):
         if item.get(key) is not None:
@@ -365,6 +382,41 @@ def _extract_answer_question_id(item: Dict[str, Any]) -> Optional[int]:
                 return None
     return None
 
+
+
+
+def _metadata_with_contact_identity(
+    metadata: Optional[Dict[str, Any]],
+    *,
+    payload: Dict[str, Any],
+    anon_id: Optional[str],
+) -> Dict[str, Any]:
+    base_metadata = dict(metadata or {})
+    identity = getattr(g, "contact_identity", None)
+    if not isinstance(identity, dict):
+        identity = {}
+
+    contact_key = identity.get("contact_key") or payload.get("contact_key")
+    conversation_id = identity.get("conversation_id") or payload.get("conversation_id") or payload.get("conversationId")
+    phone_e164 = identity.get("phone_e164")
+
+    def _set_if_missing_or_none(key: str, value: Any):
+        if value is None:
+            return
+        if base_metadata.get(key) is None:
+            base_metadata[key] = value
+
+    _set_if_missing_or_none("contact_key", contact_key)
+    _set_if_missing_or_none("conversation_id", conversation_id)
+    _set_if_missing_or_none("phone_e164", phone_e164)
+
+    # Keep compatibility with existing downstream processors that still read anon_id first.
+    _set_if_missing_or_none("anon_id", anon_id)
+
+    identity_source = identity.get("source")
+    _set_if_missing_or_none("identity_source", identity_source)
+
+    return base_metadata
 
 def _parse_answers(payload: Dict[str, Any], encuesta: PublicSurvey) -> List[Dict[str, Any]]:
     raw_answers = payload.get("answers") or payload.get("respuestas")
@@ -480,11 +532,18 @@ def enviar_respuesta(slug: str):
     payload = request.get_json(force=True, silent=True) or {}
     respuestas = _parse_answers(payload, encuesta)
 
-    anon_id = payload.get("anon_id") or payload.get("anonId") or payload.get("respondent_id")
+    identity = getattr(g, "contact_identity", None) if hasattr(g, "contact_identity") else {}
+    anon_id = (
+        payload.get("anon_id")
+        or payload.get("anonId")
+        or payload.get("respondent_id")
+        or (identity.get("anon_id") if isinstance(identity, dict) else None)
+    )
     if not anon_id:
         anon_id = get_or_create_anon_id()
 
     metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else None
+    metadata = _metadata_with_contact_identity(metadata, payload=payload, anon_id=anon_id)
 
     try:
         response = _store_answers(encuesta, respuestas, anon_id=anon_id, metadata=metadata)
@@ -493,5 +552,11 @@ def enviar_respuesta(slug: str):
         return jsonify({"error": str(exc)}), 400
 
     db.session.commit()
-    return jsonify({"success": True, "respuesta_id": response.id, "anon_id": anon_id}), 201
-
+    return jsonify({
+        "contract_version": ENCUESTAS_PUBLIC_RESPONSE_CONTRACT_VERSION,
+        "success": True,
+        "respuesta_id": response.id,
+        "anon_id": anon_id,
+        "contact_key": metadata.get("contact_key"),
+        "conversation_id": metadata.get("conversation_id"),
+    }), 201
