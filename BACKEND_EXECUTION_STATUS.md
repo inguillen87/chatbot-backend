@@ -83,6 +83,10 @@ Avance actual de etapa 4:
 - `widget-config` publica `contract_version: public.widget_config.v1` y error envelope 404 consistente para bootstrap FE.
 - `/auth/demo/catalog` y `/auth/demo` quedan deshabilitados por defecto (404 `auth.demo.v1`) cuando `ENABLE_DEMO_MODE=false`.
 - Alias `/api/auth/demo/catalog` y `/api/auth/demo` mantienen paridad de contrato (`auth.demo.v1`) para clientes legacy.
+- Ingest de analytics normaliza payloads con `contact_key`/`conversation_id` en `null` reemplazándolos por identidad resuelta cuando está disponible.
+- Metadata de encuestas públicas normaliza `contact_key`/`conversation_id` en `null` con identidad resuelta del request.
+- `GET /tickets/public/status` y `GET /tickets/workflow/metadata` exponen `request_id` + header `X-Request-Id` para trazabilidad FE/BE.
+- `GET /tickets/public/status` publica envelope de error versionado (`tickets.public_status.v1`) también para `400/404`.
 
 KPIs objetivo:
 - >95% endpoints críticos usando resolver central de identidad.

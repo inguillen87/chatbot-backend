@@ -1130,33 +1130,76 @@ def _public_tracking_payload(ticket: MunicipioTicket) -> dict:
     }
 
 
+def _ticket_contract_response(payload: dict, status_code: int = 200, request_id: str | None = None):
+    rid = request_id or (request.headers.get("X-Request-Id") or uuid.uuid4().hex)
+    merged_payload = {
+        **payload,
+        "request_id": rid,
+    }
+    response = jsonify(merged_payload)
+    response.status_code = status_code
+    response.headers.setdefault("X-Request-Id", rid)
+    return response
+
+
 @ticket_bp.route('/tickets/public/status', methods=['GET'])
 def get_public_ticket_status():
     """Lookup ticket status by tracking code + PIN without exposing full details."""
 
+    request_id = request.headers.get("X-Request-Id") or uuid.uuid4().hex
     code = (request.args.get("code") or request.args.get("nro_ticket") or "").strip().upper()
     pin = (request.args.get("pin") or "").strip()
 
     if not code:
-        return jsonify({"error": "code requerido."}), 400
+        return _ticket_contract_response(
+            {
+                "contract_version": "tickets.public_status.v1",
+                "error": {"code": 400, "message": "code requerido."},
+            },
+            400,
+            request_id,
+        )
     if not pin:
-        return jsonify({"error": "pin requerido."}), 400
+        return _ticket_contract_response(
+            {
+                "contract_version": "tickets.public_status.v1",
+                "error": {"code": 400, "message": "pin requerido."},
+            },
+            400,
+            request_id,
+        )
 
     normalized = code[2:] if code.startswith("M-") else code
     token = request.args.get("recaptcha_token")
     if token and token.lower() not in ("undefined", "null"):
         if not verify_recaptcha(token):
-            return jsonify({"error": "Verificación reCAPTCHA fallida."}), 400
+            return _ticket_contract_response(
+                {
+                    "contract_version": "tickets.public_status.v1",
+                    "error": {"code": 400, "message": "Verificación reCAPTCHA fallida."},
+                },
+                400,
+                request_id,
+            )
 
     ticket = MunicipioTicket.query.filter_by(nro_ticket=normalized, consulta_pin=pin).first()
     if not ticket:
-        return jsonify({"error": "Ticket no encontrado."}), 404
+        return _ticket_contract_response(
+            {
+                "contract_version": "tickets.public_status.v1",
+                "error": {"code": 404, "message": "Ticket no encontrado."},
+            },
+            404,
+            request_id,
+        )
 
-    return jsonify(
+    return _ticket_contract_response(
         {
             "contract_version": "tickets.public_status.v1",
             "ticket": _public_tracking_payload(ticket),
-        }
+        },
+        200,
+        request_id,
     )
 
 
@@ -1164,13 +1207,13 @@ def get_public_ticket_status():
 def get_ticket_workflow_metadata():
     """Expose canonical ticket state machine metadata for FE alignment."""
 
-    return jsonify(
+    return _ticket_contract_response(
         {
             "contract_version": TICKET_WORKFLOW_CONTRACT_VERSION,
             "states": list(TICKET_ALLOWED_STATES),
             "transitions": TICKET_ALLOWED_TRANSITIONS,
             "final_states": ["cerrado"],
-        }
+        },
     )
 
 @ticket_bp.route('/tickets/municipio/<int:ticket_id>', methods=['GET'])

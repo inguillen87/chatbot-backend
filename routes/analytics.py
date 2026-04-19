@@ -118,10 +118,14 @@ def _build_event_payload_with_identity(payload: dict) -> dict:
 
     identity = _current_contact_identity()
     if identity:
-        enriched_payload.setdefault("contact_key", identity.get("contact_key"))
-        enriched_payload.setdefault("conversation_id", identity.get("conversation_id"))
-        enriched_payload.setdefault("phone_e164", identity.get("phone_e164"))
-        enriched_payload.setdefault("identity_source", identity.get("source"))
+        for key, source_key in (
+            ("contact_key", "contact_key"),
+            ("conversation_id", "conversation_id"),
+            ("phone_e164", "phone_e164"),
+            ("identity_source", "source"),
+        ):
+            if enriched_payload.get(key) is None and identity.get(source_key) is not None:
+                enriched_payload[key] = identity.get(source_key)
 
     # Also honor direct API payload hints when provided by trusted callers.
     if payload.get("contact_key"):

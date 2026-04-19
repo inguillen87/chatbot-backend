@@ -42,6 +42,30 @@ class AnalyticsIdentityPayloadTestCase(unittest.TestCase):
         self.assertEqual(result["contact_key"], "explicit-key")
         self.assertEqual(result["conversation_id"], "explicit-conv")
 
+    def test_null_payload_identity_fields_are_replaced_with_resolved_identity(self):
+        with self.app.test_request_context("/analytics/event", method="POST"):
+            g.contact_identity = {
+                "contact_key": "resolved-key",
+                "conversation_id": "resolved-conv",
+                "phone_e164": "+5491110000000",
+                "source": "resolver",
+            }
+            result = _build_event_payload_with_identity(
+                {
+                    "payload": {
+                        "contact_key": None,
+                        "conversation_id": None,
+                        "phone_e164": None,
+                        "identity_source": None,
+                    }
+                }
+            )
+
+        self.assertEqual(result["contact_key"], "resolved-key")
+        self.assertEqual(result["conversation_id"], "resolved-conv")
+        self.assertEqual(result["phone_e164"], "+5491110000000")
+        self.assertEqual(result["identity_source"], "resolver")
+
 
 if __name__ == "__main__":
     unittest.main()

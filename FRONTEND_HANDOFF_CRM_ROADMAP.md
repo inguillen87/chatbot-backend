@@ -241,8 +241,11 @@ Backend quedó preparado para una estrategia más segura en runtime:
 - `widget-config` devuelve `contract_version: public.widget_config.v1` para validación de bootstrap.
 - `/auth/demo/catalog` y `/auth/demo` devuelven 404 contractado (`auth.demo.v1`) cuando `ENABLE_DEMO_MODE=false`.
 - Alias legacy `/api/auth/demo/catalog` y `/api/auth/demo` devuelven el mismo 404 contractado (`auth.demo.v1`) para evitar drift entre clientes con prefijos distintos.
+- Ingest de analytics reemplaza `contact_key`/`conversation_id` en `null` por identidad resuelta del request para no perder correlación omnicanal.
+- Metadata de encuestas reemplaza `contact_key`/`conversation_id` en `null` por identidad resuelta cuando exista.
 - Endpoints de tickets empiezan a usar identidad global para `anon_id`, reduciendo diferencias entre header legacy y contexto omnicanal.
 - `tickets/<tipo>/<id>/timeline` puede incluir `contact_key` y `anon_id` para conservar estado en UI realtime.
+- `tickets/public/status` y `tickets/workflow/metadata` incluyen `request_id` + header `X-Request-Id`; además `tickets/public/status` devuelve envelope de error contractado (`400/404`).
 - Nuevo endpoint de monitoreo: `/analytics/identity/coverage` (lectura `analytics.read`) para tablero de cobertura omnicanal.
 - `/analytics/identity/coverage` acepta `target_pct` y devuelve `slo_status` (`ok` | `below_target`).
 - `/analytics/identity/coverage` ahora incluye `alerts` y `alert_count` para disparar banners de calidad de datos.

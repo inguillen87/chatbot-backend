@@ -42,6 +42,32 @@ class EncuestasContactIdentityTestCase(unittest.TestCase):
         self.assertEqual(result["contact_key"], "payload-key")
         self.assertEqual(result["conversation_id"], "payload-conv")
 
+    def test_null_metadata_identity_fields_are_replaced_with_resolved_identity(self):
+        with self.app.test_request_context("/public/encuestas/demo/respuestas", method="POST"):
+            g.contact_identity = {
+                "contact_key": "resolved-ck",
+                "conversation_id": "resolved-conv",
+                "phone_e164": "+5491111111111",
+                "source": "contact_key",
+            }
+            result = _metadata_with_contact_identity(
+                {
+                    "contact_key": None,
+                    "conversation_id": None,
+                    "phone_e164": None,
+                    "identity_source": None,
+                    "anon_id": None,
+                },
+                payload={},
+                anon_id="anon-from-request",
+            )
+
+        self.assertEqual(result["contact_key"], "resolved-ck")
+        self.assertEqual(result["conversation_id"], "resolved-conv")
+        self.assertEqual(result["phone_e164"], "+5491111111111")
+        self.assertEqual(result["identity_source"], "contact_key")
+        self.assertEqual(result["anon_id"], "anon-from-request")
+
 
 if __name__ == "__main__":
     unittest.main()

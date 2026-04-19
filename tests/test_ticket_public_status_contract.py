@@ -32,6 +32,10 @@ class _DummyMunicipioTicket:
     query = _DummyQuery(_DummyTicket())
 
 
+class _DummyMunicipioTicketMissing:
+    query = _DummyQuery(None)
+
+
 class TicketPublicStatusContractTestCase(unittest.TestCase):
     def setUp(self):
         self.app = Flask(__name__)
@@ -41,6 +45,20 @@ class TicketPublicStatusContractTestCase(unittest.TestCase):
     def test_public_status_requires_code_and_pin(self):
         response = self.client.get("/tickets/public/status")
         self.assertEqual(response.status_code, 400)
+        body = response.get_json()
+        self.assertEqual(body["contract_version"], "tickets.public_status.v1")
+        self.assertEqual(body["error"]["code"], 400)
+        self.assertTrue(body.get("request_id"))
+        self.assertTrue(response.headers.get("X-Request-Id"))
+
+    def test_public_status_requires_pin(self):
+        response = self.client.get("/tickets/public/status?code=M-12345")
+        self.assertEqual(response.status_code, 400)
+        body = response.get_json()
+        self.assertEqual(body["contract_version"], "tickets.public_status.v1")
+        self.assertEqual(body["error"]["code"], 400)
+        self.assertEqual(body["error"]["message"], "pin requerido.")
+        self.assertTrue(body.get("request_id"))
 
     def test_public_status_contract(self):
         with patch("routes.ticket.MunicipioTicket", _DummyMunicipioTicket), patch(
@@ -51,8 +69,35 @@ class TicketPublicStatusContractTestCase(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         body = response.get_json()
         self.assertEqual(body["contract_version"], "tickets.public_status.v1")
+        self.assertTrue(body.get("request_id"))
+        self.assertTrue(response.headers.get("X-Request-Id"))
         self.assertEqual(body["ticket"]["nro_ticket"], "M-12345")
         self.assertEqual(body["ticket"]["estado"], "en_proceso")
+
+    def test_public_status_preserves_request_id_header(self):
+        with patch("routes.ticket.MunicipioTicket", _DummyMunicipioTicket), patch(
+            "routes.ticket.verify_recaptcha", return_value=True
+        ):
+            response = self.client.get(
+                "/tickets/public/status?code=M-12345&pin=9999",
+                headers={"X-Request-Id": "req-ticket-public"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.get_json()
+        self.assertEqual(body["request_id"], "req-ticket-public")
+        self.assertEqual(response.headers.get("X-Request-Id"), "req-ticket-public")
+
+    def test_public_status_not_found_contract(self):
+        with patch("routes.ticket.MunicipioTicket", _DummyMunicipioTicketMissing):
+            response = self.client.get("/tickets/public/status?code=M-99999&pin=1111")
+
+        self.assertEqual(response.status_code, 404)
+        body = response.get_json()
+        self.assertEqual(body["contract_version"], "tickets.public_status.v1")
+        self.assertEqual(body["error"]["code"], 404)
+        self.assertEqual(body["error"]["message"], "Ticket no encontrado.")
+        self.assertTrue(body.get("request_id"))
 
 
 if __name__ == "__main__":

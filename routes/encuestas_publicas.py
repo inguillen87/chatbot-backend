@@ -400,20 +400,21 @@ def _metadata_with_contact_identity(
     conversation_id = identity.get("conversation_id") or payload.get("conversation_id") or payload.get("conversationId")
     phone_e164 = identity.get("phone_e164")
 
-    if contact_key:
-        base_metadata.setdefault("contact_key", contact_key)
-    if conversation_id:
-        base_metadata.setdefault("conversation_id", conversation_id)
-    if phone_e164:
-        base_metadata.setdefault("phone_e164", phone_e164)
+    def _set_if_missing_or_none(key: str, value: Any):
+        if value is None:
+            return
+        if base_metadata.get(key) is None:
+            base_metadata[key] = value
+
+    _set_if_missing_or_none("contact_key", contact_key)
+    _set_if_missing_or_none("conversation_id", conversation_id)
+    _set_if_missing_or_none("phone_e164", phone_e164)
 
     # Keep compatibility with existing downstream processors that still read anon_id first.
-    if anon_id:
-        base_metadata.setdefault("anon_id", anon_id)
+    _set_if_missing_or_none("anon_id", anon_id)
 
     identity_source = identity.get("source")
-    if identity_source:
-        base_metadata.setdefault("identity_source", identity_source)
+    _set_if_missing_or_none("identity_source", identity_source)
 
     return base_metadata
 
