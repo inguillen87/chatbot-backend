@@ -27,6 +27,8 @@ class AnalyticsViewer:
             return True
         if self.role == "admin":
             return True
+        if "*" in self.capabilities:
+            return True
         if not self.capabilities:
             # Legacy fallback while CT-02 rolls out progressively.
             return True
@@ -49,13 +51,13 @@ def _viewer_from_user(user) -> AnalyticsViewer:
     capabilities: Set[str] = set()
 
     def _normalize_permissions(raw_permissions) -> Set[str]:
-        if not isinstance(raw_permissions, (list, tuple, set)):
+        if isinstance(raw_permissions, str):
+            values = [value.strip() for value in raw_permissions.split(",") if value.strip()]
+        elif isinstance(raw_permissions, (list, tuple, set)):
+            values = [str(value).strip() for value in raw_permissions if str(value).strip()]
+        else:
             return set()
-        return {
-            str(permission).strip().lower()
-            for permission in raw_permissions
-            if str(permission).strip()
-        }
+        return {value.lower() for value in values}
 
     scope = getattr(user, "scope", None)
     if isinstance(scope, dict):

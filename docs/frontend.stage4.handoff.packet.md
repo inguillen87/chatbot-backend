@@ -41,7 +41,12 @@
 
 3.2 **Analytics geo (heatmap/points)**
    - `GET /analytics/geo/heatmap` y `GET /analytics/geo/points`
+   - Soportan filtro por categoría via `category=<slug>` o `categories=a,b,c`.
    - Deben conservar `request_id`/`X-Request-Id` para correlación con logs operativos.
+   - Ambos endpoints ahora incluyen `map_layers.contract_version: analytics.geo_layers.v1` con:
+     - `provider.name: openstreetmap` + tile URL OSM.
+     - `category_heatmap.top_categories[]` para filtros por categoría (MapLibre/Leaflet).
+     - `category_heatmap.applied_categories[]` cuando FE aplica filtro por querystring.
 
 4. **WhatsApp funnel admin**
    - `GET /admin/analytics/whatsapp-funnel`
@@ -92,6 +97,7 @@
 11. **Market rewards runtime (ajuste)**
    - `market/cart` conserva `recompensas_demo` para compatibilidad de FE.
    - Con demo mode off, payload devuelve `mode: "disabled"` y wallet sin saldo sintético.
+   - `market/cart.continuity` incluye `portal_links.home/orders/profile` + `conversation_id` para continuidad portal-carrito.
 
 12. **Rubro educación (nuevo)**
    - `rubros` ahora puede incluir `education_profile` cuando detecta colegios/escuelas.

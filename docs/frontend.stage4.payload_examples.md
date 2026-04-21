@@ -80,6 +80,8 @@
 - `X-Request-Id: <uuid|forwarded>`
 
 > Nota: endpoints `GET /analytics/geo/heatmap` y `GET /analytics/geo/points` siguen la misma regla (`request_id` en payload + `X-Request-Id` en header).
+> Además exponen `map_layers` con provider OpenStreetMap y `category_heatmap.top_categories` para filtros de capa en FE.
+> Para filtrar server-side por categoría: usar `?category=bache` o `?categories=bache,luz`; la respuesta refleja `map_layers.category_heatmap.applied_categories`.
 
 ---
 
@@ -397,6 +399,14 @@
 
 ```json
 {
+  "continuity": {
+    "portal_links": {
+      "home": "/junin/portal",
+      "orders": "/junin/portal/pedidos",
+      "profile": "/junin/portal/perfil"
+    },
+    "conversation_id": "wa_conv_123"
+  },
   "recompensas_demo": {
     "mode": "disabled",
     "balance_resumen": {

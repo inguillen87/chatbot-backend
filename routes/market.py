@@ -492,6 +492,9 @@ def _cart_summary(cart: MarketCart, owner: User, *, event: Optional[str] = None)
     )
     support_phone = getattr(owner, "telefono", None)
     commercial_stage = "cart_active" if total_count else "cart_empty"
+    identity = getattr(g, "contact_identity", {}) if hasattr(g, "contact_identity") else {}
+    conversation_id = str((identity or {}).get("conversation_id") or "").strip() or None
+    portal_base_path = f"/{cart.tenant.slug}/portal" if getattr(cart.tenant, "slug", None) else None
 
     resumen = {
         "tenant_id": cart.tenant_id,
@@ -520,7 +523,13 @@ def _cart_summary(cart: MarketCart, owner: User, *, event: Optional[str] = None)
         },
         "continuity": {
             "resume_key": cart.contact_key or cart.session_id,
-            "portal_path": f"/{cart.tenant.slug}/portal" if getattr(cart.tenant, "slug", None) else None,
+            "portal_path": portal_base_path,
+            "portal_links": {
+                "home": portal_base_path,
+                "orders": f"{portal_base_path}/pedidos" if portal_base_path else None,
+                "profile": f"{portal_base_path}/perfil" if portal_base_path else None,
+            },
+            "conversation_id": conversation_id,
             "preferred_handoff_channel": "whatsapp" if support_phone else (cart.channel or "web"),
         },
         "suggested_actions": [
@@ -557,6 +566,7 @@ def _cart_summary(cart: MarketCart, owner: User, *, event: Optional[str] = None)
 
 def _empty_cart_summary(tenant: TenantProfile) -> Dict[str, object]:
     rewards = _runtime_rewards_profile(tenant.id, 0.0)
+    portal_base_path = f"/{tenant.slug}/portal" if getattr(tenant, "slug", None) else None
     return {
         "tenant_id": tenant.id,
         "cart_id": None,
@@ -572,7 +582,13 @@ def _empty_cart_summary(tenant: TenantProfile) -> Dict[str, object]:
         "wallet": rewards.get("balance_resumen"),
         "continuity": {
             "resume_key": None,
-            "portal_path": f"/{tenant.slug}/portal" if getattr(tenant, "slug", None) else None,
+            "portal_path": portal_base_path,
+            "portal_links": {
+                "home": portal_base_path,
+                "orders": f"{portal_base_path}/pedidos" if portal_base_path else None,
+                "profile": f"{portal_base_path}/perfil" if portal_base_path else None,
+            },
+            "conversation_id": None,
             "preferred_handoff_channel": "web",
         },
         "suggested_actions": [

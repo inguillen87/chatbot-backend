@@ -37,6 +37,7 @@ analytics_bp = Blueprint("analytics", __name__, url_prefix="/analytics")
 ANALYTICS_IDENTITY_COVERAGE_CONTRACT_VERSION = "analytics.identity_coverage.v1"
 ANALYTICS_EVENT_INGEST_CONTRACT_VERSION = "analytics.event_ingest.v1"
 ANALYTICS_EVENT_SCHEMA_CONTRACT_VERSION = "analytics.event_schema.v1"
+ANALYTICS_GEO_LAYERS_CONTRACT_VERSION = "analytics.geo_layers.v1"
 
 ANALYTICS_CANONICAL_EVENT_NAMES = [
     "message_received",
@@ -199,6 +200,118 @@ def _event_has_contact_identity(metadata: dict[str, Any] | None, session_id: str
             return True
 
     return bool(session_id or anon_id)
+
+
+def _augment_geo_payload_for_frontend(data: dict[str, Any], *, module: str) -> dict[str, Any]:
+    """Attach frontend-ready geo layer hints (OSM/OpenStreet + category overlays)."""
+    payload = dict(data or {})
+    category_totals: dict[str, int] = {}
+    bounds = (payload.get("meta") or {}).get("map", {}).get("bounds") if isinstance(payload.get("meta"), dict) else None
+
+    if module == "heatmap":
+        for cell in payload.get("cells") or []:
+            if not isinstance(cell, dict):
+                continue
+            for category, count in (cell.get("categories") or {}).items():
+                category_key = str(category or "sin_dato").strip() or "sin_dato"
+                try:
+                    category_totals[category_key] = category_totals.get(category_key, 0) + int(count or 0)
+                except (TypeError, ValueError):
+                    continue
+    elif module == "points":
+        for point in payload.get("points") or []:
+            if not isinstance(point, dict):
+                continue
+            category_key = str(point.get("categoria") or "sin_dato").strip() or "sin_dato"
+            category_totals[category_key] = category_totals.get(category_key, 0) + 1
+
+    top_categories = sorted(
+        (
+            {"category": category, "count": count}
+            for category, count in category_totals.items()
+            if count > 0
+        ),
+        key=lambda item: item["count"],
+        reverse=True,
+    )
+
+    payload["map_layers"] = {
+        "contract_version": ANALYTICS_GEO_LAYERS_CONTRACT_VERSION,
+        "provider": {
+            "name": "openstreetmap",
+            "tiles": [{"url": "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", "attribution": "© OpenStreetMap contributors"}],
+            "recommended_engine": "maplibre-gl",
+        },
+        "category_heatmap": {
+            "enabled": bool(top_categories),
+            "source_module": module,
+            "top_categories": top_categories[:12],
+            "supports_multi_select": True,
+            "bounds": bounds,
+        },
+    }
+    return payload
+
+
+def _requested_categories() -> list[str]:
+    raw_values: list[str] = []
+    raw_values.extend(request.args.getlist("category"))
+    raw_values.extend(request.args.getlist("categories"))
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw_value in raw_values:
+        for chunk in str(raw_value or "").split(","):
+            value = chunk.strip().lower()
+            if not value or value in seen:
+                continue
+            seen.add(value)
+            normalized.append(value)
+    return normalized
+
+
+def _apply_geo_category_filter(data: dict[str, Any], *, module: str, categories: list[str]) -> dict[str, Any]:
+    if not categories:
+        return data
+
+    payload = dict(data or {})
+    wanted = {category.lower() for category in categories}
+
+    if module == "heatmap":
+        filtered_cells: list[dict[str, Any]] = []
+        for cell in payload.get("cells") or []:
+            if not isinstance(cell, dict):
+                continue
+            original_categories = cell.get("categories") or {}
+            selected_categories = {
+                str(category): count
+                for category, count in original_categories.items()
+                if str(category or "").strip().lower() in wanted
+            }
+            if not selected_categories:
+                continue
+            try:
+                selected_count = int(sum(int(value or 0) for value in selected_categories.values()))
+            except (TypeError, ValueError):
+                continue
+            new_cell = dict(cell)
+            new_cell["categories"] = selected_categories
+            new_cell["count"] = selected_count
+            filtered_cells.append(new_cell)
+
+        max_count = max((int(cell.get("count") or 0) for cell in filtered_cells), default=0)
+        for cell in filtered_cells:
+            count = int(cell.get("count") or 0)
+            cell["intensity"] = round((count / max_count), 4) if max_count else 0.0
+        payload["cells"] = filtered_cells
+
+    elif module == "points":
+        payload["points"] = [
+            point
+            for point in (payload.get("points") or [])
+            if isinstance(point, dict) and str(point.get("categoria") or "").strip().lower() in wanted
+        ]
+
+    return payload
 
 
 
@@ -389,7 +502,11 @@ def analytics_heatmap():
         request_id = uuid.uuid4().hex
     filters = parse_filters(request.args)
     require_access(filters.tenant_id, "visor", required_capability="analytics.read")
-    data = get_geo_heatmap(filters)
+    categories = _requested_categories()
+    data = _apply_geo_category_filter(get_geo_heatmap(filters), module="heatmap", categories=categories)
+    data = _augment_geo_payload_for_frontend(data, module="heatmap")
+    if categories:
+        data["map_layers"]["category_heatmap"]["applied_categories"] = categories
     response = _json_response(data, request_id=request_id)
     elapsed_ms = round((time.perf_counter() - request_started) * 1000.0, 2)
     response.headers.setdefault("X-Request-Id", request_id)
@@ -417,7 +534,11 @@ def analytics_points():
     filters = parse_filters(request.args)
     require_access(filters.tenant_id, "visor", required_capability="analytics.read")
     limit = int(request.args.get("limit", 500))
-    data = get_geo_points(filters, limit=limit)
+    categories = _requested_categories()
+    data = _apply_geo_category_filter(get_geo_points(filters, limit=limit), module="points", categories=categories)
+    data = _augment_geo_payload_for_frontend(data, module="points")
+    if categories:
+        data["map_layers"]["category_heatmap"]["applied_categories"] = categories
     response = _json_response(data, request_id=request_id)
     elapsed_ms = round((time.perf_counter() - request_started) * 1000.0, 2)
     response.headers.setdefault("X-Request-Id", request_id)
