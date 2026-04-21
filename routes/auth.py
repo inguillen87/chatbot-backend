@@ -1178,12 +1178,21 @@ def _demo_mode_disabled_response(request_id: str | None = None):
         response.headers.setdefault("X-Request-Id", request_id)
     return response
 
+
+def _normalized_request_id() -> str:
+    raw = request.headers.get("X-Request-Id")
+    if isinstance(raw, str):
+        cleaned = raw.strip()
+        if cleaned:
+            return cleaned
+    return uuid.uuid4().hex
+
 @auth_bp.route('/demo/catalog', methods=['GET', 'OPTIONS'])
 @cross_origin(supports_credentials=True)
 def demo_catalog():
     if request.method == 'OPTIONS':
         return '', 204
-    request_id = request.headers.get('X-Request-Id') or uuid.uuid4().hex
+    request_id = _normalized_request_id()
     if not bool(current_app.config.get("ENABLE_DEMO_MODE", False)):
         return _demo_mode_disabled_response(request_id)
     ensure_users = str(request.args.get('ensure_users') or '').strip().lower() in {'1', 'true', 'yes', 'on'}
@@ -1358,7 +1367,7 @@ def demo_catalog():
 def login_demo():
     if request.method == 'OPTIONS':
         return '', 204
-    request_id = request.headers.get('X-Request-Id') or uuid.uuid4().hex
+    request_id = _normalized_request_id()
     if not bool(current_app.config.get("ENABLE_DEMO_MODE", False)):
         return _demo_mode_disabled_response(request_id)
 

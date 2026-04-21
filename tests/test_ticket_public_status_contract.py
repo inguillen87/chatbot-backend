@@ -88,6 +88,21 @@ class TicketPublicStatusContractTestCase(unittest.TestCase):
         self.assertEqual(body["request_id"], "req-ticket-public")
         self.assertEqual(response.headers.get("X-Request-Id"), "req-ticket-public")
 
+    def test_public_status_ignores_blank_request_id_header(self):
+        with patch("routes.ticket.MunicipioTicket", _DummyMunicipioTicket), patch(
+            "routes.ticket.verify_recaptcha", return_value=True
+        ):
+            response = self.client.get(
+                "/tickets/public/status?code=M-12345&pin=9999",
+                headers={"X-Request-Id": "   "},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.get_json()
+        self.assertTrue(body["request_id"])
+        self.assertNotEqual(body["request_id"], "   ")
+        self.assertEqual(body["request_id"], response.headers.get("X-Request-Id"))
+
     def test_public_status_not_found_contract(self):
         with patch("routes.ticket.MunicipioTicket", _DummyMunicipioTicketMissing):
             response = self.client.get("/tickets/public/status?code=M-99999&pin=1111")

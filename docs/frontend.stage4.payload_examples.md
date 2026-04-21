@@ -9,6 +9,8 @@
 3. Tickets públicos (`/tickets/public/status`, `/tickets/workflow/metadata`) con `request_id`.
 4. Demo auth (`/auth/demo/*` y `/api/auth/demo/*`) en modo disabled contract.
 
+> Regla transversal: si `X-Request-Id` se envía vacío (`""` o whitespace), backend lo normaliza y devuelve uno nuevo no vacío.
+
 ## 1) GET `/analytics/identity/coverage`
 
 ### Response 200 (con alertas)

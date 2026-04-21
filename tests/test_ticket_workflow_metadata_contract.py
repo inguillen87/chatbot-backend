@@ -30,6 +30,13 @@ class TicketWorkflowMetadataContractTestCase(unittest.TestCase):
         self.assertEqual(body["request_id"], "req-workflow-1")
         self.assertEqual(response.headers.get("X-Request-Id"), "req-workflow-1")
 
+    def test_workflow_metadata_ignores_blank_request_id_header(self):
+        response = self.client.get("/tickets/workflow/metadata", headers={"X-Request-Id": ""})
+        self.assertEqual(response.status_code, 200)
+        body = response.get_json()
+        self.assertTrue(body["request_id"])
+        self.assertEqual(body["request_id"], response.headers.get("X-Request-Id"))
+
 
 if __name__ == "__main__":
     unittest.main()

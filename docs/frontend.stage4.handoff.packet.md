@@ -83,6 +83,7 @@
    - `/auth/demo/catalog` y `/auth/demo` retornan 404 con `contract_version: auth.demo.v1` + `request_id`.
    - Alias `/api/auth/demo/catalog` y `/api/auth/demo` mantienen el mismo contrato 404 (sin fallback 200/503) para evitar drift por prefijos legacy.
    - Endpoints canónicos y alias `/api/auth/demo/*` exponen `X-Request-Id` para correlación de errores en FE.
+   - Si FE envía `X-Request-Id` vacío, backend lo reemplaza por uno válido (no persiste vacío).
 
 11. **Market rewards runtime (ajuste)**
    - `market/cart` conserva `recompensas_demo` para compatibilidad de FE.

@@ -90,6 +90,15 @@ api_aliases_bp = Blueprint("api_aliases", __name__, url_prefix="/api")
 public_aliases_bp = Blueprint("public_aliases", __name__)
 
 
+def _normalized_request_id() -> str:
+    raw = request.headers.get("X-Request-Id")
+    if isinstance(raw, str):
+        cleaned = raw.strip()
+        if cleaned:
+            return cleaned
+    return uuid.uuid4().hex
+
+
 @api_aliases_bp.route("/auth/admin/login", methods=["POST", "OPTIONS"], strict_slashes=False)
 def admin_login_alias():
     try:
@@ -166,7 +175,7 @@ def auth_login_alias():
 
 @api_aliases_bp.route("/auth/demo/catalog", methods=["GET", "OPTIONS"], strict_slashes=False)
 def auth_demo_catalog_alias():
-    request_id = request.headers.get("X-Request-Id") or uuid.uuid4().hex
+    request_id = _normalized_request_id()
     response = demo_catalog()
 
     flask_response = make_response(response)
@@ -176,7 +185,7 @@ def auth_demo_catalog_alias():
 
 @api_aliases_bp.route("/auth/demo", methods=["POST", "OPTIONS"], strict_slashes=False)
 def auth_demo_login_alias():
-    request_id = request.headers.get("X-Request-Id") or uuid.uuid4().hex
+    request_id = _normalized_request_id()
     response = login_demo()
     flask_response = make_response(response)
     flask_response.headers.setdefault("X-Request-Id", request_id)

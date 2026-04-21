@@ -32,6 +32,7 @@
 
 ## Headers
 - `X-Request-Id` (uuid generado por backend o valor reenviado por cliente)
+- Si cliente envía `X-Request-Id` vacío (`""` o whitespace), backend genera uno válido no vacío.
 
 ## Compatibility policy
 - Additive-only for non-breaking evolution.

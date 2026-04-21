@@ -155,7 +155,14 @@ def _resolve_event_name(payload: dict) -> str:
     return "frontend_analytics_event"
 
 def _json_response(payload, status: int = 200):
-    request_id = request.headers.get("X-Request-Id") or uuid.uuid4().hex
+    header_request_id = request.headers.get("X-Request-Id")
+    request_id = None
+    if isinstance(header_request_id, str):
+        cleaned = header_request_id.strip()
+        if cleaned:
+            request_id = cleaned
+    if not request_id:
+        request_id = uuid.uuid4().hex
     needs_request_id = (
         isinstance(payload, dict)
         and (

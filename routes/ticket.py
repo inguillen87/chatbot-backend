@@ -1131,7 +1131,13 @@ def _public_tracking_payload(ticket: MunicipioTicket) -> dict:
 
 
 def _ticket_contract_response(payload: dict, status_code: int = 200, request_id: str | None = None):
-    rid = request_id or (request.headers.get("X-Request-Id") or uuid.uuid4().hex)
+    normalized_header_id = None
+    header_raw = request.headers.get("X-Request-Id")
+    if isinstance(header_raw, str):
+        trimmed = header_raw.strip()
+        if trimmed:
+            normalized_header_id = trimmed
+    rid = request_id or normalized_header_id or uuid.uuid4().hex
     merged_payload = {
         **payload,
         "request_id": rid,
@@ -1146,7 +1152,14 @@ def _ticket_contract_response(payload: dict, status_code: int = 200, request_id:
 def get_public_ticket_status():
     """Lookup ticket status by tracking code + PIN without exposing full details."""
 
-    request_id = request.headers.get("X-Request-Id") or uuid.uuid4().hex
+    request_id = None
+    request_id_raw = request.headers.get("X-Request-Id")
+    if isinstance(request_id_raw, str):
+        trimmed = request_id_raw.strip()
+        if trimmed:
+            request_id = trimmed
+    if not request_id:
+        request_id = uuid.uuid4().hex
     code = (request.args.get("code") or request.args.get("nro_ticket") or "").strip().upper()
     pin = (request.args.get("pin") or "").strip()
 

@@ -40,6 +40,19 @@ class AnalyticsRequestIdResponseTestCase(unittest.TestCase):
         self.assertEqual(body["request_id"], "req-forwarded-1")
         self.assertEqual(response.headers.get("X-Request-Id"), "req-forwarded-1")
 
+    def test_json_response_ignores_blank_forwarded_request_id_header(self):
+        with self.app.test_request_context(
+            "/analytics/event",
+            method="POST",
+            headers={"X-Request-Id": "   "},
+        ):
+            response = _json_response({"ok": True}, status=200)
+
+        body = response.get_json()
+        self.assertTrue(body["request_id"])
+        self.assertNotEqual(body["request_id"], "   ")
+        self.assertEqual(body["request_id"], response.headers.get("X-Request-Id"))
+
 
 if __name__ == "__main__":
     unittest.main()

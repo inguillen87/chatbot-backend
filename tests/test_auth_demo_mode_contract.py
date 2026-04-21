@@ -28,6 +28,14 @@ class AuthDemoModeContractTestCase(unittest.TestCase):
         self.assertEqual(body["request_id"], "req-auth-catalog")
         self.assertEqual(response.headers.get("X-Request-Id"), "req-auth-catalog")
 
+    def test_demo_catalog_ignores_blank_request_id_when_demo_mode_disabled(self):
+        response = self.client.get("/auth/demo/catalog", headers={"X-Request-Id": "   "})
+        self.assertEqual(response.status_code, 404)
+        body = response.get_json()
+        self.assertTrue(body["request_id"])
+        self.assertNotEqual(body["request_id"], "   ")
+        self.assertEqual(body["request_id"], response.headers.get("X-Request-Id"))
+
     def test_demo_login_returns_404_contract_when_demo_mode_disabled(self):
         response = self.client.post("/auth/demo", json={"rubro": "pyme"})
         self.assertEqual(response.status_code, 404)
@@ -47,6 +55,13 @@ class AuthDemoModeContractTestCase(unittest.TestCase):
         body = response.get_json()
         self.assertEqual(body["request_id"], "req-auth-login")
         self.assertEqual(response.headers.get("X-Request-Id"), "req-auth-login")
+
+    def test_demo_login_ignores_blank_request_id_when_demo_mode_disabled(self):
+        response = self.client.post("/auth/demo", json={"rubro": "pyme"}, headers={"X-Request-Id": ""})
+        self.assertEqual(response.status_code, 404)
+        body = response.get_json()
+        self.assertTrue(body["request_id"])
+        self.assertEqual(body["request_id"], response.headers.get("X-Request-Id"))
 
 
 if __name__ == "__main__":

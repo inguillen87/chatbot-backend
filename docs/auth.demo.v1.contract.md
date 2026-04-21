@@ -26,3 +26,4 @@ Contrato de disponibilidad de endpoints demo de autenticación.
 
 - Si `ENABLE_DEMO_MODE=false`, los endpoints canónicos y los alias `/api/*` deben responder 404 con este contrato.
 - Endpoints canónicos y alias `/api/*` deben devolver `X-Request-Id` para trazabilidad FE/BE.
+- Si `X-Request-Id` llega vacío (`""` o whitespace), backend genera uno nuevo (no se conserva vacío).
