@@ -61,6 +61,9 @@ class AnalyticsIdentityCoverageAccessTestCase(unittest.TestCase):
             response = self.client.get("/analytics/identity/coverage?tenant_id=10")
 
         self.assertEqual(response.status_code, 200)
+        body = response.get_json()
+        self.assertTrue(body.get("request_id"))
+        self.assertTrue(response.headers.get("X-Request-Id"))
         self.assertEqual(mock_require_access.call_count, 1)
         mock_require_access.assert_called_once_with(
             "10",
@@ -82,6 +85,9 @@ class AnalyticsIdentityCoverageAccessTestCase(unittest.TestCase):
             response = self.client.get("/analytics/identity/coverage?tenant_id=10&emit_alert_events=1")
 
         self.assertEqual(response.status_code, 200)
+        body = response.get_json()
+        self.assertTrue(body.get("request_id"))
+        self.assertTrue(response.headers.get("X-Request-Id"))
         self.assertEqual(mock_require_access.call_count, 2)
         self.assertEqual(
             mock_require_access.call_args_list[0].args,
@@ -110,6 +116,27 @@ class AnalyticsIdentityCoverageAccessTestCase(unittest.TestCase):
         body = response.get_json()
         self.assertEqual(body["error"]["code"], 400)
         self.assertIn("limit", body["error"]["message"])
+        self.assertTrue(body.get("request_id"))
+        self.assertTrue(response.headers.get("X-Request-Id"))
+
+    def test_identity_coverage_preserves_request_id_header(self):
+        with patch("routes.analytics.get_config", return_value=SimpleNamespace(feature_enabled=True)), patch(
+            "routes.analytics.parse_filters", return_value=self.filters
+        ), patch("routes.analytics.require_access", return_value=None), patch(
+            "routes.analytics.AnalyticsEventV2", _FakeAnalyticsEventModel
+        ), patch(
+            "routes.analytics._compute_identity_coverage",
+            return_value={"coverage_pct": 100.0, "channels": {}, "total_events": 0, "events_with_identity": 0},
+        ):
+            response = self.client.get(
+                "/analytics/identity/coverage?tenant_id=10",
+                headers={"X-Request-Id": "req-coverage-1"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.get_json()
+        self.assertEqual(body["request_id"], "req-coverage-1")
+        self.assertEqual(response.headers.get("X-Request-Id"), "req-coverage-1")
 
 
 if __name__ == "__main__":

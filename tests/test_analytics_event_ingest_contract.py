@@ -36,6 +36,8 @@ class AnalyticsEventIngestContractTestCase(unittest.TestCase):
         self.assertEqual(body["event_name"], "portal_opened")
         self.assertEqual(body["contact_key"], "ck-123")
         self.assertEqual(body["conversation_id"], "conv-123")
+        self.assertTrue(body.get("request_id"))
+        self.assertTrue(response.headers.get("X-Request-Id"))
 
     def test_event_ingest_uses_identity_source_when_present(self):
         @self.app.before_request
@@ -62,6 +64,21 @@ class AnalyticsEventIngestContractTestCase(unittest.TestCase):
         body = response.get_json()
         self.assertEqual(body["contract_version"], ANALYTICS_EVENT_INGEST_CONTRACT_VERSION)
         self.assertEqual(body["identity_source"], "conversation_id")
+
+    def test_event_ingest_preserves_request_id_header(self):
+        with patch("routes.analytics.get_config", return_value=SimpleNamespace(feature_enabled=True)), \
+             patch("routes.analytics.require_access", return_value=None), \
+             patch("routes.analytics.analytics_ingestor.track", return_value=None):
+            response = self.client.post(
+                "/analytics/event",
+                headers={"X-Request-Id": "req-analytics-ingest-1"},
+                json={"tenant_id": 10, "event_name": "portal_opened", "payload": {}},
+            )
+
+        self.assertEqual(response.status_code, 202)
+        body = response.get_json()
+        self.assertEqual(body["request_id"], "req-analytics-ingest-1")
+        self.assertEqual(response.headers.get("X-Request-Id"), "req-analytics-ingest-1")
 
 
 if __name__ == "__main__":

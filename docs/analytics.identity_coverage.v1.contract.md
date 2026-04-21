@@ -28,6 +28,10 @@
 - `emit_alert_events`
 - `alert_events_emitted`
 - `contract_version` (`analytics.identity_coverage.v1`)
+- `request_id` (request correlation id)
+
+## Headers
+- `X-Request-Id` (uuid generado por backend o valor reenviado por cliente)
 
 ## Compatibility policy
 - Additive-only for non-breaking evolution.

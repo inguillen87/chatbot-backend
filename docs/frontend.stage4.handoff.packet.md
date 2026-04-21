@@ -15,6 +15,7 @@
    - Lectura base: `analytics.read` (si se usa `emit_alert_events=1`, requiere `analytics.admin`).
    - Campos clave de UI:
      - `contract_version`
+     - `request_id`
      - `coverage_pct`
      - `slo_status` (`ok` | `below_target`)
      - `alerts` (array)
@@ -24,6 +25,7 @@
    - `POST /analytics/event`
    - Campos clave de integración:
      - `contract_version` (`analytics.event_ingest.v1`)
+     - `request_id`
      - `contact_key`
      - `conversation_id`
      - `identity_source`
@@ -32,6 +34,7 @@
 3.1 **Analytics event schema (catálogo canónico)**
    - `GET /analytics/event/schema?tenant_id=<id>`
    - FE puede tomar de ahí:
+     - `request_id`
      - `canonical_events`
      - `required_dimensions`
      - `recommended_dimensions`
@@ -109,6 +112,7 @@ export interface IdentityCoverageAlert {
 
 export interface IdentityCoverageResponseV1 {
   contract_version: 'analytics.identity_coverage.v1';
+  request_id: string;
   tenant_id: number | null;
   coverage_pct: number;
   slo_status: SloStatus;
@@ -135,6 +139,7 @@ export interface WhatsappFunnelResponseV1 {
 export interface AnalyticsEventIngestAckV1 {
   ok: true;
   contract_version: 'analytics.event_ingest.v1';
+  request_id: string;
   tenant_id: number;
   event_name: string;
   contact_key?: string;
@@ -157,6 +162,7 @@ export interface WidgetTokenAckV1 {
 
 export interface AnalyticsEventSchemaV1 {
   contract_version: 'analytics.event_schema.v1';
+  request_id: string;
   tenant_id: number;
   required_dimensions: string[];
   recommended_dimensions: string[];

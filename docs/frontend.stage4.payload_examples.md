@@ -9,6 +9,7 @@
 ```json
 {
   "contract_version": "analytics.identity_coverage.v1",
+  "request_id": "uuid-or-forwarded-request-id",
   "tenant_id": 42,
   "scope": "tenant",
   "target_pct": 90.0,
@@ -53,6 +54,7 @@
 ```json
 {
   "contract_version": "analytics.identity_coverage.v1",
+  "request_id": "uuid-or-forwarded-request-id",
   "tenant_id": 42,
   "scope": "tenant",
   "target_pct": 85.0,
@@ -63,6 +65,10 @@
   "channels": []
 }
 ```
+
+### Headers esperados
+
+- `X-Request-Id: <uuid|forwarded>`
 
 ---
 
@@ -132,6 +138,7 @@
 {
   "ok": true,
   "contract_version": "analytics.event_ingest.v1",
+  "request_id": "uuid-or-forwarded-request-id",
   "tenant_id": 42,
   "event_name": "portal_opened",
   "contact_key": "wa:contact:abc123",
@@ -139,6 +146,10 @@
   "identity_source": "conversation_id"
 }
 ```
+
+### Headers esperados
+
+- `X-Request-Id: <uuid|forwarded>`
 
 > Nota: si FE envía `contact_key` o `conversation_id` en `null` o `""`, backend intenta reemplazarlos con identidad resuelta del request.
 
@@ -200,6 +211,7 @@
 ```json
 {
   "contract_version": "analytics.event_schema.v1",
+  "request_id": "uuid-or-forwarded-request-id",
   "tenant_id": 42,
   "required_dimensions": ["event_name", "channel", "tenant_id"],
   "recommended_dimensions": [
@@ -226,6 +238,10 @@
   ]
 }
 ```
+
+### Headers esperados
+
+- `X-Request-Id: <uuid|forwarded>`
 
 ---
 
