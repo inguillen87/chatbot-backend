@@ -89,6 +89,38 @@ class AnalyticsGeoRequestIdContractTestCase(unittest.TestCase):
         self.assertEqual(len(body["cells"]), 2)
         self.assertTrue(all("luz" in (cell.get("categories") or {}) for cell in body["cells"]))
 
+    def test_geo_heatmap_reports_missing_requested_categories(self):
+        with patch("routes.analytics.parse_filters", return_value=self.filters), patch(
+            "routes.analytics.require_access", return_value=None
+        ), patch(
+            "routes.analytics.get_geo_heatmap",
+            return_value={
+                "cells": [{"count": 3, "categories": {"bache": 3}}],
+                "render_contract": {"state": "ok"},
+            },
+        ):
+            response = self.client.get("/analytics/geo/heatmap?tenant_id=10&category=alumbrado")
+
+        self.assertEqual(response.status_code, 200)
+        body = response.get_json()
+        category_layer = body["map_layers"]["category_heatmap"]
+        self.assertEqual(category_layer["applied_categories"], ["alumbrado"])
+        self.assertEqual(category_layer["missing_categories"], ["alumbrado"])
+        self.assertEqual(category_layer["warning"], "requested_categories_without_data")
+
+    def test_geo_points_returns_400_when_limit_is_invalid(self):
+        with patch("routes.analytics.parse_filters", return_value=self.filters), patch(
+            "routes.analytics.require_access", return_value=None
+        ):
+            response = self.client.get("/analytics/geo/points?tenant_id=10&limit=nope")
+
+        self.assertEqual(response.status_code, 400)
+        body = response.get_json()
+        self.assertIn("error", body)
+        self.assertEqual(body["error"]["code"], 400)
+        self.assertIn("numérico", body["error"]["message"])
+        self.assertTrue(body.get("request_id"))
+
 
 if __name__ == "__main__":
     unittest.main()

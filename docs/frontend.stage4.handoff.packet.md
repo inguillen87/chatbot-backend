@@ -42,11 +42,14 @@
 3.2 **Analytics geo (heatmap/points)**
    - `GET /analytics/geo/heatmap` y `GET /analytics/geo/points`
    - Soportan filtro por categoría via `category=<slug>` o `categories=a,b,c`.
+   - `limit` en `/analytics/geo/points` debe ser entero positivo (`1..5000`), caso inválido responde `400` contractado.
    - Deben conservar `request_id`/`X-Request-Id` para correlación con logs operativos.
    - Ambos endpoints ahora incluyen `map_layers.contract_version: analytics.geo_layers.v1` con:
      - `provider.name: openstreetmap` + tile URL OSM.
      - `category_heatmap.top_categories[]` para filtros por categoría (MapLibre/Leaflet).
+     - `category_heatmap.available_categories[]` con el catálogo derivado del dataset filtrado.
      - `category_heatmap.applied_categories[]` cuando FE aplica filtro por querystring.
+     - `category_heatmap.missing_categories[]` + `warning` cuando se pide categoría sin datos.
 
 4. **WhatsApp funnel admin**
    - `GET /admin/analytics/whatsapp-funnel`

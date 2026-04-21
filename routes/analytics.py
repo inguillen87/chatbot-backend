@@ -246,6 +246,7 @@ def _augment_geo_payload_for_frontend(data: dict[str, Any], *, module: str) -> d
             "enabled": bool(top_categories),
             "source_module": module,
             "top_categories": top_categories[:12],
+            "available_categories": [item["category"] for item in top_categories],
             "supports_multi_select": True,
             "bounds": bounds,
         },
@@ -357,6 +358,19 @@ def _coverage_slo_status(coverage_pct: float, target_pct: float) -> str:
     except (TypeError, ValueError):
         target = 90.0
     return "ok" if float(coverage_pct) >= target else "below_target"
+
+
+def _parse_positive_int_arg(name: str, *, default: int, minimum: int = 1, maximum: int | None = None) -> int:
+    raw_value = request.args.get(name, default)
+    try:
+        parsed = int(str(raw_value).strip())
+    except (TypeError, ValueError):
+        raise ValueError(f"{name} debe ser numérico")
+    if parsed < minimum:
+        raise ValueError(f"{name} debe ser >= {minimum}")
+    if maximum is not None and parsed > maximum:
+        raise ValueError(f"{name} debe ser <= {maximum}")
+    return parsed
 
 
 
@@ -506,7 +520,17 @@ def analytics_heatmap():
     data = _apply_geo_category_filter(get_geo_heatmap(filters), module="heatmap", categories=categories)
     data = _augment_geo_payload_for_frontend(data, module="heatmap")
     if categories:
-        data["map_layers"]["category_heatmap"]["applied_categories"] = categories
+        category_layer = data["map_layers"]["category_heatmap"]
+        available_categories = {
+            str(value).strip().lower()
+            for value in (category_layer.get("available_categories") or [])
+            if str(value).strip()
+        }
+        missing_categories = [value for value in categories if value not in available_categories]
+        category_layer["applied_categories"] = categories
+        if missing_categories:
+            category_layer["missing_categories"] = missing_categories
+            category_layer["warning"] = "requested_categories_without_data"
     response = _json_response(data, request_id=request_id)
     elapsed_ms = round((time.perf_counter() - request_started) * 1000.0, 2)
     response.headers.setdefault("X-Request-Id", request_id)
@@ -533,12 +557,25 @@ def analytics_points():
         request_id = uuid.uuid4().hex
     filters = parse_filters(request.args)
     require_access(filters.tenant_id, "visor", required_capability="analytics.read")
-    limit = int(request.args.get("limit", 500))
+    try:
+        limit = _parse_positive_int_arg("limit", default=500, minimum=1, maximum=5000)
+    except ValueError as exc:
+        return _error_response(str(exc), status=400)
     categories = _requested_categories()
     data = _apply_geo_category_filter(get_geo_points(filters, limit=limit), module="points", categories=categories)
     data = _augment_geo_payload_for_frontend(data, module="points")
     if categories:
-        data["map_layers"]["category_heatmap"]["applied_categories"] = categories
+        category_layer = data["map_layers"]["category_heatmap"]
+        available_categories = {
+            str(value).strip().lower()
+            for value in (category_layer.get("available_categories") or [])
+            if str(value).strip()
+        }
+        missing_categories = [value for value in categories if value not in available_categories]
+        category_layer["applied_categories"] = categories
+        if missing_categories:
+            category_layer["missing_categories"] = missing_categories
+            category_layer["warning"] = "requested_categories_without_data"
     response = _json_response(data, request_id=request_id)
     elapsed_ms = round((time.perf_counter() - request_started) * 1000.0, 2)
     response.headers.setdefault("X-Request-Id", request_id)

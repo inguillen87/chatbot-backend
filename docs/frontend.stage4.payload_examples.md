@@ -82,6 +82,8 @@
 > Nota: endpoints `GET /analytics/geo/heatmap` y `GET /analytics/geo/points` siguen la misma regla (`request_id` en payload + `X-Request-Id` en header).
 > Además exponen `map_layers` con provider OpenStreetMap y `category_heatmap.top_categories` para filtros de capa en FE.
 > Para filtrar server-side por categoría: usar `?category=bache` o `?categories=bache,luz`; la respuesta refleja `map_layers.category_heatmap.applied_categories`.
+> Si una categoría pedida no tiene datos en el rango/filtros, backend responde `map_layers.category_heatmap.missing_categories` y `warning: requested_categories_without_data`.
+> `GET /analytics/geo/points` valida `limit` (`1..5000`); si FE envía texto o valores fuera de rango responde `400` con envelope `error`.
 
 ---
 

@@ -25,6 +25,7 @@ class AnalyticsGeoLayersContractTestCase(unittest.TestCase):
         self.assertEqual(layers["category_heatmap"]["source_module"], "heatmap")
         self.assertEqual(layers["category_heatmap"]["top_categories"][0]["category"], "bache")
         self.assertEqual(layers["category_heatmap"]["top_categories"][0]["count"], 5)
+        self.assertIn("bache", layers["category_heatmap"]["available_categories"])
 
     def test_points_uses_categoria_field_for_top_categories(self):
         payload = {"points": [{"categoria": "recoleccion"}, {"categoria": "recoleccion"}, {"categoria": "alumbrado"}]}
