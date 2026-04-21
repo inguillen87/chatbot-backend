@@ -108,6 +108,19 @@ class AnalyticsGeoRequestIdContractTestCase(unittest.TestCase):
         self.assertEqual(category_layer["missing_categories"], ["alumbrado"])
         self.assertEqual(category_layer["warning"], "requested_categories_without_data")
 
+    def test_geo_points_returns_400_when_limit_is_invalid(self):
+        with patch("routes.analytics.parse_filters", return_value=self.filters), patch(
+            "routes.analytics.require_access", return_value=None
+        ):
+            response = self.client.get("/analytics/geo/points?tenant_id=10&limit=nope")
+
+        self.assertEqual(response.status_code, 400)
+        body = response.get_json()
+        self.assertIn("error", body)
+        self.assertEqual(body["error"]["code"], 400)
+        self.assertIn("numérico", body["error"]["message"])
+        self.assertTrue(body.get("request_id"))
+
 
 if __name__ == "__main__":
     unittest.main()

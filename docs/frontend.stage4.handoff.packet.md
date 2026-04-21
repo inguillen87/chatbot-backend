@@ -42,6 +42,7 @@
 3.2 **Analytics geo (heatmap/points)**
    - `GET /analytics/geo/heatmap` y `GET /analytics/geo/points`
    - Soportan filtro por categoría via `category=<slug>` o `categories=a,b,c`.
+   - `limit` en `/analytics/geo/points` debe ser entero positivo (`1..5000`), caso inválido responde `400` contractado.
    - Deben conservar `request_id`/`X-Request-Id` para correlación con logs operativos.
    - Ambos endpoints ahora incluyen `map_layers.contract_version: analytics.geo_layers.v1` con:
      - `provider.name: openstreetmap` + tile URL OSM.

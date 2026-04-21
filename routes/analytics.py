@@ -360,6 +360,19 @@ def _coverage_slo_status(coverage_pct: float, target_pct: float) -> str:
     return "ok" if float(coverage_pct) >= target else "below_target"
 
 
+def _parse_positive_int_arg(name: str, *, default: int, minimum: int = 1, maximum: int | None = None) -> int:
+    raw_value = request.args.get(name, default)
+    try:
+        parsed = int(str(raw_value).strip())
+    except (TypeError, ValueError):
+        raise ValueError(f"{name} debe ser numérico")
+    if parsed < minimum:
+        raise ValueError(f"{name} debe ser >= {minimum}")
+    if maximum is not None and parsed > maximum:
+        raise ValueError(f"{name} debe ser <= {maximum}")
+    return parsed
+
+
 
 def _build_identity_alerts(
     channels: dict[str, Any],
@@ -544,7 +557,10 @@ def analytics_points():
         request_id = uuid.uuid4().hex
     filters = parse_filters(request.args)
     require_access(filters.tenant_id, "visor", required_capability="analytics.read")
-    limit = int(request.args.get("limit", 500))
+    try:
+        limit = _parse_positive_int_arg("limit", default=500, minimum=1, maximum=5000)
+    except ValueError as exc:
+        return _error_response(str(exc), status=400)
     categories = _requested_categories()
     data = _apply_geo_category_filter(get_geo_points(filters, limit=limit), module="points", categories=categories)
     data = _augment_geo_payload_for_frontend(data, module="points")
