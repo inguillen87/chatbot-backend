@@ -87,6 +87,12 @@ Avance actual de etapa 4:
 - Metadata de encuestas públicas normaliza `contact_key`/`conversation_id` en `null` con identidad resuelta del request.
 - `GET /tickets/public/status` y `GET /tickets/workflow/metadata` exponen `request_id` + header `X-Request-Id` para trazabilidad FE/BE.
 - `GET /tickets/public/status` publica envelope de error versionado (`tickets.public_status.v1`) también para `400/404`.
+- Paridad de trazabilidad también aplicada en analytics (`/analytics/event`, `/analytics/event/schema`, `/analytics/identity/coverage`) con `request_id` no vacío + `X-Request-Id`.
+
+### Última actualización incremental (2026-04-21)
+
+- Normalización de identidad en ingest/encuestas cubre `null` y `""` para evitar pérdida silenciosa de correlación.
+- Contratos FE de analytics/tickets/documentación quedaron alineados con `request_id` y envelopes de error vigentes.
 
 KPIs objetivo:
 - >95% endpoints críticos usando resolver central de identidad.

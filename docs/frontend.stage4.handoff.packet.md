@@ -255,10 +255,21 @@ export interface PublicWidgetConfigV1 {
 - Dashboard de coverage muestra banner cuando `alert_count > 0`.
 - Ingest de analytics valida `contract_version === 'analytics.event_ingest.v1'`.
 - Ingest de analytics y submit de encuestas no deben persistir `contact_key`/`conversation_id` en `null`/`""` si backend resolvió identidad.
+- Respuestas de analytics (`coverage`, `event`, `event/schema`) deben traer `request_id` no vacío y header `X-Request-Id`.
 - Configurador de eventos valida catálogo desde `/analytics/event/schema`.
 - Vista funnel valida `contract_version` antes de renderizar.
 - Pantalla de tracking público maneja `tickets.public_status.v1` en éxito/error (`400/404`) y muestra `request_id` en soporte.
 - Pantallas con permisos usan `requiredCapabilities` alineado a RBAC v1.
+
+---
+
+## 3.5) Orden recomendado de implementación FE
+
+1. `identity-headers-propagation` (base de continuidad).
+2. `analytics-event-ingest-ack-v1` + `analytics-event-schema-v1` (tipado + catálogo).
+3. `analytics-coverage-ui` (incluye `request_id` para soporte operativo).
+4. `whatsapp-funnel-contract-v1` (validación estricta de contrato).
+5. `rbac-required-capabilities-alignment` + tracking público tickets (`request_id` visible).
 
 ---
 

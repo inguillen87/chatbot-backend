@@ -2,6 +2,13 @@
 
 > Ejemplos de referencia para tipado y pruebas de integración FE.
 
+## Orden sugerido de implementación FE
+
+1. Analytics ingest ack + event schema (`/analytics/event`, `/analytics/event/schema`).
+2. Analytics coverage (`/analytics/identity/coverage`) con `request_id`.
+3. Tickets públicos (`/tickets/public/status`, `/tickets/workflow/metadata`) con `request_id`.
+4. Demo auth (`/auth/demo/*` y `/api/auth/demo/*`) en modo disabled contract.
+
 ## 1) GET `/analytics/identity/coverage`
 
 ### Response 200 (con alertas)

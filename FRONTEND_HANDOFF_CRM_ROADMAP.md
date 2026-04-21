@@ -260,6 +260,7 @@ Backend quedó preparado para una estrategia más segura en runtime:
 2. Reinyectar esos headers en requests subsiguientes para mantener continuidad.
 3. En módulo encuestas, guardar `contact_key`/`conversation_id` devueltos para asociar siguientes interacciones del usuario.
 4. En bootstrap público (`/tenant-profile`), manejar `404` explícito sin fallback demo (estado vacío + CTA soporte).
+5. Exponer `request_id` en vistas operativas (analytics/tickets públicos) con botón copiar para soporte.
 
 ## Referencia ejecutable
 
@@ -290,7 +291,7 @@ Además, FE-07 (permisos) debe tomar como referencia:
 2. Actualizar cliente de analytics admin para tipar:
    - `unique_contacts` (por etapa),
    - `contract_version` (payload funnel),
-   - `alerts`, `alert_count`, `slo_status` (coverage endpoint).
+   - `alerts`, `alert_count`, `slo_status`, `request_id` (coverage endpoint).
 3. Instrumentar eventos UI:
    - `identity_context_attached`
    - `identity_context_missing`

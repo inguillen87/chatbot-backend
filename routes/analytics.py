@@ -156,7 +156,14 @@ def _resolve_event_name(payload: dict) -> str:
 
 def _json_response(payload, status: int = 200):
     request_id = request.headers.get("X-Request-Id") or uuid.uuid4().hex
-    if isinstance(payload, dict) and payload.get("request_id") is None:
+    needs_request_id = (
+        isinstance(payload, dict)
+        and (
+            payload.get("request_id") is None
+            or (isinstance(payload.get("request_id"), str) and not payload.get("request_id").strip())
+        )
+    )
+    if needs_request_id:
         payload = {**payload, "request_id": request_id}
     response = jsonify(payload)
     response.status_code = status

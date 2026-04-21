@@ -238,6 +238,7 @@ Este orden minimiza riesgo de drift y maximiza valor operativo temprano.
 - [ ] **FE-02** · `strict` habilitado en `api` + `context` sin regressions.
 - [ ] **FE-03** · Reinyección obligatoria de `X-Contact-Key` y `X-Conversation-Id` en wrappers HTTP.
 - [ ] **FE-04** · Checkout state machine con telemetría por transición.
+- [ ] **FE-08** · Superficie de soporte con `request_id` (analytics + tickets públicos) visible/copiable en UI para debugging.
 - [ ] **FE-P1** · Banner de calidad de datos usando `alert_count` y `slo_status`.
 
 ### Cadencia sugerida
