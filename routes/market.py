@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Dict, List, Optional
 
-from flask import Blueprint, abort, jsonify, make_response, request, g, session
+from flask import Blueprint, abort, current_app, jsonify, make_response, request, g, session
 from flask_login import current_user
 from sqlalchemy import func, or_
 
@@ -74,11 +74,17 @@ def _tenant_owner(tenant: TenantProfile) -> Optional[User]:
 def _resolve_session_identifier() -> str:
     """Resolve a stable identifier for the cart owner.
 
-    Prioritizes the explicit `X-Anon-Id` header (or cookie) sent by the
-    frontend, which persists across browser sessions better than the Flask
-    session cookie (often blocked or cleared). Falls back to the Flask session
-    if no anonymous ID is provided.
+    Priority:
+      1) Omnichannel conversation id (if present)
+      2) Anonymous identifiers from headers/cookies
+      3) Contact key (if already resolved upstream)
+      4) Flask session fallback
     """
+    contact_identity = getattr(g, "contact_identity", {}) if hasattr(g, "contact_identity") else {}
+    conversation_id = str((contact_identity or {}).get("conversation_id") or "").strip()
+    if conversation_id:
+        return conversation_id
+
     # 1. Try Anon-Id from headers (most reliable for PWA/Widgets)
     anon_id = (
         request.headers.get("X-Anon-Id")
@@ -94,7 +100,12 @@ def _resolve_session_identifier() -> str:
     if anon_id_cookie:
         return anon_id_cookie
 
-    # 3. Fallback to flask session (volatile if cookies blocked)
+    # 3. If available, reuse canonical contact key resolved by app middleware.
+    contact_key = str((contact_identity or {}).get("contact_key") or "").strip()
+    if contact_key:
+        return contact_key
+
+    # 4. Fallback to flask session (volatile if cookies blocked)
     session_id = session.get("market_session_id")
     if not session_id:
         import secrets
@@ -111,6 +122,41 @@ def _request_channel() -> str:
         or request.headers.get("X-Channel")
         or request.args.get("channel")
     )
+
+
+def _runtime_rewards_profile(tenant_id: int, puntos_en_carrito: float) -> Dict[str, object]:
+    """Return rewards payload without forcing demo fixtures in production."""
+
+    demo_mode_enabled = bool(current_app.config.get("ENABLE_DEMO_MODE", False))
+    if demo_mode_enabled:
+        payload = reward_profile_for_tenant(tenant_id, puntos_en_carrito)
+        payload["mode"] = "demo"
+        return payload
+
+    puntos = round(max(float(puntos_en_carrito or 0.0), 0.0), 2)
+    return {
+        "mode": "disabled",
+        "balance_resumen": {
+            "saldo_disponible": 0.0,
+            "puntos_en_carrito": puntos,
+            "saldo_estimado_post_compra": 0.0,
+        },
+    }
+
+
+def _resolve_contact_key(user: User, session_id: str) -> Optional[str]:
+    identity = getattr(g, "contact_identity", None)
+    if isinstance(identity, dict):
+        contact_key = str(identity.get("contact_key") or "").strip()
+        if contact_key:
+            return contact_key
+
+    contact = resolve_order_contact_payload(
+        user=user,
+        session_id=session_id,
+        channel=_request_channel(),
+    )
+    return contact.get("contact_key")
 
 
 def _get_or_create_cart_for_user(
@@ -172,7 +218,7 @@ def _get_or_create_cart_for_user(
             contact_phone=getattr(user, "telefono", None),
             contact_name=getattr(user, "name", None),
             contact_email=getattr(user, "email", None),
-            contact_key=resolve_order_contact_payload(user=user, session_id=session_id, channel=_request_channel()).get("contact_key"),
+            contact_key=_resolve_contact_key(user=user, session_id=session_id),
             channel=_request_channel(),
         )
         db.session.add(cart)
@@ -189,10 +235,11 @@ def _get_or_create_cart_for_user(
             if not cart.contact_name:
                 cart.contact_name = getattr(user, "name", None)
             modified = True
-        resolved_contact = resolve_order_contact_payload(user=user, session_id=session_id, channel=_request_channel())
-        if resolved_contact.get("contact_key") and cart.contact_key != resolved_contact.get("contact_key"):
-            cart.contact_key = resolved_contact.get("contact_key")
+        resolved_contact_key = _resolve_contact_key(user=user, session_id=session_id)
+        if resolved_contact_key and cart.contact_key != resolved_contact_key:
+            cart.contact_key = resolved_contact_key
             modified = True
+        resolved_contact = resolve_order_contact_payload(user=user, session_id=session_id, channel=_request_channel())
         if resolved_contact.get("email") and not cart.contact_email:
             cart.contact_email = resolved_contact.get("email")
             modified = True
@@ -445,6 +492,9 @@ def _cart_summary(cart: MarketCart, owner: User, *, event: Optional[str] = None)
     )
     support_phone = getattr(owner, "telefono", None)
     commercial_stage = "cart_active" if total_count else "cart_empty"
+    identity = getattr(g, "contact_identity", {}) if hasattr(g, "contact_identity") else {}
+    conversation_id = str((identity or {}).get("conversation_id") or "").strip() or None
+    portal_base_path = f"/{cart.tenant.slug}/portal" if getattr(cart.tenant, "slug", None) else None
 
     resumen = {
         "tenant_id": cart.tenant_id,
@@ -473,7 +523,13 @@ def _cart_summary(cart: MarketCart, owner: User, *, event: Optional[str] = None)
         },
         "continuity": {
             "resume_key": cart.contact_key or cart.session_id,
-            "portal_path": f"/{cart.tenant.slug}/portal" if getattr(cart.tenant, "slug", None) else None,
+            "portal_path": portal_base_path,
+            "portal_links": {
+                "home": portal_base_path,
+                "orders": f"{portal_base_path}/pedidos" if portal_base_path else None,
+                "profile": f"{portal_base_path}/perfil" if portal_base_path else None,
+            },
+            "conversation_id": conversation_id,
             "preferred_handoff_channel": "whatsapp" if support_phone else (cart.channel or "web"),
         },
         "suggested_actions": [
@@ -498,8 +554,8 @@ def _cart_summary(cart: MarketCart, owner: User, *, event: Optional[str] = None)
             "promo_total_carrito": promotion_summary.get("promo_total_carrito_aplicada_info"),
         }
 
-    resumen["recompensas_demo"] = reward_profile_for_tenant(cart.tenant_id, total_points)
-    resumen["wallet"] = resumen["recompensas_demo"].get("balance_resumen")
+    resumen["recompensas_demo"] = _runtime_rewards_profile(cart.tenant_id, total_points)
+    resumen["wallet"] = (resumen.get("recompensas_demo") or {}).get("balance_resumen")
     resumen["checkout_preview"] = {
         "state": "ready" if total_count > 0 else "empty",
         "supports_points": total_points > 0,
@@ -509,7 +565,8 @@ def _cart_summary(cart: MarketCart, owner: User, *, event: Optional[str] = None)
 
 
 def _empty_cart_summary(tenant: TenantProfile) -> Dict[str, object]:
-    rewards = reward_profile_for_tenant(tenant.id, 0.0)
+    rewards = _runtime_rewards_profile(tenant.id, 0.0)
+    portal_base_path = f"/{tenant.slug}/portal" if getattr(tenant, "slug", None) else None
     return {
         "tenant_id": tenant.id,
         "cart_id": None,
@@ -525,7 +582,13 @@ def _empty_cart_summary(tenant: TenantProfile) -> Dict[str, object]:
         "wallet": rewards.get("balance_resumen"),
         "continuity": {
             "resume_key": None,
-            "portal_path": f"/{tenant.slug}/portal" if getattr(tenant, "slug", None) else None,
+            "portal_path": portal_base_path,
+            "portal_links": {
+                "home": portal_base_path,
+                "orders": f"{portal_base_path}/pedidos" if portal_base_path else None,
+                "profile": f"{portal_base_path}/perfil" if portal_base_path else None,
+            },
+            "conversation_id": None,
             "preferred_handoff_channel": "web",
         },
         "suggested_actions": [
