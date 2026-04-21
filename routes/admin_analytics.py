@@ -43,6 +43,7 @@ _WHATSAPP_FUNNEL_STAGES: list[tuple[str, str]] = [
     ("realtime_session_created", "Sesión realtime creada"),
     ("realtime_business_action_executed", "Acción de negocio realtime"),
 ]
+WHATSAPP_FUNNEL_CONTRACT_VERSION = "admin.analytics.whatsapp_funnel.v1"
 
 _WHATSAPP_ATTRIBUTION_KEYS = ("source", "utm_source", "channel", "origin", "entrypoint")
 
@@ -151,6 +152,9 @@ def _build_whatsapp_funnel_payload(filters, *, window_minutes: int = 60) -> dict
     unique_sessions_per_stage: dict[str, set[str]] = {
         event_name: set() for event_name, _ in _WHATSAPP_FUNNEL_STAGES
     }
+    unique_contacts_per_stage: dict[str, set[str]] = {
+        event_name: set() for event_name, _ in _WHATSAPP_FUNNEL_STAGES
+    }
 
     filtered_events = []
     for row in events:
@@ -177,11 +181,20 @@ def _build_whatsapp_funnel_payload(filters, *, window_minutes: int = 60) -> dict
         if row.session_id:
             unique_sessions_per_stage.setdefault(row.event_name, set()).add(str(row.session_id))
 
+        contact_key = None
+        if isinstance(metadata, dict):
+            raw_contact = metadata.get("contact_key")
+            if raw_contact is not None:
+                contact_key = str(raw_contact).strip()
+        if contact_key:
+            unique_contacts_per_stage.setdefault(row.event_name, set()).add(contact_key)
+
     ordered = []
     previous_value = None
     for event_name, label in _WHATSAPP_FUNNEL_STAGES:
         total = stage_counts.get(event_name, 0)
         sessions = len(unique_sessions_per_stage.get(event_name, set()))
+        contacts = len(unique_contacts_per_stage.get(event_name, set()))
         conversion = None
         if previous_value is not None and previous_value > 0:
             conversion = round((sessions / previous_value) * 100, 2)
@@ -191,6 +204,7 @@ def _build_whatsapp_funnel_payload(filters, *, window_minutes: int = 60) -> dict
                 "label": label,
                 "total": total,
                 "unique_sessions": sessions,
+                "unique_contacts": contacts,
                 "conversion_from_prev_pct": conversion,
             }
         )
@@ -201,6 +215,7 @@ def _build_whatsapp_funnel_payload(filters, *, window_minutes: int = 60) -> dict
         "scope": filters.scope,
         "window_minutes": window_minutes_int,
         "cutoff": cutoff.isoformat(),
+        "contract_version": WHATSAPP_FUNNEL_CONTRACT_VERSION,
         "stages": ordered,
         "totals": {
             "events": len(filtered_events),
@@ -209,6 +224,13 @@ def _build_whatsapp_funnel_payload(filters, *, window_minutes: int = 60) -> dict
                     str(row.session_id)
                     for row in filtered_events
                     if row.session_id
+                }
+            ),
+            "unique_contacts": len(
+                {
+                    str((row.metadata_payload or {}).get("contact_key")).strip()
+                    for row in filtered_events
+                    if isinstance(row.metadata_payload, dict) and (row.metadata_payload or {}).get("contact_key")
                 }
             ),
         },
@@ -710,7 +732,7 @@ def _dashboard_response(filters):
 @admin_analytics_bp.get("/overview")
 def admin_analytics_overview():
     filters = parse_filters(request.args)
-    require_access(filters.tenant_id, "operador")
+    require_access(filters.tenant_id, "operador", required_capability="analytics.admin")
     payload = _ensure_total_interactions(get_summary(filters))
     return _json(payload)
 
@@ -718,7 +740,7 @@ def admin_analytics_overview():
 @admin_analytics_bp.get("/heatmap")
 def admin_analytics_heatmap():
     filters = parse_filters(request.args)
-    require_access(filters.tenant_id, "operador")
+    require_access(filters.tenant_id, "operador", required_capability="analytics.admin")
     tz = request.args.get("tz") or "UTC"
     base = get_geo_heatmap(filters)
 
@@ -884,7 +906,7 @@ def _build_realtime_hub_payload(filters, *, window_minutes: int = 30) -> dict[st
 @admin_analytics_bp.get("/realtime-hub")
 def admin_analytics_realtime_hub():
     filters = parse_filters(request.args)
-    require_access(filters.tenant_id, "operador")
+    require_access(filters.tenant_id, "operador", required_capability="analytics.admin")
     window_minutes = request.args.get("window_minutes", 30)
     payload = _build_realtime_hub_payload(filters, window_minutes=window_minutes)
     return _json(payload)
@@ -893,7 +915,7 @@ def admin_analytics_realtime_hub():
 @admin_analytics_bp.get("/whatsapp-funnel")
 def admin_analytics_whatsapp_funnel():
     filters = parse_filters(request.args)
-    require_access(filters.tenant_id, "operador")
+    require_access(filters.tenant_id, "operador", required_capability="analytics.admin")
     window_minutes = request.args.get("window_minutes", 60)
     payload = _build_whatsapp_funnel_payload(filters, window_minutes=window_minutes)
     return _json(payload)
@@ -902,7 +924,7 @@ def admin_analytics_whatsapp_funnel():
 @admin_analytics_bp.get("/export.csv")
 def admin_analytics_export_csv():
     filters = parse_filters(request.args)
-    require_access(filters.tenant_id, "operador")
+    require_access(filters.tenant_id, "operador", required_capability="analytics.admin")
     overview = get_summary(filters)
 
     buffer = io.StringIO()
@@ -923,7 +945,7 @@ def admin_analytics_export_csv():
 @admin_analytics_bp.get("/export.pdf")
 def admin_analytics_export_pdf():
     filters = parse_filters(request.args)
-    require_access(filters.tenant_id, "operador")
+    require_access(filters.tenant_id, "operador", required_capability="analytics.admin")
     overview = get_summary(filters)
 
     tenant_id = _tenant_id_as_int(filters.tenant_id)
@@ -983,7 +1005,7 @@ def admin_analytics_dashboard():
     """Unified payload for the /analytics UI tabs (general/municipio/ventas/mapas)."""
 
     filters = parse_filters(request.args)
-    require_access(filters.tenant_id, "operador")
+    require_access(filters.tenant_id, "operador", required_capability="analytics.admin")
     return _dashboard_response(filters)
 
 
@@ -992,5 +1014,5 @@ def admin_analytics_hub():
     """Alias endpoint to support frontend convergence on one analytics hub route."""
 
     filters = parse_filters(request.args)
-    require_access(filters.tenant_id, "operador")
+    require_access(filters.tenant_id, "operador", required_capability="analytics.admin")
     return _dashboard_response(filters)
