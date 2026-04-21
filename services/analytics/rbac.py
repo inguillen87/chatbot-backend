@@ -47,15 +47,27 @@ def _viewer_from_user(user) -> AnalyticsViewer:
         tenants.add(str(user.empresa_id))
     role = getattr(user, "rol", "visor") or "visor"
     capabilities: Set[str] = set()
+
+    def _normalize_permissions(raw_permissions) -> Set[str]:
+        if not isinstance(raw_permissions, (list, tuple, set)):
+            return set()
+        return {
+            str(permission).strip().lower()
+            for permission in raw_permissions
+            if str(permission).strip()
+        }
+
     scope = getattr(user, "scope", None)
     if isinstance(scope, dict):
-        raw_permissions = scope.get("permisos") or scope.get("permissions") or []
-        if isinstance(raw_permissions, (list, tuple, set)):
-            capabilities = {
-                str(permission).strip().lower()
-                for permission in raw_permissions
-                if str(permission).strip()
-            }
+        capabilities |= _normalize_permissions(scope.get("permisos") or scope.get("permissions") or [])
+
+    accesibilidad = getattr(user, "accesibilidad", None)
+    if isinstance(accesibilidad, dict):
+        employee_scope = accesibilidad.get("employee_scope")
+        if isinstance(employee_scope, dict):
+            capabilities |= _normalize_permissions(
+                employee_scope.get("permisos") or employee_scope.get("permissions") or []
+            )
     if role == "admin":
         tenants.add("*")
     return AnalyticsViewer(getattr(user, "id", None), role.lower(), tenants, teams, capabilities)

@@ -53,6 +53,14 @@ class AnalyticsRequestIdResponseTestCase(unittest.TestCase):
         self.assertNotEqual(body["request_id"], "   ")
         self.assertEqual(body["request_id"], response.headers.get("X-Request-Id"))
 
+    def test_json_response_reuses_explicit_request_id_override(self):
+        with self.app.test_request_context("/analytics/event", method="POST"):
+            response = _json_response({"ok": True}, status=200, request_id="req-local-1")
+
+        body = response.get_json()
+        self.assertEqual(body["request_id"], "req-local-1")
+        self.assertEqual(response.headers.get("X-Request-Id"), "req-local-1")
+
 
 if __name__ == "__main__":
     unittest.main()

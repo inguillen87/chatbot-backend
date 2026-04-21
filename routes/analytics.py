@@ -154,15 +154,18 @@ def _resolve_event_name(payload: dict) -> str:
     # name while still sending tenant context.
     return "frontend_analytics_event"
 
-def _json_response(payload, status: int = 200):
-    header_request_id = request.headers.get("X-Request-Id")
-    request_id = None
-    if isinstance(header_request_id, str):
-        cleaned = header_request_id.strip()
-        if cleaned:
-            request_id = cleaned
-    if not request_id:
-        request_id = uuid.uuid4().hex
+def _json_response(payload, status: int = 200, request_id: str | None = None):
+    resolved_request_id = request_id
+    if isinstance(resolved_request_id, str):
+        resolved_request_id = resolved_request_id.strip() or None
+    if not resolved_request_id:
+        header_request_id = request.headers.get("X-Request-Id")
+        if isinstance(header_request_id, str):
+            cleaned = header_request_id.strip()
+            if cleaned:
+                resolved_request_id = cleaned
+    if not resolved_request_id:
+        resolved_request_id = uuid.uuid4().hex
     needs_request_id = (
         isinstance(payload, dict)
         and (
@@ -171,10 +174,10 @@ def _json_response(payload, status: int = 200):
         )
     )
     if needs_request_id:
-        payload = {**payload, "request_id": request_id}
+        payload = {**payload, "request_id": resolved_request_id}
     response = jsonify(payload)
     response.status_code = status
-    response.headers.setdefault("X-Request-Id", request_id)
+    response.headers.setdefault("X-Request-Id", resolved_request_id)
     return response
 
 
@@ -379,11 +382,15 @@ def analytics_breakdown():
 @analytics_bp.route("/geo/heatmap", methods=["GET"])
 def analytics_heatmap():
     request_started = time.perf_counter()
-    request_id = request.headers.get("X-Request-Id") or uuid.uuid4().hex
+    request_id = request.headers.get("X-Request-Id")
+    if isinstance(request_id, str):
+        request_id = request_id.strip() or None
+    if not request_id:
+        request_id = uuid.uuid4().hex
     filters = parse_filters(request.args)
     require_access(filters.tenant_id, "visor", required_capability="analytics.read")
     data = get_geo_heatmap(filters)
-    response = _json_response(data)
+    response = _json_response(data, request_id=request_id)
     elapsed_ms = round((time.perf_counter() - request_started) * 1000.0, 2)
     response.headers.setdefault("X-Request-Id", request_id)
     response.headers.setdefault("Server-Timing", f"analytics_geo_heatmap;dur={elapsed_ms}")
@@ -402,12 +409,16 @@ def analytics_heatmap():
 @analytics_bp.route("/geo/points", methods=["GET"])
 def analytics_points():
     request_started = time.perf_counter()
-    request_id = request.headers.get("X-Request-Id") or uuid.uuid4().hex
+    request_id = request.headers.get("X-Request-Id")
+    if isinstance(request_id, str):
+        request_id = request_id.strip() or None
+    if not request_id:
+        request_id = uuid.uuid4().hex
     filters = parse_filters(request.args)
     require_access(filters.tenant_id, "visor", required_capability="analytics.read")
     limit = int(request.args.get("limit", 500))
     data = get_geo_points(filters, limit=limit)
-    response = _json_response(data)
+    response = _json_response(data, request_id=request_id)
     elapsed_ms = round((time.perf_counter() - request_started) * 1000.0, 2)
     response.headers.setdefault("X-Request-Id", request_id)
     response.headers.setdefault("Server-Timing", f"analytics_geo_points;dur={elapsed_ms}")

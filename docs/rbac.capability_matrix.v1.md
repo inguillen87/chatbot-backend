@@ -39,6 +39,12 @@
 | analytics_viewer | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ |
 | end_user | ✅ (solo propios) | ✅ (crear/comentar propios) | ❌ | ❌ | ❌ | ✅ | ❌ | ✅ (solo propios) | ✅ (crear propios) | ✅ (públicas) | ✅ (responder) | ❌ | ❌ | ❌ |
 
+### Fuente de capabilities en backend (analytics)
+
+- Prioridad 1: `user.scope.permisos` / `user.scope.permissions`.
+- Prioridad 2: `user.accesibilidad.employee_scope.permisos` / `permissions`.
+- Si no hay capabilities en ninguna fuente, aplica fallback legacy (allow) durante transición CT-02.
+
 ## 4) Capability -> endpoints backend (v1 inicial)
 
 > Mapeo orientativo para iniciar enforcement en rutas críticas.

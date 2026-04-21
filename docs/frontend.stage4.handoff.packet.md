@@ -39,6 +39,10 @@
      - `required_dimensions`
      - `recommended_dimensions`
 
+3.2 **Analytics geo (heatmap/points)**
+   - `GET /analytics/geo/heatmap` y `GET /analytics/geo/points`
+   - Deben conservar `request_id`/`X-Request-Id` para correlación con logs operativos.
+
 4. **WhatsApp funnel admin**
    - `GET /admin/analytics/whatsapp-funnel`
    - Campos mínimos por etapa:
