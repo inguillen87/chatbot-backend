@@ -53,6 +53,7 @@ from config.feature_flags import FEATURE_ENCUESTAS
 from extensions import db, migrate, login_manager, sock, limiter  # livianos + limiter
 from middleware import tenant_middleware
 from utils.errors import ApiError
+from utils.contact_identity import resolve_contact_identity_from_request
 
 
 def _mask_token(value: str | None) -> str | None:
@@ -252,6 +253,10 @@ def create_app(config_class=Config):
                     g.viewer = user
                     current_app.logger.debug(f"User {user.id} via token.")
 
+        @app.before_request
+        def attach_contact_identity():
+            g.contact_identity = resolve_contact_identity_from_request(request)
+
         tenant_middleware(app)
 
     # --- Inicialización de extensiones base (seguras para migraciones) ---
@@ -355,6 +360,8 @@ def create_app(config_class=Config):
             "X-Token",
             "x-token",
             "X-Whatsapp-Dst",
+            "X-Contact-Key",
+            "X-Conversation-Id",
         ]
 
         allow_methods = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
@@ -370,6 +377,8 @@ def create_app(config_class=Config):
                 "Authorization",
                 "X-Anon-Id",
                 "Anon-Id",
+                "X-Contact-Key",
+                "X-Conversation-Id",
             ],
         )
 
@@ -377,6 +386,22 @@ def create_app(config_class=Config):
         def add_permissions_policy(resp):
             policy = current_app.config.get("PERMISSIONS_POLICY_HEADER", "geolocation=(self)")
             resp.headers.setdefault("Permissions-Policy", policy)
+            return resp
+
+        @app.after_request
+        def expose_contact_identity(resp):
+            identity = getattr(g, "contact_identity", None)
+            if not isinstance(identity, dict):
+                return resp
+
+            contact_key = identity.get("contact_key")
+            conversation_id = identity.get("conversation_id")
+
+            if contact_key:
+                resp.headers.setdefault("X-Contact-Key", str(contact_key))
+            if conversation_id:
+                resp.headers.setdefault("X-Conversation-Id", str(conversation_id))
+
             return resp
 
         def _origin_is_allowed(origin: str | None) -> bool:
@@ -712,35 +737,44 @@ def create_app(config_class=Config):
     # Comandos CLI
     register_commands(app)
 
-    # --- Robustness: Ensure DB tables exist if they are missing in production ---
+    # Runtime bootstrap only when explicitly enabled (recommended: migrations/CLI in production).
     if not MIGRATIONS_ONLY:
-        # Check if we should attempt to create tables.
-        # We assume if the user is running the app, they expect it to work.
-        # Catching specific errors is hard without making a query.
-        # But create_all is idempotent if tables exist.
-        # We wrap in try/except to avoid crashing if connection fails (let gunicorn retry or fail later).
-        with app.app_context():
-            try:
-                # Force import of models to ensure all tables are registered
-                import models  # noqa: F401
-                # This will create tables if they don't exist.
-                # It does NOT handle migrations (schema updates), but it fixes "UndefinedTable" for new deployments.
-                db.create_all()
+        runtime_schema_sync_enabled = bool(app.config.get("ENABLE_RUNTIME_SCHEMA_SYNC"))
+        runtime_tenant_init_enabled = bool(app.config.get("ENABLE_RUNTIME_TENANT_INIT"))
 
-                # Auto-initialize tenants if missing (ensure demo tenants exist)
-                if not app.config.get("SKIP_INIT_TENANTS"):
-                    from init_tenants import init_tenants
-                    init_tenants()
-
-                db.session.remove()
-                app.logger.info("Startup: db.create_all() executed successfully (tables ensured).")
-            except Exception as e:
-                # Log warning but proceed; maybe DB is readonly or connection transiently failed.
-                app.logger.warning(f"Startup db.create_all() failed (ignoring): {e}")
+        if runtime_schema_sync_enabled or runtime_tenant_init_enabled:
+            with app.app_context():
                 try:
-                    db.session.remove()
-                except Exception:
-                    pass
+                    if runtime_schema_sync_enabled:
+                        # Force import of models so table metadata is fully loaded.
+                        import models  # noqa: F401
+                        db.create_all()
+                        app.logger.warning(
+                            "Startup runtime schema sync executed (db.create_all). "
+                            "Use Flask-Migrate in production deployments."
+                        )
+
+                    if runtime_tenant_init_enabled and not app.config.get("SKIP_INIT_TENANTS"):
+                        from init_tenants import init_tenants
+
+                        init_tenants()
+                        app.logger.warning(
+                            "Startup runtime tenant init executed. "
+                            "Prefer explicit CLI/bootstrap commands in production."
+                        )
+
+                except Exception as e:
+                    app.logger.warning(f"Startup runtime bootstrap failed (continuing): {e}")
+                finally:
+                    try:
+                        db.session.remove()
+                    except Exception:
+                        pass
+        else:
+            app.logger.info(
+                "Startup runtime bootstrap disabled. "
+                "Apply migrations explicitly (e.g. 'flask db upgrade')."
+            )
 
     # Inicializar SocketIO solo en runtime normal
     if socketio is not None:
