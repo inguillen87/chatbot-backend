@@ -152,6 +152,10 @@ DEFAULT_BACKEND_VERSION = _coalesce_version(
 # --- Variables de Entorno para Despliegue ---
 ENV = os.getenv("ENV", "dev")  # "dev" o "prod"
 
+
+def _is_render_runtime() -> bool:
+    return os.getenv("RENDER", "").strip().lower() == "true" or bool(os.getenv("RENDER_EXTERNAL_URL"))
+
 # Render provides the public URL of the service through RENDER_EXTERNAL_URL.
 # If BACKEND_URL is not explicitly set we fall back to that value so the
 # frontend can discover the correct origin via /api/config.
@@ -443,9 +447,34 @@ class Config:
     # respaldo en caso de que la sesión basada en cookies falle
     AUTH_TOKEN_COOKIE_NAME = os.getenv("AUTH_TOKEN_COOKIE_NAME", "auth_token")
     DEFER_ANON_MIGRATION_ON_LOGIN = os.getenv("DEFER_ANON_MIGRATION_ON_LOGIN", "true").strip().lower() not in {"0", "false", "no", "off"}
+
+    # Runtime bootstrap guards: in production, schema sync and tenant init must be explicit
+    # via migrations/CLI. Local dev keeps convenience defaults enabled.
+    _runtime_bootstrap_default = ENV == "dev" and not _is_render_runtime()
+    ENABLE_RUNTIME_SCHEMA_SYNC = _env_flag(
+        _runtime_bootstrap_default,
+        "ENABLE_RUNTIME_SCHEMA_SYNC",
+        "FLASK_ENABLE_RUNTIME_SCHEMA_SYNC",
+    )
+    ENABLE_RUNTIME_TENANT_INIT = _env_flag(
+        _runtime_bootstrap_default,
+        "ENABLE_RUNTIME_TENANT_INIT",
+        "FLASK_ENABLE_RUNTIME_TENANT_INIT",
+    )
+    # Demo placeholders and synthetic catalogs must be explicitly enabled.
+    ENABLE_DEMO_MODE = _env_flag(
+        False,
+        "ENABLE_DEMO_MODE",
+        "FLASK_ENABLE_DEMO_MODE",
+    )
     # Cookie aislada para los tokens emitidos al widget embebido.  Evita que
     # los tokens de corta duración del widget reemplacen la sesión del panel.
     WIDGET_TOKEN_COOKIE_NAME = os.getenv("WIDGET_TOKEN_COOKIE_NAME", "widget_token")
+    WIDGET_JWT_ALG = _env_first("WIDGET_JWT_ALG", default="HS256")
+    WIDGET_JWT_KID = _env_first("WIDGET_JWT_KID", default="widget-hs256")
+    WIDGET_JWT_SECRET = _env_first("WIDGET_JWT_SECRET", "SECRET_KEY", default=SECRET_KEY)
+    WIDGET_JWT_PRIVATE_KEY = _env_first("WIDGET_JWT_PRIVATE_KEY")
+    WIDGET_JWT_PUBLIC_KEY = _env_first("WIDGET_JWT_PUBLIC_KEY")
 
     # 4. RESTO DE LA CONFIGURACIÓN...
     ATTENTION_BUBBLE_TEXT = os.getenv("ATTENTION_BUBBLE_TEXT", "¡Hola! ¿Necesitas ayuda?")
