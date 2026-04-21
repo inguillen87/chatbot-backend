@@ -79,6 +79,8 @@
 
 - `X-Request-Id: <uuid|forwarded>`
 
+> Nota: endpoints `GET /analytics/geo/heatmap` y `GET /analytics/geo/points` siguen la misma regla (`request_id` en payload + `X-Request-Id` en header).
+
 ---
 
 ## 2) GET `/admin/analytics/whatsapp-funnel`
