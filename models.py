@@ -22,6 +22,11 @@ from sqlalchemy.dialects.postgresql import JSONB
 from database import db
 from werkzeug.security import generate_password_hash, check_password_hash
 import secrets
+
+# Import new modules so Alembic detects them automatically
+import models_audit
+import models_rag
+import models_voice
 from flask_login import UserMixin
 import uuid
 import json
