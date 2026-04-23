@@ -30,6 +30,144 @@ class OpenAIResponsesProvider:
             except ImportError:
                 self.client = OpenAI()
 
+    def generate_stream(self, request: GatewayRequest):
+        """
+        Executes a complete AI request utilizing the OpenAI SDK with streaming.
+        Yields dictionaries representing typed events for the AIStreamService.
+        """
+        start_time = time.perf_counter()
+
+        # 1. Build messages payload
+        messages = []
+        messages.append({"role": "system", "content": request.instructions})
+
+        if not hasattr(self, "_message_state"):
+            self._message_state = {}
+
+        if request.previous_response_id and request.previous_response_id in self._message_state:
+            messages = self._message_state[request.previous_response_id].copy()
+
+        content_items = []
+        tool_results = []
+        for item in request.input_items:
+            if item.type == "text" and item.text:
+                content_items.append({"type": "text", "text": item.text})
+            elif item.type == "image" and item.url:
+                content_items.append({"type": "image_url", "image_url": {"url": item.url}})
+            elif item.type == "tool_result" and item.tool_call_id:
+                tool_results.append({
+                    "role": "tool",
+                    "tool_call_id": item.tool_call_id,
+                    "content": item.text or ""
+                })
+
+        if content_items:
+            messages.append({"role": "user", "content": content_items})
+
+        if tool_results:
+            messages.extend(tool_results)
+
+        kwargs = {
+            "model": request.model,
+            "messages": messages,
+            "max_tokens": request.max_output_tokens,
+            "parallel_tool_calls": request.parallel_tool_calls,
+            "stream": True
+        }
+
+        tools = request.tools
+        if tools:
+            kwargs["tools"] = tools
+            kwargs["tool_choice"] = request.tool_choice if tools else None
+
+        if request.output_schema:
+            kwargs["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "structured_output",
+                    "strict": True,
+                    "schema": request.output_schema
+                }
+            }
+
+        if request.provider_options:
+            for k, v in request.provider_options.items():
+                if k not in kwargs:
+                    kwargs[k] = v
+
+        try:
+            stream = self.client.chat.completions.create(**kwargs)
+
+            full_text = []
+            tool_calls_buffer = {}
+            current_provider_id = None
+            usage_metrics = UsageMetrics()
+
+            for chunk in stream:
+                if chunk.id and not current_provider_id:
+                    current_provider_id = chunk.id
+
+                choice = chunk.choices[0] if chunk.choices else None
+                if choice and choice.delta:
+                    delta = choice.delta
+
+                    if delta.content:
+                        full_text.append(delta.content)
+                        yield {
+                            "type": "response.delta",
+                            "data": {"text": delta.content}
+                        }
+
+                    if delta.tool_calls:
+                        for tc in delta.tool_calls:
+                            idx = tc.index
+                            if idx not in tool_calls_buffer:
+                                tool_calls_buffer[idx] = {"id": tc.id, "name": tc.function.name, "arguments": ""}
+                                yield {
+                                    "type": "tool.started",
+                                    "data": {"tool_call_id": tc.id, "name": tc.function.name}
+                                }
+                            if tc.function.arguments:
+                                tool_calls_buffer[idx]["arguments"] += tc.function.arguments
+
+            # Yield completion
+            finish_reason = None
+            if chunk.choices:
+                finish_reason = chunk.choices[0].finish_reason
+
+            if tool_calls_buffer:
+                for idx, tc in tool_calls_buffer.items():
+                    yield {
+                        "type": "tool.completed",
+                        "data": tc
+                    }
+
+                # Signal the orchestrator that tools are pending
+                yield {
+                    "type": "response.completed",
+                    "data": {
+                        "status": "tool_calls_pending",
+                        "tool_calls": list(tool_calls_buffer.values()),
+                        "provider_response_id": current_provider_id
+                    }
+                }
+            else:
+                yield {
+                    "type": "response.completed",
+                    "data": {
+                        "status": "completed",
+                        "text": "".join(full_text),
+                        "provider_response_id": current_provider_id
+                    }
+                }
+
+        except Exception as e:
+            logger.error(f"Provider Stream Exception: {e}", exc_info=True)
+            yield {
+                "type": "response.error",
+                "data": {"error_code": "provider_error", "message": str(e)}
+            }
+
     def generate(self, request: GatewayRequest) -> GatewayResponse:
         """Executes a complete AI request utilizing the OpenAI SDK."""
         start_time = time.perf_counter()
