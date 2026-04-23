@@ -47,6 +47,8 @@ class MockProvider:
 
 class TestAIGateway(unittest.TestCase):
     def setUp(self):
+        import app
+        self.app = app.create_app()
         @tool_registry.register("mock_tool", "A mock tool", {"type": "object", "properties": {}})
         def mock_tool_func(param: str, context: dict = None):
             return f"Processed: {param}"
@@ -55,21 +57,22 @@ class TestAIGateway(unittest.TestCase):
         self.gateway = AIGateway(provider=self.provider)
 
     def test_gateway_tool_loop(self):
-        req = GatewayRequest(
-            tenant_id=1,
-            channel="widget",
-            model="gpt-mock",
-            instructions="You are a helpful assistant.",
-            input_items=[GatewayInputItem(text="Do something")]
-        )
+        with self.app.app_context():
+            req = GatewayRequest(
+                tenant_id=1,
+                channel="widget",
+                model="gpt-mock",
+                instructions="You are a helpful assistant.",
+                input_items=[GatewayInputItem(text="Do something")]
+            )
 
-        res = self.gateway.execute(req)
+            res = self.gateway.execute(req)
 
-        self.assertEqual(res.status, "completed")
-        self.assertTrue("Processed: value" in res.text)
-        self.assertTrue("Chained: response_1" in res.text)
-        self.assertEqual(self.provider.rounds, 2)
-        self.assertEqual(res.latency_ms, 30)
+            self.assertEqual(res.status, "completed")
+            self.assertTrue("Processed: value" in res.text)
+            self.assertTrue("Chained: response_1" in res.text)
+            self.assertEqual(self.provider.rounds, 2)
+            self.assertEqual(res.latency_ms, 30)
 
 if __name__ == "__main__":
     unittest.main()

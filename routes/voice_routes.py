@@ -13,10 +13,35 @@ import base64
 import logging
 from services.voice_stream_service import VoiceStreamService
 
+from utils.auth_helpers import token_requerido
+from services.realtime_session_service import realtime_session_service
+from flask import jsonify
+
 voice_bp = Blueprint('voice', __name__)
 
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
 logger = logging.getLogger(__name__)
+
+@voice_bp.route('/api/realtime/session', methods=['POST'])
+@token_requerido
+def create_webrtc_session(current_user, owner_user, anon_id):
+    """
+    Creates an ephemeral WebRTC session token for the browser client.
+    Requires widget/panel auth.
+    """
+    tenant_id = getattr(owner_user, 'tenant_id', None) or getattr(owner_user, 'id', None)
+    if not tenant_id:
+        return jsonify({"error": "Tenant missing"}), 400
+
+    user_id = getattr(current_user, 'id', None)
+
+    result = realtime_session_service.create_session(tenant_id, user_id, anon_id)
+
+    status_code = result.pop("status_code", 500)
+    if status_code != 200:
+        return jsonify({"error": result.get("error")}), status_code
+
+    return jsonify(result), 200
 
 @voice_bp.route('/voice/fallback', methods=['POST'])
 def voice_fallback():

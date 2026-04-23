@@ -1,8 +1,8 @@
-"""Add multimodal ticket and PR-06 PR-07 models
+"""add catalog upload extended fields
 
-Revision ID: b1efa5b6dd9a
-Revises: a6dfab11f261
-Create Date: 2026-04-23 17:36:57.775446
+Revision ID: 63d5d1f8a654
+Revises: 20300124
+Create Date: 2026-02-04 01:38:44.912705
 
 """
 from alembic import op
@@ -10,8 +10,8 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision = 'b1efa5b6dd9a'
-down_revision = 'a6dfab11f261'
+revision = '63d5d1f8a654'
+down_revision = '20300124'
 branch_labels = None
 depends_on = None
 
