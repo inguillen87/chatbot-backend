@@ -71,3 +71,24 @@ class AIToolCallLog(db.Model):
     latency_ms = Column(Integer, nullable=True)
     is_error = Column(Boolean, default=False)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+#
+# PR-06: Prompt Registry Models
+#
+
+class PromptVersion(db.Model):
+    __tablename__ = "prompt_versions"
+    id = Column(Integer, primary_key=True)
+    prompt_key = Column(String(100), nullable=False, index=True)
+    version = Column(String(50), nullable=False)
+    channel = Column(String(50), nullable=True)
+    tenant_override = Column(Integer, nullable=True, index=True)
+
+    model_default = Column(String(100), nullable=False)
+    instructions = Column(Text, nullable=False)
+    tool_profile = Column(JSON, nullable=True)
+    response_schema = Column(JSON, nullable=True)
+
+    status = Column(String(20), default="draft") # draft, active, deprecated
+    created_by = Column(String(100), nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))

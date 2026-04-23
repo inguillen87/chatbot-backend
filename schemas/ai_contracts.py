@@ -38,8 +38,10 @@ class GatewayRequest(BaseModel):
     channel: str
     trace_id: Optional[str] = None
 
-    model: str
-    instructions: str
+    model: str = "gpt-4o-mini"
+    instructions: Optional[str] = None
+    instructions_key: Optional[str] = None
+    prompt_variables: Dict[str, Any] = Field(default_factory=dict)
     input_items: List[GatewayInputItem] = Field(default_factory=list)
 
     # XOR fields for continuation

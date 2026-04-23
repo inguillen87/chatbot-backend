@@ -5,6 +5,8 @@ from typing import Dict, Any, List, Optional
 import openai
 from openai import OpenAI
 
+from cachetools import TTLCache
+
 from schemas.ai_contracts import (
     GatewayRequest,
     GatewayResponse,
@@ -42,7 +44,7 @@ class OpenAIResponsesProvider:
         messages.append({"role": "system", "content": request.instructions})
 
         if not hasattr(self, "_message_state"):
-            self._message_state = {}
+            self._message_state = TTLCache(maxsize=1000, ttl=3600)
 
         if request.previous_response_id and request.previous_response_id in self._message_state:
             messages = self._message_state[request.previous_response_id].copy()
@@ -185,7 +187,7 @@ class OpenAIResponsesProvider:
         # stateful Responses API on top of standard Chat Completions until the actual SDK for Responses
         # is fully available in the environment, or we can use it to emulate previous_response_id.
         if not hasattr(self, "_message_state"):
-            self._message_state = {}
+            self._message_state = TTLCache(maxsize=1000, ttl=3600) # Keep 1 hour of states max
 
         # If chaining from previous_response_id, fetch history
         if request.previous_response_id and request.previous_response_id in self._message_state:
