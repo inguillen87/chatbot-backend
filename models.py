@@ -2686,3 +2686,4 @@ class TenantWidgetConfig(db.Model, TimestampMixin):
             "last_published_at": self.last_published_at.isoformat() if self.last_published_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
+from models_analytics_k import AIUsageLog, TenantBudget, CostRollupHourly, CostRollupDaily
