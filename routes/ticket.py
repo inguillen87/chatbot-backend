@@ -1,13 +1,25 @@
 import os
 import uuid
 import logging
+from typing import Optional
 from werkzeug.utils import secure_filename
-from flask import Blueprint, request, jsonify, current_app, send_from_directory, render_template
-from socket_service import emit_ticket_update, emit_ticket_comment, emit_new_ticket
+from flask import Blueprint, g, request, jsonify, current_app, send_from_directory, render_template
+from socket_service import (
+    emit_ticket_update,
+    emit_ticket_comment,
+    emit_new_ticket,
+    emit_ticket_status_changed,
+    emit_ticket_assignment_changed,
+    emit_ticket_presence_changed,
+    emit_conversation_message_read,
+    emit_ticket_unread_changed,
+)
 from models import (
     MunicipioTicket,
     PymeTicket,
+    Rubro,
     User,
+    TenantProfile,
     TicketComentario,
     TicketSatisfaccion,
     Conversacion,
@@ -16,13 +28,24 @@ from models import (
 )
 from datetime import datetime, timedelta
 from services.ticket_service import servicio_tickets
+from services.ticket_realtime_state import (
+    build_ticket_collaboration_state,
+    build_ticket_realtime_summary,
+    build_viewer_key,
+    mark_ticket_read,
+    upsert_ticket_presence,
+)
+from services.conversation_stream import build_unified_conversation_stream
 from services.gcs_service import upload_to_gcs # Import the new GCS service
 from services.geo.route import obtener_ruta
 from utils.auth_helpers import token_requerido, anon_o_token_requerido, admin_o_empleado_requerido
 from utils.permissions import require_role
 from collections import defaultdict
-from sqlalchemy import or_
+from sqlalchemy import or_, func
 from utils.ticket_utils import normalize_category
+from utils.time_utils import datetime_to_iso_utc, get_local_now
+from utils.tenant import get_current_tenant, get_current_tenant_profile
+from utils.errors import ApiError
 logger = logging.getLogger("app")
 
 from utils.recaptcha import verify_recaptcha
@@ -40,6 +63,312 @@ TICKET_ALLOWED_STATES = [
     "esperando_agente_en_vivo",
     "cerrado",
 ]
+TICKET_WORKFLOW_CONTRACT_VERSION = "tickets.workflow.v1"
+
+TICKET_ALLOWED_TRANSITIONS = {
+    "nuevo": ["en_proceso", "cerrado"],
+    "en_proceso": ["en_vivo", "esperando_agente_en_vivo", "cerrado"],
+    "en_vivo": ["en_proceso", "cerrado"],
+    "esperando_agente_en_vivo": ["en_vivo", "en_proceso", "cerrado"],
+    "cerrado": [],
+}
+
+
+def _build_ticket_operational_badges(ticket_obj) -> dict:
+    """Compute lightweight SLA/ops hints for frontend inboxes.
+
+    No reemplaza un SLA engine formal, pero da una base consistente para pintar
+    badges de priorización (`sin_asignar`, `por_vencer`, `vencido`,
+    `respuesta_pendiente`) en paneles y vistas de tracking.
+    """
+
+    now = get_local_now()
+    created_at = getattr(ticket_obj, "fecha", None) or now
+    last_activity = getattr(ticket_obj, "ultima_actividad", None) or created_at
+
+    def _normalize_dt(value):
+        if value is None:
+            return None
+        if getattr(value, "tzinfo", None) is None:
+            return value.replace(tzinfo=now.tzinfo)
+        return value
+
+    created_at = _normalize_dt(created_at)
+    last_activity = _normalize_dt(last_activity)
+    estado = (getattr(ticket_obj, "estado", None) or "").strip().lower()
+    assigned_user_id = getattr(ticket_obj, "asignado_a_id", None)
+
+    age_hours = max((now - created_at).total_seconds() / 3600, 0)
+    inactivity_hours = max((now - last_activity).total_seconds() / 3600, 0)
+    is_closed = estado in {"cerrado", "resuelto"}
+
+    badges: list[str] = []
+    sla_status = "ok"
+
+    if is_closed:
+        return {
+            "sla_status": "resuelto",
+            "badges": ["resuelto"],
+            "age_hours": round(age_hours, 2),
+            "inactivity_hours": round(inactivity_hours, 2),
+        }
+
+    if not assigned_user_id:
+        badges.append("sin_asignar")
+        if age_hours >= 24:
+            badges.append("vencido")
+            sla_status = "vencido"
+        elif age_hours >= 8:
+            badges.append("por_vencer")
+            sla_status = "por_vencer"
+        else:
+            sla_status = "sin_asignar"
+    else:
+        if inactivity_hours >= 24:
+            badges.extend(["respuesta_pendiente", "vencido"])
+            sla_status = "vencido"
+        elif inactivity_hours >= 8:
+            badges.extend(["respuesta_pendiente", "por_vencer"])
+            sla_status = "por_vencer"
+        elif inactivity_hours >= 2:
+            badges.append("respuesta_pendiente")
+            sla_status = "seguimiento"
+
+    if not badges:
+        badges.append("ok")
+
+    return {
+        "sla_status": sla_status,
+        "badges": list(dict.fromkeys(badges)),
+        "age_hours": round(age_hours, 2),
+        "inactivity_hours": round(inactivity_hours, 2),
+    }
+
+
+def _validar_asignacion_empleado(ticket_obj, current_user: User):
+    """Devuelve una respuesta de error si el empleado no está asignado al ticket."""
+
+    if current_user.rol != "empleado":
+        return None
+
+    if getattr(ticket_obj, "asignado_a_id", None) != current_user.id:
+        return jsonify({"error": "Ticket no asignado a este empleado."}), 403
+
+    return None
+
+
+def _resolver_acceso_chat_ticket(ticket_obj, current_user: User, anon_id: str = None, pin: Optional[str] = None) -> dict:
+    """Normaliza los permisos de acceso al chat/timeline de tickets públicos.
+
+    Este helper evita drift entre endpoints públicos del reclamo. En especial,
+    deja explícito que el flujo con ``consulta_pin`` es un acceso ciudadano
+    legítimo aunque no exista sesión autenticada todavía, para que el tracking
+    público, el historial y la mensajería reutilicen la misma regla.
+    """
+
+    es_agente_municipal = bool(current_user and current_user.tipo_chat == "municipio")
+    es_agente_pyme = bool(
+        current_user
+        and getattr(current_user, "rubro_id", None)
+        and getattr(ticket_obj, "rubro_id", None) == current_user.rubro_id
+    )
+    es_agente = es_agente_municipal or es_agente_pyme
+    es_dueno = bool(current_user and getattr(ticket_obj, "user_id", None) == current_user.id)
+    es_anon_valido = bool(anon_id and getattr(ticket_obj, "anon_id", None) == anon_id)
+    es_pin_valido = bool(pin and str(getattr(ticket_obj, "consulta_pin", "")) == str(pin))
+
+    return {
+        "es_agente": es_agente,
+        "es_dueno": es_dueno,
+        "es_anon_valido": es_anon_valido,
+        "es_pin_valido": es_pin_valido,
+        "permitido": es_agente or es_dueno or es_anon_valido or es_pin_valido,
+    }
+
+
+def _resolve_ticket_with_access(ticket_type: str, ticket_id: int, current_user: User, anon_id: str = None, pin: Optional[str] = None):
+    TicketModel = MunicipioTicket if ticket_type == "municipio" else PymeTicket if ticket_type == "pyme" else None
+    if not TicketModel:
+        return None, jsonify({"error": f"Tipo de ticket no válido: {ticket_type}"}), 400, None
+
+    ticket_obj = db.session.get(TicketModel, ticket_id)
+    if not ticket_obj:
+        return None, jsonify({"error": "Ticket no encontrado."}), 404, None
+
+    if ticket_type == "municipio":
+        access = _resolver_acceso_chat_ticket(ticket_obj, current_user, anon_id, pin)
+    else:
+        es_agente = bool(current_user and current_user.rubro_id and ticket_obj.rubro_id == current_user.rubro_id)
+        es_dueno = bool(current_user and ticket_obj.user_id == current_user.id)
+        es_anon_valido = bool(anon_id and getattr(ticket_obj, "anon_id", None) == anon_id)
+        es_pin_valido = bool(pin and str(getattr(ticket_obj, "consulta_pin", "")) == str(pin))
+        access = {
+            "es_agente": es_agente,
+            "es_dueno": es_dueno,
+            "es_anon_valido": es_anon_valido,
+            "es_pin_valido": es_pin_valido,
+            "permitido": es_agente or es_dueno or es_anon_valido or es_pin_valido,
+        }
+
+    if not access["permitido"]:
+        return None, jsonify({"error": MENSAJE_SIN_PERMISOS}), 403, None
+
+    return ticket_obj, None, None, access
+
+
+def _request_anon_id() -> Optional[str]:
+    identity = getattr(g, "contact_identity", None)
+    if isinstance(identity, dict):
+        anon_id = str(identity.get("anon_id") or "").strip()
+        if anon_id:
+            return anon_id
+
+    anon_id = (
+        request.headers.get("X-Anon-Id")
+        or request.headers.get("Anon-Id")
+        or request.headers.get("x-anon-id")
+        or request.headers.get("anon-id")
+    )
+    anon_id = str(anon_id or "").strip()
+    return anon_id or None
+
+
+def _request_contact_key() -> Optional[str]:
+    identity = getattr(g, "contact_identity", None)
+    if not isinstance(identity, dict):
+        return None
+    contact_key = str(identity.get("contact_key") or "").strip()
+    return contact_key or None
+
+
+def _request_active_session_id() -> Optional[str]:
+    chat_session = str(request.headers.get("X-Chat-Session-Id") or "").strip()
+    if chat_session:
+        return chat_session
+
+    identity = getattr(g, "contact_identity", None)
+    if isinstance(identity, dict):
+        for key in ("conversation_id", "contact_key", "anon_id"):
+            value = str(identity.get(key) or "").strip()
+            if value:
+                return value
+
+    anon_id = _request_anon_id()
+    return anon_id
+
+
+def _build_realtime_actor_context(*, current_user: User, anon_id: str = None, access: Optional[dict] = None) -> tuple[str | None, str | None, str | None]:
+    access = access or {}
+    viewer_key = build_viewer_key(
+        user_id=getattr(current_user, "id", None),
+        anon_id=anon_id if access.get("es_anon_valido") else None,
+        pin=request.args.get("pin") if access.get("es_pin_valido") else None,
+    )
+    if getattr(current_user, "id", None):
+        viewer_role = getattr(current_user, "rol", None) or "user"
+    elif access.get("es_pin_valido"):
+        viewer_role = "public_pin"
+    else:
+        viewer_role = "anonymous"
+    viewer_anon_id = anon_id if access.get("es_anon_valido") else None
+    return viewer_key, viewer_role, viewer_anon_id
+
+
+def _build_ticket_unread_event_payload(ticket_obj, ticket_type: str) -> dict:
+    summary = build_ticket_realtime_summary(ticket_type=ticket_type, ticket_id=ticket_obj.id)
+    tenant_id = getattr(ticket_obj, "municipio_id", None) if ticket_type == "municipio" else getattr(ticket_obj, "rubro_id", None)
+    room = f"{'municipio' if ticket_type == 'municipio' else 'pyme'}_{tenant_id}" if tenant_id else None
+    return {
+        "ticket_id": ticket_obj.id,
+        "tipo": ticket_type,
+        "tenant_type": ticket_type,
+        "tenant_id": tenant_id,
+        "municipio_id": getattr(ticket_obj, "municipio_id", None),
+        "rubro_id": getattr(ticket_obj, "rubro_id", None),
+        "socket_room": room,
+        "summary": summary["read_state"],
+        "collaboration_state": build_ticket_collaboration_state(ticket_type=ticket_type, ticket_id=ticket_obj.id),
+    }
+
+def _categorias_permitidas_para_empleado(user: User) -> tuple[list[str], list[int]]:
+    """Obtiene las categorías habilitadas para un empleado normalizadas en minúsculas.
+
+    Devuelve una tupla con nombres y IDs (para ``CategoriaTicket``) para soportar
+    el nuevo enrutamiento multi-tenant basado en categorías persistentes.
+    """
+
+    nombres: list[str] = []
+    ids: list[int] = []
+    categorias_rel = getattr(user, "categorias_ticket", None) or getattr(user, "categorias", None) or []
+    for cat in categorias_rel:
+        nombre = getattr(cat, "nombre", None)
+        if nombre:
+            nombres.append(nombre.strip().lower())
+        if getattr(cat, "id", None):
+            ids.append(cat.id)
+
+    if not nombres and getattr(user, "ticket_categorias", None):
+        nombres.extend(
+            [c.strip().lower() for c in user.ticket_categorias.split(",") if c.strip()]
+        )
+
+    # Remover duplicados preservando orden
+    return list(dict.fromkeys(nombres)), list(dict.fromkeys(ids))
+
+
+def _resolve_tenant_scope(current_user: User) -> tuple[Optional[TenantProfile], Optional[int], Optional[int]]:
+    tenant = get_current_tenant_profile()
+    if not tenant:
+        return None, None, None
+    return tenant, tenant.municipio_id, tenant.pyme_id
+
+
+def _authorized_for_tenant_scope(current_user: User, tenant: Optional[TenantProfile]) -> bool:
+    if not tenant:
+        return False
+    if current_user.tenant_id == tenant.id:
+        return True
+    if tenant.municipio_id and current_user.municipio_id == tenant.municipio_id:
+        return True
+    if tenant.pyme_id and current_user.id == tenant.pyme_id:
+        return True
+    if tenant.pyme_id and current_user.pyme_id == tenant.pyme_id:
+        return True
+    if tenant.municipio_id and current_user.empresa_id == tenant.municipio_id:
+        return True
+    if (
+        current_user.rol in {"admin", "empleado"}
+        and current_user.tipo_chat
+        and tenant.tipo
+        and current_user.tipo_chat == tenant.tipo
+    ):
+        return True
+    return False
+
+
+def _get_allowed_municipio_id(current_user: User) -> Optional[int]:
+    allowed_ids = _get_allowed_municipio_ids(current_user)
+    if not allowed_ids:
+        return None
+    return allowed_ids[0]
+
+
+def _get_allowed_municipio_ids(current_user: User) -> list[int]:
+    tenant, tenant_municipio_id, _tenant_pyme_id = _resolve_tenant_scope(current_user)
+    allowed_ids: list[int] = []
+    if current_user.municipio_id:
+        allowed_ids.append(current_user.municipio_id)
+    if _authorized_for_tenant_scope(current_user, tenant) and tenant_municipio_id:
+        if tenant_municipio_id not in allowed_ids:
+            allowed_ids.append(tenant_municipio_id)
+    return allowed_ids
+
+
+def _is_municipio_agent(current_user: User) -> bool:
+    tenant, tenant_municipio_id, _tenant_pyme_id = _resolve_tenant_scope(current_user)
+    if _authorized_for_tenant_scope(current_user, tenant) and tenant_municipio_id:
+        return True
+    return current_user.tipo_chat == "municipio" and bool(current_user.municipio_id)
 
 
 @ticket_bp.route('/tickets/estados', methods=['GET'])
@@ -168,15 +497,23 @@ def serialize_ticket_to_json(ticket, ticket_type):
         room_prefix = 'municipio' if ticket_type == 'municipio' else 'pyme'
         socket_room = f"{room_prefix}_{tenant_id}"
 
+    assigned_user = getattr(ticket, "asignado_a", None)
+    operational_hints = _build_ticket_operational_badges(ticket)
+    collaboration_state = build_ticket_collaboration_state(ticket_type=ticket_type, ticket_id=ticket.id)
+
+    estado_original = getattr(ticket, "estado", None) or "desconocido"
+    estado_serializado = "resuelto" if estado_original == "cerrado" else estado_original
+    categoria_ticket = getattr(ticket, "categoria", None) or "Sin categoría"
+    categoria_normalizada = normalize_category(categoria_ticket) or categoria_ticket
+
     serialized_data = {
         "id": ticket.id,
         "tipo": ticket_type,
         "nro_ticket": _generate_friendly_ticket_id(ticket, ticket_type),
         "asunto": getattr(ticket, 'asunto', 'Sin Asunto'),
-        # Mapear "cerrado" a "resuelto" para una mejor UX en el panel.
-        "estado": "resuelto" if getattr(ticket, 'estado', None) == "cerrado" else ticket.estado,
-        "fecha": ticket.fecha.isoformat(),
-        "categoria": normalize_category(getattr(ticket, 'categoria', 'Sin Categoría')),
+        "estado": estado_serializado,
+        "fecha": datetime_to_iso_utc(ticket.fecha),
+        "categoria": categoria_normalizada,
         "direccion": user_data.get("direccion", "No especificada"),
         "distrito": getattr(ticket, 'distrito', None),
         "latitud": getattr(ticket, 'latitud', None),
@@ -201,6 +538,23 @@ def serialize_ticket_to_json(ticket, ticket_type):
         "tenant_type": tenant_type,
         "tenant_id": tenant_id,
         "socket_room": socket_room,
+        "asignado_a": (
+            {
+                "id": assigned_user.id,
+                "nombre": assigned_user.name,
+                "email": assigned_user.email,
+            }
+            if assigned_user
+            else None
+        ),
+        "asignado_en": datetime_to_iso_utc(getattr(ticket, "asignado_en", None)),
+        "sla_status": operational_hints["sla_status"],
+        "operational_badges": operational_hints["badges"],
+        "operational_metrics": {
+            "age_hours": operational_hints["age_hours"],
+            "inactivity_hours": operational_hints["inactivity_hours"],
+        },
+        "collaboration_state": collaboration_state,
     }
     return serialized_data
 
@@ -238,86 +592,144 @@ def get_tickets_del_usuario_logic(current_user: User):
     if not current_user:
         return jsonify({"error": "Usuario no asociado, no se pueden mostrar tickets."}), 404
 
+    g.current_user = current_user
+
     try:
+        tenant_for_query = get_current_tenant_profile()
+        tenant_slug = getattr(tenant_for_query, "slug", None)
+
         requested_estado_filter = request.args.get("estado")
         requested_categoria_filter = request.args.get("categoria")
+        requested_categoria_id = request.args.get("categoria_id")
+
+        try:
+            requested_categoria_id_int = int(requested_categoria_id) if requested_categoria_id else None
+        except (TypeError, ValueError):
+            requested_categoria_id_int = None
 
         TicketModel = None
         tipo_ticket_str = '' # Para usar en la serialización
 
-        if current_user.tipo_chat == "municipio":
+        tenant_owner_municipio_id = None
+        tenant_owner_pyme_id = None
+        if tenant_for_query:
+            tenant_owner_municipio_id = tenant_for_query.municipio_id
+            tenant_owner_pyme_id = tenant_for_query.pyme_id
+
+        def _authorized_for_tenant() -> bool:
+            return _authorized_for_tenant_scope(current_user, tenant_for_query)
+
+        # Determinar el tipo de ticket usando tenant_slug primero y luego `tipo_chat`.
+        if tenant_owner_municipio_id or (
+            current_user.tipo_chat == "municipio" or (
+                not current_user.tipo_chat and current_user.municipio_id
+            )
+        ):
             TicketModel = MunicipioTicket
-            current_app.logger.info(f"[DEBUG] Usuario municipal: id={current_user.id}, municipio_id={current_user.municipio_id}, rol={current_user.rol}, tipo_chat={current_user.tipo_chat}")
-            if not current_user.municipio_id:
+            municipio_ids_for_query = _get_allowed_municipio_ids(current_user)
+            if not municipio_ids_for_query and tenant_owner_municipio_id and _authorized_for_tenant():
+                municipio_ids_for_query = [tenant_owner_municipio_id]
+            current_app.logger.info(
+                "[DEBUG] Usuario municipal: id=%s, municipio_id=%s, rol=%s, tipo_chat=%s, tenant_slug=%s, municipio_query_ids=%s",
+                current_user.id,
+                current_user.municipio_id,
+                current_user.rol,
+                current_user.tipo_chat,
+                tenant_slug,
+                municipio_ids_for_query,
+            )
+            if not municipio_ids_for_query:
                 current_app.logger.error(f"[DEBUG] Usuario {current_user.id} no tiene municipio_id.")
                 return jsonify({"error": "El usuario municipal no tiene asignado un municipio_id válido. Comuníquese con el soporte."}), 400
 
-            query_base = TicketModel.query.filter(TicketModel.municipio_id == current_user.municipio_id)
-            current_app.logger.info(f"[DEBUG] Querying for municipio_id: {current_user.municipio_id}")
+            query_base = TicketModel.query.filter(TicketModel.municipio_id.in_(municipio_ids_for_query))
+            current_app.logger.info(f"[DEBUG] Querying for municipio_ids: {municipio_ids_for_query}")
             tipo_ticket_str = 'municipio'
-        else:
+        elif tenant_owner_pyme_id or (
+            current_user.tipo_chat == "pyme" or (
+                not current_user.tipo_chat and current_user.rubro_id
+            )
+        ):
             TicketModel = PymeTicket
             current_app.logger.info(f"[DEBUG] Usuario PYME: id={current_user.id}, rubro_id={current_user.rubro_id}, rol={current_user.rol}, tipo_chat={current_user.tipo_chat}")
-            if current_user.rubro_id:
+
+            tenant_pyme = getattr(current_user, "tenant_profile_pyme", None)
+            if tenant_for_query and _authorized_for_tenant():
+                query_base = TicketModel.query.filter(PymeTicket.tenant_id == tenant_for_query.id)
+            elif tenant_pyme:
+                query_base = TicketModel.query.filter(PymeTicket.tenant_id == tenant_pyme.id)
+            elif current_user.rubro_id:
                 query_base = TicketModel.query.filter(PymeTicket.rubro_id == current_user.rubro_id)
             else:
                 current_app.logger.warning(f"Usuario PYME {current_user.id} sin rubro_id intentando acceder a /tickets")
                 return jsonify({"error": "Usuario PYME no tiene rubro asignado o configuración incorrecta."}), 400
             tipo_ticket_str = 'pyme'
+        else:
+            current_app.logger.warning(
+                f"[DEBUG] Usuario {current_user.id} no tiene tipo_chat ni IDs asociados para tickets"
+            )
+            return jsonify({"error": "Usuario no tiene configuración de tickets asociada."}), 400
 
         # Aplicar filtro de categoría si se proveyó (afecta tanto al summary como a la lista)
-        if requested_categoria_filter:
+        if requested_categoria_id_int is not None:
+            query_base = query_base.filter(TicketModel.categoria_id == requested_categoria_id_int)
+        elif requested_categoria_filter:
             if requested_categoria_filter.lower() == "luminarias":
                 query_base = query_base.filter(TicketModel.categoria.ilike("%lumin%"))
             else:
                 query_base = query_base.filter(TicketModel.categoria == requested_categoria_filter)
 
-        # Aplicar filtro de categorías asignadas al empleado (afecta tanto al summary como a la lista)
-        employee_specific_categories = []
-        if current_user.rol == 'empleado' and current_user.ticket_categorias:
-            employee_specific_categories = [c.strip().lower() for c in current_user.ticket_categorias.split(',') if c.strip()]
-            if employee_specific_categories:
-                 # Usar ilike para búsquedas insensibles a mayúsculas/minúsculas si es necesario,
-                 # o asumir que las categorías se guardan normalizadas.
-                 # Por ahora, se asume que la comparación directa es suficiente si las categorías están normalizadas.
-                 # query_base = query_base.filter(TicketModel.categoria.in_(employee_specific_categories))
-                 # SQLAlchemy no tiene un `ANY` directo como SQL puro para listas de strings de esta forma.
-                 # Se puede usar OR:
-                category_conditions = []
-                for cat_name in employee_specific_categories:
-                    if cat_name.lower() == "luminarias":
-                        category_conditions.append(TicketModel.categoria.ilike("%lumin%"))
-                    else:
-                        category_conditions.append(TicketModel.categoria.ilike(cat_name))
-                query_base = query_base.filter(or_(*category_conditions))
+        if current_user.rol == 'empleado' or getattr(current_user, "es_empleado", False):
+            categorias_empleado, categorias_ids = _categorias_permitidas_para_empleado(current_user)
+            if categorias_ids:
+                query_base = query_base.filter(TicketModel.categoria_id.in_(categorias_ids))
+            elif categorias_empleado:
+                query_base = query_base.filter(
+                    func.lower(TicketModel.categoria).in_(categorias_empleado)
+                )
+            else:
+                query_base = query_base.filter(False)
 
-
-        # Obtener todos los tickets que cumplen con los filtros base (municipio/rubro y categoría de empleado/request) para el resumen
-        all_tickets_for_summary_calculation = query_base.all()
-
+        # Obtener todos los tickets que cumplen con los filtros base (municipio/rubro y categoría
+        # de empleado/request) para el resumen utilizando una consulta agregada en lugar de traer
+        # todas las filas a memoria. Esto mejora la latencia percibida en clientes móviles y
+        # reduce el consumo de recursos en escenarios con grandes volúmenes de tickets.
         summary_by_status = defaultdict(int)
         defined_statuses = list(TICKET_ALLOWED_STATES) + ["resuelto"]
 
-        # Inicializar todos los estados definidos en 0 para que el frontend
-        # siempre reciba las claves esperadas aunque no existan tickets en ese
-        # estado.
         for st in defined_statuses:
             summary_by_status[st] = 0
 
-        for t_sum in all_tickets_for_summary_calculation:
-            # El filtro de categoría de empleado ya se aplicó en la query_base
-            estado_actual = "resuelto" if t_sum.estado == "cerrado" else t_sum.estado
+        status_counts = (
+            query_base.with_entities(
+                TicketModel.estado,
+                func.count(TicketModel.id)
+            )
+            .group_by(TicketModel.estado)
+            .all()
+        )
+
+        total_tickets = 0
+        for estado_original, cantidad in status_counts:
+            estado_original = estado_original or "desconocido"
+            estado_actual = "resuelto" if estado_original == "cerrado" else estado_original
+            total_tickets += cantidad
+
             if estado_actual in defined_statuses:
-                summary_by_status[estado_actual] += 1
+                summary_by_status[estado_actual] += cantidad
             else:
-                summary_by_status["otros"] += 1  # Contar otros estados
-        summary_by_status["total"] = len(all_tickets_for_summary_calculation)
-        # Unificar los tickets cerrados dentro de la cuenta de "resuelto" para
-        # que el frontend los trate como reclamos resueltos.
+                summary_by_status["otros"] += cantidad
+
+        summary_by_status["total"] = total_tickets
+        # Unificar los tickets cerrados dentro de la cuenta de "resuelto" para que el frontend
+        # los trate como reclamos resueltos.
         summary_by_status["resuelto"] += summary_by_status.get("cerrado", 0)
 
         # Ahora, obtener la lista de tickets para la página actual, aplicando el filtro de estado si existe
-        current_app.logger.info(f"Filtros aplicados: estado={requested_estado_filter}, categoria={requested_categoria_filter}")
+        current_app.logger.info(
+            f"Filtros aplicados: estado={requested_estado_filter}, "
+            f"categoria={requested_categoria_filter}, categoria_id={requested_categoria_id_int}"
+        )
         final_tickets_query = query_base  # query_base ya tiene los filtros de categoria y rol
 
         search_query = request.args.get("q")
@@ -346,25 +758,71 @@ def get_tickets_del_usuario_logic(current_user: User):
             else:
                 final_tickets_query = final_tickets_query.filter(TicketModel.estado == requested_estado_filter)
 
-        page = int(request.args.get("page", 1))
-        per_page = int(request.args.get("per_page", current_app.config.get("TICKETS_PER_PAGE_DEFAULT", 50)))
+        try:
+            page = int(request.args.get("page", 1))
+        except (TypeError, ValueError):
+            page = 1
+        if page < 1:
+            page = 1
 
-        tickets_for_list_page = (
-            final_tickets_query
-            .order_by(TicketModel.fecha.desc())
-            .offset((page - 1) * per_page)
-            .limit(per_page)
-            .all()
-        )
+        per_page_default = current_app.config.get("TICKETS_PER_PAGE_DEFAULT", 50)
+        per_page_raw = request.args.get("per_page")
+        try:
+            per_page = int(per_page_raw) if per_page_raw is not None else int(per_page_default)
+        except (TypeError, ValueError):
+            per_page = int(per_page_default)
+
+        # Interpret per_page <= 0 as a request for all records (no pagination)
+        if per_page <= 0:
+            per_page = 0
+            page = 1  # Cuando no hay paginación, forzamos la página a 1
+
+        ordered_query = final_tickets_query.order_by(TicketModel.fecha.desc())
+        if per_page > 0:
+            tickets_for_list_page = (
+                ordered_query
+                .offset((page - 1) * per_page)
+                .limit(per_page)
+                .all()
+            )
+        else:
+            tickets_for_list_page = ordered_query.all()
 
         serialized_tickets = [serialize_ticket_to_json(t, tipo_ticket_str) for t in tickets_for_list_page]
 
-        # Devolver tanto la lista de tickets para la página actual como el resumen
+        if per_page > 0:
+            total_pages = max(1, (total_tickets + per_page - 1) // per_page)
+            has_next = page * per_page < total_tickets
+            has_prev = page > 1
+            per_page_value = per_page
+        else:
+            total_pages = 1
+            has_next = False
+            has_prev = False
+            # Reportar 0 para mantener compatibilidad con el valor solicitado "sin límite"
+            per_page_value = 0
+
+        pagination_info = {
+            "page": page,
+            "per_page": per_page_value,
+            "total_items": total_tickets,
+            "total_pages": total_pages,
+            "has_next": has_next,
+            "has_prev": has_prev,
+        }
+
+        # Devolver tanto la lista de tickets para la página actual como el resumen y metadatos
+        # de paginación para facilitar experiencias responsivas (por ejemplo, vistas móviles).
         return jsonify({
             "tickets": serialized_tickets,
-            "summary": summary_by_status
+            "summary": dict(summary_by_status),
+            "pagination": pagination_info,
         })
 
+    except ApiError as e:
+        response = jsonify({"error": e.message})
+        response.status_code = getattr(e, "status_code", 400) or 400
+        return response
     except Exception as e:
         current_app.logger.error(f"Error en get_tickets_del_usuario para user {getattr(current_user,'id','?')}: {e}", exc_info=True)
         return jsonify({"error": "Error interno al obtener los tickets."}), 500
@@ -411,13 +869,15 @@ def get_mis_tickets(current_user: User):
         )
 
         def serialize(t, tipo):
+            estado_original = getattr(t, "estado", None) or "desconocido"
+            estado_serializado = "resuelto" if estado_original == "cerrado" else estado_original
             base = {
                 "id": t.id,
                 "tipo": tipo,
                 "nro_ticket": t.nro_ticket,
                 "asunto": getattr(t, "asunto", "N/A"),
-                "estado": t.estado,
-                "fecha": t.fecha.isoformat(),
+                "estado": estado_serializado,
+                "fecha": datetime_to_iso_utc(t.fecha),
                 "direccion": getattr(t, "direccion", None),
                 "latitud": getattr(t, "latitud", None),
                 "longitud": getattr(t, "longitud", None),
@@ -431,7 +891,7 @@ def get_mis_tickets(current_user: User):
                 })
             else:
                 base.update({
-                    "categoria": getattr(t, "categoria", None),
+                    "categoria": getattr(t, "categoria", None) or "Sin categoría",
                     "dni": getattr(t, "dni", None) or getattr(t, "dni_vecino", None),
                 })
             return base
@@ -520,13 +980,13 @@ def _serialize_ticket_details(ticket, ticket_type):
                 analisis = adj.analisis
                 analisis_data = {
                     "id": analisis.id, "resumen": analisis.resumen, "estado_analisis": analisis.estado_analisis,
-                    "fecha_analisis": analisis.fecha_analisis.isoformat() if analisis.fecha_analisis else None,
+                    "fecha_analisis": datetime_to_iso_utc(analisis.fecha_analisis) if analisis.fecha_analisis else None,
                     "error_analisis": analisis.error_analisis, "texto_extraido": analisis.texto_extraido,
                     "datos_estructurados": analisis.datos_estructurados, "tipo_analisis": analisis.tipo_analisis,
                 }
             archivos_adjuntos_data.append({
                 "id": adj.id, "name": adj.nombre_original or adj.filename, "mimeType": adj.mime,
-                "size": adj.tamano, "url": adj.url, "fecha": adj.fecha.isoformat() if adj.fecha else None,
+                "size": adj.tamano, "url": adj.url, "fecha": datetime_to_iso_utc(adj.fecha) if adj.fecha else None,
                 "analisis": analisis_data
             })
 
@@ -538,6 +998,13 @@ def _serialize_ticket_details(ticket, ticket_type):
             "dni": user_data["dni"]
         }
 
+    canal_ingreso_valor = getattr(ticket, 'canal_ingreso', None)
+    canal_normalizado = canal_ingreso_valor or 'desconocido'
+    ultima_actualizacion_dt = getattr(ticket, 'ultima_actividad', None) or getattr(ticket, 'fecha', None)
+
+    assigned_user = getattr(ticket, "asignado_a", None)
+    operational_hints = _build_ticket_operational_badges(ticket)
+
     ticket_data = {
         "id": ticket.id,
         "id_ticket": _generate_friendly_ticket_id(ticket, ticket_type),
@@ -546,7 +1013,7 @@ def _serialize_ticket_details(ticket, ticket_type):
         "asunto": getattr(ticket, 'asunto', ''),
         "categoria_reclamo": getattr(ticket, 'categoria', ''),
         "estado_ticket": ticket.estado,
-        "fecha_hora_creacion": ticket.fecha.isoformat(),
+        "fecha_hora_creacion": datetime_to_iso_utc(ticket.fecha),
         "descripcion_completa_reclamo": getattr(ticket, 'pregunta', ''),
         "detalles_adicionales": user_data["descripcion"], # Datos extraídos del campo 'detalles'
         "comentarios": sorted(comentarios, key=lambda c: c['fecha']),
@@ -562,7 +1029,8 @@ def _serialize_ticket_details(ticket, ticket_type):
             "distrito": getattr(ticket, 'distrito', None),
             "direccion": getattr(ticket, 'direccion', None),
         },
-        "canal_ingreso": getattr(ticket, 'canal_ingreso', None),
+        "canal_ingreso": canal_ingreso_valor,
+        "channel": canal_normalizado,
         "contacto_seguimiento": getattr(ticket, 'contacto_seguimiento', None),
         "nombre_y_avatar_whatsapp": {
             "nombre": getattr(ticket, 'nombre_display_whatsapp', None),
@@ -572,6 +1040,23 @@ def _serialize_ticket_details(ticket, ticket_type):
         "historial_chat": historial_chat,
         "timeline": timeline,
         "progreso_estados": progreso_estados,
+        "ultima_actualizacion": datetime_to_iso_utc(ultima_actualizacion_dt),
+        "sla_status": operational_hints["sla_status"],
+        "operational_badges": operational_hints["badges"],
+        "operational_metrics": {
+            "age_hours": operational_hints["age_hours"],
+            "inactivity_hours": operational_hints["inactivity_hours"],
+        },
+        "asignado_a": (
+            {
+                "id": assigned_user.id,
+                "nombre": assigned_user.name,
+                "email": assigned_user.email,
+            }
+            if assigned_user
+            else None
+        ),
+        "asignado_en": datetime_to_iso_utc(getattr(ticket, "asignado_en", None)),
     }
 
     if hasattr(ticket, 'foto_url_directa'):
@@ -628,6 +1113,122 @@ def get_ticket_by_number_public(current_user, owner_user, anon_id, nro_ticket: s
     ticket_data = _serialize_ticket_details(ticket, "municipio")
     return jsonify(ticket_data)
 
+
+def _public_tracking_payload(ticket: MunicipioTicket) -> dict:
+    """Return a minimal, safe payload for public status checks."""
+
+    fecha = getattr(ticket, "fecha", None)
+    ultima_actividad = getattr(ticket, "ultima_actividad", None) or fecha
+    return {
+        "nro_ticket": f"M-{ticket.nro_ticket}",
+        "estado": getattr(ticket, "estado", None),
+        "categoria": getattr(ticket, "categoria", None),
+        "subcategoria": getattr(ticket, "subcategoria", None),
+        "canal_ingreso": getattr(ticket, "canal_ingreso", None),
+        "fecha_creacion": datetime_to_iso_utc(fecha),
+        "ultima_actualizacion": datetime_to_iso_utc(ultima_actividad),
+    }
+
+
+def _ticket_contract_response(payload: dict, status_code: int = 200, request_id: str | None = None):
+    normalized_header_id = None
+    header_raw = request.headers.get("X-Request-Id")
+    if isinstance(header_raw, str):
+        trimmed = header_raw.strip()
+        if trimmed:
+            normalized_header_id = trimmed
+    rid = request_id or normalized_header_id or uuid.uuid4().hex
+    merged_payload = {
+        **payload,
+        "request_id": rid,
+    }
+    response = jsonify(merged_payload)
+    response.status_code = status_code
+    response.headers.setdefault("X-Request-Id", rid)
+    return response
+
+
+@ticket_bp.route('/tickets/public/status', methods=['GET'])
+def get_public_ticket_status():
+    """Lookup ticket status by tracking code + PIN without exposing full details."""
+
+    request_id = None
+    request_id_raw = request.headers.get("X-Request-Id")
+    if isinstance(request_id_raw, str):
+        trimmed = request_id_raw.strip()
+        if trimmed:
+            request_id = trimmed
+    if not request_id:
+        request_id = uuid.uuid4().hex
+    code = (request.args.get("code") or request.args.get("nro_ticket") or "").strip().upper()
+    pin = (request.args.get("pin") or "").strip()
+
+    if not code:
+        return _ticket_contract_response(
+            {
+                "contract_version": "tickets.public_status.v1",
+                "error": {"code": 400, "message": "code requerido."},
+            },
+            400,
+            request_id,
+        )
+    if not pin:
+        return _ticket_contract_response(
+            {
+                "contract_version": "tickets.public_status.v1",
+                "error": {"code": 400, "message": "pin requerido."},
+            },
+            400,
+            request_id,
+        )
+
+    normalized = code[2:] if code.startswith("M-") else code
+    token = request.args.get("recaptcha_token")
+    if token and token.lower() not in ("undefined", "null"):
+        if not verify_recaptcha(token):
+            return _ticket_contract_response(
+                {
+                    "contract_version": "tickets.public_status.v1",
+                    "error": {"code": 400, "message": "Verificación reCAPTCHA fallida."},
+                },
+                400,
+                request_id,
+            )
+
+    ticket = MunicipioTicket.query.filter_by(nro_ticket=normalized, consulta_pin=pin).first()
+    if not ticket:
+        return _ticket_contract_response(
+            {
+                "contract_version": "tickets.public_status.v1",
+                "error": {"code": 404, "message": "Ticket no encontrado."},
+            },
+            404,
+            request_id,
+        )
+
+    return _ticket_contract_response(
+        {
+            "contract_version": "tickets.public_status.v1",
+            "ticket": _public_tracking_payload(ticket),
+        },
+        200,
+        request_id,
+    )
+
+
+@ticket_bp.route('/tickets/workflow/metadata', methods=['GET'])
+def get_ticket_workflow_metadata():
+    """Expose canonical ticket state machine metadata for FE alignment."""
+
+    return _ticket_contract_response(
+        {
+            "contract_version": TICKET_WORKFLOW_CONTRACT_VERSION,
+            "states": list(TICKET_ALLOWED_STATES),
+            "transitions": TICKET_ALLOWED_TRANSITIONS,
+            "final_states": ["cerrado"],
+        },
+    )
+
 @ticket_bp.route('/tickets/municipio/<int:ticket_id>', methods=['GET'])
 @token_requerido
 def get_ticket_details(current_user: User, ticket_id: int):
@@ -635,18 +1236,118 @@ def get_ticket_details(current_user: User, ticket_id: int):
     Devuelve el detalle de un ticket municipal, verificando que el usuario
     (admin o empleado) pertenezca al municipio correcto.
     """
-    if current_user.tipo_chat != "municipio" or not current_user.municipio_id:
-        return jsonify({"error": "Acceso denegado. Se requiere un usuario municipal."}), 403
-
     ticket = db.session.get(MunicipioTicket, ticket_id)
     if not ticket:
         return jsonify({"error": "Ticket no encontrado."}), 404
 
-    if ticket.municipio_id != current_user.municipio_id:
+    tenant, tenant_municipio_id, _tenant_pyme_id = _resolve_tenant_scope(current_user)
+    if current_user.tipo_chat != "municipio" or not current_user.municipio_id:
+        if not (_authorized_for_tenant_scope(current_user, tenant) and tenant_municipio_id):
+            return jsonify({"error": "Acceso denegado. Se requiere un usuario municipal."}), 403
+
+    allowed_municipio_ids = _get_allowed_municipio_ids(current_user)
+    if not allowed_municipio_ids or ticket.municipio_id not in allowed_municipio_ids:
         return jsonify({"error": "No tienes permiso para ver este ticket."}), 403
+
+    error_response = _validar_asignacion_empleado(ticket, current_user)
+    if error_response:
+        return error_response
 
     ticket_data = _serialize_ticket_details(ticket, "municipio")
     return jsonify(ticket_data)
+
+
+@ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/asignar', methods=['POST', 'PUT'])
+@token_requerido
+@require_role('admin', 'empleado')
+def asignar_ticket(current_user: User, tipo: str, ticket_id: int):
+    if tipo not in {"municipio", "pyme"}:
+        return jsonify({"error": "Tipo de ticket no soportado para asignación."}), 400
+
+    if tipo == "municipio":
+        ticket_obj = db.session.get(MunicipioTicket, ticket_id)
+    else:
+        ticket_obj = db.session.get(PymeTicket, ticket_id)
+
+    if not ticket_obj:
+        return jsonify({"error": "Ticket no encontrado."}), 404
+
+    if tipo == "municipio":
+        municipio_owner_id = current_user.municipio_id or current_user.empresa_id
+        if current_user.tipo_chat != "municipio" or municipio_owner_id != ticket_obj.municipio_id:
+            return jsonify({"error": "No tienes permiso para asignar este ticket."}), 403
+    else:
+        pyme_owner_id = current_user.id if current_user.rol == "admin" else current_user.empresa_id
+        if current_user.tipo_chat != "pyme" or ticket_obj.rubro_id != current_user.rubro_id:
+            return jsonify({"error": "No tienes permiso para asignar este ticket."}), 403
+        if pyme_owner_id is None:
+            return jsonify({"error": "Usuario PYME sin empresa asociada."}), 400
+
+    data = request.get_json(silent=True) or {}
+    requested_user_id = data.get("user_id")
+    auto = bool(data.get("auto"))
+
+    if current_user.rol == 'empleado':
+        if ticket_obj.asignado_a_id and ticket_obj.asignado_a_id != current_user.id:
+            return jsonify({"error": "El ticket ya está asignado a otro agente."}), 400
+        requested_user_id = current_user.id
+        auto = False
+
+    if tipo == "municipio":
+        empleado_asignado = servicio_tickets.asignar_ticket_municipal(
+            ticket_obj,
+            empleado_id=requested_user_id,
+            auto=auto or requested_user_id is None,
+            actor_id=current_user.id,
+        )
+    else:
+        empleado_asignado = servicio_tickets.asignar_ticket_pyme(
+            ticket_obj,
+            empleado_id=requested_user_id,
+            auto=auto or requested_user_id is None,
+            actor_id=current_user.id,
+        )
+
+    if not empleado_asignado:
+        return jsonify({"error": "No se pudo asignar el ticket a un agente disponible."}), 400
+
+    db.session.commit()
+    ticket_json = serialize_ticket_to_json(ticket_obj, tipo)
+    assignment_payload = {
+        **ticket_json,
+        "ticket": ticket_json,
+        "ticket_id": ticket_obj.id,
+        "tipo": tipo,
+        "assigned_to": {
+            "id": empleado_asignado.id,
+            "nombre": empleado_asignado.name,
+            "email": empleado_asignado.email,
+        },
+        "actor_id": current_user.id,
+    }
+    emit_ticket_assignment_changed(assignment_payload)
+
+    return jsonify({
+        "ticket": ticket_json,
+        "asignado_a": {
+            "id": empleado_asignado.id,
+            "nombre": empleado_asignado.name,
+            "email": empleado_asignado.email,
+        },
+    })
+
+
+@ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/assign', methods=['POST', 'PUT'])
+@ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/asignacion', methods=['POST', 'PUT'])
+@token_requerido
+@require_role('admin', 'empleado')
+def asignar_ticket_alias(current_user: User, tipo: str, ticket_id: int):
+    """Alias en inglés para compatibilidad con frontends que usan `/assign`.
+
+    Reutiliza la lógica de :func:`asignar_ticket` para evitar duplicaciones.
+    """
+
+    return asignar_ticket(current_user, tipo, ticket_id)
 
 @ticket_bp.route('/tickets/pyme/<int:ticket_id>', methods=['GET'])
 @token_requerido
@@ -655,15 +1356,26 @@ def get_ticket_details_pyme(current_user: User, ticket_id: int):
     Devuelve el detalle de un ticket de pyme, verificando que el usuario
     (admin o empleado) pertenezca a la pyme correcta.
     """
-    if current_user.tipo_chat != "pyme" or not current_user.rubro_id:
-        return jsonify({"error": "Acceso denegado. Se requiere un usuario de pyme."}), 403
-
     ticket = db.session.get(PymeTicket, ticket_id)
     if not ticket:
         return jsonify({"error": "Ticket no encontrado."}), 404
 
-    if ticket.rubro_id != current_user.rubro_id:
+    tenant, _tenant_municipio_id, tenant_pyme_id = _resolve_tenant_scope(current_user)
+    if current_user.tipo_chat != "pyme" or not current_user.rubro_id:
+        if not (_authorized_for_tenant_scope(current_user, tenant) and tenant_pyme_id):
+            return jsonify({"error": "Acceso denegado. Se requiere un usuario de pyme."}), 403
+
+    allowed_rubro_id = (
+        tenant_pyme_id
+        if _authorized_for_tenant_scope(current_user, tenant) and tenant_pyme_id
+        else current_user.rubro_id
+    )
+    if ticket.rubro_id != allowed_rubro_id:
         return jsonify({"error": "No tienes permiso para ver este ticket."}), 403
+
+    error_response = _validar_asignacion_empleado(ticket, current_user)
+    if error_response:
+        return error_response
 
     ticket_data = _serialize_ticket_details(ticket, "pyme")
     return jsonify(ticket_data)
@@ -713,10 +1425,10 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
 
     # Refuerzo de permisos:
     if tipo == 'municipio':
-        if not (
-            current_user.tipo_chat == "municipio" and
-            ticket_obj.municipio_id == current_user.municipio_id
-        ):
+        allowed_municipio_ids = _get_allowed_municipio_ids(current_user)
+        if not _is_municipio_agent(current_user) or not allowed_municipio_ids:
+            return jsonify({"error": "No tienes permiso para responder este ticket."}), 403
+        if ticket_obj.municipio_id not in allowed_municipio_ids:
             return jsonify({"error": "No tienes permiso para responder este ticket."}), 403
     elif tipo == 'pyme':
         if not (
@@ -725,10 +1437,14 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
         ):
             return jsonify({"error": "No tienes permiso para responder este ticket."}), 403
 
+    error_response = _validar_asignacion_empleado(ticket_obj, current_user)
+    if error_response:
+        return error_response
+
     log_ticket_debug(
         "responder_agente_con_archivos", # Acción actualizada
         ticket_id,
-        request.headers.get("X-Anon-Id") or request.headers.get("Anon-Id"),
+        _request_anon_id(),
         ticket_obj,
     )
 
@@ -749,8 +1465,14 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
     # Create a comment for the text part, if it exists
     if comentario_texto and comentario_texto.strip():
         comentario_obj = servicio_tickets.crear_comentario(
-            ticket_id=ticket_id, tipo_ticket=tipo,
-            comentario_data={"comentario": comentario_texto, "user_id": current_user.id, "es_admin": True}
+            ticket_id=ticket_id,
+            tipo_ticket=tipo,
+            comentario_data={
+                "comentario": comentario_texto,
+                "user_id": current_user.id,
+                "es_admin": True,
+                "emit_notifications": False,
+            },
         )
         if comentario_obj:
             comentarios_creados.append(comentario_obj)
@@ -761,13 +1483,15 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
     if 'attachment_info' in locals() and attachment_info:
         file_comment_text = f"[Archivo adjunto: {attachment_info.get('name', 'archivo')}]"
         file_comment_obj = servicio_tickets.crear_comentario(
-            ticket_id=ticket_id, tipo_ticket=tipo,
+            ticket_id=ticket_id,
+            tipo_ticket=tipo,
             comentario_data={
                 "comentario": file_comment_text,
                 "user_id": current_user.id,
                 "es_admin": True,
-                "archivo_adjunto_id": attachment_info.get('id')
-            }
+                "archivo_adjunto_id": attachment_info.get('id'),
+                "emit_notifications": False,
+            },
         )
         if file_comment_obj:
             comentarios_creados.append(file_comment_obj)
@@ -781,13 +1505,15 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
 
         file_comment_text = f"[Archivo adjunto: {adjunto.nombre_original}]"
         file_comment_obj = servicio_tickets.crear_comentario(
-            ticket_id=ticket_id, tipo_ticket=tipo,
+            ticket_id=ticket_id,
+            tipo_ticket=tipo,
             comentario_data={
                 "comentario": file_comment_text,
                 "user_id": current_user.id,
                 "es_admin": True,
-                "archivo_adjunto_id": adjunto.id
-            }
+                "archivo_adjunto_id": adjunto.id,
+                "emit_notifications": False,
+            },
         )
         if file_comment_obj:
             comentarios_creados.append(file_comment_obj)
@@ -817,21 +1543,47 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
     # El objeto 'ticket_obj' ya está cargado.
     # 'archivos_adjuntados_db' es la lista de objetos ArchivoAdjunto recién creados y guardados.
     try:
-        from services.email_service import (
-            enviar_email_ticket_novedad,
-            enviar_sms_ticket_novedad,
-            enviar_whatsapp_ticket_novedad,
+        from services.notification_dispatcher import dispatch_ticket_update
+
+        resultados_notif = dispatch_ticket_update(
+            ticket_obj,
+            tipo,
+            mensaje_notificacion_base,
+            comentario_reciente=comentarios_creados[0] if comentarios_creados else None,
+            enable_whatsapp=(
+                tipo == "municipio"
+                or current_app.config.get("ENABLE_PYME_WHATSAPP_CHAT", True)
+            ),
         )
-        # Email siempre se envía si hay email
-        enviar_email_ticket_novedad(ticket_obj, mensaje_notificacion_base) # TODO: Email con adjuntos? Por ahora solo texto.
 
-        # SMS siempre se envía si hay teléfono (solo texto)
-        enviar_sms_ticket_novedad(ticket_obj, mensaje_notificacion_base)
+        # Envío de adjuntos por WhatsApp si aplica
+        if archivos_adjuntados_db and resultados_notif.get("whatsapp") and (
+            tipo == "municipio" or current_app.config.get("ENABLE_PYME_WHATSAPP_CHAT", True)
+        ):
+            try:
+                from services.email_service import enviar_whatsapp_ticket_novedad
 
-        # WhatsApp con adjuntos (si los hay)
-        if tipo == "municipio": # Asumiendo que WhatsApp es principalmente para municipio por ahora
-            enviar_whatsapp_ticket_novedad(ticket_obj, mensaje_notificacion_base, archivos_adjuntos=archivos_adjuntados_db)
-        current_app.logger.info(f"Notificaciones para respuesta de ticket {ticket_id} (tipo {tipo}) procesadas.")
+                enviar_whatsapp_ticket_novedad(
+                    ticket_obj,
+                    mensaje_notificacion_base,
+                    archivos_adjuntos=archivos_adjuntados_db,
+                )
+            except Exception as exc:  # pragma: no cover - logging defensivo
+                current_app.logger.error(
+                    "Error enviando adjuntos por WhatsApp para ticket %s: %s",
+                    ticket_id,
+                    exc,
+                    exc_info=True,
+                )
+
+        current_app.logger.info(
+            "Notificaciones para respuesta de ticket %s (tipo %s) -> email=%s sms=%s whatsapp=%s",
+            ticket_id,
+            tipo,
+            resultados_notif.get("email"),
+            resultados_notif.get("sms"),
+            resultados_notif.get("whatsapp"),
+        )
 
         # Notificación por Websocket/Pusher
         # Serializar el ticket completo para enviar todos los datos actualizados
@@ -847,6 +1599,7 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
                     ticket_snapshot=ticket_json,
                 )
                 emit_ticket_comment(comment_payload)
+                emit_ticket_unread_changed(_build_ticket_unread_event_payload(ticket_obj, tipo))
             except Exception as socket_exc:  # pragma: no cover - defensive log
                 current_app.logger.exception(
                     "Error emitting comment event for ticket %s: %s",
@@ -886,14 +1639,14 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
                 "mimeType": adj.mime,
                 "size": adj.tamano,
                 "url": adj.url, 
-                "fecha": adj.fecha.isoformat() if adj.fecha else None,
+                "fecha": datetime_to_iso_utc(adj.fecha) if adj.fecha else None,
                 "analisis": None 
             })
 
     ticket_data_respuesta = {
         "id": ticket_obj.id, "tipo": tipo, "nro_ticket": ticket_obj.nro_ticket,
         "asunto": getattr(ticket_obj, 'asunto', ''), "estado": ticket_obj.estado,
-        "fecha": ticket_obj.fecha.isoformat(),
+        "fecha": datetime_to_iso_utc(ticket_obj.fecha),
         "detalles": getattr(ticket_obj, 'detalles', getattr(ticket_obj, 'pregunta', '')),
         "comentarios": comentarios_actualizados, # Usar la lista actualizada
         "archivos_adjuntos": archivos_actualizados_data, # Usar la lista actualizada
@@ -930,10 +1683,10 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
 
     # Refuerzo de permisos:
     if tipo == 'municipio':
-        if not (
-            current_user.tipo_chat == "municipio" and
-            ticket_obj.municipio_id == current_user.municipio_id
-        ):
+        allowed_municipio_ids = _get_allowed_municipio_ids(current_user)
+        if not _is_municipio_agent(current_user) or not allowed_municipio_ids:
+            return jsonify({"error": "No tienes permiso para cambiar el estado de este ticket."}), 403
+        if ticket_obj.municipio_id not in allowed_municipio_ids:
             return jsonify({"error": "No tienes permiso para cambiar el estado de este ticket."}), 403
     elif tipo == 'pyme':
         if not (
@@ -942,16 +1695,22 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
         ):
             return jsonify({"error": "No tienes permiso para cambiar el estado de este ticket."}), 403
 
+    error_response = _validar_asignacion_empleado(ticket_obj, current_user)
+    if error_response:
+        return error_response
+
     log_ticket_debug(
         "cambiar_estado",
         ticket_id,
-        request.headers.get("X-Anon-Id") or request.headers.get("Anon-Id"),
+        _request_anon_id(),
         ticket_obj,
     )
 
     ticket_obj.estado = nuevo_estado
     if hasattr(ticket_obj, "estado_cliente"):
         ticket_obj.estado_cliente = nuevo_estado
+    if hasattr(ticket_obj, "ultima_actividad"):
+        ticket_obj.ultima_actividad = get_local_now()
     if nuevo_estado == "cerrado":
         encuesta = TicketSatisfaccion(
             ticket_id=ticket_obj.id,
@@ -972,30 +1731,44 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
     db.session.add(comentario_estado)
     db.session.commit()
     try:
-        from services.email_service import (
-            enviar_email_ticket_novedad,
-            enviar_sms_ticket_novedad,
-            enviar_whatsapp_ticket_novedad, # <--- IMPORTAR NUEVA FUNCIÓN
-        )
-        mensaje_notificacion = f"El estado de tu ticket #{ticket_obj.nro_ticket} ha sido actualizado a: '{nuevo_estado}'."
+        from services.notification_dispatcher import dispatch_ticket_state_change
 
-        enviar_email_ticket_novedad(ticket_obj, mensaje_notificacion)
-        enviar_sms_ticket_novedad(ticket_obj, mensaje_notificacion)
-        if tipo == "municipio": # Por ahora, WhatsApp solo para municipio
-            enviar_whatsapp_ticket_novedad(ticket_obj, mensaje_notificacion)
+        resultados_notif = dispatch_ticket_state_change(
+            ticket_obj,
+            tipo,
+            nuevo_estado,
+            comentario_estado=comentario_estado,
+        )
+        current_app.logger.info(
+            "[NOTIFY] Estado ticket %s tipo=%s -> %s | email=%s sms=%s whatsapp=%s",
+            ticket_id,
+            tipo,
+            nuevo_estado,
+            resultados_notif.get("email"),
+            resultados_notif.get("sms"),
+            resultados_notif.get("whatsapp"),
+        )
 
     except Exception as e:  # pragma: no cover - ignore notif errors in tests
         current_app.logger.error(f"Error notificando cambio de estado para ticket {ticket_id} (tipo {tipo}): {e}", exc_info=True)
 
     # Notificación por Websocket
     ticket_json = serialize_ticket_to_json(ticket_obj, tipo)
-    emit_ticket_update(ticket_json)
+    emit_ticket_status_changed(ticket_json)
 
-    comentarios = [{"id": c.id, "comentario": c.comentario, "fecha": c.fecha.isoformat(), "es_admin": c.es_admin} for c in ticket_obj.comentarios]
+    comentarios = [
+        {
+            "id": c.id,
+            "comentario": c.comentario,
+            "fecha": datetime_to_iso_utc(c.fecha),
+            "es_admin": c.es_admin,
+        }
+        for c in ticket_obj.comentarios
+    ]
     ticket_data = {
         "id": ticket_obj.id, "tipo": tipo, "nro_ticket": ticket_obj.nro_ticket,
         "asunto": getattr(ticket_obj, 'asunto', ''), "estado": ticket_obj.estado,
-        "fecha": ticket_obj.fecha.isoformat(),
+        "fecha": datetime_to_iso_utc(ticket_obj.fecha),
         "detalles": getattr(ticket_obj, 'detalles', getattr(ticket_obj, 'pregunta', '')),
         "comentarios": sorted(comentarios, key=lambda c: c['fecha']),
         "rubro_id": getattr(ticket_obj, 'rubro_id', None),
@@ -1022,16 +1795,21 @@ def get_chat_mensajes(current_user: User, ticket_id: int, anon_id: str = None, o
         if not sala_de_chat:
             return jsonify({"error": "Sala de chat no encontrada."}), 404
 
-        es_agente_municipal = current_user and current_user.tipo_chat == "municipio"
-        es_dueño_del_ticket = current_user and sala_de_chat.user_id == current_user.id
-        es_anon_valido = anon_id and sala_de_chat.anon_id == anon_id
+        pin_query = request.args.get("pin")
+        access = _resolver_acceso_chat_ticket(sala_de_chat, current_user, anon_id, pin_query)
+        es_agente_municipal = access["es_agente"]
+
+        if es_agente_municipal:
+            error_response = _validar_asignacion_empleado(sala_de_chat, current_user)
+            if error_response:
+                return error_response
 
         log_ticket_debug("get_chat_mensajes", ticket_id, anon_id, sala_de_chat)
 
-        if not (es_agente_municipal or es_dueño_del_ticket or es_anon_valido):
+        if not access["permitido"]:
             return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
 
-        if sala_de_chat.estado == "cerrado" and not es_agente_municipal:
+        if sala_de_chat.estado == "cerrado" and not es_agente_municipal and not access["es_pin_valido"]:
             return jsonify({"error": MENSAJE_CHAT_CERRADO}), 403
 
         ultimo_mensaje_id = request.args.get('ultimo_mensaje_id', default=0, type=int)
@@ -1057,6 +1835,7 @@ def get_chat_mensajes(current_user: User, ticket_id: int, anon_id: str = None, o
         respuesta_final = {
             "estado_chat": sala_de_chat.estado,
             "mensajes": mensajes_formateados,
+            "realtime_state": build_ticket_realtime_summary(ticket_type="municipio", ticket_id=ticket_id),
         }
         return jsonify(respuesta_final)
     except Exception as e:
@@ -1076,6 +1855,11 @@ def get_chat_mensajes_pyme(current_user: User, ticket_id: int):
 
         es_agente_pyme = current_user.rubro_id and sala_de_chat.rubro_id == current_user.rubro_id
         es_dueño = sala_de_chat.user_id == current_user.id
+
+        if es_agente_pyme:
+            error_response = _validar_asignacion_empleado(sala_de_chat, current_user)
+            if error_response:
+                return error_response
 
         log_ticket_debug("get_chat_mensajes_pyme", ticket_id, None, sala_de_chat)
 
@@ -1112,6 +1896,7 @@ def get_chat_mensajes_pyme(current_user: User, ticket_id: int):
         respuesta_final = {
             "estado_chat": sala_de_chat.estado,
             "mensajes": mensajes_formateados,
+            "realtime_state": build_ticket_realtime_summary(ticket_type="pyme", ticket_id=ticket_id),
         }
         return jsonify(respuesta_final)
     except Exception as e:
@@ -1123,6 +1908,7 @@ def get_chat_mensajes_pyme(current_user: User, ticket_id: int):
 @anon_o_token_requerido
 def get_ticket_route(current_user: User, tipo: str, ticket_id: int, anon_id: str = None, owner_user: User = None):
     """Devuelve la ruta desde el municipio hasta la ubicación del ticket."""
+    anon_id = anon_id or _request_anon_id()
     if tipo != "municipio":
         return jsonify({"error": "Ruta solo disponible para tickets de municipio."}), 400
 
@@ -1133,8 +1919,12 @@ def get_ticket_route(current_user: User, tipo: str, ticket_id: int, anon_id: str
     es_agente = current_user and current_user.tipo_chat == "municipio"
     es_dueno = current_user and ticket_obj.user_id == current_user.id
     es_anon = anon_id and ticket_obj.anon_id == anon_id
+    # Evitar que el frontend público genere errores al cargar esta sección.
+    # Como las sugerencias son un placeholder y no exponen datos sensibles,
+    # respondemos con una lista vacía para usuarios sin permisos en lugar de
+    # devolver 403.
     if not (es_agente or es_dueno or es_anon):
-        return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
+        return jsonify({"sugerencias": [], "habilitado": False})
 
     if ticket_obj.latitud is None or ticket_obj.longitud is None:
         return jsonify({"error": "El ticket no tiene coordenadas."}), 400
@@ -1164,6 +1954,7 @@ def get_ticket_timeline(current_user: User, tipo: str, ticket_id: int, anon_id: 
     ticket. Esto permite que el frontend muestre una vista completa del flujo de
     interacción del reclamo o pedido, combinando mensajes del chat y estados.
     """
+    anon_id = anon_id or _request_anon_id()
     TicketModel = MunicipioTicket if tipo == "municipio" else PymeTicket if tipo == "pyme" else None
     if not TicketModel:
         return jsonify({"error": f"Tipo de ticket no válido: {tipo}"}), 400
@@ -1172,66 +1963,246 @@ def get_ticket_timeline(current_user: User, tipo: str, ticket_id: int, anon_id: 
     if not ticket_obj:
         return jsonify({"error": "Ticket no encontrado."}), 404
 
+    pin = request.args.get("pin")
+
     if tipo == "municipio":
         es_agente = current_user and current_user.tipo_chat == "municipio"
         es_dueno = current_user and ticket_obj.user_id == current_user.id
         es_anon = anon_id and ticket_obj.anon_id == anon_id
-        if not (es_agente or es_dueno or es_anon):
+        pin_valido = pin and str(ticket_obj.consulta_pin) == str(pin)
+
+        if not (es_agente or es_dueno or es_anon or pin_valido):
             return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
-        if ticket_obj.estado == "cerrado" and not es_agente:
-            return jsonify({"error": MENSAJE_CHAT_CERRADO}), 403
     else:  # pyme
         es_agente = current_user and current_user.rubro_id and ticket_obj.rubro_id == current_user.rubro_id
         es_dueno = current_user and ticket_obj.user_id == current_user.id
         es_anon = anon_id and ticket_obj.anon_id == anon_id
-        if not (es_agente or es_dueno or es_anon):
+        pin_valido = pin and str(ticket_obj.consulta_pin) == str(pin)
+
+        if not (es_agente or es_dueno or es_anon or pin_valido):
             return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
-        if ticket_obj.estado == "cerrado" and not es_agente:
-            return jsonify({"error": MENSAJE_CHAT_CERRADO}), 403
 
     timeline = servicio_tickets.obtener_timeline_ticket(ticket_obj)
     historial_chat = servicio_tickets.obtener_historial_chat(ticket_obj)
 
-    return jsonify({
+    payload = {
         "estado_chat": ticket_obj.estado,
         "timeline": timeline,
         "historial_chat": historial_chat,
-    })
+        "unified_conversation_stream": build_unified_conversation_stream(
+            timeline=timeline,
+            historial_chat=historial_chat,
+            latest_comment_id=build_ticket_realtime_summary(ticket_type=tipo, ticket_id=ticket_id)["read_state"]["latest_comment_id"],
+        ),
+        "realtime_state": build_ticket_realtime_summary(ticket_type=tipo, ticket_id=ticket_id),
+    }
+
+    contact_key = _request_contact_key()
+    if contact_key:
+        payload["contact_key"] = contact_key
+    if anon_id:
+        payload.setdefault("anon_id", anon_id)
+
+    return jsonify(payload)
+
+
+@ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/presence', methods=['POST'])
+@anon_o_token_requerido
+def update_ticket_presence(current_user: User, tipo: str, ticket_id: int, anon_id: str = None, owner_user: User = None):
+    anon_id = anon_id or _request_anon_id()
+    pin = request.args.get("pin")
+    ticket_obj, error_response, status_code, access = _resolve_ticket_with_access(tipo, ticket_id, current_user, anon_id, pin)
+    if error_response:
+        return error_response, status_code
+
+    payload = request.get_json(silent=True) or {}
+    presence_status = str(payload.get("presence_status") or "active").strip().lower()
+    if presence_status not in {"active", "idle", "inactive"}:
+        return jsonify({"error": "presence_status inválido."}), 400
+
+    viewer_key, viewer_role, viewer_anon_id = _build_realtime_actor_context(current_user=current_user, anon_id=anon_id, access=access)
+    if not viewer_key:
+        return jsonify({"error": "No se pudo identificar el viewer."}), 400
+
+    state = upsert_ticket_presence(
+        ticket_type=tipo,
+        ticket_id=ticket_id,
+        viewer_key=viewer_key,
+        viewer_user_id=getattr(current_user, "id", None),
+        viewer_anon_id=viewer_anon_id,
+        viewer_role=viewer_role,
+        active_session_id=_request_active_session_id(),
+        presence_status=presence_status,
+    )
+    db.session.commit()
+
+    summary = build_ticket_realtime_summary(ticket_type=tipo, ticket_id=ticket_id)
+    event_payload = {
+        "ticket_id": ticket_id,
+        "tipo": tipo,
+        "tenant_type": tipo,
+        "tenant_id": getattr(ticket_obj, "municipio_id", None) if tipo == "municipio" else getattr(ticket_obj, "rubro_id", None),
+        "municipio_id": getattr(ticket_obj, "municipio_id", None),
+        "rubro_id": getattr(ticket_obj, "rubro_id", None),
+        "socket_room": f"{'municipio' if tipo == 'municipio' else 'pyme'}_{getattr(ticket_obj, 'municipio_id', None) if tipo == 'municipio' else getattr(ticket_obj, 'rubro_id', None)}" if (getattr(ticket_obj, "municipio_id", None) if tipo == "municipio" else getattr(ticket_obj, "rubro_id", None)) else None,
+        "presence_status": presence_status,
+        "viewer": state.to_dict(),
+        "summary": summary["presence"],
+    }
+    emit_ticket_presence_changed(event_payload)
+    return jsonify({"ok": True, "presence": state.to_dict(), "realtime_state": summary})
+
+
+@ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/read-state', methods=['POST'])
+@anon_o_token_requerido
+def update_ticket_read_state(current_user: User, tipo: str, ticket_id: int, anon_id: str = None, owner_user: User = None):
+    anon_id = anon_id or _request_anon_id()
+    pin = request.args.get("pin")
+    ticket_obj, error_response, status_code, access = _resolve_ticket_with_access(tipo, ticket_id, current_user, anon_id, pin)
+    if error_response:
+        return error_response, status_code
+
+    payload = request.get_json(silent=True) or {}
+    last_read_comment_id = payload.get("last_read_comment_id")
+    if last_read_comment_id is not None:
+        try:
+            last_read_comment_id = int(last_read_comment_id)
+        except (TypeError, ValueError):
+            return jsonify({"error": "last_read_comment_id inválido."}), 400
+
+    viewer_key, viewer_role, viewer_anon_id = _build_realtime_actor_context(current_user=current_user, anon_id=anon_id, access=access)
+    if not viewer_key:
+        return jsonify({"error": "No se pudo identificar el viewer."}), 400
+
+    state = mark_ticket_read(
+        ticket_type=tipo,
+        ticket_id=ticket_id,
+        viewer_key=viewer_key,
+        last_read_comment_id=last_read_comment_id,
+        viewer_user_id=getattr(current_user, "id", None),
+        viewer_anon_id=viewer_anon_id,
+        viewer_role=viewer_role,
+        active_session_id=_request_active_session_id(),
+    )
+    db.session.commit()
+
+    summary = build_ticket_realtime_summary(ticket_type=tipo, ticket_id=ticket_id)
+    event_payload = {
+        "ticket_id": ticket_id,
+        "tipo": tipo,
+        "tenant_type": tipo,
+        "tenant_id": getattr(ticket_obj, "municipio_id", None) if tipo == "municipio" else getattr(ticket_obj, "rubro_id", None),
+        "municipio_id": getattr(ticket_obj, "municipio_id", None),
+        "rubro_id": getattr(ticket_obj, "rubro_id", None),
+        "socket_room": f"{'municipio' if tipo == 'municipio' else 'pyme'}_{getattr(ticket_obj, 'municipio_id', None) if tipo == 'municipio' else getattr(ticket_obj, 'rubro_id', None)}" if (getattr(ticket_obj, "municipio_id", None) if tipo == "municipio" else getattr(ticket_obj, "rubro_id", None)) else None,
+        "read_at": state.to_dict().get("last_read_at"),
+        "last_read_comment_id": state.last_read_comment_id,
+        "viewer": state.to_dict(),
+        "summary": summary["read_state"],
+    }
+    emit_conversation_message_read(event_payload)
+    emit_ticket_unread_changed(_build_ticket_unread_event_payload(ticket_obj, tipo))
+    return jsonify({"ok": True, "read_state": state.to_dict(), "realtime_state": summary})
+
+
+@ticket_bp.route('/tickets/<int:ticket_id>/knowledge-base/suggestions', methods=['GET', 'POST'])
+@anon_o_token_requerido
+def get_ticket_knowledge_base_suggestions(current_user: User, owner_user: User, anon_id: str, ticket_id: int):
+    """Devuelve sugerencias de base de conocimiento para un ticket.
+
+    Para evitar ruidos en la vista pública (CORS/preflight o 403 al no estar
+    autenticado), cuando el usuario no tiene permisos se devuelve una respuesta
+    vacía y marcada como deshabilitada en lugar de un error. Los agentes y
+    dueños siguen recibiendo sugerencias contextualizadas por rubro.
+    """
+
+    ticket_obj = db.session.get(MunicipioTicket, ticket_id)
+    ticket_tipo = "municipio"
+
+    if not ticket_obj:
+        ticket_obj = db.session.get(PymeTicket, ticket_id)
+        ticket_tipo = "pyme" if ticket_obj else None
+
+    if not ticket_obj:
+        return jsonify({"error": "Ticket no encontrado."}), 404
+
+    if ticket_tipo == "municipio":
+        es_agente = current_user and current_user.tipo_chat == "municipio"
+        es_dueno = current_user and ticket_obj.user_id == current_user.id
+        es_anon = anon_id and ticket_obj.anon_id == anon_id
+    else:  # pyme
+        es_agente = current_user and current_user.rubro_id and ticket_obj.rubro_id == current_user.rubro_id
+        es_dueno = current_user and ticket_obj.user_id == current_user.id
+        es_anon = anon_id and ticket_obj.anon_id == anon_id
+
+    # Los usuarios sin permisos obtienen un stub vacío para evitar errores
+    # visibles en la UI pública sin exponer datos sensibles.
+    if not (es_agente or es_dueno or es_anon):
+        return jsonify({"sugerencias": [], "disabled": True})
+
+    sugerencias = []
+    try:
+        from services.utils_placeholders import sugerencias_por_rubro
+
+        if ticket_tipo == "municipio":
+            sugerencias = sugerencias_por_rubro("municipios")
+        else:
+            rubro = db.session.get(Rubro, ticket_obj.rubro_id) if ticket_obj.rubro_id else None
+            rubro_nombre = (rubro.nombre or rubro.clave) if rubro else None
+            if rubro_nombre:
+                sugerencias = sugerencias_por_rubro(rubro_nombre)
+    except Exception as e:  # pragma: no cover - fallback defensivo
+        logger.warning(f"No se pudieron cargar sugerencias predefinidas: {e}")
+
+    return jsonify({"sugerencias": sugerencias[:5]})
 
 # ---------- CHAT EN VIVO: RESPONDER CIUDADANO (SOLO TOKEN) ----------
 @ticket_bp.route('/tickets/chat/<int:ticket_id>/responder_ciudadano', methods=['POST'])
-@token_requerido
-def responder_ciudadano_a_chat(current_user: User, ticket_id: int):
+@anon_o_token_requerido
+def responder_ciudadano_a_chat(current_user: User, ticket_id: int, anon_id: str = None, owner_user: User = None):
     """
     Permite al ciudadano responder en el chat de su ticket.
-    Requiere que el usuario esté autenticado.
+    Acepta sesión autenticada, ``anon_id`` válido o acceso por ``consulta_pin``
+    para no romper el portal público de seguimiento.
     """
-    data = request.get_json()
-    if not data or not data.get("comentario"):
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        data = {}
+    if request.form:
+        form_payload = request.form.to_dict(flat=True)
+        for key in ("comentario", "mensaje", "texto"):
+            if key in form_payload and key not in data:
+                data[key] = form_payload.get(key)
+
+    comentario = (data.get("comentario") or data.get("mensaje") or data.get("texto") or "").strip()
+    if not comentario:
         return jsonify({"error": "El comentario no puede estar vacío."}), 400
 
     sala_de_chat = db.session.get(MunicipioTicket, ticket_id)
     if not sala_de_chat:
         return jsonify({"error": "Sala de chat no encontrada."}), 404
 
-    es_dueño = sala_de_chat.user_id == current_user.id
+    pin_query = request.args.get("pin")
+    access = _resolver_acceso_chat_ticket(sala_de_chat, current_user, anon_id, pin_query)
 
     log_ticket_debug("responder_ciudadano", ticket_id, None, sala_de_chat)
 
-    if sala_de_chat.user_id is None or not es_dueño:
+    if not access["permitido"] or access["es_agente"]:
         return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
 
     if sala_de_chat.estado == "cerrado":
         return jsonify({"error": MENSAJE_CHAT_CERRADO}), 403
 
-    user_id_para_comentario = current_user.id if current_user else None
+    user_id_para_comentario = current_user.id if access["es_dueno"] else None
+    anon_id_para_comentario = anon_id if access["es_anon_valido"] else getattr(sala_de_chat, "anon_id", None)
 
     nuevo_comentario = servicio_tickets.crear_comentario(
         ticket_id=ticket_id,
         tipo_ticket="municipio",
         comentario_data={
-            "comentario": data["comentario"],
+            "comentario": comentario,
             "user_id": user_id_para_comentario,
+            "anon_id": anon_id_para_comentario,
             "es_admin": False
         }
     )
@@ -1255,6 +2226,7 @@ def responder_ciudadano_a_chat(current_user: User, ticket_id: int):
                 ticket_snapshot=ticket_snapshot,
             )
             emit_ticket_comment(comment_payload)
+            emit_ticket_unread_changed(_build_ticket_unread_event_payload(sala_de_chat, "municipio"))
         except Exception as socket_exc:  # pragma: no cover - defensive log
             current_app.logger.exception(
                 "Error emitting citizen comment event for ticket %s: %s",
@@ -1316,6 +2288,7 @@ def responder_cliente_a_chat(current_user: User, ticket_id: int):
                 ticket_snapshot=ticket_snapshot,
             )
             emit_ticket_comment(comment_payload)
+            emit_ticket_unread_changed(_build_ticket_unread_event_payload(sala_de_chat, "pyme"))
         except Exception as socket_exc:  # pragma: no cover - defensive log
             current_app.logger.exception(
                 "Error emitting pyme comment event for ticket %s: %s",
@@ -1390,9 +2363,18 @@ def get_panel_por_categoria(current_user: User):
         # Por ahora, las métricas serán por categoría, y el empleado solo verá las categorías asignadas.
 
         tickets_to_process = all_tickets_for_user_municipio
-        if current_user.rol == 'empleado' and current_user.ticket_categorias:
-            employee_allowed_categories = [c.strip().lower() for c in current_user.ticket_categorias.split(',') if c.strip()]
-            tickets_to_process = [t for t in all_tickets_for_user_municipio if (t.categoria or '').lower() in employee_allowed_categories]
+        if current_user.rol == 'empleado' or getattr(current_user, "es_empleado", False):
+            cat_nombres, cat_ids = _categorias_permitidas_para_empleado(current_user)
+            nombres_set = set(cat_nombres)
+            ids_set = set(cat_ids)
+            tickets_to_process = [
+                t
+                for t in all_tickets_for_user_municipio
+                if (
+                    (t.categoria_id in ids_set if getattr(t, "categoria_id", None) is not None else False)
+                    or (t.categoria or "").strip().lower() in nombres_set
+                )
+            ]
 
         # Agrupar tickets por categoría
         tickets_grouped_by_cat = defaultdict(list)
@@ -1424,12 +2406,22 @@ def get_panel_por_categoria(current_user: User):
                 ticket_data_serialized = {
                     "id": ticket_obj.id, "tipo": "municipio", "nro_ticket": ticket_obj.nro_ticket,
                     "asunto": ticket_obj.asunto, "estado": ticket_obj.estado,
-                    "fecha": ticket_obj.fecha.isoformat(), "direccion": direccion,
+                    "fecha": datetime_to_iso_utc(ticket_obj.fecha), "direccion": direccion,
                     "latitud": getattr(ticket_obj, 'latitud', None), "longitud": getattr(ticket_obj, 'longitud', None),
                     "nombre_usuario": user_data["nombre"],
                     "telefono": user_data["telefono"],
                     "email_usuario": user_data["email"],
                     "dni": user_data["dni"],
+                    "asignado_a": (
+                        {
+                            "id": getattr(ticket_obj.asignado_a, 'id', None),
+                            "nombre": getattr(ticket_obj.asignado_a, 'name', None),
+                            "email": getattr(ticket_obj.asignado_a, 'email', None),
+                        }
+                        if getattr(ticket_obj, 'asignado_a', None)
+                        else None
+                    ),
+                    "asignado_en": datetime_to_iso_utc(getattr(ticket_obj, 'asignado_en', None)),
                 }
                 serialized_tickets_for_cat.append(ticket_data_serialized)
 
@@ -1472,9 +2464,19 @@ def get_panel_pyme(current_user: User):
         all_tickets_for_user_pyme = query.order_by(PymeTicket.fecha.desc()).all()
 
         tickets_to_process = all_tickets_for_user_pyme
-        if current_user.rol == 'empleado' and current_user.ticket_categorias:
-            employee_allowed_categories = [c.strip().lower() for c in current_user.ticket_categorias.split(',') if c.strip()]
-            tickets_to_process = [t for t in all_tickets_for_user_pyme if (t.categoria or '').lower() in employee_allowed_categories]
+        if current_user.rol == 'empleado' or getattr(current_user, "es_empleado", False):
+            cat_nombres, cat_ids = _categorias_permitidas_para_empleado(current_user)
+            nombres_set = set(cat_nombres)
+            ids_set = set(cat_ids)
+            tickets_to_process = [
+                t
+                for t in all_tickets_for_user_pyme
+                if (
+                    t.asignado_a_id == current_user.id
+                    or (getattr(t, "categoria_id", None) in ids_set)
+                    or (t.categoria or "").strip().lower() in nombres_set
+                )
+            ]
 
         tickets_grouped_by_cat = defaultdict(list)
         for t_obj in tickets_to_process:
@@ -1498,7 +2500,7 @@ def get_panel_pyme(current_user: User):
                 ticket_data_serialized = {
                     "id": ticket_obj.id, "tipo": "pyme", "nro_ticket": ticket_obj.nro_ticket,
                     "asunto": ticket_obj.asunto, "estado": ticket_obj.estado,
-                    "fecha": ticket_obj.fecha.isoformat(),
+                    "fecha": datetime_to_iso_utc(ticket_obj.fecha),
                     "direccion": getattr(ticket_obj, 'direccion', None),
                     "latitud": getattr(ticket_obj, 'latitud', None), "longitud": getattr(ticket_obj, 'longitud', None),
                      # PYME specific fields for serialization if needed by frontend for this view
@@ -1506,6 +2508,16 @@ def get_panel_pyme(current_user: User):
                     "telefono": user_data["telefono"],
                     "email_usuario": user_data["email"],
                     "dni": user_data["dni"],
+                    "asignado_a": (
+                        {
+                            "id": getattr(ticket_obj.asignado_a, 'id', None),
+                            "nombre": getattr(ticket_obj.asignado_a, 'name', None),
+                            "email": getattr(ticket_obj.asignado_a, 'email', None),
+                        }
+                        if getattr(ticket_obj, 'asignado_a', None)
+                        else None
+                    ),
+                    "asignado_en": datetime_to_iso_utc(getattr(ticket_obj, 'asignado_en', None)),
                 }
                 serialized_tickets_for_cat.append(ticket_data_serialized)
 
@@ -1562,7 +2574,7 @@ def actualizar_ubicacion_ticket(current_user: User, tipo: str, ticket_id: int):
     if not ticket_obj:
         return jsonify({"error": "Ticket no encontrado."}), 404
 
-    anon_id_header = request.headers.get("X-Anon-Id") or request.headers.get("Anon-Id")
+    anon_id_header = _request_anon_id()
 
     # Si el ticket aún es anónimo pero coincide el X-Anon-Id, lo asignamos al usuario
     if (
@@ -1677,7 +2689,7 @@ def obtener_encuesta(current_user: User, tipo: str, ticket_id: int):
         "tipo": encuesta.tipo,
         "puntuacion": encuesta.puntuacion,
         "comentario": encuesta.comentario,
-        "fecha": encuesta.fecha.isoformat() if encuesta.fecha else None,
+        "fecha": datetime_to_iso_utc(encuesta.fecha) if encuesta.fecha else None,
     })
 
 # ---------- MAPA DE TICKETS ABIERTOS ----------
@@ -1761,10 +2773,26 @@ def mapa_de_tickets(current_user: User, tipo: str):
     return jsonify({"type": "FeatureCollection", "features": features})
 
 # ---------- ENVIAR HISTORIAL POR CORREO ----------
+def _format_datetime_safe(value) -> str:
+    """Formatea valores de fecha evitando errores cuando son nulos o strings."""
+    if not value:
+        return "Sin fecha"
+    if isinstance(value, str):
+        value = value.strip()
+        return value or "Sin fecha"
+    try:
+        return value.strftime("%d/%m/%Y %H:%M")
+    except Exception:
+        try:
+            parsed = datetime.fromisoformat(str(value))
+            return parsed.strftime("%d/%m/%Y %H:%M")
+        except Exception:
+            return str(value)
+
+
 @ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/send-history', methods=['POST'])
-@token_requerido
-@admin_o_empleado_requerido
-def send_ticket_history(current_user: User, tipo: str, ticket_id: int):
+@anon_o_token_requerido
+def send_ticket_history(current_user: User, tipo: str, ticket_id: int, anon_id: str = None, owner_user: User = None):
     """
     Recupera el historial completo de un ticket y lo envía por correo electrónico
     al cliente y al correo de contacto del agente/municipio.
@@ -1776,12 +2804,30 @@ def send_ticket_history(current_user: User, tipo: str, ticket_id: int):
         return jsonify({"error": "Ticket no encontrado."}), 404
 
     # --- Verificación de Permisos ---
+    pin = request.args.get("pin")
+
     if tipo == 'municipio':
-        if not (current_user.tipo_chat == "municipio" and ticket_obj.municipio_id == current_user.municipio_id):
-            return jsonify({"error": "No tienes permiso para realizar esta acción."}), 403
+        es_agente = (
+            current_user
+            and current_user.tipo_chat == "municipio"
+            and ticket_obj.municipio_id == getattr(current_user, "municipio_id", None)
+        )
+        es_dueno = current_user and ticket_obj.user_id == current_user.id
+        es_anon = anon_id and ticket_obj.anon_id == anon_id
+        pin_valido = pin and str(ticket_obj.consulta_pin) == str(pin)
+        if not (es_agente or es_dueno or es_anon or pin_valido):
+            return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
     elif tipo == 'pyme':
-        if not (current_user.rubro_id and ticket_obj.rubro_id == current_user.rubro_id):
-            return jsonify({"error": "No tienes permiso para realizar esta acción."}), 403
+        es_agente = (
+            current_user
+            and current_user.rubro_id
+            and ticket_obj.rubro_id == current_user.rubro_id
+        )
+        es_dueno = current_user and ticket_obj.user_id == current_user.id
+        es_anon = anon_id and ticket_obj.anon_id == anon_id
+        pin_valido = pin and str(ticket_obj.consulta_pin) == str(pin)
+        if not (es_agente or es_dueno or es_anon or pin_valido):
+            return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
     else:
         return jsonify({"error": f"Tipo de ticket no válido: {tipo}"}), 400
 
@@ -1817,13 +2863,54 @@ def send_ticket_history(current_user: User, tipo: str, ticket_id: int):
         # --- Renderizar y Enviar Correo ---
         asunto = f"Historial de conversación del Ticket #{ticket_obj.nro_ticket}"
 
+        ticket_info = {
+            "nro_ticket": ticket_obj.nro_ticket or "",
+            "asunto": ticket_obj.asunto or "Sin asunto",
+            "estado": ticket_obj.estado or "Sin estado",
+            "fecha_creacion": _format_datetime_safe(getattr(ticket_obj, "fecha", None)),
+            "ultima_actividad": _format_datetime_safe(getattr(ticket_obj, "ultima_actividad", None)),
+            "canal_ingreso": ticket_obj.canal_ingreso or None,
+        }
+
+        comentarios_info = []
+        for comentario in comentarios:
+            adjunto = None
+            if comentario.archivo_adjunto:
+                nombre_adjunto = (
+                    comentario.archivo_adjunto.nombre_original
+                    or comentario.archivo_adjunto.filename
+                    or "Archivo adjunto"
+                )
+                adjunto = {
+                    "nombre": nombre_adjunto,
+                    "url": comentario.archivo_adjunto.url,
+                }
+
+            comentarios_info.append({
+                "es_admin": bool(comentario.es_admin),
+                "autor": "Agente" if comentario.es_admin else "Vecino/a",
+                "fecha": _format_datetime_safe(getattr(comentario, "fecha", None)),
+                "mensaje": comentario.comentario or "",
+                "adjunto": adjunto,
+            })
+
         cuerpo_html = render_template(
             "email/ticket_history.html",
-            ticket=ticket_obj,
-            comentarios=comentarios
+            ticket=ticket_info,
+            comentarios=comentarios_info
         )
 
-        from services.email_service import enviar_email_con_multiples_adjuntos
+        from services.email_service import (
+            enviar_email_con_multiples_adjuntos,
+            validar_configuracion_smtp,
+        )
+
+        smtp_valida, smtp_error = validar_configuracion_smtp(require_auth=False)
+        if not smtp_valida:
+            current_app.logger.error(
+                f"SMTP no configurado correctamente al enviar historial del ticket {ticket_id}: {smtp_error}"
+            )
+            return jsonify({"error": smtp_error}), 503
 
         exito = enviar_email_con_multiples_adjuntos(
             destinos=destinos,

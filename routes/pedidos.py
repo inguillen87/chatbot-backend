@@ -1,5 +1,5 @@
 from flask import Blueprint, request, jsonify, current_app
-from models import User, PymePedido, db
+from models import User, PymePedido, db, TenantProfile
 from utils.auth_helpers import token_requerido, admin_o_empleado_requerido
 from services.logic import es_rubro_publico
 from services.email_service import enviar_email_pedido_admin
@@ -23,7 +23,8 @@ def listar_pedidos_pyme(current_user: User):
             return get_tickets_del_usuario_logic(current_user)
         return jsonify({"error": "Acceso denegado. Esta sección es solo para PYMEs."}), 403
 
-    query = PymePedido.query.filter(PymePedido.pyme_id == current_user.id)
+    pyme_id_context = current_user.empresa_id or current_user.id
+    query = PymePedido.query.filter(PymePedido.pyme_id == pyme_id_context)
 
     estado_filter = request.args.get('estado')
     fecha_inicio_str = request.args.get('fecha_inicio')
@@ -70,7 +71,8 @@ def obtener_pedido_pyme(current_user: User, pedido_id: int):
     if not pedido:
         return jsonify({"error": "Pedido no encontrado."}), 404
 
-    if pedido.pyme_id != current_user.id:
+    pyme_id_context = current_user.empresa_id or current_user.id
+    if pedido.pyme_id != pyme_id_context:
         return jsonify({"error": "Acceso denegado a este pedido."}), 403
 
     return jsonify(_serialize_pedido(pedido))
@@ -83,7 +85,8 @@ def actualizar_estado_pedido_pyme(current_user: User, pedido_id: int):
     if not pedido:
         return jsonify({"error": "Pedido no encontrado."}), 404
 
-    if pedido.pyme_id != current_user.id:
+    pyme_id_context = current_user.empresa_id or current_user.id
+    if pedido.pyme_id != pyme_id_context:
         return jsonify({"error": "Acceso denegado a este pedido."}), 403
 
     data = request.get_json()
@@ -124,8 +127,26 @@ def crear_pedido_pyme(current_user: User):
     except (TypeError, ValueError):
         return jsonify({"error": "Formato de 'detalles' inválido. Debe ser un JSON serializable."}), 400
 
+    pyme_id_context = current_user.empresa_id or current_user.id
+
+    # Resolve tenant_id to ensure order visibility in Admin Panel
+    tenant_id = current_user.tenant_id
+    if not tenant_id:
+        # Check if pyme owner has tenant_id
+        if current_user.empresa_id:
+             owner = db.session.get(User, current_user.empresa_id)
+             if owner and owner.tenant_id:
+                 tenant_id = owner.tenant_id
+
+    if not tenant_id:
+        # Find tenant linked to this pyme
+        tenant = TenantProfile.query.filter_by(pyme_id=pyme_id_context).first()
+        if tenant:
+            tenant_id = tenant.id
+
     nuevo_pedido = PymePedido(
-        pyme_id=current_user.id,
+        pyme_id=pyme_id_context,
+        tenant_id=tenant_id,
         asunto=data.get('asunto', f'Pedido de {data.get("nombre_cliente", "cliente")}'),
         detalles=detalles_str,
         monto_total=data.get('monto_total'),

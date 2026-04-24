@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta
 
-from flask import Blueprint, request, jsonify, g
+from flask import Blueprint, current_app, jsonify, request, g
 
 from utils.auth_helpers import token_requerido, admin_o_empleado_requerido
 from utils.time_utils import get_local_now
@@ -9,6 +9,10 @@ from services.municipal_stats import build_stats_for_municipio, StatsFilters
 from services.metricas_service import MetricasService
 from models import User
 from services.demo_geo import generate_demo_points
+from utils.heatmap import aggregate_heatmap_points, build_feature_collection, enrich_heatmap_points
+from utils.map_config import get_map_config
+from utils.tenant import get_current_tenant, get_current_tenant_profile, get_current_tenant_slug
+from services.tenant_resolver import TenantResolutionError, resolve_tenant_only
 
 
 estadisticas_bp = Blueprint("estadisticas", __name__, url_prefix="/estadisticas")
@@ -117,6 +121,70 @@ def _parse_bool_param(args, key: str) -> bool | None:
     return None
 
 
+def _normalize_tenant_slug(raw_slug: str | None) -> str | None:
+    if not raw_slug:
+        return None
+
+    slug = raw_slug.strip().lower()
+    if not slug:
+        return None
+
+    alias_map = dict(current_app.config.get("TENANT_ALIAS_MAP", {}) or {})
+    alias_target = current_app.config.get("PUBLIC_CATALOG_DEFAULT_TENANT")
+    if alias_target:
+        alias_map.setdefault("whatsapp", alias_target)
+        alias_map.setdefault("pwa", alias_target)
+
+        # Los dashboards de estadísticas suelen invocarse con
+        # ``tenant_slug=estadisticas`` desde el frontend. Si ese alias no
+        # existe como tenant real, degradamos al tenant por defecto (ej. el
+        # municipal) en lugar de responder 404.
+        alias_map.setdefault("estadisticas", alias_target)
+
+    # Fallback razonable cuando no hay alias configurado: tratar
+    # ``estadisticas`` como sinónimo de municipio para mantener compatibilidad
+    # con widgets viejos.
+    alias_map.setdefault("estadisticas", "municipio")
+
+    return alias_map.get(slug, slug)
+
+
+def _resolve_tenant_profile_or_error(args) -> object:
+    slug_hint = (
+        args.get("tenant_slug")
+        or args.get("tenant")
+        or get_current_tenant_slug()
+    )
+    slug_hint = _normalize_tenant_slug(slug_hint)
+
+    if not slug_hint and current_app.config.get("TESTING"):
+        return None
+
+    try:
+        tenant = resolve_tenant_only(
+            tenant_slug=slug_hint,
+            require_explicit_slug=bool(slug_hint),
+        )
+    except TenantResolutionError as exc:
+        raise TenantResolutionError(str(exc))
+    except Exception:
+        if current_app.config.get("TESTING"):
+            return None
+        raise
+
+    if not tenant and not slug_hint:
+        tenant = get_current_tenant_profile()
+
+    if not tenant and slug_hint:
+        raise TenantResolutionError("Tenant desconocido")
+
+    if tenant:
+        g.tenant_profile = tenant
+        g.current_tenant = tenant
+        g.current_tenant_slug = getattr(tenant, "slug", None)
+    return tenant
+
+
 def _demo_heatmap(scope: str) -> list[dict]:
     demo_points = generate_demo_points(scope=scope, count=90 if scope == "municipio" else 70)
     heatmap: list[dict] = []
@@ -127,6 +195,8 @@ def _demo_heatmap(scope: str) -> list[dict]:
             weight = max(1, int(round(total / 2500))) if total else 1
         heatmap.append(
             {
+                "lat": point["lat"],
+                "lng": point["lon"],
                 "location": {"lat": point["lat"], "lng": point["lon"]},
                 "weight": weight,
                 "categoria": point.get("categoria"),
@@ -135,11 +205,354 @@ def _demo_heatmap(scope: str) -> list[dict]:
                 "fuente": "demo",
             }
         )
+    enrich_heatmap_points(
+        heatmap,
+        property_keys=("categoria", "estado", "barrio", "fuente"),
+    )
     return heatmap
 
 
-def _parse_iso_datetime(value: str | None, *, is_end: bool = False) -> datetime | None:
-    """Parsea fechas ISO añadiendo zona horaria local y normalizando fin de rango."""
+
+
+def _build_showcase_metrics(points: list[dict[str, object]]) -> dict[str, object]:
+    """Build front-end friendly KPI and animation hints for premium dashboards."""
+
+    if not points:
+        return {
+            "events_total": 0,
+            "active_zones": 0,
+            "top_hotspots": [],
+            "sparkline": [],
+            "animation": {"enabled": False},
+        }
+
+    total_events = 0.0
+    hotspots: dict[str, float] = {}
+    sparkline: list[float] = []
+
+    for idx, point in enumerate(points):
+        weight = float(point.get("weight", 1) or 1)
+        total_events += weight
+        location = point.get("location") if isinstance(point.get("location"), dict) else {}
+        label = (
+            point.get("barrio")
+            or point.get("distrito")
+            or location.get("barrio")
+            or location.get("ciudad")
+            or f"Zona {idx + 1}"
+        )
+        hotspots[label] = hotspots.get(label, 0.0) + weight
+        sparkline.append(round(weight, 2))
+
+    top_hotspots = sorted(
+        ({"label": label, "weight": round(value, 2)} for label, value in hotspots.items()),
+        key=lambda item: item["weight"],
+        reverse=True,
+    )[:6]
+
+    # Keep sparkline compact and deterministic for UI cards
+    if len(sparkline) > 24:
+        step = max(1, len(sparkline) // 24)
+        sparkline = sparkline[::step][:24]
+
+    return {
+        "events_total": int(round(total_events)),
+        "active_zones": len(hotspots),
+        "top_hotspots": top_hotspots,
+        "sparkline": sparkline,
+        "animation": {
+            "enabled": True,
+            "pulse_interval_ms": 3200,
+            "toast_lifetime_ms": 4200,
+            "recommended_layers": ["heatmap", "clusters", "pulses", "arcs"],
+        },
+    }
+
+def _augment_heatmap_payload(payload: dict[str, object], *, key: str = "heatmap") -> None:
+    """Attach shared heatmap representations, metadata and provider hints."""
+
+    map_config = get_map_config()
+    if map_config:
+        payload.setdefault("map_config", map_config)
+
+    points = payload.get(key)
+    if not isinstance(points, list) or not points:
+        return
+
+    enrich_heatmap_points(
+        points,
+        property_keys=("categoria", "estado", "barrio", "fuente", "canal", "total"),
+    )
+
+    def _style_hint(items: list[dict[str, object]]) -> dict[str, object]:
+        intensities = [float(p.get("intensity", 0.0) or 0.0) for p in items]
+        max_intensity = max(intensities) if intensities else 0.0
+        if max_intensity < 0:
+            max_intensity = 0.0
+        if max_intensity >= 0.75:
+            recommended_radius = 28
+        elif max_intensity >= 0.4:
+            recommended_radius = 22
+        else:
+            recommended_radius = 16
+
+        gradient = [
+            {"stop": 0.0, "color": "rgba(0, 126, 255, 0)"},
+            {"stop": 0.3, "color": "rgba(0, 126, 255, 0.6)"},
+            {"stop": 0.6, "color": "rgba(255, 200, 0, 0.85)"},
+            {"stop": 1.0, "color": "rgba(255, 60, 0, 1)"},
+        ]
+
+        return {
+            "max_intensity": round(max_intensity, 4),
+            "recommended_radius": recommended_radius,
+            "gradient": gradient,
+        }
+
+    feature_collection = build_feature_collection(points)
+    supported_formats: list[str] = ["points"]
+    preferred_format = "points"
+
+    if feature_collection:
+        payload[f"{key}_geojson"] = feature_collection
+        supported_formats.append("geojson")
+        preferred_format = "geojson"
+
+    provider_hint = map_config.get("provider") if isinstance(map_config, dict) else None
+    if not provider_hint or provider_hint == "none":
+        provider_hint = "maplibre"
+
+    layers = payload.setdefault("map_layers", {})
+    if isinstance(layers, dict):
+        layers[key] = {
+            "kind": "heatmap",
+            "supported_formats": supported_formats,
+            "preferred_format": preferred_format,
+            "provider_hint": provider_hint,
+            "source_keys": {"points": key, "geojson": f"{key}_geojson"},
+        }
+        layers[f"{key}_pulses"] = {
+            "kind": "pulses",
+            "provider_hint": provider_hint,
+            "source_keys": {"points": key},
+            "style": {"radius": 8, "glow": 0.85},
+        }
+
+    # Aggregate the points into grid cells so that MapLibre/MapTiler can render
+    # either a heatmap or clustered overlays without relying on the deprecated
+    # Google APIs.
+    cells, cells_metadata = aggregate_heatmap_points(
+        points,
+        categorical_keys=("categoria", "estado", "barrio", "fuente", "canal"),
+    )
+
+    if cells:
+        pulses = []
+        for idx, cell in enumerate(cells[:25]):
+            if not isinstance(cell, dict):
+                continue
+            location = cell.get("location") or {}
+            pulses.append(
+                {
+                    "id": f"{key}_pulse_{idx+1}",
+                    "lat": location.get("lat"),
+                    "lng": location.get("lng"),
+                    "intensity": cell.get("intensity"),
+                    "weight": cell.get("count"),
+                }
+            )
+        payload[f"{key}_cells"] = cells
+        if pulses:
+            payload[f"{key}_pulses"] = pulses
+        cells_geojson = build_feature_collection(cells)
+        if cells_geojson:
+            payload[f"{key}_cells_geojson"] = cells_geojson
+
+        if isinstance(layers, dict):
+            layers[f"{key}_cells"] = {
+                "kind": "grid",
+                "supported_formats": ["cells", "geojson"],
+                "preferred_format": "geojson",
+                "provider_hint": provider_hint,
+                "source_keys": {
+                    "cells": f"{key}_cells",
+                    "geojson": f"{key}_cells_geojson",
+                },
+            }
+            if payload.get(f"{key}_pulses"):
+                layers[f"{key}_pulses"] = {
+                    "kind": "pulse",
+                    "supported_formats": ["points"],
+                    "preferred_format": "points",
+                    "provider_hint": provider_hint,
+                    "source_keys": {"points": f"{key}_pulses"},
+                }
+
+    metadata = payload.setdefault("metadata", {})
+    if isinstance(metadata, dict):
+        map_metadata = metadata.setdefault("map", {})
+        if isinstance(map_metadata, dict):
+            top_cells = sorted(
+                cells,
+                key=lambda cell: float(cell.get("count", 0.0) or 0.0),
+                reverse=True,
+            )[:5]
+            cinematic_events = []
+            for idx, cell in enumerate(top_cells, start=1):
+                if not isinstance(cell, dict):
+                    continue
+                loc = cell.get("location") or {}
+                cinematic_events.append(
+                    {
+                        "rank": idx,
+                        "lat": loc.get("lat"),
+                        "lng": loc.get("lng"),
+                        "label": cell.get("barrio") or cell.get("distrito") or f"Zona {idx}",
+                        "weight": cell.get("count"),
+                        "intensity": cell.get("intensity"),
+                        "pulse_ms": 1200 + idx * 180,
+                    }
+                )
+
+            showcase = _build_showcase_metrics(points)
+            if isinstance(showcase, dict):
+                anim = showcase.setdefault("animation", {})
+                if isinstance(anim, dict):
+                    anim.setdefault("enabled", bool(points))
+                    anim.setdefault("default", "pulse")
+
+            map_metadata[key] = {
+                "point_count": cells_metadata.get("point_count"),
+                "cell_count": cells_metadata.get("cell_count"),
+                "max_point_weight": cells_metadata.get("max_point_weight"),
+                "max_cell_count": cells_metadata.get("max_cell_count"),
+                "total_weight": cells_metadata.get("total_weight"),
+                "resolution": cells_metadata.get("resolution"),
+                "bounds": cells_metadata.get("bounds"),
+                "centroid": cells_metadata.get("centroid"),
+                "provider_hint": provider_hint,
+                "style": _style_hint(points),
+                "showcase": showcase,
+                "hotspots": cinematic_events,
+                "rendering": {
+                    "recommended_engine": "maplibre-gl",
+                    "supports_animations": True,
+                    "supports_clusters": True,
+                    "supports_heatmap": True,
+                },
+            }
+
+        category_palette = [
+            "#EF4444",
+            "#F97316",
+            "#EAB308",
+            "#22C55E",
+            "#06B6D4",
+            "#3B82F6",
+            "#8B5CF6",
+            "#EC4899",
+        ]
+        grouped_categories: dict[str, dict[str, object]] = {}
+        for point in points:
+            if not isinstance(point, dict):
+                continue
+            categoria = str(point.get("categoria") or "sin_categoria").strip().lower() or "sin_categoria"
+            lat = point.get("lat")
+            lng = point.get("lng")
+            if lat is None or lng is None:
+                continue
+            weight = float(point.get("weight") or point.get("w") or point.get("count") or 1.0)
+            bucket = grouped_categories.setdefault(categoria, {"count": 0, "weight": 0.0, "points": []})
+            bucket["count"] = int(bucket.get("count") or 0) + 1
+            bucket["weight"] = float(bucket.get("weight") or 0.0) + max(weight, 0.0)
+            point_list = bucket.setdefault("points", [])
+            if isinstance(point_list, list):
+                point_list.append({"lat": float(lat), "lng": float(lng), "weight": round(max(weight, 0.0), 4)})
+
+        ranked_categories = sorted(grouped_categories.items(), key=lambda item: float(item[1].get("weight") or 0.0), reverse=True)
+        max_weight = max((float(data.get("weight") or 0.0) for _, data in ranked_categories), default=0.0)
+        category_items = []
+        for idx, (name, data) in enumerate(ranked_categories):
+            total_weight = float(data.get("weight") or 0.0)
+            category_items.append(
+                {
+                    "categoria": name,
+                    "color": category_palette[idx % len(category_palette)],
+                    "event_count": int(data.get("count") or 0),
+                    "total_weight": round(total_weight, 4),
+                    "intensity": round((total_weight / max_weight) if max_weight > 0 else 0.0, 4),
+                    "points": data.get("points") or [],
+                }
+            )
+
+        metadata["category_layers"] = {
+            "provider": provider_hint or "maplibre",
+            "tiles": {
+                "url": "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+                "attribution": "© OpenStreetMap contributors",
+            },
+            "categories": category_items,
+            "legend": {"mode": "category_weight", "min_weight": 0, "max_weight": round(max_weight, 4)},
+        }
+
+    if isinstance(metadata, dict):
+        filters_meta = metadata.setdefault("filters", {})
+        if isinstance(filters_meta, dict):
+            categorias = sorted({p.get("categoria") for p in points if p.get("categoria")})
+            estados = sorted({p.get("estado") for p in points if p.get("estado")})
+            distritos = sorted({
+                p.get("barrio")
+                or p.get("distrito")
+                or (p.get("location") or {}).get("barrio")
+                for p in points
+                if p.get("barrio")
+                or p.get("distrito")
+                or (isinstance(p.get("location"), dict) and (p.get("location") or {}).get("barrio"))
+            })
+            if categorias:
+                filters_meta.setdefault("categorias", categorias)
+            if estados:
+                filters_meta.setdefault("estados", estados)
+            if distritos:
+                filters_meta.setdefault("distritos", distritos)
+            filters_meta.setdefault(
+                "rangos_tiempo",
+                [
+                    {"label": "Últimos 7 días", "days": 7},
+                    {"label": "Últimos 30 días", "days": 30},
+                    {"label": "Últimos 90 días", "days": 90},
+                ],
+            )
+
+    if isinstance(metadata, dict):
+        analytics_meta = metadata.setdefault("analytics", {})
+        if isinstance(analytics_meta, dict):
+            sorted_points = sorted(
+                [p for p in points if isinstance(p, dict)],
+                key=lambda item: float(item.get("weight", 0.0) or 0.0),
+                reverse=True,
+            )
+            analytics_meta[key] = {
+                "top_points": [
+                    {
+                        "rank": idx + 1,
+                        "lat": (pt.get("location") or {}).get("lat", pt.get("lat")),
+                        "lng": (pt.get("location") or {}).get("lng", pt.get("lng")),
+                        "weight": pt.get("weight"),
+                        "categoria": pt.get("categoria"),
+                        "estado": pt.get("estado"),
+                    }
+                    for idx, pt in enumerate(sorted_points[:10])
+                ],
+                "kpi": {
+                    "coverage_score": round(min(100.0, float(cells_metadata.get("cell_count", 0) or 0) * 2.75), 2),
+                    "activity_score": round(min(100.0, float(cells_metadata.get("total_weight", 0.0) or 0.0) * 1.5), 2),
+                },
+            }
+
+
+def _parse_date_param(value: str | None, *, name: str, is_end: bool = False) -> datetime | None:
+    """Parses date parameters supporting YYYY-MM-DD and ISO 8601 (with Z)."""
 
     if not value:
         return None
@@ -148,10 +561,25 @@ def _parse_iso_datetime(value: str | None, *, is_end: bool = False) -> datetime 
     if not raw:
         return None
 
-    try:
-        parsed = datetime.fromisoformat(raw)
-    except ValueError:
-        return None
+    normalized = raw
+    if raw.endswith("Z"):
+        normalized = f"{raw[:-1]}+00:00"
+
+    parsed = None
+    for parser in (
+        lambda text: datetime.fromisoformat(text),
+        lambda text: datetime.strptime(text, "%Y-%m-%d"),
+    ):
+        try:
+            parsed = parser(normalized)
+            break
+        except ValueError:
+            parsed = None
+
+    if parsed is None:
+        raise ValueError(
+            f"El parámetro '{name}' tiene un formato inválido. Usa YYYY-MM-DD o ISO 8601."
+        )
 
     tzinfo = get_local_now().tzinfo
     if parsed.tzinfo is None and tzinfo is not None:
@@ -174,8 +602,8 @@ def _build_stats_filters(args, estados: list[str] | None) -> StatsFilters | None
         agentes = _parse_int_params(args, "agente")
 
     filtros = StatsFilters(
-        fecha_inicio=_parse_iso_datetime(args.get("fecha_inicio")),
-        fecha_fin=_parse_iso_datetime(args.get("fecha_fin"), is_end=True),
+        fecha_inicio=_parse_date_param(args.get("fecha_inicio"), name="fecha_inicio"),
+        fecha_fin=_parse_date_param(args.get("fecha_fin"), name="fecha_fin", is_end=True),
         estados=tuple(estados) if estados else None,
         categorias=tuple(categorias) if categorias else None,
         distritos=tuple(distritos) if distritos else None,
@@ -298,6 +726,11 @@ def estadisticas_dashboard(current_user):
     if tipo == "pyme" and rubro_id is None:
         rubro_id = getattr(current_user, "rubro_id", None)
 
+    try:
+        stats_filters = _build_stats_filters(args, estados)
+    except ValueError as exc:
+        return jsonify({"error": "bad_request", "detail": str(exc)}), 400
+
     heatmap = servicio_tickets.obtener_tickets_con_ubicacion_para_mapa(
         tipo_ticket=tipo,
         municipio_id=municipio_id,
@@ -334,8 +767,9 @@ def estadisticas_dashboard(current_user):
         ),
     }
 
+    _augment_heatmap_payload(payload)
+
     if tipo == "municipio":
-        stats_filters = _build_stats_filters(args, estados)
         if stats_filters:
             stats = build_stats_for_municipio(municipio_id, filters=stats_filters)
         else:
@@ -399,6 +833,13 @@ def estadisticas_dashboard(current_user):
 def mapa_calor_datos(current_user):
     """Devuelve los puntos para el mapa de calor en formato JSON."""
     args = request.args
+    tipo_ticket = args.get("tipo_ticket", "municipio")
+
+    try:
+        tenant = _resolve_tenant_profile_or_error(args)
+    except TenantResolutionError as exc:
+        return jsonify({"error": "tenant_desconocido", "detail": str(exc)}), 404
+
     estados = _parse_estado_params(args)
     estado_param = None
     if estados:
@@ -408,30 +849,55 @@ def mapa_calor_datos(current_user):
     distrito = distritos[0] if distritos else None
 
     municipio_id = args.get("municipio_id", type=int)
-    if municipio_id is None and args.get("tipo_ticket", "municipio") == "municipio":
-        municipio_id = _resolve_municipio_id(current_user)
+    if municipio_id is None and tipo_ticket == "municipio":
+        municipio_id = getattr(tenant, "municipio_id", None) or _resolve_municipio_id(
+            current_user
+        )
+
+    rubro_id = args.get("rubro_id", type=int)
+    if rubro_id is None and tipo_ticket == "pyme":
+        rubro_id = getattr(tenant, "pyme_id", None) or getattr(current_user, "rubro_id", None)
 
     categorias = _parse_multi_value_param(args, "categoria")
 
-    puntos = servicio_tickets.obtener_tickets_con_ubicacion_para_mapa(
-        tipo_ticket=args.get("tipo_ticket", "municipio"),
-        municipio_id=municipio_id,
-        rubro_id=args.get("rubro_id", type=int),
-        fecha_inicio=args.get("fecha_inicio"),
-        fecha_fin=args.get("fecha_fin"),
-        categoria=categorias or None,
-        distrito=distrito,
-        estado=estado_param,
-        satisfactorio=args.get("satisfactorio", type=lambda v: str(v).lower() == "true"),
-    )
+    try:
+        stats_filters = _build_stats_filters(args, estados)
+        puntos = servicio_tickets.obtener_tickets_con_ubicacion_para_mapa(
+            tipo_ticket=tipo_ticket,
+            municipio_id=municipio_id,
+            rubro_id=rubro_id,
+            fecha_inicio=args.get("fecha_inicio"),
+            fecha_fin=args.get("fecha_fin"),
+            categoria=categorias or None,
+            distrito=distrito,
+            estado=estado_param,
+            satisfactorio=args.get(
+                "satisfactorio", type=lambda v: str(v).lower() == "true"
+            ),
+        )
+    except ValueError as exc:
+        return jsonify({"error": "bad_request", "detail": str(exc)}), 400
+    except Exception:
+        current_app.logger.error(
+            "[estadisticas] error interno",
+            exc_info=True,
+            extra={
+                "path": request.path,
+                "args": dict(request.args),
+                "tenant": request.args.get("tenant"),
+                "tenant_slug": request.args.get("tenant_slug"),
+            },
+        )
+        return jsonify({"error": "server_error", "detail": "Error interno"}), 500
 
     if not puntos:
-        puntos = _demo_heatmap(args.get("tipo_ticket", "municipio"))
+        puntos = _demo_heatmap(tipo_ticket)
 
     payload: dict[str, object] = {"heatmap": puntos}
 
-    if args.get("tipo_ticket", "municipio") == "municipio":
-        stats_filters = _build_stats_filters(args, estados)
+    _augment_heatmap_payload(payload)
+
+    if tipo_ticket == "municipio":
         if stats_filters:
             stats = build_stats_for_municipio(municipio_id, filters=stats_filters)
         else:
@@ -485,6 +951,11 @@ def estadisticas_tickets(current_user):
     args = request.args
     tipo = args.get("tipo", "municipio")
 
+    try:
+        tenant = _resolve_tenant_profile_or_error(args)
+    except TenantResolutionError as exc:
+        return jsonify({"error": "tenant_desconocido", "detail": str(exc)}), 404
+
     municipio_id = args.get("municipio_id", type=int)
     rubro_id = args.get("rubro_id", type=int)
 
@@ -498,33 +969,52 @@ def estadisticas_tickets(current_user):
         distrito = distrito.strip() or None
 
     if tipo == "municipio" and municipio_id is None:
-        municipio_id = _resolve_municipio_id(current_user)
+        municipio_id = getattr(tenant, "municipio_id", None) or _resolve_municipio_id(
+            current_user
+        )
     if tipo == "pyme" and rubro_id is None:
-        rubro_id = getattr(current_user, "rubro_id", None)
+        rubro_id = getattr(tenant, "pyme_id", None) or getattr(current_user, "rubro_id", None)
 
     categoria_values = _parse_multi_value_param(args, "categoria")
     categoria = categoria_values or None
 
-    puntos = servicio_tickets.obtener_tickets_con_ubicacion_para_mapa(
-        tipo_ticket=tipo,
-        municipio_id=municipio_id,
-        rubro_id=rubro_id,
-        fecha_inicio=args.get("fecha_inicio"),
-        fecha_fin=args.get("fecha_fin"),
-        categoria=categoria,
-        distrito=distrito,
-        estado=estado_param,
-        satisfactorio=args.get(
-            "satisfactorio", type=lambda v: str(v).lower() == "true"
-        ),
-    )
+    try:
+        stats_filters = _build_stats_filters(args, estados)
+        puntos = servicio_tickets.obtener_tickets_con_ubicacion_para_mapa(
+            tipo_ticket=tipo,
+            municipio_id=municipio_id,
+            rubro_id=rubro_id,
+            fecha_inicio=args.get("fecha_inicio"),
+            fecha_fin=args.get("fecha_fin"),
+            categoria=categoria,
+            distrito=distrito,
+            estado=estado_param,
+            satisfactorio=args.get(
+                "satisfactorio", type=lambda v: str(v).lower() == "true"
+            ),
+        )
+    except ValueError as exc:
+        return jsonify({"error": "bad_request", "detail": str(exc)}), 400
+    except Exception:
+        current_app.logger.error(
+            "[estadisticas] error interno",
+            exc_info=True,
+            extra={
+                "path": request.path,
+                "args": dict(request.args),
+                "tenant": request.args.get("tenant"),
+                "tenant_slug": request.args.get("tenant_slug"),
+            },
+        )
+        return jsonify({"error": "server_error", "detail": "Error interno"}), 500
 
     heatmap = puntos or _demo_heatmap(tipo)
 
     respuesta: dict[str, object] = {"heatmap": heatmap}
 
+    _augment_heatmap_payload(respuesta)
+
     if tipo == "municipio":
-        stats_filters = _build_stats_filters(args, estados)
         if stats_filters:
             stats = build_stats_for_municipio(municipio_id, filters=stats_filters)
         else:

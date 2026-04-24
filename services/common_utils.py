@@ -1,9 +1,11 @@
 # services/common_utils.py
 import re
+import os
 import unicodedata
 import pandas as pd
 from typing import Dict, Any, Tuple, Optional, List
 from config.feature_flags import FEATURE_ENCUESTAS
+from services.response_formatter import render_audio_text
 from .constants import ConversationState, CONTEXTO_MUNICIPIO
 
 # --- PLACEHOLDER DEFINITIONS ---
@@ -89,102 +91,85 @@ def limpiar_texto_base(texto: str) -> str:
 
 def parse_precio_flexible(precio_str: str) -> Tuple[str, Optional[float], Optional[str]]:
     """
-    PLACEHOLDER: Basic price parsing.
-    Original implementation needs to be restored.
+    Interpret price strings that may use different thousand/decimal separators
+    and currency hints.
+
+    Returns a tuple of (precio_normalizado, precio_float, moneda_detectada).
+    * ``precio_normalizado`` is a canonical numeric string if it can be parsed,
+      otherwise the original cleaned input.
+    * ``precio_float`` is ``None`` when parsing fails.
+    * ``moneda_detectada`` is a best-effort guess (``None`` if no hint exists).
     """
-    get_logger().warning(f"Using PLACEHOLDER parse_precio_flexible for: {precio_str}")
+
+    if precio_str is None:
+        return "", None, None
+
     if not isinstance(precio_str, str):
+        precio_str = str(precio_str)
+
+    texto_original = precio_str.strip()
+    if not texto_original:
         return "", None, None
 
-    texto_original_limpio = precio_str.strip()
-    if not texto_original_limpio:
-        return "", None, None
+    texto_lower = texto_original.lower()
 
-    moneda_detectada = "ARS" # Default a ARS, o podría ser None
-    # Detectar monedas comunes
-    if "usd" in texto_original_limpio.lower() or "$" in texto_original_limpio:
-        # Si es solo "$", podría ser ARS en Argentina. Necesitaríamos más contexto o una lista de monedas prioritarias.
-        # Por ahora, si hay "$", asumimos USD a menos que se especifique ARS explícitamente.
-        # Esto puede necesitar ajuste según el mercado objetivo.
-        if "ars" in texto_original_limpio.lower():
-            moneda_detectada = "ARS"
-        else:
-            # Si "$" es el único indicador y no hay "USD" o "U$S", podría ser moneda local.
-            # Para ser más conservador, si solo es "$" y no hay "USD", no cambiar de ARS (default).
-            # Cambiar a USD solo si "USD" o "U$S" (o similar) está presente.
-            if "usd" in texto_original_limpio.lower() or "u$s" in texto_original_limpio.lower():
-                 moneda_detectada = "USD"
-            # else: moneda_detectada sigue siendo ARS (default) si solo hay "$"
-
-    elif "€" in texto_original_limpio or "eur" in texto_original_limpio.lower():
+    moneda_detectada = None
+    if any(token in texto_lower for token in ["usd", "u$s", "us$", "dolar", "dólar"]):
+        moneda_detectada = "USD"
+    elif "€" in texto_original or "eur" in texto_lower:
         moneda_detectada = "EUR"
-    elif "ars" in texto_original_limpio.lower(): # Ej. "100 ARS"
+    elif any(token in texto_lower for token in ["ars", "peso", "pesos", "$ar"]):
+        moneda_detectada = "ARS"
+    elif "$" in texto_original:
+        # Asumimos pesos argentinos cuando solo hay símbolo "$" sin otras pistas.
         moneda_detectada = "ARS"
 
-
-    # Eliminar símbolos de moneda y texto no numérico, excepto separadores comunes
-    # Permitimos dígitos, punto, coma. Temporalmente también el signo menos por si acaso.
-    # Se quitan espacios para facilitar el parseo de números como "1 234,56"
-    texto_numerico = re.sub(r'[^\d,.\-]', '', texto_original_limpio.replace(" ", ""))
-
+    # Conservar dígitos, comas, puntos y signo menos para extraer el número.
+    texto_numerico = re.sub(r"[^0-9,\.-]", "", texto_original.replace(" ", ""))
+    if "-" in texto_numerico:
+        texto_numerico = ("-" if texto_numerico.startswith("-") else "") + texto_numerico.replace("-", "")
+    texto_numerico = texto_numerico.strip(".,")
     if not texto_numerico:
-        return texto_original_limpio, None, moneda_detectada # Devolver original si no queda nada numérico
+        return texto_original, None, moneda_detectada
 
-    precio_float = None
     logger = get_logger()
 
-    # Intento 1: Asumir que la coma es decimal y los puntos son miles (ej. 1.234,56)
+    # Determinar separador decimal usando heurísticas basadas en la última
+    # aparición de punto/coma y la longitud del tramo final.
+    decimal_sep = None
+    last_dot = texto_numerico.rfind(".")
+    last_comma = texto_numerico.rfind(",")
+
+    if last_dot != -1 and last_comma != -1:
+        decimal_sep = "." if last_dot > last_comma else ","
+    elif texto_numerico.count(",") == 1 and len(texto_numerico.split(",")[-1]) <= 2:
+        decimal_sep = ","
+    elif texto_numerico.count(".") == 1 and len(texto_numerico.split(".")[-1]) <= 2:
+        decimal_sep = "."
+
+    if decimal_sep == ",":
+        numero_normalizado = texto_numerico.replace(".", "").replace(",", ".")
+    elif decimal_sep == ".":
+        numero_normalizado = texto_numerico.replace(",", "")
+    else:
+        numero_normalizado = texto_numerico.replace(",", "").replace(".", "")
+
     try:
-        s_intento1 = texto_numerico.replace('.', '').replace(',', '.')
-        precio_float = float(s_intento1)
-        # logger.debug(f"Parse precio (intento 1: '.' miles, ',' dec): '{texto_numerico}' -> {s_intento1} -> {precio_float}")
+        precio_float = float(numero_normalizado)
     except ValueError:
-        # Intento 2: Asumir que el punto es decimal y las comas son miles (ej. 1,234.56)
-        try:
-            s_intento2 = texto_numerico.replace(',', '')
-            precio_float = float(s_intento2)
-            # logger.debug(f"Parse precio (intento 2: ',' miles, '.' dec): '{texto_numerico}' -> {s_intento2} -> {precio_float}")
-        except ValueError:
-            # Intento 3: Asumir que no hay separadores de miles, y el último punto/coma es decimal
-            # Esto es más riesgoso. Solo si los anteriores fallan.
-            s_intento3 = texto_numerico
-            if '.' in texto_numerico and ',' in texto_numerico:
-                last_dot_idx = texto_numerico.rfind('.')
-                last_comma_idx = texto_numerico.rfind(',')
-                if last_dot_idx > last_comma_idx: # punto es el último, probable decimal: 1,234.56
-                    s_intento3 = texto_numerico.replace(',', '')
-                else: # coma es la última, probable decimal: 1.234,56
-                    s_intento3 = texto_numerico.replace('.', '').replace(',', '.')
-            elif '.' in texto_numerico: # Solo puntos
-                 # Si hay múltiples puntos, quitar todos menos el último (asumiendo que es decimal)
-                 if texto_numerico.count('.') > 1:
-                    s_intento3 = texto_numerico.replace('.', '', texto_numerico.count('.') -1)
-                 # Si solo hay un punto, se asume que es decimal. s_intento3 ya es texto_numerico.
-            elif ',' in texto_numerico: # Solo comas
-                 # Si hay múltiples comas, quitar todas menos la última y reemplazar esa última por punto
-                 if texto_numerico.count(',') > 1:
-                    s_intento3 = texto_numerico.replace(',', '', texto_numerico.count(',') -1)
-                 s_intento3 = s_intento3.replace(',', '.') # Reemplazar la (única o última) coma por punto
-            # else: s_intento3 ya es texto_numerico (solo dígitos)
+        logger.warning(
+            "No se pudo parsear el precio de forma flexible: '%s' (procesado como '%s')",
+            texto_original,
+            texto_numerico,
+        )
+        return texto_original, None, moneda_detectada
 
-            try:
-                precio_float = float(s_intento3)
-                # logger.debug(f"Parse precio (intento 3: heurística último sep): '{texto_numerico}' -> {s_intento3} -> {precio_float}")
-            except ValueError:
-                logger.warning(f"No se pudo parsear el precio de forma flexible: '{texto_original_limpio}' (procesado como '{texto_numerico}')")
-                return texto_original_limpio, None, moneda_detectada
+    if precio_float.is_integer():
+        precio_normalizado = str(int(precio_float))
+    else:
+        precio_normalizado = f"{precio_float:.2f}".rstrip("0").rstrip(".")
 
-    precio_str_limpio_retorno = texto_numerico
-    if precio_float is not None:
-        if precio_float == int(precio_float):
-            precio_str_limpio_retorno = str(int(precio_float))
-        else:
-            # Formatear a string con hasta 2 decimales, usando punto como separador decimal.
-            # Esto es para consistencia, pero el número de decimales podría ser configurable.
-            precio_str_limpio_retorno = f"{precio_float:.2f}".rstrip('0').rstrip('.') if '.' in f"{precio_float:.2f}" else f"{precio_float:.0f}"
-
-
-    return precio_str_limpio_retorno, precio_float, moneda_detectada
+    return precio_normalizado, precio_float, moneda_detectada
 
 def crear_mapa_de_columnas_inteligente(df: pd.DataFrame, umbral_similitud: float = 0.8) -> Optional[Tuple[Dict[str, Any], int]]:
     """
@@ -685,31 +670,160 @@ def _get_main_menu_payload(
             if isinstance(nombre_contacto, str) and nombre_contacto.strip():
                 user_name = nombre_contacto.strip()
 
+    municipio_config = context.get("municipio_config_actual") or {}
+
+    def _is_placeholder_name(value: Optional[str]) -> bool:
+        normalized = str(value or "").strip().lower()
+        if not normalized:
+            return True
+        if normalized in {"municipio inteligente", "demo municipio", "default"}:
+            return True
+        return "municipio inteligente" in normalized
+
+    def _resolve_tenant_name() -> str:
+        tenant_name = "tu municipio"
+        if isinstance(municipio_config, dict):
+            candidate_name = (
+                municipio_config.get("nombre")
+                or municipio_config.get("nombre_municipio")
+                or municipio_config.get("municipio_nombre")
+                or tenant_name
+            )
+            if _is_placeholder_name(candidate_name):
+                candidate_name = "tu municipio"
+            tenant_name = candidate_name
+        if owner_user and tenant_name == "tu municipio":
+            tenant_name = getattr(owner_user, "nombre_empresa", None) or getattr(owner_user, "name", "tu municipio")
+        if _is_placeholder_name(tenant_name):
+            tenant_name = "tu municipio"
+        return tenant_name
+
+    def _safe_format(template: str, values: dict) -> str:
+        class _SafeDict(dict):
+            def __missing__(self, key: str) -> str:
+                return "{" + key + "}"
+
+        return template.format_map(_SafeDict(values))
+
+    def _sanitize_assistant_name(value: Optional[str]) -> str:
+        raw = (value or "").strip()
+        if not raw:
+            return ""
+        if raw.lower() in {"municipio inteligente", "asistente virtual"} or _is_placeholder_name(raw):
+            return ""
+        return raw
+
+    tenant_name_text = _resolve_tenant_name()
+
+    # --- PYME LOGIC: If the user is interacting with a Pyme, use the specific Pyme menu generator ---
+    if owner_user and getattr(owner_user, "tipo_chat", "") == "pyme":
+        from services.pyme_menu import get_pyme_menu_payload
+
+        # Pass relevant context to the Pyme menu builder
+        rubro_obj = getattr(owner_user, "rubro", None)
+        rubro_slug = _slugify_rubro(getattr(rubro_obj, "clave", None) if rubro_obj else None)
+
+        pyme_context = {
+            "nombre_pyme": tenant_name_text,
+            "rubro_slug": rubro_slug,
+            "rubro_nombre": getattr(rubro_obj, "nombre", None) if rubro_obj else None,
+        }
+
+        # This returns a dict with 'message_body', 'options_list', 'message_type', etc.
+        # tailored for the specific business category (or generic pyme).
+        pyme_payload = get_pyme_menu_payload(pyme_context, channel=context.get("channel", "web"))
+
+        # Override the greeting in the payload to respect the user's name if known
+        if user_name:
+            assistant_name = "Tu Asistente" # Default, could be extracted from pyme config
+            # Try to extract assistant name from message_body if it follows standard format, or just prepend
+            # Simpler: Prepend a personalized hello if not already present
+            if f"Hola, {user_name}" not in pyme_payload["message_body"]:
+                 pyme_payload["message_body"] = f"👋 ¡Hola, {user_name}! " + pyme_payload["message_body"]
+
+        # If we need to ask for name (pyme flow might handle this differently, but let's stick to standard)
+        if not user_name:
+             contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
+             contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_NOMBRE_INICIAL.name
+             return {
+                "message_body": f"¡Hola! Soy el asistente virtual de {tenant_name_text}. Para una atención más personalizada, ¿podrías decirme tu nombre?",
+                "message_type": "text",
+                "fuente": "pedir_nombre_inicial_pyme"
+            }
+
+        return pyme_payload
+
+    # --- MUNICIPIO LOGIC (Existing) ---
+
     if welcome_message_override:
         welcome_message = welcome_message_override
     elif user_name:
-        welcome_message = f"👋 ¡Hola, {user_name}!"
+        welcome_message = f"👋 *¡Hola, {user_name}!*"
     else:
-        # User's name is not known, ask for it.
-        contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
-        contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_NOMBRE_INICIAL.name
+        # User's name is not known. Prioritize discoverability with a compact
+        # category-first onboarding and keep name as optional.
+        assistant_name = None
+        if isinstance(municipio_config, dict):
+            assistant_name = _sanitize_assistant_name(
+                municipio_config.get("assistant_name") or municipio_config.get("bot_name")
+            )
+        if not assistant_name:
+            assistant_name = tenant_name_text if tenant_name_text != "tu municipio" else "JUNI"
         return {
-            "message_body": "¡Hola! Soy JUNI, tu Asistente Virtual. Para una atención más personalizada, ¿podrías decirme tu nombre?",
+            "message_body": (
+                f"¡Hola! Soy {assistant_name}, asistente virtual de {tenant_name_text}. "
+                "Para empezar más rápido, elegí una categoría del menú o contame directamente qué necesitás. "
+                "Si querés, también podés decirme tu nombre para personalizar la atención."
+            ),
             "message_type": "text",
-            "fuente": "pedir_nombre_inicial"
+            "botones": [
+                {"texto": "🗣️ Reclamos y Consultas", "action_id": "mostrar_menu_reclamos"},
+                {"texto": "🚗 Trámites y Turnos", "action_id": "mostrar_menu_tramites"},
+                {"texto": "📰 Información del Municipio", "action_id": "mostrar_menu_informacion"},
+                {"texto": "🛍️ Catálogo y Beneficios", "action_id": "mostrar_menu_catalogo"},
+            ],
+            "fuente": "onboarding_categorias_primero"
         }
 
+    # Determine tenant name for text body
+    tenant_name_text = "tu municipio"
+    municipio_config = context.get("municipio_config_actual") or {}
+    if isinstance(municipio_config, dict):
+        tenant_name_text = (
+            municipio_config.get("nombre")
+            or municipio_config.get("nombre_municipio")
+            or municipio_config.get("municipio_nombre")
+            or tenant_name_text
+        )
+    if owner_user and tenant_name_text == "tu municipio":
+        tenant_name_text = getattr(owner_user, "nombre_empresa", None) or getattr(owner_user, "name", "tu municipio")
+
+    if welcome_message == f"👋 *¡Hola, {user_name}!*":
+        welcome_message = f"{welcome_message} Bienvenido a *{tenant_name_text}*."
+
+    assistant_intro = ""
+
     if reduced:
-        main_text_body = (
-            "Estas son las opciones principales del municipio.\n\n"
-            "Elegí una o contame qué necesitás y te ayudo al instante."
+        main_text_body = "\n\n".join(
+            part
+            for part in [
+                assistant_intro,
+                "Estas son las opciones principales del municipio.",
+                "Podés compartir tu ubicación, enviarnos fotos o mandarnos una nota de voz con lo que necesitás.",
+                "Elegí una o contame qué necesitás y te ayudo al instante.",
+            ]
+            if part
         )
     else:
-        main_text_body = (
-            "Soy *JUNI*, tu Asistente Virtual de la Municipalidad de Junín.\n\n"
-            "*Podés compartir tu ubicación, enviarnos fotos o mandarnos una nota de voz* con lo que necesitás y te ofreceremos opciones para trámites, reclamos y más. Este servicio es accesible y está listo para ayudarte.\n\n"
-            "También podés usar emojis para realizar acciones rápidas.\n\n"
-            "¿Cómo te puedo ayudar hoy?"
+        main_text_body = "\n\n".join(
+            part
+            for part in [
+                assistant_intro,
+                "*Podés compartir tu ubicación, enviarnos fotos o mandarnos una nota de voz* con lo que necesitás y te ofreceremos opciones para trámites, reclamos y más. Este servicio es accesible y está listo para ayudarte.",
+                "También podés usar emojis para realizar acciones rápidas.",
+                "¿Cómo te puedo ayudar hoy?",
+            ]
+            if part
         )
 
     channel = context.get("channel", "web")
@@ -720,10 +834,12 @@ def _get_main_menu_payload(
             {"texto": "🚗 Trámites y Turnos", "action_id": "mostrar_menu_tramites"},
             {"texto": "📰 Información del Municipio", "action_id": "mostrar_menu_informacion"},
         ]
+        whatsapp_buttons.append({"texto": "🛍️ Catálogo y Beneficios", "action_id": "mostrar_menu_catalogo"})
         if FEATURE_ENCUESTAS:
             whatsapp_buttons.append({"texto": "🗳️ Participación Ciudadana", "action_id": "mostrar_menu_encuestas"})
         whatsapp_buttons.extend([
             {"texto": "🅿️ Estacionamiento", "action_id": "mostrar_menu_estacionamiento"},
+            {"texto": "📞 Solicitar llamada", "action_id": "solicitar_llamada"},
             {"texto": "❓ Ayuda", "action_id": "mostrar_menu_ayuda"},
         ])
 
@@ -755,9 +871,34 @@ def _get_main_menu_payload(
                 {"texto": "🎭 Agenda Cultural y Noticias", "action_id": "agenda_y_noticias"},
                 {"texto": "🐾 Veterinaria y Bromatología", "action_id": "veterinaria_bromatologia"},
                 {"texto": "🏗️ Obras", "action_id": "obras"},
-                {"texto": "♻️ Punto Limpio", "action_id": "punto_limpio"},
             ]},
         ]
+
+        # Only add Punto Limpio for valid municipal tenants (e.g. Junín) or generic "municipio"
+        is_junin_or_generic = False
+        if owner_user:
+            owner_type = getattr(owner_user, "tipo_chat", "")
+            owner_slug = getattr(owner_user, "municipio_id", "") # Assuming municipio_id might act as slug or id check
+            if owner_type == "municipio" or (owner_user.id == 4): # 4 is often default municipality
+                 is_junin_or_generic = True
+        elif context.get("chat_db_context_data", {}).get(CONTEXTO_MUNICIPIO):
+             is_junin_or_generic = True # Context exists, implies municipality
+
+        # Explicit check for pyme context to disable it
+        if context.get("tipo_entidad") == "pyme":
+             is_junin_or_generic = False
+
+        if is_junin_or_generic:
+            # Append Punto Limpio only if appropriate
+            categorias[-1]["botones"].append({"texto": "♻️ Punto Limpio", "action_id": "punto_limpio"})
+
+        categorias.append({"titulo": "🛍️ Catálogo y Beneficios", "botones": [
+                {"texto": "📂 Ver Catálogo", "action_id": "catalogo_ver"},
+                {"texto": "🎁 Canje de Puntos", "action_id": "catalogo_canje_puntos"},
+                {"texto": "🛒 Compra de Productos", "action_id": "catalogo_compras"},
+                {"texto": "❤️ Donaciones", "action_id": "catalogo_donaciones"},
+            ]},
+        )
 
         if FEATURE_ENCUESTAS:
             categorias.append({
@@ -770,6 +911,9 @@ def _get_main_menu_payload(
         categorias.extend([
             {"titulo": "🅿️ Estacionamiento", "botones": [
                 {"texto": "🅿️ Buscar Estacionamiento Libre", "action_id": "buscar_estacionamiento"},
+            ]},
+            {"titulo": "Accesibilidad", "botones": [
+                {"texto": "📞 Solicitar llamada de voz", "action_id": "solicitar_llamada"},
             ]},
             {"titulo": "❓ Ayuda", "botones": [
                 {"texto": "ℹ️ Cómo usar el bot", "action_id": "mostrar_menu_ayuda"},
@@ -789,13 +933,25 @@ def _get_main_menu_payload(
         return normalized.strip()
 
     safe_user_name = _normalize_for_audio(user_name)
+
+    # Determine tenant/bot name dynamically
+    tenant_name = tenant_name_text
+    bot_name = "el asistente virtual"
+    if isinstance(municipio_config, dict):
+        bot_name = _sanitize_assistant_name(
+            municipio_config.get("assistant_name") or municipio_config.get("bot_name")
+        ) or bot_name
+
     if safe_user_name:
-        audio_greeting = f"Hola {safe_user_name}, soy Juni, el asistente virtual de la Municipalidad de Junín."
+        audio_greeting = f"Hola {safe_user_name}, soy {bot_name} de {tenant_name}."
     else:
-        audio_greeting = "Hola, soy Juni, el asistente virtual de la Municipalidad de Junín."
+        audio_greeting = f"Hola, soy {bot_name} de {tenant_name}."
 
     if reduced:
-        audio_intro = "Volvimos al menú principal para seguir con tu gestión."
+        audio_intro = (
+            "Volvimos al menú principal para seguir con tu gestión. "
+            "Podés enviar ubicación, fotos o notas de voz para que te ayudemos mejor."
+        )
         audio_prompt = "Elegí una categoría para continuar."
     else:
         audio_intro = (
@@ -835,6 +991,11 @@ def _get_main_menu_payload(
     audio_parts = [audio_greeting, audio_intro, audio_prompt, *audio_options, audio_closing]
     audio_text = " ".join(part.strip() for part in audio_parts if part)
 
+    try:
+        menu_tts_speed = float(os.getenv("OPENAI_TTS_MENU_SPEED", "0.92"))
+    except (TypeError, ValueError):
+        menu_tts_speed = 0.92
+
     response = {
         "message_body": f"{welcome_message}\n\n{main_text_body}",
         "options_list": flat_buttons,
@@ -843,12 +1004,34 @@ def _get_main_menu_payload(
         "fuente": "greeting_handler_structured_menu_v2",
         "categorias": categorias,
         "audio_text": audio_text,
-        "generar_audio": True
+        "generar_audio": True,
+        # Menú principal: priorizamos una voz más natural y modelo de mayor calidad.
+        "tts_voice": "shimmer",
+        "tts_model": os.getenv("OPENAI_TTS_MENU_MODEL", "tts-1-hd"),
+        "tts_speed": menu_tts_speed,
+        "tts_cache_namespace": "menu_principal",
     }
+    # Hard guard: never leak the generic placeholder identity in final greeting.
+    for key in ("message_body", "audio_text"):
+        value = response.get(key)
+        if not isinstance(value, str):
+            continue
+        normalized = value.lower()
+        if "municipio inteligente" in normalized:
+            sanitized = value.replace("Municipio Inteligente", "tu municipio")
+            sanitized = sanitized.replace("municipio inteligente", "tu municipio")
+            sanitized = sanitized.replace("de tu municipio de tu municipio", "de tu municipio")
+            response[key] = sanitized
     # Do not include a header image in the initial greeting menu to keep the
     # conversation lightweight and similar to other professional bots like
     # Boti. Removing the image avoids large headers in WhatsApp.
     return response
+
+def _slugify_rubro(value: str | None) -> str:
+    """Helper to slugify rubro names, duplicated from pyme_menu to avoid circular imports if needed."""
+    if not value:
+        return "default"
+    return re.sub(r"[^a-z0-9]+", "-", str(value).lower()).strip("-") or "default"
 
 def clean_text_for_tts(text: str) -> str:
     """
@@ -891,27 +1074,51 @@ def clean_text_for_tts(text: str) -> str:
     return text
 
 def parse_cantidad_flexible(cantidad_str: Any) -> Optional[int]:
+    """Extrae cantidad de empaque/venta desde descripciones libres.
+
+    Ejemplos esperados:
+    - "Caja x6 - 750 ml" -> 6
+    - "Pack de 12 latas" -> 12
+    - "x 24 unidades" -> 24
+    - "750 ml" -> None (volumen, no cantidad de unidades)
     """
-    PLACEHOLDER: Parses a flexible quantity string (e.g., "6 units", "12", "1 dozen") into an integer.
-    Attempts to extract the first number found.
-    Original implementation needs to be restored for more robust parsing.
-    """
-    get_logger().warning(f"Using PLACEHOLDER parse_cantidad_flexible for: {cantidad_str}")
     if cantidad_str is None:
         return None
 
-    s = str(cantidad_str)
+    s = str(cantidad_str).strip().lower()
+    if not s:
+        return None
 
-    # Try to extract first number found
-    match = re.search(r'\d+', s)
-    if match:
+    # 1) Patrones explícitos de empaque (prioridad alta)
+    explicit_patterns = [
+        r"\bx\s*(\d{1,4})\b",  # x6, x 12
+        r"\b(?:pack|caja|caj[aá]n|estuche|combo|kit)\s*(?:de)?\s*(\d{1,4})\b",
+        r"\b(\d{1,4})\s*(?:u(?:n(?:id(?:ad(?:es)?)?)?)?\.?|unidades?|botellas?|latas?|frascos?|sobres?)\b",
+    ]
+    for pattern in explicit_patterns:
+        match = re.search(pattern, s, flags=re.IGNORECASE)
+        if match:
+            try:
+                value = int(match.group(1))
+                if value > 0:
+                    return value
+            except (TypeError, ValueError):
+                continue
+
+    # 2) Evitar confundir medidas físicas con cantidad de empaque (750ml, 1kg, 2l)
+    if re.search(r"\b\d+(?:[.,]\d+)?\s*(?:ml|l|lt|lts|kg|g|gr|cm|mm)\b", s):
+        return None
+
+    # 3) Fallback conservador: único número en string y rango razonable.
+    all_numbers = re.findall(r"\d{1,4}", s)
+    if len(all_numbers) == 1:
         try:
-            return int(match.group(0))
+            value = int(all_numbers[0])
+            if 1 <= value <= 200:
+                return value
         except ValueError:
             return None
 
-    # Add more sophisticated parsing here if needed (e.g., "dozen" -> 12)
-    # For placeholder, this is basic.
     return None
 
 def validar_email(email: str) -> bool:

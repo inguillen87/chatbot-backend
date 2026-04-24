@@ -118,7 +118,7 @@ def generar_audio_openai(
         logger.info(f"Requesting OpenAI speech synthesis for text: '{text[:50]}...'")
 
         request_payload = {
-            "model": model or os.getenv("OPENAI_TTS_MODEL", "tts-1-hd"),
+            "model": model or os.getenv("OPENAI_TTS_MODEL", "tts-1"),
             "voice": selected_voice,
             "input": text,
             "speed": speed,

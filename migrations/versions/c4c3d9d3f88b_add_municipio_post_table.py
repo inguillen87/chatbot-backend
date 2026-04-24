@@ -52,4 +52,3 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.drop_index("ix_municipio_post_municipio_fecha", table_name="municipio_post")
     op.drop_table("municipio_post")
-

@@ -1,17 +1,34 @@
 from flask_socketio import SocketIO, join_room, emit
 from flask import current_app, request
 from config import ALLOWED_ORIGINS
-from models import User, db, TicketComentario, MunicipioTicket, PymeTicket
+from models import User, TenantProfile, db, TicketComentario, MunicipioTicket, PymeTicket
 import jwt
 from services.ticket_service import servicio_tickets # Reutilizamos el servicio de tickets
 from services.tts_orchestrator import generar_audio
+from services.conversation_stream import build_realtime_envelope
 from utils.response_utils import ensure_buttons_compatibility
 from typing import Any, Optional, Set
+import os
+
+SOCKET_CORS_ORIGINS = list(
+    dict.fromkeys(list(ALLOWED_ORIGINS) + ["https://chatboc.ar", "https://www.chatboc.ar"])
+)
+
+def _resolve_socket_async_mode() -> str:
+    """Use threading by default; allow explicit override via env."""
+    forced_mode = (os.getenv("SOCKETIO_ASYNC_MODE") or "").strip().lower()
+    if forced_mode:
+        return forced_mode
+    return "threading"
+
 
 socketio = SocketIO(
-    cors_allowed_origins=ALLOWED_ORIGINS,
-    cookie=True,
-    async_mode="eventlet"
+    cors_allowed_origins=SOCKET_CORS_ORIGINS,
+    # Engine.IO expects cookie settings as None/str/dict. Using boolean True
+    # can break on newer versions when composing SID cookies.
+    cookie={"name": "io", "path": "/", "httponly": True},
+    async_mode=_resolve_socket_async_mode(),
+    path="/api/socket.io",
 )
 
 
@@ -60,6 +77,31 @@ def _get_rooms_for_user(user: Optional[User]) -> list[str]:
 
     return list(rooms)
 
+def _get_rooms_for_tenant_slug(tenant_slug: Optional[str]) -> list[str]:
+    if not tenant_slug:
+        return []
+
+    tenant = TenantProfile.query.filter_by(slug=str(tenant_slug).strip()).first()
+    if not tenant:
+        return []
+
+    rooms: Set[str] = set()
+    if tenant.municipio_id:
+        rooms.add(f"municipio_{tenant.municipio_id}")
+    if tenant.pyme_id:
+        rooms.add(f"pyme_{tenant.pyme_id}")
+    return list(rooms)
+
+
+
+def _merge_rooms_for_subscription(user: User, tenant_slug: Optional[str]) -> list[str]:
+    """Merge user-derived and tenant-derived rooms without dropping either scope."""
+
+    rooms = list(_get_rooms_for_user(user))
+    for room in _get_rooms_for_tenant_slug(tenant_slug):
+        if room not in rooms:
+            rooms.append(room)
+    return rooms
 
 def _resolve_ticket_room(payload: Any) -> Optional[str]:
     if not isinstance(payload, dict):
@@ -114,9 +156,69 @@ def _emit_to_ticket_room(event_name: str, data: Any) -> None:
         socketio.emit(event_name, data)
 
 
+def _emit_standard_ticket_event(event_name: str, data: Any) -> None:
+    """Emit normalized enterprise-style events alongside legacy socket payloads."""
+    payload = data if isinstance(data, dict) else {"payload": data}
+    room = _resolve_ticket_room(payload)
+    envelope = build_realtime_envelope(event_name=event_name, payload=payload, room=room)
+    if room:
+        socketio.emit(event_name, envelope, room=room)
+    else:
+        socketio.emit(event_name, envelope)
+
+
 def emit_ticket_update(data: Any) -> None:
     """Broadcast generic ticket updates to subscribed admin clients."""
     _emit_to_ticket_room('ticket_update', data)
+
+
+def emit_ticket_status_changed(data: Any) -> None:
+    """Broadcast a normalized status event while preserving legacy consumers."""
+    _emit_standard_ticket_event('ticket.status.changed', data)
+    emit_ticket_update(data)
+
+
+def emit_ticket_assignment_changed(data: Any) -> None:
+    """Broadcast assignment changes with a normalized contract for new clients."""
+    _emit_standard_ticket_event('ticket.assignment.changed', data)
+    emit_ticket_update(data)
+
+
+def emit_ticket_presence_changed(data: Any) -> None:
+    """Broadcast ticket presence updates for collaborative inbox experiences."""
+    _emit_standard_ticket_event('ticket.presence.changed', data)
+
+
+def emit_conversation_message_read(data: Any) -> None:
+    """Broadcast read-state updates for enterprise inbox clients."""
+    _emit_standard_ticket_event('conversation.message.read', data)
+
+def emit_conversation_linked(data: Any) -> None:
+    """Broadcast omnichannel link events."""
+    _emit_standard_ticket_event('conversation.linked', data)
+
+
+def emit_notification_status_changed(data: Any) -> None:
+    """Broadcast normalized notification lifecycle events."""
+    event_name = data.get("event") if isinstance(data, dict) else None
+    if event_name not in {"notification.sent", "notification.failed"}:
+        event_name = "notification.updated"
+    _emit_standard_ticket_event(event_name, data)
+
+
+def emit_ticket_unread_changed(data: Any) -> None:
+    """Broadcast unread-summary deltas for inbox list reconciliation."""
+    _emit_standard_ticket_event('ticket.unread.changed', data)
+
+
+def emit_tenant_update(tenant_slug: str, event_name: str, data: Any = None) -> None:
+    """Emit an event to the tenant's specific room for real-time portal updates."""
+    if tenant_slug:
+        # Emit generic content update signal
+        socketio.emit('tenant_content_update', {'type': event_name}, room=tenant_slug)
+        # Emit specific event
+        if data:
+            socketio.emit(event_name, data, room=tenant_slug)
 
 
 def emit_new_ticket(data: Any) -> None:
@@ -128,6 +230,27 @@ def emit_new_ticket(data: Any) -> None:
 def emit_ticket_comment(data: Any) -> None:
     """Broadcast a new comment without altering the legacy ticket_update payloads."""
     _emit_to_ticket_room('new_comment', data)
+    _emit_standard_ticket_event('conversation.message.created', data)
+
+def emit_new_chat_message(data: Any) -> None:
+    """Broadcast a new chat message to the live chat room."""
+    _emit_to_ticket_room('new_chat_message', data)
+    _emit_standard_ticket_event('conversation.message.created', data)
+
+
+def emit_survey_update(slug_publico: str, data: Any) -> None:
+    """Emit a live update for a specific survey/poll."""
+    room = f"encuesta_{slug_publico}"
+    socketio.emit('survey_update', data, room=room)
+
+
+def emit_survey_comment(slug_publico: str, data: Any) -> None:
+    """Emit a live comment for a specific survey/poll."""
+    room = f"encuesta_{slug_publico}"
+    socketio.emit('survey_comment', data, room=room)
+
+
+
 
 def send_welcome_message(sid, auth):
     """Sends a welcome message to a newly connected anonymous client."""
@@ -193,13 +316,20 @@ def on_connect(auth):
     For anonymous web connections, sends a welcome message.
     """
     current_app.logger.info(f"Socket.IO client connected: {request.sid}")
-    token = (auth or {}).get('token')
-    channel = (auth or {}).get('channel')
+    auth_payload = auth if isinstance(auth, dict) else {}
+    token = auth_payload.get('token')
+    channel = auth_payload.get('channel')
 
     if token:
         try:
-            payload = jwt.decode(token, current_app.config['SECRET_KEY'], algorithms=["HS256"])
+            secret = current_app.config.get('SECRET_KEY')
+            if not secret:
+                current_app.logger.error("Socket.IO rejected sid %s: SECRET_KEY is not configured.", request.sid)
+                return False
+
+            payload = jwt.decode(token, secret, algorithms=["HS256"])
             user_id = payload.get('user_id')
+            tenant_slug = payload.get('tenant_slug')
             user = User.query.get(user_id) if user_id else None
             if not user:
                 current_app.logger.warning(
@@ -208,7 +338,7 @@ def on_connect(auth):
                 )
                 return False
 
-            rooms = _get_rooms_for_user(user)
+            rooms = _merge_rooms_for_subscription(user, tenant_slug)
             for room in rooms:
                 join_room(room)
                 current_app.logger.debug(
@@ -223,6 +353,9 @@ def on_connect(auth):
         except (jwt.ExpiredSignatureError, jwt.InvalidTokenError) as e:
             current_app.logger.warning(f"Socket.IO connection rejected for sid {request.sid} due to invalid token: {e}")
             return False
+        except Exception as e:
+            current_app.logger.exception("Socket.IO unexpected connect error for sid %s: %s", request.sid, e)
+            return False
     elif channel == 'web':
         # Defer the welcome message to a separate thread to not block the connection
         socketio.start_background_task(send_welcome_message, request.sid, auth)
@@ -231,6 +364,7 @@ def on_connect(auth):
 @socketio.on('subscribe_ticket_updates')
 def on_subscribe_ticket_updates(data):
     token = (data or {}).get('token')
+    tenant_slug = (data or {}).get('tenant_slug')
     if not token:
         emit('subscription_error', {'error': 'missing_token'})
         return
@@ -248,7 +382,7 @@ def on_subscribe_ticket_updates(data):
         emit('subscription_error', {'error': 'unknown_user'})
         return
 
-    rooms = _get_rooms_for_user(user)
+    rooms = _merge_rooms_for_subscription(user, tenant_slug)
     for room in rooms:
         join_room(room)
     emit('subscribed_ticket_updates', {'rooms': rooms or []})
@@ -257,7 +391,11 @@ def on_subscribe_ticket_updates(data):
 def on_join(data):
     room = data['room']
     join_room(room)
-    socketio.emit('status', {'msg': 'Conectado a la sala ' + room}, room=room)
+    # Support for survey rooms
+    if room.startswith("encuesta_"):
+        current_app.logger.debug(f"Client joined survey room: {room}")
+    # Remove 'status' emit to prevent annoying "pip" sound on frontend
+    # socketio.emit('status', {'msg': 'Conectado a la sala ' + room}, room=room)
 
 @socketio.on('new_chat')
 def on_new_chat(data):
@@ -323,7 +461,7 @@ def handle_send_chat_message(data):
 
                 enviar_email_ticket_novedad(ticket_obj, mensaje_notificacion)
                 enviar_sms_ticket_novedad(ticket_obj, mensaje_notificacion)
-                if ticket_type == "municipio":
+                if ticket_type == "municipio" or current_app.config.get("ENABLE_PYME_WHATSAPP_CHAT", True):
                     enviar_whatsapp_ticket_novedad(ticket_obj, mensaje_notificacion)
 
                 current_app.logger.info(f"Notificaciones por respuesta de agente enviadas para ticket {ticket_id} (tipo {ticket_type}).")

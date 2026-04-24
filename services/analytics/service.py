@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import json
 from collections import Counter, defaultdict
+from dataclasses import replace
 from datetime import date, datetime, timedelta
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from flask import current_app
 from sqlalchemy import func, literal
 
 from extensions import db
 from models import MunicipioTicket, PymePedido, PymeTicket, TicketComentario
+from utils.map_config import get_map_config
 
 from .cache import analytics_cache
 from .config import get_config
@@ -19,6 +21,7 @@ from .filters import AnalyticsFilters
 from .helpers import (
     compute_percentiles,
     compute_ctr,
+    growth_rate,
     mode,
     safe_ratio,
     tenant_as_int,
@@ -57,6 +60,47 @@ def _filters_cache_key(filters: AnalyticsFilters, *extra: Any) -> Tuple:
         filters.resolution,
         extra,
     )
+
+
+def _average(values: Sequence[float]) -> Optional[float]:
+    if not values:
+        return None
+    return round(sum(values) / len(values), 2)
+
+
+def _previous_period_filters(filters: AnalyticsFilters) -> Optional[AnalyticsFilters]:
+    """Return a copy of filters shifted to the previous period for comparisons."""
+
+    span: Optional[timedelta] = None
+    if filters.date_from and filters.date_to:
+        span = filters.date_to - filters.date_from
+    if span is None or span <= timedelta(0):
+        span = timedelta(days=7)
+    anchor = filters.date_from or filters.date_to or datetime.utcnow()
+    previous_end = anchor - timedelta(seconds=1)
+    previous_start = previous_end - span
+    if previous_start >= previous_end:
+        return None
+    return replace(filters, date_from=previous_start, date_to=previous_end)
+
+
+def _enrich_with_period_comparison(
+    payload: Dict[str, Any],
+    filters: AnalyticsFilters,
+    aggregator,
+    metrics: Sequence[str],
+) -> None:
+    previous_filters = _previous_period_filters(filters)
+    if not previous_filters:
+        return
+    previous_payload = aggregator(previous_filters)
+    totals = payload.setdefault("totals", {})
+    previous_totals = previous_payload.get("totals", {})
+    for metric in metrics:
+        current_value = totals.get(metric, 0)
+        previous_value = previous_totals.get(metric, 0)
+        totals[f"{metric}_periodo_anterior"] = previous_value
+        totals[f"{metric}_variacion_pct"] = growth_rate(current_value, previous_value)
 
 
 def _is_closed(status: Optional[str]) -> bool:
@@ -132,6 +176,68 @@ def _survey_metrics(surveys_map: Dict[int, Sequence]) -> Dict[str, Any]:
     return result
 
 
+def _build_meta(
+    *, empty: bool, source: str = "live", warnings: Optional[List[str]] = None
+) -> Dict[str, Any]:
+    meta: Dict[str, Any] = {"empty": empty, "source": source}
+    if warnings:
+        meta["warnings"] = warnings
+    return meta
+
+
+def _style_hint_from_records(records: Sequence[Mapping[str, Any]], *, weight_key: str) -> Dict[str, Any]:
+    if not records:
+        return {
+            "max_intensity": 0.0,
+            "recommended_radius": 16,
+            "gradient": [
+                {"stop": 0.0, "color": "rgba(0, 126, 255, 0)"},
+                {"stop": 0.3, "color": "rgba(0, 126, 255, 0.6)"},
+                {"stop": 0.6, "color": "rgba(255, 200, 0, 0.85)"},
+                {"stop": 1.0, "color": "rgba(255, 60, 0, 1)"},
+            ],
+        }
+
+    weights = [float(item.get(weight_key) or 0.0) for item in records]
+    max_weight = max(weights) if weights else 0.0
+    if max_weight >= 75:
+        radius = 30
+    elif max_weight >= 25:
+        radius = 24
+    else:
+        radius = 18
+
+    return {
+        "max_intensity": max_weight,
+        "recommended_radius": radius,
+        "gradient": [
+            {"stop": 0.0, "color": "rgba(0, 126, 255, 0)"},
+            {"stop": 0.3, "color": "rgba(0, 126, 255, 0.6)"},
+            {"stop": 0.6, "color": "rgba(255, 200, 0, 0.85)"},
+            {"stop": 1.0, "color": "rgba(255, 60, 0, 1)"},
+        ],
+    }
+
+
+def _map_meta(style: Dict[str, Any]) -> Dict[str, Any]:
+    config = get_map_config()
+    provider = config.get("provider") or "none"
+    provider_hint = provider if provider != "none" else "maplibre"
+    available_providers = list(config.get("available_providers") or [])
+    render_ready = bool(available_providers)
+    return {
+        "provider_hint": provider_hint,
+        "fallback_provider": "maplibre",
+        "google_maps": bool(config.get("google_maps_key")),
+        "maptiler": bool(config.get("maptiler_key") or config.get("style_url")),
+        "provider_aliases": config.get("provider_aliases") or {"maptiler": "maplibre"},
+        "available_providers": available_providers,
+        "render_ready": render_ready,
+        "render_reason": "configured" if render_ready else "missing_map_provider",
+        "style": style,
+    }
+
+
 def _default_summary_payload() -> Dict[str, Any]:
     return {
         "totals": {
@@ -150,6 +256,13 @@ def _default_summary_payload() -> Dict[str, Any]:
             "ttr": {"p50": None, "p90": None, "p95": None},
         },
         "extras": {},
+        "meta": _build_meta(
+            empty=True,
+            source="none",
+            warnings=[
+                "No hay tickets ni encuestas para el período filtrado; se muestran valores vacíos."
+            ],
+        ),
     }
 
 
@@ -170,6 +283,9 @@ def _municipio_summary(filters: AnalyticsFilters) -> Dict[str, Any]:
     attachment_total, attachments_with_ticket = _attachments_per_ticket(attachments_map)
 
     channel_scores: Dict[str, List[int]] = defaultdict(list)
+    agent_samples: Dict[int, Dict[str, Any]] = defaultdict(
+        lambda: {"tickets": 0, "first_response": []}
+    )
 
     for ticket in tickets:
         comments = comments_map.get(ticket.id, [])
@@ -188,26 +304,54 @@ def _municipio_summary(filters: AnalyticsFilters) -> Dict[str, Any]:
             responses = [c for c in admin_comments if c.es_admin]
             if len(responses) == 1 and not _ticket_reopened(comments):
                 first_contact_resolved += 1
+            first_comment = min(responses, key=lambda c: c.fecha)
+            if first_comment.user_id:
+                agent_data = agent_samples[first_comment.user_id]
+                agent_data["tickets"] += 1
+                if first_minutes is not None:
+                    agent_data["first_response"].append(first_minutes)
         if not _is_closed(ticket.estado):
             open_tickets += 1
         for survey in surveys_map.get(ticket.id, []):
             canal = (ticket.canal_ingreso or "desconocido").lower()
             channel_scores[canal].append(survey.puntuacion)
 
+    agent_ids = [agent_id for agent_id in agent_samples.keys() if agent_id]
+    user_map = load_users(agent_ids)
+    agent_rows: List[Dict[str, Any]] = []
+    for agent_id, data in agent_samples.items():
+        if not agent_id:
+            continue
+        name = getattr(user_map.get(agent_id), "name", f"Agente {agent_id}")
+        agent_rows.append(
+            {
+                "agente_id": agent_id,
+                "agente": name,
+                "tickets": data["tickets"],
+                "respuesta_promedio_min": _average(data["first_response"]),
+            }
+        )
+    agent_rows.sort(key=lambda row: row["tickets"], reverse=True)
+
     survey_summary = _survey_metrics(surveys_map)
 
+    closed_tickets = total - open_tickets
     payload["totals"].update(
         {
             "tickets": total,
             "tickets_abiertos": open_tickets,
+            "tickets_cerrados": closed_tickets,
             "backlog": open_tickets,
             "adjuntos_por_100": round((attachment_total / total) * 100, 2) if total else 0.0,
             "automatizado_pct": safe_ratio(automated, total),
             "primer_contacto_pct": safe_ratio(first_contact_resolved, total),
+            "cierre_pct": safe_ratio(closed_tickets, total),
             "reaperturas": reopenings,
             "nps": survey_summary.get("nps"),
             "csat": survey_summary.get("csat"),
             "encuestas": survey_summary.get("responses"),
+            "tta_promedio_min": _average(tta_values),
+            "ttr_promedio_min": _average(ttr_values),
         }
     )
 
@@ -221,6 +365,9 @@ def _municipio_summary(filters: AnalyticsFilters) -> Dict[str, Any]:
         }
         for canal, scores in channel_scores.items()
     }
+    payload["extras"]["agents"] = agent_rows
+
+    payload["meta"] = _build_meta(empty=False)
 
     return payload
 
@@ -257,6 +404,9 @@ def _pyme_summary(filters: AnalyticsFilters) -> Dict[str, Any]:
     first_contact_resolved = 0
 
     attachment_total, _ = _attachments_per_ticket(attachments_map)
+    agent_samples: Dict[int, Dict[str, Any]] = defaultdict(
+        lambda: {"tickets": 0, "first_response": []}
+    )
 
     for ticket in tickets:
         comments = comments_map.get(ticket.id, [])
@@ -274,6 +424,12 @@ def _pyme_summary(filters: AnalyticsFilters) -> Dict[str, Any]:
         if admin_comments:
             if len(admin_comments) == 1 and not _ticket_reopened(comments):
                 first_contact_resolved += 1
+            first_comment = min(admin_comments, key=lambda c: c.fecha)
+            if first_comment.user_id:
+                agent_data = agent_samples[first_comment.user_id]
+                agent_data["tickets"] += 1
+                if first_minutes is not None:
+                    agent_data["first_response"].append(first_minutes)
 
     total_amount = sum(pedido.monto_total or 0 for pedido in pedidos)
     avg_ticket = round(total_amount / total_orders, 2) if total_orders else 0.0
@@ -285,6 +441,23 @@ def _pyme_summary(filters: AnalyticsFilters) -> Dict[str, Any]:
         key = _customer_key(pedido)
         if key:
             customers[key].append(pedido.fecha)
+
+    agent_ids = [agent_id for agent_id in agent_samples.keys() if agent_id]
+    user_map = load_users(agent_ids)
+    agent_rows: List[Dict[str, Any]] = []
+    for agent_id, data in agent_samples.items():
+        if not agent_id:
+            continue
+        name = getattr(user_map.get(agent_id), "name", f"Agente {agent_id}")
+        agent_rows.append(
+            {
+                "agente_id": agent_id,
+                "agente": name,
+                "tickets": data["tickets"],
+                "respuesta_promedio_min": _average(data["first_response"]),
+            }
+        )
+    agent_rows.sort(key=lambda row: row["tickets"], reverse=True)
 
     retention30 = retention60 = retention90 = 0
     cohort_sizes = 0
@@ -308,17 +481,22 @@ def _pyme_summary(filters: AnalyticsFilters) -> Dict[str, Any]:
 
     survey_summary = _survey_metrics(surveys_map)
 
+    open_tickets = sum(1 for ticket in tickets if not _is_closed(ticket.estado))
+    closed_tickets = total_tickets - open_tickets
+
     payload["totals"].update(
         {
             "tickets": total_tickets,
-            "tickets_abiertos": sum(1 for ticket in tickets if not _is_closed(ticket.estado)),
-            "backlog": sum(1 for ticket in tickets if not _is_closed(ticket.estado)),
+            "tickets_abiertos": open_tickets,
+            "tickets_cerrados": closed_tickets,
+            "backlog": open_tickets,
             "pedidos": total_orders,
             "ticket_medio": avg_ticket,
             "conversion_pct": safe_ratio(total_orders, total_tickets) if total_tickets else 0.0,
             "adjuntos_por_100": round((attachment_total / total_tickets) * 100, 2) if total_tickets else 0.0,
             "automatizado_pct": safe_ratio(automated, total_tickets) if total_tickets else 0.0,
             "primer_contacto_pct": safe_ratio(first_contact_resolved, total_tickets) if total_tickets else 0.0,
+            "cierre_pct": safe_ratio(closed_tickets, total_tickets) if total_tickets else 0.0,
             "reaperturas": reopenings,
             "nps": survey_summary.get("nps"),
             "csat": survey_summary.get("csat"),
@@ -327,11 +505,17 @@ def _pyme_summary(filters: AnalyticsFilters) -> Dict[str, Any]:
             "retencion_60": safe_ratio(retention60, cohort_sizes),
             "retencion_90": safe_ratio(retention90, cohort_sizes),
             "hora_pico": mode(hourly_orders.elements()),
+            "tta_promedio_min": _average(tta_values),
+            "ttr_promedio_min": _average(ttr_values),
         }
     )
 
     payload["sla"]["tta"] = compute_percentiles(tta_values)
     payload["sla"]["ttr"] = compute_percentiles(ttr_values)
+
+    payload["extras"]["agents"] = agent_rows
+
+    payload["meta"] = _build_meta(empty=False)
 
     return payload
 
@@ -369,6 +553,8 @@ def _operations_summary(filters: AnalyticsFilters) -> Dict[str, Any]:
     aging_buckets = {"0-4h": 0, "4-24h": 0, "1-3d": 0, "3-7d": 0, ">7d": 0}
     queue_by_estado: Counter[str] = Counter()
     agent_stats: Dict[int, Dict[str, Any]] = defaultdict(lambda: {"tickets": 0, "first_response": []})
+    tta_samples: List[float] = []
+    ttr_samples: List[float] = []
 
     def _collect_operations(dataset, is_pyme: bool = False):
         if is_pyme:
@@ -391,14 +577,19 @@ def _operations_summary(filters: AnalyticsFilters) -> Dict[str, Any]:
                 else:
                     aging_buckets[">7d"] += 1
             comments = comments_map.get(ticket.id, [])
+            first_minutes = _ticket_first_response_minutes(ticket, comments)
+            if first_minutes is not None:
+                tta_samples.append(first_minutes)
+            resolution_minutes = _ticket_resolution_minutes(ticket, comments)
+            if resolution_minutes is not None:
+                ttr_samples.append(resolution_minutes)
             admin_comments = [c for c in comments if c.es_admin and c.user_id]
             if admin_comments:
                 first = min(admin_comments, key=lambda c: c.fecha)
-                delta = to_minutes(first.fecha - ticket.fecha)
                 agent_data = agent_stats[first.user_id]
                 agent_data["tickets"] += 1
-                if delta is not None:
-                    agent_data["first_response"].append(delta)
+                if first_minutes is not None:
+                    agent_data["first_response"].append(first_minutes)
 
     _collect_operations(muni_dataset, is_pyme=False)
     _collect_operations(pyme_dataset, is_pyme=True)
@@ -422,14 +613,31 @@ def _operations_summary(filters: AnalyticsFilters) -> Dict[str, Any]:
         )
     agent_rows.sort(key=lambda row: row["tickets"], reverse=True)
 
+    closed = tickets_total - abiertos
+    totals = {
+        "tickets": tickets_total,
+        "abiertos": abiertos,
+        "tickets_cerrados": closed,
+        "cierre_pct": safe_ratio(closed, tickets_total) if tickets_total else 0.0,
+        "violaciones_sla": municipio_data["totals"].get("reaperturas", 0),
+        "primer_contacto_pct": municipio_data["totals"].get("primer_contacto_pct", 0.0),
+        "automatizado_pct": municipio_data["totals"].get("automatizado_pct", 0.0),
+        "tta_promedio_min": _average(tta_samples),
+        "ttr_promedio_min": _average(ttr_samples),
+    }
+
+    warnings: List[str] = []
+    if municipio_data.get("meta", {}).get("empty"):
+        warnings.append(
+            "Sin tickets municipales en el período; se muestran valores vacíos para operaciones."
+        )
+    if pyme_data.get("meta", {}).get("empty"):
+        warnings.append(
+            "Sin tickets o pedidos PYME en el período; se muestran valores vacíos para operaciones."
+        )
+
     return {
-        "totals": {
-            "tickets": tickets_total,
-            "abiertos": abiertos,
-            "violaciones_sla": municipio_data["totals"].get("reaperturas", 0),
-            "primer_contacto_pct": municipio_data["totals"].get("primer_contacto_pct", 0.0),
-            "automatizado_pct": municipio_data["totals"].get("automatizado_pct", 0.0),
-        },
+        "totals": totals,
         "sla": municipio_data.get("sla", {}),
         "extras": {
             "pyme": pyme_data,
@@ -437,6 +645,11 @@ def _operations_summary(filters: AnalyticsFilters) -> Dict[str, Any]:
             "queue": dict(queue_by_estado),
             "agents": agent_rows,
         },
+        "meta": _build_meta(
+            empty=tickets_total == 0,
+            source="live" if tickets_total else "none",
+            warnings=warnings or None,
+        ),
     }
 
 
@@ -452,10 +665,18 @@ def get_summary(filters: AnalyticsFilters) -> Dict[str, Any]:
 
 def _summary_no_cache(filters: AnalyticsFilters) -> Dict[str, Any]:
     if filters.scope == "municipio":
-        return _municipio_summary(filters)
-    if filters.scope == "pyme":
-        return _pyme_summary(filters)
-    return _operations_summary(filters)
+        aggregator = _municipio_summary
+        metrics = ["tickets", "encuestas"]
+    elif filters.scope == "pyme":
+        aggregator = _pyme_summary
+        metrics = ["tickets", "pedidos", "encuestas"]
+    else:
+        aggregator = _operations_summary
+        metrics = ["tickets"]
+
+    payload = aggregator(filters)
+    _enrich_with_period_comparison(payload, filters, aggregator, metrics)
+    return payload
 
 
 def _aggregate_timeseries(query, date_column, group_column=None) -> List[Dict[str, Any]]:
@@ -507,7 +728,18 @@ def _timeseries_no_cache(filters: AnalyticsFilters, metric: str, group: Optional
     else:
         query = municipio_ticket_query(filters)
         data = _aggregate_timeseries(query, MunicipioTicket.fecha)
-    return {"series": data}
+    return {
+        "series": data,
+        "meta": _build_meta(
+            empty=len(data) == 0,
+            source="live" if data else "none",
+            warnings=None
+            if data
+            else [
+                "No hay eventos para la serie temporal solicitada; verifique filtros o cargue datos reales."
+            ],
+        ),
+    }
 
 
 def get_breakdown(filters: AnalyticsFilters, dimension: str = "categoria") -> Dict[str, Any]:
@@ -541,14 +773,25 @@ def _breakdown_no_cache(filters: AnalyticsFilters, dimension: str) -> Dict[str, 
         .order_by(func.count().desc())
         .all()
     )
+    breakdown = [
+        {
+            "label": row.label or "sin_dato",
+            "value": int(row.value or 0),
+        }
+        for row in rows
+    ]
+
     return {
-        "breakdown": [
-            {
-                "label": row.label or "sin_dato",
-                "value": int(row.value or 0),
-            }
-            for row in rows
-        ]
+        "breakdown": breakdown,
+        "meta": _build_meta(
+            empty=len(breakdown) == 0,
+            source="live" if breakdown else "none",
+            warnings=None
+            if breakdown
+            else [
+                "No se encontraron resultados para el desglose solicitado; ajuste filtros o ingrese datos."
+            ],
+        ),
     }
 
 
@@ -757,7 +1000,20 @@ def _generate_geo_from_tickets(tickets: Sequence, filters: AnalyticsFilters) -> 
                 "categories": dict(data["categories"]),
             }
         )
-    return results
+    return _attach_intensity(results)
+
+
+def _attach_intensity(cells: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    if not cells:
+        return cells
+    max_count = max(cell.get("count") or 0 for cell in cells) or 0
+    if not max_count:
+        for cell in cells:
+            cell["intensity"] = 0.0
+        return cells
+    for cell in cells:
+        cell["intensity"] = round((cell.get("count") or 0) / max_count, 4)
+    return cells
 
 
 def get_geo_heatmap(filters: AnalyticsFilters) -> Dict[str, Any]:
@@ -770,6 +1026,7 @@ def get_geo_heatmap(filters: AnalyticsFilters) -> Dict[str, Any]:
 
 def _geo_heatmap_no_cache(filters: AnalyticsFilters) -> Dict[str, Any]:
     cached_cells = fetch_geo_cells(filters)
+    meta = _build_meta(empty=False)
     if cached_cells:
         payload = [
             {
@@ -789,8 +1046,36 @@ def _geo_heatmap_no_cache(filters: AnalyticsFilters) -> Dict[str, Any]:
         payload = _generate_geo_from_tickets(tickets, filters)
 
     if not payload:
-        return {"cells": generate_demo_heatmap_cells(scope=filters.scope)}
-    return {"cells": payload}
+        demo_cells = generate_demo_heatmap_cells(scope=filters.scope)
+        meta = _build_meta(
+            empty=True,
+            source="demo",
+            warnings=[
+                "Sin datos georreferenciados para los filtros solicitados; se muestran puntos de ejemplo."
+            ],
+        )
+        meta["map"] = _map_meta(_style_hint_from_records(demo_cells, weight_key="count"))
+        return {
+            "cells": _attach_intensity(demo_cells),
+            "meta": meta,
+            "render_contract": {
+                "module": "heatmap",
+                "state": "demo_fallback",
+                "source_keys": ["cells", "meta.map"],
+            },
+        }
+    meta["empty"] = False
+    cells_with_intensity = _attach_intensity(payload)
+    meta["map"] = _map_meta(_style_hint_from_records(cells_with_intensity, weight_key="count"))
+    return {
+        "cells": cells_with_intensity,
+        "meta": meta,
+        "render_contract": {
+            "module": "heatmap",
+            "state": "ready",
+            "source_keys": ["cells", "meta.map"],
+        },
+    }
 
 
 def get_geo_points(filters: AnalyticsFilters, limit: int = 500) -> Dict[str, Any]:
@@ -802,6 +1087,7 @@ def get_geo_points(filters: AnalyticsFilters, limit: int = 500) -> Dict[str, Any
 
 
 def _geo_points_no_cache(filters: AnalyticsFilters, limit: int) -> Dict[str, Any]:
+    meta = _build_meta(empty=False)
     if filters.scope == "municipio":
         tickets = municipio_ticket_query(filters).limit(limit).all()
         points = [
@@ -829,8 +1115,37 @@ def _geo_points_no_cache(filters: AnalyticsFilters, limit: int) -> Dict[str, Any
     if not points:
         demo_count = limit if limit and limit > 0 else 72
         demo_count = min(demo_count, 180)
-        return {"points": generate_demo_points(scope=filters.scope, count=demo_count)}
-    return {"points": points}
+        meta = _build_meta(
+            empty=True,
+            source="demo",
+            warnings=[
+                "No hay puntos georreferenciados; se generaron puntos de ejemplo para mantener el mapa operativo."
+            ],
+        )
+        demo_points = generate_demo_points(scope=filters.scope, count=demo_count)
+        meta["map"] = _map_meta(_style_hint_from_records(demo_points, weight_key="count"))
+        return {
+            "points": demo_points,
+            "meta": meta,
+            "render_contract": {
+                "module": "points",
+                "state": "demo_fallback",
+                "source_keys": ["points", "meta.map"],
+            },
+        }
+    meta["empty"] = False
+    meta["map"] = _map_meta(
+        _style_hint_from_records(points, weight_key="weight" if filters.scope == "municipio" else "total")
+    )
+    return {
+        "points": points,
+        "meta": meta,
+        "render_contract": {
+            "module": "points",
+            "state": "ready",
+            "source_keys": ["points", "meta.map"],
+        },
+    }
 
 
 def get_top(filters: AnalyticsFilters, category: str = "barrios", limit: int = 10) -> Dict[str, Any]:

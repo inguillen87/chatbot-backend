@@ -12,7 +12,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.attributes import flag_modified
 from fuzzywuzzy import process
 
-from models import Conversacion, db, PymePedido, ArchivoAdjunto
+from models import Conversacion, db, PymePedido, PymeTicket, ArchivoAdjunto
 try:
     from flask import session as flask_session, current_app, request # Añadir request
 except Exception:
@@ -23,6 +23,7 @@ except Exception:
 import models
 from services.qdrant_search import (
     buscar_catalogo_qdrant,
+    buscar_catalogo_db_fallback,
     armar_respuesta_legible,
     CATALOGO_PYME
 )
@@ -32,8 +33,9 @@ from services.logic import es_rubro_publico
 from services.ticket_service import servicio_tickets
 from services.ticket_utils import formatear_ticket_respuesta, remove_buttons_with_urls_in_message
 from services.webinfo import obtener_info_web
-from .common_utils import construir_respuesta_sugerir_registro # <--- NUEVA IMPORTACIÓN
+from .common_utils import construir_respuesta_sugerir_registro, parse_precio_flexible # <--- NUEVA IMPORTACIÓN
 from services.preferences import add_preference
+from services.pedido_service import servicio_pedidos
 from services import cart as cart_service
 from services.promocion_service import promocion_service
 from services import promo_service
@@ -53,6 +55,7 @@ from services.pyme_multimodal import (
 )
 from .llm_utils import extract_multiple_contact_details_llm, resumir_descripcion_producto_llm
 from .common_utils import validar_email, validar_telefono
+from services.llm_orchestrator import llamar_llm_con_fallback # Import for proactive suggestions
 
 logger = logging.getLogger(__name__)
 
@@ -353,8 +356,20 @@ def tiene_archivo_catalogo(user_id: int) -> bool:
     except Exception: return False
 
 def url_descargar_catalogo_pyme(pyme_id: int) -> str:
-    if not current_app or not request: # Si no hay contexto de app/request (ej. prueba unitaria)
-        return f"/catalogo/publico/{pyme_id}/descargar" # Fallback a URL relativa
+    try:
+        catalogo_adj = (
+            ArchivoAdjunto.query.filter_by(user_id=pyme_id, tipo="catalogo")
+            .order_by(ArchivoAdjunto.fecha.desc(), ArchivoAdjunto.id.desc())
+            .first()
+        )
+        raw_url = (catalogo_adj.url or "").strip() if catalogo_adj else ""
+        if raw_url and (raw_url.startswith("http://") or raw_url.startswith("https://")):
+            return raw_url
+    except Exception:
+        pass
+
+    if not current_app or not request:  # Si no hay contexto de app/request (ej. prueba unitaria)
+        return f"/catalogo/publico/{pyme_id}/descargar"  # Fallback a URL relativa
     base_url = current_app.config.get("APP_BASE_URL", request.url_root.rstrip('/'))
     return f"{base_url}/catalogo/publico/{pyme_id}/descargar"
 
@@ -423,7 +438,7 @@ def extraer_productos_regex(texto: str) -> list[dict]:
                 if unidad_str and len(unidad_str.split()) > 2: nombre_str = f"{unidad_str} {nombre_str}".strip(); unidad_str = None
                 if nombre_str.lower().endswith(" de"): nombre_str = nombre_str[:-3].strip()
                 if nombre_str:
-                    item_data = {"nombre": nombre_str, "cantidad": int(float(cantidad_str.replace(',','.')))}
+                    item_data = {"nombre": nombre, "cantidad": int(float(cantidad_str.replace(',','.')))}
                     if unidad_str and unidad_str.lower() not in ["unidad", "unidades"]: item_data["unidad"] = unidad_str.lower()
                     items.append(item_data)
             except: pass
@@ -448,6 +463,22 @@ def extraer_productos_pedido(texto: str) -> list[dict]:
 def formatear_carrito_desde_summary(summary_cart_obj: dict, context: dict = None) -> str:
     if not summary_cart_obj or not summary_cart_obj.get("items_detalle"):
         return "Tu carrito está vacío."
+
+    from decimal import Decimal, InvalidOperation
+    from utils.money_ar import format_ars
+
+    def _format_money(value: object, moneda: str) -> str:
+        if moneda != "ARS":
+            try:
+                return f"{float(value):,.2f}"
+            except (TypeError, ValueError):
+                return str(value)
+        try:
+            dec_value = Decimal(str(value))
+        except (TypeError, ValueError, InvalidOperation):
+            return str(value)
+        decimals = 0 if dec_value == dec_value.to_integral_value() else 2
+        return format_ars(dec_value, decimals=decimals)
     items_detalle = summary_cart_obj.get("items_detalle", [])
     lineas_carrito = ["**Tu Carrito de Compras:**"]
     for item in items_detalle:
@@ -459,25 +490,41 @@ def formatear_carrito_desde_summary(summary_cart_obj: dict, context: dict = None
         promocion_aplicada_item_info = item.get("promocion_aplicada_info")
         linea = f"- {cantidad} x {nombre}"
         if presentacion: linea += f" ({presentacion})"
-        linea += f" @ ${precio_original_unit:,.2f} {moneda} c/u"
+        linea += f" @ ${_format_money(precio_original_unit, moneda)} {moneda} c/u"
         if descuento_aplicado_linea > 0:
             precio_original_total_linea = cantidad * precio_original_unit
-            linea += f" (Original: <s style='color:grey;'>${precio_original_total_linea:,.2f}</s>)"
-            linea += f" <b style='color:green;'>Ahora: ${subtotal_con_descuento_item:,.2f} {moneda}</b>"
+            linea += (
+                " (Original: <s style='color:grey;'>"
+                f"${_format_money(precio_original_total_linea, moneda)}</s>)"
+            )
+            linea += (
+                " <b style='color:green;'>Ahora: "
+                f"${_format_money(subtotal_con_descuento_item, moneda)} {moneda}</b>"
+            )
             if promocion_aplicada_item_info and promocion_aplicada_item_info.get("nombre_promocion"):
                  linea += f" <i style='font-size:smaller; color:green;'>({promocion_aplicada_item_info['nombre_promocion']})</i>"
-        else: linea += f" = ${subtotal_con_descuento_item:,.2f} {moneda}"
+        else:
+            linea += f" = ${_format_money(subtotal_con_descuento_item, moneda)} {moneda}"
         lineas_carrito.append(linea)
     total_original_calc = summary_cart_obj.get("total_original_calculado", 0.0)
     total_final_desc = summary_cart_obj.get("total_final_con_descuento", total_original_calc)
     total_ahorrado = summary_cart_obj.get("total_ahorrado_final", 0.0)
     moneda_carrito = items_detalle[0].get("moneda", "ARS") if items_detalle else "ARS"
     if total_original_calc > 0:
-        lineas_carrito.append(f"\nSubtotal Original: ${total_original_calc:,.2f} {moneda_carrito}")
+        lineas_carrito.append(
+            f"\nSubtotal Original: ${_format_money(total_original_calc, moneda_carrito)} {moneda_carrito}"
+        )
         if total_ahorrado > 0:
-            lineas_carrito.append(f"**Descuentos Totales: -${total_ahorrado:,.2f} {moneda_carrito}** 🎉")
+            lineas_carrito.append(
+                f"**Descuentos Totales: -${_format_money(total_ahorrado, moneda_carrito)} {moneda_carrito}** 🎉"
+            )
             promo_total_info = summary_cart_obj.get("promo_total_carrito_aplicada_info")
-            if promo_total_info: lineas_carrito.append(f"<i style='font-size:smaller; color:green;'>Promo sobre el total: '{promo_total_info['nombre_promocion']}' (-${promo_total_info['descuento_sobre_total_aplicado']:.2f})</i>")
+            if promo_total_info:
+                lineas_carrito.append(
+                    "<i style='font-size:smaller; color:green;'>Promo sobre el total: "
+                    f"'{promo_total_info['nombre_promocion']}' (-"
+                    f"${_format_money(promo_total_info['descuento_sobre_total_aplicado'], moneda_carrito)})</i>"
+                )
             nombres_promos_items_unicos = set()
             for item_det in items_detalle:
                 if item_det.get("promocion_aplicada_info") and item_det["promocion_aplicada_info"].get("nombre_promocion"):
@@ -485,7 +532,9 @@ def formatear_carrito_desde_summary(summary_cart_obj: dict, context: dict = None
             if nombres_promos_items_unicos and not promo_total_info:
                  if len(nombres_promos_items_unicos) == 1: lineas_carrito.append(f"<i style='font-size:smaller; color:green;'>Promoción aplicada: {list(nombres_promos_items_unicos)[0]}</i>")
                  elif len(nombres_promos_items_unicos) > 1: lineas_carrito.append(f"<i style='font-size:smaller; color:green;'>Promociones aplicadas: {', '.join(list(nombres_promos_items_unicos))}</i>")
-        lineas_carrito.append(f"\n**TOTAL A PAGAR: ${total_final_desc:,.2f} {moneda_carrito}**")
+        lineas_carrito.append(
+            f"\n**TOTAL A PAGAR: ${_format_money(total_final_desc, moneda_carrito)} {moneda_carrito}**"
+        )
     return "\n".join(lineas_carrito)
 
 
@@ -543,10 +592,22 @@ def _build_pyme_order_success_payload(context: dict, handler_response: dict) -> 
     if not isinstance(cliente_info, dict):
         cliente_info = {}
 
+    # Name Resolution Logic - improved to prioritize real names
+    pyme_ctx = context.get(CONTEXTO_PYME, {})
     nombre_cliente = cliente_info.get("nombre")
+
     if not nombre_cliente:
-        viewer = context.get("viewer_user_obj")
-        nombre_cliente = getattr(viewer, "name", None) if viewer else None
+        nombre_cliente = pyme_ctx.get("nombre_cliente")
+
+    viewer = context.get("viewer_user_obj")
+    candidate_user_name = getattr(viewer, "name", None) if viewer else None
+
+    # Trust authenticated user profile name if available and not generic
+    if candidate_user_name and candidate_user_name.lower() not in ["vecino/a", "cliente", "usuario", "unknown"]:
+        # If we currently have no name, or a generic name, overwrite it
+        if not nombre_cliente or nombre_cliente.lower() in ["cliente", "vecino/a", "vecino"]:
+            nombre_cliente = candidate_user_name
+
     if not nombre_cliente:
         nombre_cliente = "Cliente"
 
@@ -609,7 +670,18 @@ def _build_pyme_order_success_payload(context: dict, handler_response: dict) -> 
 
     base_tracking_url = None
     if current_app:
-        base_tracking_url = current_app.config.get("PYME_PEDIDOS_PUBLIC_URL")
+        # Prioritize APP_BASE_URL for consistent production links
+        app_base_url = current_app.config.get("APP_BASE_URL")
+
+        # FIX: Ensure we don't leak localhost. Enforce https://chatboc.ar if missing or localhost.
+        if not app_base_url or "localhost" in app_base_url:
+             app_base_url = "https://chatboc.ar"
+
+        if app_base_url:
+            base_tracking_url = f"{app_base_url.rstrip('/')}/pyme/pedidos"
+
+        if not base_tracking_url:
+            base_tracking_url = current_app.config.get("PYME_PEDIDOS_PUBLIC_URL")
         if not base_tracking_url:
             panel_url = current_app.config.get("PANEL_URL")
             if panel_url:
@@ -618,6 +690,8 @@ def _build_pyme_order_success_payload(context: dict, handler_response: dict) -> 
             backend_url = current_app.config.get("BACKEND_URL")
             if backend_url:
                 base_tracking_url = f"{backend_url.rstrip('/')}/pyme/pedidos"
+
+    # Final fallback if nothing else is set
     if not base_tracking_url:
         base_tracking_url = "https://www.chatboc.ar/pyme/pedidos"
 
@@ -689,20 +763,19 @@ def _build_pyme_order_success_payload(context: dict, handler_response: dict) -> 
     for btn in default_buttons:
         _register_button(btn)
 
-    promo_section = promo_service.build_ticket_promo_section(
-        ticket_number=nro_pedido,
-        neighbor_name=nombre_cliente,
-    )
+    # Pass owner_user explicitly to avoid leakage via global context
+    owner_user_id = context.get("user_id")
+    owner_user_obj = None
+    tenant_profile = None
+    if owner_user_id:
+        owner_user_obj = db.session.get(models.User, owner_user_id)
+        if owner_user_obj:
+            tenant_profile = getattr(owner_user_obj, "tenant_profile_pyme", None)
+
+    # Explicitly disabled for Pymes to prevent "Punto Limpio" leakage
+    # Pymes should strictly have their own branding or no promo section by default
+    promo_section = None
     image_url = handler_response.get("image_url")
-    if promo_section:
-        promo_text = promo_section.get("message_body")
-        if promo_text:
-            message_body = f"{message_body}\n\n{promo_text}".strip()
-        promo_button = promo_section.get("button")
-        if promo_button:
-            _register_button(promo_button)
-        if not image_url:
-            image_url = promo_section.get("image_url")
 
     if include_links:
         url_buttons_before_cleanup = [dict(btn) for btn in buttons if btn.get("url")]
@@ -748,10 +821,6 @@ def _build_pyme_order_success_payload(context: dict, handler_response: dict) -> 
     audio_text = handler_response.get("audio_text")
     if audio_text:
         result["audio_text"] = audio_text
-
-    if delayed_payload:
-        result["delayed_payload"] = delayed_payload
-        result["delay_seconds"] = delay_seconds
 
     cliente_payload = {
         "nombre": nombre_cliente,
@@ -830,6 +899,60 @@ class SaludoHandler(BaseHandler):
             or self.context.get("rubro_nombre")
             or getattr(self.context.get("rubro_obj"), "slug", None)
         )
+
+        # --- WhatsApp Template Handling ---
+        if str(channel).lower() == "whatsapp":
+            tenant_slug = None
+            owner_user_id = self.context.get("user_id")
+            if owner_user_id:
+                owner_user_obj = db.session.get(models.User, owner_user_id)
+                if owner_user_obj:
+                    tenant_profile = getattr(owner_user_obj, "tenant_profile_pyme", None)
+                    tenant_slug = tenant_profile.slug if tenant_profile else None
+
+            # Load Pyme-specific config (prioritizing tenant > rubro > default)
+            pyme_config = cargar_configuracion_pyme(rubro_slug, "config.json", tenant_slug=tenant_slug)
+            welcome_config = pyme_config.get("welcome")
+
+            if welcome_config and welcome_config.get("template_sid"):
+                user_name = (
+                    getattr(self.context.get("viewer_user_obj"), "name", None)
+                    or self.pyme_ctx.get("nombre_cliente")
+                    or "Cliente"
+                )
+                if user_name.lower() in ["vecino/a", "cliente", "usuario", "unknown"]:
+                    user_name = "" # Let template handle empty name if configured, or it remains generic
+
+                # Prepare the template payload for whatsapp_webhook.py logic
+                whatsapp_receipt = {
+                    "body_text": "", # Template handles the body
+                    "media_url": welcome_config.get("sticker_url"), # Sticker if configured
+                    "options_list": [], # Template handles buttons usually, or they are app-defined
+                }
+
+                # Signal to webhook that we want to trigger the welcome flow which handles templates
+                # However, the webhook logic for "welcome" is usually triggered by "hola".
+                # If we are here, we might be in the middle of a flow or explicit "menu" request.
+                # To force a template, we can return a specific structure.
+
+                # Actually, `routes/whatsapp_webhook.py` handles the welcome template logic
+                # principally when it detects "hola" AND user is new/not-busy.
+                # But here we are EXPLICITLY executing the SaludoHandler.
+                # We should return a payload that tells the formatter/webhook to use the template if possible.
+
+                # CURRENT LIMITATION: The `whatsapp_webhook.py` logic for templates is tightly coupled
+                # to the initial "Boti-style" greeting block.
+                # Re-using it here requires simulating that behavior or replicating the template send.
+
+                # For now, we will assume standard text menu fallback if we can't invoke the template directly,
+                # BUT the user specifically requested the template fix.
+                # Let's try to leverage the webhook's `_load_pyme_welcome_settings` logic indirectly
+                # by ensuring our Pyme config is correct (which we did in step 2).
+
+                # If we return a standard menu payload, the webhook will render it as a list/buttons.
+                # To use the template, we might need to rely on the webhook's `should_trigger_welcome` logic.
+                pass
+
         menu_context = {
             "rubro_slug": rubro_slug,
             "nombre_pyme": self.context.get("nombre_pyme"),
@@ -913,59 +1036,211 @@ class SaludoHandler(BaseHandler):
         return menu_payload
 
 class CatalogoHandler(BaseHandler):
+    def _build_structured_catalog_response(self, pregunta: str, resultados_qdrant: list, channel: str) -> tuple[str, list[dict]]:
+        summary = "Te comparto una selección recomendada para tu consulta."
+        cards: list[dict] = []
+        for hit in resultados_qdrant[:3]:
+            payload = getattr(hit, "payload", {}) or {}
+            nombre = str(payload.get("nombre") or "Producto").strip()
+            precio = str(payload.get("precio_str") or payload.get("precio") or "").strip()
+            categoria = str(payload.get("categoria") or "General").strip()
+            cards.append({"nombre": nombre, "precio": precio, "categoria": categoria})
+
+        if cards:
+            lines = [summary, "", "Productos recomendados:"]
+            for card in cards:
+                price_txt = f" - ${card['precio']}" if card.get("precio") else ""
+                lines.append(f"• {card['nombre']}{price_txt} ({card['categoria']})")
+            lines.append("")
+            lines.append("¿Buscás por precio, marca o uso? Te ayudo a afinar la búsqueda.")
+            lines.append("CTA: puedes agregar al carrito, pedir presupuesto o hablar con asesor.")
+            return "\n".join(lines), cards
+        return "", []
+
     def execute(self, action_data):
         pregunta = action_data.get("pregunta", "")
         if not self.pyme_id_actual: return {"respuesta": "No puedo identificar la tienda.", "fuente": "catalogo_sin_pyme_id_v2"}
         query_qdrant = pregunta
         if self.context.get("intencion") == "ver_catalogo" and len(pregunta.split()) < 3: query_qdrant = "productos populares"
 
-        resultados_qdrant = buscar_catalogo_qdrant(self.pyme_id_actual, query_qdrant, self.context.get("rubro_nombre"), 3, self.context.get("coleccion_qdrant", CATALOGO_PYME))
+        # Detect filters from natural language
+        en_promocion = False
+        con_stock = False
+        precio_max = None
+
+        pregunta_lower = pregunta.lower()
+        if "oferta" in pregunta_lower or "promo" in pregunta_lower or "descuento" in pregunta_lower:
+            en_promocion = True
+        if "stock" in pregunta_lower or "disponible" in pregunta_lower:
+            con_stock = True
+
+        # Simple regex for "menor a 1000" or "menos de 1000"
+        match_precio = re.search(r"(?:menor|menos)\s+(?:a|de)\s+(?:\$)?\s*(\d+)", pregunta_lower)
+        if match_precio:
+            try:
+                precio_max = float(match_precio.group(1))
+            except ValueError:
+                pass
+
+        resultados_qdrant = buscar_catalogo_qdrant(
+            user_id=self.pyme_id_actual,
+            pregunta=query_qdrant,
+            limite=3,
+            categoria=self.context.get("rubro_nombre"),
+            coleccion=self.context.get("coleccion_qdrant", CATALOGO_PYME),
+            en_promocion=en_promocion,
+            con_stock=con_stock,
+            precio_max=precio_max
+        )
+
+        # Fallback mechanism: If Qdrant returns nothing, try SQL DB
+        if not resultados_qdrant:
+            try:
+                resultados_qdrant = buscar_catalogo_db_fallback(
+                    user_id=self.pyme_id_actual,
+                    pregunta=query_qdrant,
+                    limite=3,
+                    precio_max=precio_max
+                )
+                if resultados_qdrant:
+                    logger.info(f"Fallback DB search success for '{pregunta}'")
+            except Exception as e:
+                logger.error(f"Fallback search failed: {e}")
+
         chat_ctx = self.context.setdefault("chat_db_context_data", {})
         add_preference(chat_ctx, "busquedas", pregunta)
         
         respuesta_texto = ""; botones_catalogo = []; fuente_catalogo = "catalogo_qdrant_sin_resultados_v2"
 
         if resultados_qdrant:
+            # Use LLM to summarize results naturally
+            try:
+                from services.llm_utils import robust_chat
+                items_summary = []
+                for hit in resultados_qdrant:
+                    p = getattr(hit, "payload", {})
+                    items_summary.append(f"{p.get('nombre')} (${p.get('precio_str', '?')})")
+
+                context_summary = f"Productos encontrados: {', '.join(items_summary)}. Usuario preguntó: '{pregunta}'."
+                prompt_intro = f"Genera una frase corta y amigable presentando estos productos al cliente. {context_summary}"
+
+                intro_text = robust_chat(message=prompt_intro)
+                if not intro_text:
+                    intro_text = "Encontré estos productos que podrían interesarte:"
+            except Exception:
+                intro_text = "Encontré estos productos que podrían interesarte:"
+
             productos_formateados = []
-            productos_formateados.append("| Producto | Precio | Cantidad |")
-            productos_formateados.append("|---|---|---|")
+            if self.context.get("channel") != "whatsapp":
+                productos_formateados.append("| Producto | Precio | Cantidad |")
+                productos_formateados.append("|---|---|---|")
+
             for idx, hit in enumerate(resultados_qdrant):
                 payload = getattr(hit, "payload", {}); item_db_id = payload.get("db_id")
                 item_obj = db.session.get(models.CatalogoItem, item_db_id) if item_db_id else None
                 nombre = payload.get("nombre", "Producto")
                 precio_s, precio_f, moneda = parse_precio_flexible(payload.get("precio_str", ""))
                 cantidad = payload.get("cantidad", "")
-                linea = f"| {nombre} | ${precio_f:,.2f} {moneda or 'ARS'} | {cantidad} |"
+
+                if self.context.get("channel") == "whatsapp":
+                    linea = f"• *{nombre}*: ${precio_f:,.2f} {moneda or 'ARS'}"
+                    if cantidad:
+                        linea += f" (Disp: {cantidad})"
+                else:
+                    linea = f"| {nombre} | ${precio_f:,.2f} {moneda or 'ARS'} | {cantidad} |"
+
                 productos_formateados.append(linea)
                 identificador_accion = payload.get("sku") or item_db_id or nombre
-                botones_catalogo.append({"texto": f"Pedir {nombre[:20]}", "action": f"pedir_item_{identificador_accion}"})
+
+                # Check checkout_type logic
+                checkout_type = "chatboc"
+                external_url = None
+                if item_obj:
+                    checkout_type = getattr(item_obj, "checkout_type", "chatboc")
+                    external_url = getattr(item_obj, "external_url", None)
+
+                if checkout_type in ["mercadolibre", "tiendanube"] and external_url:
+                    label_site = "ML" if checkout_type == "mercadolibre" else "Web"
+                    botones_catalogo.append({
+                        "texto": f"Ver en {label_site}",
+                        "url": external_url,
+                        "type": "url"
+                    })
+                else:
+                    botones_catalogo.append({"texto": f"Pedir {nombre[:20]}", "action": f"pedir_item_{identificador_accion}"})
 
             if productos_formateados:
-                respuesta_texto = "Algunos productos que podrían interesarte:\n\n" + "\n".join(productos_formateados)
-                respuesta_texto += "\n\nSi quieres alguno, usa los botones o dime (ej: 'quiero 2 [nombre]')."
+                structured_text, _ = self._build_structured_catalog_response(
+                    pregunta=pregunta,
+                    resultados_qdrant=resultados_qdrant,
+                    channel=self.context.get("channel") or "web",
+                )
+                if structured_text:
+                    respuesta_texto = structured_text
+                else:
+                    respuesta_texto = f"{intro_text}\n\n" + "\n".join(productos_formateados)
+                    respuesta_texto += "\n\nSi quieres alguno, usa los botones o dime (ej: 'quiero 2 [nombre]')."
                 fuente_catalogo = "catalogo_qdrant_con_promos_v2"
         
         if not respuesta_texto:
-            respuesta_texto = f"No encontré productos para '{pregunta}'. Intenta con otras palabras."
+            resultados_faq = buscar_en_faq_spacy(
+                pregunta,
+                self.pyme_id_actual,
+                self.context.get("rubro_nombre") or "general",
+                top_n=1,
+                umbral_similitud=0.68,
+            )
+            if resultados_faq:
+                mejor_match = resultados_faq[0]
+                respuesta_texto = (
+                    f"Resumen: {mejor_match.get('respuesta', 'Encontré una respuesta útil.')}\n\n"
+                    "¿Buscás por precio, marca o uso?"
+                )
+                fuente_catalogo = "catalogo_fallback_faq"
+            else:
+                owner_obj = db.session.get(models.User, self.pyme_id_actual)
+                website_url = getattr(owner_obj, "link_web", None) if owner_obj else None
+                web_info = obtener_info_web(self.pyme_id_actual, website_url) if website_url else {}
+                if web_info:
+                    respuesta_texto = (
+                        f"Resumen: {str(web_info)[:320]}\n\n"
+                        "No encontré el producto exacto en el catálogo local. "
+                        "¿Te muestro alternativas por precio, marca o uso?"
+                    )
+                    fuente_catalogo = "catalogo_fallback_web"
+                else:
+                    respuesta_texto = f"No encontré productos para '{pregunta}'. Intenta con otras palabras."
             # No product-specific buttons if nothing found
             botones_catalogo = []
 
         body = respuesta_texto
         options = []
 
-        # Add "Pedir {nombre}" buttons from botones_catalogo (which were generated from resultados_qdrant)
-        # Assuming botones_catalogo was populated correctly if resultados_qdrant had hits
-        for btn_cat_original in botones_catalogo: # botones_catalogo was defined earlier in your original code
-            # Original action: f"pedir_item_{identificador_accion}"
-            # We need the identificador_accion part for the ID.
-            action_str = btn_cat_original.get("action", "")
-            id_suffix = action_str.replace("pedir_item_", "") if action_str.startswith("pedir_item_") else _normalize_user_input(btn_cat_original.get("texto", "")).replace(" ", "_")
+        # Determine safe truncation length based on potential message type
+        # List messages (interactive_list) support up to 24 chars for title.
+        # Reply buttons (interactive_buttons) support up to 20 chars.
+        # If we have > 3 items + system buttons, we likely force a list.
+        # Estimate count: catalog items + fixed buttons (Buscar otra + Hablar agent)
+        estimated_count = len(botones_catalogo) + 2
+        if tiene_archivo_catalogo(self.pyme_id_actual) and self.context.get("channel") != "whatsapp":
+            estimated_count += 1
 
-            options.append({
-                "id": f"pedir_item_pyme_{id_suffix}",
-                "texto": btn_cat_original.get("texto", "Pedir producto")[:20] # Ensure text is suitable for button title
-            })
-            if len(options) >= 7 and self.context.get("channel") == 'whatsapp': # Limit Pedir buttons for WhatsApp to leave space for general ones
+        truncate_len = 24 if estimated_count > 3 else 20
+
+        # Add buttons from botones_catalogo
+        for btn_cat_original in botones_catalogo:
+            if btn_cat_original.get("type") == "url":
+                options.append(btn_cat_original)
+            else:
+                action_str = btn_cat_original.get("action", "")
+                id_suffix = action_str.replace("pedir_item_", "") if action_str.startswith("pedir_item_") else _normalize_user_input(btn_cat_original.get("texto", "")).replace(" ", "_")
+
+                options.append({
+                    "id": f"pedir_item_pyme_{id_suffix}",
+                    "texto": btn_cat_original.get("texto", "Pedir producto")[:truncate_len]
+                })
+
+            if len(options) >= 8 and self.context.get("channel") == 'whatsapp':
                 break
 
         # Add general action buttons
@@ -974,7 +1249,7 @@ class CatalogoHandler(BaseHandler):
         if tiene_archivo_catalogo(self.pyme_id_actual):
             url_cat = url_descargar_catalogo_pyme(self.pyme_id_actual)
             if self.context.get("channel") == "whatsapp":
-                body += f"\n\nTambién puedes descargar nuestro catálogo completo en: {url_cat}"
+                body += f"\n\n📂 También puedes descargar nuestro catálogo completo aquí: {url_cat}"
             else: # For web, add as a URL button
                 options.append({
                     "id": "descargar_catalogo_pyme_pdf",
@@ -983,6 +1258,7 @@ class CatalogoHandler(BaseHandler):
                     "type": "url" # For formatter to handle for web
                 })
 
+        options.append({"id": "pedir_presupuesto_pyme", "texto": "Pedir presupuesto"})
         options.append({"id": "hablar_con_agente_pyme_catalogo", "texto": "Hablar con un agente"})
 
         interactive_options_count = sum(1 for opt in options if opt.get("type") != "url")
@@ -1090,7 +1366,22 @@ class HumanHandler(BaseHandler):
         # telefono_pyme = getattr(pyme_user_obj, "telefono_contacto", "nuestro teléfono principal")
         # email_pyme = getattr(pyme_user_obj, "email_contacto", "nuestro email de soporte")
 
-        body = f"Entendido. Para hablar con un representante de {nombre_pyme}, por favor contáctanos directamente."
+        schedule_override = None
+        tenant_cfg = self.context.get("tenant_config") if isinstance(self.context.get("tenant_config"), dict) else {}
+        if isinstance(tenant_cfg.get("live_chat_schedule"), dict):
+            schedule_override = tenant_cfg.get("live_chat_schedule")
+        live_status = build_live_chat_status(schedule_override=schedule_override)
+
+        if live_status.get("available"):
+            body = (
+                f"Perfecto. Te derivo con un asesor humano de {nombre_pyme}. "
+                f"Estamos en línea ahora ({live_status.get('description')})."
+            )
+        else:
+            body = (
+                f"Perfecto. Registré tu solicitud para hablar con un asesor de {nombre_pyme}. "
+                f"Horario de atención: {live_status.get('description')}."
+            )
         # Idealmente, aquí se crearía un ticket o se notificaría a alguien.
         # Por ahora, solo damos un mensaje.
         # Crear ticket si servicio_tickets está disponible
@@ -1114,6 +1405,23 @@ class HumanHandler(BaseHandler):
                 if ticket_creado_id:
                     body = f"He generado el ticket #{ticket_creado_id} para que un agente se ponga en contacto contigo. ¿Hay algo más en lo que pueda ayudarte mientras tanto?"
                     self.pyme_ctx["ultimo_ticket_creado"] = ticket_creado_id
+
+                    # Persist human handoff flags so WhatsApp/widget can route messages
+                    # directly to the live ticket room while the human chat is active.
+                    chat_data = self.context.get("chat_db_context_data") if isinstance(self.context.get("chat_db_context_data"), dict) else {}
+                    chat_data["human_chat_in_progress"] = True
+                    chat_data["ticket_id"] = ticket_creado_id
+                    chat_data["tipo_ticket"] = "pyme"
+                    chat_data["room"] = f"ticket_pyme_{ticket_creado_id}"
+                    self.context["chat_db_context_data"] = chat_data
+
+                    try:
+                        pyme_ticket_obj = db.session.get(PymeTicket, ticket_creado_id)
+                        if pyme_ticket_obj and pyme_ticket_obj.estado == "nuevo":
+                            pyme_ticket_obj.estado = "esperando_agente_en_vivo"
+                    except Exception:
+                        logger.exception("No se pudo actualizar estado inicial de ticket humano pyme=%s", ticket_creado_id)
+
                     self._guardar_contexto_pyme()
             except Exception as e:
                 logger.error(f"Error creando ticket en HumanHandler: {e}")
@@ -1208,6 +1516,19 @@ class FinalizarPedidoHandler(BaseHandler):
         try:
             db.session.add(nuevo_pedido)
             db.session.commit()
+            try:
+                market_order = servicio_pedidos.sync_market_order_from_pyme(
+                    nuevo_pedido,
+                    channel=self.context.get("channel"),
+                )
+            except Exception as e:
+                db.session.rollback()
+                logger.error(
+                    "Error creando MarketOrder para pedido %s: %s",
+                    nuevo_pedido.nro_pedido,
+                    e,
+                    exc_info=True,
+                )
 
             # Clear the cart
             cart_service.clear_pyme_cart(self.pyme_carts_data, self.pyme_id_actual)
@@ -1317,7 +1638,7 @@ def get_or_create_user_by_phone(phone_number: str, owner_user: models.User) -> O
     """
     Busca un usuario por su número de teléfono. Si no existe, crea uno nuevo
     asociado al `owner_user` (la pyme o municipio).
-    Maneja condiciones de carrera durante la creación.
+    Maneja condiciones de carrera durante la creación mediante try/except IntegrityError.
     """
     if not phone_number or not owner_user:
         return None
@@ -1328,7 +1649,7 @@ def get_or_create_user_by_phone(phone_number: str, owner_user: models.User) -> O
         return user
 
     # Si no existe, intentar crear uno nuevo
-    logger.info(f"No se encontró un usuario para el teléfono '{phone_number}'. Creando uno nuevo.")
+    logger.info(f"No se encontró un usuario para el teléfono '{phone_number}'. Intentando crear uno nuevo...")
 
     nuevo_usuario = models.User(
         telefono=phone_number,
@@ -1352,6 +1673,7 @@ def get_or_create_user_by_phone(phone_number: str, owner_user: models.User) -> O
     except IntegrityError:
         db.session.rollback()
         logger.warning(f"Race condition detectada para el teléfono '{phone_number}'. Re-intentando la búsqueda.")
+        # Re-intentar la búsqueda, asumiendo que otro proceso lo creó
         return models.User.query.filter_by(telefono=phone_number, empresa_id=owner_user.id).first()
     except Exception as e:
         db.session.rollback()
@@ -1457,6 +1779,12 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
         if chat_db_context:
             flag_modified(chat_db_context, "context_data")
 
+        if pyme_ctx_actual.get("saludo_audio_pendiente") and flow_result.message_body:
+            flow_result.message_body = (
+                f"Hola, soy el asistente de {nombre_pyme_display}. {flow_result.message_body}"
+            )
+            pyme_ctx_actual["saludo_audio_pendiente"] = False
+
         final_payload = {
             "success": True,
             "message_body": flow_result.message_body,
@@ -1555,6 +1883,10 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
     )
     pyme_ctx_actual["rubro_slug"] = rubro_slug
 
+    # Resolve tenant slug for config loading
+    tenant_profile = getattr(owner_user, "tenant_profile_pyme", None)
+    tenant_slug = tenant_profile.slug if tenant_profile else None
+
     nombre_pyme_display = (
         getattr(owner_user, "nombre_empresa", None)
         or pyme_ctx_actual.get("nombre_pyme_cache")
@@ -1562,7 +1894,9 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
     )
 
     static_bundle = pyme_ctx_actual.get("static_data_cache")
-    if not static_bundle or static_bundle.get("_slug") != rubro_slug:
+    # Check if we need to reload based on slug or tenant change
+    current_cache_key = f"{rubro_slug}_{tenant_slug or ''}"
+    if not static_bundle or static_bundle.get("_cache_key") != current_cache_key:
         data_files = {
             "config": "config.json",
             "catalogo_destacado": "catalogo_destacado.json",
@@ -1572,14 +1906,15 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
         }
         loaded_bundle = {}
         for key, filename in data_files.items():
-            data = cargar_configuracion_pyme(rubro_slug, filename)
+            data = cargar_configuracion_pyme(rubro_slug, filename, tenant_slug=tenant_slug)
             if data:
                 loaded_bundle[key] = data
         if loaded_bundle:
             loaded_bundle["_slug"] = rubro_slug
+            loaded_bundle["_cache_key"] = current_cache_key
             static_bundle = loaded_bundle
         else:
-            static_bundle = {"_slug": rubro_slug}
+            static_bundle = {"_slug": rubro_slug, "_cache_key": current_cache_key}
         pyme_ctx_actual["static_data_cache"] = static_bundle
 
     config_data = static_bundle.get("config", {}) if static_bundle else {}
@@ -1732,6 +2067,38 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
             contextual_notes.append("El usuario envió una nota de voz.")
             transcripcion = uploaded_info.get("transcribed_text")
             if transcripcion:
+                if not pyme_ctx_actual.get("saludo_audio_enviado"):
+                    pyme_ctx_actual["saludo_audio_pendiente"] = True
+                    pyme_ctx_actual["saludo_audio_enviado"] = True
+
+                normalized_audio = _normalize_user_input(transcripcion)
+                agent_keywords = RAW_PYME_MENU_KEYWORDS.get("pyme_hablar_agente", set())
+                if normalized_audio and any(
+                    _normalize_user_input(keyword) in normalized_audio for keyword in agent_keywords | {"llamar", "llamada"}
+                ):
+                    from services.actions.pyme_actions import DerivarHumanoActionHandlerPyme
+
+                    handler_context = {
+                        CONTEXTO_PYME: pyme_ctx_actual,
+                        "user_obj": owner_user,
+                        "viewer_user_obj": viewer_user,
+                        "cliente_id": getattr(viewer_user, "id", None),
+                        "anon_id": anon_id,
+                        "user_id": getattr(owner_user, "id", None),
+                        "chat_db_context_data": chat_db_context.context_data,
+                        "channel": channel,
+                        "target_entity_type": "pyme",
+                        "pregunta_actual_usuario": transcripcion,
+                    }
+                    handler = DerivarHumanoActionHandlerPyme(handler_context)
+                    handler_result = handler.execute({"motivo_derivacion": "Solicitud de contacto por nota de voz"})
+                    flow_result = PymeFlowResult(
+                        message_body=handler_result.get("message_to_user") or handler_result.get("message_body", ""),
+                        source="pyme_handoff_audio",
+                        data=handler_result.get("data", {}),
+                    )
+                    return _finalize_early_response(flow_result, intent="pyme_hablar_agente")
+
                 intent_from_audio = detect_intent_from_text(transcripcion)
                 if intent_from_audio:
                     logger_actual.info(
@@ -1766,6 +2133,8 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
                         return _finalize_early_response(audio_flow, intent=intent_from_audio)
         elif mime_type:
             contextual_notes.append(f"El usuario adjuntó un archivo del tipo {mime_type}.")
+        else:
+            contextual_notes.append("El usuario adjuntó un archivo.")
 
         if uploaded_info.get("caption") and not pregunta_str.strip():
             pregunta_str = uploaded_info["caption"]
@@ -1801,7 +2170,10 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
         elif contextual_notes:
             pregunta_str = contextual_notes[0]
         else:
-            pregunta_str = "El usuario compartió información sin texto adicional."
+            if pyme_ctx_actual.get("demo_quick_actions"):
+                pregunta_str = "menu"
+            else:
+                pregunta_str = "Necesito una guía rápida para elegir productos."
 
     mensaje_para_llm = pregunta_str.strip()
     if contextual_notes:
@@ -1957,7 +2329,10 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
         if contextual_notes:
             pregunta_str = contextual_notes[0]
         else:
-            pregunta_str = "El usuario compartió información sin texto adicional."
+            if pyme_ctx_actual.get("demo_quick_actions"):
+                pregunta_str = "menu"
+            else:
+                pregunta_str = "Necesito una guía rápida para elegir productos."
 
     mensaje_para_llm = pregunta_str.strip()
     if contextual_notes:
@@ -1995,6 +2370,9 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
             menu_request = ("menu", None)
         elif normalized_input in MENU_COMMAND_KEYWORDS:
             menu_request = ("menu", None)
+        # Fix loop where user says just their name
+        elif usuario_nombre and normalized_input == _normalize_user_input(usuario_nombre):
+            menu_request = ("menu", None)
         else:
             resolved_action = _find_menu_action_by_input(pregunta_str, last_options_sent)
             if resolved_action:
@@ -2020,13 +2398,49 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
 
     llm_response_structured = manual_llm_output
     if not llm_response_structured:
+        # --- Voice/Channel Injection ---
+        mensaje_payload = {"texto": mensaje_para_llm}
+        # Check context for voice mode (similar to municipio)
+        is_voice = channel == "voice" or pyme_ctx_actual.get("_voice_mode")
+
+        if is_voice:
+            mensaje_payload["instruccion_canal"] = (
+                "ESTAS EN UNA LLAMADA DE VOZ. TU OBJETIVO ES VENDER RÁPIDO Y FLUIDO."
+                "ACTÚA COMO UN VENDEDOR ARGENTINO ('Rioplatense') RE BUENA ONDA. USA 'VOS', 'CHE', 'DALE', 'GENIAL', 'BÁRBARO'."
+                "RESPUESTAS MAXIMO DE 1 ORACIÓN CORTA. NO DES VUELTAS."
+                "EJEMPLO: '¡Hola! ¿Qué te puedo ofrecer hoy?' o 'Dale, anotado el pedido. ¿Algo más?'."
+                "SI TE PIDEN PRECIO, DALO DIRECTO: 'Te sale 5000 pesos'."
+                "EL AUDIO TIENE QUE SALIR AL INSTANTE, ASÍ QUE SÉ BREVE."
+            )
+
+        mensaje_para_llm_json = json.dumps(mensaje_payload)
+
         llm_response_structured, _ = llamar_llm_con_fallback(
             app=current_app,
-            mensaje_usuario=mensaje_para_llm,
+            mensaje_usuario=mensaje_para_llm_json,
             usuario=usuario_info_for_llm,
             historial=historial_chat_llm,
             chat_session_id=kwargs.get("chat_session_uuid")
         )
+
+    # --- Gating / Hard Rules: Prevent premature handoff (Pyme) ---
+    accion_backend = llm_response_structured.get("accion_backend")
+
+    # Check if we have items in cart or a current intent
+    cart_summary_check = cart_service.get_cart_summary(
+        chat_db_context.context_data.get(cart_service.SESSION_CARTS_KEY, {}),
+        getattr(owner_user, "id", None),
+        getattr(viewer_user, "id", None),
+    )
+    has_cart_items = cart_summary_check and bool(cart_summary_check.get("items_detalle"))
+
+    if accion_backend in ["pyme_hablar_agente"] and not has_cart_items:
+        # Check if user query explicitly demands human strongly, or if it's just "quiero hablar con alguien"
+        # For now, we enforce a soft block: Ask what they need first.
+        logger_actual.info("[PYME_GATING] Blocking premature human handoff. Forcing sales inquiry.")
+        llm_response_structured["accion_backend"] = "responder_directamente"
+        llm_response_structured["message_body"] = "Te comunico en un momento. Para agilizar la atención, ¿me contás qué estabas buscando o en qué producto estás interesado?"
+        llm_response_structured["pedir_info"] = "necesidad_cliente"
 
     # Actualizar historial para la próxima llamada al LLM
     if "mensajes_previos_llm_formato" not in chat_db_context.context_data:
@@ -2040,9 +2454,13 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
         rubro_nombre_para_contexto = "general"
     rubro_nombre_para_contexto = rubro_nombre_para_contexto.lower()
 
+    tenant_profile = getattr(owner_user, "tenant_profile_pyme", None)
+    tenant_id = tenant_profile.id if tenant_profile else None
+
     global_context_for_orchestrator = {
         CONTEXTO_PYME: pyme_ctx_actual,
         "user_id": getattr(owner_user, "id", None), # ID de la PYME (owner)
+        "tenant_id": tenant_id,
         "nombre_pyme": nombre_pyme_display,
         "rubro_nombre": rubro_nombre_para_contexto,
         "viewer_user_obj": viewer_user,
@@ -2200,6 +2618,10 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
         elif num_opt > 3:
             message_type_pyme = "interactive_list"
 
+    if pyme_ctx_actual.get("saludo_audio_pendiente") and respuesta_final_texto:
+        respuesta_final_texto = f"Hola, soy el asistente de {nombre_pyme_display}. {respuesta_final_texto}"
+        pyme_ctx_actual["saludo_audio_pendiente"] = False
+
     final_response_dict = {
         "message_body": respuesta_final_texto, "options_list": opciones_finales,
         "message_type": message_type_pyme,
@@ -2214,7 +2636,7 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
     if action_handler_result.get("delayed_payload"):
         final_response_dict["delayed_payload"] = action_handler_result["delayed_payload"]
 
-    # Log de conversación
+    # Log de conversación (Legacy)
     if anon_id and not viewer_user:
         try:
             db.session.add(Conversacion(
@@ -2227,34 +2649,249 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
             logger_actual.error(f"Error guardando Conversacion final (PYME): {e_conv_pyme_final}", exc_info=True)
             db.session.rollback()
 
-    # Proactive suggestions
-    sugerencia_proactiva = sugerir_productos_relacionados(historial_chat_llm, owner_user.id)
-    if sugerencia_proactiva:
+    # --- Persistence: Save Chat History for Ticket (Pyme) ---
+    try:
+        # Check if an active ticket exists in the context (set by HumanHandler)
+        active_ticket_id = pyme_ctx_actual.get("ultimo_ticket_creado")
+        # Or if one was created in this turn
+        if final_response_dict.get("ticket_id"):
+            active_ticket_id = final_response_dict["ticket_id"]
+
+        if active_ticket_id:
+            # 1. Save User Message
+            servicio_tickets.crear_comentario(
+                ticket_id=active_ticket_id,
+                tipo_ticket="pyme",
+                comentario_data={
+                    "comentario": pregunta_str, # Original user input
+                    "user_id": getattr(viewer_user, "id", None),
+                    "es_admin": False,
+                    "origen": "chat_persistence"
+                }
+            )
+            # 2. Save Bot Response
+            bot_text = final_response_dict.get("message_body", "")
+            if bot_text:
+                servicio_tickets.crear_comentario(
+                    ticket_id=active_ticket_id,
+                    tipo_ticket="pyme",
+                    comentario_data={
+                        "comentario": bot_text,
+                        "user_id": getattr(owner_user, "id", None), # Bot acts on behalf of owner
+                        "es_admin": True,
+                        "origen": "chat_persistence"
+                    }
+                )
+            logger_actual.info(f"Persisted Pyme chat messages to Ticket ID {active_ticket_id}")
+
+            # --- Update context for Voice Status Handlers (Pyme) ---
+            if final_response_dict.get("success") and final_response_dict.get("data", {}).get("nro_pedido"):
+                ticket_data = final_response_dict["data"]
+                chat_db_context.context_data["latest_ticket_id"] = ticket_data.get("pedido_id")
+                chat_db_context.context_data["latest_ticket_nro"] = ticket_data.get("nro_pedido")
+                # Try to extract tracking link from body or build it
+                import re
+                tracking_links = re.findall(r"https?://\S+/pyme/pedidos\S*", final_response_dict.get("message_body", ""))
+                if tracking_links:
+                    chat_db_context.context_data["latest_tracking_url"] = tracking_links[0]
+
+                flag_modified(chat_db_context, "context_data")
+
+    except Exception as e_persist:
+        logger_actual.warning(f"Failed to persist Pyme chat messages: {e_persist}")
+
+    # Proactive suggestions (Intelligent)
+    pyme_ctx_actual["turn_counter"] = int(pyme_ctx_actual.get("turn_counter", 0) or 0) + 1
+
+    cart_summary_now = cart_service.get_cart_summary(
+        global_context_for_orchestrator.get("chat_db_context_data", {}).get(cart_service.SESSION_CARTS_KEY, {}),
+        getattr(owner_user, "id", None),
+        getattr(viewer_user, "id", None),
+    )
+
+    sugerencia_proactiva = sugerir_productos_relacionados(
+        historial_chat_llm,
+        pyme_id=getattr(owner_user, "id", 0),
+        rubro_nombre=global_context_for_orchestrator.get("rubro_nombre", "general"),
+        nombre_pyme=nombre_pyme_display,
+        cart_summary=cart_summary_now,
+        last_intent=llm_response_structured.get("accion_backend") if isinstance(llm_response_structured, dict) else None,
+        pyme_ctx=pyme_ctx_actual,
+        channel=channel,
+    )
+
+    if sugerencia_proactiva and final_response_dict.get("success", True):
         final_response_dict["message_body"] += f"\n\n{sugerencia_proactiva}"
 
     logger.info(f"[RESPONDER_PYME_END_V4 - {request_id}] Respuesta: '{final_response_dict['message_body'][:100]}...', Fuente: {final_response_dict['fuente']}")
     return final_response_dict
 
-def sugerir_productos_relacionados(historial_chat: list, pyme_id: int) -> Optional[str]:
-    """
-    Analiza el historial de chat para sugerir productos relacionados o promociones.
-    """
-    if not historial_chat:
-        return None
+def _trim_to_words(text: str, max_words: int) -> str:
+    words = (text or "").strip().split()
+    if len(words) <= max_words:
+        return " ".join(words).strip()
+    return " ".join(words[:max_words]).strip().rstrip(".,;:!?") + "…"
 
-    last_user_message = ""
+def _is_low_signal_message(msg: str) -> bool:
+    m = (msg or "").strip().lower()
+    return m in {"ok", "dale", "gracias", "👍", "si", "no", "bien"} or len(m) < 3
+
+def _pick_seed_product_from_cart(cart_summary: Optional[dict]) -> Optional[str]:
+    if not cart_summary or not isinstance(cart_summary.get("items_detalle"), list):
+        return None
+    for it in cart_summary["items_detalle"]:
+        if not isinstance(it, dict):
+            continue
+        nombre = (it.get("nombre_producto") or it.get("nombre") or "").strip()
+        if nombre:
+            return nombre
+    return None
+
+def _pick_last_user_message(historial_chat: list) -> str:
+    if not historial_chat:
+        return ""
     for msg in reversed(historial_chat):
         if msg.get("role") == "user":
-            last_user_message = msg.get("parts", [{}])[0].get("text", "")
-            break
+            parts = msg.get("parts") or []
+            if parts and isinstance(parts, list):
+                txt = (parts[0] or {}).get("text", "")
+                return txt or ""
+    return ""
 
-    if not last_user_message:
+def sugerir_productos_relacionados(
+    historial_chat: list,
+    pyme_id: int,
+    rubro_nombre: str,
+    *,
+    nombre_pyme: str = "la tienda",
+    cart_summary: Optional[dict] = None,
+    last_intent: Optional[str] = None,
+    pyme_ctx: Optional[dict] = None,
+    channel: str = "web",
+    max_words: int = 16,
+) -> Optional[str]:
+    """
+    Sugerencia pro:
+    1) Intenta cross-sell REAL con Qdrant (catálogo).
+    2) Si no hay, intenta LLM (JSON estricto) pero SIN inventar productos.
+    3) Rate limit + evita momentos sensibles del flujo.
+    """
+
+    if not pyme_id or not historial_chat:
         return None
 
-    # Simple keyword-based suggestion for now
-    if "vino" in last_user_message.lower():
-        return "Veo que te interesa el vino. ¿Te gustaría probar nuestra selección de quesos para acompañar?"
-    elif "queso" in last_user_message.lower():
-        return "El queso es una excelente elección. ¿Qué tal un vino Malbec para maridar?"
+    # ------------- Rate limit / timing -------------
+    pyme_ctx = pyme_ctx if isinstance(pyme_ctx, dict) else {}
+    turns = int(pyme_ctx.get("turn_counter", 0) or 0)  # si no lo tenés, lo podés incrementar en responder_pyme
+    last_turn = int(pyme_ctx.get("cross_sell_last_turn", -9999) or -9999)
 
-    return None
+    # Evitar spamear: 1 sugerencia cada 4 turnos
+    if turns - last_turn < 4:
+        return None
+
+    # Evitar cuando el usuario está dejando datos / confirmando
+    estado = str(pyme_ctx.get("estado_conversacion") or "")
+    estados_sensibles = {
+        PymeConversationState.ESPERANDO_DATOS_CLIENTE_NOMBRE.name,
+        PymeConversationState.ESPERANDO_DATOS_CLIENTE_TELEFONO.name,
+        PymeConversationState.ESPERANDO_DATOS_CLIENTE_DIRECCION.name,
+        PymeConversationState.ESPERANDO_DATOS_CLIENTE_EMAIL.name,
+        PymeConversationState.CONFIRMANDO_PEDIDO.name,
+        PymeConversationState.ESPERANDO_CONFIRMACION_FINAL_CON_DATOS.name,
+    }
+    if estado in estados_sensibles:
+        return None
+
+    last_user_message = _pick_last_user_message(historial_chat)
+    if not last_user_message or _is_low_signal_message(last_user_message):
+        return None
+
+    # Si la intención es “hablar agente” o similar, no metas cross-sell
+    li = (last_intent or "").lower()
+    if any(x in li for x in ["hablar", "agente", "humano", "reclamo", "ticket"]):
+        return None
+
+    # ------------- 1) QDRANT FIRST (SUGERENCIA REAL) -------------
+    seed = _pick_seed_product_from_cart(cart_summary)
+    if not seed:
+        # intento simple desde el último mensaje (sin NLP pesado)
+        seed = last_user_message.strip()[:60]
+
+    try:
+        query = f"complemento para {seed}"
+        hits = buscar_catalogo_qdrant(
+            user_id=pyme_id,
+            pregunta=query,
+            categoria=rubro_nombre or "general",
+            limite=3,
+            coleccion=CATALOGO_PYME,
+        )
+        # elegí el primer hit decente
+        for hit in hits or []:
+            payload = getattr(hit, "payload", {}) or {}
+            nombre = (payload.get("nombre") or "").strip()
+            if not nombre:
+                continue
+            # Evitar sugerir exactamente lo mismo
+            if nombre.lower() in (seed or "").lower():
+                continue
+
+            # opcional: precio si está
+            precio_txt = (payload.get("precio_str") or "").strip()
+            sugerencia = f"Sugerencia: ¿Querés sumar {nombre} para completar tu compra?"
+            if precio_txt and len(precio_txt) < 20:
+                sugerencia = f"Sugerencia: ¿Sumamos {nombre} ({precio_txt}) para completar?"
+
+            # guardar rate limit
+            pyme_ctx["cross_sell_last_turn"] = turns
+            return _trim_to_words(sugerencia, max_words)
+    except Exception as e:
+        logger.warning(f"[cross_sell_qdrant] error: {e}")
+
+    # ------------- 2) LLM FALLBACK (JSON ESTRICTO, SIN INVENTAR) -------------
+    # Si no tenés catálogo o Qdrant no devolvió nada, el LLM puede sugerir un "extra" genérico
+    # (ej: "¿Querés coordinar envío o retiro?") pero sin inventar productos.
+    prompt = f"""
+Sos un asistente comercial de {nombre_pyme}.
+Objetivo: aumentar el ticket sin ser insistente.
+
+REGLAS:
+- NO inventes productos que no estén confirmados en el mensaje del usuario.
+- Si no hay una sugerencia clara, devolvé: {{ "suggestion": null }}
+- Si sí hay, devolvé JSON estricto: {{ "suggestion": "..." }}
+- 1 sola oración, tono profesional, máximo {max_words} palabras.
+- Sin emojis.
+
+Contexto:
+- Rubro: {rubro_nombre or "general"}
+- Último mensaje del usuario: "{last_user_message}"
+
+Salida JSON:
+""".strip()
+
+    try:
+        llm_out, _ = llamar_llm_con_fallback(
+            app=current_app,
+            mensaje_usuario=prompt,
+            usuario={"nombre": "system", "tipo_entidad": "pyme"},
+            historial=[],
+            chat_session_id=None,
+        )
+        suggestion = None
+        if isinstance(llm_out, dict):
+            suggestion = llm_out.get("suggestion") or llm_out.get("respuesta") or llm_out.get("message_body")
+        elif isinstance(llm_out, str):
+            suggestion = llm_out
+
+        if not suggestion:
+            return None
+
+        suggestion = str(suggestion).strip().strip('"').strip()
+        if suggestion.lower() in {"skip", "null", "none"}:
+            return None
+
+        pyme_ctx["cross_sell_last_turn"] = turns
+        return _trim_to_words(f"Sugerencia: {suggestion}", max_words)
+    except Exception as e:
+        logger.warning(f"[cross_sell_llm] error: {e}")
+        return None

@@ -13,6 +13,7 @@ import logging
 import math
 from dataclasses import dataclass, field
 import re
+from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from flask import current_app
@@ -22,8 +23,25 @@ from services.multimodal_analyzer import analizar_imagen_con_fallback
 from services.pyme_menu import get_pyme_menu_payload
 from services.config_loader import cargar_configuracion_pyme
 from services.document_processing_service import document_processing_service
+from services.qdrant_search import buscar_catalogo_qdrant, CATALOGO_PYME
+from utils.money_ar import format_ars, parse_ars
 
 logger = logging.getLogger(__name__)
+
+
+def _format_money(value: object, currency: str = "ARS") -> str:
+    if currency != "ARS":
+        try:
+            return f"{float(value):,.2f}"
+        except (TypeError, ValueError):
+            return str(value)
+    try:
+        # Convert float to string to avoid precision issues before Decimal
+        dec_value = Decimal(str(value))
+    except (TypeError, ValueError, InvalidOperation):
+        return str(value)
+    decimals = 0 if dec_value == dec_value.to_integral_value() else 2
+    return format_ars(dec_value, decimals=decimals)
 
 
 # ---------------------------------------------------------------------------
@@ -100,8 +118,8 @@ def _parse_price(value: Any) -> float:
     if isinstance(value, (int, float)):
         return float(value)
     try:
-        cleaned = str(value).strip().replace("$", "").replace(",", "")
-        return float(cleaned)
+        # Use localized parser to handle '5.207' as 5207.0, not 5.207
+        return float(parse_ars(value))
     except Exception:
         return 0.0
 
@@ -116,6 +134,8 @@ def _serialise_item(item: CatalogoItem) -> Dict[str, Any]:
         "presentacion": item.cantidad or "unidad",
         "marca": item.marca,
         "categoria": item.categoria,
+        "talles": item.extra_metadata.get("talles") if item.extra_metadata else None,
+        "colores": item.extra_metadata.get("colores") if item.extra_metadata else None,
     }
 
 
@@ -174,7 +194,19 @@ def match_catalog_items(
             results.append((score, item))
 
     results.sort(key=lambda pair: pair[0], reverse=True)
-    return [item for _, item in results[:max_results]]
+
+    # Log top matches for observability
+    top_matches = results[:max_results]
+    if top_matches:
+        logger.info(
+            f"[CATALOG_MATCH] Query: '{query}' | Tokens: {tokens} | Top {len(top_matches)} matches:"
+        )
+        for score, item in top_matches:
+            logger.info(f"  - Score: {score} | Item: {item.get('nombre')} (SKU: {item.get('sku')})")
+    else:
+        logger.info(f"[CATALOG_MATCH] Query: '{query}' | No matches found.")
+
+    return [item for _, item in top_matches]
 
 
 def add_items_to_cart(
@@ -243,21 +275,22 @@ def render_cart_summary(state: PymeSessionState) -> str:
         price = item.get("unitPrice", 0.0)
         total = qty * price
         presentacion = item.get("metadata", {}).get("presentacion")
+        currency = item.get("currency", "ARS")
         detail = f"- {qty} x {title}"
         if presentacion:
             detail += f" ({presentacion})"
-        detail += f" — ${total:,.2f}"
+        detail += f" — ${_format_money(total, currency)}"
         lines.append(detail)
 
     subtotal = state.cart.get("subtotal", 0.0)
     envio = state.delivery.get("shipping_total")
     total = state.cart.get("total", subtotal)
 
-    lines.append(f"Subtotal productos: ${subtotal:,.2f}")
+    lines.append(f"Subtotal productos: ${_format_money(subtotal)}")
     if envio is not None:
-        lines.append(f"Envío estimado: ${envio:,.2f}")
+        lines.append(f"Envío estimado: ${_format_money(envio)}")
         total = subtotal + envio
-    lines.append(f"Total estimado: ${total:,.2f}")
+    lines.append(f"Total estimado: ${_format_money(total)}")
     return "\n".join(lines)
 
 
@@ -345,12 +378,16 @@ def detect_intent_from_text(text: str) -> Optional[str]:
             scores[intent] = score
 
     if not scores:
+        logger.info(f"[INTENT_DETECT] No keywords matched for text: '{text}'")
         return None
 
     max_score = max(scores.values())
     candidates = [intent for intent, score in scores.items() if score == max_score]
     candidates.sort(key=lambda intent: INTENT_PRIORITY.get(intent, 99))
-    return candidates[0]
+
+    winner = candidates[0]
+    logger.info(f"[INTENT_DETECT] Winner: '{winner}' | Scores: {scores}")
+    return winner
 
 
 @dataclass
@@ -396,6 +433,9 @@ def handle_keyword_intent(
     parsed_items: Optional[List[Dict[str, Any]]] = None,
     request_id: Optional[str] = None,
 ) -> Optional[PymeFlowResult]:
+    logger.info(
+        f"[HANDLE_INTENT] Intent: '{intent}' | Text: '{text}' | Parsed Items: {parsed_items} | Request ID: {request_id}"
+    )
     catalog = load_catalog(owner_user_id, rubro_slug)
 
     if intent in {"ver_catalogo", "precios"}:
@@ -408,7 +448,7 @@ def handle_keyword_intent(
         lines = ["Estos son algunos destacados:"]
         for item in destacados:
             lines.append(
-                f"• {item.get('nombre')} — ${_parse_price(item.get('precio')):,.2f} ({item.get('presentacion')})"
+                f"• {item.get('nombre')} — ${_format_money(_parse_price(item.get('precio')))} ({item.get('presentacion')})"
             )
         return PymeFlowResult(
             message_body="\n".join(lines),
@@ -421,6 +461,7 @@ def handle_keyword_intent(
 
     if intent == "pedido":
         matches: List[Tuple[Dict[str, Any], int]] = []
+        # Explicit items (e.g. "2 cajas de Malbec")
         if parsed_items:
             for parsed in parsed_items:
                 nombre = parsed.get("nombre")
@@ -430,45 +471,67 @@ def handle_keyword_intent(
                 catalog_match = match_catalog_items(nombre, catalog, max_results=1)
                 if catalog_match:
                     matches.append((catalog_match[0], cantidad))
-        if not matches:
-            fallback_matches = match_catalog_items(text, catalog)
-            matches.extend((item, 1) for item in fallback_matches)
-        if not matches:
-            return PymeFlowResult(
-                message_body=(
-                    "No reconocí el producto en el catálogo. Podés pedirme, por ejemplo, "
-                    "'Agregar 2 cajas de Malbec Reserva'."
-                ),
-                source="pyme_catalogo_sin_match",
-            )
-        logger.info(
-            "[PYME_FLOW] catalog_hit",
-            extra={
-                "request_id": request_id,
-                "intent": "pedido",
-                "matches": [
-                    {"sku": item.get("sku"), "qty": qty} for item, qty in matches if item.get("sku")
-                ],
-            },
-        )
-        cart_updates = add_items_to_cart(state, matches)
-        if cart_updates:
+
+        # If explicit matches found, add to cart
+        if matches:
             logger.info(
-                "[PYME_FLOW] cart_updated",
+                "[PYME_FLOW] catalog_hit",
                 extra={
                     "request_id": request_id,
-                    "updates": cart_updates,
-                    "subtotal": state.cart.get("subtotal"),
+                    "intent": "pedido",
+                    "matches": [
+                        {"sku": item.get("sku"), "qty": qty} for item, qty in matches if item.get("sku")
+                    ],
                 },
             )
-        state.last_intent = "pedido"
-        body = render_cart_summary(state)
+            cart_updates = add_items_to_cart(state, matches)
+            if cart_updates:
+                logger.info(
+                    "[PYME_FLOW] cart_updated",
+                    extra={
+                        "request_id": request_id,
+                        "updates": cart_updates,
+                        "subtotal": state.cart.get("subtotal"),
+                    },
+                )
+            state.last_intent = "pedido"
+            body = render_cart_summary(state)
+            return PymeFlowResult(
+                message_body=body,
+                source="pyme_item_agregado",
+                options_list=[
+                    {"texto": "Pedir presupuesto", "action_id": "armar_presupuesto"},
+                    {"texto": "Confirmar pedido", "action_id": "confirmar_pedido"},
+                ],
+            )
+
+        # Fallback: treat as SEARCH if no explicit quantity/item found
+        # User said "quiero comprar malbec" -> Show list of malbecs
+        fallback_matches = match_catalog_items(text, catalog, max_results=5)
+        if not fallback_matches:
+            return PymeFlowResult(
+                message_body=(
+                    "No encontré productos que coincidan con tu búsqueda. "
+                    "Podés ver el catálogo completo o probar con otro nombre."
+                ),
+                source="pyme_catalogo_sin_match",
+                options_list=[
+                    {"texto": "Ver catálogo", "action_id": "ver_catalogo"},
+                ]
+            )
+
+        lines = ["Encontré estos productos:"]
+        for item in fallback_matches:
+            lines.append(
+                f"• {item.get('nombre')} — ${_format_money(_parse_price(item.get('precio')))} ({item.get('presentacion')})"
+            )
+        lines.append("\nRespondé con el nombre o cantidad para agregarlos al carrito.")
+
         return PymeFlowResult(
-            message_body=body,
-            source="pyme_item_agregado",
+            message_body="\n".join(lines),
+            source="pyme_catalogo_busqueda",
             options_list=[
-                {"texto": "Pedir presupuesto", "action_id": "armar_presupuesto"},
-                {"texto": "Confirmar pedido", "action_id": "confirmar_pedido"},
+                {"texto": "Ver más opciones", "action_id": "ver_catalogo_completo"},
             ],
         )
 
@@ -761,9 +824,15 @@ def analyse_image_for_products(image_url: str) -> List[Dict[str, Any]]:
     if not image_url:
         return []
     try:
+        prompt = (
+            "Analiza esta imagen. Si es una lista de pedido manuscrita o impresa, extrae los productos y cantidades en JSON. "
+            "Si es una etiqueta de producto, extrae nombre, marca y detalles. "
+            "Si es un documento médico o técnico, extrae el concepto principal. "
+            "Formato: {\"items\": [{\"nombre\": \"...\", \"cantidad\": 1, \"descripcion\": \"...\"}]}"
+        )
         result = analizar_imagen_con_fallback(
             image_url,
-            "Detecta productos de catálogo o etiquetas legibles. Devuelve JSON con 'items'.",
+            prompt,
         )
     except Exception as exc:  # pragma: no cover - defensive logging
         logger.warning("OpenAI vision fallback failed: %s", exc)
@@ -788,55 +857,94 @@ def handle_image_payload(
 ) -> Optional[PymeFlowResult]:
     image_url = image_info.get("url")
     detected = analyse_image_for_products(image_url)
+
     if not detected:
         return PymeFlowResult(
-            message_body="No pude reconocer el producto de la foto. ¿Me confirmás el nombre?",
+            message_body="Recibí la imagen pero no pude leer el contenido claramente. ¿Podrías decirme qué necesitás?",
             source="pyme_imagen_sin_match",
         )
 
     matched: List[Tuple[Dict[str, Any], int]] = []
+    items_to_confirm: List[str] = []
+
     for candidate in detected:
-        sku = candidate.get("sku") or candidate.get("nombre")
-        qty = int(candidate.get("qty") or candidate.get("cantidad") or 1)
-        if not sku:
-            continue
-        catalog_match = match_catalog_items(sku, catalog, max_results=1)
+        raw_name = candidate.get("nombre") or candidate.get("sku") or "Producto desconocido"
+        qty = int(candidate.get("cantidad") or candidate.get("qty") or 1)
+
+        # 1. Try deterministic/exact match first (fastest/safest)
+        catalog_match = match_catalog_items(raw_name, catalog, max_results=1)
+
+        # 2. If no exact match, try Semantic Vector Search (Qdrant)
+        if not catalog_match and state.pyme_id:
+            try:
+                hits = buscar_catalogo_qdrant(
+                    user_id=state.pyme_id,
+                    pregunta=raw_name,
+                    limite=1,
+                    coleccion=CATALOGO_PYME
+                )
+                if hits:
+                    payload = getattr(hits[0], "payload", {})
+                    # Convert payload back to serialised format used by this module
+                    item_qdrant = {
+                        "sku": payload.get("sku") or payload.get("nombre"),
+                        "nombre": payload.get("nombre"),
+                        "descripcion": payload.get("descripcion"),
+                        "precio": _parse_price(payload.get("precio_str") or payload.get("precio")),
+                        "moneda": "ARS",
+                        "presentacion": payload.get("cantidad") or "unidad",
+                        # We trust semantic match score > 0.8 usually, but here we take top 1
+                    }
+                    catalog_match = [item_qdrant]
+                    logger.info(f"[PYME_MULTIMODAL] Qdrant match for '{raw_name}' -> '{item_qdrant.get('nombre')}'")
+            except Exception as e:
+                logger.warning(f"[PYME_MULTIMODAL] Qdrant search failed for '{raw_name}': {e}")
+
         if catalog_match:
-            matched.append((catalog_match[0], qty))
+            item = catalog_match[0]
+            matched.append((item, qty))
+            items_to_confirm.append(f"- {qty} x {item.get('nombre')} (${_format_money(_parse_price(item.get('precio')))})")
+        else:
+            # 3. Item truly not found: add as generic placeholder
+            placeholder_item = {
+                "sku": f"GENERIC_{_normalise(raw_name)[:10].replace(' ', '_')}",
+                "nombre": raw_name,
+                "precio": 0.0,
+                "moneda": "ARS",
+                "descripcion": candidate.get("descripcion", "Item detectado en imagen"),
+                "presentacion": "unidad"
+            }
+            matched.append((placeholder_item, qty))
+            items_to_confirm.append(f"- {qty} x {raw_name} (Precio a confirmar)")
 
     if not matched:
         return PymeFlowResult(
-            message_body="Recibí la foto pero no encuentro coincidencias en el catálogo. ¿La cargamos manualmente?",
+            message_body="Entendí la lista pero no encontré coincidencias exactas en el catálogo. ¿Te gustaría que lo revise un humano?",
             source="pyme_imagen_catalogo_sin_match",
         )
 
+    # Add to cart tentatively
     logger.info(
-        "[PYME_FLOW] catalog_hit",
+        "[PYME_FLOW] image_order_extracted",
         extra={
             "request_id": request_id,
-            "intent": "imagen_catalogo",
+            "intent": "imagen_pedido",
             "matches": [
-                {"sku": item.get("sku"), "qty": qty} for item, qty in matched if item.get("sku")
+                {"sku": item.get("sku"), "qty": qty} for item, qty in matched
             ],
         },
     )
-    cart_updates = add_items_to_cart(state, matched)
-    if cart_updates:
-        logger.info(
-            "[PYME_FLOW] cart_updated",
-            extra={
-                "request_id": request_id,
-                "updates": cart_updates,
-                "subtotal": state.cart.get("subtotal"),
-            },
-        )
-    summary = render_cart_summary(state)
+
+    add_items_to_cart(state, matched)
+
+    msg = "Leí tu pedido de la imagen:\n\n" + "\n".join(items_to_confirm) + "\n\n¿Es correcto? Confirmame para procesarlo."
+
     return PymeFlowResult(
-        message_body=summary,
+        message_body=msg,
         source="pyme_imagen_items_agregados",
         options_list=[
-            {"texto": "Pedir presupuesto", "action_id": "armar_presupuesto"},
             {"texto": "Confirmar pedido", "action_id": "confirmar_pedido"},
+            {"texto": "Modificar", "action_id": "ver_carrito_pyme"},
         ],
     )
 
@@ -881,20 +989,42 @@ def handle_pdf_payload(
         text_blocks.append(pdf_info["texto_extraido"])
 
     matches: List[Tuple[Dict[str, Any], int]] = []
+    items_to_confirm: List[str] = []
+
+    # First pass: structured items from PDF analysis
     for raw_item in extracted_items:
         if not isinstance(raw_item, dict):
             continue
-        sku = raw_item.get("sku") or raw_item.get("nombre")
-        if not sku:
+        raw_name = raw_item.get("nombre") or raw_item.get("sku")
+        if not raw_name:
             continue
-        qty = int(raw_item.get("qty") or raw_item.get("cantidad") or 1)
-        catalog_match = match_catalog_items(sku, catalog, max_results=1)
-        if catalog_match:
-            matches.append((catalog_match[0], max(1, qty)))
+        qty = int(raw_item.get("cantidad") or raw_item.get("qty") or 1)
 
+        catalog_match = match_catalog_items(raw_name, catalog, max_results=1)
+        if catalog_match:
+            item = catalog_match[0]
+            matches.append((item, max(1, qty)))
+            items_to_confirm.append(f"- {qty} x {item.get('nombre')} (${_format_money(_parse_price(item.get('precio')))})")
+        else:
+             # Add generic placeholder for unknown items in PDF
+            placeholder_item = {
+                "sku": f"PDF_{raw_name[:10].replace(' ', '_')}",
+                "nombre": raw_name,
+                "precio": 0.0,
+                "moneda": "ARS",
+                "descripcion": "Item detectado en PDF",
+                "presentacion": "unidad"
+            }
+            matches.append((placeholder_item, qty))
+            items_to_confirm.append(f"- {qty} x {raw_name} (Precio a confirmar)")
+
+    # Second pass: Free text matching if structured extraction failed
     if not matches and text_blocks:
         for block in text_blocks:
-            matches.extend(_match_catalog_from_free_text(block, catalog))
+            found = _match_catalog_from_free_text(block, catalog)
+            for item, qty in found:
+                matches.append((item, qty))
+                items_to_confirm.append(f"- {qty} x {item.get('nombre')}")
 
     if not matches:
         if not text_blocks and not extracted_items:
@@ -907,40 +1037,32 @@ def handle_pdf_payload(
             )
         return PymeFlowResult(
             message_body=(
-                "Analicé la lista de precios pero no encontré coincidencias exactas. ¿Me confirmás "
-                "qué producto te interesa?"
+                "Analicé el documento pero no encontré coincidencias exactas en el catálogo. "
+                "¿Me confirmás qué productos te interesan?"
             ),
             source="pyme_pdf_sin_match",
         )
 
     logger.info(
-        "[PYME_FLOW] catalog_hit",
+        "[PYME_FLOW] pdf_order_extracted",
         extra={
             "request_id": request_id,
-            "intent": "pdf_catalogo",
+            "intent": "pdf_pedido",
             "matches": [
                 {"sku": item.get("sku"), "qty": qty} for item, qty in matches if item.get("sku")
             ],
         },
     )
-    cart_updates = add_items_to_cart(state, matches)
-    if cart_updates:
-        logger.info(
-            "[PYME_FLOW] cart_updated",
-            extra={
-                "request_id": request_id,
-                "updates": cart_updates,
-                "subtotal": state.cart.get("subtotal"),
-            },
-        )
+    add_items_to_cart(state, matches)
 
-    summary = render_cart_summary(state)
+    msg = "Procesé el pedido del archivo:\n\n" + "\n".join(items_to_confirm) + "\n\n¿Confirmamos?"
+
     return PymeFlowResult(
-        message_body=summary,
+        message_body=msg,
         source="pyme_pdf_items_agregados",
         options_list=[
-            {"texto": "Pedir presupuesto", "action_id": "armar_presupuesto"},
             {"texto": "Confirmar pedido", "action_id": "confirmar_pedido"},
+            {"texto": "Modificar", "action_id": "ver_carrito_pyme"},
         ],
     )
 
@@ -979,4 +1101,3 @@ __all__ = [
     "build_default_context",
     "ensure_session_context",
 ]
-

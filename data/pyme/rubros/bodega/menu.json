@@ -1,5 +1,5 @@
 {
-  "title": "Menú Bodega Cuatro Fincas",
+  "title": "Menú Bodega Demo",
   "greeting": "¡Hola! Soy el asistente de Cuatro Fincas. Te acompaño con pedidos de vino, hospitality y soporte a distribuidores.",
   "help_text": "Escribí, enviá tu ubicación para cotizar envíos, mandá fotos de etiquetas o una nota de voz con el pedido. Yo lo interpreto y genero la orden.",
   "sections": [
@@ -9,12 +9,12 @@
       "options": [
         {
           "id": "pyme_productos_stock",
-          "label": "Vinos y stock",
+          "label": "Ver Productos",
           "description": "Tintos, blancos, espumantes y ediciones limitadas"
         },
         {
           "id": "pyme_promociones",
-          "label": "Promos mayoristas",
+          "label": "Promociones",
           "description": "Bonificaciones por volumen y combos gastronómicos"
         },
         {
@@ -39,8 +39,8 @@
         },
         {
           "id": "pyme_hablar_agente",
-          "label": "Hablar con sommelier",
-          "description": "Coordiná degustaciones, eventos o wine pairing"
+          "label": "Hablar con un representante",
+          "description": "Atención personalizada"
         }
       ]
     }

@@ -86,14 +86,107 @@ def _parse_public_encuestas_domain_map(raw_value: Optional[str]) -> Dict[str, in
 
     return mapping
 
+
+def _coalesce_version(*candidates: Optional[str], fallback: str = "dev") -> str:
+    """Return the first non-empty version string from the provided candidates."""
+
+    for candidate in candidates:
+        if not candidate:
+            continue
+
+        value = str(candidate).strip()
+        if value:
+            return value
+
+    return fallback
+
+
+def _env_first(*names: str, default: Optional[str] = None) -> Optional[str]:
+    """Return the first defined/non-empty environment variable from *names."""
+
+    for name in names:
+        if not name:
+            continue
+
+        value = os.getenv(name)
+        if value is None:
+            continue
+
+        value = value.strip()
+        if value == "":
+            continue
+
+        return value
+
+    return default
+
+
+def _env_flag(default: bool, *names: str) -> bool:
+    """Return a boolean flag honoring multiple environment variable aliases."""
+
+    raw_value = _env_first(*names)
+    if raw_value is None:
+        return default
+
+    return raw_value.strip().lower() in {"1", "true", "t", "yes", "y"}
+
+
+# Backend/Frontend version identifiers exposed through /api/version so admins can
+# double check deployed revisions from the UI without forcing a cache reset.
+DEFAULT_FRONTEND_VERSION = _coalesce_version(
+    os.getenv("FRONTEND_VERSION"),
+    os.getenv("APP_VERSION"),
+    os.getenv("VITE_APP_VERSION"),
+    os.getenv("NEXT_PUBLIC_APP_VERSION"),
+)
+
+DEFAULT_BACKEND_VERSION = _coalesce_version(
+    os.getenv("BACKEND_VERSION"),
+    os.getenv("SOURCE_VERSION"),  # Heroku style
+    os.getenv("RENDER_GIT_COMMIT"),
+    os.getenv("GIT_COMMIT"),
+    os.getenv("GITHUB_SHA"),
+    os.getenv("VERCEL_GIT_COMMIT_SHA"),
+)
+
 # --- Variables de Entorno para Despliegue ---
 ENV = os.getenv("ENV", "dev")  # "dev" o "prod"
+
+
+def _is_render_runtime() -> bool:
+    return os.getenv("RENDER", "").strip().lower() == "true" or bool(os.getenv("RENDER_EXTERNAL_URL"))
 
 # Render provides the public URL of the service through RENDER_EXTERNAL_URL.
 # If BACKEND_URL is not explicitly set we fall back to that value so the
 # frontend can discover the correct origin via /api/config.
 RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")
 BACKEND_URL = os.getenv("BACKEND_URL", RENDER_EXTERNAL_URL or "http://localhost:5000")
+
+# Public participation surveys share image (also used for WhatsApp thumbnails)
+ENCUESTAS_DEFAULT_SHARE_IMAGE_PATH = (
+    "https://chatboc-demo-widget-oigs.vercel.app/junin/participacion_ciudadana.png"
+)
+# Local/static fallback used when WhatsApp needs an asset hosted on the backend
+ENCUESTAS_DEFAULT_SHARE_MEDIA_FALLBACK_PATH = (
+    os.getenv(
+        "ENCUESTAS_DEFAULT_SHARE_MEDIA_FALLBACK_PATH",
+        "/static/encuestas/participacion_ciudadana.png",
+    )
+)
+# Optional WhatsApp template to show a banner before the encuestas menu
+PUBLIC_ENCUESTAS_WHATSAPP_BANNER_TEMPLATE_SID = os.getenv(
+    "PUBLIC_ENCUESTAS_WHATSAPP_BANNER_TEMPLATE_SID"
+)
+# Caption used when falling back to a media message for the banner
+PUBLIC_ENCUESTAS_WHATSAPP_BANNER_BODY = os.getenv(
+    "PUBLIC_ENCUESTAS_WHATSAPP_BANNER_BODY",
+    "Encuestas/Opiniones/Sondeos",
+)
+# Optional media URL associated with the banner template so menus reuse the
+# same artwork as the Twilio pre-message.
+PUBLIC_ENCUESTAS_WHATSAPP_BANNER_MEDIA_URL = os.getenv(
+    "PUBLIC_ENCUESTAS_WHATSAPP_BANNER_MEDIA_URL"
+)
 
 PANEL_URL = os.getenv("PANEL_URL", "http://localhost:8080")
 WIDGET_URL = os.getenv("WIDGET_URL", "http://localhost:8080")
@@ -294,6 +387,22 @@ class Config:
 
     DEBUG = True
 
+    # Public URLs exposed to the frontend. Keeping them in the Flask config
+    # ensures endpoints like /api/config can always read them without having
+    # to import the module-level constants.
+    BACKEND_URL = str(BACKEND_URL)
+    PANEL_URL = str(PANEL_URL)
+    WIDGET_URL = str(WIDGET_URL)
+
+    # Version identifiers surfaced through /api/version so that the Admin UI
+    # can display the active frontend/backend revisions.
+    FRONTEND_VERSION = DEFAULT_FRONTEND_VERSION
+    BACKEND_VERSION = DEFAULT_BACKEND_VERSION
+
+    # Maps provider configuration
+    MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "")
+    MAPS_DEFAULT_PROVIDER = os.getenv("MAPS_DEFAULT_PROVIDER", "google")
+
     # 1. LLAVE SECRETA
     SECRET_KEY = os.getenv("SECRET_KEY", "una-llave-secreta-muy-segura-para-desarrollo-local")
 
@@ -333,13 +442,39 @@ class Config:
     REMEMBER_COOKIE_SECURE = (ENV == "prod") or IS_HTTPS
 
     SESSION_TYPE = 'sqlalchemy'
-    SESSION_SQLALCHEMY_TABLE = 'sessions'
+    SESSION_SQLALCHEMY_TABLE = 'flask_sessions'
     # Nombre del cookie adicional que almacena el token de acceso como
     # respaldo en caso de que la sesión basada en cookies falle
     AUTH_TOKEN_COOKIE_NAME = os.getenv("AUTH_TOKEN_COOKIE_NAME", "auth_token")
+    DEFER_ANON_MIGRATION_ON_LOGIN = os.getenv("DEFER_ANON_MIGRATION_ON_LOGIN", "true").strip().lower() not in {"0", "false", "no", "off"}
+
+    # Runtime bootstrap guards: in production, schema sync and tenant init must be explicit
+    # via migrations/CLI. Local dev keeps convenience defaults enabled.
+    _runtime_bootstrap_default = ENV == "dev" and not _is_render_runtime()
+    ENABLE_RUNTIME_SCHEMA_SYNC = _env_flag(
+        _runtime_bootstrap_default,
+        "ENABLE_RUNTIME_SCHEMA_SYNC",
+        "FLASK_ENABLE_RUNTIME_SCHEMA_SYNC",
+    )
+    ENABLE_RUNTIME_TENANT_INIT = _env_flag(
+        _runtime_bootstrap_default,
+        "ENABLE_RUNTIME_TENANT_INIT",
+        "FLASK_ENABLE_RUNTIME_TENANT_INIT",
+    )
+    # Demo placeholders and synthetic catalogs must be explicitly enabled.
+    ENABLE_DEMO_MODE = _env_flag(
+        False,
+        "ENABLE_DEMO_MODE",
+        "FLASK_ENABLE_DEMO_MODE",
+    )
     # Cookie aislada para los tokens emitidos al widget embebido.  Evita que
     # los tokens de corta duración del widget reemplacen la sesión del panel.
     WIDGET_TOKEN_COOKIE_NAME = os.getenv("WIDGET_TOKEN_COOKIE_NAME", "widget_token")
+    WIDGET_JWT_ALG = _env_first("WIDGET_JWT_ALG", default="HS256")
+    WIDGET_JWT_KID = _env_first("WIDGET_JWT_KID", default="widget-hs256")
+    WIDGET_JWT_SECRET = _env_first("WIDGET_JWT_SECRET", "SECRET_KEY", default=SECRET_KEY)
+    WIDGET_JWT_PRIVATE_KEY = _env_first("WIDGET_JWT_PRIVATE_KEY")
+    WIDGET_JWT_PUBLIC_KEY = _env_first("WIDGET_JWT_PUBLIC_KEY")
 
     # 4. RESTO DE LA CONFIGURACIÓN...
     ATTENTION_BUBBLE_TEXT = os.getenv("ATTENTION_BUBBLE_TEXT", "¡Hola! ¿Necesitas ayuda?")
@@ -359,6 +494,10 @@ class Config:
     ANON_SESSION_COOKIE_NAME = os.getenv("ANON_SESSION_COOKIE_NAME", "chatboc_anon_id")
     ANON_SESSION_COOKIE_MAX_AGE = int(os.getenv("ANON_SESSION_COOKIE_MAX_AGE", str(60 * 60 * 24 * 30)))
 
+    WEBAUTHN_RP_ID = os.getenv("WEBAUTHN_RP_ID", "chatboc.ar")
+    WEBAUTHN_RP_NAME = os.getenv("WEBAUTHN_RP_NAME", "Chatboc")
+    WEBAUTHN_EXPECTED_ORIGIN = os.getenv("WEBAUTHN_EXPECTED_ORIGIN", "https://www.chatboc.ar")
+
     DEMO_MAX_MESSAGES_PER_SESSION = int(os.getenv("DEMO_MAX_MESSAGES_PER_SESSION", "5"))
     DEMO_WELCOME_MESSAGE = os.getenv(
         "DEMO_WELCOME_MESSAGE",
@@ -374,26 +513,86 @@ class Config:
     CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", "redis://localhost:6379/0")
     CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", "redis://localhost:6379/0")
 
-    # Valores por defecto orientados a Zoho; pueden sobrescribirse mediante variables de entorno
-    SMTP_HOST = os.getenv("SMTP_HOST", "smtp.zoho.com")
-    SMTP_PORT = int(os.getenv("SMTP_PORT", 587))
-    SMTP_USER = os.getenv("SMTP_USER", "info@chatboc.ar")
+    # Valores por defecto orientados a Zoho; pueden sobrescribirse mediante múltiples alias
+    SMTP_HOST = _env_first("SMTP_HOST", "MAIL_SERVER", "MAIL_HOST", default="smtp.zoho.com")
+    SMTP_PORT = int(
+        _env_first("SMTP_PORT", "MAIL_PORT", default=str(587))
+    )
+    SMTP_USER = _env_first(
+        "SMTP_USER",
+        "SMTP_USERNAME",
+        "MAIL_USERNAME",
+        "MAIL_USER",
+        "MAIL_FROM_ADDRESS",
+        default="info@chatboc.ar",
+    )
     # No se proporciona contraseña por defecto para evitar uso accidental de credenciales personales
-    SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
-    SMTP_USE_TLS = os.getenv("SMTP_USE_TLS", "True").lower() in ('true', '1', 't')
-    SMTP_USE_SSL = os.getenv("SMTP_USE_SSL", "False").lower() in ('true', '1', 't')
+    SMTP_PASSWORD = _env_first(
+        "SMTP_PASSWORD",
+        "SMTP_PASS",
+        "MAIL_PASSWORD",
+        default="",
+    )
+    SMTP_USE_TLS = _env_flag(True, "SMTP_USE_TLS", "MAIL_USE_TLS", "SMTP_TLS")
+    SMTP_USE_SSL = _env_flag(False, "SMTP_USE_SSL", "MAIL_USE_SSL", "SMTP_SSL")
 
-    MAIL_FROM_ADDRESS = os.getenv("MAIL_FROM_ADDRESS", SMTP_USER if SMTP_USER else "noreply@example.com")
-    MAIL_FROM_NAME = os.getenv("MAIL_FROM_NAME", "Chatboc Platform")
+    MAIL_FROM_ADDRESS = _env_first(
+        "MAIL_FROM_ADDRESS",
+        "MAIL_DEFAULT_SENDER",
+        "MAIL_SENDER",
+        default=SMTP_USER if SMTP_USER else "noreply@example.com",
+    )
+    MAIL_FROM_NAME = _env_first(
+        "MAIL_FROM_NAME",
+        "MAIL_SENDER_NAME",
+        "MAIL_DEFAULT_NAME",
+        default="Chatboc Platform",
+    )
 
-    SMTP_HOST_CAMPAIGN = os.getenv("SMTP_HOST_CAMPAIGN", SMTP_HOST)
-    SMTP_PORT_CAMPAIGN = int(os.getenv("SMTP_PORT_CAMPAIGN", SMTP_PORT))
-    SMTP_USER_CAMPAIGN = os.getenv("SMTP_USER_CAMPAIGN", SMTP_USER)
-    SMTP_PASSWORD_CAMPAIGN = os.getenv("SMTP_PASSWORD_CAMPAIGN", SMTP_PASSWORD)
-    SMTP_USE_TLS_CAMPAIGN = os.getenv("SMTP_USE_TLS_CAMPAIGN", str(SMTP_USE_TLS)).lower() in ('true', '1', 't')
-    SMTP_USE_SSL_CAMPAIGN = os.getenv("SMTP_USE_SSL_CAMPAIGN", str(SMTP_USE_SSL)).lower() in ('true', '1', 't')
-    MAIL_FROM_ADDRESS_CAMPAIGN = os.getenv("MAIL_FROM_ADDRESS_CAMPAIGN", MAIL_FROM_ADDRESS)
-    MAIL_FROM_NAME_CAMPAIGN = os.getenv("MAIL_FROM_NAME_CAMPAIGN", MAIL_FROM_NAME)
+    SMTP_HOST_CAMPAIGN = _env_first(
+        "SMTP_HOST_CAMPAIGN",
+        "MAIL_SERVER_CAMPAIGN",
+        "MAIL_HOST_CAMPAIGN",
+        default=SMTP_HOST,
+    )
+    SMTP_PORT_CAMPAIGN = int(
+        _env_first("SMTP_PORT_CAMPAIGN", "MAIL_PORT_CAMPAIGN", default=str(SMTP_PORT))
+    )
+    SMTP_USER_CAMPAIGN = _env_first(
+        "SMTP_USER_CAMPAIGN",
+        "SMTP_USERNAME_CAMPAIGN",
+        "MAIL_USERNAME_CAMPAIGN",
+        "MAIL_USER_CAMPAIGN",
+        default=SMTP_USER,
+    )
+    SMTP_PASSWORD_CAMPAIGN = _env_first(
+        "SMTP_PASSWORD_CAMPAIGN",
+        "SMTP_PASS_CAMPAIGN",
+        "MAIL_PASSWORD_CAMPAIGN",
+        default=SMTP_PASSWORD,
+    )
+    SMTP_USE_TLS_CAMPAIGN = _env_flag(
+        SMTP_USE_TLS,
+        "SMTP_USE_TLS_CAMPAIGN",
+        "MAIL_USE_TLS_CAMPAIGN",
+    )
+    SMTP_USE_SSL_CAMPAIGN = _env_flag(
+        SMTP_USE_SSL,
+        "SMTP_USE_SSL_CAMPAIGN",
+        "MAIL_USE_SSL_CAMPAIGN",
+    )
+    MAIL_FROM_ADDRESS_CAMPAIGN = _env_first(
+        "MAIL_FROM_ADDRESS_CAMPAIGN",
+        "MAIL_SENDER_CAMPAIGN",
+        "MAIL_DEFAULT_SENDER_CAMPAIGN",
+        default=MAIL_FROM_ADDRESS,
+    )
+    MAIL_FROM_NAME_CAMPAIGN = _env_first(
+        "MAIL_FROM_NAME_CAMPAIGN",
+        "MAIL_SENDER_NAME_CAMPAIGN",
+        "MAIL_DEFAULT_NAME_CAMPAIGN",
+        default=MAIL_FROM_NAME,
+    )
 
     ANALYTICS_ENABLED = os.getenv("ANALYTICS_ENABLED", "true").lower() in {"1", "true", "yes"}
     ANALYTICS_CACHE_TTL = int(os.getenv("ANALYTICS_CACHE_TTL", "600"))
@@ -404,7 +603,22 @@ class Config:
     TWILIO_PHONE_NUMBER = os.getenv("TWILIO_PHONE_NUMBER")
     TWILIO_WHATSAPP_NUMBER = os.getenv("TWILIO_WHATSAPP_NUMBER")
 
-    APP_BASE_URL = os.getenv("APP_BASE_URL", "http://localhost:5000")
+    APP_BASE_URL = os.getenv("APP_BASE_URL", "https://chatboc.ar")
+
+    # If in production-like environment (not local debug/test) and env var is missing or default,
+    # reinforce the domain to ensure we don't accidentally use localhost defaults elsewhere
+    if ENV != "dev" and (not APP_BASE_URL or "localhost" in APP_BASE_URL):
+        APP_BASE_URL = "https://chatboc.ar"
+
+    PUBLIC_ENCUESTAS_WHATSAPP_BANNER_TEMPLATE_SID = (
+        PUBLIC_ENCUESTAS_WHATSAPP_BANNER_TEMPLATE_SID
+    )
+    PUBLIC_ENCUESTAS_WHATSAPP_BANNER_BODY = PUBLIC_ENCUESTAS_WHATSAPP_BANNER_BODY
+    PUBLIC_ENCUESTAS_WHATSAPP_BANNER_MEDIA_URL = (
+        PUBLIC_ENCUESTAS_WHATSAPP_BANNER_MEDIA_URL
+    )
+
+    PUBLIC_CATALOG_DEFAULT_TENANT = os.getenv("PUBLIC_CATALOG_DEFAULT_TENANT", "municipio")
 
     _encuestas_default = os.getenv("PUBLIC_ENCUESTAS_DEFAULT_TENANT_ID")
     if _encuestas_default is None or _encuestas_default == "":
@@ -448,6 +662,75 @@ class Config:
 
         PUBLIC_ENCUESTAS_CANONICAL_BASE_URL = str(fallback_url).rstrip("/")
 
+    _encuestas_api_base_url = os.getenv("PUBLIC_ENCUESTAS_API_BASE_URL")
+    if _encuestas_api_base_url:
+        PUBLIC_ENCUESTAS_API_BASE_URL = _encuestas_api_base_url.rstrip("/")
+    else:
+        PUBLIC_ENCUESTAS_API_BASE_URL = str(BACKEND_URL).rstrip("/")
+
+    _encuestas_qr_target_base_url = os.getenv("PUBLIC_ENCUESTAS_QR_TARGET_BASE_URL")
+    if _encuestas_qr_target_base_url:
+        PUBLIC_ENCUESTAS_QR_TARGET_BASE_URL = _encuestas_qr_target_base_url.rstrip("/")
+    else:
+        PUBLIC_ENCUESTAS_QR_TARGET_BASE_URL = PUBLIC_ENCUESTAS_CANONICAL_BASE_URL
+
+    _encuestas_default_share_image = os.getenv("PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL")
+    if isinstance(_encuestas_default_share_image, str) and _encuestas_default_share_image.strip():
+        PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL = _encuestas_default_share_image.strip()
+    else:
+        asset_candidate = ENCUESTAS_DEFAULT_SHARE_IMAGE_PATH
+        if isinstance(asset_candidate, str) and asset_candidate.startswith(("http://", "https://")):
+            PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL = asset_candidate
+        else:
+            base_for_assets = (
+                PUBLIC_ENCUESTAS_CANONICAL_BASE_URL
+                or PUBLIC_ENCUESTAS_API_BASE_URL
+                or str(BACKEND_URL)
+            )
+            if base_for_assets and asset_candidate:
+                PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL = (
+                    f"{base_for_assets.rstrip('/')}"
+                    f"{asset_candidate}"
+                )
+            else:
+                PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL = None
+
+    _encuestas_media_fallback_url = os.getenv(
+        "PUBLIC_ENCUESTAS_DEFAULT_SHARE_MEDIA_FALLBACK_URL"
+    )
+    if (
+        isinstance(_encuestas_media_fallback_url, str)
+        and _encuestas_media_fallback_url.strip()
+    ):
+        PUBLIC_ENCUESTAS_DEFAULT_SHARE_MEDIA_FALLBACK_URL = (
+            _encuestas_media_fallback_url.strip()
+        )
+    else:
+        fallback_candidate = ENCUESTAS_DEFAULT_SHARE_MEDIA_FALLBACK_PATH
+        fallback_candidate = fallback_candidate.strip() if isinstance(
+            fallback_candidate, str
+        ) else ""
+        if fallback_candidate:
+            if fallback_candidate.startswith(("http://", "https://")):
+                PUBLIC_ENCUESTAS_DEFAULT_SHARE_MEDIA_FALLBACK_URL = fallback_candidate
+            else:
+                base_for_media = (
+                    PUBLIC_ENCUESTAS_CANONICAL_BASE_URL
+                    or PUBLIC_ENCUESTAS_API_BASE_URL
+                    or str(BACKEND_URL)
+                )
+                if base_for_media:
+                    if not fallback_candidate.startswith("/"):
+                        fallback_candidate = "/" + fallback_candidate
+                    PUBLIC_ENCUESTAS_DEFAULT_SHARE_MEDIA_FALLBACK_URL = (
+                        f"{base_for_media.rstrip('/')}"
+                        f"{fallback_candidate}"
+                    )
+                else:
+                    PUBLIC_ENCUESTAS_DEFAULT_SHARE_MEDIA_FALLBACK_URL = None
+        else:
+            PUBLIC_ENCUESTAS_DEFAULT_SHARE_MEDIA_FALLBACK_URL = None
+
     PYME_UMBRAL_SUGERENCIA_REGISTRO = int(os.getenv("PYME_UMBRAL_SUGERENCIA_REGISTRO", "3"))
     MUNICIPIO_UMBRAL_SUGERENCIA_REGISTRO = int(os.getenv("MUNICIPIO_UMBRAL_SUGERENCIA_REGISTRO", "3"))
 
@@ -475,6 +758,7 @@ class Config:
 class TestConfig(Config):
     TESTING = True
     SQLALCHEMY_DATABASE_URI = 'sqlite:///:memory:'
+    SQLALCHEMY_ENGINE_OPTIONS = {'connect_args': {'timeout': 5}}
     CELERY_TASK_ALWAYS_EAGER = True
     SESSION_COOKIE_SECURE = False
     SERVER_NAME = 'localhost'

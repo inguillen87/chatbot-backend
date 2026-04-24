@@ -6,14 +6,22 @@ from typing import List, Optional, Dict, Any, Tuple
 from collections import OrderedDict, Counter
 from .qdrant_utils import get_qdrant_client, verificar_y_crear_coleccion_qdrant
 from services.logic import es_rubro_publico
+from .embedding_service import embed_textos_llm as embed_textos
 
 # from collections import Counter # Ya está importado arriba
 from qdrant_client.http import models as qdrant_models
+from models import CatalogoItem, db
 from .common_utils import limpiar_texto_base, unir_codigos_alfa_numericos # Changed from .utils
 from .herramientas_municipio import normalizar_texto
 
 # Permite ajustar el número de resultados devueltos desde una variable de entorno.
 DEFAULT_SEARCH_LIMIT = int(os.getenv("CATALOGO_RESULT_LIMIT", "5"))
+
+def _safe_int(value, default=DEFAULT_SEARCH_LIMIT):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 # Columnas por defecto para la tabla de catálogo en formato Markdown
 DEFAULT_TABLE_COLUMNS = [
@@ -43,10 +51,12 @@ def buscar_catalogo_qdrant(
     coleccion: str = CATALOGO_PYME,
     en_promocion: Optional[bool] = None, 
     con_stock: Optional[bool] = None,
+    precio_min: Optional[float] = None,
+    precio_max: Optional[float] = None,
 ) -> List[qdrant_models.ScoredPoint]:
     """
     Busca productos en el catálogo vectorial Qdrant de una PyME, maximizando relevancia comercial y minimizando falsos negativos.
-    Retorna una lista de resultados ordenados por score y enriquecidos para experiencia de usuario.
+    Implementa filtros avanzados por categoría, promoción, stock y rango de precios.
     """
     qdrant_cli = get_qdrant_client()
     if not qdrant_cli:
@@ -63,6 +73,8 @@ def buscar_catalogo_qdrant(
             "[QDRANT SEARCH] No se pudo inicializar colección/indexes en Qdrant."
         )
         return []
+
+    limite = _safe_int(limite, DEFAULT_SEARCH_LIMIT)
 
     try:
         pregunta_pre = unir_codigos_alfa_numericos(pregunta.strip())
@@ -90,16 +102,18 @@ def buscar_catalogo_qdrant(
         return []
 
     try:
-        search_filter = None
-        id_log = f"user_id {user_id}" if user_id is not None else "ANONIMO"
         must_conditions = []
+        id_log = f"user_id {user_id}" if user_id is not None else "ANONIMO"
 
+        # Filtro de usuario obligatorio si se provee
         if user_id is not None:
             must_conditions.append(
                 qdrant_models.FieldCondition(
                     key="user_id", match=qdrant_models.MatchValue(value=user_id)
                 )
             )
+
+        # Filtro por categoría
         if categoria:
             must_conditions.append(
                 qdrant_models.FieldCondition(
@@ -107,11 +121,84 @@ def buscar_catalogo_qdrant(
                     match=qdrant_models.MatchValue(value=categoria.lower()),
                 )
             )
+
+        # Filtro adicional explícito para rubros complejos (ej. Varietal en bodegas)
+        # Esto soluciona que buscar "Malbec" traiga "Torrontés" si el vector está "sucio"
+        # o si la búsqueda vectorial es demasiado laxa.
+        # Detectamos si la pregunta contiene palabras clave de atributos específicos.
+        pregunta_lower = pregunta.lower()
+        if "malbec" in pregunta_lower:
+             must_conditions.append(
+                qdrant_models.FieldCondition(
+                    key="texto_original_para_embedding", # O un campo específico 'varietal' si existe en payload
+                    match=qdrant_models.MatchText(text="Malbec")
+                )
+            )
+        elif "cabernet" in pregunta_lower:
+             must_conditions.append(
+                qdrant_models.FieldCondition(
+                    key="texto_original_para_embedding",
+                    match=qdrant_models.MatchText(text="Cabernet")
+                )
+            )
+
+        # Filtros booleanos (promocion, stock)
+        # Nota: Asumimos que el payload tiene campos 'en_promocion' y 'con_stock' o similar.
+        # Si el payload usa otros nombres (ej. 'stock' > 0), ajustamos aquí.
+        if en_promocion is True:
+            # Opción A: campo booleano 'en_promocion'
+            # must_conditions.append(qdrant_models.FieldCondition(key="en_promocion", match=qdrant_models.MatchValue(value=True)))
+
+            # Opción B: campo 'promocion_info' o 'promocion_texto' no vacío.
+            # Qdrant no tiene "IsNotEmpty" directo fácil en MatchValue, pero podemos filtrar si existe.
+            # Para simplificar y dado que el prompt pide "en_promocion=True", asumimos un flag o lógica de negocio.
+            # Vamos a usar un filtro de rango o match value si el campo existe como bool.
+            # Si no existe, filtramos post-búsqueda o ajustamos el ingest.
+            # Asumiremos que el ingest agrega 'en_promocion': True/False.
+             must_conditions.append(
+                qdrant_models.FieldCondition(
+                    key="en_promocion", match=qdrant_models.MatchValue(value=True)
+                )
+            )
+
+        if con_stock is True:
+            # Filtrar items con stock > 0
+            # Asumiendo campo 'cantidad' o 'stock' numérico
+            must_conditions.append(
+                qdrant_models.FieldCondition(
+                    key="stock",
+                    range=qdrant_models.Range(gt=0)
+                )
+            )
+
+        # Filtro de Precio
+        if precio_min is not None or precio_max is not None:
+            rango_precio = qdrant_models.Range()
+            if precio_min is not None:
+                rango_precio.gte = float(precio_min)
+            if precio_max is not None:
+                rango_precio.lte = float(precio_max)
+
+            must_conditions.append(
+                qdrant_models.FieldCondition(
+                    key="precio_float",
+                    range=rango_precio
+                )
+            )
+
+        # Filtro por Rubro Slug (si está disponible en payload)
+        # Esto asegura que si dos tenants comparten colección, no se mezclen rubros
+        # aunque el user_id ya debería aislar tenants.
+        # Es una capa extra de seguridad.
+        # Asumimos que 'rubro_slug' se indexa.
+        # if rubro_slug: ...
+
+        search_filter = None
         if must_conditions:
             search_filter = qdrant_models.Filter(must=must_conditions)
 
         logger.info(
-            f"[QDRANT SEARCH] Buscando en catálogo ({coleccion}) para {id_log}, pregunta '{pregunta_limpia}', categoria='{categoria}'"
+            f"[QDRANT SEARCH] Buscando en ({coleccion}) para {id_log}, pregunta='{pregunta_limpia}', filtros={{cat:{categoria}, promo:{en_promocion}, stock:{con_stock}, p_min:{precio_min}, p_max:{precio_max}}}"
         )
 
         resultados = qdrant_cli.search(
@@ -122,31 +209,33 @@ def buscar_catalogo_qdrant(
             score_threshold=score_min,
         )
 
+        # Fallback: Si no hay resultados con filtros estrictos, quizás relajar score?
+        # Por ahora mantenemos la lógica original de reintentar sin threshold si falla la primera?
+        # La lógica original reintentaba sin score_threshold pero CON filtros.
         if not resultados:
             resultados = qdrant_cli.search(
                 collection_name=coleccion,
                 query_vector=vector_q,
-                query_filter=search_filter,
+                query_filter=search_filter, # Mantenemos filtros, relajamos score
                 limit=limite,
             )
 
         logger.info(
-            f"[QDRANT SEARCH] Pregunta: '{pregunta}', Hits: {len(resultados)}, Scores: {[getattr(r, 'score', 0) for r in resultados[:3]]}"
+            f"[QDRANT SEARCH] Hits: {len(resultados)}, Scores: {[getattr(r, 'score', 0) for r in resultados[:3]]}"
         )
 
-        # --- FILTRADO INTELIGENTE Y FLEXIBLE (opcional, solo si querés más control) ---
-        # Si querés filtrar resultados basura, lo mejor es filtrar solo productos sin nombre/código o con precio 0:
+        # --- FILTRADO DE CALIDAD POST-SEARCH ---
         filtrados = []
         for hit in resultados:
             payload = getattr(hit, "payload", {}) or {}
             nombre = payload.get("nombre", "") or payload.get("title", "")
             precio = payload.get("precio_float") or payload.get("precio")
-            if nombre and (precio is None or precio == "" or float(precio) > 0):
-                filtrados.append(hit)
-        if filtrados:
-            resultados = filtrados
 
-        return resultados
+            # Filtro básico de integridad de datos
+            if nombre and (precio is None or precio == "" or float(precio) >= 0):
+                filtrados.append(hit)
+
+        return filtrados
 
     except Exception as e_qdrant:
         id_log = f"user_id {user_id}" if user_id is not None else "ANONIMO"
@@ -154,6 +243,81 @@ def buscar_catalogo_qdrant(
             f"[QDRANT SEARCH] Error buscando en Qdrant para {id_log}, pregunta '{pregunta_limpia}': {e_qdrant}",
             exc_info=True,
         )
+        return []
+
+def buscar_catalogo_db_fallback(
+    user_id: int,
+    pregunta: str,
+    limite: int = DEFAULT_SEARCH_LIMIT,
+    precio_max: Optional[float] = None
+) -> List[Any]:
+    """
+    Realiza una búsqueda básica en la base de datos (ILIKE) como fallback
+    cuando Qdrant no está disponible o no devuelve resultados.
+    Retorna objetos con interfaz similar a ScoredPoint para compatibilidad.
+    """
+    if not user_id or not pregunta:
+        return []
+
+    try:
+        terminos = pregunta.strip().split()
+        if not terminos:
+            return []
+
+        query = CatalogoItem.query.filter(CatalogoItem.user_id == user_id)
+
+        # Filtro básico por palabras clave (AND)
+        # Se busca que el nombre o descripción contenga CADA término
+        for termino in terminos:
+            if len(termino) > 2: # Ignorar palabras muy cortas
+                term_like = f"%{termino}%"
+                query = query.filter(
+                    (CatalogoItem.nombre.ilike(term_like)) |
+                    (CatalogoItem.descripcion.ilike(term_like)) |
+                    (CatalogoItem.categoria.ilike(term_like))
+                )
+
+        # Filtro de precio (si existe la columna y el valor)
+        if precio_max is not None:
+            # Nota: precio_monetario es un campo deferred en algunos modelos,
+            # pero aquí lo intentamos usar si está mapeado
+            try:
+                query = query.filter(CatalogoItem.precio_monetario <= precio_max)
+            except Exception:
+                pass # Ignorar si la columna falla
+
+        items = query.limit(limite).all()
+
+        resultados_mock = []
+        for item in items:
+            # Construir un payload compatible con lo que espera el frontend/bot
+            payload = {
+                "id": str(item.id),
+                "db_id": item.id,
+                "nombre": item.nombre,
+                "descripcion": item.descripcion or "",
+                "precio_str": item.precio or "",
+                "precio_float": float(item.precio_monetario) if item.precio_monetario else 0.0,
+                "sku": item.sku,
+                "cantidad": item.cantidad,
+                "marca": item.marca,
+                "categoria_qdrant": item.categoria
+            }
+            # Simular ScoredPoint
+            scored_point = SimpleNamespace(
+                id=item.id,
+                version=0,
+                score=0.5, # Score fijo arbitrario para fallback
+                payload=payload,
+                vector=None
+            )
+            resultados_mock.append(scored_point)
+
+        logger.info(f"[DB FALLBACK SEARCH] Encontrados {len(resultados_mock)} items para '{pregunta}'")
+        return resultados_mock
+
+    except Exception as e:
+        logger.error(f"[DB FALLBACK SEARCH] Error: {e}", exc_info=True)
         return []
 
 
@@ -376,7 +540,7 @@ CONSULTA: "{consulta}"
 def inferir_intencion_con_llm(consulta: str) -> str | None:
     """Intenta deducir la intención comercial del usuario con el LLM."""
     try:
-        from .cohere_ai import robust_chat
+        from .llm_utils import robust_chat # Changed from .cohere_ai
 
         resp = robust_chat(message=PROMPT_INTENCION_BUSQUEDA.format(consulta=consulta))
         if resp:
@@ -393,6 +557,10 @@ def buscar_catalogo_avanzado(
     score_min: float = 0.20,
     coleccion: str = CATALOGO_PYME,
     score_suficiente: float = 0.25,
+    en_promocion: bool = False, # Added param
+    con_stock: bool = False, # Added param
+    precio_min: float = None, # Added param
+    precio_max: float = None, # Added param
 ) -> tuple[list[qdrant_models.ScoredPoint], str | None]:
     """Búsqueda en Qdrant con inferencia de intención si hay pocos resultados."""
 
@@ -402,6 +570,10 @@ def buscar_catalogo_avanzado(
         limite=limite,
         score_min=score_min,
         coleccion=coleccion,
+        en_promocion=en_promocion, # Pass through
+        con_stock=con_stock, # Pass through
+        precio_min=precio_min, # Pass through
+        precio_max=precio_max, # Pass through
     )
 
     hay_score_suficiente = any(

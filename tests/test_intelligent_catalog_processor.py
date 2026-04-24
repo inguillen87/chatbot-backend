@@ -36,8 +36,11 @@ class TestIntelligentCatalogProcessor:
         db.session.commit()
 
     @pytest.mark.skip(reason="Skipping due to persistent ModuleNotFoundError for openpyxl in test environment")
-    def test_process_excel_file(self, tmp_path):
+    @patch('services.intelligent_catalog_processor.r2_service.upload_file_with_key')
+    def test_process_excel_file(self, mock_r2_upload, tmp_path):
         """Test processing a valid Excel file."""
+        mock_r2_upload.return_value = "https://cdn.example.com/test_catalog.xlsx"
+
         # 1. Create a dummy Excel file
         excel_data = {
             'Nombre del Producto': ['Producto Excel 1', 'Producto Excel 2'],
@@ -67,6 +70,8 @@ class TestIntelligentCatalogProcessor:
         # Check AnalisisArchivo
         archivo_adjunto = ArchivoAdjunto.query.filter_by(user_id=self.user.id).first()
         assert archivo_adjunto is not None
+        assert archivo_adjunto.url == "https://cdn.example.com/test_catalog.xlsx"
+
         analisis = AnalisisArchivo.query.filter_by(archivo_adjunto_id=archivo_adjunto.id).first()
         assert analisis is not None
         assert analisis.estado_analisis == "completado"
@@ -77,9 +82,11 @@ class TestIntelligentCatalogProcessor:
 
     @patch('services.intelligent_catalog_processor.procesar_archivo_generico')
     @patch('services.intelligent_catalog_processor.llamar_llm_para_json_estructurado')
-    def test_process_pdf_file(self, mock_llm_call, mock_file_processor, tmp_path):
+    @patch('services.intelligent_catalog_processor.r2_service.upload_file_with_key')
+    def test_process_pdf_file(self, mock_r2_upload, mock_llm_call, mock_file_processor, tmp_path):
         """Test processing a PDF file by mocking the text extraction and LLM call."""
         # 1. Mock the dependencies
+        mock_r2_upload.return_value = "https://cdn.example.com/dummy.pdf"
         extracted_text = "Texto extraído del PDF."
         mock_file_processor.return_value = {"texto_extraido": extracted_text}
         mock_llm_call.return_value = MOCK_LLM_DATA
@@ -107,6 +114,9 @@ class TestIntelligentCatalogProcessor:
         assert items[0].nombre == "Producto LLM 1"
         assert items[0].sku == "LLM001"
 
+        archivo_adjunto = ArchivoAdjunto.query.filter_by(user_id=self.user.id).first()
+        assert archivo_adjunto.url == "https://cdn.example.com/dummy.pdf"
+
         analisis = AnalisisArchivo.query.first()
         assert analisis.estado_analisis == "completado"
         assert analisis.texto_extraido == "Texto extraído del PDF."
@@ -114,9 +124,11 @@ class TestIntelligentCatalogProcessor:
 
     @patch('services.intelligent_catalog_processor.GoogleVisionService')
     @patch('services.intelligent_catalog_processor.llamar_llm_para_json_estructurado')
-    def test_process_image_file(self, mock_llm_call, mock_vision_service, tmp_path):
+    @patch('services.intelligent_catalog_processor.r2_service.upload_file_with_key')
+    def test_process_image_file(self, mock_r2_upload, mock_llm_call, mock_vision_service, tmp_path):
         """Test processing an image file by mocking the Vision API and LLM call."""
         # 1. Mock the dependencies
+        mock_r2_upload.return_value = "https://cdn.example.com/dummy.jpg"
         mock_vision_instance = mock_vision_service.return_value
         mock_vision_instance.detect_text.return_value = MagicMock(
             text_annotations=[MagicMock(description=MOCK_OCR_TEXT)]
@@ -142,13 +154,19 @@ class TestIntelligentCatalogProcessor:
         assert len(items) == 1
         assert items[0].nombre == "Producto LLM 1"
 
+        archivo_adjunto = ArchivoAdjunto.query.filter_by(user_id=self.user.id).first()
+        assert archivo_adjunto.url == "https://cdn.example.com/dummy.jpg"
+
         analisis = AnalisisArchivo.query.first()
         assert analisis.estado_analisis == "completado"
         assert analisis.texto_extraido == MOCK_OCR_TEXT
         assert len(analisis.datos_estructurados) == 1
 
-    def test_unsupported_file_type(self, tmp_path):
+    @patch('services.intelligent_catalog_processor.r2_service.upload_file_with_key')
+    def test_unsupported_file_type(self, mock_r2_upload, tmp_path):
         """Test that an unsupported file type is handled gracefully."""
+        mock_r2_upload.return_value = "https://cdn.example.com/unsupported.txt"
+
         # 1. Create a dummy file
         txt_filepath = tmp_path / "unsupported.txt"
         txt_filepath.write_text("some text")

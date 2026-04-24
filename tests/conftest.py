@@ -1,6 +1,21 @@
-import eventlet
-eventlet.monkey_patch()
+import os
+import sys
+
+# Workaround for eventlet + Python 3.12 issue
+os.environ.setdefault("EVENTLET_NO_GREENDNS", "YES")
+
+try:
+    import eventlet
+    eventlet.monkey_patch()
+except ImportError:
+    print("Eventlet not found, skipping monkey patching.")
+    pass
+
 import pytest
+
+# Evita que app.py cree una instancia global conectada a Postgres durante las pruebas.
+os.environ.setdefault("FLASK_SKIP_GLOBAL_APP", "1")
+
 from app import create_app, db
 from config import TestingConfig
 @pytest.fixture(scope='session')
@@ -24,19 +39,33 @@ def init_database(client):
     """Fixture to set up the database and create some initial users."""
     from models import User, Rubro
 
-    # Create a test rubro
-    rubro = Rubro(id=1, clave="municipio", nombre="Municipalidad")
-    db.session.add(rubro)
+    # Reuse seeded data when available to avoid primary-key collisions.
+    rubro = Rubro.query.filter_by(clave="municipio").first()
+    if not rubro:
+        rubro = Rubro(clave="municipio", nombre="Municipalidad")
+        db.session.add(rubro)
+        db.session.flush()
 
-    # Create an owner user (admin)
-    owner_user = User(id=1, name="Admin User", email="admin@test.com", rol="admin", municipio_id=1, rubro_id=1, tipo_chat="municipio")
-    owner_user.set_password("admin")
-    db.session.add(owner_user)
+    # Create or reuse an owner user (admin)
+    owner_user = User.query.filter_by(email="admin@test.com").first()
+    if not owner_user:
+        owner_user = User(
+            name="Admin User",
+            email="admin@test.com",
+            rol="admin",
+            municipio_id=1,
+            rubro_id=rubro.id,
+            tipo_chat="municipio",
+        )
+        owner_user.set_password("admin")
+        db.session.add(owner_user)
 
-    # Create a viewer user (citizen)
-    viewer_user = User(id=2, name="Test Viewer", email="viewer@test.com", rol="usuario")
-    viewer_user.set_password("viewer")
-    db.session.add(viewer_user)
+    # Create or reuse a viewer user (citizen)
+    viewer_user = User.query.filter_by(email="viewer@test.com").first()
+    if not viewer_user:
+        viewer_user = User(name="Test Viewer", email="viewer@test.com", rol="usuario")
+        viewer_user.set_password("viewer")
+        db.session.add(viewer_user)
 
     db.session.commit()
 
@@ -45,9 +74,9 @@ def init_database(client):
 @pytest.fixture
 def owner_user(init_database):
     from models import User
-    return User.query.get(1)
+    return User.query.filter_by(email="admin@test.com").first()
 
 @pytest.fixture
 def viewer_user(init_database):
     from models import User
-    return User.query.get(2)
+    return User.query.filter_by(email="viewer@test.com").first()

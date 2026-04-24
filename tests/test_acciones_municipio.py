@@ -619,7 +619,7 @@ class TestAccionesMunicipio(unittest.TestCase):
         social_urls = [opt.get("url") for opt in response.get("options_list", []) if isinstance(opt, dict)]
         self.assertTrue(any(url and url.startswith("https://www.facebook.com/") for url in social_urls))
         self.assertIn("https://example.com/flyer.jpg", response["message_body"])
-        self.assertIn("🔗 https://example.com/noticia1", response["message_body"])
+        self.assertIn("🔗 Más info: https://example.com/noticia1", response["message_body"])
         self.assertIn("📅 22/08/2025 10:00 hs", response["message_body"])
         self.assertIn(
             "📅 30/08/2025 20:00 hs - 30/08/2025 22:00 hs",

@@ -1,38 +1,80 @@
 %PDF-1.4
+%\x93\x8c\x8b\x9e ReportLab Generated PDF document (opensource)
 1 0 obj
-<< /Type /Catalog /Pages 2 0 R >>
+<<
+/F1 2 0 R /F2 3 0 R /F3 4 0 R
+>>
 endobj
 2 0 obj
-<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+<<
+/BaseFont /Helvetica /Encoding /WinAnsiEncoding /Name /F1 /Subtype /Type1 /Type /Font
+>>
 endobj
 3 0 obj
-<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 300] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>
+<<
+/BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding /Name /F2 /Subtype /Type1 /Type /Font
+>>
 endobj
 4 0 obj
-<< /Length 215 >>
-stream
-BT
-/F1 18 Tf
-36 260 Td (Lookbook Urbano Temporada) Tj
-0 -24 Td (Colección cápsula con talles XS-XXL) Tj
-0 -24 Td (Paletas de color combinables por cápsulas) Tj
-0 -24 Td (Precio sugerido retail y mayorista) Tj
-ET
-endstream
+<<
+/BaseFont /Helvetica-Oblique /Encoding /WinAnsiEncoding /Name /F3 /Subtype /Type1 /Type /Font
+>>
 endobj
 5 0 obj
-<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+<<
+/Contents 9 0 R /MediaBox [ 0 0 595.2756 841.8898 ] /Parent 8 0 R /Resources <<
+/Font 1 0 R /ProcSet [ /PDF /Text /ImageB /ImageC /ImageI ]
+>> /Rotate 0 /Trans <<
+
+>>
+  /Type /Page
+>>
+endobj
+6 0 obj
+<<
+/PageMode /UseNone /Pages 8 0 R /Type /Catalog
+>>
+endobj
+7 0 obj
+<<
+/Author (\(anonymous\)) /CreationDate (D:20251216063510+00'00') /Creator (\(unspecified\)) /Keywords () /ModDate (D:20251216063510+00'00') /Producer (ReportLab PDF Library - \(opensource\))
+  /Subject (\(unspecified\)) /Title (\(anonymous\)) /Trapped /False
+>>
+endobj
+8 0 obj
+<<
+/Count 1 /Kids [ 5 0 R ] /Type /Pages
+>>
+endobj
+9 0 obj
+<<
+/Filter [ /ASCII85Decode /FlateDecode ] /Length 817
+>>
+stream
+Gasama_oie&A@rkk)]X^JC#Q1;K?\i2BZs8-W/9L0=4,/9I2EiA9[kGNY]74A#Fl#OW(rZo/JNO",[V)^.Ah(3JPp="3)Kj!#%ac4FsPXn706pA=t'(!YRr^#X*-X-lPQ!!"t)BjZl-JKNs+9%ZlWdq9P-X7rf)EeE!.Oe1?bNEMT<?V_Gc)WJ7U*Xpb1?ib+'CiG9<^>41q6eK\U#%rE*U_i%62ejO.J*ITneme[u23<'2QEj5ps0FA?";>-@/rrmN!a5#*45dPmT"2_$:h=bb\@D#@k-X^]-p]r1fD'!l*LD6aC4/bu/6j7!%MU?XuX['(GJY[G=6LY0pVZS\ln?<oX`A-m%]G)q=a!:@sD"H(SU6c/@:+oh]Q)II0E9^`?8h(&jGVjkd'C0rjl?P(ooslnjipBBJB7UDI_f.ng+UkYcJ-WFEJbqmkYM-]m_&B3B\[P3:Yr>,BFBiF5Sm[UHDS.P@JICWk"%bBY"=n?KaDon(q[&0/Tp-T&.c<Sp]/@0M4.!jmXc?'>^mCq&3VZ`"jjL"SCSKG5NDNZY0Q0MIgeX/^99F$U(HT%%L8fOAm#g;WMH]Lp[WH4^7a+*q5iBi>psT.e92+Ys,5/Foa5IfkkH;0&2u)uce*D;.]f=-lZ*D^%7!C1F8A"Z>&,X,LiFHH9UY4@?ZE`?leCnlig6c[_lZ#QG\gZQFPl'&;?RgNkC6CorpM(%YRXB?[@S<RN=llNr'51!/>d:L^G.6!>r.Z$T269DTqNYTld]OUd"u;1qgm+/Vh%:ndj-%seX+ZBY?-QXVdnEgNkB!qQj20_-!E4KF~>endstream
 endobj
 xref
-0 6
+0 10
 0000000000 65535 f 
-0000000009 00000 n 
-0000000058 00000 n 
-0000000115 00000 n 
-0000000241 00000 n 
-0000000506 00000 n 
+0000000061 00000 n
+0000000112 00000 n
+0000000219 00000 n
+0000000331 00000 n
+0000000446 00000 n
+0000000649 00000 n
+0000000717 00000 n
+0000000997 00000 n
+0000001056 00000 n
 trailer
-<< /Size 6 /Root 1 0 R >>
+<<
+/ID
+[<df6a6ea24a35c2cebc7731f15399fc87><df6a6ea24a35c2cebc7731f15399fc87>]
+% ReportLab generated PDF document -- digest (opensource)
+
+/Info 7 0 R
+/Root 6 0 R
+/Size 10
+>>
 startxref
-576
+1963
 %%EOF

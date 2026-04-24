@@ -1,0 +1,156 @@
+{
+  "nombre": "Seguros Demo",
+  "descripcion": "Gestión integral: programas corporativos, siniestros y analítica.",
+  "prompt_context": "ShieldOne Seguros administra pólizas colectivas, beneficios para colaboradores y asistencia regional con monitoreo de siniestros en tiempo real, compliance SOX y reporting a aseguradoras globales.",
+  "welcome_message": "🛡️ Bienvenido a ShieldOne.\n\nElegí una opción para ver programas corporativos, gestionar siniestros o consultar analítica.",
+  "resources": [
+    {
+      "title": "Catálogo coberturas enterprise",
+      "description": "Planes combinados para flotas, property, cyber y beneficios ejecutivos.",
+      "type": "pdf",
+      "url": "/static/demo/seguros/coberturas-enterprise-2024.pdf",
+      "cta_text": "Ver catálogo corporate",
+      "price": "Primas anuales desde USD 4M",
+      "highlight": "Planes multinacionales",
+      "availability": "Cobertura LATAM + USA"
+    },
+    {
+      "title": "Dashboard siniestros Q3",
+      "description": "KPIs de frecuencia, severidad y tiempos de indemnización con benchmarks.",
+      "type": "pdf",
+      "url": "/static/demo/seguros/dashboard-siniestros-q3.pdf",
+      "cta_text": "Descargar dashboard ejecutivo",
+      "highlight": "Actualizado septiembre 2024",
+      "availability": "Data lake + PowerBI"
+    },
+    {
+      "title": "Red de asistencia ShieldOne",
+      "description": "Mapa de prestadores, talleres y clínicas con SLA por región.",
+      "type": "image",
+      "url": "/static/demo/seguros/red-asistencia.svg",
+      "thumbnail": "/static/demo/seguros/red-asistencia.svg",
+      "cta_text": "Ver red de asistencia",
+      "highlight": "+320 nodos certificados",
+      "availability": "Response 24/7"
+    }
+  ],
+  "quick_actions": [
+    {
+      "emoji": "🏢",
+      "texto": "Corporativo",
+      "description": "Flotas, property y beneficios",
+      "category": "🏢 Portafolio corporate",
+      "submenu": [
+        {
+          "emoji": "🚗",
+          "texto": "Flotas inteligentes",
+          "prompt": "Quiero conocer coberturas para flotas con telemetría y gestión de choferes.",
+          "description": "Políticas adaptadas por perfil"
+        },
+        {
+          "emoji": "🏢",
+          "texto": "Property & BI",
+          "prompt": "Mostrame planes property + business interruption con sumas aseguradas y deducibles.",
+          "description": "Cobertura global con auditoría"
+        },
+        {
+          "emoji": "🧑‍💼",
+          "texto": "Beneficios ejecutivos",
+          "prompt": "Necesito propuestas para beneficios ejecutivos y coberturas internacionales.",
+          "description": "Plan premium con asistencia worldwide"
+        }
+      ]
+    },
+    {
+      "emoji": "🚑",
+      "texto": "Siniestros",
+      "description": "Denuncias, talleres y asistencia",
+      "category": "🚑 Gestión de siniestros",
+      "submenu": [
+        {
+          "emoji": "📲",
+          "texto": "Denuncia mobile",
+          "prompt": "¿Cómo funciona la denuncia mobile con carga de fotos y geolocalización?",
+          "description": "App branded + bots asistidos"
+        },
+        {
+          "emoji": "🛠️",
+          "texto": "Red de talleres",
+          "prompt": "Mostrame tiempos promedio y SLA de talleres certificados en AMBA.",
+          "description": "SLA 48 h con seguimiento"
+        },
+        {
+          "emoji": "📞",
+          "texto": "Mesa ejecutiva",
+          "prompt": "Necesito contacto de mesa ejecutiva para siniestros críticos.",
+          "description": "Escalamiento 24/7"
+        }
+      ]
+    },
+    {
+      "emoji": "📊",
+      "texto": "Analítica",
+      "description": "KPIs, compliance y pricing",
+      "category": "📊 Data & compliance",
+      "submenu": [
+        {
+          "emoji": "📈",
+          "texto": "KPIs ejecutivos",
+          "prompt": "Quiero los KPIs ejecutivos de siniestralidad, severidad y forecast.",
+          "description": "Dashboards en tiempo real"
+        },
+        {
+          "emoji": "🧾",
+          "texto": "Compliance regulatorio",
+          "prompt": "¿Qué entregables generan para auditorías y compliance internacional?",
+          "description": "SOX · GDPR · IFRS 17"
+        },
+        {
+          "emoji": "🧮",
+          "texto": "Pricing actuarial",
+          "prompt": "Mostrame modelos actuariales y supuestos para renovar pólizas.",
+          "description": "Modelos propios + benchmark"
+        }
+      ]
+    },
+    {
+      "emoji": "🤝",
+      "texto": "Partners",
+      "description": "Brokers, APIs y academia",
+      "category": "🤝 Ecosistema",
+      "submenu": [
+        {
+          "emoji": "🌐",
+          "texto": "Brokers aliados",
+          "prompt": "Necesito listado de brokers aliados y condiciones de revenue share.",
+          "description": "Programas regionales certificados"
+        },
+        {
+          "emoji": "🔗",
+          "texto": "APIs de pólizas",
+          "prompt": "¿Cómo integro emisión de pólizas y certificados vía API?",
+          "description": "REST + Webhooks + SSO"
+        },
+        {
+          "emoji": "🎓",
+          "texto": "Academia risk",
+          "prompt": "Mostrame workshops y entrenamientos para áreas de risk management.",
+          "description": "Capacitaciones presenciales y virtuales"
+        }
+      ]
+    }
+  ],
+  "capabilities": [
+    "🛡️ Diseño programas multinacionales con matrices de retención y cláusulas tailor-made.",
+    "📲 Opero siniestros con bots y gestores humanos coordinando talleres y asistencias.",
+    "📊 Entrego tableros ejecutivos con KPIs, forecasts y benchmarks sectoriales.",
+    "🤝 Integro brokers, HR y finanzas con APIs seguras y portales white-label."
+  ],
+  "keywords": [
+    "seguros corporativos",
+    "siniestros digitales",
+    "dashboards de riesgo",
+    "compliance internacional",
+    "brokers aliados"
+  ]
+}

@@ -20,8 +20,24 @@ def get_qdrant_client() -> Optional[QdrantClient]:
             return None
 
         try:
-            logger.info(f"[QDRANT UTILS] Intentando conectar a Qdrant URL: {url}")
-            qdrant_client_instance = QdrantClient(url=url, api_key=api_key, timeout=20)
+            # Fix common Qdrant Cloud issue: remove port 6333 if present in a Cloud URL (https)
+            # Cloud usually exposes API on 443 (implicit) or rejects :6333 for REST
+            if url and "cloud.qdrant.io" in url:
+                # Force port 443 for Cloud if using HTTPS, effectively stripping implicit 6333
+                if ":6333" in url:
+                    url = url.replace(":6333", "")
+
+                logger.info(f"[QDRANT UTILS] URL ajustada para Cloud: {url}")
+                # Explicitly passing port=None or 443 might be needed depending on client version
+                # But typically ensuring the URL is correct is enough.
+                # If QdrantClient adds 6333, we can try passing port=443 explicitly if https.
+                if url.startswith("https://"):
+                     qdrant_client_instance = QdrantClient(url=url, port=443, api_key=api_key, timeout=20)
+                else:
+                     qdrant_client_instance = QdrantClient(url=url, api_key=api_key, timeout=20)
+            else:
+                logger.info(f"[QDRANT UTILS] Intentando conectar a Qdrant URL: {url}")
+                qdrant_client_instance = QdrantClient(url=url, api_key=api_key, timeout=20)
             logger.info("✅ [QDRANT UTILS] Cliente Qdrant inicializado.")
         except Exception as e:
             logger.error(
@@ -84,12 +100,22 @@ def verificar_y_crear_coleccion_qdrant(
 def _verificar_y_crear_indices_default(client: QdrantClient, collection_name: str) -> None:
     """Crea los índices requeridos para las consultas.
 
-    Actualmente asegura los campos ``user_id`` (integer) y ``categoria_qdrant`` (keyword).
+    Asegura los campos para filtros:
+    - user_id (integer)
+    - categoria_qdrant (keyword)
+    - texto_original_para_embedding (text) para búsqueda full-text exacta
+    - stock (integer) para rangos
+    - precio_float (float) para rangos
+    - en_promocion (keyword) para filtros booleanos
     """
 
     indices_requeridos = {
         "user_id": "integer",
         "categoria_qdrant": "keyword",
+        "texto_original_para_embedding": "text",
+        "stock": "integer",
+        "precio_float": "float",
+        "en_promocion": "keyword",  # Qdrant usually treats boolean as integer 0/1 or requires keyword map
     }
 
     try:
@@ -119,4 +145,3 @@ def _verificar_y_crear_indices_default(client: QdrantClient, collection_name: st
                 f"❌ [QDRANT UTILS] Error creando índice '{campo}' en colección '{collection_name}': {e_create}",
                 exc_info=True,
             )
-

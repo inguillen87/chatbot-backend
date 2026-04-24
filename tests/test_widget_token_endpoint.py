@@ -6,7 +6,7 @@ os.environ.setdefault("CORS_ALLOWED_ORIGINS", "https://example.com")
 
 try:
     from app import create_app
-    from models import db, User
+    from models import TenantProfile, db, User
     from config import TestingConfig
 except Exception:
     create_app = None
@@ -29,6 +29,15 @@ class WidgetTokenEndpointTests(unittest.TestCase):
             tipo_chat="municipio",
         )
         db.session.add(cls.user)
+        db.session.flush()
+        cls.tenant = TenantProfile(
+            slug="demo-tenant",
+            nombre="Demo Tenant",
+            tipo="municipio",
+            municipio_id=cls.user.id,
+            configuracion={"widget_tokens": ["tenant-widget-token"]},
+        )
+        db.session.add(cls.tenant)
         db.session.commit()
         cls.client = cls.app.test_client()
 
@@ -47,6 +56,7 @@ class WidgetTokenEndpointTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         data = resp.get_json()
         self.assertIn("token", data)
+        self.assertEqual(data.get("contract_version"), "auth.widget_token.v1")
         decoded = jwt.decode(
             data["token"], self.app.config["SECRET_KEY"], algorithms=["HS256"]
         )
@@ -81,7 +91,9 @@ class WidgetTokenEndpointTests(unittest.TestCase):
             headers={"Authorization": self.user.token, "Origin": "https://example.com"},
         )
         self.assertEqual(resp.status_code, 200)
-        self.assertIn("token", resp.get_json())
+        payload = resp.get_json()
+        self.assertIn("token", payload)
+        self.assertEqual(payload.get("contract_version"), "auth.widget_token.v1")
         self.assertEqual(
             resp.headers.get("Access-Control-Allow-Origin"), "https://example.com"
         )
@@ -107,9 +119,11 @@ class WidgetTokenEndpointTests(unittest.TestCase):
             headers={"Origin": "https://example.com"},
         )
         self.assertEqual(resp.status_code, 200)
-        self.assertIn("token", resp.get_json())
+        payload = resp.get_json()
+        self.assertIn("token", payload)
+        self.assertEqual(payload.get("contract_version"), "auth.widget_token.v1")
         refreshed = jwt.decode(
-            resp.get_json()["token"],
+            payload["token"],
             self.app.config["SECRET_KEY"],
             algorithms=["HS256"],
         )
@@ -138,10 +152,21 @@ class WidgetTokenEndpointTests(unittest.TestCase):
             headers={"Origin": "https://example.com"},
         )
         self.assertEqual(resp.status_code, 200)
-        self.assertIn("token", resp.get_json())
+        payload = resp.get_json()
+        self.assertIn("token", payload)
+        self.assertEqual(payload.get("contract_version"), "auth.widget_token.v1")
         self.assertEqual(
             resp.headers.get("Access-Control-Allow-Origin"), "https://example.com"
         )
+
+    def test_widget_token_from_tenant_profile_allows_profile_fetch(self):
+        resp = self.client.get(
+            "/auth/perfil",
+            headers={"Authorization": "tenant-widget-token", "Origin": "https://example.com"},
+        )
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.get_json()
+        self.assertEqual(payload.get("id"), self.user.id)
 
 
 if __name__ == "__main__":

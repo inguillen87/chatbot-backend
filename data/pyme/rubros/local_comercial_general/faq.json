@@ -1,0 +1,62 @@
+[
+  {
+    "question": "Lookbook interactivo",
+    "answer": "Outfits cápsula + talles extendidos",
+    "extended_answer": "Mostrame el lookbook digital con mix & match y recomendaciones por ocasión."
+  },
+  {
+    "question": "Drops hipersegmentados",
+    "answer": "Reservas anticipadas y prueba en tienda",
+    "extended_answer": "Quiero crear un drop exclusivo para clientes premium con notificación push."
+  },
+  {
+    "question": "Probadores inteligentes",
+    "answer": "RFID + recomendaciones automáticas",
+    "extended_answer": "¿Cómo funcionan los probadores inteligentes y qué métricas entregan?"
+  },
+  {
+    "question": "Programa loyalty",
+    "answer": "Cashback, early access y styling",
+    "extended_answer": "Necesito la estructura del programa de fidelización y beneficios por nivel."
+  },
+  {
+    "question": "Campañas omnicanal",
+    "answer": "Email, SMS y push coordinados",
+    "extended_answer": "Mostrame ejemplos de journeys automatizados por temporada y comportamiento."
+  },
+  {
+    "question": "Dashboard de clientes",
+    "answer": "KPIs retail en tiempo real",
+    "extended_answer": "Quiero ver el dashboard con RFM, ticket promedio y frecuencia."
+  },
+  {
+    "question": "Eventos VIP",
+    "answer": "After office + styling en vivo",
+    "extended_answer": "Armá un calendario de eventos VIP en tienda con experiencias personalizadas."
+  },
+  {
+    "question": "Giftcards corporativas",
+    "answer": "Integración con beneficios corporativos",
+    "extended_answer": "¿Qué opciones de giftcards digitales ofrecen para empresas?"
+  },
+  {
+    "question": "Uniformes y cápsulas",
+    "answer": "Diseño + producción bajo demanda",
+    "extended_answer": "Necesito una propuesta de uniformes personalizados para un equipo comercial."
+  },
+  {
+    "question": "Ecommerce + tienda",
+    "answer": "OMS integrado + SLA por tienda",
+    "extended_answer": "¿Cómo sincronizan stock online con tienda y envíos ship-from-store?"
+  },
+  {
+    "question": "Customer data platform",
+    "answer": "CDP con tracking en tiempo real",
+    "extended_answer": "Quiero saber cómo centralizan datos y eventos para personalizar campañas."
+  },
+  {
+    "question": "Logística inversa",
+    "answer": "Gestión integrada de devoluciones",
+    "extended_answer": "Mostrame el flujo de logística inversa y cambios en tienda vs online."
+  }
+]

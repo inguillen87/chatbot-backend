@@ -1,0 +1,414 @@
+{
+  "key": "inmobiliaria",
+  "responses": [
+    {
+      "id": "welcome",
+      "keywords": [
+        "__INIT__",
+        "hola",
+        "inicio",
+        "empezar",
+        "menu"
+      ],
+      "match_always": false,
+      "response": "🏙️ Hola, soy el advisor digital de Inmobiliaria Demo. Elegí proyectos, inversiones, operaciones digitales o posventa y avanzo con vos.",
+      "buttons": [
+        {
+          "label": "🏗️ Proyectos en preventa",
+          "target": "proyectos_en_prevent"
+        },
+        {
+          "label": "💼 Inversiones & renta",
+          "target": "inversiones_&_renta"
+        },
+        {
+          "label": "🖥️ Operaciones digitales",
+          "target": "operaciones_digitale"
+        },
+        {
+          "label": "🤝 Postventa & fidelización",
+          "target": "postventa_&_fideliza"
+        }
+      ]
+    },
+    {
+      "id": "demo_experiencia",
+      "keywords": [
+        "demo",
+        "plantilla",
+        "experiencia",
+        "interactivo",
+        "dashboard",
+        "carrito",
+        "catálogo"
+      ],
+      "response": "🚀 Bienvenido a la demo de Inmobiliaria Demo. Probá el catálogo, la encuesta en vivo y el portal del cliente con analíticas en tiempo real.",
+      "buttons": [
+        {
+          "label": "🛒 Catálogo listo",
+          "target": "catalogo_demo"
+        },
+        {
+          "label": "🗳️ Encuesta en vivo",
+          "target": "encuesta_demo"
+        },
+        {
+          "label": "📊 Dashboard",
+          "target": "dashboard_demo"
+        },
+        {
+          "label": "📨 Portal del cliente",
+          "target": "portal_demo"
+        }
+      ]
+    },
+    {
+      "id": "catalogo_demo",
+      "keywords": [
+        "catálogo demo",
+        "catalogo demo",
+        "productos demo",
+        "ver catálogo"
+      ],
+      "response": "Catálogo navegable con precios, imágenes y stock listo para agregar al carrito. Incluye QR y link compartible para que cualquier visitante lo abra desde su móvil.",
+      "buttons": [
+        {
+          "label": "🛍️ Ver productos",
+          "target": "catalogo_demo_items"
+        },
+        {
+          "label": "🔗 Compartir catálogo",
+          "target": "catalogo_demo_compartir"
+        }
+      ]
+    },
+    {
+      "id": "catalogo_demo_items",
+      "keywords": [
+        "productos demo",
+        "productos",
+        "items"
+      ],
+      "response": "Ejemplo de ítems listos para sumar al carrito: variantes, combos y precios destacados. Al avanzar, el carrito conserva el progreso y sugiere completar datos o ingresar al portal.",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "catalogo_demo_compartir",
+      "keywords": [
+        "compartir catálogo",
+        "link catálogo",
+        "qr catálogo"
+      ],
+      "response": "Podés compartir el catálogo por QR, link corto o redes sociales. Cada acceso queda trazado en el panel de analíticas con mapa de calor y conversiones.",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "encuesta_demo",
+      "keywords": [
+        "encuesta",
+        "votación",
+        "votacion",
+        "feedback"
+      ],
+      "response": "Encuesta en vivo pensada para Inmobiliaria Demo: botones de voto, QR para participación masiva y resultados en tiempo real.",
+      "buttons": [
+        {
+          "label": "✅ Enviar voto",
+          "target": "encuesta_demo_votar"
+        },
+        {
+          "label": "📈 Ver resultados",
+          "target": "encuesta_demo_resultados"
+        }
+      ]
+    },
+    {
+      "id": "encuesta_demo_votar",
+      "keywords": [
+        "votar",
+        "vote",
+        "participar"
+      ],
+      "response": "Botones listos para votar sin salir del chat. También se pueden embeber en el widget o enviar por WhatsApp.",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "encuesta_demo_resultados",
+      "keywords": [
+        "resultados",
+        "dashboard encuesta",
+        "metricas"
+      ],
+      "response": "Resultados en vivo con gráficos, tasa de respuesta y segmentación por canal. Exportable y con alertas automáticas.",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "dashboard_demo",
+      "keywords": [
+        "dashboard",
+        "analíticas",
+        "analytics",
+        "mapa de calor"
+      ],
+      "response": "Dashboard de experiencia digital: mapa de calor de interacciones, conversión por canal, tickets abiertos y estado de pedidos.",
+      "buttons": [
+        {
+          "label": "📍 Mapa de calor",
+          "target": "dashboard_mapa_calor"
+        },
+        {
+          "label": "🧾 Tickets y pedidos",
+          "target": "dashboard_tickets_pedidos"
+        }
+      ]
+    },
+    {
+      "id": "dashboard_mapa_calor",
+      "keywords": [
+        "mapa de calor",
+        "heatmap",
+        "flujo usuarios"
+      ],
+      "response": "Visualizá el mapa de calor con los puntos más clickeados, embebible en la página demo para mostrar dónde interactúan los usuarios.",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "dashboard_tickets_pedidos",
+      "keywords": [
+        "tickets",
+        "reclamos",
+        "pedidos"
+      ],
+      "response": "Vista rápida de reclamos, pedidos y encuestas abiertas por tenant. Permite derivar a humano o seguir el ciclo de compra sin perder el carrito.",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "portal_demo",
+      "keywords": [
+        "portal",
+        "perfil",
+        "usuario"
+      ],
+      "response": "Portal del cliente con historial de compras, puntos, reclamos y encuestas abiertas. Al iniciar sesión, se mantiene el carrito y se pueden reordenar ítems con un clic.",
+      "buttons": [
+        {
+          "label": "🔐 Ingresar al portal",
+          "target": "portal_demo_ingreso"
+        },
+        {
+          "label": "🧾 Ver historial",
+          "target": "portal_demo_historial"
+        }
+      ]
+    },
+    {
+      "id": "portal_demo_ingreso",
+      "keywords": [
+        "ingresar",
+        "login",
+        "registro"
+      ],
+      "response": "Ingreso rápido con email, WhatsApp o código QR. Se sincroniza con el carrito activo para continuar la compra sin perder productos.",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "portal_demo_historial",
+      "keywords": [
+        "historial",
+        "puntos",
+        "seguimiento"
+      ],
+      "response": "Historial de pedidos, reclamos y seguimientos, con notificaciones push y trazabilidad de entregas.",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "torres_premium",
+      "keywords": [
+        "torres premium"
+      ],
+      "response": "Departamentos de 2 a 4 ambientes\n\n_Mostrame las torres en preventa con valores, amenities y plan de pagos._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "barrios_cerrados",
+      "keywords": [
+        "barrios cerrados"
+      ],
+      "response": "Lotes 800-1200 m² + clubhouse\n\n_Quiero opciones de barrios cerrados con lotes disponibles y financiación._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "oficinas_aaa",
+      "keywords": [
+        "oficinas aaa"
+      ],
+      "response": "Oficinas 500-2000 m²\n\n_Necesito oficinas AAA en CABA con flexibilidad y cowork integrado._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "proyectos_en_prevent",
+      "keywords": [
+        "proyectos en preventa"
+      ],
+      "response": "Torres residenciales, oficinas AAA y barrios cerrados",
+      "buttons": [
+        {
+          "label": "🏢 Torres premium",
+          "target": "torres_premium"
+        },
+        {
+          "label": "🌳 Barrios cerrados",
+          "target": "barrios_cerrados"
+        },
+        {
+          "label": "🏬 Oficinas AAA",
+          "target": "oficinas_aaa"
+        }
+      ]
+    },
+    {
+      "id": "renta_temporaria",
+      "keywords": [
+        "renta temporaria"
+      ],
+      "response": "ROI esperado 7,5% anual\n\n_Mostrame unidades llave en mano con renta temporaria proyectada._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "inversor_extranjero",
+      "keywords": [
+        "inversor extranjero"
+      ],
+      "response": "Onboarding integral + compliance\n\n_¿Cómo acompañan a inversores extranjeros con apertura de cuentas y legal?_",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "fondos_inmobiliarios",
+      "keywords": [
+        "fondos inmobiliarios"
+      ],
+      "response": "Fondos renta y desarrollo\n\n_Necesito la ficha de fondos inmobiliarios disponibles y capital mínimo._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "inversiones_&_renta",
+      "keywords": [
+        "inversiones & renta"
+      ],
+      "response": "Unidades de renta, landbanking y fondos inmobiliarios",
+      "buttons": [
+        {
+          "label": "💵 Renta temporaria",
+          "target": "renta_temporaria"
+        },
+        {
+          "label": "🌐 Inversor extranjero",
+          "target": "inversor_extranjero"
+        },
+        {
+          "label": "📈 Fondos inmobiliarios",
+          "target": "fondos_inmobiliarios"
+        }
+      ]
+    },
+    {
+      "id": "reserva_digital",
+      "keywords": [
+        "reserva digital"
+      ],
+      "response": "Workflow 100% online\n\n_¿Cómo gestiono una reserva digital con pago en criptomonedas o transferencia?_",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "due_diligence",
+      "keywords": [
+        "due diligence"
+      ],
+      "response": "Cheklist legal + certificaciones\n\n_Quiero saber qué incluye el due diligence legal y tiempos promedio._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "firma_y_escrituració",
+      "keywords": [
+        "firma y escrituración"
+      ],
+      "response": "Integración con escribanía digital\n\n_Mostrame el proceso de firma digital, escribanía y entrega de documentación._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "operaciones_digitale",
+      "keywords": [
+        "operaciones digitales"
+      ],
+      "response": "Reservas online, firma digital y seguimiento documental",
+      "buttons": [
+        {
+          "label": "📝 Reserva digital",
+          "target": "reserva_digital"
+        },
+        {
+          "label": "🔍 Due diligence",
+          "target": "due_diligence"
+        },
+        {
+          "label": "🔐 Firma y escrituración",
+          "target": "firma_y_escrituració"
+        }
+      ]
+    },
+    {
+      "id": "amenities_y_consorci",
+      "keywords": [
+        "amenities y consorcios"
+      ],
+      "response": "Amenities premium + app consorcio\n\n_¿Qué servicios de administración y amenities ofrecen post entrega?_",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "mantenimiento",
+      "keywords": [
+        "mantenimiento"
+      ],
+      "response": "Mantenimiento programado + emergencias\n\n_Necesito conocer los servicios de mantenimiento y garantía postventa._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "gestión_de_alquiler",
+      "keywords": [
+        "gestión de alquiler"
+      ],
+      "response": "Administración + reporting mensual\n\n_¿Ofrecen gestión integral de alquiler y seguimiento de cobranzas?_",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "postventa_&_fideliza",
+      "keywords": [
+        "postventa & fidelización"
+      ],
+      "response": "Conserjería, amenities y gestión de alquileres",
+      "buttons": [
+        {
+          "label": "🏊 Amenities y consorcios",
+          "target": "amenities_y_consorci"
+        },
+        {
+          "label": "🛠️ Mantenimiento",
+          "target": "mantenimiento"
+        },
+        {
+          "label": "📞 Gestión de alquiler",
+          "target": "gestión_de_alquiler"
+        }
+      ]
+    }
+  ],
+  "fallback": {
+    "response": "No entendí tu consulta. ¿Te gustaría ver el menú principal?",
+    "buttons": [
+      {
+        "label": "Ver menú principal",
+        "target": "welcome"
+      }
+    ]
+  }
+}

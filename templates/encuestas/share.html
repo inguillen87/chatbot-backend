@@ -268,6 +268,57 @@
             <a class="button secondary" href="{{ share_url }}" target="_blank" rel="noopener noreferrer">Abrir versión web completa</a>
             <button class="button secondary" id="copy-link" data-url="{{ share_url }}" type="button">Copiar enlace</button>
             <a class="button secondary" href="{{ whatsapp_url }}" target="_blank" rel="noopener noreferrer">Enviar por WhatsApp</a>
+            <button
+              class="button secondary"
+              id="share-social"
+              data-url="{{ share_url }}"
+              data-title="{{ encuesta.titulo }}"
+              data-text="{{ encuesta.descripcion or 'Sumá tu voz a esta encuesta ciudadana.' }}"
+              type="button"
+            >
+              Compartir en redes
+            </button>
+            <button
+              class="button secondary"
+              id="share-qr"
+              data-qr="{{ qr_url }}?size=900"
+              data-title="Código QR - {{ encuesta.titulo }}"
+              type="button"
+            >
+              Compartir código QR
+            </button>
+            <a
+              class="button secondary"
+              href="{{ qr_url }}?size=900"
+              download="qr-{{ encuesta.slug }}.png"
+              rel="noopener"
+            >
+              Descargar QR
+            </a>
+            <a
+              class="button secondary"
+              href="https://www.facebook.com/sharer/sharer.php?u={{ share_url|urlencode }}"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Facebook
+            </a>
+            <a
+              class="button secondary"
+              href="https://twitter.com/intent/tweet?url={{ share_url|urlencode }}&text={{ ('Participá de la encuesta ' ~ encuesta.titulo)|urlencode }}"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              X / Twitter
+            </a>
+            <a
+              class="button secondary"
+              href="https://www.linkedin.com/sharing/share-offsite/?url={{ share_url|urlencode }}"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              LinkedIn
+            </a>
           </div>
         </header>
         <main>
@@ -329,6 +380,63 @@
             shareLink.focus();
           }
         });
+
+        const socialButton = document.getElementById('share-social');
+        if (socialButton) {
+          socialButton.addEventListener('click', async () => {
+            const shareUrl = socialButton.getAttribute('data-url');
+            const title = socialButton.getAttribute('data-title');
+            const text = socialButton.getAttribute('data-text');
+            if (navigator.share) {
+              try {
+                await navigator.share({ title, text, url: shareUrl });
+                socialButton.textContent = '¡Compartido!';
+                setTimeout(() => {
+                  socialButton.textContent = 'Compartir en redes';
+                }, 3200);
+                return;
+              } catch (error) {
+                console.warn('Error al usar navigator.share', error);
+              }
+            }
+            const tweet = `https://twitter.com/intent/tweet?url=${encodeURIComponent(shareUrl)}&text=${encodeURIComponent(text)}`;
+            window.open(tweet, '_blank', 'noopener');
+          });
+        }
+
+        const shareQrButton = document.getElementById('share-qr');
+        if (shareQrButton) {
+          shareQrButton.addEventListener('click', async () => {
+            const qrUrl = shareQrButton.getAttribute('data-qr');
+            const title = shareQrButton.getAttribute('data-title') || 'Código QR';
+            try {
+              const response = await fetch(qrUrl);
+              const blob = await response.blob();
+              if (navigator.canShare && navigator.canShare({ files: [new File([blob], 'qr.png', { type: blob.type })] })) {
+                await navigator.share({
+                  title,
+                  files: [new File([blob], 'qr-encuesta.png', { type: blob.type })],
+                });
+                shareQrButton.textContent = '¡QR compartido!';
+                setTimeout(() => {
+                  shareQrButton.textContent = 'Compartir código QR';
+                }, 3200);
+                return;
+              }
+              if (navigator.clipboard && window.ClipboardItem) {
+                await navigator.clipboard.write([new ClipboardItem({ [blob.type]: blob })]);
+                shareQrButton.textContent = '¡QR copiado!';
+                setTimeout(() => {
+                  shareQrButton.textContent = 'Compartir código QR';
+                }, 3200);
+                return;
+              }
+            } catch (error) {
+              console.warn('No fue posible compartir el QR directamente', error);
+            }
+            window.open(qrUrl, '_blank', 'noopener');
+          });
+        }
       })();
     </script>
   </body>

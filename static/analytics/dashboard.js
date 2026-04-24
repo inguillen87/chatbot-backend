@@ -19,6 +19,12 @@ const state = {
   drawControl: null,
   selectionLayer: null,
   mapContainerId: null,
+  mapLayers: { heat: true, cluster: true },
+  baseLayer: 'streets',
+  baseLayers: new Map(),
+  currentBaseLayer: null,
+  mapData: { cells: [], points: [] },
+  mapBounds: null,
 };
 
 const API_BASE = '/analytics';
@@ -38,6 +44,7 @@ function init() {
   bindScopeButtons();
   bindFilterActions();
   bindExports();
+  bindMapControls();
   bindThemeToggle();
   bindShareView();
   hydrateFiltersFromUrl();
@@ -117,6 +124,38 @@ function bindShareView() {
   });
 }
 
+function bindMapControls() {
+  document.querySelectorAll('[data-map-layer]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const layer = button.dataset.mapLayer;
+      if (!layer) return;
+      const activeLayers = Object.values(state.mapLayers).filter(Boolean).length;
+      const isActive = !!state.mapLayers[layer];
+      if (isActive && activeLayers <= 1) {
+        return;
+      }
+      state.mapLayers[layer] = !isActive;
+      applyMapLayers();
+      updateMapModeButtons();
+    });
+  });
+
+  document.querySelectorAll('[data-map-fit]').forEach((button) => {
+    button.addEventListener('click', () => {
+      fitMapToData(true);
+    });
+  });
+
+  document.querySelectorAll('[data-map-base]').forEach((select) => {
+    select.addEventListener('change', () => {
+      setBaseLayer(select.value);
+    });
+  });
+
+  updateMapModeButtons();
+  updateBaseLayerSelectors();
+}
+
 function hydrateFiltersFromUrl() {
   const params = new URLSearchParams(window.location.search);
   if (params.get('from')) state.filters.from = params.get('from');
@@ -132,9 +171,12 @@ function hydrateFiltersFromUrl() {
 
 function populateInputs() {
   const { from, to, canal, categoria, estado, agente, zona, etiqueta, bbox } = state.filters;
-  if (from) document.getElementById('date-from').value = from;
-  if (to) document.getElementById('date-to').value = to;
-  if (bbox) document.getElementById('filter-bbox').value = bbox;
+  const fromInput = document.getElementById('date-from');
+  if (fromInput) fromInput.value = from || '';
+  const toInput = document.getElementById('date-to');
+  if (toInput) toInput.value = to || '';
+  const bboxInput = document.getElementById('filter-bbox');
+  if (bboxInput) bboxInput.value = bbox || '';
   setSelectValues('filter-canal', canal);
   setSelectValues('filter-categoria', categoria);
   setSelectValues('filter-estado', estado);
@@ -230,6 +272,11 @@ async function loadDashboard() {
     summary = createDemoSummary(state.scope);
   }
   renderSummary(summary);
+  if (state.scope === 'municipio') {
+    renderDemografia(summary.demografia || null);
+  } else {
+    renderDemografia(null);
+  }
 
   const tasks = [];
   if (state.scope === 'municipio') {
@@ -285,21 +332,63 @@ function createDemoSummary(scope) {
     const ttaP90 = ttaP50 + Math.round(10 + random() * 18);
     const ttrP50 = Math.round(120 + random() * 160);
     const ttrP90 = ttrP50 + Math.round(150 + random() * 220);
+    const respuestas = Math.max(Math.round(180 + random() * 160), 1);
+    const encuestasDelta = Number((random() * 40 - 20).toFixed(2));
+    const ticketsDelta = Number((random() * 28 - 14).toFixed(2));
+    const ticketsPrev = Math.max(Math.round(tickets / (1 + ticketsDelta / 100)), 1);
+    const encuestasPrev = Math.max(Math.round(respuestas / (1 + encuestasDelta / 100)), 1);
+    const generoFem = Math.round(respuestas * (0.45 + random() * 0.1));
+    const generoMasc = Math.round(respuestas * (0.4 + random() * 0.08));
+    const generoNb = Math.max(respuestas - generoFem - generoMasc, 0);
+    const ageBuckets = ['18-24', '25-34', '35-44', '45-54', '55-64', '65+'];
+    const demoAges = {};
+    let remaining = respuestas;
+    ageBuckets.forEach((bucket, index) => {
+      const weight = 0.3 - index * 0.03 + random() * 0.05;
+      const value = Math.max(Math.round(respuestas * Math.max(weight, 0.05)), 0);
+      demoAges[bucket] = value;
+      remaining -= value;
+    });
+    if (remaining > 0) {
+      demoAges['18-24'] += remaining;
+    }
+    const barrioLabels = ['Centro', 'Sur', 'Norte', 'Este', 'Oeste'];
+    const demoBarrios = barrioLabels.map((label, idx) => ({ label, value: Math.max(Math.round(respuestas * (0.12 + random() * 0.1) * (1 - idx * 0.1)), 1) }));
     return {
       totals: {
         tickets,
         tickets_abiertos: abiertos,
+        tickets_cerrados: Math.max(tickets - abiertos, 0),
         backlog,
         automatizado_pct: automatizado,
         primer_contacto_pct: primerContacto,
         nps,
         csat,
+        encuestas: respuestas,
+        cierre_pct: tickets ? Math.round(((tickets - abiertos) / tickets) * 10000) / 100 : 0,
+        tta_promedio_min: Math.round((ttaP50 + ttaP90) / 2),
+        ttr_promedio_min: Math.round((ttrP50 + ttrP90) / 2),
+        tickets_periodo_anterior: ticketsPrev,
+        tickets_variacion_pct: ticketsDelta,
+        encuestas_periodo_anterior: encuestasPrev,
+        encuestas_variacion_pct: encuestasDelta,
       },
       sla: {
         tta: { p50: ttaP50, p90: ttaP90, p95: ttaP90 + Math.round(random() * 10) },
         ttr: { p50: ttrP50, p90: ttrP90, p95: ttrP90 + Math.round(random() * 30) },
       },
       extras: {},
+      demografia: {
+        genero: { femenino: generoFem, masculino: generoMasc, no_binario: generoNb },
+        rango_etario: demoAges,
+        edad: {
+          promedio: Math.round((28 + random() * 18) * 10) / 10,
+          mediana: 35,
+          p90: 58,
+          muestra: respuestas,
+        },
+        territorio: { barrios: demoBarrios },
+      },
     };
   }
   if (scope === 'pyme') {
@@ -312,20 +401,42 @@ function createDemoSummary(scope) {
     const hora = `${String(8 + Math.floor(random() * 10)).padStart(2, '0')}:00`;
     const nps = Math.round(-10 + random() * 60);
     const csat = Math.round((3.8 + random() * 1) * 100) / 100;
+    const encuestas = Math.max(Math.round(60 + random() * 45), 1);
+    const ticketsDelta = Number((random() * 26 - 13).toFixed(2));
+    const pedidosDelta = Number((random() * 30 - 15).toFixed(2));
+    const encuestasDelta = Number((random() * 36 - 18).toFixed(2));
+    const ttaProm = Math.round(10 + random() * 18);
+    const ttrProm = Math.round(90 + random() * 140);
     return {
       totals: {
         tickets,
+        tickets_cerrados: Math.max(tickets - Math.round(tickets * 0.25), 0),
         pedidos,
         ticket_medio: ticketMedio,
         conversion_pct: conversion,
         retencion_30: retencion,
+        retencion_60: Math.max(retencion - 5, 0),
+        retencion_90: Math.max(retencion - 9, 0),
         automatizado_pct: automatizado,
         hora_pico: hora,
         nps,
         csat,
+        encuestas,
+        tickets_abiertos: Math.round(tickets * 0.25),
+        backlog: Math.round(tickets * 0.25),
+        cierre_pct: tickets ? Math.round(((tickets - Math.round(tickets * 0.25)) / tickets) * 10000) / 100 : 0,
+        tta_promedio_min: ttaProm,
+        ttr_promedio_min: ttrProm,
+        tickets_periodo_anterior: Math.max(Math.round(tickets / (1 + ticketsDelta / 100)), 1),
+        tickets_variacion_pct: ticketsDelta,
+        pedidos_periodo_anterior: Math.max(Math.round(pedidos / (1 + pedidosDelta / 100)), 1),
+        pedidos_variacion_pct: pedidosDelta,
+        encuestas_periodo_anterior: Math.max(Math.round(encuestas / (1 + encuestasDelta / 100)), 1),
+        encuestas_variacion_pct: encuestasDelta,
       },
       sla: {},
       extras: {},
+      demografia: null,
     };
   }
   const tickets = Math.round(200 + random() * 160);
@@ -333,53 +444,226 @@ function createDemoSummary(scope) {
   const violaciones = Math.round(5 + random() * 25);
   const primer = Math.round(40 + random() * 45);
   const automatizado = Math.round(20 + random() * 35);
+  const ticketsDelta = Number((random() * 22 - 11).toFixed(2));
+  const ttaProm = Math.round(9 + random() * 16);
+  const ttrProm = Math.round(95 + random() * 155);
   return {
     totals: {
       tickets,
       abiertos,
+      tickets_cerrados: Math.max(tickets - abiertos, 0),
+      cierre_pct: tickets ? Math.round(((tickets - abiertos) / tickets) * 10000) / 100 : 0,
       violaciones_sla: violaciones,
       primer_contacto_pct: primer,
       automatizado_pct: automatizado,
+      tta_promedio_min: ttaProm,
+      ttr_promedio_min: ttrProm,
+      tickets_periodo_anterior: Math.max(Math.round(tickets / (1 + ticketsDelta / 100)), 1),
+      tickets_variacion_pct: ticketsDelta,
     },
     sla: {},
     extras: {},
+    demografia: null,
   };
 }
 
+function createDemoTimeseries(scope) {
+  const offset = scope === 'pyme' ? 59 : scope === 'operaciones' ? 103 : 27;
+  const random = createSeededRandom(dailySeed(offset));
+  const days = 21;
+  const today = new Date();
+  const base = scope === 'pyme' ? 120 : scope === 'operaciones' ? 160 : 240;
+  const series = [];
+  for (let index = days - 1; index >= 0; index -= 1) {
+    const date = new Date(today);
+    date.setDate(today.getDate() - index);
+    const variance = (random() - 0.5) * 0.4;
+    const value = Math.max(1, Math.round(base * (0.75 + variance) + random() * 35));
+    series.push({
+      date: date.toISOString().slice(0, 10),
+      group: 'total',
+      value,
+    });
+  }
+  return series;
+}
+
+function createDemoBreakdown(dimension, scope) {
+  const offset =
+    dimension === 'canal' ? 71 : dimension === 'estado' ? 83 : scope === 'pyme' ? 67 : 45;
+  const random = createSeededRandom(dailySeed(offset));
+  let labels;
+  if (dimension === 'canal') {
+    labels = scope === 'pyme' ? ['WhatsApp', 'Instagram', 'Web', 'Sucursal'] : ['WhatsApp', 'Web', 'Presencial', 'Llamadas'];
+  } else if (dimension === 'estado') {
+    labels = scope === 'pyme' ? ['nuevo', 'pagado', 'en_proceso', 'entregado'] : DEMO_STATUSES;
+  } else if (dimension === 'productos') {
+    labels = ['Canasta básica', 'Turnos médicos', 'Turismo', 'Eventos', 'Pagos'];
+  } else {
+    labels = scope === 'pyme'
+      ? ['Ventas online', 'Delivery', 'Turnos', 'Reservas', 'Reclamos']
+      : DEMO_CATEGORIES;
+  }
+  const breakdown = labels.map((label, index) => ({
+    label,
+    value: Math.max(1, Math.round((index + 1) * 12 + random() * 90)),
+  }));
+  breakdown.sort((a, b) => b.value - a.value);
+  return { breakdown };
+}
+
+function createDemoTop(category, scope) {
+  const random = createSeededRandom(dailySeed(category === 'productos' ? 89 : 75));
+  let labels;
+  if (category === 'productos') {
+    labels = ['Menú ejecutivo', 'Supermercado', 'Farmacia', 'Limpieza', 'Regalería', 'Electrónica'];
+  } else {
+    labels = ['Centro', 'Norte', 'Sur', 'Este', 'Oeste', 'San Martín', 'Belgrano', 'La Colonia', 'Godoy Cruz', 'Ciudad'];
+  }
+  const items = labels.map((label, index) => ({
+    label,
+    value: Math.max(1, Math.round(30 + random() * (scope === 'pyme' ? 60 : 110) - index * 4)),
+  }));
+  items.sort((a, b) => b.value - a.value);
+  return { items };
+}
+
+function createDemoTemplates() {
+  const random = createSeededRandom(dailySeed(111));
+  const templates = [
+    'Seguimiento pedido',
+    'Promoción semanal',
+    'Encuesta satisfacción',
+    'Recordatorio pago',
+  ].map((template) => {
+    const sent = Math.round(180 + random() * 260);
+    const responded = Math.round(sent * (0.18 + random() * 0.32));
+    const ctr = sent ? Number(((responded / sent) * 100).toFixed(1)) : 0;
+    return {
+      template,
+      sent,
+      responded,
+      ctr,
+    };
+  });
+  return { templates };
+}
+
+function createDemoCohorts() {
+  const random = createSeededRandom(dailySeed(129));
+  const cohorts = [];
+  const baseDate = new Date();
+  for (let index = 0; index < 4; index += 1) {
+    const date = new Date(baseDate);
+    date.setMonth(baseDate.getMonth() - index);
+    const label = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+    const size = Math.round(80 + random() * 140);
+    const retention30 = Math.round(30 + random() * 40);
+    const retention60 = Math.max(retention30 - Math.round(10 + random() * 15), 5);
+    const retention90 = Math.max(retention60 - Math.round(5 + random() * 12), 3);
+    cohorts.push({
+      cohort: label,
+      size,
+      retention30,
+      retention60,
+      retention90,
+    });
+  }
+  return { cohorts };
+}
+
+function createDemoOperations() {
+  const random = createSeededRandom(dailySeed(151));
+  const aging = {
+    '0-1 días': Math.round(45 + random() * 25),
+    '2-3 días': Math.round(30 + random() * 22),
+    '4-7 días': Math.round(18 + random() * 15),
+    '8+ días': Math.round(8 + random() * 10),
+  };
+  const agents = ['García', 'Rodríguez', 'Pérez', 'López', 'Fernández'].map((apellido, index) => ({
+    agente: `Agente ${apellido}`,
+    tickets: Math.round(35 + random() * 28 - index * 3),
+    respuesta_promedio_min: Math.round(18 + random() * 25 + index * 2),
+  }));
+  const queue = {
+    'Guardia Urbana': Math.round(22 + random() * 18),
+    'Espacios Verdes': Math.round(18 + random() * 14),
+    'Obras Públicas': Math.round(26 + random() * 16),
+    'Servicios Generales': Math.round(15 + random() * 12),
+  };
+  return { extras: { aging, agents, queue } };
+}
+
+function populateAgentsFromSummary(summary) {
+  const agents = summary?.extras?.agents;
+  if (!Array.isArray(agents) || !agents.length) return;
+  const options = agents.map((agent) => ({
+    value:
+      agent.agente_id !== undefined && agent.agente_id !== null
+        ? String(agent.agente_id)
+        : agent.value || agent.agente || agent.label,
+    label: agent.agente || agent.label || agent.nombre || `Agente ${agent.agente_id ?? ''}`,
+  }));
+  updateFilterOptions('filter-agente', options);
+}
+
 function renderSummary(summary) {
+  populateAgentsFromSummary(summary);
   if (state.scope === 'municipio') {
+    const totals = summary.totals || {};
     const items = [
-      { label: 'Tickets', value: summary.totals.tickets },
-      { label: 'Abiertos', value: summary.totals.tickets_abiertos },
-      { label: 'Backlog', value: summary.totals.backlog },
-      { label: 'TTA P50', value: summary.sla.tta?.p50, suffix: 'min' },
-      { label: 'TTR P90', value: summary.sla.ttr?.p90, suffix: 'min' },
-      { label: '% Automatizado', value: summary.totals.automatizado_pct, suffix: '%' },
-      { label: '% 1er contacto', value: summary.totals.primer_contacto_pct, suffix: '%' },
-      { label: 'NPS', value: summary.totals.nps },
-      { label: 'CSAT', value: summary.totals.csat },
+      { label: 'Tickets', value: totals.tickets },
+      { label: 'Δ Tickets', value: totals.tickets_variacion_pct, suffix: '%' },
+      { label: 'Cerrados', value: totals.tickets_cerrados },
+      { label: '% Cierre', value: totals.cierre_pct, suffix: '%' },
+      { label: 'Abiertos', value: totals.tickets_abiertos },
+      { label: 'Backlog', value: totals.backlog },
+      { label: 'TTA prom', value: totals.tta_promedio_min, suffix: 'min' },
+      { label: 'TTR prom', value: totals.ttr_promedio_min, suffix: 'min' },
+      { label: 'TTA P90', value: summary.sla?.tta?.p90, suffix: 'min' },
+      { label: 'TTR P90', value: summary.sla?.ttr?.p90, suffix: 'min' },
+      { label: '% Automatizado', value: totals.automatizado_pct, suffix: '%' },
+      { label: '% 1er contacto', value: totals.primer_contacto_pct, suffix: '%' },
+      { label: 'Encuestas', value: totals.encuestas },
+      { label: 'NPS', value: totals.nps },
+      { label: 'CSAT', value: totals.csat },
     ];
     renderKpis('municipio-kpis', items);
     renderSla('municipio-sla', summary.sla);
   } else if (state.scope === 'pyme') {
+    const totals = summary.totals || {};
     const items = [
-      { label: 'Tickets', value: summary.totals.tickets },
-      { label: 'Pedidos', value: summary.totals.pedidos },
-      { label: 'Ticket medio', value: summary.totals.ticket_medio, prefix: '$' },
-      { label: '% Conversión', value: summary.totals.conversion_pct, suffix: '%' },
-      { label: 'Retención 30', value: summary.totals.retencion_30, suffix: '%' },
-      { label: '% Automatizado', value: summary.totals.automatizado_pct, suffix: '%' },
-      { label: 'Hora pico', value: summary.totals.hora_pico },
-      { label: 'NPS', value: summary.totals.nps },
-      { label: 'CSAT', value: summary.totals.csat },
+      { label: 'Tickets', value: totals.tickets },
+      { label: 'Δ Tickets', value: totals.tickets_variacion_pct, suffix: '%' },
+      { label: 'Cerrados', value: totals.tickets_cerrados },
+      { label: '% Cierre', value: totals.cierre_pct, suffix: '%' },
+      { label: 'Pedidos', value: totals.pedidos },
+      { label: 'Δ Pedidos', value: totals.pedidos_variacion_pct, suffix: '%' },
+      { label: 'Ticket medio', value: totals.ticket_medio, prefix: '$' },
+      { label: '% Conversión', value: totals.conversion_pct, suffix: '%' },
+      { label: 'Retención 30', value: totals.retencion_30, suffix: '%' },
+      { label: 'Retención 60', value: totals.retencion_60, suffix: '%' },
+      { label: 'Retención 90', value: totals.retencion_90, suffix: '%' },
+      { label: '% Automatizado', value: totals.automatizado_pct, suffix: '%' },
+      { label: 'TTA prom', value: totals.tta_promedio_min, suffix: 'min' },
+      { label: 'TTR prom', value: totals.ttr_promedio_min, suffix: 'min' },
+      { label: 'Hora pico', value: totals.hora_pico },
+      { label: 'Encuestas', value: totals.encuestas },
+      { label: 'NPS', value: totals.nps },
+      { label: 'CSAT', value: totals.csat },
     ];
     renderKpis('pyme-kpis', items);
   } else {
     const totals = summary.totals || {};
     const items = [
       { label: 'Tickets', value: totals.tickets },
+      { label: 'Δ Tickets', value: totals.tickets_variacion_pct, suffix: '%' },
+      { label: 'Cerrados', value: totals.tickets_cerrados },
+      { label: '% Cierre', value: totals.cierre_pct, suffix: '%' },
       { label: 'Abiertos', value: totals.abiertos },
       { label: 'Violaciones SLA', value: totals.violaciones_sla },
+      { label: 'TTA prom', value: totals.tta_promedio_min, suffix: 'min' },
+      { label: 'TTR prom', value: totals.ttr_promedio_min, suffix: 'min' },
       { label: '% 1er contacto', value: totals.primer_contacto_pct, suffix: '%' },
       { label: '% Automatizado', value: totals.automatizado_pct, suffix: '%' },
     ];
@@ -423,10 +707,25 @@ function renderSla(containerId, sla) {
 
 async function loadTimeseries(canvasId) {
   const params = buildParams();
-  const data = await fetchJson('timeseries', params);
+  let data;
+  try {
+    data = await fetchJson('timeseries', params);
+  } catch (error) {
+    console.warn('Timeseries unavailable, generating demo data.', error);
+    data = { series: [] };
+  }
+  let series = Array.isArray(data?.series) ? data.series : [];
+  if (!series.length) {
+    series = createDemoTimeseries(state.scope);
+  }
+  if (!series.length) {
+    updateEmptyState(canvasId, false, 'Sin datos de evolución');
+    return;
+  }
+  updateEmptyState(canvasId, true);
   const canvas = document.getElementById(canvasId);
   if (!canvas) return;
-  const grouped = groupSeries(data.series || []);
+  const grouped = groupSeries(series);
   const datasets = Object.entries(grouped).map(([group, entries], index) => ({
     label: group,
     data: entries.map((entry) => ({ x: entry.date, y: entry.value })),
@@ -459,41 +758,145 @@ async function loadTimeseries(canvasId) {
 }
 
 async function loadBreakdowns() {
-  const categoria = await fetchJson('breakdown', buildParams({ dimension: 'categoria' }));
-  renderBarChart('municipio-top-categorias', categoria.breakdown || []);
-  const canales = await fetchJson('breakdown', buildParams({ dimension: 'canal' }));
-  renderDonutChart('municipio-top-canales', canales.breakdown || []);
-  updateFilterOptions('filter-categoria', categoria.breakdown);
-  updateFilterOptions('filter-canal', canales.breakdown);
-  const estados = await fetchJson('breakdown', buildParams({ dimension: 'estado' }));
-  updateFilterOptions('filter-estado', estados.breakdown);
-  const zonas = await fetchJson('top', buildParams({ category: 'barrios', limit: 20 }));
-  updateFilterOptions('filter-zona', zonas.items);
+  let categoria;
+  try {
+    categoria = await fetchJson('breakdown', buildParams({ dimension: 'categoria' }));
+  } catch (error) {
+    console.warn('Categoría breakdown unavailable, using demo data.', error);
+    categoria = { breakdown: [] };
+  }
+  let categoriasData = Array.isArray(categoria?.breakdown) ? categoria.breakdown : [];
+  if (!categoriasData.length) {
+    categoriasData = createDemoBreakdown('categoria', state.scope).breakdown;
+  }
+  renderBarChart('municipio-top-categorias', categoriasData);
+  updateFilterOptions('filter-categoria', categoriasData);
+
+  let canales;
+  try {
+    canales = await fetchJson('breakdown', buildParams({ dimension: 'canal' }));
+  } catch (error) {
+    console.warn('Canal breakdown unavailable, using demo data.', error);
+    canales = { breakdown: [] };
+  }
+  let canalesData = Array.isArray(canales?.breakdown) ? canales.breakdown : [];
+  if (!canalesData.length) {
+    canalesData = createDemoBreakdown('canal', state.scope).breakdown;
+  }
+  renderDonutChart('municipio-top-canales', canalesData);
+  updateFilterOptions('filter-canal', canalesData);
+
+  let estados;
+  try {
+    estados = await fetchJson('breakdown', buildParams({ dimension: 'estado' }));
+  } catch (error) {
+    console.warn('Estado breakdown unavailable, using demo data.', error);
+    estados = { breakdown: [] };
+  }
+  let estadosData = Array.isArray(estados?.breakdown) ? estados.breakdown : [];
+  if (!estadosData.length) {
+    estadosData = createDemoBreakdown('estado', state.scope).breakdown;
+  }
+  updateFilterOptions('filter-estado', estadosData);
+
+  let zonas;
+  try {
+    zonas = await fetchJson('top', buildParams({ category: 'barrios', limit: 20 }));
+  } catch (error) {
+    console.warn('Zonas top unavailable, using demo data.', error);
+    zonas = { items: [] };
+  }
+  let zonasData = Array.isArray(zonas?.items) ? zonas.items : [];
+  if (!zonasData.length) {
+    zonasData = createDemoTop('barrios', state.scope).items;
+  }
+  updateFilterOptions('filter-zona', zonasData);
 }
 
 async function loadTopMunicipio() {
-  const zonas = await fetchJson('top', buildParams({ category: 'barrios', limit: 10 }));
-  renderTable('municipio-top-zonas', zonas.items, ['label', 'value']);
+  let zonas;
+  try {
+    zonas = await fetchJson('top', buildParams({ category: 'barrios', limit: 10 }));
+  } catch (error) {
+    console.warn('Top zonas unavailable, using demo data.', error);
+    zonas = { items: [] };
+  }
+  let items = Array.isArray(zonas?.items) ? zonas.items : [];
+  if (!items.length) {
+    items = createDemoTop('barrios', state.scope).items.slice(0, 10);
+  }
+  renderTable('municipio-top-zonas', items, ['label', 'value']);
 }
 
 async function loadPymeBreakdowns() {
-  const productos = await fetchJson('top', buildParams({ category: 'productos', limit: 10 }));
-  renderBarChart('pyme-top-productos', productos.items || []);
-  const conversion = await fetchJson('breakdown', buildParams({ dimension: 'canal' }));
-  renderDonutChart('pyme-conversion-canal', conversion.breakdown || []);
-  updateFilterOptions('filter-canal', conversion.breakdown);
+  let productos;
+  try {
+    productos = await fetchJson('top', buildParams({ category: 'productos', limit: 10 }));
+  } catch (error) {
+    console.warn('Top productos unavailable, using demo data.', error);
+    productos = { items: [] };
+  }
+  let productosItems = Array.isArray(productos?.items) ? productos.items : [];
+  if (!productosItems.length) {
+    productosItems = createDemoTop('productos', 'pyme').items.slice(0, 10);
+  }
+  renderBarChart('pyme-top-productos', productosItems);
+
+  let conversion;
+  try {
+    conversion = await fetchJson('breakdown', buildParams({ dimension: 'canal' }));
+  } catch (error) {
+    console.warn('Conversión por canal unavailable, using demo data.', error);
+    conversion = { breakdown: [] };
+  }
+  let conversionData = Array.isArray(conversion?.breakdown) ? conversion.breakdown : [];
+  if (!conversionData.length) {
+    conversionData = createDemoBreakdown('canal', 'pyme').breakdown;
+  }
+  renderDonutChart('pyme-conversion-canal', conversionData);
+  updateFilterOptions('filter-canal', conversionData);
 }
 
 async function loadPymeTables() {
-  const templates = await fetchJson('whatsapp/templates', buildParams());
-  renderTable('pyme-templates', templates.templates, ['template', 'sent', 'responded', 'ctr']);
-  const cohorts = await fetchJson('cohorts', buildParams());
-  renderTable('pyme-cohorts', cohorts.cohorts, ['cohort', 'size', 'retention30', 'retention60', 'retention90']);
+  let templates;
+  try {
+    templates = await fetchJson('whatsapp/templates', buildParams());
+  } catch (error) {
+    console.warn('Templates analytics unavailable, using demo data.', error);
+    templates = { templates: [] };
+  }
+  let templatesRows = Array.isArray(templates?.templates) ? templates.templates : [];
+  if (!templatesRows.length) {
+    templatesRows = createDemoTemplates().templates;
+  }
+  renderTable('pyme-templates', templatesRows, ['template', 'sent', 'responded', 'ctr']);
+
+  let cohorts;
+  try {
+    cohorts = await fetchJson('cohorts', buildParams());
+  } catch (error) {
+    console.warn('Cohorts analytics unavailable, using demo data.', error);
+    cohorts = { cohorts: [] };
+  }
+  let cohortRows = Array.isArray(cohorts?.cohorts) ? cohorts.cohorts : [];
+  if (!cohortRows.length) {
+    cohortRows = createDemoCohorts().cohorts;
+  }
+  renderTable('pyme-cohorts', cohortRows, ['cohort', 'size', 'retention30', 'retention60', 'retention90']);
 }
 
 async function loadOperations() {
-  const data = await fetchJson('operations', buildParams());
-  const extras = data.extras || {};
+  let data;
+  try {
+    data = await fetchJson('operations', buildParams());
+  } catch (error) {
+    console.warn('Operaciones analytics unavailable, using demo data.', error);
+    data = { extras: {} };
+  }
+  let extras = data?.extras || {};
+  if (!extras.aging && !extras.agents && !extras.queue) {
+    extras = createDemoOperations().extras;
+  }
   renderBarChart('operaciones-aging', Object.entries(extras.aging || {}).map(([label, value]) => ({ label, value })));
   renderTable('operaciones-agentes', extras.agents, ['agente', 'tickets', 'respuesta_promedio_min']);
   renderBarChart('operaciones-sla', Object.entries(extras.queue || {}).map(([label, value]) => ({ label, value })));
@@ -599,6 +1002,14 @@ function renderChart(canvas, config) {
   if (state.charts.has(canvas.id)) {
     state.charts.get(canvas.id).destroy();
   }
+  canvas.style.display = '';
+  const container = canvas.parentElement;
+  if (container) {
+    const placeholder = container.querySelector('.empty-state');
+    if (placeholder) {
+      placeholder.remove();
+    }
+  }
   const context = canvas.getContext('2d');
   if (!config.data.labels && config.data.datasets?.[0]?.data?.[0]?.x !== undefined) {
     const labels = Array.from(
@@ -611,6 +1022,90 @@ function renderChart(canvas, config) {
   }
   const chart = new window.Chart(context, config);
   state.charts.set(canvas.id, chart);
+}
+
+function updateEmptyState(canvasId, hasData, message = 'Sin datos disponibles') {
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return;
+  const container = canvas.parentElement;
+  if (!container) return;
+  if (hasData) {
+    canvas.style.display = '';
+    const placeholder = container.querySelector('.empty-state');
+    if (placeholder) placeholder.remove();
+    return;
+  }
+  if (state.charts.has(canvasId)) {
+    state.charts.get(canvasId).destroy();
+    state.charts.delete(canvasId);
+  }
+  canvas.style.display = 'none';
+  let placeholder = container.querySelector('.empty-state');
+  if (!placeholder) {
+    placeholder = document.createElement('p');
+    placeholder.className = 'empty-state';
+    container.appendChild(placeholder);
+  }
+  placeholder.textContent = message;
+}
+
+function renderDemografia(data) {
+  const resumenContainer = document.getElementById('municipio-demografia-resumen');
+  if (!data) {
+    updateEmptyState('municipio-demografia-genero', false, 'Sin datos de género');
+    updateEmptyState('municipio-demografia-edad', false, 'Sin datos etarios');
+    updateEmptyState('municipio-demografia-barrios', false, 'Sin datos por barrio');
+    if (resumenContainer) {
+      resumenContainer.innerHTML = '<p class="empty-state">Sin datos demográficos suficientes</p>';
+    }
+    return;
+  }
+
+  const generoEntries = Object.entries(data.genero || {}).map(([label, value]) => ({ label, value }));
+  updateEmptyState('municipio-demografia-genero', generoEntries.length > 0, 'Sin datos de género');
+  if (generoEntries.length) {
+    renderDonutChart('municipio-demografia-genero', generoEntries);
+  }
+
+  const ageOrder = ['0-12', '13-17', '18-24', '25-34', '35-44', '45-54', '55-64', '65+'];
+  const ageCounts = data.rango_etario || {};
+  const ageItems = ageOrder
+    .map((bucket) => ({ label: bucket, value: ageCounts[bucket] || 0 }))
+    .filter((item) => item.value > 0);
+  updateEmptyState('municipio-demografia-edad', ageItems.length > 0, 'Sin datos etarios');
+  if (ageItems.length) {
+    renderBarChart('municipio-demografia-edad', ageItems);
+  }
+
+  const barriosItems = Array.isArray(data.territorio?.barrios) ? data.territorio.barrios.slice(0, 8) : [];
+  updateEmptyState('municipio-demografia-barrios', barriosItems.length > 0, 'Sin datos por barrio');
+  if (barriosItems.length) {
+    renderBarChart('municipio-demografia-barrios', barriosItems);
+  }
+
+  if (resumenContainer) {
+    const edad = data.edad || {};
+    const metrics = [
+      {
+        label: 'Promedio',
+        value:
+          edad.promedio != null ? formatNumber(Math.round(Number(edad.promedio) * 10) / 10) : '—',
+      },
+      { label: 'Mediana', value: edad.mediana != null ? formatNumber(Number(edad.mediana)) : '—' },
+      { label: 'P90', value: edad.p90 != null ? formatNumber(Number(edad.p90)) : '—' },
+      { label: 'Muestra', value: edad.muestra != null ? edad.muestra : 0 },
+    ];
+    if (!metrics.length) {
+      resumenContainer.innerHTML = '<p class="empty-state">Sin datos demográficos suficientes</p>';
+    } else {
+      resumenContainer.innerHTML = metrics
+        .map(
+          (metric) =>
+            `<div class="metric"><span>${metric.label}</span><strong>${metric.value}</strong></div>`
+        )
+        .join('');
+    }
+  }
 }
 
 function groupSeries(series) {
@@ -690,6 +1185,12 @@ function generateDemoGeoDataset(scope = 'municipio') {
       fuente: 'demo',
     });
   }
+  if (cells.length) {
+    const maxCount = Math.max(...cells.map((cell) => cell.count || 0)) || 1;
+    cells.forEach((cell) => {
+      cell.intensity = Number(((cell.count || 0) / maxCount).toFixed(4));
+    });
+  }
   const points = [];
   for (let index = 0; index < pointCount; index += 1) {
     const coords = randomPointAroundJunin(random);
@@ -723,14 +1224,31 @@ function updateFilterOptions(selectId, values) {
   if (!select || !values) return;
   const existing = new Set(Array.from(select.options).map((opt) => opt.value));
   values.forEach((value) => {
-    const label = typeof value === 'object' ? value.label : value;
-    const optionValue = typeof value === 'object' ? value.label : value;
-    if (!optionValue || existing.has(optionValue)) return;
+    let optionValue;
+    let label;
+    if (typeof value === 'object') {
+      optionValue =
+        value.value ??
+        value.id ??
+        value.agente_id ??
+        value.key ??
+        value.label ??
+        value.nombre ??
+        value.agente ??
+        '';
+      label = value.label || value.nombre || value.agente || value.text || String(optionValue);
+    } else {
+      optionValue = value;
+      label = value;
+    }
+    if (!optionValue) return;
+    const key = String(optionValue);
+    if (existing.has(key)) return;
     const option = document.createElement('option');
-    option.value = optionValue;
+    option.value = key;
     option.textContent = label || optionValue;
     select.append(option);
-    existing.add(optionValue);
+    existing.add(key);
   });
 }
 
@@ -743,16 +1261,53 @@ function ensureMap() {
     state.map.off();
     state.map.remove();
   }
+  state.baseLayers = new Map();
+  state.currentBaseLayer = null;
   state.map = L.map(container, {
     center: [JUNIN_CENTER.lat, JUNIN_CENTER.lon],
     zoom: 13,
     zoomControl: true,
   });
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    attribution: '&copy; OpenStreetMap contributors',
-  }).addTo(state.map);
-  state.heatLayer = L.heatLayer([], { radius: 25, blur: 15, maxZoom: 17 }).addTo(state.map);
-  state.clusterLayer = L.markerClusterGroup().addTo(state.map);
+  state.baseLayers.set(
+    'streets',
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; OpenStreetMap contributors',
+      maxZoom: 19,
+    }),
+  );
+  state.baseLayers.set(
+    'dark',
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+      attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
+      maxZoom: 19,
+    }),
+  );
+  state.baseLayers.set(
+    'terrain',
+    L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
+      attribution:
+        'Datos © OpenStreetMap contributors, SRTM | Estilo © OpenTopoMap (CC-BY-SA)',
+      maxZoom: 17,
+    }),
+  );
+  setBaseLayer(state.baseLayer, { silent: true });
+  state.heatLayer = L.heatLayer([], {
+    radius: 24,
+    blur: 18,
+    maxZoom: 18,
+    gradient: {
+      0.2: '#38bdf8',
+      0.4: '#0ea5e9',
+      0.6: '#6366f1',
+      0.8: '#f97316',
+      1: '#f43f5e',
+    },
+  });
+  state.clusterLayer = L.markerClusterGroup({
+    disableClusteringAtZoom: 17,
+    spiderfyOnEveryZoom: false,
+    spiderfyDistanceMultiplier: 1.3,
+  });
   state.selectionLayer = L.featureGroup().addTo(state.map);
   if (state.drawControl) {
     state.map.removeControl(state.drawControl);
@@ -785,27 +1340,162 @@ function ensureMap() {
     loadDashboard();
   });
   state.mapContainerId = desiredId;
+  applyMapLayers();
+  updateMapModeButtons();
+  updateBaseLayerSelectors();
 }
 
 function updateMap(cells, points) {
   ensureMap();
   if (!state.map) return;
-  state.heatLayer.setLatLngs(cells.map((cell) => [cell.centroid_lat, cell.centroid_lon, cell.count]));
+  const mapCells = Array.isArray(cells) ? cells : [];
+  const mapPoints = Array.isArray(points) ? points : [];
+  state.mapData = { cells: mapCells, points: mapPoints };
+  const heatPoints = mapCells
+    .map((cell) => {
+      const lat = Number(cell.centroid_lat);
+      const lon = Number(cell.centroid_lon);
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+      let intensity = Number(cell.intensity);
+      if (!Number.isFinite(intensity) || intensity <= 0) {
+        const count = Number(cell.count || 0);
+        intensity = Number.isFinite(count) && count > 0 ? Math.min(count / 10, 1) : 0;
+      }
+      const normalized = Math.max(0, Math.min(1, intensity));
+      return [lat, lon, normalized];
+    })
+    .filter(Boolean);
+  state.heatLayer.setLatLngs(heatPoints);
   state.clusterLayer.clearLayers();
-  points.forEach((point) => {
-    const marker = L.marker([point.lat, point.lon]);
-    marker.bindPopup(`<strong>${point.categoria || point.estado || 'Dato'}</strong><br/>${formatCell(point.total || point.count || '')}`);
-    state.clusterLayer.addLayer(marker);
+  const bounds = [];
+  mapCells.forEach((cell) => {
+    const lat = Number(cell.centroid_lat);
+    const lon = Number(cell.centroid_lon);
+    if (Number.isFinite(lat) && Number.isFinite(lon)) {
+      bounds.push([lat, lon]);
+    }
   });
-  if (!state.map.hasLayer(state.clusterLayer)) {
-    state.map.addLayer(state.clusterLayer);
+  mapPoints.forEach((point) => {
+    const lat = Number(point.lat);
+    const lon = Number(point.lon);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+    const marker = L.marker([lat, lon], {
+      title: point.categoria || point.estado || 'Dato',
+    });
+    const details = [];
+    if (point.categoria) {
+      details.push(`<strong>${point.categoria}</strong>`);
+    }
+    if (point.estado) {
+      details.push(`<span>${point.estado}</span>`);
+    }
+    if (point.total) {
+      details.push(`<span>Monto: ${formatCell(point.total)}</span>`);
+    } else if (point.count) {
+      details.push(`<span>Casos: ${formatCell(point.count)}</span>`);
+    }
+    marker.bindPopup(details.join('<br/>') || 'Dato');
+    state.clusterLayer.addLayer(marker);
+    bounds.push([lat, lon]);
+  });
+  state.mapBounds = bounds.length ? L.latLngBounds(bounds) : null;
+  applyMapLayers();
+  updateMapModeButtons();
+  updateMapMeta(mapCells, mapPoints);
+  fitMapToData();
+}
+
+function applyMapLayers() {
+  if (!state.map) return;
+  if (state.heatLayer) {
+    if (state.mapLayers.heat && !state.map.hasLayer(state.heatLayer)) {
+      state.heatLayer.addTo(state.map);
+    }
+    if (!state.mapLayers.heat && state.map.hasLayer(state.heatLayer)) {
+      state.map.removeLayer(state.heatLayer);
+    }
   }
-  if (cells.length || points.length) {
-    const bounds = [];
-    cells.forEach((cell) => bounds.push([cell.centroid_lat, cell.centroid_lon]));
-    points.forEach((point) => bounds.push([point.lat, point.lon]));
-    if (bounds.length) state.map.fitBounds(bounds, { padding: [40, 40] });
+  if (state.clusterLayer) {
+    if (state.mapLayers.cluster && !state.map.hasLayer(state.clusterLayer)) {
+      state.map.addLayer(state.clusterLayer);
+    }
+    if (!state.mapLayers.cluster && state.map.hasLayer(state.clusterLayer)) {
+      state.map.removeLayer(state.clusterLayer);
+    }
   }
+}
+
+function updateMapModeButtons() {
+  document.querySelectorAll('[data-map-layer]').forEach((button) => {
+    const layer = button.dataset.mapLayer;
+    if (!layer) return;
+    const active = !!state.mapLayers[layer];
+    button.setAttribute('aria-pressed', active ? 'true' : 'false');
+  });
+}
+
+function updateBaseLayerSelectors() {
+  document.querySelectorAll('[data-map-base]').forEach((select) => {
+    if (!select) return;
+    if (select.value !== state.baseLayer) {
+      select.value = state.baseLayer;
+    }
+  });
+}
+
+function setBaseLayer(name, options = {}) {
+  const desired = name || state.baseLayer || 'streets';
+  state.baseLayer = desired;
+  if (!state.map || !state.baseLayers.size) {
+    if (!options.silent) updateBaseLayerSelectors();
+    return;
+  }
+  const key = state.baseLayers.has(desired) ? desired : 'streets';
+  const layer = state.baseLayers.get(key);
+  if (!layer) return;
+  if (state.currentBaseLayer) {
+    state.map.removeLayer(state.currentBaseLayer);
+  }
+  layer.addTo(state.map);
+  state.currentBaseLayer = layer;
+  state.baseLayer = key;
+  if (!options.silent) updateBaseLayerSelectors();
+}
+
+function fitMapToData(animate = false) {
+  ensureMap();
+  if (!state.map) return;
+  if (state.mapBounds && state.mapBounds.isValid()) {
+    state.map.fitBounds(state.mapBounds, {
+      padding: [40, 40],
+      maxZoom: 16,
+      animate,
+    });
+  } else {
+    state.map.setView([JUNIN_CENTER.lat, JUNIN_CENTER.lon], 13);
+  }
+}
+
+function updateMapMeta(cells, points) {
+  const metaId = state.scope === 'pyme' ? 'pyme-map-meta' : 'municipio-map-meta';
+  const container = document.getElementById(metaId);
+  if (!container) return;
+  const totalPoints = points.length;
+  const activeCells = cells.filter((cell) => Number(cell.count || cell.intensity || 0) > 0).length;
+  const maxIntensity = cells.reduce((max, cell) => {
+    const value = Number(cell.intensity || 0);
+    return value > max ? value : max;
+  }, 0);
+  if (!totalPoints && !activeCells) {
+    container.textContent = 'Sin datos georreferenciados para el período seleccionado.';
+    return;
+  }
+  const intensityPct = Math.round(Math.min(Math.max(maxIntensity, 0), 1) * 100);
+  container.innerHTML = `
+    <span><strong>${formatNumber(totalPoints)}</strong> puntos</span>
+    <span><strong>${formatNumber(activeCells)}</strong> hotspots</span>
+    <span>Intensidad máx: <strong>${intensityPct}%</strong></span>
+  `;
 }
 
 function exportCsv(key) {

@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 RUBROS_PUBLICOS = {
     "municipio",
     "municipios",
+    "municipio inteligente",
     "ong",
     "gobierno",
     "hospital_publico",
@@ -26,6 +27,31 @@ RUBROS_PUBLICOS = {
     "publico",
     "municipalidad",
     # Agregá acá los que consideres públicos
+}
+
+MENU_KEYWORDS = {
+    "ver_estado_reclamo": {"estado", "reclamo", "seguimiento"},
+    "iniciar_reclamo": {"iniciar", "nuevo", "hacer"},
+    "cancelar_reclamo": {"cancelar", "anular"},
+    "hablar_con_agente": {"agente", "hablar", "asesor", "representante", "humano"},
+    "consultar_otro_reclamo": {"otro", "consultar"},
+    "finalizar_conversacion": {"finalizar", "terminar", "chau", "adios"},
+    "menu_principal": {"menu", "principal", "inicio"},
+    "consultar_deuda": {"deuda", "pagar", "factura"},
+    "consultar_licencia": {"licencia", "conducir", "registro"},
+    "consultar_transporte": {"transporte", "colectivo", "sube"},
+    "consultar_eventos": {"eventos", "agenda", "actividades"},
+    "consultar_noticias": {"noticias", "novedades", "informacion"},
+    "consultar_tramites": {"tramites", "tramite", "gestiones"},
+    "consultar_servicios": {"servicios", "servicio"},
+    "consultar_turismo": {"turismo", "visitar", "pasear"},
+    "consultar_salud": {"salud", "hospital", "emergencia"},
+    "consultar_educacion": {"educacion", "escuelas", "cursos"},
+    "consultar_trabajo": {"trabajo", "empleo", "buscar"},
+    "consultar_mascotas": {"mascotas", "perros", "gatos"},
+    "consultar_ambiente": {"ambiente", "verde", "ecologia"},
+    "consultar_cultura": {"cultura", "arte", "museos"},
+    "consultar_deportes": {"deportes", "ejercicio", "gimnasio"},
 }
 
 def normalizar_rubro(rubro) -> str:
@@ -50,8 +76,6 @@ def es_rubro_publico(rubro) -> bool:
 
 from services.demo_response_engine import maybe_handle_demo_interaction
 from services.llm_utils import clasificar_entidad_con_llm
-from services.municipio_responder import responder_municipio
-from services.pymes import responder_pyme
 from services.response_formatter import render_audio_text
 from services.constants import CONTEXTO_MUNICIPIO
 
@@ -60,6 +84,8 @@ from services.constants import CONTEXTO_MUNICIPIO
 
 # ... otras funciones que ya tengas en logic.py (como responder_chatboc)
 from utils.db_utils import safe_flag_modified
+from utils.response_utils import normalize_response_payload
+from services.catalog_share import maybe_handle_catalog_share
 
 def responder_chatboc(
     pregunta,
@@ -125,6 +151,14 @@ def responder_chatboc(
     if not effective_owner_user:
         logger.warning(f"[responder_chatboc] 'effective_owner_user' could not be determined. This is critical for context-specific logic (e.g., for /ask/municipio). Check if a valid entity token is being passed for the bot instance.")
 
+    catalog_share_response = maybe_handle_catalog_share(
+        pregunta=pregunta,
+        owner_user=effective_owner_user,
+        channel=channel,
+    )
+    if catalog_share_response:
+        return catalog_share_response
+
     # 2. Detectar nombre de rubro (universal)
     rubro_nombre = ""
     fuente = ""
@@ -157,20 +191,21 @@ def responder_chatboc(
     #     f"[LOGIC] Usando rubro: '{rubro_nombre}' (fuente: {fuente}, user: {getattr(owner_user, 'id', None)})"
     # )
 
-    # Si el rubro indica un tipo específico de lógica, lo usamos siempre
-    if rubro_nombre:
-        tipo_chat = "municipio" if es_rubro_publico(rubro_nombre) else "pyme"
-    elif tipo_chat not in ("municipio", "pyme"):
+    # Si el rubro indica un tipo específico de lógica, lo usamos para inferir cuando no viene explícito
+    if rubro_nombre and tipo_chat not in ("municipio", "pyme"):
+        tipo_chat = "municipio" if es_rubro_publico(rubro_obj or rubro_nombre) else "pyme"
+    elif not rubro_nombre and tipo_chat not in ("municipio", "pyme"):
         raise ValueError(f"Tipo de chat inválido: {tipo_chat}")
 
     # --- INICIO: Manejo de confusión Pyme/Municipio ---
-    if tipo_chat == "pyme":
-        from services.municipio_responder import MENU_KEYWORDS as MUNICIPIO_MENU_KEYWORDS
-        pregunta_text = pregunta if isinstance(pregunta, str) else pregunta.get("pregunta", "")
-        pregunta_norm = normalizar_texto(pregunta_text)
+    pregunta_text_check = pregunta if isinstance(pregunta, str) else pregunta.get("pregunta", "")
+    pregunta_norm_check = normalizar_texto(pregunta_text_check)
+    skip_confusion_check = any(k in pregunta_norm_check for k in ["catalogo", "catálogo", "carrito", "comprar", "pedido", "producto", "precio"])
+
+    if tipo_chat == "pyme" and not kwargs.get("demo_metadata") and not skip_confusion_check:
         # Check for municipal keywords in the user's query
-        for action, keywords in MUNICIPIO_MENU_KEYWORDS.items():
-            if any(keyword in pregunta_norm for keyword in keywords):
+        for action, keywords in MENU_KEYWORDS.items():
+            if any(keyword in pregunta_norm_check for keyword in keywords):
                 pyme_name = getattr(effective_owner_user, "nombre_empresa", "este comercio")
                 return {
                     "message_body": f"Parece que estás consultando sobre un trámite municipal, pero te encuentras en el chat de {pyme_name}. ¿Querés que te dirija al asistente del municipio?",
@@ -258,12 +293,14 @@ def responder_chatboc(
                 kwargs.setdefault("es_audio", True)
                 from services.audio_transcription_service import transcribe_audio_from_url
 
-                # Re-introduce the specific error handling for the final solution
-                transcript = ""
-                try:
-                    transcript = transcribe_audio_from_url(file_url, mime_type)
-                except Exception as e:
-                    logger.error(f"Error inesperado durante la transcripción de audio web: {e}", exc_info=True)
+                # Check if we already have the transcript (e.g. from WhatsApp/Twilio metadata)
+                transcript = uploaded_file_info.get("transcribed_text")
+
+                if not transcript:
+                    try:
+                        transcript = transcribe_audio_from_url(file_url, mime_type)
+                    except Exception as e:
+                        logger.error(f"Error inesperado durante la transcripción de audio web: {e}", exc_info=True)
 
                 if transcript:
                     # This is the key change: pass the transcript in the same way WhatsApp does,
@@ -378,7 +415,7 @@ def responder_chatboc(
     # Los handlers (responder_municipio, responder_pyme) son responsables de cargar/guardar
     # su propio contexto desde/hacia chat_db_context.context_data usando chat_session_uuid como posible sub-key si es necesario.
 
-    demo_metadata = kwargs.get("demo_metadata") if isinstance(kwargs.get("demo_metadata"), dict) else None
+    demo_metadata = kwargs.get("demo_metadata")
 
     response_data = None
     if demo_metadata:
@@ -397,9 +434,29 @@ def responder_chatboc(
             action_id=action_from_payload,
         )
 
+        if response_data is None:
+            quick_actions = demo_metadata.get("quick_actions") or []
+            message_type = "interactive_list" if len(quick_actions) > 3 else "interactive_buttons"
+            response_data = {
+                "message_body": demo_metadata.get(
+                    "welcome_message",
+                )
+                or "Estás en la demo interactiva. Elegí una opción para continuar.",
+                "options_list": quick_actions,
+                "botones": quick_actions,
+                "message_type": message_type,
+                "fuente": "demo_offline",
+                "skip_audio_generation": True,
+            }
+
+    if demo_metadata and tipo_chat == "municipio" and response_data is not None:
+        return response_data
+
     if tipo_chat == "municipio":
         if response_data is None:
-            response_data = responder_municipio(
+            from services import municipio_responder as municipio_responder_module
+
+            response_data = municipio_responder_module.responder_municipio(
                 pregunta_original=pregunta, # La pregunta original del usuario
                 owner_user=owner_user,
                 rubro_obj=rubro_obj,
@@ -412,7 +469,9 @@ def responder_chatboc(
             )
     elif tipo_chat == "pyme":
         if response_data is None:
-            response_data = responder_pyme(
+            from services import pymes as pymes_module
+
+            response_data = pymes_module.responder_pyme(
                 pregunta_original=pregunta,
                 owner_user=owner_user,
                 rubro_obj=rubro_obj,
@@ -427,6 +486,27 @@ def responder_chatboc(
         # Esto no debería ocurrir debido a las validaciones previas de tipo_chat
         logger.error(f"Error crítico: tipo_chat '{tipo_chat}' no es ni 'municipio' ni 'pyme' en la parte final de responder_chatboc.")
         response_data = {"respuesta": "Error interno: tipo de chat no configurado correctamente.", "fuente": "sistema_error"}
+
+    if (
+        isinstance(response_data, dict)
+        and response_data.get("fuente") == "pyme_municipio_confusion_handler"
+    ):
+        quick_actions = (demo_metadata or {}).get("quick_actions") or []
+        message_type = "interactive_list" if len(quick_actions) > 3 else "interactive_buttons"
+        response_data = {
+            "message_body": (demo_metadata or {}).get("welcome_message")
+            or "Estás en la demo interactiva. Elegí una opción para continuar.",
+            "options_list": quick_actions,
+            "botones": quick_actions,
+            "message_type": message_type,
+            "fuente": "demo_offline",
+            "skip_audio_generation": True,
+        }
+
+    if isinstance(response_data, dict):
+        fuente_val = str(response_data.get("fuente") or "").strip().lower()
+        if fuente_val.startswith("demo_") or response_data.get("demo_selector_mode"):
+            response_data["skip_audio_generation"] = True
 
     # Always enable audio responses for accessibility
     context_data = chat_db_context.context_data if chat_db_context else {}
@@ -459,15 +539,56 @@ def responder_chatboc(
             )
         if text_to_speak:
             from services.tts_orchestrator import generar_audio
-            audio_url = generar_audio(text_to_speak)
+            tts_speed = response_data.get("tts_speed")
+            try:
+                tts_speed = float(tts_speed) if tts_speed is not None else None
+            except (TypeError, ValueError):
+                tts_speed = None
+
+            audio_url = generar_audio(
+                text_to_speak,
+                voice=response_data.get("tts_voice"),
+                model=response_data.get("tts_model"),
+                style=response_data.get("tts_style"),
+                speed=tts_speed,
+                cache_namespace=response_data.get("tts_cache_namespace"),
+            )
             if audio_url:
                 response_data['audio_url'] = audio_url
                 logger.info(f"Generated audio response at {audio_url}")
+
+    if isinstance(response_data, dict) and response_data.get("fuente") == "pyme_municipio_confusion_handler":
+        quick_actions = (demo_metadata or {}).get("quick_actions") or []
+        message_type = "interactive_list" if len(quick_actions) > 3 else "interactive_buttons"
+        response_data = {
+            "message_body": (demo_metadata or {}).get("welcome_message")
+            or "Estás en la demo interactiva. Elegí una opción para continuar.",
+            "options_list": quick_actions,
+            "botones": quick_actions,
+            "message_type": message_type,
+            "fuente": "demo_offline",
+            "skip_audio_generation": True,
+        }
 
     if chat_db_context and chat_db_context.context_data:
         chat_db_context.context_data.pop('source_is_audio', None)
     if response_data:
         response_data.pop('generar_audio', None)
         response_data.pop('skip_audio_generation', None)
+
+    if demo_metadata and tipo_chat == "municipio":
+        response_data = response_data or {
+            "message_body": (demo_metadata or {}).get("welcome_message")
+            or "Estás en la demo interactiva. Elegí una opción para continuar.",
+            "options_list": (demo_metadata or {}).get("quick_actions") or [],
+            "botones": (demo_metadata or {}).get("quick_actions") or [],
+            "message_type": "interactive_buttons",
+        }
+        if isinstance(response_data, dict):
+            response_data["fuente"] = "demo_offline"
+
+
+    if isinstance(response_data, dict):
+        normalize_response_payload(response_data)
 
     return response_data

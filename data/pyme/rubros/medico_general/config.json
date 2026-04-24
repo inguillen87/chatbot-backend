@@ -1,0 +1,155 @@
+{
+  "nombre": "Clínica Demo",
+  "descripcion": "Clínica polivalente: turnos inteligentes y telemedicina.",
+  "prompt_context": "Clínica Demo ofrece turnos médicos inteligentes, teleconsulta con receta digital, gestión de estudios y seguimiento remoto de pacientes crónicos. Integra cobertura con obras sociales, reporting para empresas y analítica de ocupación.",
+  "welcome_message": "🏥 Bienvenido a Clínica Demo.\n\nElegí una opción para gestionar turnos, estudios, telemedicina o convenios.",
+  "resources": [
+    {
+      "title": "Agenda de turnos prioritarios",
+      "description": "Bloques de guardia, disponibilidad de especialidades y cobertura.",
+      "type": "pdf",
+      "url": "/static/demo/medico/agenda-turnos-prioritarios.pdf",
+      "cta_text": "Ver agenda inteligente",
+      "highlight": "Actualización diaria",
+      "availability": "Clínica central y sedes"
+    },
+    {
+      "title": "Guía de estudios y preparación",
+      "description": "Instrucciones por tipo de estudio, ayuno y tiempos de entrega de resultados.",
+      "type": "pdf",
+      "url": "/static/demo/medico/guia-preparacion-estudios.pdf",
+      "cta_text": "Descargar guía de estudios",
+      "highlight": "Chequeos adultos y pediátricos",
+      "availability": "Laboratorio propio"
+    },
+    {
+      "title": "Flujo de teleconsulta",
+      "description": "Reserva, videollamada, receta digital y seguimiento de tratamiento.",
+      "type": "image",
+      "url": "/static/demo/medico/teleconsulta-flujo.svg",
+      "thumbnail": "/static/demo/medico/teleconsulta-flujo.svg",
+      "cta_text": "Ver flujo completo",
+      "highlight": "Receta electrónica",
+      "availability": "Adultos y pediatría"
+    }
+  ],
+  "quick_actions": [
+    {
+      "emoji": "📅",
+      "texto": "Turnos",
+      "description": "Consultorios, pediatría y derivaciones",
+      "category": "📅 Turnos",
+      "submenu": [
+        {
+          "emoji": "🩺",
+          "texto": "Clínica médica",
+          "prompt": "Quiero turnos de clínica médica esta semana y saber si aceptan OSDE 410.",
+          "description": "Consultorios mañana y tarde"
+        },
+        {
+          "emoji": "👶",
+          "texto": "Pediatría",
+          "prompt": "Necesito un turno pediátrico con prioridad para control de 2 años.",
+          "description": "Guardia pediátrica 24/7"
+        },
+        {
+          "emoji": "🧾",
+          "texto": "Turnos derivados",
+          "prompt": "¿Cómo gestiono turnos derivados por mi obra social y autorizaciones?",
+          "description": "Gestión automática con autorizaciones"
+        }
+      ]
+    },
+    {
+      "emoji": "🧪",
+      "texto": "Estudios",
+      "description": "Laboratorio, imágenes y resultados",
+      "category": "🧪 Estudios",
+      "submenu": [
+        {
+          "emoji": "🩸",
+          "texto": "Laboratorio general",
+          "prompt": "¿Qué preparación necesito para análisis de laboratorio completo y cuándo entregan resultados?",
+          "description": "Resultados en 24/48 h"
+        },
+        {
+          "emoji": "🧬",
+          "texto": "Diagnóstico por imágenes",
+          "prompt": "Necesito saber disponibilidad para resonancia y requisitos de autorización.",
+          "description": "Resonancia 1.5T · sedes Centro y Norte"
+        },
+        {
+          "emoji": "📤",
+          "texto": "Entrega digital",
+          "prompt": "¿Cómo accedo a resultados digitalizados y los comparto con mi médico?",
+          "description": "Portal seguro + firma electrónica"
+        }
+      ]
+    },
+    {
+      "emoji": "💬",
+      "texto": "Telemedicina",
+      "description": "Videoconsultas y seguimiento remoto",
+      "category": "💬 Telemedicina",
+      "submenu": [
+        {
+          "emoji": "🖥️",
+          "texto": "Teleconsulta",
+          "prompt": "Quiero entender cómo funciona la teleconsulta y cómo recibir la receta digital.",
+          "description": "Video HD + receta electrónica"
+        },
+        {
+          "emoji": "📈",
+          "texto": "Seguimiento crónicos",
+          "prompt": "¿Qué herramientas tienen para monitoreo remoto de pacientes crónicos?",
+          "description": "Dispositivos conectados + alertas"
+        },
+        {
+          "emoji": "📞",
+          "texto": "Acompañamiento post alta",
+          "prompt": "Necesito saber cómo es el acompañamiento post alta y coordinación con mi prepaga.",
+          "description": "Contact center médico + reportes"
+        }
+      ]
+    },
+    {
+      "emoji": "🏢",
+      "texto": "Corporativo",
+      "description": "Planes preventivos y beneficios",
+      "category": "🏢 Corporate",
+      "submenu": [
+        {
+          "emoji": "🧾",
+          "texto": "Planes preventivos",
+          "prompt": "Enviame propuestas de chequeos preventivos corporativos por segmento.",
+          "description": "Programas anualizados y on site"
+        },
+        {
+          "emoji": "📊",
+          "texto": "Reporting ejecutivo",
+          "prompt": "Necesito un ejemplo de reporte ejecutivo con métricas de utilización y NPS.",
+          "description": "Dashboards mensuales personalizados"
+        },
+        {
+          "emoji": "🤝",
+          "texto": "Beneficios empresas",
+          "prompt": "¿Qué beneficios adicionales ofrecen para empresas (guardería, wellness, charlas)?",
+          "description": "Charlas de wellness y salud mental"
+        }
+      ]
+    }
+  ],
+  "capabilities": [
+    "📲 Agenda turnos inteligentes con recordatorios por WhatsApp, SMS y email.",
+    "🧑‍⚕️ Gestiono teleconsultas, receta digital y envío automático a farmacias adheridas.",
+    "🧪 Integro resultados de laboratorio e imágenes en el portal paciente con permisos por rol.",
+    "📊 Armo tableros para convenios corporativos con métricas de uso y satisfacción."
+  ],
+  "keywords": [
+    "turno médico",
+    "teleconsulta",
+    "preparación estudios",
+    "seguimiento crónicos",
+    "convenios corporativos"
+  ]
+}

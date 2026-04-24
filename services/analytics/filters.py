@@ -6,7 +6,9 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Iterable, Optional, Sequence
 
-from flask import abort
+from flask import abort, current_app, g, request
+
+from models import TenantProfile
 
 
 @dataclass(frozen=True)
@@ -74,10 +76,51 @@ def _parse_bbox(value: Optional[str]) -> Optional[tuple[float, float, float, flo
     return (min_lon, min_lat, max_lon, max_lat)
 
 
+
+
+def _resolve_tenant_id_from_context() -> Optional[str]:
+    """Best-effort tenant inference for authenticated dashboards.
+
+    Keeps /analytics and /admin/analytics usable when frontend omits tenant_id
+    while user/session context is already available in request globals.
+    """
+
+    debug_tenant = (request.headers.get("X-Debug-Tenant") or "").strip()
+    if current_app.config.get("TESTING") and debug_tenant:
+        return debug_tenant
+
+    tenant_profile = getattr(g, "tenant_profile", None)
+    if tenant_profile is not None and getattr(tenant_profile, "id", None) is not None:
+        return str(tenant_profile.id)
+
+    viewer = getattr(g, "viewer", None)
+    if viewer is not None:
+        for attr in ("tenant_id", "municipio_id", "pyme_id", "empresa_id", "id"):
+            value = getattr(viewer, attr, None)
+            if value is not None:
+                return str(value)
+
+    # Debug fallback for local/manual calls without full auth stack.
+    if debug_tenant:
+        return debug_tenant
+
+    return None
+
 def parse_filters(args) -> AnalyticsFilters:
     """Parse request args into a structured filter object."""
 
     tenant_id = args.get("tenant_id")
+    if not tenant_id:
+        tenant_slug = (args.get("tenant_slug") or args.get("tenant") or "").strip().lower()
+        if tenant_slug:
+            tenant_obj = TenantProfile.query.filter(TenantProfile.slug.ilike(tenant_slug)).first()
+            if tenant_obj:
+                owner_tenant_id = tenant_obj.municipio_id or tenant_obj.pyme_id
+                tenant_id = str(owner_tenant_id or tenant_obj.id)
+
+    if not tenant_id:
+        tenant_id = _resolve_tenant_id_from_context()
+
     if not tenant_id:
         abort(400, description="tenant_id is required")
 

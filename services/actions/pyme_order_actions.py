@@ -1,9 +1,13 @@
 # services/actions/pyme_order_actions.py
 import logging
 import json
+import re
+from decimal import Decimal, InvalidOperation
 from typing import Dict, Any, List, Optional
 from .base_action_handler import BaseActionHandler
 from services.pedido_service import servicio_pedidos # For creating PymePedido
+from services.conversation_summaries import build_order_confirmation_payload
+from services.order_attachment_preview import build_order_attachment_preview
 from services.cart import (
     add_item_to_cart, remove_item_from_cart,
     update_item_quantity_in_cart, clear_pyme_cart, get_cart_summary
@@ -11,8 +15,21 @@ from services.cart import (
 from services.qdrant_search import buscar_catalogo_qdrant, CATALOGO_PYME
 from models import CatalogoItem, db, User, PymePedido # Added PymePedido
 from services.common_utils import parse_precio_flexible, validar_telefono, formatear_telefono_e164, validar_email
+from utils.money_ar import format_ars
 
 logger = logging.getLogger(__name__)
+
+
+def _format_price_for_user(value: Any, moneda: str = "ARS") -> str:
+    try:
+        dec_value = Decimal(str(value))
+    except (TypeError, ValueError, InvalidOperation):
+        return str(value)
+
+    if (moneda or "ARS").upper() == "ARS":
+        decimals = 0 if dec_value == dec_value.to_integral_value() else 2
+        return format_ars(dec_value, decimals=decimals)
+    return f"{float(dec_value):,.2f}"
 
 def _get_pyme_carts_data_from_context(context: Dict[str, Any]) -> Dict[int, List[Dict[str, Any]]]:
     chat_db_context_data = context.get("chat_db_context_data")
@@ -25,39 +42,78 @@ def _get_pyme_carts_data_from_context(context: Dict[str, Any]) -> Dict[int, List
     return chat_db_context_data['carritos_pymes']
 
 class AgregarItemCarritoAction(BaseActionHandler):
-    def _find_product_details(self, pyme_id: int, product_identifier: str) -> Optional[Dict[str, Any]]:
-        # This function can be expanded with more sophisticated search logic,
-        # including fuzzy matching, alias resolution, etc.
-        # For now, it relies on a direct Qdrant search.
-        qdrant_collection = CATALOGO_PYME
-        logger.info(f"Searching Qdrant '{qdrant_collection}' for '{product_identifier}' (pyme_id: {pyme_id})")
-        qdrant_results = buscar_catalogo_qdrant(user_id=pyme_id, texto_busqueda=product_identifier, limite=1, coleccion=qdrant_collection)
-
-        if not qdrant_results or not qdrant_results[0].payload:
-            logger.warning(f"Product '{product_identifier}' not found for pyme_id {pyme_id}.")
-            return None
-
-        payload = qdrant_results[0].payload
+    def _build_product_info_from_qdrant_hit(self, payload: Dict[str, Any], fallback_name: str) -> Dict[str, Any]:
         db_id = payload.get("db_id")
         item_db = db.session.get(CatalogoItem, db_id) if db_id else None
 
         if item_db:
             _, precio_float, moneda = parse_precio_flexible(item_db.precio)
             return {
-                "catalogo_item_id": item_db.id, "nombre_producto": item_db.nombre,
-                "precio_unitario": precio_float, "moneda": moneda or "ARS", "sku": item_db.sku,
-                "presentacion": item_db.unidad, "imagen_url": item_db.imagen_url
+                "catalogo_item_id": item_db.id,
+                "nombre_producto": item_db.nombre,
+                "precio_unitario": precio_float,
+                "moneda": moneda or "ARS",
+                "sku": item_db.sku,
+                "presentacion": item_db.unidad,
+                "imagen_url": item_db.imagen_url,
             }
 
-        logger.warning(f"Qdrant found '{product_identifier}', but no corresponding DB record via db_id={db_id}. Using Qdrant payload as fallback.")
         _, precio_float, moneda = parse_precio_flexible(payload.get("precio_str", "0"))
         return {
             "catalogo_item_id": payload.get("sku") or payload.get("nombre"),
-            "nombre_producto": payload.get("nombre", product_identifier),
-            "precio_unitario": precio_float, "moneda": moneda or "ARS",
-            "sku": payload.get("sku"), "presentacion": payload.get("unidad_descripcion") or payload.get("unidad_original"),
-            "imagen_url": payload.get("imagen_url")
+            "nombre_producto": payload.get("nombre", fallback_name),
+            "precio_unitario": precio_float,
+            "moneda": moneda or "ARS",
+            "sku": payload.get("sku"),
+            "presentacion": payload.get("unidad_descripcion") or payload.get("unidad_original"),
+            "imagen_url": payload.get("imagen_url"),
         }
+
+    def _search_product_candidates(self, pyme_id: int, product_identifier: str, *, limit: int = 5) -> List[Dict[str, Any]]:
+        qdrant_collection = CATALOGO_PYME
+        logger.info(f"Searching Qdrant '{qdrant_collection}' for '{product_identifier}' (pyme_id: {pyme_id})")
+        qdrant_results = buscar_catalogo_qdrant(
+            user_id=pyme_id,
+            pregunta=product_identifier,
+            limite=max(1, int(limit or 1)),
+            coleccion=qdrant_collection,
+        )
+
+        candidates: List[Dict[str, Any]] = []
+        seen: set[str] = set()
+        for hit in qdrant_results or []:
+            payload = getattr(hit, "payload", {}) or {}
+            if not payload:
+                continue
+            candidate = self._build_product_info_from_qdrant_hit(payload, product_identifier)
+            dedupe_key = str(candidate.get("catalogo_item_id") or candidate.get("sku") or candidate.get("nombre_producto"))
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            candidates.append(candidate)
+        return candidates
+
+    def _find_product_details(self, pyme_id: int, product_identifier: str) -> Optional[Dict[str, Any]]:
+        sku_candidate = str(product_identifier or "").strip()
+        if sku_candidate:
+            exact = CatalogoItem.query.filter_by(user_id=pyme_id, sku=sku_candidate).first()
+            if exact:
+                _, precio_float, moneda = parse_precio_flexible(exact.precio)
+                return {
+                    "catalogo_item_id": exact.id,
+                    "nombre_producto": exact.nombre,
+                    "precio_unitario": precio_float,
+                    "moneda": moneda or "ARS",
+                    "sku": exact.sku,
+                    "presentacion": exact.unidad,
+                    "imagen_url": exact.imagen_url,
+                }
+
+        candidates = self._search_product_candidates(pyme_id, product_identifier, limit=1)
+        if not candidates:
+            logger.warning(f"Product '{product_identifier}' not found for pyme_id {pyme_id}.")
+            return None
+        return candidates[0]
 
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
         logger.info(f"Executing AgregarItemCarritoAction with data: {action_data}")
@@ -69,11 +125,50 @@ class AgregarItemCarritoAction(BaseActionHandler):
         if not product_identifier:
             return {"success": False, "message_to_user": "Por favor, especifica el producto que deseas agregar.", "pedir_info": "nombre_producto_mencionado"}
 
+        cantidad_raw = action_data.get("cantidad_producto_mencionado")
+        cantidad_fue_explicita = cantidad_raw is not None
         try:
-            cantidad = int(action_data.get("cantidad_producto_mencionado", 1))
+            cantidad = int(cantidad_raw if cantidad_raw is not None else 1)
             if cantidad <= 0: raise ValueError("La cantidad debe ser un número positivo.")
         except (ValueError, TypeError):
             return {"success": False, "message_to_user": "La cantidad proporcionada no es válida. Por favor, indica un número."}
+
+        pregunta_usuario = str(self.context.get("pregunta_actual_usuario") or "").strip().lower()
+        exploratory_patterns = (
+            r"\b(que|qué)\s+ten[eé]s\b",
+            r"\b(cu[aá]les?|mostrame|mostrar|opciones)\b",
+            r"\b(quiero\s+comprar|busco|tienen|ten[eé]s?)\b",
+        )
+        query_corta = len(re.findall(r"\w+", pregunta_usuario)) <= 8
+        es_consulta_exploratoria = bool(
+            pregunta_usuario
+            and query_corta
+            and any(re.search(pattern, pregunta_usuario) for pattern in exploratory_patterns)
+        )
+
+        if es_consulta_exploratoria and not cantidad_fue_explicita:
+            candidates = self._search_product_candidates(pyme_id, product_identifier, limit=4)
+            if len(candidates) > 1:
+                opciones = []
+                lineas = ["Encontré varias opciones para tu búsqueda. Decime cuál querés agregar:"]
+                for idx, candidate in enumerate(candidates[:4], start=1):
+                    nombre = candidate.get("nombre_producto") or "Producto"
+                    moneda = candidate.get("moneda") or "ARS"
+                    precio = candidate.get("precio_unitario")
+                    precio_txt = ""
+                    if isinstance(precio, (int, float)):
+                        precio_txt = f" — ${_format_price_for_user(precio, moneda)} {moneda}"
+                    lineas.append(f"{idx}. {nombre}{precio_txt}")
+                    suffix = candidate.get("catalogo_item_id") or candidate.get("sku") or nombre
+                    opciones.append({"texto": f"Pedir {str(nombre)[:18]}", "id_accion": f"agregar_item_carrito__{suffix}"})
+
+                opciones.append({"texto": "Buscar otra cosa", "id_accion": "consultar_producto_pyme"})
+                return {
+                    "success": True,
+                    "message_to_user": "\n".join(lineas),
+                    "options_list": opciones,
+                    "fuente": "pyme_disambiguacion_producto_v1",
+                }
 
         producto_info = self._find_product_details(pyme_id, product_identifier)
         if not producto_info:
@@ -126,9 +221,16 @@ class CrearPedidoAction(BaseActionHandler):
         email_cliente_validado = email_cliente_raw if validar_email(email_cliente_raw) else None
 
         missing_contact = []
-        if not nombre_cliente: missing_contact.append("nombre")
-        if not (telefono_cliente_validado or email_cliente_validado): missing_contact.append("un teléfono o email de contacto")
-        if not direccion_entrega: missing_contact.append("una dirección de entrega")
+        if not nombre_cliente:
+            missing_contact.append("nombre")
+        if self.context.get("channel") == "voice":
+            if not telefono_cliente_validado:
+                missing_contact.append("un teléfono de contacto")
+        else:
+            if not (telefono_cliente_validado or email_cliente_validado):
+                missing_contact.append("un teléfono o email de contacto")
+        if not direccion_entrega:
+            missing_contact.append("una dirección de entrega")
 
         if missing_contact:
             campos_str = " y ".join(missing_contact)
@@ -160,6 +262,7 @@ class CrearPedidoAction(BaseActionHandler):
             "direccion": direccion_entrega,
             "monto_total": monto_total_estimado,
             "pyme_id": pyme_id,
+            "channel": self.context.get("channel"),
         }
 
         try:
@@ -180,6 +283,13 @@ class CrearPedidoAction(BaseActionHandler):
                 "direccion": direccion_entrega,
             }
 
+            nota_pdf_generado = getattr(nuevo_pedido, "nota_pedido_pdf_generado", False)
+            order_confirmation = build_order_confirmation_payload(
+                cart_summary=current_cart_summary,
+                customer=cliente_payload,
+                delivery_address=direccion_entrega,
+                channel=self.context.get("channel"),
+            )
             data_payload = {
                 "nro_pedido": nuevo_pedido.nro_pedido,
                 "pedido_id": nuevo_pedido.id,
@@ -188,11 +298,20 @@ class CrearPedidoAction(BaseActionHandler):
                 "cart_summary": current_cart_summary,
                 "cliente": cliente_payload,
                 "order_summary_text": resumen_carrito,
+                "order_confirmation": order_confirmation,
+                "confirmation_card": order_confirmation,
+                "nota_pedido_pdf_generado": nota_pdf_generado,
             }
+
+            mensaje_confirmacion = resumen_carrito
+            if nota_pdf_generado and email_cliente_validado:
+                mensaje_confirmacion += f"\n\nTe enviamos la nota de pedido en PDF a {email_cliente_validado}."
+            elif nota_pdf_generado:
+                mensaje_confirmacion += "\n\nLa nota de pedido en PDF está lista para compartir con tu equipo."
 
             return {
                 "success": True,
-                "message_body": resumen_carrito,
+                "message_body": mensaje_confirmacion,
                 "data": data_payload,
                 "fuente": "pyme_pedido_registrado",
             }
@@ -216,7 +335,7 @@ class ConsultarProductoAction(BaseActionHandler):
         rubro_nombre = getattr(pyme_user.rubro, "nombre", "general") if pyme_user and hasattr(pyme_user, "rubro") else "general"
         qdrant_collection = CATALOGO_PYME
 
-        resultados = buscar_catalogo_qdrant(user_id=pyme_id, texto_busqueda=query, limite=3, coleccion=qdrant_collection)
+        resultados = buscar_catalogo_qdrant(user_id=pyme_id, pregunta=query, limite=3, coleccion=qdrant_collection)
 
         if not resultados:
             return {"success": True, "message_to_user": f"No encontré productos para '{query}'. ¿Intentar otra búsqueda?"}
@@ -407,20 +526,26 @@ class ProcesarAdjuntoPedidoAction(BaseActionHandler):
         if not texto_extraido:
             return {"success": False, "message_to_user": "No se pudo extraer texto del archivo para procesar el pedido."}
 
-        # Use the LLM to parse the extracted text into a structured order
-        # This is a conceptual step. The actual implementation will require a prompt that
-        # tells the LLM to extract order items from the text.
-
-        # For now, I will just return the extracted text and ask the user to confirm.
-
-        message = f"He procesado el archivo y extraje el siguiente texto:\n\n---\n{texto_extraido[:500]}...\n\n---\n\n¿Quieres que intente crear un pedido con esta información?"
-
-        # In a real implementation, we would parse this with another LLM call,
-        # then match with catalog, and then create the order.
-        # For now, we will just confirm with the user.
+        preview = build_order_attachment_preview(
+            texto_extraido=texto_extraido,
+            pyme_id_context=self.context.get("user_id"),
+            telefono=self.context.get("telefono_usuario_contexto"),
+            email=self.context.get("email_usuario_contexto"),
+            nombre=self.context.get("nombre_usuario_contexto"),
+            direccion=self.context.get("direccion_usuario_contexto"),
+            channel=self.context.get("channel"),
+        )
 
         return {
             "success": True,
-            "message_to_user": message,
-            "data": {"adjunto_pedido_procesado": True, "texto_extraido": texto_extraido}
+            "message_to_user": preview["message"],
+            "data": {
+                "adjunto_pedido_procesado": True,
+                "texto_extraido": texto_extraido,
+                "items_detectados": preview["items_detectados"],
+                "catalog_match_summary": preview["catalog_match_summary"],
+                "order_confirmation": preview["order_confirmation"],
+                "confirmation_card": preview["confirmation_card"],
+            },
+            "options_list": preview["options_list"],
         }

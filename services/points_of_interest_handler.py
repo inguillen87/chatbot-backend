@@ -6,6 +6,7 @@ from pathlib import Path
 from sqlalchemy.orm.attributes import flag_modified
 
 from .herramientas_municipio import TOOL_REGISTRY
+from .poi_service import nearby as poi_nearby
 from .estacionamiento_utils import _dist_m
 from .estacionamiento_service import consultar_ocupacion
 from .conversation_state import ConversationState
@@ -188,13 +189,9 @@ class PointsOfInterestHandler:
     def _parking_response(self, location: dict | str, info: dict | None = None) -> dict:
         """Generate a parking response based on coordinates or an address."""
         if not self.parking_data:
-            from .municipio_responder import _message_with_menu
-            payload = _message_with_menu(
-                "No tengo datos de estacionamiento disponibles en este momento.",
-                self.context,
+            return self._build_simple_response(
+                "No tengo datos de estacionamiento disponibles en este momento."
             )
-            payload["fuente"] = "points_of_interest_handler"
-            return payload
 
         address = ""
         lat = lon = None
@@ -244,7 +241,11 @@ class PointsOfInterestHandler:
 
         if info.get("geocode_source") == "invalid_query" and not info.get("segmentos"):
             from .municipio_responder import _message_with_menu  # local import
-            payload = _message_with_menu(info.get("texto") or "Necesito una dirección para ayudarte.", self.context)
+            payload = _message_with_menu(
+                info.get("texto") or "Necesito una dirección para ayudarte.",
+                self.context,
+                include_greeting=False,
+            )
             payload.update({
                 "fuente": "points_of_interest_handler",
                 "geocode_source": info.get("geocode_source"),
@@ -254,7 +255,11 @@ class PointsOfInterestHandler:
         if lat is None or lon is None:
             message = info.get("texto") or "No pude ubicar esa dirección. Probá con calle y altura (ej.: San Martín 1200)."
             from .municipio_responder import _message_with_menu
-            payload = _message_with_menu(message, self.context)
+            payload = _message_with_menu(
+                message,
+                self.context,
+                include_greeting=False,
+            )
             payload.update({
                 "fuente": "points_of_interest_handler",
                 "geocode_source": info.get("geocode_source"),
@@ -356,11 +361,7 @@ class PointsOfInterestHandler:
             })
 
         message_text = "\n".join(lines)
-        try:
-            from .municipio_responder import _message_with_menu  # local import to avoid circular dependency
-            base_payload = _message_with_menu(message_text, self.context)
-        except ImportError:  # pragma: no cover - fallback for circular imports in isolated tests
-            base_payload = {"message_body": message_text}
+        base_payload = self._build_simple_response(message_text)
         base_payload.update({
             "fuente": "points_of_interest_handler",
             "camera": cam_name,
@@ -375,10 +376,194 @@ class PointsOfInterestHandler:
             "resolved_lon": lon,
         })
         return base_payload
+
+    @staticmethod
+    def _requires_refinement(message: str | None) -> bool:
+        if not message:
+            return True
+        lowered = message.lower()
+        return any(
+            phrase in lowered
+            for phrase in (
+                "no tengo información",
+                "no tengo info",
+                "no cuento con información",
+                "no pude encontrar",
+                "no pude encontrar información",
+                "podrias especificar",
+                "podrías especificar",
+                "qué tipo de lugar",
+                "que tipo de lugar",
+                "qué tipo de lugares",
+                "que tipo de lugares",
+                "que tipo de lugares cercanos",
+                "qué tipo de lugares cercanos",
+            )
+        )
+
+    @staticmethod
+    def _poi_refinement_options() -> list[dict[str, str]]:
+        return [
+            {"texto": "🏥 Hospitales o clínicas", "action_id": "hospitales"},
+            {"texto": "🩺 Farmacias (incluye 24hs)", "action_id": "farmacias 24 horas"},
+            {"texto": "🍽️ Restaurantes", "action_id": "restaurantes"},
+            {"texto": "🚓 Comisarías", "action_id": "comisarias"},
+            {"texto": "🚒 Bomberos", "action_id": "bomberos"},
+            {"texto": "🏦 Cajeros/ATM", "action_id": "cajeros automáticos"},
+            {"texto": "🏞️ Parques o plazas", "action_id": "parques"},
+            {"texto": "🛒 Supermercados", "action_id": "supermercados"},
+            {"texto": "🅿️ Estacionamiento (demo)", "action_id": "estacionamiento"},
+            {"texto": "Otro tipo de lugar", "action_id": "otro lugar"},
+        ]
+
+    @staticmethod
+    def _poi_keyword_from_query(query: str) -> tuple[str, bool] | tuple[None, bool]:
+        normalized = PointsOfInterestHandler._normalize_text(query)
+        keyword_map = {
+            "hospitales": "hospital",
+            "clinicas": "hospital",
+            "clínicas": "hospital",
+            "farmacias": "farmacia",
+            "farmacias 24 horas": "farmacia",
+            "farmacias 24 hs": "farmacia",
+            "farmacias 24hs": "farmacia",
+            "restaurantes": "restaurant",
+            "comisarias": "police",
+            "comisarías": "police",
+            "bomberos": "fire station",
+            "cajeros automaticos": "atm",
+            "cajeros automáticos": "atm",
+            "parques": "park",
+            "plazas": "park",
+            "supermercados": "supermarket",
+        }
+        open_now = any(token in normalized for token in ("24", "24hs", "24 horas", "de turno", "guardia"))
+        for key, keyword in keyword_map.items():
+            if key in normalized:
+                return keyword, open_now
+        return None, open_now
+
+    @staticmethod
+    def _format_poi_results(results: list[dict], label: str) -> str:
+        if not results:
+            return f"No pude encontrar {label} cerca de esa ubicación."
+        lines = [f"{label.capitalize()} cercanos:"]
+        for idx, item in enumerate(results[:3], 1):
+            name = item.get("name") or "Lugar"
+            address = item.get("vicinity") or item.get("formatted_address") or "Dirección no disponible"
+            lines.append(f"{idx}. {name} — {address}")
+        return "\n".join(lines)
+
+    def _build_refinement_prompt(self, location: dict | None) -> dict:
+        address = ""
+        if isinstance(location, dict):
+            address = location.get("address") or location.get("label") or ""
+        address_text = f"cerca de *{address}*" if address else "cerca de tu ubicación"
+        message_body = (
+            f"Perfecto, puedo buscar lugares {address_text}. "
+            "¿Qué tipo de lugar necesitás?"
+        )
+        return {
+            "message_body": message_body,
+            "options_list": self._poi_refinement_options(),
+            "message_type": "interactive_buttons",
+            "fuente": "points_of_interest_refinement",
+            "generar_audio": True,
+        }
+
+    def _handle_direct_poi_lookup(self, rubro: str, location: dict | None) -> dict | None:
+        """Attempt a direct POI tool lookup when the user already chose a category."""
+        if not rubro or not location:
+            return None
+
+        herramienta = TOOL_REGISTRY.get("buscar_poi") or TOOL_REGISTRY.get("buscar_puntos_de_interes")
+        if not herramienta:
+            return None
+
+        localidad = location.get("address") or location.get("label")
+        if not localidad:
+            return None
+
+        try:
+            resultado = herramienta["funcion"](rubro=rubro, localidad=localidad)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.error("Error executing POI tool: %s", exc, exc_info=True)
+            return self._build_simple_response(
+                "Ocurrió un error al buscar lugares cercanos."
+            )
+
+        return self._build_simple_response(str(resultado))
+
+    @staticmethod
+    def _build_simple_response(message: str) -> dict:
+        return {
+            "message_body": message,
+            "message_type": "text",
+            "fuente": "points_of_interest_handler",
+            "generar_audio": True,
+        }
     def handle(self, payload: dict) -> dict | None:
         original_question = payload.get("pregunta") or ""
         pregunta = original_question.lower()
         location = payload.get("location")
+
+        if not location:
+            municipio_ctx = (
+                self.context.get("chat_db_context_data", {})
+                .get(CONTEXTO_MUNICIPIO, {})
+            )
+            location = (
+                municipio_ctx.get("ubicacion_contextual")
+                or self.context.get("ubicacion_usuario")
+            )
+
+        if isinstance(location, dict):
+            normalized_location = {
+                "address": location.get("address") or location.get("label"),
+                "lat": location.get("lat") or location.get("latitude"),
+                "lon": location.get("lon") or location.get("longitude"),
+            }
+            if location.get("formatted_address") and not normalized_location.get("address"):
+                normalized_location["address"] = location.get("formatted_address")
+            location = {k: v for k, v in normalized_location.items() if v}
+
+        normalized_question = self._normalize_text(pregunta)
+        if normalized_question in {"lugares cercanos", "lugares cerca", "lugares", "cerca"}:
+            return self._build_refinement_prompt(location if isinstance(location, dict) else None)
+
+        refinement_actions = {
+            self._normalize_text(option.get("action_id"))
+            for option in self._poi_refinement_options()
+            if option.get("action_id")
+        }
+        if normalized_question in refinement_actions and "estacionamiento" not in normalized_question:
+            if isinstance(location, dict) and location.get("lat") is not None and location.get("lon") is not None:
+                keyword, open_now = self._poi_keyword_from_query(original_question)
+                if keyword:
+                    results = poi_nearby(
+                        location.get("lat"),
+                        location.get("lon"),
+                        keyword=keyword,
+                        radius=1500,
+                        open_now=open_now,
+                    )
+                    if results is None:
+                        return self._build_simple_response(
+                            "No pude consultar lugares en tiempo real. Probá más tarde o consultá la web del municipio."
+                        )
+                    if open_now:
+                        results = [
+                            item
+                            for item in (results or [])
+                            if item.get("opening_hours", {}).get("open_now") is True
+                        ]
+                    label = original_question
+                    message = self._format_poi_results(results or [], label)
+                    return self._build_simple_response(message)
+
+            direct_lookup = self._handle_direct_poi_lookup(original_question, location if isinstance(location, dict) else None)
+            if direct_lookup:
+                return direct_lookup
 
         keywords = ("estacionamiento", "estacionar", "lugar libre")
         if any(word in pregunta for word in keywords):
@@ -481,35 +666,59 @@ class PointsOfInterestHandler:
         message_body = respuesta_llm.get("message_body", "")
         botones = respuesta_llm.get("botones", [])
 
+        if accion == "responder_directamente" and self._requires_refinement(message_body):
+            return self._build_refinement_prompt(location if isinstance(location, dict) else None)
+
         if accion == "ejecutar_herramienta":
             datos = respuesta_llm.get("datos_estructura", {})
             nombre = datos.get("nombre_herramienta")
             params = datos.get("parametros_herramienta", {})
             herramienta = TOOL_REGISTRY.get(nombre)
             if not herramienta:
-                from .municipio_responder import _message_with_menu
-                final_payload = _message_with_menu(message_body or "No tengo una herramienta para eso.", self.context)
-                final_payload["fuente"] = "points_of_interest_handler"
-                return final_payload
+                return self._build_simple_response(
+                    message_body or "No tengo una herramienta para eso."
+                )
             try:
+                if (
+                    nombre in {"buscar_poi", "buscar_puntos_de_interes"}
+                    and isinstance(location, dict)
+                    and location.get("lat") is not None
+                    and location.get("lon") is not None
+                ):
+                    keyword, open_now = self._poi_keyword_from_query(params.get("rubro") or params.get("tipo_lugar") or "")
+                    if keyword:
+                        results = poi_nearby(
+                            location.get("lat"),
+                            location.get("lon"),
+                            keyword=keyword,
+                            radius=1500,
+                            open_now=open_now,
+                        )
+                        if results is None:
+                            return self._build_simple_response(
+                                "No pude consultar lugares en tiempo real. Probá más tarde o consultá la web del municipio."
+                            )
+                        if open_now:
+                            results = [
+                                item
+                                for item in (results or [])
+                                if item.get("opening_hours", {}).get("open_now") is True
+                            ]
+                        label = params.get("rubro") or params.get("tipo_lugar") or "lugares"
+                        result_text = self._format_poi_results(results or [], label)
+                        return self._build_simple_response(result_text)
+
                 resultado = herramienta["funcion"](**params)
                 if isinstance(resultado, dict):
                     result_text = resultado.get("texto") or resultado.get("message_body") or str(resultado)
                 else:
                     result_text = str(resultado)
                 final_message = f"{message_body}\n{result_text}".strip() or result_text
-                from .municipio_responder import _message_with_menu
-                final_payload = _message_with_menu(final_message, self.context)
-                final_payload["fuente"] = "points_of_interest_handler"
-                return final_payload
+                return self._build_simple_response(final_message)
             except Exception as exc:  # pragma: no cover - defensive
                 logger.error("Error executing tool %s: %s", nombre, exc, exc_info=True)
-                from .municipio_responder import _message_with_menu
-                final_payload = _message_with_menu("Ocurrió un error al obtener la información solicitada.", self.context)
-                final_payload["fuente"] = "points_of_interest_handler"
-                return final_payload
+                return self._build_simple_response(
+                    "Ocurrió un error al obtener la información solicitada."
+                )
 
-        from .municipio_responder import _message_with_menu
-        final_payload = _message_with_menu(message_body, self.context)
-        final_payload["fuente"] = "points_of_interest_handler"
-        return final_payload
+        return self._build_simple_response(message_body)

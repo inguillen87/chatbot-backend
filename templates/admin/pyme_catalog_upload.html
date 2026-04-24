@@ -152,22 +152,43 @@
         }
       }
 
+      async function safeParseJson(response) {
+        const contentType = (response.headers.get('content-type') || '').toLowerCase();
+        if (!contentType.includes('application/json')) {
+          return null;
+        }
+        try {
+          return await response.json();
+        } catch (parseError) {
+          console.warn('No se pudo parsear el JSON de respuesta', parseError);
+          return null;
+        }
+      }
+
       async function uploadSingleFile(file) {
         const targetUrl = authToken
           ? `${uploadEndpoint}?token=${encodeURIComponent(authToken)}`
           : uploadEndpoint;
         const formData = new FormData();
         formData.append('file', file, file.name);
-        const response = await fetch(targetUrl, {
-          method: 'POST',
-          body: formData,
-        });
-        if (!response.ok) {
-          const payload = await response.json().catch(() => ({}));
-          const message = payload.error || `Error ${response.status}: no se pudo procesar ${file.name}`;
-          throw new Error(message);
+
+        let response;
+        try {
+          response = await fetch(targetUrl, {
+            method: 'POST',
+            body: formData,
+          });
+        } catch (networkError) {
+          throw new Error(`Importación fallida: ${networkError.message || 'Error de red'}`);
         }
-        return response.json().catch(() => ({ mensaje: 'Catálogo subido correctamente.' }));
+
+        const payload = await safeParseJson(response);
+        if (!response.ok) {
+          const detail = (payload && (payload.mensaje || payload.error)) || response.statusText || `HTTP ${response.status}`;
+          throw new Error(`Importación fallida: ${detail}`);
+        }
+
+        return payload || { mensaje: 'Catálogo subido correctamente.' };
       }
 
       form.addEventListener('submit', async (event) => {
@@ -189,7 +210,10 @@
           fileInput.value = '';
         } catch (error) {
           console.error(error);
-          updateStatus(error.message || 'Ocurrió un error al subir el catálogo.', 'error');
+          const message = error.message?.includes('Importación fallida')
+            ? error.message
+            : `Importación fallida: ${error.message || 'Ocurrió un error al subir el catálogo.'}`;
+          updateStatus(message, 'error');
         } finally {
           form.querySelector('button[type="submit"]').disabled = false;
         }

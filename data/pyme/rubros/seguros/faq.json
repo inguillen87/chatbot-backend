@@ -1,0 +1,62 @@
+[
+  {
+    "question": "Flotas inteligentes",
+    "answer": "Políticas adaptadas por perfil",
+    "extended_answer": "Quiero conocer coberturas para flotas con telemetría y gestión de choferes."
+  },
+  {
+    "question": "Property & BI",
+    "answer": "Cobertura global con auditoría",
+    "extended_answer": "Mostrame planes property + business interruption con sumas aseguradas y deducibles."
+  },
+  {
+    "question": "Beneficios ejecutivos",
+    "answer": "Plan premium con asistencia worldwide",
+    "extended_answer": "Necesito propuestas para beneficios ejecutivos y coberturas internacionales."
+  },
+  {
+    "question": "Denuncia mobile",
+    "answer": "App branded + bots asistidos",
+    "extended_answer": "¿Cómo funciona la denuncia mobile con carga de fotos y geolocalización?"
+  },
+  {
+    "question": "Red de talleres",
+    "answer": "SLA 48 h con seguimiento",
+    "extended_answer": "Mostrame tiempos promedio y SLA de talleres certificados en AMBA."
+  },
+  {
+    "question": "Mesa ejecutiva",
+    "answer": "Escalamiento 24/7",
+    "extended_answer": "Necesito contacto de mesa ejecutiva para siniestros críticos."
+  },
+  {
+    "question": "KPIs ejecutivos",
+    "answer": "Dashboards en tiempo real",
+    "extended_answer": "Quiero los KPIs ejecutivos de siniestralidad, severidad y forecast."
+  },
+  {
+    "question": "Compliance regulatorio",
+    "answer": "SOX · GDPR · IFRS 17",
+    "extended_answer": "¿Qué entregables generan para auditorías y compliance internacional?"
+  },
+  {
+    "question": "Pricing actuarial",
+    "answer": "Modelos propios + benchmark",
+    "extended_answer": "Mostrame modelos actuariales y supuestos para renovar pólizas."
+  },
+  {
+    "question": "Brokers aliados",
+    "answer": "Programas regionales certificados",
+    "extended_answer": "Necesito listado de brokers aliados y condiciones de revenue share."
+  },
+  {
+    "question": "APIs de pólizas",
+    "answer": "REST + Webhooks + SSO",
+    "extended_answer": "¿Cómo integro emisión de pólizas y certificados vía API?"
+  },
+  {
+    "question": "Academia risk",
+    "answer": "Capacitaciones presenciales y virtuales",
+    "extended_answer": "Mostrame workshops y entrenamientos para áreas de risk management."
+  }
+]

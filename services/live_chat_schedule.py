@@ -188,6 +188,82 @@ def _clamp_time(hour: int, minute: int) -> time:
     return time(hour, minute)
 
 
+
+
+def _parse_time_value(value, fallback: time) -> time:
+    if isinstance(value, time):
+        return value
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return fallback
+        if ':' in raw:
+            try:
+                hour_s, minute_s = raw.split(':', 1)
+                return _clamp_time(int(hour_s), int(minute_s))
+            except Exception:
+                return fallback
+        if raw.isdigit():
+            return _clamp_time(int(raw), 0)
+    if isinstance(value, (tuple, list)) and len(value) >= 2:
+        try:
+            return _clamp_time(int(value[0]), int(value[1]))
+        except Exception:
+            return fallback
+    if isinstance(value, int):
+        return _clamp_time(value, 0)
+    return fallback
+
+
+def build_schedule_from_config(config: Optional[dict]) -> LiveChatSchedule:
+    config = config if isinstance(config, dict) else {}
+    enabled = bool(config.get('enabled', True))
+
+    tz_name = str(config.get('timezone') or DEFAULT_TIMEZONE).strip() or DEFAULT_TIMEZONE
+    try:
+        timezone = ZoneInfo(tz_name)
+    except Exception:
+        timezone = ZoneInfo(DEFAULT_TIMEZONE)
+
+    days = _normalize_days(config.get('days') if config.get('days') is not None else 'mon-fri')
+
+    start_value = config.get('start_time')
+    end_value = config.get('end_time')
+    if start_value is None and config.get('start_hour') is not None:
+        start_value = (config.get('start_hour'), config.get('start_minute', 0))
+    if end_value is None and config.get('end_hour') is not None:
+        end_value = (config.get('end_hour'), config.get('end_minute', 0))
+
+    start_time = _parse_time_value(start_value, DEFAULT_START)
+    end_time = _parse_time_value(end_value, DEFAULT_END)
+
+    return LiveChatSchedule(
+        enabled=enabled,
+        days=days,
+        start_time=start_time,
+        end_time=end_time,
+        timezone=timezone,
+    )
+
+
+def _is_live_chat_available_for_schedule(schedule: LiveChatSchedule, now: Optional[datetime] = None) -> bool:
+    if not schedule.enabled:
+        return False
+    if not schedule.days:
+        return False
+
+    tz_now = now.astimezone(schedule.timezone) if now else datetime.now(schedule.timezone)
+    if tz_now.weekday() not in schedule.days:
+        return False
+
+    current_time = tz_now.time()
+    start = schedule.start_time
+    end = schedule.end_time
+
+    if start <= end:
+        return start <= current_time < end
+    return current_time >= start or current_time < end
+
 def get_live_chat_schedule() -> LiveChatSchedule:
     enabled = bool(_get_config_value("LIVE_CHAT_SCHEDULE_ENABLED", True))
     tz_name = _get_config_value("LIVE_CHAT_SCHEDULE_TIMEZONE", DEFAULT_TIMEZONE)
@@ -217,25 +293,9 @@ def get_live_chat_schedule() -> LiveChatSchedule:
     )
 
 
-def is_live_chat_available(now: Optional[datetime] = None) -> bool:
-    schedule = get_live_chat_schedule()
-    if not schedule.enabled:
-        return False
-    if not schedule.days:
-        return False
-
-    tz_now = now.astimezone(schedule.timezone) if now else datetime.now(schedule.timezone)
-    if tz_now.weekday() not in schedule.days:
-        return False
-
-    current_time = tz_now.time()
-    start = schedule.start_time
-    end = schedule.end_time
-
-    if start <= end:
-        return start <= current_time < end
-    # Overnight window (e.g., 22:00 - 02:00)
-    return current_time >= start or current_time < end
+def is_live_chat_available(now: Optional[datetime] = None, schedule: Optional[LiveChatSchedule] = None) -> bool:
+    schedule = schedule or get_live_chat_schedule()
+    return _is_live_chat_available_for_schedule(schedule, now)
 
 
 def _describe_day_ranges(days: Iterable[int]) -> str:
@@ -281,6 +341,23 @@ def get_schedule_description() -> str:
     return base
 
 
+def build_live_chat_status(now: Optional[datetime] = None, schedule_override: Optional[dict] = None) -> dict:
+    schedule = build_schedule_from_config(schedule_override) if schedule_override is not None else get_live_chat_schedule()
+    description = get_schedule_description()
+    days_sorted = sorted(schedule.days)
+    days = [DAY_NAMES[day] for day in days_sorted if 0 <= day < len(DAY_NAMES)]
+    tz_label = getattr(schedule.timezone, "key", str(schedule.timezone))
+    return {
+        "enabled": schedule.enabled,
+        "available": is_live_chat_available(now, schedule=schedule),
+        "description": description,
+        "days": days,
+        "start_time": schedule.start_time.strftime("%H:%M"),
+        "end_time": schedule.end_time.strftime("%H:%M"),
+        "timezone": tz_label,
+    }
+
+
 def _load_custom_urgency_terms() -> Tuple[Set[str], Set[str]]:
     raw_terms = _get_config_value("LIVE_CHAT_AUTO_URGENCY_KEYWORDS", "")
     if not raw_terms:
@@ -321,4 +398,3 @@ def detect_urgency_reason(message: Optional[str]) -> Optional[str]:
 
 def should_auto_live_chat(message: Optional[str]) -> bool:
     return detect_urgency_reason(message) is not None
-

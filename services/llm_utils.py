@@ -627,26 +627,52 @@ def _clean_llm_json_output(llm_output: str) -> str:
     return cleaned_output.strip()
 
 
-def llamar_llm_para_json_estructurado(system_prompt: str, user_prompt: str) -> Optional[Dict | List]:
+def _sanitize_llm_text_output(text: str) -> str:
+    """Remove JSON/code-fence wrappers from LLM text output when a plain sentence is expected."""
+    if not text:
+        return ""
+
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        match = re.match(r"^\s*```(?:json)?\s*([\s\S]*?)\s*```\s*$", stripped, re.DOTALL)
+        if match:
+            stripped = match.group(1).strip()
+
+    cleaned_json = _clean_llm_json_output(stripped)
+    try:
+        parsed = json.loads(cleaned_json)
+        if isinstance(parsed, dict):
+            descripcion = parsed.get("descripcion") or parsed.get("description")
+            if isinstance(descripcion, str) and descripcion.strip():
+                return descripcion.strip()
+    except json.JSONDecodeError:
+        pass
+
+    return stripped.strip('"').strip()
+
+
+def llamar_llm_para_json_estructurado(system_prompt: str, user_prompt: str, model: str = "gpt-4o-mini") -> Optional[Dict | List]:
     """
     Calls the LLM requesting a JSON output and parses it safely.
 
     Args:
         system_prompt: The system prompt guiding the LLM's task.
         user_prompt: The user prompt, containing the data to be processed.
+        model: The model to use (default: gpt-4o-mini).
 
     Returns:
         A dictionary or list parsed from the LLM's JSON response, or None on error.
     """
     from services.llm_bridge import llamar_llm_para_generacion_texto
 
-    logger.info("Calling LLM for structured JSON output.")
+    logger.info(f"Calling LLM for structured JSON output using model: {model}")
     try:
         response_text = llamar_llm_para_generacion_texto(
             system_prompt_especifico=system_prompt,
             user_prompt=user_prompt,
             temperature=0.1,  # Lower temp for more deterministic JSON extraction
-            json_output=True
+            json_output=True,
+            model=model
         )
 
         if not response_text:
@@ -1436,7 +1462,9 @@ def generar_descripcion_natural_de_imagen(elementos: str) -> str:
             user_prompt=prompt,
             temperature=0.5
         )
-        return descripcion.strip() if descripcion else elementos
+        if not descripcion:
+            return elementos
+        return _sanitize_llm_text_output(descripcion)
     except Exception as e:
         logger.error(f"Error al generar descripción natural de imagen: {e}")
         return elementos # Fallback a los elementos crudos

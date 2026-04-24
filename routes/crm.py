@@ -1,4 +1,5 @@
 from flask import Blueprint, jsonify, request, current_app, render_template
+import re
 from models import (
     User,
     Conversacion,
@@ -8,6 +9,7 @@ from models import (
     ArchivoAdjunto,
     ClienteNota, # Nueva importación
     LlmInteractionLog,
+    TenantProfile,
 )
 from extensions import db
 from sqlalchemy import or_
@@ -40,8 +42,10 @@ def _obtener_clientes(
     order: str | None = None,
     limit: int | None = None,
     offset: int | None = None,
+    page: int | None = None,
+    page_size: int | None = None,
 ):
-    """Obtiene los clientes permitiendo búsqueda y filtros opcionales.
+    """Obtiene los clientes permitiendo búsqueda, filtros y paginación opcional.
 
     Args:
         current_user: Usuario dueño de los clientes.
@@ -50,8 +54,10 @@ def _obtener_clientes(
         acepta_marketing: 'true' / 'false' para filtrar por suscripción.
         sort: Campo por el cual ordenar (name, email, telefono).
         order: 'asc' o 'desc'.
-        limit: Cantidad máxima de registros a devolver.
-        offset: Desplazamiento inicial de los resultados.
+        limit: Cantidad máxima de registros a devolver (modo compatibilidad).
+        offset: Desplazamiento inicial de los resultados (modo compatibilidad).
+        page: Número de página (1-indexado) para paginación.
+        page_size: Cantidad de registros por página.
     """
     query = User.query.filter_by(empresa_id=current_user.id)
     if tag:
@@ -72,27 +78,43 @@ def _obtener_clientes(
         query = query.order_by(columna.desc())
     else:
         query = query.order_by(columna.asc())
-    if offset is not None:
+
+    usar_paginacion = page_size is not None or page is not None
+    if usar_paginacion:
         try:
-            offset_val = int(offset)
-            if offset_val >= 0:
-                query = query.offset(offset_val)
+            page_val = max(int(page or 1), 1)
         except (TypeError, ValueError):
-            pass
-    if limit is not None:
+            page_val = 1
         try:
-            limit_val = int(limit)
-            if limit_val >= 0:
-                query = query.limit(limit_val)
+            page_size_val = min(max(int(page_size or 50), 1), 500)
         except (TypeError, ValueError):
-            pass
+            page_size_val = 50
+        total = query.order_by(None).count()
+        query = query.limit(page_size_val).offset((page_val - 1) * page_size_val)
+    else:
+        if offset is not None:
+            try:
+                offset_val = int(offset)
+                if offset_val >= 0:
+                    query = query.offset(offset_val)
+            except (TypeError, ValueError):
+                pass
+        if limit is not None:
+            try:
+                limit_val = int(limit)
+                if limit_val >= 0:
+                    query = query.limit(limit_val)
+            except (TypeError, ValueError):
+                pass
+
     clientes = query.all()
-    return [
+    data = [
         {
             "id": c.id,
-            "name": c.name,
-            "email": c.email,
-            "telefono": c.telefono,
+            # Normalizamos strings para evitar valores None que rompan el front al aplicar toLowerCase
+            "name": c.name or "",
+            "email": c.email or "",
+            "telefono": c.telefono or "",
             "acepta_marketing": c.acepta_marketing,
             "latitud": c.latitud,
             "longitud": c.longitud,
@@ -100,6 +122,17 @@ def _obtener_clientes(
         }
         for c in clientes
     ]
+
+    if usar_paginacion:
+        return {
+            "items": data,
+            "total": total,
+            "page": page_val,
+            "page_size": page_size_val,
+            "pages": (total + page_size_val - 1) // page_size_val if total else 0,
+        }
+
+    return data
 
 @crm_bp.route('/clientes', methods=['GET'])
 @token_requerido
@@ -113,6 +146,8 @@ def listar_clientes(current_user: User):
     order = request.args.get('order')
     limit = request.args.get('limit')
     offset = request.args.get('offset')
+    page = request.args.get('page')
+    page_size = request.args.get('page_size')
     resultado = _obtener_clientes(
         current_user,
         tag,
@@ -122,6 +157,8 @@ def listar_clientes(current_user: User):
         order=order,
         limit=limit,
         offset=offset,
+        page=page,
+        page_size=page_size,
     )
     return jsonify(resultado)
 
@@ -161,6 +198,8 @@ def listar_usuarios(current_user: User):
     order = request.args.get('order')
     limit = request.args.get('limit')
     offset = request.args.get('offset')
+    page = request.args.get('page')
+    page_size = request.args.get('page_size')
     resultado = _obtener_clientes(
         current_user,
         tag,
@@ -170,8 +209,64 @@ def listar_usuarios(current_user: User):
         order=order,
         limit=limit,
         offset=offset,
+        page=page,
+        page_size=page_size,
     )
     return jsonify(resultado)
+
+
+@crm_bp.route('/usuarios/<int:usuario_id>', methods=['PUT'])
+@token_requerido
+@admin_o_empleado_requerido
+def actualizar_usuario(current_user: User, usuario_id: int):
+    """Permite actualizar datos básicos y el rol de un usuario del tenant."""
+
+    payload = request.get_json(silent=True) or {}
+    usuario = User.query.filter_by(id=usuario_id, empresa_id=current_user.id).first()
+    if not usuario:
+        return jsonify({"error": "Usuario no encontrado"}), 404
+
+    nuevo_nombre = payload.get("name")
+    nuevo_email = payload.get("email")
+    nuevo_rol = payload.get("rol")
+
+    if nuevo_nombre is not None:
+        if not isinstance(nuevo_nombre, str) or not nuevo_nombre.strip():
+            return jsonify({"error": "El nombre no puede estar vacío."}), 400
+        usuario.name = nuevo_nombre.strip()
+
+    if nuevo_email is not None:
+        if not isinstance(nuevo_email, str) or not nuevo_email.strip():
+            return jsonify({"error": "El email es obligatorio."}), 400
+        patron_email = r"^[^@\s]+@[^@\s]+\.[^@\s]+$"
+        if not re.match(patron_email, nuevo_email.strip()):
+            return jsonify({"error": "Formato de email inválido."}), 400
+        correo_final = nuevo_email.strip().lower()
+        existe = User.query.filter(User.email == correo_final, User.id != usuario.id).first()
+        if existe:
+            return jsonify({"error": "El email ya está en uso."}), 400
+        usuario.email = correo_final
+
+    if nuevo_rol is not None:
+        roles_permitidos = {"usuario", "operador", "admin"}
+        if nuevo_rol not in roles_permitidos:
+            return jsonify({"error": "Rol inválido."}), 400
+        usuario.rol = nuevo_rol
+
+    try:
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        return jsonify({"error": "No se pudo actualizar el usuario."}), 500
+
+    return jsonify(
+        {
+            "id": usuario.id,
+            "name": usuario.name,
+            "email": usuario.email,
+            "rol": usuario.rol,
+        }
+    )
 
 
 @crm_bp.route('/clientes/<int:cliente_id>/tags', methods=['PUT'])
@@ -289,11 +384,46 @@ def analytics(current_user: User):
     })
 
 
-def _obtener_interacciones(cliente: User):
-    """Compila el historial de chats y tickets de un cliente."""
-    chats = Conversacion.query.filter_by(user_id=cliente.id).all()
-    pymes = PymeTicket.query.filter_by(user_id=cliente.id).all()
-    munis = MunicipioTicket.query.filter_by(user_id=cliente.id).all()
+def _obtener_interacciones(cliente: User, viewer_user: User):
+    """Compila el historial de chats y tickets de un cliente, filtrado por el tenant del viewer."""
+
+    # Determinar contexto del viewer
+    viewer_empresa_id = viewer_user.empresa_id or viewer_user.id # Si es admin, es su propio ID
+
+    # Filtrar conversaciones
+    chats_query = Conversacion.query.filter_by(user_id=cliente.id)
+    if viewer_user.tipo_chat == "pyme":
+        chats_query = chats_query.filter_by(pyme_id=viewer_empresa_id)
+    # Para municipio, Conversacion no tiene municipio_id directo siempre?
+    # Conversacion tiene user_id (cliente) y pyme_id.
+    # Si es municipio, Conversacion podría no estar linkeada directamente por ID, o usa lógica distinta.
+    # Asumimos que el CRM de municipio ve lo que le corresponde.
+    # Si Conversacion no tiene municipio_id, es difícil filtrar.
+    # Pero el modelo tiene 'pyme_id'.
+
+    chats = chats_query.all()
+
+    # Filtrar PymeTickets
+    pymes_query = PymeTicket.query.filter_by(user_id=cliente.id)
+    if viewer_user.tipo_chat == "pyme":
+        tenant_pyme = getattr(viewer_user, "tenant_profile_pyme", None)
+        if tenant_pyme:
+             pymes_query = pymes_query.filter(PymeTicket.tenant_id == tenant_pyme.id)
+        else:
+             # Fallback inseguro o vacio? Mejor vacio para seguridad.
+             # O intentar filtrar por rubro si era la logica vieja, pero es insegura.
+             # Si no hay tenant_id, no mostramos nada para evitar leak.
+             pymes_query = pymes_query.filter(PymeTicket.tenant_id != None)
+
+    pymes = pymes_query.all()
+
+    # Filtrar MunicipioTickets
+    munis_query = MunicipioTicket.query.filter_by(user_id=cliente.id)
+    if viewer_user.tipo_chat == "municipio":
+        munis_query = munis_query.filter_by(municipio_id=viewer_empresa_id)
+
+    munis = munis_query.all()
+
     historial = []
     for c in chats:
         historial.append({
@@ -334,7 +464,7 @@ def interacciones_cliente(current_user: User, cliente_id: int):
     cliente = User.query.filter_by(id=cliente_id, empresa_id=current_user.id).first()
     if not cliente:
         return jsonify({"error": "Cliente no encontrado"}), 404
-    historial = _obtener_interacciones(cliente)
+    historial = _obtener_interacciones(cliente, current_user)
     return jsonify(historial)
 
 
@@ -702,13 +832,23 @@ def get_recent_clients(current_user: User):
                 last_interaction_date = last_convo.timestamp
 
         # Check PymeTickets (usar ultima_actividad que se actualiza)
-        last_pyme_ticket = PymeTicket.query.filter_by(user_id=client.id).order_by(PymeTicket.ultima_actividad.desc()).first()
+        pyme_q = PymeTicket.query.filter_by(user_id=client.id)
+        if current_user.tipo_chat == "pyme":
+             tenant_pyme = getattr(current_user, "tenant_profile_pyme", None)
+             if tenant_pyme:
+                 pyme_q = pyme_q.filter(PymeTicket.tenant_id == tenant_pyme.id)
+
+        last_pyme_ticket = pyme_q.order_by(PymeTicket.ultima_actividad.desc()).first()
         if last_pyme_ticket:
             if not last_interaction_date or last_pyme_ticket.ultima_actividad > last_interaction_date:
                 last_interaction_date = last_pyme_ticket.ultima_actividad
 
         # Check MunicipioTickets (usar ultima_actividad)
-        last_muni_ticket = MunicipioTicket.query.filter_by(user_id=client.id).order_by(MunicipioTicket.ultima_actividad.desc()).first()
+        muni_q = MunicipioTicket.query.filter_by(user_id=client.id)
+        if current_user.tipo_chat == "municipio":
+             muni_q = muni_q.filter_by(municipio_id=current_user.empresa_id or current_user.id)
+
+        last_muni_ticket = muni_q.order_by(MunicipioTicket.ultima_actividad.desc()).first()
         if last_muni_ticket:
             if not last_interaction_date or last_muni_ticket.ultima_actividad > last_interaction_date:
                 last_interaction_date = last_muni_ticket.ultima_actividad
@@ -756,12 +896,22 @@ def get_needs_followup_clients(current_user: User):
             if not last_interaction_date or last_convo.timestamp > last_interaction_date:
                 last_interaction_date = last_convo.timestamp
 
-        last_pyme_ticket = PymeTicket.query.filter_by(user_id=client.id).order_by(PymeTicket.ultima_actividad.desc()).first()
+        pyme_q = PymeTicket.query.filter_by(user_id=client.id)
+        if current_user.tipo_chat == "pyme":
+             tenant_pyme = getattr(current_user, "tenant_profile_pyme", None)
+             if tenant_pyme:
+                 pyme_q = pyme_q.filter(PymeTicket.tenant_id == tenant_pyme.id)
+
+        last_pyme_ticket = pyme_q.order_by(PymeTicket.ultima_actividad.desc()).first()
         if last_pyme_ticket:
             if not last_interaction_date or last_pyme_ticket.ultima_actividad > last_interaction_date:
                 last_interaction_date = last_pyme_ticket.ultima_actividad
 
-        last_muni_ticket = MunicipioTicket.query.filter_by(user_id=client.id).order_by(MunicipioTicket.ultima_actividad.desc()).first()
+        muni_q = MunicipioTicket.query.filter_by(user_id=client.id)
+        if current_user.tipo_chat == "municipio":
+             muni_q = muni_q.filter_by(municipio_id=current_user.empresa_id or current_user.id)
+
+        last_muni_ticket = muni_q.order_by(MunicipioTicket.ultima_actividad.desc()).first()
         if last_muni_ticket:
             if not last_interaction_date or last_muni_ticket.ultima_actividad > last_interaction_date:
                 last_interaction_date = last_muni_ticket.ultima_actividad

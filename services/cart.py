@@ -20,9 +20,11 @@ def _get_pyme_cart(pyme_carts_data: Dict[int, List[Dict[str, Any]]], pyme_id: in
         logger.warning(f"pyme_carts_data no es un diccionario. Recibido: {type(pyme_carts_data)}. Se reiniciará a {{}}.")
         pyme_carts_data = {}
 
-    if pyme_id not in pyme_carts_data:
-        pyme_carts_data[pyme_id] = []
-    return pyme_carts_data[pyme_id]
+    # Force pyme_id to string to avoid int/string key mismatches in JSON serialization
+    key = str(pyme_id)
+    if key not in pyme_carts_data:
+        pyme_carts_data[key] = []
+    return pyme_carts_data[key]
 
 def add_item_to_cart(pyme_carts_data: Dict[int, List[Dict[str, Any]]], pyme_id: int, producto_info: Dict[str, Any], cantidad: int = 1) -> None:
     """

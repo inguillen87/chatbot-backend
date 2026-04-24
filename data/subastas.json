@@ -1,0 +1,38 @@
+[
+  {
+    "id": "subasta-tecnologia-001",
+    "titulo": "Equipamiento tecnológico recuperado",
+    "descripcion": "Lotes de notebooks reacondicionadas provenientes de programas municipales de inclusión digital.",
+    "fecha_publicacion": "2024-12-15T12:00:00Z",
+    "fecha_cierre": "2025-12-31T23:59:00Z",
+    "precio_base": 50000,
+    "moneda": "ARS",
+    "estado": "activa",
+    "imagen_url": "https://images.unsplash.com/photo-1519389950473-47ba0277781c?auto=format&fit=crop&w=1200&q=80",
+    "etiquetas": ["tecnología", "reciclado"]
+  },
+  {
+    "id": "subasta-mobiliario-002",
+    "titulo": "Mobiliario urbano reciclado",
+    "descripcion": "Bancos de plaza y luminarias reacondicionadas con garantía municipal.",
+    "fecha_publicacion": "2025-01-10T10:00:00Z",
+    "fecha_cierre": "2025-10-01T18:00:00Z",
+    "precio_base": 15000,
+    "moneda": "ARS",
+    "estado": "activa",
+    "imagen_url": "https://images.unsplash.com/photo-1499951360447-b19be8fe80f5?auto=format&fit=crop&w=1200&q=80",
+    "etiquetas": ["mobiliario", "reciclado"]
+  },
+  {
+    "id": "subasta-vehiculos-003",
+    "titulo": "Vehículos en desuso",
+    "descripcion": "Camionetas utilitarias dadas de baja con documentación al día. Se entregan en el predio municipal.",
+    "fecha_publicacion": "2024-11-01T09:00:00Z",
+    "fecha_cierre": "2025-05-30T15:00:00Z",
+    "precio_base": 320000,
+    "moneda": "ARS",
+    "estado": "activa",
+    "imagen_url": "https://images.unsplash.com/photo-1503736334956-4c8f8e92946d?auto=format&fit=crop&w=1200&q=80",
+    "etiquetas": ["vehículos", "subasta"]
+  }
+]

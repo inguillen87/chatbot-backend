@@ -17,7 +17,11 @@ from app import create_app, db
 from config import Config
 from models import User, Rubro, WhatsappNumero, ChatSessionContext
 from services.municipio_responder import CONTEXTO_MUNICIPIO
-from routes.whatsapp_webhook import _send_delayed_payload, _strip_duplicate_welcome_media
+from routes.whatsapp_webhook import (
+    _send_delayed_payload,
+    _strip_duplicate_welcome_media,
+    _reset_municipio_context_for_menu,
+)
 # Moved model imports after app and config to ensure they are found via sys.path
 # and to avoid potential issues if models.py itself tries to import app-context related things early.
 # However, for direct use in tests, they are typically at the top. Let's try keeping them here.
@@ -123,6 +127,74 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self.twilio_client_patch.stop()
         self.welcome_patch.stop()
 
+    def test_reset_municipio_context_for_menu_clears_sensitive_draft_data(self):
+        session = ChatSessionContext(
+            chat_session_id="ctx-reset-test",
+            user_id=self.empresa_id_for_test,
+            anon_id=self.test_user_number_str,
+            context_data={
+                CONTEXTO_MUNICIPIO: {
+                    "estado_conversacion": "confirmando_reclamo",
+                    "reclamo_flow_v2": {"state": "confirm"},
+                    "datos_reclamo": {"categoria": "Bache"},
+                    "datos_parciales_llm_reclamo": {"descripcion": "calle rota"},
+                    "confirmation_required": True,
+                },
+                "last_options_sent": [{"texto": "Iniciar reclamo", "action_id": "iniciar_reclamo"}],
+                "pending_sensitive_action": {"action_id": "iniciar_reclamo"},
+            },
+        )
+        db.session.add(session)
+        db.session.commit()
+
+        _reset_municipio_context_for_menu(session)
+
+        municipio_ctx = session.context_data.get(CONTEXTO_MUNICIPIO, {})
+        self.assertEqual(municipio_ctx.get("estado_conversacion"), "ESPERANDO_SELECCION_MENU_PRINCIPAL")
+        self.assertNotIn("reclamo_flow_v2", municipio_ctx)
+        self.assertNotIn("datos_reclamo", municipio_ctx)
+        self.assertNotIn("datos_parciales_llm_reclamo", municipio_ctx)
+        self.assertNotIn("last_options_sent", session.context_data)
+        self.assertNotIn("pending_sensitive_action", session.context_data)
+
+    @patch("routes.whatsapp_webhook.responder_chatboc")
+    def test_sensitive_numeric_menu_option_requires_explicit_confirmation(self, mock_bot):
+        self._set_owner_tipo_chat("municipio")
+        self.mock_validator.validate.return_value = True
+
+        self._create_confirmed_session()
+        session = ChatSessionContext.query.filter_by(
+            chat_session_id=f"whatsapp_{self.empresa_id_for_test}_{self.test_user_number_str}"
+        ).first()
+        updated_context = dict(session.context_data or {})
+        updated_context["last_options_sent"] = [
+            {"texto": "Iniciar un Reclamo", "action_id": "iniciar_reclamo"}
+        ]
+        session.context_data = updated_context
+        db.session.add(session)
+        db.session.commit()
+
+        payload = {
+            "To": f"whatsapp:{self.test_whatsapp_number_str}",
+            "From": f"whatsapp:{self.test_user_number_str}",
+            "Body": "1",
+        }
+        headers = {"X-Twilio-Signature": "dummy_signature_valid"}
+
+        response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data.decode(), "OK")
+
+        mock_bot.assert_not_called()
+        self.assertGreaterEqual(self.mock_twilio_create.call_count, 1)
+        sent_body = self.mock_twilio_create.call_args.kwargs.get("body", "")
+        self.assertIn("confirmame por favor", sent_body.lower())
+        self.assertIn("iniciar desde cero", sent_body.lower())
+
+        db.session.refresh(session)
+        pending = session.context_data.get("pending_sensitive_action") or {}
+        self.assertEqual(pending.get("action_id"), "iniciar_reclamo")
+
     @patch('routes.whatsapp_webhook.threading.Timer')
     @patch('services.response_formatter.build_interactive_response')
     def test_send_delayed_payload_includes_audio(self, mock_build_response, mock_timer):
@@ -188,6 +260,77 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
             mock_build_response.call_args.kwargs["audio_url"],
             payload["audio_url"],
         )
+
+    @patch('routes.whatsapp_webhook.threading.Timer')
+    @patch('services.response_formatter.build_interactive_response')
+    def test_send_delayed_payload_sends_pre_messages_first(
+        self, mock_build_response, mock_timer
+    ):
+        """Pre-messages should be sent before the delayed interactive payload."""
+
+        self.app.config["APP_BASE_URL"] = "https://example.com"
+
+        payload = {
+            "message_body": "Hola, este es el menú.",
+            "options_list": [{"texto": "Opción", "id": "opcion"}],
+            "message_type": "text",
+            "_base_url": "https://example.com",
+            "_request_url_root": "https://example.com/",
+            "_twilio_pre_messages": [
+                {
+                    "channels": ["whatsapp"],
+                    "body": "Encuestas/Opiniones/Sondeos",
+                    "media_urls": ["/static/encuestas/banner.png"],
+                },
+                {
+                    "channels": ["sms"],
+                    "body": "No enviar",
+                },
+            ],
+        }
+
+        mock_build_response.return_value = {
+            "type": "text",
+            "text": {"body": "Mensaje principal"},
+        }
+
+        class ImmediateTimer:
+            def __init__(self, delay, callback):
+                self.callback = callback
+
+            def start(self):
+                self.callback()
+
+        mock_timer.side_effect = lambda delay, callback: ImmediateTimer(delay, callback)
+
+        sent_messages = []
+
+        def fake_create(**kwargs):
+            sent_messages.append(kwargs)
+            msg = MagicMock()
+            msg.sid = f"SM{len(sent_messages)}"
+            return msg
+
+        client = MagicMock()
+        client.messages.create.side_effect = fake_create
+
+        _send_delayed_payload(
+            client=client,
+            to_number="whatsapp:+111111111",
+            from_number="whatsapp:+222222222",
+            payload=payload,
+            delay=0,
+            app=self.app,
+        )
+
+        self.assertEqual(len(sent_messages), 2)
+        banner_message, main_message = sent_messages
+        self.assertEqual(banner_message.get("body"), "Encuestas/Opiniones/Sondeos")
+        self.assertEqual(
+            banner_message.get("media_url"),
+            ["https://example.com/static/encuestas/banner.png"],
+        )
+        self.assertEqual(main_message.get("body"), "Mensaje principal")
 
     @patch('routes.whatsapp_webhook.threading.Timer')
     @patch('services.response_formatter.build_interactive_response')
@@ -1123,7 +1266,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self.app.config["APP_BASE_URL"] = "http://chatboc.ar"
 
         payload = {
-            "message_body": "Hola", 
+            "message_body": "Hola",
             "options_list": [],
             "message_type": "text",
             "image_url": "/static/welcome/sticker.png",
@@ -1169,6 +1312,63 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self.assertTrue(sent_messages)
         first_call = sent_messages[0]
         self.assertEqual(first_call.get("media_url"), ["https://chatboc.ar/static/welcome/sticker.png"])
+
+    @patch('routes.whatsapp_webhook.threading.Timer')
+    @patch('services.response_formatter.build_interactive_response')
+    def test_delayed_payload_supports_media_urls(self, mock_build_response, mock_timer):
+        self.app.config["APP_BASE_URL"] = "http://api.chatboc.ar"
+
+        payload = {
+            "message_body": "Hola",
+            "options_list": [],
+            "message_type": "text",
+            "media_urls": [
+                "/static/qr/demo.png",
+                "http://cdn.example.com/banner.jpg",
+            ],
+            "_base_url": "http://api.chatboc.ar",
+            "_request_url_root": "http://api.chatboc.ar",
+        }
+
+        mock_build_response.return_value = {
+            "type": "text",
+            "text": {"body": "Hola"},
+        }
+
+        class ImmediateTimer:
+            def __init__(self, delay, callback):
+                self.callback = callback
+
+            def start(self):
+                self.callback()
+
+        mock_timer.side_effect = lambda delay, callback: ImmediateTimer(delay, callback)
+
+        sent_messages = []
+
+        def fake_create(**kwargs):
+            sent_messages.append(kwargs)
+            msg = MagicMock()
+            msg.sid = f"SM{len(sent_messages)}"
+            return msg
+
+        client = MagicMock()
+        client.messages.create.side_effect = fake_create
+
+        _send_delayed_payload(
+            client=client,
+            to_number="whatsapp:+111",
+            from_number="whatsapp:+222",
+            payload=payload,
+            delay=0,
+            app=self.app,
+        )
+
+        self.assertTrue(sent_messages)
+        media_urls = sent_messages[0].get("media_url")
+        self.assertEqual(len(media_urls), 2)
+        self.assertIn("https://api.chatboc.ar/static/qr/demo.png", media_urls)
+        self.assertIn("https://cdn.example.com/banner.jpg", media_urls)
 
     def test_welcome_skips_generic_profile_name(self):
         """Generic profile names should trigger a name request."""
@@ -1833,6 +2033,69 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
             self.assertEqual(kwargs_twilio["to"], f"whatsapp:{self.test_user_number_str}")
             self.assertTrue(kwargs_twilio["body"].startswith("Ok"))
             self.mock_welcome.assert_not_called()
+
+    def test_whatsapp_payload_sends_pre_messages_before_main_message(self):
+        self._set_owner_tipo_chat("municipio")
+        self.mock_validator.validate.return_value = True
+        self._create_confirmed_session()
+
+        self.app.config["WELCOME_TEMPLATE_SID"] = None
+        self.app.config["WELCOME_MEDIA_URL"] = None
+        self.app.config["WELCOME_AUDIO_URL"] = None
+
+        headers = {"X-Twilio-Signature": "dummy_signature_valid"}
+        incoming_payload = {
+            "To": f"whatsapp:{self.test_whatsapp_number_str}",
+            "From": f"whatsapp:{self.test_user_number_str}",
+            "Body": "encuestas",
+        }
+
+        response_payload = {
+            "message_body": "Menú principal",
+            "options_list": [],
+            "message_type": "text",
+            "_twilio_pre_messages": [
+                {
+                    "channels": ["whatsapp"],
+                    "content_sid": "HXbanner",
+                    "content_variables": {"1": "Junín"},
+                },
+                {
+                    "channels": ["whatsapp"],
+                    "body": "Participá",
+                    "media_urls": ["/static/encuestas/banner.png"],
+                },
+            ],
+        }
+
+        with patch(
+            "routes.whatsapp_webhook.responder_chatboc", return_value=response_payload
+        ):
+            response = self.client.post(
+                "/webhook/whatsapp", data=incoming_payload, headers=headers
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.mock_twilio_create.call_count, 3)
+
+        template_kwargs = self.mock_twilio_create.call_args_list[0].kwargs
+        self.assertEqual(template_kwargs.get("content_sid"), "HXbanner")
+        self.assertEqual(
+            json.loads(template_kwargs.get("content_variables", "{}")), {"1": "Junín"}
+        )
+
+        media_kwargs = self.mock_twilio_create.call_args_list[1].kwargs
+        self.assertEqual(media_kwargs.get("body"), "Participá")
+        media_urls = media_kwargs.get("media_url")
+        self.assertIsInstance(media_urls, list)
+        self.assertTrue(media_urls)
+        self.assertTrue(media_urls[0].endswith("/static/encuestas/banner.png"))
+
+        main_kwargs = self.mock_twilio_create.call_args_list[2].kwargs
+        self.assertTrue(
+            (main_kwargs.get("body") or "").startswith("Menú principal"),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

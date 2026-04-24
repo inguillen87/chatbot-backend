@@ -1,0 +1,62 @@
+[
+  {
+    "question": "Combos familiares",
+    "answer": "Packs para 4/6 personas con frescos y bebidas",
+    "extended_answer": "Mostrame el catálogo completo de combos familiares con precios y stock actualizado."
+  },
+  {
+    "question": "Coffee break corporativo",
+    "answer": "Set dulce y salado con termos y descartables",
+    "extended_answer": "Necesito opciones de coffee break corporativo para 20 personas con entrega hoy."
+  },
+  {
+    "question": "After office y bares",
+    "answer": "Bandejas finger food + cócteles ready",
+    "extended_answer": "Mostrame los combos express para bares y after office con márgenes sugeridos."
+  },
+  {
+    "question": "Tarifario mayorista",
+    "answer": "Bonos 12% / 18% según volumen",
+    "extended_answer": "Enviame la lista mayorista con escalas, mínimos de compra y bonificaciones."
+  },
+  {
+    "question": "Forecast de reposición",
+    "answer": "Proyección de rotación por categoría",
+    "extended_answer": "Quiero simular reposiciones semanales para un bar con consumo medio."
+  },
+  {
+    "question": "Integración con ERP",
+    "answer": "APIs, stock en vivo y conciliación",
+    "extended_answer": "¿Cómo conecto el catálogo del almacén con mi ERP y los medios de pago?"
+  },
+  {
+    "question": "Mapa de cobertura",
+    "answer": "Entrega express 90' y rutas programadas",
+    "extended_answer": "Mostrame el mapa de cobertura y tiempos de entrega para Gran Mendoza."
+  },
+  {
+    "question": "Pedidos mixtos",
+    "answer": "Flujo combinado retiro + delivery",
+    "extended_answer": "Armá un pedido mixto con retiro en depósito y envío a dos direcciones."
+  },
+  {
+    "question": "Control de frescos",
+    "answer": "Checklists y monitoreo en vivo",
+    "extended_answer": "¿Qué protocolos de frío tienen para lácteos y frescos en las rutas express?"
+  },
+  {
+    "question": "Medios de pago & QR",
+    "answer": "Links recurrentes, QR dinámicos y conciliación",
+    "extended_answer": "Quiero conocer los medios de pago disponibles y cómo emitir QR propios."
+  },
+  {
+    "question": "Panel de analítica",
+    "answer": "Actualización en tiempo real",
+    "extended_answer": "Mostrame el dashboard con KPIs de venta, frecuencia y stock crítico."
+  },
+  {
+    "question": "Onboarding y training",
+    "answer": "Sprints de capacitación y soporte 24/7",
+    "extended_answer": "¿Cómo es el onboarding del equipo y qué soporte brindan en temporada alta?"
+  }
+]

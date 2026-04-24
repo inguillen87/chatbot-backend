@@ -234,6 +234,24 @@ class TestResponseFormatter(unittest.TestCase):
         importlib.reload(rf)
 
     @unittest.mock.patch.dict(os.environ, {"WHATSAPP_FORCE_TEXT": "true"})
+    def test_force_text_can_be_overridden(self):
+        import importlib
+        importlib.reload(rf)
+
+        response = rf.build_interactive_response(
+            options=[{"id": "b", "texto": "Opción B"}],
+            body_text="Menu:",
+            channel="whatsapp",
+            message_type='interactive_buttons',
+            original_bot_response={"_force_whatsapp_interactive": True},
+        )
+        self.assertEqual(response["type"], "interactive")
+        self.assertEqual(response["interactive"]["type"], "button")
+
+        os.environ["WHATSAPP_FORCE_TEXT"] = "false"
+        importlib.reload(rf)
+
+    @unittest.mock.patch.dict(os.environ, {"WHATSAPP_FORCE_TEXT": "true"})
     def test_text_menu_includes_url_and_actionable_numbers(self):
         """URL-only options should be rendered inline while action buttons keep numbering."""
         import importlib

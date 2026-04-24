@@ -2,6 +2,8 @@
 
 This project exposes several endpoints to process questions for different sectors.
 
+For the upcoming conversational marketplace and rewards evolution, see `docs/propuesta-marketplace-conversacional.md`.
+
 When WhatsApp interactive menus are not approved or available, the bot falls back
 to a text-based menu that groups options by category and includes numeric
 selection instructions to maintain full visibility of all choices.
@@ -25,6 +27,20 @@ selection instructions to maintain full visibility of all choices.
   so deployments can try OpenAI Whisper and then Cohere automatically. Customise
   the target language with `OPENAI_STT_LANGUAGE` or `COHERE_STT_LANGUAGE` to keep
   pronunciations friendly for usuarios rioplatenses.
+- Realtime voice calls (Twilio Media Streams) now use a dedicated model
+  setting: `OPENAI_REALTIME_SPEECH_MODEL` (fallback compatible with
+  `OPENAI_REALTIME_MODEL`), defaulting to `gpt-realtime-1.5`. This is scoped to
+  live speech sessions and does not change the regular chat-model defaults.
+- Chat model selection is now channel-aware and configurable: use
+  `OPENAI_CHAT_MODEL_DEFAULT` as base, plus `OPENAI_CHAT_MODEL_WHATSAPP` and
+  `OPENAI_CHAT_MODEL_WIDGET` for premium channels when desired (for example
+  `gpt-5-mini` on WhatsApp/widget). For long/complex threads you can also set
+  `OPENAI_CHAT_MODEL_HIGH_COMPLEXITY` with thresholds via
+  `OPENAI_CHAT_COMPLEXITY_MIN_CHARS` and `OPENAI_CHAT_COMPLEXITY_MIN_TURNS`.
+- Analytics and AI summaries are also configurable via
+  `OPENAI_ANALYTICS_MODEL`, `OPENAI_SENTIMENT_MODEL` and
+  `OPENAI_TICKET_SUMMARY_MODEL` (defaults set to `gpt-5-mini` for higher
+  quality insights).
 - The sanitizer normalises common abreviaturas argentinas (por ejemplo "Av." o
   "CABA") y refuerza las pausas en puntos y comas para que la lectura sonorice de
   manera pausada y entendible.
@@ -76,6 +92,11 @@ selection instructions to maintain full visibility of all choices.
 - `GET /analytics/cohorts` – cohortes y recurrencia de clientes.
 - `GET /analytics/whatsapp/templates` – métricas de CTR y bloqueos por plantilla.
 - `GET /analytics/ui` – dashboard responsive con filtros persistentes, exportación CSV/PNG y modo oscuro.
+- `GET /gov/analytics/scorecards` – KPIs municipales con backlog, SLA de 24h y ranking por barrio/categoría.
+- `GET /gov/analytics/heatmap` – celdas H3 agregadas con ruido diferencial y metadatos listos para MapLibre/deck.gl.
+- `GET /gov/analytics/demand` – forecast determinístico (tendencia + intervalos) para planificar cuadrillas.
+- `GET /gov/analytics/clusters` – clusters de incidentes recurrentes para priorizar intervenciones.
+- `GET /gov/analytics/routes` – orden sugerido de visitas respetando un depósito y máximo de paradas.
 
 Todos los endpoints requieren `tenant_id` y validan RBAC (`admin`, `operador`, `visor`). El módulo puede deshabilitarse con `ANALYTICS_ENABLED=false` y cuenta con cache TTL configurable (`ANALYTICS_CACHE_TTL`).
 - `GET /catalogo/buscar` – query the vector catalog with `?q=` and optional
@@ -299,9 +320,40 @@ This project can be deployed as a multi-tenant SaaS solution. Each company has i
 
 ## Log Utilities
 You can inspect log files using `script_filter_logs.py`.
-This helper allows filtering by log level, searching with a regular expression
-and limiting the output to the last N lines. Example:
+The helper now supports filtering by log level, searching with a regular
+expression, scoping results to a session/anon ID, showing context lines,
+and printing basic level statistics. Examples:
 
 ```bash
-python script_filter_logs.py logs/chatbot.log --level ERROR --contains reclamo --tail 50
+# Find the last 50 ERROR lines mentioning reclamos, with 2 lines of context
+python script_filter_logs.py logs/chatbot.log --level ERROR --contains reclamo --tail 50 --context 2 --number
+
+# Inspect a specific chat session/anon id and show level counts
+python script_filter_logs.py app.log --session 7d282ef0-ea35-4524-a934-50c5427898b5 --stats
 ```
+
+## Admin AI Module (tenant-scoped)
+
+These endpoints are intended for authenticated backoffice roles (`operador`/`admin`) and enforce tenant scoping using RBAC.
+
+- `POST /admin/ai/executive-summary`
+  - Body: `{ "tenant_id": <int>, "scope": "municipio|pyme|operaciones", "from": "YYYY-MM-DD", "to": "YYYY-MM-DD" }`
+  - Returns period metrics + AI executive summary.
+- `POST /admin/tickets/<ticket_id>/ai-summary`
+  - Body: `{ "scope": "municipio|pyme" }`
+  - Returns timeline-based AI summary for a tenant-owned ticket.
+- `POST /admin/ai/product-recommendations`
+  - Body: `{ "tenant_id": <int>, "limit": <int> }`
+  - Returns ranked catalog recommendations based on tenant order history + catalog coverage.
+- `POST /admin/ai/order-draft-from-document`
+  - `multipart/form-data` with `tenant_id` and `file` (PDF/image).
+  - Returns a preliminary order draft with catalog matching status per extracted line.
+- `GET /admin/bot/settings?tenant_id=<int>` (alias: `/api/admin/bot/settings`)
+  - Returns tenant bot customization (`name`, `tone`, `system_prompt`, `fallback_behavior`, `branding`).
+- `PUT /admin/bot/settings` (alias: `/api/admin/bot/settings`)
+  - Body: `{ "tenant_id": <int>, "name": "...", "tone": "...", "system_prompt": "...", "fallback_behavior": "derivar_humano|auto_reply|silent", "branding": {"logo_url": "...", "primary_color": "#...", "secondary_color": "#..."} }`
+  - Persists settings under `TenantProfile.configuracion.bot_settings` and keeps `logo_url` synced in `TenantProfile.logo_url` for backward compatibility.
+
+> Notes:
+> - Cross-tenant access is denied with `403`.
+> - Missing or invalid tenant inputs return `400`.

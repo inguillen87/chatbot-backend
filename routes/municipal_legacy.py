@@ -10,15 +10,18 @@ from utils.auth_helpers import token_requerido, admin_o_empleado_requerido
 from datetime import datetime, timedelta, timezone
 from utils.time_utils import get_local_now
 from utils.permissions import require_role
-from routes.crm import _obtener_clientes
+# from routes.crm import _obtener_clientes
 from services.municipio_responder import TODAS_LAS_CATEGORIAS_UNICAS
+from routes.categorias import _bootstrap_municipio_categories, _serialize_categoria
 from routes.tramites import listar_tramites, obtener_tramite
 from sqlalchemy import func, or_
-from models import Conversacion, MunicipioTicket, MunicipioPost, User, db
+from models import Categoria, Conversacion, MunicipioTicket, MunicipioPost, User, db, TenantProfile
 from utils.municipio_utils import get_numeric_municipio_id
 from routes.ticket import TICKET_ALLOWED_STATES
+from services.encuestas_service import list_public_encuestas_for_tenant, serialize_public_encuesta
 from config import ALLOWED_ORIGINS as DEFAULT_ALLOWED_ORIGINS
 from services.municipal_stats import build_stats_for_municipio, StatsFilters
+from socket_service import emit_tenant_update
 
 municipal_bp = Blueprint('municipal_legacy', __name__, url_prefix='/municipal')
 
@@ -126,6 +129,44 @@ def apply_cors_headers(response):
         response.headers.pop("Access-Control-Allow-Credentials", None)
 
     return response
+
+
+@municipal_bp.route("/whatsapp", methods=["GET", "OPTIONS"])
+def municipal_whatsapp_placeholder():
+    """Placeholder que evita 404 en la sección de WhatsApp del panel.
+
+    Devuelve un cuerpo JSON mínimo para que el frontend pueda mostrar un
+    estado coherente incluso cuando aún no se configuró la integración.
+    """
+
+    if request.method == "OPTIONS":
+        return "", 204
+
+    payload = {
+        "ok": True,
+        "integraciones": [],
+        "mensaje": "Integración de WhatsApp no configurada en este entorno",
+    }
+    return jsonify(payload)
+
+
+@municipal_bp.route("/integrations", methods=["GET", "OPTIONS"])
+def municipal_integrations_placeholder():
+    """Placeholder para la vista de integraciones del panel admin.
+
+    Responde con un arreglo vacío y un mensaje descriptivo para evitar que el
+    frontend reciba un 404/HTML y muestre pantallas en blanco.
+    """
+
+    if request.method == "OPTIONS":
+        return "", 204
+
+    payload = {
+        "ok": True,
+        "integraciones": [],
+        "mensaje": "No hay integraciones configuradas en este entorno",
+    }
+    return jsonify(payload)
 
 
 def _resolve_current_municipio_id(user) -> Any:
@@ -777,29 +818,43 @@ def _dedupe_sorted(values, fallback: str) -> list[str]:
     return cleaned
 
 
-@municipal_bp.route('/usuarios', methods=['GET'])
+@municipal_bp.route('/usuarios', methods=['GET', 'POST', 'OPTIONS'])
 @token_requerido
 @admin_o_empleado_requerido
 def municipal_usuarios(current_user):
-    tag = request.args.get('tag')
-    q = request.args.get('q')
-    marketing = request.args.get('acepta_marketing')
-    sort = request.args.get('sort')
-    order = request.args.get('order')
-    limit = request.args.get('limit')
-    offset = request.args.get('offset')
-    return jsonify(
-        _obtener_clientes(
-            current_user,
-            tag,
-            q=q,
-            acepta_marketing=marketing,
-            sort=sort,
-            order=order,
-            limit=limit,
-            offset=offset,
-        )
-    )
+    if request.method == 'OPTIONS':
+        return "", 204
+
+    if request.method == 'POST':
+        payload = request.get_json(silent=True) or {}
+        tag = payload.get('tag') or request.args.get('tag')
+        q = payload.get('q') or request.args.get('q')
+        marketing = payload.get('acepta_marketing') or request.args.get('acepta_marketing')
+        sort = payload.get('sort') or request.args.get('sort')
+        order = payload.get('order') or request.args.get('order')
+        limit = payload.get('limit') or request.args.get('limit')
+        offset = payload.get('offset') or request.args.get('offset')
+    else:
+        tag = request.args.get('tag')
+        q = request.args.get('q')
+        marketing = request.args.get('acepta_marketing')
+        sort = request.args.get('sort')
+        order = request.args.get('order')
+        limit = request.args.get('limit')
+        offset = request.args.get('offset')
+    # return jsonify(
+    #     _obtener_clientes(
+    #         current_user,
+    #         tag,
+    #         q=q,
+    #         acepta_marketing=marketing,
+    #         sort=sort,
+    #         order=order,
+    #         limit=limit,
+    #         offset=offset,
+    #     )
+    # )
+    return jsonify({"error": "Endpoint under construction", "status": "pending"})
 
 @municipal_bp.route('/categorias', methods=['GET', 'OPTIONS'])
 @token_requerido
@@ -808,12 +863,42 @@ def municipal_categorias(current_user):
     if request.method == 'OPTIONS':
         return "", 204
 
-    categorias = list(TODAS_LAS_CATEGORIAS_UNICAS)
-    payload = {
-        "categorias": categorias,
-        "categories": categorias,
-    }
+    municipio_id = _resolve_current_municipio_id(current_user)
+    if municipio_id is None:
+        return jsonify({"error": "Usuario no asociado a un municipio"}), 400
+
+    _bootstrap_municipio_categories(municipio_id)
+    categorias = (
+        Categoria.query.filter_by(municipio_id=municipio_id)
+        .order_by(Categoria.nombre.asc())
+        .all()
+    )
+    serializadas = [_serialize_categoria(cat) for cat in categorias]
+    payload = {"categorias": serializadas, "categories": serializadas}
     return jsonify(payload)
+
+
+@municipal_bp.route("/tickets/categorias", methods=["GET", "OPTIONS"])
+@token_requerido
+@require_role("admin", "empleado")
+def municipal_tickets_categorias(current_user):
+    """Alias de categorías pensado para el panel de tickets municipales."""
+
+    if request.method == "OPTIONS":
+        return "", 204
+
+    municipio_id = _resolve_current_municipio_id(current_user)
+    if municipio_id is None:
+        return jsonify({"error": "Usuario no asociado a un municipio"}), 400
+
+    _bootstrap_municipio_categories(municipio_id)
+    categorias = (
+        Categoria.query.filter_by(municipio_id=municipio_id)
+        .order_by(Categoria.nombre.asc())
+        .all()
+    )
+    serializadas = [_serialize_categoria(cat) for cat in categorias]
+    return jsonify({"categorias": serializadas, "categories": serializadas})
 
 @municipal_bp.route('/estados', methods=['GET', 'OPTIONS'])
 def municipal_estados():
@@ -823,6 +908,40 @@ def municipal_estados():
         return "", 204
 
     return jsonify({"estados": TICKET_ALLOWED_STATES})
+
+
+@municipal_bp.route('/encuestas', methods=['GET', 'OPTIONS'])
+@token_requerido
+@admin_o_empleado_requerido
+def municipal_encuestas_list(current_user):
+    """
+    Listar encuestas del municipio (legacy endpoint compatibility).
+    """
+    if request.method == 'OPTIONS':
+        return "", 204
+
+    municipio_id = _resolve_current_municipio_id(current_user)
+    if municipio_id is None:
+        return jsonify([])
+
+    tenant = TenantProfile.query.filter_by(municipio_id=municipio_id).first()
+    if not tenant:
+        return jsonify([])
+
+    try:
+        encuestas = list_public_encuestas_for_tenant(tenant.id, limit=50)
+    except Exception:
+        return jsonify([])
+
+    payload = []
+    base_url = current_app.config.get("PUBLIC_ENCUESTAS_CANONICAL_BASE_URL") or request.host_url.rstrip("/")
+
+    for encuesta, slug in encuestas:
+        data = serialize_public_encuesta(encuesta, slug_publico=slug)
+        data["url_publica"] = f"{base_url}/e/{slug}"
+        payload.append(data)
+
+    return jsonify(payload)
 
 @municipal_bp.route('/stats', methods=['GET', 'OPTIONS'])
 @token_requerido
@@ -1295,17 +1414,30 @@ def _prune_old_posts(municipio_id: int, max_posts: int = 200) -> int:
 
 
 @municipal_bp.route('/posts', methods=['GET'])
-@token_requerido
-@admin_o_empleado_requerido
-def list_municipal_posts(current_user):
+def list_municipal_posts():
     """Devuelve los posts municipales almacenados en la base de datos."""
+    # Use resolve_tenant_only as resolve_tenant_from_request might be deprecated or missing
+    from services.tenant_resolver import resolve_tenant_only as resolve_tenant_from_request
 
-    if current_user.tipo_chat != "municipio":
-        return jsonify({"error": "Acceso denegado. Se requiere un usuario municipal."}), 403
+    tenant = resolve_tenant_from_request()
+    municipio_id = None
+    if tenant and tenant.municipio_id:
+        municipio_id = tenant.municipio_id
 
-    municipio_id = _resolve_current_municipio_id(current_user)
     if municipio_id is None:
-        return jsonify({"error": "No se pudo determinar el municipio asociado al usuario."}), 400
+        # Fallback to current_user if authenticated (for admin panel)
+        try:
+            from flask_jwt_extended import get_current_user
+            current_user = get_current_user()
+            if current_user:
+                municipio_id = _resolve_current_municipio_id(current_user)
+        except Exception:
+            pass
+
+    if municipio_id is None:
+        # Allow accessing if specific tenant header/slug context is missing but this is a legacy call often made by public frontend
+        # We need a default or return empty
+        return jsonify({"error": "No se pudo determinar el municipio."}), 400
 
     db_municipio_id = get_numeric_municipio_id(municipio_id)
     if db_municipio_id is None:
@@ -1475,6 +1607,12 @@ def create_municipal_post(current_user):
             return jsonify({
                 "message": "El post se creó pero se archivó automáticamente por superar el límite de publicaciones recientes."
             }), 201
+
+        tenant = TenantProfile.query.filter_by(municipio_id=db_municipio_id).first()
+        if tenant:
+            event_type = 'news_update' if normalized_tipo == 'noticia' else 'events_update'
+            emit_tenant_update(tenant.slug, event_type, persisted.to_dict())
+
         return jsonify(persisted.to_dict()), 201
     except Exception as e:
         current_app.logger.error("Error al guardar el post municipal", exc_info=True)
@@ -1629,6 +1767,11 @@ def create_municipal_posts_bulk(current_user):
         )
         persisted_map = {post.id: post for post in persisted_posts}
         payload = [persisted_map[pid].to_dict() for pid in created_ids if pid in persisted_map]
+
+        tenant = TenantProfile.query.filter_by(municipio_id=db_municipio_id).first()
+        if tenant:
+            event_type = 'news_update' if normalized_tipo_default == 'noticia' else 'events_update'
+            emit_tenant_update(tenant.slug, event_type, payload)
 
         return jsonify({"created": payload}), 201
 

@@ -1,37 +1,560 @@
-# import os # No es necesario si usamos current_app.config
+# services/email_service.py
+import os
+import contextlib
 import logging
 import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
+from datetime import datetime
 from email.mime.application import MIMEApplication # Para adjuntos
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from typing import Any, Dict, Iterable, List, Optional, Tuple
+
+from flask import current_app, has_app_context # Para acceder a la configuración
 from twilio.rest import Client
-from flask import current_app # Para acceder a la configuración
+
 from services.config_loader import cargar_configuracion_municipio
-from typing import Any, Dict, List, Optional
+from services.map_preview import generate_static_map
+
+from models import ArchivoAdjunto, TicketComentario, User
 
 logger = logging.getLogger(__name__)
 
-# Las variables de configuración SMTP y Twilio ahora se leerán de current_app.config
-# SMTP_HOST = os.getenv("SMTP_HOST")
-# SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
-# SMTP_USERNAME = os.getenv("SMTP_USERNAME")
-# SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
-# FROM_EMAIL = os.getenv("FROM_EMAIL", SMTP_USERNAME)
-ADMIN_EMAIL = None # Se podría cargar desde config también: current_app.config.get("ADMIN_EMAIL")
+# Feature flag to safely enable/disable email notifications globally
+EMAIL_NOTIFICATION_FLAG_KEYS = (
+    "EMAIL_NOTIFICATIONS_ENABLED",
+    "ENABLE_EMAIL_NOTIFICATIONS",
+)
+_EMAIL_DISABLED_LOGGED = False
+_EMAIL_CONFIG_CHECKED = False
+_EMAIL_CONFIG_VALID = False
 
-# TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
-# TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
-# TWILIO_PHONE_NUMBER = os.getenv("TWILIO_PHONE_NUMBER")
-# TWILIO_WHATSAPP_NUMBER = os.getenv("TWILIO_WHATSAPP_NUMBER", "whatsapp:+14155238886")
+# Las variables de configuración SMTP y Twilio ahora se leerán de current_app.config
+ADMIN_EMAIL = None
+
+def _coerce_float(value: Any) -> Optional[float]:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_bool(value: Any, *, default: bool = False) -> bool:
+    """Convierte valores tipo string en booleanos confiables."""
+
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _email_notifications_enabled() -> bool:
+    """Return True when email notifications are explicitly enabled."""
+
+    if has_app_context():
+        for key in EMAIL_NOTIFICATION_FLAG_KEYS:
+            if key in current_app.config:
+                return _coerce_bool(current_app.config.get(key), default=False)
+
+    for key in EMAIL_NOTIFICATION_FLAG_KEYS:
+        env_val = os.getenv(key)
+        if env_val is not None:
+            return _coerce_bool(env_val, default=False)
+
+    return False
+
+
+def _log_email_disabled_once(prefix: str) -> None:
+    global _EMAIL_DISABLED_LOGGED
+
+    if _EMAIL_DISABLED_LOGGED:
+        return
+
+    _EMAIL_DISABLED_LOGGED = True
+    logger.info(
+        "%s Notifications disabled by feature flag %s=False.",
+        prefix,
+        EMAIL_NOTIFICATION_FLAG_KEYS[0],
+    )
+
+
+def _format_datetime(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    if isinstance(value, datetime):
+        return value.strftime("%d/%m/%Y %H:%M")
+    try:
+        return value.strftime("%d/%m/%Y %H:%M")
+    except Exception:  # pragma: no cover - defensa ante objetos inesperados
+        return str(value)
+
+
+def _serialize_attachment(archivo: ArchivoAdjunto) -> Dict[str, Any]:
+    nombre = getattr(archivo, "nombre_original", None) or getattr(archivo, "filename", None)
+    url = getattr(archivo, "url", None)
+    mime = getattr(archivo, "mime", None) or ""
+    return {
+        "nombre": nombre or "Archivo adjunto",
+        "url": url,
+        "mime": mime,
+        "size": getattr(archivo, "tamano", None),
+        "es_imagen": mime.startswith("image/"),
+    }
+
+
+def _serialize_comment(ticket: Any, comentario: Any) -> Dict[str, Any]:
+    es_admin = bool(getattr(comentario, "es_admin", False))
+    autor_nombre = getattr(comentario, "autor_nombre", None)
+    if not autor_nombre:
+        if es_admin:
+            autor_nombre = "Municipio"
+        else:
+            autor_nombre = (
+                getattr(ticket, "nombre_vecino", None)
+                or getattr(ticket, "nombre_cliente", None)
+                or "Vecino/a"
+            )
+
+    attachment = None
+    archivo = getattr(comentario, "archivo_adjunto", None)
+    if archivo:
+        attachment = _serialize_attachment(archivo)
+
+    return {
+        "autor": autor_nombre,
+        "rol": "Municipio" if es_admin else "Vecino/a",
+        "fecha": _format_datetime(getattr(comentario, "fecha", None)),
+        "mensaje": getattr(comentario, "comentario", ""),
+        "estado": getattr(comentario, "estado_ticket", None),
+        "adjunto": attachment,
+    }
+
+
+def _collect_ticket_attachments(ticket: Any, datos_ticket: Dict[str, Any]) -> List[Dict[str, Any]]:
+    adjuntos: List[Dict[str, Any]] = []
+
+    archivos_rel = getattr(ticket, "archivos", None)
+    if archivos_rel is not None:
+        archivos: Iterable[Any]
+        if hasattr(archivos_rel, "order_by") and ArchivoAdjunto is not None:
+            try:
+                archivos = archivos_rel.order_by(ArchivoAdjunto.fecha.asc()).all()
+            except Exception:  # pragma: no cover - comportamiento defensivo en tests
+                archivos = list(archivos_rel)
+        else:
+            try:
+                archivos = list(archivos_rel)
+            except TypeError:
+                archivos = []
+        for archivo in archivos:
+            if archivo:
+                adjuntos.append(_serialize_attachment(archivo))
+
+    foto_url = getattr(ticket, "foto_url_directa", None) or datos_ticket.get("foto_url")
+    if foto_url:
+        adjuntos.insert(0, {
+            "nombre": "Imagen del reclamo",
+            "url": foto_url,
+            "mime": "image/*",
+            "size": None,
+            "es_imagen": True,
+        })
+
+    return adjuntos
+
+
+def _collect_ticket_comments(ticket: Any, comentario_reciente: Any = None, limite: int = 6) -> List[Dict[str, Any]]:
+    comentarios: List[Any] = []
+    comentarios_rel = getattr(ticket, "comentarios", None)
+    if comentarios_rel is not None:
+        if hasattr(comentarios_rel, "order_by") and TicketComentario is not None:
+            try:
+                comentarios = list(
+                    comentarios_rel.order_by(TicketComentario.fecha.desc()).limit(limite)
+                )
+            except Exception:  # pragma: no cover - defensivo si la relación es un mock simple
+                try:
+                    comentarios = list(comentarios_rel)
+                except TypeError:
+                    comentarios = []
+        else:
+            try:
+                comentarios = list(comentarios_rel)
+            except TypeError:
+                comentarios = []
+
+    if comentario_reciente and comentario_reciente not in comentarios:
+        comentarios.append(comentario_reciente)
+
+    comentarios_ordenados = sorted(
+        comentarios,
+        key=lambda c: getattr(c, "fecha", datetime.utcnow()) or datetime.utcnow(),
+    )
+
+    serializados: List[Dict[str, Any]] = []
+    for comentario in comentarios_ordenados[-limite:]:
+        if comentario:
+            serializados.append(_serialize_comment(ticket, comentario))
+    return serializados
+
+
+def _build_ticket_email_context(
+    ticket: Any,
+    tipo_ticket: str,
+    *,
+    ticket_data: Optional[Dict[str, Any]] = None,
+    admin_user: Any = None,
+    comentario_reciente: Any = None,
+) -> Dict[str, Any]:
+    datos_ticket = ticket_data or {}
+    ticket_numero = str(getattr(ticket, "nro_ticket", "") or datos_ticket.get("nro_ticket", "")).strip()
+    prefijo = "M" if tipo_ticket == "municipio" else "P"
+    ticket_codigo = f"{prefijo}-{ticket_numero}" if ticket_numero else ticket_numero
+
+    estado_actual = getattr(ticket, "estado", None) or datos_ticket.get("estado")
+    fecha_creacion = (
+        getattr(ticket, "fecha", None)
+        or datos_ticket.get("fecha")
+    )
+    ultima_actividad = getattr(ticket, "ultima_actividad", None)
+
+    categoria = (
+        getattr(ticket, "categoria", None)
+        or datos_ticket.get("categoria")
+        or getattr(ticket, "tipo_reclamo", None)
+        or "General"
+    )
+
+    asunto = (
+        getattr(ticket, "asunto", None)
+        or datos_ticket.get("asunto")
+        or categoria
+    )
+
+    descripcion = (
+        getattr(ticket, "detalles", None)
+        or getattr(ticket, "pregunta", None)
+        or datos_ticket.get("detalles")
+        or ""
+    )
+
+    direccion = getattr(ticket, "direccion", None) or datos_ticket.get("direccion")
+
+    latitud = _coerce_float(
+        getattr(ticket, "latitud", None)
+        or datos_ticket.get("latitud")
+        or datos_ticket.get("lat")
+        or datos_ticket.get("latitude")
+    )
+    longitud = _coerce_float(
+        getattr(ticket, "longitud", None)
+        or datos_ticket.get("longitud")
+        or datos_ticket.get("lon")
+        or datos_ticket.get("lng")
+        or datos_ticket.get("longitude")
+    )
+
+    mapa_url = mapa_alt = mapa_link = None
+    if latitud is not None and longitud is not None:
+        mapa_url, mapa_alt = generate_static_map(latitud, longitud)
+        mapa_link = f"https://www.google.com/maps/search/?api=1&query={latitud},{longitud}"
+
+    consulta_pin = getattr(ticket, "consulta_pin", None) or datos_ticket.get("consulta_pin")
+    canal_ingreso = getattr(ticket, "canal_ingreso", None) or datos_ticket.get("canal_ingreso")
+
+    nombre_cliente = (
+        getattr(ticket, "nombre_vecino", None)
+        or datos_ticket.get("nombre_vecino")
+        or datos_ticket.get("nombre_cliente")
+        or getattr(ticket, "nombre_cliente", None)
+    )
+    email_cliente = (
+        getattr(ticket, "email_vecino", None)
+        or getattr(ticket, "email", None)
+        or datos_ticket.get("email_cliente")
+    )
+    telefono_cliente = (
+        getattr(ticket, "telefono_vecino", None)
+        or getattr(ticket, "telefono", None)
+        or datos_ticket.get("telefono_cliente")
+    )
+    dni_cliente = (
+        getattr(ticket, "dni_vecino", None)
+        or getattr(ticket, "dni", None)
+        or datos_ticket.get("dni")
+    )
+
+    contacto_email = None
+    contacto_telefono = None
+    contacto_horario = None
+    contacto_enlace = None
+    if admin_user:
+        contacto_email = getattr(admin_user, "email", None)
+        contacto_telefono = getattr(admin_user, "telefono", None)
+        contacto_horario = getattr(admin_user, "horario", None)
+        contacto_enlace = getattr(admin_user, "link_web", None)
+
+    contacto_enlace = (
+        contacto_enlace
+        or getattr(ticket, "contacto_seguimiento", None)
+        or datos_ticket.get("enlace_contacto")
+    )
+
+    base_url = current_app.config.get("APP_BASE_URL", "https://www.chatboc.ar")
+    ticket_id = getattr(ticket, "id", None)
+    chat_url = base_url
+    if tipo_ticket == "municipio":
+        chat_url = f"{base_url}/chat/{ticket_id}" if ticket_id else base_url
+    else:
+        chat_url = f"{base_url}/pyme/chat/{ticket_id}" if ticket_id else base_url
+
+    panel_url = current_app.config.get("ADMIN_PORTAL_URL")
+    if not panel_url:
+        if tipo_ticket == "municipio":
+            panel_url = (
+                f"{base_url}/panel/municipio/tickets/{ticket_id}"
+                if ticket_id
+                else base_url
+            )
+        else:
+            panel_url = (
+                f"{base_url}/panel/pyme/tickets/{ticket_id}"
+                if ticket_id
+                else base_url
+            )
+
+    adjuntos_ticket = _collect_ticket_attachments(ticket, datos_ticket)
+    historial = _collect_ticket_comments(ticket, comentario_reciente)
+    comentario_destacado = _serialize_comment(ticket, comentario_reciente) if comentario_reciente else None
+
+    return {
+        "ticket_codigo": ticket_codigo,
+        "ticket_numero": ticket_numero,
+        "tipo_ticket": tipo_ticket,
+        "estado": estado_actual,
+        "fecha_creacion": _format_datetime(fecha_creacion),
+        "ultima_actualizacion": _format_datetime(ultima_actividad),
+        "categoria": categoria,
+        "asunto": asunto,
+        "descripcion": descripcion,
+        "direccion": direccion,
+        "mapa_url": mapa_url,
+        "mapa_alt": mapa_alt,
+        "mapa_link": mapa_link,
+        "latitud": latitud,
+        "longitud": longitud,
+        "consulta_pin": consulta_pin,
+        "chat_url": chat_url,
+        "panel_url": panel_url,
+        "adjuntos_ticket": adjuntos_ticket,
+        "historial": historial,
+        "comentario_reciente": comentario_destacado,
+        "canal_ingreso": canal_ingreso,
+        "cliente": {
+            "nombre": nombre_cliente,
+            "email": email_cliente,
+            "telefono": telefono_cliente,
+            "dni": dni_cliente,
+        },
+        "contacto_institucion": {
+            "email": contacto_email,
+            "telefono": contacto_telefono,
+            "horario": contacto_horario,
+            "enlace": contacto_enlace,
+        },
+        "soporte_email": current_app.config.get("MAIL_FROM_ADDRESS"),
+    }
+
+
+SMTP_CONFIG_ALIASES = {
+    "SMTP_HOST": ["MAIL_SERVER", "EMAIL_HOST"],
+    "SMTP_PORT": ["MAIL_PORT", "EMAIL_PORT"],
+    "SMTP_USER": [
+        "SMTP_USERNAME",
+        "MAIL_USERNAME",
+        "MAIL_FROM_ADDRESS",
+        "EMAIL_HOST_USER",
+        "SMTP_LOGIN",
+        "SMTP_EMAIL",
+    ],
+    "SMTP_PASSWORD": ["SMTP_PASS", "MAIL_PASSWORD", "EMAIL_HOST_PASSWORD"],
+    "SMTP_USE_TLS": ["MAIL_USE_TLS"],
+    "SMTP_USE_SSL": ["MAIL_USE_SSL"],
+    "MAIL_FROM_ADDRESS": ["MAIL_DEFAULT_SENDER"],
+    "MAIL_FROM_NAME": ["MAIL_SENDER_NAME"],
+}
+
+
+def _clean_config_value(val: Optional[str]):
+    """Normaliza valores de configuración devolviendo ``None`` si están vacíos."""
+
+    if val is None:
+        return None
+
+    if isinstance(val, str):
+        val = val.strip()
+        if not val:
+            return None
+
+    return val
+
+
+def _smtp_auth_required(*, default: bool = True) -> bool:
+    """Obtiene si se requiere autenticación SMTP desde config/env.
+
+    El valor por defecto puede ajustarse según el contexto del llamado
+    para preservar compatibilidad con comportamientos previos.
+    """
+
+    return _coerce_bool(_get_config_val("SMTP_REQUIRE_AUTH"), default=default)
+
+
+def _resolve_config_key(key: str, *, campaign_specific: bool = False):
+    """Intenta múltiples claves equivalentes para una configuración SMTP.
+
+    Primero busca en la configuración de Flask y, como respaldo, revisa las
+    variables de entorno. Esto ayuda cuando el contenedor tiene las
+    credenciales como variables de entorno pero no se propagaron correctamente
+    a ``current_app.config`` al inicializar la app.
+    """
+
+    keys_to_try = [key]
+    keys_to_try.extend(SMTP_CONFIG_ALIASES.get(key, []))
+
+    if campaign_specific:
+        for candidate in keys_to_try:
+            campaign_key = f"{candidate}_CAMPAIGN"
+            if campaign_key in current_app.config:
+                val = _clean_config_value(current_app.config.get(campaign_key))
+                if val is not None:
+                    return val
+            # Respaldo directo a variables de entorno si la config no está poblada
+            env_val = _clean_config_value(os.getenv(campaign_key))
+            if env_val is not None:
+                return env_val
+
+    for candidate in keys_to_try:
+        if candidate in current_app.config:
+            val = _clean_config_value(current_app.config.get(candidate))
+            if val is not None:
+                return val
+
+        env_val = _clean_config_value(os.getenv(candidate))
+        if env_val is not None:
+            return env_val
+
+    return None
 
 
 def _get_config_val(key, default=None, campaign_specific=False):
-    """Helper para obtener valores de config, con fallback a campaña si se especifica."""
-    if campaign_specific:
-        val = current_app.config.get(f"{key}_CAMPAIGN", None)
-        if val is not None:
-            return val
-    return current_app.config.get(key, default)
+    """Helper para obtener valores de config, considerando alias comunes."""
+
+    val = _resolve_config_key(key, campaign_specific=campaign_specific)
+    if val is None:
+        return default
+    return val
+
+
+class SMTPConfigurationError(RuntimeError):
+    """Error personalizado para problemas de configuración SMTP."""
+
+
+def validar_configuracion_smtp(require_auth: bool = True) -> Tuple[bool, Optional[str]]:
+    """Valida la configuración SMTP mínima necesaria para enviar correos.
+
+    Retorna una tupla (es_valida, mensaje_error). Si la configuración es válida,
+    el mensaje de error es ``None``.
+    """
+
+    smtp_host = _get_config_val("SMTP_HOST")
+    smtp_port = _get_config_val("SMTP_PORT", 587)
+    smtp_user = _get_config_val("SMTP_USER")
+    smtp_password = _get_config_val("SMTP_PASSWORD")
+    from_email = _get_config_val("MAIL_FROM_ADDRESS")
+    resolved_require_auth = _smtp_auth_required(default=bool(smtp_password) or require_auth)
+
+    if not smtp_user and from_email:
+        smtp_user = from_email
+
+    if not smtp_host or not smtp_port:
+        return False, "Configuración SMTP incompleta: faltan host o puerto."
+
+    if resolved_require_auth and (not smtp_user or not smtp_password):
+        return (
+            False,
+            "Configuración SMTP inválida: se requiere autenticación pero faltan credenciales.",
+        )
+
+    if not from_email:
+        return False, "Configuración SMTP incompleta: falta el remitente (MAIL_FROM_ADDRESS)."
+
+    return True, None
+
+
+def _ensure_smtp_configuration(prefix: str) -> bool:
+    """Validate SMTP configuration once to avoid repeated noisy logs."""
+
+    global _EMAIL_CONFIG_CHECKED, _EMAIL_CONFIG_VALID
+
+    if _EMAIL_CONFIG_CHECKED:
+        return _EMAIL_CONFIG_VALID
+
+    _EMAIL_CONFIG_CHECKED = True
+    _EMAIL_CONFIG_VALID, error = validar_configuracion_smtp(require_auth=True)
+    if _EMAIL_CONFIG_VALID:
+        logger.info("%s SMTP configuration validated; email notifications enabled.", prefix)
+    else:
+        logger.warning("%s SMTP configuration invalid: %s", prefix, error)
+
+    return _EMAIL_CONFIG_VALID
+
+
+def _connect_smtp_server(
+    *,
+    host: str,
+    port: int,
+    use_tls: bool,
+    use_ssl: bool,
+    username: Optional[str],
+    password: Optional[str],
+    require_auth: bool = True,
+):
+    """Abre una conexión SMTP consistente y autenticada."""
+
+    if not host or not port:
+        raise SMTPConfigurationError("Host o puerto SMTP no configurados")
+
+    if require_auth and (not username or not password):
+        missing_parts = []
+        if not username:
+            missing_parts.append("usuario (SMTP_USER/MAIL_USERNAME/EMAIL_HOST_USER)")
+        if not password:
+            missing_parts.append("contraseña (SMTP_PASSWORD/MAIL_PASSWORD/EMAIL_HOST_PASSWORD)")
+
+        raise SMTPConfigurationError(
+            "Se requiere autenticación SMTP pero faltan credenciales: "
+            + ", ".join(missing_parts)
+        )
+
+    server = smtplib.SMTP_SSL(host, port) if use_ssl else smtplib.SMTP(host, port)
+    try:
+        server.ehlo()
+        if use_tls and not use_ssl:
+            server.starttls()
+            server.ehlo()
+
+        if username and password:
+            server.login(username, password)
+
+        return server
+    except Exception:
+        with contextlib.suppress(Exception):
+            server.quit()
+        raise
 
 
 def enviar_email(destino: str, asunto: str, cuerpo_html: str, cuerpo_texto: str = "", es_campana: bool = False) -> bool:
@@ -39,6 +562,11 @@ def enviar_email(destino: str, asunto: str, cuerpo_html: str, cuerpo_texto: str 
     Envía un email simple en formato HTML y opcionalmente texto plano.
     Si es_campana es True, intenta usar configuraciones SMTP específicas para campañas.
     """
+    if not _email_notifications_enabled():
+        _log_email_disabled_once("[EMAIL]")
+        return False
+    if not _ensure_smtp_configuration("[EMAIL]"):
+        return False
 
     smtp_host = _get_config_val("SMTP_HOST", campaign_specific=es_campana)
     smtp_port = int(_get_config_val("SMTP_PORT", 587, campaign_specific=es_campana))
@@ -46,8 +574,17 @@ def enviar_email(destino: str, asunto: str, cuerpo_html: str, cuerpo_texto: str 
     smtp_password = _get_config_val("SMTP_PASSWORD", campaign_specific=es_campana)
     from_email = _get_config_val("MAIL_FROM_ADDRESS", campaign_specific=es_campana)
     from_name = _get_config_val("MAIL_FROM_NAME", campaign_specific=es_campana)
-    use_tls = _get_config_val("SMTP_USE_TLS", True, campaign_specific=es_campana)
-    use_ssl = _get_config_val("SMTP_USE_SSL", False, campaign_specific=es_campana)
+    use_tls = _coerce_bool(
+        _get_config_val("SMTP_USE_TLS", True, campaign_specific=es_campana),
+        default=True,
+    )
+    use_ssl = _coerce_bool(
+        _get_config_val("SMTP_USE_SSL", False, campaign_specific=es_campana)
+    )
+    require_auth = _smtp_auth_required(default=bool(smtp_password))
+
+    if not smtp_user and from_email:
+        smtp_user = from_email
 
     if not all([smtp_host, smtp_port, from_email, destino]):
         logger.error(f"[EMAIL{' CAMPAIGN' if es_campana else ''}] Configuración SMTP incompleta o falta destino. Email no enviado a {destino}.")
@@ -72,18 +609,19 @@ def enviar_email(destino: str, asunto: str, cuerpo_html: str, cuerpo_texto: str 
 
     log_prefix = f"[EMAIL{' CAMPAIGN' if es_campana else ''}]"
     try:
-        logger.info(f"{log_prefix} Intentando enviar a {destino} desde {from_email} via {smtp_host}:{smtp_port}")
+        logger.info(
+            f"{log_prefix} Intentando enviar a {destino} desde {from_email} via {smtp_host}:{smtp_port}"
+        )
 
-        if use_ssl:
-            server = smtplib.SMTP_SSL(smtp_host, smtp_port)
-        else:
-            server = smtplib.SMTP(smtp_host, smtp_port)
-
-        if use_tls and not use_ssl:
-            server.starttls()
-
-        if smtp_user and smtp_password:
-            server.login(smtp_user, smtp_password)
+        server = _connect_smtp_server(
+            host=smtp_host,
+            port=smtp_port,
+            use_tls=use_tls,
+            use_ssl=use_ssl,
+            username=smtp_user,
+            password=smtp_password,
+            require_auth=require_auth,
+        )
 
         server.send_message(msg)
         server.quit()
@@ -94,6 +632,10 @@ def enviar_email(destino: str, asunto: str, cuerpo_html: str, cuerpo_texto: str 
         logger.error(f"{log_prefix} Error de autenticación SMTP: {e_auth}")
     except smtplib.SMTPServerDisconnected as e_disconnect:
         logger.error(f"{log_prefix} Servidor SMTP desconectado: {e_disconnect}")
+    except smtplib.SMTPSenderRefused as e_sender:
+        logger.error(f"{log_prefix} Sender Refused (Auth Required?): {e_sender} - Check SMTP_PASSWORD")
+    except smtplib.SMTPAuthenticationError as e_auth:
+        logger.error(f"{log_prefix} SMTP Auth Error: {e_auth}")
     except smtplib.SMTPException as e_smtp:
         logger.error(f"{log_prefix} Error SMTP general: {e_smtp}", exc_info=True)
     except Exception as e:
@@ -103,14 +645,24 @@ def enviar_email(destino: str, asunto: str, cuerpo_html: str, cuerpo_texto: str 
 
 def enviar_email_con_adjunto(destino: str, asunto: str, cuerpo_html: str, nombre_archivo: str, contenido_adjunto: bytes, cuerpo_texto: str = "") -> bool:
     """Envía un email con un archivo adjunto."""
-    smtp_host = current_app.config.get("SMTP_HOST")
-    smtp_port = current_app.config.get("SMTP_PORT", 587)
-    smtp_user = current_app.config.get("SMTP_USER")
-    smtp_password = current_app.config.get("SMTP_PASSWORD")
-    from_email = current_app.config.get("MAIL_FROM_ADDRESS")
-    from_name = current_app.config.get("MAIL_FROM_NAME", from_email)
-    use_tls = current_app.config.get("SMTP_USE_TLS", True)
-    use_ssl = current_app.config.get("SMTP_USE_SSL", False)
+    if not _email_notifications_enabled():
+        _log_email_disabled_once("[EMAIL_ADJ]")
+        return False
+    if not _ensure_smtp_configuration("[EMAIL_ADJ]"):
+        return False
+
+    smtp_host = _get_config_val("SMTP_HOST")
+    smtp_port = int(_get_config_val("SMTP_PORT", 587))
+    smtp_user = _get_config_val("SMTP_USER")
+    smtp_password = _get_config_val("SMTP_PASSWORD")
+    from_email = _get_config_val("MAIL_FROM_ADDRESS")
+    from_name = _get_config_val("MAIL_FROM_NAME", from_email)
+    use_tls = _coerce_bool(_get_config_val("SMTP_USE_TLS", True), default=True)
+    use_ssl = _coerce_bool(_get_config_val("SMTP_USE_SSL", False))
+    require_auth = _smtp_auth_required(default=bool(smtp_password))
+
+    if not smtp_user and from_email:
+        smtp_user = from_email
 
     if not all([smtp_host, smtp_port, from_email, destino]):
         logger.error("[EMAIL_ADJ] Configuración SMTP incompleta o falta destino. Email no enviado.")
@@ -138,16 +690,19 @@ def enviar_email_con_adjunto(destino: str, asunto: str, cuerpo_html: str, nombre
 
 
     try:
-        logger.info(f"[EMAIL_ADJ] Intentando enviar a {destino} con adjunto {nombre_archivo}")
-        if use_ssl:
-            server = smtplib.SMTP_SSL(smtp_host, smtp_port)
-        else:
-            server = smtplib.SMTP(smtp_host, smtp_port)
-        if use_tls and not use_ssl:
-            server.starttls()
-        if smtp_user and smtp_password:
-            server.login(smtp_user, smtp_password)
-        server.send_message(msg) # send_message es mejor para MIME
+        logger.info(
+            f"[EMAIL_ADJ] Intentando enviar a {destino} con adjunto {nombre_archivo}"
+        )
+        server = _connect_smtp_server(
+            host=smtp_host,
+            port=smtp_port,
+            use_tls=use_tls,
+            use_ssl=use_ssl,
+            username=smtp_user,
+            password=smtp_password,
+            require_auth=require_auth,
+        )
+        server.send_message(msg)  # send_message es mejor para MIME
         server.quit()
         logger.info(f"[EMAIL_ADJ] Enviado a {destino} con adjunto {nombre_archivo}")
         return True
@@ -156,40 +711,131 @@ def enviar_email_con_adjunto(destino: str, asunto: str, cuerpo_html: str, nombre
         return False
 
 
-def enviar_email_pedido_admin(pedido) -> bool:
+def _render_items_html(pedido) -> str:
+    try:
+        from services.pedido_pdf import extraer_items_pedido
+    except Exception:  # pragma: no cover - fallback if import fails
+        extraer_items_pedido = None  # type: ignore
+
+    if extraer_items_pedido is None:
+        return f"<pre>{getattr(pedido, 'detalles', '')}</pre>"
+
+    items = extraer_items_pedido(pedido)
+    if not items:
+        return f"<pre>{getattr(pedido, 'detalles', '')}</pre>"
+
+    lines = ["<ul style='padding-left:20px'>"]
+    for item in items:
+        nombre = item.get("nombre", "Item")
+        cantidad = item.get("cantidad", 0)
+        precio = item.get("precio_unitario", 0)
+        subtotal = item.get("subtotal", cantidad * precio)
+        lines.append(
+            f"<li><strong>{nombre}</strong>: {cantidad:g} x ${precio:,.2f} = ${subtotal:,.2f}</li>"
+        )
+    lines.append("</ul>")
+    return "".join(lines)
+
+
+def enviar_email_pedido_admin(pedido, *, pdf_bytes: bytes | None = None, empresa_info: Dict[str, Any] | None = None) -> bool:
     """Envía un correo al administrador con el nuevo pedido."""
+    if not _email_notifications_enabled():
+        _log_email_disabled_once("[EMAIL]")
+        return False
+
     admin_email_val = current_app.config.get("ADMIN_EMAIL")
     if not admin_email_val or admin_email_val == "noreply@example.com":
         logger.warning("[EMAIL] ADMIN_EMAIL no configurado para notificación de pedido. Envío omitido.")
         return False
 
-    detalles = pedido.detalles
     asunto = f"Nuevo pedido {pedido.nro_pedido}"
     cuerpo_html_pedido = (
         f"<h3>Nuevo pedido recibido</h3>"
         f"<p><strong>Número:</strong> {pedido.nro_pedido}</p>"
         f"<p><strong>Cliente:</strong> {pedido.nombre_cliente} - {pedido.email_cliente} - {pedido.telefono_cliente}</p>"
         f"<p><strong>Monto estimado:</strong> ${pedido.monto_total:,.2f}</p>"
-        f"<pre>{detalles}</pre>"
+        f"{_render_items_html(pedido)}"
     )
+    cuerpo_texto = (
+        f"Nuevo pedido {pedido.nro_pedido} de {pedido.nombre_cliente or 'cliente'} "
+        f"por ${pedido.monto_total or 0:,.2f}."
+    )
+    if pdf_bytes:
+        nombre_archivo = f"Pedido-{pedido.nro_pedido}.pdf"
+        return enviar_email_con_adjunto(admin_email_val, asunto, cuerpo_html_pedido, nombre_archivo, pdf_bytes, cuerpo_texto)
     # Para emails transaccionales, no marcamos como es_campana=True
-    return enviar_email(admin_email_val, asunto, cuerpo_html_pedido)
+    return enviar_email(admin_email_val, asunto, cuerpo_html_pedido, cuerpo_texto=cuerpo_texto)
 
 
-def enviar_email_pedido_cliente(pedido) -> bool:
+def enviar_email_pedido_despacho(pedido, dispatch_email: str, *, pdf_bytes: bytes | None = None) -> bool:
+    """Envía un correo al responsable de despacho con el nuevo pedido."""
+    if not _email_notifications_enabled():
+        _log_email_disabled_once("[EMAIL_DISPATCH]")
+        return False
+
+    if not dispatch_email:
+        return False
+
+    asunto = f"Despacho: Nuevo pedido {pedido.nro_pedido}"
+    cuerpo_html_pedido = (
+        f"<h3>Orden de Despacho</h3>"
+        f"<p><strong>Número:</strong> {pedido.nro_pedido}</p>"
+        f"<p><strong>Cliente:</strong> {pedido.nombre_cliente} - {pedido.telefono_cliente}</p>"
+        f"<p><strong>Dirección:</strong> {pedido.direccion or 'Retiro en tienda'}</p>"
+        f"{_render_items_html(pedido)}"
+    )
+    cuerpo_texto = (
+        f"Orden de Despacho {pedido.nro_pedido}. Cliente: {pedido.nombre_cliente}. "
+        f"Items: ver adjunto o sistema."
+    )
+
+    if pdf_bytes:
+        nombre_archivo = f"Despacho-{pedido.nro_pedido}.pdf"
+        return enviar_email_con_adjunto(dispatch_email, asunto, cuerpo_html_pedido, nombre_archivo, pdf_bytes, cuerpo_texto)
+
+    return enviar_email(dispatch_email, asunto, cuerpo_html_pedido, cuerpo_texto=cuerpo_texto)
+
+
+def enviar_email_pedido_cliente(pedido, *, pdf_bytes: bytes | None = None, empresa_info: Dict[str, Any] | None = None) -> bool:
     """Envía un correo al cliente confirmando su pedido."""
+    if not _email_notifications_enabled():
+        _log_email_disabled_once("[EMAIL]")
+        return False
+
     destino = getattr(pedido, "email_cliente", None)
     if not destino:
         logger.warning("[EMAIL] Pedido sin email de cliente.")
         return False
 
-    asunto = f"Confirmación de pedido {pedido.nro_pedido}"
-    cuerpo_html_confirmacion = (
-        f"<p>Hola {pedido.nombre_cliente or ''},</p>"
-        f"<p>Recibimos tu pedido <strong>{pedido.nro_pedido}</strong> y está en proceso.</p>"
-        "<p>Te avisaremos cuando esté listo para el envío.</p>"
-    )
-    return enviar_email(destino, asunto, cuerpo_html_confirmacion)
+    empresa_nombre = None
+    if empresa_info:
+        empresa_nombre = empresa_info.get("nombre")
+    asunto = f"Confirmación de pedido {pedido.nro_pedido}" if not empresa_nombre else f"{empresa_nombre} - Pedido {pedido.nro_pedido}"
+    body_lines = [
+        f"<p>Hola {pedido.nombre_cliente or ''},</p>",
+        f"<p>Recibimos tu pedido <strong>{pedido.nro_pedido}</strong> y está en proceso.</p>",
+    ]
+    if pdf_bytes:
+        body_lines.append("<p>Adjuntamos la nota de pedido en PDF para que la revises.</p>")
+    else:
+        body_lines.append("<p>Te avisaremos cuando esté listo para el envío.</p>")
+    items_html = _render_items_html(pedido)
+    if items_html:
+        body_lines.append(items_html)
+    cuerpo_html_confirmacion = "".join(body_lines)
+    if pdf_bytes:
+        cuerpo_texto = (
+            f"Hola {pedido.nombre_cliente or ''}, tu pedido {pedido.nro_pedido} está en proceso. "
+            "Adjuntamos la nota en PDF."
+        )
+    else:
+        cuerpo_texto = (
+            f"Hola {pedido.nombre_cliente or ''}, tu pedido {pedido.nro_pedido} está en proceso."
+        )
+    if pdf_bytes:
+        nombre_archivo = f"Pedido-{pedido.nro_pedido}.pdf"
+        return enviar_email_con_adjunto(destino, asunto, cuerpo_html_confirmacion, nombre_archivo, pdf_bytes, cuerpo_texto)
+    return enviar_email(destino, asunto, cuerpo_html_confirmacion, cuerpo_texto=cuerpo_texto)
 
 
 def enviar_email_ticket_admin(
@@ -198,8 +844,15 @@ def enviar_email_ticket_admin(
     admin_user=None,
     tipo_ticket: Optional[str] = None,
     ticket_data: Optional[Dict[str, Any]] = None,
+    comentario_reciente=None,
+    mensaje_resumen: Optional[str] = None,
 ) -> bool:
     """Envía un correo al administrador con la información completa del ticket."""
+    if not _email_notifications_enabled():
+        _log_email_disabled_once("[EMAIL]")
+        return False
+    if not _ensure_smtp_configuration("[EMAIL]"):
+        return False
 
     destino = None
     if admin_user and getattr(admin_user, "email", None):
@@ -220,54 +873,12 @@ def enviar_email_ticket_admin(
         or ("municipio" if getattr(ticket, "municipio_id", None) else "pyme")
     )
 
-    ticket_numero = str(getattr(ticket, "nro_ticket", ""))
-    prefijo = "M" if tipo_ticket == "municipio" else "P"
-    ticket_codigo = f"{prefijo}-{ticket_numero}" if ticket_numero else ticket_numero
-
-    categoria = (
-        getattr(ticket, "categoria", None)
-        or datos_ticket.get("categoria")
-        or "General"
-    )
-    asunto_ticket = getattr(ticket, "asunto", None) or categoria
-    detalles_ticket = (
-        getattr(ticket, "detalles", None)
-        or getattr(ticket, "pregunta", None)
-        or datos_ticket.get("detalles")
-        or ""
-    )
-    direccion = getattr(ticket, "direccion", None) or datos_ticket.get("direccion")
-    consulta_pin = getattr(ticket, "consulta_pin", None) or datos_ticket.get("consulta_pin")
-    canal_ingreso = (
-        getattr(ticket, "canal_ingreso", None) or datos_ticket.get("canal_ingreso")
-    )
-
-    cliente_nombre = (
-        getattr(ticket, "nombre_vecino", None)
-        or datos_ticket.get("nombre_vecino")
-        or datos_ticket.get("nombre_cliente")
-        or getattr(ticket, "nombre_cliente", None)
-        or "Usuario"
-    )
-    email_cliente = (
-        getattr(ticket, "email_vecino", None)
-        or getattr(ticket, "email", None)
-        or datos_ticket.get("email_cliente")
-    )
-    telefono_cliente = (
-        getattr(ticket, "telefono_vecino", None)
-        or getattr(ticket, "telefono", None)
-        or datos_ticket.get("telefono_cliente")
-    )
-    dni_cliente = (
-        getattr(ticket, "dni_vecino", None)
-        or getattr(ticket, "dni", None)
-        or datos_ticket.get("dni")
-    )
-
-    fecha_ticket = getattr(ticket, "fecha", None)
-    fecha_formateada = (
-        fecha_ticket.strftime("%d/%m/%Y %H:%M") if fecha_ticket else None
+    contexto = _build_ticket_email_context(
+        ticket,
+        tipo_ticket,
+        ticket_data=datos_ticket,
+        admin_user=admin_user,
+        comentario_reciente=comentario_reciente,
     )
 
     rubro_nombre = None
@@ -276,67 +887,75 @@ def enviar_email_ticket_admin(
             rubro_nombre = getattr(admin_user.rubro, "nombre", None)
         if not rubro_nombre and getattr(ticket, "rubro_id", None):
             try:
-                from models import Rubro  # Import local to avoid circular imports
+                from models import Rubro  # Import local para evitar dependencias circulares
 
                 rubro = Rubro.query.get(ticket.rubro_id)
                 rubro_nombre = getattr(rubro, "nombre", None)
-            except Exception:  # pragma: no cover - logging handled later
+            except Exception:  # pragma: no cover - logging handled más adelante
                 rubro_nombre = None
 
-    base_url = current_app.config.get("APP_BASE_URL", "https://www.chatboc.ar")
-    panel_url = current_app.config.get("ADMIN_PORTAL_URL")
-    if not panel_url:
-        if tipo_ticket == "municipio":
-            panel_url = (
-                f"{base_url}/panel/municipio/tickets/{getattr(ticket, 'id', '')}"
-                if getattr(ticket, "id", None)
-                else base_url
-            )
-        else:
-            panel_url = (
-                f"{base_url}/panel/pyme/tickets/{getattr(ticket, 'id', '')}"
-                if getattr(ticket, "id", None)
-                else base_url
-            )
+    contexto["rubro_nombre"] = rubro_nombre
+    contexto["admin_nombre"] = getattr(admin_user, "name", None)
+    contexto["destinatario"] = "admin"
+    contexto["mostrar_historial"] = bool(contexto.get("historial"))
+    contexto["es_actualizacion"] = comentario_reciente is not None
+    mensaje_destacado = mensaje_resumen or (
+        (contexto.get("comentario_reciente") or {}).get("mensaje")
+    )
+    contexto["mensaje_destacado"] = mensaje_destacado
+    contexto["cta_url"] = contexto.get("panel_url")
+    contexto["cta_label"] = "Abrir ticket en el panel"
 
-    asunto_email = f"Nuevo ticket {ticket_codigo or ticket_numero}".strip()
+    if comentario_reciente is not None:
+        header_title = "Nuevo mensaje del vecino"
+        intro_base = "Tenés una nueva actualización para revisar."
+    else:
+        header_title = "Nuevo ticket recibido"
+        intro_base = "Se generó un nuevo ticket en tu panel de gestión."
+
+    if contexto.get("cliente", {}).get("nombre"):
+        intro_persona = f"Contacto: {contexto['cliente']['nombre']}"
+    else:
+        intro_persona = ""
+
+    contexto["header_title"] = header_title
+    contexto["header_intro"] = intro_base
+    contexto["header_subtitle"] = intro_persona
+
+    ticket_codigo = contexto.get("ticket_codigo") or contexto.get("ticket_numero")
+    asunto_prefijo = "Actualización" if comentario_reciente else "Nuevo ticket"
+    asunto_email = f"{asunto_prefijo} {ticket_codigo}".strip()
 
     cuerpo_html_ticket = render_template(
         "email/ticket_admin_notificacion.html",
-        ticket_codigo=ticket_codigo or ticket_numero,
-        categoria=categoria,
-        asunto=asunto_ticket,
-        detalles=detalles_ticket,
-        direccion=direccion,
-        consulta_pin=consulta_pin,
-        canal_ingreso=canal_ingreso,
-        cliente_nombre=cliente_nombre,
-        email_cliente=email_cliente,
-        telefono_cliente=telefono_cliente,
-        dni_cliente=dni_cliente,
-        fecha_formateada=fecha_formateada,
-        tipo_ticket=tipo_ticket,
-        rubro_nombre=rubro_nombre,
-        admin_nombre=getattr(admin_user, "name", None),
-        panel_url=panel_url,
+        **contexto,
     )
 
     return enviar_email(destino, asunto_email, cuerpo_html_ticket)
 
 
 import requests
-from models import ArchivoAdjunto
 
 def enviar_email_con_multiples_adjuntos(destinos: List[str], asunto: str, cuerpo_html: str, adjuntos: List[ArchivoAdjunto], cuerpo_texto: str = "") -> bool:
     """Envía un email con múltiples archivos adjuntos."""
-    smtp_host = current_app.config.get("SMTP_HOST")
-    smtp_port = current_app.config.get("SMTP_PORT", 587)
-    smtp_user = current_app.config.get("SMTP_USER")
-    smtp_password = current_app.config.get("SMTP_PASSWORD")
-    from_email = current_app.config.get("MAIL_FROM_ADDRESS")
-    from_name = current_app.config.get("MAIL_FROM_NAME", from_email)
-    use_tls = current_app.config.get("SMTP_USE_TLS", True)
-    use_ssl = current_app.config.get("SMTP_USE_SSL", False)
+    if not _email_notifications_enabled():
+        _log_email_disabled_once("[EMAIL_MULTI_ADJ]")
+        return False
+    if not _ensure_smtp_configuration("[EMAIL_MULTI_ADJ]"):
+        return False
+
+    smtp_host = _get_config_val("SMTP_HOST")
+    smtp_port = int(_get_config_val("SMTP_PORT", 587))
+    smtp_user = _get_config_val("SMTP_USER")
+    smtp_password = _get_config_val("SMTP_PASSWORD")
+    from_email = _get_config_val("MAIL_FROM_ADDRESS")
+    from_name = _get_config_val("MAIL_FROM_NAME", from_email)
+    use_tls = _coerce_bool(_get_config_val("SMTP_USE_TLS", True), default=True)
+    use_ssl = _coerce_bool(_get_config_val("SMTP_USE_SSL", False))
+    require_auth = _smtp_auth_required(default=bool(smtp_password))
+
+    if not smtp_user and from_email:
+        smtp_user = from_email
 
     if not all([smtp_host, smtp_port, from_email, destinos]):
         logger.error("[EMAIL_MULTI_ADJ] Configuración SMTP incompleta o falta destino. Email no enviado.")
@@ -376,21 +995,40 @@ def enviar_email_con_multiples_adjuntos(destinos: List[str], asunto: str, cuerpo
             continue
 
     try:
-        logger.info(f"[EMAIL_MULTI_ADJ] Intentando enviar a {', '.join(destinos)} con {len(adjuntos)} adjuntos.")
-        if use_ssl:
-            server = smtplib.SMTP_SSL(smtp_host, smtp_port)
-        else:
-            server = smtplib.SMTP(smtp_host, smtp_port)
-        if use_tls and not use_ssl:
-            server.starttls()
-        if smtp_user and smtp_password:
-            server.login(smtp_user, smtp_password)
+        logger.info(
+            f"[EMAIL_MULTI_ADJ] Intentando enviar a {', '.join(destinos)} con {len(adjuntos)} adjuntos."
+        )
+        server = _connect_smtp_server(
+            host=smtp_host,
+            port=smtp_port,
+            use_tls=use_tls,
+            use_ssl=use_ssl,
+            username=smtp_user,
+            password=smtp_password,
+            require_auth=require_auth,
+        )
         server.send_message(msg)
         server.quit()
         logger.info(f"[EMAIL_MULTI_ADJ] Enviado a {', '.join(destinos)} exitosamente.")
         return True
+    except SMTPConfigurationError as config_err:
+        logger.error(f"[EMAIL_MULTI_ADJ] Configuración SMTP inválida: {config_err}")
+        return False
+    except smtplib.SMTPSenderRefused as sender_error:
+        if sender_error.smtp_code == 530:
+            logger.error(
+                "[EMAIL_MULTI_ADJ] El servidor exige autenticación SMTP (código 530). Verificar credenciales o IP permitida."
+            )
+        logger.error(
+            f"[EMAIL_MULTI_ADJ] Servidor rechazó el remitente: {sender_error}",
+            exc_info=True,
+        )
+        return False
     except Exception as e:
-        logger.error(f"[EMAIL_MULTI_ADJ] Error enviando correo con múltiples adjuntos: {e}", exc_info=True)
+        logger.error(
+            f"[EMAIL_MULTI_ADJ] Error enviando correo con múltiples adjuntos: {e}",
+            exc_info=True,
+        )
         return False
 
 from flask import render_template
@@ -403,6 +1041,11 @@ def enviar_email_ticket_cliente(
     ticket_data: Optional[Dict[str, Any]] = None,
 ) -> bool:
     """Confirma al cliente que su reclamo o pedido fue recibido."""
+    if not _email_notifications_enabled():
+        _log_email_disabled_once("[EMAIL]")
+        return False
+    if not _ensure_smtp_configuration("[EMAIL]"):
+        return False
 
     destino = (
         getattr(ticket, "email_vecino", None)
@@ -419,80 +1062,54 @@ def enviar_email_ticket_cliente(
         or ("municipio" if getattr(ticket, "municipio_id", None) else "pyme")
     )
 
-    ticket_numero = str(getattr(ticket, "nro_ticket", ""))
-    prefijo = "M" if tipo_ticket == "municipio" else "P"
-    ticket_codigo = f"{prefijo}-{ticket_numero}" if ticket_numero else ticket_numero
+    contexto = _build_ticket_email_context(
+        ticket,
+        tipo_ticket,
+        ticket_data=datos_ticket,
+        admin_user=admin_user,
+    )
 
-    asunto_ticket = getattr(ticket, "asunto", None) or datos_ticket.get("asunto")
-    if not asunto_ticket:
-        asunto_ticket = "Reclamo registrado" if tipo_ticket == "municipio" else "Pedido recibido"
-
-    asunto = f"Ticket #{ticket_codigo or ticket_numero} Recibido: {asunto_ticket}".strip()
-
-    base_url = current_app.config.get("APP_BASE_URL", "https://www.chatboc.ar")
-    chat_url = f"{base_url}/chat/{getattr(ticket, 'id', '')}" if getattr(ticket, "id", None) else base_url
-
-    if tipo_ticket == "pyme":
-        chat_url = f"{base_url}/pyme/chat/{getattr(ticket, 'id', '')}" if getattr(ticket, "id", None) else base_url
-
-    telefono_contacto = None
-    horario_contacto = None
-    enlace_contacto = None
-
-    if admin_user:
-        telefono_contacto = getattr(admin_user, "telefono", None)
-        horario_contacto = getattr(admin_user, "horario", None)
-        enlace_contacto = getattr(admin_user, "link_web", None)
-
-    if tipo_ticket == "municipio" and not enlace_contacto and getattr(ticket, "municipio_id", None):
+    # Complementar datos de contacto desde la configuración municipal si fuera necesario
+    if (
+        tipo_ticket == "municipio"
+        and not contexto["contacto_institucion"].get("enlace")
+        and getattr(ticket, "municipio_id", None)
+    ):
         cfg = cargar_configuracion_municipio(ticket.municipio_id, "config.json")
         if isinstance(cfg, dict):
-            enlace_contacto = cfg.get("web_url")
+            contexto["contacto_institucion"]["enlace"] = (
+                contexto["contacto_institucion"].get("enlace") or cfg.get("web_url")
+            )
+            contexto["contacto_institucion"]["telefono"] = (
+                contexto["contacto_institucion"].get("telefono") or cfg.get("telefono")
+            )
 
-    detalles_ticket = (
-        getattr(ticket, "detalles", None)
-        or getattr(ticket, "pregunta", None)
-        or datos_ticket.get("detalles")
-        or "Sin descripción."
+    ticket_codigo = contexto.get("ticket_codigo") or contexto.get("ticket_numero")
+
+    asunto_ticket = (
+        getattr(ticket, "asunto", None)
+        or datos_ticket.get("asunto")
+        or contexto.get("categoria")
+        or "Ticket registrado"
     )
 
-    direccion_ticket = (
-        getattr(ticket, "direccion", None)
-        or datos_ticket.get("direccion")
-        or "No especificada"
-    )
+    asunto = f"Confirmación de ticket {ticket_codigo}: {asunto_ticket}".strip()
 
-    nombre_vecino = (
-        getattr(ticket, "nombre_vecino", None)
-        or datos_ticket.get("nombre_vecino")
-        or datos_ticket.get("nombre_cliente")
-        or "Vecino/a"
+    nombre_destinatario = contexto.get("cliente", {}).get("nombre") or "Vecino/a"
+    contexto["destinatario"] = "ciudadano"
+    contexto["es_actualizacion"] = False
+    contexto["mostrar_historial"] = bool(contexto.get("historial"))
+    contexto["header_title"] = "¡Recibimos tu reclamo!" if tipo_ticket == "municipio" else "Recibimos tu solicitud"
+    contexto["header_intro"] = (
+        f"Hola {nombre_destinatario}, confirmamos que registramos tu ticket."
     )
-
-    categoria_ticket = (
-        getattr(ticket, "categoria", None)
-        or datos_ticket.get("categoria")
-        or "No especificada"
-    )
-
-    consulta_pin = getattr(ticket, "consulta_pin", None) or datos_ticket.get("consulta_pin")
+    contexto["header_subtitle"] = f"Ticket {ticket_codigo}" if ticket_codigo else ""
+    contexto["cta_url"] = contexto.get("chat_url")
+    contexto["cta_label"] = "Ver estado del ticket"
+    contexto["mensaje_destacado"] = contexto.get("descripcion")
 
     try:
-        cuerpo_html = render_template(
-            "email/ticket_creado.html",
-            nombre_vecino=nombre_vecino,
-            nro_ticket=ticket_codigo or ticket_numero,
-            categoria=categoria_ticket,
-            direccion=direccion_ticket,
-            detalles=detalles_ticket,
-            foto_url=getattr(ticket, "foto_url_directa", None),
-            chat_url=chat_url,
-            telefono_contacto=telefono_contacto,
-            horario_contacto=horario_contacto,
-            enlace_contacto=enlace_contacto,
-            consulta_pin=consulta_pin,
-            tipo_ticket=tipo_ticket,
-        )
+        cuerpo_html = render_template("email/ticket_creado.html", **contexto)
         return enviar_email(destino, asunto, cuerpo_html)
     except Exception as e:  # pragma: no cover - logged only
         logger.error(
@@ -502,61 +1119,63 @@ def enviar_email_ticket_cliente(
         return False
 
 
-def enviar_email_ticket_novedad(ticket, mensaje: str) -> bool:
-    """Notifica al cliente que su ticket tiene una novedad con una plantilla HTML mejorada."""
+def enviar_email_ticket_novedad(
+    ticket,
+    mensaje: str,
+    *,
+    comentario_reciente=None,
+) -> bool:
+    """Notifica al cliente que su ticket tiene una novedad usando la plantilla principal."""
+    if not _email_notifications_enabled():
+        _log_email_disabled_once("[EMAIL]")
+        return False
+    if not _ensure_smtp_configuration("[EMAIL]"):
+        return False
+
     destino = getattr(ticket, "email", None)
-    if not destino and getattr(ticket, "user_id", None):
-        from models import User # Importar User aquí para evitar importación circular a nivel de módulo
+    if not destino and getattr(ticket, "user_id", None) and hasattr(User, "query"):
         usuario = User.query.get(ticket.user_id)
         destino = getattr(usuario, "email", None)
     if not destino:
         logger.warning("[EMAIL] Ticket sin email para notificar novedad.")
         return False
 
-    asunto = f"Actualización en tu ticket {ticket.nro_ticket}"
+    tipo_ticket = "municipio" if getattr(ticket, "municipio_id", None) else "pyme"
+    contexto = _build_ticket_email_context(
+        ticket,
+        tipo_ticket,
+        comentario_reciente=comentario_reciente,
+    )
 
-    # --- Plantilla HTML Mejorada ---
-    cuerpo_html_novedad = f"""\
-<!DOCTYPE html>
-<html lang="es">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{asunto}</title>
-</head>
-<body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background-color: #f4f4f7;">
-    <table align="center" border="0" cellpadding="0" cellspacing="0" width="100%" style="max-width: 600px; margin: 20px auto; background-color: #ffffff; border-radius: 8px; box-shadow: 0 4px 10px rgba(0,0,0,0.05);">
-        <tr>
-            <td style="padding: 30px 40px; border-bottom: 1px solid #eeeeee;">
-                <h1 style="margin: 0; color: #1a1a1a; font-size: 24px; font-weight: 600;">Actualización de tu Ticket</h1>
-            </td>
-        </tr>
-        <tr>
-            <td style="padding: 30px 40px;">
-                <p style="margin: 0 0 15px; color: #444444; font-size: 16px; line-height: 1.6;">Hola,</p>
-                <p style="margin: 0 0 20px; color: #444444; font-size: 16px; line-height: 1.6;">
-                    Se registró una nueva actividad en tu ticket <strong>#{ticket.nro_ticket}</strong>.
-                </p>
-                <div style="background-color: #f9f9f9; border-left: 4px solid #007bff; padding: 15px 20px; margin-bottom: 20px;">
-                    <p style="margin: 0; color: #333333; font-size: 16px; font-style: italic;">"{mensaje}"</p>
-                </div>
-                <p style="margin: 0; color: #444444; font-size: 16px; line-height: 1.6;">
-                    Puedes ver el estado de tu ticket y responder ingresando a nuestro portal.
-                </p>
-            </td>
-        </tr>
-        <tr>
-            <td style="padding: 20px 40px; text-align: center; background-color: #f9f9f9; border-top: 1px solid #eeeeee; border-radius: 0 0 8px 8px;">
-                <p style="margin: 0; color: #888888; font-size: 12px;">
-                    Este es un mensaje automático. Por favor, no respondas a este correo.
-                </p>
-            </td>
-        </tr>
-    </table>
-</body>
-</html>
-"""
-    return enviar_email(destino, asunto, cuerpo_html_novedad)
+    ticket_codigo = contexto.get("ticket_codigo") or contexto.get("ticket_numero") or getattr(ticket, "nro_ticket", "")
+    nombre_destinatario = contexto.get("cliente", {}).get("nombre") or "Vecino/a"
+
+    contexto["destinatario"] = "ciudadano"
+    contexto["es_actualizacion"] = True
+    contexto["mostrar_historial"] = bool(contexto.get("historial"))
+    contexto["header_title"] = "Tu ticket tiene novedades"
+    contexto["header_intro"] = f"Hola {nombre_destinatario}, tenemos una actualización para tu ticket."
+    contexto["header_subtitle"] = f"Ticket {ticket_codigo}" if ticket_codigo else ""
+    contexto["cta_url"] = contexto.get("chat_url")
+    contexto["cta_label"] = "Responder al municipio"
+    contexto["mensaje_destacado"] = mensaje or (
+        (contexto.get("comentario_reciente") or {}).get("mensaje")
+    )
+
+    asunto = f"Actualización en tu ticket {ticket_codigo}".strip()
+
+    try:
+        cuerpo_html = render_template("email/ticket_creado.html", **contexto)
+    except Exception as e:  # pragma: no cover - se registra para diagnóstico
+        logger.error(
+            f"Error al renderizar plantilla de novedad para ticket {getattr(ticket, 'id', 'N/A')}: {e}",
+            exc_info=True,
+        )
+        cuerpo_html = (
+            f"<p>{contexto['header_intro']}</p><p>{contexto.get('mensaje_destacado') or mensaje}</p>"
+        )
+
+    return enviar_email(destino, asunto, cuerpo_html)
 
 
 def enviar_sms(destino: str, mensaje: str) -> bool:

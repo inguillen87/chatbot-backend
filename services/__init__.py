@@ -1,1 +1,2 @@
-# This file makes the 'services' directory a Python package.
+# Service package initializer
+# Avoid eager imports to prevent circular dependencies during migrations.

@@ -5,12 +5,14 @@ import io
 import re
 import shutil
 from datetime import datetime, timedelta
+from typing import Any
 from urllib.parse import urlparse, urljoin
 
 import requests
 from flask import current_app, has_app_context, has_request_context, request, g
 from werkzeug.utils import secure_filename
 from services.thumbnail_service import generar_thumbnail
+from services.r2_service import r2_service
 
 logger = logging.getLogger(__name__)
 
@@ -320,13 +322,17 @@ def _mask_sensitive_value(value: str) -> str:
 
 
 def _clean_env_value(name: str) -> str | None:
-    """Return a trimmed environment variable or ``None`` if empty."""
+    """Return a trimmed config value from env or Flask config when available."""
 
-    raw_value = os.environ.get(name)
+    raw_value: Any = os.environ.get(name)
+
+    if raw_value is None and has_app_context():
+        raw_value = current_app.config.get(name)
+
     if raw_value is None:
         return None
 
-    cleaned = raw_value.strip()
+    cleaned = str(raw_value).strip()
     return cleaned or None
 
 
@@ -391,12 +397,20 @@ def _init_cloudinary():  # pragma: no cover - thin wrapper validated via tests
 
     config_kwargs.setdefault("secure", True)
     try:
-        cloudinary.config(**config_kwargs)
+        if has_all_explicit and cloudinary_url:
+            original_url = os.environ.pop("CLOUDINARY_URL", None)
+            try:
+                cloudinary.config(**config_kwargs)
+            finally:
+                if original_url is not None:
+                    os.environ["CLOUDINARY_URL"] = original_url
+        else:
+            cloudinary.config(**config_kwargs)
     except Exception as exc:  # pragma: no cover - configuration errors logged
         logger.error("Failed to configure Cloudinary: %s", exc, exc_info=True)
         return False, None, {}
 
-    extra_options = {}
+    extra_options: dict[str, Any] = {}
     if upload_folder:
         sanitized = upload_folder.strip("/")
         if sanitized:
@@ -434,14 +448,69 @@ def _init_cloudinary():  # pragma: no cover - thin wrapper validated via tests
     return True, cloudinary_uploader, extra_options
 
 
-CLOUDINARY_ENABLED, uploader, CLOUDINARY_UPLOAD_OPTIONS = _init_cloudinary()
+CLOUDINARY_ENABLED: bool | None = None
+uploader = None
+CLOUDINARY_UPLOAD_OPTIONS: dict[str, Any] = {}
 _CLOUDINARY_DISABLED_REASON: str | None = None
+_CLOUDINARY_CONFIG_FINGERPRINT: tuple[str | None, str | None, str | None, str | None, str | None] | None = None
+
+
+def _current_cloudinary_fingerprint() -> tuple[str | None, str | None, str | None, str | None, str | None]:
+    """Return a tuple identifying the active Cloudinary configuration."""
+
+    return (
+        _clean_env_value("CLOUDINARY_URL"),
+        _clean_env_value("CLOUDINARY_CLOUD_NAME"),
+        _clean_env_value("CLOUDINARY_API_KEY"),
+        _clean_env_value("CLOUDINARY_API_SECRET"),
+        _clean_env_value("CLOUDINARY_UPLOAD_FOLDER"),
+    )
+
+
+def _ensure_cloudinary_initialized(force: bool = False) -> None:
+    """Initialise Cloudinary configuration when first accessed."""
+
+    global CLOUDINARY_ENABLED
+    global uploader
+    global CLOUDINARY_UPLOAD_OPTIONS
+    global _CLOUDINARY_DISABLED_REASON
+    global _CLOUDINARY_CONFIG_FINGERPRINT
+
+    if force:
+        CLOUDINARY_ENABLED = None
+        uploader = None
+        CLOUDINARY_UPLOAD_OPTIONS = {}
+        _CLOUDINARY_DISABLED_REASON = None
+        _CLOUDINARY_CONFIG_FINGERPRINT = None
+
+    fingerprint = _current_cloudinary_fingerprint()
+
+    if CLOUDINARY_ENABLED is not None and fingerprint == _CLOUDINARY_CONFIG_FINGERPRINT:
+        return
+
+    enabled, configured_uploader, options = _init_cloudinary()
+    CLOUDINARY_ENABLED = enabled
+    uploader = configured_uploader
+    CLOUDINARY_UPLOAD_OPTIONS = options
+    _CLOUDINARY_CONFIG_FINGERPRINT = fingerprint
+
+
+def refresh_cloudinary_configuration() -> None:
+    """Force Cloudinary to pick up new credentials from env or app config."""
+
+    _ensure_cloudinary_initialized(force=True)
+
+
+_ensure_cloudinary_initialized()
 
 
 def _disable_cloudinary(reason: str) -> None:
     """Disable Cloudinary uploads for the remainder of the process."""
 
     global CLOUDINARY_ENABLED, _CLOUDINARY_DISABLED_REASON
+
+    if CLOUDINARY_ENABLED is None:
+        _ensure_cloudinary_initialized()
 
     if not CLOUDINARY_ENABLED:
         return
@@ -625,7 +694,7 @@ def _save_to_local(
         "mimetype": mimetype,
         "thumb_meta": thumb_meta,
         "thumbUrl": thumb_url,
-        "path": original_path,
+        "path": os.path.realpath(original_path),
     }
 
 
@@ -684,6 +753,11 @@ def _save_to_cloudinary(
     Returns ``None`` if the upload fails so callers can gracefully fall back to
     the next configured storage backend.
     """
+    _ensure_cloudinary_initialized()
+
+    if not CLOUDINARY_ENABLED or uploader is None:
+        return None
+
     try:  # pragma: no cover - exercised via unit tests with mocks
         file_obj = io.BytesIO(file_bytes)
         upload_kwargs = {"public_id": unique_name, "resource_type": "auto"}
@@ -733,24 +807,32 @@ def _save_to_cloudinary(
             "must specify api key",
             "api key is invalid",
             "unauthorized",
+            "must supply api_secret",
+            "must supply api secret",
         )
         if any(token in error_message for token in auth_errors):
             reason = "authentication error"
             if "unknown api key" in error_message:
                 reason = "unknown api key"
+            elif "must supply api_secret" in error_message or "must supply api secret" in error_message:
+                reason = "missing api secret"
             _disable_cloudinary(reason)
 
         return None
 
 
-def upload_to_gcs(file_storage) -> dict | None:
+def upload_to_gcs(file_storage, kind: str = "attachments") -> dict | None:
     """Upload a file to the configured storage backend.
 
-    If ``GCS_ENABLED`` is false, the file is saved to the local filesystem instead of
-    Google Cloud Storage.
+    Order of preference:
+    1. Cloudflare R2 (Primary)
+    2. Cloudinary (Fallback)
+    3. GCS (Legacy/Secondary)
+    4. Local Filesystem (Dev/Last Resort)
 
     Args:
         file_storage: The ``FileStorage`` object from Flask request.
+        kind: The subfolder or type of upload (e.g. 'catalogos', 'logos', 'attachments')
 
     Returns:
         A dictionary containing the file's metadata (unique name, URL, size, etc.) or
@@ -764,6 +846,35 @@ def upload_to_gcs(file_storage) -> dict | None:
 
     file_storage.seek(0)
     file_bytes = file_storage.read()
+
+    # 1. R2 Upload Strategy
+    try:
+        # Determine context/owner
+        owner = getattr(g, 'current_user', None) or getattr(g, 'owner_user', None)
+        if not owner and has_app_context() and hasattr(g, 'viewer'):
+            owner = g.viewer
+
+        key_prefix = _determine_r2_key_prefix(owner, kind=kind)
+        r2_key = f"{key_prefix}/{unique_name}"
+
+        file_stream_r2 = io.BytesIO(file_bytes)
+        r2_url = r2_service.upload_file_with_key(file_stream_r2, r2_key, file_storage.mimetype)
+
+        if r2_url:
+            return {
+                "unique_name": unique_name,
+                "public_url": r2_url,
+                "size": len(file_bytes),
+                "original_name": original_filename,
+                "mimetype": file_storage.mimetype,
+            }
+        else:
+            logger.warning(f"R2 upload failed for {original_filename}, attempting fallback.")
+    except Exception as e:
+        logger.error(f"R2 Upload Exception: {e}", exc_info=True)
+
+    # 2. Cloudinary Fallback
+    _ensure_cloudinary_initialized()
 
     if CLOUDINARY_ENABLED:
         result = _save_to_cloudinary(
@@ -835,13 +946,69 @@ def upload_to_gcs(file_storage) -> dict | None:
         return None
 
 
-def guardar_adjunto_y_thumbnail(file_storage) -> dict | None:
+def _determine_r2_key_prefix(owner_user, kind: str = "attachments") -> str:
+    """
+    Determine the R2 key prefix (folder structure) based on the owner.
+    Format: <type>/<slug>/<kind>/<filename>
+    User request: pymes/<tenant_slug>/... or municipios/<tenant_slug>/...
+    """
+    if not owner_user:
+        return f"uploads/anonymous/{kind}"
+
+    # Try to find tenant profile slug via relationships or IDs
+    # If we have a direct tenant relationship:
+    tenant = getattr(owner_user, 'tenant', None) # If User has 'tenant'
+    if not tenant and getattr(owner_user, 'tenant_profile_pyme', None):
+        tenant = owner_user.tenant_profile_pyme
+    if not tenant and getattr(owner_user, 'tenant_profile_municipio', None):
+        tenant = owner_user.tenant_profile_municipio
+
+    # Or maybe via the g.tenant_profile if set by middleware
+    if has_app_context() and hasattr(g, 'tenant_profile') and g.tenant_profile:
+        tenant = g.tenant_profile
+
+    slug = "unknown"
+    prefix_type = "uploads"
+
+    if tenant:
+        slug = tenant.slug
+        if tenant.tipo == 'municipio':
+            prefix_type = 'municipios'
+        else:
+            prefix_type = 'pymes'
+    else:
+        # Fallback logic if no full tenant profile is loaded but IDs exist
+        if getattr(owner_user, 'municipio_id', None):
+            prefix_type = 'municipios'
+            slug = str(owner_user.municipio_id) # Ideally fetch slug, but ID is safe fallback
+        elif getattr(owner_user, 'pyme_id', None):
+            prefix_type = 'pymes'
+            slug = str(owner_user.pyme_id)
+        elif getattr(owner_user, 'tipo_chat', None) == 'municipio':
+            prefix_type = 'municipios'
+            slug = getattr(owner_user, 'tenant_slug', str(owner_user.id))
+        elif getattr(owner_user, 'tipo_chat', None) == 'pyme':
+            prefix_type = 'pymes'
+            slug = getattr(owner_user, 'tenant_slug', str(owner_user.id))
+
+    # Sanitize kind to prevent directory traversal or weird chars
+    safe_kind = _sanitize_path_segment(kind) or "attachments"
+
+    return f"{prefix_type}/{slug}/{safe_kind}"
+
+
+def guardar_adjunto_y_thumbnail(file_storage, kind: str = "attachments") -> dict | None:
     """Upload a file and its generated thumbnail to storage.
 
-    Uses GCS when enabled, otherwise falls back to local filesystem storage.
+    Order of preference:
+    1. Cloudflare R2 (Primary)
+    2. Cloudinary (Fallback)
+    3. GCS (Legacy/Secondary)
+    4. Local Filesystem (Dev/Last Resort)
 
     Args:
         file_storage: The ``FileStorage`` object from the request.
+        kind: The subfolder or type of upload (e.g. 'catalogos', 'logos', 'attachments')
 
     Returns:
         A dictionary with the file URL and thumbnail metadata, or ``None`` on failure.
@@ -867,6 +1034,54 @@ def guardar_adjunto_y_thumbnail(file_storage) -> dict | None:
     thumbnail_bytes, thumb_meta = generar_thumbnail(
         file_stream_for_thumb, file_storage.mimetype
     )
+
+    # 1. R2 Upload Strategy
+    try:
+        # Determine context/owner
+        owner = getattr(g, 'current_user', None) or getattr(g, 'owner_user', None)
+        # Use g.viewer from app.py logic if available
+        if not owner and has_app_context() and hasattr(g, 'viewer'):
+            owner = g.viewer
+
+        key_prefix = _determine_r2_key_prefix(owner, kind=kind)
+        r2_key = f"{key_prefix}/{unique_name}"
+
+        # Reset stream for R2
+        file_stream_r2 = io.BytesIO(file_bytes)
+        r2_url = r2_service.upload_file_with_key(file_stream_r2, r2_key, file_storage.mimetype)
+
+        if r2_url:
+            # Upload thumbnail to R2 if exists
+            thumb_url = None
+            if thumbnail_bytes and thumb_meta:
+                thumb_filename = get_thumb_filename(unique_name)
+                r2_thumb_key = f"{key_prefix}/{thumb_filename}"
+                thumb_url = r2_service.upload_file_with_key(
+                    io.BytesIO(thumbnail_bytes),
+                    r2_thumb_key,
+                    "image/webp"
+                )
+                if thumb_url:
+                    thumb_meta["url"] = thumb_url
+
+            return {
+                "unique_name": unique_name,
+                "original_url": r2_url,
+                "size": len(file_bytes),
+                "original_name": original_filename,
+                "mimetype": file_storage.mimetype,
+                "thumb_meta": thumb_meta,
+                "thumbUrl": thumb_url,
+            }
+        else:
+            logger.warning(f"R2 upload failed for {original_filename}, attempting fallback.")
+
+    except Exception as e:
+        logger.error(f"R2 Upload Exception: {e}", exc_info=True)
+        # Continue to fallbacks
+
+    # 2. Cloudinary Fallback
+    _ensure_cloudinary_initialized()
 
     if CLOUDINARY_ENABLED:
         cloudinary_result = _save_to_cloudinary(
@@ -949,7 +1164,7 @@ def guardar_adjunto_y_thumbnail(file_storage) -> dict | None:
         )
 
 
-def upload_file_from_url(url: str) -> dict | None:
+def upload_file_from_url(url: str, kind: str = "attachments") -> dict | None:
     """
     Downloads a file from a URL and uploads it to the configured storage.
     """
@@ -971,6 +1186,7 @@ def upload_file_from_url(url: str) -> dict | None:
         file_stream = io.BytesIO(response.content)
 
         # Create a FileStorage-like object
+        from werkzeug.datastructures import FileStorage # Import here if needed or at top
         file_storage = FileStorage(
             stream=file_stream,
             filename=filename,
@@ -980,7 +1196,7 @@ def upload_file_from_url(url: str) -> dict | None:
         )
 
         current_app.logger.info(f"Uploading file from URL: {url} as {filename}")
-        return guardar_adjunto_y_thumbnail(file_storage)
+        return guardar_adjunto_y_thumbnail(file_storage, kind=kind)
 
     except requests.exceptions.RequestException as e:
         current_app.logger.error(

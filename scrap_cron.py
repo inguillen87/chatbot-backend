@@ -17,10 +17,10 @@ app = create_app()
 
 with app.app_context():
     logging.info("[CRON] Iniciando tarea de scraping para todos los usuarios con link_web.")
-    
+
     # Obtenemos todos los usuarios que tienen un link_web no nulo y no vacío.
     users_a_scrapear = User.query.filter(User.link_web != None, User.link_web != '').all()
-    
+
     logging.info(f"[CRON] Se encontraron {len(users_a_scrapear)} usuarios para procesar.")
 
     for user in users_a_scrapear:

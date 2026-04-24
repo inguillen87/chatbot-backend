@@ -1,12 +1,16 @@
 import unittest
+from datetime import datetime, timezone
 from unittest.mock import patch
+
 from app import create_app, db
+from config import TestConfig
 from models import MunicipioTicket, User, TicketComentario
 from utils.auth_helpers import generar_token
+from utils.time_utils import datetime_to_iso_utc
 
 class TicketPublicEndpointTest(unittest.TestCase):
     def setUp(self):
-        self.app = create_app()
+        self.app = create_app(TestConfig)
         self.app_context = self.app.app_context()
         self.app_context.push()
         db.create_all()
@@ -19,10 +23,18 @@ class TicketPublicEndpointTest(unittest.TestCase):
         self.user = user
 
         # create sample ticket linked to the user
-        ticket = MunicipioTicket(nro_ticket='123456', municipio_id=user.id, pregunta='p', consulta_pin='654321')
+        ticket = MunicipioTicket(
+            nro_ticket='123456',
+            municipio_id=user.id,
+            pregunta='p',
+            consulta_pin='654321',
+            canal_ingreso='web',
+            ultima_actividad=datetime(2024, 1, 2, 3, 4, 5, tzinfo=timezone.utc),
+        )
         db.session.add(ticket)
         db.session.commit()
         self.ticket_id = ticket.id
+        self.ticket_ultima = ticket.ultima_actividad
 
     def tearDown(self):
         db.session.remove()
@@ -51,6 +63,9 @@ class TicketPublicEndpointTest(unittest.TestCase):
         self.assertEqual(data['timeline'][0]['estado'], 'nuevo')
         self.assertEqual(data['timeline'][1]['tipo'], 'comentario')
         self.assertEqual(data['timeline'][2]['estado'], 'en progreso')
+        self.assertEqual(data['channel'], 'web')
+        self.assertEqual(data['canal_ingreso'], 'web')
+        self.assertEqual(data['ultima_actualizacion'], datetime_to_iso_utc(self.ticket_ultima))
 
     def test_timeline_maps_cerrado_to_resuelto(self):
         cambio_estado = TicketComentario(

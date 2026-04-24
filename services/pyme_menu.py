@@ -155,11 +155,11 @@ def get_pyme_menu_payload(context: Dict[str, Any], channel: str = "web") -> Dict
     if not flat_options:
         flat_options.extend(
             [
-                {"id": "pyme_productos_stock", "texto": "📦 Catálogo y precios"},
-                {"id": "pyme_promociones", "texto": "🔥 Promos mayoristas"},
+                {"id": "pyme_productos_stock", "texto": "📦 Ver productos"},
+                {"id": "pyme_promociones", "texto": "🔥 Promociones"},
                 {"id": "pyme_hacer_pedido", "texto": "🛒 Armar pedido"},
                 {"id": "pyme_estado_pedido", "texto": "📲 Seguir mi pedido"},
-                {"id": "pyme_hablar_agente", "texto": "🤝 Hablar con un asesor"},
+                {"id": "pyme_hablar_agente", "texto": "🤝 Hablar con un representante"},
             ]
         )
 
@@ -186,8 +186,8 @@ def get_pyme_menu_payload(context: Dict[str, Any], channel: str = "web") -> Dict
     }
 
     if channel.lower() == "whatsapp":
-        assistant_name = menu_config.get("assistant_name") or "ACA WinRey"
-        brand_name = nombre_pyme or menu_config.get("nombre_pyme") or "la bodega"
+        assistant_name = menu_config.get("assistant_name") or "Tu Asistente"
+        brand_name = nombre_pyme or menu_config.get("nombre_pyme") or "la empresa"
         whatsapp_lines = [
             f"🍷 ¡Hola! Soy *{assistant_name}*, tu asistente virtual de {brand_name}.",
         ]
@@ -209,6 +209,20 @@ def get_pyme_menu_payload(context: Dict[str, Any], channel: str = "web") -> Dict
                 ],
             }
         ]
+
+        catalog_buttons = [
+            {"texto": "🛍️ Catálogo", "action_id": "pyme_productos_stock"},
+            {"texto": "🛒 Ver carrito", "action_id": "ver_carrito_pyme"},
+            {"texto": "🎁 Canjear puntos", "action_id": "pyme_otras_consultas"},
+            {"texto": "🤲 Donaciones", "action_id": "pyme_otras_consultas"},
+        ]
+
+        payload["categorias"].append(
+            {
+                "titulo": "Catálogo",
+                "botones": catalog_buttons,
+            }
+        )
 
     if menu_config.get("footer"):
         payload["data"]["footer"] = menu_config["footer"]

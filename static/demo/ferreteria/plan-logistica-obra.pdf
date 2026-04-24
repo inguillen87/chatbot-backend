@@ -1,38 +1,80 @@
 %PDF-1.4
+%\x93\x8c\x8b\x9e ReportLab Generated PDF document (opensource)
 1 0 obj
-<< /Type /Catalog /Pages 2 0 R >>
+<<
+/F1 2 0 R /F2 3 0 R /F3 4 0 R
+>>
 endobj
 2 0 obj
-<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+<<
+/BaseFont /Helvetica /Encoding /WinAnsiEncoding /Name /F1 /Subtype /Type1 /Type /Font
+>>
 endobj
 3 0 obj
-<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 300] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>
+<<
+/BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding /Name /F2 /Subtype /Type1 /Type /Font
+>>
 endobj
 4 0 obj
-<< /Length 220 >>
-stream
-BT
-/F1 18 Tf
-36 260 Td (Plan de Logística a Obra) Tj
-0 -24 Td (Coordinación de camión grúa y horarios) Tj
-0 -24 Td (Seguimiento GPS para despachos parciales) Tj
-0 -24 Td (Retiro de bolsones y residuos en obra) Tj
-ET
-endstream
+<<
+/BaseFont /Helvetica-Oblique /Encoding /WinAnsiEncoding /Name /F3 /Subtype /Type1 /Type /Font
+>>
 endobj
 5 0 obj
-<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+<<
+/Contents 9 0 R /MediaBox [ 0 0 595.2756 841.8898 ] /Parent 8 0 R /Resources <<
+/Font 1 0 R /ProcSet [ /PDF /Text /ImageB /ImageC /ImageI ]
+>> /Rotate 0 /Trans <<
+
+>>
+  /Type /Page
+>>
+endobj
+6 0 obj
+<<
+/PageMode /UseNone /Pages 8 0 R /Type /Catalog
+>>
+endobj
+7 0 obj
+<<
+/Author (\(anonymous\)) /CreationDate (D:20251216063510+00'00') /Creator (\(unspecified\)) /Keywords () /ModDate (D:20251216063510+00'00') /Producer (ReportLab PDF Library - \(opensource\))
+  /Subject (\(unspecified\)) /Title (\(anonymous\)) /Trapped /False
+>>
+endobj
+8 0 obj
+<<
+/Count 1 /Kids [ 5 0 R ] /Type /Pages
+>>
+endobj
+9 0 obj
+<<
+/Filter [ /ASCII85Decode /FlateDecode ] /Length 845
+>>
+stream
+Gasamb>R(K']%q&mP8>X,KZ)jh%^8j43[3bP)Z]2`/H:EZ:!B]n!3gd#r*`t=Rt"ie^:o<$3VI9hg#ZMT#'(p"j.rl!Ta?;lio)K`NKI4O^SB4&dCpj-Fa-oJs=V=U(HgY;jos:6h^\p?D'5<*cR!#C\5o&ET`lIkF2f"Ug]W5+=giFV6!\!Z;7/*'(2j3ICA\SA1s%8_!+$"C#.gU:Q:8=2<#D^M=?'$ofS<knlXaK;O=F>Q[/B@7\PPUZZ[mg(2ZkrQng[J1lKDL&!uM[=nV'Qp;F<.l>RLCN/4E6k?;S2ARW:SNQrq6@t]\9S:0`YL/CR(1?<EdKlI/+-(g*r`bc"c6!RB!YR4DYLlY)sE#?V@@Mk++06i8mE<b<]SM35k'.*-3'=mTbM:66c@<AZ\XdK<(!i'3-ITNYQ.Wl`Oab[QWDNoPiP$e?`7dVm'LZCGf^+OPDeQRRQ5'[KFk@sWo/r[&(WQ-:.NJ87W;D%tZqS:h<JCL]9K))J>^4,:Yg6KX92A*0t=/O*97@NYG]4tEjH'\Dp8!Ksr9B0,kb/0T)(2V2?Co)8-'Y=7!@.36$Ma"MLjp2<TqNdUfq*BNme:[=3F,Xjj%A]5RC7OjKg,^[PZ8JkK9e.A5;#(%\&]N&]\`nFWSqsOgIcCC(c\[Emr:iDh7IAPD-P\ai)sL(-cSC&nMsp@JTl`2_$oTZrcA%P!L8ESVE73F<kT%0RFNF>XptI7lmotI$fN]('S:@u(KmV@T]PLbF@$C%oV(i;o(JM5:=X]hNR,DnL2S00[ra<l,jf?_/b!iWp9l#N)#iLOG$Eid4`C@;^-HD(1mE4'B39\Vkp]mCCTLf~>endstream
 endobj
 xref
-0 6
+0 10
 0000000000 65535 f 
-0000000009 00000 n 
-0000000058 00000 n 
-0000000115 00000 n 
-0000000241 00000 n 
-0000000511 00000 n 
+0000000061 00000 n
+0000000112 00000 n
+0000000219 00000 n
+0000000331 00000 n
+0000000446 00000 n
+0000000649 00000 n
+0000000717 00000 n
+0000000997 00000 n
+0000001056 00000 n
 trailer
-<< /Size 6 /Root 1 0 R >>
+<<
+/ID
+[<75b426a3da5397ce7ca8aefff970aff3><75b426a3da5397ce7ca8aefff970aff3>]
+% ReportLab generated PDF document -- digest (opensource)
+
+/Info 7 0 R
+/Root 6 0 R
+/Size 10
+>>
 startxref
-581
+1991
 %%EOF

@@ -67,10 +67,46 @@ class EstadisticasHeatmapRouteTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.get_json()
         self.assertIsInstance(payload, dict)
-        self.assertEqual(
-            payload.get("heatmap"),
-            [{"location": {"lat": 1, "lng": 2}, "weight": 3, "categoria": None}],
-        )
+        self.assertEqual(len(payload.get("heatmap", [])), 1)
+        point = payload["heatmap"][0]
+        self.assertEqual(point["location"], {"lat": 1, "lng": 2})
+        self.assertEqual(point["weight"], 3.0)
+        self.assertIn("feature", point)
+        self.assertIn("coordinates", point)
+        self.assertIn("heatmap_geojson", payload)
+        self.assertNotIn("heatmap_google", payload)
+        self.assertIn("map_config", payload)
+        self.assertIsInstance(payload["map_config"], dict)
+        self.assertIn("map_layers", payload)
+        heatmap_layer = payload["map_layers"].get("heatmap")
+        self.assertIsInstance(heatmap_layer, dict)
+        self.assertEqual(heatmap_layer.get("preferred_format"), "geojson")
+        self.assertIn("geojson", heatmap_layer.get("supported_formats", []))
+        self.assertIn("source_keys", heatmap_layer)
+        self.assertIn("heatmap_cells", payload)
+        self.assertTrue(payload["heatmap_cells"])
+        self.assertIn("heatmap_cells_geojson", payload)
+        self.assertIn("heatmap_cells", payload.get("map_layers", {}))
+        grid_layer = payload["map_layers"].get("heatmap_cells")
+        self.assertIsInstance(grid_layer, dict)
+        self.assertEqual(grid_layer.get("kind"), "grid")
+        self.assertIn("geojson", grid_layer.get("supported_formats", []))
+        self.assertIn("metadata", payload)
+        self.assertIn("map", payload["metadata"])
+        self.assertIn("heatmap", payload["metadata"]["map"])
+        heatmap_meta = payload["metadata"]["map"]["heatmap"]
+        self.assertIsInstance(heatmap_meta, dict)
+        self.assertIn("point_count", heatmap_meta)
+        self.assertIn("cell_count", heatmap_meta)
+        self.assertIn("provider_hint", heatmap_meta)
+        self.assertIn("style", heatmap_meta)
+        self.assertIn("category_layers", payload["metadata"])
+        category_layers = payload["metadata"]["category_layers"]
+        self.assertEqual(category_layers.get("provider"), "maplibre")
+        self.assertIn("categories", category_layers)
+        filters_meta = payload["metadata"].get("filters", {})
+        self.assertIn("rangos_tiempo", filters_meta)
+        self.assertTrue(filters_meta.get("rangos_tiempo"))
         mock_servicio.obtener_tickets_con_ubicacion_para_mapa.assert_called_once_with(
             tipo_ticket='municipio',
             municipio_id=None,

@@ -1,0 +1,248 @@
+{
+  "key": "default",
+  "responses": [
+    {
+      "id": "welcome",
+      "keywords": [
+        "__INIT__",
+        "hola",
+        "inicio",
+        "empezar",
+        "menu"
+      ],
+      "match_always": false,
+      "response": "¡Hola! 👋 Soy tu asistente virtual. Estoy aquí para ayudarte a mostrar cómo funciona nuestra plataforma. Elige una opción:",
+      "buttons": [
+        {
+          "label": "🏢 Ver demos disponibles",
+          "target": "demo_menu"
+        }
+      ]
+    },
+    {
+      "id": "demo_experiencia",
+      "keywords": [
+        "demo",
+        "plantilla",
+        "experiencia",
+        "interactivo",
+        "dashboard",
+        "carrito",
+        "catálogo"
+      ],
+      "response": "🚀 Bienvenido a la demo de Default. Probá el catálogo, la encuesta en vivo y el portal del cliente con analíticas en tiempo real.",
+      "buttons": [
+        {
+          "label": "🛒 Catálogo listo",
+          "target": "catalogo_demo"
+        },
+        {
+          "label": "🗳️ Encuesta en vivo",
+          "target": "encuesta_demo"
+        },
+        {
+          "label": "📊 Dashboard",
+          "target": "dashboard_demo"
+        },
+        {
+          "label": "📨 Portal del cliente",
+          "target": "portal_demo"
+        }
+      ]
+    },
+    {
+      "id": "catalogo_demo",
+      "keywords": [
+        "catálogo demo",
+        "catalogo demo",
+        "productos demo",
+        "ver catálogo"
+      ],
+      "response": "Catálogo navegable con precios, imágenes y stock listo para agregar al carrito. Incluye QR y link compartible para que cualquier visitante lo abra desde su móvil.",
+      "buttons": [
+        {
+          "label": "🛍️ Ver productos",
+          "target": "catalogo_demo_items"
+        },
+        {
+          "label": "🔗 Compartir catálogo",
+          "target": "catalogo_demo_compartir"
+        }
+      ]
+    },
+    {
+      "id": "catalogo_demo_items",
+      "keywords": [
+        "productos demo",
+        "productos",
+        "items"
+      ],
+      "response": "Ejemplo de ítems listos para sumar al carrito: variantes, combos y precios destacados. Al avanzar, el carrito conserva el progreso y sugiere completar datos o ingresar al portal.",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "catalogo_demo_compartir",
+      "keywords": [
+        "compartir catálogo",
+        "link catálogo",
+        "qr catálogo"
+      ],
+      "response": "Podés compartir el catálogo por QR, link corto o redes sociales. Cada acceso queda trazado en el panel de analíticas con mapa de calor y conversiones.",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "encuesta_demo",
+      "keywords": [
+        "encuesta",
+        "votación",
+        "votacion",
+        "feedback"
+      ],
+      "response": "Encuesta en vivo pensada para Default: botones de voto, QR para participación masiva y resultados en tiempo real.",
+      "buttons": [
+        {
+          "label": "✅ Enviar voto",
+          "target": "encuesta_demo_votar"
+        },
+        {
+          "label": "📈 Ver resultados",
+          "target": "encuesta_demo_resultados"
+        }
+      ]
+    },
+    {
+      "id": "encuesta_demo_votar",
+      "keywords": [
+        "votar",
+        "vote",
+        "participar"
+      ],
+      "response": "Botones listos para votar sin salir del chat. También se pueden embeber en el widget o enviar por WhatsApp.",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "encuesta_demo_resultados",
+      "keywords": [
+        "resultados",
+        "dashboard encuesta",
+        "metricas"
+      ],
+      "response": "Resultados en vivo con gráficos, tasa de respuesta y segmentación por canal. Exportable y con alertas automáticas.",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "dashboard_demo",
+      "keywords": [
+        "dashboard",
+        "analíticas",
+        "analytics",
+        "mapa de calor"
+      ],
+      "response": "Dashboard de experiencia digital: mapa de calor de interacciones, conversión por canal, tickets abiertos y estado de pedidos.",
+      "buttons": [
+        {
+          "label": "📍 Mapa de calor",
+          "target": "dashboard_mapa_calor"
+        },
+        {
+          "label": "🧾 Tickets y pedidos",
+          "target": "dashboard_tickets_pedidos"
+        }
+      ]
+    },
+    {
+      "id": "dashboard_mapa_calor",
+      "keywords": [
+        "mapa de calor",
+        "heatmap",
+        "flujo usuarios"
+      ],
+      "response": "Visualizá el mapa de calor con los puntos más clickeados, embebible en la página demo para mostrar dónde interactúan los usuarios.",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "dashboard_tickets_pedidos",
+      "keywords": [
+        "tickets",
+        "reclamos",
+        "pedidos"
+      ],
+      "response": "Vista rápida de reclamos, pedidos y encuestas abiertas por tenant. Permite derivar a humano o seguir el ciclo de compra sin perder el carrito.",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "portal_demo",
+      "keywords": [
+        "portal",
+        "perfil",
+        "usuario"
+      ],
+      "response": "Portal del cliente con historial de compras, puntos, reclamos y encuestas abiertas. Al iniciar sesión, se mantiene el carrito y se pueden reordenar ítems con un clic.",
+      "buttons": [
+        {
+          "label": "🔐 Ingresar al portal",
+          "target": "portal_demo_ingreso"
+        },
+        {
+          "label": "🧾 Ver historial",
+          "target": "portal_demo_historial"
+        }
+      ]
+    },
+    {
+      "id": "portal_demo_ingreso",
+      "keywords": [
+        "ingresar",
+        "login",
+        "registro"
+      ],
+      "response": "Ingreso rápido con email, WhatsApp o código QR. Se sincroniza con el carrito activo para continuar la compra sin perder productos.",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "portal_demo_historial",
+      "keywords": [
+        "historial",
+        "puntos",
+        "seguimiento"
+      ],
+      "response": "Historial de pedidos, reclamos y seguimientos, con notificaciones push y trazabilidad de entregas.",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "demo_menu",
+      "keywords": [
+        "demos",
+        "ver demos"
+      ],
+      "response": "Tenemos demos preparadas para diferentes industrias. Selecciona una para ver cómo funciona:",
+      "buttons": [
+        {
+          "label": "🍷 Bodega",
+          "action": "switch_demo_bodega"
+        },
+        {
+          "label": "🛒 Almacén",
+          "action": "switch_demo_almacen"
+        },
+        {
+          "label": "🏗️ Ferretería",
+          "action": "switch_demo_ferreteria"
+        },
+        {
+          "label": "👗 Tienda Ropa",
+          "action": "switch_demo_ropa"
+        }
+      ]
+    }
+  ],
+  "fallback": {
+    "response": "No entendí tu consulta. ¿Te gustaría ver las demos disponibles?",
+    "buttons": [
+      {
+        "label": "Ver demos",
+        "target": "demo_menu"
+      }
+    ]
+  }
+}

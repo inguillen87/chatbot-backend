@@ -1,38 +1,80 @@
 %PDF-1.4
+%\x93\x8c\x8b\x9e ReportLab Generated PDF document (opensource)
 1 0 obj
-<< /Type /Catalog /Pages 2 0 R >>
+<<
+/F1 2 0 R /F2 3 0 R /F3 4 0 R
+>>
 endobj
 2 0 obj
-<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+<<
+/BaseFont /Helvetica /Encoding /WinAnsiEncoding /Name /F1 /Subtype /Type1 /Type /Font
+>>
 endobj
 3 0 obj
-<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 300] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>
+<<
+/BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding /Name /F2 /Subtype /Type1 /Type /Font
+>>
 endobj
 4 0 obj
-<< /Length 209 >>
-stream
-BT
-/F1 18 Tf
-36 260 Td (Agenda de Turnos Prioritarios) Tj
-0 -24 Td (Clínica médica y pediatría 48h) Tj
-0 -24 Td (Guardias programadas con teletriage) Tj
-0 -24 Td (Notificaciones por WhatsApp y email) Tj
-ET
-endstream
+<<
+/BaseFont /Helvetica-Oblique /Encoding /WinAnsiEncoding /Name /F3 /Subtype /Type1 /Type /Font
+>>
 endobj
 5 0 obj
-<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+<<
+/Contents 9 0 R /MediaBox [ 0 0 595.2756 841.8898 ] /Parent 8 0 R /Resources <<
+/Font 1 0 R /ProcSet [ /PDF /Text /ImageB /ImageC /ImageI ]
+>> /Rotate 0 /Trans <<
+
+>>
+  /Type /Page
+>>
+endobj
+6 0 obj
+<<
+/PageMode /UseNone /Pages 8 0 R /Type /Catalog
+>>
+endobj
+7 0 obj
+<<
+/Author (\(anonymous\)) /CreationDate (D:20251216063510+00'00') /Creator (\(unspecified\)) /Keywords () /ModDate (D:20251216063510+00'00') /Producer (ReportLab PDF Library - \(opensource\))
+  /Subject (\(unspecified\)) /Title (\(anonymous\)) /Trapped /False
+>>
+endobj
+8 0 obj
+<<
+/Count 1 /Kids [ 5 0 R ] /Type /Pages
+>>
+endobj
+9 0 obj
+<<
+/Filter [ /ASCII85Decode /FlateDecode ] /Length 790
+>>
+stream
+Gasam9iKe#&A@7.lnN&UA''o#o[X)g9S]#?n<&Wj'bFkJ<-D19n%8-lSWEuoj%*<9m68;`+;!R#g0[h\I*^d2#6@.7?NX^KKDYqVo@`RMl&ggQ1eXPo>@_s\%jJmTJe<f,7MD@YPb`o-"T6^W]ob%b3Voi(3sEcYG=mL+P4;))1daN7_#1Kc83"(J8\!36qZ?R$jC`GG$U[7iq!=/QHpT<#&,%HVJH9I&O=W)QIs]VPOKe;qH.,<&j:M#m*1Dn-p5d;8'RC?fijbi3MSNm<d?ohuKVc-2bJJZ2+ta/7TJ>Q''"cd`%)mf<AB<1i,Uf?/n`S>5nQJD4a!#^WGR`uF=gS`[RP>Z29Mj5f^iS)cEBSpBf1q\k)&"=cHR<dl[q%e.q5(Di^G]tmQjJ`@&U:,k=dJn<Nl<72f41r]<\!^&Lr<'He#_r7BqHBF(4<6+@:\CciQC0`Hgl&#4i0Lb`bZs0_K0ghCk(X)=D0VL*r10a2!IsHY$L:`5+p?AoAHnYD*aLb[!1G.H3kOO*MJFn:J_us3X^Z8k)bfh'R:)$OcRf2#5daT.Qcke>N;PX``ZT"KYg_YRF8SYSG5Wh?`hZX5Oj0do6[sb5C\ChYM,/Y9aUQr/ac@'Nb&:V%c?*[U@2p.)/RreSIIN1%0o[A_bFbg]Q4q@d37hNYl@R<hmYZ`o[lFgN.#jl,s.AU^TJN8R]B/ZD;tUpTU];WU90=drq;%Dj3a>G2mq="X90k*;)l#MOLhS9,']cN5T!pKq(/"*VdNNIB'js\mEJe$r<)cRL/J~>endstream
 endobj
 xref
-0 6
+0 10
 0000000000 65535 f 
-0000000009 00000 n 
-0000000058 00000 n 
-0000000115 00000 n 
-0000000241 00000 n 
-0000000500 00000 n 
+0000000061 00000 n
+0000000112 00000 n
+0000000219 00000 n
+0000000331 00000 n
+0000000446 00000 n
+0000000649 00000 n
+0000000717 00000 n
+0000000997 00000 n
+0000001056 00000 n
 trailer
-<< /Size 6 /Root 1 0 R >>
+<<
+/ID
+[<9ead61c28fdb6d3437caca2417d38efa><9ead61c28fdb6d3437caca2417d38efa>]
+% ReportLab generated PDF document -- digest (opensource)
+
+/Info 7 0 R
+/Root 6 0 R
+/Size 10
+>>
 startxref
-570
+1936
 %%EOF

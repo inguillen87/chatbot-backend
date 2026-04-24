@@ -14,25 +14,34 @@ project_root_chat_routes = os.path.abspath(os.path.join(os.path.dirname(__file__
 if project_root_chat_routes not in sys.path:
     sys.path.insert(0, project_root_chat_routes)
 
-from flask import Blueprint, request, jsonify, current_app
+from flask import Blueprint, request, jsonify, current_app, g
 from sqlalchemy import func, desc
+from sqlalchemy.exc import ProgrammingError, SQLAlchemyError
 from sqlalchemy.orm.attributes import flag_modified # Importado para flag_modified
-from models import User, Rubro, Conversacion, db, ChatSessionContext # Added ChatSessionContext
-from utils.db_utils import commit_with_retry
+from models import User, Rubro, Conversacion, MunicipioTicket, TenantProfile, db, ChatSessionContext # Added ChatSessionContext
+from utils.db_utils import commit_with_retry, ensure_chat_session_context_schema
 from socket_service import socketio # Import socketio
 from services.logic import (
-    responder_chatboc,
     RUBROS_PUBLICOS,
     normalizar_rubro,
     es_rubro_publico,
 )
+from services.live_chat_schedule import build_live_chat_status
 from services.demo_registry import load_demo_rubros, demo_rubro_for_token
+from services.common_utils import validar_email, validar_telefono, formatear_telefono_e164
+from services.contact_intake import missing_contact_fields, resolve_contact_snapshot
+from services.notifications import enviar_notificacion_sms, enviar_notificacion_whatsapp_con_plantilla
+from services.email_service import enviar_email
+from services.conversation_resolver import ConversationResolver
 from utils.auth_helpers import (
     anon_o_token_requerido,
+    obtener_entity_token,
     obtener_token,
     user_from_token,
+    _is_jwt_token,
 )
-from utils.response_utils import ensure_buttons_compatibility
+from utils.map_config import get_map_config
+from utils.response_utils import normalize_response_payload
 from datetime import datetime, timedelta
 
 chat_bp = Blueprint("chat_bp", __name__)
@@ -42,6 +51,155 @@ DEMO_MENU_PREFIX = "demo_menu"
 DEMO_MENU_BACK_ACTION = f"{DEMO_MENU_PREFIX}:back"
 DEMO_MENU_HOME_ACTION = f"{DEMO_MENU_PREFIX}:home"
 DEMO_MENU_ROOT_ID = "demo_menu_root"
+DEMO_SEGMENT_PREFIX = "demo_segment"
+DEMO_LEAD_ACTION_ID = "open_demo_form"
+
+
+def _extract_text_value(payload) -> str:
+    if payload is None:
+        return ""
+    if isinstance(payload, str):
+        return payload.strip()
+    if isinstance(payload, dict):
+        for key in ("texto", "text", "pregunta", "value"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return ""
+
+
+def _build_demo_lead_prompt(message_body: str, *, pedir_info: str) -> Dict[str, object]:
+    return {
+        "message_body": message_body,
+        "respuesta": message_body,
+        "message_type": "interactive_buttons",
+        "pedir_info": pedir_info,
+        "fuente": "demo_lead_capture",
+        "botones": [
+            {"texto": "Continuar demo", "action": DEMO_MENU_HOME_ACTION, "action_id": DEMO_MENU_HOME_ACTION},
+            {"texto": "Ver rubros", "action": DEMO_MENU_BACK_ACTION, "action_id": DEMO_MENU_BACK_ACTION},
+        ],
+        "generar_audio": False,
+    }
+
+
+def _notify_superadmin_new_lead(ticket: MunicipioTicket, *, lead_nombre: str, lead_telefono: str, lead_email: str, rubro_demo: str) -> None:
+    superadmin_phone = current_app.config.get("SUPERADMIN_LEAD_PHONE", "+5492613168608")
+    superadmin_email = current_app.config.get("SUPERADMIN_LEAD_EMAIL") or current_app.config.get("MAIL_FROM_ADDRESS")
+    resumen = (
+        f"Nuevo lead demo: {lead_nombre} | Tel: {lead_telefono} | Email: {lead_email} | "
+        f"Rubro: {rubro_demo} | Ticket #{ticket.nro_ticket}"
+    )
+
+    enviar_notificacion_whatsapp_con_plantilla(
+        superadmin_phone,
+        "Superadmin",
+        ticket.nro_ticket,
+        categoria="lead_demo",
+        mensaje=resumen,
+    )
+    enviar_notificacion_sms(superadmin_phone, resumen)
+
+    if superadmin_email:
+        enviar_email(
+            superadmin_email,
+            f"Nuevo lead demo #{ticket.nro_ticket}",
+            (
+                f"<p>Se registró un nuevo prospecto desde la demo pública.</p>"
+                f"<ul><li>Nombre: {lead_nombre}</li><li>Teléfono: {lead_telefono}</li>"
+                f"<li>Email: {lead_email}</li><li>Rubro: {rubro_demo}</li></ul>"
+            ),
+            resumen,
+        )
+
+
+def _create_demo_lead_ticket(*, owner_user: Optional[User], anon_id: Optional[str], chat_session_id: str, lead_nombre: str, lead_telefono: str, lead_email: str, rubro_demo: str) -> MunicipioTicket:
+    tenant_id = getattr(owner_user, "tenant_id", None)
+    if not tenant_id and owner_user is not None:
+        tenant_ref = (
+            getattr(owner_user, "tenant", None)
+            or getattr(owner_user, "tenant_profile", None)
+            or getattr(owner_user, "tenant_profile_municipio", None)
+            or getattr(owner_user, "tenant_profile_pyme", None)
+        )
+        tenant_id = getattr(tenant_ref, "id", None)
+
+    ticket = MunicipioTicket(
+        pregunta="Prospecto generado desde demo pública",
+        asunto=f"Lead prospecto demo - {rubro_demo}",
+        categoria="lead_demo_prospecto",
+        detalles=f"Sesión: {chat_session_id} | Rubro demo: {rubro_demo}",
+        nombre_vecino=lead_nombre,
+        telefono_vecino=lead_telefono,
+        email_vecino=lead_email,
+        canal_ingreso="web_demo_widget",
+        anon_id=anon_id,
+        municipio_id=getattr(owner_user, "id", None),
+        tenant_id=tenant_id,
+    )
+    db.session.add(ticket)
+    db.session.flush()
+    return ticket
+
+
+def _persist_core_conversation_messages(
+    *,
+    tenant_id: Optional[int],
+    chat_session_id: Optional[str],
+    anon_id: Optional[str],
+    actor_user: Optional[User],
+    user_message: Optional[str],
+    bot_payload: Optional[dict],
+) -> None:
+    """Persist user + assistant turns into BE-01 conversation core tables."""
+
+    if not tenant_id or not chat_session_id:
+        return
+
+    user_text = (user_message or "").strip()
+    if not user_text:
+        return
+
+    bot_payload = bot_payload or {}
+    bot_text = (
+        bot_payload.get("respuesta")
+        or bot_payload.get("message_body")
+        or bot_payload.get("texto")
+        or ""
+    )
+    if isinstance(bot_text, dict):
+        bot_text = bot_text.get("text") or bot_text.get("texto") or ""
+    bot_text = str(bot_text).strip()
+
+    resolver = ConversationResolver(int(tenant_id))
+    resolved = resolver.resolve_or_create(
+        chat_session_id=chat_session_id,
+        channel="web",
+        channel_identity=anon_id or (str(actor_user.id) if actor_user else None),
+        user_id=getattr(actor_user, "id", None),
+    )
+    resolver.append_message(
+        conversation_id=resolved.conversation.id,
+        channel_session_id=resolved.channel_session.id,
+        sender_type="user",
+        sender_user_id=getattr(actor_user, "id", None),
+        direction="in",
+        body=user_text,
+        metadata={"source": "routes.chat.ask"},
+    )
+    if bot_text:
+        resolver.append_message(
+            conversation_id=resolved.conversation.id,
+            channel_session_id=resolved.channel_session.id,
+            sender_type="assistant",
+            direction="out",
+            body=bot_text,
+            metadata={
+                "source": "routes.chat.ask",
+                "fuente": bot_payload.get("fuente"),
+                "message_type": bot_payload.get("message_type"),
+            },
+        )
 
 
 def _load_demo_rubros() -> List[Dict[str, Optional[str]]]:
@@ -76,6 +234,25 @@ def _extract_demo_key(action_id: Optional[str]) -> Optional[str]:
     return candidate or None
 
 
+
+
+def _extract_demo_segment(action_id: Optional[str]) -> Optional[str]:
+    if not action_id:
+        return None
+    value = str(action_id).strip().lower()
+    if not value:
+        return None
+
+    if value.startswith(f"{DEMO_SEGMENT_PREFIX}:"):
+        return value.split(":", 1)[1].strip() or None
+
+    if value in {"gobiernos", "gobierno", "sector_publico", "publico"}:
+        return "gobiernos"
+    if value in {"empresas", "empresa", "pyme", "pymes", "negocios"}:
+        return "empresas"
+
+    return None
+
 def _is_init_payload(payload) -> bool:
     if payload is None:
         return True
@@ -90,32 +267,303 @@ def _is_init_payload(payload) -> bool:
     return False
 
 
-def _build_demo_selector_payload(opciones: List[Dict[str, Optional[str]]]) -> Dict[str, object]:
+
+
+def _anonymous_message_count(session_id: str, window_minutes: int) -> int:
+    """Count billable anonymous messages in the active window.
+
+    Excludes synthetic init payloads so a frontend handshake (`__INIT__`) does
+    not consume quota and immediately block the first real message.
+    """
+
+    if not session_id:
+        return 0
+
+    return (
+        Conversacion.query
+        .filter(Conversacion.session_id == session_id)
+        .filter(Conversacion.timestamp >= datetime.utcnow() - timedelta(minutes=window_minutes))
+        .filter(~Conversacion.pregunta.in_(["", "__INIT__"]))
+        .count()
+    )
+
+
+
+
+def _should_enforce_owner_plan_limit(*, demo_flow_active: bool, is_init_request: bool, is_public_landing: bool, is_anonymous: bool, has_entity_token: bool) -> bool:
+    """Return whether owner plan-limit checks should be applied.
+
+    Public landing demo/widget sessions authenticated via entity token should not
+    be blocked by owner plan limits; otherwise prospects hit 403 on first
+    interactions and cannot complete the trial experience.
+    """
+
+    if demo_flow_active or is_init_request:
+        return False
+
+    # Public anonymous web visitors should never be blocked by owner plan
+    # counters during discovery. Entity token detection can fail depending on
+    # proxy/header transformations, so we intentionally do not require it.
+    if is_public_landing and is_anonymous:
+        return False
+
+    return True
+
+
+
+def _is_public_landing_request() -> bool:
+    """Return True when request comes from public marketing site."""
+
+    origin = (request.headers.get("Origin") or "").lower()
+    referer = (request.headers.get("Referer") or "").lower()
+    landing_source = origin or referer
+    return "chatboc.ar" in landing_source and "app.chatboc.ar" not in landing_source
+
+
+def _extract_entity_token_hint() -> str | None:
+    """Best-effort extraction of static entity/widget token from request.
+
+    Public embeds often authenticate with X-Token (static owner/entity token),
+    not JWT. We must detect that to avoid applying owner plan-limit guards to
+    demo/public prospect sessions.
+    """
+
+    candidates = [
+        request.args.get("entityToken"),
+        request.args.get("owner_token") or request.args.get("ownerToken"),
+        request.args.get("widget_token"),
+        request.args.get("token"),
+        request.headers.get("X-Entity-Token"),
+        request.headers.get("X-Owner-Token"),
+        request.headers.get("X-Widget-Token"),
+        request.headers.get("X-Token"),
+    ]
+
+    auth_header = request.headers.get("Authorization") or ""
+    if auth_header.lower().startswith("bearer "):
+        bearer_token = auth_header.split(None, 1)[1]
+        if bearer_token and not _is_jwt_token(bearer_token):
+            candidates.append(bearer_token)
+
+    for candidate in candidates:
+        if candidate and str(candidate).strip():
+            return str(candidate).strip()
+
+    return None
+
+
+def _log_widget_request(response, user):
+    """Log widget chat requests with tenant and token context."""
+
+    status_code = None
+    response_obj = response
+    if isinstance(response, tuple):
+        response_obj = response[0]
+        status_code = response[1] if len(response) > 1 else None
+    if status_code is None and hasattr(response_obj, "status_code"):
+        status_code = response_obj.status_code
+
+    tenant_slug = getattr(user, "tenant_slug", None) if user else None
+    entity_token = getattr(user, "entity_token", None) if user else None
+
+    current_app.logger.info(
+        "WIDGET_REQ path=%s user_id=%s tenant=%s entity_token=%s status=%s",
+        getattr(request, "path", None),
+        getattr(user, "id", None) if user else None,
+        tenant_slug,
+        entity_token,
+        status_code,
+    )
+
+    return response
+
+
+def _build_demo_selector_payload(
+    opciones: List[Dict[str, Optional[str]]],
+    *,
+    segment_filter: Optional[str] = None,
+) -> Dict[str, object]:
+    segment_normalized = (segment_filter or "").strip().lower() or None
+
+    def _segment_of(option: Dict[str, object]) -> str:
+        segment_raw = str(option.get("segment") or "").strip().lower()
+        if segment_raw.startswith("gob") or str(option.get("tipo_chat") or "").strip().lower() == "municipio":
+            return "gobiernos"
+        return "empresas"
+
+    groups: OrderedDict[str, List[Dict[str, object]]] = OrderedDict([("gobiernos", []), ("empresas", [])])
+    for opcion in opciones:
+        groups[_segment_of(opcion)].append(opcion)
+
+    if segment_normalized in groups:
+        filtered = groups.get(segment_normalized) or []
+        titulo_segmento = "Soluciones para Sector Público" if segment_normalized == "gobiernos" else "Soluciones para Empresas"
+        mensaje = f"Perfecto. Elegí el rubro dentro de {titulo_segmento}:"
+        botones: List[Dict[str, object]] = []
+        for opcion in filtered:
+            action_value = f"{DEMO_ACTION_PREFIX}:{opcion['key']}"
+            boton = {
+                "texto": opcion["label"],
+                "action_id": action_value,
+                "action": action_value,
+                "id": action_value,
+            }
+            if opcion.get("descripcion"):
+                boton["descripcion"] = opcion["descripcion"]
+            botones.append(boton)
+
+        back_action = f"{DEMO_SEGMENT_PREFIX}:all"
+        botones.append({
+            "texto": "⬅️ Volver a categorías",
+            "action": back_action,
+            "action_id": back_action,
+            "id": back_action,
+        })
+        return {
+            "message_body": mensaje,
+            "options_list": botones,
+            "botones": botones,
+            "message_type": "interactive_list",
+            "fuente": "demo_selector",
+            "demo_selector_mode": "segment_rubros",
+            "segment": segment_normalized,
+            "generar_audio": True,
+        }
+
     mensaje = current_app.config.get(
         "DEMO_WELCOME_MESSAGE",
         "👋 ¡Bienvenido a la demo de Chatboc! Elegí la experiencia que querés probar:",
     )
-    botones: List[Dict[str, object]] = []
-    for opcion in opciones:
-        action_value = f"{DEMO_ACTION_PREFIX}:{opcion['key']}"
-        boton = {
-            "texto": opcion["label"],
-            "action_id": action_value,
-            "action": action_value,
-            "id": action_value,
-        }
-        if opcion.get("descripcion"):
-            boton["descripcion"] = opcion["descripcion"]
-        botones.append(boton)
+    category_buttons = [
+        {
+            "texto": "Soluciones Para Empresas",
+            "action": f"{DEMO_SEGMENT_PREFIX}:empresas",
+            "action_id": f"{DEMO_SEGMENT_PREFIX}:empresas",
+            "id": f"{DEMO_SEGMENT_PREFIX}:empresas",
+            "descripcion": "Retail, salud, logística, fintech y más.",
+        },
+        {
+            "texto": "Soluciones Para Sector Público",
+            "action": f"{DEMO_SEGMENT_PREFIX}:gobiernos",
+            "action_id": f"{DEMO_SEGMENT_PREFIX}:gobiernos",
+            "id": f"{DEMO_SEGMENT_PREFIX}:gobiernos",
+            "descripcion": "Municipios, atención ciudadana y trámites.",
+        },
+    ]
 
-    message_type = "interactive_list" if len(botones) > 1 else "interactive_buttons"
+    grouped_sections = []
+    for segment_key, entries in groups.items():
+        if not entries:
+            continue
+        section_title = "Soluciones Para Sector Público" if segment_key == "gobiernos" else "Soluciones Para Empresas"
+        rows = []
+        for entry in entries:
+            row_action = f"{DEMO_ACTION_PREFIX}:{entry['key']}"
+            rows.append(
+                {
+                    "id": row_action,
+                    "title": entry.get("label") or entry.get("key"),
+                    "description": entry.get("descripcion") or "",
+                }
+            )
+        grouped_sections.append({"title": section_title, "rows": rows})
+
     return {
         "message_body": mensaje,
-        "options_list": botones,
-        "botones": botones,
-        "message_type": message_type,
+        "options_list": category_buttons,
+        "botones": category_buttons,
+        "message_type": "interactive_list",
         "fuente": "demo_selector",
+        "demo_selector_mode": "segment_categories",
+        "interactive_sections": grouped_sections,
         "generar_audio": True,
+    }
+
+
+def _owner_context_is_trusted(owner_user: Optional[User], resolution_source: Optional[str]) -> bool:
+    """Return True when the owner comes from a tenant-specific context.
+
+    We only trust owners that were resolved from explicit auth/entity context or
+    that were previously persisted in the same chat session. The generic
+    fallback municipality owner used on the public landing must not disable the
+    demo selector by itself.
+    """
+
+    if not owner_user:
+        return False
+
+    return (resolution_source or "").strip().lower() in {
+        "jwt_parent_owner",
+        "jwt_self_owner",
+        "static_entity_token",
+        "explicit_entity_token",
+        "session_owner_context",
+    }
+
+
+def _can_restore_session_owner_context(
+    *,
+    persisted_owner_id: Optional[object],
+    persisted_resolution_source: Optional[str],
+    is_public_landing: bool,
+    is_anonymous: bool,
+    has_entity_token: bool,
+) -> bool:
+    """Return True when a stored owner can safely be revived from chat session state."""
+
+    if not persisted_owner_id:
+        return False
+
+    normalized_source = (persisted_resolution_source or "").strip().lower()
+    if normalized_source not in {
+        "jwt_parent_owner",
+        "jwt_self_owner",
+        "static_entity_token",
+        "explicit_entity_token",
+        "session_owner_context",
+    }:
+        return False
+
+    return True
+
+
+def _build_widget_ux_context(
+    *,
+    owner_user: Optional[User],
+    resolution_source: Optional[str],
+    tipo_chat: Optional[str],
+    demo_session_activa: bool,
+) -> Dict[str, object]:
+    trusted_owner = _owner_context_is_trusted(owner_user, resolution_source)
+    owner_tipo_chat = (getattr(owner_user, "tipo_chat", None) or tipo_chat or "").strip().lower() or None
+    owner_name = getattr(owner_user, "name", None) if owner_user else None
+    tenant_slug = getattr(owner_user, "tenant_slug", None) if owner_user else None
+
+    return {
+        "trusted_owner": trusted_owner,
+        "owner_resolution_source": resolution_source or "unknown",
+        "owner_user_id": getattr(owner_user, "id", None),
+        "owner_tipo_chat": owner_tipo_chat,
+        "owner_name": owner_name,
+        "tenant_slug": tenant_slug,
+        "demo_session": bool(demo_session_activa),
+        "should_render_demo_shell": bool(demo_session_activa or not trusted_owner),
+        "channel_capabilities": {
+            "supports_audio_input": True,
+            "supports_file_upload": True,
+            "supports_image_input": True,
+            "supports_location_share": True,
+            "supports_realtime": True,
+        },
+        "recommended_experience": {
+            "primary_channel": "widget",
+            "intake_mode": "guided",
+            "supports_rich_claim_intake": owner_tipo_chat == "municipio",
+            "supports_rich_order_intake": owner_tipo_chat == "pyme",
+            "supports_confirmation_cards": True,
+            "supports_multimodal_intake": True,
+            "preferred_handoff_channels": ["widget", "whatsapp", "voice"],
+        },
     }
 
 
@@ -371,63 +819,55 @@ def _format_demo_resources(
             attachment_entry["precio"] = price_text
         if highlight_text:
             attachment_entry["badge"] = highlight_text
-        if availability_text:
-            attachment_entry["disponibilidad"] = availability_text
         if absolute_url:
             attachment_entry["url"] = absolute_url
         if thumbnail_url:
             attachment_entry["thumbnail"] = thumbnail_url
+        if action_id:
+            attachment_entry["id"] = action_id
+
         attachments.append(attachment_entry)
 
-    formatted_text = "\n".join(line for line in lines if line) if lines else ""
-    return formatted_text, buttons, attachments
+    text_block = "\n".join(lines).strip()
+    return text_block, buttons, attachments
 
 
-def _build_demo_menu_registry(
-    quick_actions: List[Dict[str, object]] | None,
-) -> Tuple[Dict[str, Dict[str, object]], str, List[str]]:
-    """Crea una estructura de menús navegables basada en las quick actions configuradas."""
+def _next_id(base_id: str) -> str:
+    """Generate a predictable unique ID if collision occurs in a local scope."""
+    match = re.search(r"_(\d+)$", base_id)
+    if match:
+        num = int(match.group(1)) + 1
+        return re.sub(r"_(\d+)$", f"_{num}", base_id)
+    return f"{base_id}_2"
 
-    if not quick_actions:
-        return {}, DEMO_MENU_ROOT_ID, []
+
+def _process_entries(
+    raw_entries: List[Dict[str, object]] | None,
+    menu_id: str,
+    title: Optional[str],
+    description: Optional[str],
+    parent: Optional[str],
+) -> Dict[str, object]:
+    """Procesa recursivamente una lista de acciones/opciones."""
 
     registry: Dict[str, Dict[str, object]] = {}
+    items: List[Dict[str, object]] = []
+    groups: "OrderedDict[Optional[str], List[Dict[str, object]]]" = OrderedDict()
+    category_order: List[Optional[str]] = []
+    used_ids: Set[str] = set()
     prompt_examples: List[str] = []
-    used_ids: set[str] = set()
 
-    def _next_id(base: str) -> str:
-        slug = re.sub(r"[^a-z0-9]+", "_", base.lower()).strip("_") or "menu"
-        candidate = slug
-        counter = 1
-        while candidate in used_ids or candidate in registry:
-            counter += 1
-            candidate = f"{slug}_{counter}"
-        used_ids.add(candidate)
-        return candidate
+    if parent:
+        items.append({
+            "id": "back",
+            "label": "Volver",
+            "texto": "⬅️ Volver",
+            "action": DEMO_MENU_BACK_ACTION,
+            "type": "system",
+        })
 
-    def _process_entries(
-        entries: List[Dict[str, object]] | None,
-        menu_id: str,
-        title: Optional[str],
-        description: Optional[str],
-        parent: Optional[str],
-    ) -> Dict[str, object]:
-        groups: "OrderedDict[Optional[str], List[Dict[str, object]]]" = OrderedDict()
-        category_order: List[Optional[str]] = []
-        items: List[Dict[str, object]] = []
-
-        if not entries:
-            return {
-                "id": menu_id,
-                "title": title or "Menú",
-                "description": description,
-                "items": items,
-                "groups": groups,
-                "category_order": category_order,
-                "parent": parent,
-            }
-
-        for idx, raw in enumerate(entries):
+    if raw_entries and isinstance(raw_entries, list):
+        for idx, raw in enumerate(raw_entries):
             if not isinstance(raw, dict):
                 continue
 
@@ -672,302 +1112,24 @@ def _interactive_sections_from_quick_items(
 
     sections: List[Dict[str, object]] = []
     for category, rows in rows_by_category.items():
-        if not rows:
-            continue
         sections.append({
-            "title": str(category) if category else "Menú principal",
-            "rows": rows,
+            "title": category,
+            "rows": rows
         })
-
     return sections
 
 
-def _build_menu_navigation_payload(
-    menu_entry: Dict[str, object],
-    *,
-    menu_registry: Dict[str, Dict[str, object]],
-    root_id: str,
-    stack: List[str],
-) -> Dict[str, object]:
-    (
-        menu_text,
-        prompt_text,
-        _prompt_lines,
-        buttons,
-        quick_items,
-        grouped_sections,
-    ) = _format_menu_items(menu_entry)
-
-    breadcrumbs: List[str] = []
-    for menu_id in stack:
-        entry = menu_registry.get(menu_id)
-        if not entry:
-            continue
-        title = str(entry.get("title") or entry.get("id") or "").strip()
-        if title:
-            breadcrumbs.append(title)
-    breadcrumb_text = " > ".join(breadcrumbs)
-
-    title_line = str(menu_entry.get("title") or "Menú").strip()
-    description_line = str(menu_entry.get("description") or "").strip()
-
-    segments: List[str] = []
-    if breadcrumb_text and breadcrumb_text.lower() != title_line.lower():
-        segments.append(f"{title_line}\nRuta: {breadcrumb_text}")
-    else:
-        segments.append(title_line)
-    if description_line:
-        segments.append(description_line)
-    if menu_text:
-        segments.append(f"━━━━━━━━━━━━\nOpciones disponibles\n{menu_text}")
-    if prompt_text:
-        segments.append(f"💬 Probá decir\n{prompt_text}")
-    segments.append("Elegí una opción o usá los botones para navegar.")
-
-    message_text = "\n\n".join(seg for seg in segments if seg)
-
-    payload: Dict[str, object] = {
-        "message_body": message_text,
-        "respuesta": message_text,
-        "fuente": "demo_menu",
-    }
-
-    menu_buttons: List[Dict[str, object]] = []
-    seen_ids: set[str] = set()
-    for button in buttons:
-        if not isinstance(button, dict):
-            continue
-        candidate = deepcopy(button)
-        candidate_id = str(
-            candidate.get("id")
-            or candidate.get("action_id")
-            or candidate.get("action")
-            or len(menu_buttons)
-        )
-        if candidate_id in seen_ids:
-            continue
-        seen_ids.add(candidate_id)
-        menu_buttons.append(candidate)
-
-    current_menu_id = str(menu_entry.get("id") or "")
-    if current_menu_id and current_menu_id != root_id:
-        back_button = {
-            "texto": "⬅️ Volver al menú anterior",
-            "action": DEMO_MENU_BACK_ACTION,
-            "action_id": DEMO_MENU_BACK_ACTION,
-            "id": DEMO_MENU_BACK_ACTION,
-            "type": "menu",
-        }
-        home_button = {
-            "texto": "🏠 Menú principal",
-            "action": f"{DEMO_MENU_PREFIX}:{root_id}",
-            "action_id": f"{DEMO_MENU_PREFIX}:{root_id}",
-            "id": f"{DEMO_MENU_PREFIX}:{root_id}",
-            "type": "menu",
-        }
-        for nav_button in (back_button, home_button):
-            nav_id = nav_button["id"]
-            if nav_id not in seen_ids:
-                menu_buttons.append(nav_button)
-                seen_ids.add(nav_id)
-
-    payload["options_list"] = menu_buttons
-    payload["botones"] = menu_buttons
-
-    non_url_buttons = [btn for btn in menu_buttons if btn.get("type") != "url"]
-    payload["message_type"] = "interactive_list" if len(non_url_buttons) > 3 else "interactive_buttons"
-
-    menu_sections_payload: List[Dict[str, object]] = []
-    if quick_items:
-        section_payload: Dict[str, object] = {
-            "title": menu_entry.get("title") or "Menú",
-            "type": "quick_actions",
-            "items": quick_items,
-        }
-        if grouped_sections:
-            section_payload["groups"] = grouped_sections
-        menu_sections_payload.append(section_payload)
-    if menu_sections_payload:
-        payload["menu_sections"] = menu_sections_payload
-
-    if quick_items:
-        interactive_sections = _interactive_sections_from_quick_items(quick_items)
-        if interactive_sections:
-            payload["interactive_list_sections"] = interactive_sections
-            if payload.get("message_type") == "interactive_list":
-                payload.setdefault("interactive_list_button_text", "Ver opciones")
-                if len(interactive_sections) == 1:
-                    payload.setdefault(
-                        "interactive_list_section_title",
-                        interactive_sections[0].get("title") or (menu_entry.get("title") or "Menú"),
-                    )
-                else:
-                    payload.setdefault("interactive_list_section_title", menu_entry.get("title") or "Menú")
-
-    payload["generar_audio"] = True
-    return payload
-
-
-def _handle_demo_menu_action(
-    contexto_chat: Dict[str, object],
-    action_value: Optional[str],
-) -> Optional[Dict[str, object]]:
-    if not isinstance(action_value, str):
-        return None
-
-    normalized = action_value.strip()
-    if not normalized:
-        return None
-
-    menu_registry = contexto_chat.get("demo_menu_registry")
-    if not isinstance(menu_registry, dict) or not menu_registry:
-        return None
-
-    root_id = str(contexto_chat.get("demo_menu_root_id") or DEMO_MENU_ROOT_ID)
-
-    stack_raw = contexto_chat.get("demo_menu_stack")
-    if isinstance(stack_raw, list) and stack_raw:
-        stack = [str(item).strip() for item in stack_raw if str(item).strip()]
-    else:
-        stack = []
-    if not stack:
-        stack = [root_id]
-
-    target_id = None
-
-    if normalized == DEMO_MENU_BACK_ACTION:
-        if len(stack) > 1:
-            stack.pop()
-        target_id = stack[-1]
-    elif normalized in {DEMO_MENU_HOME_ACTION, f"{DEMO_MENU_PREFIX}:{root_id}"}:
-        stack = [root_id]
-        target_id = root_id
-    elif normalized.startswith(f"{DEMO_MENU_PREFIX}:"):
-        candidate = normalized.split(":", 1)[1].strip()
-        if not candidate:
-            candidate = root_id
-        if candidate not in menu_registry:
-            return None
-        path: List[str] = []
-        current = candidate
-        guard = 0
-        while current and guard < 50:
-            path.insert(0, current)
-            parent_id = menu_registry.get(current, {}).get("parent")
-            if not parent_id:
-                break
-            current = str(parent_id)
-            guard += 1
-        if not path or path[0] != root_id:
-            path.insert(0, root_id)
-        stack = path
-        target_id = candidate
-    else:
-        return None
-
-    if target_id not in menu_registry:
-        target_id = root_id
-        if target_id not in menu_registry:
-            return None
-
-    contexto_chat["demo_menu_stack"] = stack
-    menu_entry = menu_registry[target_id]
-    return _build_menu_navigation_payload(
-        menu_entry,
-        menu_registry=menu_registry,
-        root_id=root_id,
-        stack=stack,
-    )
-
-def _format_demo_quick_actions(
-    quick_actions: List[Dict[str, object]] | None,
-) -> Tuple[
-    str,
-    str,
-    List[Dict[str, object]],
-    Dict[str, Dict[str, object]],
-    str,
-    List[Dict[str, object]],
-    List[Dict[str, object]],
-]:
-    """Render quick access suggestions for the intro message."""
-
-    if not quick_actions:
-        return "", "", [], {}, DEMO_MENU_ROOT_ID, [], []
-
-    menu_registry, root_menu_id, prompt_examples = _build_demo_menu_registry(quick_actions)
-    root_menu = menu_registry.get(root_menu_id)
-
-    (
-        menu_text,
-        prompt_text_root,
-        prompt_lines_root,
-        buttons,
-        quick_items,
-        grouped_sections,
-    ) = _format_menu_items(root_menu)
-
-    combined_prompts: List[str] = []
-    seen_prompts: set[str] = set()
-
-    if root_menu:
-        for item in root_menu.get("items", []):
-            prompt_val = item.get("prompt")
-            if prompt_val and prompt_val not in seen_prompts:
-                combined_prompts.append(prompt_val)
-                seen_prompts.add(prompt_val)
-
-    for prompt in prompt_examples:
-        if prompt and prompt not in seen_prompts:
-            combined_prompts.append(prompt)
-            seen_prompts.add(prompt)
-
-    prompt_examples_text = "\n".join(f'• "{prompt}"' for prompt in combined_prompts) or prompt_text_root
-
-    return (
-        menu_text,
-        prompt_examples_text,
-        buttons,
-        menu_registry,
-        root_menu_id,
-        quick_items,
-        grouped_sections,
-    )
-
-
-def _format_demo_keywords(keywords: List[object] | None) -> str:
-    if not keywords:
-        return ""
-
-    lines: List[str] = []
-    seen: set[str] = set()
-    for raw in keywords:
-        if raw is None:
-            continue
-        text = str(raw).strip()
-        if not text or text.lower() in seen:
-            continue
-        seen.add(text.lower())
-        bullet = text if text.startswith("•") else f"• {text}"
-        lines.append(bullet)
-
-    return "\n".join(lines)
-
-
-def _format_demo_capabilities(capabilities: List[object] | None) -> str:
+def _format_demo_capabilities(capabilities: List[str] | None) -> str:
     if not capabilities:
         return ""
 
     lines: List[str] = []
     seen: set[str] = set()
-    for raw in capabilities:
-        if raw is None:
+    for text in capabilities:
+        if not isinstance(text, str):
             continue
-        text = str(raw).strip()
-        if not text:
-            continue
-        normalized = text.lower()
-        if normalized in seen:
+        normalized = text.strip().lower()
+        if not normalized or normalized in seen:
             continue
         seen.add(normalized)
         bullet = text if text.startswith("•") else f"• {text}"
@@ -1157,7 +1319,7 @@ def _parse_request(tipo_chat_fijo: str | None = None):
             None,
             None,
             None,
-            jsonify({"error": str(e)}),
+            jsonify({"error": {"code": 400, "message": str(e)}}), # NEW FORMAT
         )
     except Exception as e:
         current_app.logger.error(f"Error inesperado al parsear /ask: {e}")
@@ -1173,7 +1335,7 @@ def _parse_request(tipo_chat_fijo: str | None = None):
             None,
             None,
             None,
-            jsonify({"error": "Formato JSON inválido"}),
+            jsonify({"error": {"code": 400, "message": "Formato JSON inválido"}}), # NEW FORMAT
         )
 
 def _authenticate_and_get_user():
@@ -1190,6 +1352,8 @@ def _procesar_chat(
     owner_user=None,
     anon_id: str | None = None,
 ): 
+    from services.logic import responder_chatboc
+
     channel = "web"  # Define channel for this processing function
     original_user_payload = None
     # --- Session and Context Initialization ---
@@ -1202,7 +1366,7 @@ def _procesar_chat(
         """Emite un mensaje por Socket.IO si hay una sesión web activa."""
 
         if channel == "web" and chat_session_id_header:
-            ensure_buttons_compatibility(payload)
+            normalize_response_payload(payload)
 
             socketio.emit('message', payload, room=chat_session_id_header)
             current_app.logger.debug(
@@ -1211,7 +1375,48 @@ def _procesar_chat(
             )
 
     actor_principal = current_user
-    chat_context_obj = ChatSessionContext.query.filter_by(chat_session_id=chat_session_id_header).first()
+
+    # Failsafe: make sure schema is aligned even if migrations lag behind
+    ensure_chat_session_context_schema(db.session)
+    try:
+        chat_context_obj = ChatSessionContext.query.filter_by(
+            chat_session_id=chat_session_id_header
+        ).first()
+    except ProgrammingError as exc:
+        current_app.logger.warning(
+            "[CHAT] tenant_id missing when querying chat_session_context; retrying after safeguard",
+            exc_info=exc,
+        )
+        db.session.rollback()
+        ensure_chat_session_context_schema(db.session)
+        try:
+            chat_context_obj = ChatSessionContext.query.filter_by(
+                chat_session_id=chat_session_id_header
+            ).first()
+        except ProgrammingError as exc_retry:
+            current_app.logger.exception(
+                "[CHAT] Error accediendo a chat_session_context (schema mismatch)",
+                exc_info=exc_retry,
+            )
+            db.session.rollback()
+            return (
+                jsonify(
+                    {
+                        "error": {"code": 500, "message": "Estamos ajustando el servicio. Por favor, reintentá en unos minutos."} # NEW FORMAT
+                    }
+                ),
+                200,
+            )
+    except SQLAlchemyError as exc:
+        current_app.logger.exception(
+            "[CHAT] Error de base de datos obteniendo el contexto de sesión",
+            exc_info=exc,
+        )
+        db.session.rollback()
+        return (
+            jsonify({"error": {"code": 500, "message": "Hubo un problema momentáneo. Probá de nuevo en breve."}}), # NEW FORMAT
+            200,
+        )
 
     if not chat_context_obj:
         current_app.logger.info(f"No ChatSessionContext found for {chat_session_id_header}. Creating new one.")
@@ -1234,7 +1439,7 @@ def _procesar_chat(
                 exc_info=True,
             )
             return (
-                jsonify({"error": "Error de base de datos"}),
+                jsonify({"error": {"code": 500, "message": "Error de base de datos"}}), # NEW FORMAT
                 500,
             )
 
@@ -1275,7 +1480,7 @@ def _procesar_chat(
             action_id = None
             original_user_payload = pregunta
         else:
-            return jsonify({"error": "Audio file is empty."}), 400
+            return jsonify({"error": {"code": 400, "message": "Audio file is empty."}}), 400 # NEW FORMAT
     else:
         # chat_context_obj.context_data.pop('source_is_audio', None) # This was moved to after the check
         try:
@@ -1308,7 +1513,7 @@ def _procesar_chat(
                 pregunta = "[Ubicación compartida por el usuario]"
         except Exception as e:
             current_app.logger.error(f"Error parsing request in _procesar_chat: {e}", exc_info=True)
-            return jsonify({"error": f"Invalid request format: {e}"}), 400
+            return jsonify({"error": {"code": 400, "message": f"Invalid request format: {e}"}}), 400 # NEW FORMAT
 
         current_app.logger.debug(
             "Parsed request data",
@@ -1366,27 +1571,29 @@ def _procesar_chat(
                 return jsonify({"status": "message_sent_to_live_chat"}), 200
             else:
                 db.session.rollback()
-                return jsonify({"error": "Failed to save user message for live chat"}), 500
+                return jsonify({"error": {"code": 500, "message": "Failed to save user message for live chat"}}), 500 # NEW FORMAT
 
     try:
         # --- User and Role Determination ---
         is_anonymous = not actor_principal
         viewer_obj = current_user # El que mira
+        owner_resolution_source = getattr(g, "owner_resolution_source", "anonymous")
 
         if is_anonymous and not anon_id:
             # This case should ideally not be reached if anon_o_token_requerido is working correctly,
             # as it should have generated an anon_id. This is a safeguard.
             current_app.logger.warning("anon_id no fue provisto a _procesar_chat para un usuario anónimo. El decorador podría no estar funcionando como se espera.")
-            return jsonify({"error": "No se pudo identificar la sesión anónima."}), 401
+            return jsonify({"error": {"code": 401, "message": "No se pudo identificar la sesión anónima."}}), 401 # NEW FORMAT
+
+        is_init_request = _is_init_payload(original_user_payload)
+        message_count_this_session = 0
 
         if is_anonymous:
             # Lógica para usuarios anónimos
-            max_messages = current_app.config.get("ANONYMOUS_MAX_MESSAGES_PER_SESSION", 10)
+            max_messages = current_app.config.get("ANONYMOUS_MAX_MESSAGES_PER_SESSION", 50)
             session_timeout_minutes = current_app.config.get("ANONYMOUS_SESSION_TIMEOUT_MINUTES", 15)
 
-            last_message_time = db.session.query(func.max(Conversacion.timestamp)) \
-                .filter(Conversacion.session_id == anon_id) \
-                .scalar()
+            last_message_time = db.session.query(func.max(Conversacion.timestamp))                 .filter(Conversacion.session_id == anon_id)                 .scalar()
 
             session_expired = False
             if last_message_time:
@@ -1395,16 +1602,16 @@ def _procesar_chat(
                     current_app.logger.info(f"Sesión anónima {anon_id} expirada. Reiniciando conteo de mensajes.")
 
             if not session_expired:
-                message_count_this_session = Conversacion.query \
-                    .filter(Conversacion.session_id == anon_id) \
-                    .filter(Conversacion.timestamp >= datetime.utcnow() - timedelta(minutes=session_timeout_minutes)) \
-                    .count()
+                message_count_this_session = _anonymous_message_count(
+                    anon_id,
+                    session_timeout_minutes,
+                )
 
                 current_app.logger.info(f"Usuario anónimo {anon_id}: {message_count_this_session} mensajes en la sesión actual (límite: {max_messages}).")
 
-                if message_count_this_session >= max_messages:
+                if message_count_this_session >= max_messages and not is_init_request:
                     return jsonify({
-                        "error": "Alcanzaste el límite de mensajes para usuarios invitados.",
+                        "error": {"code": 403, "message": "Alcanzaste el límite de mensajes para usuarios invitados."}, # NEW FORMAT
                         "respuesta": "Alcanzaste el límite de mensajes para usuarios invitados. Para continuar, por favor inicia sesión o regístrate.",
                         "botones": [
                             {"texto": "Iniciar Sesión", "action": "login"},
@@ -1431,6 +1638,33 @@ def _procesar_chat(
             contexto_chat = {}
             if chat_context_obj:
                 chat_context_obj.context_data = contexto_chat
+
+        is_public_landing = _is_public_landing_request()
+        explicit_entity_token = bool(obtener_entity_token())
+
+        persisted_owner_id = contexto_chat.get("resolved_owner_user_id") if isinstance(contexto_chat, dict) else None
+        persisted_owner_resolution_source = (
+            contexto_chat.get("resolved_owner_resolution_source")
+            if isinstance(contexto_chat, dict)
+            else None
+        )
+        if (
+            _can_restore_session_owner_context(
+                persisted_owner_id=persisted_owner_id,
+                persisted_resolution_source=persisted_owner_resolution_source,
+                is_public_landing=is_public_landing,
+                is_anonymous=is_anonymous,
+                has_entity_token=explicit_entity_token,
+            )
+            and (
+            not owner_user
+            or owner_resolution_source == "default_municipio_owner"
+            )
+        ):
+            persisted_owner = db.session.get(User, persisted_owner_id)
+            if persisted_owner:
+                owner_user = persisted_owner
+                owner_resolution_source = "session_owner_context"
 
         demo_session_activa = bool(
             isinstance(contexto_chat, dict) and contexto_chat.get("demo_session")
@@ -1465,6 +1699,14 @@ def _procesar_chat(
             _update_tipo_flags()
 
         owner_tipo_chat = (getattr(owner_user, "tipo_chat", None) or "").strip().lower()
+        if tipo_chat_fijo and owner_tipo_chat and tipo_chat_fijo != owner_tipo_chat:
+            current_app.logger.info(
+                "[CHAT] endpoint_mismatch auto-recovered: requested=%s owner_tipo=%s owner_id=%s",
+                tipo_chat_fijo,
+                owner_tipo_chat,
+                getattr(owner_user, "id", "N/A"),
+            )
+            _set_tipo_chat(owner_tipo_chat)
         if owner_tipo_chat in {"pyme", "municipio"} and owner_tipo_chat != tipo_chat_normalized:
             current_app.logger.info(
                 "[CHAT] Ajustando tipo_chat a '%s' basado en owner_user %s (valor previo: '%s')",
@@ -1476,7 +1718,43 @@ def _procesar_chat(
         else:
             _update_tipo_flags()
 
-        if is_municipal_request and isinstance(contexto_chat, dict):
+        # Enforce Demo Flow for Public Origin or Missing Auth
+        # If we are on the public site and don't have a valid user context, force the demo selector
+        # If on public landing and no explicit owner (or leaked owner context from cookie that we stripped),
+        # force tenant hint to generic so demo flow triggers.
+        if is_public_landing and not owner_user and not demo_session_activa:
+             # Default to municipality demo logic if no specific context
+             # This effectively overrides any 'junin' slug that might have leaked in query params
+             # unless an entity token validated it.
+             pass
+
+        tenant_slug_hint = (
+            request.args.get("tenant_slug")
+            or request.args.get("tenant")
+            or ""
+        ).strip().lower()
+
+        # If on public landing, force 'municipio' generic flow if specific tenant access is attempted without token
+        if is_public_landing and tenant_slug_hint not in ("municipio", "pyme") and not request.args.get("entityToken"):
+             current_app.logger.warning(f"Public landing access to specific tenant '{tenant_slug_hint}' without entityToken. Forcing demo flow.")
+             tenant_slug_hint = "municipio"
+
+        force_demo_selector_flow = (
+            not actor_principal
+            and tenant_slug_hint in {"municipio", "pyme"}
+            and not _owner_context_is_trusted(owner_user, owner_resolution_source)
+            and not demo_session_activa
+        )
+
+        should_show_public_demo_selector = (
+            is_public_landing
+            and is_anonymous
+            and not _owner_context_is_trusted(owner_user, owner_resolution_source)
+            and not demo_session_activa
+            and (is_init_request or message_count_this_session == 0)
+        )
+
+        if is_municipal_request and not force_demo_selector_flow and isinstance(contexto_chat, dict):
             demo_keys_to_clear = (
                 "demo_session",
                 "demo_owner_user_id",
@@ -1504,6 +1782,17 @@ def _procesar_chat(
             if cleared_demo_state and chat_context_obj:
                 flag_modified(chat_context_obj, "context_data")
                 _sync_demo_session_flag()
+
+        if (
+            owner_user
+            and isinstance(contexto_chat, dict)
+            and _owner_context_is_trusted(owner_user, owner_resolution_source)
+        ):
+            contexto_chat["resolved_owner_user_id"] = owner_user.id
+            contexto_chat["resolved_owner_tipo_chat"] = (getattr(owner_user, "tipo_chat", None) or tipo_chat or "").strip().lower() or None
+            contexto_chat["resolved_owner_resolution_source"] = owner_resolution_source
+            if chat_context_obj:
+                flag_modified(chat_context_obj, "context_data")
 
         is_demo_selection_event = False
         demo_options: Optional[List[Dict[str, Optional[str]]]] = None
@@ -1603,22 +1892,31 @@ def _procesar_chat(
 
         # Recuperar el owner de una demo previamente seleccionada si no vino en la request
         if (
-            not is_municipal_request
+            (not is_municipal_request or force_demo_selector_flow)
             and not owner_del_bot
             and isinstance(contexto_chat, dict)
+            and contexto_chat.get("demo_owner_user_id")
         ):
-            stored_owner_id = contexto_chat.get("demo_owner_user_id")
-            if stored_owner_id:
-                potencial_owner = User.query.get(stored_owner_id)
-                if potencial_owner:
-                    owner_del_bot = potencial_owner
-                    rubro_obj_global = Rubro.query.get(contexto_chat.get("demo_rubro_id")) or potencial_owner.rubro
-                    if rubro_obj_global:
-                        rubro_para_log = rubro_para_log or getattr(rubro_obj_global, "nombre", None) or getattr(rubro_obj_global, "clave", None)
-                        if not rubro_id:
+            owner_del_bot = User.query.get(contexto_chat["demo_owner_user_id"])
+            if owner_del_bot:
+                if not rubro_obj_global:
+                    rubro_id_saved = contexto_chat.get("demo_rubro_id")
+                    if rubro_id_saved:
+                        rubro_obj_global = Rubro.query.get(rubro_id_saved)
+                        if rubro_obj_global:
+                            rubro_para_log = getattr(rubro_obj_global, "nombre", None) or getattr(rubro_obj_global, "clave", None)
                             rubro_id = rubro_obj_global.id
-                        if not rubro_clave and getattr(rubro_obj_global, "clave", None):
-                            rubro_clave = rubro_obj_global.clave
+                            if getattr(rubro_obj_global, "clave", None):
+                                rubro_clave = rubro_obj_global.clave
+                    if not rubro_obj_global and contexto_chat.get("demo_rubro_clave"):
+                        rubro_clave = contexto_chat.get("demo_rubro_clave")
+                        rubro_obj_global = Rubro.query.filter_by(clave=rubro_clave).first()
+                        if rubro_obj_global:
+                            rubro_para_log = getattr(rubro_obj_global, "nombre", None) or getattr(rubro_obj_global, "clave", None)
+                            if not rubro_id:
+                                rubro_id = rubro_obj_global.id
+                            if not rubro_clave and getattr(rubro_obj_global, "clave", None):
+                                rubro_clave = rubro_obj_global.clave
                     _set_tipo_chat(contexto_chat.get("demo_tipo_chat", tipo_chat))
 
         if owner_del_bot and getattr(owner_del_bot, "token", None):
@@ -1645,10 +1943,25 @@ def _procesar_chat(
                     flag_modified(chat_context_obj, "context_data")
                 _sync_demo_session_flag()
 
-        if not is_municipal_request:
+        if not is_municipal_request or force_demo_selector_flow or should_show_public_demo_selector:
             demo_key = _extract_demo_key(action_id)
             if not demo_key and isinstance(original_user_payload, dict):
                 demo_key = _extract_demo_key(original_user_payload.get("action") or original_user_payload.get("action_id"))
+
+            segment_key = _extract_demo_segment(action_id)
+            if not segment_key and isinstance(original_user_payload, dict):
+                segment_key = _extract_demo_segment(original_user_payload.get("action") or original_user_payload.get("action_id"))
+            if not segment_key and isinstance(original_user_payload, str):
+                segment_key = _extract_demo_segment(original_user_payload)
+
+            if segment_key:
+                demo_options = demo_options or _load_demo_rubros()
+                if segment_key == "all":
+                    selector_payload = _build_demo_selector_payload(demo_options)
+                else:
+                    selector_payload = _build_demo_selector_payload(demo_options, segment_filter=segment_key)
+                _emit_socket_payload(selector_payload)
+                return jsonify(selector_payload), 200
 
             if not demo_key and isinstance(original_user_payload, str):
                 user_text = original_user_payload.strip().lower()
@@ -1714,7 +2027,7 @@ def _procesar_chat(
                 action_id = None
                 is_demo_selection_event = True
 
-            if not owner_del_bot:
+            if not owner_del_bot or should_show_public_demo_selector:
                 demo_options = demo_options or _load_demo_rubros()
                 if demo_options:
                     contexto_chat["demo_session"] = True
@@ -1746,6 +2059,135 @@ def _procesar_chat(
                     _emit_socket_payload(selector_payload)
                     return jsonify(selector_payload), 200
 
+        # Demo lead capture flow (prospect intake)
+        if isinstance(contexto_chat, dict):
+            lead_state = str(contexto_chat.get("demo_lead_capture_state") or "").strip().lower()
+            lead_text = _extract_text_value(original_user_payload)
+            lead_chat_session_id = request.headers.get("X-Chat-Session-Id") or str(uuid.uuid4())
+            rubro_demo_label = str(
+                contexto_chat.get("demo_display_name")
+                or rubro_para_log
+                or (getattr(rubro_obj_global, "nombre", None) if rubro_obj_global else "Demo Chatboc")
+            )
+
+            if action_id == DEMO_LEAD_ACTION_ID and not lead_state:
+                contexto_chat["demo_lead_capture_state"] = "waiting_name"
+                if chat_context_obj:
+                    flag_modified(chat_context_obj, "context_data")
+                payload = _build_demo_lead_prompt(
+                    "¡Excelente! Para que un asesor te contacte y arme una demo personalizada, ¿cuál es tu nombre?",
+                    pedir_info="nombre",
+                )
+                try:
+                    commit_with_retry(db.session)
+                except Exception as e_commit:
+                    db.session.rollback()
+                    current_app.logger.error("Error guardando estado de captura de lead demo: %s", e_commit, exc_info=True)
+                _emit_socket_payload(payload)
+                return jsonify(payload), 200
+
+            if lead_state == "waiting_name" and lead_text:
+                contexto_chat["demo_lead_nombre"] = lead_text[:150]
+                contexto_chat["demo_lead_capture_state"] = "waiting_phone"
+                if chat_context_obj:
+                    flag_modified(chat_context_obj, "context_data")
+                payload = _build_demo_lead_prompt(
+                    "¡Gracias! Ahora pasame tu teléfono con código de área (ej: +549...)",
+                    pedir_info="telefono",
+                )
+                try:
+                    commit_with_retry(db.session)
+                except Exception as e_commit:
+                    db.session.rollback()
+                    current_app.logger.error("Error guardando estado de captura de lead demo: %s", e_commit, exc_info=True)
+                _emit_socket_payload(payload)
+                return jsonify(payload), 200
+
+            if lead_state == "waiting_phone" and lead_text:
+                telefono_ok = validar_telefono(lead_text)
+                if not telefono_ok:
+                    payload = _build_demo_lead_prompt(
+                        "Ese teléfono no parece válido. ¿Podés reenviarlo incluyendo código de área?",
+                        pedir_info="telefono",
+                    )
+                    _emit_socket_payload(payload)
+                    return jsonify(payload), 200
+                contexto_chat["demo_lead_telefono"] = formatear_telefono_e164(lead_text)
+                contexto_chat["demo_lead_capture_state"] = "waiting_email"
+                if chat_context_obj:
+                    flag_modified(chat_context_obj, "context_data")
+                payload = _build_demo_lead_prompt(
+                    "Perfecto. ¿Cuál es tu email para enviarte propuesta, catálogo y seguimiento?",
+                    pedir_info="email",
+                )
+                try:
+                    commit_with_retry(db.session)
+                except Exception as e_commit:
+                    db.session.rollback()
+                    current_app.logger.error("Error guardando estado de captura de lead demo: %s", e_commit, exc_info=True)
+                _emit_socket_payload(payload)
+                return jsonify(payload), 200
+
+            if lead_state == "waiting_email" and lead_text:
+                if not validar_email(lead_text):
+                    payload = _build_demo_lead_prompt(
+                        "Ese email no parece válido. ¿Podés escribirlo nuevamente?",
+                        pedir_info="email",
+                    )
+                    _emit_socket_payload(payload)
+                    return jsonify(payload), 200
+
+                lead_nombre = str(contexto_chat.get("demo_lead_nombre") or "Prospecto Demo").strip()
+                lead_telefono = str(contexto_chat.get("demo_lead_telefono") or "").strip()
+                lead_email = lead_text.strip().lower()
+
+                lead_ticket = _create_demo_lead_ticket(
+                    owner_user=owner_del_bot,
+                    anon_id=anon_id,
+                    chat_session_id=lead_chat_session_id,
+                    lead_nombre=lead_nombre,
+                    lead_telefono=lead_telefono,
+                    lead_email=lead_email,
+                    rubro_demo=rubro_demo_label,
+                )
+                _notify_superadmin_new_lead(
+                    lead_ticket,
+                    lead_nombre=lead_nombre,
+                    lead_telefono=lead_telefono,
+                    lead_email=lead_email,
+                    rubro_demo=rubro_demo_label,
+                )
+
+                contexto_chat["demo_lead_capture_state"] = "completed"
+                contexto_chat["demo_lead_ticket_id"] = lead_ticket.id
+                if chat_context_obj:
+                    flag_modified(chat_context_obj, "context_data")
+
+                payload = {
+                    "message_body": (
+                        "¡Listo! Ya registré tus datos y un asesor te contacta a la brevedad. "
+                        f"Tu código de seguimiento es #{lead_ticket.nro_ticket}."
+                    ),
+                    "respuesta": (
+                        "¡Listo! Ya registré tus datos y un asesor te contacta a la brevedad. "
+                        f"Tu código de seguimiento es #{lead_ticket.nro_ticket}."
+                    ),
+                    "fuente": "demo_lead_capture",
+                    "message_type": "interactive_buttons",
+                    "botones": [
+                        {"texto": "Seguir explorando", "action": DEMO_MENU_HOME_ACTION, "action_id": DEMO_MENU_HOME_ACTION},
+                        {"texto": "Ver rubros", "action": DEMO_MENU_BACK_ACTION, "action_id": DEMO_MENU_BACK_ACTION},
+                    ],
+                    "generar_audio": False,
+                }
+                try:
+                    commit_with_retry(db.session)
+                except Exception as e_commit:
+                    db.session.rollback()
+                    current_app.logger.error("Error guardando estado de captura de lead demo: %s", e_commit, exc_info=True)
+                _emit_socket_payload(payload)
+                return jsonify(payload), 200
+
         if not owner_del_bot and rubro_obj_global:
             current_app.logger.warning(
                 f"Rubro ID {rubro_obj_global.id} ('{rubro_para_log}') encontrado pero sin User owner asociado (empresa_id=None o rol=admin). Se continuará sin owner específico si el rubro es público.")
@@ -1756,6 +2198,8 @@ def _procesar_chat(
             current_app.logger.info(f"Usando Rubro ID {rubro_obj_global.id} ('{nombre_rubro_log}') perteneciente a User ID {owner_id_log} para la lógica del bot.")
         else:
             current_app.logger.info("No se pudo determinar un rubro/owner específico para la lógica del bot. Se usará lógica genérica si aplica (ej. para rubros públicos por defecto).")
+            if tipo_chat == "pyme" and not demo_session_activa:
+                 return jsonify({"error": {"code": 400, "message": "rubro_required"}, "message": "No se especificó un rubro válido para la PyME."}), 400 # NEW FORMAT
 
         if isinstance(contexto_chat, dict) and contexto_chat.get("demo_key") and not contexto_chat.get("demo_session"):
             contexto_chat["demo_session"] = True
@@ -1779,12 +2223,19 @@ def _procesar_chat(
         ):
             demo_flow_active = True
 
-        if owner_del_bot and not demo_flow_active:
+        has_entity_token = bool(_extract_entity_token_hint())
+        if owner_del_bot and _should_enforce_owner_plan_limit(
+            demo_flow_active=demo_flow_active,
+            is_init_request=is_init_request,
+            is_public_landing=is_public_landing,
+            is_anonymous=is_anonymous,
+            has_entity_token=has_entity_token,
+        ):
             from utils.plan_limits import limite_para_usuario
             limite = limite_para_usuario(owner_del_bot)
             if limite is not None and owner_del_bot.preguntas_usadas >= limite:
                 return jsonify({
-                    "error": f"El bot ha alcanzado el límite de preguntas de su plan ({limite})."
+                    "error": {"code": 403, "message": f"El bot ha alcanzado el límite de preguntas de su plan ({limite})."} # NEW FORMAT
                 }), 403
 
         demo_limit = current_app.config.get("DEMO_MAX_MESSAGES_PER_SESSION", 0)
@@ -1811,7 +2262,8 @@ def _procesar_chat(
                         exc_info=True,
                     )
                 _emit_socket_payload(respuesta_limite)
-                return jsonify(respuesta_limite), 403
+                # Return 200 OK with limit error payload to prevent frontend crash
+                return jsonify(respuesta_limite), 200
 
         # The logic for file analysis has been moved to the upload endpoint.
         # The chat endpoint is only responsible for passing the attachmentInfo.
@@ -1854,527 +2306,63 @@ def _procesar_chat(
             chat_context_obj.context_data["user_was_present_before"] = bool(actor_principal)
 
         if chat_context_obj and chat_context_obj.context_data.get('just_logged_in_flag'):
-            current_app.logger.info(f"User {actor_principal.id} just logged in. Clearing flag.")
-            # Welcome back message or other logic can be triggered here.
-            # For now, just clearing the flag.
-            chat_context_obj.context_data.pop('just_logged_in_flag', None)
-            flag_modified(chat_context_obj, "context_data")
+            if contexto_chat.get("estado_conversacion") == "ESPERANDO_NOMBRE_INICIAL":
+                 current_app.logger.info("User just logged in and was pending name. Clearing ESPERANDO_NOMBRE_INICIAL state.")
+                 contexto_chat.pop("estado_conversacion", None)
+                 flag_modified(chat_context_obj, "context_data")
 
-
-        # El objeto `chat_context_obj.context_data` será el que se pase y modifique
-        # en lugar de `flask_request_session` para el contexto específico del chat.
-
-        interpretacion_imagen_resultado = None
-        # --- Deduplicar mensajes rápidos idénticos ---
-        last_msg = chat_context_obj.context_data.get("last_user_message")
-        last_time_str = chat_context_obj.context_data.get("last_user_message_time")
-        if last_msg == pregunta and last_time_str:
-            try:
-                last_dt = datetime.fromisoformat(last_time_str)
-                if datetime.utcnow() - last_dt < timedelta(seconds=2):
-                    current_app.logger.info("Mensaje duplicado detectado; reenviando última respuesta.")
-                    last_resp = chat_context_obj.context_data.get("last_bot_response")
-                    if last_resp:
-                        ensure_buttons_compatibility(last_resp)
-                        return jsonify(last_resp), 200
-            except Exception:
-                pass
-
-        demo_metadata = None
-        if isinstance(contexto_chat, dict) and contexto_chat.get("demo_session"):
-            demo_metadata = {
-                "key": contexto_chat.get("demo_key"),
-                "prompt_context": contexto_chat.get("demo_prompt_context") or contexto_chat.get("demo_description"),
-                "display_name": contexto_chat.get("demo_display_name"),
-                "description": contexto_chat.get("demo_description"),
-                "welcome_message": contexto_chat.get("demo_welcome_message"),
-                "resources": deepcopy(contexto_chat.get("demo_resources") or []),
-                "faq_preview": deepcopy(contexto_chat.get("demo_faq_preview") or []),
-                "quick_actions": deepcopy(contexto_chat.get("demo_quick_actions") or []),
-                "capabilities": deepcopy(contexto_chat.get("demo_capabilities") or []),
-                "keywords": deepcopy(contexto_chat.get("demo_keywords") or []),
-            }
-
-        menu_action_payload: Optional[Dict[str, object]] = None
-        if isinstance(contexto_chat, dict) and contexto_chat.get("demo_session"):
-            menu_command: Optional[str] = None
-            if isinstance(action_id, str):
-                candidate = action_id.strip()
-                if candidate:
-                    menu_command = candidate
-            if not menu_command and isinstance(original_user_payload, dict):
-                raw_action = original_user_payload.get("action") or original_user_payload.get("action_id")
-                if isinstance(raw_action, str) and raw_action.strip():
-                    menu_command = raw_action.strip()
-            if not menu_command and isinstance(pregunta, str):
-                stripped_question = pregunta.strip()
-                if stripped_question.startswith(f"{DEMO_MENU_PREFIX}:") or stripped_question in {
-                    DEMO_MENU_BACK_ACTION,
-                    DEMO_MENU_HOME_ACTION,
-                }:
-                    menu_command = stripped_question
-
-            if menu_command and (
-                menu_command.startswith(f"{DEMO_MENU_PREFIX}:")
-                or menu_command in {DEMO_MENU_BACK_ACTION, DEMO_MENU_HOME_ACTION}
-            ):
-                menu_action_payload = _handle_demo_menu_action(contexto_chat, menu_command)
-
-        if menu_action_payload:
-            contexto_chat.setdefault("demo_intro_sent", True)
-            if chat_context_obj:
-                flag_modified(chat_context_obj, "context_data")
-            try:
-                commit_with_retry(db.session)
-            except Exception as e_commit:
-                db.session.rollback()
-                current_app.logger.error(
-                    f"Error al guardar el estado del menú demo para la sesión {chat_session_id_header}: {e_commit}",
-                    exc_info=True,
-                )
-            ensure_buttons_compatibility(menu_action_payload)
-            _emit_socket_payload(menu_action_payload)
-            return jsonify(menu_action_payload), 200
-
-        responder_extra_kwargs = {}
-        if location:
-            responder_extra_kwargs["es_ubicacion"] = True
-            responder_extra_kwargs["ubicacion_usuario"] = location
+        uploaded_file_info = None
+        archivo_adjunto_id = None
 
         if attachment_info:
-            normalized_uploaded_info = {
-                "id": attachment_info.get("id"),
-                "url": attachment_info.get("url"),
-                "name": attachment_info.get("name"),
-                "mime_type": attachment_info.get("mimeType")
-                or attachment_info.get("mime_type"),
-                "size": attachment_info.get("size"),
-                "thumb_url": attachment_info.get("thumbUrl")
-                or attachment_info.get("thumbnailUrl"),
-                "thumbnail_url": attachment_info.get("thumbnailUrl")
-                or attachment_info.get("thumbUrl"),
-                "meta": attachment_info.get("meta"),
-                "source": attachment_info.get("source") or "web_upload",
-            }
-            responder_extra_kwargs["uploaded_file_info"] = {
-                key: value
-                for key, value in normalized_uploaded_info.items()
-                if value is not None
-            }
+            file_id = attachment_info.get("id")
+            if file_id:
+                archivo_adjunto_id = file_id
+                # Fetch metadata if needed, but for now just passing the ID is sufficient for logic
+                uploaded_file_info = attachment_info
 
+        # --- Core Chat Logic Execution ---
         resultado = responder_chatboc(
-            pregunta=pregunta,
+            pregunta,
             owner_user=owner_del_bot,
-            current_user=viewer_obj, # El usuario que está viendo/interactuando
-            rubro_obj=rubro_obj_global,
-            rubro_nombre_frontend=rubro_clave,
+            current_user=actor_principal,
+            contexto_previo=contexto_previo,
             tipo_chat=tipo_chat,
-            contexto_previo=contexto_previo, # Este 'contexto_previo' del request original podría necesitar ser integrado o reemplazado por el de la DB
-            anon_id=anon_id, # El anon_id de la cabecera, para lógica de límites de mensajes anónimos, etc.
-            chat_session_uuid=chat_session_id_header, # El ID de sesión único, ahora desde el header
-            chat_db_context=chat_context_obj, # Pasar el objeto de contexto de DB
-            channel="web", # Set channel to web
-            attachment_info=attachment_info,
+            rubro_id=rubro_id,
+            rubro_clave=rubro_clave,
+            rubro_obj=rubro_obj_global,
+            uploaded_file_info=uploaded_file_info,
             location=location,
-            profile_name=profile_name,
-            user_data={
-                "name": actor_principal.name,
-                "email": actor_principal.email,
-                "telefono": actor_principal.telefono
-            } if actor_principal else None,
-            demo_metadata=demo_metadata,
-            **responder_extra_kwargs,
+            chat_db_context=chat_context_obj,
+            action_id=action_id,
+            anon_id=anon_id
         )
-
-        recursos_demo: List[Dict[str, object]] = []
-        faq_preview_data: List[Dict[str, object]] = []
-        demo_description: Optional[str] = None
-        demo_welcome: Optional[str] = None
-        quick_actions_raw: List[Dict[str, object]] = []
-        capabilities_raw: List[object] = []
-        keywords_raw: List[object] = []
-        if isinstance(contexto_chat, dict):
-            recursos_demo = contexto_chat.get("demo_resources") or []
-            faq_preview_data = contexto_chat.get("demo_faq_preview") or []
-            demo_description = contexto_chat.get("demo_description")
-            demo_welcome = contexto_chat.get("demo_welcome_message")
-            quick_actions_raw = contexto_chat.get("demo_quick_actions") or []
-            capabilities_raw = contexto_chat.get("demo_capabilities") or []
-            keywords_raw = contexto_chat.get("demo_keywords") or []
-
-        has_intro_content = bool(
-            recursos_demo
-            or faq_preview_data
-            or demo_description
-            or demo_welcome
-            or quick_actions_raw
-            or capabilities_raw
-            or keywords_raw
-        )
-
-        should_apply_intro = (
-            demo_session_activa
-            and has_intro_content
-            and isinstance(resultado, dict)
-            and not contexto_chat.get("demo_intro_sent")
-            and (is_demo_selection_event or _is_init_payload(original_user_payload))
-        )
-
-        if should_apply_intro:
-            resources_text, resource_buttons, resource_attachments = _format_demo_resources(recursos_demo)
-            (
-                menu_text,
-                prompt_examples_text,
-                quick_action_buttons,
-                menu_registry,
-                menu_root_id,
-                quick_items_struct,
-                grouped_quick_sections,
-            ) = _format_demo_quick_actions(quick_actions_raw)
-            if menu_registry:
-                contexto_chat["demo_menu_registry"] = menu_registry
-                contexto_chat["demo_menu_root_id"] = menu_root_id
-                contexto_chat["demo_menu_stack"] = [menu_root_id]
-            quick_actions_list = quick_actions_raw if isinstance(quick_actions_raw, list) else list(quick_actions_raw or [])
-            display_name = contexto_chat.get("demo_display_name") or contexto_chat.get("demo_key") or "esta demo"
-            faq_preview_text = _format_demo_faq_preview(faq_preview_data)
-            keywords_text = _format_demo_keywords(keywords_raw)
-            capabilities_text = _format_demo_capabilities(capabilities_raw)
-
-            base_message = (
-                contexto_chat.get("demo_welcome_message")
-                or resultado.get("message_body")
-                or resultado.get("respuesta")
-            )
-            description = contexto_chat.get("demo_description")
-            original_message = resultado.get("message_body")
-
-            segments: List[str] = []
-
-            def _clean_text(value: object) -> str:
-                return str(value).strip() if value is not None else ""
-
-            def _append_section(title: str, body: str) -> None:
-                body_text = _clean_text(body)
-                if body_text:
-                    segments.append(f"━━━━━━━━━━━━\n{title}\n{body_text}")
-
-            base_text = _clean_text(base_message)
-            if base_text:
-                segments.append(base_text)
-
-            if description:
-                description_text = _clean_text(description)
-                if description_text and description_text not in segments:
-                    segments.append(description_text)
-
-            _append_section("📋 Menú principal", menu_text)
-            _append_section("💬 Probá decir", prompt_examples_text)
-            _append_section("🔑 Palabras clave sugeridas", keywords_text)
-            _append_section("🧪 Herramientas disponibles", capabilities_text)
-            _append_section("❓ Preguntas frecuentes destacadas", faq_preview_text)
-            if resources_text:
-                _append_section(f"📎 Material destacado de {display_name}", resources_text)
-
-            if original_message:
-                original_text = _clean_text(original_message)
-                if original_text and original_text not in segments:
-                    segments.append(original_text)
-
-            closing_line = "🟢 Elegí una opción del menú o contame qué necesitás y te muestro la demo en acción."
-            if closing_line not in segments:
-                segments.append(closing_line)
-
-            message_text = "\n\n".join([seg for seg in segments if seg])
-            if message_text:
-                resultado["message_body"] = message_text
-                resultado["respuesta"] = message_text
-
-            combined_buttons: List[Dict[str, object]] = []
-            seen_button_ids: set[str] = set()
-
-            def _append_buttons(buttons: List[Dict[str, object]] | None) -> None:
-                if not buttons:
-                    return
-                for button in buttons:
-                    if not isinstance(button, dict):
-                        continue
-                    candidate = deepcopy(button)
-                    candidate_id = str(
-                        candidate.get("id")
-                        or candidate.get("action_id")
-                        or candidate.get("texto")
-                        or len(combined_buttons)
-                    )
-                    if candidate_id in seen_button_ids:
-                        continue
-                    seen_button_ids.add(candidate_id)
-                    combined_buttons.append(candidate)
-
-            _append_buttons(quick_action_buttons)
-            existing_options = resultado.get("options_list") or resultado.get("botones") or []
-            _append_buttons(existing_options)
-            if not combined_buttons and resource_buttons:
-                _append_buttons(resource_buttons)
-
-            if combined_buttons:
-                resultado["options_list"] = combined_buttons
-                resultado["botones"] = combined_buttons
-                non_url_buttons = [btn for btn in combined_buttons if btn.get("type") != "url"]
-                if len(non_url_buttons) > 3:
-                    resultado["message_type"] = "interactive_list"
-                else:
-                    resultado["message_type"] = "interactive_buttons"
-            else:
-                resultado.setdefault("message_type", resultado.get("message_type") or "text")
-
-            if resource_attachments:
-                existing_adjuntos = resultado.get("adjuntos") or []
-                resultado["adjuntos"] = existing_adjuntos + resource_attachments
-
-            menu_sections: List[Dict[str, object]] = []
-
-            quick_items: List[Dict[str, object]] = []
-            if quick_items_struct:
-                for entry in quick_items_struct:
-                    item = {
-                        "id": entry.get("id") or entry.get("action") or entry.get("texto"),
-                        "texto": entry.get("texto"),
-                        "description": entry.get("description"),
-                        "action": entry.get("action"),
-                        "type": entry.get("type"),
-                    }
-                    if entry.get("prompt"):
-                        item["prompt"] = entry.get("prompt")
-                    if entry.get("emoji"):
-                        item["emoji"] = entry.get("emoji")
-                    if entry.get("category"):
-                        item["category"] = entry.get("category")
-                    if entry.get("menu_id"):
-                        item["menu_id"] = entry.get("menu_id")
-                    quick_items.append({k: v for k, v in item.items() if v})
-            else:
-                for idx, button in enumerate(quick_action_buttons or []):
-                    texto_btn = _clean_text(button.get("texto"))
-                    if not texto_btn:
-                        continue
-                    item: Dict[str, object] = {
-                        "id": button.get("id") or button.get("action_id") or f"quick_{idx}",
-                        "texto": texto_btn,
-                        "description": _clean_text(button.get("description")) or None,
-                        "action": button.get("action"),
-                        "type": button.get("type"),
-                    }
-                    raw_item = quick_actions_list[idx] if idx < len(quick_actions_list) else None
-                    if isinstance(raw_item, dict):
-                        prompt_val = raw_item.get("prompt") or raw_item.get("question") or raw_item.get("payload")
-                        prompt_text = _clean_text(prompt_val)
-                        if prompt_text:
-                            item["prompt"] = prompt_text
-                        emoji_val = raw_item.get("emoji") or raw_item.get("icon")
-                        if emoji_val:
-                            item["emoji"] = emoji_val
-                    quick_items.append({k: v for k, v in item.items() if v})
-            if quick_items:
-                section_payload: Dict[str, object] = {
-                    "title": "Menú principal",
-                    "type": "quick_actions",
-                    "items": quick_items,
-                }
-                if grouped_quick_sections:
-                    section_payload["groups"] = grouped_quick_sections
-                menu_sections.append(section_payload)
-
-            prompt_items: List[str] = []
-            for raw in quick_actions_list:
-                if not isinstance(raw, dict):
-                    continue
-                prompt_val = raw.get("prompt") or raw.get("question") or raw.get("payload")
-                prompt_text = _clean_text(prompt_val)
-                if prompt_text:
-                    prompt_items.append(prompt_text)
-            if prompt_items:
-                menu_sections.append({
-                    "title": "Probá decir",
-                    "type": "prompt_examples",
-                    "items": prompt_items,
-                })
-
-            keyword_items: List[str] = []
-            seen_keywords: set[str] = set()
-            for raw in keywords_raw or []:
-                text = _clean_text(raw)
-                if not text:
-                    continue
-                key = text.lower()
-                if key in seen_keywords:
-                    continue
-                seen_keywords.add(key)
-                keyword_items.append(text)
-            if keyword_items:
-                menu_sections.append({
-                    "title": "Palabras clave sugeridas",
-                    "type": "keywords",
-                    "items": keyword_items,
-                })
-
-            capability_items: List[str] = []
-            seen_capabilities: set[str] = set()
-            for raw in capabilities_raw or []:
-                text = _clean_text(raw)
-                if not text:
-                    continue
-                key = text.lower()
-                if key in seen_capabilities:
-                    continue
-                seen_capabilities.add(key)
-                capability_items.append(text)
-            if capability_items:
-                menu_sections.append({
-                    "title": "Herramientas disponibles",
-                    "type": "capabilities",
-                    "items": capability_items,
-                })
-
-            faq_items: List[Dict[str, str]] = []
-            for faq in faq_preview_data or []:
-                if not isinstance(faq, dict):
-                    continue
-                pregunta_text = _clean_text(faq.get("pregunta"))
-                respuesta_text = _clean_text(faq.get("respuesta"))
-                if not pregunta_text and not respuesta_text:
-                    continue
-                faq_items.append({
-                    "question": pregunta_text,
-                    "answer": respuesta_text,
-                })
-            if faq_items:
-                menu_sections.append({
-                    "title": "Preguntas frecuentes destacadas",
-                    "type": "faqs",
-                    "items": faq_items,
-                })
-
-            resource_items: List[Dict[str, object]] = []
-            for idx, attachment in enumerate(resource_attachments or []):
-                if not isinstance(attachment, dict):
-                    continue
-                item = {
-                    "id": attachment.get("url") or f"resource_{idx}",
-                    "title": attachment.get("titulo"),
-                    "description": attachment.get("descripcion"),
-                    "cta": attachment.get("cta"),
-                    "price": attachment.get("precio"),
-                    "badge": attachment.get("badge"),
-                    "availability": attachment.get("disponibilidad"),
-                    "url": attachment.get("url"),
-                    "thumbnail": attachment.get("thumbnail"),
-                    "type": attachment.get("tipo"),
-                }
-                resource_items.append({k: v for k, v in item.items() if v})
-            if resource_items:
-                menu_sections.append({
-                    "title": f"Material destacado de {display_name}",
-                    "type": "resources",
-                    "items": resource_items,
-                })
-
-            if menu_sections:
-                resultado["menu_sections"] = menu_sections
-
-            if quick_items:
-                quick_sections_payload = _interactive_sections_from_quick_items(quick_items)
-                if quick_sections_payload:
-                    resultado["interactive_list_sections"] = quick_sections_payload
-                    if resultado.get("message_type") == "interactive_list":
-                        resultado.setdefault("interactive_list_button_text", "Ver menú")
-                        if len(quick_sections_payload) == 1:
-                            resultado.setdefault(
-                                "interactive_list_section_title",
-                                quick_sections_payload[0].get("title") or "Menú principal",
-                            )
-                        else:
-                            resultado.setdefault("interactive_list_section_title", "Menú principal")
-
-            contexto_chat["demo_intro_sent"] = True
-            flag_modified(chat_context_obj, "context_data")
 
         # Después de que responder_chatboc y sus sub-funciones hayan modificado chat_context_obj.context_data,
-        # lo persistimos.
-        
-        # Marcar explícitamente context_data como modificado para SQLAlchemy
-        if chat_context_obj:
-            # Importar la función de serialización
-            from services.municipio_responder import serializar_enum, CONTEXTO_MUNICIPIO # CONTEXTO_MUNICIPIO for logging clarity
+        # limpiamos el flag temporal 'just_logged_in_flag' si existe, para que no afecte a futuros mensajes.
+        if chat_context_obj and chat_context_obj.context_data.get('just_logged_in_flag'):
+             chat_context_obj.context_data.pop('just_logged_in_flag', None)
+             flag_modified(chat_context_obj, "context_data")
 
-            # Serializar el context_data COMPLETO antes de marcarlo como modificado y hacer commit
-            if chat_context_obj.context_data:
-                # Log an example of what's in 'estado_conversacion' before and after, if it exists
-                # This is for debugging the specific issue observed.
-                raw_municipio_context = chat_context_obj.context_data.get(CONTEXTO_MUNICIPIO, {})
-                state_before_global_serialization = raw_municipio_context.get("estado_conversacion", "N/A_in_sub_context")
+        # --- Audio Synthesis (Post-Processing) ---
+        es_publico = es_rubro_publico(rubro_obj_global) if rubro_obj_global else (tipo_chat == "municipio")
 
-                # Also check top-level estado_conversacion if it exists
-                top_level_state_before = chat_context_obj.context_data.get("estado_conversacion", "N/A_top_level")
-
-                chat_context_obj.context_data = serializar_enum(chat_context_obj.context_data)
-
-                # Log after serialization
-                serialized_municipio_context = chat_context_obj.context_data.get(CONTEXTO_MUNICIPIO, {})
-                state_after_global_serialization = serialized_municipio_context.get("estado_conversacion", "N/A_in_sub_context_after")
-                top_level_state_after = chat_context_obj.context_data.get("estado_conversacion", "N/A_top_level_after")
-
-                current_app.logger.info(f"ChatSessionContext Serialization: TopLevelState before='{top_level_state_before}', after='{top_level_state_after}'. SubContextState before='{state_before_global_serialization}', after='{state_after_global_serialization}'.")
-
-            flag_modified(chat_context_obj, "context_data")
-            current_app.logger.info(f"ChatSessionContext.context_data (post-serialization) marcado como modificado para {chat_session_id_header}.")
-
-        try:
-            commit_with_retry(db.session) # Commit principal para ChatSessionContext y User.preguntas_usadas
-            current_app.logger.info(f"ChatSessionContext para {chat_session_id_header} guardado/actualizado en DB (Commit Principal).")
-        except Exception as e_commit:
-            db.session.rollback()
-            current_app.logger.error(f"Error en Commit Principal (ChatSessionContext) para {chat_session_id_header}: {e_commit}", exc_info=True)
-            # La respuesta al usuario ya se formó, pero el contexto no se guardó.
-
-        es_publico = es_rubro_publico(rubro_obj_global)
-        nombre_rubro_log = getattr(rubro_obj_global, "clave", "N/A") if rubro_obj_global else "N/A"
-
-        current_app.logger.info(
-            f"[RUBROS] Rubro efectivo: '{nombre_rubro_log}' (ID: {getattr(rubro_obj_global, 'id', 'N/A')}), esPublico={es_publico}"
-        )
-
-        if owner_del_bot and not demo_flow_active:
-            owner_del_bot.preguntas_usadas += 1
-
-        if isinstance(resultado, dict):
-            message_body = resultado.get("message_body")
-            respuesta = resultado.get("respuesta")
-            if message_body and not respuesta:
-                resultado["respuesta"] = message_body
-            elif respuesta and not message_body:
-                resultado["message_body"] = respuesta
-
-            resultado["es_publico"] = es_publico
-            if owner_del_bot:
-                from utils.plan_limits import limite_para_usuario
-                resultado["preguntas_usadas"] = owner_del_bot.preguntas_usadas
-                resultado["limite_preguntas"] = limite_para_usuario(owner_del_bot)
-            if interpretacion_imagen_resultado and not interpretacion_imagen_resultado.get("error"):
-                resultado["interpretacion_adjunto"] = interpretacion_imagen_resultado
-
-        # ... (previous commit for ChatSessionContext) ...
-
-        # The 'resultado' dictionary from responder_chatboc is now structured
-        # exactly as the LLM specified, which is what the frontend expects.
-
-        # --- Audio Synthesis Step ---
-        # If the response indicates that audio should be generated, do it now.
+        # Only synthesize speech if:
+        # 1. The response requests it ('generar_audio' is True)
+        # 2. It's a public municipality chat OR the authenticated user has it enabled.
+        # 3. AND the source was audio (optional constraint, can be relaxed)
+        should_synthesize = False
         if isinstance(resultado, dict) and resultado.get("generar_audio"):
+             should_synthesize = True
+        elif isinstance(resultado, dict) and not es_publico and actor_principal and actor_principal.preferences.get("audio_response_enabled"):
+             # User preference override (example)
+             should_synthesize = True
+
+        if should_synthesize: # and chat_context_obj.context_data.get('source_is_audio'):
             from services.google_text_to_speech import TextToSpeechService
             tts_service = TextToSpeechService()
-            # The text to synthesize can be in 'message_body' (municipio) or 'respuesta' (pyme)
-            text_to_synthesize = resultado.get("message_body") or resultado.get("respuesta")
+            # Always synthesize from the normalized message_body.
+            text_to_synthesize = resultado.get("message_body")
             if text_to_synthesize:
                 try:
                     audio_url = tts_service.synthesize_speech(text_to_synthesize)
@@ -2412,19 +2400,43 @@ def _procesar_chat(
             resultado["preguntas_usadas"] = owner_del_bot.preguntas_usadas
             resultado["limite_preguntas"] = limite_para_usuario(owner_del_bot)
 
-        if interpretacion_imagen_resultado and not interpretacion_imagen_resultado.get("error"):
-            resultado["interpretacion_adjunto"] = interpretacion_imagen_resultado
+        if not resultado.get("messages") and resultado.get("message_body"):
+             resultado["messages"] = [{
+                 "role": "assistant",
+                 "content": resultado["message_body"]
+             }]
 
         if isinstance(resultado, dict):
             audio_url = resultado.get("audio_url")
             if audio_url and channel == "web" and "audio" not in resultado:
                 resultado["audio"] = {"link": audio_url}
 
-        ensure_buttons_compatibility(resultado)
+            resultado["ux_context"] = _build_widget_ux_context(
+                owner_user=owner_del_bot or owner_user,
+                resolution_source=owner_resolution_source,
+                tipo_chat=tipo_chat,
+                demo_session_activa=demo_session_activa,
+            )
 
-        # Si el usuario es anónimo y la acción requiere datos personales, pedirlos
-        if is_anonymous and resultado and resultado.get("accion_backend") in ["crear_reclamo", "iniciar_reclamo"] and not (resultado.get("datos_estructura", {}).get("nombre_usuario_detectado") and resultado.get("datos_estructura", {}).get("telefono_detectado") and resultado.get("datos_estructura", {}).get("email_detectado")):
-            resultado['pedir_info'] = ["nombre", "telefono", "email"]
+        normalize_response_payload(resultado)
+
+        # Si el usuario es anónimo y la acción requiere datos personales, pedir solo los faltantes.
+        if is_anonymous and resultado and resultado.get("accion_backend") in ["crear_reclamo", "iniciar_reclamo"]:
+            datos_estructura = resultado.get("datos_estructura") if isinstance(resultado.get("datos_estructura"), dict) else {}
+            contacto = resolve_contact_snapshot(
+                datos=datos_estructura,
+                profile_name=(chat_context_obj.context_data or {}).get("profile_name") if chat_context_obj and isinstance(chat_context_obj.context_data, dict) else None,
+                anon_id=anon_id,
+            )
+            faltan_contactos = missing_contact_fields(contacto)
+            if faltan_contactos:
+                resultado['pedir_info'] = faltan_contactos
+                if not resultado.get("message_body"):
+                    resultado["message_body"] = (
+                        "Para continuar con tu reclamo, necesito estos datos: "
+                        + ", ".join(faltan_contactos)
+                        + "."
+                    )
 
         # Guardar datos del último mensaje para evitar duplicados
         if chat_context_obj:
@@ -2433,17 +2445,39 @@ def _procesar_chat(
             chat_context_obj.context_data["last_bot_response"] = resultado
             flag_modified(chat_context_obj, "context_data")
 
+        # Persistencia BE-01 conversation core (compatibilidad temporal con chat_session_id)
+        try:
+            tenant_for_conversation = (
+                getattr(chat_context_obj, "tenant_id", None)
+                or getattr(owner_del_bot, "tenant_id", None)
+                or getattr(actor_principal, "tenant_id", None)
+            )
+            _persist_core_conversation_messages(
+                tenant_id=tenant_for_conversation,
+                chat_session_id=chat_session_id_header,
+                anon_id=anon_id,
+                actor_user=actor_principal,
+                user_message=pregunta,
+                bot_payload=resultado if isinstance(resultado, dict) else {},
+            )
+        except Exception as conversation_err:
+            current_app.logger.warning(
+                "[BE01] conversation core persistence skipped for session=%s: %s",
+                chat_session_id_header,
+                conversation_err,
+            )
+
         # This commit is for User.preguntas_usadas and ChatSessionContext primarily
         try:
             commit_with_retry(db.session)
         except Exception as e:
             db.session.rollback()
             current_app.logger.error(f"Error during final commit: {e}", exc_info=True)
-            return jsonify({"error": "Error interno del servidor al guardar la sesión."}), 500
+            return jsonify({"error": {"code": 500, "message": "Error interno del servidor al guardar la sesión."}}), 500 # NEW FORMAT
 
         # Emit the result via Socket.IO if the channel is web
         if channel == "web" and chat_session_id_header:
-            ensure_buttons_compatibility(resultado)
+            normalize_response_payload(resultado)
 
             socketio.emit('message', resultado, room=chat_session_id_header)
             current_app.logger.debug(
@@ -2478,25 +2512,28 @@ def _procesar_chat(
             f"❌ Error crítico en _procesar_chat. Details: {error_details}. Exception: {e}",
             exc_info=True
         )
-        return jsonify({"error": "Error interno del servidor."}), 500
+        return jsonify({"error": {"code": 500, "message": "Error interno del servidor."}}), 500 # NEW FORMAT
 
 @chat_bp.route("/ask", methods=["POST", "OPTIONS"])
 @anon_o_token_requerido
 def ask(current_user=None, anon_id=None, owner_user=None):
     user = owner_user or current_user
-    return _procesar_chat(current_user=current_user, owner_user=user, anon_id=anon_id)
+    response = _procesar_chat(current_user=current_user, owner_user=user, anon_id=anon_id)
+    return _log_widget_request(response, user)
 
 @chat_bp.route("/ask/pyme", methods=["POST", "OPTIONS"])
 @anon_o_token_requerido
 def ask_pyme(current_user=None, anon_id=None, owner_user=None):
     user = owner_user or current_user
-    return _procesar_chat("pyme", current_user=current_user, owner_user=user, anon_id=anon_id)
+    response = _procesar_chat("pyme", current_user=current_user, owner_user=user, anon_id=anon_id)
+    return _log_widget_request(response, user)
 
 @chat_bp.route("/ask/municipio", methods=["POST", "OPTIONS"])
 @anon_o_token_requerido
 def ask_municipio(current_user=None, anon_id=None, owner_user=None):
     user = owner_user or current_user
-    return _procesar_chat("municipio", current_user=current_user, owner_user=user, anon_id=anon_id)
+    response = _procesar_chat("municipio", current_user=current_user, owner_user=user, anon_id=anon_id)
+    return _log_widget_request(response, user)
 
 
 @chat_bp.route("/profile-name", methods=["POST", "OPTIONS"])
@@ -2508,7 +2545,7 @@ def set_profile_name():
     data = request.get_json(silent=True) or {}
     profile_name = data.get("nombre_usuario") or data.get("profile_name")
     if not profile_name:
-        return jsonify({"error": "'nombre_usuario' requerido"}), 400
+        return jsonify({"error": {"code": 400, "message": "'nombre_usuario' requerido"}}), 400 # NEW FORMAT
 
     resp = jsonify({"profile_name": profile_name})
     resp.set_cookie(
@@ -2536,12 +2573,20 @@ def set_profile_name():
 @chat_bp.route("/widget/attention", methods=["GET"])
 def widget_attention():
     opciones = current_app.config.get("ATTENTION_BUBBLE_CHOICES")
+    default_choices = (
+        "¡Hola! ¿Necesitas ayuda?",
+        "¿Te ayudo a encontrar algo?",
+        "¿Querés que te guíe?",
+    )
+
     if opciones:
         mensaje = random.choice(opciones)
     else:
-        mensaje = current_app.config.get(
-            "ATTENTION_BUBBLE_TEXT", "¡Hola! ¿Necesitas ayuda?"
-        )
+        texto_unico = current_app.config.get("ATTENTION_BUBBLE_TEXT")
+        if texto_unico:
+            mensaje = texto_unico
+        else:
+            mensaje = random.choice(default_choices)
     return jsonify({"mensaje": mensaje})
 
 
@@ -2549,13 +2594,13 @@ def widget_attention():
 def widget_config():
     token = obtener_token()
     if not token:
-        return jsonify({"error": "Token requerido"}), 400
+        return jsonify({"error": {"code": 400, "message": "Token requerido"}}), 400 # NEW FORMAT
 
     user = user_from_token(token)
     if not user:
         user = User.query.filter_by(token=token).first()
     if not user:
-        return jsonify({"error": "Token inválido"}), 404
+        return jsonify({"error": {"code": 404, "message": "Token inválido"}}), 404 # NEW FORMAT
 
     config = {
         "nombre_empresa": user.nombre_empresa or user.name or "",
@@ -2569,6 +2614,33 @@ def widget_config():
 
     return jsonify(config)
 
+@chat_bp.route("/live-chat/schedule", methods=["GET"])
+@chat_bp.route("/api/live-chat/schedule", methods=["GET"])
+def live_chat_schedule():
+    tenant_slug = str(request.args.get("tenant_slug") or request.args.get("tenant") or "").strip().lower()
+    try:
+        if tenant_slug:
+            tenant = TenantProfile.query.filter_by(slug=tenant_slug).first()
+            if tenant and isinstance(tenant.configuracion, dict):
+                schedule_cfg = tenant.configuracion.get("live_chat_schedule")
+                if isinstance(schedule_cfg, dict):
+                    status = build_live_chat_status(schedule_override=schedule_cfg)
+                    status["tenant_slug"] = tenant.slug
+                    status["source"] = "tenant_config"
+                    status.setdefault("socket_transport_hint", "polling")
+                    status.setdefault("socket_transports", ["polling"])
+                    status.setdefault("socket_fallback_enabled", True)
+                    return jsonify(status)
+    except Exception as exc:
+        current_app.logger.warning("[live_chat_schedule] tenant lookup failed for %s: %s", tenant_slug, exc)
+
+    status = build_live_chat_status()
+    status["source"] = "global_config"
+    status.setdefault("socket_transport_hint", "polling")
+    status.setdefault("socket_transports", ["polling"])
+    status.setdefault("socket_fallback_enabled", True)
+    return jsonify(status)
+
 @chat_bp.route("/config/google-maps-key", methods=["GET"])
 def google_maps_key():
-    return jsonify({"google_maps_key": current_app.config.get("GOOGLE_MAPS_API_KEY")})
+    return jsonify(get_map_config())

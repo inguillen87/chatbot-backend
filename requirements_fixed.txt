@@ -164,6 +164,8 @@ twilio==9.6.4
 pydub
 python-docx==1.2.0
 pusher==3.3.3
+openpyxl==3.1.5
+xlrd==2.0.1
 
 ##############################
 # HTTP CLIENTS (async y sync)

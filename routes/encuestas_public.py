@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import io
+import json
+import os
 import time
+import uuid
 from collections import defaultdict, deque
 import re
 from threading import Lock
-from typing import Optional
+from typing import Any, Dict, Iterator, Mapping, Optional, Pattern, Sequence, Union
 
 from flask import (
     Blueprint,
@@ -17,10 +20,14 @@ from flask import (
     render_template,
     request,
     send_file,
-    url_for,
 )
+from flask_login import current_user
 from urllib.parse import quote_plus
 
+from config import (
+    ALLOWED_ORIGINS as DEFAULT_ALLOWED_ORIGINS,
+    ENCUESTAS_DEFAULT_SHARE_IMAGE_PATH,
+)
 from config.feature_flags import FEATURE_ENCUESTAS
 from services.encuestas_qr_service import build_qr_png
 from services.encuestas_service import (
@@ -29,13 +36,162 @@ from services.encuestas_service import (
     list_public_encuestas_for_tenant,
     save_respuesta,
     serialize_public_encuesta,
+    create_comentario,
+    list_comentarios,
+    reportar_comentario,
+    verify_social_comment_token,
 )
+from services.encuestas_analytics_service import calculate_live_results
 from utils.auth_helpers import obtener_token, user_from_token
 
-_RATE_LIMIT = 30
-_RATE_PERIOD = 60
+_DEFAULT_RATE_LIMIT = 150
+_DEFAULT_RATE_PERIOD = 60
 _rate_buckets: defaultdict[str, deque] = defaultdict(deque)
 _rate_lock = Lock()
+
+AllowedOrigin = Union[str, Pattern[str]]
+
+
+def _safe_json_loads(raw: Optional[str]) -> Optional[Any]:
+    """Best-effort JSON parsing that never raises."""
+
+    if not isinstance(raw, str):
+        return None
+
+    candidate = raw.strip()
+    if not candidate:
+        return None
+
+    try:
+        return json.loads(candidate)
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_form_scalar(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    parsed = _safe_json_loads(value)
+    if parsed is not None:
+        return parsed
+    stripped = value.strip()
+    return stripped or value
+
+
+def _assign_nested_form_values(
+    container: Dict[str, Any],
+    path: Sequence[str],
+    raw_values: Sequence[str],
+    is_list: bool,
+) -> None:
+    if not path:
+        return
+
+    key = path[0]
+    if len(path) == 1:
+        coerced = [_coerce_form_scalar(item) for item in raw_values]
+        if is_list or len(coerced) > 1:
+            container[key] = coerced
+        elif coerced:
+            container[key] = coerced[0]
+        return
+
+    next_container = container.get(key)
+    if not isinstance(next_container, dict):
+        next_container = {}
+        container[key] = next_container
+    _assign_nested_form_values(next_container, path[1:], raw_values, is_list)
+
+
+def _payload_from_form(form) -> Optional[Dict[str, Any]]:
+    """Normalize form-encoded submissions into a JSON-like payload."""
+
+    if not form:
+        return None
+
+    payload: Dict[str, Any] = {}
+    respuestas_nested: Dict[int, Dict[str, Any]] = {}
+    metadata_nested: Dict[str, Any] = {}
+
+    for key, values in form.lists():
+        if not values:
+            continue
+
+        parts = re.findall(r"([^\[\]]+)", key)
+        is_list = key.endswith("[]") or len(values) > 1
+
+        if parts and parts[0] == "respuestas" and len(parts) >= 3:
+            index_part = parts[1]
+            if index_part.isdigit():
+                idx = int(index_part)
+                target = respuestas_nested.setdefault(idx, {})
+                _assign_nested_form_values(target, parts[2:], values, is_list)
+                continue
+
+        if parts and parts[0] == "metadata" and len(parts) >= 2:
+            _assign_nested_form_values(metadata_nested, parts[1:], values, is_list)
+            continue
+
+        payload[key] = (
+            _coerce_form_scalar(values[0])
+            if len(values) == 1
+            else [_coerce_form_scalar(item) for item in values]
+        )
+
+    if metadata_nested:
+        existing = payload.get("metadata")
+        if isinstance(existing, dict):
+            existing.update(metadata_nested)
+        else:
+            payload["metadata"] = metadata_nested
+
+    if respuestas_nested:
+        ordered = [respuestas_nested[idx] for idx in sorted(respuestas_nested)]
+        payload["respuestas"] = ordered
+
+    raw_embedded = payload.get("payload")
+    if isinstance(raw_embedded, str):
+        parsed = _safe_json_loads(raw_embedded)
+        if isinstance(parsed, dict):
+            payload.pop("payload", None)
+            for key, value in parsed.items():
+                if key in payload and key in {"metadata", "respuestas"}:
+                    continue
+                payload[key] = value
+    elif isinstance(raw_embedded, Mapping):
+        payload.pop("payload", None)
+        for key, value in raw_embedded.items():
+            if key in payload and key in {"metadata", "respuestas"}:
+                continue
+            payload[key] = value
+
+    for key in ("respuestas", "metadata"):
+        value = payload.get(key)
+        if isinstance(value, str):
+            parsed = _safe_json_loads(value)
+            if parsed is not None:
+                payload[key] = parsed
+
+    return payload or None
+
+
+def _extract_request_payload() -> Dict[str, Any]:
+    """Obtain the submission payload regardless of encoding."""
+
+    json_payload = request.get_json(silent=True)
+    if isinstance(json_payload, dict):
+        return json_payload
+
+    form_payload = _payload_from_form(request.form)
+    if isinstance(form_payload, dict):
+        return form_payload
+
+    raw_body = request.get_data(cache=False, as_text=True)
+    parsed_body = _safe_json_loads(raw_body)
+    if isinstance(parsed_body, dict):
+        return parsed_body
+
+    return {}
 
 
 def _normalize_host(value: Optional[str]) -> Optional[str]:
@@ -62,11 +218,198 @@ def _feature_guard():
     return None
 
 
+def _resolve_preview_user():
+    """Return an authenticated user allowed to preview unpublished surveys."""
+
+    token = obtener_token()
+    if token:
+        user = user_from_token(token)
+        if user is not None:
+            return user
+
+    try:
+        if getattr(current_user, "is_authenticated", False):
+            return current_user
+    except Exception:  # pragma: no cover - extremely defensive
+        current_app.logger.exception("[encuestas] Failed to resolve preview user from session")
+
+    return None
+
+
 def _public_base_url() -> str:
     configured = current_app.config.get("PUBLIC_ENCUESTAS_CANONICAL_BASE_URL")
     if configured:
         return configured.rstrip("/")
     return request.host_url.rstrip("/")
+
+
+def _public_api_base_url() -> str:
+    api_base = current_app.config.get("PUBLIC_ENCUESTAS_API_BASE_URL")
+    if isinstance(api_base, str) and api_base.strip():
+        return api_base.rstrip("/")
+
+    backend = current_app.config.get("BACKEND_URL")
+    if isinstance(backend, str) and backend.strip():
+        return backend.rstrip("/")
+
+    return request.host_url.rstrip("/")
+
+
+def _public_target_base_url() -> str:
+    target = current_app.config.get("PUBLIC_ENCUESTAS_QR_TARGET_BASE_URL")
+    if isinstance(target, str) and target.strip():
+        return target.rstrip("/")
+
+    canonical = current_app.config.get("PUBLIC_ENCUESTAS_CANONICAL_BASE_URL")
+    if isinstance(canonical, str) and canonical.strip():
+        return canonical.rstrip("/")
+
+    return request.host_url.rstrip("/")
+
+
+def _resolve_comment_social_providers() -> list[dict]:
+    configured = current_app.config.get("SURVEY_COMMENT_SOCIAL_PROVIDERS")
+    if isinstance(configured, list) and configured:
+        normalized = []
+        for item in configured:
+            if isinstance(item, dict):
+                provider_id = str(item.get("id") or item.get("provider") or "").strip().lower()
+                if provider_id:
+                    normalized.append(
+                        {
+                            "id": provider_id,
+                            "label": str(item.get("label") or provider_id.title()),
+                        }
+                    )
+            elif isinstance(item, str) and item.strip():
+                provider_id = item.strip().lower()
+                normalized.append({"id": provider_id, "label": provider_id.title()})
+        if normalized:
+            return normalized
+
+    return [
+        {"id": "facebook", "label": "Facebook"},
+        {"id": "google", "label": "Google"},
+        {"id": "instagram", "label": "Instagram"},
+    ]
+
+
+def _attach_comment_social_config(data: dict) -> dict:
+    if not isinstance(data, dict):
+        return data
+    if data.get("permitir_comentarios"):
+        comment_cfg = data.setdefault("commentConfig", {})
+        comment_cfg.setdefault(
+            "requiresSocialToken",
+            _coerce_bool(current_app.config.get("SURVEY_SOCIAL_COMMENT_REQUIRE_TOKEN"), default=False),
+        )
+        comment_cfg.setdefault("acceptedModes", ["anon", "social"])
+        data.setdefault("socialProviders", _resolve_comment_social_providers())
+    return data
+
+
+def _coerce_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return default
+
+
+def _enrich_comment_payload_with_social_token(payload: Dict[str, Any]) -> tuple[Dict[str, Any], bool, bool]:
+    """Merge verified social-token claims into comment payload.
+
+    Returns (payload, had_invalid_token, had_token).
+    """
+
+    token = (
+        payload.get("social_token")
+        or payload.get("auth_token")
+        or request.headers.get("X-Survey-Social-Token")
+    )
+    token = str(token or "").strip()
+    if not token:
+        return payload, False, False
+
+    claims = verify_social_comment_token(token)
+    if not claims:
+        return payload, True, True
+
+    mapping = {
+        "provider": "auth_provider",
+        "auth_user_id": "auth_user_id",
+        "auth_email": "auth_email",
+        "auth_first_name": "auth_first_name",
+        "auth_last_name": "auth_last_name",
+    }
+    for claim_key, payload_key in mapping.items():
+        incoming = str(payload.get(payload_key) or "").strip()
+        claim_value = str(claims.get(claim_key) or "").strip()
+        if incoming and claim_value and incoming.lower() != claim_value.lower():
+            raise EncuestaError(
+                "Los datos sociales no coinciden con el token",
+                status_code=400,
+                payload={"reason_code": "social_identity_mismatch", "retryable": False},
+            )
+        if claim_value:
+            payload[payload_key] = claim_value
+
+    current_mode = str(payload.get("mode") or payload.get("comment_mode") or "").strip().lower()
+    if not current_mode and payload.get("auth_provider"):
+        payload["mode"] = "social"
+    return payload, False, True
+
+
+def _resolve_request_id() -> str:
+    request_id = (
+        request.headers.get("X-Request-Id")
+        or request.headers.get("X-Correlation-Id")
+        or getattr(g, "request_id", None)
+    )
+    if not request_id:
+        request_id = uuid.uuid4().hex
+    g.request_id = request_id
+    return request_id
+
+
+def _public_error_response(err: EncuestaError, *, fallback_reason: Optional[str] = None):
+    payload = err.to_dict() if hasattr(err, "to_dict") else {"error": str(err)}
+    status_code = int(getattr(err, "status_code", 500) or 500)
+    reason_code = payload.get("reason_code") or fallback_reason
+    retryable = status_code >= 500
+    action_hint_map = {
+        "survey_not_published": "view_other_surveys",
+        "survey_outside_active_window": "view_other_surveys",
+        "rate_limited": "retry_later",
+    }
+    action_hint = action_hint_map.get(reason_code, "retry")
+    if status_code == 404:
+        action_hint = "go_home"
+
+    payload.setdefault("status_code", status_code)
+    if reason_code:
+        payload["reason_code"] = reason_code
+    payload.setdefault("retryable", retryable)
+    payload.setdefault("action_hint", action_hint)
+    payload.setdefault("request_id", _resolve_request_id())
+    return jsonify(payload), status_code
+
+
+def _load_public_encuesta_for_request(slug: str, *, preview_user=None):
+    tenant_id = _resolve_tenant_from_request()
+    return get_public_encuesta(
+        slug,
+        allow_inactive_for_user=preview_user,
+        preferred_tenant_id=tenant_id,
+    )
 
 
 _SHARE_IMAGE_CANDIDATE_KEYS = (
@@ -101,8 +444,22 @@ def _resolve_share_image(encuesta: Optional[dict]) -> Optional[str]:
                 if candidate:
                     return candidate
 
-    fallback = current_app.config.get("PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL")
-    return _clean(fallback)
+    fallback = _clean(current_app.config.get("PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL"))
+    if fallback:
+        return fallback
+
+    base = _clean(current_app.config.get("PUBLIC_ENCUESTAS_CANONICAL_BASE_URL"))
+    if not base:
+        base = _clean(request.host_url)
+
+    asset_candidate = ENCUESTAS_DEFAULT_SHARE_IMAGE_PATH
+    if isinstance(asset_candidate, str) and asset_candidate.startswith(("http://", "https://")):
+        return asset_candidate
+
+    if base and asset_candidate:
+        return f"{base.rstrip('/')}{asset_candidate}"
+
+    return asset_candidate or None
 
 
 def _extract_ip() -> str:
@@ -112,16 +469,101 @@ def _extract_ip() -> str:
     return request.remote_addr or "0.0.0.0"
 
 
+def _coerce_positive_int(value: Any, default: int) -> int:
+    try:
+        coerced = int(value)
+    except (TypeError, ValueError):
+        return default
+    return coerced if coerced > 0 else default
+
+
+def _resolve_rate_settings() -> tuple[int, int]:
+    limit = current_app.config.get("PUBLIC_ENCUESTAS_RATE_LIMIT")
+    period = current_app.config.get("PUBLIC_ENCUESTAS_RATE_PERIOD")
+
+    if limit is None:
+        limit = os.getenv("PUBLIC_ENCUESTAS_RATE_LIMIT")
+    if period is None:
+        period = os.getenv("PUBLIC_ENCUESTAS_RATE_PERIOD")
+
+    resolved_limit = _coerce_positive_int(limit, _DEFAULT_RATE_LIMIT)
+    resolved_period = _coerce_positive_int(period, _DEFAULT_RATE_PERIOD)
+    return resolved_limit, resolved_period
+
+
 def _rate_limit(ip: str) -> bool:
+    limit, period = _resolve_rate_settings()
+    if limit <= 0 or period <= 0:
+        return True
+
     now = time.time()
     with _rate_lock:
         bucket = _rate_buckets[ip]
-        while bucket and now - bucket[0] > _RATE_PERIOD:
+        while bucket and now - bucket[0] > period:
             bucket.popleft()
-        if len(bucket) >= _RATE_LIMIT:
+        if len(bucket) >= limit:
             return False
         bucket.append(now)
         return True
+
+
+def _iter_allowed_origins() -> Iterator[AllowedOrigin]:
+    """Yield allowed CORS origins honoring environment overrides."""
+
+    env_value = os.getenv("CORS_ALLOWED_ORIGINS")
+    if env_value is not None:
+        stripped = env_value.strip()
+        if stripped == "*":
+            yield "*"
+            return
+
+        seen: set[str] = set()
+        for raw in stripped.split(","):
+            candidate = raw.strip().rstrip("/")
+            if not candidate or candidate in seen:
+                continue
+            seen.add(candidate)
+            yield candidate
+
+        if seen:
+            return
+
+    for origin in DEFAULT_ALLOWED_ORIGINS:
+        yield origin
+
+
+def _resolve_cors_origin(origin: Optional[str]) -> tuple[Optional[str], bool]:
+    """Return the value for Access-Control-Allow-Origin and credentials flag."""
+
+    if not origin:
+        return None, False
+
+    normalized = origin.rstrip("/")
+    for allowed in _iter_allowed_origins():
+        if allowed == "*":
+            return "*", False
+        if isinstance(allowed, str):
+            if normalized == allowed.rstrip("/"):
+                return origin, True
+        elif hasattr(allowed, "match") and allowed.match(origin):
+            return origin, True
+
+    return None, False
+
+
+def _merge_header_values(response, header_name: str, values: list[str]) -> None:
+    """Ensure comma-separated headers include the provided values."""
+
+    existing = response.headers.get(header_name, "")
+    items = [item.strip() for item in existing.split(",") if item.strip()]
+
+    updated = list(items)
+    for value in values:
+        if value not in updated:
+            updated.append(value)
+
+    if updated:
+        response.headers[header_name] = ", ".join(updated)
 
 
 def _resolve_tenant_from_request() -> Optional[int]:
@@ -230,6 +672,47 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
             return guard
         return None
 
+    @bp.after_request
+    def _apply_cors(response):
+        allowed_origin, allow_credentials = _resolve_cors_origin(
+            request.headers.get("Origin")
+        )
+
+        if allowed_origin:
+            response.headers["Access-Control-Allow-Origin"] = allowed_origin
+
+            if allowed_origin != "*":
+                _merge_header_values(response, "Vary", ["Origin"])
+                if allow_credentials:
+                    response.headers["Access-Control-Allow-Credentials"] = "true"
+            else:
+                response.headers.pop("Access-Control-Allow-Credentials", None)
+
+            _merge_header_values(
+                response,
+                "Access-Control-Allow-Headers",
+                [
+                    "Authorization",
+                    "Content-Type",
+                    "Origin",
+                    "Accept",
+                    "X-Entity-Token",
+                    "X-Chat-Session-Id",
+                    "X-Anon-Id",
+                    "Anon-Id",
+                ],
+            )
+
+            _merge_header_values(
+                response,
+                "Access-Control-Allow-Methods",
+                ["GET", "POST", "OPTIONS"],
+            )
+        else:
+            response.headers.pop("Access-Control-Allow-Credentials", None)
+
+        return response
+
     @bp.route("", methods=["GET", "OPTIONS"])
     def listar_publicas():
         if request.method == "OPTIONS":
@@ -255,10 +738,10 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
                 500,
             )
 
-        base_url = _public_base_url()
+        base_url = _public_target_base_url()
         payload = []
         for encuesta, slug in encuestas:
-            data = serialize_public_encuesta(encuesta, slug_publico=slug)
+            data = _attach_comment_social_config(serialize_public_encuesta(encuesta, slug_publico=slug))
             data["url_publica"] = f"{base_url}/e/{slug}"
             payload.append(data)
 
@@ -266,14 +749,16 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
 
     @bp.route("/<slug>", methods=["GET"])
     def obtener_encuesta(slug: str):
+        preview_user = _resolve_preview_user()
         try:
-            encuesta = get_public_encuesta(slug)
+            encuesta = _load_public_encuesta_for_request(slug, preview_user=preview_user)
         except EncuestaError as err:
-            return jsonify(err.to_dict()), err.status_code
-        return jsonify(serialize_public_encuesta(encuesta, slug_publico=slug))
+            return _public_error_response(err)
+        return jsonify(_attach_comment_social_config(serialize_public_encuesta(encuesta, slug_publico=slug)))
 
     def _handle_responder(slug: str):
         ip = _extract_ip()
+        tenant_id = _resolve_tenant_from_request()
         if not _rate_limit(ip):
             return (
                 jsonify({
@@ -289,9 +774,27 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
             or request.headers.get("X-Anon-Id"),
             "canal": request.args.get("canal"),
         }
+        payload = _extract_request_payload()
         try:
-            respuesta = save_respuesta(slug, request.get_json(force=True), request_ctx)
+            respuesta = save_respuesta(
+                slug,
+                payload,
+                request_ctx,
+                preferred_tenant_id=tenant_id,
+            )
         except EncuestaError as err:
+            if err.status_code == 409:
+                return (
+                    jsonify(
+                        {
+                            "ok": True,
+                            "duplicate": True,
+                            "message": "Ya registramos tu participación",
+                            "suggested_admin_endpoint_template": "/admin/encuestas/{encuesta_id}/seed-demo/bulk",
+                        }
+                    ),
+                    200,
+                )
             return jsonify(err.to_dict()), err.status_code
         return jsonify({"ok": True, "respuesta_id": respuesta.id}), 201
 
@@ -307,20 +810,128 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
             return "", 204
         return _handle_responder(slug)
 
-    @bp.route("/<slug>/qr")
-    def qr(slug: str):
-        preview_user = None
-        token = obtener_token()
-        if token:
-            preview_user = user_from_token(token)
+    @bp.route("/<slug>/live-results", methods=["GET", "OPTIONS"])
+    def live_results(slug: str):
+        if request.method == "OPTIONS":
+            return "", 204
+
+        include_heatmap = request.args.get("include_heatmap", "1").strip().lower() not in {"0", "false", "no", "off"}
+        max_points = request.args.get("max_points", default=2000, type=int) or 2000
+        max_cells = request.args.get("max_cells", default=200, type=int) or 200
+        window_minutes = request.args.get("window_minutes", default=10, type=int) or 10
 
         try:
-            encuesta = get_public_encuesta(slug, allow_inactive_for_user=preview_user)
+            # Reusing existing service/analytics logic
+            results = calculate_live_results(
+                slug,
+                include_heatmap=include_heatmap,
+                max_points=max(100, min(max_points, 5000)),
+                max_cells=max(50, min(max_cells, 1000)),
+                momentum_window_minutes=window_minutes,
+            )
+            return jsonify(results)
         except EncuestaError as err:
-            return jsonify(err.to_dict()), err.status_code
+            return _public_error_response(err)
+        except Exception as e:
+            current_app.logger.error(f"Error fetching live results for {slug}: {e}")
+            wrapped = EncuestaError(
+                "Error interno",
+                status_code=500,
+                payload={"reason_code": "internal_error"},
+            )
+            return _public_error_response(wrapped)
+
+    @bp.route("/<slug>/comentarios", methods=["GET", "POST", "OPTIONS"])
+    def comentarios(slug: str):
+        if request.method == "OPTIONS":
+            return "", 204
+
+        preview_user = _resolve_preview_user()
+        try:
+            encuesta = _load_public_encuesta_for_request(slug, preview_user=preview_user)
+        except EncuestaError as err:
+            return _public_error_response(err)
+
+        if request.method == "POST":
+            # For comments, we might want to know who the user is
+            token = obtener_token()
+            user = user_from_token(token) if token else None
+
+            payload = _extract_request_payload()
+            if not isinstance(payload, dict):
+                payload = {}
+            try:
+                payload, invalid_social_token, has_social_token = _enrich_comment_payload_with_social_token(payload)
+                requires_social_token = _coerce_bool(
+                    current_app.config.get("SURVEY_SOCIAL_COMMENT_REQUIRE_TOKEN"),
+                    default=False,
+                )
+                comment_mode = str(payload.get("mode") or payload.get("comment_mode") or "").strip().lower()
+                is_social_comment = comment_mode == "social"
+                if invalid_social_token and (is_social_comment or requires_social_token):
+                    raise EncuestaError(
+                        "Token social inválido o expirado",
+                        status_code=400,
+                        payload={"reason_code": "invalid_social_token", "retryable": False},
+                    )
+                if requires_social_token and is_social_comment and not has_social_token:
+                    raise EncuestaError(
+                        "Se requiere token social válido para comentar",
+                        status_code=400,
+                        payload={"reason_code": "social_token_required", "retryable": False},
+                    )
+
+                comentario = create_comentario(encuesta.id, payload, user)
+                auth_user_id = None
+                if isinstance(comentario.anon_id, str) and comentario.anon_id.startswith("social:"):
+                    parts = comentario.anon_id.split(":", 2)
+                    if len(parts) == 3:
+                        auth_user_id = parts[2] or None
+                return jsonify({
+                    "ok": True,
+                    "comentario": {
+                        "id": comentario.id,
+                        "texto": comentario.texto,
+                        "nombre_autor": comentario.nombre_autor,
+                        "fecha": comentario.created_at.isoformat(),
+                        "comment_mode": "social" if isinstance(comentario.anon_id, str) and comentario.anon_id.startswith("social:") else "anon",
+                        "auth_provider": (comentario.anon_id.split(":", 2)[1] if isinstance(comentario.anon_id, str) and comentario.anon_id.startswith("social:") and len(comentario.anon_id.split(":", 2)) == 3 else None),
+                        "auth_user_id": auth_user_id,
+                    }
+                }), 201
+            except EncuestaError as err:
+                return _public_error_response(err)
+
+        # GET
+        limit = request.args.get("limit", default=50, type=int)
+        offset = request.args.get("offset", default=0, type=int)
+        items = list_comentarios(encuesta.id, limit=limit, offset=offset)
+        return jsonify(items)
+
+    @bp.route("/<slug>/comentarios/<int:comentario_id>/reportar", methods=["POST", "OPTIONS"])
+    def reportar_comment(slug: str, comentario_id: int):
+        if request.method == "OPTIONS":
+            return "", 204
+
+        try:
+            # We fetch encuesta just to ensure the slug is valid, though report doesn't strictly depend on it in service
+            _load_public_encuesta_for_request(slug)
+            reportar_comentario(comentario_id)
+            return jsonify({"ok": True}), 200
+        except EncuestaError as err:
+            return _public_error_response(err)
+
+    @bp.route("/<slug>/qr")
+    def qr(slug: str):
+        preview_user = _resolve_preview_user()
+
+        try:
+            encuesta = _load_public_encuesta_for_request(slug, preview_user=preview_user)
+        except EncuestaError as err:
+            return _public_error_response(err)
 
         size = request.args.get("size", default=320, type=int)
-        base_url = _public_base_url()
+        base_url = _public_target_base_url()
         url = f"{base_url}/e/{slug}"
         try:
             png = build_qr_png(url, size=size)
@@ -367,11 +978,12 @@ def share_redirect(slug: str):
     accept = request.accept_mimetypes
     wants_json = accept.best == "application/json" and accept[accept.best] >= accept["text/html"]
 
+    preview_user = _resolve_preview_user()
     try:
-        encuesta = get_public_encuesta(slug)
+        encuesta = _load_public_encuesta_for_request(slug, preview_user=preview_user)
     except EncuestaError as err:
         if wants_json:
-            return jsonify(err.to_dict()), err.status_code
+            return _public_error_response(err)
         return (
             render_template(
                 "encuestas/share.html",
@@ -388,10 +1000,11 @@ def share_redirect(slug: str):
             err.status_code,
         )
 
-    data = serialize_public_encuesta(encuesta, slug_publico=slug)
-    base_url = _public_base_url()
+    data = _attach_comment_social_config(serialize_public_encuesta(encuesta, slug_publico=slug))
+    base_url = _public_target_base_url()
     share_url = f"{base_url}/e/{slug}"
-    qr_url = url_for("encuestas_public_bp.qr", slug=slug, _external=True)
+    api_base_url = _public_api_base_url()
+    qr_url = f"{api_base_url}/api/public/encuestas/{slug}/qr"
     widget_url = f"{share_url}?canal=widget_chat"
     titulo = data.get("titulo") or "Encuesta ciudadana"
     whatsapp_message = f"Participá en '{titulo}' ingresando a {share_url}"
@@ -411,4 +1024,3 @@ def share_redirect(slug: str):
         whatsapp_message=whatsapp_message,
         share_image_url=share_image_url,
     )
-

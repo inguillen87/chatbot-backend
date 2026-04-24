@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Seguimiento de Pedido</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        .step-active .step-icon { @apply bg-blue-600 text-white border-blue-600; }
+        .step-completed .step-icon { @apply bg-green-500 text-white border-green-500; }
+
+        @keyframes pulse-ring {
+            0% { transform: scale(0.8); opacity: 0.5; }
+            100% { transform: scale(2); opacity: 0; }
+        }
+        .pulse-ring::before {
+            content: '';
+            position: absolute;
+            left: 0; top: 0;
+            width: 100%; height: 100%;
+            background-color: inherit;
+            border-radius: 50%;
+            z-index: -1;
+            animation: pulse-ring 2s infinite;
+        }
+
+        /* Chat bubbles */
+        .chat-bubble { position: relative; max-width: 80%; padding: 10px 14px; border-radius: 12px; font-size: 0.9rem; line-height: 1.4; }
+        .chat-bubble.me { background-color: #eff6ff; color: #1e3a8a; align-self: flex-end; border-bottom-right-radius: 2px; }
+        .chat-bubble.them { background-color: #f3f4f6; color: #1f2937; align-self: flex-start; border-bottom-left-radius: 2px; }
+
+        .map-container iframe { width: 100%; height: 100%; border: 0; }
+    </style>
+</head>
+<body class="bg-gray-50 min-h-screen font-sans">
+
+    <!-- Header -->
+    <header class="bg-white shadow-sm sticky top-0 z-50">
+        <div class="max-w-4xl mx-auto px-4 py-4 flex items-center justify-between">
+            <div class="flex items-center space-x-3">
+                {% if tenant.logo_url %}
+                <img src="{{ tenant.logo_url }}" alt="{{ tenant.nombre }}" class="h-10 w-10 rounded-full object-cover shadow-sm">
+                {% else %}
+                <div class="h-10 w-10 rounded-full bg-blue-600 text-white flex items-center justify-center font-bold shadow-sm">
+                    {{ tenant.nombre[:1] }}
+                </div>
+                {% endif %}
+                <div>
+                    <h1 class="text-lg font-bold text-gray-900 leading-tight">{{ tenant.nombre }}</h1>
+                    <p class="text-xs text-gray-500">Seguimiento de tu compra</p>
+                </div>
+            </div>
+            <a href="https://wa.me/{{ tenant.whatsapp_sender_id }}?text=Hola,%20tengo%20una%20consulta%20sobre%20mi%20pedido%20{{ pedido.nro_pedido }}"
+               target="_blank"
+               class="flex items-center space-x-2 text-green-600 hover:text-green-700 bg-green-50 px-4 py-2 rounded-full text-sm font-bold transition-all hover:shadow-md">
+                <i class="fab fa-whatsapp text-lg"></i>
+                <span class="hidden sm:inline">WhatsApp</span>
+            </a>
+        </div>
+    </header>
+
+    <main class="max-w-4xl mx-auto px-4 py-8 space-y-6">
+
+        <!-- Status Card -->
+        <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 md:p-8 relative overflow-hidden">
+            <!-- Background Icon -->
+            <div class="absolute -top-6 -right-6 p-4 opacity-5 text-gray-900 transform rotate-12">
+                <i class="fas fa-box-open text-9xl"></i>
+            </div>
+
+            <div class="relative z-10">
+                <div class="flex flex-col md:flex-row md:items-center justify-between mb-8">
+                    <div>
+                        <div class="flex items-center space-x-2 mb-1">
+                            <span class="bg-gray-100 text-gray-600 text-xs font-bold px-2 py-0.5 rounded uppercase tracking-wide">Pedido</span>
+                            <span class="text-gray-400 text-xs">{{ pedido.fecha.strftime('%d/%m/%Y') }}</span>
+                        </div>
+                        <h2 class="text-3xl font-extrabold text-gray-900 tracking-tight">#{{ pedido.nro_pedido }}</h2>
+                    </div>
+                    <div class="mt-4 md:mt-0">
+                        <span class="inline-flex items-center px-4 py-2 rounded-full text-sm font-bold uppercase tracking-wide shadow-sm
+                            {% if pedido.estado == 'pendiente' %} bg-yellow-100 text-yellow-800
+                            {% elif pedido.estado == 'confirmado' %} bg-blue-100 text-blue-800
+                            {% elif pedido.estado == 'en_proceso' %} bg-indigo-100 text-indigo-800
+                            {% elif pedido.estado == 'enviado' %} bg-purple-100 text-purple-800
+                            {% elif pedido.estado == 'entregado' %} bg-green-100 text-green-800
+                            {% elif pedido.estado == 'cancelado' %} bg-red-100 text-red-800
+                            {% else %} bg-gray-100 text-gray-800 {% endif %}">
+                            <span class="flex h-2 w-2 relative mr-2">
+                                <span class="animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 bg-current"></span>
+                                <span class="relative inline-flex rounded-full h-2 w-2 bg-current"></span>
+                            </span>
+                            {{ pedido.estado | replace('_', ' ') }}
+                        </span>
+                    </div>
+                </div>
+
+                <!-- Timeline -->
+                <div class="relative mt-12">
+                    <!-- Line -->
+                    <div class="hidden sm:block absolute top-1/2 left-0 w-full h-1 bg-gray-100 -translate-y-1/2 rounded-full z-0"></div>
+
+                    <div class="flex flex-col sm:flex-row justify-between relative space-y-8 sm:space-y-0">
+                        {% set steps = [
+                            ('pendiente', 'Recibido', 'fas fa-clipboard-check'),
+                            ('confirmado', 'Confirmado', 'fas fa-thumbs-up'),
+                            ('en_proceso', 'Preparación', 'fas fa-box'),
+                            ('enviado', 'En Camino', 'fas fa-truck'),
+                            ('entregado', 'Entregado', 'fas fa-home')
+                        ] %}
+
+                        {% set current_index = -1 %}
+                        {% for s_key, s_label, s_icon in steps %}
+                            {% if s_key == pedido.estado %}
+                                {% set current_index = loop.index0 %}
+                            {% endif %}
+                        {% endfor %}
+
+                        {% for s_key, s_label, s_icon in steps %}
+                            {% set is_completed = loop.index0 <= current_index %}
+                            {% set is_current = loop.index0 == current_index %}
+
+                            <div class="flex items-center sm:flex-col sm:justify-center relative group z-10">
+                                <!-- Mobile Vertical Line -->
+                                <div class="absolute left-5 top-10 bottom-[-2rem] w-0.5 bg-gray-100 sm:hidden
+                                    {% if loop.last %} hidden {% endif %}"></div>
+
+                                <div class="relative w-10 h-10 sm:w-12 sm:h-12 rounded-full flex items-center justify-center border-4 transition-all duration-500
+                                    {% if is_completed %} bg-green-500 border-green-500 text-white shadow-lg shadow-green-200 scale-105
+                                    {% elif is_current %} bg-blue-600 border-blue-600 text-white pulse-ring
+                                    {% else %} bg-white border-gray-200 text-gray-300 {% endif %}">
+                                    <i class="{{ s_icon }} text-sm sm:text-base"></i>
+                                </div>
+                                <div class="ml-4 sm:ml-0 sm:mt-4 text-left sm:text-center">
+                                    <p class="text-sm font-bold
+                                        {% if is_completed or is_current %} text-gray-900 {% else %} text-gray-400 {% endif %}">
+                                        {{ s_label }}
+                                    </p>
+                                    {% if is_current %}
+                                    <p class="text-xs text-blue-600 font-medium sm:block hidden mt-1">En curso...</p>
+                                    {% endif %}
+                                </div>
+                            </div>
+                        {% endfor %}
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <!-- Left Column: Details -->
+            <div class="lg:col-span-2 space-y-6">
+
+                <!-- Order Items -->
+                <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
+                    <h3 class="text-lg font-bold text-gray-900 mb-4 flex items-center">
+                        <i class="fas fa-receipt text-gray-400 mr-2"></i> Resumen de Compra
+                    </h3>
+                    <div class="space-y-4 divide-y divide-gray-50">
+                        {% for item in detalles %}
+                        <div class="flex justify-between items-center pt-4 first:pt-0">
+                            <div class="flex items-center space-x-3">
+                                <div class="bg-gray-50 w-10 h-10 rounded-lg flex items-center justify-center text-gray-400">
+                                    <i class="fas fa-tag"></i>
+                                </div>
+                                <div>
+                                    <p class="text-gray-900 font-semibold">{{ item.nombre }}</p>
+                                    <p class="text-xs text-gray-500">x{{ item.cantidad }} · SKU: {{ item.sku or 'N/A' }}</p>
+                                </div>
+                            </div>
+                            <div class="text-right">
+                                <p class="text-gray-900 font-bold">${{ "{:,.2f}".format(item.subtotal) }}</p>
+                            </div>
+                        </div>
+                        {% endfor %}
+                    </div>
+                    <div class="mt-6 pt-4 border-t border-gray-100 bg-gray-50 -mx-6 -mb-6 px-6 py-4 rounded-b-2xl flex justify-between items-center">
+                        <span class="text-gray-600 font-medium">Total Final</span>
+                        <span class="text-2xl font-bold text-gray-900">${{ "{:,.2f}".format(pedido.monto_total) }}</span>
+                    </div>
+                </div>
+
+                <!-- Shipping Map -->
+                {% if pedido.direccion %}
+                <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 overflow-hidden">
+                    <h3 class="text-lg font-bold text-gray-900 mb-4 flex items-center">
+                        <i class="fas fa-map-marked-alt text-gray-400 mr-2"></i> Entrega en
+                    </h3>
+                    <div class="flex items-start space-x-3 mb-4">
+                        <i class="fas fa-location-dot text-red-500 mt-1"></i>
+                        <p class="text-gray-700 font-medium">{{ pedido.direccion }}</p>
+                    </div>
+
+                    {% if pedido.latitud and pedido.longitud %}
+                    <div class="rounded-xl overflow-hidden h-64 bg-gray-100 relative shadow-inner group">
+                        <iframe
+                            width="100%"
+                            height="100%"
+                            style="border:0"
+                            loading="lazy"
+                            allowfullscreen
+                            referrerpolicy="no-referrer-when-downgrade"
+                            src="https://www.google.com/maps/embed/v1/place?key={{ google_maps_key }}&q={{ pedido.latitud }},{{ pedido.longitud }}&zoom=15">
+                        </iframe>
+                        <!-- Fallback/Overlay Action -->
+                        <a href="https://www.google.com/maps/search/?api=1&query={{ pedido.latitud }},{{ pedido.longitud }}"
+                           target="_blank"
+                           class="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-10 transition-all flex items-center justify-center pointer-events-none group-hover:pointer-events-auto">
+                            <span class="bg-white text-gray-900 px-4 py-2 rounded-full shadow-lg font-bold text-sm transform translate-y-4 opacity-0 group-hover:translate-y-0 group-hover:opacity-100 transition-all">
+                                Ver en Google Maps <i class="fas fa-external-link-alt ml-1"></i>
+                            </span>
+                        </a>
+                    </div>
+                    {% endif %}
+                </div>
+                {% endif %}
+            </div>
+
+            <!-- Right Column: Chat/Support -->
+            <div class="space-y-6">
+                <!-- Chat Interface -->
+                <div class="bg-white rounded-2xl shadow-sm border border-gray-100 flex flex-col h-[600px] lg:h-auto lg:min-h-[500px]">
+                    <div class="p-4 border-b border-gray-100 bg-gray-50 rounded-t-2xl">
+                        <h3 class="text-md font-bold text-gray-900 flex items-center">
+                            <i class="fas fa-comments text-blue-500 mr-2"></i> Chat con la Tienda
+                        </h3>
+                        <p class="text-xs text-gray-500 mt-1">Historial de mensajes sobre este pedido</p>
+                    </div>
+
+                    <div id="chatHistory" class="flex-1 p-4 overflow-y-auto space-y-3 bg-white scrollbar-thin scrollbar-thumb-gray-200">
+                        <!-- Initial System Message -->
+                        <div class="text-center py-4">
+                            <span class="bg-gray-100 text-gray-500 text-xs px-3 py-1 rounded-full">
+                                Pedido creado el {{ pedido.fecha.strftime('%d/%m %H:%M') }}
+                            </span>
+                        </div>
+
+                        {% for msg in chat_history %}
+                        <div class="flex flex-col {% if msg.es_admin %} items-start {% else %} items-end {% endif %}">
+                            <div class="chat-bubble {% if msg.es_admin %} them {% else %} me {% endif %}">
+                                {{ msg.comentario }}
+                            </div>
+                            <span class="text-[10px] text-gray-400 mt-1 px-1">
+                                {{ msg.autor_nombre }} · {{ msg.fecha | replace('T', ' ') | truncate(16, True, '') }}
+                            </span>
+                        </div>
+                        {% endfor %}
+                    </div>
+
+                    <div class="p-4 border-t border-gray-100 bg-gray-50 rounded-b-2xl">
+                        <form id="chatForm" class="flex space-x-2">
+                            <input type="text" id="chatInput"
+                                   class="flex-1 rounded-full border-gray-300 text-sm focus:ring-blue-500 focus:border-blue-500 px-4 py-2 shadow-sm"
+                                   placeholder="Escribe un mensaje..." required>
+                            <button type="submit"
+                                    class="bg-blue-600 hover:bg-blue-700 text-white rounded-full w-10 h-10 flex items-center justify-center transition-colors shadow-sm">
+                                <i class="fas fa-paper-plane text-sm"></i>
+                            </button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    </main>
+
+    <footer class="max-w-4xl mx-auto px-4 py-8 text-center">
+        <p class="text-gray-400 text-xs">&copy; {{ current_year }} {{ tenant.nombre }}. Powered by <a href="#" class="font-bold hover:text-gray-500">Chatboc</a>.</p>
+    </footer>
+
+    <script>
+        const chatHistory = document.getElementById('chatHistory');
+        const chatForm = document.getElementById('chatForm');
+        const chatInput = document.getElementById('chatInput');
+
+        // Auto-scroll to bottom
+        chatHistory.scrollTop = chatHistory.scrollHeight;
+
+        function appendMessage(text, isMe, author, time) {
+            const wrapper = document.createElement('div');
+            wrapper.className = `flex flex-col ${isMe ? 'items-end' : 'items-start'}`;
+
+            wrapper.innerHTML = `
+                <div class="chat-bubble ${isMe ? 'me' : 'them'}">
+                    ${text}
+                </div>
+                <span class="text-[10px] text-gray-400 mt-1 px-1">
+                    ${author} · ${time}
+                </span>
+            `;
+            chatHistory.appendChild(wrapper);
+            chatHistory.scrollTop = chatHistory.scrollHeight;
+        }
+
+        chatForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const text = chatInput.value.trim();
+            if (!text) return;
+
+            const originalBtn = chatForm.querySelector('button').innerHTML;
+            chatForm.querySelector('button').disabled = true;
+            chatForm.querySelector('button').innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+
+            try {
+                const response = await fetch('/tracking/api/send-message', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        nro_pedido: "{{ pedido.nro_pedido }}",
+                        mensaje: text
+                    })
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    chatInput.value = '';
+                    // Optimistic update using server response data if available, or local
+                    const entry = data.chat_entry;
+                    const time = entry ? entry.fecha.replace('T', ' ').substring(0, 16) : 'Ahora';
+                    appendMessage(text, true, 'Yo', time);
+                } else {
+                    alert('Error al enviar: ' + (data.error || 'Desconocido'));
+                }
+            } catch (err) {
+                console.error(err);
+                alert('Error de conexión');
+            } finally {
+                chatForm.querySelector('button').disabled = false;
+                chatForm.querySelector('button').innerHTML = originalBtn;
+                chatInput.focus();
+            }
+        });
+    </script>
+
+</body>
+</html>

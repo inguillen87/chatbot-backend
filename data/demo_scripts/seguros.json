@@ -1,0 +1,414 @@
+{
+  "key": "seguros",
+  "responses": [
+    {
+      "id": "welcome",
+      "keywords": [
+        "__INIT__",
+        "hola",
+        "inicio",
+        "empezar",
+        "menu"
+      ],
+      "match_always": false,
+      "response": "🛡️ Bienvenido a ShieldOne. Elegí programas corporativos, siniestros, analítica o partners y te preparo propuestas inmediatas.",
+      "buttons": [
+        {
+          "label": "🏢 Programas corporativos",
+          "target": "programas_corporativ"
+        },
+        {
+          "label": "🚑 Siniestros & asistencia",
+          "target": "siniestros_&_asisten"
+        },
+        {
+          "label": "📊 Analítica & compliance",
+          "target": "analítica_&_complian"
+        },
+        {
+          "label": "🤝 Brokers & partnerships",
+          "target": "brokers_&_partnershi"
+        }
+      ]
+    },
+    {
+      "id": "demo_experiencia",
+      "keywords": [
+        "demo",
+        "plantilla",
+        "experiencia",
+        "interactivo",
+        "dashboard",
+        "carrito",
+        "catálogo"
+      ],
+      "response": "🚀 Bienvenido a la demo de Seguros Demo. Probá el catálogo, la encuesta en vivo y el portal del cliente con analíticas en tiempo real.",
+      "buttons": [
+        {
+          "label": "🛒 Catálogo listo",
+          "target": "catalogo_demo"
+        },
+        {
+          "label": "🗳️ Encuesta en vivo",
+          "target": "encuesta_demo"
+        },
+        {
+          "label": "📊 Dashboard",
+          "target": "dashboard_demo"
+        },
+        {
+          "label": "📨 Portal del cliente",
+          "target": "portal_demo"
+        }
+      ]
+    },
+    {
+      "id": "catalogo_demo",
+      "keywords": [
+        "catálogo demo",
+        "catalogo demo",
+        "productos demo",
+        "ver catálogo"
+      ],
+      "response": "Catálogo navegable con precios, imágenes y stock listo para agregar al carrito. Incluye QR y link compartible para que cualquier visitante lo abra desde su móvil.",
+      "buttons": [
+        {
+          "label": "🛍️ Ver productos",
+          "target": "catalogo_demo_items"
+        },
+        {
+          "label": "🔗 Compartir catálogo",
+          "target": "catalogo_demo_compartir"
+        }
+      ]
+    },
+    {
+      "id": "catalogo_demo_items",
+      "keywords": [
+        "productos demo",
+        "productos",
+        "items"
+      ],
+      "response": "Ejemplo de ítems listos para sumar al carrito: variantes, combos y precios destacados. Al avanzar, el carrito conserva el progreso y sugiere completar datos o ingresar al portal.",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "catalogo_demo_compartir",
+      "keywords": [
+        "compartir catálogo",
+        "link catálogo",
+        "qr catálogo"
+      ],
+      "response": "Podés compartir el catálogo por QR, link corto o redes sociales. Cada acceso queda trazado en el panel de analíticas con mapa de calor y conversiones.",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "encuesta_demo",
+      "keywords": [
+        "encuesta",
+        "votación",
+        "votacion",
+        "feedback"
+      ],
+      "response": "Encuesta en vivo pensada para Seguros Demo: botones de voto, QR para participación masiva y resultados en tiempo real.",
+      "buttons": [
+        {
+          "label": "✅ Enviar voto",
+          "target": "encuesta_demo_votar"
+        },
+        {
+          "label": "📈 Ver resultados",
+          "target": "encuesta_demo_resultados"
+        }
+      ]
+    },
+    {
+      "id": "encuesta_demo_votar",
+      "keywords": [
+        "votar",
+        "vote",
+        "participar"
+      ],
+      "response": "Botones listos para votar sin salir del chat. También se pueden embeber en el widget o enviar por WhatsApp.",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "encuesta_demo_resultados",
+      "keywords": [
+        "resultados",
+        "dashboard encuesta",
+        "metricas"
+      ],
+      "response": "Resultados en vivo con gráficos, tasa de respuesta y segmentación por canal. Exportable y con alertas automáticas.",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "dashboard_demo",
+      "keywords": [
+        "dashboard",
+        "analíticas",
+        "analytics",
+        "mapa de calor"
+      ],
+      "response": "Dashboard de experiencia digital: mapa de calor de interacciones, conversión por canal, tickets abiertos y estado de pedidos.",
+      "buttons": [
+        {
+          "label": "📍 Mapa de calor",
+          "target": "dashboard_mapa_calor"
+        },
+        {
+          "label": "🧾 Tickets y pedidos",
+          "target": "dashboard_tickets_pedidos"
+        }
+      ]
+    },
+    {
+      "id": "dashboard_mapa_calor",
+      "keywords": [
+        "mapa de calor",
+        "heatmap",
+        "flujo usuarios"
+      ],
+      "response": "Visualizá el mapa de calor con los puntos más clickeados, embebible en la página demo para mostrar dónde interactúan los usuarios.",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "dashboard_tickets_pedidos",
+      "keywords": [
+        "tickets",
+        "reclamos",
+        "pedidos"
+      ],
+      "response": "Vista rápida de reclamos, pedidos y encuestas abiertas por tenant. Permite derivar a humano o seguir el ciclo de compra sin perder el carrito.",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "portal_demo",
+      "keywords": [
+        "portal",
+        "perfil",
+        "usuario"
+      ],
+      "response": "Portal del cliente con historial de compras, puntos, reclamos y encuestas abiertas. Al iniciar sesión, se mantiene el carrito y se pueden reordenar ítems con un clic.",
+      "buttons": [
+        {
+          "label": "🔐 Ingresar al portal",
+          "target": "portal_demo_ingreso"
+        },
+        {
+          "label": "🧾 Ver historial",
+          "target": "portal_demo_historial"
+        }
+      ]
+    },
+    {
+      "id": "portal_demo_ingreso",
+      "keywords": [
+        "ingresar",
+        "login",
+        "registro"
+      ],
+      "response": "Ingreso rápido con email, WhatsApp o código QR. Se sincroniza con el carrito activo para continuar la compra sin perder productos.",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "portal_demo_historial",
+      "keywords": [
+        "historial",
+        "puntos",
+        "seguimiento"
+      ],
+      "response": "Historial de pedidos, reclamos y seguimientos, con notificaciones push y trazabilidad de entregas.",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "flotas_inteligentes",
+      "keywords": [
+        "flotas inteligentes"
+      ],
+      "response": "Políticas adaptadas por perfil\n\n_Quiero conocer coberturas para flotas con telemetría y gestión de choferes._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "property_&_bi",
+      "keywords": [
+        "property & bi"
+      ],
+      "response": "Cobertura global con auditoría\n\n_Mostrame planes property + business interruption con sumas aseguradas y deducibles._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "beneficios_ejecutivo",
+      "keywords": [
+        "beneficios ejecutivos"
+      ],
+      "response": "Plan premium con asistencia worldwide\n\n_Necesito propuestas para beneficios ejecutivos y coberturas internacionales._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "programas_corporativ",
+      "keywords": [
+        "programas corporativos"
+      ],
+      "response": "Planes combinados, beneficios ejecutivos y compliance",
+      "buttons": [
+        {
+          "label": "🚗 Flotas inteligentes",
+          "target": "flotas_inteligentes"
+        },
+        {
+          "label": "🏢 Property & BI",
+          "target": "property_&_bi"
+        },
+        {
+          "label": "🧑‍💼 Beneficios ejecutivos",
+          "target": "beneficios_ejecutivo"
+        }
+      ]
+    },
+    {
+      "id": "denuncia_mobile",
+      "keywords": [
+        "denuncia mobile"
+      ],
+      "response": "App branded + bots asistidos\n\n_¿Cómo funciona la denuncia mobile con carga de fotos y geolocalización?_",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "red_de_talleres",
+      "keywords": [
+        "red de talleres"
+      ],
+      "response": "SLA 48 h con seguimiento\n\n_Mostrame tiempos promedio y SLA de talleres certificados en AMBA._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "mesa_ejecutiva",
+      "keywords": [
+        "mesa ejecutiva"
+      ],
+      "response": "Escalamiento 24/7\n\n_Necesito contacto de mesa ejecutiva para siniestros críticos._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "siniestros_&_asisten",
+      "keywords": [
+        "siniestros & asistencia"
+      ],
+      "response": "Onboarding digital, triage y seguimiento en vivo",
+      "buttons": [
+        {
+          "label": "📲 Denuncia mobile",
+          "target": "denuncia_mobile"
+        },
+        {
+          "label": "🛠️ Red de talleres",
+          "target": "red_de_talleres"
+        },
+        {
+          "label": "📞 Mesa ejecutiva",
+          "target": "mesa_ejecutiva"
+        }
+      ]
+    },
+    {
+      "id": "kpis_ejecutivos",
+      "keywords": [
+        "kpis ejecutivos"
+      ],
+      "response": "Dashboards en tiempo real\n\n_Quiero los KPIs ejecutivos de siniestralidad, severidad y forecast._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "compliance_regulator",
+      "keywords": [
+        "compliance regulatorio"
+      ],
+      "response": "SOX · GDPR · IFRS 17\n\n_¿Qué entregables generan para auditorías y compliance internacional?_",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "pricing_actuarial",
+      "keywords": [
+        "pricing actuarial"
+      ],
+      "response": "Modelos propios + benchmark\n\n_Mostrame modelos actuariales y supuestos para renovar pólizas._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "analítica_&_complian",
+      "keywords": [
+        "analítica & compliance"
+      ],
+      "response": "Tableros, reportes SOX y auditorías",
+      "buttons": [
+        {
+          "label": "📈 KPIs ejecutivos",
+          "target": "kpis_ejecutivos"
+        },
+        {
+          "label": "🧾 Compliance regulatorio",
+          "target": "compliance_regulator"
+        },
+        {
+          "label": "🧮 Pricing actuarial",
+          "target": "pricing_actuarial"
+        }
+      ]
+    },
+    {
+      "id": "brokers_aliados",
+      "keywords": [
+        "brokers aliados"
+      ],
+      "response": "Programas regionales certificados\n\n_Necesito listado de brokers aliados y condiciones de revenue share._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "apis_de_pólizas",
+      "keywords": [
+        "apis de pólizas"
+      ],
+      "response": "REST + Webhooks + SSO\n\n_¿Cómo integro emisión de pólizas y certificados vía API?_",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "academia_risk",
+      "keywords": [
+        "academia risk"
+      ],
+      "response": "Capacitaciones presenciales y virtuales\n\n_Mostrame workshops y entrenamientos para áreas de risk management._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "brokers_&_partnershi",
+      "keywords": [
+        "brokers & partnerships"
+      ],
+      "response": "Marketplace de partners, revenue share y APIs",
+      "buttons": [
+        {
+          "label": "🌐 Brokers aliados",
+          "target": "brokers_aliados"
+        },
+        {
+          "label": "🔗 APIs de pólizas",
+          "target": "apis_de_pólizas"
+        },
+        {
+          "label": "🎓 Academia risk",
+          "target": "academia_risk"
+        }
+      ]
+    }
+  ],
+  "fallback": {
+    "response": "No entendí tu consulta. ¿Te gustaría ver el menú principal?",
+    "buttons": [
+      {
+        "label": "Ver menú principal",
+        "target": "welcome"
+      }
+    ]
+  }
+}

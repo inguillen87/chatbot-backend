@@ -1,3 +1,4 @@
+import os
 import json
 import logging
 from typing import Any, Dict, Tuple
@@ -46,6 +47,7 @@ def llamar_llm(
     mensaje: Any = None,
     chat_session_id: str | None = None,
     timeout_seconds: int = 20,
+    model: str = "gpt-4o-mini",
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """Generic LLM wrapper using OpenAI with Cohere as fallback.
 
@@ -60,8 +62,10 @@ def llamar_llm(
         logger.info("llamar_llm: returning cached response")
         return LLM_CACHE[cache_key]
 
+    resolved_model = model or os.getenv("OPENAI_CHAT_MODEL_DEFAULT", "gpt-4o-mini")
+
     try:
-        respuesta = llamar_openai(app, user_msg, usuario or {}, historial or [], chat_session_id)
+        respuesta = llamar_openai(app, user_msg, usuario or {}, historial or [], chat_session_id, model=resolved_model)
         log_text_block(logger, "LLM OpenAI response", respuesta)
     except Exception as e:
         logger.error(f"OpenAI call failed: {e}; trying Cohere", exc_info=True)
@@ -89,6 +93,7 @@ def llamar_llm_para_generacion_texto(
     user_prompt: str,
     temperature: float = 0.7,
     json_output: bool = False,
+    model: str = "gpt-4o-mini",
 ) -> str:
     """Generate text using OpenAI (with optional JSON formatting)."""
     try:
@@ -102,9 +107,15 @@ def llamar_llm_para_generacion_texto(
             messages.append({"role": "system", "content": system_prompt_especifico})
         messages.append({"role": "user", "content": user_prompt})
 
-        kwargs = {"model": "gpt-4o-mini", "messages": messages, "temperature": temperature}
+        kwargs = {"model": model, "messages": messages, "temperature": temperature}
         if json_output:
             kwargs["response_format"] = {"type": "json_object"}
+            # Ensure the prompt contains the word "JSON" as required by OpenAI
+            json_instruction = " Respond in JSON format."
+            if messages and messages[0]["role"] == "system":
+                messages[0]["content"] += json_instruction
+            else:
+                messages.insert(0, {"role": "system", "content": "You are a helpful assistant." + json_instruction})
 
         response = openai_client.chat.completions.create(**kwargs)
         return response.choices[0].message.content.strip()

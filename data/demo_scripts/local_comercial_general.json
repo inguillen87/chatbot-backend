@@ -1,88 +1,414 @@
 {
+  "key": "local_comercial_general",
   "responses": [
     {
       "id": "welcome",
-      "keywords_any": ["__init__", "hola", "buen dia", "buenas", "saludo", "que tal"],
-      "response": "🛍️ ¡Hola! {demo_name} integra tienda física, Instagram Shopping y e-commerce. ¿Buscás colecciones, stock por talle o programas de fidelización?",
+      "keywords": [
+        "__INIT__",
+        "hola",
+        "inicio",
+        "empezar",
+        "menu"
+      ],
+      "match_always": false,
+      "response": "👗 Hola, soy tu planner de Moda Urbana. Elegí lookbooks, fidelización, eventos B2B o integraciones y te muestro cómo funciona.",
       "buttons": [
-        {"label": "Lookbook actual", "target": "catalogo"},
-        {"label": "Promos y puntos", "target": "fidelizacion"},
-        {"label": "Opciones de entrega", "target": "envios"}
+        {
+          "label": "🧥 Visual & colecciones",
+          "target": "visual_&_colecciones"
+        },
+        {
+          "label": "🎁 Fidelización & CRM",
+          "target": "fidelización_&_crm"
+        },
+        {
+          "label": "🤝 Eventos & B2B",
+          "target": "eventos_&_b2b"
+        },
+        {
+          "label": "🔗 Integración omnicanal",
+          "target": "integración_omnicana"
+        }
       ]
     },
     {
-      "id": "catalogo",
-      "keywords_any": ["lookbook", "catalogo", "coleccion", "temporada", "novedad", "pdf", "descargar"],
-      "response": "La colección actual combina prendas urbanas y deco corporativa. Podés filtrar por talles, colores y disponibilidad en sucursal.",
-      "resource_tags": ["title:Lookbook urbano"],
+      "id": "demo_experiencia",
+      "keywords": [
+        "demo",
+        "plantilla",
+        "experiencia",
+        "interactivo",
+        "dashboard",
+        "carrito",
+        "catálogo"
+      ],
+      "response": "🚀 Bienvenido a la demo de Moda Urbana. Probá el catálogo, la encuesta en vivo y el portal del cliente con analíticas en tiempo real.",
       "buttons": [
-        {"label": "Ver stock", "target": "stock"},
-        {"label": "Programas de fidelización", "target": "fidelizacion"}
+        {
+          "label": "🛒 Catálogo listo",
+          "target": "catalogo_demo"
+        },
+        {
+          "label": "🗳️ Encuesta en vivo",
+          "target": "encuesta_demo"
+        },
+        {
+          "label": "📊 Dashboard",
+          "target": "dashboard_demo"
+        },
+        {
+          "label": "📨 Portal del cliente",
+          "target": "portal_demo"
+        }
       ]
     },
     {
-      "id": "stock",
-      "keywords_any": ["stock", "talle", "talles", "color", "inventario"],
-      "response": "El panel sincroniza stock de tienda, depósito y online. Permite reservar prendas por talle, programar reposiciones y mostrar equivalencias entre talles internacionales.",
+      "id": "catalogo_demo",
+      "keywords": [
+        "catálogo demo",
+        "catalogo demo",
+        "productos demo",
+        "ver catálogo"
+      ],
+      "response": "Catálogo navegable con precios, imágenes y stock listo para agregar al carrito. Incluye QR y link compartible para que cualquier visitante lo abra desde su móvil.",
       "buttons": [
-        {"label": "Opciones de entrega", "target": "envios"},
-        {"label": "Fidelización", "target": "fidelizacion"}
+        {
+          "label": "🛍️ Ver productos",
+          "target": "catalogo_demo_items"
+        },
+        {
+          "label": "🔗 Compartir catálogo",
+          "target": "catalogo_demo_compartir"
+        }
       ]
     },
     {
-      "id": "fidelizacion",
-      "keywords_any": ["fidelizacion", "fidelización", "puntos", "club", "cupon", "beneficio"],
-      "response": "Podés lanzar cupones segmentados, campañas por aniversario y códigos QR en tienda. El CRM detecta clientes frecuentes y propone combos corporativos.",
-      "resource_tags": ["title:Programa de fidelización"],
+      "id": "catalogo_demo_items",
+      "keywords": [
+        "productos demo",
+        "productos",
+        "items"
+      ],
+      "response": "Ejemplo de ítems listos para sumar al carrito: variantes, combos y precios destacados. Al avanzar, el carrito conserva el progreso y sugiere completar datos o ingresar al portal.",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "catalogo_demo_compartir",
+      "keywords": [
+        "compartir catálogo",
+        "link catálogo",
+        "qr catálogo"
+      ],
+      "response": "Podés compartir el catálogo por QR, link corto o redes sociales. Cada acceso queda trazado en el panel de analíticas con mapa de calor y conversiones.",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "encuesta_demo",
+      "keywords": [
+        "encuesta",
+        "votación",
+        "votacion",
+        "feedback"
+      ],
+      "response": "Encuesta en vivo pensada para Moda Urbana: botones de voto, QR para participación masiva y resultados en tiempo real.",
       "buttons": [
-        {"label": "Lookbook", "target": "catalogo"},
-        {"label": "Opciones corporativas", "target": "corporativo"}
+        {
+          "label": "✅ Enviar voto",
+          "target": "encuesta_demo_votar"
+        },
+        {
+          "label": "📈 Ver resultados",
+          "target": "encuesta_demo_resultados"
+        }
       ]
     },
     {
-      "id": "envios",
-      "keywords_any": ["envio", "envios", "envia", "retiro", "sucursal", "delivery"],
-      "response": "Ofrecemos retiro en 2 h, envíos metropolitanos en el día y logística nacional. El bot confirma pagos, imprime etiquetas y avisa cuando llega a sucursal.",
+      "id": "encuesta_demo_votar",
+      "keywords": [
+        "votar",
+        "vote",
+        "participar"
+      ],
+      "response": "Botones listos para votar sin salir del chat. También se pueden embeber en el widget o enviar por WhatsApp.",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "encuesta_demo_resultados",
+      "keywords": [
+        "resultados",
+        "dashboard encuesta",
+        "metricas"
+      ],
+      "response": "Resultados en vivo con gráficos, tasa de respuesta y segmentación por canal. Exportable y con alertas automáticas.",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "dashboard_demo",
+      "keywords": [
+        "dashboard",
+        "analíticas",
+        "analytics",
+        "mapa de calor"
+      ],
+      "response": "Dashboard de experiencia digital: mapa de calor de interacciones, conversión por canal, tickets abiertos y estado de pedidos.",
       "buttons": [
-        {"label": "Consultar stock", "target": "stock"},
-        {"label": "Quiero un asesor", "target": "contacto"}
+        {
+          "label": "📍 Mapa de calor",
+          "target": "dashboard_mapa_calor"
+        },
+        {
+          "label": "🧾 Tickets y pedidos",
+          "target": "dashboard_tickets_pedidos"
+        }
       ]
     },
     {
-      "id": "corporativo",
-      "keywords_any": ["corporativo", "empresa", "regalo", "kits"],
-      "response": "Diseñamos kits corporativos con branding, tarjetas personalizadas y seguimiento de envíos múltiples. Ideal para fin de año o eventos internos.",
-      "resource_tags": ["title:Combo corporativo"],
+      "id": "dashboard_mapa_calor",
+      "keywords": [
+        "mapa de calor",
+        "heatmap",
+        "flujo usuarios"
+      ],
+      "response": "Visualizá el mapa de calor con los puntos más clickeados, embebible en la página demo para mostrar dónde interactúan los usuarios.",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "dashboard_tickets_pedidos",
+      "keywords": [
+        "tickets",
+        "reclamos",
+        "pedidos"
+      ],
+      "response": "Vista rápida de reclamos, pedidos y encuestas abiertas por tenant. Permite derivar a humano o seguir el ciclo de compra sin perder el carrito.",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "portal_demo",
+      "keywords": [
+        "portal",
+        "perfil",
+        "usuario"
+      ],
+      "response": "Portal del cliente con historial de compras, puntos, reclamos y encuestas abiertas. Al iniciar sesión, se mantiene el carrito y se pueden reordenar ítems con un clic.",
       "buttons": [
-        {"label": "Lookbook de regalos", "target": "catalogo"},
-        {"label": "Hablar con asesor", "target": "contacto"}
+        {
+          "label": "🔐 Ingresar al portal",
+          "target": "portal_demo_ingreso"
+        },
+        {
+          "label": "🧾 Ver historial",
+          "target": "portal_demo_historial"
+        }
       ]
     },
     {
-      "id": "presupuesto",
-      "keywords_any": ["presupuesto", "cotizar", "lista de precios", "armar pedido"],
-      "response": "Generamos presupuestos con talles confirmados, foto de producto y beneficios del programa de puntos para cerrar la venta sin llamar al LLM.",
-      "resource_tags": ["title:Lookbook urbano", "title:Programa de fidelización"],
+      "id": "portal_demo_ingreso",
+      "keywords": [
+        "ingresar",
+        "login",
+        "registro"
+      ],
+      "response": "Ingreso rápido con email, WhatsApp o código QR. Se sincroniza con el carrito activo para continuar la compra sin perder productos.",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "portal_demo_historial",
+      "keywords": [
+        "historial",
+        "puntos",
+        "seguimiento"
+      ],
+      "response": "Historial de pedidos, reclamos y seguimientos, con notificaciones push y trazabilidad de entregas.",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "lookbook_interactivo",
+      "keywords": [
+        "lookbook interactivo"
+      ],
+      "response": "Outfits cápsula + talles extendidos\n\n_Mostrame el lookbook digital con mix & match y recomendaciones por ocasión._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "drops_hipersegmentad",
+      "keywords": [
+        "drops hipersegmentados"
+      ],
+      "response": "Reservas anticipadas y prueba en tienda\n\n_Quiero crear un drop exclusivo para clientes premium con notificación push._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "probadores_inteligen",
+      "keywords": [
+        "probadores inteligentes"
+      ],
+      "response": "RFID + recomendaciones automáticas\n\n_¿Cómo funcionan los probadores inteligentes y qué métricas entregan?_",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "visual_&_colecciones",
+      "keywords": [
+        "visual & colecciones"
+      ],
+      "response": "Lookbooks digitales, guías de estilo y drops exclusivos",
       "buttons": [
-        {"label": "Ver colecciones", "target": "catalogo"},
-        {"label": "Opciones corporativas", "target": "corporativo"}
+        {
+          "label": "📸 Lookbook interactivo",
+          "target": "lookbook_interactivo"
+        },
+        {
+          "label": "🎯 Drops hipersegmentados",
+          "target": "drops_hipersegmentad"
+        },
+        {
+          "label": "🪞 Probadores inteligentes",
+          "target": "probadores_inteligen"
+        }
       ]
     },
     {
-      "id": "contacto",
-      "keywords_any": ["contacto", "asesor", "llamar", "hablar"],
-      "response": "Podés derivar a un ejecutivo comercial desde el bot. En la demo recopilamos tus datos y coordinamos onboarding gratuito con el equipo de Chatboc.",
+      "id": "programa_loyalty",
+      "keywords": [
+        "programa loyalty"
+      ],
+      "response": "Cashback, early access y styling\n\n_Necesito la estructura del programa de fidelización y beneficios por nivel._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "campañas_omnicanal",
+      "keywords": [
+        "campañas omnicanal"
+      ],
+      "response": "Email, SMS y push coordinados\n\n_Mostrame ejemplos de journeys automatizados por temporada y comportamiento._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "dashboard_de_cliente",
+      "keywords": [
+        "dashboard de clientes"
+      ],
+      "response": "KPIs retail en tiempo real\n\n_Quiero ver el dashboard con RFM, ticket promedio y frecuencia._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "fidelización_&_crm",
+      "keywords": [
+        "fidelización & crm"
+      ],
+      "response": "Niveles VIP, cashback y campañas automatizadas",
       "buttons": [
-        {"label": "Promos y puntos", "target": "fidelizacion"},
-        {"label": "Opciones de entrega", "target": "envios"}
+        {
+          "label": "⭐ Programa loyalty",
+          "target": "programa_loyalty"
+        },
+        {
+          "label": "📧 Campañas omnicanal",
+          "target": "campañas_omnicanal"
+        },
+        {
+          "label": "📊 Dashboard de clientes",
+          "target": "dashboard_de_cliente"
+        }
+      ]
+    },
+    {
+      "id": "eventos_vip",
+      "keywords": [
+        "eventos vip"
+      ],
+      "response": "After office + styling en vivo\n\n_Armá un calendario de eventos VIP en tienda con experiencias personalizadas._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "giftcards_corporativ",
+      "keywords": [
+        "giftcards corporativas"
+      ],
+      "response": "Integración con beneficios corporativos\n\n_¿Qué opciones de giftcards digitales ofrecen para empresas?_",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "uniformes_y_cápsulas",
+      "keywords": [
+        "uniformes y cápsulas"
+      ],
+      "response": "Diseño + producción bajo demanda\n\n_Necesito una propuesta de uniformes personalizados para un equipo comercial._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "eventos_&_b2b",
+      "keywords": [
+        "eventos & b2b"
+      ],
+      "response": "Styling corporativo, giftcards y alianzas",
+      "buttons": [
+        {
+          "label": "🥂 Eventos VIP",
+          "target": "eventos_vip"
+        },
+        {
+          "label": "🎟️ Giftcards corporativas",
+          "target": "giftcards_corporativ"
+        },
+        {
+          "label": "🧵 Uniformes y cápsulas",
+          "target": "uniformes_y_cápsulas"
+        }
+      ]
+    },
+    {
+      "id": "ecommerce_+_tienda",
+      "keywords": [
+        "ecommerce + tienda"
+      ],
+      "response": "OMS integrado + SLA por tienda\n\n_¿Cómo sincronizan stock online con tienda y envíos ship-from-store?_",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "customer_data_platfo",
+      "keywords": [
+        "customer data platform"
+      ],
+      "response": "CDP con tracking en tiempo real\n\n_Quiero saber cómo centralizan datos y eventos para personalizar campañas._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "logística_inversa",
+      "keywords": [
+        "logística inversa"
+      ],
+      "response": "Gestión integrada de devoluciones\n\n_Mostrame el flujo de logística inversa y cambios en tienda vs online._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "integración_omnicana",
+      "keywords": [
+        "integración omnicanal"
+      ],
+      "response": "ERP, ecommerce y ship-from-store",
+      "buttons": [
+        {
+          "label": "🛒 Ecommerce + tienda",
+          "target": "ecommerce_+_tienda"
+        },
+        {
+          "label": "💡 Customer data platform",
+          "target": "customer_data_platfo"
+        },
+        {
+          "label": "📦 Logística inversa",
+          "target": "logística_inversa"
+        }
       ]
     }
   ],
   "fallback": {
-    "response": "Este flujo de demo no llama a IA. Elegí un botón para explorar colecciones, stock o programas de fidelización. Si querés una demo personalizada podemos agendarla enseguida.",
+    "response": "No entendí tu consulta. ¿Te gustaría ver el menú principal?",
     "buttons": [
-      {"label": "Lookbook actual", "target": "catalogo"},
-      {"label": "Promos y puntos", "target": "fidelizacion"}
+      {
+        "label": "Ver menú principal",
+        "target": "welcome"
+      }
     ]
   }
 }

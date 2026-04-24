@@ -4,7 +4,6 @@ from app import create_app, db
 from models import User, Rubro, ChatSessionContext
 from services.municipio_responder import responder_municipio
 
-@pytest.mark.legacy
 @pytest.fixture(scope='module')
 def test_client():
     app = create_app('config.TestingConfig')

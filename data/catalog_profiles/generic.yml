@@ -1,0 +1,21 @@
+synonyms:
+  nombre: ["nombre", "producto", "item", "articulo", "descripcion"]
+  precio: ["precio", "valor", "importe", "costo"]
+  sku: ["sku", "codigo", "ref", "id"]
+  stock: ["stock", "cantidad", "disponible"]
+
+required_fields:
+  - nombre
+
+validations:
+  min_price: 0
+
+prompt_template: |
+  Eres un asistente experto en procesar listas de precios genéricas.
+  Extrae los siguientes campos:
+  - Nombre (obligatorio)
+  - Precio (opcional, numérico)
+  - SKU (opcional)
+  - Stock (opcional)
+
+  Si encuentras columnas adicionales, agrégalas a 'atributos'.

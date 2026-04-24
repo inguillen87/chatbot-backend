@@ -1,0 +1,62 @@
+[
+  {
+    "question": "Torres premium",
+    "answer": "Departamentos de 2 a 4 ambientes",
+    "extended_answer": "Mostrame las torres en preventa con valores, amenities y plan de pagos."
+  },
+  {
+    "question": "Barrios cerrados",
+    "answer": "Lotes 800-1200 m² + clubhouse",
+    "extended_answer": "Quiero opciones de barrios cerrados con lotes disponibles y financiación."
+  },
+  {
+    "question": "Oficinas AAA",
+    "answer": "Oficinas 500-2000 m²",
+    "extended_answer": "Necesito oficinas AAA en CABA con flexibilidad y cowork integrado."
+  },
+  {
+    "question": "Renta temporaria",
+    "answer": "ROI esperado 7,5% anual",
+    "extended_answer": "Mostrame unidades llave en mano con renta temporaria proyectada."
+  },
+  {
+    "question": "Inversor extranjero",
+    "answer": "Onboarding integral + compliance",
+    "extended_answer": "¿Cómo acompañan a inversores extranjeros con apertura de cuentas y legal?"
+  },
+  {
+    "question": "Fondos inmobiliarios",
+    "answer": "Fondos renta y desarrollo",
+    "extended_answer": "Necesito la ficha de fondos inmobiliarios disponibles y capital mínimo."
+  },
+  {
+    "question": "Reserva digital",
+    "answer": "Workflow 100% online",
+    "extended_answer": "¿Cómo gestiono una reserva digital con pago en criptomonedas o transferencia?"
+  },
+  {
+    "question": "Due diligence",
+    "answer": "Cheklist legal + certificaciones",
+    "extended_answer": "Quiero saber qué incluye el due diligence legal y tiempos promedio."
+  },
+  {
+    "question": "Firma y escrituración",
+    "answer": "Integración con escribanía digital",
+    "extended_answer": "Mostrame el proceso de firma digital, escribanía y entrega de documentación."
+  },
+  {
+    "question": "Amenities y consorcios",
+    "answer": "Amenities premium + app consorcio",
+    "extended_answer": "¿Qué servicios de administración y amenities ofrecen post entrega?"
+  },
+  {
+    "question": "Mantenimiento",
+    "answer": "Mantenimiento programado + emergencias",
+    "extended_answer": "Necesito conocer los servicios de mantenimiento y garantía postventa."
+  },
+  {
+    "question": "Gestión de alquiler",
+    "answer": "Administración + reporting mensual",
+    "extended_answer": "¿Ofrecen gestión integral de alquiler y seguimiento de cobranzas?"
+  }
+]

@@ -100,16 +100,31 @@
             </header>
             <canvas id="municipio-top-canales"></canvas>
           </article>
+          <article class="card">
+            <header><h3>Participación por género</h3></header>
+            <canvas id="municipio-demografia-genero"></canvas>
+          </article>
+          <article class="card">
+            <header><h3>Rangos etarios</h3></header>
+            <canvas id="municipio-demografia-edad"></canvas>
+          </article>
           <article class="card wide">
             <header>
               <h3>Mapa de incidencias</h3>
-              <div class="card-actions">
-                <button id="map-mode-heat">Calor</button>
-                <button id="map-mode-cluster">Clusters</button>
+              <div class="card-actions map-actions">
+                <button type="button" class="ghost" data-map-layer="heat" aria-pressed="true">Calor</button>
+                <button type="button" class="ghost" data-map-layer="cluster" aria-pressed="true">Clusters</button>
+                <select data-map-base aria-label="Base cartográfica">
+                  <option value="streets">Calles</option>
+                  <option value="dark">Nocturno</option>
+                  <option value="terrain">Terreno</option>
+                </select>
+                <button type="button" class="ghost" data-map-fit>Centrar</button>
                 <button data-export="municipio-map" data-format="png">PNG</button>
               </div>
             </header>
             <div id="municipio-map" class="map"></div>
+            <div id="municipio-map-meta" class="map-meta" aria-live="polite"></div>
           </article>
           <article class="card">
             <header>
@@ -119,6 +134,14 @@
               </div>
             </header>
             <table id="municipio-top-zonas" class="data-table"></table>
+          </article>
+          <article class="card">
+            <header><h3>Barrios con más respuestas</h3></header>
+            <canvas id="municipio-demografia-barrios"></canvas>
+          </article>
+          <article class="card">
+            <header><h3>Resumen demográfico</h3></header>
+            <div id="municipio-demografia-resumen" class="demografia-resumen"></div>
           </article>
           <article class="card">
             <header>
@@ -152,8 +175,22 @@
             <canvas id="pyme-conversion-canal"></canvas>
           </article>
           <article class="card wide">
-            <header><h3>Mapa de pedidos</h3></header>
+            <header>
+              <h3>Mapa de pedidos</h3>
+              <div class="card-actions map-actions">
+                <button type="button" class="ghost" data-map-layer="heat" aria-pressed="true">Calor</button>
+                <button type="button" class="ghost" data-map-layer="cluster" aria-pressed="true">Clusters</button>
+                <select data-map-base aria-label="Base cartográfica">
+                  <option value="streets">Calles</option>
+                  <option value="dark">Nocturno</option>
+                  <option value="terrain">Terreno</option>
+                </select>
+                <button type="button" class="ghost" data-map-fit>Centrar</button>
+                <button data-export="pyme-map" data-format="png">PNG</button>
+              </div>
+            </header>
             <div id="pyme-map" class="map"></div>
+            <div id="pyme-map-meta" class="map-meta" aria-live="polite"></div>
           </article>
           <article class="card">
             <header><h3>Plantillas WhatsApp</h3></header>

@@ -1,0 +1,62 @@
+[
+  {
+    "question": "Slots y turnos",
+    "answer": "Torre con visibilidad 360°",
+    "extended_answer": "¿Cómo gestionan turnos de carga, control de pallets y monitoreo en tiempo real?"
+  },
+  {
+    "question": "Control documental",
+    "answer": "Escaneo OCR + RPA",
+    "extended_answer": "Necesito ver cómo automatizan checklists de ingreso y documentación."
+  },
+  {
+    "question": "Mantenimiento flota",
+    "answer": "KPIs MTTR y fuel savings",
+    "extended_answer": "Mostrame planes de mantenimiento y telemetría para flota propia."
+  },
+  {
+    "question": "Picking inteligente",
+    "answer": "Batch picking + AMR híbrido",
+    "extended_answer": "Mostrame layout de picking por olas y robots AMR disponibles."
+  },
+  {
+    "question": "Kitting y personalización",
+    "answer": "Kitting 24/7 con QA",
+    "extended_answer": "¿Qué capacidades de kitting y packaging personalizado manejan?"
+  },
+  {
+    "question": "Packaging verde",
+    "answer": "Materiales reciclados + offset",
+    "extended_answer": "Necesito opciones de packaging sustentable y medición de huella."
+  },
+  {
+    "question": "Export flash",
+    "answer": "Partners aéreos + aduana simplificada",
+    "extended_answer": "¿Cómo gestionan exportaciones express a Chile y Uruguay?"
+  },
+  {
+    "question": "Lockers y pick up",
+    "answer": "+420 puntos omnicanal",
+    "extended_answer": "Mostrame red de lockers y puntos pick-up integrados."
+  },
+  {
+    "question": "Ventanas same-day",
+    "answer": "Same-day AMBA · next-day interior",
+    "extended_answer": "Necesito SLA para entregas same-day y cobertura por barrios."
+  },
+  {
+    "question": "Gemelo digital",
+    "answer": "Simulación de slots y rutas",
+    "extended_answer": "Quiero ver el gemelo digital del centro de distribución y simulaciones."
+  },
+  {
+    "question": "KPIs en vivo",
+    "answer": "Dashboard torre comando",
+    "extended_answer": "Mostrame KPIs en vivo de fill rate, OTIF y desvíos."
+  },
+  {
+    "question": "Huella de carbono",
+    "answer": "Calculadora CO₂ + programas offset",
+    "extended_answer": "¿Cómo calculan y compensan la huella de carbono de la operación?"
+  }
+]

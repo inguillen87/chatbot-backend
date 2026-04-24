@@ -1,101 +1,308 @@
+import io
+import json
 import logging
-from typing import Dict, Any
-from models import ArchivoAdjunto, db
-from services.google_vision_service import analyze_image_from_content
-from services.analisis_archivo_service import AnalisisArchivoService
 import os
+import re
+from typing import Any, Dict, List, Tuple
+
+import pandas as pd
+import pdfplumber
+import requests
+from docx import Document
+
+from models import ArchivoAdjunto, db
+from services.llm_utils import llamar_llm_para_json_estructurado
 
 logger = logging.getLogger(__name__)
 
-class DocumentProcessingService:
-    def process_document(self, file_content: bytes, mime_type: str) -> Dict[str, Any]:
-        """
-        Processes a document given its content and MIME type.
-        This is a placeholder implementation.
-        """
-        logger.info(f"Processing document with mime type: {mime_type}")
-        if not file_content or not mime_type:
-            return {"success": False, "error": "Contenido o tipo de archivo no proporcionado."}
 
-        # Simulating a basic response, as the original method was missing.
-        return {"success": True, "text": "Contenido del documento procesado (simulado)."}
+_HEADER_KEYWORDS = {
+    "producto",
+    "descripcion",
+    "descripción",
+    "precio",
+    "unidad",
+    "cantidad",
+    "stock",
+    "sku",
+    "codigo",
+    "código",
+    "marca",
+    "presentacion",
+    "presentación",
+    "volumen",
+    "item",
+    "nombre",
+}
+
+
+class DocumentProcessingService:
+    """Utility to transform raw documents into structured purchase data."""
+
+    MAX_TEXT_CHARS = 18000
+    MAX_TABLE_ROWS = 40
+
+    def process_document(
+        self,
+        file_content: bytes,
+        mime_type: str,
+        filename: str | None = None,
+    ) -> Dict[str, Any]:
+        """Extract plain text and structured information from a document."""
+
+        if not file_content:
+            return {"success": False, "error": "Contenido vacío."}
+
+        mime_type = (mime_type or "").lower()
+        logger.info("Processing document with mime type %s", mime_type or "desconocido")
+
+        extractor = None
+        if "pdf" in mime_type:
+            extractor = self._extract_from_pdf
+        elif "spreadsheet" in mime_type or "excel" in mime_type or mime_type.endswith("csv"):
+            extractor = self._extract_from_spreadsheet
+        elif "word" in mime_type or mime_type.endswith("msword"):
+            extractor = self._extract_from_word
+        elif mime_type.startswith("text/") or mime_type in {"application/json"}:
+            extractor = self._extract_from_text
+        else:
+            logger.warning("Unsupported MIME type for document processing: %s", mime_type)
+            return {"success": False, "error": f"Tipo de archivo no soportado: {mime_type}"}
+
+        text_content, table_records, metadata = extractor(file_content, filename)
+
+        if not text_content and not table_records:
+            return {"success": False, "error": "No se pudo extraer información del documento."}
+
+        structured = self._build_structured_response(text_content, table_records, filename)
+
+        return {
+            "success": True,
+            "texto_extraido": text_content,
+            "datos_estructurados": structured,
+            "metadata": metadata,
+        }
 
     def process_document_by_id(self, archivo_id: int) -> Dict[str, Any]:
-        """
-        Processes a document given its ID in the ArchivoAdjunto table.
-        """
-        logger.info(f"Processing document for ArchivoAdjunto ID: {archivo_id}")
-        archivo = db.session.get(ArchivoAdjunto, archivo_id)
+        """Helper that fetches the ``ArchivoAdjunto`` bytes and processes them."""
 
+        archivo = db.session.get(ArchivoAdjunto, archivo_id)
         if not archivo:
-            logger.error(f"ArchivoAdjunto with ID {archivo_id} not found.")
+            logger.error("ArchivoAdjunto with ID %s not found.", archivo_id)
             return {"success": False, "error": "Archivo no encontrado."}
 
-        # Delegate to a more specific method based on MIME type
-        if archivo.mime.startswith("image/"):
-            return self._process_image(archivo)
-        elif archivo.mime == "application/pdf":
-            return self._process_pdf(archivo)
-        elif "spreadsheet" in archivo.mime or ".xls" in archivo.nombre_original:
-            return self._process_spreadsheet(archivo)
-        else:
-            logger.warning(f"Unsupported MIME type for automatic processing: {archivo.mime}")
-            return {"success": False, "error": f"Tipo de archivo no soportado: {archivo.mime}"}
+        try:
+            file_bytes = self._download_file_bytes(archivo)
+        except Exception as exc:  # pragma: no cover - network/path errors are hard to simulate consistently
+            logger.error("Unable to download file %s: %s", archivo.url, exc, exc_info=True)
+            return {"success": False, "error": "No se pudo descargar el archivo para analizarlo."}
 
-    def _process_image(self, archivo: ArchivoAdjunto) -> Dict[str, Any]:
-        logger.info(f"Processing image: {archivo.nombre_original} (ID: {archivo.id})")
-        analisis_service = AnalisisArchivoService()
-        analisis = analisis_service.crear_analisis_inicial(archivo.id)
+        return self.process_document(file_bytes, archivo.mime or "", archivo.nombre_original or archivo.filename)
+
+    # ------------------------------------------------------------------
+    # Extraction helpers
+    # ------------------------------------------------------------------
+    def _extract_from_pdf(self, file_content: bytes, filename: str | None = None) -> Tuple[str, List[Dict[str, Any]], Dict[str, Any]]:
+        text_chunks: List[str] = []
+        table_records: List[Dict[str, Any]] = []
+
+        with pdfplumber.open(io.BytesIO(file_content)) as pdf:
+            for page in pdf.pages:
+                page_text = page.extract_text() or ""
+                if page_text.strip():
+                    text_chunks.append(page_text.strip())
+
+                try:
+                    tables = page.extract_tables() or []
+                except Exception:  # pragma: no cover
+                    tables = []
+
+                for tbl in tables:
+                    table_records.extend(self._table_to_records(tbl))
+
+        full_text = "\n\n".join(text_chunks)
+        metadata = {"tables_detected": len(table_records)}
+        return full_text, table_records, metadata
+
+    def _extract_from_spreadsheet(self, file_content: bytes, filename: str | None = None) -> Tuple[str, List[Dict[str, Any]], Dict[str, Any]]:
+        buffer = io.BytesIO(file_content)
+        csv_text: str | None = None
 
         try:
-            with open(archivo.url, "rb") as f:
-                image_content = f.read()
+            df_raw = pd.read_excel(buffer, header=None, dtype=str, keep_default_na=False)
 
-            vision_result = analyze_image_from_content(image_content)
+            def loader(header: int) -> pd.DataFrame:
+                inner_buffer = io.BytesIO(file_content)
+                return pd.read_excel(inner_buffer, header=header, dtype=str, keep_default_na=False)
 
-            if vision_result.get("error"):
-                raise Exception(vision_result.get("error"))
-
-            texto_extraido = vision_result.get("text", "")
-            datos_estructurados = {
-                "labels": vision_result.get("labels", []),
-                "objects": vision_result.get("objects", []),
-            }
-
-            analisis_service.actualizar_analisis_completado(
-                analisis.id,
-                datos_estructurados=datos_estructurados,
-                texto_extraido=texto_extraido
+        except ValueError:
+            csv_text = file_content.decode("utf-8", errors="replace")
+            df_raw = pd.read_csv(
+                io.StringIO(csv_text),
+                header=None,
+                dtype=str,
+                keep_default_na=False,
+                sep=None,
+                engine="python",
             )
 
-            return {"success": True, "extracted_data": {"texto_ocr": texto_extraido, **datos_estructurados}}
+            def loader(header: int) -> pd.DataFrame:
+                return pd.read_csv(
+                    io.StringIO(csv_text),
+                    header=header,
+                    dtype=str,
+                    keep_default_na=False,
+                    sep=None,
+                    engine="python",
+                )
 
-        except Exception as e:
-            logger.error(f"Error processing image ID {archivo.id} with Vision API: {e}", exc_info=True)
-            analisis_service.actualizar_analisis_con_error(analisis.id, str(e))
-            return {"success": False, "error": "Error durante el análisis de la imagen."}
+        header_row = self._detect_header_row(df_raw)
+        df = loader(header_row)
+        df = df.applymap(lambda val: val.strip() if isinstance(val, str) else val)
+        df = df.replace("", pd.NA).dropna(how="all").fillna("")
 
-    def _process_pdf(self, archivo: ArchivoAdjunto) -> Dict[str, Any]:
-        logger.info(f"Processing PDF: {archivo.nombre_original} (ID: {archivo.id})")
-        # Placeholder for PDF processing logic (e.g., using pdfplumber or Document AI)
-        # from services.google_docai import procesar_documento_pdf
-        # extracted_data = procesar_documento_pdf(archivo.url)
+        df.columns = [self._clean_header(str(col)) for col in df.columns]
+        df = df.loc[:, ~df.columns.str.contains(r"^unnamed", case=False)]
 
-        # Simulate reading some text from the PDF
-        simulated_text = "Contenido extraído del PDF: Producto A - 10 unidades, Producto B - 5 cajas."
+        records = df.to_dict(orient="records")
+        trimmed_records = records[: self.MAX_TABLE_ROWS]
 
-        return {"success": True, "extracted_data": {"texto_extraido": simulated_text}}
+        csv_buffer = io.StringIO()
+        df.head(self.MAX_TABLE_ROWS).to_csv(csv_buffer, index=False)
 
-    def _process_spreadsheet(self, archivo: ArchivoAdjunto) -> Dict[str, Any]:
-        logger.info(f"Processing spreadsheet: {archivo.nombre_original} (ID: {archivo.id})")
-        # Placeholder for spreadsheet processing (e.g., using pandas)
-        # from services.procesar_catalogo_excel import procesar_excel
-        # extracted_data = procesar_excel(archivo.url)
+        metadata = {
+            "header_row_index": header_row,
+            "columnas_detectadas": list(df.columns),
+            "total_filas": len(df),
+            "formato_fuente": "csv" if csv_text is not None else "excel",
+        }
 
-        # Simulate reading some data from the spreadsheet
-        simulated_text = "Contenido extraído de la planilla: SKU,Producto,Precio\n123,Producto A,100\n456,Producto B,200"
+        return csv_buffer.getvalue(), trimmed_records, metadata
 
-        return {"success": True, "extracted_data": {"texto_extraido": simulated_text}}
+    def _extract_from_word(self, file_content: bytes, filename: str | None = None) -> Tuple[str, List[Dict[str, Any]], Dict[str, Any]]:
+        document = Document(io.BytesIO(file_content))
+        paragraphs = [para.text.strip() for para in document.paragraphs if para.text.strip()]
+        text = "\n".join(paragraphs)
+        return text, [], {}
 
-# Singleton instance for the service
+    def _extract_from_text(self, file_content: bytes, filename: str | None = None) -> Tuple[str, List[Dict[str, Any]], Dict[str, Any]]:
+        text = file_content.decode("utf-8", errors="replace")
+        return text, [], {}
+
+    # ------------------------------------------------------------------
+    # Utilities
+    # ------------------------------------------------------------------
+    def _download_file_bytes(self, archivo: ArchivoAdjunto) -> bytes:
+        """Download file bytes from local storage or remote URL."""
+
+        url = archivo.url or ""
+        if not url:
+            raise FileNotFoundError("Archivo sin URL asociada")
+
+        if url.startswith("http://") or url.startswith("https://"):
+            response = requests.get(url, timeout=20)
+            response.raise_for_status()
+            return response.content
+
+        local_path = url
+        if os.path.isabs(local_path) and os.path.exists(local_path):
+            with open(local_path, "rb") as file_handle:
+                return file_handle.read()
+
+        raise FileNotFoundError(f"No se pudo ubicar el archivo en {url}")
+
+    def _table_to_records(self, table: List[List[Any]]) -> List[Dict[str, Any]]:
+        if not table or len(table) < 2:
+            return []
+
+        headers = [self._clean_header(str(cell)) for cell in table[0]]
+        records: List[Dict[str, Any]] = []
+        for row in table[1:]:
+            record = {}
+            for idx, cell in enumerate(row):
+                header = headers[idx] if idx < len(headers) else f"columna_{idx}"
+                value = "" if cell is None else str(cell).strip()
+                record[header] = value
+            if any(record.values()):
+                records.append(record)
+        return records
+
+    def _clean_header(self, header: str) -> str:
+        header = header.strip()
+        header = header.replace("\n", " ")
+        header = re.sub(r"\s+", " ", header)
+        return header.lower()
+
+    def _detect_header_row(self, df: pd.DataFrame) -> int:
+        best_row = 0
+        best_score = float("-inf")
+
+        for idx, row in df.iterrows():
+            score = 0.0
+            for cell in row.tolist():
+                value = str(cell).strip()
+                if not value or value.lower() in {"nan", "none"}:
+                    continue
+                score += 1.0
+                if any(keyword in value.lower() for keyword in _HEADER_KEYWORDS):
+                    score += 2.0
+                if re.match(r"^[0-9.,]+$", value):
+                    score -= 0.3
+            if score > best_score:
+                best_score = score
+                best_row = idx
+
+        return int(best_row)
+
+    def _build_structured_response(
+        self,
+        text_content: str,
+        table_records: List[Dict[str, Any]],
+        filename: str | None,
+    ) -> Dict[str, Any] | None:
+        if not text_content and not table_records:
+            return None
+
+        trimmed_text = (text_content or "")[: self.MAX_TEXT_CHARS]
+        records_json = json.dumps(table_records[: self.MAX_TABLE_ROWS], ensure_ascii=False)
+
+        system_prompt = (
+            "Eres un asistente experto en interpretar documentos comerciales de pymes. "
+            "Debes producir JSON estricto que describa pedidos o catálogos."
+        )
+
+        user_prompt = (
+            "Analiza la información extraída de un documento (catálogo, nota de pedido, factura o lista de precios).\n"
+            "Genera un JSON con esta estructura exacta:\n"
+            "{\n"
+            "  \"resumen\": string,\n"
+            "  \"items\": [\n"
+            "    {\n"
+            "      \"nombre\": string,\n"
+            "      \"descripcion\": string,\n"
+            "      \"unidad\": string,\n"
+            "      \"cantidad\": string,\n"
+            "      \"precio_unitario\": string,\n"
+            "      \"moneda\": string,\n"
+            "      \"subtotal_estimado\": string\n"
+            "    }\n"
+            "  ],\n"
+            "  \"totales\": {\"moneda\": string, \"total_estimado\": string},\n"
+            "  \"contacto\": {\"nombre\": string, \"telefono\": string, \"email\": string}\n"
+            "}\n"
+            "Usa cadenas vacías si un dato no aparece. No inventes información.\n"
+            f"Nombre del archivo (si disponible): {filename or 'desconocido'}.\n"
+            "Texto extraído (recortado si es largo):\n"
+            f'"""{trimmed_text}"""\n\n'
+            "Filas detectadas (formato JSON):\n"
+            f"{records_json}\n"
+            "Devuelve solamente el JSON final."
+        )
+
+        llm_response = llamar_llm_para_json_estructurado(system_prompt, user_prompt)
+        if isinstance(llm_response, dict):
+            return llm_response
+        return None
+
+
 document_processing_service = DocumentProcessingService()

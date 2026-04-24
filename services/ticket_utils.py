@@ -1,5 +1,7 @@
+import json
 import re
 import unicodedata
+from typing import Any
 
 from services.vocabulary_loader import get_ticket_vocabulary
 
@@ -60,6 +62,49 @@ def _clean_clause_text(text: str | None) -> str:
     return cleaned.strip(" ,;:.\n")
 
 
+def _format_business_hours(value: Any) -> str:
+    """Format schedule payloads into a readable human string."""
+    if value is None:
+        return ""
+
+    parsed = value
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return ""
+        try:
+            parsed = json.loads(stripped)
+        except (TypeError, ValueError):
+            return stripped
+
+    if isinstance(parsed, list):
+        chunks: list[str] = []
+        for row in parsed:
+            if not isinstance(row, dict):
+                continue
+            dia = str(row.get("dia") or row.get("day") or "").strip()
+            if not dia:
+                continue
+            cerrado = bool(row.get("cerrado"))
+            abre = str(row.get("abre") or "").strip()
+            cierra = str(row.get("cierra") or "").strip()
+            if cerrado or (not abre and not cierra):
+                chunks.append(f"{dia}: cerrado")
+            elif abre and cierra:
+                chunks.append(f"{dia}: {abre}-{cierra}")
+            else:
+                chunks.append(f"{dia}: horario a confirmar")
+        return " | ".join(chunks)
+
+    if isinstance(parsed, dict):
+        abierto = str(parsed.get("abre") or "").strip()
+        cierre = str(parsed.get("cierra") or "").strip()
+        if abierto and cierre:
+            return f"{abierto}-{cierre}"
+
+    return str(parsed)
+
+
 def _pluralize_spanish_verb(verb: str, subject: str | None) -> str:
     if not verb:
         return ""
@@ -104,6 +149,11 @@ def construir_descripcion_breve(texto: str | None, max_chars: int = 80) -> str |
     texto = str(texto).strip()
     if not texto:
         return texto
+
+    # Short-circuit for short texts to prevent aggressive summarization (e.g. "Quiera...")
+    if len(texto) <= max_chars:
+        cleaned = texto.replace("\n", " ").strip(" .,;")
+        return cleaned
 
     def _clean_candidate(sentence: str) -> str:
         candidate = sentence.strip()
@@ -479,6 +529,7 @@ def formatear_ticket_respuesta(
     dni=None,
     consulta_pin=None,
     include_links_in_message=True,
+    ubicacion=None,
 ):
     nombre_asesor = None
     titulo_asesor = None
@@ -512,15 +563,39 @@ def formatear_ticket_respuesta(
             })
 
     if id_ticket and base_chat_url:
-        if base_chat_url.endswith('/'):
-            base_chat_url = base_chat_url[:-1]
+        # Determine tracking path based on type
+        tracking_path = "/chat" # Default fallback
+        if tipo == "reclamo":
+            tracking_path = "/tracking/claim"
+        elif tipo == "pedido":
+            tracking_path = "/tracking/order"
+
+        # Ensure base URL is clean (strip /chat if present in legacy config to get root)
+        base_url_clean = base_chat_url
+        if "/chat" in base_chat_url and tracking_path != "/chat":
+             base_url_clean = base_chat_url.replace("/chat", "")
+
+        if base_url_clean.endswith('/'):
+            base_url_clean = base_url_clean[:-1]
 
         ticket_id_numeric = id_ticket.replace('M-', '').replace('S-', '')
-        chat_url = f"{base_chat_url}/{ticket_id_numeric}"
+        chat_url = f"{base_url_clean}{tracking_path}/{ticket_id_numeric}"
+
         if consulta_pin:
-            chat_url += f"?pin={consulta_pin}"
+            # Ensure no trailing punctuation is accidentally added
+            # We aggressively strip non-digit characters from the pin just in case
+            clean_pin = str(consulta_pin).strip()
+            clean_pin = re.sub(r"[^0-9]", "", clean_pin)
+            # Limit to 6 digits to avoid capturing trailing garbage if regex failed somehow (redundant but safe)
+            clean_pin = clean_pin[:6]
+            # For tracking pages, we might not need the pin in URL if not supported yet,
+            # but let's keep it compatible or maybe the tracking page doesn't require it?
+            # The tracking page lookup uses just nro_ticket.
+            # We can append it as query param just in case we add auth later.
+            pass
+
         botones.append({
-            "texto": "💬 Ver mi Ticket",
+            "texto": "💬 Ver Estado",
             "url": chat_url,
             "type": "url"
         })
@@ -541,7 +616,8 @@ def formatear_ticket_respuesta(
         texto = texto.strip()
         texto = re.sub(r"^tengo\s+un?\s+", "", texto, flags=re.IGNORECASE)
         texto = re.sub(r"^hay\s+un?\s+", "", texto, flags=re.IGNORECASE)
-        resumen = construir_descripcion_breve(texto, max_chars=70)
+        # Keep summaries short (1-2 useful sentences)
+        resumen = construir_descripcion_breve(texto, max_chars=120)
         return resumen or texto
 
     descripcion_resumen = _resumir_descripcion(descripcion)
@@ -551,6 +627,8 @@ def formatear_ticket_respuesta(
         resumen_lineas.append(f"• *Ticket:* `{id_ticket}`")
     if categoria:
         resumen_lineas.append(f"• *Categoría:* {categoria}")
+    if ubicacion:
+        resumen_lineas.append(f"• *Dirección:* {ubicacion}")
     if descripcion_resumen:
         resumen_lineas.append(f"• *Descripción:* {descripcion_resumen}")
     if dni:
@@ -568,6 +646,8 @@ def formatear_ticket_respuesta(
             )
 
     respuesta_lineas: list[str] = [f"✅ *¡{texto_tipo} recibido, {nombre_usuario}!*"]
+    if tipo == "reclamo" and id_ticket:
+        respuesta_lineas.append(f"Listo {nombre_usuario} ✅ Tu reclamo quedó cargado con el número `{id_ticket}`.")
     if resumen_lineas:
         respuesta_lineas.append("")
         respuesta_lineas.append("📄 *Resumen:*")
@@ -587,7 +667,13 @@ def formatear_ticket_respuesta(
         if telefono_asesor:
             respuesta_lineas.append(f"• *Teléfono:* {telefono_asesor}")
         if horario_asesor:
-            respuesta_lineas.append(f"• *Horario:* {horario_asesor}")
+            horario_legible = _format_business_hours(horario_asesor)
+            if horario_legible:
+                respuesta_lineas.append(f"• *Horario:* {horario_legible}")
+
+    if tipo == "reclamo":
+        respuesta_lineas.append("")
+        respuesta_lineas.append("¿Querés hacer otro reclamo?")
 
     respuesta = "\n".join(respuesta_lineas).strip()
 

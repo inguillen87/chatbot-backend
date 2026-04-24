@@ -38,11 +38,17 @@ def llamar_cohere(app, mensaje_usuario: str, usuario: dict, historial: list, cha
     # For Cohere, the "preamble" is similar to a system prompt.
     # The message from the user
     message = ""
+    instruccion_canal = None
     try:
         message_data = json.loads(mensaje_usuario)
         message = message_data.get("texto", str(message_data))
+        instruccion_canal = message_data.get("instruccion_canal")
     except (json.JSONDecodeError, TypeError):
         message = str(mensaje_usuario)
+
+    preamble = get_system_prompt(usuario)
+    if instruccion_canal:
+        preamble += f"\n\nCONTEXTO DEL CANAL: {instruccion_canal}"
 
     logger.info(f"Sending to Cohere. Message: {message[:100]}...")
 
@@ -51,7 +57,7 @@ def llamar_cohere(app, mensaje_usuario: str, usuario: dict, historial: list, cha
         response = co.chat(
             message=message,
             chat_history=chat_history,
-            preamble=get_system_prompt(usuario),
+            preamble=preamble,
             model="command-r",  # A good default model
             temperature=0.3,
         )

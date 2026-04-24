@@ -1,0 +1,31 @@
+synonyms:
+  nombre: ["nombre", "producto", "material", "descripcion"]
+  precio: ["precio", "valor", "metro", "unidad"]
+  unidad: ["unidad", "medida", "presentacion", "formato"]
+  sku: ["sku", "codigo", "cod"]
+
+required_fields:
+  - nombre
+  - unidad
+
+attributes:
+  - marca
+  - rendimiento
+  - peso
+  - dimensiones
+
+prompt_template: |
+  Eres un experto en materiales de construcción (CORRALÓN).
+  Analiza la lista de precios.
+
+  OJO: La unidad de medida es CRÍTICA.
+  - Arena/Piedra: m3, bolsa, camionada.
+  - Cemento/Cal: bolsa 50kg, bolsa 25kg.
+  - Hierro: barra 12m, kg.
+  - Ladrillos: mil, pallet, unidad.
+
+  Extrae:
+  - Nombre (ej: "Cemento Avellaneda")
+  - Unidad Base (ej: "bolsa")
+  - Contenido (ej: "50kg")
+  - Precio

@@ -1,0 +1,10 @@
+[
+  {
+    "pregunta": "¿Cuál es el horario de atención?",
+    "respuesta": "Nuestro horario de atención es de Lunes a Viernes de 9:00 a 18:00hs."
+  },
+  {
+    "pregunta": "¿Dónde están ubicados?",
+    "respuesta": "Estamos ubicados en [DIRECCIÓN_DEL_TENANT]."
+  }
+]

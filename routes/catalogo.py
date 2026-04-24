@@ -1,7 +1,8 @@
 import os
-from flask import Blueprint, request, jsonify, send_from_directory, render_template, g, url_for
-from models import CatalogoItem, QA, ArchivoAdjunto
+from flask import Blueprint, request, jsonify, send_from_directory, render_template, g, url_for, redirect
+from models import CatalogoItem, QA, ArchivoAdjunto, User, CatalogoModalidad, TenantProfile
 from routes.auth import token_requerido
+from socket_service import emit_tenant_update
 from services.qdrant_search import (
     buscar_catalogo_qdrant,
     DEFAULT_SEARCH_LIMIT,
@@ -9,6 +10,7 @@ from services.qdrant_search import (
     CATALOGO_PYME,
     CATALOGO_MUNICIPIO,
 )
+from services.catalog_seed import ensure_seed_catalog
 try:
     from services.upload_processor import (
         subir_catalogo as _subir_catalogo,
@@ -25,7 +27,6 @@ from services.common_utils import (
 )
 
 catalogo_bp = Blueprint('catalogo', __name__, url_prefix='/catalogo')
-
 
 from werkzeug.utils import secure_filename
 from services.intelligent_catalog_processor import IntelligentCatalogProcessor
@@ -73,6 +74,18 @@ def upload_catalog(user):
                 success = processor.process_file(filepath, original_filename)
 
                 if success:
+                    # Emit socket update
+                    tenant = None
+                    if user.tipo_chat == 'municipio' and user.municipio_id:
+                        tenant = TenantProfile.query.filter_by(municipio_id=user.municipio_id).first()
+                    elif getattr(user, 'rubro_id', None): # Pyme
+                        tenant = TenantProfile.query.filter_by(pyme_id=user.id).first()
+                        if not tenant and user.empresa_id:
+                             tenant = TenantProfile.query.filter_by(pyme_id=user.empresa_id).first()
+
+                    if tenant:
+                        emit_tenant_update(tenant.slug, 'catalog_update', {'source': 'upload'})
+
                     return jsonify({"mensaje": "Catálogo subido y procesado exitosamente."}), 202
                 else:
                     return jsonify({"error": "No se pudo procesar el catálogo. Revise los logs para más detalles."}), 500
@@ -104,10 +117,17 @@ def listar_archivos(user):
         .order_by(ArchivoAdjunto.fecha.desc())
         .all()
     )
-    data = [
-        {"nombre": c.nombre_original or c.filename, "url": f"/catalogo/archivo/{c.filename}"}
-        for c in catalogos
-    ]
+    data = []
+    for c in catalogos:
+        url = c.url
+        # If url is not external and not relative starting with /, construct local endpoint
+        if not (url and (url.startswith("http") or url.startswith("//") or url.startswith("/"))):
+             url = f"/catalogo/archivo/{c.filename}"
+        elif not url:
+             url = f"/catalogo/archivo/{c.filename}"
+
+        data.append({"nombre": c.nombre_original or c.filename, "url": url})
+
     return jsonify(data)
 
 
@@ -122,6 +142,10 @@ def descargar_catalogo(user):
     )
     if not adj:
         return jsonify({"error": "No hay catálogo disponible"}), 404
+
+    if adj.url and (adj.url.startswith("http") or adj.url.startswith("//")):
+        return redirect(adj.url)
+
     return send_from_directory(CATALOGO_FOLDER, adj.filename, as_attachment=True)
 
 
@@ -132,16 +156,143 @@ def descargar_archivo(user, filename):
     adj = ArchivoAdjunto.query.filter_by(filename=filename, tipo="catalogo", user_id=user.id).first()
     if not adj:
         return jsonify({"error": "Archivo no encontrado"}), 404
+
+    if adj.url and (adj.url.startswith("http") or adj.url.startswith("//")):
+        return redirect(adj.url)
+
     return send_from_directory(CATALOGO_FOLDER, filename, as_attachment=True)
+
+
+_CATEGORY_FALLBACK_IMAGES: dict[str, str] = {
+    "educación": "https://images.unsplash.com/photo-1516383740770-fbcc5ccbece0?auto=format&fit=crop&w=900&q=80",
+    "ambiente": "https://images.unsplash.com/photo-1501004318641-b39e6451bec6?auto=format&fit=crop&w=900&q=80",
+    "salud": "https://images.unsplash.com/photo-1584467735871-5884e44b1f4d?auto=format&fit=crop&w=900&q=80",
+    "producción local": "https://images.unsplash.com/photo-1504674900247-0877df9cc836?auto=format&fit=crop&w=900&q=80",
+    "economía circular": "https://images.unsplash.com/photo-1503594384566-461fe158e797?auto=format&fit=crop&w=900&q=80",
+    "deporte": "https://images.unsplash.com/photo-1431329842981-433c86325f43?auto=format&fit=crop&w=900&q=80",
+}
+
+_DEMO_IMAGE_FALLBACKS: dict[str, str] = {
+    "kit-escolar": "https://images.unsplash.com/photo-1503676260728-1c00da094a0b?auto=format&fit=crop&w=900&q=80",
+    "arbol-nativo": "https://images.unsplash.com/photo-1501785888041-af3ef285b470?auto=format&fit=crop&w=900&q=80",
+    "bono-hospital": "https://images.unsplash.com/photo-1505751172876-fa1923c5c528?auto=format&fit=crop&w=900&q=80",
+    "bolson-saludable": "https://images.unsplash.com/photo-1466978913421-dad2ebd01d17?auto=format&fit=crop&w=900&q=80",
+    "canje-electronicos": "https://images.unsplash.com/photo-1518770660439-4636190af475?auto=format&fit=crop&w=900&q=80",
+}
+
+_GENERIC_PRODUCT_PLACEHOLDER = (
+    "https://images.unsplash.com/photo-1503602642458-232111445657?auto=format&fit=crop&w=900&q=80"
+)
+
+
+def _fallback_image_for_item(imagen_url: str | None, data: dict, categoria_normalizada: str) -> str | None:
+    """Return a resilient image URL for demo assets even when legacy CDN links fail."""
+
+    if imagen_url and "cdn.chatboc.ar" not in imagen_url.lower():
+        return imagen_url
+
+    candidates = [
+        data.get("sku"),
+        data.get("nombre"),
+        data.get("imagen_url"),
+    ]
+    for cand in candidates:
+        if not cand:
+            continue
+        key = str(cand).lower()
+        for demo_key, demo_url in _DEMO_IMAGE_FALLBACKS.items():
+            if demo_key in key:
+                return demo_url
+
+    return _CATEGORY_FALLBACK_IMAGES.get(categoria_normalizada.lower()) or _GENERIC_PRODUCT_PLACEHOLDER
+
+
+def _moneda_desde_texto(precio_str: str | None) -> str | None:
+    if not precio_str:
+        return None
+
+    texto = precio_str.lower()
+    if "pt" in texto or "punto" in texto:
+        return "PTS"
+    if "usd" in texto or "u$s" in texto:
+        return "USD"
+    if "$" in precio_str:
+        return "ARS"
+    return None
+
+
+
+
+def _sanitize_personalization_options(raw_options) -> list[dict]:
+    """Normalize product personalization options for API responses."""
+
+    if not isinstance(raw_options, list):
+        return []
+
+    sanitized: list[dict] = []
+    for idx, option in enumerate(raw_options):
+        if not isinstance(option, dict):
+            continue
+
+        option_id = str(option.get("id") or option.get("key") or f"opt_{idx+1}").strip()
+        label = str(option.get("label") or option.get("nombre") or option_id).strip()
+        option_type = str(option.get("type") or option.get("tipo") or "text").strip().lower()
+        if option_type not in {"text", "select", "multiselect", "number", "boolean"}:
+            option_type = "text"
+
+        values = option.get("values") or option.get("opciones") or []
+        values_out = []
+        if isinstance(values, list):
+            for value in values:
+                if isinstance(value, dict):
+                    value_label = str(value.get("label") or value.get("value") or "").strip()
+                    if not value_label:
+                        continue
+                    try:
+                        price_delta = float(value.get("price_delta", 0) or 0)
+                    except (TypeError, ValueError):
+                        price_delta = 0.0
+                    values_out.append({"value": value_label, "price_delta": price_delta})
+                else:
+                    value_label = str(value).strip()
+                    if value_label:
+                        values_out.append({"value": value_label, "price_delta": 0.0})
+
+        try:
+            max_length = int(option.get("max_length")) if option.get("max_length") is not None else None
+        except (TypeError, ValueError):
+            max_length = None
+
+        try:
+            max_select = int(option.get("max_select")) if option.get("max_select") is not None else None
+        except (TypeError, ValueError):
+            max_select = None
+
+        sanitized.append(
+            {
+                "id": option_id[:60],
+                "label": label[:120],
+                "type": option_type,
+                "required": bool(option.get("required", False)),
+                "values": values_out[:50],
+                "max_length": max_length,
+                "max_select": max_select,
+                "help_text": str(option.get("help_text") or "").strip()[:200] or None,
+            }
+        )
+
+    return sanitized
 
 
 def _formatear_producto(data: dict) -> dict:
     """Normaliza un diccionario de producto al formato universal."""
     precio_pack = None
     precio_unitario = None
+    extra_metadata = data.get("extra_metadata") or {}
 
     precio_float = data.get("precio_float")
     precio_str = data.get("precio_str")
+    moneda_detectada = _moneda_desde_texto(precio_str)
 
     if precio_float is not None:
         precio_pack = precio_float
@@ -155,7 +306,8 @@ def _formatear_producto(data: dict) -> dict:
     elif isinstance(precio_str, str) and precio_str.strip():
         from services.common_utils import parse_precio_flexible
 
-        _, parsed_float, _ = parse_precio_flexible(precio_str)
+        _, parsed_float, moneda_precio = parse_precio_flexible(precio_str)
+        moneda_detectada = moneda_detectada or moneda_precio
         if parsed_float is not None:
             precio_pack = parsed_float
             unidad_str = data.get("unidad") or data.get("presentacion", "")
@@ -187,20 +339,97 @@ def _formatear_producto(data: dict) -> dict:
     if not promo_info and "promocion_info" in data: # Desde CatalogoItem (si 'data' es un dict de su __dict__)
         promo_info = data.get("promocion_info")
 
+    categoria_normalizada = (data.get("categoria") or data.get("categoria_qdrant", "")).strip()
+    imagen_url = _fallback_image_for_item(data.get("imagen_url"), data, categoria_normalizada)
+
+    unidad_por_caja = (
+        data.get("unidad_por_caja")
+        or extra_metadata.get("unidad_por_caja")
+        or extra_metadata.get("unidades_por_caja")
+    )
+    precio_por_caja = data.get("precio_por_caja") or extra_metadata.get("precio_por_caja")
+    precio_unitario_estimado = extra_metadata.get("precio_unitario_estimado")
+    if precio_unitario_estimado is not None:
+        precio_unitario = precio_unitario_estimado
+
+    precio_texto = precio_str or (str(precio_pack) if precio_pack is not None else None)
+    precio_puntos = data.get("precio_puntos")
+    moneda_estandar = moneda_detectada or data.get("moneda")
+    if precio_puntos is not None and not moneda_estandar:
+        moneda_estandar = "PTS"
+        if precio_unitario is None:
+            precio_unitario = precio_puntos
+
+    modalidad = data.get("modalidad")
+    if isinstance(modalidad, str):
+        modalidad_norm = modalidad.strip().lower()
+        if modalidad_norm == "venta":
+            modalidad = "compra"
+        elif modalidad_norm in {"donación", "donacion"}:
+            modalidad = "donacion"
+        elif modalidad_norm in {"canje", "puntos"}:
+            modalidad = "canje"
+    if not modalidad:
+        if moneda_estandar == "PTS":
+            modalidad = "canje"
+        else:
+            try:
+                valor_numerico = float(precio_unitario) if precio_unitario is not None else None
+            except (TypeError, ValueError):
+                valor_numerico = None
+            if valor_numerico == 0:
+                modalidad = "donacion"
+            else:
+                modalidad = "compra"
+    modalidad = modalidad or "compra"
+
+    modalidad_valor = CatalogoModalidad.infer(
+        data.get("modalidad"),
+        moneda=moneda_estandar,
+        precio_puntos=data.get("precio_puntos"),
+        precio_value=precio_float if precio_float is not None else precio_pack,
+    ).value
+
+    unidad_display = data.get("unidad") or data.get("presentacion", "") or data.get("unidad_original","") or "u"
+    personalization_options = _sanitize_personalization_options(
+        extra_metadata.get("personalization_options")
+        or extra_metadata.get("opciones_personalizacion")
+    )
+
     return {
         "nombre": data.get("nombre", ""),
         "marca": data.get("marca"), # Añadido aquí para consistencia en la estructura base
-        "categoria": data.get("categoria") or data.get("categoria_qdrant", ""),
+        "categoria": categoria_normalizada,
         "descripcion": descripcion_final, # Usa la descripción corta si está disponible
         "promocion_info": promo_info if promo_info else None, # Añadido campo de promoción
         "sku": data.get("sku") or None,
-        "presentacion": data.get("unidad") or data.get("presentacion", "") or data.get("unidad_original",""), # Añadido fallback a unidad_original
+        "presentacion": unidad_display, # Añadido fallback a unidad_original
+        "unidad": unidad_display,
+        "quantityLabel": unidad_display,
+        "quantity_label": unidad_display,
         "talles": data.get("talles"),
         "colores": data.get("colores"),
         "precio_unitario": precio_unitario,
         "precio_pack": precio_pack if precio_pack != precio_unitario else None,
+        "precio_por_caja": precio_por_caja,
+        "unidades_por_caja": unidad_por_caja,
+        "precio_anterior": extra_metadata.get("precio_anterior"),
+        "promocion_activa": extra_metadata.get("promocion_activa") or promo_info,
+        "precio_mayorista": extra_metadata.get("precio_mayorista"),
+        "cantidad_minima_mayorista": extra_metadata.get("cantidad_minima_mayorista"),
+        "precio_texto": precio_texto,
+        "precio_puntos":
+            precio_puntos
+            if moneda_estandar == "PTS" and precio_puntos is not None
+            else (precio_unitario if moneda_estandar == "PTS" else None),
+        "moneda": moneda_estandar,
+        "modalidad": modalidad,
         "stock": data.get("cantidad") or data.get("stock"), # Qdrant tiene "stock", CatalogoItem "cantidad"
-        "imagen_url": data.get("imagen_url"),
+        "imagen_url": imagen_url,
+        "external_url": data.get("external_url"),
+        "checkout_type": data.get("checkout_type", "chatboc"),
+        "personalization_options": personalization_options,
+        "personalization_enabled": bool(personalization_options),
         # Podríamos añadir aquí una lista de acciones sugeridas para el bot
         # "acciones_sugeridas": ["agregar_carrito", "mas_detalles"] # Ejemplo
     }
@@ -229,6 +458,12 @@ def _agrupar_variantes(productos: list[dict]) -> list[dict]:
             "colores": prod.get("colores"),
             "precio_unitario": prod.get("precio_unitario"),
             "precio_pack": prod.get("precio_pack"),
+            "precio_por_caja": prod.get("precio_por_caja"),
+            "unidades_por_caja": prod.get("unidades_por_caja"),
+            "precio_anterior": prod.get("precio_anterior"),
+            "promocion_activa": prod.get("promocion_activa"),
+            "precio_mayorista": prod.get("precio_mayorista"),
+            "cantidad_minima_mayorista": prod.get("cantidad_minima_mayorista"),
             "stock": prod.get("stock"),
         }
         variante = {k: v for k, v in variante.items() if v not in (None, "")}
@@ -244,17 +479,20 @@ def listar_catalogo(user, *args, **kwargs):
     precio_max = request.args.get("precio_max")
     stock_min = request.args.get("stock_min")
 
-    consulta = CatalogoItem.query.filter_by(user_id=user.id)
+    catalog_owner = _resolve_catalog_owner(user)
+    if getattr(catalog_owner, "tipo_chat", None) == "municipio":
+        ensure_seed_catalog(catalog_owner)
+
+    consulta = CatalogoItem.query.options(*CatalogoItem.legacy_safe_options()).filter_by(
+        user_id=catalog_owner.id
+    )
     if categoria:
         consulta = consulta.filter_by(categoria=categoria)
     items = consulta.all()
     if not items:
-        return jsonify(
-            {
-                "mensaje": "No hay productos cargados en el catálogo. "
-                "Contactá a la empresa para más info."
-            }
-        )
+        response = jsonify([])
+        response.headers["X-Catalogo-Vacio"] = "1"
+        return response
 
     productos = []
     for item in items:
@@ -269,6 +507,15 @@ def listar_catalogo(user, *args, **kwargs):
                 "cantidad": item.cantidad,
                 "marca": item.marca,
                 "imagen_url": item.imagen_url,
+                "descripcion_corta": item.descripcion_corta,
+                "promocion_info": item.promocion_info,
+                "precio_por_caja": item.precio_por_caja,
+                "unidad_por_caja": item.unidad_por_caja,
+                "moneda": item.moneda,
+                "precio_float": item.precio_monetario,
+                "extra_metadata": item.extra_metadata,
+                "talles": item.extra_metadata.get("talles") if item.extra_metadata else None,
+                "colores": item.extra_metadata.get("colores") if item.extra_metadata else None,
             }
         )
 
@@ -332,7 +579,11 @@ def buscar_en_catalogo(user):
 @token_requerido
 def resumen_catalogo(user):
     """Devuelve un resumen del catálogo agrupado por categoría."""
-    items = CatalogoItem.query.filter_by(user_id=user.id).all()
+    items = (
+        CatalogoItem.query.options(*CatalogoItem.legacy_safe_options())
+        .filter_by(user_id=user.id)
+        .all()
+    )
     if not items:
         return jsonify({"total": 0, "categorias": []})
 
@@ -387,10 +638,21 @@ def descargar_catalogo_publico(pyme_user_id):
     # O si está en config: current_app.config.get("CATALOGO_FOLDER_PATH")
     # Por ahora, asumimos que CATALOGO_FOLDER (definido al inicio de este archivo) es correcto.
 
+    # Check if URL is external or internal
+    if adj.url and (adj.url.startswith("http") or adj.url.startswith("//")):
+        current_app.logger.info(f"Redirigiendo a URL externa del catálogo: {adj.url}")
+        return redirect(adj.url)
+
     current_app.logger.info(f"Proporcionando descarga pública del catálogo '{adj.filename}' para PYME ID: {pyme_user_id} desde la carpeta {CATALOGO_FOLDER}")
 
     # Verificar que el archivo exista antes de intentar enviarlo
     if not os.path.exists(os.path.join(CATALOGO_FOLDER, adj.filename)):
+        # Fallback: maybe it's in the static uploads folder (new storage system)?
+        # But we don't know the exact path easily without resolving logic.
+        # If url is relative like /static/uploads/..., redirect there.
+        if adj.url and adj.url.startswith("/"):
+             return redirect(adj.url)
+
         current_app.logger.error(f"El archivo de catálogo '{adj.filename}' no fue encontrado en la ruta esperada: {os.path.join(CATALOGO_FOLDER, adj.filename)} para PYME ID: {pyme_user_id}")
         return jsonify({"error": "Archivo de catálogo no encontrado en el servidor."}), 500
 
@@ -455,3 +717,10 @@ def listar_compartidos(user):
             "fecha_compartido": c.fecha_compartido.isoformat()
         })
     return jsonify(data)
+def _resolve_catalog_owner(user: User) -> User:
+    """Return the owning account that should manage the catalog entries."""
+
+    empresa = getattr(user, "empresa", None)
+    if empresa is not None:
+        return empresa
+    return user

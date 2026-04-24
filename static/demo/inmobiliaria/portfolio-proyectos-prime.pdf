@@ -1,123 +1,80 @@
 %PDF-1.4
-1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
-2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj
-3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R /F2 6 0 R /F3 7 0 R >> >> >> endobj
-4 0 obj << /Length 2172 >>
+%\x93\x8c\x8b\x9e ReportLab Generated PDF document (opensource)
+1 0 obj
+<<
+/F1 2 0 R /F2 3 0 R /F3 4 0 R
+>>
+endobj
+2 0 obj
+<<
+/BaseFont /Helvetica /Encoding /WinAnsiEncoding /Name /F1 /Subtype /Type1 /Type /Font
+>>
+endobj
+3 0 obj
+<<
+/BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding /Name /F2 /Subtype /Type1 /Type /Font
+>>
+endobj
+4 0 obj
+<<
+/BaseFont /Helvetica-Oblique /Encoding /WinAnsiEncoding /Name /F3 /Subtype /Type1 /Type /Font
+>>
+endobj
+5 0 obj
+<<
+/Contents 9 0 R /MediaBox [ 0 0 595.2756 841.8898 ] /Parent 8 0 R /Resources <<
+/Font 1 0 R /ProcSet [ /PDF /Text /ImageB /ImageC /ImageI ]
+>> /Rotate 0 /Trans <<
+
+>>
+  /Type /Page
+>>
+endobj
+6 0 obj
+<<
+/PageMode /UseNone /Pages 8 0 R /Type /Catalog
+>>
+endobj
+7 0 obj
+<<
+/Author (\(anonymous\)) /CreationDate (D:20251216063510+00'00') /Creator (\(unspecified\)) /Keywords () /ModDate (D:20251216063510+00'00') /Producer (ReportLab PDF Library - \(opensource\))
+  /Subject (\(unspecified\)) /Title (\(anonymous\)) /Trapped /False
+>>
+endobj
+8 0 obj
+<<
+/Count 1 /Kids [ 5 0 R ] /Type /Pages
+>>
+endobj
+9 0 obj
+<<
+/Filter [ /ASCII85Decode /FlateDecode ] /Length 866
+>>
 stream
-BT
-/F2 24 Tf
-54 738.00 Td
-(PORTFOLIO PROYECTOS PRIME) Tj
-ET
-BT
-/F3 14 Tf
-54 708.00 Td
-(Desarrollos residenciales y comerciales en ejecucin) Tj
-ET
-BT
-/F2 14 Tf
-54 678.50 Td
-(PROYECTOS DESTACADOS) Tj
-ET
-BT
-/F1 11 Tf
-54 661.00 Td
-(? Skyline Libertador  torre residencial 38 pisos) Tj
-ET
-BT
-/F1 11 Tf
-54 647.25 Td
-(? Nova Distrito  oficinas AAA con certificacin LEED) Tj
-ET
-BT
-/F1 11 Tf
-54 633.50 Td
-(? Laguna Norte  barrio cerrado con amenities premium) Tj
-ET
-BT
-/F2 14 Tf
-54 613.75 Td
-(VENTAJAS COMPETITIVAS) Tj
-ET
-BT
-/F1 11 Tf
-54 596.25 Td
-(? Plan de pagos flexible con actualizacin UVA) Tj
-ET
-BT
-/F1 11 Tf
-54 582.50 Td
-(? Partner bancario para crditos hipotecarios) Tj
-ET
-BT
-/F1 11 Tf
-54 568.75 Td
-(? Reservas digitales y firma remota) Tj
-ET
-BT
-/F2 14 Tf
-54 549.00 Td
-(SERVICIOS ASOCIADOS) Tj
-ET
-BT
-/F1 11 Tf
-54 531.50 Td
-(? Mesa legal bilinge para inversores extranjeros) Tj
-ET
-BT
-/F1 11 Tf
-54 517.75 Td
-(? Onboarding financiero y apertura de cuentas) Tj
-ET
-BT
-/F1 11 Tf
-54 504.00 Td
-(? Concierge postventa con gestor personal) Tj
-ET
-BT
-/F2 13 Tf
-54 484.25 Td
-(CRONOGRAMA) Tj
-ET
-BT /F2 11 Tf 54.00 468.00 Td (Proyecto) Tj ET
-BT /F2 11 Tf 180.00 468.00 Td (Estado) Tj ET
-BT /F2 11 Tf 306.00 468.00 Td (Entrega) Tj ET
-BT /F2 11 Tf 432.00 468.00 Td (ROI estimado) Tj ET
-BT /F1 10 Tf 54.00 454.00 Td (Skyline Libertador) Tj ET
-BT /F1 10 Tf 180.00 454.00 Td (En obra) Tj ET
-BT /F1 10 Tf 306.00 454.00 Td (Q4 2025) Tj ET
-BT /F1 10 Tf 432.00 454.00 Td (32%) Tj ET
-BT /F1 10 Tf 54.00 440.00 Td (Nova Distrito) Tj ET
-BT /F1 10 Tf 180.00 440.00 Td (Preventa) Tj ET
-BT /F1 10 Tf 306.00 440.00 Td (Q2 2026) Tj ET
-BT /F1 10 Tf 432.00 440.00 Td (28%) Tj ET
-BT /F1 10 Tf 54.00 426.00 Td (Laguna Norte) Tj ET
-BT /F1 10 Tf 180.00 426.00 Td (Lanzamiento) Tj ET
-BT /F1 10 Tf 306.00 426.00 Td (Q1 2026) Tj ET
-BT /F1 10 Tf 432.00 426.00 Td (25%) Tj ET
-BT /F3 9 Tf 54.00 36.00 Td (Portfolio actualizado agosto 2024  contacto advisors@primerealty.com) Tj ET
-54 474.00 m 558.00 474.00 l S
-54 422.00 m 558.00 422.00 l S
-54.00 474.00 m 54.00 422.00 l S
-180.00 474.00 m 180.00 422.00 l S
-306.00 474.00 m 306.00 422.00 l S
-432.00 474.00 m 432.00 422.00 l S
-558.00 474.00 m 558.00 422.00 l S
-endstream endobj
-5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj
-6 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >> endobj
-7 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Oblique >> endobj
+Gasam92jS!&AI=/lnN(/,KZ,9oG1!?[$+5e0fL_BX\_mJ!njI4hfo#+:.QenM576Hna3ftU-S4Cc'i/C(GSUt;P4HX/PtkTLmP?%7o(A`C&.j`Omb`d1dVS_n7]lGT7Y+n:]1j;H=[05r<U*a?%@"gRA"g/N7Zo(X*mnYH3$<="QC-8ht#!/[*d<9$$2Bb:Co`UHj8d2M?rGb^O93h$t,4[iXc7]1!g+,NG8m^\LOCreehW,ibr;+69j5!%t-8M$[8icYNZ!pFAsC1Uk-oi_3saH,(bi4/!VV4;u6`30VN="#ST9Xp2uE>%&WYF6B3o!@0?TW+"Lf\Ae>24l4Sj0'Pu)bhD??``*p,F!CQj5IDK-9ge[-XHV7%2O9$#^c[[Xl-*$bZYFJ=fUpMh,[;sSSd<8?]JHZcM)_>jcoOFWar4pX>X)g$%U!P:o\5D"3o!"",ANL%<C#^YN%TB!fB-lAJPb%BF;@`<p+]IL(#Ih6=nQ8&VJ:.VD?EeEJlS@pN!hC^_(QE=aF5VZJ5->q,o,Hd!m!?m!M/C"n<MGB"5Wan#/J4:*@,sHP?.@r$Q'7m49VkpYnf<OWO&q."3/LHgW^!spjBNJ)e/Mp(Vr8XK>Eb>7H&3;+D]D*7c"8#%U9-mdZ>0PE/f+&&J@;%]k,Hcu\HXOA-5db)e-#@aIh,h'gg&g15Q.fs:&Ete^q,Yj:.4e$"-rTNN?&L*/&O_-_r5KEGj&`6OL6i+Zna+7L\8B&aL`ku29PUHVaCUReDhl8s6/M*mnLoK;3VE732nZuA#j*R&t<f^Wq&Pf5J=k-`&=V&]]rk^])@W,27#a9qVld>`rq+m3J>R_ZJ=(8Yit3B?p<k_@.Xu(M4]G~>endstream
+endobj
 xref
-0 8
+0 10
 0000000000 65535 f 
-0000000009 00000 n 
-0000000058 00000 n 
-0000000115 00000 n 
-0000000261 00000 n 
-0000002485 00000 n 
-0000002555 00000 n 
-0000002630 00000 n 
-trailer << /Size 8 /Root 1 0 R >>
+0000000061 00000 n
+0000000112 00000 n
+0000000219 00000 n
+0000000331 00000 n
+0000000446 00000 n
+0000000649 00000 n
+0000000717 00000 n
+0000000997 00000 n
+0000001056 00000 n
+trailer
+<<
+/ID
+[<cf7246cbb4ddbd47c1ccfa23464ed285><cf7246cbb4ddbd47c1ccfa23464ed285>]
+% ReportLab generated PDF document -- digest (opensource)
+
+/Info 7 0 R
+/Root 6 0 R
+/Size 10
+>>
 startxref
-2708
+2012
 %%EOF

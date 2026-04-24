@@ -1,0 +1,154 @@
+{
+  "nombre": "Logística Demo",
+  "descripcion": "Operador logístico 3PL con fulfillment omnicanal.",
+  "prompt_context": "Logística Demo gestiona fulfillment B2C/B2B, control torre con visibilidad end-to-end, hubs regionales y capacidad crossborder con partners aéreos y terrestres.",
+  "welcome_message": "🚚 Bienvenido a Logística Demo.\n\nElegí una opción del menú para conocer nuestras capacidades de fulfillment, operaciones y envíos internacionales.",
+  "resources": [
+    {
+      "title": "Blueprint operaciones omnicanal",
+      "description": "Diseño de nodos, slots de preparación y flujos WMS/TMS integrados.",
+      "type": "pdf",
+      "url": "/static/demo/logistica/blueprint-operaciones-omnicanal.pdf",
+      "cta_text": "Descargar blueprint",
+      "highlight": "Lead time <24 h",
+      "availability": "Centros Buenos Aires · Córdoba"
+    },
+    {
+      "title": "Matriz SLA retail & ecommerce",
+      "description": "KPIs por vertical, carrier y ventana de entrega con benchmarking regional.",
+      "type": "pdf",
+      "url": "/static/demo/logistica/matriz-sla-retail.pdf",
+      "cta_text": "Ver matriz SLA",
+      "highlight": "Actualizado octubre 2024",
+      "availability": "Industria moda · beauty · tech"
+    },
+    {
+      "title": "Red de hubs Axis",
+      "description": "Mapa de hubs, cross-dock y última milla con orígenes y destinos.",
+      "type": "image",
+      "url": "/static/demo/logistica/red-hubs.svg",
+      "thumbnail": "/static/demo/logistica/red-hubs.svg",
+      "cta_text": "Explorar red logística",
+      "highlight": "+18 hubs integrados",
+      "availability": "Cobertura nacional"
+    }
+  ],
+  "quick_actions": [
+    {
+      "emoji": "🏭",
+      "texto": "Operaciones 3PL",
+      "description": "Inbound y cross-docking",
+      "category": "🏭 Operaciones",
+      "submenu": [
+        {
+          "emoji": "🚛",
+          "texto": "Slots y turnos",
+          "prompt": "¿Cómo gestionan turnos de carga, control de pallets y monitoreo en tiempo real?",
+          "description": "Torre con visibilidad 360°"
+        },
+        {
+          "emoji": "🧾",
+          "texto": "Control documental",
+          "prompt": "Necesito ver cómo automatizan checklists de ingreso y documentación.",
+          "description": "Escaneo OCR + RPA"
+        },
+        {
+          "emoji": "🛠️",
+          "texto": "Mantenimiento flota",
+          "prompt": "Mostrame planes de mantenimiento y telemetría para flota propia.",
+          "description": "KPIs MTTR y fuel savings"
+        }
+      ]
+    },
+    {
+      "emoji": "📦",
+      "texto": "Fulfillment",
+      "description": "WMS y picking inteligente",
+      "category": "📦 Fulfillment",
+      "submenu": [
+        {
+          "emoji": "🤖",
+          "texto": "Picking inteligente",
+          "prompt": "Mostrame layout de picking por olas y robots AMR disponibles.",
+          "description": "Batch picking + AMR híbrido"
+        },
+        {
+          "emoji": "📦",
+          "texto": "Kitting y personalización",
+          "prompt": "¿Qué capacidades de kitting y packaging personalizado manejan?",
+          "description": "Kitting 24/7 con QA"
+        },
+        {
+          "emoji": "♻️",
+          "texto": "Packaging verde",
+          "prompt": "Necesito opciones de packaging sustentable y medición de huella.",
+          "description": "Materiales reciclados + offset"
+        }
+      ]
+    },
+    {
+      "emoji": "🌐",
+      "texto": "Crossborder",
+      "description": "Operación internacional",
+      "category": "🌐 Crossborder",
+      "submenu": [
+        {
+          "emoji": "✈️",
+          "texto": "Export flash",
+          "prompt": "¿Cómo gestionan exportaciones express a Chile y Uruguay?",
+          "description": "Partners aéreos + aduana simplificada"
+        },
+        {
+          "emoji": "📍",
+          "texto": "Lockers y pick up",
+          "prompt": "Mostrame red de lockers y puntos pick-up integrados.",
+          "description": "+420 puntos omnicanal"
+        },
+        {
+          "emoji": "⚡",
+          "texto": "Ventanas same-day",
+          "prompt": "Necesito SLA para entregas same-day y cobertura por barrios.",
+          "description": "Same-day AMBA · next-day interior"
+        }
+      ]
+    },
+    {
+      "emoji": "📈",
+      "texto": "Innovación & BI",
+      "description": "Gemelos digitales y analítica",
+      "category": "📈 Innovación",
+      "submenu": [
+        {
+          "emoji": "🛰️",
+          "texto": "Gemelo digital",
+          "prompt": "Quiero ver el gemelo digital del centro de distribución y simulaciones.",
+          "description": "Simulación de slots y rutas"
+        },
+        {
+          "emoji": "📊",
+          "texto": "KPIs en vivo",
+          "prompt": "Mostrame KPIs en vivo de fill rate, OTIF y desvíos.",
+          "description": "Dashboard torre comando"
+        },
+        {
+          "emoji": "🌱",
+          "texto": "Huella de carbono",
+          "prompt": "¿Cómo calculan y compensan la huella de carbono de la operación?",
+          "description": "Calculadora CO₂ + programas offset"
+        }
+      ]
+    }
+  ],
+  "capabilities": [
+    "🚚 Orquesto inbound, almacenaje y última milla.",
+    "📦 Integro WMS/TMS con marketplaces.",
+    "🌐 Gestiono crossborder con documentación digital.",
+    "📊 Entrego tableros predictivos."
+  ],
+  "keywords": [
+    "fulfillment",
+    "logística",
+    "crossborder",
+    "torre de control"
+  ]
+}

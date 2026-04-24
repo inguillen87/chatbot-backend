@@ -1,78 +1,414 @@
 {
+  "key": "medico_general",
   "responses": [
     {
       "id": "welcome",
-      "keywords_any": ["__init__", "hola", "buen dia", "buenas", "saludo", "turno"],
-      "response": "🩺 Hola, soy el asistente de {demo_name}. Puedo ayudarte con turnos, coberturas y preparación de estudios. ¿Qué te gustaría resolver?",
+      "keywords": [
+        "__INIT__",
+        "hola",
+        "inicio",
+        "empezar",
+        "menu"
+      ],
+      "match_always": false,
+      "response": "🏥 Bienvenido a Clínica Demo. Elegí turnos, estudios, telemedicina o convenios corporativos y te ayudo al instante.",
       "buttons": [
-        {"label": "Reservar turno", "target": "turno"},
-        {"label": "Coberturas y obras sociales", "target": "cobertura"},
-        {"label": "Guardias y urgencias", "target": "guardia"}
+        {
+          "label": "📅 Turnos y especialidades",
+          "target": "turnos_y_especialida"
+        },
+        {
+          "label": "🧪 Estudios y laboratorio",
+          "target": "estudios_y_laborator"
+        },
+        {
+          "label": "💬 Telemedicina & seguimiento",
+          "target": "telemedicina_&_segui"
+        },
+        {
+          "label": "🏢 Convenios corporativos",
+          "target": "convenios_corporativ"
+        }
       ]
     },
     {
-      "id": "turno",
-      "keywords_any": ["turno", "reservar", "sacar", "agenda", "prioritario", "pdf", "descargar"],
-      "response": "Podés reservar turnos online para clínica médica, pediatría, ginecología, laboratorio y nutrición. Confirmamos por WhatsApp y enviamos recordatorio automático.",
-      "resource_tags": ["title:Agenda de turnos"],
+      "id": "demo_experiencia",
+      "keywords": [
+        "demo",
+        "plantilla",
+        "experiencia",
+        "interactivo",
+        "dashboard",
+        "carrito",
+        "catálogo"
+      ],
+      "response": "🚀 Bienvenido a la demo de Clínica Demo. Probá el catálogo, la encuesta en vivo y el portal del cliente con analíticas en tiempo real.",
       "buttons": [
-        {"label": "Ver coberturas", "target": "cobertura"},
-        {"label": "Teleconsulta", "target": "teleconsulta"}
+        {
+          "label": "🛒 Catálogo listo",
+          "target": "catalogo_demo"
+        },
+        {
+          "label": "🗳️ Encuesta en vivo",
+          "target": "encuesta_demo"
+        },
+        {
+          "label": "📊 Dashboard",
+          "target": "dashboard_demo"
+        },
+        {
+          "label": "📨 Portal del cliente",
+          "target": "portal_demo"
+        }
       ]
     },
     {
-      "id": "cobertura",
-      "keywords_any": ["cobertura", "obra social", "prepaga", "plan"],
-      "response": "Trabajamos con OSDE, Swiss Medical, Galeno, OSEP y planes provinciales. El bot valida números de afiliado y envía autorizaciones por correo seguro.",
+      "id": "catalogo_demo",
+      "keywords": [
+        "catálogo demo",
+        "catalogo demo",
+        "productos demo",
+        "ver catálogo"
+      ],
+      "response": "Catálogo navegable con precios, imágenes y stock listo para agregar al carrito. Incluye QR y link compartible para que cualquier visitante lo abra desde su móvil.",
       "buttons": [
-        {"label": "Reservar turno", "target": "turno"},
-        {"label": "Requisitos de estudios", "target": "estudios"}
+        {
+          "label": "🛍️ Ver productos",
+          "target": "catalogo_demo_items"
+        },
+        {
+          "label": "🔗 Compartir catálogo",
+          "target": "catalogo_demo_compartir"
+        }
       ]
     },
     {
-      "id": "guardia",
-      "keywords_any": ["guardia", "urgencia", "emergencia"],
-      "response": "Coordinamos guardias programadas y teletriage. Si es una emergencia real, siempre recomendamos llamar al servicio médico correspondiente o acudir al centro más cercano.",
+      "id": "catalogo_demo_items",
+      "keywords": [
+        "productos demo",
+        "productos",
+        "items"
+      ],
+      "response": "Ejemplo de ítems listos para sumar al carrito: variantes, combos y precios destacados. Al avanzar, el carrito conserva el progreso y sugiere completar datos o ingresar al portal.",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "catalogo_demo_compartir",
+      "keywords": [
+        "compartir catálogo",
+        "link catálogo",
+        "qr catálogo"
+      ],
+      "response": "Podés compartir el catálogo por QR, link corto o redes sociales. Cada acceso queda trazado en el panel de analíticas con mapa de calor y conversiones.",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "encuesta_demo",
+      "keywords": [
+        "encuesta",
+        "votación",
+        "votacion",
+        "feedback"
+      ],
+      "response": "Encuesta en vivo pensada para Clínica Demo: botones de voto, QR para participación masiva y resultados en tiempo real.",
       "buttons": [
-        {"label": "Teleconsulta", "target": "teleconsulta"},
-        {"label": "Reservar turno", "target": "turno"}
+        {
+          "label": "✅ Enviar voto",
+          "target": "encuesta_demo_votar"
+        },
+        {
+          "label": "📈 Ver resultados",
+          "target": "encuesta_demo_resultados"
+        }
       ]
     },
     {
-      "id": "estudios",
-      "keywords_any": ["estudio", "laboratorio", "analisis", "preparacion", "pdf", "instrucciones"],
-      "response": "Compartimos preparación para laboratorio, turnos para ecografías y coordinación de resultados. Podés adjuntar órdenes para que el equipo las valide.",
-      "resource_tags": ["title:Guía de preparación"],
+      "id": "encuesta_demo_votar",
+      "keywords": [
+        "votar",
+        "vote",
+        "participar"
+      ],
+      "response": "Botones listos para votar sin salir del chat. También se pueden embeber en el widget o enviar por WhatsApp.",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "encuesta_demo_resultados",
+      "keywords": [
+        "resultados",
+        "dashboard encuesta",
+        "metricas"
+      ],
+      "response": "Resultados en vivo con gráficos, tasa de respuesta y segmentación por canal. Exportable y con alertas automáticas.",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "dashboard_demo",
+      "keywords": [
+        "dashboard",
+        "analíticas",
+        "analytics",
+        "mapa de calor"
+      ],
+      "response": "Dashboard de experiencia digital: mapa de calor de interacciones, conversión por canal, tickets abiertos y estado de pedidos.",
       "buttons": [
-        {"label": "Coberturas", "target": "cobertura"},
-        {"label": "Teleconsulta", "target": "teleconsulta"}
+        {
+          "label": "📍 Mapa de calor",
+          "target": "dashboard_mapa_calor"
+        },
+        {
+          "label": "🧾 Tickets y pedidos",
+          "target": "dashboard_tickets_pedidos"
+        }
+      ]
+    },
+    {
+      "id": "dashboard_mapa_calor",
+      "keywords": [
+        "mapa de calor",
+        "heatmap",
+        "flujo usuarios"
+      ],
+      "response": "Visualizá el mapa de calor con los puntos más clickeados, embebible en la página demo para mostrar dónde interactúan los usuarios.",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "dashboard_tickets_pedidos",
+      "keywords": [
+        "tickets",
+        "reclamos",
+        "pedidos"
+      ],
+      "response": "Vista rápida de reclamos, pedidos y encuestas abiertas por tenant. Permite derivar a humano o seguir el ciclo de compra sin perder el carrito.",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "portal_demo",
+      "keywords": [
+        "portal",
+        "perfil",
+        "usuario"
+      ],
+      "response": "Portal del cliente con historial de compras, puntos, reclamos y encuestas abiertas. Al iniciar sesión, se mantiene el carrito y se pueden reordenar ítems con un clic.",
+      "buttons": [
+        {
+          "label": "🔐 Ingresar al portal",
+          "target": "portal_demo_ingreso"
+        },
+        {
+          "label": "🧾 Ver historial",
+          "target": "portal_demo_historial"
+        }
+      ]
+    },
+    {
+      "id": "portal_demo_ingreso",
+      "keywords": [
+        "ingresar",
+        "login",
+        "registro"
+      ],
+      "response": "Ingreso rápido con email, WhatsApp o código QR. Se sincroniza con el carrito activo para continuar la compra sin perder productos.",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "portal_demo_historial",
+      "keywords": [
+        "historial",
+        "puntos",
+        "seguimiento"
+      ],
+      "response": "Historial de pedidos, reclamos y seguimientos, con notificaciones push y trazabilidad de entregas.",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "clínica_médica",
+      "keywords": [
+        "clínica médica"
+      ],
+      "response": "Consultorios mañana y tarde\n\n_Quiero turnos de clínica médica esta semana y saber si aceptan OSDE 410._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "pediatría",
+      "keywords": [
+        "pediatría"
+      ],
+      "response": "Guardia pediátrica 24/7\n\n_Necesito un turno pediátrico con prioridad para control de 2 años._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "turnos_derivados",
+      "keywords": [
+        "turnos derivados"
+      ],
+      "response": "Gestión automática con autorizaciones\n\n_¿Cómo gestiono turnos derivados por mi obra social y autorizaciones?_",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "turnos_y_especialida",
+      "keywords": [
+        "turnos y especialidades"
+      ],
+      "response": "Disponibilidad por sede, coberturas y derivaciones",
+      "buttons": [
+        {
+          "label": "🩺 Clínica médica",
+          "target": "clínica_médica"
+        },
+        {
+          "label": "👶 Pediatría",
+          "target": "pediatría"
+        },
+        {
+          "label": "🧾 Turnos derivados",
+          "target": "turnos_derivados"
+        }
+      ]
+    },
+    {
+      "id": "laboratorio_general",
+      "keywords": [
+        "laboratorio general"
+      ],
+      "response": "Resultados en 24/48 h\n\n_¿Qué preparación necesito para análisis de laboratorio completo y cuándo entregan resultados?_",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "diagnóstico_por_imág",
+      "keywords": [
+        "diagnóstico por imágenes"
+      ],
+      "response": "Resonancia 1.5T · sedes Centro y Norte\n\n_Necesito saber disponibilidad para resonancia y requisitos de autorización._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "entrega_digital",
+      "keywords": [
+        "entrega digital"
+      ],
+      "response": "Portal seguro + firma electrónica\n\n_¿Cómo accedo a resultados digitalizados y los comparto con mi médico?_",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "estudios_y_laborator",
+      "keywords": [
+        "estudios y laboratorio"
+      ],
+      "response": "Preparación, tiempos y resultados online",
+      "buttons": [
+        {
+          "label": "🩸 Laboratorio general",
+          "target": "laboratorio_general"
+        },
+        {
+          "label": "🧬 Diagnóstico por imágenes",
+          "target": "diagnóstico_por_imág"
+        },
+        {
+          "label": "📤 Entrega digital",
+          "target": "entrega_digital"
+        }
       ]
     },
     {
       "id": "teleconsulta",
-      "keywords_any": ["teleconsulta", "virtual", "videollamada", "online"],
-      "response": "La clínica ofrece teleconsultas seguras con firma digital. Enviamos link por WhatsApp, receta electrónica y recordatorio minutos antes.",
-      "resource_tags": ["title:Flujo de teleconsulta"],
+      "keywords": [
+        "teleconsulta"
+      ],
+      "response": "Video HD + receta electrónica\n\n_Quiero entender cómo funciona la teleconsulta y cómo recibir la receta digital._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "seguimiento_crónicos",
+      "keywords": [
+        "seguimiento crónicos"
+      ],
+      "response": "Dispositivos conectados + alertas\n\n_¿Qué herramientas tienen para monitoreo remoto de pacientes crónicos?_",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "acompañamiento_post_",
+      "keywords": [
+        "acompañamiento post alta"
+      ],
+      "response": "Contact center médico + reportes\n\n_Necesito saber cómo es el acompañamiento post alta y coordinación con mi prepaga._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "telemedicina_&_segui",
+      "keywords": [
+        "telemedicina & seguimiento"
+      ],
+      "response": "Videoconsultas, receta digital y monitoreo remoto",
       "buttons": [
-        {"label": "Reservar turno", "target": "turno"},
-        {"label": "Ver estudios", "target": "estudios"}
+        {
+          "label": "🖥️ Teleconsulta",
+          "target": "teleconsulta"
+        },
+        {
+          "label": "📈 Seguimiento crónicos",
+          "target": "seguimiento_crónicos"
+        },
+        {
+          "label": "📞 Acompañamiento post alta",
+          "target": "acompañamiento_post_"
+        }
       ]
     },
     {
-      "id": "contacto",
-      "keywords_any": ["contacto", "asesor", "hablar", "llamar"],
-      "response": "Para derivar a un humano, dejá tus datos y derivamos a la central de turnos o al coordinador de pacientes crónicos en minutos.",
+      "id": "planes_preventivos",
+      "keywords": [
+        "planes preventivos"
+      ],
+      "response": "Programas anualizados y on site\n\n_Enviame propuestas de chequeos preventivos corporativos por segmento._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "reporting_ejecutivo",
+      "keywords": [
+        "reporting ejecutivo"
+      ],
+      "response": "Dashboards mensuales personalizados\n\n_Necesito un ejemplo de reporte ejecutivo con métricas de utilización y NPS._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "beneficios_empresas",
+      "keywords": [
+        "beneficios empresas"
+      ],
+      "response": "Charlas de wellness y salud mental\n\n_¿Qué beneficios adicionales ofrecen para empresas (guardería, wellness, charlas)?_",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "convenios_corporativ",
+      "keywords": [
+        "convenios corporativos"
+      ],
+      "response": "Planes preventivos, informes y gestión de beneficios",
       "buttons": [
-        {"label": "Reservar turno", "target": "turno"},
-        {"label": "Coberturas", "target": "cobertura"}
+        {
+          "label": "🧾 Planes preventivos",
+          "target": "planes_preventivos"
+        },
+        {
+          "label": "📊 Reporting ejecutivo",
+          "target": "reporting_ejecutivo"
+        },
+        {
+          "label": "🤝 Beneficios empresas",
+          "target": "beneficios_empresas"
+        }
       ]
     }
   ],
   "fallback": {
-    "response": "Esta demo usa respuestas predefinidas para mostrar turnos, coberturas y guardias. Tocá un botón para seguir sin gastar tokens de IA.",
+    "response": "No entendí tu consulta. ¿Te gustaría ver el menú principal?",
     "buttons": [
-      {"label": "Reservar turno", "target": "turno"},
-      {"label": "Coberturas", "target": "cobertura"}
+      {
+        "label": "Ver menú principal",
+        "target": "welcome"
+      }
     ]
   }
 }

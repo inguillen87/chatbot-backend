@@ -1,88 +1,414 @@
 {
+  "key": "ferreteria",
   "responses": [
     {
       "id": "welcome",
-      "keywords_any": ["__init__", "hola", "buen dia", "buenas", "que tal", "saludo"],
-      "response": "🔧 ¡Hola! {demo_name} cotiza materiales de obra, herramientas eléctricas y sanitarios en un solo lugar. ¿Necesitás un presupuesto, stock o coordinar entrega a obra?",
+      "keywords": [
+        "__INIT__",
+        "hola",
+        "inicio",
+        "empezar",
+        "menu"
+      ],
+      "match_always": false,
+      "response": "🏗️ Hola, soy ProObra. Elegí materiales estructurales, logística de obra, servicios técnicos o financiamiento y armamos la propuesta.",
       "buttons": [
-        {"label": "Pedir presupuesto", "target": "presupuesto"},
-        {"label": "Materiales de obra", "target": "materiales"},
-        {"label": "Logística a obra", "target": "entrega"}
+        {
+          "label": "🧱 Materiales estructurales",
+          "target": "materiales_estructur"
+        },
+        {
+          "label": "🚛 Logística de obra",
+          "target": "logística_de_obra"
+        },
+        {
+          "label": "🧮 Servicios técnicos",
+          "target": "servicios_técnicos"
+        },
+        {
+          "label": "💳 Financiación & integraciones",
+          "target": "financiación_&_integ"
+        }
       ]
     },
     {
-      "id": "presupuesto",
-      "keywords_any": ["presupuesto", "cotizar", "cotizacion", "cotiza", "precio", "pdf", "lista"],
-      "response": "Armamos cotizaciones por rubro con combos de cemento, áridos, hierros y placas. En minutos generamos PDF con precios actualizados y alternativas por marca.",
-      "resource_tags": ["title:Catálogo de materiales"],
+      "id": "demo_experiencia",
+      "keywords": [
+        "demo",
+        "plantilla",
+        "experiencia",
+        "interactivo",
+        "dashboard",
+        "carrito",
+        "catálogo"
+      ],
+      "response": "🚀 Bienvenido a la demo de ProObra Ferretería. Probá el catálogo, la encuesta en vivo y el portal del cliente con analíticas en tiempo real.",
       "buttons": [
-        {"label": "Ver materiales", "target": "materiales"},
-        {"label": "Enviar a logística", "target": "entrega"}
+        {
+          "label": "🛒 Catálogo listo",
+          "target": "catalogo_demo"
+        },
+        {
+          "label": "🗳️ Encuesta en vivo",
+          "target": "encuesta_demo"
+        },
+        {
+          "label": "📊 Dashboard",
+          "target": "dashboard_demo"
+        },
+        {
+          "label": "📨 Portal del cliente",
+          "target": "portal_demo"
+        }
       ]
     },
     {
-      "id": "materiales",
-      "keywords_any": ["material", "cemento", "hierro", "placa", "sanitario", "obra"],
-      "response": "Tenemos Holcim, Loma Negra, hierro del 8 al 20, perfiles galvanizados, sanitarios y pinturas. También EPP, herramientas manuales y jardinería.",
-      "resource_tags": ["title:Catálogo de materiales"],
+      "id": "catalogo_demo",
+      "keywords": [
+        "catálogo demo",
+        "catalogo demo",
+        "productos demo",
+        "ver catálogo"
+      ],
+      "response": "Catálogo navegable con precios, imágenes y stock listo para agregar al carrito. Incluye QR y link compartible para que cualquier visitante lo abra desde su móvil.",
       "buttons": [
-        {"label": "Cotizar ahora", "target": "presupuesto"},
-        {"label": "Entrega a obra", "target": "entrega"}
+        {
+          "label": "🛍️ Ver productos",
+          "target": "catalogo_demo_items"
+        },
+        {
+          "label": "🔗 Compartir catálogo",
+          "target": "catalogo_demo_compartir"
+        }
       ]
     },
     {
-      "id": "entrega",
-      "keywords_any": ["entrega", "camion", "camion grua", "logistica", "plan logistica", "pdf logistica", "seguimiento", "tracking", "envio", "obra"],
-      "response": "Coordinamos camión grúa, seguimiento GPS y entregas escalonadas por frente de obra. También retiramos escombros y traemos bolsas de retorno.",
-      "resource_tags": ["title:Plan logístico", "title:Camión grúa"],
+      "id": "catalogo_demo_items",
+      "keywords": [
+        "productos demo",
+        "productos",
+        "items"
+      ],
+      "response": "Ejemplo de ítems listos para sumar al carrito: variantes, combos y precios destacados. Al avanzar, el carrito conserva el progreso y sugiere completar datos o ingresar al portal.",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "catalogo_demo_compartir",
+      "keywords": [
+        "compartir catálogo",
+        "link catálogo",
+        "qr catálogo"
+      ],
+      "response": "Podés compartir el catálogo por QR, link corto o redes sociales. Cada acceso queda trazado en el panel de analíticas con mapa de calor y conversiones.",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "encuesta_demo",
+      "keywords": [
+        "encuesta",
+        "votación",
+        "votacion",
+        "feedback"
+      ],
+      "response": "Encuesta en vivo pensada para ProObra Ferretería: botones de voto, QR para participación masiva y resultados en tiempo real.",
       "buttons": [
-        {"label": "Herramientas eléctricas", "target": "herramientas"},
-        {"label": "Solicitar asesor", "target": "contacto"}
+        {
+          "label": "✅ Enviar voto",
+          "target": "encuesta_demo_votar"
+        },
+        {
+          "label": "📈 Ver resultados",
+          "target": "encuesta_demo_resultados"
+        }
       ]
     },
     {
-      "id": "herramientas",
-      "keywords_any": ["herramienta", "taladro", "amoladora", "electrica", "dewalt", "makita"],
-      "response": "Contamos con taladros, percutores, sierras y soldadoras de primeras marcas. Podés sumar mantenimiento preventivo y calibración anual.",
+      "id": "encuesta_demo_votar",
+      "keywords": [
+        "votar",
+        "vote",
+        "participar"
+      ],
+      "response": "Botones listos para votar sin salir del chat. También se pueden embeber en el widget o enviar por WhatsApp.",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "encuesta_demo_resultados",
+      "keywords": [
+        "resultados",
+        "dashboard encuesta",
+        "metricas"
+      ],
+      "response": "Resultados en vivo con gráficos, tasa de respuesta y segmentación por canal. Exportable y con alertas automáticas.",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "dashboard_demo",
+      "keywords": [
+        "dashboard",
+        "analíticas",
+        "analytics",
+        "mapa de calor"
+      ],
+      "response": "Dashboard de experiencia digital: mapa de calor de interacciones, conversión por canal, tickets abiertos y estado de pedidos.",
       "buttons": [
-        {"label": "Pedir presupuesto", "target": "presupuesto"},
-        {"label": "Ver EPP", "target": "seguridad"}
+        {
+          "label": "📍 Mapa de calor",
+          "target": "dashboard_mapa_calor"
+        },
+        {
+          "label": "🧾 Tickets y pedidos",
+          "target": "dashboard_tickets_pedidos"
+        }
       ]
     },
     {
-      "id": "planillas",
-      "keywords_any": ["planilla", "excel", "checklist", "lista materiales", "descargar lista"],
-      "response": "Descargá planillas de materiales listas para compartir con arquitectos o jefes de obra. El bot las completa con precios y disponibilidad en minutos.",
-      "resource_tags": ["title:Catálogo de materiales"],
+      "id": "dashboard_mapa_calor",
+      "keywords": [
+        "mapa de calor",
+        "heatmap",
+        "flujo usuarios"
+      ],
+      "response": "Visualizá el mapa de calor con los puntos más clickeados, embebible en la página demo para mostrar dónde interactúan los usuarios.",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "dashboard_tickets_pedidos",
+      "keywords": [
+        "tickets",
+        "reclamos",
+        "pedidos"
+      ],
+      "response": "Vista rápida de reclamos, pedidos y encuestas abiertas por tenant. Permite derivar a humano o seguir el ciclo de compra sin perder el carrito.",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "portal_demo",
+      "keywords": [
+        "portal",
+        "perfil",
+        "usuario"
+      ],
+      "response": "Portal del cliente con historial de compras, puntos, reclamos y encuestas abiertas. Al iniciar sesión, se mantiene el carrito y se pueden reordenar ítems con un clic.",
       "buttons": [
-        {"label": "Pedir presupuesto", "target": "presupuesto"},
-        {"label": "Ver logística", "target": "entrega"}
+        {
+          "label": "🔐 Ingresar al portal",
+          "target": "portal_demo_ingreso"
+        },
+        {
+          "label": "🧾 Ver historial",
+          "target": "portal_demo_historial"
+        }
       ]
     },
     {
-      "id": "seguridad",
-      "keywords_any": ["epp", "seguridad", "casco", "guante", "arnes"],
-      "response": "Disponemos de EPP certificados: cascos, arneses, guantes dieléctricos y señalización. También kits para altura y espacios confinados.",
+      "id": "portal_demo_ingreso",
+      "keywords": [
+        "ingresar",
+        "login",
+        "registro"
+      ],
+      "response": "Ingreso rápido con email, WhatsApp o código QR. Se sincroniza con el carrito activo para continuar la compra sin perder productos.",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "portal_demo_historial",
+      "keywords": [
+        "historial",
+        "puntos",
+        "seguimiento"
+      ],
+      "response": "Historial de pedidos, reclamos y seguimientos, con notificaciones push y trazabilidad de entregas.",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "acero_y_perfiles",
+      "keywords": [
+        "acero y perfiles"
+      ],
+      "response": "Perfiles UPN · IPN · galvanizado\n\n_Necesito la tabla de acero laminado y perfiles UPN con entrega semanal._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "paneles_térmicos",
+      "keywords": [
+        "paneles térmicos"
+      ],
+      "response": "Panel PUR/PIR de 40/60 mm\n\n_Mostrame panelería térmica con ficha técnica y R-value para cámara frigorífica._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "madera_laminada",
+      "keywords": [
+        "madera laminada"
+      ],
+      "response": "Tramos de 6 a 12 m certificados\n\n_¿Qué soluciones de madera laminada estructural ofrecen y en qué dimensiones?_",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "materiales_estructur",
+      "keywords": [
+        "materiales estructurales"
+      ],
+      "response": "Acero, hormigón premoldeado y panelería aislante",
       "buttons": [
-        {"label": "Materiales de obra", "target": "materiales"},
-        {"label": "Coordinar entrega", "target": "entrega"}
+        {
+          "label": "🏗️ Acero y perfiles",
+          "target": "acero_y_perfiles"
+        },
+        {
+          "label": "🧊 Paneles térmicos",
+          "target": "paneles_térmicos"
+        },
+        {
+          "label": "🪚 Madera laminada",
+          "target": "madera_laminada"
+        }
       ]
     },
     {
-      "id": "contacto",
-      "keywords_any": ["contacto", "asesor", "llamar", "hablar"],
-      "response": "Podés derivar a un asesor técnico para validar planos o listas de materiales. En producción duplicamos este flujo en tu municipio, pyme o corralón real.",
+      "id": "cronograma_por_etapa",
+      "keywords": [
+        "cronograma por etapa"
+      ],
+      "response": "Just in time + controles de recepción\n\n_Armá un plan de entregas por etapas para un edificio de 12 pisos._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "montaje_con_grúa",
+      "keywords": [
+        "montaje con grúa"
+      ],
+      "response": "Camiones grúa + operadores habilitados\n\n_¿Cómo coordinan grúas y operadores certificados para montaje de paneles?_",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "seguridad_industrial",
+      "keywords": [
+        "seguridad industrial"
+      ],
+      "response": "Cursos SST y auditorías in situ\n\n_Necesito el checklist de EPP obligatorio y capacitaciones en obra._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "logística_de_obra",
+      "keywords": [
+        "logística de obra"
+      ],
+      "response": "Planificación de entregas y montaje en sitio",
       "buttons": [
-        {"label": "Pedir presupuesto", "target": "presupuesto"},
-        {"label": "Ver logística", "target": "entrega"}
+        {
+          "label": "📅 Cronograma por etapa",
+          "target": "cronograma_por_etapa"
+        },
+        {
+          "label": "🪜 Montaje con grúa",
+          "target": "montaje_con_grúa"
+        },
+        {
+          "label": "🔒 Seguridad industrial",
+          "target": "seguridad_industrial"
+        }
+      ]
+    },
+    {
+      "id": "cálculo_de_estructur",
+      "keywords": [
+        "cálculo de estructuras"
+      ],
+      "response": "Ingeniería básica + memoria descriptiva\n\n_Quiero un cálculo preliminar para estructura metálica de 1.200 m²._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "integración_bim",
+      "keywords": [
+        "integración bim"
+      ],
+      "response": "Familias REVIT + seguimiento\n\n_¿Cómo integran el catálogo a nuestro modelo BIM y control de avance?_",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "plan_hseq",
+      "keywords": [
+        "plan hseq"
+      ],
+      "response": "Procedimientos, permisos y auditorías\n\n_Necesito la matriz HSEQ para presentar ante el comitente._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "servicios_técnicos",
+      "keywords": [
+        "servicios técnicos"
+      ],
+      "response": "Ingeniería de valor y soporte BIM",
+      "buttons": [
+        {
+          "label": "📐 Cálculo de estructuras",
+          "target": "cálculo_de_estructur"
+        },
+        {
+          "label": "🖥️ Integración BIM",
+          "target": "integración_bim"
+        },
+        {
+          "label": "🧯 Plan HSEQ",
+          "target": "plan_hseq"
+        }
+      ]
+    },
+    {
+      "id": "líneas_bancarias",
+      "keywords": [
+        "líneas bancarias"
+      ],
+      "response": "Hasta 120 días con avales\n\n_¿Qué líneas bancarias y plazos ofrecen para constructoras?_",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "api_de_pedidos",
+      "keywords": [
+        "api de pedidos"
+      ],
+      "response": "APIs REST + webhooks\n\n_Necesito integrar pedidos y stock al ERP de la constructora._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "dashboard_de_consumo",
+      "keywords": [
+        "dashboard de consumos"
+      ],
+      "response": "Alertas de sobreconsumo y reposición\n\n_Mostrame el dashboard con consumo por obra y desvíos._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "financiación_&_integ",
+      "keywords": [
+        "financiación & integraciones"
+      ],
+      "response": "Líneas bancarias, acuerdos fintech y APIs",
+      "buttons": [
+        {
+          "label": "🏦 Líneas bancarias",
+          "target": "líneas_bancarias"
+        },
+        {
+          "label": "💻 API de pedidos",
+          "target": "api_de_pedidos"
+        },
+        {
+          "label": "📊 Dashboard de consumos",
+          "target": "dashboard_de_consumo"
+        }
       ]
     }
   ],
   "fallback": {
-    "response": "Esta demo offline resume los flujos más pedidos: presupuestos, logística a obra y stock crítico. Elegí una opción para verlo sin llamar al LLM.",
+    "response": "No entendí tu consulta. ¿Te gustaría ver el menú principal?",
     "buttons": [
-      {"label": "Pedir presupuesto", "target": "presupuesto"},
-      {"label": "Logística a obra", "target": "entrega"}
+      {
+        "label": "Ver menú principal",
+        "target": "welcome"
+      }
     ]
   }
 }

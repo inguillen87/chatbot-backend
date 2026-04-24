@@ -3,10 +3,11 @@ import logging
 import os
 import re
 import sys
+import time
 from urllib.parse import urlparse
 
 from .base_action_handler import BaseActionHandler
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 import random
 from services.ticket_service import servicio_tickets
 from services.notifications import enviar_notificacion_whatsapp_con_plantilla, enviar_notificacion_sms
@@ -16,16 +17,36 @@ from services.herramientas_municipio import (
     normalizar_texto,
     obtener_direccion_de_coordenadas,
 )
+from services.address_parser import parse_address
+from services.categorias_municipio import (
+    CATEGORIAS_RECLAMO,
+    CATEGORIAS_SINONIMOS,
+    normalizar_texto as normalizar_texto_municipio,
+)
 from services.ticket_utils import formatear_ticket_respuesta, remove_buttons_with_urls_in_message
+from services.whatsapp_receipts import render_ticket_whatsapp
+from services.live_chat_schedule import build_live_chat_status
+from utils.ticket_utils import normalize_category
 from services.common_utils import validar_telefono, formatear_telefono_e164, validar_email
 from services.config_loader import cargar_configuracion_municipio
-from models import MunicipioTicket
+from models import MunicipioTicket, TenantProfile, CategoriaTicket
 from services.common_utils import _get_main_menu_payload
 from services import promo_service
+from services.voice_handler import initiate_outbound_call
+from services.conversation_summaries import build_claim_confirmation_payload
 
 logger = logging.getLogger(__name__)
 
 CONTEXTO_MUNICIPIO = "contexto_municipio_v2"
+
+
+def _parse_int_env(var_name: str, default: int) -> int:
+    raw_value = os.getenv(var_name, str(default))
+    try:
+        return int(raw_value)
+    except (TypeError, ValueError):
+        logger.warning("Valor inválido para %s=%r; usando %s.", var_name, raw_value, default)
+        return default
 
 
 def _normalize_url_for_comparison(raw_url: str) -> tuple[str, str]:
@@ -50,6 +71,18 @@ def _normalize_url_for_comparison(raw_url: str) -> tuple[str, str]:
         path = path.rstrip("/")
 
     return domain, path
+
+
+def _resolve_promo_image_url(municipio_config: dict) -> str | None:
+    if not isinstance(municipio_config, dict):
+        return None
+    promo_image_url = municipio_config.get("promo_image_url")
+    if promo_image_url:
+        return promo_image_url
+    promo_section = municipio_config.get("promo_section") or municipio_config.get("promo")
+    if isinstance(promo_section, dict):
+        return promo_section.get("image_url")
+    return None
 
 def _address_seems_generic(address: str | None) -> bool:
     if not address:
@@ -76,6 +109,229 @@ def _address_seems_generic(address: str | None) -> bool:
         return True
 
     return False
+
+
+def _infer_category_from_description(
+    description: str | None,
+    category_candidates: list[str] | None = None,
+) -> str | None:
+    if not description:
+        return None
+
+    normalized_description = normalizar_texto_municipio(description)
+    if not normalized_description:
+        return None
+
+    best_match = None
+    best_score = 0
+    normalized_synonyms_keys = {
+        normalizar_texto_municipio(key) for key in CATEGORIAS_SINONIMOS.keys()
+    }
+
+    for categoria_key, synonyms in CATEGORIAS_SINONIMOS.items():
+        terms = [categoria_key, *synonyms]
+        score = 0
+        for term in terms:
+            normalized_term = normalizar_texto_municipio(term)
+            if not normalized_term:
+                continue
+            pattern = rf"\b{re.escape(normalized_term)}\b"
+            if re.search(pattern, normalized_description):
+                score += 2
+            elif normalized_term in normalized_description:
+                score += 1
+        if score > best_score:
+            best_score = score
+            best_match = categoria_key
+
+    for candidate in category_candidates or []:
+        normalized_candidate = normalizar_texto_municipio(candidate)
+        if not normalized_candidate or normalized_candidate in normalized_synonyms_keys:
+            continue
+        pattern = rf"\b{re.escape(normalized_candidate)}\b"
+        if re.search(pattern, normalized_description):
+            score = 2
+        elif normalized_candidate in normalized_description:
+            score = 1
+        else:
+            score = 0
+        if score > best_score:
+            best_score = score
+            best_match = candidate
+
+    if not best_match:
+        return None
+
+    return normalize_category(best_match)
+
+
+def _get_categoria_candidates(owner_user: Any, context: Dict[str, Any]) -> list[str]:
+    categorias: list[str] = list(CATEGORIAS_RECLAMO)
+    tenant_id, _ = _resolve_municipio_tenant_ids(owner_user, context)
+    if not tenant_id:
+        return categorias
+
+    try:
+        tenant_categories = (
+            CategoriaTicket.query.filter_by(tenant_id=tenant_id)
+            .order_by(CategoriaTicket.nombre.asc())
+            .all()
+        )
+    except Exception as exc:
+        logger.warning("No se pudieron cargar categorías del tenant: %s", exc)
+        return categorias
+
+    normalized_existing = {normalizar_texto_municipio(cat) for cat in categorias if cat}
+    for category in tenant_categories:
+        nombre = getattr(category, "nombre", None)
+        if not nombre:
+            continue
+        normalized = normalizar_texto_municipio(nombre)
+        if normalized and normalized not in normalized_existing:
+            categorias.append(nombre)
+            normalized_existing.add(normalized)
+
+    return categorias
+
+
+def _ubicacion_es_valida(ubicacion: str | None) -> bool:
+    if not ubicacion:
+        return False
+    normalized = normalizar_texto(ubicacion)
+    if not normalized:
+        return False
+    greeting_words = {
+        "hola",
+        "buenas",
+        "buenos",
+        "buenas tardes",
+        "buenos dias",
+        "buenas noches",
+    }
+    if normalized in greeting_words:
+        return False
+    if re.search(r"-?\d{1,3}\.\d+", normalized):
+        return True
+    # Stricter validation: Require a number if it looks like a street, or explicit intersection/barrio keywords
+    has_street_keyword = bool(re.search(r"\b(calle|av\.?|avenida|ruta|km)\b", normalized))
+    has_number = bool(re.search(r"\d", normalized))
+
+    if has_street_keyword and not has_number:
+        return False
+
+    if re.search(r"\b(esquina|interseccion|intersección|entre|altura|barrio|manzana|mz|lote|plaza|parque|monumento)\b", normalized):
+        return True
+    if re.search(r"\b[a-z]{3,}\s+(y|e)\s+[a-z]{3,}\b", normalized):
+        return True
+    if re.search(r"\b(rotonda|puente|terminal|hospital|escuela)\b", normalized):
+        return True
+
+    if has_number:
+        # Check if it's too long (likely a description)
+        if len(normalized.split()) > 12:
+            return False
+        return True
+
+    return direccion_es_valida(ubicacion)
+
+
+def _resolve_municipio_tenant_ids(owner_user, context: Dict[str, Any]) -> tuple[Optional[int], Optional[int]]:
+    """Resolve tenant_id and municipio_id for municipal tickets."""
+
+    municipio_config = (context or {}).get("municipio_config_actual", {}) or {}
+    tenant_slug = (
+        municipio_config.get("tenant_slug")
+        or municipio_config.get("slug")
+        or getattr(owner_user, "tenant_slug", None)
+    )
+    owner_id = (
+        getattr(owner_user, "municipio_id", None)
+        or getattr(owner_user, "id", None)
+    )
+
+    tenant = None
+    if tenant_slug:
+        tenant = TenantProfile.query.filter_by(slug=str(tenant_slug).strip()).first()
+    if not tenant and owner_id:
+        tenant = TenantProfile.query.filter_by(municipio_id=owner_id).first()
+
+    tenant_id = getattr(tenant, "id", None)
+    municipio_id = getattr(tenant, "municipio_id", None) or owner_id
+
+    if not municipio_id:
+        logger.warning(
+            "[tickets] municipio_id missing while resolving tenant. tenant_slug=%s owner_id=%s",
+            tenant_slug,
+            owner_id,
+        )
+
+    return tenant_id, municipio_id
+
+
+def _render_closing_caption_template(template: str | None, values: Dict[str, Any]) -> str:
+    """Render a caption template using {{placeholder}} or {placeholder} tokens."""
+
+    message_body = str(values.get("message_body") or "").strip()
+    if not template:
+        return message_body
+
+    rendered = str(template)
+    for key, value in values.items():
+        token_value = str(value) if value is not None else ""
+        rendered = rendered.replace(f"{{{{{key}}}}}", token_value)
+        rendered = rendered.replace(f"{{{key}}}", token_value)
+
+    return rendered
+
+
+def _apply_whatsapp_closing_promo(
+    payload: Dict[str, Any],
+    *,
+    context: Dict[str, Any],
+    caption_values: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Attach WhatsApp hero media for closing flows when enabled."""
+
+    channel = (context.get("channel") or "").strip().lower()
+    if not channel.startswith("whatsapp"):
+        return payload
+
+    municipio_config = context.get("municipio_config_actual", {}) or {}
+    if not municipio_config.get("closing_promo_enabled"):
+        return payload
+
+    image_url = (
+        municipio_config.get("closing_promo_image_url")
+        or municipio_config.get("promo_image_url")
+        or payload.get("image_url")
+    )
+    if not image_url:
+        return payload
+
+    caption_template = municipio_config.get("closing_promo_caption_template")
+    caption = _render_closing_caption_template(caption_template, caption_values)
+
+    pre_messages = payload.get("_twilio_pre_messages")
+    if not isinstance(pre_messages, list):
+        pre_messages = [] if pre_messages is None else [pre_messages]
+
+    pre_messages.append(
+        {
+            "channels": ["whatsapp"],
+            "body": caption,
+            "media_urls": [image_url],
+        }
+    )
+    payload["_twilio_pre_messages"] = pre_messages
+
+    if payload.get("options_list"):
+        payload["message_body"] = municipio_config.get(
+            "closing_promo_followup_text",
+            "Seleccioná una opción para continuar.",
+        )
+
+    payload.pop("image_url", None)
+    return payload
 
 
 class BuscarEstacionamientoActionHandler(BaseActionHandler):
@@ -123,6 +379,13 @@ class CrearReclamoActionHandler(BaseActionHandler):
         viewer_user = self.context.get("viewer_user_obj")
         datos_parciales_llm = contexto_reclamo.get("datos_parciales_llm_reclamo", {})
         contacto_ctx = contexto_reclamo.get("contacto_usuario", {})
+        resolved_contact = self.context.get("resolved_contact") or {}
+
+        if resolved_contact:
+            contacto_ctx.setdefault("nombre", resolved_contact.get("nombre"))
+            contacto_ctx.setdefault("email", resolved_contact.get("email"))
+            contacto_ctx.setdefault("dni", resolved_contact.get("dni"))
+            contacto_ctx.setdefault("telefono", resolved_contact.get("telefono"))
 
         # Fusionar datos: action_data tiene prioridad, luego el contexto del reclamo, luego el perfil del usuario
         datos_parciales = contexto_reclamo.get("datos_parciales_llm_reclamo", {})
@@ -172,8 +435,52 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 if not ubicacion_llm or _address_seems_generic(ubicacion_llm):
                     ubicacion_llm = geocoded_from_coords.get("formatted_address")
 
+        # Check if the extracted location is actually a description
+        if ubicacion_llm:
+            lower_ubi = ubicacion_llm.lower()
+            # Stricter heuristic: if it's long and has 'descripción' or looks like narrative
+            if "descripción es" in lower_ubi or "problema es" in lower_ubi or len(lower_ubi.split()) > 12:
+                # Likely a description or junk text
+                if not descripcion:
+                    descripcion = ubicacion_llm # Move to description if empty
+                logger.info(f"[VALIDATION] Location rejected (too long or narrative): {ubicacion_llm}")
+                ubicacion_llm = None
+            elif not _ubicacion_es_valida(ubicacion_llm):
+                logger.info(f"[VALIDATION] Ubicacion invalida detectada: {ubicacion_llm}")
+                ubicacion_llm = None
+
+        if descripcion:
+            categoria_candidates = _get_categoria_candidates(self.context.get("user_obj"), self.context)
+            categoria_inferida = _infer_category_from_description(descripcion, categoria_candidates)
+            categoria_actual = normalize_category(categoria) if categoria else None
+            categorias_genericas = {
+                "Limpieza",
+                "Limpieza Y Riego",
+                "Reclamo",
+                "Reclamo General",
+                "Reclamo Generico",
+                "Reclamo Genérico",
+                "General",
+                "Consulta General",
+                "Servicios",
+                "Otros",
+                "Otro",
+                "Otro Motivo",
+            }
+            if categoria_inferida and categoria_inferida != categoria_actual:
+                if not categoria_actual or categoria_actual in categorias_genericas:
+                    categoria = categoria_inferida
+
         municipio_config = self.context.get("municipio_config_actual", {})
-        if ubicacion_llm and not distrito_llm:
+        if ubicacion_llm:
+            parsed_address = parse_address(ubicacion_llm, municipio_config)
+            if parsed_address.get("distrito") and not distrito_llm:
+                distrito_llm = parsed_address.get("distrito")
+            if parsed_address.get("barrio"):
+                contexto_reclamo.setdefault("barrio_referencia", parsed_address.get("barrio"))
+            if parsed_address.get("referencia"):
+                contexto_reclamo.setdefault("referencia_ubicacion", parsed_address.get("referencia"))
+        if ubicacion_llm and not distrito_llm and direccion_es_valida(ubicacion_llm):
             try:
                 logger.info(f"Attempting to parse district from address: {ubicacion_llm}")
                 parsed_addr = parse_direccion(ubicacion_llm, municipio_config)
@@ -209,16 +516,44 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 "favor",
                 "hola",
                 "buenas",
+                "buenos",
                 "tengo",
                 "hay",
+                "soy",
+                "mi",
+                "nombre",
+                "es",
+                "me",
+                "llamo",
             }
-            if any(token in cleaned_lower for token in forbidden_tokens):
+
+            # Tokenize and filter out forbidden words to extract the actual name
+            words = cleaned_lower.split()
+            filtered_words = [w for w in words if w not in forbidden_tokens]
+
+            if not filtered_words:
                 return None
-            if any(char.isdigit() for char in cleaned_lower):
+
+            # Reconstruct the name from the original casing based on the filtered indices?
+            # Simpler approach: Remove forbidden tokens from the cleaned string but preserve casing of the rest if possible.
+            # Or just use the filtered words and capitalize them.
+
+            # Let's use a regex replace to preserve original casing of remaining words
+            # But simple filtering is robust enough for names usually.
+
+            cleaned_filtered = " ".join([word.title() for word in filtered_words])
+
+            if len(cleaned_filtered) < 3: # "Al" ? maybe too short
                 return None
-            if len(cleaned.split()) > 6:
+
+            if any(char.isdigit() for char in cleaned_filtered):
                 return None
-            return cleaned
+
+            # Check length again on the filtered result
+            if len(cleaned_filtered.split()) > 5:
+                return None
+
+            return cleaned_filtered
 
         trusted_candidates = [
             getattr(viewer_user, "name", None) if viewer_user else None,
@@ -321,16 +656,21 @@ class CrearReclamoActionHandler(BaseActionHandler):
             "campos_requeridos_reclamo",
             ['descripcion', 'ubicacion', 'nombre', 'telefono', 'email']
         )
+        if self.context.get("channel") == "voice":
+            campos_requeridos = ["descripcion", "ubicacion", "telefono"]
 
         datos_finales_reclamo = {
             "categoria": categoria,
             "descripcion": descripcion,
-            "ubicacion": ubicacion_llm or coordenadas_llm,
+            "ubicacion": ubicacion_llm if _ubicacion_es_valida(ubicacion_llm) else None,
             "nombre": nombre_vecino_final if nombre_vecino_final != "Vecino/a" else None,
             "telefono": telefono_final,
             "email": email_final,
             "dni": dni_final,
         }
+
+        if not datos_finales_reclamo.get("ubicacion") and coordenadas_llm:
+            datos_finales_reclamo["ubicacion"] = coordenadas_llm
 
         campos_faltantes = [campo for campo in campos_requeridos if not datos_finales_reclamo.get(campo)]
 
@@ -400,6 +740,8 @@ class CrearReclamoActionHandler(BaseActionHandler):
             categoria = categoria_lookup
         contacto_especializado = dict(contactos.get(categoria_lookup, contactos.get("default", {})))
 
+        tenant_id, municipio_id = _resolve_municipio_tenant_ids(owner_user, self.context)
+
         ticket_data = {
             "pregunta": pregunta_original,
             "asunto": f"Reclamo (LLM): {categoria or 'General'}",
@@ -415,7 +757,8 @@ class CrearReclamoActionHandler(BaseActionHandler):
             "estado": "nuevo",
             "user_id": getattr(viewer_user, "id", None),
             "anon_id": self.context.get("anon_id"),
-            "municipio_id": getattr(owner_user, "municipio_id", None),  # Asegurar que el municipio_id se pasa aquí
+            "municipio_id": municipio_id,
+            "tenant_id": tenant_id,
             "latitud": coordenadas_llm.get("lat") if isinstance(coordenadas_llm, dict) else None,
             "longitud": (
                 coordenadas_llm.get("lng") if isinstance(coordenadas_llm, dict) else None
@@ -428,6 +771,49 @@ class CrearReclamoActionHandler(BaseActionHandler):
 
         ticket_data_cleaned = {k: v for k, v in ticket_data.items() if v is not None}
         logger.info(f"Data for servicio_tickets.crear_nuevo_ticket: {ticket_data_cleaned}")
+
+        dedupe_window_seconds = _parse_int_env("CHATBOC_RECLAMO_DEDUP_WINDOW_SECONDS", 600)
+        dedupe_fingerprint = {
+            "categoria": normalizar_texto_municipio(categoria or ""),
+            "descripcion": normalizar_texto_municipio(descripcion or ""),
+            "ubicacion": normalizar_texto_municipio(ubicacion_llm or ""),
+            "telefono": str(telefono_final or "").strip(),
+            "dni": str(dni_final or "").strip(),
+            "foto_url": str(foto_url_llm or "").strip(),
+        }
+        previous_ticket = contexto_reclamo.get("last_created_reclamo")
+        if (
+            isinstance(previous_ticket, dict)
+            and previous_ticket.get("fingerprint") == dedupe_fingerprint
+            and (time.time() - float(previous_ticket.get("ts", 0))) < max(0, dedupe_window_seconds)
+        ):
+            logger.warning(
+                "Reclamo duplicado detectado en %ss. Se evita crear nuevo ticket y se reutiliza %s.",
+                dedupe_window_seconds,
+                previous_ticket.get("ticket_nro"),
+            )
+            ticket_nro_prev = previous_ticket.get("ticket_nro")
+            pin_prev = previous_ticket.get("consulta_pin")
+            tracking_url = previous_ticket.get("tracking_url")
+            dedupe_message = (
+                "Ya habíamos registrado este reclamo hace instantes ✅\n"
+                f"• Ticket: *{ticket_nro_prev or 'N/A'}*"
+            )
+            if pin_prev:
+                dedupe_message += f"\n• PIN: *{pin_prev}*"
+            if tracking_url:
+                dedupe_message += f"\n• Seguimiento: {tracking_url}"
+            return {
+                "success": True,
+                "message_body": dedupe_message,
+                "message_type": "text",
+                "data": {
+                    "nro_ticket": ticket_nro_prev,
+                    "consulta_pin": pin_prev,
+                    "tracking_url": tracking_url,
+                    "deduplicated": True,
+                },
+            }
 
         # Enhanced logging for debugging contact info
         logger.info(f"DEBUG_CONTACT_INFO: nombre='{ticket_data_cleaned.get('nombre_vecino')}', "
@@ -445,6 +831,28 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 raise ValueError("El ticket creado no tiene un 'nro_ticket'.")
             nro_ticket_str = f"M-{ticket_nro}"
             logger.info(f"Ticket {nro_ticket_str} creado exitosamente.")
+
+            try:
+                from models import MunicipioTicket, db
+                from routes.ticket import serialize_ticket_to_json
+                from socket_service import emit_new_ticket
+
+                ticket_obj = db.session.get(MunicipioTicket, ticket_creado.get("id"))
+                if ticket_obj:
+                    ticket_json = serialize_ticket_to_json(ticket_obj, "municipio")
+                    emit_new_ticket(ticket_json)
+                else:
+                    logger.warning(
+                        "No se pudo recuperar el ticket recién creado para emitir socket: id=%s",
+                        ticket_creado.get("id"),
+                    )
+            except Exception as e_notify:
+                logger.error(
+                    "Error enviando notificación en tiempo real para ticket %s: %s",
+                    nro_ticket_str,
+                    e_notify,
+                    exc_info=True,
+                )
 
             # Completar datos desde tramites.json si existen
             tramites_cfg = cargar_configuracion_municipio(
@@ -488,18 +896,25 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 "telefono": telefono_final,
                 "direccion": direccion_contacto,
             }
-            # Limpiamos TODO el contexto del municipio para evitar "context bleed".
-            if CONTEXTO_MUNICIPIO in self.context:
-                self.context[CONTEXTO_MUNICIPIO].clear()
+            if CONTEXTO_MUNICIPIO in self.context and isinstance(self.context[CONTEXTO_MUNICIPIO], dict):
+                municipio_ctx = self.context[CONTEXTO_MUNICIPIO]
+                for stale_key in (
+                    "reclamo_flow_v2",
+                    "historial_llm_reclamo",
+                    "datos_parciales_llm_reclamo",
+                    "expected_fields_llm_reclamo",
+                ):
+                    municipio_ctx.pop(stale_key, None)
                 if user_info:
-                    self.context[CONTEXTO_MUNICIPIO]['user'] = user_info
-                self.context[CONTEXTO_MUNICIPIO]['contacto_usuario'] = {
+                    municipio_ctx["user"] = user_info
+                municipio_ctx["contacto_usuario"] = {
                     k: v for k, v in contacto_usuario.items() if v
                 }
                 from services.municipio_responder import ConversationState
-                self.context[CONTEXTO_MUNICIPIO]['estado_conversacion'] = ConversationState.CONVERSACION_GENERAL_LLM.name
+                municipio_ctx["estado_conversacion"] = ConversationState.CONVERSACION_GENERAL_LLM.name
                 logger.info(
-                    f"Contexto de reclamo limpiado. Nuevo estado: {self.context[CONTEXTO_MUNICIPIO]['estado_conversacion']}"
+                    "Contexto de reclamo limpiado. Nuevo estado: %s",
+                    municipio_ctx["estado_conversacion"],
                 )
 
 
@@ -526,7 +941,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
             # Formatear respuesta y obtener el botón de contacto
             municipio_config = self.context.get('municipio_config_actual', {})
             base_chat_url = municipio_config.get('base_chat_url', 'https://www.chatboc.ar/chat')
-            promo_image_url = municipio_config.get('promo_image_url')
+            promo_image_url = _resolve_promo_image_url(municipio_config)
             channel_value = (self.context.get("channel") or "").strip().lower()
             is_web_like_channel = channel_value.startswith("web") or "widget" in channel_value
             categoria_display = categoria
@@ -541,6 +956,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 dni=ticket_data_cleaned.get("dni_vecino"),
                 consulta_pin=pin_final,
                 include_links_in_message=not is_web_like_channel,
+                ubicacion=ubicacion_llm,
             )
             if botones_finales is None:
                 botones_finales = []
@@ -552,7 +968,10 @@ class CrearReclamoActionHandler(BaseActionHandler):
             promo_section = promo_service.build_ticket_promo_section(
                 ticket_number=nro_ticket_str,
                 neighbor_name=ticket_data_cleaned.get("nombre_vecino", "Vecino/a"),
+                owner_user=owner_user,
+                municipio_config=municipio_config,
             )
+            promo_text = None
             if promo_section:
                 promo_text = promo_section.get("message_body")
                 if promo_text:
@@ -613,7 +1032,17 @@ class CrearReclamoActionHandler(BaseActionHandler):
             # Delayed menu
             menu_payload = _get_main_menu_payload(self.context)
 
-            return {
+            claim_confirmation = build_claim_confirmation_payload(
+                categoria=categoria_display,
+                ubicacion=ubicacion_llm,
+                descripcion=descripcion,
+                nombre=ticket_data_cleaned.get("nombre_vecino"),
+                telefono=ticket_data_cleaned.get("telefono_vecino"),
+                email=ticket_data_cleaned.get("email_vecino"),
+                channel=channel_value or self.context.get("channel"),
+            )
+
+            response_payload = {
                 "success": True,
                 "message_body": mensaje_respuesta,
                 "options_list": botones_finales,
@@ -626,8 +1055,76 @@ class CrearReclamoActionHandler(BaseActionHandler):
                     "nro_ticket": nro_ticket_str,
                     "status": "creado",
                     "consulta_pin": pin_final,
+                    "nombre_vecino": ticket_data_cleaned.get("nombre_vecino"),
+                    "contacto_especializado": contacto_especializado,
+                    "promo_text": promo_text,
+                    "claim_confirmation": claim_confirmation,
+                    "confirmation_card": claim_confirmation,
                 }
             }
+            tracking_url = None
+            if base_chat_url:
+                ticket_numeric = str(nro_ticket_str).replace("M-", "").replace("S-", "")
+                tracking_url = f"{base_chat_url.rstrip('/')}/{ticket_numeric}"
+                if pin_final:
+                    tracking_url = f"{tracking_url}?pin={pin_final}"
+            response_payload["contexto_actualizado"] = {
+                "latest_ticket_id": ticket_creado.get("id"),
+                "latest_ticket_nro": nro_ticket_str,
+                "latest_ticket_pin": pin_final,
+                "latest_tracking_url": tracking_url,
+                "awaiting_photo_for_ticket": nro_ticket_str,
+                "last_ticket_code": nro_ticket_str,
+                "awaiting_ticket_photo": True,
+                "awaiting_ticket_photo_until": time.time() + 600,
+            }
+            response_payload["whatsapp_receipt"] = render_ticket_whatsapp(
+                kind="reclamo",
+                nombre=ticket_data_cleaned.get("nombre_vecino", "Vecino/a"),
+                ticket_nro=nro_ticket_str,
+                categoria=categoria_display,
+                descripcion=descripcion,
+                direccion=ubicacion_llm,
+                dni=ticket_data_cleaned.get("dni_vecino"),
+                consulta_pin=pin_final,
+                base_chat_url=base_chat_url,
+                promo_image_url=promo_image_url,
+                promo_text=promo_text,
+                contacto_especializado=contacto_especializado,
+                info_url=municipio_config.get("link_web") or municipio_config.get("url_web"),
+                include_menu=channel_value != "whatsapp",
+            )
+            if channel_value == "whatsapp":
+                receipt = response_payload["whatsapp_receipt"]
+                response_payload["message_body"] = receipt.get("body_text") or mensaje_respuesta
+                response_payload["options_list"] = []
+                response_payload["message_type"] = "text"
+                response_payload["image_url"] = receipt.get("media_url") or promo_image_url
+
+            tracking_url = (
+                response_payload.get("contexto_actualizado", {}) or {}
+            ).get("latest_tracking_url")
+            contexto_reclamo["last_created_reclamo"] = {
+                "ts": time.time(),
+                "fingerprint": dedupe_fingerprint,
+                "ticket_nro": nro_ticket_str,
+                "consulta_pin": pin_final,
+                "tracking_url": tracking_url,
+            }
+            caption_values = {
+                "message_body": mensaje_respuesta,
+                "ticket_nro": nro_ticket_str,
+                "ticket_id": ticket_creado.get("id"),
+                "nombre": ticket_data_cleaned.get("nombre_vecino"),
+                "categoria": categoria_display,
+                "descripcion": descripcion,
+                "consulta_pin": pin_final,
+            }
+            return _apply_whatsapp_closing_promo(
+                response_payload,
+                context=self.context,
+                caption_values=caption_values,
+            )
         except Exception as e:
             logger.error(f"Error en CrearReclamoActionHandler: {e}", exc_info=True)
             response = {
@@ -760,6 +1257,7 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
             or action_data.get("direccion_contacto")
             or contacto_prev.get("direccion")
             or getattr(viewer_user, "direccion", None)
+            or ubicacion_sugerencia
         )
         telefono_vecino = (
             action_data.get("telefono")
@@ -772,11 +1270,17 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
                 "message_to_user": "Para registrar tu sugerencia necesito tu nombre completo, DNI, email y dirección. Podés escribir todo en un solo mensaje.",
                 "pedir_info": "datos_contacto_sugerencia"
             }
+        pin_llm = action_data.get("pin") or action_data.get("consulta_pin")
+        pin_str = str(pin_llm).strip() if pin_llm else ""
+        if pin_str.isdigit() and len(pin_str) == 6:
+            pin_final = pin_str
+        else:
+            pin_final = f"{random.randint(0, 999999):06d}"
         # Create a ticket for the suggestion
         owner_user = self.context.get("user_obj")
         user_id_db = getattr(viewer_user, "id", None)
         anon_id_db = self.context.get("anon_id") if not user_id_db else None
-        municipio_db_id_para_ticket = getattr(owner_user, "municipio_id", None)
+        tenant_id, municipio_id = _resolve_municipio_tenant_ids(owner_user, self.context)
         nombre_vecino_final = nombre_vecino or getattr(viewer_user, "nombre", "Ciudadano Anónimo")
 
         ticket_data = {
@@ -797,13 +1301,14 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
             "longitud": (
                 coordenadas_sugerencia.get("lng") if isinstance(coordenadas_sugerencia, dict) else None
             ),
+            "municipio_id": municipio_id,
+            "tenant_id": tenant_id,
+            "consulta_pin": pin_final,
         }
         if self.context.get("foto_url"):
             ticket_data["foto_url_directa"] = self.context.get("foto_url")
 
         ticket_data_cleaned = {k: v for k, v in ticket_data.items() if v is not None}
-        if "municipio_id" in ticket_data_cleaned:
-            del ticket_data_cleaned["municipio_id"]
 
         try:
             ticket_creado = servicio_tickets.crear_nuevo_ticket(tipo_ticket="municipio", ticket_data=ticket_data_cleaned)
@@ -812,6 +1317,33 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
 
             nro_ticket_str = f"S-{ticket_creado.get('nro_ticket')}"
             logger.info(f"Ticket de sugerencia {nro_ticket_str} creado exitosamente.")
+
+            pin_value = ticket_creado.get("consulta_pin") or pin_final
+            try:
+                from models import MunicipioTicket, db
+                from routes.ticket import serialize_ticket_to_json
+                from socket_service import emit_new_ticket
+
+                ticket_obj = db.session.get(MunicipioTicket, ticket_creado.get("id"))
+                if ticket_obj:
+                    if not ticket_obj.consulta_pin:
+                        ticket_obj.consulta_pin = pin_value
+                        db.session.commit()
+                    pin_value = ticket_obj.consulta_pin or pin_value
+                    ticket_json = serialize_ticket_to_json(ticket_obj, "municipio")
+                    emit_new_ticket(ticket_json)
+                else:
+                    logger.warning(
+                        "No se pudo recuperar la sugerencia recién creada para emitir socket: id=%s",
+                        ticket_creado.get("id"),
+                    )
+            except Exception as e_notify:
+                logger.error(
+                    "Error enviando notificación en tiempo real para sugerencia %s: %s",
+                    nro_ticket_str,
+                    e_notify,
+                    exc_info=True,
+                )
 
             # Limpiar el contexto para evitar estados pegajosos
             user_info = self.context.get(CONTEXTO_MUNICIPIO, {}).get('user', {})
@@ -834,7 +1366,7 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
             # Obtener la URL base del chat del contexto para el botón "Ver mi Ticket"
             municipio_config = self.context.get('municipio_config_actual', {})
             base_chat_url = municipio_config.get('base_chat_url', 'https://www.chatboc.ar/chat')
-            promo_image_url = municipio_config.get('promo_image_url')
+            promo_image_url = _resolve_promo_image_url(municipio_config)
 
             respuesta_formateada, botones_generados = formatear_ticket_respuesta(
                 "sugerencia",
@@ -845,21 +1377,78 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
                 {}, # No hay contacto especializado para sugerencias
                 base_chat_url,
                 dni=dni_vecino,
-                consulta_pin=ticket_creado.get("consulta_pin"),
+                consulta_pin=pin_value,
             )
+
+            promo_section = promo_service.build_ticket_promo_section(
+                ticket_number=nro_ticket_str,
+                neighbor_name=nombre_vecino_final,
+                owner_user=owner_user,
+                municipio_config=municipio_config,
+            )
+            promo_text = None
+            if promo_section:
+                promo_text = promo_section.get("message_body")
+                if promo_text:
+                    respuesta_formateada = f"{respuesta_formateada}\n\n{promo_text}"
+                if not promo_image_url and promo_section.get("image_url"):
+                    promo_image_url = promo_section.get("image_url")
 
             # Añadir el botón de acción específico para sugerencias
             botones_finales = botones_generados
             botones_finales.append({"texto": "Hacer otra sugerencia", "id_accion": "hacer_sugerencia"})
 
-            return {
+            response_payload = {
                 "success": True,
                 "message_to_user": respuesta_formateada,
                 "options_list": botones_finales,
                 "message_type": "interactive_buttons",
                 "image_url": promo_image_url,
-                "data": {"ticket_id": ticket_creado.get('id'), "nro_ticket": nro_ticket_str, "status": "creado"}
+                "consulta_pin": pin_value,
+                "data": {
+                    "ticket_id": ticket_creado.get('id'),
+                    "nro_ticket": nro_ticket_str,
+                    "status": "creado",
+                    "nombre_vecino": nombre_vecino_final,
+                    "promo_text": promo_text,
+                    "consulta_pin": pin_value,
+                }
             }
+            channel_value = (self.context.get("channel") or "").strip().lower()
+            response_payload["whatsapp_receipt"] = render_ticket_whatsapp(
+                kind="sugerencia",
+                nombre=nombre_vecino_final,
+                ticket_nro=nro_ticket_str,
+                categoria="Sugerencia",
+                descripcion=descripcion_sugerencia,
+                direccion=ubicacion_sugerencia,
+                dni=dni_vecino,
+                consulta_pin=pin_value,
+                base_chat_url=base_chat_url,
+                promo_image_url=promo_image_url,
+                promo_text=promo_text,
+                info_url=municipio_config.get("link_web") or municipio_config.get("url_web"),
+            )
+            if channel_value == "whatsapp":
+                receipt = response_payload["whatsapp_receipt"]
+                response_payload["message_to_user"] = receipt.get("body_text") or respuesta_formateada
+                response_payload["options_list"] = []
+                response_payload["message_type"] = "text"
+                response_payload["image_url"] = receipt.get("media_url") or promo_image_url
+            caption_values = {
+                "message_body": respuesta_formateada,
+                "ticket_nro": nro_ticket_str,
+                "ticket_id": ticket_creado.get("id"),
+                "nombre": nombre_vecino_final,
+                "categoria": "Sugerencia",
+                "descripcion": descripcion_sugerencia,
+                "consulta_pin": pin_value,
+            }
+            return _apply_whatsapp_closing_promo(
+                response_payload,
+                context=self.context,
+                caption_values=caption_values,
+            )
         except Exception as e:
             logger.error(f"Error en HacerSugerenciaActionHandler: {e}", exc_info=True)
             return {
@@ -990,11 +1579,32 @@ class DerivarHumanoActionHandler(BaseActionHandler):
             chat_id = f"M-{sala_dict['nro_ticket']}"
 
             # formatear_ticket_respuesta now returns a tuple (message, buttons)
-            user_message, _ = formatear_ticket_respuesta("chat", nombre, pregunta_original, "Atención en Vivo", chat_id)
+            user_message, _ = formatear_ticket_respuesta(
+                "chat",
+                nombre,
+                pregunta_original,
+                "Atención en Vivo",
+                chat_id,
+            )
+            live_chat_status = build_live_chat_status()
+            if not live_chat_status.get("available"):
+                schedule_text = live_chat_status.get("description")
+                if schedule_text:
+                    user_message = (
+                        f"{user_message}\n\n"
+                        f"⏰ Nuestro horario de atención en vivo es {schedule_text}."
+                    )
+                else:
+                    user_message = f"{user_message}\n\n⏰ Ahora mismo no hay agentes disponibles."
             return {
                 "success": True,
                 "message_to_user": user_message,
-                "data": {"ticket_id": sala_dict['id'], "chat_id": chat_id, "status": "esperando_agente_en_vivo"},
+                "data": {
+                    "ticket_id": sala_dict['id'],
+                    "chat_id": chat_id,
+                    "status": "esperando_agente_en_vivo",
+                    "live_chat": live_chat_status,
+                },
             }
         except Exception as e:
             logger.error(f"Error en DerivarHumanoActionHandler: {e}", exc_info=True)
@@ -1085,6 +1695,115 @@ class MenuPrincipalActionHandler(BaseActionHandler):
             ],
             "message_type": "interactive_buttons"
         }
+
+class SolicitarLlamadaActionHandler(BaseActionHandler):
+    action_name = "solicitar_llamada"
+
+    def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Inicia una llamada saliente al usuario para continuar la interacción por voz.
+        """
+        logger.info(f"Executing SolicitarLlamadaActionHandler with data: {action_data}")
+
+        viewer_user = self.context.get("viewer_user_obj")
+        owner_user = self.context.get("user_obj")
+
+        # --- Plan Check: Only "full" (or enterprise/premium) plans allow outbound callback ---
+        # "pro" allows inbound only.
+
+        # Determine plan from tenant profile or user record
+        plan = "free"
+        tenant = getattr(owner_user, "tenant", None)
+        if tenant:
+            plan = str(tenant.plan or "free").lower()
+        elif hasattr(owner_user, "plan"):
+            plan = str(owner_user.plan or "free").lower()
+
+        # Allow if plan is 'full' (legacy: 'premium', 'enterprise')
+        # allowed_plans = {"full"}
+
+        # Map legacy high-tier plans to full
+        # if plan in {"premium", "enterprise", "municipio_full"}:
+        #    plan = "full"
+
+        # if plan not in allowed_plans:
+        #      return {
+        #         "success": False,
+        #         "message_to_user": "Esta función (Llamada Saliente) está disponible solo en el plan Full. Por favor, llamanos directamente o consultá por upgrade.",
+        #         "message_type": "text"
+        #     }
+
+        # Validar si tenemos el teléfono del usuario
+        # En WhatsApp, anon_id suele ser el número
+        user_phone = self.context.get("anon_id")
+
+        if not user_phone:
+             # Try getting from user object
+             if viewer_user and viewer_user.telefono:
+                 user_phone = viewer_user.telefono
+
+        if not user_phone:
+            return {
+                "success": False,
+                "message_to_user": "No pude identificar tu número de teléfono para llamarte. Por favor, escribime desde un número válido.",
+                "message_type": "text"
+            }
+
+        # Validar si tenemos el número del bot (owner) para usar como caller ID
+        # Necesitamos buscar el WhatsappNumero asociado al owner_user
+        # O usar un default si no es crítico que sea el mismo número
+
+        # Por simplicidad, intentamos usar el número configurado en Twilio o el del tenant
+        # Pero Twilio requiere que el 'From' sea un número verificado o comprado.
+        # Asumimos que el sistema usa el numero principal de Twilio por defecto si no se especifica otro.
+        bot_phone = os.environ.get("TWILIO_PHONE_NUMBER")
+
+        # Intentar obtener el numero especifico del tenant si existe
+        if hasattr(owner_user, 'whatsapp_numeros') and owner_user.whatsapp_numeros:
+             # Tomar el primero activo
+             for wn in owner_user.whatsapp_numeros:
+                 if wn.is_active:
+                     bot_phone = wn.numero_whatsapp
+                     break
+
+        if not bot_phone:
+             return {
+                "success": False,
+                "message_to_user": "Lo siento, el servicio de llamadas no está disponible en este momento (error de configuración).",
+                "message_type": "text"
+            }
+
+        # Nota: Twilio no permite llamadas OUTBOUND a "whatsapp:+...", tiene que ser al numero real "+..."
+        # Si 'user_phone' viene sin 'whatsapp:', está bien. Si viene con, hay que limpiarlo.
+        # Y el destino debe ser PSTN (red telefónica), no la app de WhatsApp (Voice API es distinta).
+
+        # Corrección: Para llamadas de voz PSTN, los números deben ser E.164 limpios.
+        clean_user_phone = user_phone.replace("whatsapp:", "").strip()
+        if not clean_user_phone.startswith("+"):
+             clean_user_phone = f"+{clean_user_phone}"
+
+        clean_bot_phone = bot_phone.replace("whatsapp:", "").strip()
+        if not clean_bot_phone.startswith("+"):
+             clean_bot_phone = f"+{clean_bot_phone}"
+
+        success = initiate_outbound_call(
+            to_number=clean_user_phone,
+            from_number=clean_bot_phone,
+            chat_session_id=self.context.get("chat_session_uuid"),
+        )
+
+        if success:
+            return {
+                "success": True,
+                "message_to_user": "¡Listo! Te estoy llamando en este momento. Atendé por favor.",
+                "message_type": "text"
+            }
+        else:
+            return {
+                "success": False,
+                "message_to_user": "Hubo un error al intentar llamarte. Por favor, intentá de nuevo más tarde o continuá por chat.",
+                "message_type": "text"
+            }
 
 # Add other handlers as needed
 # e.g., CalificarAtencionActionHandler, ConfirmarCierreTicketActionHandler

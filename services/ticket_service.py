@@ -1,7 +1,8 @@
 # services/ticket_service.py
+import os
 import random
 from datetime import datetime, timedelta
-from typing import Dict, Any, Literal, Union, Iterable
+from typing import Dict, Any, Literal, Union, Iterable, Optional
 import logging
 
 from models import (
@@ -14,10 +15,17 @@ from models import (
     db,
 )
 from utils.ticket_utils import normalize_category
+from utils.time_utils import datetime_to_iso_utc, get_local_now
+from sqlalchemy import func
 from sqlalchemy.exc import SQLAlchemyError
 from .integracion_municipal import enviar_ticket_a_sigem # SIGEM Integration
+from utils.heatmap import enrich_heatmap_points
+from services.notification_dispatcher import notification_dispatcher
 
 logger = logging.getLogger(__name__)
+
+_CLOSED_STATES = {"cerrado"}
+
 
 class TicketCreator:
     def create(self, ticket_data: Dict[str, Any]) -> Union[PymeTicket, MunicipioTicket]:
@@ -39,6 +47,7 @@ class MunicipioTicketCreator(TicketCreator):
         return MunicipioTicket(
             user_id=ticket_data.get("user_id"),
             municipio_id=ticket_data.get("municipio_id"),
+            tenant_id=ticket_data.get("tenant_id") or ticket_data.get("municipio_id"), # Ensure tenant_id is set
             anon_id=ticket_data.get("anon_id"),
             asunto=ticket_data.get("asunto", "Sin Asunto"),
             categoria=ticket_data.get("categoria", "General"),
@@ -61,6 +70,17 @@ class MunicipioTicketCreator(TicketCreator):
 
 class PymeTicketCreator(TicketCreator):
     def create(self, ticket_data: Dict[str, Any]) -> PymeTicket:
+        tenant_id = ticket_data.get("tenant_id")
+        rubro_id = ticket_data.get("rubro_id")
+        pyme_id = ticket_data.get("pyme_id")
+        if (tenant_id is None or rubro_id is None) and pyme_id:
+            pyme_user = db.session.get(User, pyme_id)
+            if pyme_user:
+                if tenant_id is None:
+                    tenant_id = getattr(pyme_user, "tenant_id", None)
+                if rubro_id is None:
+                    rubro_id = getattr(pyme_user, "rubro_id", None)
+
         lat = (
             ticket_data.get("latitud")
             or ticket_data.get("lat")
@@ -84,12 +104,13 @@ class PymeTicketCreator(TicketCreator):
         )
         return PymeTicket(
             user_id=ticket_data.get("user_id"),
+            tenant_id=tenant_id,
             anon_id=ticket_data.get("anon_id"),
             asunto=ticket_data.get("asunto", "Sin Asunto"),
             categoria=ticket_data.get("categoria", "General"),
             pregunta=ticket_data.get("pregunta"),
             nro_ticket=ticket_data.get("nro_ticket"),
-            rubro_id=ticket_data.get("rubro_id"),
+            rubro_id=rubro_id,
             direccion=ticket_data.get("direccion"),
             latitud=lat,
             longitud=lon,
@@ -106,8 +127,208 @@ class ServicioTickets:
             "municipio": MunicipioTicketCreator(),
             "pyme": PymeTicketCreator()
         }
+        self.auto_assign_enabled = (
+            str(os.getenv("AUTO_ASSIGN_TICKETS", "false")).strip().lower()
+            in {"1", "true", "yes"}
+        )
 
-    def crear_nuevo_ticket(self, tipo_ticket: Literal["municipio", "pyme"], ticket_data: Dict[str, Any]) -> Union[PymeTicket, MunicipioTicket, None, dict]:
+    def _empleados_para_ticket_municipal(self, ticket: MunicipioTicket) -> list[User]:
+        if not ticket.municipio_id:
+            return []
+
+        query = User.query.filter(
+            User.empresa_id == ticket.municipio_id,
+            User.rol == "empleado",
+            User.tipo_chat == "municipio",
+        )
+
+        categoria_normalizada = (ticket.categoria or "").strip().lower()
+        if categoria_normalizada:
+            query = query.join(User.categorias).filter(func.lower(Categoria.nombre) == categoria_normalizada)
+
+        return query.order_by(User.id.asc()).all()
+
+    def _calcular_carga_empleado_municipal(self, empleado: User, municipio_id: int) -> int:
+        return (
+            MunicipioTicket.query.filter(
+                MunicipioTicket.municipio_id == municipio_id,
+                MunicipioTicket.asignado_a_id == empleado.id,
+                ~MunicipioTicket.estado.in_(list(_CLOSED_STATES)),
+            )
+            .with_entities(func.count(MunicipioTicket.id))
+            .scalar()
+            or 0
+        )
+
+    def asignar_ticket_municipal(
+        self,
+        ticket: MunicipioTicket,
+        empleado_id: Optional[int] = None,
+        *,
+        auto: bool = False,
+        actor_id: Optional[int] = None,
+    ) -> Optional[User]:
+        """Asigna el ticket a un empleado compatible con la categoría y municipio."""
+
+        if not ticket:
+            return None
+
+        if empleado_id:
+            empleado = User.query.filter(
+                User.id == empleado_id,
+                User.empresa_id == ticket.municipio_id,
+                User.rol.in_(["empleado", "admin"]),
+            ).first()
+        else:
+            candidatos = self._empleados_para_ticket_municipal(ticket)
+            if not candidatos or (not auto and not self.auto_assign_enabled):
+                return None
+            empleado = min(
+                candidatos,
+                key=lambda emp: self._calcular_carga_empleado_municipal(emp, ticket.municipio_id),
+            )
+
+        if not empleado:
+            return None
+
+        if ticket.asignado_a_id == empleado.id:
+            return empleado
+
+        ticket.asignado_a = empleado
+        ticket.asignado_en = get_local_now()
+        if hasattr(ticket, "ultima_actividad"):
+            ticket.ultima_actividad = get_local_now()
+
+        comentario = TicketComentario(
+            municipio_ticket_id=ticket.id,
+            comentario=f"Ticket asignado a {empleado.name}",
+            user_id=actor_id,
+            es_admin=True,
+            origen="sistema",
+        )
+        db.session.add(comentario)
+
+        return empleado
+
+    def _resolve_pyme_owner_id(self, ticket: PymeTicket, actor_id: Optional[int]) -> Optional[int]:
+        if actor_id:
+            actor = db.session.get(User, actor_id)
+            if actor and actor.tipo_chat == "pyme":
+                return actor.id if actor.rol == "admin" else actor.empresa_id
+
+        admin_for_rubro = (
+            User.query.filter(
+                User.rubro_id == ticket.rubro_id,
+                User.tipo_chat == "pyme",
+                User.rol == "admin",
+            )
+            .order_by(User.id.asc())
+            .first()
+        )
+        return admin_for_rubro.id if admin_for_rubro else None
+
+    def _empleados_para_ticket_pyme(self, ticket: PymeTicket, actor_id: Optional[int]) -> list[User]:
+        owner_id = self._resolve_pyme_owner_id(ticket, actor_id)
+        if not owner_id:
+            return []
+
+        candidatos = (
+            User.query.filter(
+                User.empresa_id == owner_id,
+                User.rol.in_(["empleado", "admin"]),
+                User.tipo_chat == "pyme",
+            )
+            .order_by(User.id.asc())
+            .all()
+        )
+
+        categoria_normalizada = (ticket.categoria or "").strip().lower()
+        if not categoria_normalizada:
+            return candidatos
+
+        filtrados = []
+        for empleado in candidatos:
+            categorias_emp = [
+                c.strip().lower()
+                for c in (empleado.ticket_categorias or "").split(",")
+                if c.strip()
+            ]
+            if not categorias_emp or categoria_normalizada in categorias_emp:
+                filtrados.append(empleado)
+
+        return filtrados
+
+    def _calcular_carga_empleado_pyme(self, empleado: User, rubro_id: int) -> int:
+        return (
+            PymeTicket.query.filter(
+                PymeTicket.rubro_id == rubro_id,
+                PymeTicket.asignado_a_id == empleado.id,
+                ~PymeTicket.estado.in_(list(_CLOSED_STATES)),
+            )
+            .with_entities(func.count(PymeTicket.id))
+            .scalar()
+            or 0
+        )
+
+    def asignar_ticket_pyme(
+        self,
+        ticket: PymeTicket,
+        empleado_id: Optional[int] = None,
+        *,
+        auto: bool = False,
+        actor_id: Optional[int] = None,
+    ) -> Optional[User]:
+        """Asigna el ticket de pyme a un empleado compatible."""
+
+        if not ticket:
+            return None
+
+        if empleado_id:
+            owner_id = self._resolve_pyme_owner_id(ticket, actor_id)
+            empleado = User.query.filter(
+                User.id == empleado_id,
+                User.tipo_chat == "pyme",
+                User.rol.in_(["empleado", "admin"]),
+                User.empresa_id == owner_id,
+            ).first()
+        else:
+            candidatos = self._empleados_para_ticket_pyme(ticket, actor_id)
+            if not candidatos or (not auto and not self.auto_assign_enabled):
+                return None
+            empleado = min(
+                candidatos,
+                key=lambda emp: self._calcular_carga_empleado_pyme(emp, ticket.rubro_id),
+            )
+
+        if not empleado:
+            return None
+
+        if ticket.asignado_a_id == empleado.id:
+            return empleado
+
+        ticket.asignado_a = empleado
+        ticket.asignado_en = get_local_now()
+        if hasattr(ticket, "ultima_actividad"):
+            ticket.ultima_actividad = get_local_now()
+
+        comentario = TicketComentario(
+            pyme_ticket_id=ticket.id,
+            comentario=f"Ticket asignado a {empleado.name}",
+            user_id=actor_id,
+            es_admin=True,
+            origen="sistema",
+        )
+        db.session.add(comentario)
+
+        return empleado
+
+    def crear_nuevo_ticket(
+        self,
+        tipo_ticket: Literal["municipio", "pyme"],
+        ticket_data: Dict[str, Any],
+        *,
+        return_object: bool = False,
+    ) -> Union[PymeTicket, MunicipioTicket, None, dict]:
         creator = self.creators.get(tipo_ticket)
         if not creator:
             raise ValueError(f"Tipo de ticket inválido: '{tipo_ticket}'.")
@@ -136,6 +357,16 @@ class ServicioTickets:
             db.session.add(ticket)
             db.session.flush() # flush para obtener el ID del ticket para el comentario
 
+            if (
+                self.auto_assign_enabled
+                and tipo_ticket == "municipio"
+                and isinstance(ticket, MunicipioTicket)
+            ):
+                try:
+                    self.asignar_ticket_municipal(ticket, auto=True)
+                except Exception:
+                    logger.exception("No se pudo asignar automáticamente el ticket municipal")
+
             # Si viene un comentario opcional, lo agregamos
             if ticket_data.get("comentario"):
                 comentario = TicketComentario(
@@ -149,7 +380,7 @@ class ServicioTickets:
                     comentario.pyme_ticket = ticket
                 db.session.add(comentario)
 
-            # db.session.commit() # <<< ELIMINADO
+            db.session.commit()
             logger.info(f"Ticket #{ticket.nro_ticket} (ID: {ticket.id}) ({tipo_ticket}) creado localmente. Municipio ID: {getattr(ticket, 'municipio_id', 'N/A')}. Datos: {ticket.__dict__}")
 
             # Integración con SIGEM para tickets municipales
@@ -165,7 +396,11 @@ class ServicioTickets:
                     # La integración externa no debe impedir el funcionamiento primario.
                     logger.error(f"Error durante el envío del Ticket #{ticket.nro_ticket} a SIGEM: {e_sigem}", exc_info=True)
 
-            # Notificaciones por email (admin y cliente)
+            # Notificaciones centralizadas (email, whatsapp, admin)
+            # notification_dispatcher no tiene un metodo especifico para tickets aun,
+            # pero podemos adaptar o llamar a _notificar_ticket_por_email por ahora
+            # y extender dispatcher despues.
+            # Para mantener consistencia con el pedido del usuario:
             self._notificar_ticket_por_email(ticket, tipo_ticket, ticket_data)
 
             # Notificar panel en tiempo real
@@ -199,10 +434,14 @@ class ServicioTickets:
                 ticket_dict["telefono_vecino"] = getattr(ticket, 'telefono_vecino', None)
                 ticket_dict["email_vecino"] = getattr(ticket, 'email_vecino', None)
                 ticket_dict["municipio_id"] = getattr(ticket, 'municipio_id', None)
+                ticket_dict["consulta_pin"] = getattr(ticket, 'consulta_pin', None)
             elif tipo_ticket == "pyme":
+                ticket_dict["consulta_pin"] = getattr(ticket, 'consulta_pin', None)
                 ticket_dict["detalles"] = ticket.pregunta # PymeTicket uses 'pregunta'
                 ticket_dict["rubro_id"] = getattr(ticket, 'rubro_id', None)
 
+            if return_object:
+                return ticket
             return ticket_dict
         except SQLAlchemyError as e:
             db.session.rollback()
@@ -282,24 +521,71 @@ class ServicioTickets:
             else:
                 nuevo_comentario.pyme_ticket = ticket
             db.session.add(nuevo_comentario)
-            # db.session.commit() # <<< ELIMINADO
+            if hasattr(ticket, "ultima_actividad"):
+                ticket.ultima_actividad = get_local_now()
+            db.session.commit()
+            should_notify = comentario_data.get("emit_notifications", True)
+            if should_notify:
+                try:
+                    from services.email_service import (
+                        enviar_email_ticket_novedad,
+                        enviar_sms_ticket_novedad,
+                        enviar_whatsapp_ticket_novedad, # <--- IMPORTAR NUEVA FUNCIÓN
+                        enviar_email_ticket_admin,
+                    )
+                    comentario_texto = comentario_data.get('comentario', '') or ''
+                    mensaje_notificacion = f"Nuevo comentario en tu ticket #{ticket.nro_ticket}: {comentario_texto[:50]}..."
+                    mensaje_completo = comentario_texto.strip() or mensaje_notificacion
+                    if nuevo_comentario.es_admin: # Notificar al usuario/cliente
+                        enviar_email_ticket_novedad(
+                            ticket,
+                            mensaje_completo,
+                            comentario_reciente=nuevo_comentario,
+                        )
+                        enviar_sms_ticket_novedad(ticket, mensaje_notificacion)
+                        if tipo_ticket == "municipio": # Por ahora, WhatsApp solo para municipio
+                            enviar_whatsapp_ticket_novedad(ticket, mensaje_notificacion)
+                    else: # Notificar al admin/empleado
+                        enviar_email_ticket_admin(
+                            ticket,
+                            tipo_ticket=tipo_ticket,
+                            comentario_reciente=nuevo_comentario,
+                            mensaje_resumen=mensaje_completo,
+                        )
+                except Exception as e:  # pragma: no cover - not essential for tests
+                    logger.error(f"Error enviando notificaciones tras crear comentario para ticket {ticket.id if ticket else 'N/A'}: {e}", exc_info=True)
+
+            # Emitir evento de socket para Live Chat (Admin Panel)
             try:
-                from services.email_service import (
-                    enviar_email_ticket_novedad,
-                    enviar_sms_ticket_novedad,
-                    enviar_whatsapp_ticket_novedad, # <--- IMPORTAR NUEVA FUNCIÓN
-                    enviar_email_ticket_admin,
-                )
-                mensaje_notificacion = f"Nuevo comentario en tu ticket #{ticket.nro_ticket}: {comentario_data.get('comentario', '')[:50]}..."
-                if nuevo_comentario.es_admin: # Notificar al usuario/cliente
-                    enviar_email_ticket_novedad(ticket, mensaje_notificacion)
-                    enviar_sms_ticket_novedad(ticket, mensaje_notificacion)
-                    if tipo_ticket == "municipio": # Por ahora, WhatsApp solo para municipio
-                        enviar_whatsapp_ticket_novedad(ticket, mensaje_notificacion)
-                else: # Notificar al admin/empleado
-                    enviar_email_ticket_admin(ticket) # Email al admin es suficiente por ahora
-            except Exception as e:  # pragma: no cover - not essential for tests
-                logger.error(f"Error enviando notificaciones tras crear comentario para ticket {ticket.id if ticket else 'N/A'}: {e}", exc_info=True)
+                from socket_service import emit_ticket_comment
+
+                # We need to construct a payload that matches what frontend expects for 'new_chat_message'
+                # Ideally reuse 'new_chat_message' event structure if frontend listens to it.
+                # Currently socket_service.handle_send_chat_message emits 'new_chat_message'.
+                # emit_ticket_comment emits 'new_comment'.
+                # We will emit 'new_chat_message' manually here to match the Live Chat expectation.
+
+                from flask_socketio import emit
+                from socket_service import _resolve_ticket_room, socketio
+
+                room_payload = {
+                    "tenant_type": tipo_ticket,
+                    "id": ticket_id,
+                    # Fallbacks
+                    "municipio_id": getattr(ticket, "municipio_id", None),
+                    "pyme_id": getattr(ticket, "rubro_id", None) # Approximation for pyme room resolution
+                }
+
+                room = _resolve_ticket_room(room_payload)
+                if room:
+                    socketio.emit('new_chat_message', {
+                        'ticket_id': ticket_id,
+                        'message': nuevo_comentario.to_dict()
+                    }, room=room)
+
+            except Exception as e_sock:
+                logger.error(f"Error emitting socket event for comment on ticket {ticket_id}: {e_sock}", exc_info=True)
+
             return nuevo_comentario
         except SQLAlchemyError as e:
             db.session.rollback()
@@ -456,7 +742,15 @@ class ServicioTickets:
                     logger.warning(f"Formato de fecha_fin inválido: {fecha_fin}")
 
             categorias_filtrar_lower: list[str] = []
-            if categoria and hasattr(Model, 'categoria'):
+            # Check if model has a 'categoria' column before filtering by it
+            has_categoria_column = hasattr(Model, 'categoria')
+
+            # PymeTicket typically stores category in 'categoria' (String) as per schema,
+            # but log error 'column pyme_ticket.categoria_id does not exist' suggests
+            # something else might have been trying to join or filter by ID.
+            # The code block below filters by `Model.categoria` string column.
+
+            if categoria and has_categoria_column:
                 if isinstance(categoria, str):
                     raw_values = [categoria]
                 else:
@@ -543,6 +837,10 @@ class ServicioTickets:
                         "categoria": cat,
                     }
                 )
+            enrich_heatmap_points(
+                resultado_heatmap,
+                property_keys=("categoria", "estado", "barrio", "fuente"),
+            )
             logger.info(
                 "[TICKET_SERVICE_MAPA] puntos_heatmap=%s ejemplo=%s",
                 len(resultado_heatmap),
@@ -588,7 +886,7 @@ class ServicioTickets:
                     mensajes.append(
                         {
                             "texto": conv.pregunta,
-                            "fecha": conv.timestamp.isoformat(),
+                            "fecha": datetime_to_iso_utc(conv.timestamp),
                             "autor": "vecino",
                             "autor_nombre": nombre_vecino,
                             "es_admin": False,
@@ -596,7 +894,9 @@ class ServicioTickets:
                     )
                 if conv.respuesta:
                     # Añadir un pequeño delta para conservar el orden pregunta-respuesta
-                    respuesta_fecha = (conv.timestamp + timedelta(milliseconds=1)).isoformat()
+                    respuesta_fecha = datetime_to_iso_utc(
+                        conv.timestamp + timedelta(milliseconds=1)
+                    )
                     mensajes.append(
                         {
                             "texto": conv.respuesta,
@@ -616,6 +916,7 @@ class ServicioTickets:
         for c in comentarios:
             data = c.to_dict()
             data["texto"] = data.pop("comentario")
+            data["fecha"] = datetime_to_iso_utc(c.fecha)
             mensajes.append(data)
 
         # Orden cronológico por fecha
@@ -637,7 +938,7 @@ class ServicioTickets:
             {
                 "tipo": "ticket_creado",
                 "estado": "nuevo",
-                "fecha": ticket.fecha.isoformat(),
+                "fecha": datetime_to_iso_utc(ticket.fecha),
             }
         ]
 
@@ -647,7 +948,7 @@ class ServicioTickets:
                     {
                         "tipo": "estado",
                         "estado": _estado_publico(c.estado_ticket),
-                        "fecha": c.fecha.isoformat(),
+                        "fecha": datetime_to_iso_utc(c.fecha),
                     }
                 )
             else:
@@ -670,13 +971,31 @@ class ServicioTickets:
                     {
                         "tipo": "comentario",
                         "texto": c.comentario,
-                        "fecha": c.fecha.isoformat(),
+                        "fecha": datetime_to_iso_utc(c.fecha),
                         "es_admin": c.es_admin,
                         "user_id": c.user_id,
                         "autor": autor_tipo,
                         "autor_nombre": nombre_autor,
                     }
                 )
+
+        estado_actual = _estado_publico(getattr(ticket, "estado", None))
+        if estado_actual:
+            estado_ya_registrado = any(
+                evento.get("tipo") == "estado" and evento.get("estado") == estado_actual
+                for evento in timeline
+            )
+            if not estado_ya_registrado:
+                fecha_estado = getattr(ticket, "ultima_actividad", None) or ticket.fecha
+                timeline.append(
+                    {
+                        "tipo": "estado",
+                        "estado": estado_actual,
+                        "fecha": datetime_to_iso_utc(fecha_estado),
+                    }
+                )
+
+        timeline.sort(key=lambda evento: evento.get("fecha") or "")
 
         return timeline
 

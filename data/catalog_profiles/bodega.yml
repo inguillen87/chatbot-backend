@@ -1,0 +1,33 @@
+synonyms:
+  nombre: ["nombre", "producto", "vino", "etiqueta", "variedad"]
+  precio: ["precio", "valor botella", "precio unitario", "p. unit"]
+  sku: ["sku", "codigo", "ref"]
+  stock: ["stock", "cajas disponibles", "botellas disponibles"]
+  varietal: ["varietal", "uva", "cepa", "tipo"]
+  anada: ["año", "cosecha", "añada"]
+  presentacion: ["presentacion", "formato", "empaque", "caja"]
+
+required_fields:
+  - nombre
+
+attributes:
+  - varietal
+  - anada
+  - unidades_por_caja
+  - precio_caja
+  - precio_sugerido
+
+prompt_template: |
+  Eres un experto sommelier y analista de datos. Procesarás una lista de precios de una BODEGA.
+
+  Campos clave a extraer:
+  - Nombre del vino (ej: "Malbec Reserva", "Rutini Cabernet")
+  - Varietal (Malbec, Cabernet, Chardonnay, etc.)
+  - Añada (Año de cosecha, ej: 2020)
+  - Presentación (ej: "Caja x 6", "750ml")
+  - Precio Unitario (Precio por botella)
+  - Precio Caja (Precio por caja cerrada, si existe)
+
+  Reglas:
+  - Si dice "Caja x 6", entonces unidad_base="botella" y contenido_paquete="caja x 6".
+  - Si hay columnas "Sugerido", es el precio de venta al público sugerido.

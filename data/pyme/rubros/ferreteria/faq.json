@@ -1,0 +1,62 @@
+[
+  {
+    "question": "Acero y perfiles",
+    "answer": "Perfiles UPN · IPN · galvanizado",
+    "extended_answer": "Necesito la tabla de acero laminado y perfiles UPN con entrega semanal."
+  },
+  {
+    "question": "Paneles térmicos",
+    "answer": "Panel PUR/PIR de 40/60 mm",
+    "extended_answer": "Mostrame panelería térmica con ficha técnica y R-value para cámara frigorífica."
+  },
+  {
+    "question": "Madera laminada",
+    "answer": "Tramos de 6 a 12 m certificados",
+    "extended_answer": "¿Qué soluciones de madera laminada estructural ofrecen y en qué dimensiones?"
+  },
+  {
+    "question": "Cronograma por etapa",
+    "answer": "Just in time + controles de recepción",
+    "extended_answer": "Armá un plan de entregas por etapas para un edificio de 12 pisos."
+  },
+  {
+    "question": "Montaje con grúa",
+    "answer": "Camiones grúa + operadores habilitados",
+    "extended_answer": "¿Cómo coordinan grúas y operadores certificados para montaje de paneles?"
+  },
+  {
+    "question": "Seguridad industrial",
+    "answer": "Cursos SST y auditorías in situ",
+    "extended_answer": "Necesito el checklist de EPP obligatorio y capacitaciones en obra."
+  },
+  {
+    "question": "Cálculo de estructuras",
+    "answer": "Ingeniería básica + memoria descriptiva",
+    "extended_answer": "Quiero un cálculo preliminar para estructura metálica de 1.200 m²."
+  },
+  {
+    "question": "Integración BIM",
+    "answer": "Familias REVIT + seguimiento",
+    "extended_answer": "¿Cómo integran el catálogo a nuestro modelo BIM y control de avance?"
+  },
+  {
+    "question": "Plan HSEQ",
+    "answer": "Procedimientos, permisos y auditorías",
+    "extended_answer": "Necesito la matriz HSEQ para presentar ante el comitente."
+  },
+  {
+    "question": "Líneas bancarias",
+    "answer": "Hasta 120 días con avales",
+    "extended_answer": "¿Qué líneas bancarias y plazos ofrecen para constructoras?"
+  },
+  {
+    "question": "API de pedidos",
+    "answer": "APIs REST + webhooks",
+    "extended_answer": "Necesito integrar pedidos y stock al ERP de la constructora."
+  },
+  {
+    "question": "Dashboard de consumos",
+    "answer": "Alertas de sobreconsumo y reposición",
+    "extended_answer": "Mostrame el dashboard con consumo por obra y desvíos."
+  }
+]

@@ -1,0 +1,1518 @@
+{
+  "templates": [
+    {
+      "slug": "votacion-envivo-youtube",
+      "titulo": "Votación en vivo: {{municipality}} decide",
+      "descripcion": "Participá en tiempo real y dejá tu comentario para enriquecer la decisión.",
+      "tipo": "opinion",
+      "politica_unicidad": "libre",
+      "anonimato": true,
+      "requiere_datos_contacto": false,
+      "es_votacion_envivo": true,
+      "mostrar_resultados_envivo": true,
+      "permitir_comentarios": true,
+      "tags": [
+        "votacion",
+        "envivo",
+        "participacion"
+      ],
+      "preguntas": [
+        {
+          "orden": 1,
+          "tipo": "opcion_unica",
+          "texto": "¿Cuál opción debería priorizarse?",
+          "obligatoria": true,
+          "opciones": [
+            {
+              "orden": 1,
+              "texto": "Opción A"
+            },
+            {
+              "orden": 2,
+              "texto": "Opción B"
+            },
+            {
+              "orden": 3,
+              "texto": "Opción C"
+            },
+            {
+              "orden": 4,
+              "texto": "Opción D"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "slug": "servicios-publicos",
+      "titulo": "Encuesta sobre servicios públicos en {{municipality}}",
+      "descripcion": "Queremos conocer la experiencia de los vecinos y vecinas con los servicios urbanos para planificar mejoras.",
+      "tipo": "opinion",
+      "politica_unicidad": "por_dni_o_phone",
+      "anonimato": false,
+      "requiere_datos_contacto": true,
+      "tags": [
+        "Servicios públicos",
+        "Mantenimiento urbano"
+      ],
+      "preguntas": [
+        {
+          "orden": 1,
+          "tipo": "opcion_unica",
+          "texto": "¿Cómo calificás la limpieza urbana en {{municipality}}?",
+          "obligatoria": true,
+          "opciones": [
+            {
+              "orden": 1,
+              "texto": "Muy buena"
+            },
+            {
+              "orden": 2,
+              "texto": "Buena"
+            },
+            {
+              "orden": 3,
+              "texto": "Regular"
+            },
+            {
+              "orden": 4,
+              "texto": "Mala"
+            }
+          ]
+        },
+        {
+          "orden": 2,
+          "tipo": "multiple",
+          "texto": "¿Qué aspectos deberían reforzarse prioritariamente?",
+          "obligatoria": true,
+          "min_selecciones": 1,
+          "max_selecciones": 3,
+          "opciones": [
+            {
+              "orden": 1,
+              "texto": "Recolección de residuos"
+            },
+            {
+              "orden": 2,
+              "texto": "Iluminación pública"
+            },
+            {
+              "orden": 3,
+              "texto": "Mantenimiento de calles"
+            },
+            {
+              "orden": 4,
+              "texto": "Espacios verdes"
+            }
+          ]
+        },
+        {
+          "orden": 3,
+          "tipo": "abierta",
+          "texto": "¿Qué propuesta concreta sugerís para mejorar los servicios públicos?",
+          "obligatoria": false
+        }
+      ]
+    },
+    {
+      "slug": "seguridad-ciudadana",
+      "titulo": "Sondeo de seguridad ciudadana en {{municipality}}",
+      "descripcion": "Medimos la percepción de seguridad barrial para coordinar acciones con fuerzas locales.",
+      "tipo": "sondeo",
+      "politica_unicidad": "por_dni_o_phone",
+      "anonimato": false,
+      "requiere_datos_contacto": true,
+      "tags": [
+        "Seguridad",
+        "Prevención"
+      ],
+      "preguntas": [
+        {
+          "orden": 1,
+          "tipo": "opcion_unica",
+          "texto": "¿Con qué frecuencia ves patrullajes o controles preventivos?",
+          "obligatoria": true,
+          "opciones": [
+            {
+              "orden": 1,
+              "texto": "Todos los días"
+            },
+            {
+              "orden": 2,
+              "texto": "Varias veces por semana"
+            },
+            {
+              "orden": 3,
+              "texto": "Pocas veces al mes"
+            },
+            {
+              "orden": 4,
+              "texto": "Nunca"
+            }
+          ]
+        },
+        {
+          "orden": 2,
+          "tipo": "opcion_unica",
+          "texto": "¿Cómo evaluás la iluminación nocturna en tu cuadra?",
+          "obligatoria": true,
+          "opciones": [
+            {
+              "orden": 1,
+              "texto": "Muy adecuada"
+            },
+            {
+              "orden": 2,
+              "texto": "Adecuada"
+            },
+            {
+              "orden": 3,
+              "texto": "Insuficiente"
+            },
+            {
+              "orden": 4,
+              "texto": "Muy insuficiente"
+            }
+          ]
+        },
+        {
+          "orden": 3,
+          "tipo": "abierta",
+          "texto": "Comentá situaciones o zonas específicas donde te gustaría ver más presencia preventiva.",
+          "obligatoria": false
+        }
+      ]
+    },
+    {
+      "slug": "movilidad-y-transporte",
+      "titulo": "Consulta sobre movilidad y transporte en {{municipality}}",
+      "descripcion": "Identificamos necesidades de infraestructura vial y transporte público para priorizar inversiones.",
+      "tipo": "opinion",
+      "politica_unicidad": "por_ip",
+      "anonimato": true,
+      "requiere_datos_contacto": false,
+      "tags": [
+        "Movilidad",
+        "Transporte"
+      ],
+      "preguntas": [
+        {
+          "orden": 1,
+          "tipo": "multiple",
+          "texto": "¿Qué medios de transporte utilizás semanalmente?",
+          "obligatoria": true,
+          "min_selecciones": 1,
+          "max_selecciones": 4,
+          "opciones": [
+            {
+              "orden": 1,
+              "texto": "Colectivo"
+            },
+            {
+              "orden": 2,
+              "texto": "Bicicleta"
+            },
+            {
+              "orden": 3,
+              "texto": "Motocicleta"
+            },
+            {
+              "orden": 4,
+              "texto": "Auto particular"
+            },
+            {
+              "orden": 5,
+              "texto": "Caminata"
+            }
+          ]
+        },
+        {
+          "orden": 2,
+          "tipo": "opcion_unica",
+          "texto": "¿Cuál es la principal dificultad para moverte por {{municipality}}?",
+          "obligatoria": true,
+          "opciones": [
+            {
+              "orden": 1,
+              "texto": "Frecuencia del transporte público"
+            },
+            {
+              "orden": 2,
+              "texto": "Estado de las calles"
+            },
+            {
+              "orden": 3,
+              "texto": "Falta de ciclovías"
+            },
+            {
+              "orden": 4,
+              "texto": "Congestión vehicular"
+            },
+            {
+              "orden": 5,
+              "texto": "Inseguridad vial"
+            }
+          ]
+        },
+        {
+          "orden": 3,
+          "tipo": "abierta",
+          "texto": "¿Qué cambio puntual ayudaría a mejorar tu traslado diario?",
+          "obligatoria": false
+        }
+      ]
+    },
+    {
+      "slug": "agenda-cultural-2025",
+      "titulo": "Agenda cultural y turística 2025 para {{municipality}}",
+      "descripcion": "Priorizamos actividades, festivales y experiencias turísticas locales que potencien la identidad regional.",
+      "tipo": "opinion",
+      "politica_unicidad": "por_cookie",
+      "anonimato": true,
+      "requiere_datos_contacto": false,
+      "tags": [
+        "Cultura",
+        "Turismo"
+      ],
+      "preguntas": [
+        {
+          "orden": 1,
+          "tipo": "multiple",
+          "texto": "¿Qué tipo de eventos te gustaría que se multipliquen en {{municipality}}?",
+          "obligatoria": true,
+          "min_selecciones": 1,
+          "max_selecciones": 3,
+          "opciones": [
+            {
+              "orden": 1,
+              "texto": "Festivales gastronómicos"
+            },
+            {
+              "orden": 2,
+              "texto": "Ferias de emprendedores"
+            },
+            {
+              "orden": 3,
+              "texto": "Shows musicales al aire libre"
+            },
+            {
+              "orden": 4,
+              "texto": "Actividades deportivas"
+            },
+            {
+              "orden": 5,
+              "texto": "Recorridos turísticos guiados"
+            }
+          ]
+        },
+        {
+          "orden": 2,
+          "tipo": "opcion_unica",
+          "texto": "¿Cuál es tu principal motivación para asistir a eventos culturales locales?",
+          "obligatoria": true,
+          "opciones": [
+            {
+              "orden": 1,
+              "texto": "Aprender y descubrir propuestas nuevas"
+            },
+            {
+              "orden": 2,
+              "texto": "Compartir tiempo en familia o con amistades"
+            },
+            {
+              "orden": 3,
+              "texto": "Apoyar a artistas y emprendedores locales"
+            },
+            {
+              "orden": 4,
+              "texto": "Turismo y recreación"
+            }
+          ]
+        },
+        {
+          "orden": 3,
+          "tipo": "abierta",
+          "texto": "Comentá una idea innovadora para sumar a la agenda cultural.",
+          "obligatoria": false
+        }
+      ]
+    },
+    {
+      "slug": "ciudad-sustentable-2025",
+      "titulo": "Encuesta 2025 de ciudad sustentable para {{municipality}}",
+      "descripcion": "Priorizamos acciones sobre energía, agua, residuos y economía circular con foco educativo.",
+      "tipo": "planificacion",
+      "politica_unicidad": "por_dni",
+      "anonimato": false,
+      "requiere_datos_contacto": true,
+      "tags": [
+        "Sustentabilidad",
+        "Planificación"
+      ],
+      "preguntas": [
+        {
+          "orden": 1,
+          "tipo": "multiple",
+          "texto": "¿Qué iniciativas sustentables debería impulsar primero {{municipality}}?",
+          "obligatoria": true,
+          "min_selecciones": 1,
+          "max_selecciones": 3,
+          "opciones": [
+            {
+              "orden": 1,
+              "texto": "Programas para reducir el consumo de agua"
+            },
+            {
+              "orden": 2,
+              "texto": "Eficiencia energética y luminarias LED"
+            },
+            {
+              "orden": 3,
+              "texto": "Capacitaciones sobre uso responsable de gas"
+            },
+            {
+              "orden": 4,
+              "texto": "Fortalecer puntos limpios y reciclaje"
+            },
+            {
+              "orden": 5,
+              "texto": "Huertas urbanas y compostaje comunitario"
+            }
+          ]
+        },
+        {
+          "orden": 2,
+          "tipo": "opcion_unica",
+          "texto": "¿Qué tan útil sería que el punto limpio produzca materiales educativos con IA y reciclados para escuelas y jardines?",
+          "obligatoria": true,
+          "opciones": [
+            {
+              "orden": 1,
+              "texto": "Muy útil, debería ser una prioridad"
+            },
+            {
+              "orden": 2,
+              "texto": "Útil como complemento de otras acciones"
+            },
+            {
+              "orden": 3,
+              "texto": "Poco útil frente a otras necesidades"
+            },
+            {
+              "orden": 4,
+              "texto": "No es necesario"
+            }
+          ]
+        },
+        {
+          "orden": 3,
+          "tipo": "opcion_unica",
+          "texto": "¿Preferís materiales educativos reciclados en formato libros, historietas o recursos digitales?",
+          "obligatoria": true,
+          "opciones": [
+            {
+              "orden": 1,
+              "texto": "Libros y cuadernos impresos"
+            },
+            {
+              "orden": 2,
+              "texto": "Historietas y cuentos ilustrados"
+            },
+            {
+              "orden": 3,
+              "texto": "Recursos digitales interactivos"
+            },
+            {
+              "orden": 4,
+              "texto": "Combinación de formatos"
+            }
+          ]
+        },
+        {
+          "orden": 4,
+          "tipo": "abierta",
+          "texto": "Compartí ideas para reutilizar materiales reciclados en proyectos educativos o comunitarios.",
+          "obligatoria": false
+        }
+      ]
+    },
+    {
+      "slug": "obras-publicas-2025",
+      "titulo": "Prioridades 2025 de obras públicas en {{municipality}}",
+      "descripcion": "Identificamos intervenciones clave en pavimentación, plazas y seguridad vial.",
+      "tipo": "planificacion",
+      "politica_unicidad": "por_phone",
+      "anonimato": false,
+      "requiere_datos_contacto": true,
+      "tags": [
+        "Obras públicas",
+        "Infraestructura"
+      ],
+      "preguntas": [
+        {
+          "orden": 1,
+          "tipo": "multiple",
+          "texto": "¿Qué proyectos de obra pública deberían priorizarse en tu barrio?",
+          "obligatoria": true,
+          "min_selecciones": 1,
+          "max_selecciones": 3,
+          "opciones": [
+            {
+              "orden": 1,
+              "texto": "Pavimentación y bacheo de calles"
+            },
+            {
+              "orden": 2,
+              "texto": "Renovación y mantenimiento de plazas"
+            },
+            {
+              "orden": 3,
+              "texto": "Modernización de semáforos"
+            },
+            {
+              "orden": 4,
+              "texto": "Construcción de lomas de burro"
+            },
+            {
+              "orden": 5,
+              "texto": "Mejoras en desagües pluviales"
+            }
+          ]
+        },
+        {
+          "orden": 2,
+          "tipo": "opcion_unica",
+          "texto": "¿Cómo evaluás el estado actual de las veredas y accesos peatonales en tu zona?",
+          "obligatoria": true,
+          "opciones": [
+            {
+              "orden": 1,
+              "texto": "Muy bueno"
+            },
+            {
+              "orden": 2,
+              "texto": "Aceptable"
+            },
+            {
+              "orden": 3,
+              "texto": "Deficiente"
+            },
+            {
+              "orden": 4,
+              "texto": "Muy deficiente"
+            }
+          ]
+        },
+        {
+          "orden": 3,
+          "tipo": "opcion_unica",
+          "texto": "¿Cuál debería ser el principal criterio para definir el cronograma de obras?",
+          "obligatoria": true,
+          "opciones": [
+            {
+              "orden": 1,
+              "texto": "Cantidad de reclamos registrados"
+            },
+            {
+              "orden": 2,
+              "texto": "Impacto en la seguridad vial"
+            },
+            {
+              "orden": 3,
+              "texto": "Beneficio para escuelas y espacios comunitarios"
+            },
+            {
+              "orden": 4,
+              "texto": "Sincronización con otras obras de infraestructura"
+            }
+          ]
+        },
+        {
+          "orden": 4,
+          "tipo": "abierta",
+          "texto": "Indicá calles, plazas o cruces específicos donde debería focalizarse la próxima etapa de obras.",
+          "obligatoria": false
+        }
+      ]
+    },
+    {
+      "slug": "sondeo-intencion-voto-2025",
+      "titulo": "Sondeo de intención de voto legislativo 2025 en {{municipality}}",
+      "descripcion": "Permite medir la preferencia electoral local rumbo a las legislativas 2025 y los factores que inciden en la decisión.",
+      "tipo": "sondeo",
+      "politica_unicidad": "por_dni",
+      "anonimato": false,
+      "requiere_datos_contacto": true,
+      "tags": [
+        "Elecciones 2025",
+        "Política"
+      ],
+      "preguntas": [
+        {
+          "orden": 1,
+          "tipo": "opcion_unica",
+          "texto": "Si la elección legislativa provincial fuera hoy, ¿a qué espacio votarías?",
+          "obligatoria": true,
+          "opciones": [
+            {
+              "orden": 1,
+              "texto": "Frente oficialista local"
+            },
+            {
+              "orden": 2,
+              "texto": "Opción opositora principal"
+            },
+            {
+              "orden": 3,
+              "texto": "Espacio vecinal o independiente"
+            },
+            {
+              "orden": 4,
+              "texto": "Aún no lo decidí"
+            }
+          ]
+        },
+        {
+          "orden": 2,
+          "tipo": "opcion_unica",
+          "texto": "¿Qué tan definido está tu voto?",
+          "obligatoria": true,
+          "opciones": [
+            {
+              "orden": 1,
+              "texto": "Totalmente decidido"
+            },
+            {
+              "orden": 2,
+              "texto": "Probablemente mantenga mi voto"
+            },
+            {
+              "orden": 3,
+              "texto": "Estoy evaluando alternativas"
+            },
+            {
+              "orden": 4,
+              "texto": "No tengo ninguna preferencia"
+            }
+          ]
+        },
+        {
+          "orden": 3,
+          "tipo": "multiple",
+          "texto": "¿Qué temas pesan más en tu decisión de voto?",
+          "obligatoria": true,
+          "min_selecciones": 1,
+          "max_selecciones": 3,
+          "opciones": [
+            {
+              "orden": 1,
+              "texto": "Empleo y desarrollo económico"
+            },
+            {
+              "orden": 2,
+              "texto": "Seguridad ciudadana"
+            },
+            {
+              "orden": 3,
+              "texto": "Servicios e infraestructura urbana"
+            },
+            {
+              "orden": 4,
+              "texto": "Educación y salud"
+            },
+            {
+              "orden": 5,
+              "texto": "Gestión ambiental y clima"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "slug": "pulso-economico-2025",
+      "titulo": "Pulso económico y precios 2025 en {{municipality}}",
+      "descripcion": "Consulta express para conocer el clima económico local, los precios que más preocupan y las medidas de alivio preferidas.",
+      "tipo": "opinion",
+      "politica_unicidad": "por_cookie",
+      "anonimato": true,
+      "requiere_datos_contacto": false,
+      "tags": [
+        "Economía",
+        "Inflación"
+      ],
+      "preguntas": [
+        {
+          "orden": 1,
+          "tipo": "opcion_unica",
+          "texto": "¿Cómo describirías la situación económica de tu hogar en los últimos tres meses?",
+          "obligatoria": true,
+          "opciones": [
+            {
+              "orden": 1,
+              "texto": "Mejoró"
+            },
+            {
+              "orden": 2,
+              "texto": "Se mantiene igual"
+            },
+            {
+              "orden": 3,
+              "texto": "Empeoró levemente"
+            },
+            {
+              "orden": 4,
+              "texto": "Empeoró mucho"
+            }
+          ]
+        },
+        {
+          "orden": 2,
+          "tipo": "opcion_unica",
+          "texto": "¿Qué medida aliviaría más tu economía cotidiana en {{municipality}}?",
+          "obligatoria": true,
+          "opciones": [
+            {
+              "orden": 1,
+              "texto": "Descuentos en alimentos y canasta escolar"
+            },
+            {
+              "orden": 2,
+              "texto": "Créditos blandos para comercios y pymes"
+            },
+            {
+              "orden": 3,
+              "texto": "Subsidios o tarifa social de energía y transporte"
+            },
+            {
+              "orden": 4,
+              "texto": "Reducción de tasas e impuestos locales"
+            }
+          ]
+        },
+        {
+          "orden": 3,
+          "tipo": "abierta",
+          "texto": "Comentá brevemente qué precios o servicios te preocupan más para 2025.",
+          "obligatoria": false
+        }
+      ]
+    },
+    {
+      "slug": "agenda-gobierno-2026",
+      "titulo": "Agenda de gobierno 2026 para {{municipality}} y Mendoza",
+      "descripcion": "Identificamos prioridades estratégicas para la planificación provincial 2026-2027 y el desarrollo local.",
+      "tipo": "planificacion",
+      "politica_unicidad": "por_dni_o_phone",
+      "anonimato": false,
+      "requiere_datos_contacto": true,
+      "tags": [
+        "Planificación 2026",
+        "Gestión provincial"
+      ],
+      "preguntas": [
+        {
+          "orden": 1,
+          "tipo": "multiple",
+          "texto": "¿Qué iniciativas deberían liderar la agenda 2026 en {{municipality}} y Mendoza?",
+          "obligatoria": true,
+          "min_selecciones": 1,
+          "max_selecciones": 3,
+          "opciones": [
+            {
+              "orden": 1,
+              "texto": "Modernizar hospitales y centros de salud"
+            },
+            {
+              "orden": 2,
+              "texto": "Seguridad hídrica y obras de agua potable"
+            },
+            {
+              "orden": 3,
+              "texto": "Programas de empleo joven y economía del conocimiento"
+            },
+            {
+              "orden": 4,
+              "texto": "Transporte metropolitano integrado"
+            },
+            {
+              "orden": 5,
+              "texto": "Energía limpia y eficiencia en edificios públicos"
+            }
+          ]
+        },
+        {
+          "orden": 2,
+          "tipo": "opcion_unica",
+          "texto": "¿Cómo evaluás el ritmo de ejecución de proyectos estratégicos en {{municipality}} durante 2024?",
+          "obligatoria": true,
+          "opciones": [
+            {
+              "orden": 1,
+              "texto": "Muy bueno, se avanzó como estaba previsto"
+            },
+            {
+              "orden": 2,
+              "texto": "Aceptable, aunque faltan hitos clave"
+            },
+            {
+              "orden": 3,
+              "texto": "Lento, requiere mayor coordinación"
+            },
+            {
+              "orden": 4,
+              "texto": "No se observan avances concretos"
+            }
+          ]
+        },
+        {
+          "orden": 3,
+          "tipo": "abierta",
+          "texto": "Sumá propuestas específicas para 2026 que deberían priorizarse en tu barrio o sector productivo.",
+          "obligatoria": false
+        }
+      ]
+    },
+    {
+      "slug": "satisfaccion-cliente-pyme",
+      "titulo": "Tu opinión nos ayuda a mejorar",
+      "descripcion": "Contanos cómo fue tu experiencia de compra para que podamos ofrecerte un mejor servicio.",
+      "tipo": "satisfaccion",
+      "politica_unicidad": "libre",
+      "anonimato": true,
+      "requiere_datos_contacto": false,
+      "tags": [
+        "Clientes",
+        "Feedback",
+        "PyME"
+      ],
+      "preguntas": [
+        {
+          "orden": 1,
+          "tipo": "opcion_unica",
+          "texto": "¿Cómo calificarías tu experiencia general de compra?",
+          "obligatoria": true,
+          "opciones": [
+            {
+              "orden": 1,
+              "texto": "Excelente"
+            },
+            {
+              "orden": 2,
+              "texto": "Muy buena"
+            },
+            {
+              "orden": 3,
+              "texto": "Regular"
+            },
+            {
+              "orden": 4,
+              "texto": "Mala"
+            }
+          ]
+        },
+        {
+          "orden": 2,
+          "tipo": "opcion_unica",
+          "texto": "¿Recomendarías nuestros productos/servicios a un amigo?",
+          "obligatoria": true,
+          "opciones": [
+            {
+              "orden": 1,
+              "texto": "Sí, seguro"
+            },
+            {
+              "orden": 2,
+              "texto": "Probablemente"
+            },
+            {
+              "orden": 3,
+              "texto": "No creo"
+            },
+            {
+              "orden": 4,
+              "texto": "Definitivamente no"
+            }
+          ]
+        },
+        {
+          "orden": 3,
+          "tipo": "abierta",
+          "texto": "¿Qué podríamos mejorar para tu próxima visita?",
+          "obligatoria": false
+        }
+      ]
+    },
+    {
+      "slug": "lanzamiento-producto-pyme",
+      "titulo": "¡Ayudanos a elegir nuestro próximo lanzamiento!",
+      "descripcion": "Queremos traer lo que más te gusta. Votá por tu favorito.",
+      "tipo": "opinion",
+      "politica_unicidad": "libre",
+      "anonimato": true,
+      "requiere_datos_contacto": false,
+      "tags": [
+        "Novedades",
+        "Productos",
+        "PyME"
+      ],
+      "preguntas": [
+        {
+          "orden": 1,
+          "tipo": "opcion_unica",
+          "texto": "¿Qué tipo de producto te gustaría ver en nuestra tienda próximamente?",
+          "obligatoria": true,
+          "opciones": [
+            {
+              "orden": 1,
+              "texto": "Nuevas variedades/sabores"
+            },
+            {
+              "orden": 2,
+              "texto": "Promociones especiales y packs"
+            },
+            {
+              "orden": 3,
+              "texto": "Productos exclusivos/premium"
+            },
+            {
+              "orden": 4,
+              "texto": "Accesorios complementarios"
+            }
+          ]
+        },
+        {
+          "orden": 2,
+          "tipo": "abierta",
+          "texto": "¿Tenés alguna sugerencia específica de marca o modelo?",
+          "obligatoria": false
+        }
+      ]
+    },
+    {
+      "slug": "luis-petri-tracking-campana",
+      "titulo": "Tracking de campaña Luis Petri 2025 en {{municipality}}",
+      "descripcion": "Medición semanal de intención de voto, clima social y prioridades para ajustar mensajes de campaña en tiempo real.",
+      "tipo": "sondeo",
+      "politica_unicidad": "por_dni_o_phone",
+      "anonimato": false,
+      "requiere_datos_contacto": true,
+      "es_votacion_envivo": true,
+      "mostrar_resultados_envivo": true,
+      "permitir_comentarios": true,
+      "tags": [
+        "Luis Petri",
+        "Campaña",
+        "Tracking",
+        "Tiempo real"
+      ],
+      "auto_seed_demo": {
+        "enabled": true,
+        "cantidad": 260,
+        "geo_profile_key": "mendoza",
+        "municipality_label": "Mendoza",
+        "label": "Base de campaña inicial"
+      },
+      "preguntas": [
+        {
+          "orden": 1,
+          "tipo": "opcion_unica",
+          "texto": "Si hoy fueran las elecciones legislativas, ¿a quién apoyarías en {{municipality}}?",
+          "obligatoria": true,
+          "opciones": [
+            {
+              "orden": 1,
+              "texto": "Luis Petri"
+            },
+            {
+              "orden": 2,
+              "texto": "Principal espacio opositor"
+            },
+            {
+              "orden": 3,
+              "texto": "Otro candidato"
+            },
+            {
+              "orden": 4,
+              "texto": "Indeciso/a"
+            }
+          ]
+        },
+        {
+          "orden": 2,
+          "tipo": "multiple",
+          "texto": "¿Qué temas te hacen inclinar tu voto?",
+          "obligatoria": true,
+          "min_selecciones": 1,
+          "max_selecciones": 3,
+          "opciones": [
+            {
+              "orden": 1,
+              "texto": "Seguridad"
+            },
+            {
+              "orden": 2,
+              "texto": "Empleo"
+            },
+            {
+              "orden": 3,
+              "texto": "Inflación"
+            },
+            {
+              "orden": 4,
+              "texto": "Educación"
+            },
+            {
+              "orden": 5,
+              "texto": "Obras y servicios"
+            }
+          ]
+        },
+        {
+          "orden": 3,
+          "tipo": "abierta",
+          "texto": "Dejá un comentario sobre qué propuesta esperás para tu barrio.",
+          "obligatoria": false
+        }
+      ]
+    },
+    {
+      "slug": "luis-petri-votacion-prioridades",
+      "titulo": "Votación en vivo de prioridades de gobierno - Equipo Luis Petri",
+      "descripcion": "Tablero en vivo para actos y recorridas: muestra resultados instantáneos por distrito y comentarios ciudadanos.",
+      "tipo": "votacion",
+      "politica_unicidad": "por_cookie",
+      "anonimato": true,
+      "requiere_datos_contacto": false,
+      "es_votacion_envivo": true,
+      "mostrar_resultados_envivo": true,
+      "permitir_comentarios": true,
+      "tags": [
+        "Luis Petri",
+        "Votación en vivo",
+        "Agenda pública"
+      ],
+      "auto_seed_demo": {
+        "enabled": true,
+        "cantidad": 320,
+        "geo_profile_key": "mendoza",
+        "municipality_label": "Mendoza",
+        "label": "Simulación de acto masivo"
+      },
+      "preguntas": [
+        {
+          "orden": 1,
+          "tipo": "opcion_unica",
+          "texto": "¿Cuál debería ser la prioridad número 1 de gestión en {{municipality}}?",
+          "obligatoria": true,
+          "opciones": [
+            {
+              "orden": 1,
+              "texto": "Plan integral de seguridad"
+            },
+            {
+              "orden": 2,
+              "texto": "Plan empleo joven"
+            },
+            {
+              "orden": 3,
+              "texto": "Bajar costos municipales"
+            },
+            {
+              "orden": 4,
+              "texto": "Obras barriales urgentes"
+            }
+          ]
+        },
+        {
+          "orden": 2,
+          "tipo": "opcion_unica",
+          "texto": "¿Te gustaría recibir avances semanales de estas propuestas?",
+          "obligatoria": true,
+          "opciones": [
+            {
+              "orden": 1,
+              "texto": "Sí"
+            },
+            {
+              "orden": 2,
+              "texto": "No"
+            }
+          ]
+        },
+        {
+          "orden": 3,
+          "tipo": "abierta",
+          "texto": "¿Qué problema puntual de tu zona debe resolverse en los próximos 90 días?",
+          "obligatoria": false
+        }
+      ]
+    },
+    {
+      "slug": "luis-petri-sondeo-territorial",
+      "titulo": "Sondeo territorial por barrios - Mendoza",
+      "descripcion": "Segmenta la campaña por barrio para detectar focos, oportunidades y evolución diaria del voto.",
+      "tipo": "sondeo",
+      "politica_unicidad": "por_ip",
+      "anonimato": true,
+      "requiere_datos_contacto": false,
+      "es_votacion_envivo": true,
+      "mostrar_resultados_envivo": true,
+      "permitir_comentarios": true,
+      "tags": [
+        "Territorio",
+        "Mapa de calor",
+        "Luis Petri"
+      ],
+      "auto_seed_demo": {
+        "enabled": true,
+        "cantidad": 280,
+        "geo_profile_key": "mendoza",
+        "municipality_label": "Mendoza",
+        "label": "Muestra territorial inicial"
+      },
+      "preguntas": [
+        {
+          "orden": 1,
+          "tipo": "opcion_unica",
+          "texto": "¿Cómo describís hoy el clima social en tu barrio?",
+          "obligatoria": true,
+          "opciones": [
+            {
+              "orden": 1,
+              "texto": "Muy positivo"
+            },
+            {
+              "orden": 2,
+              "texto": "Positivo"
+            },
+            {
+              "orden": 3,
+              "texto": "Tenso"
+            },
+            {
+              "orden": 4,
+              "texto": "Muy tenso"
+            }
+          ]
+        },
+        {
+          "orden": 2,
+          "tipo": "multiple",
+          "texto": "¿Qué formato de campaña te resulta más cercano?",
+          "obligatoria": true,
+          "min_selecciones": 1,
+          "max_selecciones": 2,
+          "opciones": [
+            {
+              "orden": 1,
+              "texto": "Recorridas barriales"
+            },
+            {
+              "orden": 2,
+              "texto": "Reuniones con vecinos"
+            },
+            {
+              "orden": 3,
+              "texto": "Redes sociales"
+            },
+            {
+              "orden": 4,
+              "texto": "Propuestas por WhatsApp"
+            }
+          ]
+        },
+        {
+          "orden": 3,
+          "tipo": "abierta",
+          "texto": "Compartí un comentario o reclamo clave de tu zona.",
+          "obligatoria": false
+        }
+      ]
+    }
+  ],
+  "profiles": [
+    {
+      "key": "junin",
+      "municipality": "Junín",
+      "tenant_env": "JUNIN_ENCUESTAS_TENANT_ID",
+      "fallback_tenant_id": 4,
+      "keywords": [
+        "junin"
+      ],
+      "auto_publish": true
+    },
+    {
+      "key": "san_martin",
+      "municipality": "San Martín",
+      "tenant_env": "SANMARTIN_ENCUESTAS_TENANT_ID",
+      "keywords": [
+        "san martin",
+        "san martín"
+      ],
+      "auto_publish": true
+    },
+    {
+      "key": "rivadavia",
+      "municipality": "Rivadavia",
+      "tenant_env": "RIVADAVIA_ENCUESTAS_TENANT_ID",
+      "keywords": [
+        "rivadavia"
+      ],
+      "auto_publish": true
+    },
+    {
+      "key": "mendoza",
+      "municipality": "Mendoza",
+      "tenant_env": "MENDOZA_ENCUESTAS_TENANT_ID",
+      "keywords": [
+        "mendoza",
+        "mendoza capital",
+        "luis petri"
+      ],
+      "auto_publish": true,
+      "template_slugs": [
+        "votacion-envivo-youtube",
+        "sondeo-intencion-voto-2025",
+        "agenda-gobierno-2026",
+        "luis-petri-tracking-campana",
+        "luis-petri-votacion-prioridades",
+        "luis-petri-sondeo-territorial"
+      ]
+    },
+    {
+      "key": "godoy_cruz",
+      "municipality": "Godoy Cruz",
+      "tenant_env": "GODOYCRUZ_ENCUESTAS_TENANT_ID",
+      "keywords": [
+        "godoy cruz"
+      ],
+      "auto_publish": true
+    },
+    {
+      "key": "lavalle",
+      "municipality": "Lavalle",
+      "tenant_env": "LAVALLE_ENCUESTAS_TENANT_ID",
+      "keywords": [
+        "lavalle"
+      ],
+      "auto_publish": true
+    }
+  ],
+  "geo_catalog": {
+    "junin": {
+      "municipality": "Junín",
+      "state": "Mendoza",
+      "country": "AR",
+      "center": [
+        -33.0985,
+        -68.476
+      ],
+      "bounds": [
+        -68.598,
+        -33.216,
+        -68.312,
+        -33.002
+      ],
+      "districts": [
+        "Ciudad",
+        "Los Barriales",
+        "Medrano",
+        "Philipson",
+        "Rodríguez Peña",
+        "La Colonia"
+      ],
+      "neighborhoods": [
+        "Centro",
+        "Alto Verde",
+        "La Florida",
+        "Belgrano",
+        "San Cayetano",
+        "Bartolomé Mitre"
+      ],
+      "otros_label": "Otro barrio / dirección",
+      "coordinates": [
+        {
+          "lat": -33.0912,
+          "lng": -68.4796,
+          "barrio": "Centro"
+        },
+        {
+          "lat": -33.1044,
+          "lng": -68.4625,
+          "barrio": "Belgrano"
+        },
+        {
+          "lat": -33.0868,
+          "lng": -68.4982,
+          "barrio": "San Cayetano"
+        },
+        {
+          "lat": -33.0755,
+          "lng": -68.4459,
+          "barrio": "Los Barriales"
+        },
+        {
+          "lat": -33.0634,
+          "lng": -68.4212,
+          "barrio": "La Colonia"
+        },
+        {
+          "lat": -33.1203,
+          "lng": -68.5051,
+          "barrio": "Rodríguez Peña"
+        }
+      ]
+    },
+    "san_martin": {
+      "municipality": "San Martín",
+      "state": "Mendoza",
+      "country": "AR",
+      "center": [
+        -33.0808,
+        -68.4895
+      ],
+      "bounds": [
+        -68.6501,
+        -33.2102,
+        -68.2914,
+        -32.9207
+      ],
+      "districts": [
+        "Palmira",
+        "El Central",
+        "Tres Porteñas",
+        "Chapanay",
+        "Montecaseros"
+      ],
+      "neighborhoods": [
+        "San Pedro",
+        "Libertador",
+        "Ferroviario",
+        "Canota",
+        "La Primavera"
+      ],
+      "otros_label": "Otro distrito / barrio",
+      "coordinates": [
+        {
+          "lat": -33.0801,
+          "lng": -68.4822,
+          "barrio": "San Pedro"
+        },
+        {
+          "lat": -33.0983,
+          "lng": -68.4589,
+          "barrio": "Libertador"
+        },
+        {
+          "lat": -33.0567,
+          "lng": -68.4954,
+          "barrio": "Palmira"
+        },
+        {
+          "lat": -32.9923,
+          "lng": -68.5231,
+          "barrio": "Tres Porteñas"
+        },
+        {
+          "lat": -33.1214,
+          "lng": -68.4362,
+          "barrio": "Montecaseros"
+        }
+      ]
+    },
+    "rivadavia": {
+      "municipality": "Rivadavia",
+      "state": "Mendoza",
+      "country": "AR",
+      "center": [
+        -33.1869,
+        -68.4682
+      ],
+      "bounds": [
+        -68.7004,
+        -33.3412,
+        -68.2267,
+        -33.0215
+      ],
+      "districts": [
+        "Ciudad",
+        "La Libertad",
+        "Santa María de Oro",
+        "La Central",
+        "Medrano Este"
+      ],
+      "neighborhoods": [
+        "Lencinas",
+        "Fuerte San Carlos",
+        "Marcial Pérez",
+        "B° Rivadavia",
+        "Posta de los Andes"
+      ],
+      "otros_label": "Otro punto del departamento",
+      "coordinates": [
+        {
+          "lat": -33.1861,
+          "lng": -68.4655,
+          "barrio": "Lencinas"
+        },
+        {
+          "lat": -33.2104,
+          "lng": -68.4451,
+          "barrio": "Fuerte San Carlos"
+        },
+        {
+          "lat": -33.1672,
+          "lng": -68.4928,
+          "barrio": "Posta de los Andes"
+        }
+      ]
+    },
+    "mendoza": {
+      "municipality": "Mendoza",
+      "state": "Mendoza",
+      "country": "AR",
+      "center": [
+        -32.8898,
+        -68.8459
+      ],
+      "bounds": [
+        -68.9342,
+        -33.0842,
+        -68.7305,
+        -32.7718
+      ],
+      "districts": [
+        "1ra Sección",
+        "2da Sección",
+        "3ra Sección",
+        "4ta Sección",
+        "5ta Sección"
+      ],
+      "neighborhoods": [
+        "Bombal",
+        "Cívica",
+        "La Favorita",
+        "San Martín",
+        "Cerro de la Gloria"
+      ],
+      "otros_label": "Otra referencia en la Ciudad",
+      "coordinates": [
+        {
+          "lat": -32.8904,
+          "lng": -68.8431,
+          "barrio": "Cívica"
+        },
+        {
+          "lat": -32.8891,
+          "lng": -68.8565,
+          "barrio": "Bombal"
+        },
+        {
+          "lat": -32.8968,
+          "lng": -68.8787,
+          "barrio": "La Favorita"
+        }
+      ]
+    },
+    "godoy_cruz": {
+      "municipality": "Godoy Cruz",
+      "state": "Mendoza",
+      "country": "AR",
+      "center": [
+        -32.9236,
+        -68.8451
+      ],
+      "bounds": [
+        -68.9127,
+        -32.9836,
+        -68.7695,
+        -32.8482
+      ],
+      "districts": [
+        "Gobernador Benegas",
+        "Las Tortugas",
+        "Presidente Sarmiento",
+        "San Francisco del Monte"
+      ],
+      "neighborhoods": [
+        "Trapiche",
+        "La Estanzuela",
+        "Bº Palmares",
+        "Bº Presidente Perón",
+        "Bº Arizu"
+      ],
+      "otros_label": "Otro barrio de Godoy Cruz",
+      "coordinates": [
+        {
+          "lat": -32.9307,
+          "lng": -68.8462,
+          "barrio": "Trapiche"
+        },
+        {
+          "lat": -32.9102,
+          "lng": -68.8355,
+          "barrio": "La Estanzuela"
+        },
+        {
+          "lat": -32.9426,
+          "lng": -68.8674,
+          "barrio": "Bº Presidente Perón"
+        }
+      ]
+    },
+    "lavalle": {
+      "municipality": "Lavalle",
+      "state": "Mendoza",
+      "country": "AR",
+      "center": [
+        -32.7395,
+        -68.3427
+      ],
+      "bounds": [
+        -68.5752,
+        -32.9958,
+        -68.1084,
+        -32.4081
+      ],
+      "districts": [
+        "Villa Tulumaya",
+        "Costa de Araujo",
+        "El Vergel",
+        "Jocolí",
+        "Tres de Mayo",
+        "Lagunas del Rosario"
+      ],
+      "neighborhoods": [
+        "Barrio Virgen del Rosario",
+        "Barrio La Palmera",
+        "Barrio Carsi",
+        "Barrio Solares del Centro",
+        "Barrio Jarilleros",
+        "Barrio Colonia Italia"
+      ],
+      "otros_label": "Otro punto de Lavalle",
+      "coordinates": [
+        {
+          "lat": -32.7379,
+          "lng": -68.3391,
+          "barrio": "Villa Tulumaya"
+        },
+        {
+          "lat": -32.6734,
+          "lng": -68.2439,
+          "barrio": "Costa de Araujo"
+        },
+        {
+          "lat": -32.8127,
+          "lng": -68.4136,
+          "barrio": "Tres de Mayo"
+        },
+        {
+          "lat": -32.5998,
+          "lng": -68.1584,
+          "barrio": "Lagunas del Rosario"
+        }
+      ]
+    }
+  }
+}

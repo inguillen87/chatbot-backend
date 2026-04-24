@@ -10,6 +10,7 @@ from flask import current_app
 from sqlalchemy import func
 
 from models import QA, Rubro, User
+from utils.user_query import _safe_user_query
 from services.logic import es_rubro_publico
 
 
@@ -27,6 +28,8 @@ class DemoRubro:
     owner_user_id: Optional[int]
     rubro_id: Optional[int]
     rubro_clave: Optional[str]
+    segment: Optional[str] = None
+    subsegment: Optional[str] = None
     token: Optional[str] = None
     prompt_context: Optional[str] = None
     welcome_message: Optional[str] = None
@@ -36,6 +39,7 @@ class DemoRubro:
     quick_actions: List[Dict[str, object]] = field(default_factory=list)
     capabilities: List[str] = field(default_factory=list)
     keywords: List[str] = field(default_factory=list)
+    padre_id: Optional[int] = None
 
     def to_internal_dict(self) -> Dict[str, object]:
         """Return a dict representation used by the chat routes."""
@@ -48,6 +52,8 @@ class DemoRubro:
             "owner_user_id": self.owner_user_id,
             "rubro_id": self.rubro_id,
             "rubro_clave": self.rubro_clave,
+            "segment": self.segment,
+            "subsegment": self.subsegment,
             "prompt_context": self.prompt_context,
             "welcome_message": self.welcome_message,
             "resources": [dict(item) for item in self.resources],
@@ -55,6 +61,7 @@ class DemoRubro:
             "quick_actions": [dict(item) for item in self.quick_actions],
             "capabilities": list(self.capabilities),
             "keywords": list(self.keywords),
+            "padre_id": self.padre_id,
         }
         if self.token:
             payload["token"] = self.token
@@ -67,11 +74,14 @@ class DemoRubro:
 
         return {
             "key": self.key,
+            "slug": self.key,
             "label": self.label,
             "descripcion": self.descripcion,
             "tipo_chat": self.tipo_chat,
             "rubro_id": self.rubro_id,
             "rubro_clave": self.rubro_clave,
+            "segment": self.segment,
+            "subsegment": self.subsegment,
             "prompt_context": self.prompt_context,
             "welcome_message": self.welcome_message,
             "resources": [dict(item) for item in self.resources],
@@ -79,6 +89,7 @@ class DemoRubro:
             "quick_actions": [dict(item) for item in self.quick_actions],
             "capabilities": list(self.capabilities),
             "keywords": list(self.keywords),
+            "padre_id": self.padre_id,
         }
 
 
@@ -163,12 +174,18 @@ def _faq_preview_for_rubro(rubro: Rubro, limit: int = 3) -> List[Dict[str, str]]
     return resultados
 
 
-def load_demo_rubros() -> List[DemoRubro]:
-    """Build the curated demo catalog based on configuration and database state."""
+def load_demo_rubros(require_owner: bool = True) -> List[DemoRubro]:
+    """Build the curated demo catalog based on configuration and database state.
+
+    When ``require_owner`` is False, demo entries that lack a matching owner or
+    rubro will still be returned so they can be listed as previews (e.g. in the
+    landing page) instead of silently disappearing.
+    """
 
     demo_entries = current_app.config.get("DEMO_RUBROS") or []
     opciones: List[DemoRubro] = []
     seen_keys: set[str] = set()
+    user_query = _safe_user_query()
 
     for entry in demo_entries:
         if not isinstance(entry, dict):
@@ -191,29 +208,29 @@ def load_demo_rubros() -> List[DemoRubro]:
         rubro_obj = None
 
         if user_id_conf:
-            owner_user = User.query.get(user_id_conf)
+            owner_user = user_query.get(user_id_conf)
 
         if not owner_user and token_conf:
-            owner_user = User.query.filter_by(token=token_conf).first()
+            owner_user = user_query.filter_by(token=token_conf).first()
 
         if not owner_user and rubro_id_conf:
             rubro_obj = Rubro.query.get(rubro_id_conf)
             if rubro_obj:
                 owner_user = (
-                    User.query.filter_by(rubro_id=rubro_obj.id, empresa_id=None).first()
-                    or User.query.filter_by(rubro_id=rubro_obj.id, rol="admin").first()
+                    user_query.filter_by(rubro_id=rubro_obj.id, empresa_id=None).first()
+                    or user_query.filter_by(rubro_id=rubro_obj.id, rol="admin").first()
                 )
 
         if not owner_user and rubro_clave_conf:
             rubro_obj = Rubro.query.filter(func.lower(Rubro.clave) == func.lower(str(rubro_clave_conf))).first()
             if rubro_obj:
                 owner_user = (
-                    User.query.filter_by(rubro_id=rubro_obj.id, empresa_id=None).first()
-                    or User.query.filter_by(rubro_id=rubro_obj.id, rol="admin").first()
+                    user_query.filter_by(rubro_id=rubro_obj.id, empresa_id=None).first()
+                    or user_query.filter_by(rubro_id=rubro_obj.id, rol="admin").first()
                 )
 
         if not owner_user and entry.get("tipo_chat", "").strip().lower() == "municipio":
-            owner_user = User.query.filter_by(tipo_chat="municipio", rol="admin").first()
+            owner_user = user_query.filter_by(tipo_chat="municipio", rol="admin").first()
             if owner_user and not rubro_obj:
                 rubro_obj = owner_user.rubro
 
@@ -222,13 +239,13 @@ def load_demo_rubros() -> List[DemoRubro]:
 
         if rubro_obj and not owner_user:
             owner_user = (
-                User.query.filter_by(rubro_id=rubro_obj.id, empresa_id=None).first()
-                or User.query.filter_by(rubro_id=rubro_obj.id, rol="admin").first()
+                user_query.filter_by(rubro_id=rubro_obj.id, empresa_id=None).first()
+                or user_query.filter_by(rubro_id=rubro_obj.id, rol="admin").first()
             )
 
         if rubro_obj and not owner_user:
             fallback_owner = (
-                User.query.filter_by(rubro_id=rubro_obj.id)
+                user_query.filter_by(rubro_id=rubro_obj.id)
                 .order_by(User.id.asc())
                 .first()
             )
@@ -241,34 +258,40 @@ def load_demo_rubros() -> List[DemoRubro]:
                 owner_user = fallback_owner
 
         if not owner_user and rubro_obj and es_rubro_publico(rubro_obj):
-            owner_user = User.query.filter_by(tipo_chat="municipio", rol="admin").first()
+            owner_user = user_query.filter_by(tipo_chat="municipio", rol="admin").first()
 
         if not owner_user:
-            if key not in _MISCONFIGURED_DEMOS_LOGGED:
-                current_app.logger.warning(
-                    "[demo] No se pudo preparar la demo '%s' porque falta owner o rubro válido.",
-                    key,
-                )
-                _MISCONFIGURED_DEMOS_LOGGED.add(key)
-            continue
+            if require_owner:
+                if key not in _MISCONFIGURED_DEMOS_LOGGED:
+                    current_app.logger.warning(
+                        "[demo] No se pudo preparar la demo '%s' porque falta owner o rubro válido.",
+                        key,
+                    )
+                    _MISCONFIGURED_DEMOS_LOGGED.add(key)
+                continue
+        if not rubro_obj:
+            rubro_obj = owner_user.rubro if owner_user else None
 
         if not rubro_obj:
-            rubro_obj = owner_user.rubro
-
-        if not rubro_obj:
-            if key not in _MISCONFIGURED_DEMOS_LOGGED:
-                current_app.logger.warning(
-                    "[demo] El owner '%s' no tiene rubro asociado para la demo '%s'.",
-                    owner_user.id,
-                    key,
-                )
-                _MISCONFIGURED_DEMOS_LOGGED.add(key)
-            continue
-
+            if require_owner:
+                if key not in _MISCONFIGURED_DEMOS_LOGGED:
+                    current_app.logger.warning(
+                        "[demo] El owner '%s' no tiene rubro asociado para la demo '%s'.",
+                        owner_user.id,
+                        key,
+                    )
+                    _MISCONFIGURED_DEMOS_LOGGED.add(key)
+                continue
         _MISCONFIGURED_DEMOS_LOGGED.discard(key)
 
         tipo_chat = _guess_tipo_chat(entry, rubro_obj, owner_user)
         descripcion_final = descripcion or getattr(rubro_obj, "descripcion", None) or getattr(rubro_obj, "nombre", None)
+        segment = entry.get("segment") or entry.get("categoria")
+        subsegment = entry.get("subsegment") or entry.get("subcategoria") or entry.get("grupo")
+        if not segment:
+            segment = "gobiernos" if tipo_chat == "municipio" else "empresas"
+        if not subsegment and segment == "empresas":
+            subsegment = "Empresas y Comercios"
 
         prompt_context = entry.get("prompt_context") or entry.get("prompt")
         welcome_message = entry.get("welcome_message")
@@ -324,14 +347,27 @@ def load_demo_rubros() -> List[DemoRubro]:
             if text:
                 keywords.append(text)
 
+        rubro_id_value = getattr(rubro_obj, "id", None)
+        rubro_clave_value = getattr(rubro_obj, "clave", None) or entry.get("rubro_clave") or key
+
+        # Infer Padre ID based on Segment
+        padre_id = getattr(rubro_obj, "padre_id", None)
+        if not padre_id:
+             if tipo_chat == "municipio" or segment.lower().startswith("gobierno"):
+                 padre_id = 1 # Hardcoded ID for Municipios Root
+             else:
+                 padre_id = 2 # Hardcoded ID for Empresas Root
+
         demo_rubro = DemoRubro(
             key=key,
             label=str(nombre),
-            descripcion=descripcion_final,
+            descripcion=descripcion_final or nombre,
             tipo_chat=tipo_chat,
-            owner_user_id=owner_user.id,
-            rubro_id=rubro_obj.id,
-            rubro_clave=getattr(rubro_obj, "clave", None),
+            owner_user_id=owner_user.id if owner_user else None,
+            rubro_id=rubro_id_value,
+            rubro_clave=rubro_clave_value,
+            segment=str(segment) if segment else None,
+            subsegment=str(subsegment) if subsegment else None,
             token=entry.get("token"),
             prompt_context=prompt_context,
             welcome_message=welcome_message,
@@ -341,6 +377,7 @@ def load_demo_rubros() -> List[DemoRubro]:
             quick_actions=quick_actions,
             capabilities=capabilities,
             keywords=keywords,
+            padre_id=padre_id
         )
 
         opciones.append(demo_rubro)

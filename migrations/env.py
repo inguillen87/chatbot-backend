@@ -1,10 +1,33 @@
 # migrations/env.py
 import os
+import sys
+from logging.config import fileConfig
+
 from alembic import context
 from sqlalchemy import create_engine
 from sqlalchemy.engine import make_url
 
-# --- Helpers ---------------------------------------------------------------
+# This is the Alembic Config object, which provides
+# access to the values within the .ini file in use.
+config = context.config
+
+# Interpret the config file for Python logging.
+# This line sets up loggers basically.
+if config.config_file_name is not None and os.path.exists(config.config_file_name):
+    fileConfig(config.config_file_name)
+
+# Add project root to sys.path for model imports
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+# Import your app's models and metadata
+# This is crucial for 'autogenerate' to detect changes.
+from extensions import db
+import models  # Ensure all models are imported
+import models_memory # Ensure memory models are imported for Alembic
+
+target_metadata = db.metadata
+
+# --- Helpers from original env.py ------------------------------------------
 
 def _normalize(url_str: str) -> str:
     """
@@ -61,6 +84,7 @@ def _choose_raw_url() -> str:
 
     # 3) env vars
     env_candidates = [
+        "ALEMBIC_DB_URL",
         "SQLALCHEMY_DATABASE_URI",
         "DATABASE_URL",
         "PG_EXTERNAL",
@@ -86,16 +110,17 @@ def _choose_raw_url() -> str:
 RAW_URL = _choose_raw_url()
 DB_URL = _normalize(RAW_URL)
 
-config = context.config
 config.set_main_option("sqlalchemy.url", DB_URL)
 
-print("ALEMBIC_DB_URL:", _mask(DB_URL))  # útil para diagnosticar; NO imprime la pass
+print("ALEMBIC_DB_URL:", _mask(DB_URL))
 
 # --- Alembic hooks ---------------------------------------------------------
 
 def run_migrations_offline() -> None:
+    """Run migrations in 'offline' mode."""
     context.configure(
         url=DB_URL,
+        target_metadata=target_metadata,
         literal_binds=True,
         compare_type=True,
         compare_server_default=True,
@@ -104,25 +129,25 @@ def run_migrations_offline() -> None:
         context.run_migrations()
 
 def run_migrations_online() -> None:
-    # Si ya nos inyectaron una conexión (pattern recomendado), úsala.
+    """Run migrations in 'online' mode."""
     connectable = config.attributes.get("connection", None)
 
     if connectable is None:
-        # Fallback: creamos nuestro propio engine (lo que a vos te fallaba)
         engine = create_engine(DB_URL, pool_pre_ping=True)
         with engine.connect() as connection:
             context.configure(
                 connection=connection,
+                target_metadata=target_metadata,
                 compare_type=True,
                 compare_server_default=True,
             )
             with context.begin_transaction():
                 context.run_migrations()
     else:
-        # Conexión provista desde afuera (no creamos engine acá)
         connection = connectable
         context.configure(
             connection=connection,
+            target_metadata=target_metadata,
             compare_type=True,
             compare_server_default=True,
         )

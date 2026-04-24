@@ -172,9 +172,23 @@ def build_interactive_response(options: list,
         original_type = message_type
         num_options = len(options)
 
+        force_interactive = bool(
+            original_bot_response.get("_force_whatsapp_interactive")
+        )
+        force_text_override = original_bot_response.get("_force_whatsapp_text")
+        bypass_force_text = force_interactive
+
+        if force_text_override is not None:
+            # Explicit overrides use truthiness to mirror environment parsing.
+            if bool(force_text_override):
+                message_type = 'text'
+                bypass_force_text = False
+            else:
+                bypass_force_text = True
+
         # If interactive templates aren't yet approved we force plain text
         # responses so the user still sees every option in the menu.
-        if WHATSAPP_FORCE_TEXT:
+        if WHATSAPP_FORCE_TEXT and not bypass_force_text:
             message_type = 'text'
         else:
             # Decide message type based on options, unless it's forced to 'text'

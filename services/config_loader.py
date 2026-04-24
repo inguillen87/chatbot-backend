@@ -36,10 +36,13 @@ else:
 # Ensure PYME directories mirror the municipio layout so configuration files
 # can be dropped in the same persistent volume.
 _ensure_base_directory(_default_data_path, "pyme", "rubros")
+# Ensure tenant-specific directories exist
+_ensure_base_directory(_default_data_path, "tenants")
 
 BASE_DATA_PATH = _default_data_path
 BASE_CONFIG_PATH = os.path.join(BASE_DATA_PATH, "municipios")
 BASE_PYME_CONFIG_PATH = os.path.join(BASE_DATA_PATH, "pyme", "rubros")
+BASE_TENANT_CONFIG_PATH = os.path.join(BASE_DATA_PATH, "tenants")
 
 _config_cache = {}
 _mtime_cache = {}
@@ -105,37 +108,89 @@ def cargar_configuracion_municipio(municipio_id: str, archivo: str) -> dict:
         return {}
 
 
-def cargar_configuracion_pyme(rubro_slug: str, archivo: str) -> dict:
-    """Carga un archivo de configuración JSON para un rubro PYME específico."""
+def cargar_configuracion_pyme(rubro_slug: str, archivo: str, tenant_slug: str | None = None) -> dict:
+    """Carga un archivo de configuración JSON.
+
+    Prioridad:
+    1. Tenant específico (`data/tenants/<tenant_slug>`)
+    2. Rubro específico (`data/pyme/rubros/<rubro_slug>`)
+    3. Default (`data/pyme/rubros/default`)
+    """
 
     if not rubro_slug:
         rubro_slug = "default"
 
     rubro_slug = str(rubro_slug).strip().lower()
-    clave = (rubro_slug, archivo)
 
-    # Ruta prioritaria: volumen persistente (`/data/pyme/rubros/...`).
-    ruta = os.path.join(BASE_PYME_CONFIG_PATH, rubro_slug, archivo)
+    # Construct a cache key that includes tenant_slug to differentiate
+    cache_key_prefix = f"tenant_{tenant_slug}" if tenant_slug else f"rubro_{rubro_slug}"
+    clave = (cache_key_prefix, archivo)
 
-    # Ruta de respaldo dentro del repositorio por si aún no existe una copia en
-    # el volumen persistente (p. ej. entornos de desarrollo o tests).
-    repo_ruta = os.path.join(
+    rutas_candidatas = []
+
+    # 1. Check tenant-specific path if provided
+    if tenant_slug:
+        tenant_slug = str(tenant_slug).strip().lower()
+        rutas_candidatas.append(os.path.join(BASE_TENANT_CONFIG_PATH, tenant_slug, archivo))
+        # Also check repo fallback for tenant
+        rutas_candidatas.append(os.path.join(
+            os.path.dirname(os.path.dirname(__file__)), "data", "tenants", tenant_slug, archivo
+        ))
+
+    # 2. Check rubro-specific path
+    # If a tenant_slug is present, we check `data/pyme/rubros/{rubro_slug}/{tenant_slug}/{archivo}`
+    if tenant_slug:
+        rutas_candidatas.append(os.path.join(BASE_PYME_CONFIG_PATH, rubro_slug, tenant_slug, archivo))
+        rutas_candidatas.append(os.path.join(
+            os.path.dirname(os.path.dirname(__file__)), "data", "pyme", "rubros", rubro_slug, tenant_slug, archivo
+        ))
+
+    rutas_candidatas.append(os.path.join(BASE_PYME_CONFIG_PATH, rubro_slug, archivo))
+    rutas_candidatas.append(os.path.join(
         os.path.dirname(os.path.dirname(__file__)), "data", "pyme", "rubros", rubro_slug, archivo
-    )
+    ))
 
-    if not os.path.exists(ruta):
-        if os.path.exists(repo_ruta):
-            ruta = repo_ruta
-        elif rubro_slug != "default":
-            # Intentar fallback al rubro "default" para garantizar valores.
-            return cargar_configuracion_pyme("default", archivo)
-        else:
-            logger.warning(
-                f"[CONFIG] Archivo PYME '{archivo}' no encontrado para rubro '{rubro_slug}'."
-            )
-            _pyme_config_cache[clave] = {}
-            _pyme_mtime_cache[clave] = None
-            return {}
+    ruta_elegida = None
+    for ruta in rutas_candidatas:
+        if os.path.exists(ruta):
+            ruta_elegida = ruta
+            break
+
+    # 3. Fallback to default if not found
+    if not ruta_elegida and rubro_slug != "default":
+        # Recursive call without tenant_slug to force fallback logic
+        return cargar_configuracion_pyme("default", archivo, tenant_slug=None)
+
+    if not ruta_elegida:
+        logger.warning(
+            f"[CONFIG] Archivo PYME '{archivo}' no encontrado para rubro '{rubro_slug}' (tenant: {tenant_slug})."
+        )
+        _pyme_config_cache[clave] = {}
+        _pyme_mtime_cache[clave] = None
+        return {}
+
+    try:
+        mtime = os.path.getmtime(ruta_elegida)
+    except OSError as e:
+        logger.error(f"[CONFIG] No se pudo acceder a {ruta_elegida}: {e}")
+        _pyme_config_cache[clave] = {}
+        _pyme_mtime_cache[clave] = None
+        return {}
+
+    if clave in _pyme_config_cache and _pyme_mtime_cache.get(clave) == mtime:
+        return _pyme_config_cache[clave]
+
+    try:
+        with open(ruta_elegida, "r", encoding="utf-8") as f:
+            datos = json.load(f)
+        _pyme_config_cache[clave] = datos
+        _pyme_mtime_cache[clave] = mtime
+        return datos
+    except Exception as e:
+        logger.error(f"[CONFIG] No se pudo cargar {ruta_elegida}: {e}")
+        _pyme_config_cache[clave] = {}
+        _pyme_mtime_cache[clave] = mtime
+        return {}
 
     try:
         mtime = os.path.getmtime(ruta)

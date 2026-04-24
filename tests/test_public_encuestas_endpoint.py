@@ -1,5 +1,6 @@
 from app import create_app, db
 from config import TestingConfig
+from routes.encuestas_public import _rate_buckets, _rate_limit
 
 
 def test_public_encuestas_defaults_to_config_owner(client):
@@ -10,8 +11,29 @@ def test_public_encuestas_defaults_to_config_owner(client):
 
 
 def test_public_encuestas_options_is_handled(client):
-    response = client.options("/public/encuestas")
+    origin = "http://localhost:8080"
+    response = client.options(
+        "/public/encuestas", headers={"Origin": origin}
+    )
     assert response.status_code == 204
+    assert response.headers.get("Access-Control-Allow-Origin") == origin
+    allow_methods = response.headers.get("Access-Control-Allow-Methods", "")
+    assert "OPTIONS" in allow_methods
+    assert "GET" in allow_methods
+    allow_headers = response.headers.get("Access-Control-Allow-Headers", "")
+    assert "Content-Type" in allow_headers
+
+
+def test_public_encuestas_get_includes_cors_headers(client):
+    origin = "http://localhost:8080"
+    response = client.get(
+        "/public/encuestas", headers={"Origin": origin}
+    )
+    assert response.status_code == 200
+    assert response.headers.get("Access-Control-Allow-Origin") == origin
+    assert response.headers.get("Access-Control-Allow-Credentials") == "true"
+    vary_header = response.headers.get("Vary", "")
+    assert "Origin" in [item.strip() for item in vary_header.split(",") if item.strip()]
 
 
 def test_not_found_returns_json(client):
@@ -40,3 +62,15 @@ def test_internal_error_returns_json():
 
     assert response.status_code == 500
     assert response.get_json() == {"error": "server_error"}
+
+
+def test_public_encuestas_rate_limit_respects_config(app):
+    ip = "203.0.113.10"
+    with app.app_context():
+        app.config["PUBLIC_ENCUESTAS_RATE_LIMIT"] = 2
+        app.config["PUBLIC_ENCUESTAS_RATE_PERIOD"] = 60
+        _rate_buckets.pop(ip, None)
+
+        assert _rate_limit(ip) is True
+        assert _rate_limit(ip) is True
+        assert _rate_limit(ip) is False

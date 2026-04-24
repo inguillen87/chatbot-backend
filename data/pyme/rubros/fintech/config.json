@@ -1,0 +1,157 @@
+{
+  "nombre": "Fintech Demo",
+  "descripcion": "Banca digital, cobranzas y analítica de riesgo.",
+  "prompt_context": "Fintech Demo orquesta onboarding digital, core de pagos, scoring de crédito y open banking con integraciones plug-and-play para bancos, retailers y fintechs regionales.",
+  "welcome_message": "💳 Bienvenido a Fintech Demo.\n\nElegí una opción del menú para explorar onboarding, cobranzas, riesgo o nuestras APIs.",
+  "resources": [
+    {
+      "title": "Playbook onboarding digital",
+      "description": "Kits KYC, biometría facial y journeys automatizados por segmento.",
+      "type": "pdf",
+      "url": "/static/demo/fintech/onboarding-digital-2024.pdf",
+      "cta_text": "Descargar playbook onboarding",
+      "price": "Costo por alta desde USD 1,20",
+      "highlight": "Aprobación en 3 minutos",
+      "availability": "Operativo en LATAM + España"
+    },
+    {
+      "title": "Suite de cobranzas omnicanal",
+      "description": "Débitos, billeteras, links dinámicos y conciliación automática en un solo panel.",
+      "type": "pdf",
+      "url": "/static/demo/fintech/suite-cobranzas-omnicanal.pdf",
+      "cta_text": "Ver suite de cobranzas",
+      "price": "Recupero +30% en 90 días",
+      "highlight": "Plug-ins Magento · VTEX",
+      "availability": "Integración API + Webhooks"
+    },
+    {
+      "title": "Mapa de APIs Aurora",
+      "description": "Open banking, scoring, pagos y loyalty en un gateway escalable.",
+      "type": "image",
+      "url": "/static/demo/fintech/mapa-apis.svg",
+      "thumbnail": "/static/demo/fintech/mapa-apis.svg",
+      "cta_text": "Explorar mapa de APIs",
+      "highlight": "+60 endpoints disponibles",
+      "availability": "Sandbox y producción"
+    }
+  ],
+  "quick_actions": [
+    {
+      "emoji": "🚀",
+      "texto": "Onboarding",
+      "description": "Journeys digitales y upgrades",
+      "category": "🚀 Crecimiento & producto",
+      "submenu": [
+        {
+          "emoji": "🆔",
+          "texto": "Onboarding express",
+          "prompt": "Mostrame el journey de onboarding digital con KYC biométrico y aprobación en minutos.",
+          "description": "Workflow 100% paperless"
+        },
+        {
+          "emoji": "💳",
+          "texto": "Upsell tarjetas",
+          "prompt": "¿Qué campañas de upsell aplican para tarjeta premium y créditos preaprobados?",
+          "description": "Ofertas en tiempo real"
+        },
+        {
+          "emoji": "📱",
+          "texto": "App modular",
+          "prompt": "Necesito ver módulos white-label para app y banca web.",
+          "description": "Componentes UX listos"
+        }
+      ]
+    },
+    {
+      "emoji": "💰",
+      "texto": "Cobranzas",
+      "description": "Pagos, links y recaudos",
+      "category": "💰 Cobranzas omnicanal",
+      "submenu": [
+        {
+          "emoji": "🔗",
+          "texto": "Links dinámicos",
+          "prompt": "Mostrame cómo se generan links de pago dinámicos con vencimiento y recordatorios.",
+          "description": "Expiración y recordatorios automáticos"
+        },
+        {
+          "emoji": "🏦",
+          "texto": "Arqueo y conciliación",
+          "prompt": "¿Cómo concilian cobros de POS, QR y transferencias en un dashboard único?",
+          "description": "Motor de conciliación inteligente"
+        },
+        {
+          "emoji": "📉",
+          "texto": "Recupero inteligente",
+          "prompt": "Necesito flujos de cobranzas preventivas con campañas multicanal.",
+          "description": "Automatización con IA conversacional"
+        }
+      ]
+    },
+    {
+      "emoji": "🛡️",
+      "texto": "Riesgo & compliance",
+      "description": "Scoring, antifraude y monitoreo",
+      "category": "🛡️ Gestión de riesgo",
+      "submenu": [
+        {
+          "emoji": "📊",
+          "texto": "Panel de riesgo",
+          "prompt": "Mostrame el dashboard de riesgo con alertas tempranas y controles AML.",
+          "description": "Alertas configurables por umbral"
+        },
+        {
+          "emoji": "🧮",
+          "texto": "Scoring crediticio",
+          "prompt": "¿Qué variables usan para el scoring crediticio y cómo se integran al core bancario?",
+          "description": "Modelos híbridos + open data"
+        },
+        {
+          "emoji": "🧾",
+          "texto": "Reporting regulatorio",
+          "prompt": "Necesito los reportes regulatorios automáticos para BCRA y CNV.",
+          "description": "Salida en XBRL y PDF"
+        }
+      ]
+    },
+    {
+      "emoji": "🤝",
+      "texto": "Partners",
+      "description": "Marketplace, revenue share y APIs",
+      "category": "🤝 Partners & APIs",
+      "submenu": [
+        {
+          "emoji": "🔌",
+          "texto": "API marketplace",
+          "prompt": "Quiero conocer el marketplace de APIs y cómo habilitar sandbox para partners.",
+          "description": "Portal developers con analytics"
+        },
+        {
+          "emoji": "🌍",
+          "texto": "Cross border",
+          "prompt": "¿Cómo operan pagos cross border y liquidez multimoneda?",
+          "description": "Liquidación USD/EUR instantánea"
+        },
+        {
+          "emoji": "🎯",
+          "texto": "Programas aliados",
+          "prompt": "Mostrame los programas de revenue share para retailers y telcos.",
+          "description": "Planes silver · gold · platinum"
+        }
+      ]
+    }
+  ],
+  "capabilities": [
+    "⚙️ Orquesto onboarding digital con biometría, listas negras y scoring adaptativo.",
+    "💳 Administro cobranzas omnicanal con conciliación automática y recordatorios inteligentes.",
+    "📈 Expondo tableros de riesgo, cohortes y cohortes de monetización en tiempo real.",
+    "🔗 Gestiono APIs open banking con sandbox, keys rotativas y monitoreo 24/7."
+  ],
+  "keywords": [
+    "onboarding digital",
+    "cobranzas omnicanal",
+    "scoring crediticio",
+    "open banking",
+    "compliance fintech"
+  ]
+}
