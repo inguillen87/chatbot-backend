@@ -534,6 +534,8 @@ class TenantProfile(db.Model, TimestampMixin):
     configuracion = db.Column(JSONType, nullable=True)
     plan = db.Column(db.String(50), default="free")
     whatsapp_sender_id = db.Column(db.String(255), nullable=True)
+    vertical = db.Column(db.String(50), nullable=True, default="pyme")
+    subvertical = db.Column(db.String(50), nullable=True)
     is_active = db.Column(db.Boolean, default=True, nullable=False)
 
     # Dispatch & Notification Configuration

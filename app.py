@@ -455,6 +455,7 @@ def create_app(config_class=Config):
     from routes.admin_ai import admin_ai_bp
     from routes.analytics_routes import analytics_v2_bp
     from routes.analytics_kpis import analytics_kpis_bp
+    from routes.education_routes import education_bp
     from routes.gov_analytics import gov_analytics_bp
     from services.upload_processor import upload_bp
     from routes.archivos import archivos_bp
