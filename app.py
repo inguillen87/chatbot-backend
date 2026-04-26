@@ -456,6 +456,7 @@ def create_app(config_class=Config):
     from routes.analytics_routes import analytics_v2_bp
     from routes.analytics_kpis import analytics_kpis_bp
     from routes.education_routes import education_bp
+    from routes.education_kb import education_kb_bp
     from routes.gov_analytics import gov_analytics_bp
     from services.upload_processor import upload_bp
     from routes.archivos import archivos_bp
@@ -598,6 +599,9 @@ def create_app(config_class=Config):
     app.register_blueprint(admin_analytics_bp)
     app.register_blueprint(admin_ai_bp)
     app.register_blueprint(analytics_v2_bp)
+    app.register_blueprint(analytics_kpis_bp)
+    app.register_blueprint(education_bp)
+    app.register_blueprint(education_kb_bp)
     app.register_blueprint(gov_analytics_bp)
     app.register_blueprint(upload_bp)
     app.register_blueprint(archivos_bp)
