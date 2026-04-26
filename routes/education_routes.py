@@ -1,85 +1,60 @@
 from flask import Blueprint, jsonify, request
 from utils.auth_helpers import token_requerido
-from models_education import School, Campus, CourseSection, Guardian, StudentGuardianRelation
-from models import PymeTicket
 from app import db
+from models_education import School, Campus, Student, Guardian, StudentGuardianRelation
+from models import TenantProfile
 
 education_bp = Blueprint('education', __name__)
 
 @education_bp.route('/api/v1/education/schools', methods=['GET'])
 @token_requerido
-def list_schools(current_user, actor_principal):
-    tenant_id = getattr(actor_principal, 'tenant_id', None) or getattr(actor_principal, 'municipio_id', None) or getattr(actor_principal, 'pyme_id', None)
-    if not tenant_id:
-        return jsonify({'error': {'code': 400, 'message': 'Tenant context required'}}), 400
-
-    schools = School.query.filter_by(tenant_id=tenant_id).all()
+def get_schools(current_user, actor_principal):
+    schools = School.query.all()
     return jsonify([
         {
             "id": s.id,
-            "name": s.name,
-            "school_type": s.school_type,
-            "status": s.status
+            "tenant_id": s.tenant_id,
+            "name": s.name
         } for s in schools
-    ]), 200
+    ])
 
-@education_bp.route('/api/v1/education/guardians/verify', methods=['POST'])
-@token_requerido
-def verify_guardian(current_user, actor_principal):
+@education_bp.route('/api/v1/education/guardian/verify', methods=['POST'])
+def verify_guardian():
     data = request.json or {}
-    document_number = data.get('document_number')
-    tenant_id = getattr(actor_principal, 'tenant_id', None) or getattr(actor_principal, 'municipio_id', None) or getattr(actor_principal, 'pyme_id', None)
+    phone = data.get('phone_number')
+    if not phone:
+        return jsonify({"error": {"code": 400, "message": "phone_number required"}}), 400
 
-    if not document_number or not tenant_id:
-        return jsonify({'error': {'code': 400, 'message': 'Missing document_number or tenant context'}}), 400
+    guardian = Guardian.query.filter_by(phone_number=phone).first()
+    if not guardian:
+         return jsonify({"error": {"code": 404, "message": "Guardian not found"}}), 404
 
-    guardian = Guardian.query.filter_by(tenant_id=tenant_id, document_number=document_number).first()
-    if guardian:
-        guardian.verification_status = "verified"
-        db.session.commit()
-        return jsonify({
-            "status": "verified",
-            "guardian_id": guardian.id,
-            "name": f"{guardian.first_name} {guardian.last_name}"
-        }), 200
+    return jsonify({
+        "id": guardian.id,
+        "first_name": guardian.first_name,
+        "last_name": guardian.last_name,
+        "school_id": guardian.school_id
+    })
 
-    return jsonify({'error': {'code': 404, 'message': 'Guardian not found for verification'}}), 404
-
-@education_bp.route('/api/v1/education/me/family-context', methods=['GET'])
+@education_bp.route('/api/v1/education/family/context', methods=['GET'])
 @token_requerido
 def get_family_context(current_user, actor_principal):
-    guardian_id = request.args.get('guardian_id', type=int)
+    # This requires looking up by the actor's implicit identity or a passed param
+    guardian_id = request.args.get('guardian_id')
     if not guardian_id:
-        return jsonify({'error': {'code': 400, 'message': 'Missing guardian_id'}}), 400
+        return jsonify({"error": {"code": 400, "message": "guardian_id required"}}), 400
 
-    relations = StudentGuardianRelation.query.filter_by(guardian_id=guardian_id, status='active').all()
+    relations = StudentGuardianRelation.query.filter_by(guardian_id=guardian_id).all()
+
     students = []
-    for rel in relations:
-        student = rel.student
+    for r in relations:
+        student = r.student
         students.append({
             "id": student.id,
             "first_name": student.first_name,
             "last_name": student.last_name,
-            "section_id": student.section_id,
-            "relationship": rel.relationship_type
+            "grade": student.grade,
+            "relationship": r.relationship_type
         })
 
-    return jsonify({"students": students}), 200
-
-@education_bp.route('/api/v1/education/cases', methods=['GET'])
-@token_requerido
-def list_cases(current_user, actor_principal):
-    # This aliases to existing tickets. We use PymeTicket as the universal case engine for this tenant context
-    tenant_id = getattr(actor_principal, 'tenant_id', None) or getattr(actor_principal, 'municipio_id', None) or getattr(actor_principal, 'pyme_id', None)
-    if not tenant_id:
-        return jsonify({'error': {'code': 400, 'message': 'Tenant context required'}}), 400
-
-    cases = PymeTicket.query.filter_by(tenant_id=tenant_id).all()
-    return jsonify([
-        {
-            "id": c.id,
-            "subject": c.asunto,
-            "category": c.categoria,
-            "status": c.estado
-        } for c in cases
-    ]), 200
+    return jsonify({"students": students})

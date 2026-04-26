@@ -1,8 +1,8 @@
-"""Init
+"""add catalog upload extended fields
 
-Revision ID: aed532251a0b
-Revises:
-Create Date: 2026-04-25 18:20:38.957684
+Revision ID: 63d5d1f8a654
+Revises: 20300124
+Create Date: 2026-02-04 01:38:44.912705
 
 """
 from alembic import op
@@ -10,8 +10,8 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision = 'aed532251a0b'
-down_revision = None
+revision = '63d5d1f8a654'
+down_revision = '20300124'
 branch_labels = None
 depends_on = None
 

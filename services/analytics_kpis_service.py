@@ -1,7 +1,8 @@
+import models_analytics_k
 import logging
 from datetime import datetime, timezone, timedelta
 from app import db
-from models import PymeTicket, MunicipioTicket, EncRespuesta, Message, TenantBudget
+
 
 logger = logging.getLogger(__name__)
 
@@ -13,14 +14,9 @@ class AnalyticsKPIService:
         """
         since_date = datetime.now(timezone.utc) - timedelta(days=days_back)
 
+        from models import PymeTicket, EncRespuesta, Message
         # 1. Ticket Resolution & Volume
-        # Assuming PymeTicket/MunicipioTicket is joined via generic Ticket base or fetched contextually
-        # Here we do a generalized approach assuming 'Ticket' exists. If not, adapting to MunicipioTicket/PymeTicket is necessary.
-        try:
-            from models import PymeTicket
-            TicketModel = PymeTicket
-        except ImportError:
-            from models import MunicipioTicket as TicketModel
+        TicketModel = PymeTicket
 
         total_tickets = db.session.query(TicketModel).filter(
             TicketModel.tenant_id == tenant_id,
@@ -78,7 +74,7 @@ class AnalyticsKPIService:
         }
 
     def get_cost_metrics(self, tenant_id: int) -> dict:
-        budget = TenantBudget.query.filter_by(tenant_id=tenant_id).first()
+        budget = models_analytics_k.TenantBudget.query.filter_by(tenant_id=tenant_id).first()
         if not budget:
             return {"status": "no_budget_set"}
 

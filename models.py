@@ -534,8 +534,6 @@ class TenantProfile(db.Model, TimestampMixin):
     configuracion = db.Column(JSONType, nullable=True)
     plan = db.Column(db.String(50), default="free")
     whatsapp_sender_id = db.Column(db.String(255), nullable=True)
-    vertical = db.Column(db.String(50), nullable=True, default="pyme")
-    subvertical = db.Column(db.String(50), nullable=True)
     is_active = db.Column(db.Boolean, default=True, nullable=False)
 
     # Dispatch & Notification Configuration
@@ -2689,3 +2687,4 @@ class TenantWidgetConfig(db.Model, TimestampMixin):
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
 from models_analytics_k import AIUsageLog, TenantBudget, CostRollupHourly, CostRollupDaily
+from models_education import School, Campus, Student, Guardian, StudentGuardianRelation
