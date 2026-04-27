@@ -4,6 +4,8 @@ from flask import Blueprint, current_app, g, jsonify, make_response, request, ur
 from flask_cors import cross_origin
 from services.logic import es_rubro_publico, normalizar_rubro
 import os
+import re
+import unicodedata
 from sqlalchemy import func, or_
 from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.orm.attributes import flag_modified
@@ -520,9 +522,16 @@ def build_profile_payload(user: User) -> Dict[str, Any]:
     plan_metadata = get_plan_metadata(profile_data.get("plan"))
     profile_data["plan_detalle"] = serialize_plan_for_response(plan_metadata)
     profile_data["planes_disponibles"] = serialize_plan_catalog()
-    tenant_slug_value = getattr(user, "tenant_slug", None)
+    tenant_slug_value = (
+        getattr(user, "tenant_slug", None)
+        or getattr(tenant_profile, "slug", None)
+    )
     profile_data["tenant_slug"] = tenant_slug_value
     profile_data["tenantSlug"] = tenant_slug_value
+    profile_data["rubro_id"] = getattr(user, "rubro_id", None)
+    profile_data["rubro_clave"] = getattr(rubro_obj, "clave", None) if rubro_obj else None
+    profile_data["profile_sections"] = _dashboard_panels_for_user(user, tipo_chat)
+    profile_data["requires_rubro_selection"] = bool(not getattr(user, "rubro_id", None) and tipo_chat == "pyme")
 
     owner_token = _resolve_owner_token(user)
     widget_session_active = bool(getattr(g, "widget_session", False))
@@ -960,6 +969,60 @@ def _resolve_demo_tenant_slug(rubro_raw: Optional[str]) -> Optional[str]:
     return None
 
 
+def _normalize_rubro_lookup(value: Optional[str]) -> str:
+    text = (value or "").strip().lower()
+    if not text:
+        return ""
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    text = re.sub(r"[\s\-]+", "_", text)
+    return text
+
+
+def _resolve_rubro_from_input(rubro_raw: Any) -> Optional[Rubro]:
+    if rubro_raw is None:
+        return None
+
+    raw_text = str(rubro_raw).strip()
+    if not raw_text:
+        return None
+
+    if raw_text.isdigit():
+        return Rubro.query.filter_by(id=int(raw_text)).first()
+
+    normalized = _normalize_rubro_lookup(raw_text)
+    rubros = Rubro.query.all()
+    for rubro in rubros:
+        normalized_clave = _normalize_rubro_lookup(getattr(rubro, "clave", None))
+        normalized_nombre = _normalize_rubro_lookup(getattr(rubro, "nombre", None))
+        if normalized in {normalized_clave, normalized_nombre}:
+            return rubro
+
+    return None
+
+
+def _resolve_demo_rubro_for_tenant(tenant: TenantProfile) -> Optional[Rubro]:
+    owner = _tenant_owner(tenant)
+    if owner and getattr(owner, "rubro_id", None):
+        rubro = Rubro.query.get(owner.rubro_id)
+        if rubro:
+            return rubro
+
+    rubro_from_slug = _resolve_rubro_from_input(getattr(tenant, "slug", None))
+    if rubro_from_slug:
+        return rubro_from_slug
+
+    if (tenant.tipo or "").strip().lower() == "municipio":
+        return (
+            Rubro.query.filter(func.lower(Rubro.clave) == "municipio").first()
+            or Rubro.query.filter(Rubro.es_publico.is_(True)).order_by(Rubro.id.asc()).first()
+        )
+
+    return (
+        Rubro.query.filter(func.lower(Rubro.clave) == "pyme").first()
+        or Rubro.query.filter(func.lower(Rubro.clave) == "local_comercial_general").first()
+        or Rubro.query.filter(Rubro.es_publico.is_(False)).order_by(Rubro.id.asc()).first()
+    )
 
 
 def _demo_superadmin_credentials() -> dict:
@@ -1041,11 +1104,18 @@ def _get_or_create_demo_user_for_tenant(tenant: TenantProfile) -> User:
     """
 
     demo_email = f"demo.{tenant.slug}@chatboc.ar"
+    demo_rubro = _resolve_demo_rubro_for_tenant(tenant)
     user = _user_query().filter_by(email=demo_email).first()
     if user:
         _attach_user_to_tenant(user, tenant)
+        updated = False
+        if demo_rubro and getattr(user, "rubro_id", None) != demo_rubro.id:
+            user.rubro_id = demo_rubro.id
+            updated = True
         if user.rol != "admin":
             user.rol = "admin"
+            updated = True
+        if updated:
             db.session.add(user)
             db.session.commit()
         return user
@@ -1059,6 +1129,7 @@ def _get_or_create_demo_user_for_tenant(tenant: TenantProfile) -> User:
         tenant_id=getattr(tenant, "id", None),
         pyme_id=tenant.pyme_id,
         municipio_id=tenant.municipio_id,
+        rubro_id=getattr(demo_rubro, "id", None),
     )
     user.set_password("demo")
     db.session.add(user)
@@ -1445,7 +1516,13 @@ def login_demo():
         "tenantSlug": tenant_obj.slug,
         "marketplace": _tenant_market_payload(tenant_obj),
         "demo_mode": True,
-        "rubro": rubro or candidate or tenant_obj.slug,
+        "rubro": (
+            getattr(getattr(demo_user, "rubro", None), "clave", None)
+            or rubro
+            or candidate
+            or tenant_obj.slug
+        ),
+        "rubro_id": getattr(demo_user, "rubro_id", None),
         "sector": requested_sector or ("gobierno" if tipo_chat == "municipio" else "empresas"),
     }
     response = jsonify(response_payload)
@@ -2014,12 +2091,8 @@ def register():
             "botones": [{"texto": "Volver al chat"}],
         }), 409
 
-    # Buscar el rubro por nombre o ID
-    rubro = None
-    if isinstance(rubro_raw, int) or (isinstance(rubro_raw, str) and rubro_raw.isdigit()):
-        rubro = Rubro.query.filter_by(id=int(rubro_raw)).first()
-    elif isinstance(rubro_raw, str):
-        rubro = Rubro.query.filter(func.lower(Rubro.nombre) == func.lower(rubro_raw.strip())).first()
+    # Buscar el rubro por id/clave/nombre (normalizado con alias básicos).
+    rubro = _resolve_rubro_from_input(rubro_raw)
 
     if not rubro:
         return jsonify({
