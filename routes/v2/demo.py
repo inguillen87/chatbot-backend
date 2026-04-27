@@ -6,6 +6,7 @@ from flask import Blueprint, jsonify, request
 from sqlalchemy import func
 
 from models import TenantProfile
+from routes.auth import demo_catalog as legacy_demo_catalog
 from services.demo_experience_contract import build_demo_experience_contract
 from services.demo_registry import load_demo_rubros
 from routes.v2.tenants import create_demo_session_token
@@ -38,7 +39,22 @@ def _safe_demo_rubros() -> list[dict[str, Any]]:
 
 @v2_demo_bp.route('/catalog', methods=['GET'])
 def demo_catalog_v2():
-    rubros = _safe_demo_rubros()
+    # Reuse legacy catalog generation, then sanitize/reshape into v2 contract.
+    legacy_response = legacy_demo_catalog()
+    legacy_payload = legacy_response.get_json(silent=True) if hasattr(legacy_response, "get_json") else {}
+
+    rubros = []
+    for item in (legacy_payload or {}).get("tenant_demos") or []:
+        rubros.append(
+            {
+                "key": item.get("key"),
+                "label": item.get("label"),
+                "tipo_chat": item.get("tipo_chat"),
+                "tenant_slug": item.get("tenant_slug"),
+            }
+        )
+    if not rubros:
+        rubros = _safe_demo_rubros()
     gobierno = [r for r in rubros if (r.get("tipo_chat") or "").lower() == "municipio"]
     empresas = [r for r in rubros if (r.get("tipo_chat") or "").lower() == "pyme"]
 
