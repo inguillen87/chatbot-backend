@@ -1,4 +1,4 @@
-from models import User, Rubro, db
+from models import User, Rubro, TenantProfile, db
 import jwt
 from datetime import datetime, timedelta
 from flask import current_app
@@ -44,6 +44,50 @@ def test_perfil_alias_works(client):
     assert json_data["widget_token_cookie_name"] == client.application.config.get("WIDGET_TOKEN_COOKIE_NAME", "widget_token")
     assert json_data["session_expires_at"]
     assert "session_renew_until" not in json_data
+
+
+def test_perfil_uses_tenant_slug_and_exposes_profile_sections(client):
+    rubro = Rubro.query.filter_by(clave="pyme").first()
+    if not rubro:
+        rubro = Rubro(nombre="pyme", clave="pyme", es_publico=False)
+        db.session.add(rubro)
+        db.session.commit()
+
+    owner = User(
+        email="profile-sections@test.com",
+        name="Profile Sections",
+        token="profile-sections-token",
+        rubro_id=rubro.id,
+        tipo_chat="pyme",
+        rol="admin",
+    )
+    owner.set_password("pw")
+    db.session.add(owner)
+    db.session.flush()
+
+    tenant = TenantProfile(
+        slug="profile-sections-tenant",
+        nombre="Profile Sections Tenant",
+        tipo="pyme",
+        pyme_id=owner.id,
+    )
+    db.session.add(tenant)
+    db.session.commit()
+
+    jwt_payload = {"user_id": owner.id, "exp": datetime.utcnow() + timedelta(days=1)}
+    jwt_token = jwt.encode(jwt_payload, current_app.config["SECRET_KEY"], algorithm="HS256")
+    if isinstance(jwt_token, bytes):
+        jwt_token = jwt_token.decode("utf-8")
+
+    response = client.get("/auth/perfil", headers={"Authorization": f"Bearer {jwt_token}"})
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["tenant_slug"] == tenant.slug
+    assert data["tenantSlug"] == tenant.slug
+    assert data["rubro_id"] == rubro.id
+    assert data["rubro_clave"] == rubro.clave
+    assert "tickets" in (data.get("profile_sections") or [])
+    assert data["requires_rubro_selection"] is False
 
 
 def test_perfil_returns_owner_token_for_employee(client):
@@ -96,6 +140,48 @@ def test_perfil_returns_owner_token_for_employee(client):
     assert data["entity_token"] == owner.token
     assert data["widget_embed_token"] == owner.token
     assert data["owner_token"] == owner.token
+
+
+def test_auth_demo_assigns_rubro_for_first_time_demo_user(client):
+    client.application.config["ENABLE_DEMO_MODE"] = True
+
+    rubro = Rubro.query.filter_by(clave="ferreteria").first()
+    if not rubro:
+        rubro = Rubro(nombre="Ferretería", clave="ferreteria", es_publico=False)
+        db.session.add(rubro)
+        db.session.flush()
+
+    owner = User(
+        email="owner-ferreteria-demo@test.com",
+        name="Owner Demo Ferretería",
+        token="owner-ferreteria-demo-token",
+        rubro_id=rubro.id,
+        tipo_chat="pyme",
+        rol="admin",
+    )
+    owner.set_password("pw")
+    db.session.add(owner)
+    db.session.flush()
+
+    tenant = TenantProfile(
+        slug="ferreteria",
+        nombre="Ferretería Demo",
+        tipo="pyme",
+        pyme_id=owner.id,
+    )
+    db.session.add(tenant)
+    db.session.commit()
+
+    response = client.post("/auth/demo", json={"tenant_slug": tenant.slug})
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["tenant_slug"] == tenant.slug
+    assert payload["rubro_id"] == rubro.id
+    assert payload["rubro"] == rubro.clave
+
+    demo_user = User.query.filter_by(email=f"demo.{tenant.slug}@chatboc.ar").first()
+    assert demo_user is not None
+    assert demo_user.rubro_id == rubro.id
 
 
 def test_perfil_accepts_static_entity_token_and_sets_widget_session(client):

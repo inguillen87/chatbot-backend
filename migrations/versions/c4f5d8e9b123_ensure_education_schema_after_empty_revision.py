@@ -1,32 +1,29 @@
-"""add education and analytics tables
+"""ensure education schema after previously empty revision
 
-Revision ID: 71c9a10fb7cb
-Revises: de53397ead1d
-Create Date: 2026-04-25 23:44:20.309424
+Revision ID: c4f5d8e9b123
+Revises: 71c9a10fb7cb
+Create Date: 2026-04-27 16:30:00.000000
 
 """
+
 from alembic import op
 import sqlalchemy as sa
 
 
-# revision identifiers, used by Alembic.
-revision = '71c9a10fb7cb'
-down_revision = 'de53397ead1d'
+revision = "c4f5d8e9b123"
+down_revision = "71c9a10fb7cb"
 branch_labels = None
 depends_on = None
 
 
 def _has_table(table_name: str) -> bool:
-    bind = op.get_bind()
-    inspector = sa.inspect(bind)
+    inspector = sa.inspect(op.get_bind())
     return table_name in inspector.get_table_names()
 
 
 def _has_column(table_name: str, column_name: str) -> bool:
-    bind = op.get_bind()
-    inspector = sa.inspect(bind)
-    columns = inspector.get_columns(table_name)
-    return any(col["name"] == column_name for col in columns)
+    inspector = sa.inspect(op.get_bind())
+    return any(col["name"] == column_name for col in inspector.get_columns(table_name))
 
 
 def upgrade():
@@ -100,13 +97,7 @@ def upgrade():
             sa.Column("shift_id", sa.Integer(), sa.ForeignKey("edu_shifts.id"), nullable=False),
             sa.Column("homeroom_staff_id", sa.Integer(), sa.ForeignKey("user.id"), nullable=True),
             sa.UniqueConstraint(
-                "campus_id",
-                "academic_year",
-                "level_id",
-                "grade",
-                "division",
-                "shift_id",
-                name="uq_edu_section_unique_slot",
+                "campus_id", "academic_year", "level_id", "grade", "division", "shift_id", name="uq_edu_section_unique_slot"
             ),
         )
         op.create_index("ix_edu_course_sections_campus_id", "edu_course_sections", ["campus_id"])
@@ -222,30 +213,6 @@ def upgrade():
 
 
 def downgrade():
-    if _has_table("edu_school_case_aliases"):
-        op.drop_table("edu_school_case_aliases")
-    if _has_table("edu_family_verification_attempts"):
-        op.drop_table("edu_family_verification_attempts")
-    if _has_table("edu_student_guardian_relations"):
-        op.drop_table("edu_student_guardian_relations")
-    if _has_table("edu_guardians"):
-        op.drop_table("edu_guardians")
-    if _has_table("edu_students"):
-        op.drop_table("edu_students")
-    if _has_table("edu_course_sections"):
-        op.drop_table("edu_course_sections")
-    if _has_table("edu_shifts"):
-        op.drop_table("edu_shifts")
-    if _has_table("edu_academic_levels"):
-        op.drop_table("edu_academic_levels")
-    if _has_table("edu_campuses"):
-        op.drop_table("edu_campuses")
-    if _has_table("edu_schools"):
-        op.drop_table("edu_schools")
-
-    if _has_column("tenant_profile", "capabilities_json"):
-        op.drop_column("tenant_profile", "capabilities_json")
-    if _has_column("tenant_profile", "subvertical"):
-        op.drop_column("tenant_profile", "subvertical")
-    if _has_column("tenant_profile", "vertical"):
-        op.drop_column("tenant_profile", "vertical")
+    # This revision is a safety net to enforce schema in environments that already
+    # stamped/applied a previously empty migration; we avoid destructive downgrade.
+    pass

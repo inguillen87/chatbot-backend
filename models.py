@@ -532,6 +532,9 @@ class TenantProfile(db.Model, TimestampMixin):
     logo_url = db.Column(db.String(512), nullable=True)
     tema = db.Column(JSONType, nullable=True)
     configuracion = db.Column(JSONType, nullable=True)
+    vertical = db.Column(db.String(50), nullable=True)
+    subvertical = db.Column(db.String(50), nullable=True)
+    capabilities_json = db.Column(JSONType, nullable=True)
     plan = db.Column(db.String(50), default="free")
     whatsapp_sender_id = db.Column(db.String(255), nullable=True)
     is_active = db.Column(db.Boolean, default=True, nullable=False)
@@ -2687,4 +2690,15 @@ class TenantWidgetConfig(db.Model, TimestampMixin):
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
 from models_analytics_k import AIUsageLog, TenantBudget, CostRollupHourly, CostRollupDaily
-from models_education import School, Campus, Student, Guardian, StudentGuardianRelation
+from models_education import (
+    School,
+    Campus,
+    AcademicLevel,
+    Shift,
+    CourseSection,
+    Student,
+    Guardian,
+    StudentGuardianRelation,
+    FamilyVerificationAttempt,
+    SchoolCaseAlias,
+)

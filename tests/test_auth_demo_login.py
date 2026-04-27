@@ -16,6 +16,7 @@ class TestConfig(Config):
     TESTING = True
     SQLALCHEMY_DATABASE_URI = "sqlite:///:memory:"
     WTF_CSRF_ENABLED = False
+    ENABLE_DEMO_MODE = True
     SQLALCHEMY_ENGINE_OPTIONS = {"connect_args": {"check_same_thread": False}}
 
 
@@ -150,6 +151,28 @@ class AuthDemoLoginTest(unittest.TestCase):
         self.assertIn('marketplace', payload)
         set_cookie_header = resp.headers.get('Set-Cookie', '')
         self.assertIn('auth_token=', set_cookie_header)
+
+    def test_demo_login_exposes_onboarding_starter_prompts(self):
+        resp = self.client.post('/auth/demo', json={"rubro": "municipio"})
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.get_json()
+
+        onboarding = payload.get("demo_onboarding") or {}
+        self.assertTrue(onboarding.get("autostart_chat"))
+        self.assertTrue(onboarding.get("open_widget"))
+        self.assertTrue(onboarding.get("entry_prompt"))
+        self.assertTrue(len(onboarding.get("starter_prompts") or []) >= 3)
+        self.assertTrue(len(onboarding.get("suggested_workflows") or []) >= 1)
+        self.assertIsInstance(onboarding.get("quick_actions"), list)
+        self.assertTrue(onboarding.get("experience_version"))
+        self.assertIn("satisfaccion_usuario", onboarding.get("analytics_kpis") or [])
+        integrations = onboarding.get("integrations") or {}
+        self.assertTrue((integrations.get("webhooks") or {}).get("supported"))
+        self.assertTrue("hubspot" in (integrations.get("crm_connectors") or []))
+
+        widget = payload.get("widget") or {}
+        self.assertTrue(widget.get("autostart"))
+        self.assertEqual(widget.get("tenant_slug"), payload.get("tenant_slug"))
 
     def test_demo_catalog_exposes_generic_entry_points(self):
         resp = self.client.get('/auth/demo/catalog')
