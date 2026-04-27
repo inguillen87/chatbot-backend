@@ -214,3 +214,22 @@ def dispatch_notifications_task(self, tenant_id: int, limit: int = 50):
     except Exception as exc:
         db.session.rollback()
         raise self.retry(exc=exc)
+
+
+@celery_app.task(name="tasks.v2_detect_sla_breaches", bind=True, max_retries=1, default_retry_delay=60)
+def v2_detect_sla_breaches_task(self, tenant_id: int):
+    """Detect SLA breaches for TenantTicket v2 and emit audit events."""
+    try:
+        from models import TenantProfile
+        from services.v2.sla_service import detect_sla_breaches_for_tenant
+
+        tenant = TenantProfile.query.get(int(tenant_id))
+        if not tenant:
+            return {"status": "tenant_not_found", "tenant_id": tenant_id}
+
+        breaches = detect_sla_breaches_for_tenant(tenant)
+        db.session.commit()
+        return {"status": "ok", "tenant_id": tenant_id, "breaches": len(breaches)}
+    except Exception as exc:
+        db.session.rollback()
+        raise self.retry(exc=exc)

@@ -385,7 +385,7 @@ class Config:
     Contiene todas las variables de configuración.
     """
 
-    DEBUG = True
+    DEBUG = ENV == "dev"
 
     # Public URLs exposed to the frontend. Keeping them in the Flask config
     # ensures endpoints like /api/config can always read them without having
@@ -754,6 +754,36 @@ class Config:
     WELCOME_STICKER_COOLDOWN_SECONDS = int(
         os.getenv("WELCOME_STICKER_COOLDOWN_SECONDS", "300")
     )
+
+INSECURE_SECRET_MARKERS = {
+    "",
+    "changeme",
+    "change_me",
+    "secret",
+    "default",
+    "una-llave-secreta-muy-segura-para-desarrollo-local",
+}
+
+
+def validate_runtime_security(config: Any) -> list[str]:
+    """Return runtime security errors for production-like environments."""
+
+    errors: list[str] = []
+    env_value = str(getattr(config, "get", lambda *_: None)("ENV", ENV) or ENV).strip().lower()
+    is_production = env_value in {"prod", "production"}
+    if not is_production:
+        return errors
+
+    secret_key = str(getattr(config, "get", lambda *_: None)("SECRET_KEY", "") or "").strip()
+    if not secret_key or secret_key.lower() in INSECURE_SECRET_MARKERS or len(secret_key) < 24:
+        errors.append("SECRET_KEY insegura para producción.")
+
+    debug_enabled = bool(getattr(config, "get", lambda *_: None)("DEBUG", False))
+    if debug_enabled:
+        errors.append("DEBUG=True no está permitido en producción.")
+
+    return errors
+
 
 class TestConfig(Config):
     TESTING = True
