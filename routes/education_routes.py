@@ -13,6 +13,7 @@ from models_education import (
     Guardian,
     School,
     SchoolCaseAlias,
+    Student,
     StudentGuardianRelation,
 )
 from utils.auth_helpers import token_requerido
@@ -28,6 +29,20 @@ SCHOOL_CASE_TAXONOMY = {
     "cobranza": "Cobranza",
     "admisiones": "Admisiones",
 }
+
+
+def _tenant_supports_education(tenant: TenantProfile | None) -> bool:
+    if not tenant:
+        return False
+    vertical = (getattr(tenant, "vertical", None) or "").strip().lower()
+    if vertical in {"educacion", "educación"}:
+        return True
+    capabilities = getattr(tenant, "capabilities_json", None)
+    if isinstance(capabilities, dict):
+        edu = capabilities.get("education")
+        if isinstance(edu, dict):
+            return bool(edu.get("enabled"))
+    return False
 
 
 def _resolve_actor_tenant_id(current_user=None, actor_principal=None):
@@ -62,6 +77,108 @@ def _resolve_school_tenant_id(raw_tenant_id):
         return int(raw_tenant_id)
     except (TypeError, ValueError):
         return None
+
+
+def _parse_optional_int(raw_value, field_name: str):
+    if raw_value in (None, ""):
+        return None
+    try:
+        return int(raw_value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{field_name} must be an integer")
+
+
+@education_bp.route("/api/v1/education/tenant/capabilities", methods=["GET"])
+@token_requerido
+def get_education_capabilities(current_user, actor_principal=None):
+    tenant_id = _resolve_actor_tenant_id(current_user, actor_principal)
+    if not tenant_id:
+        return jsonify({"error": {"code": 400, "message": "Tenant context required"}}), 400
+    tenant = TenantProfile.query.filter_by(id=tenant_id).first()
+    if not tenant:
+        return jsonify({"error": {"code": 404, "message": "Tenant profile not found"}}), 404
+
+    return jsonify(
+        {
+            "tenant_id": tenant.id,
+            "tenant_slug": tenant.slug,
+            "vertical": tenant.vertical,
+            "subvertical": tenant.subvertical,
+            "education_enabled": _tenant_supports_education(tenant),
+            "capabilities_json": tenant.capabilities_json or {},
+        }
+    )
+
+
+@education_bp.route("/api/v1/education/tenant/capabilities", methods=["PUT"])
+@token_requerido
+def update_education_capabilities(current_user, actor_principal=None):
+    tenant_id = _resolve_actor_tenant_id(current_user, actor_principal)
+    if not tenant_id:
+        return jsonify({"error": {"code": 400, "message": "Tenant context required"}}), 400
+    tenant = TenantProfile.query.filter_by(id=tenant_id).first()
+    if not tenant:
+        return jsonify({"error": {"code": 404, "message": "Tenant profile not found"}}), 404
+
+    payload = request.json or {}
+    education_enabled = payload.get("education_enabled")
+    subvertical = payload.get("subvertical")
+    modules = payload.get("modules")
+
+    if education_enabled is not None and not isinstance(education_enabled, bool):
+        return jsonify({"error": {"code": 400, "message": "education_enabled must be boolean"}}), 400
+    if subvertical is not None and not isinstance(subvertical, str):
+        return jsonify({"error": {"code": 400, "message": "subvertical must be string"}}), 400
+    if modules is not None and not isinstance(modules, list):
+        return jsonify({"error": {"code": 400, "message": "modules must be list"}}), 400
+
+    capabilities = tenant.capabilities_json if isinstance(tenant.capabilities_json, dict) else {}
+    edu_capabilities = capabilities.get("education") if isinstance(capabilities.get("education"), dict) else {}
+
+    if education_enabled is not None:
+        edu_capabilities["enabled"] = education_enabled
+        tenant.vertical = "educacion" if education_enabled else tenant.vertical
+    if subvertical is not None:
+        tenant.subvertical = subvertical.strip() or tenant.subvertical
+    if modules is not None:
+        edu_capabilities["modules"] = [str(item).strip() for item in modules if str(item).strip()]
+
+    capabilities["education"] = edu_capabilities
+    tenant.capabilities_json = capabilities
+    db.session.add(tenant)
+    db.session.commit()
+
+    return jsonify(
+        {
+            "tenant_id": tenant.id,
+            "vertical": tenant.vertical,
+            "subvertical": tenant.subvertical,
+            "education_enabled": _tenant_supports_education(tenant),
+            "capabilities_json": tenant.capabilities_json or {},
+        }
+    )
+
+
+@education_bp.route("/api/v1/education/cases/taxonomy", methods=["GET"])
+@token_requerido
+def get_school_case_taxonomy(current_user, actor_principal=None):
+    tenant_id = _resolve_actor_tenant_id(current_user, actor_principal)
+    if not tenant_id:
+        return jsonify({"error": {"code": 400, "message": "Tenant context required"}}), 400
+    tenant = TenantProfile.query.filter_by(id=tenant_id).first()
+    if not tenant:
+        return jsonify({"error": {"code": 404, "message": "Tenant profile not found"}}), 404
+
+    return jsonify(
+        {
+            "tenant_id": tenant.id,
+            "education_enabled": _tenant_supports_education(tenant),
+            "taxonomy": [
+                {"key": key, "label": label}
+                for key, label in SCHOOL_CASE_TAXONOMY.items()
+            ],
+        }
+    )
 
 
 @education_bp.route("/api/v1/education/schools", methods=["GET"])
@@ -196,6 +313,9 @@ def verify_guardian():
 
     if not tenant_id or not phone:
         return jsonify({"error": {"code": 400, "message": "tenant_id and phone_number required"}}), 400
+    tenant = TenantProfile.query.filter_by(id=tenant_id).first()
+    if not tenant:
+        return jsonify({"error": {"code": 404, "message": "Tenant not found"}}), 404
 
     guardian = Guardian.query.filter_by(tenant_id=tenant_id, phone_number=phone).first()
     status = "verified" if guardian else "failed"
@@ -297,6 +417,50 @@ def create_school_case(current_user, actor_principal=None):
     if not school:
         return jsonify({"error": {"code": 404, "message": "School not found"}}), 404
 
+    try:
+        campus_id = _parse_optional_int(data.get("campus_id"), "campus_id")
+        section_id = _parse_optional_int(data.get("section_id"), "section_id")
+        student_id = _parse_optional_int(data.get("student_id"), "student_id")
+        guardian_id = _parse_optional_int(data.get("guardian_id"), "guardian_id")
+    except ValueError as exc:
+        return jsonify({"error": {"code": 400, "message": str(exc)}}), 400
+
+    campus = None
+    if campus_id is not None:
+        campus = Campus.query.filter_by(id=campus_id, school_id=school.id).first()
+        if not campus:
+            return jsonify({"error": {"code": 404, "message": "Campus not found for school"}}), 404
+
+    section = None
+    if section_id is not None:
+        section = CourseSection.query.filter_by(id=section_id).first()
+        if not section:
+            return jsonify({"error": {"code": 404, "message": "Section not found"}}), 404
+        if section.campus is None or section.campus.school_id != school.id:
+            return jsonify({"error": {"code": 400, "message": "Section does not belong to school"}}), 400
+        if campus_id is not None and section.campus_id != campus_id:
+            return jsonify({"error": {"code": 400, "message": "Section does not belong to campus"}}), 400
+
+    student = None
+    if student_id is not None:
+        student = Student.query.filter_by(id=student_id).first()
+        if not student:
+            return jsonify({"error": {"code": 404, "message": "Student not found"}}), 404
+        if student.school_id != school.id:
+            return jsonify({"error": {"code": 400, "message": "Student does not belong to school"}}), 400
+        if campus_id is not None and student.campus_id and student.campus_id != campus_id:
+            return jsonify({"error": {"code": 400, "message": "Student does not belong to campus"}}), 400
+        if section_id is not None and student.section_id and student.section_id != section_id:
+            return jsonify({"error": {"code": 400, "message": "Student does not belong to section"}}), 400
+
+    guardian = None
+    if guardian_id is not None:
+        guardian = Guardian.query.filter_by(id=guardian_id, tenant_id=tenant_id).first()
+        if not guardian:
+            return jsonify({"error": {"code": 404, "message": "Guardian not found for tenant"}}), 404
+        if guardian.school_id and guardian.school_id != school.id:
+            return jsonify({"error": {"code": 400, "message": "Guardian does not belong to school"}}), 400
+
     tenant_profile = TenantProfile.query.get(tenant_id)
     if not tenant_profile:
         return jsonify({"error": {"code": 404, "message": "Tenant profile not found"}}), 404
@@ -329,10 +493,10 @@ def create_school_case(current_user, actor_principal=None):
     alias = SchoolCaseAlias(
         tenant_id=tenant_id,
         school_id=school.id,
-        campus_id=data.get("campus_id"),
-        section_id=data.get("section_id"),
-        student_id=data.get("student_id"),
-        guardian_id=data.get("guardian_id"),
+        campus_id=campus_id,
+        section_id=section_id,
+        student_id=student_id,
+        guardian_id=guardian_id,
         case_type=case_type,
         sensitivity_level=(data.get("sensitivity_level") or "internal").strip().lower(),
         channel=(data.get("channel") or "api").strip().lower(),

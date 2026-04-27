@@ -127,6 +127,38 @@ class TestEducationRoutes(unittest.TestCase):
         self.assertEqual(len(sections), 1)
         self.assertEqual(sections[0]["grade"], "5")
 
+    def test_tenant_capabilities_and_taxonomy_endpoints(self):
+        caps_resp = self.client.get(
+            "/api/v1/education/tenant/capabilities",
+            headers=self.auth_header,
+        )
+        self.assertEqual(caps_resp.status_code, 200)
+        caps_data = caps_resp.get_json()
+        self.assertTrue(caps_data["education_enabled"])
+
+        update_resp = self.client.put(
+            "/api/v1/education/tenant/capabilities",
+            headers=self.auth_header,
+            json={
+                "education_enabled": True,
+                "subvertical": "colegio_privado",
+                "modules": ["inbox_escolar", "family_context"],
+            },
+        )
+        self.assertEqual(update_resp.status_code, 200)
+        update_data = update_resp.get_json()
+        self.assertTrue(update_data["education_enabled"])
+        self.assertEqual(update_data["vertical"], "educacion")
+
+        taxonomy_resp = self.client.get(
+            "/api/v1/education/cases/taxonomy",
+            headers=self.auth_header,
+        )
+        self.assertEqual(taxonomy_resp.status_code, 200)
+        taxonomy_data = taxonomy_resp.get_json()
+        keys = {item["key"] for item in taxonomy_data["taxonomy"]}
+        self.assertIn("documentacion", keys)
+
     def test_guardian_lookup_verify_and_family_context(self):
         lookup_resp = self.client.post(
             "/api/v1/education/guardian/lookup",
@@ -154,6 +186,14 @@ class TestEducationRoutes(unittest.TestCase):
         data = family_resp.get_json()
         self.assertEqual(len(data["students"]), 1)
         self.assertTrue(data["students"][0]["can_receive_sensitive_updates"])
+
+    def test_verify_guardian_rejects_unknown_tenant(self):
+        response = self.client.post(
+            "/api/v1/education/guardian/verify",
+            json={"tenant_id": 999999, "phone_number": self.guardian.phone_number},
+        )
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.get_json()["error"]["message"], "Tenant not found")
 
     def test_create_and_list_school_cases_aliases_to_tickets(self):
         create_resp = self.client.post(
@@ -185,6 +225,48 @@ class TestEducationRoutes(unittest.TestCase):
         cases = list_resp.get_json()
         self.assertEqual(len(cases), 1)
         self.assertEqual(cases[0]["taxonomy_label"], "Documentación")
+
+    def test_create_school_case_rejects_foreign_guardian(self):
+        other_owner = User(
+            email=f"foreign-owner-{int(time.time()*1000)}@chatboc.ar",
+            password_hash="hash",
+            es_empleado=False,
+            name="Foreign Owner",
+        )
+        db.session.add(other_owner)
+        db.session.commit()
+        other_tenant = TenantProfile(
+            slug=f"foreign-tenant-{int(time.time()*1000)}",
+            nombre="Foreign Tenant",
+            tipo="pyme",
+            pyme_id=other_owner.id,
+        )
+        db.session.add(other_tenant)
+        db.session.commit()
+
+        foreign_guardian = Guardian(
+            tenant_id=other_tenant.id,
+            first_name="Otro",
+            last_name="Tutor",
+            phone_number="+5492615000099",
+            verification_status="pending",
+        )
+        db.session.add(foreign_guardian)
+        db.session.commit()
+
+        response = self.client.post(
+            "/api/v1/education/cases",
+            headers=self.auth_header,
+            json={
+                "school_id": self.school.id,
+                "case_type": "documentacion",
+                "asunto": "Constancia",
+                "pregunta": "Necesito constancia.",
+                "guardian_id": foreign_guardian.id,
+            },
+        )
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.get_json()["error"]["message"], "Guardian not found for tenant")
 
 
 if __name__ == "__main__":
