@@ -184,6 +184,24 @@ def _get_or_create_demo_tenant(slug: str) -> Optional[TenantProfile]:
 
     logger.info(f"Lazy-creating demo tenant for slug: {slug_norm}")
 
+    def _resolve_demo_owner_rubro_id() -> Optional[int]:
+        if matched_demo and getattr(matched_demo, "rubro_id", None):
+            return matched_demo.rubro_id
+        if matched_demo and getattr(matched_demo, "rubro_clave", None):
+            rubro = Rubro.query.filter(func.lower(Rubro.clave) == matched_demo.rubro_clave.lower()).first()
+            if rubro:
+                return rubro.id
+        rubro_slug = Rubro.query.filter(func.lower(Rubro.clave) == slug_norm.lower()).first()
+        if rubro_slug:
+            return rubro_slug.id
+        if (matched_demo and matched_demo.segment == "Gobiernos") or (fallback_data and fallback_data.get("segment") == "Gobiernos"):
+            rubro_publico = Rubro.query.filter(func.lower(Rubro.clave) == "municipio").first() or Rubro.query.filter(Rubro.es_publico.is_(True)).first()
+            return rubro_publico.id if rubro_publico else None
+        rubro_privado = Rubro.query.filter(func.lower(Rubro.clave) == "pyme").first() or Rubro.query.filter(Rubro.es_publico.is_(False)).first()
+        return rubro_privado.id if rubro_privado else None
+
+    owner_rubro_id = _resolve_demo_owner_rubro_id()
+
     # Create Owner User
     owner_email = f"admin@{slug_norm}.demo"
     owner = User.query.filter_by(email=owner_email).first()
@@ -195,8 +213,13 @@ def _get_or_create_demo_tenant(slug: str) -> Optional[TenantProfile]:
             password_hash="demo", # Not usable for login without hash, but safe placeholder
             rol="admin",
             tipo_chat="pyme" if (matched_demo and matched_demo.segment == "Empresas") or (fallback_data and fallback_data.get("segment") == "Empresas") else "municipio",
+            rubro_id=owner_rubro_id,
             token=secrets.token_urlsafe(32)
         )
+        db.session.add(owner)
+        db.session.commit()
+    elif owner_rubro_id and not getattr(owner, "rubro_id", None):
+        owner.rubro_id = owner_rubro_id
         db.session.add(owner)
         db.session.commit()
 
