@@ -127,6 +127,26 @@ class V2SurveysApiTest(unittest.TestCase):
         failed_resp = self.client.post(f"/api/v2/public/surveys/{token}/respond", json={"respuestas": []})
         self.assertEqual(failed_resp.status_code, 403)
 
+
+    def test_analytics_surveys_returns_votes_for_tenant(self):
+        headers = {**self._auth(self.admin_1), "X-Tenant-Slug": self.tenant_1.slug}
+
+        survey_id = self.client.post("/api/v2/surveys", json=self._create_payload(), headers=headers).get_json()["id"]
+        token = self.client.post(f"/api/v2/surveys/{survey_id}/publish", headers=headers).get_json()["public_token"]
+
+        public_get = self.client.get(f"/api/v2/public/surveys/{token}").get_json()
+        question_id = public_get.get("preguntas", [])[0].get("id")
+        option_id = public_get.get("preguntas", [])[0].get("opciones", [])[0].get("id")
+        self.client.post(
+            f"/api/v2/public/surveys/{token}/respond",
+            json={"anon_id": "a-analytics-1", "respuestas": [{"pregunta_id": question_id, "opcion_id": option_id}]},
+        )
+
+        analytics_resp = self.client.get("/api/v2/analytics/surveys", headers=headers)
+        self.assertEqual(analytics_resp.status_code, 200)
+        stats = (analytics_resp.get_json() or {}).get("stats") or {}
+        self.assertGreaterEqual(int(stats.get("total_votes") or 0), 1)
+
     def test_tenant_isolation_on_list(self):
         headers_1 = {**self._auth(self.admin_1), "X-Tenant-Slug": self.tenant_1.slug}
         headers_2 = {**self._auth(self.admin_2), "X-Tenant-Slug": self.tenant_2.slug}
