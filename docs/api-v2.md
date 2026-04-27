@@ -63,6 +63,31 @@ Notas:
 
 Este endpoint usa la resolución estricta v2 y sirve como referencia para nuevas rutas tenant-aware.
 
+### Tickets v2 operativos
+- `GET /api/v2/tickets`
+- `POST /api/v2/tickets`
+- `PATCH /api/v2/tickets/<ticket_id>`
+- `POST /api/v2/tickets/<ticket_id>/comments`
+- `GET /api/v2/tickets/<ticket_id>/events`
+
+Características:
+- Scope estricto por tenant.
+- Eventos de auditoría por cambios clave (`ticket.created`, `ticket.status_changed`, `ticket.assigned`, `ticket.priority_changed`, `ticket.comment_added`).
+- Comentarios internos/privados soportados en payload (`visibility`), filtrados para usuario final.
+
+### SLA v2
+- `GET /api/v2/sla/policies`
+- `POST /api/v2/sla/policies`
+- `GET /api/v2/sla/breaches`
+
+SLA calcula y persiste en `datos_extra.sla` por ticket:
+- `first_response_due_at`
+- `resolution_due_at`
+- `next_update_due_at`
+- pausa automática cuando estado está en `waiting_customer` (o equivalente).
+
+Breaches emiten evento de auditoría `sla.breach_detected` y quedan listados vía endpoint.
+
 ## Resolución de tenant en v2
 
 Para rutas v2 tenant-aware, se permite resolver tenant solo por:
