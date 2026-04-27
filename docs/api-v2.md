@@ -1,0 +1,99 @@
+# API v2 Foundation (Chatboc Backend)
+
+Este documento describe la primera base de `/api/v2` incorporada en el monolito Flask actual, manteniendo compatibilidad con rutas legacy.
+
+## Objetivo
+
+- Introducir namespace estable para nuevas features backend: `/api/v2`.
+- Aplicar resolución estricta de tenant en v2 (sin fallback implícito).
+- Separar demo v2 de auth productiva v2.
+- Congelar aliases legacy (`/api/*`) para compatibilidad, sin ampliarlos para features nuevas.
+
+## Endpoints v2 disponibles
+
+### Health
+- `GET /api/v2/health`
+
+Respuesta:
+
+```json
+{
+  "ok": true,
+  "version": "v2"
+}
+```
+
+### Demo
+- `GET /api/v2/demo/catalog`
+  - Devuelve catálogo limpio por sectores (`gobierno`, `empresas`) con rubros demo públicos.
+  - No incluye contraseñas ni tokens administrativos.
+
+- `POST /api/v2/demo/session`
+  - Body:
+    ```json
+    {
+      "sector": "gobierno|empresas",
+      "rubro": "string",
+      "tenant_slug": "optional"
+    }
+    ```
+  - Respuesta:
+    ```json
+    {
+      "demo_session_id": "...",
+      "tenant": {"id": 1, "slug": "...", "nombre": "...", "tipo": "..."},
+      "chat_seed": {"entry_prompt": "...", "autostart_chat": true, "open_widget": true},
+      "quick_replies": ["..."]
+    }
+    ```
+
+### Auth v2 mínima
+- `POST /api/v2/auth/login`
+- `POST /api/v2/auth/refresh`
+- `POST /api/v2/auth/logout`
+- `GET /api/v2/auth/me`
+
+Notas:
+- Reusa `User` y `check_password` del backend actual.
+- No mezcla login demo con auth productiva.
+- Devuelve payload de usuario mínimo (sin campos sensibles).
+
+### Tenant strict resolver (v2)
+- `GET /api/v2/tenants/current`
+
+Este endpoint usa la resolución estricta v2 y sirve como referencia para nuevas rutas tenant-aware.
+
+## Resolución de tenant en v2
+
+Para rutas v2 tenant-aware, se permite resolver tenant solo por:
+1. Path param explícito (si aplica).
+2. Header `X-Tenant-Slug`.
+3. Token autenticado con `tenant_slug`.
+4. `X-Widget-Token` o sesión demo válida (`X-Demo-Session` / `demo_session_id`).
+
+### Reglas
+- No hay fallback al primer tenant disponible.
+- Si falta el dato obligatorio: `400`.
+- Si el tenant no existe: `404`.
+
+## Legacy congelado
+
+`routes/api_aliases.py` sigue activo para compatibilidad retroactiva. Queda congelado para features nuevas: toda nueva capacidad debe ir en `/api/v2`.
+
+## Hardening de entorno para producción
+
+En producción (`ENV=prod` o `ENV=production`):
+- `SECRET_KEY` debe ser segura (no default/insegura, ni demasiado corta).
+- `DEBUG=True` está bloqueado.
+- Si no cumple, el arranque falla con `RuntimeError`.
+
+## Variables de entorno obligatorias (producción)
+
+- `ENV=prod` (o `production`)
+- `SECRET_KEY=<valor largo y aleatorio>`
+- `DEBUG=false`
+- `DATABASE_URL=...`
+
+Recomendadas:
+- `DEMO_SESSION_SECRET=<valor distinto de SECRET_KEY>`
+- `ENABLE_DEMO_MODE=false` (salvo ambientes controlados)
