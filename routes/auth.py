@@ -1525,6 +1525,28 @@ def login_demo():
         "rubro_id": getattr(demo_user, "rubro_id", None),
         "sector": requested_sector or ("gobierno" if tipo_chat == "municipio" else "empresas"),
     }
+    experience = build_demo_experience_contract(
+        tenant_type=tipo_chat,
+        rubro_label=getattr(tenant_obj, "nombre", None),
+        max_messages=int(current_app.config.get("DEMO_MAX_MESSAGES_PER_SESSION", 10) or 10),
+    )
+    guided_onboarding = experience.get("guided_onboarding") or {}
+    response_payload["demo_onboarding"] = {
+        "autostart_chat": bool(guided_onboarding.get("autostart_chat", True)),
+        "open_widget": bool(guided_onboarding.get("open_widget", True)),
+        "entry_prompt": guided_onboarding.get("entry_prompt") or "¿Sobre qué te gustaría preguntar primero?",
+        "starter_prompts": guided_onboarding.get("starter_prompts") or [],
+        "suggested_workflows": guided_onboarding.get("suggested_workflows") or [],
+        "quick_actions": experience.get("quick_actions") or [],
+        "experience_version": experience.get("version"),
+        "analytics_kpis": experience.get("analytics_kpis") or [],
+        "integrations": experience.get("integrations") or {},
+    }
+    response_payload["widget"] = {
+        "autostart": True,
+        "tenant_slug": tenant_obj.slug,
+        "hint": "Podés abrir el widget y usar los prompts sugeridos para empezar.",
+    }
     response = jsonify(response_payload)
 
     cookie_name = current_app.config.get("AUTH_TOKEN_COOKIE_NAME", "auth_token")

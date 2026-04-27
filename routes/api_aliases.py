@@ -4,6 +4,10 @@ These aliases prevent 404s when the widget or frontend calls newer /api/*
 paths while the canonical blueprints live under non-/api prefixes (e.g.,
 /productos, /carrito, /app). The functions are reused directly so CORS and
 behavior remain consistent with the original endpoints.
+
+NOTE (v2 freeze): this module is maintained only for backwards compatibility.
+New backend capabilities should be implemented under /api/v2 blueprints instead
+of adding new /api legacy aliases here.
 """
 
 import uuid
