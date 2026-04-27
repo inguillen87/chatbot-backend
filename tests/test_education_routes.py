@@ -159,6 +159,67 @@ class TestEducationRoutes(unittest.TestCase):
         keys = {item["key"] for item in taxonomy_data["taxonomy"]}
         self.assertIn("documentacion", keys)
 
+    def test_create_school_campus_and_section_endpoints(self):
+        school_resp = self.client.post(
+            "/api/v1/education/schools",
+            headers=self.auth_header,
+            json={"name": "Colegio Norte", "school_type": "private"},
+        )
+        self.assertEqual(school_resp.status_code, 201)
+        school_id = school_resp.get_json()["id"]
+
+        campus_resp = self.client.post(
+            "/api/v1/education/campuses",
+            headers=self.auth_header,
+            json={"school_id": school_id, "name": "Sede Norte"},
+        )
+        self.assertEqual(campus_resp.status_code, 201)
+        campus_id = campus_resp.get_json()["id"]
+
+        level_resp = self.client.post(
+            "/api/v1/education/levels",
+            headers=self.auth_header,
+            json={"school_id": school_id, "code": "secundaria", "name": "Secundaria"},
+        )
+        self.assertEqual(level_resp.status_code, 201)
+        level_id = level_resp.get_json()["id"]
+
+        shift_resp = self.client.post(
+            "/api/v1/education/shifts",
+            headers=self.auth_header,
+            json={"school_id": school_id, "code": "tarde", "name": "Tarde"},
+        )
+        self.assertEqual(shift_resp.status_code, 201)
+        shift_id = shift_resp.get_json()["id"]
+
+        levels_list_resp = self.client.get(
+            f"/api/v1/education/levels?school_id={school_id}",
+            headers=self.auth_header,
+        )
+        self.assertEqual(levels_list_resp.status_code, 200)
+        self.assertEqual(len(levels_list_resp.get_json()), 1)
+
+        shifts_list_resp = self.client.get(
+            f"/api/v1/education/shifts?school_id={school_id}",
+            headers=self.auth_header,
+        )
+        self.assertEqual(shifts_list_resp.status_code, 200)
+        self.assertEqual(len(shifts_list_resp.get_json()), 1)
+
+        section_resp = self.client.post(
+            "/api/v1/education/sections",
+            headers=self.auth_header,
+            json={
+                "campus_id": campus_id,
+                "academic_year": 2026,
+                "level_id": level_id,
+                "grade": "2",
+                "division": "B",
+                "shift_id": shift_id,
+            },
+        )
+        self.assertEqual(section_resp.status_code, 201)
+
     def test_guardian_lookup_verify_and_family_context(self):
         lookup_resp = self.client.post(
             "/api/v1/education/guardian/lookup",

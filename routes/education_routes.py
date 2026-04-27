@@ -13,6 +13,7 @@ from models_education import (
     Guardian,
     School,
     SchoolCaseAlias,
+    Shift,
     Student,
     StudentGuardianRelation,
 )
@@ -205,6 +206,44 @@ def get_schools(current_user, actor_principal=None):
     )
 
 
+@education_bp.route("/api/v1/education/schools", methods=["POST"])
+@token_requerido
+def create_school(current_user, actor_principal=None):
+    tenant_id = _resolve_actor_tenant_id(current_user, actor_principal)
+    if not tenant_id:
+        return jsonify({"error": {"code": 400, "message": "Tenant context required"}}), 400
+    tenant = TenantProfile.query.filter_by(id=tenant_id).first()
+    if not tenant:
+        return jsonify({"error": {"code": 404, "message": "Tenant profile not found"}}), 404
+    if not _tenant_supports_education(tenant):
+        return jsonify({"error": {"code": 403, "message": "Education capability disabled for tenant"}}), 403
+
+    data = request.json or {}
+    name = str(data.get("name") or "").strip()
+    school_type = str(data.get("school_type") or "public").strip().lower()
+    if not name:
+        return jsonify({"error": {"code": 400, "message": "name required"}}), 400
+    if school_type not in {"public", "private"}:
+        return jsonify({"error": {"code": 400, "message": "school_type must be public or private"}}), 400
+
+    existing = School.query.filter(func.lower(School.name) == name.lower(), School.tenant_id == tenant_id).first()
+    if existing:
+        return jsonify({"error": {"code": 409, "message": "School already exists for tenant"}}), 409
+
+    school = School(
+        tenant_id=tenant_id,
+        name=name,
+        school_type=school_type,
+        jurisdiction=(data.get("jurisdiction") or "").strip() or None,
+        brand_name=(data.get("brand_name") or "").strip() or None,
+        status=(data.get("status") or "active").strip().lower(),
+    )
+    db.session.add(school)
+    db.session.commit()
+
+    return jsonify({"id": school.id, "tenant_id": school.tenant_id, "name": school.name, "school_type": school.school_type}), 201
+
+
 @education_bp.route("/api/v1/education/campuses", methods=["GET"])
 @token_requerido
 def get_campuses(current_user, actor_principal=None):
@@ -232,6 +271,40 @@ def get_campuses(current_user, actor_principal=None):
             for campus in campuses
         ]
     )
+
+
+@education_bp.route("/api/v1/education/campuses", methods=["POST"])
+@token_requerido
+def create_campus(current_user, actor_principal=None):
+    tenant_id = _resolve_actor_tenant_id(current_user, actor_principal)
+    if not tenant_id:
+        return jsonify({"error": {"code": 400, "message": "Tenant context required"}}), 400
+    data = request.json or {}
+    school_id = data.get("school_id")
+    name = str(data.get("name") or "").strip()
+    if not school_id or not name:
+        return jsonify({"error": {"code": 400, "message": "school_id and name required"}}), 400
+
+    school = School.query.filter_by(id=school_id, tenant_id=tenant_id).first()
+    if not school:
+        return jsonify({"error": {"code": 404, "message": "School not found"}}), 404
+
+    existing = Campus.query.filter(Campus.school_id == school.id, func.lower(Campus.name) == name.lower()).first()
+    if existing:
+        return jsonify({"error": {"code": 409, "message": "Campus already exists for school"}}), 409
+
+    campus = Campus(
+        school_id=school.id,
+        name=name,
+        address=(data.get("address") or "").strip() or None,
+        phone=(data.get("phone") or "").strip() or None,
+        email=(data.get("email") or "").strip() or None,
+        timezone=(data.get("timezone") or "").strip() or None,
+        is_main=bool(data.get("is_main", False)),
+    )
+    db.session.add(campus)
+    db.session.commit()
+    return jsonify({"id": campus.id, "school_id": campus.school_id, "name": campus.name}), 201
 
 
 @education_bp.route("/api/v1/education/sections", methods=["GET"])
@@ -267,6 +340,146 @@ def get_sections(current_user, actor_principal=None):
             }
         )
     return jsonify(response)
+
+
+@education_bp.route("/api/v1/education/levels", methods=["GET"])
+@token_requerido
+def get_academic_levels(current_user, actor_principal=None):
+    school_id = request.args.get("school_id", type=int)
+    if not school_id:
+        return jsonify({"error": {"code": 400, "message": "school_id required"}}), 400
+
+    tenant_id = _resolve_actor_tenant_id(current_user, actor_principal)
+    school = School.query.filter_by(id=school_id, tenant_id=tenant_id).first()
+    if not school:
+        return jsonify({"error": {"code": 404, "message": "School not found"}}), 404
+
+    levels = AcademicLevel.query.filter_by(school_id=school.id).order_by(AcademicLevel.id.asc()).all()
+    return jsonify([{"id": level.id, "school_id": level.school_id, "code": level.code, "name": level.name} for level in levels])
+
+
+@education_bp.route("/api/v1/education/levels", methods=["POST"])
+@token_requerido
+def create_academic_level(current_user, actor_principal=None):
+    tenant_id = _resolve_actor_tenant_id(current_user, actor_principal)
+    data = request.json or {}
+    school_id = data.get("school_id")
+    code = str(data.get("code") or "").strip().lower()
+    name = str(data.get("name") or "").strip()
+
+    if not school_id or not code or not name:
+        return jsonify({"error": {"code": 400, "message": "school_id, code and name required"}}), 400
+
+    school = School.query.filter_by(id=school_id, tenant_id=tenant_id).first()
+    if not school:
+        return jsonify({"error": {"code": 404, "message": "School not found"}}), 404
+
+    existing = AcademicLevel.query.filter_by(school_id=school.id, code=code).first()
+    if existing:
+        return jsonify({"error": {"code": 409, "message": "Academic level already exists for school"}}), 409
+
+    level = AcademicLevel(school_id=school.id, code=code, name=name)
+    db.session.add(level)
+    db.session.commit()
+    return jsonify({"id": level.id, "school_id": level.school_id, "code": level.code, "name": level.name}), 201
+
+
+@education_bp.route("/api/v1/education/shifts", methods=["GET"])
+@token_requerido
+def get_shifts(current_user, actor_principal=None):
+    school_id = request.args.get("school_id", type=int)
+    if not school_id:
+        return jsonify({"error": {"code": 400, "message": "school_id required"}}), 400
+
+    tenant_id = _resolve_actor_tenant_id(current_user, actor_principal)
+    school = School.query.filter_by(id=school_id, tenant_id=tenant_id).first()
+    if not school:
+        return jsonify({"error": {"code": 404, "message": "School not found"}}), 404
+
+    shifts = Shift.query.filter_by(school_id=school.id).order_by(Shift.id.asc()).all()
+    return jsonify([{"id": shift.id, "school_id": shift.school_id, "code": shift.code, "name": shift.name} for shift in shifts])
+
+
+@education_bp.route("/api/v1/education/shifts", methods=["POST"])
+@token_requerido
+def create_shift(current_user, actor_principal=None):
+    tenant_id = _resolve_actor_tenant_id(current_user, actor_principal)
+    data = request.json or {}
+    school_id = data.get("school_id")
+    code = str(data.get("code") or "").strip().lower()
+    name = str(data.get("name") or "").strip()
+
+    if not school_id or not code or not name:
+        return jsonify({"error": {"code": 400, "message": "school_id, code and name required"}}), 400
+
+    school = School.query.filter_by(id=school_id, tenant_id=tenant_id).first()
+    if not school:
+        return jsonify({"error": {"code": 404, "message": "School not found"}}), 404
+
+    existing = Shift.query.filter_by(school_id=school.id, code=code).first()
+    if existing:
+        return jsonify({"error": {"code": 409, "message": "Shift already exists for school"}}), 409
+
+    shift = Shift(school_id=school.id, code=code, name=name)
+    db.session.add(shift)
+    db.session.commit()
+    return jsonify({"id": shift.id, "school_id": shift.school_id, "code": shift.code, "name": shift.name}), 201
+
+
+@education_bp.route("/api/v1/education/sections", methods=["POST"])
+@token_requerido
+def create_section(current_user, actor_principal=None):
+    tenant_id = _resolve_actor_tenant_id(current_user, actor_principal)
+    if not tenant_id:
+        return jsonify({"error": {"code": 400, "message": "Tenant context required"}}), 400
+    data = request.json or {}
+
+    campus_id = data.get("campus_id")
+    level_id = data.get("level_id")
+    shift_id = data.get("shift_id")
+    grade = str(data.get("grade") or "").strip()
+    division = str(data.get("division") or "").strip()
+    academic_year = data.get("academic_year")
+    if not all([campus_id, level_id, shift_id, grade, division, academic_year]):
+        return jsonify({"error": {"code": 400, "message": "campus_id, level_id, shift_id, grade, division and academic_year required"}}), 400
+    try:
+        academic_year = int(academic_year)
+    except (TypeError, ValueError):
+        return jsonify({"error": {"code": 400, "message": "academic_year must be integer"}}), 400
+
+    campus = Campus.query.filter_by(id=campus_id).first()
+    if not campus or not campus.school or campus.school.tenant_id != tenant_id:
+        return jsonify({"error": {"code": 404, "message": "Campus not found"}}), 404
+    level = AcademicLevel.query.filter_by(id=level_id, school_id=campus.school_id).first()
+    if not level:
+        return jsonify({"error": {"code": 404, "message": "Academic level not found"}}), 404
+    shift = Shift.query.filter_by(id=shift_id, school_id=campus.school_id).first()
+    if not shift:
+        return jsonify({"error": {"code": 404, "message": "Shift not found"}}), 404
+
+    existing = CourseSection.query.filter_by(
+        campus_id=campus.id,
+        academic_year=academic_year,
+        level_id=level.id,
+        grade=grade,
+        division=division,
+        shift_id=shift.id,
+    ).first()
+    if existing:
+        return jsonify({"error": {"code": 409, "message": "Section already exists"}}), 409
+
+    section = CourseSection(
+        campus_id=campus.id,
+        academic_year=academic_year,
+        level_id=level.id,
+        grade=grade,
+        division=division,
+        shift_id=shift.id,
+        homeroom_staff_id=data.get("homeroom_staff_id"),
+    )
+    db.session.add(section)
+    db.session.commit()
+    return jsonify({"id": section.id, "campus_id": section.campus_id, "academic_year": section.academic_year}), 201
 
 
 @education_bp.route("/api/v1/education/guardian/lookup", methods=["POST"])
