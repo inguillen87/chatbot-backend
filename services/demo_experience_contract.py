@@ -21,6 +21,21 @@ def _quick_actions_for_tipo(tipo: str) -> list[dict[str, Any]]:
     ]
 
 
+def _starter_prompts_for_tipo(tipo: str) -> list[str]:
+    normalized = (tipo or "").strip().lower()
+    if normalized == "municipio":
+        return [
+            "Quiero iniciar un reclamo de alumbrado público.",
+            "Necesito saber cómo sacar un turno para licencia.",
+            "¿Dónde reporto baches con ubicación?",
+        ]
+    return [
+        "Quiero ver el catálogo y precios mayoristas.",
+        "Necesito crear un pedido con envío en el día.",
+        "¿Qué promociones tienen esta semana?",
+    ]
+
+
 def build_demo_experience_contract(
     *,
     tenant_type: str,
@@ -30,9 +45,21 @@ def build_demo_experience_contract(
     tipo = (tenant_type or "").strip().lower() or "pyme"
     rubro = (rubro_label or tipo.title()).strip()
     actions = _quick_actions_for_tipo(tipo)
+    starter_prompts = _starter_prompts_for_tipo(tipo)
     return {
         "version": "2026-04-demo-experience-v1",
         "tenant_type": tipo,
+        "guided_onboarding": {
+            "autostart_chat": True,
+            "open_widget": True,
+            "entry_prompt": "¿Sobre qué te gustaría preguntar primero?",
+            "starter_prompts": starter_prompts,
+            "suggested_workflows": [
+                {"id": "wf_guided_chat", "label": "Chat guiado con botones"},
+                {"id": "wf_ticket_or_order", "label": "Crear y seguir ticket/pedido"},
+                {"id": "wf_feedback_loop", "label": "Recolectar feedback de satisfacción"},
+            ],
+        },
         "hero": {
             "title": f"Demo IA para {rubro}",
             "subtitle": "Probá en tiempo real WhatsApp + Widget + automatizaciones en minutos.",
@@ -91,6 +118,20 @@ def build_demo_experience_contract(
                 "Soporte multimodal: audio, imagen, ubicación y archivos",
             ],
             "cta_label": "Hablar con ventas",
+        },
+        "analytics_kpis": [
+            "tiempo_respuesta_promedio",
+            "tasa_resolucion",
+            "satisfaccion_usuario",
+            "conversion_ticket_o_pedido",
+        ],
+        "integrations": {
+            "webhooks": {
+                "supported": True,
+                "events": ["ticket.created", "ticket.updated", "order.created", "survey.completed"],
+            },
+            "crm_connectors": ["hubspot", "salesforce"],
+            "erp_connectors": ["tango", "colppy"],
         },
         "component_pack": {
             "layout": "stacked_cards",

@@ -48,7 +48,7 @@ from flask_cors import CORS
 from flask_session import Session
 from sqlalchemy import event as sa_event
 
-from config import Config, ALLOWED_ORIGINS
+from config import Config, ALLOWED_ORIGINS, validate_runtime_security
 from config.feature_flags import FEATURE_ENCUESTAS
 from extensions import db, migrate, login_manager, sock, limiter  # livianos + limiter
 from middleware import tenant_middleware
@@ -139,6 +139,9 @@ def create_app(config_class=Config):
 
     # Cargar configuración
     app.config.from_object(config_class)
+    security_errors = validate_runtime_security(app.config)
+    if security_errors:
+        raise RuntimeError(" ".join(security_errors))
     print(f"Loaded config: {config_class}")
     print(
         "Database URI: "
@@ -455,6 +458,8 @@ def create_app(config_class=Config):
     from routes.admin_ai import admin_ai_bp
     from routes.analytics_routes import analytics_v2_bp
     from routes.analytics_kpis import analytics_kpis_bp
+    from routes.education_routes import education_bp
+    from routes.education_kb import education_kb_bp
     from routes.gov_analytics import gov_analytics_bp
     from services.upload_processor import upload_bp
     from routes.archivos import archivos_bp
@@ -533,6 +538,7 @@ def create_app(config_class=Config):
     from routes.conversations import conversations_bp
     from routes.access_control import access_control_bp
     from routes.whatsapp_rules import whatsapp_rules_bp
+    from routes.v2 import register_v2_blueprints
     from cli_commands import register_commands
 
     if FEATURE_ENCUESTAS:
@@ -570,6 +576,7 @@ def create_app(config_class=Config):
     # Register
     app.register_blueprint(config_bp)
     app.register_blueprint(auth_bp)
+    register_v2_blueprints(app)
 
     # Alias de login para clientes que aún llaman a  en lugar de
     @app.route('/login', methods=['GET', 'POST', 'OPTIONS'])
@@ -597,6 +604,9 @@ def create_app(config_class=Config):
     app.register_blueprint(admin_analytics_bp)
     app.register_blueprint(admin_ai_bp)
     app.register_blueprint(analytics_v2_bp)
+    app.register_blueprint(analytics_kpis_bp)
+    app.register_blueprint(education_bp)
+    app.register_blueprint(education_kb_bp)
     app.register_blueprint(gov_analytics_bp)
     app.register_blueprint(upload_bp)
     app.register_blueprint(archivos_bp)

@@ -1,13 +1,13 @@
 @host = https://api.chatboc.ar
-@token = e497eb24-69d5-4551-852c-c9a0a3b1213a
+@token = REPLACE_WITH_BEARER_TOKEN
 
 ### 🔐 Login
 POST {{host}}/login
 Content-Type: application/json
 
 {
-  "email": "demo@demo.com",
-  "password": "marcemarce"
+  "email": "REPLACE_WITH_EMAIL",
+  "password": "REPLACE_WITH_PASSWORD"
 }
 
 ###
@@ -17,11 +17,11 @@ POST {{host}}/register
 Content-Type: application/json
 
 {
-  "name": "Marcelo",
-  "email": "demo@demo.com",
-  "password": "123456",
-  "nombre_empresa": "Chatboc",
-  "rubro": "Bodega"
+  "name": "REPLACE_WITH_NAME",
+  "email": "REPLACE_WITH_EMAIL",
+  "password": "REPLACE_WITH_PASSWORD",
+  "nombre_empresa": "REPLACE_WITH_COMPANY",
+  "rubro": "REPLACE_WITH_RUBRO"
 }
 
 ###
