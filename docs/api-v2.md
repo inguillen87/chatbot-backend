@@ -122,3 +122,35 @@ En producción (`ENV=prod` o `ENV=production`):
 Recomendadas:
 - `DEMO_SESSION_SECRET=<valor distinto de SECRET_KEY>`
 - `ENABLE_DEMO_MODE=false` (salvo ambientes controlados)
+
+
+### Surveys v2 (opinar.ar compatible)
+- `GET /api/v2/surveys`
+- `POST /api/v2/surveys`
+- `GET /api/v2/surveys/<survey_id>`
+- `PATCH /api/v2/surveys/<survey_id>`
+- `POST /api/v2/surveys/<survey_id>/publish`
+- `POST /api/v2/surveys/<survey_id>/close`
+- `GET /api/v2/surveys/<survey_id>/analytics`
+
+Notas de contrato:
+- Se acepta payload v2 en inglés (`title`, `description`, `questions`, `opens_at`, `closes_at`) y se mapea al modelo actual `EncEncuesta`.
+- `questions[].type` soporta: `single|multi|rating|text|nps|ranking|location` (con normalización al tipo interno vigente).
+- Publicación devuelve `public_token` para consumo frontend.
+
+### Public Surveys v2
+- `GET /api/v2/public/surveys/<public_token>`
+- `POST /api/v2/public/surveys/<public_token>/respond`
+
+Reglas:
+- El token público no expone metadata sensible de tenant.
+- `respond` soporta `anon_id` y fuente (`source/channel/canal`), persistiendo con validaciones existentes.
+- Una encuesta cerrada o no publicada rechaza respuestas.
+
+### Analytics v2 (dashboard)
+- `GET /api/v2/analytics/overview`
+- `GET /api/v2/analytics/tickets`
+- `GET /api/v2/analytics/surveys`
+- `GET /api/v2/analytics/funnel`
+
+También se mantienen aliases v2 de compatibilidad para endpoints legacy analytics (`/summary`, `/heatmap`, `/surveys/summary`, `/surveys/sentiment`, etc.) para no romper integraciones existentes.
