@@ -6,7 +6,12 @@ from flask import Blueprint, jsonify, request
 from sqlalchemy import func
 
 from models import TenantProfile
-from routes.auth import demo_catalog as legacy_demo_catalog
+from routes.auth import (
+    _first_active_tenant_for_demo,
+    _resolve_demo_tenant_slug,
+    demo_catalog as legacy_demo_catalog,
+)
+from services.tenant_resolver import resolve_tenant_only
 from services.demo_experience_contract import build_demo_experience_contract
 from services.demo_registry import load_demo_rubros
 from routes.v2.tenants import create_demo_session_token
@@ -90,18 +95,22 @@ def demo_session_v2():
 
     tenant = None
     if tenant_slug:
-        tenant = TenantProfile.query.filter(func.lower(TenantProfile.slug) == tenant_slug).first()
+        try:
+            tenant = resolve_tenant_only(tenant_slug=tenant_slug, require_explicit_slug=True)
+        except Exception:
+            tenant = None
         if not tenant:
             return jsonify({"error": "Tenant no encontrado"}), 404
     else:
-        for entry in _safe_demo_rubros():
-            entry_key = (entry.get("key") or "").strip().lower()
-            if entry_key == rubro:
-                slug = (entry.get("tenant_slug") or "").strip().lower()
-                if slug:
-                    tenant = TenantProfile.query.filter(func.lower(TenantProfile.slug) == slug).first()
-                    if tenant:
-                        break
+        candidate = _resolve_demo_tenant_slug(rubro)
+        if candidate:
+            try:
+                tenant = resolve_tenant_only(tenant_slug=candidate, require_explicit_slug=True)
+            except Exception:
+                tenant = None
+        if not tenant:
+            requested_tipo = "municipio" if sector == "gobierno" else "pyme"
+            tenant = _first_active_tenant_for_demo(requested_tipo)
         if not tenant:
             return jsonify({"error": "No se pudo resolver tenant demo"}), 404
 

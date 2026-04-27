@@ -62,6 +62,10 @@ class ApiV2FoundationTest(unittest.TestCase):
         )
         self.assertEqual(resp.status_code, 401)
 
+    def test_v2_refresh_invalid_token_returns_401(self):
+        resp = self.client.post("/api/v2/auth/refresh", json={"token": "invalid-token"})
+        self.assertEqual(resp.status_code, 401)
+
     def test_prod_with_default_secret_fails_fast(self):
         with self.assertRaises(RuntimeError):
             create_app(BadProdConfig)
