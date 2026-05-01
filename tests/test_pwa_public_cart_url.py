@@ -82,6 +82,42 @@ class PublicCartUrlTest(unittest.TestCase):
         self.assertEqual(payload["tenant_slug"], self.tenant.slug)
         self.assertIn(self.tenant.slug, payload["cart_url"])
 
+    def test_invalid_explicit_slug_returns_actionable_json(self):
+        response = self.client.get("/api/pwa/public/cart/url?tenant=slug-inexistente")
+        self.assertEqual(response.status_code, 404)
+        payload = response.get_json()
+        self.assertEqual(payload["contract_version"], "pwa.public_tenant_resolution.v1")
+        self.assertEqual(payload["reason_code"], "tenant_resolution_failed")
+        self.assertEqual(payload["status_code"], 404)
+        self.assertFalse(payload["retryable"])
+        self.assertIn("query_params", payload["hints"])
+        self.assertIn("accepted_query_params", payload["hints"])
+
+    def test_canonical_tenant_info_returns_contract(self):
+        response = self.client.get(
+            f"/api/pwa/public/tenant-info?tenant={self.tenant.slug}",
+            headers={"X-Request-Id": "tenant-info-contract-1"},
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["contract_version"], "public.tenant_profile.v1")
+        self.assertEqual(payload["request_id"], "tenant-info-contract-1")
+        self.assertEqual(payload["tenant"]["slug"], self.tenant.slug)
+        self.assertIn("public_cart_url", payload["tenant"])
+
+    def test_public_tenant_widget_config_returns_frontend_contract(self):
+        response = self.client.get(f"/api/public/tenants/{self.tenant.slug}/widget-config")
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["contract_version"], "public.widget_config.v1")
+        self.assertEqual(payload["tenant"]["slug"], self.tenant.slug)
+        self.assertIsInstance(payload["widget"], dict)
+        self.assertIsInstance(payload["builder_config"], dict)
+        self.assertIsInstance(payload["quick_menu"], list)
+        self.assertIn("quick_menu", payload["builder_config"])
+        self.assertFalse(payload["suppress_global_widget"])
+        self.assertFalse(payload["integration_preview"])
+
 
 if __name__ == "__main__":
     unittest.main()

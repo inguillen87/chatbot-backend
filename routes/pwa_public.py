@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Dict, List, Tuple
+import uuid
 
 from flask import Blueprint, abort, g, jsonify, make_response, request, session
 from flask_cors import cross_origin
@@ -38,28 +39,87 @@ public_api_bp = Blueprint("public_api", __name__, url_prefix="/api/public")
 pwa_tenant_info_bp = Blueprint("pwa_tenant_info", __name__)
 
 
+def _request_id() -> str:
+    incoming = (request.headers.get("X-Request-Id") or "").strip()
+    return incoming or uuid.uuid4().hex
+
+
+def _tenant_resolution_error_payload(request_id: str) -> Dict[str, object]:
+    return {
+        "contract_version": "pwa.public_tenant_resolution.v1",
+        "status_code": 404,
+        "reason_code": "tenant_resolution_failed",
+        "retryable": False,
+        "action_hint": "send tenant, tenant_slug, endpoint or X-Tenant-Slug",
+        "request_id": request_id,
+        "error": {
+            "code": 404,
+            "message": "Tenant no encontrado",
+        },
+        "detail": "Revisa el slug o la URL del widget; no se pudo resolver el tenant publico.",
+        "hints": {
+            "query_params": ["tenant", "tenant_slug", "endpoint", "widget_token"],
+            "headers": ["X-Tenant-Slug", "X-Tenant", "X-Entity-Token"],
+            "accepted_query_params": ["tenant", "tenant_slug", "slug", "endpoint", "widget_token", "entityToken"],
+            "accepted_headers": ["X-Tenant-Slug", "X-Tenant", "X-Widget-Token", "X-Entity-Token"],
+            "example": "/api/pwa/public/tenant-info?tenant=<tenant_slug>",
+        },
+    }
+
+
+def _tenant_resolution_error_response():
+    request_id = _request_id()
+    response = jsonify(_tenant_resolution_error_payload(request_id))
+    response.status_code = 404
+    response.headers["X-Request-Id"] = request_id
+    return response
+
+
+def _tenant_info_response():
+    tenant = _require_tenant()
+    request_id = _request_id()
+    public_payload = tenant.to_public_dict()
+    cart_url, _, _ = _build_public_cart_url(tenant)
+    public_payload.setdefault("public_cart_url", cart_url)
+    public_payload.setdefault("public_catalog_url", f"/api/pwa/public/catalog?tenant={tenant.slug}")
+    body = {
+        **public_payload,
+        "contract_version": "public.tenant_profile.v1",
+        "request_id": request_id,
+        "tenant": public_payload,
+    }
+    response = jsonify(body)
+    response.headers["X-Request-Id"] = request_id
+    return response
+
+
 @pwa_tenant_info_bp.route("/api/pwa/tenant-info", methods=["GET", "OPTIONS"])
 @cross_origin(**_cors_kwargs(["GET", "OPTIONS"]))
 def api_pwa_tenant_info():
     """Alias JSON de /api/public/tenant-profile para el PWA del widget."""
-    from routes.public_resolver import tenant_profile as tenant_profile_view
-
     if request.method == "OPTIONS":
         return "", 204
 
-    return tenant_profile_view()
+    return _tenant_info_response()
 
 
 @pwa_tenant_info_bp.route("/pwa/tenant-info", methods=["GET", "OPTIONS"])
 @cross_origin(**_cors_kwargs(["GET", "OPTIONS"]))
 def pwa_tenant_info_alias():
     """Alias sin prefijo /api usado por algunos embeds del widget."""
-    from routes.public_resolver import tenant_profile as tenant_profile_view
-
     if request.method == "OPTIONS":
         return "", 204
 
-    return tenant_profile_view()
+    return _tenant_info_response()
+
+
+@pwa_public_bp.route("/tenant-info", methods=["GET", "OPTIONS"])
+@cross_origin(**_cors_kwargs(["GET", "OPTIONS"]))
+def public_pwa_tenant_info():
+    if request.method == "OPTIONS":
+        return "", 204
+    return _tenant_info_response()
+
 
 
 def _require_tenant() -> TenantProfile:
@@ -76,6 +136,9 @@ def _require_tenant() -> TenantProfile:
             request.args.get("tenant")
             or request.args.get("slug")
             or request.args.get("tenant_slug")
+            or request.args.get("endpoint")
+            or request.headers.get("X-Tenant-Slug")
+            or request.headers.get("X-Tenant")
         )
         host_hint = request.headers.get("X-Forwarded-Host") or request.host
 
@@ -84,7 +147,7 @@ def _require_tenant() -> TenantProfile:
                 widget_token=widget_token,
                 tenant_slug=tenant_slug,
                 host=host_hint,
-                require_explicit_slug=False,
+                require_explicit_slug=bool(tenant_slug),
             )
         except TenantResolutionError:
             tenant = None
@@ -93,12 +156,23 @@ def _require_tenant() -> TenantProfile:
             g.tenant_profile_slug = tenant.slug
 
     if tenant is None:
+        abort(make_response(_tenant_resolution_error_response()))
         abort(
             make_response(
                 jsonify(
                     {
-                        "error": "Tenant no encontrado",
-                        "detail": "Revisa el slug o la URL del widget; no se pudo resolver el tenant para el carrito público.",
+                        "contract_version": "pwa.public_tenant_resolution.v1",
+                        "error": {
+                            "code": 404,
+                            "message": "Tenant no encontrado",
+                        },
+                        "reason_code": "tenant_resolution_failed",
+                        "detail": "Revisá el slug o la URL del widget; no se pudo resolver el tenant para el carrito público.",
+                        "hints": {
+                            "accepted_query_params": ["tenant", "tenant_slug", "slug", "widget_token", "entityToken"],
+                            "accepted_headers": ["X-Tenant", "X-Widget-Token", "X-Entity-Token"],
+                            "example": "/api/pwa/public/cart?tenant=<tenant_slug>",
+                        },
                     }
                 ),
                 404,
@@ -554,7 +628,7 @@ def public_tenant_widget_config(tenant_slug: str):
     try:
         tenant = resolve_tenant_only(tenant_slug=tenant_slug, require_explicit_slug=False)
     except TenantResolutionError:
-        abort(404, "Tenant no encontrado")
+        return _tenant_resolution_error_response()
 
     owner = _tenant_owner(tenant)
     cfg = tenant.configuracion or {}
@@ -682,10 +756,26 @@ def public_tenant_widget_config(tenant_slug: str):
     widget_payload = _build_widget_embed_payload(tenant, entity_token)
 
     public_token = widget_payload.get("widget_token") or entity_token
+    builder_config = widget_payload.get("builder_config") if isinstance(widget_payload.get("builder_config"), dict) else {}
+    quick_menu = widget_payload.get("quick_menu") or builder_config.get("quick_menu") or []
+    if "quick_menu" not in builder_config:
+        builder_config = {**builder_config, "quick_menu": quick_menu}
+    widget = {**widget_payload, "default_open": default_open, "quick_menu": quick_menu, "builder_config": builder_config}
 
     return jsonify({
+        "contract_version": "public.widget_config.v1",
+        "tenant": {
+            "id": tenant.id,
+            "slug": tenant.slug,
+            "tipo": tenant.tipo,
+            "nombre": tenant.nombre,
+        },
+        "widget": widget,
         "slug": tenant.slug,
         "name": tenant.nombre,
+        "nombre": tenant.nombre,
+        "tenant_name": tenant.nombre,
+        "tipo": tenant.tipo,
         "tipo_chat": tenant.tipo,
         "endpoint": tenant.tipo or "municipio",
         "logo_url": tenant.logo_url or (widget_cfg.logo_url if widget_cfg else "") or "",
@@ -696,8 +786,11 @@ def public_tenant_widget_config(tenant_slug: str):
         "interaction": interaction,
         "cta_messages": cta_messages,
         "default_open": default_open,
+        "quick_menu": quick_menu,
+        "suppress_global_widget": False,
+        "integration_preview": False,
         "embed_snippet": widget_payload.get("embed_snippet"),
-        "builder_config": widget_payload.get("builder_config", {}),
+        "builder_config": builder_config,
         "embed_attributes": widget_payload.get("attributes", {}),
         "owner_token": public_token,
         "entity_token": public_token,

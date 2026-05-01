@@ -68,6 +68,14 @@ class WidgetTokenEndpointTests(unittest.TestCase):
             {"*", origin},
         )
 
+    def test_widget_token_nested_alias_matches_docs(self):
+        resp = self.client.post(
+            "/auth/widget/token",
+            headers={"Authorization": self.user.token, "Origin": "https://example.com"},
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_json().get("contract_version"), "auth.widget_token.v1")
+
     def test_widget_token_preflight(self):
         origin = "https://example.com"
         resp = self.client.options(
@@ -131,6 +139,19 @@ class WidgetTokenEndpointTests(unittest.TestCase):
         self.assertEqual(
             resp.headers.get("Access-Control-Allow-Origin"), "https://example.com"
         )
+
+    def test_widget_refresh_nested_alias_matches_docs(self):
+        token = self.client.post(
+            "/auth/widget-token",
+            headers={"Authorization": self.user.token, "Origin": "https://example.com"},
+        ).get_json()["token"]
+        resp = self.client.post(
+            "/auth/widget/refresh",
+            json={"token": token},
+            headers={"Origin": "https://example.com"},
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_json().get("contract_version"), "auth.widget_token.v1")
 
     def test_widget_refresh_preflight_trailing_slash(self):
         resp = self.client.options(

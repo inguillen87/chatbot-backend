@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from typing import Any
+import uuid
+
 from flask import Blueprint, g, jsonify, request
 
 from extensions import db
@@ -11,18 +14,54 @@ from services.v2.ticket_service import add_comment, create_ticket, list_tickets,
 v2_tickets_bp = Blueprint("v2_tickets", __name__, url_prefix="/api/v2")
 
 
+def _request_id() -> str:
+    incoming = (request.headers.get("X-Request-Id") or "").strip()
+    return incoming or uuid.uuid4().hex
+
+
+def _json_response(payload: dict[str, Any], status: int = 200):
+    request_id = _request_id()
+    body = dict(payload)
+    body.setdefault("request_id", request_id)
+    response = jsonify(body)
+    response.status_code = status
+    response.headers["X-Request-Id"] = request_id
+    return response
+
+
+def _error_response(message: str, status_code: int, reason_code: str = "request_error", action_hint: str = "check_request"):
+    return _json_response(
+        {
+            "contract_version": "shared.error.v1",
+            "status_code": status_code,
+            "reason_code": reason_code,
+            "retryable": False,
+            "action_hint": action_hint,
+            "error": {"code": status_code, "message": message},
+            "message": message,
+        },
+        status_code,
+    )
+
+
 def _viewer():
     return getattr(g, "viewer", None)
 
 
 def _resolve_tenant_or_error():
-    explicit_slug = (request.headers.get("X-Tenant-Slug") or request.args.get("tenant_slug") or "").strip()
+    explicit_slug = (
+        request.headers.get("X-Tenant-Slug")
+        or request.headers.get("X-Tenant")
+        or request.args.get("tenant_slug")
+        or request.args.get("tenant")
+        or ""
+    ).strip()
     if not explicit_slug:
-        return None, (jsonify({"error": "X-Tenant-Slug es obligatorio en tickets v2"}), 400)
+        return None, _error_response("X-Tenant-Slug es obligatorio en tickets v2", 400, "missing_tenant", "send_tenant_slug")
     try:
         return resolve_tenant_v2(required=True, explicit_slug=explicit_slug), None
     except V2TenantResolutionError as exc:
-        return None, (jsonify({"error": exc.message}), exc.status_code)
+        return None, _error_response(exc.message, exc.status_code, "tenant_resolution_failed", "check_tenant_slug")
 
 
 @v2_tickets_bp.route("/tickets", methods=["GET"])
@@ -46,7 +85,7 @@ def list_tickets_v2():
 
     items, pagination, summary = list_tickets(tenant=tenant, viewer=_viewer(), filters=filters)
     db.session.commit()
-    return jsonify({"items": items, "pagination": pagination, "summary": summary})
+    return _json_response({"contract_version": "tickets.v2.list", "items": items, "pagination": pagination, "summary": summary})
 
 
 @v2_tickets_bp.route("/tickets", methods=["POST"])

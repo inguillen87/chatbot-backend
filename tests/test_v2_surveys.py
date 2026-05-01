@@ -114,6 +114,32 @@ class V2SurveysApiTest(unittest.TestCase):
         self.assertEqual(respond_resp.status_code, 201)
         self.assertTrue(respond_resp.get_json().get("ok"))
 
+    def test_survey_draft_accepts_incomplete_payload(self):
+        headers = {
+            **self._auth(self.admin_1),
+            "X-Tenant-Slug": self.tenant_1.slug,
+            "X-Request-Id": "draft-contract-1",
+            "Idempotency-Key": "draft-offline-1",
+        }
+        response = self.client.post(
+            "/api/v2/surveys/draft",
+            json={
+                "title": "Borrador offline",
+                "description": "",
+                "questions": [{"id": "question-1", "title": "", "type": "single"}],
+            },
+            headers=headers,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload.get("ok"))
+        self.assertEqual(payload.get("contract_version"), "surveys.draft.v2")
+        self.assertEqual(payload.get("request_id"), "draft-contract-1")
+        self.assertEqual(payload.get("status"), "draft")
+        self.assertEqual(payload.get("draft_id"), "draft_draft-offline-1")
+        self.assertEqual(payload.get("idempotency_key"), "draft-offline-1")
+
     def test_closed_survey_rejects_public_responses(self):
         headers = {**self._auth(self.admin_1), "X-Tenant-Slug": self.tenant_1.slug}
         created = self.client.post("/api/v2/surveys", json=self._create_payload(), headers=headers).get_json()

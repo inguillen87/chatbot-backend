@@ -109,6 +109,29 @@ class TestEducationRoutes(unittest.TestCase):
         self.ctx.pop()
 
     def test_list_campuses_and_sections(self):
+        school_resp = self.client.get(
+            f"/api/v1/education/schools/{self.school.id}",
+            headers=self.auth_header,
+        )
+        self.assertEqual(school_resp.status_code, 200)
+        school_data = school_resp.get_json()
+        self.assertEqual(school_data["id"], self.school.id)
+        self.assertEqual(school_data["counts"]["campuses"], 1)
+
+        nested_campuses_resp = self.client.get(
+            f"/api/v1/education/schools/{self.school.id}/campuses",
+            headers=self.auth_header,
+        )
+        self.assertEqual(nested_campuses_resp.status_code, 200)
+        self.assertEqual(nested_campuses_resp.get_json()[0]["name"], "Sede Centro")
+
+        nested_sections_resp = self.client.get(
+            f"/api/v1/education/schools/{self.school.id}/sections",
+            headers=self.auth_header,
+        )
+        self.assertEqual(nested_sections_resp.status_code, 200)
+        self.assertEqual(nested_sections_resp.get_json()[0]["school_id"], self.school.id)
+
         campuses_resp = self.client.get(
             f"/api/v1/education/campuses?school_id={self.school.id}",
             headers=self.auth_header,
@@ -222,14 +245,20 @@ class TestEducationRoutes(unittest.TestCase):
 
     def test_guardian_lookup_verify_and_family_context(self):
         lookup_resp = self.client.post(
-            "/api/v1/education/guardian/lookup",
+            "/api/v1/education/guardians/lookup",
             json={"tenant_id": self.tenant.id, "phone_number": self.guardian.phone_number},
         )
         self.assertEqual(lookup_resp.status_code, 200)
         self.assertEqual(lookup_resp.get_json()["verification_status"], "pending")
 
+        legacy_lookup_resp = self.client.post(
+            "/api/v1/education/guardian/lookup",
+            json={"tenant_id": self.tenant.id, "phone_number": self.guardian.phone_number},
+        )
+        self.assertEqual(legacy_lookup_resp.status_code, 200)
+
         verify_resp = self.client.post(
-            "/api/v1/education/guardian/verify",
+            "/api/v1/education/guardians/verify",
             json={"tenant_id": self.tenant.id, "phone_number": self.guardian.phone_number},
         )
         self.assertEqual(verify_resp.status_code, 200)
@@ -239,6 +268,21 @@ class TestEducationRoutes(unittest.TestCase):
         self.assertEqual(len(attempts), 1)
         self.assertEqual(attempts[0].status, "verified")
 
+        link_resp = self.client.post(
+            "/api/v1/education/guardians/link-student",
+            json={
+                "tenant_id": self.tenant.id,
+                "guardian_id": self.guardian.id,
+                "student_id": self.student.id,
+                "relationship_type": "madre",
+                "can_receive_sensitive_updates": True,
+            },
+        )
+        self.assertIn(link_resp.status_code, {200, 201})
+        link_payload = link_resp.get_json()
+        self.assertEqual(link_payload["student"]["id"], self.student.id)
+        self.assertTrue(link_payload["relationship"]["can_receive_sensitive_updates"])
+
         family_resp = self.client.get(
             f"/api/v1/education/family/context?guardian_id={self.guardian.id}",
             headers=self.auth_header,
@@ -247,6 +291,17 @@ class TestEducationRoutes(unittest.TestCase):
         data = family_resp.get_json()
         self.assertEqual(len(data["students"]), 1)
         self.assertTrue(data["students"][0]["can_receive_sensitive_updates"])
+
+        self.guardian.user_id = self.owner.id
+        db.session.add(self.guardian)
+        db.session.commit()
+
+        me_family_resp = self.client.get(
+            "/api/v1/education/me/family-context",
+            headers=self.auth_header,
+        )
+        self.assertEqual(me_family_resp.status_code, 200)
+        self.assertEqual(me_family_resp.get_json()["guardian"]["id"], self.guardian.id)
 
     def test_verify_guardian_rejects_unknown_tenant(self):
         response = self.client.post(
@@ -286,6 +341,39 @@ class TestEducationRoutes(unittest.TestCase):
         cases = list_resp.get_json()
         self.assertEqual(len(cases), 1)
         self.assertEqual(cases[0]["taxonomy_label"], "Documentación")
+
+        case_id = payload["school_case_id"]
+
+        detail_resp = self.client.get(
+            f"/api/v1/education/cases/{case_id}",
+            headers=self.auth_header,
+        )
+        self.assertEqual(detail_resp.status_code, 200)
+        self.assertEqual(detail_resp.get_json()["school_case_id"], case_id)
+
+        reply_resp = self.client.post(
+            f"/api/v1/education/cases/{case_id}/reply",
+            headers=self.auth_header,
+            json={"comentario": "La constancia queda en preparación."},
+        )
+        self.assertEqual(reply_resp.status_code, 201)
+        self.assertTrue(reply_resp.get_json()["ok"])
+
+        assign_resp = self.client.post(
+            f"/api/v1/education/cases/{case_id}/assign",
+            headers=self.auth_header,
+            json={"assignee_id": self.owner.id},
+        )
+        self.assertEqual(assign_resp.status_code, 200)
+        self.assertEqual(assign_resp.get_json()["ticket"]["asignado_a_id"], self.owner.id)
+
+        escalate_resp = self.client.post(
+            f"/api/v1/education/cases/{case_id}/escalate",
+            headers=self.auth_header,
+            json={"sensitivity_level": "critical", "reason": "Requiere dirección"},
+        )
+        self.assertEqual(escalate_resp.status_code, 200)
+        self.assertEqual(escalate_resp.get_json()["sensitivity_level"], "critical")
 
     def test_create_school_case_rejects_foreign_guardian(self):
         other_owner = User(

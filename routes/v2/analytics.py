@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from typing import Any
+import uuid
 
 from flask import Blueprint, jsonify, request
 
@@ -14,22 +16,58 @@ from utils.permissions import require_role
 v2_analytics_bp = Blueprint("v2_analytics", __name__, url_prefix="/api/v2/analytics")
 
 
+def _request_id() -> str:
+    incoming = (request.headers.get("X-Request-Id") or "").strip()
+    return incoming or uuid.uuid4().hex
+
+
+def _json_response(payload: dict[str, Any], status: int = 200):
+    request_id = _request_id()
+    body = dict(payload)
+    body.setdefault("request_id", request_id)
+    response = jsonify(body)
+    response.status_code = status
+    response.headers["X-Request-Id"] = request_id
+    return response
+
+
+def _error_response(message: str, status_code: int, reason_code: str = "request_error", action_hint: str = "check_request"):
+    return _json_response(
+        {
+            "contract_version": "shared.error.v1",
+            "status_code": status_code,
+            "reason_code": reason_code,
+            "retryable": False,
+            "action_hint": action_hint,
+            "error": {"code": status_code, "message": message},
+            "message": message,
+        },
+        status_code,
+    )
+
+
 def _resolve_tenant_or_error(current_user):
-    explicit_slug = (request.headers.get("X-Tenant-Slug") or request.args.get("tenant_slug") or "").strip()
+    explicit_slug = (
+        request.headers.get("X-Tenant-Slug")
+        or request.headers.get("X-Tenant")
+        or request.args.get("tenant_slug")
+        or request.args.get("tenant")
+        or ""
+    ).strip()
     if not explicit_slug:
-        return None, (jsonify({"error": "X-Tenant-Slug es obligatorio en analytics v2"}), 400)
+        return None, _error_response("X-Tenant-Slug es obligatorio en analytics v2", 400, "missing_tenant", "send_tenant_slug")
 
     try:
         tenant = resolve_tenant_v2(required=True, explicit_slug=explicit_slug)
     except V2TenantResolutionError as exc:
-        return None, (jsonify({"error": exc.message}), exc.status_code)
+        return None, _error_response(exc.message, exc.status_code, "tenant_resolution_failed", "check_tenant_slug")
 
     role = str(getattr(current_user, "rol", "") or "").lower()
     if role != "super_admin":
         same_slug = (getattr(current_user, "tenant_slug", "") or "").strip().lower() == (tenant.slug or "").strip().lower()
         same_id = str(getattr(current_user, "tenant_id", "") or "") == str(tenant.id)
         if not same_slug and not same_id:
-            return None, (jsonify({"error": "Permisos insuficientes para este tenant"}), 403)
+            return None, _error_response("Permisos insuficientes para este tenant", 403, "forbidden_tenant", "switch_tenant")
 
     return tenant, None
 
@@ -75,25 +113,45 @@ def overview_v2(current_user):
         context=request.args.get("context", "overview"),
         filters={"channel": request.args.get("channel")} if request.args.get("channel") else {},
     )
+    survey_summary = analytics_service.get_survey_summary(tenant.id) or {}
+    survey_stats = survey_summary.get("stats") or {}
+    conversations = int((summary.get("kpis") or {}).get("total_interactions") or 0)
+    total_tickets = int(TenantTicket.query.filter_by(tenant_id=tenant.id).count())
+    open_tickets = int(
+        TenantTicket.query.filter(TenantTicket.tenant_id == tenant.id, TenantTicket.estado.notin_(["cerrado", "closed"]))
+        .count()
+    )
+    overdue_tickets = int(
+        TenantTicket.query.filter(TenantTicket.tenant_id == tenant.id, TenantTicket.estado.in_(["vencido", "overdue"])).count()
+    )
+    survey_responses = int(survey_stats.get("total_votes") or 0)
+    survey_completion_rate = float(survey_stats.get("participation_rate") or 0.0)
+    contract_summary = {
+        "conversations": conversations,
+        "open_tickets": open_tickets,
+        "overdue_tickets": overdue_tickets,
+        "response_time": 0,
+        "survey_responses": survey_responses,
+        "nps": 0,
+        "csat": 0,
+        "handoff_rate": 0,
+    }
 
-    return jsonify(
+    return _json_response(
         {
+            "contract_version": "analytics.overview.v2",
             "tenant_id": tenant.id,
-            "total_conversations": int((summary.get("kpis") or {}).get("total_interactions") or 0),
-            "total_tickets": int(TenantTicket.query.filter_by(tenant_id=tenant.id).count()),
-            "open_tickets": int(
-                TenantTicket.query.filter(TenantTicket.tenant_id == tenant.id, TenantTicket.estado.notin_(["cerrado", "closed"]))
-                .count()
-            ),
-            "overdue_tickets": int(
-                TenantTicket.query.filter(TenantTicket.tenant_id == tenant.id, TenantTicket.estado.in_(["vencido", "overdue"])).count()
-            ),
+            "summary": contract_summary,
+            "total_conversations": conversations,
+            "total_tickets": total_tickets,
+            "open_tickets": open_tickets,
+            "overdue_tickets": overdue_tickets,
             "avg_first_response_time": None,
             "avg_resolution_time": None,
-            "survey_response_count": int(((analytics_service.get_survey_summary(tenant.id) or {}).get("stats") or {}).get("total_votes") or 0),
-            "survey_completion_rate": float(((analytics_service.get_survey_summary(tenant.id) or {}).get("stats") or {}).get("participation_rate") or 0.0),
-            "csat_score": None,
-            "nps_score": None,
+            "survey_response_count": survey_responses,
+            "survey_completion_rate": survey_completion_rate,
+            "csat_score": 0,
+            "nps_score": 0,
         }
     )
 

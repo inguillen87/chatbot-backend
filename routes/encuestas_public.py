@@ -399,8 +399,11 @@ def _public_error_response(err: EncuestaError, *, fallback_reason: Optional[str]
         payload["reason_code"] = reason_code
     payload.setdefault("retryable", retryable)
     payload.setdefault("action_hint", action_hint)
-    payload.setdefault("request_id", _resolve_request_id())
-    return jsonify(payload), status_code
+    request_id = _resolve_request_id()
+    payload.setdefault("request_id", request_id)
+    response = jsonify(payload)
+    response.headers.setdefault("X-Request-Id", request_id)
+    return response, status_code
 
 
 def _load_public_encuesta_for_request(slug: str, *, preview_user=None):
@@ -733,10 +736,12 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
                 "No se pudieron listar las encuestas públicas para el tenant %s",
                 tenant_id,
             )
-            return (
-                jsonify({"error": "No se pudieron obtener las encuestas."}),
-                500,
+            wrapped = EncuestaError(
+                "No se pudieron obtener las encuestas.",
+                status_code=500,
+                payload={"reason_code": "internal_error"},
             )
+            return _public_error_response(wrapped)
 
         base_url = _public_target_base_url()
         payload = []
@@ -760,12 +765,12 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
         ip = _extract_ip()
         tenant_id = _resolve_tenant_from_request()
         if not _rate_limit(ip):
-            return (
-                jsonify({
-                    "error": "Demasiadas respuestas desde esta IP. Intenta más tarde.",
-                }),
-                429,
+            wrapped = EncuestaError(
+                "Demasiadas respuestas desde esta IP. Intenta más tarde.",
+                status_code=429,
+                payload={"reason_code": "rate_limited", "retryable": False},
             )
+            return _public_error_response(wrapped)
 
         request_ctx = {
             "ip": ip,
@@ -795,8 +800,11 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
                     ),
                     200,
                 )
-            return jsonify(err.to_dict()), err.status_code
-        return jsonify({"ok": True, "respuesta_id": respuesta.id}), 201
+            return _public_error_response(err)
+        request_id = _resolve_request_id()
+        response = jsonify({"ok": True, "respuesta_id": respuesta.id, "request_id": request_id})
+        response.headers.setdefault("X-Request-Id", request_id)
+        return response, 201
 
     @bp.route("/<slug>/responder", methods=["POST", "OPTIONS"])
     def responder(slug: str):
@@ -936,7 +944,12 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
         try:
             png = build_qr_png(url, size=size)
         except ValueError as exc:
-            return jsonify({"error": str(exc)}), 400
+            wrapped = EncuestaError(
+                str(exc),
+                status_code=400,
+                payload={"reason_code": "invalid_qr_size", "retryable": False},
+            )
+            return _public_error_response(wrapped)
         return send_file(
             io.BytesIO(png),
             mimetype="image/png",

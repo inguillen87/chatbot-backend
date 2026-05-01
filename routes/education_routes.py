@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from flask import Blueprint, jsonify, request
 from sqlalchemy import func
 
 from app import db
-from models import MunicipioTicket, PymeTicket, TenantProfile
+from models import MunicipioTicket, PymeTicket, TenantProfile, TicketComentario, User
 from models_education import (
     AcademicLevel,
     Campus,
@@ -30,6 +32,10 @@ SCHOOL_CASE_TAXONOMY = {
     "cobranza": "Cobranza",
     "admisiones": "Admisiones",
 }
+
+
+def _utc_now():
+    return datetime.now(timezone.utc)
 
 
 def _tenant_supports_education(tenant: TenantProfile | None) -> bool:
@@ -87,6 +93,133 @@ def _parse_optional_int(raw_value, field_name: str):
         return int(raw_value)
     except (TypeError, ValueError):
         raise ValueError(f"{field_name} must be an integer")
+
+
+def _parse_bool(raw_value, default: bool = False) -> bool:
+    if raw_value is None:
+        return default
+    if isinstance(raw_value, bool):
+        return raw_value
+    if isinstance(raw_value, (int, float)):
+        return bool(raw_value)
+    if isinstance(raw_value, str):
+        normalized = raw_value.strip().lower()
+        if normalized in {"1", "true", "yes", "si", "sí", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return default
+
+
+def _school_payload(school: School, *, include_counts: bool = False) -> dict:
+    payload = {
+        "id": school.id,
+        "tenant_id": school.tenant_id,
+        "name": school.name,
+        "school_type": school.school_type,
+        "jurisdiction": school.jurisdiction,
+        "brand_name": school.brand_name,
+        "status": school.status,
+    }
+    if include_counts:
+        payload["counts"] = {
+            "campuses": school.campuses.count(),
+            "levels": school.academic_levels.count(),
+            "shifts": school.shifts.count(),
+            "students": school.students.count(),
+        }
+    return payload
+
+
+def _campus_payload(campus: Campus) -> dict:
+    return {
+        "id": campus.id,
+        "school_id": campus.school_id,
+        "name": campus.name,
+        "address": campus.address,
+        "phone": campus.phone,
+        "email": campus.email,
+        "timezone": campus.timezone,
+        "is_main": bool(campus.is_main),
+    }
+
+
+def _section_payload(section: CourseSection) -> dict:
+    level = section.level
+    shift = section.shift
+    return {
+        "id": section.id,
+        "campus_id": section.campus_id,
+        "school_id": section.campus.school_id if section.campus else None,
+        "academic_year": section.academic_year,
+        "grade": section.grade,
+        "division": section.division,
+        "level": {
+            "id": level.id if level else None,
+            "code": level.code if level else None,
+            "name": level.name if level else None,
+        },
+        "shift": {
+            "id": shift.id if shift else None,
+            "code": shift.code if shift else None,
+            "name": shift.name if shift else None,
+        },
+        "homeroom_staff_id": section.homeroom_staff_id,
+    }
+
+
+def _guardian_payload(guardian: Guardian) -> dict:
+    return {
+        "id": guardian.id,
+        "first_name": guardian.first_name,
+        "last_name": guardian.last_name,
+        "verification_status": guardian.verification_status,
+        "tenant_id": guardian.tenant_id,
+        "school_id": guardian.school_id,
+        "preferred_channel": guardian.preferred_channel,
+        "language": guardian.language,
+    }
+
+
+def _get_case_alias_for_tenant(case_id: int, tenant_id: int) -> SchoolCaseAlias | None:
+    return SchoolCaseAlias.query.filter_by(id=case_id, tenant_id=tenant_id).first()
+
+
+def _ticket_for_case(alias: SchoolCaseAlias):
+    if alias.ticket_type == "pyme":
+        return PymeTicket.query.get(alias.ticket_id)
+    return MunicipioTicket.query.get(alias.ticket_id)
+
+
+def _case_payload(alias: SchoolCaseAlias, *, include_comments: bool = False) -> dict:
+    ticket = _ticket_for_case(alias)
+    payload = {
+        "school_case_id": alias.id,
+        "school_id": alias.school_id,
+        "campus_id": alias.campus_id,
+        "section_id": alias.section_id,
+        "student_id": alias.student_id,
+        "guardian_id": alias.guardian_id,
+        "case_type": alias.case_type,
+        "taxonomy_label": SCHOOL_CASE_TAXONOMY.get(alias.case_type, alias.case_type),
+        "sensitivity_level": alias.sensitivity_level,
+        "channel": alias.channel,
+        "ticket": {
+            "type": alias.ticket_type,
+            "id": alias.ticket_id,
+            "nro_ticket": getattr(ticket, "nro_ticket", None) if ticket else None,
+            "estado": getattr(ticket, "estado", None) if ticket else None,
+            "asunto": getattr(ticket, "asunto", None) if ticket else None,
+            "categoria": getattr(ticket, "categoria", None) if ticket else None,
+            "asignado_a_id": getattr(ticket, "asignado_a_id", None) if ticket else None,
+        },
+    }
+    if include_comments and ticket:
+        payload["comments"] = [
+            comment.to_dict()
+            for comment in ticket.comentarios.order_by(TicketComentario.fecha.asc()).all()
+        ]
+    return payload
 
 
 @education_bp.route("/api/v1/education/tenant/capabilities", methods=["GET"])
@@ -191,19 +324,19 @@ def get_schools(current_user, actor_principal=None):
         query = query.filter(School.tenant_id == tenant_id)
 
     schools = query.order_by(School.name.asc()).all()
-    return jsonify(
-        [
-            {
-                "id": school.id,
-                "tenant_id": school.tenant_id,
-                "name": school.name,
-                "school_type": school.school_type,
-                "jurisdiction": school.jurisdiction,
-                "status": school.status,
-            }
-            for school in schools
-        ]
-    )
+    return jsonify([_school_payload(school) for school in schools])
+
+
+@education_bp.route("/api/v1/education/schools/<int:school_id>", methods=["GET"])
+@token_requerido
+def get_school_detail(current_user, school_id: int, actor_principal=None):
+    tenant_id = _resolve_actor_tenant_id(current_user, actor_principal)
+    school = School.query.filter_by(id=school_id).first()
+    if not school:
+        return jsonify({"error": {"code": 404, "message": "School not found"}}), 404
+    if tenant_id and school.tenant_id != tenant_id:
+        return jsonify({"error": {"code": 403, "message": "School not available for tenant"}}), 403
+    return jsonify(_school_payload(school, include_counts=True))
 
 
 @education_bp.route("/api/v1/education/schools", methods=["POST"])
@@ -259,18 +392,21 @@ def get_campuses(current_user, actor_principal=None):
         return jsonify({"error": {"code": 403, "message": "School not available for tenant"}}), 403
 
     campuses = Campus.query.filter_by(school_id=school.id).order_by(Campus.name.asc()).all()
-    return jsonify(
-        [
-            {
-                "id": campus.id,
-                "school_id": campus.school_id,
-                "name": campus.name,
-                "address": campus.address,
-                "is_main": bool(campus.is_main),
-            }
-            for campus in campuses
-        ]
-    )
+    return jsonify([_campus_payload(campus) for campus in campuses])
+
+
+@education_bp.route("/api/v1/education/schools/<int:school_id>/campuses", methods=["GET"])
+@token_requerido
+def get_school_campuses(current_user, school_id: int, actor_principal=None):
+    tenant_id = _resolve_actor_tenant_id(current_user, actor_principal)
+    school = School.query.filter_by(id=school_id).first()
+    if not school:
+        return jsonify({"error": {"code": 404, "message": "School not found"}}), 404
+    if tenant_id and school.tenant_id != tenant_id:
+        return jsonify({"error": {"code": 403, "message": "School not available for tenant"}}), 403
+
+    campuses = Campus.query.filter_by(school_id=school.id).order_by(Campus.name.asc()).all()
+    return jsonify([_campus_payload(campus) for campus in campuses])
 
 
 @education_bp.route("/api/v1/education/campuses", methods=["POST"])
@@ -322,24 +458,29 @@ def get_sections(current_user, actor_principal=None):
         return jsonify({"error": {"code": 403, "message": "Campus not available for tenant"}}), 403
 
     sections = CourseSection.query.filter_by(campus_id=campus.id).order_by(CourseSection.academic_year.desc()).all()
-    response = []
-    for section in sections:
-        level = AcademicLevel.query.get(section.level_id)
-        response.append(
-            {
-                "id": section.id,
-                "campus_id": section.campus_id,
-                "academic_year": section.academic_year,
-                "grade": section.grade,
-                "division": section.division,
-                "level": {
-                    "id": level.id if level else None,
-                    "code": level.code if level else None,
-                    "name": level.name if level else None,
-                },
-            }
-        )
-    return jsonify(response)
+    return jsonify([_section_payload(section) for section in sections])
+
+
+@education_bp.route("/api/v1/education/schools/<int:school_id>/sections", methods=["GET"])
+@token_requerido
+def get_school_sections(current_user, school_id: int, actor_principal=None):
+    tenant_id = _resolve_actor_tenant_id(current_user, actor_principal)
+    school = School.query.filter_by(id=school_id).first()
+    if not school:
+        return jsonify({"error": {"code": 404, "message": "School not found"}}), 404
+    if tenant_id and school.tenant_id != tenant_id:
+        return jsonify({"error": {"code": 403, "message": "School not available for tenant"}}), 403
+
+    campus_ids = [campus.id for campus in school.campuses.all()]
+    if not campus_ids:
+        return jsonify([])
+    sections = (
+        CourseSection.query
+        .filter(CourseSection.campus_id.in_(campus_ids))
+        .order_by(CourseSection.academic_year.desc(), CourseSection.grade.asc(), CourseSection.division.asc())
+        .all()
+    )
+    return jsonify([_section_payload(section) for section in sections])
 
 
 @education_bp.route("/api/v1/education/levels", methods=["GET"])
@@ -482,6 +623,7 @@ def create_section(current_user, actor_principal=None):
     return jsonify({"id": section.id, "campus_id": section.campus_id, "academic_year": section.academic_year}), 201
 
 
+@education_bp.route("/api/v1/education/guardians/lookup", methods=["POST"])
 @education_bp.route("/api/v1/education/guardian/lookup", methods=["POST"])
 def lookup_guardian():
     data = request.json or {}
@@ -507,17 +649,10 @@ def lookup_guardian():
     if not guardian:
         return jsonify({"error": {"code": 404, "message": "Guardian not found"}}), 404
 
-    return jsonify(
-        {
-            "id": guardian.id,
-            "first_name": guardian.first_name,
-            "last_name": guardian.last_name,
-            "verification_status": guardian.verification_status,
-            "tenant_id": guardian.tenant_id,
-        }
-    )
+    return jsonify(_guardian_payload(guardian))
 
 
+@education_bp.route("/api/v1/education/guardians/verify", methods=["POST"])
 @education_bp.route("/api/v1/education/guardian/verify", methods=["POST"])
 def verify_guardian():
     data = request.json or {}
@@ -546,7 +681,7 @@ def verify_guardian():
         verification_method="phone",
         verification_value=phone,
         status=status,
-        context_json={"endpoint": "/api/v1/education/guardian/verify"},
+        context_json={"endpoint": request.path},
     )
     db.session.add(attempt)
     db.session.commit()
@@ -554,25 +689,114 @@ def verify_guardian():
     if not guardian:
         return jsonify({"error": {"code": 404, "message": "Guardian not found"}}), 404
 
-    return jsonify(
-        {
-            "id": guardian.id,
-            "first_name": guardian.first_name,
-            "last_name": guardian.last_name,
-            "verification_status": guardian.verification_status,
-            "tenant_id": guardian.tenant_id,
-        }
+    return jsonify(_guardian_payload(guardian))
+
+
+@education_bp.route("/api/v1/education/guardians/link-student", methods=["POST"])
+def link_guardian_student():
+    data = request.json or {}
+    tenant_id = _resolve_school_tenant_id(data.get("tenant_id"))
+    guardian_id = _resolve_school_tenant_id(data.get("guardian_id"))
+    student_id = _resolve_school_tenant_id(data.get("student_id"))
+    if not tenant_id or not guardian_id or not student_id:
+        return jsonify({"error": {"code": 400, "message": "tenant_id, guardian_id and student_id required"}}), 400
+
+    guardian = Guardian.query.filter_by(id=guardian_id, tenant_id=tenant_id).first()
+    if not guardian:
+        return jsonify({"error": {"code": 404, "message": "Guardian not found"}}), 404
+    if guardian.verification_status != "verified":
+        return jsonify({"error": {"code": 403, "message": "Guardian must be verified before linking students"}}), 403
+
+    student = Student.query.filter_by(id=student_id).first()
+    if not student:
+        return jsonify({"error": {"code": 404, "message": "Student not found"}}), 404
+    school = School.query.filter_by(id=student.school_id, tenant_id=tenant_id).first()
+    if not school:
+        return jsonify({"error": {"code": 403, "message": "Student not available for tenant"}}), 403
+    if guardian.school_id and guardian.school_id != school.id:
+        return jsonify({"error": {"code": 400, "message": "Guardian and student belong to different schools"}}), 400
+
+    relation = StudentGuardianRelation.query.filter_by(
+        student_id=student.id,
+        guardian_id=guardian.id,
+    ).first()
+    created = relation is None
+    if relation is None:
+        relation = StudentGuardianRelation(student_id=student.id, guardian_id=guardian.id)
+
+    relation.relationship_type = str(data.get("relationship_type") or data.get("relationship") or relation.relationship_type or "tutor")
+    relation.custody_scope = data.get("custody_scope") or relation.custody_scope
+    relation.can_pickup = _parse_bool(data.get("can_pickup"), bool(relation.can_pickup))
+    relation.can_receive_billing = _parse_bool(data.get("can_receive_billing"), bool(relation.can_receive_billing))
+    relation.can_receive_sensitive_updates = _parse_bool(
+        data.get("can_receive_sensitive_updates"), bool(relation.can_receive_sensitive_updates)
+    )
+    relation.status = (data.get("status") or relation.status or "active").strip().lower()
+    if guardian.school_id is None:
+        guardian.school_id = school.id
+
+    db.session.add(relation)
+    db.session.add(guardian)
+    db.session.commit()
+
+    return (
+        jsonify(
+            {
+                "id": relation.id,
+                "created": created,
+                "tenant_id": tenant_id,
+                "guardian": _guardian_payload(guardian),
+                "student": {
+                    "id": student.id,
+                    "first_name": student.first_name,
+                    "last_name": student.last_name,
+                    "school_id": student.school_id,
+                    "campus_id": student.campus_id,
+                    "section_id": student.section_id,
+                },
+                "relationship": {
+                    "type": relation.relationship_type,
+                    "custody_scope": relation.custody_scope,
+                    "can_pickup": relation.can_pickup,
+                    "can_receive_billing": relation.can_receive_billing,
+                    "can_receive_sensitive_updates": relation.can_receive_sensitive_updates,
+                    "status": relation.status,
+                },
+            }
+        ),
+        201 if created else 200,
     )
 
 
+@education_bp.route("/api/v1/education/me/family-context", methods=["GET"])
 @education_bp.route("/api/v1/education/family/context", methods=["GET"])
 @token_requerido
 def get_family_context(current_user, actor_principal=None):
     guardian_id = request.args.get("guardian_id", type=int)
+    tenant_id = _resolve_actor_tenant_id(current_user, actor_principal)
+
+    if not guardian_id and request.path.endswith("/me/family-context"):
+        guardian_query = Guardian.query.filter_by(user_id=getattr(current_user, "id", None))
+        if tenant_id:
+            guardian_query = guardian_query.filter_by(tenant_id=tenant_id)
+        guardian = guardian_query.order_by(Guardian.id.asc()).first()
+        if not guardian:
+            email = (getattr(current_user, "email", None) or "").strip().lower()
+            phone = (getattr(current_user, "telefono", None) or "").strip()
+            if email or phone:
+                guardian_query = Guardian.query
+                if tenant_id:
+                    guardian_query = guardian_query.filter_by(tenant_id=tenant_id)
+                if email:
+                    guardian_query = guardian_query.filter(func.lower(Guardian.email) == email)
+                elif phone:
+                    guardian_query = guardian_query.filter(Guardian.phone_number == phone)
+                guardian = guardian_query.order_by(Guardian.id.asc()).first()
+        guardian_id = guardian.id if guardian else None
+
     if not guardian_id:
         return jsonify({"error": {"code": 400, "message": "guardian_id required"}}), 400
 
-    tenant_id = _resolve_actor_tenant_id(current_user, actor_principal)
     guardian = Guardian.query.get(guardian_id)
     if not guardian:
         return jsonify({"error": {"code": 404, "message": "Guardian not found"}}), 404
@@ -746,24 +970,149 @@ def list_school_cases(current_user, actor_principal=None):
         query = query.filter(SchoolCaseAlias.school_id == school_id)
 
     aliases = query.order_by(SchoolCaseAlias.created_at.desc()).limit(100).all()
-    return jsonify(
-        [
-            {
-                "school_case_id": alias.id,
-                "school_id": alias.school_id,
-                "campus_id": alias.campus_id,
-                "section_id": alias.section_id,
-                "student_id": alias.student_id,
-                "guardian_id": alias.guardian_id,
-                "case_type": alias.case_type,
-                "taxonomy_label": SCHOOL_CASE_TAXONOMY.get(alias.case_type, alias.case_type),
-                "sensitivity_level": alias.sensitivity_level,
-                "channel": alias.channel,
-                "ticket": {
-                    "type": alias.ticket_type,
-                    "id": alias.ticket_id,
-                },
-            }
-            for alias in aliases
-        ]
+    return jsonify([_case_payload(alias) for alias in aliases])
+
+
+@education_bp.route("/api/v1/education/cases/<int:case_id>", methods=["GET"])
+@token_requerido
+def get_school_case_detail(current_user, case_id: int, actor_principal=None):
+    tenant_id = _resolve_actor_tenant_id(current_user, actor_principal)
+    if not tenant_id:
+        return jsonify({"error": {"code": 400, "message": "Tenant context required"}}), 400
+    alias = _get_case_alias_for_tenant(case_id, tenant_id)
+    if not alias:
+        return jsonify({"error": {"code": 404, "message": "School case not found"}}), 404
+    return jsonify(_case_payload(alias, include_comments=True))
+
+
+@education_bp.route("/api/v1/education/cases/<int:case_id>/reply", methods=["POST"])
+@token_requerido
+def reply_school_case(current_user, case_id: int, actor_principal=None):
+    tenant_id = _resolve_actor_tenant_id(current_user, actor_principal)
+    if not tenant_id:
+        return jsonify({"error": {"code": 400, "message": "Tenant context required"}}), 400
+    alias = _get_case_alias_for_tenant(case_id, tenant_id)
+    if not alias:
+        return jsonify({"error": {"code": 404, "message": "School case not found"}}), 404
+    ticket = _ticket_for_case(alias)
+    if not ticket:
+        return jsonify({"error": {"code": 404, "message": "Ticket not found for school case"}}), 404
+
+    data = request.json or {}
+    comentario = (data.get("comentario") or data.get("message") or data.get("body") or "").strip()
+    if not comentario:
+        return jsonify({"error": {"code": 400, "message": "comentario required"}}), 400
+
+    comment = TicketComentario(
+        pyme_ticket_id=ticket.id if alias.ticket_type == "pyme" else None,
+        municipio_ticket_id=ticket.id if alias.ticket_type != "pyme" else None,
+        comentario=comentario,
+        user_id=getattr(current_user, "id", None),
+        es_admin=bool(data.get("es_admin", True)),
+        origen=(data.get("origen") or "education").strip().lower(),
+        estado_ticket=getattr(ticket, "estado", None),
     )
+    if hasattr(ticket, "ultima_actividad"):
+        ticket.ultima_actividad = _utc_now()
+    db.session.add(comment)
+    db.session.add(ticket)
+    db.session.commit()
+
+    return jsonify(
+        {
+            "ok": True,
+            "school_case_id": alias.id,
+            "ticket": {"type": alias.ticket_type, "id": ticket.id},
+            "comment": comment.to_dict(),
+        }
+    ), 201
+
+
+@education_bp.route("/api/v1/education/cases/<int:case_id>/assign", methods=["POST"])
+@token_requerido
+def assign_school_case(current_user, case_id: int, actor_principal=None):
+    tenant_id = _resolve_actor_tenant_id(current_user, actor_principal)
+    if not tenant_id:
+        return jsonify({"error": {"code": 400, "message": "Tenant context required"}}), 400
+    alias = _get_case_alias_for_tenant(case_id, tenant_id)
+    if not alias:
+        return jsonify({"error": {"code": 404, "message": "School case not found"}}), 404
+    ticket = _ticket_for_case(alias)
+    if not ticket:
+        return jsonify({"error": {"code": 404, "message": "Ticket not found for school case"}}), 404
+
+    data = request.json or {}
+    try:
+        assignee_id = _parse_optional_int(data.get("assignee_id") or data.get("asignado_a_id"), "assignee_id")
+    except ValueError as exc:
+        return jsonify({"error": {"code": 400, "message": str(exc)}}), 400
+    if not assignee_id:
+        return jsonify({"error": {"code": 400, "message": "assignee_id required"}}), 400
+
+    assignee = User.query.get(assignee_id)
+    if not assignee:
+        return jsonify({"error": {"code": 404, "message": "Assignee not found"}}), 404
+
+    ticket.asignado_a_id = assignee.id
+    ticket.asignado_en = _utc_now()
+    if getattr(ticket, "estado", None) == "nuevo":
+        ticket.estado = "en_proceso"
+        if hasattr(ticket, "estado_cliente"):
+            ticket.estado_cliente = "en_proceso"
+
+    comment = TicketComentario(
+        pyme_ticket_id=ticket.id if alias.ticket_type == "pyme" else None,
+        municipio_ticket_id=ticket.id if alias.ticket_type != "pyme" else None,
+        comentario=f"Caso escolar asignado a usuario #{assignee.id}",
+        user_id=getattr(current_user, "id", None),
+        es_admin=True,
+        origen="education",
+        estado_ticket=getattr(ticket, "estado", None),
+    )
+    db.session.add(ticket)
+    db.session.add(comment)
+    db.session.commit()
+
+    return jsonify(_case_payload(alias, include_comments=True))
+
+
+@education_bp.route("/api/v1/education/cases/<int:case_id>/escalate", methods=["POST"])
+@token_requerido
+def escalate_school_case(current_user, case_id: int, actor_principal=None):
+    tenant_id = _resolve_actor_tenant_id(current_user, actor_principal)
+    if not tenant_id:
+        return jsonify({"error": {"code": 400, "message": "Tenant context required"}}), 400
+    alias = _get_case_alias_for_tenant(case_id, tenant_id)
+    if not alias:
+        return jsonify({"error": {"code": 404, "message": "School case not found"}}), 404
+    ticket = _ticket_for_case(alias)
+    if not ticket:
+        return jsonify({"error": {"code": 404, "message": "Ticket not found for school case"}}), 404
+
+    data = request.json or {}
+    level = (data.get("sensitivity_level") or "critical").strip().lower()
+    if level not in {"sensitive", "critical"}:
+        return jsonify({"error": {"code": 400, "message": "sensitivity_level must be sensitive or critical"}}), 400
+
+    reason = (data.get("reason") or data.get("motivo") or "Escalación manual").strip()
+    alias.sensitivity_level = level
+    if getattr(ticket, "estado", None) == "nuevo":
+        ticket.estado = "en_proceso"
+        if hasattr(ticket, "estado_cliente"):
+            ticket.estado_cliente = "en_proceso"
+
+    comment = TicketComentario(
+        pyme_ticket_id=ticket.id if alias.ticket_type == "pyme" else None,
+        municipio_ticket_id=ticket.id if alias.ticket_type != "pyme" else None,
+        comentario=f"Caso escolar escalado ({level}): {reason}",
+        user_id=getattr(current_user, "id", None),
+        es_admin=True,
+        origen="education",
+        estado_ticket=getattr(ticket, "estado", None),
+    )
+    db.session.add(alias)
+    db.session.add(ticket)
+    db.session.add(comment)
+    db.session.commit()
+
+    return jsonify(_case_payload(alias, include_comments=True))

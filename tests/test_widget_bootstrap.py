@@ -73,6 +73,17 @@ class WidgetBootstrapTest(unittest.TestCase):
         self.assertEqual(data["jwks"].get("alg"), "HS256")
         self.assertIn("kid", data["jwks"])
 
+    def test_widget_bootstrap_post_alias_matches_docs(self):
+        response = self.client.post(
+            "/auth/widget/bootstrap",
+            headers={"X-Tenant": self.tenant.slug},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()
+        self.assertEqual(data.get("contract_version"), "auth.widget_bootstrap.v1")
+        self.assertEqual(data["tenant"]["slug"], self.tenant.slug)
+
     def test_widget_bootstrap_requires_tenant(self):
         # In an environment where default tenants exist (via init_tenants),
         # the middleware falls back to the first available tenant instead of 400.
@@ -96,6 +107,13 @@ class WidgetBootstrapTest(unittest.TestCase):
         self.assertIn("keys", payload)
         self.assertEqual(payload["keys"][0]["kty"], "oct")
         self.assertEqual(payload["keys"][0]["use"], "sig")
+
+    def test_widget_jwks_well_known_alias_matches_docs(self):
+        response = self.client.get("/auth/.well-known/jwks.json")
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertIn("keys", payload)
+        self.assertEqual(payload["keys"][0]["kid"], "widget-hs256")
 
     def test_widget_jwks_rs256_without_public_key_returns_empty_keys(self):
         self.app.config["WIDGET_JWT_ALG"] = "RS256"

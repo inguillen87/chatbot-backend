@@ -738,6 +738,7 @@ def _widget_jwks_payload() -> dict[str, list[dict[str, str]]]:
     }
 
 
+@auth_bp.route("/.well-known/jwks.json", methods=["GET"], strict_slashes=False)
 @auth_bp.route("/widget/jwks.json", methods=["GET"], strict_slashes=False)
 def widget_jwks():
     payload = _widget_jwks_payload()
@@ -746,7 +747,7 @@ def widget_jwks():
     return resp
 
 
-@auth_bp.route("/widget/bootstrap", methods=["GET", "OPTIONS"], strict_slashes=False)
+@auth_bp.route("/widget/bootstrap", methods=["GET", "POST", "OPTIONS"], strict_slashes=False)
 def widget_bootstrap():
     if request.method == "OPTIONS":
         return _add_cors(
@@ -807,6 +808,7 @@ def widget_bootstrap():
     )
 
 
+@auth_bp.route("/widget/token", methods=["POST", "OPTIONS"], strict_slashes=False)
 @auth_bp.route("/widget-token", methods=["POST", "OPTIONS"], strict_slashes=False)
 def widget_token():
     if request.method == "OPTIONS":
@@ -882,6 +884,7 @@ def widget_token():
     )
 
 
+@auth_bp.route("/widget/refresh", methods=["POST", "OPTIONS"], strict_slashes=False)
 @auth_bp.route("/widget-refresh", methods=["POST", "OPTIONS"], strict_slashes=False)
 def widget_refresh():
     if request.method == "OPTIONS":

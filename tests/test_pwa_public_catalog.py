@@ -94,6 +94,35 @@ class PublicCatalogAndCartTest(unittest.TestCase):
         cleared = clear_resp.get_json()
         self.assertEqual(cleared["items_count"], 0)
 
+    def test_public_cart_summary_marks_missing_payment_gateway(self):
+        money_item = CatalogoItem(
+            user_id=self.owner.id,
+            tenant_id=self.tenant.id,
+            nombre="Entrada taller",
+            categoria="Educación",
+            descripcion="Taller pago.",
+            precio="1000",
+            precio_monetario=1000,
+            moneda="ARS",
+            modalidad="venta",
+            sku="taller-pago",
+        )
+        db.session.add(money_item)
+        db.session.commit()
+
+        add_resp = self.client.post(
+            f"/api/pwa/public/cart/add?tenant_id={self.tenant.id}",
+            json={"catalogo_item_id": money_item.id, "cantidad": 1},
+        )
+
+        self.assertEqual(add_resp.status_code, 200)
+        summary = add_resp.get_json()
+        checkout_options = summary["checkout_options"]
+        self.assertFalse(checkout_options["mercadopago_ready"])
+        self.assertTrue(checkout_options["payment_required"])
+        self.assertTrue(checkout_options["requires_contact_or_auth"])
+        self.assertFalse(summary["checkout_preview"]["payment_ready"])
+
     def test_catalog_prices_and_rewards_endpoint(self):
         response = self.client.get(f"/api/pwa/public/catalog?tenant_id={self.tenant.id}")
         self.assertEqual(response.status_code, 200)

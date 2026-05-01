@@ -473,6 +473,10 @@ def _db_cart_summary(cart: MarketCart, owner: User, *, event: Optional[str] = No
         exclude_ids=[item.product_id for item in items if item.product_id],
     )
     support_phone = getattr(owner, "telefono", None)
+    tenant_cfg = cart.tenant.configuracion if isinstance(cart.tenant.configuracion, dict) else {}
+    mercadopago_ready = bool(tenant_cfg.get("mercadopago_access_token"))
+    payment_required = total_monetary_accum > 0
+    has_contact = bool(cart.contact_name or cart.contact_phone or cart.contact_email or getattr(cart.user, "email", None) or getattr(cart.user, "telefono", None))
 
     # Legacy fields + New fields
     resumen = {
@@ -488,8 +492,14 @@ def _db_cart_summary(cart: MarketCart, owner: User, *, event: Optional[str] = No
         "moneda": "ARS", # Legacy default
         "badge_count": total_count,
         "checkout_options": {
-            "mercadopago_ready": True,
-            "gateway_hint": "Mercado Pago preference/token flow listo para demo",
+            "mercadopago_ready": mercadopago_ready,
+            "payment_required": payment_required,
+            "requires_contact_or_auth": payment_required and not has_contact,
+            "gateway_hint": (
+                "Mercado Pago configurado para este tenant"
+                if mercadopago_ready
+                else "Mercado Pago pendiente de configurar para este tenant"
+            ),
             "points_enabled": total_points > 0,
         },
         "contacto": {
@@ -501,7 +511,7 @@ def _db_cart_summary(cart: MarketCart, owner: User, *, event: Optional[str] = No
         "commercial_state": {
             "stage": "cart_active" if total_count else "cart_empty",
             "channel": cart.channel or "web",
-            "has_contact": bool(cart.contact_name or cart.contact_phone or cart.contact_email),
+            "has_contact": has_contact,
             "supports_handoff": (cart.channel or "web") in {"whatsapp", "phone", "manual_admin"},
         },
         "continuity": {
@@ -518,6 +528,8 @@ def _db_cart_summary(cart: MarketCart, owner: User, *, event: Optional[str] = No
         "checkout_preview": {
             "state": "ready" if total_count > 0 else "empty",
             "supports_points": total_points > 0,
+            "payment_ready": (not payment_required) or mercadopago_ready,
+            "contact_ready": has_contact,
             "next_step_label": "Continuar al checkout" if total_count > 0 else "Agregá productos para avanzar",
         },
         "ui_signals": {

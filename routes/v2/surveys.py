@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+import uuid
 
 from flask import Blueprint, g, jsonify, request
 
@@ -38,14 +39,55 @@ _TYPE_MAP = {
 }
 
 
+def _request_id() -> str:
+    incoming = (request.headers.get("X-Request-Id") or "").strip()
+    return incoming or uuid.uuid4().hex
+
+
+def _json_response(payload: dict[str, Any], status: int = 200):
+    request_id = _request_id()
+    body = dict(payload)
+    body.setdefault("request_id", request_id)
+    response = jsonify(body)
+    response.status_code = status
+    response.headers["X-Request-Id"] = request_id
+    return response
+
+
+def _error_response(message: str, status_code: int, reason_code: str = "request_error", action_hint: str = "check_request"):
+    return _json_response(
+        {
+            "contract_version": "shared.error.v1",
+            "status_code": status_code,
+            "reason_code": reason_code,
+            "retryable": False,
+            "action_hint": action_hint,
+            "error": {"code": status_code, "message": message},
+            "message": message,
+        },
+        status_code,
+    )
+
+
+def _stable_id_suffix(value: Any) -> str:
+    text = "".join(ch for ch in str(value or "") if ch.isalnum() or ch in {"_", "-"}).strip("_-")
+    return text[:48] or uuid.uuid4().hex[:12]
+
+
 def _resolve_tenant_or_error(*, required: bool = True):
-    explicit_slug = (request.headers.get("X-Tenant-Slug") or request.args.get("tenant_slug") or "").strip()
+    explicit_slug = (
+        request.headers.get("X-Tenant-Slug")
+        or request.headers.get("X-Tenant")
+        or request.args.get("tenant_slug")
+        or request.args.get("tenant")
+        or ""
+    ).strip()
     if required and not explicit_slug:
-        return None, (jsonify({"error": "X-Tenant-Slug es obligatorio en surveys v2"}), 400)
+        return None, _error_response("X-Tenant-Slug es obligatorio en surveys v2", 400, "missing_tenant", "send_tenant_slug")
     try:
         return resolve_tenant_v2(required=required, explicit_slug=explicit_slug or None), None
     except V2TenantResolutionError as exc:
-        return None, (jsonify({"error": exc.message}), exc.status_code)
+        return None, _error_response(exc.message, exc.status_code, "tenant_resolution_failed", "check_tenant_slug")
 
 
 def _user_tenant_candidates(current_user) -> set[int]:
@@ -79,7 +121,7 @@ def _enforce_tenant_access(current_user, tenant) -> tuple[bool, tuple | None]:
     if (getattr(current_user, "tenant_slug", None) or "").strip().lower() == (tenant.slug or "").strip().lower():
         return True, None
 
-    return False, (jsonify({"error": "Permisos insuficientes para este tenant"}), 403)
+    return False, _error_response("Permisos insuficientes para este tenant", 403, "forbidden_tenant", "switch_tenant")
 
 
 def _normalize_question(question: dict[str, Any], index: int) -> dict[str, Any]:
@@ -154,6 +196,56 @@ def create_survey_v2(current_user):
         return jsonify(exc.to_dict()), exc.status_code
 
     return jsonify(serialize_encuesta(encuesta)), 201
+
+
+@v2_surveys_bp.route("/surveys/draft", methods=["POST"])
+@token_requerido
+@require_role("admin", "empleado", "super_admin")
+def save_survey_draft_v2(current_user):
+    tenant, error = _resolve_tenant_or_error(required=True)
+    if error:
+        return error
+    allowed, denied = _enforce_tenant_access(current_user, tenant)
+    if not allowed:
+        return denied
+
+    payload = request.get_json(silent=True) or {}
+    questions = payload.get("questions") if isinstance(payload.get("questions"), list) else []
+    normalized_questions = []
+    for index, question in enumerate(questions, start=1):
+        if not isinstance(question, dict):
+            continue
+        normalized_questions.append(
+            {
+                "id": question.get("id") or f"question-{index}",
+                "title": question.get("title") or question.get("label") or question.get("texto") or "",
+                "type": question.get("type") or question.get("tipo") or "single",
+                "required": bool(question.get("required", False)),
+                "options": question.get("options") or question.get("opciones") or [],
+            }
+        )
+
+    idempotency_key = payload.get("idempotency_key") or request.headers.get("Idempotency-Key")
+    draft_id = payload.get("draft_id") or payload.get("id")
+    if not draft_id and idempotency_key:
+        draft_id = f"draft_{_stable_id_suffix(idempotency_key)}"
+    if not draft_id:
+        draft_id = f"draft_{uuid.uuid4().hex[:12]}"
+    return _json_response(
+        {
+            "ok": True,
+            "contract_version": "surveys.draft.v2",
+            "draft_id": str(draft_id),
+            "status": "draft",
+            "idempotency_key": idempotency_key,
+            "tenant": {"id": tenant.id, "slug": tenant.slug},
+            "draft": {
+                "title": payload.get("title") or payload.get("titulo") or "",
+                "description": payload.get("description") or payload.get("descripcion") or "",
+                "questions": normalized_questions,
+            },
+        }
+    )
 
 
 @v2_surveys_bp.route("/surveys/<int:survey_id>", methods=["GET"])

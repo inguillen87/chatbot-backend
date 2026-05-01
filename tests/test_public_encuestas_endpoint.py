@@ -1,6 +1,7 @@
 from app import create_app, db
 from config import TestingConfig
-from routes.encuestas_public import _rate_buckets, _rate_limit
+from routes.encuestas_public import _public_error_response, _rate_buckets, _rate_limit
+from services.encuestas_service import EncuestaError
 
 
 def test_public_encuestas_defaults_to_config_owner(client):
@@ -74,3 +75,25 @@ def test_public_encuestas_rate_limit_respects_config(app):
         assert _rate_limit(ip) is True
         assert _rate_limit(ip) is True
         assert _rate_limit(ip) is False
+
+
+def test_public_survey_error_response_has_reason_and_request_id(app):
+    with app.test_request_context(
+        "/public/encuestas/demo",
+        headers={"X-Request-Id": "req-survey-1"},
+    ):
+        response, status = _public_error_response(
+            EncuestaError(
+                "La encuesta no está activa",
+                status_code=403,
+                payload={"reason_code": "survey_not_published"},
+            )
+        )
+
+    assert status == 403
+    payload = response.get_json()
+    assert payload["reason_code"] == "survey_not_published"
+    assert payload["retryable"] is False
+    assert payload["action_hint"] == "view_other_surveys"
+    assert payload["request_id"] == "req-survey-1"
+    assert response.headers["X-Request-Id"] == "req-survey-1"

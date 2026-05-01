@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any
 import copy
 
@@ -38,6 +38,37 @@ def _parse_iso(value: str | None) -> datetime | None:
         return None
 
 
+def _sla_status(ticket: TenantTicket) -> str:
+    if is_ticket_overdue(ticket):
+        return "breached"
+
+    extra = ticket.datos_extra if isinstance(ticket.datos_extra, dict) else {}
+    sla = extra.get("sla") if isinstance(extra.get("sla"), dict) else {}
+    due = _parse_iso(sla.get("resolution_due_at") or sla.get("next_update_due_at"))
+    if due is None:
+        return "ok"
+    if due.tzinfo is None:
+        due = due.replace(tzinfo=timezone.utc)
+    if due <= datetime.now(timezone.utc) + timedelta(hours=12):
+        return "warning"
+    return "ok"
+
+
+def _assignee_payload(assignee_id: Any) -> dict[str, Any] | None:
+    if assignee_id in (None, ""):
+        return None
+    try:
+        assignee_id_int = int(assignee_id)
+    except (TypeError, ValueError):
+        return {"id": assignee_id, "name": None}
+
+    assignee = User.query.get(assignee_id_int)
+    return {
+        "id": assignee_id_int,
+        "name": getattr(assignee, "name", None) or getattr(assignee, "email", None) if assignee else None,
+    }
+
+
 def _ensure_extra(ticket: TenantTicket) -> dict[str, Any]:
     extra = copy.deepcopy(ticket.datos_extra) if isinstance(ticket.datos_extra, dict) else {}
     ticket.datos_extra = extra
@@ -60,6 +91,9 @@ def serialize_ticket(ticket: TenantTicket, *, viewer: User | None = None) -> dic
     comments = extra.get("comments") if isinstance(extra.get("comments"), list) else []
     if role == "usuario":
         comments = [c for c in comments if (c.get("visibility") or "public") == "public"]
+    assignee_id = extra.get("assignee_id")
+    assignee = _assignee_payload(assignee_id)
+    sla_status = _sla_status(ticket)
 
     return {
         "id": ticket.id,
@@ -70,8 +104,12 @@ def serialize_ticket(ticket: TenantTicket, *, viewer: User | None = None) -> dic
         "category": ticket.categoria,
         "status": ticket.estado,
         "priority": extra.get("priority", "medium"),
+        "sla_status": sla_status,
+        "sla_state": sla_status,
         "channel": extra.get("channel") or ticket.origen,
-        "assignee_id": extra.get("assignee_id"),
+        "assignee_id": assignee_id,
+        "assignee": assignee,
+        "assignee_name": (assignee or {}).get("name"),
         "conversation_id": extra.get("conversation_id"),
         "contact": extra.get("contact") or {},
         "location": {

@@ -97,13 +97,25 @@ class V2TicketsApiTest(unittest.TestCase):
         headers_t1 = {**self._auth_header(self.employee), "X-Tenant-Slug": "tenant-1"}
         headers_t2 = {**self._auth_header(self.admin_2), "X-Tenant-Slug": "tenant-2"}
 
-        self.client.post("/api/v2/tickets", json={"title": "A", "description": "A"}, headers=headers_t1)
+        self.client.post(
+            "/api/v2/tickets",
+            json={"title": "A", "description": "A", "assignee_id": self.employee.id},
+            headers=headers_t1,
+        )
         self.client.post("/api/v2/tickets", json={"title": "B", "description": "B"}, headers=headers_t2)
 
-        resp = self.client.get("/api/v2/tickets", headers=headers_t1)
+        resp = self.client.get("/api/v2/tickets", headers={**headers_t1, "X-Request-Id": "tickets-contract-1"})
         self.assertEqual(resp.status_code, 200)
-        items = (resp.get_json() or {}).get("items") or []
+        payload = resp.get_json() or {}
+        items = payload.get("items") or []
+        self.assertEqual(payload.get("contract_version"), "tickets.v2.list")
+        self.assertEqual(payload.get("request_id"), "tickets-contract-1")
+        self.assertEqual(resp.headers.get("X-Request-Id"), "tickets-contract-1")
         self.assertTrue(all(item.get("tenant_id") == self.tenant_1.id for item in items))
+        self.assertTrue(all("sla_status" in item for item in items))
+        self.assertTrue(all("sla_state" in item for item in items))
+        self.assertTrue(any((item.get("assignee") or {}).get("id") == self.employee.id for item in items))
+        self.assertTrue(any(item.get("assignee_name") == self.employee.name for item in items))
 
     def test_patch_status_generates_event(self):
         headers = {**self._auth_header(self.employee), "X-Tenant-Slug": "tenant-1"}
