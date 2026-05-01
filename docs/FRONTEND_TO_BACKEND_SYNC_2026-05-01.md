@@ -184,15 +184,12 @@ Para encuestas publicas:
 
 ## Pendientes / blockers
 
-- Employee coverage.
-- Tenant health.
-- Executive summary superadmin.
-- Inbox omnicanal premium.
-- Pagos reales.
-- Puntos/recompensas reales.
+- Presencia real/live events para inbox omnicanal premium.
+- Webhooks v2 para confirmar/cancelar pedidos desde Mercado Pago sin pasar por rutas legacy.
+- Catalogo administrable completo de recompensas y reglas por segmento.
 - Quick menu educativo completo desde backend.
-- Hooks de notifications.
-- Idempotency key para offline sync.
+- Hooks de notifications conectados a proveedores reales.
+- Idempotency key persistente para toda sync offline.
 
 ## Tests frontend relacionados
 
@@ -254,4 +251,40 @@ Contratos:
 
 Verificacion backend SaaS P1:
 
+- `tests.test_v2_saas_contracts`
+
+## Estado backend SaaS P2 2026-05-01
+
+Nueva capa v2 para comercio, puntos e inbox accionable:
+
+- `GET /api/v2/payments/checkout-status`
+- `GET /api/v2/payments/capabilities`
+- `GET /api/v2/tenants/{slug}/payments/checkout-status`
+- `POST /api/v2/payments/checkout-preview`
+- `POST /api/v2/tenants/{slug}/payments/checkout-preview`
+- `POST /api/v2/payments/checkout-session`
+- `POST /api/v2/payments/preference`
+- `POST /api/v2/tenants/{slug}/payments/checkout-session`
+- `GET|POST /api/v2/payments/status`
+- `GET|POST /api/v2/tenants/{slug}/payments/status`
+- `GET /api/v2/rewards/profile`
+- `GET /api/v2/tenants/{slug}/rewards/profile`
+- `POST /api/v2/rewards/redeem`
+- `POST /api/v2/tenants/{slug}/rewards/redeem`
+- `POST /api/v2/inbox/omnichannel/{ticket_id}/actions`
+- `POST /api/v2/inbox/omnichannel/actions`
+
+Contratos:
+
+- `payments.checkout_status.v1`: gateway, `payment_ready`, `mercadopago_ready`, capabilities, faltantes y URLs publicas de checkout/catalogo.
+- `payments.checkout_preview.v1`: items normalizados, totales monetarios/puntos, `payment_required`, `payment_ready`, `contact_ready`, `checkout_options` y next steps.
+- `payments.checkout_session.v1`: crea preference real de Mercado Pago con token por tenant y devuelve `preference_id`, `init_point`, `external_reference`, `checkout_options` y `request_id`.
+- `payments.status.v1`: consulta estado post-pago por `pedido_id`, `market_order_id`, `preference_id` o `external_reference`; devuelve pago, orden, timeline y `request_id`.
+- `rewards.profile.v1`: wallet real del usuario, reglas por tenant, beneficios disponibles/canjeables e historial de puntos.
+- `rewards.redeem.v1`: canje real de puntos con `redemption_id`, balance actualizado e idempotencia por `Idempotency-Key`.
+- `inbox.omnichannel.action.v1`: acciones `assign`, `reply`, `handoff`, `close`, `reopen` y `set_priority` con ticket actualizado y timeline.
+
+Verificacion backend SaaS P2:
+
+- `tests.test_v2_commerce_contracts`
 - `tests.test_v2_saas_contracts`

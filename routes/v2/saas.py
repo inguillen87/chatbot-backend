@@ -522,3 +522,168 @@ def omnichannel_inbox_v2(current_user):
             },
         }
     )
+
+
+def _inbox_ticket_payload(ticket: TenantTicket) -> dict[str, Any]:
+    extra = _ticket_extra(ticket)
+    comments = extra.get("comments") if isinstance(extra.get("comments"), list) else []
+    timeline = []
+    for comment in comments[-30:]:
+        if not isinstance(comment, dict):
+            continue
+        origin = comment.get("origin") or ("admin_panel" if comment.get("visibility") == "internal" else "public_tracking")
+        timeline.append(
+            {
+                "id": comment.get("id"),
+                "origin": origin,
+                "body": comment.get("body") or "",
+                "visibility": comment.get("visibility") or "public",
+                "created_at": comment.get("created_at"),
+                "actor": comment.get("actor") if isinstance(comment.get("actor"), dict) else None,
+                "action": comment.get("action"),
+            }
+        )
+
+    assignee = None
+    if extra.get("assignee_id"):
+        assignee = {
+            "id": extra.get("assignee_id"),
+            "name": extra.get("assignee_name"),
+            "email": extra.get("assignee_email"),
+        }
+
+    return {
+        "id": ticket.id,
+        "ticket_id": ticket.id,
+        "conversation_id": extra.get("conversation_id") or f"ticket-{ticket.id}",
+        "title": extra.get("title") or ticket.categoria or f"Ticket {ticket.id}",
+        "status": ticket.estado,
+        "priority": extra.get("priority") or "medium",
+        "channel": _ticket_channel(ticket),
+        "category": ticket.categoria,
+        "assignee": assignee,
+        "contact": extra.get("contact") if isinstance(extra.get("contact"), dict) else {},
+        "location": {"lat": ticket.latitud, "lng": ticket.longitud, "address": extra.get("address")},
+        "timeline": timeline,
+        "presence": extra.get("presence") if isinstance(extra.get("presence"), dict) else {"viewers": [], "locked_by": None},
+        "actions": ["assign", "reply", "handoff", "close", "reopen"],
+        "handoff": extra.get("handoff") if isinstance(extra.get("handoff"), dict) else None,
+        "updated_at": ticket.updated_at.isoformat() if ticket.updated_at else None,
+    }
+
+
+def _append_ticket_event(extra: dict[str, Any], *, action: str, actor: User, body: str, visibility: str = "internal") -> None:
+    comments = extra.get("comments") if isinstance(extra.get("comments"), list) else []
+    comments.append(
+        {
+            "id": uuid.uuid4().hex,
+            "origin": "admin_panel",
+            "action": action,
+            "body": body,
+            "visibility": visibility,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "actor": {"id": actor.id, "name": actor.name, "role": actor.rol},
+        }
+    )
+    extra["comments"] = comments[-100:]
+
+
+@v2_saas_bp.route("/inbox/omnichannel/<int:ticket_id>/actions", methods=["POST"])
+@v2_saas_bp.route("/inbox/omnichannel/actions", methods=["POST"])
+@token_requerido
+@require_role("admin", "empleado", "super_admin")
+def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
+    tenant, error = _resolve_tenant_or_error(current_user)
+    if error:
+        return error
+
+    payload = request.get_json(silent=True) or {}
+    resolved_ticket_id = ticket_id or payload.get("ticket_id") or payload.get("id")
+    try:
+        resolved_ticket_id = int(resolved_ticket_id)
+    except (TypeError, ValueError):
+        return _error_response("ticket_id es obligatorio", 400, "ticket_id_required", "send_ticket_id")
+
+    ticket = TenantTicket.query.filter_by(id=resolved_ticket_id, tenant_id=tenant.id).first()
+    if not ticket:
+        return _error_response("Ticket no encontrado", 404, "ticket_not_found", "refresh_inbox")
+
+    action = str(payload.get("action") or payload.get("type") or "").strip().lower()
+    if action not in {"assign", "reply", "handoff", "close", "reopen", "set_priority"}:
+        return _error_response("Accion de inbox no soportada", 400, "unsupported_inbox_action", "send_supported_action")
+
+    extra = dict(_ticket_extra(ticket))
+    event_body = ""
+
+    if action == "assign":
+        assignee_id = payload.get("assignee_id") or payload.get("user_id")
+        try:
+            assignee_id = int(assignee_id)
+        except (TypeError, ValueError):
+            return _error_response("assignee_id es obligatorio", 400, "assignee_required", "send_assignee_id")
+        assignee = User.query.filter_by(id=assignee_id, tenant_id=tenant.id).first()
+        if not assignee:
+            return _error_response("Empleado no encontrado para este tenant", 404, "assignee_not_found", "choose_valid_assignee")
+        extra["assignee_id"] = assignee.id
+        extra["assignee_name"] = assignee.name
+        extra["assignee_email"] = assignee.email
+        if ticket.estado in {"nuevo", "open"}:
+            ticket.estado = "en_proceso"
+        event_body = f"Asignado a {assignee.name}"
+
+    elif action == "reply":
+        body = str(payload.get("body") or payload.get("message") or "").strip()
+        if not body:
+            return _error_response("El mensaje no puede estar vacio", 400, "reply_body_required", "send_reply_body")
+        visibility = str(payload.get("visibility") or "public").strip().lower()
+        event_body = body
+        _append_ticket_event(extra, action=action, actor=current_user, body=body, visibility=visibility)
+
+    elif action == "handoff":
+        channel = str(payload.get("channel") or payload.get("target_channel") or "operator").strip().lower()
+        extra["handoff"] = {
+            "channel": channel,
+            "status": "requested",
+            "requested_at": datetime.now(timezone.utc).isoformat(),
+            "requested_by": {"id": current_user.id, "name": current_user.name},
+            "reason": payload.get("reason"),
+        }
+        ticket.estado = "en_proceso"
+        event_body = f"Handoff solicitado: {channel}"
+
+    elif action == "close":
+        ticket.estado = str(payload.get("status") or "cerrado").strip().lower() or "cerrado"
+        extra["closed_at"] = datetime.now(timezone.utc).isoformat()
+        extra["closed_by"] = {"id": current_user.id, "name": current_user.name}
+        event_body = payload.get("body") or "Ticket cerrado"
+
+    elif action == "reopen":
+        ticket.estado = str(payload.get("status") or "nuevo").strip().lower() or "nuevo"
+        extra["reopened_at"] = datetime.now(timezone.utc).isoformat()
+        extra["reopened_by"] = {"id": current_user.id, "name": current_user.name}
+        event_body = payload.get("body") or "Ticket reabierto"
+
+    elif action == "set_priority":
+        priority = str(payload.get("priority") or "").strip().lower()
+        if not priority:
+            return _error_response("priority es obligatorio", 400, "priority_required", "send_priority")
+        extra["priority"] = priority
+        event_body = f"Prioridad actualizada: {priority}"
+
+    if action != "reply":
+        _append_ticket_event(extra, action=action, actor=current_user, body=str(event_body or action), visibility="internal")
+
+    ticket.datos_extra = extra
+    ticket.updated_at = datetime.now(timezone.utc)
+    db.session.add(ticket)
+    db.session.commit()
+
+    return _json_response(
+        {
+            "ok": True,
+            "contract_version": "inbox.omnichannel.action.v1",
+            "tenant": _tenant_ref(tenant),
+            "action": action,
+            "ticket": _inbox_ticket_payload(ticket),
+        }
+    )

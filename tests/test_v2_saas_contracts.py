@@ -195,6 +195,20 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(payload["items"][0]["channel"], "whatsapp")
         self.assertTrue(payload["items"][0]["timeline"])
 
+    def test_omnichannel_inbox_action_updates_ticket(self):
+        response = self.client.post(
+            f"/api/v2/inbox/omnichannel/{self.ticket.id}/actions",
+            json={"action": "reply", "body": "Estamos revisando tu caso.", "visibility": "public"},
+            headers={**self._auth(self.owner), "X-Request-Id": "inbox-action-1"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload.get("contract_version"), "inbox.omnichannel.action.v1")
+        self.assertEqual(payload.get("request_id"), "inbox-action-1")
+        self.assertTrue(payload["ticket"]["timeline"])
+        self.assertTrue(any(item.get("body") == "Estamos revisando tu caso." for item in payload["ticket"]["timeline"]))
+
 
 if __name__ == "__main__":
     unittest.main()

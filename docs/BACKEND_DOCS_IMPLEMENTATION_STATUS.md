@@ -94,16 +94,13 @@ Contratos implementados desde `FRONTEND_TO_BACKEND_SYNC_2026-05-01.md`:
 - `POST /api/surveys/sync` responde `contract_version: surveys.sync.v1`, `synced`, `idempotency_key` y `request_id`.
 - `POST /api/tickets/draft/sync` responde `contract_version: tickets.draft_sync.v1`, `ticket_id`, `idempotency_key` y `request_id`.
 
-Pendientes de siguiente ola:
+Pendientes honestos de siguiente ola:
 
-- Employee coverage.
-- Tenant health.
-- Executive summary superadmin.
-- Inbox omnicanal premium.
-- Pagos reales.
-- Puntos/recompensas reales.
+- Inbox omnicanal premium con presencia real y eventos live socket.
+- Webhooks v2 para recibir eventos de Mercado Pago sin pasar por rutas legacy.
+- Puntos/recompensas con catalogo administrable completo y reglas por segmento.
 - Quick menu educativo completo desde backend.
-- Hooks de notifications.
+- Delivery hooks reales para notifications segun proveedor.
 
 Verificacion sync ejecutada:
 
@@ -127,4 +124,21 @@ Contratos nuevos para destrabar secciones enterprise:
 
 Verificacion SaaS P1 ejecutada:
 
+- `tests.test_v2_saas_contracts`
+
+## SaaS P2 commerce y operaciones 2026-05-01
+
+Contratos nuevos para checkout, rewards e inbox accionable:
+
+- `GET /api/v2/payments/checkout-status`, `GET /api/v2/payments/capabilities` y `GET /api/v2/tenants/{slug}/payments/checkout-status` devuelven `contract_version: payments.checkout_status.v1`, tenant, gateway, `payment_ready`, `mercadopago_ready`, faltantes, capabilities y URLs de checkout.
+- `POST /api/v2/payments/checkout-preview` y `POST /api/v2/tenants/{slug}/payments/checkout-preview` devuelven `contract_version: payments.checkout_preview.v1`, totales normalizados, `payment_required`, `payment_ready`, `contact_ready`, `checkout_options`, next steps e idempotency key.
+- `POST /api/v2/payments/checkout-session`, `POST /api/v2/payments/preference` y `POST /api/v2/tenants/{slug}/payments/checkout-session` crean preference real de Mercado Pago con token por tenant y devuelven `contract_version: payments.checkout_session.v1`, `preference_id`, `init_point`, `external_reference`, `checkout_options` y `request_id`.
+- `GET|POST /api/v2/payments/status` y `GET|POST /api/v2/tenants/{slug}/payments/status` devuelven `contract_version: payments.status.v1` buscando por `pedido_id`, `market_order_id`, `preference_id` o `external_reference`.
+- `GET /api/v2/rewards/profile` y `GET /api/v2/tenants/{slug}/rewards/profile` devuelven `contract_version: rewards.profile.v1`, wallet real del usuario, reglas del tenant, beneficios canjeables e historial.
+- `POST /api/v2/rewards/redeem` y `POST /api/v2/tenants/{slug}/rewards/redeem` devuelven `contract_version: rewards.redeem.v1`, canje real de puntos, `redemption_id`, balance actualizado e idempotencia por `Idempotency-Key`.
+- `POST /api/v2/inbox/omnichannel/{ticket_id}/actions` y `POST /api/v2/inbox/omnichannel/actions` devuelven `contract_version: inbox.omnichannel.action.v1` y ejecutan `assign`, `reply`, `handoff`, `close`, `reopen` y `set_priority`.
+
+Verificacion SaaS P2 ejecutada:
+
+- `tests.test_v2_commerce_contracts`
 - `tests.test_v2_saas_contracts`
