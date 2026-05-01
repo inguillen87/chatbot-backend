@@ -228,3 +228,30 @@ Verificacion backend ejecutada:
 - `tests.test_v2_surveys`
 - `tests.test_pwa_public_cart_url`
 - `tests.test_offline_sync_contracts`
+
+## Estado backend SaaS P1 2026-05-01
+
+Nueva capa v2 canónica para secciones enterprise:
+
+- `GET /api/v2/employee-coverage`
+- `GET /api/v2/tenants/{slug}/employee-coverage`
+- `GET /api/v2/tenant-health`
+- `GET /api/v2/tenants/{slug}/health`
+- `GET /api/v2/superadmin/executive-summary`
+- `GET /api/v2/super-admin/executive-summary`
+- `GET|POST /api/v2/notifications/hooks`
+- `GET /api/v2/notifications/delivery-status`
+- `GET /api/v2/inbox/omnichannel`
+
+Contratos:
+
+- `employee.coverage.v1`: empleados, scope, workload, coverage por categorias/zonas/canales y alertas.
+- `tenant.health.v1`: score, status, checks, integraciones, colas, errores recientes y acciones recomendadas.
+- `superadmin.executive_summary.v1`: KPIs multi-tenant, health por tenant y top risky tenants.
+- `notifications.hooks.v1`: preferences, triggers, delivery config, templates y delivery_status.
+- `notifications.delivery_status.v1`: totales por estado/canal y success rate.
+- `inbox.omnichannel.v1`: lista omnicanal, timeline, presence basica y acciones.
+
+Verificacion backend SaaS P1:
+
+- `tests.test_v2_saas_contracts`

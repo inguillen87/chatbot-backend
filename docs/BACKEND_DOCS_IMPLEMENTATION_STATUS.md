@@ -113,3 +113,18 @@ Verificacion sync ejecutada:
 - `tests.test_v2_surveys`
 - `tests.test_pwa_public_cart_url`
 - `tests.test_offline_sync_contracts`
+
+## SaaS P1 backend 2026-05-01
+
+Contratos nuevos para destrabar secciones enterprise:
+
+- `GET /api/v2/employee-coverage` y `GET /api/v2/tenants/{slug}/employee-coverage` devuelven `contract_version: employee.coverage.v1`, empleados, scopes, workload, coverage por categoria/zona/canal y alertas.
+- `GET /api/v2/tenant-health` y `GET /api/v2/tenants/{slug}/health` devuelven `contract_version: tenant.health.v1`, health score, integraciones, colas, errores recientes, metricas y acciones recomendadas.
+- `GET /api/v2/superadmin/executive-summary` devuelve `contract_version: superadmin.executive_summary.v1`, KPIs multi-tenant, health por tenant, top risky tenants y acciones recomendadas.
+- `GET|POST /api/v2/notifications/hooks` devuelve/actualiza `contract_version: notifications.hooks.v1`, preferencias, triggers, delivery config, templates y delivery status.
+- `GET /api/v2/notifications/delivery-status` devuelve `contract_version: notifications.delivery_status.v1`.
+- `GET /api/v2/inbox/omnichannel` devuelve `contract_version: inbox.omnichannel.v1`, lista omnicanal, timeline, presencia basica y acciones.
+
+Verificacion SaaS P1 ejecutada:
+
+- `tests.test_v2_saas_contracts`
