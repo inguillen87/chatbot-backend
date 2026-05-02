@@ -236,10 +236,23 @@ class PublicResolverTest(unittest.TestCase):
         self.assertEqual(builder.get("quick_menu"), quick_menu)
         experience = widget.get("experience_blueprint") or {}
         self.assertEqual((experience.get("tenant_type") or "").lower(), "municipio")
+        self.assertEqual(experience.get("version"), "2026-05-agent-experience-v2")
+        self.assertTrue((experience.get("first_visit") or {}).get("headline"))
+        self.assertTrue(experience.get("sample_conversations"))
+        self.assertTrue((experience.get("lead_capture") or {}).get("endpoint"))
         self.assertTrue(any(item.get("intent") == "iniciar_reclamo" for item in (experience.get("quick_actions") or [])))
         widget_playbook = (experience.get("channel_playbooks") or {}).get("widget_chat") or {}
         self.assertIn("image", widget_playbook.get("media_checks") or [])
+        media_capabilities = experience.get("media_capabilities") or {}
+        self.assertEqual((media_capabilities.get("input_modes") or {}).get("image", {}).get("upload_endpoint"), "/archivos/upload/chat_attachment")
+        self.assertEqual((media_capabilities.get("input_modes") or {}).get("audio", {}).get("multipart_field"), "audio_file")
+        self.assertTrue((experience.get("conversion_ctas") or {}).get("actions"))
+        self.assertEqual((experience.get("animation_tokens") or {}).get("version"), "chat.motion.v1")
         self.assertEqual((experience.get("component_pack") or {}).get("layout"), "stacked_cards")
+        self.assertEqual(builder.get("first_visit"), experience.get("first_visit"))
+        self.assertEqual(builder.get("sample_conversations"), experience.get("sample_conversations"))
+        self.assertEqual(builder.get("media_capabilities"), experience.get("media_capabilities"))
+        self.assertEqual(builder.get("conversion_ctas"), experience.get("conversion_ctas"))
 
 
 if __name__ == "__main__":

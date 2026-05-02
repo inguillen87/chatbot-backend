@@ -129,7 +129,7 @@ class V2CommerceContractsTest(unittest.TestCase):
             captured["timeout"] = timeout
             return DummyMercadoPagoResponse()
 
-        with patch("routes.v2.commerce.requests.post", fake_post):
+        with patch("services.commerce_contracts.requests.post", fake_post):
             response = self.client.post(
                 "/api/v2/payments/checkout-session",
                 json={

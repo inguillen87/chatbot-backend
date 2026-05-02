@@ -130,6 +130,7 @@ Verificacion SaaS P1 ejecutada:
 
 Contratos nuevos para checkout, rewards e inbox accionable:
 
+- Nota de arquitectura: las rutas v2 de commerce son fachadas HTTP; la logica compartida vive en `services/commerce_contracts.py` y `services/rewards.py` para evitar duplicar una app paralela al checkout/rewards existente.
 - `GET /api/v2/payments/checkout-status`, `GET /api/v2/payments/capabilities` y `GET /api/v2/tenants/{slug}/payments/checkout-status` devuelven `contract_version: payments.checkout_status.v1`, tenant, gateway, `payment_ready`, `mercadopago_ready`, faltantes, capabilities y URLs de checkout.
 - `POST /api/v2/payments/checkout-preview` y `POST /api/v2/tenants/{slug}/payments/checkout-preview` devuelven `contract_version: payments.checkout_preview.v1`, totales normalizados, `payment_required`, `payment_ready`, `contact_ready`, `checkout_options`, next steps e idempotency key.
 - `POST /api/v2/payments/checkout-session`, `POST /api/v2/payments/preference` y `POST /api/v2/tenants/{slug}/payments/checkout-session` crean preference real de Mercado Pago con token por tenant y devuelven `contract_version: payments.checkout_session.v1`, `preference_id`, `init_point`, `external_reference`, `checkout_options` y `request_id`.
@@ -142,3 +143,52 @@ Verificacion SaaS P2 ejecutada:
 
 - `tests.test_v2_commerce_contracts`
 - `tests.test_v2_saas_contracts`
+
+## Agent Experience 2026-05-01
+
+Mejora aditiva para primera visita, demo comercial y widget:
+
+- `services/demo_experience_contract.py` queda como contrato compartido de experiencia para demo/widget.
+- `POST /api/v2/demo/session` agrega `workspace.first_visit`, `workspace.sample_conversations`, `workspace.trust_signals`, `workspace.lead_capture`, `workspace.media_capabilities`, `workspace.conversion_ctas`, `workspace.animation_tokens`, `experience_blueprint` y `chat_seed.sample_conversations`.
+- `GET /api/public/widget-config?tenant={slug}` y `GET /api/public/tenants/{slug}/widget-config` exponen `first_visit`, `sample_conversations`, `trust_signals`, `lead_capture`, `media_capabilities`, `conversion_ctas` y `animation_tokens` dentro de `widget` y `builder_config`.
+- `media_capabilities` formaliza texto, imagen, audio/nota de voz, ubicacion y archivos usando endpoints existentes (`/ask` y `/archivos/upload/chat_attachment`), sin duplicar el flujo de chat.
+- `conversion_ctas` define CTAs contextuales para ticket/pedido/checkout/handoff/lead con labels y endpoints desde backend.
+- `animation_tokens` define microinteracciones para launcher, mensajes, audio, upload, ubicacion, handoff y lead success para que frontend anime sin hardcodear comportamiento.
+- `services/chatbot_prompts.py` suma reglas multimodales compartidas para que el LLM use `uploaded_file_info`, `datos_interpretados_archivo`, `transcribed_text` y ubicacion como contexto accionable.
+- Se agrego handoff frontend: `docs/BACKEND_TO_FRONTEND_SYNC_AGENT_EXPERIENCE_2026-05-01.md`.
+
+Verificacion Agent Experience ejecutada:
+
+- `tests.test_demo_experience_contract`
+- `tests.test_api_v2_foundation`
+- `tests.test_public_resolver`
+- `tests.test_public_resolver_quick_menu`
+- `tests.test_pwa_public_cart_url`
+- `tests.test_chatbot_prompts_multimodal`
+
+## Operational Intelligence 2026-05-02
+
+Mejora aditiva para analytics, tickets/reclamos, WhatsApp, chats en vivo, empleados, encuestas/votaciones y mapas:
+
+- `services/operational_intelligence.py` agrega un agregador compartido sobre modelos existentes, sin crear app paralela.
+- `GET /api/v2/analytics/operations/dashboard` y alias `GET /api/v2/analytics/operations` devuelven `contract_version: operations.dashboard.v1`.
+- `GET /api/v2/analytics/operations/heatmap` devuelve `contract_version: operations.heatmap.v1`.
+- `GET /api/v2/analytics/operations/action-center` devuelve `contract_version: operations.action_center.v1`.
+- El dashboard une `TenantTicket`, `MunicipioTicket`, `PymeTicket`, `AnalyticsEventV2`, `ChatSessionContext`, `TicketRealtimeState`, `EncEncuesta`, `EncRespuesta`, `PublicSurvey`, `PublicSurveyResponse` y empleados `User`.
+- Heatmap combina capas `tickets`, `surveys` y `analytics_events`, con `points`, `cells`, `hotspots`, `bounds` y `render_contract` para MapLibre.
+- `trends` compara el periodo actual contra el periodo anterior del mismo tamano.
+- `next_best_actions` recomienda acciones proactivas: revisar vencidos, asignar tickets, cubrir empleados, impulsar votaciones, monitorear WhatsApp, revisar handoffs e inspeccionar hotspots.
+- Se agrego handoff frontend: `docs/BACKEND_TO_FRONTEND_SYNC_OPERATIONS_2026-05-02.md`.
+
+Verificacion Operational Intelligence ejecutada:
+
+- `tests.test_v2_operational_analytics`
+- `tests.test_v2_analytics_overview`
+- `tests.test_v2_saas_contracts`
+- `tests.test_v2_tickets`
+- `tests.test_v2_surveys`
+- `tests.test_encuestas_dashboard_bundle_contract`
+- `tests.test_encuestas_heatmap_fallback`
+- `tests.test_estadisticas_heatmap`
+- `tests.test_municipal_tickets_map_data`
+- `tests.test_ticket_realtime_state`

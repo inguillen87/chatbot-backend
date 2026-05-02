@@ -10,6 +10,12 @@ from models import TenantTicket
 from routes import analytics_routes as legacy_analytics
 from routes.v2.tenants import V2TenantResolutionError, resolve_tenant_v2
 from services.analytics_service import analytics_service
+from services.operational_intelligence import (
+    build_action_center,
+    build_operational_dashboard,
+    build_operational_freshness,
+    build_operational_heatmap,
+)
 from utils.auth_helpers import token_requerido
 from utils.permissions import require_role
 
@@ -195,6 +201,59 @@ def funnel_v2(current_user):
     start_date, end_date = _date_range()
     data = analytics_service.get_funnel_analytics(tenant.id, start_date, end_date)
     return jsonify(data)
+
+
+@v2_analytics_bp.route("/operations", methods=["GET"])
+@v2_analytics_bp.route("/operations/dashboard", methods=["GET"])
+@token_requerido
+@require_role("admin", "empleado", "super_admin")
+def operations_dashboard_v2(current_user):
+    tenant, error = _resolve_tenant_or_error(current_user)
+    if error:
+        return error
+
+    start_date, end_date = _date_range()
+    payload = build_operational_dashboard(tenant, start_date, end_date)
+    return _json_response(payload)
+
+
+@v2_analytics_bp.route("/operations/heatmap", methods=["GET"])
+@token_requerido
+@require_role("admin", "empleado", "super_admin")
+def operations_heatmap_v2(current_user):
+    tenant, error = _resolve_tenant_or_error(current_user)
+    if error:
+        return error
+
+    start_date, end_date = _date_range()
+    payload = build_operational_heatmap(tenant, start_date, end_date)
+    return _json_response(payload)
+
+
+@v2_analytics_bp.route("/operations/action-center", methods=["GET"])
+@token_requerido
+@require_role("admin", "empleado", "super_admin")
+def operations_action_center_v2(current_user):
+    tenant, error = _resolve_tenant_or_error(current_user)
+    if error:
+        return error
+
+    start_date, end_date = _date_range()
+    payload = build_action_center(tenant, start_date, end_date)
+    return _json_response(payload)
+
+
+@v2_analytics_bp.route("/operations/freshness", methods=["GET"])
+@token_requerido
+@require_role("admin", "empleado", "super_admin")
+def operations_freshness_v2(current_user):
+    tenant, error = _resolve_tenant_or_error(current_user)
+    if error:
+        return error
+
+    start_date, end_date = _date_range()
+    payload = build_operational_freshness(tenant, start_date, end_date)
+    return _json_response(payload)
 
 
 @v2_analytics_bp.route("/summary", methods=["GET"])

@@ -82,6 +82,60 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertIsInstance(workspace.get("value_cards"), list)
         self.assertIsInstance(workspace.get("handoff_labels"), dict)
         self.assertIn("createTicket", workspace.get("handoff_labels"))
+        self.assertIsInstance(workspace.get("first_visit"), dict)
+        self.assertTrue((workspace.get("first_visit") or {}).get("headline"))
+        self.assertIsInstance(workspace.get("sample_conversations"), list)
+        self.assertTrue(workspace.get("sample_conversations"))
+        self.assertTrue((workspace.get("media_capabilities") or {}).get("input_modes"))
+        self.assertTrue((workspace.get("conversion_ctas") or {}).get("actions"))
+        self.assertEqual((workspace.get("animation_tokens") or {}).get("version"), "chat.motion.v1")
+        self.assertIsInstance(payload.get("experience_blueprint"), dict)
+        self.assertEqual(payload["experience_blueprint"].get("version"), "2026-05-agent-experience-v2")
+        self.assertTrue((payload.get("lead_capture") or {}).get("endpoint"))
+        self.assertEqual(
+            ((payload.get("media_capabilities") or {}).get("input_modes") or {}).get("audio", {}).get("multipart_field"),
+            "audio_file",
+        )
+        self.assertTrue(any(item.get("intent") == "crear_pedido" for item in ((payload.get("conversion_ctas") or {}).get("actions") or [])))
+        chat_bootstrap = payload.get("chat_bootstrap") or {}
+        self.assertEqual(chat_bootstrap.get("contract_version"), "demo.chat_bootstrap.v1")
+        self.assertEqual(chat_bootstrap.get("endpoint"), "/ask/pyme")
+        self.assertEqual(chat_bootstrap.get("fallback_endpoint"), "/ask")
+        self.assertEqual((chat_bootstrap.get("headers") or {}).get("X-Chat-Session-Id"), payload.get("demo_session_id"))
+        self.assertEqual((chat_bootstrap.get("headers") or {}).get("X-Tenant-Slug"), tenant.slug)
+        self.assertEqual((chat_bootstrap.get("query") or {}).get("tenant_slug"), tenant.slug)
+        self.assertEqual((chat_bootstrap.get("payload") or {}).get("tipo_chat"), "pyme")
+        self.assertEqual((chat_bootstrap.get("payload") or {}).get("tenant_slug"), tenant.slug)
+        self.assertEqual((chat_bootstrap.get("payload") or {}).get("demo_mode"), True)
+        self.assertEqual((workspace.get("chat_bootstrap") or {}).get("endpoint"), "/ask/pyme")
+        self.assertEqual(((payload.get("chat_seed") or {}).get("chat_bootstrap") or {}).get("endpoint"), "/ask/pyme")
+        self.assertTrue((chat_bootstrap.get("supports") or {}).get("audio"))
+        self.assertTrue((chat_bootstrap.get("supports") or {}).get("image"))
+
+    def test_v2_demo_session_from_rubro_returns_matching_chat_bootstrap(self):
+        owner = User(name="Demo Rubro", email="demo-rubro@test.com", password_hash="hash", tipo_chat="pyme")
+        db.session.add(owner)
+        db.session.flush()
+        tenant = TenantProfile(slug="bodega", nombre="Bodega Demo", tipo="pyme", pyme_id=owner.id, is_active=True)
+        db.session.add(tenant)
+        db.session.commit()
+
+        resp = self.client.post(
+            "/api/v2/demo/session",
+            json={"sector": "empresas", "rubro": tenant.slug},
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.get_json()
+        chat_bootstrap = payload.get("chat_bootstrap") or {}
+        self.assertEqual(payload.get("tenant_slug"), tenant.slug)
+        self.assertEqual((payload.get("tenant") or {}).get("tipo"), "pyme")
+        self.assertEqual(chat_bootstrap.get("endpoint"), "/ask/pyme")
+        self.assertEqual((chat_bootstrap.get("payload") or {}).get("rubro"), tenant.slug)
+        self.assertEqual((chat_bootstrap.get("payload") or {}).get("rubro_clave"), tenant.slug)
+        self.assertEqual((chat_bootstrap.get("context") or {}).get("sector"), "empresas")
+        self.assertEqual((chat_bootstrap.get("start_event") or {}).get("type"), "demo_chat_start")
+        self.assertEqual((chat_bootstrap.get("start_event") or {}).get("tenant_slug"), tenant.slug)
 
     def test_v2_tenant_route_requires_explicit_tenant_context(self):
         resp = self.client.get("/api/v2/tenants/current")

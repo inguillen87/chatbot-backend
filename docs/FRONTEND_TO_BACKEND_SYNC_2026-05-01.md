@@ -257,6 +257,8 @@ Verificacion backend SaaS P1:
 
 Nueva capa v2 para comercio, puntos e inbox accionable:
 
+Nota de arquitectura backend: estos endpoints v2 son fachadas de contrato. La logica reusable queda en `services/commerce_contracts.py` y `services/rewards.py`, apoyada en modelos/servicios existentes, para no duplicar una app paralela ni deprecar el flujo actual.
+
 - `GET /api/v2/payments/checkout-status`
 - `GET /api/v2/payments/capabilities`
 - `GET /api/v2/tenants/{slug}/payments/checkout-status`

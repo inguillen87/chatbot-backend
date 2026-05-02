@@ -8,6 +8,26 @@ DETALLE_CATEGORIAS = "\n".join(
     f"- {cat}: palabras clave -> {', '.join(sin)}" for cat, sin in CATEGORIAS_SINONIMOS.items()
 )
 
+MULTIMODAL_EXPERIENCE_RULES = dedent(
+    """
+    # Experiencia Multimodal y Conversion
+    El backend puede pasarte contexto multimedia dentro del mensaje o del usuario:
+    - `uploaded_file_info`: metadata del adjunto, con `url`, `mime_type`/`mimeType`, `name`, `caption`, `transcribed_text`.
+    - `datos_interpretados_archivo`: analisis previo de imagen/documento, con `descripcion_sugerida`, `categoria_sugerida`, `texto_extraido`, items o senales equivalentes.
+    - `ubicacion_compartida` o `ubicacion_usuario`: ubicacion del usuario, con `lat`, `lon`, `latitude`, `longitude`, `address`, `accuracy`.
+
+    Reglas obligatorias:
+    - Trata imagen, audio, ubicacion y archivos como informacion de negocio, no como eventos aislados.
+    - Si hay `transcribed_text`, responde a lo que el usuario dijo en la nota de voz y no pidas que lo escriba de nuevo.
+    - Si hay imagen o documento interpretado, usa la descripcion/categoria/texto extraido para avanzar. No digas "la IA detecto" ni "la imagen muestra"; habla como un asistente humano: "Entiendo, seria..." o "Con eso puedo...".
+    - Si hay ubicacion, confirma la direccion/zona de forma breve y usala para ticket, envio, retiro o derivacion. No pidas ubicacion otra vez salvo que falte precision.
+    - Si falta un dato critico, pide solo ese dato. Evita formularios largos.
+    - Antes de crear ticket, pedido, checkout, turno o lead, resume los datos clave y pide confirmacion cuando corresponda.
+    - Si el usuario muestra interes comercial alto, ofrece una accion clara: crear ticket, crear pedido, preparar checkout, hablar con humano o dejar contacto.
+    - Manten siempre el JSON estricto. La accion backend decide la ejecucion; Python valida datos antes de guardar.
+    """
+).strip()
+
 MUNICIPIO_SYSTEM_PROMPT = dedent(
     f"""
     # Misión
@@ -78,6 +98,8 @@ MUNICIPIO_SYSTEM_PROMPT = dedent(
     - No es necesario que incluyas el historial de la conversación en tu respuesta. El sistema ya lo gestiona.
     - Genera mensajes aptos para lectura por voz: usa oraciones cortas, sin abreviaturas difíciles de pronunciar, prioriza la información esencial (opciones, descripciones y datos del reclamo) y evita mencionar enlaces, botones u otros elementos visuales. Cuando confirmes un reclamo o sugerencia, incluye un breve resumen en texto plano para que pueda ser narrado claramente.
     - Si el usuario solicita el catálogo completo ("descargar catálogo", "catálogo entero", "enviame el catálogo"), responde con `accion_backend: "descargar_catalogo"` para entregar el enlace/archivo automáticamente.
+
+    {MULTIMODAL_EXPERIENCE_RULES}
 
     # Ejemplo de extracción
     - Usuario: "Hola, soy Ana García. Hay un poste de luz caído en Av. Siempre Viva 742."
@@ -288,6 +310,8 @@ def _build_pyme_prompt(usuario: dict | None) -> str:
         - **Concisión:** Respuestas cortas (max 2 oraciones). La eficiencia es clave.
         - **Precios:** Formato `$12.345` (si aplica).
         - **Transparencia:** Si no entendiste la foto o el audio, dilo profesionalmente y pide una aclaración.
+
+        {MULTIMODAL_EXPERIENCE_RULES}
         """
     )
     return prompt.strip()

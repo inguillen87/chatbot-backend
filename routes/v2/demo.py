@@ -4,7 +4,6 @@ from typing import Any
 import uuid
 
 from flask import Blueprint, jsonify, request
-from sqlalchemy import func
 
 from models import TenantProfile
 from routes.auth import (
@@ -136,41 +135,119 @@ def _handoff_labels(experience: dict[str, Any]) -> dict[str, str]:
     }
 
 
-@v2_demo_bp.route('/catalog', methods=['GET'])
+def _chat_endpoint_for_tenant_type(tenant_type: str) -> str:
+    normalized = (tenant_type or "").strip().lower()
+    if normalized == "municipio":
+        return "/ask/municipio"
+    if normalized == "pyme":
+        return "/ask/pyme"
+    return "/ask"
+
+
+def _media_supports(media_capabilities: dict[str, Any]) -> dict[str, bool]:
+    input_modes = media_capabilities.get("input_modes") if isinstance(media_capabilities, dict) else {}
+    modes = input_modes if isinstance(input_modes, dict) else {}
+
+    def enabled(key: str) -> bool:
+        mode = modes.get(key)
+        if isinstance(mode, dict):
+            return bool(mode.get("enabled", True))
+        return False
+
+    return {
+        "text": enabled("text"),
+        "image": enabled("image"),
+        "audio": enabled("audio"),
+        "location": enabled("location"),
+        "file": enabled("file"),
+    }
+
+
+def _chat_bootstrap(
+    *,
+    tenant: TenantProfile,
+    tenant_type: str,
+    sector: str,
+    rubro: str,
+    demo_session_id: str,
+    quick_replies: list[dict[str, str]],
+    media_capabilities: dict[str, Any],
+) -> dict[str, Any]:
+    endpoint = _chat_endpoint_for_tenant_type(tenant_type)
+    canonical_rubro = (rubro or tenant.slug or tenant_type or "").strip().lower()
+    first_prompt = next((item.get("payload") or item.get("label") for item in quick_replies if item.get("label")), "")
+
+    return {
+        "contract_version": "demo.chat_bootstrap.v1",
+        "endpoint": endpoint,
+        "fallback_endpoint": "/ask",
+        "method": "POST",
+        "headers": {
+            "X-Chat-Session-Id": demo_session_id,
+            "X-Demo-Session-Id": demo_session_id,
+            "X-Tenant-Slug": tenant.slug,
+        },
+        "query": {
+            "tenant_slug": tenant.slug,
+        },
+        "payload": {
+            "pregunta": "",
+            "tipo_chat": tenant_type,
+            "tenant_slug": tenant.slug,
+            "rubro": canonical_rubro,
+            "rubro_clave": canonical_rubro,
+            "demo_session_id": demo_session_id,
+            "demo_mode": True,
+        },
+        "context": {
+            "sector": sector,
+            "rubro": canonical_rubro,
+            "tenant_slug": tenant.slug,
+            "tenant_tipo": tenant_type,
+            "demo_session_id": demo_session_id,
+        },
+        "start_event": {
+            "type": "demo_chat_start",
+            "tenant_slug": tenant.slug,
+            "tipo_chat": tenant_type,
+            "rubro": canonical_rubro,
+        },
+        "initial_prompt": first_prompt,
+        "supports": _media_supports(media_capabilities),
+        "notes": [
+            "Enviar siempre X-Chat-Session-Id.",
+            "Para imagen/archivo subir primero a /archivos/upload/chat_attachment y luego llamar al endpoint con attachmentInfo.",
+            "Para audio enviar multipart al endpoint con campo audio_file.",
+            "Para ubicacion enviar payload JSON con location.",
+        ],
+    }
+
+
+@v2_demo_bp.route("/catalog", methods=["GET"])
 def demo_catalog_v2():
-    # Reuse legacy catalog generation, then sanitize/reshape into v2 contract.
     legacy_response = legacy_demo_catalog()
     legacy_payload = legacy_response.get_json(silent=True) if hasattr(legacy_response, "get_json") else {}
 
-    rubros = []
-    for item in (legacy_payload or {}).get("tenant_demos") or []:
-        rubros.append(_normalize_rubro(item))
+    rubros = [_normalize_rubro(item) for item in (legacy_payload or {}).get("tenant_demos") or []]
     if not rubros:
         rubros = [_normalize_rubro(item) for item in _safe_demo_rubros()]
     gobierno = [r for r in rubros if (r.get("tipo_chat") or "").lower() == "municipio"]
     empresas = [r for r in rubros if (r.get("tipo_chat") or "").lower() == "pyme"]
 
-    payload = {
-        "contract_version": "demo.catalog.v2",
-        "sectors": ["gobierno", "empresas"],
-        "rubros": rubros,
-        "sector_groups": [
-            {
-                "key": "gobierno",
-                "label": "Gobiernos y municipios",
-                "rubros": gobierno,
-            },
-            {
-                "key": "empresas",
-                "label": "Empresas y pymes",
-                "rubros": empresas,
-            },
-        ]
-    }
-    return jsonify(payload)
+    return jsonify(
+        {
+            "contract_version": "demo.catalog.v2",
+            "sectors": ["gobierno", "empresas"],
+            "rubros": rubros,
+            "sector_groups": [
+                {"key": "gobierno", "label": "Gobiernos y municipios", "rubros": gobierno},
+                {"key": "empresas", "label": "Empresas y pymes", "rubros": empresas},
+            ],
+        }
+    )
 
 
-@v2_demo_bp.route('/session', methods=['POST'])
+@v2_demo_bp.route("/session", methods=["POST"])
 def demo_session_v2():
     data = request.get_json(silent=True) or {}
     sector = str(data.get("sector") or "").strip().lower()
@@ -205,25 +282,39 @@ def demo_session_v2():
             return _error_response("No se pudo resolver tenant demo", 404, "tenant_resolution_failed", "send_tenant_slug")
 
     tenant_type = (tenant.tipo or "pyme").strip().lower()
-    experience = build_demo_experience_contract(
-        tenant_type=tenant_type,
-        rubro_label=tenant.nombre,
-    )
+    experience = build_demo_experience_contract(tenant_type=tenant_type, rubro_label=tenant.nombre)
     onboarding = experience.get("guided_onboarding") or {}
     quick_replies = _quick_reply_items(onboarding.get("starter_prompts") or [])
+    media_capabilities = experience.get("media_capabilities") or {}
+    conversion_ctas = experience.get("conversion_ctas") or {}
+    animation_tokens = experience.get("animation_tokens") or {}
 
-    demo_session_id = create_demo_session_token(
-        tenant_slug=tenant.slug,
+    demo_session_id = create_demo_session_token(tenant_slug=tenant.slug, sector=sector, rubro=rubro or tenant.slug)
+    chat_bootstrap = _chat_bootstrap(
+        tenant=tenant,
+        tenant_type=tenant_type,
         sector=sector,
         rubro=rubro or tenant.slug,
+        demo_session_id=demo_session_id,
+        quick_replies=quick_replies,
+        media_capabilities=media_capabilities,
     )
 
     workspace = {
         "title": tenant.nombre or "Demo Chatboc",
-        "welcome_message": onboarding.get("entry_prompt") or "¿Sobre qué te gustaría preguntar primero?",
+        "subtitle": (experience.get("hero") or {}).get("subtitle"),
+        "welcome_message": onboarding.get("entry_prompt") or "Que queres probar primero?",
         "quick_replies": quick_replies,
         "value_cards": _workspace_cards(experience),
         "handoff_labels": _handoff_labels(experience),
+        "first_visit": experience.get("first_visit") or {},
+        "sample_conversations": experience.get("sample_conversations") or [],
+        "trust_signals": experience.get("trust_signals") or [],
+        "lead_capture": experience.get("lead_capture") or {},
+        "media_capabilities": media_capabilities,
+        "conversion_ctas": conversion_ctas,
+        "animation_tokens": animation_tokens,
+        "chat_bootstrap": chat_bootstrap,
     }
 
     return _json_response(
@@ -234,6 +325,15 @@ def demo_session_v2():
             "tenant_slug": tenant.slug,
             "tenant": _tenant_dict(tenant),
             "workspace": workspace,
+            "chat_bootstrap": chat_bootstrap,
+            "experience_blueprint": experience,
+            "first_visit": workspace["first_visit"],
+            "sample_conversations": workspace["sample_conversations"],
+            "trust_signals": workspace["trust_signals"],
+            "lead_capture": workspace["lead_capture"],
+            "media_capabilities": media_capabilities,
+            "conversion_ctas": conversion_ctas,
+            "animation_tokens": animation_tokens,
             "welcome_message": workspace["welcome_message"],
             "value_cards": workspace["value_cards"],
             "handoff_labels": workspace["handoff_labels"],
@@ -241,6 +341,11 @@ def demo_session_v2():
                 "entry_prompt": workspace["welcome_message"],
                 "autostart_chat": bool(onboarding.get("autostart_chat", True)),
                 "open_widget": bool(onboarding.get("open_widget", True)),
+                "starter_prompts": onboarding.get("starter_prompts") or [],
+                "sample_conversations": workspace["sample_conversations"],
+                "media_capabilities": media_capabilities,
+                "conversion_ctas": conversion_ctas,
+                "chat_bootstrap": chat_bootstrap,
             },
             "quick_replies": quick_replies,
         }

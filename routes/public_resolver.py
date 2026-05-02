@@ -816,6 +816,13 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
         rubro_label=rubro_profile.get("rubro_label"),
         max_messages=(demo_trial.get("limits") or {}).get("max_messages", 10),
     )
+    first_visit = experience_blueprint.get("first_visit") or {}
+    sample_conversations = experience_blueprint.get("sample_conversations") or []
+    trust_signals = experience_blueprint.get("trust_signals") or []
+    lead_capture = experience_blueprint.get("lead_capture") or {}
+    media_capabilities = experience_blueprint.get("media_capabilities") or {}
+    conversion_ctas = experience_blueprint.get("conversion_ctas") or {}
+    animation_tokens = experience_blueprint.get("animation_tokens") or {}
 
     builder_config = {
         "welcome_title": welcome_title,
@@ -877,6 +884,13 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
         "demo_trial": demo_trial,
         "quick_menu": quick_menu,
         "experience_blueprint": experience_blueprint,
+        "first_visit": first_visit,
+        "sample_conversations": sample_conversations,
+        "trust_signals": trust_signals,
+        "lead_capture": lead_capture,
+        "media_capabilities": media_capabilities,
+        "conversion_ctas": conversion_ctas,
+        "animation_tokens": animation_tokens,
     }
 
     return {
@@ -893,6 +907,13 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
         "demo_trial": demo_trial,
         "quick_menu": quick_menu,
         "experience_blueprint": experience_blueprint,
+        "first_visit": first_visit,
+        "sample_conversations": sample_conversations,
+        "trust_signals": trust_signals,
+        "lead_capture": lead_capture,
+        "media_capabilities": media_capabilities,
+        "conversion_ctas": conversion_ctas,
+        "animation_tokens": animation_tokens,
         "widget_token": canonical_token,
         "widget_token_cookie_name": current_app.config.get("WIDGET_TOKEN_COOKIE_NAME", "widget_token"),
     }
