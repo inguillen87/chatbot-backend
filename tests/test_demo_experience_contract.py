@@ -36,6 +36,23 @@ class DemoExperienceContractTest(unittest.TestCase):
         self.assertIn("conversion_ctas", section_ids)
         self.assertIn("lead_capture", section_ids)
 
+    def test_education_contract_reuses_pyme_chat_with_school_experience(self):
+        payload = build_demo_experience_contract(
+            tenant_type="pyme",
+            rubro_label="Colegio San Martin",
+            vertical="educacion",
+            education_profile={"is_education": True, "institution_type": "private", "vertical": "educacion"},
+        )
+
+        self.assertEqual(payload["tenant_type"], "pyme")
+        self.assertEqual(payload["experience_type"], "education")
+        self.assertEqual(payload["vertical"], "educacion")
+        self.assertTrue(any(item["intent"] == "justificar_inasistencia" for item in payload["quick_actions"]))
+        self.assertTrue(any(item["intent"] == "convivencia_escolar" for item in payload["quick_actions"]))
+        self.assertEqual(payload["media_capabilities"]["primary_business_action"], "school_case")
+        self.assertIn("certificado_medico", payload["media_capabilities"]["input_modes"]["image"]["intents"])
+        self.assertTrue(any(item.get("intent") == "admisiones_colegio" for item in payload["education_quick_menu"]))
+
 
 if __name__ == "__main__":
     unittest.main()

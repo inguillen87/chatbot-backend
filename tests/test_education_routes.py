@@ -158,6 +158,8 @@ class TestEducationRoutes(unittest.TestCase):
         self.assertEqual(caps_resp.status_code, 200)
         caps_data = caps_resp.get_json()
         self.assertTrue(caps_data["education_enabled"])
+        self.assertTrue((caps_data.get("education_profile") or {}).get("is_education"))
+        self.assertEqual((caps_data.get("whatsapp_playbook") or {}).get("contract_version"), "education.whatsapp_playbook.v1")
 
         update_resp = self.client.put(
             "/api/v1/education/tenant/capabilities",
@@ -181,6 +183,26 @@ class TestEducationRoutes(unittest.TestCase):
         taxonomy_data = taxonomy_resp.get_json()
         keys = {item["key"] for item in taxonomy_data["taxonomy"]}
         self.assertIn("documentacion", keys)
+        self.assertIn("secretaria", keys)
+
+        admin_menu_resp = self.client.get(
+            "/api/v1/education/admin/menu",
+            headers=self.auth_header,
+        )
+        self.assertEqual(admin_menu_resp.status_code, 200)
+        admin_menu = admin_menu_resp.get_json()
+        self.assertEqual(admin_menu.get("contract_version"), "education.admin_menu.v1")
+        section_ids = {item.get("id") for item in admin_menu.get("panel_sections") or []}
+        self.assertIn("whatsapp_school", section_ids)
+
+        playbook_resp = self.client.get(
+            "/api/v1/education/whatsapp/playbook",
+            headers=self.auth_header,
+        )
+        self.assertEqual(playbook_resp.status_code, 200)
+        playbook = playbook_resp.get_json()
+        intents = {item.get("intent") for item in playbook.get("quick_menu") or []}
+        self.assertIn("justificar_inasistencia", intents)
 
     def test_create_school_campus_and_section_endpoints(self):
         school_resp = self.client.post(

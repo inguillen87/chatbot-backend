@@ -20,6 +20,14 @@ from models_education import (
     StudentGuardianRelation,
 )
 from utils.auth_helpers import token_requerido
+from services.education_contracts import (
+    build_education_admin_menu,
+    build_education_profile,
+    build_education_whatsapp_playbook,
+    education_case_taxonomy,
+    education_taxonomy_dict,
+    is_education_tenant,
+)
 
 education_bp = Blueprint("education", __name__)
 
@@ -32,6 +40,7 @@ SCHOOL_CASE_TAXONOMY = {
     "cobranza": "Cobranza",
     "admisiones": "Admisiones",
 }
+SCHOOL_CASE_TAXONOMY.update(education_taxonomy_dict())
 
 
 def _utc_now():
@@ -41,6 +50,8 @@ def _utc_now():
 def _tenant_supports_education(tenant: TenantProfile | None) -> bool:
     if not tenant:
         return False
+    if is_education_tenant(tenant):
+        return True
     vertical = (getattr(tenant, "vertical", None) or "").strip().lower()
     if vertical in {"educacion", "educación"}:
         return True
@@ -240,6 +251,9 @@ def get_education_capabilities(current_user, actor_principal=None):
             "subvertical": tenant.subvertical,
             "education_enabled": _tenant_supports_education(tenant),
             "capabilities_json": tenant.capabilities_json or {},
+            "education_profile": build_education_profile(tenant),
+            "admin_menu": build_education_admin_menu(tenant),
+            "whatsapp_playbook": build_education_whatsapp_playbook(tenant),
         }
     )
 
@@ -289,6 +303,9 @@ def update_education_capabilities(current_user, actor_principal=None):
             "subvertical": tenant.subvertical,
             "education_enabled": _tenant_supports_education(tenant),
             "capabilities_json": tenant.capabilities_json or {},
+            "education_profile": build_education_profile(tenant),
+            "admin_menu": build_education_admin_menu(tenant),
+            "whatsapp_playbook": build_education_whatsapp_playbook(tenant),
         }
     )
 
@@ -311,8 +328,33 @@ def get_school_case_taxonomy(current_user, actor_principal=None):
                 {"key": key, "label": label}
                 for key, label in SCHOOL_CASE_TAXONOMY.items()
             ],
+            "items": education_case_taxonomy(),
         }
     )
+
+
+@education_bp.route("/api/v1/education/admin/menu", methods=["GET"])
+@token_requerido
+def get_education_admin_menu(current_user, actor_principal=None):
+    tenant_id = _resolve_actor_tenant_id(current_user, actor_principal)
+    if not tenant_id:
+        return jsonify({"error": {"code": 400, "message": "Tenant context required"}}), 400
+    tenant = TenantProfile.query.filter_by(id=tenant_id).first()
+    if not tenant:
+        return jsonify({"error": {"code": 404, "message": "Tenant profile not found"}}), 404
+    return jsonify(build_education_admin_menu(tenant))
+
+
+@education_bp.route("/api/v1/education/whatsapp/playbook", methods=["GET"])
+@token_requerido
+def get_education_whatsapp_playbook(current_user, actor_principal=None):
+    tenant_id = _resolve_actor_tenant_id(current_user, actor_principal)
+    if not tenant_id:
+        return jsonify({"error": {"code": 400, "message": "Tenant context required"}}), 400
+    tenant = TenantProfile.query.filter_by(id=tenant_id).first()
+    if not tenant:
+        return jsonify({"error": {"code": 404, "message": "Tenant profile not found"}}), 404
+    return jsonify(build_education_whatsapp_playbook(tenant))
 
 
 @education_bp.route("/api/v1/education/schools", methods=["GET"])

@@ -601,6 +601,8 @@ class TenantProfile(db.Model, TimestampMixin):
             "slug": self.slug,
             "nombre": self.nombre,
             "tipo": self.tipo,
+            "vertical": self.vertical,
+            "subvertical": self.subvertical,
             "logo_url": self.logo_url,
             "dominio": self.dominio,
             "tema": self.tema or {},

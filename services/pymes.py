@@ -1766,6 +1766,15 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
         chat_db_context.context_data["mensajes_previos_llm_formato"] = old_hist
 
     pyme_ctx_actual = chat_db_context.context_data.setdefault(CONTEXTO_PYME, {})
+    education_context = (
+        received_payload.get("education_context")
+        or kwargs.get("education_context")
+        or chat_db_context.context_data.get("education_context")
+    )
+    is_education_context = isinstance(education_context, dict) and bool(education_context)
+    if is_education_context:
+        pyme_ctx_actual["vertical"] = "educacion"
+        chat_db_context.context_data["education_context"] = education_context
     session_state = PymeSessionState(pyme_ctx_actual, getattr(owner_user, "id", None))
     pyme_ctx_actual["request_id"] = request_id
 
@@ -1958,11 +1967,14 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
     usuario_info_for_llm = {
         "nombre": usuario_nombre,
         "tipo_entidad": "pyme",
+        "vertical": "educacion" if is_education_context else None,
         "pyme_info": {
             "nombre_pyme": nombre_pyme_display,
-            "rubro": rubro_info_value,
+            "rubro": "educacion" if is_education_context else rubro_info_value,
         },
     }
+    if is_education_context:
+        usuario_info_for_llm["education_context"] = education_context
 
     pyme_data_for_llm = {k: v for k, v in (static_bundle or {}).items() if k != "_slug"}
     if pyme_data_for_llm:
@@ -2014,8 +2026,9 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
             "[PYME_FLOW] intent_detected",
             extra={"intent": "delivery_location", "request_id": request_id},
         )
-        location_result = handle_location_payload(session_state, config_data, ubicacion_payload)
-        return _finalize_early_response(location_result, intent="delivery_location")
+        if not is_education_context:
+            location_result = handle_location_payload(session_state, config_data, ubicacion_payload)
+            return _finalize_early_response(location_result, intent="delivery_location")
 
     uploaded_info = (
         received_payload.get("uploaded_file_info")
@@ -2067,6 +2080,12 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
             contextual_notes.append("El usuario envió una nota de voz.")
             transcripcion = uploaded_info.get("transcribed_text")
             if transcripcion:
+                if is_education_context:
+                    pregunta_str = transcripcion
+                    received_payload["pregunta"] = transcripcion
+                    usuario_info_for_llm["audio_transcription"] = transcripcion
+                    contextual_notes.append("Como es un colegio, interpreta la nota de voz como consulta escolar o tramite de familia.")
+                    transcripcion = ""
                 if not pyme_ctx_actual.get("saludo_audio_enviado"):
                     pyme_ctx_actual["saludo_audio_pendiente"] = True
                     pyme_ctx_actual["saludo_audio_enviado"] = True
@@ -2434,7 +2453,7 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
     )
     has_cart_items = cart_summary_check and bool(cart_summary_check.get("items_detalle"))
 
-    if accion_backend in ["pyme_hablar_agente"] and not has_cart_items:
+    if accion_backend in ["pyme_hablar_agente"] and not has_cart_items and not is_education_context:
         # Check if user query explicitly demands human strongly, or if it's just "quiero hablar con alguien"
         # For now, we enforce a soft block: Ask what they need first.
         logger_actual.info("[PYME_GATING] Blocking premature human handoff. Forcing sales inquiry.")
@@ -2481,6 +2500,8 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
         "ubicacion_usuario": ubicacion_payload if isinstance(ubicacion_payload, dict) else None,
         "datos_interpretados_archivo": datos_interpretados_archivo if isinstance(datos_interpretados_archivo, dict) else None,
         "ultimo_adjunto": pyme_ctx_actual.get("ultimo_adjunto"),
+        "education_context": education_context if is_education_context else None,
+        "vertical": "educacion" if is_education_context else None,
     }
 
     # --- 5. Ejecutar Acción vía ChatOrchestrator ---

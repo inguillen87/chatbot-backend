@@ -23,6 +23,12 @@ from routes.pwa_public import _build_public_cart_url
 from utils.auth_helpers import _is_jwt_token
 from services.demo_registry import load_demo_rubros
 from services.demo_experience_contract import build_demo_experience_contract
+from services.education_contracts import (
+    build_education_admin_menu,
+    build_education_profile,
+    build_education_whatsapp_playbook,
+    education_quick_menu,
+)
 
 public_resolver_bp = Blueprint("public_resolver_bp", __name__, url_prefix="/api/public")
 public_municipios_bp = Blueprint("public_municipios_bp", __name__)
@@ -332,6 +338,9 @@ def _tenant_rubro_profile(tenant: TenantProfile) -> dict:
                 "tramites_secretaria",
             ],
         }
+    education_profile = build_education_profile(tenant, rubro_label=rubro_nombre)
+    if education_profile.get("is_education"):
+        profile["education_profile"] = education_profile
     return profile
 
 
@@ -363,6 +372,11 @@ def _quick_menu_for_widget(tenant: TenantProfile) -> list[dict]:
     rubro_profile = _tenant_rubro_profile(tenant)
     education = rubro_profile.get("education_profile") if isinstance(rubro_profile, dict) else None
     if isinstance(education, dict) and education.get("is_education"):
+        return education_quick_menu(
+            tenant,
+            institution_type=education.get("institution_type") or "general",
+            surface="widget",
+        )
         institution_type = education.get("institution_type") or "general"
         return [
             {"id": "menu_asistencia", "label": "Asistencia", "intent": "asistencia_alumno"},
@@ -813,10 +827,14 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
     rubro_profile = _tenant_rubro_profile(tenant)
     demo_trial = _demo_trial_payload_for_widget(tenant, cfg)
     quick_menu = _quick_menu_for_widget(tenant)
+    education_profile = rubro_profile.get("education_profile") if isinstance(rubro_profile, dict) else None
     experience_blueprint = build_demo_experience_contract(
         tenant_type=tenant.tipo,
         rubro_label=rubro_profile.get("rubro_label"),
         max_messages=(demo_trial.get("limits") or {}).get("max_messages", 10),
+        vertical=(education_profile or {}).get("vertical"),
+        subvertical=(education_profile or {}).get("subvertical"),
+        education_profile=education_profile,
     )
     first_visit = experience_blueprint.get("first_visit") or {}
     sample_conversations = experience_blueprint.get("sample_conversations") or []
@@ -825,6 +843,14 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
     media_capabilities = experience_blueprint.get("media_capabilities") or {}
     conversion_ctas = experience_blueprint.get("conversion_ctas") or {}
     animation_tokens = experience_blueprint.get("animation_tokens") or {}
+    education_payload = None
+    if isinstance(education_profile, dict) and education_profile.get("is_education"):
+        education_payload = {
+            "profile": education_profile,
+            "quick_menu": quick_menu,
+            "whatsapp_playbook": build_education_whatsapp_playbook(tenant),
+            "admin_menu": build_education_admin_menu(tenant),
+        }
 
     builder_config = {
         "welcome_title": welcome_title,
@@ -894,6 +920,8 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
         "conversion_ctas": conversion_ctas,
         "animation_tokens": animation_tokens,
     }
+    if education_payload:
+        builder_config["education"] = education_payload
 
     return {
         "script_url": script_url,
@@ -918,6 +946,7 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
         "animation_tokens": animation_tokens,
         "widget_token": canonical_token,
         "widget_token_cookie_name": current_app.config.get("WIDGET_TOKEN_COOKIE_NAME", "widget_token"),
+        "education": education_payload,
     }
 
 
@@ -1377,6 +1406,10 @@ def widget_config():
         "tenant": tenant.to_public_dict(),
         "widget": widget_payload,
         "builder_config": widget_payload.get("builder_config", {}),
+        "quick_menu": widget_payload.get("quick_menu", []),
+        "rubro_profile": widget_payload.get("rubro_profile", {}),
+        "experience_blueprint": widget_payload.get("experience_blueprint", {}),
+        "education": widget_payload.get("education"),
         # The integration builder renders its own preview iframe; the global
         # site-wide widget bubble must stay hidden to avoid duplicated widgets
         # on /t/[tenant]/integracion.

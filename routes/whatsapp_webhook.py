@@ -43,6 +43,17 @@ from utils.response_utils import normalize_response_payload
 from utils.whatsapp import enviar_mensaje_whatsapp_con_fallback
 from services.contact_service import resolve_contact
 from services.ticket_service import servicio_tickets
+from services.education_contracts import (
+    build_education_case_ack_payload,
+    build_education_pending_case,
+    build_education_profile,
+    build_education_whatsapp_menu_payload,
+    build_education_whatsapp_playbook,
+    education_intents,
+    education_menu_item_for_intent,
+    education_prompt_for_intent,
+    is_education_tenant,
+)
 
 # Define the blueprint for WhatsApp webhooks
 webhook_bp = Blueprint('whatsapp_webhook', __name__)
@@ -84,6 +95,225 @@ def _build_sensitive_action_confirmation_text(selected_option: dict) -> str:
         "1) Sí, iniciar desde cero\n"
         "2) No, volver al menú"
     )
+
+
+def _sync_education_whatsapp_context(
+    session_context: ChatSessionContext,
+    tenant_profile,
+) -> dict[str, Any] | None:
+    if not session_context or not is_education_tenant(tenant_profile):
+        return None
+
+    profile = build_education_profile(tenant_profile)
+    playbook = build_education_whatsapp_playbook(tenant_profile)
+    education_context = {
+        "vertical": "educacion",
+        "profile": profile,
+        "whatsapp_playbook": playbook,
+        "quick_menu": playbook.get("quick_menu") or [],
+        "media_intelligence": playbook.get("media_intelligence") or {},
+    }
+    if not isinstance(session_context.context_data, dict):
+        session_context.context_data = {}
+    session_context.context_data["education_context"] = education_context
+    session_context.context_data["vertical"] = "educacion"
+    safe_flag_modified(session_context, "context_data")
+    return education_context
+
+
+def _education_prompt_payload(intent: str, tenant_profile) -> dict[str, Any]:
+    prompt = education_prompt_for_intent(intent, tenant_profile)
+    return {
+        "message_body": prompt.get("message_body") or "Contame el detalle y lo dejo encaminado.",
+        "message_type": "interactive_buttons",
+        "options_list": prompt.get("options_list") or [],
+        "fuente": "education_whatsapp_intent_prompt",
+        "generar_audio": True,
+        "audio_text": prompt.get("message_body") or "Contame el detalle y lo dejo encaminado.",
+    }
+
+
+def _education_case_description(
+    *,
+    message_body: str,
+    uploaded_file_info: dict[str, Any] | None,
+    location_info: dict[str, Any] | None,
+    pending_case: dict[str, Any],
+) -> str:
+    parts = [
+        f"Intent: {pending_case.get('intent') or 'consulta_escolar'}",
+        f"Categoria: {pending_case.get('category') or 'secretaria'}",
+    ]
+    if message_body:
+        parts.append(f"Mensaje: {message_body.strip()}")
+    if uploaded_file_info:
+        parts.append(
+            "Adjunto: "
+            + str(uploaded_file_info.get("name") or uploaded_file_info.get("url") or uploaded_file_info.get("id") or "archivo")
+        )
+        transcript = uploaded_file_info.get("transcribed_text")
+        if transcript:
+            parts.append(f"Transcripcion audio: {transcript}")
+    if location_info:
+        label = location_info.get("address") or location_info.get("label") or ""
+        coords = ",".join(
+            str(value)
+            for value in [
+                location_info.get("latitude") or location_info.get("lat"),
+                location_info.get("longitude") or location_info.get("lng") or location_info.get("lon"),
+            ]
+            if value not in (None, "")
+        )
+        parts.append(f"Ubicacion: {label or coords or 'compartida'}")
+    return "\n".join(parts)
+
+
+def _create_education_whatsapp_ticket(
+    *,
+    owner_user: User,
+    tenant_profile,
+    end_user: User | None,
+    anon_id: str,
+    pending_case: dict[str, Any],
+    message_body: str,
+    uploaded_file_info: dict[str, Any] | None,
+    location_info: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if not owner_user:
+        return None
+
+    tipo_chat = (getattr(owner_user, "tipo_chat", None) or getattr(tenant_profile, "tipo", None) or "pyme").lower()
+    tipo_ticket = "municipio" if tipo_chat == "municipio" else "pyme"
+    description = _education_case_description(
+        message_body=message_body,
+        uploaded_file_info=uploaded_file_info,
+        location_info=location_info,
+        pending_case=pending_case,
+    )
+    category = pending_case.get("category") or "secretaria"
+    label = pending_case.get("label") or "Consulta escolar"
+
+    ticket_data = {
+        "tenant_id": getattr(tenant_profile, "id", None),
+        "user_id": getattr(end_user, "id", None),
+        "anon_id": anon_id,
+        "asunto": f"Colegio - {label}",
+        "categoria": category,
+        "pregunta": description,
+        "comentario": description,
+        "canal_ingreso": "whatsapp",
+        "estado": "nuevo",
+        "direccion": (location_info or {}).get("address") or (location_info or {}).get("label"),
+        "latitud": (location_info or {}).get("latitude") or (location_info or {}).get("lat"),
+        "longitud": (location_info or {}).get("longitude") or (location_info or {}).get("lng") or (location_info or {}).get("lon"),
+        "telefono_cliente": anon_id,
+    }
+    if tipo_ticket == "municipio":
+        ticket_data["municipio_id"] = getattr(owner_user, "municipio_id", None) or getattr(owner_user, "id", None)
+    else:
+        ticket_data["pyme_id"] = getattr(owner_user, "id", None)
+
+    ticket = servicio_tickets.crear_nuevo_ticket(tipo_ticket, ticket_data)
+    if not ticket:
+        return None
+
+    attachment_id = (uploaded_file_info or {}).get("id")
+    ticket_id = ticket.get("id") if isinstance(ticket, dict) else None
+    if attachment_id and ticket_id:
+        try:
+            adjunto = db.session.get(ArchivoAdjunto, attachment_id)
+            if adjunto:
+                if tipo_ticket == "municipio":
+                    adjunto.municipio_ticket_id = ticket_id
+                else:
+                    adjunto.pyme_ticket_id = ticket_id
+                db.session.add(adjunto)
+                db.session.commit()
+        except Exception:
+            current_app.logger.exception("[EDUCATION_WHATSAPP] No se pudo asociar adjunto al ticket escolar")
+            db.session.rollback()
+    return ticket
+
+
+def _handle_education_whatsapp_turn(
+    *,
+    session_context: ChatSessionContext,
+    tenant_profile,
+    owner_user: User,
+    end_user: User | None,
+    anon_id: str,
+    selected_action_id: str | None,
+    selected_option: dict[str, Any] | None,
+    message_body: str,
+    uploaded_file_info: dict[str, Any] | None,
+    location_info: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if not is_education_tenant(tenant_profile):
+        return None
+
+    _sync_education_whatsapp_context(session_context, tenant_profile)
+    context_data = session_context.context_data if isinstance(session_context.context_data, dict) else {}
+    normalized_action = str(selected_action_id or "").strip().lower()
+
+    if normalized_action in {"menu_principal", "menu_colegio"}:
+        payload = build_education_whatsapp_menu_payload(tenant_profile)
+        context_data["last_options_sent"] = payload.get("options_list") or []
+        safe_flag_modified(session_context, "context_data")
+        db.session.add(session_context)
+        db.session.commit()
+        return payload
+
+    if normalized_action in education_intents(tenant_profile):
+        item = education_menu_item_for_intent(normalized_action, tenant_profile) or selected_option or {}
+        pending_case = build_education_pending_case(normalized_action, item)
+        context_data["education_pending_case"] = pending_case
+        payload = _education_prompt_payload(normalized_action, tenant_profile)
+        context_data["last_options_sent"] = payload.get("options_list") or []
+        safe_flag_modified(session_context, "context_data")
+        db.session.add(session_context)
+        db.session.commit()
+        return payload
+
+    pending_case = context_data.get("education_pending_case")
+    has_new_detail = bool((message_body or "").strip() or uploaded_file_info or location_info) and normalized_action not in {"education_send_detail"}
+    if isinstance(pending_case, dict) and has_new_detail:
+        created_at = pending_case.get("created_at")
+        if isinstance(created_at, (int, float)) and time.time() - created_at > 1800:
+            context_data.pop("education_pending_case", None)
+            safe_flag_modified(session_context, "context_data")
+            db.session.add(session_context)
+            db.session.commit()
+            return {
+                "message_body": "La consulta escolar anterior vencio. Elegi una opcion del menu y la retomamos.",
+                "message_type": "interactive_buttons",
+                "options_list": [{"texto": "Menu colegio", "action_id": "menu_colegio"}],
+                "fuente": "education_whatsapp_pending_expired",
+            }
+
+        ticket = _create_education_whatsapp_ticket(
+            owner_user=owner_user,
+            tenant_profile=tenant_profile,
+            end_user=end_user,
+            anon_id=anon_id,
+            pending_case=pending_case,
+            message_body=message_body,
+            uploaded_file_info=uploaded_file_info,
+            location_info=location_info,
+        )
+        context_data.pop("education_pending_case", None)
+        safe_flag_modified(session_context, "context_data")
+        db.session.add(session_context)
+        db.session.commit()
+        if ticket:
+            return build_education_case_ack_payload(ticket, intent=pending_case.get("intent"))
+        return {
+            "message_body": "Recibi el detalle, pero no pude crear el ticket escolar en este momento. Te derivo con secretaria.",
+            "message_type": "interactive_buttons",
+            "options_list": [{"texto": "Hablar con secretaria", "action_id": "derivar_humano"}],
+            "fuente": "education_whatsapp_case_error",
+        }
+
+    return None
 
 
 def _is_valid_media_url(url: Optional[str]) -> bool:
@@ -1150,6 +1380,7 @@ def whatsapp_webhook():
     # Ensure context_data is a dict
     if not isinstance(session_context_db_entry.context_data, dict):
         session_context_db_entry.context_data = {}
+    _sync_education_whatsapp_context(session_context_db_entry, tenant_profile)
 
     message_sid = post_vars.get("MessageSid") or post_vars.get("SmsMessageSid")
     media_message_sid = post_vars.get("MediaMessageSid") or post_vars.get("MediaSid0")
@@ -1469,11 +1700,18 @@ def whatsapp_webhook():
                 }
                 reduced_menu = template_sent or greeting_sent or sticker_sent
                 welcome_message_override = None
-                welcome_response_payload = _get_main_menu_payload(
-                    menu_context,
-                    welcome_message_override=welcome_message_override,
-                    reduced=reduced_menu,
-                )
+                if is_education_tenant(tenant_profile):
+                    welcome_response_payload = build_education_whatsapp_menu_payload(
+                        tenant_profile,
+                        profile_name=profile_name or None,
+                        reduced=reduced_menu,
+                    )
+                else:
+                    welcome_response_payload = _get_main_menu_payload(
+                        menu_context,
+                        welcome_message_override=welcome_message_override,
+                        reduced=reduced_menu,
+                    )
                 if isinstance(welcome_response_payload, dict):
                     if effective_base_url:
                         welcome_response_payload.setdefault("_base_url", effective_base_url)
@@ -1569,12 +1807,18 @@ def whatsapp_webhook():
                     body=f"¡Encantado, {new_name}! ¿En qué puedo ayudarte?",
                 )
             try:
-                welcome_response_payload = responder_chatboc(
-                    pregunta="hola", owner_user=client_user, current_user=end_user,
-                    rubro_obj=client_user.rubro, chat_db_context=session_context_db_entry,
-                    tipo_chat=client_user.tipo_chat, anon_id=from_number_cleaned,
-                    chat_session_uuid=chat_session_id_internal, channel="whatsapp",
-                )
+                if is_education_tenant(tenant_profile):
+                    welcome_response_payload = build_education_whatsapp_menu_payload(
+                        tenant_profile,
+                        profile_name=new_name,
+                    )
+                else:
+                    welcome_response_payload = responder_chatboc(
+                        pregunta="hola", owner_user=client_user, current_user=end_user,
+                        rubro_obj=client_user.rubro, chat_db_context=session_context_db_entry,
+                        tipo_chat=client_user.tipo_chat, anon_id=from_number_cleaned,
+                        chat_session_uuid=chat_session_id_internal, channel="whatsapp",
+                    )
                 if isinstance(welcome_response_payload, dict):
                     if effective_base_url:
                         welcome_response_payload.setdefault("_base_url", effective_base_url)
@@ -2136,8 +2380,23 @@ def whatsapp_webhook():
         'fuente': 'error_handler_whatsapp'
     }
 
+    education_direct_payload = _handle_education_whatsapp_turn(
+        session_context=session_context_db_entry,
+        tenant_profile=tenant_profile,
+        owner_user=client_user,
+        end_user=end_user,
+        anon_id=from_number_cleaned,
+        selected_action_id=selected_action_id,
+        selected_option=selected_option,
+        message_body=message_body,
+        uploaded_file_info=uploaded_file_info,
+        location_info=location_info,
+    )
+    if education_direct_payload:
+        bot_response_dict = education_direct_payload
+
     # Check if we should bypass the bot logic because the user selected a URL option
-    bypass_bot_logic = False
+    bypass_bot_logic = bool(education_direct_payload)
     if selected_option and selected_option.get("url"):
         # If the option has a URL, we simply echo it back to the user
         bypass_bot_logic = True
@@ -2173,6 +2432,14 @@ def whatsapp_webhook():
             # It should be passed directly as location data.
 
             kwargs_for_bot = {"source_channel": "whatsapp"}
+            education_context = (
+                session_context_db_entry.context_data.get("education_context")
+                if isinstance(session_context_db_entry.context_data, dict)
+                else None
+            )
+            if education_context:
+                kwargs_for_bot["education_context"] = education_context
+                kwargs_for_bot["vertical"] = "educacion"
             if uploaded_file_info:
                 kwargs_for_bot["uploaded_file_info"] = uploaded_file_info
                 mime_type = uploaded_file_info.get("mime_type", "")

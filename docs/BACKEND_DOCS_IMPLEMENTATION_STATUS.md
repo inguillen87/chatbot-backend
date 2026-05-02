@@ -24,6 +24,21 @@ Contratos alineados con `02_BACKEND_VERTICAL_EDUCACION_CODEX.md`:
 
 Las rutas legacy singulares (`/guardian/lookup`, `/guardian/verify`, `/family/context`) siguen funcionando.
 
+### Educacion + WhatsApp colegios 2026-05-02
+
+Mejora aditiva sobre demo, widget, panel y WhatsApp:
+
+- `services/education_contracts.py` centraliza `education.profile.v1`, `education.quick_menu.v1`, `education.admin_menu.v1`, `education.whatsapp_playbook.v1` y `education.case_intake.v1`.
+- `GET /api/v2/demo/catalog` agrega sector `educacion` sin remover `gobierno` ni `empresas`.
+- `POST /api/v2/demo/session` acepta `sector: "educacion"` y devuelve `workspace.education`, `experience_blueprint.experience_type: "education"` y `chat_bootstrap.payload.vertical: "educacion"`.
+- `GET /api/public/widget-config` y `/api/public/tenants/{slug}/widget-config` exponen `quick_menu` top-level, `education`, `builder_config.education` y tenant `vertical/subvertical`.
+- `GET /api/v1/education/admin/menu` devuelve secciones del panel tenant para colegios.
+- `GET /api/v1/education/whatsapp/playbook` devuelve menu, starters, media intelligence, routing rules y safety para WhatsApp escolar.
+- `GET /api/v1/education/tenant/capabilities` suma `education_profile`, `admin_menu` y `whatsapp_playbook`.
+- WhatsApp detecta tenants educativos, monta menu escolar de bienvenida, guarda `education_context`, pasa contexto al LLM y crea tickets escolares desde menu + detalle/media usando el servicio de tickets actual.
+- `services/chatbot_prompts.py` suma reglas para que `/ask/pyme` actue como asistente escolar cuando llega `education_context`, sin abrir un flujo paralelo.
+- Se agrego handoff frontend: `docs/BACKEND_TO_FRONTEND_SYNC_EDUCATION_WHATSAPP_2026-05-02.md`.
+
 ### Auth/widget
 
 Contratos alineados con `01_chatboc_backend_codex.md`, `widget_integration_plan.md` y handoffs stage 4:
@@ -99,7 +114,7 @@ Pendientes honestos de siguiente ola:
 - Inbox omnicanal premium con presencia real y eventos live socket.
 - Webhooks v2 para recibir eventos de Mercado Pago sin pasar por rutas legacy.
 - Puntos/recompensas con catalogo administrable completo y reglas por segmento.
-- Quick menu educativo completo desde backend.
+- Quick menu educativo avanzado por permisos/rol fino; base colegios ya sale desde backend.
 - Delivery hooks reales para notifications segun proveedor.
 
 Verificacion sync ejecutada:

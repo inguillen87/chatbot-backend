@@ -46,9 +46,10 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         payload = resp.get_json()
         self.assertEqual(payload.get("contract_version"), "demo.catalog.v2")
-        self.assertEqual(payload.get("sectors"), ["gobierno", "empresas"])
+        self.assertEqual(payload.get("sectors"), ["gobierno", "empresas", "educacion"])
         self.assertIn("rubros", payload)
         self.assertIn("sector_groups", payload)
+        self.assertTrue(any(group.get("key") == "educacion" for group in payload.get("sector_groups") or []))
 
         flattened = str(payload).lower()
         self.assertNotIn("password", flattened)
@@ -136,6 +137,39 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertEqual((chat_bootstrap.get("context") or {}).get("sector"), "empresas")
         self.assertEqual((chat_bootstrap.get("start_event") or {}).get("type"), "demo_chat_start")
         self.assertEqual((chat_bootstrap.get("start_event") or {}).get("tenant_slug"), tenant.slug)
+
+    def test_v2_demo_session_supports_education_vertical_without_new_chat_app(self):
+        owner = User(name="Colegio Demo", email="colegio-demo@test.com", password_hash="hash", tipo_chat="pyme")
+        db.session.add(owner)
+        db.session.flush()
+        tenant = TenantProfile(
+            slug="colegio-demo",
+            nombre="Colegio Demo",
+            tipo="pyme",
+            pyme_id=owner.id,
+            is_active=True,
+            vertical="educacion",
+            subvertical="colegio_privado",
+            capabilities_json={"education": {"enabled": True}},
+        )
+        db.session.add(tenant)
+        db.session.commit()
+
+        resp = self.client.post(
+            "/api/v2/demo/session",
+            json={"sector": "educacion", "tenant_slug": tenant.slug},
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.get_json()
+        chat_bootstrap = payload.get("chat_bootstrap") or {}
+        workspace = payload.get("workspace") or {}
+        self.assertEqual(chat_bootstrap.get("endpoint"), "/ask/pyme")
+        self.assertEqual((chat_bootstrap.get("payload") or {}).get("vertical"), "educacion")
+        self.assertEqual((chat_bootstrap.get("context") or {}).get("vertical"), "educacion")
+        self.assertEqual((payload.get("experience_blueprint") or {}).get("experience_type"), "education")
+        self.assertTrue((workspace.get("education") or {}).get("whatsapp_playbook"))
+        self.assertTrue(any("inasistencia" in (item.get("label") or "").lower() for item in workspace.get("quick_replies") or []))
 
     def test_v2_tenant_route_requires_explicit_tenant_context(self):
         resp = self.client.get("/api/v2/tenants/current")

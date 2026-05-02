@@ -14,6 +14,13 @@ from routes.auth import (
 from services.tenant_resolver import resolve_tenant_only
 from services.demo_experience_contract import build_demo_experience_contract
 from services.demo_registry import load_demo_rubros
+from services.education_contracts import (
+    build_education_admin_menu,
+    build_education_profile,
+    build_education_whatsapp_playbook,
+    fold_text,
+    is_education_tenant,
+)
 from routes.v2.tenants import create_demo_session_token
 
 v2_demo_bp = Blueprint("v2_demo", __name__, url_prefix="/api/v2/demo")
@@ -55,6 +62,8 @@ def _tenant_dict(tenant: TenantProfile) -> dict[str, Any]:
         "slug": tenant.slug,
         "nombre": tenant.nombre,
         "tipo": tenant.tipo,
+        "vertical": tenant.vertical,
+        "subvertical": tenant.subvertical,
     }
 
 
@@ -72,14 +81,27 @@ def _safe_demo_rubros() -> list[dict[str, Any]]:
     return items
 
 
+def _first_education_tenant_for_demo() -> TenantProfile | None:
+    candidates = TenantProfile.query.filter_by(is_active=True).order_by(TenantProfile.id.asc()).all()
+    for tenant in candidates:
+        if is_education_tenant(tenant):
+            return tenant
+    return _first_active_tenant_for_demo("pyme")
+
+
 def _normalize_rubro(item: dict[str, Any]) -> dict[str, Any]:
     slug = item.get("slug") or item.get("key") or item.get("tenant_slug")
+    label = item.get("label") or slug
+    text = " ".join([fold_text(slug), fold_text(label), fold_text(item.get("vertical"))])
+    is_education = any(keyword in text for keyword in ("colegio", "escuela", "educacion", "instituto", "jardin"))
     return {
         "slug": slug,
         "key": item.get("key") or slug,
-        "label": item.get("label") or slug,
+        "label": label,
         "tipo_chat": item.get("tipo_chat"),
         "tenant_slug": item.get("tenant_slug") or slug,
+        "vertical": "educacion" if is_education else item.get("vertical"),
+        "sector": "educacion" if is_education else item.get("sector"),
     }
 
 
@@ -172,6 +194,8 @@ def _chat_bootstrap(
     demo_session_id: str,
     quick_replies: list[dict[str, str]],
     media_capabilities: dict[str, Any],
+    vertical: str | None = None,
+    education_profile: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     endpoint = _chat_endpoint_for_tenant_type(tenant_type)
     canonical_rubro = (rubro or tenant.slug or tenant_type or "").strip().lower()
@@ -196,6 +220,8 @@ def _chat_bootstrap(
             "tenant_slug": tenant.slug,
             "rubro": canonical_rubro,
             "rubro_clave": canonical_rubro,
+            "vertical": vertical,
+            "education_profile": education_profile,
             "demo_session_id": demo_session_id,
             "demo_mode": True,
         },
@@ -204,12 +230,14 @@ def _chat_bootstrap(
             "rubro": canonical_rubro,
             "tenant_slug": tenant.slug,
             "tenant_tipo": tenant_type,
+            "vertical": vertical,
             "demo_session_id": demo_session_id,
         },
         "start_event": {
             "type": "demo_chat_start",
             "tenant_slug": tenant.slug,
             "tipo_chat": tenant_type,
+            "vertical": vertical,
             "rubro": canonical_rubro,
         },
         "initial_prompt": first_prompt,
@@ -233,15 +261,35 @@ def demo_catalog_v2():
         rubros = [_normalize_rubro(item) for item in _safe_demo_rubros()]
     gobierno = [r for r in rubros if (r.get("tipo_chat") or "").lower() == "municipio"]
     empresas = [r for r in rubros if (r.get("tipo_chat") or "").lower() == "pyme"]
+    educacion = [
+        r
+        for r in rubros
+        if (r.get("vertical") or "").lower() == "educacion"
+        or (r.get("sector") or "").lower() == "educacion"
+        or any(keyword in fold_text(r.get("label") or r.get("slug")) for keyword in ("colegio", "escuela", "educacion", "instituto", "jardin"))
+    ]
+    if not educacion:
+        educacion = [
+            {
+                "slug": "colegios",
+                "key": "colegios",
+                "label": "Colegios",
+                "tipo_chat": "pyme",
+                "tenant_slug": "colegios",
+                "vertical": "educacion",
+                "sector": "educacion",
+            }
+        ]
 
     return jsonify(
         {
             "contract_version": "demo.catalog.v2",
-            "sectors": ["gobierno", "empresas"],
+            "sectors": ["gobierno", "empresas", "educacion"],
             "rubros": rubros,
             "sector_groups": [
                 {"key": "gobierno", "label": "Gobiernos y municipios", "rubros": gobierno},
                 {"key": "empresas", "label": "Empresas y pymes", "rubros": empresas},
+                {"key": "educacion", "label": "Colegios e instituciones educativas", "rubros": educacion},
             ],
         }
     )
@@ -254,8 +302,8 @@ def demo_session_v2():
     rubro = str(data.get("rubro") or "").strip().lower()
     tenant_slug = str(data.get("tenant_slug") or "").strip().lower()
 
-    if sector not in {"gobierno", "empresas"}:
-        return _error_response("sector debe ser 'gobierno' o 'empresas'", 400, "validation_error", "send_valid_sector")
+    if sector not in {"gobierno", "empresas", "educacion"}:
+        return _error_response("sector debe ser 'gobierno', 'empresas' o 'educacion'", 400, "validation_error", "send_valid_sector")
 
     if not rubro and not tenant_slug:
         return _error_response("rubro o tenant_slug es obligatorio", 400, "validation_error", "send_rubro_or_tenant_slug")
@@ -276,13 +324,24 @@ def demo_session_v2():
             except Exception:
                 tenant = None
         if not tenant:
-            requested_tipo = "municipio" if sector == "gobierno" else "pyme"
-            tenant = _first_active_tenant_for_demo(requested_tipo)
+            if sector == "educacion":
+                tenant = _first_education_tenant_for_demo()
+            else:
+                requested_tipo = "municipio" if sector == "gobierno" else "pyme"
+                tenant = _first_active_tenant_for_demo(requested_tipo)
         if not tenant:
             return _error_response("No se pudo resolver tenant demo", 404, "tenant_resolution_failed", "send_tenant_slug")
 
     tenant_type = (tenant.tipo or "pyme").strip().lower()
-    experience = build_demo_experience_contract(tenant_type=tenant_type, rubro_label=tenant.nombre)
+    education_profile = build_education_profile(tenant, rubro_label=tenant.nombre)
+    vertical = "educacion" if sector == "educacion" or education_profile.get("is_education") else tenant.vertical
+    experience = build_demo_experience_contract(
+        tenant_type=tenant_type,
+        rubro_label=tenant.nombre,
+        vertical=vertical,
+        subvertical=tenant.subvertical,
+        education_profile=education_profile if education_profile.get("is_education") else None,
+    )
     onboarding = experience.get("guided_onboarding") or {}
     quick_replies = _quick_reply_items(onboarding.get("starter_prompts") or [])
     media_capabilities = experience.get("media_capabilities") or {}
@@ -298,7 +357,17 @@ def demo_session_v2():
         demo_session_id=demo_session_id,
         quick_replies=quick_replies,
         media_capabilities=media_capabilities,
+        vertical=vertical,
+        education_profile=education_profile if education_profile.get("is_education") else None,
     )
+    education_payload = None
+    if education_profile.get("is_education"):
+        education_payload = {
+            "profile": education_profile,
+            "whatsapp_playbook": build_education_whatsapp_playbook(tenant),
+            "admin_menu": build_education_admin_menu(tenant),
+            "quick_menu": experience.get("education_quick_menu") or [],
+        }
 
     workspace = {
         "title": tenant.nombre or "Demo Chatboc",
@@ -315,6 +384,7 @@ def demo_session_v2():
         "conversion_ctas": conversion_ctas,
         "animation_tokens": animation_tokens,
         "chat_bootstrap": chat_bootstrap,
+        "education": education_payload,
     }
 
     return _json_response(
@@ -334,6 +404,7 @@ def demo_session_v2():
             "media_capabilities": media_capabilities,
             "conversion_ctas": conversion_ctas,
             "animation_tokens": animation_tokens,
+            "education": education_payload,
             "welcome_message": workspace["welcome_message"],
             "value_cards": workspace["value_cards"],
             "handoff_labels": workspace["handoff_labels"],
@@ -346,6 +417,7 @@ def demo_session_v2():
                 "media_capabilities": media_capabilities,
                 "conversion_ctas": conversion_ctas,
                 "chat_bootstrap": chat_bootstrap,
+                "education": education_payload,
             },
             "quick_replies": quick_replies,
         }

@@ -14,6 +14,8 @@ class PublicResolverQuickMenuTestCase(unittest.TestCase):
         menu = _quick_menu_for_widget(tenant)
         intents = [item.get("intent") for item in menu]
         self.assertIn("asistencia_alumno", intents)
+        self.assertIn("justificar_inasistencia", intents)
+        self.assertIn("convivencia_escolar", intents)
         self.assertIn("tramites_secretaria", intents)
         self.assertEqual(menu[-1].get("institution_type"), "public")
 

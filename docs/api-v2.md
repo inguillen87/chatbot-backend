@@ -24,6 +24,8 @@ Respuesta:
 ```
 
 ### Demo
+Nota 2026-05-02: demo v2 tambien soporta sector `educacion` para colegios. El chat sigue reutilizando `/ask/pyme` o `/ask/municipio` segun tenant, y la respuesta agrega `education`, `chat_bootstrap.payload.vertical` y `experience_blueprint.experience_type="education"` cuando corresponde.
+
 - `GET /api/v2/demo/catalog`
   - Devuelve catálogo limpio por sectores (`gobierno`, `empresas`) con rubros demo públicos.
   - No incluye contraseñas ni tokens administrativos.

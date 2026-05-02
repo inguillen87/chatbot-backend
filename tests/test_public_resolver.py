@@ -234,6 +234,7 @@ class PublicResolverTest(unittest.TestCase):
         quick_menu = widget.get("quick_menu") or []
         self.assertTrue(any(item.get("intent") == "iniciar_reclamo" for item in quick_menu))
         self.assertEqual(builder.get("quick_menu"), quick_menu)
+        self.assertEqual(payload.get("quick_menu"), quick_menu)
         experience = widget.get("experience_blueprint") or {}
         self.assertEqual((experience.get("tenant_type") or "").lower(), "municipio")
         self.assertEqual(experience.get("version"), "2026-05-agent-experience-v2")

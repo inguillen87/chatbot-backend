@@ -2,9 +2,61 @@ from __future__ import annotations
 
 from typing import Any
 
+from services.education_contracts import education_quick_menu, fold_text
+
+
+def _is_education_experience(
+    *,
+    tenant_type: str,
+    rubro_label: str | None = None,
+    vertical: str | None = None,
+    education_profile: dict[str, Any] | None = None,
+) -> bool:
+    if isinstance(education_profile, dict) and education_profile.get("is_education"):
+        return True
+    if fold_text(vertical) in {"educacion", "education"}:
+        return True
+    haystack = " ".join([fold_text(tenant_type), fold_text(rubro_label)])
+    return any(keyword in haystack for keyword in ("colegio", "escuela", "educacion", "instituto", "jardin"))
+
 
 def _quick_actions_for_tipo(tipo: str) -> list[dict[str, Any]]:
     normalized = (tipo or "").strip().lower()
+    if normalized == "educacion":
+        return [
+            {
+                "id": "qa_asistencia",
+                "label": "Asistencia",
+                "description": "Consultar o justificar inasistencias con texto, audio o certificado.",
+                "intent": "justificar_inasistencia",
+                "icon": "calendar-check",
+                "cta_label": "Probar asistencia",
+            },
+            {
+                "id": "qa_comunicados",
+                "label": "Comunicados",
+                "description": "Responder dudas de familias sobre mensajes, cursos y fechas.",
+                "intent": "comunicados_familias",
+                "icon": "megaphone",
+                "cta_label": "Ver comunicados",
+            },
+            {
+                "id": "qa_secretaria",
+                "label": "Secretaria",
+                "description": "Crear seguimiento para tramites, certificados y documentacion.",
+                "intent": "tramites_secretaria",
+                "icon": "folder-check",
+                "cta_label": "Abrir tramite",
+            },
+            {
+                "id": "qa_convivencia",
+                "label": "Convivencia",
+                "description": "Derivar situaciones sensibles con contexto y cuidado.",
+                "intent": "convivencia_escolar",
+                "icon": "shield-alert",
+                "cta_label": "Derivar",
+            },
+        ]
     if normalized == "municipio":
         return [
             {
@@ -86,6 +138,13 @@ def _quick_actions_for_tipo(tipo: str) -> list[dict[str, Any]]:
 
 def _starter_prompts_for_tipo(tipo: str) -> list[str]:
     normalized = (tipo or "").strip().lower()
+    if normalized == "educacion":
+        return [
+            "Quiero justificar una inasistencia.",
+            "Te mando una foto del certificado medico.",
+            "Necesito consultar comunicados del curso.",
+            "Quiero hablar con secretaria por admisiones.",
+        ]
     if normalized == "municipio":
         return [
             "Quiero iniciar un reclamo por alumbrado publico.",
@@ -101,6 +160,18 @@ def _starter_prompts_for_tipo(tipo: str) -> list[str]:
 
 def _agent_persona_for_tipo(tipo: str, rubro: str) -> dict[str, Any]:
     normalized = (tipo or "").strip().lower()
+    if normalized == "educacion":
+        return {
+            "name": f"Asistente escolar {rubro}",
+            "tone": "calido, claro, prudente y organizado",
+            "promise": "Acompana a familias, alumnos y personal del colegio sin perder trazabilidad.",
+            "do": [
+                "pedir alumno, curso y fecha solo cuando haga falta",
+                "confirmar antes de crear casos",
+                "derivar convivencia y datos sensibles a una persona",
+            ],
+            "avoid": ["exponer datos sensibles", "diagnosticar salud", "prometer resoluciones no configuradas"],
+        }
     if normalized == "municipio":
         return {
             "name": "Asistente ciudadano",
@@ -120,6 +191,18 @@ def _agent_persona_for_tipo(tipo: str, rubro: str) -> dict[str, Any]:
 
 def _first_visit_for_tipo(tipo: str) -> dict[str, Any]:
     normalized = (tipo or "").strip().lower()
+    if normalized == "educacion":
+        return {
+            "headline": "Hola, soy el asistente inteligente del colegio.",
+            "subheadline": "Puedo ayudar con asistencia, comunicados, agenda, documentacion y secretaria.",
+            "primary_action": {"id": "start_attendance", "label": "Justificar inasistencia", "intent": "justificar_inasistencia"},
+            "secondary_action": {"id": "ask_secretary", "label": "Consultar secretaria", "intent": "tramites_secretaria"},
+            "steps": [
+                {"id": "choose", "label": "Elegi una accion escolar"},
+                {"id": "context", "label": "Pedimos solo los datos necesarios"},
+                {"id": "followup", "label": "Queda registrado para seguimiento"},
+            ],
+        }
     if normalized == "municipio":
         return {
             "headline": "Hola, soy tu mesa de ayuda inteligente.",
@@ -147,6 +230,30 @@ def _first_visit_for_tipo(tipo: str) -> dict[str, Any]:
 
 def _sample_conversations_for_tipo(tipo: str) -> list[dict[str, Any]]:
     normalized = (tipo or "").strip().lower()
+    if normalized == "educacion":
+        return [
+            {
+                "id": "sample_absence",
+                "title": "Inasistencia con certificado",
+                "user_message": "Mi hija falto hoy, te mando el certificado.",
+                "assistant_goal": "Leer adjunto, pedir alumno/curso si falta y crear seguimiento.",
+                "intent": "justificar_inasistencia",
+            },
+            {
+                "id": "sample_communications",
+                "title": "Comunicado por curso",
+                "user_message": "No me llego el comunicado de la reunion de 3A.",
+                "assistant_goal": "Ubicar curso/tema y orientar o derivar a secretaria.",
+                "intent": "comunicados_familias",
+            },
+            {
+                "id": "sample_admissions",
+                "title": "Consulta de admisiones",
+                "user_message": "Quiero consultar vacantes para primer grado.",
+                "assistant_goal": "Pedir nivel y contacto, y dejar lead/caso para admisiones.",
+                "intent": "admisiones_colegio",
+            },
+        ]
     if normalized == "municipio":
         return [
             {
@@ -198,6 +305,12 @@ def _sample_conversations_for_tipo(tipo: str) -> list[dict[str, Any]]:
 
 def _trust_signals_for_tipo(tipo: str) -> list[dict[str, str]]:
     normalized = (tipo or "").strip().lower()
+    if normalized == "educacion":
+        return [
+            {"id": "privacy", "label": "Datos cuidados", "detail": "Familias y alumnos se tratan con contexto y privacidad."},
+            {"id": "traceability", "label": "Seguimiento escolar", "detail": "Cada tramite puede convertirse en caso con historial."},
+            {"id": "omnichannel", "label": "WhatsApp y panel", "detail": "El colegio ve el mismo contexto que llega por el chat."},
+        ]
     if normalized == "municipio":
         return [
             {"id": "traceable", "label": "Casos trazables", "detail": "Cada reclamo queda con estado y contexto."},
@@ -216,6 +329,9 @@ def _lead_capture_for_tipo(tipo: str) -> dict[str, Any]:
     if normalized == "municipio":
         title = "Dejar contacto para seguimiento"
         trigger_intents = ["derivar_humano", "iniciar_reclamo", "consulta_estado_ticket"]
+    elif normalized == "educacion":
+        title = "Dejar contacto para secretaria"
+        trigger_intents = ["admisiones_colegio", "tramites_secretaria", "derivar_humano", "convivencia_escolar"]
     else:
         title = "Recibir propuesta o continuar compra"
         trigger_intents = ["crear_pedido", "derivar_humano", "checkout_intent"]
@@ -236,9 +352,14 @@ def _lead_capture_for_tipo(tipo: str) -> dict[str, Any]:
 
 def _media_capabilities_for_tipo(tipo: str) -> dict[str, Any]:
     normalized = (tipo or "").strip().lower()
-    primary_business_action = "ticket" if normalized == "municipio" else "pedido"
-    location_intents = ["iniciar_reclamo", "reclamo_con_ubicacion"] if normalized == "municipio" else ["crear_pedido", "coordinar_envio"]
-    image_intents = ["reclamo_con_foto", "evidencia_visual"] if normalized == "municipio" else ["consulta_producto", "soporte_visual"]
+    if normalized == "educacion":
+        primary_business_action = "school_case"
+        location_intents = ["transporte_escolar", "sede_mas_cercana", "retiro_alumno", "mantenimiento"]
+        image_intents = ["certificado_medico", "comprobante_pago", "autorizacion_firmada", "evidencia_convivencia"]
+    else:
+        primary_business_action = "ticket" if normalized == "municipio" else "pedido"
+        location_intents = ["iniciar_reclamo", "reclamo_con_ubicacion"] if normalized == "municipio" else ["crear_pedido", "coordinar_envio"]
+        image_intents = ["reclamo_con_foto", "evidencia_visual"] if normalized == "municipio" else ["consulta_producto", "soporte_visual"]
 
     return {
         "version": "media.capabilities.v1",
@@ -275,7 +396,7 @@ def _media_capabilities_for_tipo(tipo: str) -> dict[str, Any]:
                 "multipart_field": "audio_file",
                 "accept": ["audio/webm", "audio/ogg", "audio/mpeg", "audio/wav", "audio/mp4"],
                 "max_seconds": 120,
-                "intents": ["nota_de_voz", "consulta_rapida", "derivar_humano"],
+                "intents": ["nota_de_voz", "consulta_rapida", "derivar_humano"] if normalized != "educacion" else ["justificar_inasistencia", "consulta_familia", "derivar_humano"],
                 "expected_bot_behavior": "transcribir, responder sobre la transcripcion y conservar contexto de audio.",
             },
             "location": {
@@ -308,8 +429,9 @@ def _media_capabilities_for_tipo(tipo: str) -> dict[str, Any]:
             "quick_replies": True,
             "cards": True,
             "attachments": True,
-            "ticket_cta": normalized == "municipio",
-            "order_cta": normalized != "municipio",
+            "ticket_cta": normalized in {"municipio", "educacion"},
+            "order_cta": normalized == "pyme",
+            "school_case_cta": normalized == "educacion",
             "lead_cta": True,
             "handoff_cta": True,
         },
@@ -361,6 +483,41 @@ def _conversion_ctas_for_tipo(tipo: str) -> dict[str, Any]:
                 "intent": "lead_capture",
                 "endpoint": "/api/public/lead-capture",
                 "show_when": ["demo_interest", "support_followup"],
+                "style": "accent",
+            },
+        ]
+    elif normalized == "educacion":
+        actions = [
+            {
+                "id": "create_school_case",
+                "label": "Crear caso escolar",
+                "intent": "tramites_secretaria",
+                "endpoint": "/ask",
+                "show_when": ["student_context_ready", "media_attached", "high_intent"],
+                "style": "primary",
+            },
+            {
+                "id": "justify_absence",
+                "label": "Justificar inasistencia",
+                "intent": "justificar_inasistencia",
+                "endpoint": "/ask",
+                "show_when": ["certificate_attached", "attendance_intent"],
+                "style": "primary",
+            },
+            {
+                "id": "talk_secretary",
+                "label": "Hablar con secretaria",
+                "intent": "derivar_humano",
+                "endpoint": "/api/v2/inbox/omnichannel/actions",
+                "show_when": ["sensitive_case", "handoff_requested", "guardian_needs_help"],
+                "style": "secondary",
+            },
+            {
+                "id": "capture_admission_lead",
+                "label": "Consultar admisiones",
+                "intent": "lead_capture",
+                "endpoint": "/api/public/lead-capture",
+                "show_when": ["admissions_interest", "new_family"],
                 "style": "accent",
             },
         ]
@@ -461,6 +618,8 @@ def _agent_copilot_for_tipo(tipo: str) -> dict[str, Any]:
     normalized = (tipo or "").strip().lower()
     if normalized == "municipio":
         suggestions = ["Responder con proximo paso", "Asignar area", "Pedir ubicacion", "Cerrar caso"]
+    elif normalized == "educacion":
+        suggestions = ["Pedir alumno/curso", "Asignar secretaria", "Solicitar certificado", "Derivar convivencia"]
     else:
         suggestions = ["Sugerir producto", "Preparar checkout", "Ofrecer descuento configurado", "Derivar a ventas"]
     return {
@@ -476,16 +635,35 @@ def build_demo_experience_contract(
     tenant_type: str,
     rubro_label: str | None = None,
     max_messages: int = 10,
+    vertical: str | None = None,
+    subvertical: str | None = None,
+    education_profile: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     tipo = (tenant_type or "").strip().lower() or "pyme"
     rubro = (rubro_label or tipo.title()).strip()
-    first_visit = _first_visit_for_tipo(tipo)
-    starter_prompts = _starter_prompts_for_tipo(tipo)
+    is_education = _is_education_experience(
+        tenant_type=tipo,
+        rubro_label=rubro,
+        vertical=vertical,
+        education_profile=education_profile,
+    )
+    experience_type = "educacion" if is_education else tipo
+    first_visit = _first_visit_for_tipo(experience_type)
+    starter_prompts = _starter_prompts_for_tipo(experience_type)
+    quick_menu = education_quick_menu(
+        institution_type=(education_profile or {}).get("institution_type") or "general",
+        surface="demo",
+    ) if is_education else []
 
     return {
         "version": "2026-05-agent-experience-v2",
         "tenant_type": tipo,
-        "agent_persona": _agent_persona_for_tipo(tipo, rubro),
+        "experience_type": "education" if is_education else tipo,
+        "vertical": "educacion" if is_education else vertical,
+        "subvertical": subvertical,
+        "education_profile": education_profile if is_education else None,
+        "education_quick_menu": quick_menu,
+        "agent_persona": _agent_persona_for_tipo(experience_type, rubro),
         "first_visit": first_visit,
         "guided_onboarding": {
             "autostart_chat": True,
@@ -503,15 +681,15 @@ def build_demo_experience_contract(
             "subtitle": "Proba en tiempo real WhatsApp, widget y automatizaciones sin configurar nada.",
             "badge": f"Demo {max_messages} mensajes",
         },
-        "quick_actions": _quick_actions_for_tipo(tipo),
-        "sample_conversations": _sample_conversations_for_tipo(tipo),
-        "trust_signals": _trust_signals_for_tipo(tipo),
-        "lead_capture": _lead_capture_for_tipo(tipo),
-        "media_capabilities": _media_capabilities_for_tipo(tipo),
-        "conversion_ctas": _conversion_ctas_for_tipo(tipo),
+        "quick_actions": _quick_actions_for_tipo(experience_type),
+        "sample_conversations": _sample_conversations_for_tipo(experience_type),
+        "trust_signals": _trust_signals_for_tipo(experience_type),
+        "lead_capture": _lead_capture_for_tipo(experience_type),
+        "media_capabilities": _media_capabilities_for_tipo(experience_type),
+        "conversion_ctas": _conversion_ctas_for_tipo(experience_type),
         "animation_tokens": _animation_tokens(),
-        "empty_states": _empty_states_for_tipo(tipo),
-        "agent_copilot": _agent_copilot_for_tipo(tipo),
+        "empty_states": _empty_states_for_tipo(experience_type),
+        "agent_copilot": _agent_copilot_for_tipo(experience_type),
         "journeys": [
             {
                 "id": "journey_whatsapp_activation",
@@ -538,32 +716,58 @@ def build_demo_experience_contract(
         "channel_playbooks": {
             "whatsapp": {
                 "activation_phrase": "join brief-yesterday",
-                "starter_messages": [
+                "starter_messages": (
+                    [
+                        "Quiero justificar una inasistencia",
+                        "Te mando una foto del certificado medico",
+                        "Necesito consultar comunicados del curso",
+                        "Quiero hablar con secretaria",
+                    ]
+                    if is_education
+                    else [
                     "Quiero crear un reclamo",
                     "Te mando una foto del problema",
                     "Necesito precio por mayor",
                     "Quiero subir mi catalogo en PDF",
-                ],
+                    ]
+                ),
                 "media_checks": ["text", "audio", "image", "location", "file"],
             },
             "widget_chat": {
-                "starter_messages": [
+                "starter_messages": (
+                    [
+                        "Necesito ayuda con asistencia",
+                        "Quiero ver agenda academica",
+                        "Tengo un comprobante para enviar",
+                        "Quiero consultar admisiones",
+                    ]
+                    if is_education
+                    else [
                     "Mostrame promociones vigentes",
                     "Necesito un pedido rapido",
                     "Quiero cargar un catalogo en Excel",
                     "Quiero soporte con ubicacion",
-                ],
+                    ]
+                ),
                 "media_checks": ["text", "audio", "image", "location", "file"],
             },
         },
         "conversion_pitch": {
-            "title": "Listo para vender en minutos",
-            "bullets": [
-                "Menu inteligente por rubro",
-                "Automatizacion de reclamos, pedidos y sugerencias",
-                "Soporte multimodal: audio, imagen, ubicacion y archivos",
-            ],
-            "cta_label": "Hablar con ventas",
+            "title": "Listo para atender familias desde el primer dia" if is_education else "Listo para vender en minutos",
+            "bullets": (
+                [
+                    "Menu escolar para WhatsApp, widget y panel",
+                    "Casos de secretaria, asistencia y convivencia con trazabilidad",
+                    "Soporte multimodal: audio, imagen, ubicacion y archivos",
+                ]
+                if is_education
+                else [
+                    "Menu inteligente por rubro",
+                    "Automatizacion de reclamos, pedidos y sugerencias",
+                    "Soporte multimodal: audio, imagen, ubicacion y archivos",
+                ]
+            ),
+            "cta_label": "Hablar con admisiones" if is_education else "Hablar con ventas",
         },
         "analytics_kpis": [
             "tiempo_respuesta_promedio",

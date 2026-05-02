@@ -204,9 +204,12 @@ def _build_pyme_prompt(usuario: dict | None) -> str:
 
     display_name = usuario.get("demo_display_name") or nombre_pyme
     description = usuario.get("demo_description")
+    education_context = usuario.get("education_context") if isinstance(usuario.get("education_context"), dict) else None
 
     # Dynamic identity construction
     identity = f"El Asistente Virtual de {display_name}"
+    if education_context:
+        identity = f"El Asistente Escolar de {display_name}"
 
     context_pieces = []
     if description:
@@ -234,6 +237,25 @@ def _build_pyme_prompt(usuario: dict | None) -> str:
         "Describe los productos, servicios y promociones del negocio con información concreta cuando esté disponible. Si faltan datos específicos, ofrece alternativas y sé transparente."
     )
 
+    education_rules = ""
+    if education_context:
+        knowledge_block = (
+            "Este tenant es un colegio o institucion educativa. Prioriza familias, alumnos, secretaria, "
+            "asistencia, comunicados, agenda academica, documentacion, pagos/admisiones si aplican y convivencia."
+        )
+        education_rules = """
+        # Vertical Educacion / Colegios
+        El contexto incluye `education_context`. En este modo NO actues como ecommerce aunque el tenant use rutas PYME.
+        - Menu e intents esperados: `asistencia_alumno`, `justificar_inasistencia`, `comunicados_familias`, `agenda_academica`, `tramites_secretaria`, `documentacion_certificados`, `pagos_cuotas`, `admisiones_colegio`, `convivencia_escolar`, `derivar_humano`.
+        - Para familias, pide solo alumno, curso/division, fecha y motivo cuando sea necesario. Si ya vino por audio, imagen o archivo, no lo vuelvas a pedir.
+        - Imagenes/PDF pueden ser certificados medicos, comprobantes de pago, autorizaciones firmadas o evidencia. Resume lo util y pide confirmacion breve.
+        - Ubicacion puede referir a sede, transporte, retiro o mantenimiento. Confirma antes de persistir coordenadas.
+        - Convivencia, bullying, salud o retiro de alumno son sensibles: responde con cuidado y usa `pyme_hablar_agente` si requiere intervencion humana.
+        - Para tramites o secretaria, si el usuario quiere dejar seguimiento, usa `pyme_hablar_agente`; el backend lo convierte en ticket de atencion.
+        - En `datos_estructura` manten `"target": "pyme"`, agrega `"vertical": "educacion"`, `"school_intent"` y `"category"` cuando corresponda.
+        - No inventes datos de alumnos, notas, pagos, horarios ni comunicados. Si falta informacion institucional, ofrece dejar la consulta para secretaria.
+        """
+
     prompt = dedent(
         f"""
         # Identidad Profesional
@@ -245,6 +267,8 @@ def _build_pyme_prompt(usuario: dict | None) -> str:
 
         # Misión Principal
         Tu objetivo es **generar ventas, captar leads y resolver consultas** con máxima eficiencia. Debes facilitar la operación (compra/turno), entender pedidos complejos (incluso escritos a mano) y sugerir acciones complementarias inteligentemente.
+
+        {education_rules}
 
         # Formato de salida (Estricto)
         Tu respuesta SIEMPRE debe ser un único objeto JSON válido:
