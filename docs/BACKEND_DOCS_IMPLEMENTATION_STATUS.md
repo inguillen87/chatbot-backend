@@ -201,6 +201,21 @@ Mejora aditiva para analytics, tickets/reclamos, WhatsApp, chats en vivo, emplea
 - Heatmap combina capas `tickets`, `surveys` y `analytics_events`, con `points`, `cells`, `hotspots`, `bounds` y `render_contract` para MapLibre.
 - `trends` compara el periodo actual contra el periodo anterior del mismo tamano.
 - `next_best_actions` recomienda acciones proactivas: revisar vencidos, asignar tickets, cubrir empleados, impulsar votaciones, monitorear WhatsApp, revisar handoffs e inspeccionar hotspots.
+
+## Landing UX/UI 2026-05-02
+
+Contrato publico para redisenar landing y paginas aledanas desde backend, sin hardcodear copy ni marca en React:
+
+- `services/landing_experience_contract.py` agrega `public.landing_experience.v1`.
+- `GET /api/public/landing-experience` devuelve brand, logo rules, tokens de color/tipografia/layout, motion, navigation, hero, secciones, paginas aledanas, proof bar, FAQ y CTAs.
+- Soporta plataforma default y modo white-label por `tenant`, `slug` o `widget_token`.
+- Paginas cubiertas por contrato: `/demo`, `/pymes`, `/municipios`, `/colegios`, `/encuestas`, `/widget`.
+- Frontend handoff: `docs/BACKEND_TO_FRONTEND_SYNC_LANDING_UXUI_2026-05-02.md`.
+
+Verificacion Landing UX/UI ejecutada:
+
+- `tests.test_landing_experience_contract`
+- `tests.test_public_resolver_widget_config_contract`
 - Se agrego handoff frontend: `docs/BACKEND_TO_FRONTEND_SYNC_OPERATIONS_2026-05-02.md`.
 - Se agrego handoff puntual para frontend: `docs/BACKEND_TO_FRONTEND_SYNC_CHAT_BOOTSTRAP_AND_FRESHNESS_2026-05-02.md`.
 

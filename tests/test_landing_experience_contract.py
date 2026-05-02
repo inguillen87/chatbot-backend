@@ -1,0 +1,52 @@
+import unittest
+
+from services.landing_experience_contract import (
+    LANDING_EXPERIENCE_CONTRACT_VERSION,
+    build_landing_experience_contract,
+)
+
+
+class _Tenant:
+    slug = "colegio-demo"
+    tipo = "pyme"
+    nombre = "Colegio Demo"
+    logo_url = "https://example.com/logo.png"
+    vertical = "educacion"
+    subvertical = "colegio"
+    tema = {"primary": "#0ea5e9", "accent": "#22c55e"}
+    configuracion = {"education": {"enabled": True}}
+    capabilities_json = {"education": {"enabled": True}}
+
+
+class LandingExperienceContractTestCase(unittest.TestCase):
+    def test_platform_landing_contract_has_core_ux_payload(self):
+        payload = build_landing_experience_contract()
+
+        self.assertEqual(payload["contract_version"], LANDING_EXPERIENCE_CONTRACT_VERSION)
+        self.assertEqual(payload["experience_kind"], "platform")
+        self.assertEqual(payload["hero"]["h1"], "Chatboc")
+        self.assertTrue(payload["hero"]["media"]["assets"])
+        self.assertIn("primary", payload["design_tokens"]["color"])
+        self.assertIn("accent", payload["design_tokens"]["color"])
+        self.assertIn("warm", payload["design_tokens"]["color"])
+        self.assertEqual(payload["motion"]["contract_version"], "landing.motion.v1")
+
+        page_ids = {page["id"] for page in payload["adjacent_pages"]}
+        self.assertIn("demo", page_ids)
+        self.assertIn("colegios", page_ids)
+        self.assertIn("widget", page_ids)
+
+    def test_tenant_landing_contract_uses_white_label_brand(self):
+        payload = build_landing_experience_contract(_Tenant(), page="colegios")
+
+        self.assertEqual(payload["experience_kind"], "educacion")
+        self.assertTrue(payload["tenant"]["white_label"])
+        self.assertEqual(payload["tenant"]["slug"], "colegio-demo")
+        self.assertEqual(payload["brand"]["wordmark"], "Colegio Demo")
+        self.assertEqual(payload["brand"]["logo"]["source"], "tenant")
+        self.assertEqual(payload["selected_page"], "colegios")
+        self.assertEqual(payload["design_tokens"]["color"]["primary"], "#0ea5e9")
+
+
+if __name__ == "__main__":
+    unittest.main()

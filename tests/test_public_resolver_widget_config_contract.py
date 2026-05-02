@@ -34,6 +34,26 @@ class PublicResolverWidgetConfigContractTestCase(unittest.TestCase):
         self.assertEqual(body["contract_version"], WIDGET_CONFIG_CONTRACT_VERSION)
         self.assertEqual(body["tenant"]["slug"], "colegio-san-martin")
 
+    def test_landing_experience_without_tenant_returns_platform_contract(self):
+        response = self.client.get("/api/public/landing-experience")
+
+        self.assertEqual(response.status_code, 200)
+        body = response.get_json()
+        self.assertEqual(body["contract_version"], "public.landing_experience.v1")
+        self.assertEqual(body["experience_kind"], "platform")
+        self.assertEqual(body["hero"]["h1"], "Chatboc")
+
+    def test_landing_experience_with_tenant_uses_resolver(self):
+        with patch("routes.public_resolver.resolve_tenant_only", return_value=_FakeTenant()):
+            response = self.client.get("/api/public/landing-experience?tenant=colegio-san-martin&page=colegios")
+
+        self.assertEqual(response.status_code, 200)
+        body = response.get_json()
+        self.assertEqual(body["contract_version"], "public.landing_experience.v1")
+        self.assertEqual(body["tenant"]["slug"], "colegio-san-martin")
+        self.assertTrue(body["tenant"]["white_label"])
+        self.assertEqual(body["selected_page"], "colegios")
+
     def test_widget_config_not_found_uses_standard_error_contract(self):
         with patch(
             "routes.public_resolver.resolve_tenant_only",

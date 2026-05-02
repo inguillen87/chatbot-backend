@@ -23,6 +23,10 @@ from routes.pwa_public import _build_public_cart_url
 from utils.auth_helpers import _is_jwt_token
 from services.demo_registry import load_demo_rubros
 from services.demo_experience_contract import build_demo_experience_contract
+from services.landing_experience_contract import (
+    LANDING_EXPERIENCE_CONTRACT_VERSION,
+    build_landing_experience_contract,
+)
 from services.education_contracts import (
     build_education_admin_menu,
     build_education_profile,
@@ -1356,6 +1360,48 @@ def tenant_profile():
         response.set_cookie(**cookie_args)
 
     return _log_widget_public_request(response, tenant, entity_token=widget_token)
+
+
+@public_resolver_bp.route(
+    "/landing-experience", methods=["GET", "OPTIONS"], provide_automatic_options=False
+)
+@cross_origin(origins="*", automatic_options=False)
+def landing_experience():
+    """Public contract for landing and adjacent marketing/product pages."""
+
+    if request.method == "OPTIONS":
+        return jsonify({"ok": True})
+
+    widget_token = _extract_widget_token()
+    tenant_slug = request.args.get("tenant") or request.args.get("slug")
+    whatsapp_destination_number = request.args.get("whatsapp_destination_number")
+    tenant = None
+
+    if tenant_slug or widget_token or whatsapp_destination_number:
+        try:
+            tenant = resolve_tenant_only(
+                whatsapp_destination_number=whatsapp_destination_number,
+                widget_token=widget_token,
+                tenant_slug=tenant_slug,
+                require_explicit_slug=bool(tenant_slug),
+            )
+        except TenantResolutionError as exc:
+            return (
+                jsonify(
+                    {
+                        "contract_version": LANDING_EXPERIENCE_CONTRACT_VERSION,
+                        "error": {"code": 404, "message": str(exc)},
+                    }
+                ),
+                404,
+            )
+
+    return jsonify(
+        build_landing_experience_contract(
+            tenant,
+            page=request.args.get("page"),
+        )
+    )
 
 
 @public_resolver_bp.route(
