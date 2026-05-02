@@ -43,6 +43,15 @@ Respuesta:
       "demo_session_id": "...",
       "tenant": {"id": 1, "slug": "...", "nombre": "...", "tipo": "..."},
       "chat_seed": {"entry_prompt": "...", "autostart_chat": true, "open_widget": true},
+      "chat_bootstrap": {
+        "contract_version": "demo.chat_bootstrap.v1",
+        "endpoint": "/ask/municipio|/ask/pyme",
+        "fallback_endpoint": "/ask",
+        "headers": {"X-Chat-Session-Id": "...", "X-Tenant-Slug": "..."},
+        "query": {"tenant_slug": "..."},
+        "payload": {"pregunta": "", "tipo_chat": "...", "tenant_slug": "...", "rubro": "...", "demo_mode": true},
+        "supports": {"text": true, "image": true, "audio": true, "location": true, "file": true}
+      },
       "quick_replies": ["..."]
     }
     ```
@@ -152,5 +161,16 @@ Reglas:
 - `GET /api/v2/analytics/tickets`
 - `GET /api/v2/analytics/surveys`
 - `GET /api/v2/analytics/funnel`
+- `GET /api/v2/analytics/operations`
+- `GET /api/v2/analytics/operations/dashboard`
+- `GET /api/v2/analytics/operations/heatmap`
+- `GET /api/v2/analytics/operations/action-center`
+- `GET /api/v2/analytics/operations/freshness`
+
+Notas operativas:
+- `operations.dashboard.v1` agrega tickets, encuestas, chats, WhatsApp, empleados, mapa y acciones recomendadas.
+- `operations.heatmap.v1` devuelve puntos/celdas/hotspots con capas para MapLibre.
+- `operations.action_center.v1` prioriza acciones de operador.
+- `operations.freshness.v1` informa si cada fuente esta `fresh`, `stale` o `empty` para que frontend muestre estados UX accionables.
 
 También se mantienen aliases v2 de compatibilidad para endpoints legacy analytics (`/summary`, `/heatmap`, `/surveys/summary`, `/surveys/sentiment`, etc.) para no romper integraciones existentes.

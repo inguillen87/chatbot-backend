@@ -150,12 +150,14 @@ Mejora aditiva para primera visita, demo comercial y widget:
 
 - `services/demo_experience_contract.py` queda como contrato compartido de experiencia para demo/widget.
 - `POST /api/v2/demo/session` agrega `workspace.first_visit`, `workspace.sample_conversations`, `workspace.trust_signals`, `workspace.lead_capture`, `workspace.media_capabilities`, `workspace.conversion_ctas`, `workspace.animation_tokens`, `experience_blueprint` y `chat_seed.sample_conversations`.
+- `POST /api/v2/demo/session` agrega `chat_bootstrap` top-level, dentro de `workspace` y dentro de `chat_seed` para que elegir rubro -> iniciar chat use endpoint, headers, query y payload definidos por backend.
 - `GET /api/public/widget-config?tenant={slug}` y `GET /api/public/tenants/{slug}/widget-config` exponen `first_visit`, `sample_conversations`, `trust_signals`, `lead_capture`, `media_capabilities`, `conversion_ctas` y `animation_tokens` dentro de `widget` y `builder_config`.
 - `media_capabilities` formaliza texto, imagen, audio/nota de voz, ubicacion y archivos usando endpoints existentes (`/ask` y `/archivos/upload/chat_attachment`), sin duplicar el flujo de chat.
 - `conversion_ctas` define CTAs contextuales para ticket/pedido/checkout/handoff/lead con labels y endpoints desde backend.
 - `animation_tokens` define microinteracciones para launcher, mensajes, audio, upload, ubicacion, handoff y lead success para que frontend anime sin hardcodear comportamiento.
 - `services/chatbot_prompts.py` suma reglas multimodales compartidas para que el LLM use `uploaded_file_info`, `datos_interpretados_archivo`, `transcribed_text` y ubicacion como contexto accionable.
 - Se agrego handoff frontend: `docs/BACKEND_TO_FRONTEND_SYNC_AGENT_EXPERIENCE_2026-05-01.md`.
+- Se agrego handoff puntual para frontend: `docs/BACKEND_TO_FRONTEND_SYNC_CHAT_BOOTSTRAP_AND_FRESHNESS_2026-05-02.md`.
 
 Verificacion Agent Experience ejecutada:
 
@@ -174,11 +176,13 @@ Mejora aditiva para analytics, tickets/reclamos, WhatsApp, chats en vivo, emplea
 - `GET /api/v2/analytics/operations/dashboard` y alias `GET /api/v2/analytics/operations` devuelven `contract_version: operations.dashboard.v1`.
 - `GET /api/v2/analytics/operations/heatmap` devuelve `contract_version: operations.heatmap.v1`.
 - `GET /api/v2/analytics/operations/action-center` devuelve `contract_version: operations.action_center.v1`.
+- `GET /api/v2/analytics/operations/freshness` devuelve `contract_version: operations.freshness.v1` con estado por fuente (`fresh`, `stale`, `empty`) para dashboards y mapas degradables.
 - El dashboard une `TenantTicket`, `MunicipioTicket`, `PymeTicket`, `AnalyticsEventV2`, `ChatSessionContext`, `TicketRealtimeState`, `EncEncuesta`, `EncRespuesta`, `PublicSurvey`, `PublicSurveyResponse` y empleados `User`.
 - Heatmap combina capas `tickets`, `surveys` y `analytics_events`, con `points`, `cells`, `hotspots`, `bounds` y `render_contract` para MapLibre.
 - `trends` compara el periodo actual contra el periodo anterior del mismo tamano.
 - `next_best_actions` recomienda acciones proactivas: revisar vencidos, asignar tickets, cubrir empleados, impulsar votaciones, monitorear WhatsApp, revisar handoffs e inspeccionar hotspots.
 - Se agrego handoff frontend: `docs/BACKEND_TO_FRONTEND_SYNC_OPERATIONS_2026-05-02.md`.
+- Se agrego handoff puntual para frontend: `docs/BACKEND_TO_FRONTEND_SYNC_CHAT_BOOTSTRAP_AND_FRESHNESS_2026-05-02.md`.
 
 Verificacion Operational Intelligence ejecutada:
 
