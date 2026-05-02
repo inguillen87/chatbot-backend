@@ -54,6 +54,10 @@ from services.education_contracts import (
     education_prompt_for_intent,
     is_education_tenant,
 )
+from services.education_case_service import (
+    create_school_case_alias_for_ticket,
+    school_case_alias_payload,
+)
 
 # Define the blueprint for WhatsApp webhooks
 webhook_bp = Blueprint('whatsapp_webhook', __name__)
@@ -219,6 +223,21 @@ def _create_education_whatsapp_ticket(
 
     attachment_id = (uploaded_file_info or {}).get("id")
     ticket_id = ticket.get("id") if isinstance(ticket, dict) else None
+    alias = create_school_case_alias_for_ticket(
+        tenant_profile=tenant_profile,
+        ticket_type=tipo_ticket,
+        ticket_id=ticket_id,
+        case_type=category,
+        channel="whatsapp",
+        end_user=end_user,
+        phone=anon_id,
+        sensitivity_level=pending_case.get("sensitivity_level"),
+    )
+    alias_payload = school_case_alias_payload(alias)
+    if isinstance(ticket, dict) and alias_payload:
+        ticket["school_case_id"] = alias_payload.get("school_case_id")
+        ticket["school_case"] = alias_payload
+
     if attachment_id and ticket_id:
         try:
             adjunto = db.session.get(ArchivoAdjunto, attachment_id)

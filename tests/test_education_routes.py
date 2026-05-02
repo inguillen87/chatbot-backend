@@ -2,7 +2,7 @@ import time
 import unittest
 
 from app import app as flask_app, db
-from models import TenantProfile, User
+from models import PymeTicket, TenantProfile, User
 from models_education import (
     AcademicLevel,
     Campus,
@@ -14,6 +14,7 @@ from models_education import (
     StudentGuardianRelation,
     CourseSection,
 )
+from services.education_case_service import create_school_case_alias_for_ticket
 from utils.auth_helpers import generar_token
 
 
@@ -194,6 +195,8 @@ class TestEducationRoutes(unittest.TestCase):
         self.assertEqual(admin_menu.get("contract_version"), "education.admin_menu.v1")
         section_ids = {item.get("id") for item in admin_menu.get("panel_sections") or []}
         self.assertIn("whatsapp_school", section_ids)
+        overview = next(item for item in admin_menu.get("panel_sections") or [] if item.get("id") == "education_overview")
+        self.assertEqual(overview.get("endpoint"), "/api/v1/education/operations/summary")
 
         playbook_resp = self.client.get(
             "/api/v1/education/whatsapp/playbook",
@@ -366,6 +369,17 @@ class TestEducationRoutes(unittest.TestCase):
 
         case_id = payload["school_case_id"]
 
+        filtered_resp = self.client.get(
+            "/api/v1/education/cases?case_type=documentacion&channel=widget&sensitivity_level=family&status=nuevo&unassigned=1&envelope=1",
+            headers=self.auth_header,
+        )
+        self.assertEqual(filtered_resp.status_code, 200)
+        filtered = filtered_resp.get_json()
+        self.assertEqual(filtered.get("contract_version"), "education.cases.list.v1")
+        self.assertEqual(filtered["count"], 1)
+        self.assertEqual(filtered["filters"]["case_type"], "documentacion")
+        self.assertTrue(filtered["filters"]["unassigned"])
+
         detail_resp = self.client.get(
             f"/api/v1/education/cases/{case_id}",
             headers=self.auth_header,
@@ -438,6 +452,74 @@ class TestEducationRoutes(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 404)
         self.assertEqual(response.get_json()["error"]["message"], "Guardian not found for tenant")
+
+    def test_whatsapp_ticket_alias_resolves_guardian_and_summary(self):
+        ticket = PymeTicket(
+            tenant_id=self.tenant.id,
+            user_id=self.owner.id,
+            nro_ticket=int(time.time() * 1000) % 1000000000,
+            pregunta="Adjunto certificado medico por inasistencia.",
+            asunto="Colegio - Justificar inasistencia",
+            categoria="inasistencia",
+            anon_id=self.guardian.phone_number,
+            estado="nuevo",
+            latitud=-34.601,
+            longitud=-58.381,
+        )
+        db.session.add(ticket)
+        db.session.commit()
+
+        alias = create_school_case_alias_for_ticket(
+            tenant_profile=self.tenant,
+            ticket_type="pyme",
+            ticket_id=ticket.id,
+            case_type="inasistencia",
+            channel="whatsapp",
+            phone=self.guardian.phone_number,
+        )
+        self.assertIsNotNone(alias)
+        self.assertEqual(alias.school_id, self.school.id)
+        self.assertEqual(alias.campus_id, self.campus.id)
+        self.assertEqual(alias.student_id, self.student.id)
+        self.assertEqual(alias.guardian_id, self.guardian.id)
+
+        same_alias = create_school_case_alias_for_ticket(
+            tenant_profile=self.tenant,
+            ticket_type="pyme",
+            ticket_id=ticket.id,
+            case_type="documentacion",
+            channel="whatsapp",
+            phone=self.guardian.phone_number,
+        )
+        self.assertEqual(same_alias.id, alias.id)
+
+        summary_resp = self.client.get(
+            "/api/v1/education/operations/summary",
+            headers=self.auth_header,
+        )
+        self.assertEqual(summary_resp.status_code, 200)
+        summary = summary_resp.get_json()
+        self.assertEqual(summary.get("contract_version"), "education.operations_summary.v1")
+        self.assertEqual(summary["summary"]["total_cases"], 1)
+        self.assertEqual(summary["summary"]["open_cases"], 1)
+        self.assertEqual(summary["summary"]["waiting_assignment"], 1)
+        self.assertEqual(summary["summary"]["cases_with_location"], 1)
+        self.assertEqual(summary["breakdown"]["by_type"]["inasistencia"], 1)
+        self.assertEqual(summary["breakdown"]["by_channel"]["whatsapp"], 1)
+        action_ids = {item["id"] for item in summary.get("next_best_actions") or []}
+        self.assertIn("assign_open_cases", action_ids)
+        self.assertIn("inspect_school_case_heatmap", action_ids)
+
+        heatmap_resp = self.client.get(
+            "/api/v1/education/operations/heatmap?channel=whatsapp&case_type=inasistencia",
+            headers=self.auth_header,
+        )
+        self.assertEqual(heatmap_resp.status_code, 200)
+        heatmap = heatmap_resp.get_json()
+        self.assertEqual(heatmap.get("contract_version"), "education.operations_heatmap.v1")
+        self.assertEqual(heatmap["render_contract"]["state"], "ready")
+        self.assertEqual(heatmap["summary"]["points"], 1)
+        self.assertEqual(heatmap["points"][0]["school_case_id"], alias.id)
 
 
 if __name__ == "__main__":

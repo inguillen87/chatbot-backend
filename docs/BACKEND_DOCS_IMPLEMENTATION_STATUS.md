@@ -34,8 +34,11 @@ Mejora aditiva sobre demo, widget, panel y WhatsApp:
 - `GET /api/public/widget-config` y `/api/public/tenants/{slug}/widget-config` exponen `quick_menu` top-level, `education`, `builder_config.education` y tenant `vertical/subvertical`.
 - `GET /api/v1/education/admin/menu` devuelve secciones del panel tenant para colegios.
 - `GET /api/v1/education/whatsapp/playbook` devuelve menu, starters, media intelligence, routing rules y safety para WhatsApp escolar.
+- `GET /api/v1/education/operations/summary` devuelve `education.operations_summary.v1` con KPIs escolares, breakdown por tipo/canal/estado/colegio y acciones recomendadas.
+- `GET /api/v1/education/operations/heatmap` devuelve `education.operations_heatmap.v1` con puntos/celdas/hotspots de casos escolares geolocalizados.
+- `GET /api/v1/education/cases` conserva array legacy por defecto y agrega filtros (`case_type`, `channel`, `sensitivity_level`, `status`, `assignee_id`, `unassigned`, alumno/familia/sede/curso). Con `envelope=1` devuelve `education.cases.list.v1`.
 - `GET /api/v1/education/tenant/capabilities` suma `education_profile`, `admin_menu` y `whatsapp_playbook`.
-- WhatsApp detecta tenants educativos, monta menu escolar de bienvenida, guarda `education_context`, pasa contexto al LLM y crea tickets escolares desde menu + detalle/media usando el servicio de tickets actual.
+- WhatsApp detecta tenants educativos, monta menu escolar de bienvenida, guarda `education_context`, pasa contexto al LLM, crea tickets escolares desde menu + detalle/media usando el servicio de tickets actual y los vincula a `SchoolCaseAlias` cuando puede resolver colegio/familia.
 - `services/chatbot_prompts.py` suma reglas para que `/ask/pyme` actue como asistente escolar cuando llega `education_context`, sin abrir un flujo paralelo.
 - Se agrego handoff frontend: `docs/BACKEND_TO_FRONTEND_SYNC_EDUCATION_WHATSAPP_2026-05-02.md`.
 

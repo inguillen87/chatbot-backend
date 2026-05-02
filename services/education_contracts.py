@@ -157,6 +157,8 @@ def build_education_profile(tenant: Any = None, *, rubro_label: str | None = Non
         "admin_endpoints": {
             "capabilities": "/api/v1/education/tenant/capabilities",
             "admin_menu": "/api/v1/education/admin/menu",
+            "operations_summary": "/api/v1/education/operations/summary",
+            "operations_heatmap": "/api/v1/education/operations/heatmap",
             "taxonomy": "/api/v1/education/cases/taxonomy",
             "family_context": "/api/v1/education/me/family-context",
             "cases": "/api/v1/education/cases",
@@ -494,8 +496,10 @@ def build_education_admin_menu(tenant: Any = None) -> dict[str, Any]:
                 "id": "education_overview",
                 "label": "Resumen colegio",
                 "route": "/educacion",
+                "endpoint": "/api/v1/education/operations/summary",
+                "secondary_endpoints": ["/api/v1/education/operations/heatmap"],
                 "capability": "education.overview",
-                "widgets": ["tenant_health", "open_cases", "attendance_alerts"],
+                "widgets": ["tenant_health", "open_cases", "attendance_alerts", "whatsapp_cases", "case_heatmap"],
             },
             {
                 "id": "family_context",

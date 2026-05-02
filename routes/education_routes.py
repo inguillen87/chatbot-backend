@@ -26,7 +26,12 @@ from services.education_contracts import (
     build_education_whatsapp_playbook,
     education_case_taxonomy,
     education_taxonomy_dict,
+    fold_text,
     is_education_tenant,
+)
+from services.education_case_service import (
+    build_education_operations_heatmap,
+    build_education_operations_summary,
 )
 
 education_bp = Blueprint("education", __name__)
@@ -233,6 +238,25 @@ def _case_payload(alias: SchoolCaseAlias, *, include_comments: bool = False) -> 
     return payload
 
 
+def _truthy(value) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "si", "sí"}
+
+
+def _case_matches_ticket_filters(alias: SchoolCaseAlias, *, status: str = "", assignee_id: int | None = None, unassigned: bool = False) -> bool:
+    if not status and assignee_id is None and not unassigned:
+        return True
+    ticket = _ticket_for_case(alias)
+    if not ticket:
+        return False
+    if status and fold_text(getattr(ticket, "estado", None)) != status:
+        return False
+    if assignee_id is not None and getattr(ticket, "asignado_a_id", None) != assignee_id:
+        return False
+    if unassigned and getattr(ticket, "asignado_a_id", None):
+        return False
+    return True
+
+
 @education_bp.route("/api/v1/education/tenant/capabilities", methods=["GET"])
 @token_requerido
 def get_education_capabilities(current_user, actor_principal=None):
@@ -355,6 +379,41 @@ def get_education_whatsapp_playbook(current_user, actor_principal=None):
     if not tenant:
         return jsonify({"error": {"code": 404, "message": "Tenant profile not found"}}), 404
     return jsonify(build_education_whatsapp_playbook(tenant))
+
+
+@education_bp.route("/api/v1/education/operations/summary", methods=["GET"])
+@token_requerido
+def get_education_operations_summary(current_user, actor_principal=None):
+    tenant_id = _resolve_actor_tenant_id(current_user, actor_principal)
+    if not tenant_id:
+        return jsonify({"error": {"code": 400, "message": "Tenant context required"}}), 400
+    tenant = TenantProfile.query.filter_by(id=tenant_id).first()
+    if not tenant:
+        return jsonify({"error": {"code": 404, "message": "Tenant profile not found"}}), 404
+    payload = build_education_operations_summary(tenant)
+    payload["education_enabled"] = _tenant_supports_education(tenant)
+    return jsonify(payload)
+
+
+@education_bp.route("/api/v1/education/operations/heatmap", methods=["GET"])
+@token_requerido
+def get_education_operations_heatmap(current_user, actor_principal=None):
+    tenant_id = _resolve_actor_tenant_id(current_user, actor_principal)
+    if not tenant_id:
+        return jsonify({"error": {"code": 400, "message": "Tenant context required"}}), 400
+    tenant = TenantProfile.query.filter_by(id=tenant_id).first()
+    if not tenant:
+        return jsonify({"error": {"code": 404, "message": "Tenant profile not found"}}), 404
+    payload = build_education_operations_heatmap(
+        tenant,
+        school_id=request.args.get("school_id", type=int),
+        case_type=request.args.get("case_type"),
+        channel=request.args.get("channel"),
+        sensitivity_level=request.args.get("sensitivity_level"),
+        max_points=min(request.args.get("limit", default=500, type=int) or 500, 1000),
+    )
+    payload["education_enabled"] = _tenant_supports_education(tenant)
+    return jsonify(payload)
 
 
 @education_bp.route("/api/v1/education/schools", methods=["GET"])
@@ -1007,12 +1066,68 @@ def list_school_cases(current_user, actor_principal=None):
         return jsonify({"error": {"code": 400, "message": "Tenant context required"}}), 400
 
     school_id = request.args.get("school_id", type=int)
+    campus_id = request.args.get("campus_id", type=int)
+    section_id = request.args.get("section_id", type=int)
+    student_id = request.args.get("student_id", type=int)
+    guardian_id = request.args.get("guardian_id", type=int)
+    case_type = fold_text(request.args.get("case_type")).replace(" ", "_")
+    channel = fold_text(request.args.get("channel"))
+    sensitivity_level = fold_text(request.args.get("sensitivity_level"))
+    status = fold_text(request.args.get("status"))
+    assignee_id = request.args.get("assignee_id", type=int)
+    unassigned = _truthy(request.args.get("unassigned"))
+    limit = min(request.args.get("limit", default=100, type=int) or 100, 500)
+    envelope = _truthy(request.args.get("envelope"))
+
     query = SchoolCaseAlias.query.filter_by(tenant_id=tenant_id)
     if school_id:
         query = query.filter(SchoolCaseAlias.school_id == school_id)
+    if campus_id:
+        query = query.filter(SchoolCaseAlias.campus_id == campus_id)
+    if section_id:
+        query = query.filter(SchoolCaseAlias.section_id == section_id)
+    if student_id:
+        query = query.filter(SchoolCaseAlias.student_id == student_id)
+    if guardian_id:
+        query = query.filter(SchoolCaseAlias.guardian_id == guardian_id)
+    if case_type:
+        query = query.filter(SchoolCaseAlias.case_type == case_type)
+    if channel:
+        query = query.filter(SchoolCaseAlias.channel == channel)
+    if sensitivity_level:
+        query = query.filter(SchoolCaseAlias.sensitivity_level == sensitivity_level)
 
-    aliases = query.order_by(SchoolCaseAlias.created_at.desc()).limit(100).all()
-    return jsonify([_case_payload(alias) for alias in aliases])
+    fetch_limit = min(limit * 5, 1000) if (status or assignee_id is not None or unassigned) else limit
+    aliases = query.order_by(SchoolCaseAlias.created_at.desc()).limit(fetch_limit).all()
+    filtered_aliases = [
+        alias
+        for alias in aliases
+        if _case_matches_ticket_filters(alias, status=status, assignee_id=assignee_id, unassigned=unassigned)
+    ]
+    items = [_case_payload(alias) for alias in filtered_aliases[:limit]]
+    if not envelope:
+        return jsonify(items)
+    return jsonify(
+        {
+            "contract_version": "education.cases.list.v1",
+            "items": items,
+            "count": len(items),
+            "limit": limit,
+            "filters": {
+                "school_id": school_id,
+                "campus_id": campus_id,
+                "section_id": section_id,
+                "student_id": student_id,
+                "guardian_id": guardian_id,
+                "case_type": case_type or None,
+                "channel": channel or None,
+                "sensitivity_level": sensitivity_level or None,
+                "status": status or None,
+                "assignee_id": assignee_id,
+                "unassigned": unassigned,
+            },
+        }
+    )
 
 
 @education_bp.route("/api/v1/education/cases/<int:case_id>", methods=["GET"])
