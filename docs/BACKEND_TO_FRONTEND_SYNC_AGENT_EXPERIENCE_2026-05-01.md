@@ -230,6 +230,38 @@ Campos:
 }
 ```
 
+Respuesta backend lista:
+
+```json
+{
+  "ok": true,
+  "contract_version": "public.lead_capture.v1",
+  "request_id": "req_123",
+  "tenant": {
+    "slug": "tenant-slug",
+    "tipo": "pyme"
+  },
+  "lead_id": "lead_123",
+  "ticket_id": 123,
+  "ticket_type": "tenant_ticket",
+  "status": "nuevo",
+  "deduplicated": false,
+  "idempotency_key": "lead-key",
+  "message_body": "Gracias...",
+  "next_actions": [
+    { "id": "open_lead", "label": "Abrir lead", "endpoint": "/api/v2/tickets/123" }
+  ]
+}
+```
+
+Reglas:
+
+- Enviar `tenant_slug` o query `tenant_slug`.
+- Enviar `Idempotency-Key` en reintentos/offline para no duplicar leads.
+- Enviar `chat_session_id`, `anon_id`, `channel/source`, `trigger/intent` cuando existan.
+- Backend persiste usuario/anon, `ChatSessionContext.lead_profile`, `TenantTicket` con `categoria=lead_capture` y evento `lead_capture_created`.
+- Si frontend recibe `deduplicated=true`, mostrar success igual y no abrir error.
+
 ### media_capabilities
 
 Usar como fuente de verdad para el composer del chat. No mostrar botones de imagen/audio/ubicacion/archivo si el modo viene deshabilitado.

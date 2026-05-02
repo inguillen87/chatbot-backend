@@ -1653,6 +1653,7 @@ def capture_public_lead():
         return jsonify({"ok": True})
 
     payload = request.get_json(silent=True) or {}
+    request_id = _public_request_id()
     tenant = _resolve_tenant_for_lead_capture(payload)
 
     nombre = str(payload.get("nombre") or payload.get("name") or "").strip()
@@ -1662,7 +1663,12 @@ def capture_public_lead():
     interes = str(payload.get("interes") or payload.get("interest") or "").strip()
 
     if not (nombre or email or telefono):
-        return jsonify({"error": "nombre/email/telefono requerido"}), 400
+        return _lead_error_response(
+            "nombre/email/telefono requerido",
+            400,
+            "validation_error",
+            "send_name_email_or_phone",
+        )
 
     anon_id = (
         str(payload.get("anon_id") or "").strip()
@@ -1670,25 +1676,27 @@ def capture_public_lead():
         or str(request.cookies.get("chatboc_anon_id") or "").strip()
     )
 
-    user = User.create_or_get_by_anon(anon_id or None, display_name=nombre or "Interesado")
-    if nombre:
-        user.name = nombre
-    if email:
-        user.email = email
-    if telefono:
-        user.telefono = telefono
-    if tenant:
-        user.tenant_id = tenant.id
-        user.tenant_slug = tenant.slug
-        if not user.tipo_chat:
-            user.tipo_chat = (tenant.tipo or "pyme").lower()
-
-    db.session.add(user)
-    db.session.flush()
+    user = _resolve_or_create_lead_user(
+        tenant=tenant,
+        anon_id=anon_id,
+        nombre=nombre,
+        email=email,
+        telefono=telefono,
+    )
 
     session_id = (
         str(payload.get("chat_session_id") or "").strip()
         or str(request.headers.get("X-Chat-Session-Id") or "").strip()
+    )
+    idempotency_key = _lead_idempotency_key(
+        payload=payload,
+        tenant=tenant,
+        anon_id=anon_id,
+        email=email,
+        telefono=telefono,
+        session_id=session_id,
+        interes=interes,
+        mensaje=mensaje,
     )
 
     context_obj = None
@@ -1728,6 +1736,9 @@ def capture_public_lead():
             lead_profile["tenant_slug"] = tenant.slug
             lead_profile["tenant_id"] = tenant.id
             lead_profile["tenant_tipo"] = tenant.tipo
+        if idempotency_key:
+            lead_profile["idempotency_key"] = idempotency_key
+        lead_profile["request_id"] = request_id
         lead_profile["updated_at"] = datetime.now(timezone.utc).isoformat()
         data["lead_profile"] = lead_profile
 
@@ -1737,6 +1748,8 @@ def capture_public_lead():
             "mensaje": mensaje,
             "interes": interes,
             "tenant_slug": tenant.slug if tenant else None,
+            "request_id": request_id,
+            "idempotency_key": idempotency_key,
         })
         data["lead_events"] = events[-20:]
         context_obj.context_data = data
@@ -1753,6 +1766,72 @@ def capture_public_lead():
         session_id=anon_id or user.anon_id or str(user.id),
     )
     db.session.add(conv)
+    lead_ticket = None
+    deduplicated = False
+    if tenant and idempotency_key:
+        lead_ticket, deduplicated = _build_lead_ticket(
+            tenant=tenant,
+            user=user,
+            payload=payload,
+            request_id=request_id,
+            idempotency_key=idempotency_key,
+            nombre=nombre,
+            email=email,
+            telefono=telefono,
+            mensaje=mensaje,
+            interes=interes,
+            anon_id=anon_id,
+            session_id=session_id,
+        )
+        db.session.add(
+            AnalyticsEventV2(
+                tenant_id=tenant.id,
+                tenant_type=tenant.tipo,
+                user_id=user.id,
+                anon_id=anon_id or user.anon_id,
+                channel=str(payload.get("channel") or payload.get("source") or "web_widget").strip().lower() or "web_widget",
+                event_name="lead_capture_created",
+                session_id=session_id or anon_id or user.anon_id,
+                metadata_payload={
+                    "request_id": request_id,
+                    "idempotency_key": idempotency_key,
+                    "deduplicated": deduplicated,
+                    "interest": interes,
+                    "message": mensaje,
+                    "lead_ticket_id": lead_ticket.id,
+                },
+                entity_ref=f"tenant_ticket:{lead_ticket.id}",
+            )
+        )
     db.session.commit()
 
-    return jsonify(_build_lead_capture_ack(tenant))
+    body = _build_lead_capture_ack(tenant)
+    body.update(
+        {
+            "request_id": request_id,
+            "tenant": {
+                "id": tenant.id,
+                "slug": tenant.slug,
+                "tipo": tenant.tipo,
+                "nombre": tenant.nombre,
+            }
+            if tenant
+            else None,
+            "lead_id": f"lead_{lead_ticket.id}" if lead_ticket else None,
+            "ticket_id": lead_ticket.id if lead_ticket else None,
+            "ticket_type": "tenant_ticket" if lead_ticket else None,
+            "status": "nuevo" if lead_ticket else "captured_without_tenant",
+            "deduplicated": deduplicated,
+            "idempotency_key": idempotency_key,
+            "next_actions": [
+                {"id": "open_lead", "label": "Abrir lead", "endpoint": f"/api/v2/tickets/{lead_ticket.id}"}
+            ]
+            if lead_ticket
+            else [],
+        }
+    )
+    response = jsonify(body)
+    response.headers["X-Request-Id"] = request_id
+    if idempotency_key:
+        response.headers["Idempotency-Key"] = idempotency_key
+    return response

@@ -155,6 +155,7 @@ Mejora aditiva para primera visita, demo comercial y widget:
 - `media_capabilities` formaliza texto, imagen, audio/nota de voz, ubicacion y archivos usando endpoints existentes (`/ask` y `/archivos/upload/chat_attachment`), sin duplicar el flujo de chat.
 - `conversion_ctas` define CTAs contextuales para ticket/pedido/checkout/handoff/lead con labels y endpoints desde backend.
 - `animation_tokens` define microinteracciones para launcher, mensajes, audio, upload, ubicacion, handoff y lead success para que frontend anime sin hardcodear comportamiento.
+- `POST /api/public/lead-capture` devuelve `contract_version: public.lead_capture.v1`, `request_id`, `lead_id`, `ticket_id`, `deduplicated`, `idempotency_key` y persiste `TenantTicket`, `ChatSessionContext.lead_profile` y evento analytics `lead_capture_created`.
 - `services/chatbot_prompts.py` suma reglas multimodales compartidas para que el LLM use `uploaded_file_info`, `datos_interpretados_archivo`, `transcribed_text` y ubicacion como contexto accionable.
 - Se agrego handoff frontend: `docs/BACKEND_TO_FRONTEND_SYNC_AGENT_EXPERIENCE_2026-05-01.md`.
 - Se agrego handoff puntual para frontend: `docs/BACKEND_TO_FRONTEND_SYNC_CHAT_BOOTSTRAP_AND_FRESHNESS_2026-05-02.md`.
@@ -167,6 +168,7 @@ Verificacion Agent Experience ejecutada:
 - `tests.test_public_resolver_quick_menu`
 - `tests.test_pwa_public_cart_url`
 - `tests.test_chatbot_prompts_multimodal`
+- `tests/test_public_lead_capture.py`
 
 ## Operational Intelligence 2026-05-02
 
