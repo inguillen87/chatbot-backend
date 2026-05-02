@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import hashlib
 import json
 import os
 from urllib import error as urllib_error
@@ -8,7 +9,7 @@ from flask import Blueprint, jsonify, request, g, current_app
 from flask_cors import cross_origin
 from sqlalchemy import desc
 
-from models import AnalyticsEventV2, ChatSessionContext, Conversacion, TenantProfile, User, WidgetSettings, Rubro, db
+from models import AnalyticsEventV2, ChatSessionContext, Conversacion, TenantProfile, TenantTicket, User, WidgetSettings, Rubro, db
 from services.live_chat_schedule import build_live_chat_status
 from services.tenant_resolver import (
     RESERVED_TENANT_SLUGS,
@@ -27,6 +28,7 @@ public_resolver_bp = Blueprint("public_resolver_bp", __name__, url_prefix="/api/
 public_municipios_bp = Blueprint("public_municipios_bp", __name__)
 TENANT_PROFILE_CONTRACT_VERSION = "public.tenant_profile.v1"
 WIDGET_CONFIG_CONTRACT_VERSION = "public.widget_config.v1"
+LEAD_CAPTURE_CONTRACT_VERSION = "public.lead_capture.v1"
 
 
 _REALTIME_SESSION_RATE_LIMIT_WINDOW_SECONDS = 60
@@ -1434,7 +1436,166 @@ def _build_lead_capture_ack(tenant: TenantProfile | None) -> dict:
         "respuesta": f"¡Gracias! Ya registramos tu interés. En breve estaremos en contacto desde {tenant_name}.",
         "message_type": "text",
         "fuente": "lead_capture",
+        "contract_version": LEAD_CAPTURE_CONTRACT_VERSION,
     }
+
+
+def _public_request_id() -> str:
+    incoming = str(request.headers.get("X-Request-Id") or "").strip()
+    if incoming:
+        return incoming[:120]
+    seed = f"{datetime.now(timezone.utc).isoformat()}|{request.remote_addr or ''}"
+    return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:32]
+
+
+def _lead_error_response(message: str, status_code: int, reason_code: str, action_hint: str):
+    request_id = _public_request_id()
+    response = jsonify(
+        {
+            "contract_version": "shared.error.v1",
+            "status_code": status_code,
+            "reason_code": reason_code,
+            "retryable": status_code >= 500,
+            "action_hint": action_hint,
+            "request_id": request_id,
+            "error": {"code": status_code, "message": message},
+            "message": message,
+        }
+    )
+    response.status_code = status_code
+    response.headers["X-Request-Id"] = request_id
+    return response
+
+
+def _lead_idempotency_key(
+    *,
+    payload: dict,
+    tenant: TenantProfile | None,
+    anon_id: str,
+    email: str,
+    telefono: str,
+    session_id: str,
+    interes: str,
+    mensaje: str,
+) -> str | None:
+    explicit = payload.get("idempotency_key") or payload.get("idempotencyKey") or request.headers.get("Idempotency-Key")
+    if explicit:
+        return str(explicit).strip()[:120] or None
+    if not tenant:
+        return None
+    source = "|".join(
+        [
+            "lead_capture",
+            str(tenant.id),
+            session_id or "",
+            anon_id or "",
+            email or "",
+            telefono or "",
+            interes or "",
+            mensaje or "",
+        ]
+    )
+    return hashlib.sha256(source.encode("utf-8")).hexdigest()
+
+
+def _resolve_or_create_lead_user(
+    *,
+    tenant: TenantProfile | None,
+    anon_id: str,
+    nombre: str,
+    email: str,
+    telefono: str,
+) -> User:
+    user = User.query.filter_by(email=email).first() if email else None
+    if not user:
+        user = User.create_or_get_by_anon(anon_id or None, display_name=nombre or "Interesado")
+
+    if nombre:
+        user.name = nombre
+    if email and (not user.email or user.email.endswith("@passkey.chatboc")):
+        user.email = email
+    if telefono:
+        user.telefono = telefono
+    if tenant:
+        user.tenant_id = tenant.id
+        user.tenant_slug = tenant.slug
+        if not user.tipo_chat:
+            user.tipo_chat = (tenant.tipo or "pyme").lower()
+    db.session.add(user)
+    db.session.flush()
+    return user
+
+
+def _build_lead_ticket(
+    *,
+    tenant: TenantProfile,
+    user: User,
+    payload: dict,
+    request_id: str,
+    idempotency_key: str,
+    nombre: str,
+    email: str,
+    telefono: str,
+    mensaje: str,
+    interes: str,
+    anon_id: str,
+    session_id: str,
+) -> tuple[TenantTicket, bool]:
+    existing = TenantTicket.query.filter_by(tenant_id=tenant.id, fingerprint=idempotency_key).first()
+    if existing:
+        return existing, True
+
+    channel = str(payload.get("channel") or payload.get("source") or "web_widget").strip().lower() or "web_widget"
+    trigger = str(payload.get("trigger") or payload.get("intent") or "lead_capture").strip().lower() or "lead_capture"
+    now_iso = datetime.now(timezone.utc).isoformat()
+    details = {
+        "title": f"Lead capturado - {interes or tenant.nombre or tenant.slug}",
+        "priority": "high" if trigger in {"pricing_interest", "demo_interest", "checkout_intent"} else "normal",
+        "channel": channel,
+        "lead_stage": "nuevo",
+        "lead_source": channel,
+        "lead_trigger": trigger,
+        "lead_score": 70 if trigger in {"pricing_interest", "demo_interest", "checkout_intent"} else 50,
+        "lead_reasons": [trigger, "public_lead_capture"],
+        "lead_profile": {
+            "nombre": nombre,
+            "email": email,
+            "telefono": telefono,
+            "interes": interes,
+            "mensaje": mensaje,
+            "anon_id": anon_id,
+            "chat_session_id": session_id,
+            "tenant_slug": tenant.slug,
+            "tenant_tipo": tenant.tipo,
+            "source": channel,
+            "trigger": trigger,
+        },
+        "lead_timeline": [
+            {
+                "at": now_iso,
+                "type": "lead_created",
+                "source": channel,
+                "message": mensaje,
+                "interest": interes,
+                "request_id": request_id,
+            }
+        ],
+        "request_id": request_id,
+        "idempotency_key": idempotency_key,
+    }
+    ticket = TenantTicket(
+        tenant_id=tenant.id,
+        user_id=user.id,
+        categoria="lead_capture",
+        descripcion=mensaje or f"Lead capturado desde {channel}",
+        estado="nuevo",
+        origen=channel[:20],
+        datos_extra=details,
+        fingerprint=idempotency_key,
+    )
+    db.session.add(ticket)
+    db.session.flush()
+    return ticket, False
 
 
 def _municipios_response():
