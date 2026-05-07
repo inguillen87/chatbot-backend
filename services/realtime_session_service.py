@@ -3,6 +3,10 @@ import uuid
 import requests
 from typing import Dict, Any, Optional
 from flask import current_app
+from services.realtime_voice_profiles import (
+    resolve_realtime_model,
+    resolve_realtime_voice,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +30,8 @@ class RealtimeSessionService:
             logger.error("OPENAI_API_KEY is not configured.")
             return {"error": "Configuración de IA no disponible", "status_code": 500}
 
-        model = current_app.config.get("OPENAI_REALTIME_SPEECH_MODEL", "gpt-4o-realtime-preview-2024-12-17")
+        model = resolve_realtime_model(app_config=current_app.config)
+        voice = resolve_realtime_voice(app_config=current_app.config)
 
         headers = {
             "Authorization": f"Bearer {api_key}",
@@ -35,7 +40,19 @@ class RealtimeSessionService:
 
         payload = {
             "model": model,
-            "voice": "shimmer", # Default rioplatense friendly
+            "modalities": ["audio", "text"],
+            "voice": voice,
+            "instructions": (
+                "Sos un asistente realtime de Chatboc. Habla en espanol argentino, "
+                "con respuestas breves, claras y orientadas a resolver. "
+                "No inventes tickets, pedidos, precios ni confirmaciones."
+            ),
+            "turn_detection": {
+                "type": "server_vad",
+                "threshold": 0.45,
+                "prefix_padding_ms": 250,
+                "silence_duration_ms": 420,
+            },
         }
 
         try:
@@ -52,6 +69,8 @@ class RealtimeSessionService:
             return {
                 "client_secret": data.get("client_secret", {}).get("value"),
                 "session_id": str(uuid.uuid4()), # our internal reference
+                "model": model,
+                "voice": voice,
                 "status_code": 200
             }
 

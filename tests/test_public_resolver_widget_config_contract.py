@@ -43,6 +43,16 @@ class PublicResolverWidgetConfigContractTestCase(unittest.TestCase):
         self.assertEqual(body["experience_kind"], "platform")
         self.assertEqual(body["hero"]["h1"], "Chatboc")
 
+    def test_realtime_voice_capabilities_returns_platform_contract(self):
+        response = self.client.get("/api/public/realtime/voice-capabilities")
+
+        self.assertEqual(response.status_code, 200)
+        body = response.get_json()
+        self.assertEqual(body["contract_version"], "realtime.voice_capabilities.v1")
+        self.assertEqual(body["provider"], "openai_realtime")
+        self.assertEqual(body["recommended_model"], "gpt-realtime-2")
+        self.assertIn("colegio", body["verticals"])
+
     def test_landing_experience_with_tenant_uses_resolver(self):
         with patch("routes.public_resolver.resolve_tenant_only", return_value=_FakeTenant()):
             response = self.client.get("/api/public/landing-experience?tenant=colegio-san-martin&page=colegios")

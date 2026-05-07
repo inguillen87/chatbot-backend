@@ -9,8 +9,9 @@ from websockets.sync.client import connect as ws_connect
 from simple_websocket.errors import ConnectionClosed
 from twilio.rest import Client as TwilioClient
 
-from models import WhatsappNumero, ChatSessionContext, User, TenantProfile, MunicipioTicket
+from models import WhatsappNumero, ChatSessionContext, User, TenantProfile, MunicipioTicket, PymeTicket
 from extensions import db
+from sqlalchemy import func
 from sqlalchemy.orm import joinedload
 
 from utils.db_utils import safe_flag_modified
@@ -19,16 +20,20 @@ from services.whatsapp_receipts import render_ticket_whatsapp
 from services.whatsapp_sender import send_whatsapp_message
 from services.config_loader import cargar_configuracion_municipio
 from services.voice_session_service import resolve_voice_chat_session_id
+from services.realtime_voice_profiles import (
+    build_realtime_voice_instructions,
+    build_realtime_voice_tools,
+    infer_realtime_voice_vertical,
+    resolve_realtime_model,
+    resolve_realtime_voice,
+)
 
 logger = logging.getLogger(__name__)
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 # Solo para el canal de voz realtime (Twilio <-> OpenAI Realtime).
 # No impacta los modelos de chat estándar del bot.
-OPENAI_REALTIME_MODEL = os.environ.get(
-    "OPENAI_REALTIME_SPEECH_MODEL",
-    os.environ.get("OPENAI_REALTIME_MODEL", "gpt-realtime-1.5"),
-)
+OPENAI_REALTIME_MODEL = resolve_realtime_model(app_config=os.environ)
 OPENAI_REALTIME_URL = (
     f"wss://api.openai.com/v1/realtime?model={OPENAI_REALTIME_MODEL}"
 )
@@ -128,6 +133,8 @@ class VoiceStreamService:
                 },
             },
         ]
+        self.voice_vertical = "general"
+        self.tools = build_realtime_voice_tools(self.voice_vertical)
 
     # ----------------------------
     # Helpers
@@ -173,6 +180,11 @@ class VoiceStreamService:
             if isinstance(config, dict):
                 return config
         return {}
+
+    def _resolve_voice_config(self) -> dict:
+        if self.tenant_profile and isinstance(getattr(self.tenant_profile, "configuracion", None), dict):
+            return self.tenant_profile.configuracion or {}
+        return self._resolve_municipio_config()
 
     def _resolve_tenant_name(self) -> str:
         config = self._resolve_municipio_config()
@@ -325,6 +337,12 @@ class VoiceStreamService:
                 self.user = User(name="Vecino", email=f"{user_phone_clean}@voice.temp")
             self.user_id = getattr(self.user, "id", None) if self.user else None
             self.owner_user_id = getattr(self.owner_user, "id", None) if self.owner_user else None
+            empresa_id = self.owner_user_id
+            self.voice_vertical = infer_realtime_voice_vertical(
+                self.tenant_profile,
+                tenant_tipo=getattr(self.tenant_profile, "tipo", None) if self.tenant_profile else None,
+            )
+            self.tools = build_realtime_voice_tools(self.voice_vertical)
 
             # 4) Session ID
             chat_session_id = resolve_voice_chat_session_id(
@@ -430,6 +448,30 @@ class VoiceStreamService:
         """
         Prompt de voz: corto, directo, SIN alucinación y orientado a acción.
         """
+        tenant_name_for_voice = self._resolve_tenant_name()
+        identity_for_voice = self._resolve_identity_from_context(self.context_data_snapshot)
+        user_name_for_voice = (
+            sanitize_profile_name(getattr(self.user, "name", None))
+            or identity_for_voice.get("nombre")
+            or None
+        )
+        user_addr_for_voice = (
+            getattr(self.user, "direccion", None)
+            or identity_for_voice.get("direccion")
+            or ""
+        )
+        self.voice_vertical = infer_realtime_voice_vertical(
+            self.tenant_profile,
+            tenant_tipo=getattr(self.tenant_profile, "tipo", None) if self.tenant_profile else None,
+        )
+        self.tools = build_realtime_voice_tools(self.voice_vertical)
+        return build_realtime_voice_instructions(
+            tenant_name=tenant_name_for_voice,
+            vertical=self.voice_vertical,
+            user_name=user_name_for_voice,
+            user_address=user_addr_for_voice,
+        )
+
         tenant_name = self._resolve_tenant_name()
         tenant_tipo = "municipio"
 
@@ -563,19 +605,26 @@ class VoiceStreamService:
             app_ctx = self.app.app_context() if self.app else current_app.app_context()
             with app_ctx:
                 if self._resolve_context(self.from_number, self.to_number, self.call_sid):
+                    voice_cfg = self._resolve_voice_config()
+                    voice_name = resolve_realtime_voice(voice_cfg, current_app.config)
+                    self.voice_vertical = infer_realtime_voice_vertical(
+                        self.tenant_profile,
+                        tenant_tipo=getattr(self.tenant_profile, "tipo", None) if self.tenant_profile else None,
+                    )
+                    self.tools = build_realtime_voice_tools(self.voice_vertical)
                     session_update = {
                         "type": "session.update",
                         "session": {
                             "modalities": ["text", "audio"],
                             "instructions": self._get_system_instruction(),
-                            "voice": "shimmer",
+                            "voice": voice_name,
                             "input_audio_format": "g711_ulaw",
                             "output_audio_format": "g711_ulaw",
                             "turn_detection": {
                                 "type": "server_vad",
-                                "threshold": 0.5,
-                                "prefix_padding_ms": 300,
-                                "silence_duration_ms": 500,
+                                "threshold": voice_cfg.get("openai_realtime_vad_threshold", 0.45),
+                                "prefix_padding_ms": voice_cfg.get("openai_realtime_vad_prefix_padding_ms", 250),
+                                "silence_duration_ms": voice_cfg.get("openai_realtime_vad_silence_ms", 420),
                                 "create_response": True,
                                 "interrupt_response": True,
                             },
@@ -626,6 +675,23 @@ class VoiceStreamService:
     # ----------------------------
     def handle_openai_message(self, data):
         msg_type = data.get("type")
+
+        if msg_type == "response.created":
+            self.response_active = True
+            response_payload = data.get("response") or {}
+            self.response_id = (
+                data.get("response_id")
+                or response_payload.get("id")
+                or data.get("id")
+            )
+            self.cancel_pending = False
+            return
+
+        if msg_type in ("response.canceled", "response.cancelled", "response.failed"):
+            self.response_active = False
+            self.response_id = None
+            self.cancel_pending = False
+            return
 
         if msg_type == "response.audio.delta":
             audio_payload = data.get("delta")
@@ -851,9 +917,140 @@ class VoiceStreamService:
                 chat_data = session_context.context_data if session_context else {}
 
                 # ----------------------------
+                # COLEGIO: Caso escolar
+                # ----------------------------
+                if name == "crear_caso_escolar":
+                    from services.education_case_service import (
+                        create_school_case_alias_for_ticket,
+                        school_case_alias_payload,
+                    )
+                    from services.education_contracts import education_case_taxonomy, fold_text, is_education_tenant
+
+                    if not is_education_tenant(self.tenant_profile):
+                        result = "Este canal no esta configurado como colegio. Te derivo con un agente para ayudarte."
+                    else:
+                        taxonomy = {item["key"]: item for item in education_case_taxonomy()}
+                        raw_case_type = args.get("case_type") or args.get("categoria") or "secretaria"
+                        case_type = fold_text(raw_case_type).replace(" ", "_")
+                        if case_type not in taxonomy:
+                            case_type = "secretaria"
+
+                        descripcion = str(
+                            args.get("descripcion")
+                            or args.get("detalle")
+                            or args.get("consulta")
+                            or ""
+                        ).strip()
+                        if not descripcion:
+                            descripcion = "Consulta escolar recibida por llamada."
+                        asunto = str(
+                            args.get("asunto")
+                            or taxonomy.get(case_type, {}).get("label")
+                            or "Consulta escolar"
+                        ).strip()
+
+                        extra = {
+                            "source": "voice_realtime",
+                            "case_type": case_type,
+                            "alumno": args.get("alumno"),
+                            "curso": args.get("curso"),
+                            "fecha": args.get("fecha"),
+                            "ubicacion": args.get("ubicacion"),
+                            "call_sid": self.call_sid,
+                            "from_number": self._normalize_phone(self.from_number),
+                        }
+                        phone = getattr(self.user, "telefono", None) or self._normalize_phone(self.from_number)
+                        email = getattr(self.user, "email", None) if self.user else None
+                        ticket_type = "pyme" if getattr(self.tenant_profile, "pyme_id", None) else "municipio"
+
+                        if ticket_type == "pyme":
+                            max_nro = db.session.query(func.max(PymeTicket.nro_ticket)).scalar() or 0
+                            ticket = PymeTicket(
+                                tenant_id=getattr(self.tenant_profile, "id", None),
+                                nro_ticket=int(max_nro or 0) + 1,
+                                pregunta=descripcion,
+                                asunto=asunto,
+                                categoria=f"educacion:{case_type}",
+                                user_id=getattr(self.user, "id", None),
+                                telefono=phone,
+                                email=email,
+                                direccion=args.get("ubicacion"),
+                            )
+                        else:
+                            ticket = MunicipioTicket(
+                                tenant_id=getattr(self.tenant_profile, "id", None),
+                                municipio_id=getattr(self.tenant_profile, "municipio_id", None),
+                                pregunta=descripcion,
+                                asunto=asunto,
+                                categoria=f"educacion:{case_type}",
+                                user_id=getattr(self.user, "id", None),
+                                direccion=args.get("ubicacion"),
+                                nombre_vecino=sanitize_profile_name(getattr(self.user, "name", None)),
+                                telefono_vecino=phone,
+                                email_vecino=email,
+                                canal_ingreso="voice",
+                            )
+
+                        if hasattr(ticket, "detalles"):
+                            ticket.detalles = json.dumps(extra, ensure_ascii=False)
+                        db.session.add(ticket)
+                        db.session.flush()
+
+                        alias = create_school_case_alias_for_ticket(
+                            tenant_profile=self.tenant_profile,
+                            ticket_type=ticket_type,
+                            ticket_id=ticket.id,
+                            case_type=case_type,
+                            channel="voice",
+                            end_user=self.user,
+                            phone=phone,
+                            sensitivity_level=args.get("sensitivity_level") or taxonomy.get(case_type, {}).get("sensitivity_level"),
+                        )
+                        if not alias:
+                            db.session.commit()
+
+                        school_case = school_case_alias_payload(alias)
+                        case_number = (school_case or {}).get("school_case_id") or getattr(ticket, "nro_ticket", ticket.id)
+                        result = (
+                            f"Listo. Deje registrada la consulta escolar con seguimiento #{case_number}. "
+                            "Te envio el resumen por WhatsApp y el colegio podra continuar desde el panel."
+                        )
+                        self.last_ticket_nro = str(case_number)
+
+                        if session_context:
+                            self._update_session_contexts(
+                                session_context,
+                                {
+                                    "latest_school_case": school_case,
+                                    "latest_ticket_id": ticket.id,
+                                    "latest_ticket_type": ticket_type,
+                                    "latest_ticket_nro": getattr(ticket, "nro_ticket", None),
+                                    "receipt_sent": True,
+                                },
+                            )
+
+                        whatsapp_target = phone
+                        if whatsapp_target:
+                            try:
+                                body = (
+                                    f"Resumen de llamada - {self._resolve_tenant_name()}\n\n"
+                                    f"Caso escolar: #{case_number}\n"
+                                    f"Area: {taxonomy.get(case_type, {}).get('label', case_type)}\n"
+                                    f"Detalle: {descripcion}\n\n"
+                                    "Podes responder este WhatsApp con imagen, audio, ubicacion o archivo si queres sumar informacion."
+                                )
+                                send_whatsapp_message(
+                                    whatsapp_target,
+                                    body,
+                                    from_number=self._resolve_whatsapp_sender(),
+                                )
+                            except Exception as ex:
+                                logger.warning(f"[VOICE] Could not send school case WhatsApp summary: {ex}")
+
+                # ----------------------------
                 # MUNICIPIO: Reclamo
                 # ----------------------------
-                if name == "crear_reclamo":
+                elif name == "crear_reclamo":
                     from services.actions.municipio_actions import CrearReclamoActionHandler
 
                     ctx = {

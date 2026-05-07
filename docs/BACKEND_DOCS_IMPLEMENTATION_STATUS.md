@@ -118,6 +118,18 @@ Pendientes honestos de siguiente ola:
 - Webhooks v2 para recibir eventos de Mercado Pago sin pasar por rutas legacy.
 - Puntos/recompensas con catalogo administrable completo y reglas por segmento.
 - Quick menu educativo avanzado por permisos/rol fino; base colegios ya sale desde backend.
+
+## Realtime voice / llamadas WhatsApp 2026-05-07
+
+Mejora aditiva sobre la base existente de Twilio Voice/Media Streams y OpenAI Realtime:
+
+- Default realtime actualizado a `gpt-realtime-2`; fallback documentado `gpt-realtime-1.5`.
+- `services/realtime_voice_profiles.py` centraliza contrato `realtime.voice_capabilities.v1`, perfiles por vertical, tools e instrucciones de voz.
+- `GET /api/public/realtime/voice-capabilities` expone capacidades de llamadas para landing/widget/demo.
+- `GET /api/public/widget-config` agrega `realtime_voice` y atributos `data-realtime-model`, `data-realtime-fallback-model`, `data-realtime-voice`, `data-realtime-transport` y `data-realtime-profile`.
+- `/twilio/voice/stream` mantiene el stream actual pero selecciona tools por vertical: municipio, pyme o colegio.
+- Colegios pueden crear `crear_caso_escolar` por llamada y vincularlo a `SchoolCaseAlias` cuando hay contexto escolar resoluble.
+- Se agrego handoff frontend: `docs/BACKEND_TO_FRONTEND_SYNC_REALTIME_VOICE_2026-05-07.md`.
 - Delivery hooks reales para notifications segun proveedor.
 
 Verificacion sync ejecutada:

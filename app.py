@@ -150,7 +150,13 @@ def create_app(config_class=Config):
     print(f"DB object: {db}")
 
     if str(app.config.get("SQLALCHEMY_DATABASE_URI", "")).startswith("sqlite"):
-        engine_opts = app.config.setdefault("SQLALCHEMY_ENGINE_OPTIONS", {})
+        configured_engine_opts = dict(app.config.get("SQLALCHEMY_ENGINE_OPTIONS") or {})
+        engine_opts = {
+            key: value
+            for key, value in configured_engine_opts.items()
+            if key in {"connect_args", "execution_options"}
+        }
+        app.config["SQLALCHEMY_ENGINE_OPTIONS"] = engine_opts
         engine_opts.setdefault("execution_options", {}).setdefault(
             "sqlite_foreign_keys", False
         )

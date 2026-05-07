@@ -33,6 +33,14 @@ from services.education_contracts import (
     build_education_whatsapp_playbook,
     education_quick_menu,
 )
+from services.realtime_voice_profiles import (
+    REALTIME_VOICE_CONTRACT_VERSION,
+    build_realtime_voice_capabilities,
+    build_realtime_voice_instructions,
+    infer_realtime_voice_vertical,
+    resolve_realtime_model,
+    resolve_realtime_voice,
+)
 
 public_resolver_bp = Blueprint("public_resolver_bp", __name__, url_prefix="/api/public")
 public_municipios_bp = Blueprint("public_municipios_bp", __name__)
@@ -260,6 +268,9 @@ def _support_channels_payload(tenant: TenantProfile, cfg: dict) -> dict:
         or getattr(tenant, "whatsapp_sender_id", None)
         or getattr(owner, "telefono", None)
     )
+    realtime_voice = build_realtime_voice_capabilities(tenant, cfg, current_app.config)
+    realtime_model = realtime_voice.get("recommended_model")
+    realtime_voice_name = realtime_voice.get("voice")
 
     return {
         "live_chat": {
@@ -282,19 +293,27 @@ def _support_channels_payload(tenant: TenantProfile, cfg: dict) -> dict:
             "channel": "voice_call",
             "realtime_bridge": True,
             "provider": "openai_realtime",
-            "model": cfg.get("openai_realtime_model") or current_app.config.get("OPENAI_REALTIME_SPEECH_MODEL") or "gpt-realtime-1.5",
+            "model": realtime_model,
+            "fallback_model": realtime_voice.get("fallback_model"),
+            "voice": realtime_voice_name,
+            "contract_version": REALTIME_VOICE_CONTRACT_VERSION,
+            "capabilities": realtime_voice,
             "media": {"audio": True, "text": True},
             "features": {
                 "barge_in": True,
                 "dtmf_fallback": True,
                 "transfer_humano": True,
+                "native_speech_to_speech": True,
+                "whatsapp_followup": True,
             },
         },
         "video_call": {
             "enabled": bool(cfg.get("realtime_video_enabled", False)),
             "channel": "video_call",
             "provider": "openai_realtime",
-            "model": cfg.get("openai_realtime_model") or current_app.config.get("OPENAI_REALTIME_SPEECH_MODEL") or "gpt-realtime-1.5",
+            "model": realtime_model,
+            "fallback_model": realtime_voice.get("fallback_model"),
+            "voice": realtime_voice_name,
             "avatar": {
                 "enabled": bool(cfg.get("widget_avatar_enabled", True)),
                 "type": cfg.get("widget_avatar_type") or "robot",
@@ -496,16 +515,11 @@ def _build_realtime_session_payload(tenant: TenantProfile, cfg: dict, *, channel
     """Build OpenAI Realtime session payload for widget voice/video channels."""
 
     tenant_name = tenant.nombre or "Chatboc"
-    model = (
-        cfg.get("openai_realtime_model")
-        or current_app.config.get("OPENAI_REALTIME_SPEECH_MODEL")
-        or os.environ.get("OPENAI_REALTIME_SPEECH_MODEL")
-        or "gpt-realtime-1.5"
-    )
-
-    voice = cfg.get("openai_realtime_voice") or "alloy"
+    model = resolve_realtime_model(cfg, current_app.config)
+    voice = resolve_realtime_voice(cfg, current_app.config)
     modalities = ["audio", "text"] if channel == "voice" else ["audio", "text", "video"]
     avatar_enabled = bool(cfg.get("widget_avatar_enabled", True))
+    voice_vertical = infer_realtime_voice_vertical(tenant)
 
     instructions = (
         f"Sos un asistente inclusivo de {tenant_name}. "
@@ -520,7 +534,12 @@ def _build_realtime_session_payload(tenant: TenantProfile, cfg: dict, *, channel
         "model": model,
         "modalities": modalities,
         "voice": voice,
-        "instructions": instructions,
+        "instructions": build_realtime_voice_instructions(
+            tenant_name=tenant_name,
+            vertical=voice_vertical,
+            user_name=None,
+            user_address=None,
+        ),
         "input_audio_format": cfg.get("openai_realtime_input_audio_format") or "pcm16",
         "output_audio_format": cfg.get("openai_realtime_output_audio_format") or "pcm16",
         "turn_detection": {
@@ -536,8 +555,10 @@ def _build_realtime_session_payload(tenant: TenantProfile, cfg: dict, *, channel
             "avatar_enabled": avatar_enabled,
             "avatar_type": cfg.get("widget_avatar_type") or "robot",
             "avatar_persona": cfg.get("widget_avatar_persona") or "chatboc_assistant",
-            "business_flows": ["crear_reclamo", "crear_pedido", "consultas_generales", "derivar_humano"],
-            "realtime_profile": "web4_interactive",
+            "business_flows": ["crear_reclamo", "crear_pedido", "crear_caso_escolar", "consultas_generales", "derivar_humano"],
+            "realtime_profile": "realtime_voice_native",
+            "active_vertical": voice_vertical,
+            "capabilities_contract": REALTIME_VOICE_CONTRACT_VERSION,
         },
     }
 
@@ -586,7 +607,10 @@ def create_realtime_session():
         _audit_realtime_event(tenant, event_name="realtime_session_denied", channel=channel, metadata={"reason": "voice_disabled"})
         return _realtime_error_response("voice_realtime_disabled", 400)
 
-    api_key = current_app.config.get("OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY")
+    api_key = current_app.config.get("OPENAI_API_KEY")
+    if api_key is None:
+        api_key = os.environ.get("OPENAI_API_KEY")
+    api_key = str(api_key or "").strip()
     if not api_key:
         _audit_realtime_event(tenant, event_name="realtime_session_failed", channel=channel, metadata={"reason": "openai_api_key_missing"})
         return _realtime_error_response("openai_api_key_missing", 503)
@@ -632,6 +656,47 @@ def create_realtime_session():
     for key, value in _realtime_rate_limit_headers().items():
         response.headers[key] = value
     return _log_widget_public_request(response, tenant, entity_token=widget_token)
+
+
+@public_resolver_bp.route("/realtime/voice-capabilities", methods=["GET", "OPTIONS"], provide_automatic_options=False)
+@cross_origin(origins="*", automatic_options=False)
+def realtime_voice_capabilities():
+    if request.method == "OPTIONS":
+        return jsonify({"ok": True})
+
+    widget_token = _extract_widget_token()
+    tenant_slug = request.args.get("tenant") or request.args.get("tenant_slug") or request.args.get("slug")
+    tenant = None
+    cfg = {}
+
+    if tenant_slug or widget_token:
+        try:
+            tenant = resolve_tenant_only(
+                tenant_slug=tenant_slug,
+                widget_token=widget_token,
+                require_explicit_slug=bool(tenant_slug),
+            )
+            cfg = _normalize_widget_config(tenant.configuracion, tenant.widget_settings)
+        except TenantResolutionError as exc:
+            return (
+                jsonify(
+                    {
+                        "contract_version": REALTIME_VOICE_CONTRACT_VERSION,
+                        "error": {"code": 404, "message": str(exc)},
+                    }
+                ),
+                404,
+            )
+
+    payload = build_realtime_voice_capabilities(tenant, cfg, current_app.config)
+    if tenant:
+        payload["tenant"] = {
+            "id": tenant.id,
+            "slug": tenant.slug,
+            "tipo": tenant.tipo,
+            "nombre": tenant.nombre,
+        }
+    return jsonify(payload)
 
 
 @public_resolver_bp.route("/realtime/action-event", methods=["POST", "OPTIONS"], provide_automatic_options=False)
@@ -784,7 +849,11 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
         "data-logo-badge-style": logo_badge_style,
         "data-cursor-trail": str(cursor_trail).lower(),
         "data-ambient-particles": str(ambient_particles).lower(),
-        "data-realtime-model": cfg.get("openai_realtime_model") or current_app.config.get("OPENAI_REALTIME_SPEECH_MODEL") or "gpt-realtime-1.5",
+        "data-realtime-model": resolve_realtime_model(cfg, current_app.config),
+        "data-realtime-fallback-model": build_realtime_voice_capabilities(tenant, cfg, current_app.config).get("fallback_model"),
+        "data-realtime-voice": resolve_realtime_voice(cfg, current_app.config),
+        "data-realtime-transport": "webrtc",
+        "data-realtime-profile": "realtime_voice_native",
         "data-realtime-voice-enabled": str(bool(cfg.get("realtime_voice_enabled", True))).lower(),
         "data-realtime-video-enabled": str(bool(cfg.get("realtime_video_enabled", False))).lower(),
         "data-avatar-enabled": str(bool(cfg.get("widget_avatar_enabled", True))).lower(),
@@ -886,9 +955,14 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
         "enterprise_iteration": {
             "realtime": {
                 "session_endpoint": "/api/public/realtime/session",
+                "capabilities_endpoint": "/api/public/realtime/voice-capabilities",
                 "action_event_endpoint": "/api/public/realtime/action-event",
                 "required_widget_token": True,
                 "model": attrs.get("data-realtime-model"),
+                "fallback_model": attrs.get("data-realtime-fallback-model"),
+                "voice": attrs.get("data-realtime-voice"),
+                "contract_version": REALTIME_VOICE_CONTRACT_VERSION,
+                "active_vertical": (support_channels.get("voice_call", {}).get("capabilities") or {}).get("active_vertical"),
                 "voice_handoff": {
                     "enabled": True,
                     "supports_whatsapp_followup": True,
@@ -1041,7 +1115,7 @@ def _normalize_widget_config(config: dict | None, widget_settings=None) -> dict:
 
     cfg.setdefault("realtime_voice_enabled", True)
     cfg.setdefault("realtime_video_enabled", False)
-    cfg.setdefault("openai_realtime_model", current_app.config.get("OPENAI_REALTIME_SPEECH_MODEL") or "gpt-realtime-1.5")
+    cfg.setdefault("openai_realtime_model", resolve_realtime_model(app_config=current_app.config))
     cfg.setdefault("widget_avatar_enabled", True)
     cfg.setdefault("widget_avatar_type", "robot")
     cfg.setdefault("widget_avatar_persona", "chatboc_assistant")
@@ -1453,6 +1527,7 @@ def widget_config():
         "widget": widget_payload,
         "builder_config": widget_payload.get("builder_config", {}),
         "quick_menu": widget_payload.get("quick_menu", []),
+        "realtime_voice": (widget_payload.get("support_channels", {}).get("voice_call", {}).get("capabilities")),
         "rubro_profile": widget_payload.get("rubro_profile", {}),
         "experience_blueprint": widget_payload.get("experience_blueprint", {}),
         "education": widget_payload.get("education"),
