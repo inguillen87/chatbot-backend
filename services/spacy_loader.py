@@ -1,4 +1,5 @@
 import logging
+import os
 from functools import lru_cache
 
 _SPACY_IMPORT_ERROR: Exception | None = None
@@ -67,11 +68,15 @@ class _UnavailableSpacyModule:
         return _BlankSpanishPipeline()
 
 
-try:
-    import spacy  # type: ignore[import-not-found]
-except Exception as exc:  # pragma: no cover - depends on local binary deps
-    _SPACY_IMPORT_ERROR = exc
-    spacy = _UnavailableSpacyModule(exc)  # type: ignore[assignment]
+if os.getenv("TESTING") == "1" or os.getenv("CHATBOC_DISABLE_SPACY") == "1":
+    _SPACY_IMPORT_ERROR = RuntimeError("spaCy disabled for this process")
+    spacy = _UnavailableSpacyModule(_SPACY_IMPORT_ERROR)  # type: ignore[assignment]
+else:
+    try:
+        import spacy  # type: ignore[import-not-found]
+    except Exception as exc:  # pragma: no cover - depends on local binary deps
+        _SPACY_IMPORT_ERROR = exc
+        spacy = _UnavailableSpacyModule(exc)  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 

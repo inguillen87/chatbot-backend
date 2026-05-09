@@ -1,5 +1,4 @@
 import warnings
-from copy import deepcopy
 from typing import (
     Any,
     Awaitable,
@@ -101,13 +100,6 @@ class QdrantClient(QdrantFastembedMixin):
         check_compatibility: bool = True,
         **kwargs: Any,
     ):
-        self._inference_inspector = Inspector()
-        super().__init__(
-            parser=self._inference_inspector.parser, **kwargs
-        )  # If we want to pass any kwargs to the parent class or ignore unexpected kwargs,
-        # we will need to pop them from **kwargs. Otherwise, they might be passed to QdrantRemote as httpx kwargs.
-        # Httpx has specific set of params, which it accepts and will raise an error if it receives any other params.
-
         # Saving the init options to facilitate building AsyncQdrantClient from QdrantClient and vice versa.
         # Eg. AsyncQdrantClient(**sync_client.init_options) or QdrantClient(**async_client.init_options)
         self._init_options = {
@@ -115,7 +107,14 @@ class QdrantClient(QdrantFastembedMixin):
             for key, value in locals().items()
             if key not in ("self", "__class__", "kwargs")
         }
-        self._init_options.update(deepcopy(kwargs))
+        self._init_options.update({k: v for k, v in kwargs.items()})
+
+        self._inference_inspector = Inspector()
+        super().__init__(
+            parser=self._inference_inspector.parser, **kwargs
+        )  # If we want to pass any kwargs to the parent class or ignore unexpected kwargs,
+        # we will need to pop them from **kwargs. Otherwise, they might be passed to QdrantRemote as httpx kwargs.
+        # Httpx has specific set of params, which it accepts and will raise an error if it receives any other params.
 
         self._client: QdrantBase
 
@@ -420,8 +419,7 @@ class QdrantClient(QdrantFastembedMixin):
         assert len(kwargs) == 0, f"Unknown arguments: {list(kwargs.keys())}"
 
         requests = self._resolve_query_batch_request(requests)
-        requires_inference = self._inference_inspector.inspect(requests)
-        if requires_inference and not self.cloud_inference:
+        if not self.cloud_inference and self._inference_inspector.inspect(requests):
             requests = list(
                 self._embed_models(
                     requests, is_query=True, batch_size=self.local_inference_batch_size
@@ -556,39 +554,41 @@ class QdrantClient(QdrantFastembedMixin):
         # If the query contains unprocessed documents, we need to embed them and
         # replace the original query with the embedded vectors.
         query = self._resolve_query(query)
-        requires_inference = self._inference_inspector.inspect(query)
-        if not requires_inference:
-            requires_inference = self._inference_inspector.inspect(prefetch)
-        if requires_inference and not self.cloud_inference:
-            query = (
-                next(
-                    iter(
-                        self._embed_models(
-                            query, is_query=True, batch_size=self.local_inference_batch_size
-                        )
-                    )
-                )
-                if query is not None
-                else None
-            )
-            if isinstance(prefetch, list):
-                prefetch = list(
-                    self._embed_models(
-                        prefetch, is_query=True, batch_size=self.local_inference_batch_size
-                    )
-                )
-            else:
-                prefetch = (
+        if not self.cloud_inference:
+            if self._inference_inspector.inspect(query) or self._inference_inspector.inspect(
+                prefetch
+            ):
+                query = (
                     next(
                         iter(
                             self._embed_models(
-                                prefetch, is_query=True, batch_size=self.local_inference_batch_size
+                                query, is_query=True, batch_size=self.local_inference_batch_size
                             )
                         )
                     )
-                    if prefetch is not None
+                    if query is not None
                     else None
                 )
+                if isinstance(prefetch, list):
+                    prefetch = list(
+                        self._embed_models(
+                            prefetch, is_query=True, batch_size=self.local_inference_batch_size
+                        )
+                    )
+                else:
+                    prefetch = (
+                        next(
+                            iter(
+                                self._embed_models(
+                                    prefetch,
+                                    is_query=True,
+                                    batch_size=self.local_inference_batch_size,
+                                )
+                            )
+                        )
+                        if prefetch is not None
+                        else None
+                    )
 
         return self._client.query_points(
             collection_name=collection_name,
@@ -727,35 +727,35 @@ class QdrantClient(QdrantFastembedMixin):
         # If the query contains unprocessed documents, we need to embed them and
         # replace the original query with the embedded vectors.
         query = self._resolve_query(query)
-        requires_inference = self._inference_inspector.inspect(query)
-        if not requires_inference:
-            requires_inference = self._inference_inspector.inspect(prefetch)
-        if requires_inference and not self.cloud_inference:
-            query = (
-                next(
-                    iter(
-                        self._embed_models(
-                            query, is_query=True, batch_size=self.local_inference_batch_size
+        if not self.cloud_inference:
+            if self._inference_inspector.inspect(query) or self._inference_inspector.inspect(
+                prefetch
+            ):
+                query = (
+                    next(
+                        iter(
+                            self._embed_models(
+                                query, is_query=True, batch_size=self.local_inference_batch_size
+                            )
                         )
                     )
+                    if query is not None
+                    else None
                 )
-                if query is not None
-                else None
-            )
-            if isinstance(prefetch, list):
-                prefetch = list(
-                    self._embed_models(
-                        prefetch, is_query=True, batch_size=self.local_inference_batch_size
-                    )
-                )
-            elif prefetch is not None:
-                prefetch = next(
-                    iter(
+                if isinstance(prefetch, list):
+                    prefetch = list(
                         self._embed_models(
                             prefetch, is_query=True, batch_size=self.local_inference_batch_size
                         )
                     )
-                )
+                elif prefetch is not None:
+                    prefetch = next(
+                        iter(
+                            self._embed_models(
+                                prefetch, is_query=True, batch_size=self.local_inference_batch_size
+                            )
+                        )
+                    )
 
         return self._client.query_points_groups(
             collection_name=collection_name,
@@ -1614,9 +1614,7 @@ class QdrantClient(QdrantFastembedMixin):
                 stacklevel=4,
             )
 
-        requires_inference = self._inference_inspector.inspect(points)
-
-        if requires_inference and not self.cloud_inference:
+        if not self.cloud_inference and self._inference_inspector.inspect(points):
             if isinstance(points, types.Batch):
                 points = next(
                     iter(
@@ -1681,8 +1679,7 @@ class QdrantClient(QdrantFastembedMixin):
         """
         assert len(kwargs) == 0, f"Unknown arguments: {list(kwargs.keys())}"
 
-        requires_inference = self._inference_inspector.inspect(points)
-        if requires_inference and not self.cloud_inference:
+        if not self.cloud_inference and self._inference_inspector.inspect(points):
             points = list(
                 self._embed_models(
                     points, is_query=False, batch_size=self.local_inference_batch_size
@@ -2135,8 +2132,7 @@ class QdrantClient(QdrantFastembedMixin):
         """
 
         assert len(kwargs) == 0, f"Unknown arguments: {list(kwargs.keys())}"
-        requires_inference = self._inference_inspector.inspect(update_operations)
-        if requires_inference and not self.cloud_inference:
+        if not self.cloud_inference and self._inference_inspector.inspect(update_operations):
             update_operations = list(
                 self._embed_models(
                     update_operations, is_query=False, batch_size=self.local_inference_batch_size

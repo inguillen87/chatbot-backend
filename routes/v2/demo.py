@@ -97,9 +97,23 @@ def _payload_slug(value: Any) -> str:
     return str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
 
 
+def _payload_tenant_slug(value: Any) -> str:
+    if isinstance(value, dict):
+        value = value.get("slug") or value.get("tenant_slug") or value.get("key") or value.get("id")
+    return str(value or "").strip().lower()
+
+
 def _first_payload_slug(data: dict[str, Any], *keys: str) -> str:
     for key in keys:
         value = _payload_slug(data.get(key))
+        if value:
+            return value
+    return ""
+
+
+def _first_payload_tenant_slug(data: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = _payload_tenant_slug(data.get(key))
         if value:
             return value
     return ""
@@ -384,7 +398,7 @@ def demo_session_v2():
         "demo_rubro",
         "subvertical",
     )
-    tenant_slug = _first_payload_slug(data, "tenant_slug", "tenant", "slug")
+    tenant_slug = _first_payload_tenant_slug(data, "tenant_slug", "tenant", "slug")
 
     if not sector:
         sector = sector_for_rubro(rubro) or "empresas"
