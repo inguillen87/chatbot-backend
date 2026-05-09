@@ -1,11 +1,16 @@
 from flask import Blueprint, jsonify, current_app, request
 from models import Rubro
-from services.demo_registry import load_demo_rubros
 from services.demo_pillar_catalog import catalog_resources_for_rubro, curated_demo_rubros
 
 # Define blueprint without prefix here so it can be mounted flexibly in app.py
 # (e.g. at /rubros AND /api/rubros)
 rubros_bp = Blueprint("rubros", __name__)
+
+
+def load_demo_rubros():
+    from services.demo_registry import load_demo_rubros as _load_demo_rubros
+
+    return _load_demo_rubros()
 
 
 def _widget_preview_for_rubro(item: dict) -> dict:
