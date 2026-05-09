@@ -110,7 +110,9 @@ def test_respuestas_alias_reuses_handler(client, monkeypatch):
     )
     assert response.status_code == 201
     body = response.get_json()
-    assert body == {"ok": True, "respuesta_id": 123}
+    assert body["ok"] is True
+    assert body["respuesta_id"] == 123
+    assert body["request_id"]
     assert saved_calls["slug"] == "demo-encuesta"
     assert saved_calls["payload"] == {"respuesta": "ok"}
     assert saved_calls["ctx"]["ip"] == "1.1.1.1"
@@ -137,7 +139,10 @@ def test_responder_accepts_form_payload(client, monkeypatch):
     )
 
     assert response.status_code == 201
-    assert response.get_json() == {"ok": True, "respuesta_id": 456}
+    body = response.get_json()
+    assert body["ok"] is True
+    assert body["respuesta_id"] == 456
+    assert body["request_id"]
     assert captured["slug"] == "demo-encuesta"
     assert captured["payload"]["respuestas"] == respuestas
     assert captured["ctx"]["ip"] == "2.2.2.2"

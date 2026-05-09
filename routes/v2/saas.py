@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from typing import Any
 import uuid
 
 from flask import Blueprint, g, jsonify, request
 from sqlalchemy import func
+from sqlalchemy.orm.attributes import flag_modified
 
 from extensions import db
 from models import Notification, NotificationTemplate, TenantProfile, TenantTicket, User
@@ -612,7 +614,7 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
     if action not in {"assign", "reply", "handoff", "close", "reopen", "set_priority"}:
         return _error_response("Accion de inbox no soportada", 400, "unsupported_inbox_action", "send_supported_action")
 
-    extra = dict(_ticket_extra(ticket))
+    extra = deepcopy(_ticket_extra(ticket))
     event_body = ""
 
     if action == "assign":
@@ -674,6 +676,7 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
         _append_ticket_event(extra, action=action, actor=current_user, body=str(event_body or action), visibility="internal")
 
     ticket.datos_extra = extra
+    flag_modified(ticket, "datos_extra")
     ticket.updated_at = datetime.now(timezone.utc)
     db.session.add(ticket)
     db.session.commit()

@@ -21,6 +21,7 @@ from sqlalchemy import func, or_, inspect
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import joinedload, load_only
 
+from config import TIMEZONE_OFFSET as _CONFIG_TIMEZONE_OFFSET
 from database import db
 from utils.db_utils import ensure_enc_encuesta_schema
 from models import (
@@ -52,6 +53,22 @@ except Exception:  # pragma: no cover - analytics optional in some contexts
 
 _BOOTSTRAP_TENANT_ID: Optional[int] = None
 _ENC_COMENTARIO_HAS_REPORT_COUNT: Optional[bool] = None
+
+
+def _public_schedule_now() -> datetime:
+    """Return now in the timezone used by public survey windows.
+
+    SQLite strips timezone data from DateTime columns in tests and local demos.
+    Storing survey windows in the same local timezone that models use for
+    naive values keeps newly published surveys immediately active.
+    """
+
+    try:
+        offset_hours = int(current_app.config.get("TIMEZONE_OFFSET", _CONFIG_TIMEZONE_OFFSET))
+    except (RuntimeError, TypeError, ValueError):
+        offset_hours = int(_CONFIG_TIMEZONE_OFFSET)
+    offset_hours = max(-12, min(14, offset_hours))
+    return datetime.now(timezone(timedelta(hours=offset_hours)))
 
 
 def _social_comment_serializer() -> URLSafeTimedSerializer:
@@ -1498,7 +1515,7 @@ def publicar_encuesta(encuesta_id: int, user: Any) -> Tuple[EncEncuesta, EncLink
 
     encuesta.estado = "publicada"
     if not encuesta.inicio_at:
-        encuesta.inicio_at = datetime.now(timezone.utc)
+        encuesta.inicio_at = _public_schedule_now()
 
     slug_publico = _slugify(f"{encuesta.slug}-{secrets.token_hex(3)}")
     link = EncLink(
@@ -1563,7 +1580,7 @@ def cerrar_encuesta(encuesta_id: int, user: Any) -> EncEncuesta:
         raise EncuestaError("Encuesta no encontrada", status_code=404)
     _ensure_tenant_access(encuesta, user)
     encuesta.estado = "cerrada"
-    encuesta.fin_at = encuesta.fin_at or datetime.now(timezone.utc)
+    encuesta.fin_at = encuesta.fin_at or _public_schedule_now()
     db.session.commit()
     current_app.logger.info("[encuestas] Encuesta %s cerrada por %s", encuesta.id, getattr(user, "id", None))
     return encuesta
@@ -1978,18 +1995,19 @@ def _ensure_demo_public_window(encuesta: EncEncuesta) -> None:
     if not _is_bootstrap_demo_survey(encuesta):
         return
 
-    now = datetime.now(timezone.utc)
+    now = _public_schedule_now()
+    local_tz = now.tzinfo or timezone.utc
     inicio_at = encuesta.inicio_at
     if inicio_at and inicio_at.tzinfo is None:
-        inicio_at = inicio_at.replace(tzinfo=timezone.utc)
+        inicio_at = inicio_at.replace(tzinfo=local_tz)
     elif inicio_at:
-        inicio_at = inicio_at.astimezone(timezone.utc)
+        inicio_at = inicio_at.astimezone(local_tz)
 
     fin_at = encuesta.fin_at
     if fin_at and fin_at.tzinfo is None:
-        fin_at = fin_at.replace(tzinfo=timezone.utc)
+        fin_at = fin_at.replace(tzinfo=local_tz)
     elif fin_at:
-        fin_at = fin_at.astimezone(timezone.utc)
+        fin_at = fin_at.astimezone(local_tz)
 
     should_update = False
     if inicio_at and inicio_at > now:

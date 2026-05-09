@@ -1,6 +1,7 @@
 import ssl
 import os
 import sys
+import uuid
 
 # --- Modo "solo migraciones" o "testing" para evitar carga pesada de eventlet ---
 MIGRATIONS_ONLY = os.getenv("FLASK_MIGRATIONS_ONLY") == "1"
@@ -173,15 +174,61 @@ def create_app(config_class=Config):
         return jsonify({"status": "ok"})
 
     # Error handling unificado JSON
+    def _request_id() -> str:
+        incoming = (
+            request.headers.get("X-Request-Id")
+            or request.headers.get("X-Correlation-Id")
+            or getattr(g, "request_id", None)
+            or ""
+        )
+        request_id = str(incoming).strip() or uuid.uuid4().hex
+        g.request_id = request_id
+        return request_id
+
+    def _shared_error_response(
+        *,
+        status_code: int,
+        message: str,
+        reason_code: str,
+        retryable: bool = False,
+        action_hint: str | None = None,
+    ):
+        request_id = _request_id()
+        payload = {
+            "contract_version": "shared.error.v1",
+            "status_code": status_code,
+            "reason_code": reason_code,
+            "retryable": retryable,
+            "action_hint": action_hint or reason_code,
+            "request_id": request_id,
+            "error": {"code": status_code, "message": message},
+            "message": message,
+            "detail": message,
+        }
+        response = jsonify(payload)
+        response.status_code = status_code
+        response.headers["X-Request-Id"] = request_id
+        return response
+
     @app.errorhandler(400)
     def handle_bad_request(error):
         detail = getattr(error, "description", None) or str(error)
-        return jsonify({"error": {"code": 400, "message": detail}}), 400
+        return _shared_error_response(
+            status_code=400,
+            message=detail,
+            reason_code="bad_request",
+            action_hint="fix_request",
+        )
 
     @app.errorhandler(404)
     def handle_not_found(error):
         detail = getattr(error, "description", None) or "Recurso no encontrado"
-        return jsonify({"error": {"code": 404, "message": detail}}), 404
+        return _shared_error_response(
+            status_code=404,
+            message=detail,
+            reason_code="not_found",
+            action_hint="check_url",
+        )
 
     @app.errorhandler(500)
     def handle_server_error(error):
@@ -190,22 +237,35 @@ def create_app(config_class=Config):
             db.session.rollback()
         except Exception:
             pass
-        return jsonify({"error": {"code": 500, "message": "Internal server error"}}), 500
+        return _shared_error_response(
+            status_code=500,
+            message="Internal server error",
+            reason_code="server_error",
+            action_hint="retry_later",
+            retryable=True,
+        )
 
     @app.errorhandler(HTTPException)
     def handle_http_exception(error: HTTPException):
-        payload = {
-            "error": {"code": error.code, "message": error.description},
-        }
-        return jsonify(payload), error.code
+        status = error.code or 500
+        return _shared_error_response(
+            status_code=status,
+            message=error.description,
+            reason_code="http_error" if status != 404 else "not_found",
+            action_hint="check_request",
+            retryable=500 <= status < 600,
+        )
 
     @app.errorhandler(ApiError)
     def handle_custom_api_error(error: ApiError):
         status = getattr(error, "status_code", 400) or 400
-        payload = {"error": {"code": status, "message": error.message}}
-        response = jsonify(payload)
-        response.status_code = status
-        return response
+        return _shared_error_response(
+            status_code=status,
+            message=error.message,
+            reason_code=getattr(error, "reason_code", None) or "api_error",
+            action_hint=getattr(error, "action_hint", None) or "check_request",
+            retryable=bool(getattr(error, "retryable", False)),
+        )
 
     # --- Diagnóstico de sesión (solo en runtime normal) ---
     if not MIGRATIONS_ONLY:

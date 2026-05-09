@@ -35,6 +35,15 @@ def _feature_guard():
     return None
 
 
+def _has_explicit_tenant_context() -> bool:
+    if request.args.get("tenant") or request.args.get("tenant_slug") or request.args.get("tenant_id"):
+        return True
+    for header in ("X-Tenant", "X-Tenant-Slug", "X-Chatboc-Tenant", "X-Tenant-Id"):
+        if request.headers.get(header):
+            return True
+    return False
+
+
 def _create_admin_blueprint(name: str, url_prefix: str) -> Blueprint:
     """Return a blueprint that exposes the admin survey endpoints."""
 
@@ -121,7 +130,7 @@ def _create_admin_blueprint(name: str, url_prefix: str) -> Blueprint:
 
         try:
             tenant_profile = getattr(g, "tenant_profile", None)
-            if tenant_profile and not _is_authorized_for_tenant(current_user, tenant_profile):
+            if _has_explicit_tenant_context() and tenant_profile and not _is_authorized_for_tenant(current_user, tenant_profile):
                 return jsonify({"error": "No autorizado para este tenant"}), 403
 
             tenant_id = determine_tenant_id_for_user(current_user)

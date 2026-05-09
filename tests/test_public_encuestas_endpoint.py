@@ -41,9 +41,14 @@ def test_not_found_returns_json(client):
     response = client.get("/ruta-inexistente")
     assert response.status_code == 404
     payload = response.get_json()
-    assert payload["error"] == "not_found"
+    assert payload["contract_version"] == "shared.error.v1"
+    assert payload["status_code"] == 404
+    assert payload["reason_code"] == "not_found"
+    assert payload["error"]["code"] == 404
     assert isinstance(payload.get("detail"), str)
     assert payload["detail"]
+    assert payload["request_id"]
+    assert response.headers.get("X-Request-Id") == payload["request_id"]
 
 
 def test_internal_error_returns_json():
@@ -62,7 +67,12 @@ def test_internal_error_returns_json():
             db.drop_all()
 
     assert response.status_code == 500
-    assert response.get_json() == {"error": "server_error"}
+    payload = response.get_json()
+    assert payload["contract_version"] == "shared.error.v1"
+    assert payload["status_code"] == 500
+    assert payload["reason_code"] == "server_error"
+    assert payload["error"]["message"] == "Internal server error"
+    assert payload["request_id"]
 
 
 def test_public_encuestas_rate_limit_respects_config(app):

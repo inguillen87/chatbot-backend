@@ -1,15 +1,11 @@
 import os
 import sys
 
-# Workaround for eventlet + Python 3.12 issue
+# Keep eventlet out of the pytest bootstrap. The app disables eventlet in
+# TESTING mode, and patching os/file APIs here breaks Flask-Session filesystem
+# writes on Windows before endpoint logic can run.
 os.environ.setdefault("EVENTLET_NO_GREENDNS", "YES")
-
-try:
-    import eventlet
-    eventlet.monkey_patch()
-except ImportError:
-    print("Eventlet not found, skipping monkey patching.")
-    pass
+os.environ.setdefault("TESTING", "1")
 
 import pytest
 
