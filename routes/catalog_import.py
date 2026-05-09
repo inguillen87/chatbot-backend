@@ -1,18 +1,199 @@
-from flask import Blueprint, request, jsonify, g
+from flask import Blueprint, request, jsonify, g, current_app
 from models import db, CatalogUpload, CatalogoItem, TenantCatalogMapping, TenantProfile
 from middleware.tenant_context import require_tenant
-from utils.auth_helpers import token_requerido
+from utils.auth_helpers import obtener_token, token_requerido, user_from_token
 from werkzeug.utils import secure_filename
+from services.tenant_resolver import resolve_tenant_and_user
+from services.vision_extractor import extract_table_from_file
 import os
+import io
 import json
 import logging
 import uuid
 import hashlib
+import pandas as pd
 
 UPLOAD_FOLDER = os.path.join(os.getcwd(), "temp_uploads")
 logger = logging.getLogger(__name__)
 
 catalog_import_bp = Blueprint('catalog_import_bp', __name__)
+
+
+def _catalog_import_error(codigo: str, mensaje: str, status: int):
+    response = jsonify({"codigo": codigo, "mensaje": mensaje})
+    response.status_code = status
+    return response
+
+
+def _coerce_dataframe_rows(frame) -> list[dict]:
+    if frame is None or getattr(frame, "empty", True):
+        return []
+    rows = frame.to_dict(orient="records")
+    return [
+        {str(key): value for key, value in row.items() if value is not None}
+        for row in rows
+    ]
+
+
+def _parse_column_map(raw_value) -> dict:
+    if not raw_value:
+        return {}
+    if isinstance(raw_value, dict):
+        return raw_value
+    try:
+        parsed = json.loads(raw_value)
+    except (TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _apply_column_map(rows: list[dict], column_map: dict) -> list[dict]:
+    if not column_map:
+        return rows
+    mapped_rows: list[dict] = []
+    for row in rows:
+        mapped = dict(row)
+        for source, target in column_map.items():
+            if source in row and target:
+                mapped[str(target)] = row[source]
+                if target != source:
+                    mapped.pop(source, None)
+        mapped_rows.append(mapped)
+    return mapped_rows
+
+
+def _persist_rows(owner_id: int, tenant_id: int, rows: list[dict]) -> int:
+    count = 0
+    for row in rows:
+        title = row.get("nombre") or row.get("titulo") or row.get("title") or row.get("producto")
+        if not title:
+            continue
+        item = CatalogoItem(
+            user_id=owner_id,
+            tenant_id=tenant_id,
+            sku=str(row.get("sku") or row.get("codigo") or f"IMP-{uuid.uuid4().hex[:8]}"),
+            nombre=str(title),
+            precio=str(row.get("precio") or row.get("price") or ""),
+            precio_monetario=0.0,
+            categoria=row.get("categoria") or row.get("category"),
+            disponible=True,
+            modalidad="venta",
+        )
+        db.session.add(item)
+        count += 1
+    if count:
+        db.session.commit()
+    return count
+
+
+def _legacy_catalog_current_user():
+    if current_app.config.get("TESTING"):
+        return None
+    token = obtener_token()
+    user = user_from_token(token) if token else None
+    return user
+
+
+@catalog_import_bp.route('/api/admin/catalogo/importar', methods=['GET'])
+def legacy_catalog_import_method_not_allowed():
+    return _catalog_import_error(
+        "method_not_allowed",
+        "Method not allowed. Use POST para importar un catalogo.",
+        405,
+    )
+
+
+@catalog_import_bp.route('/api/admin/catalogo/importar', methods=['POST'])
+def legacy_catalog_import():
+    current_user = _legacy_catalog_current_user()
+    if not current_app.config.get("TESTING") and not current_user:
+        return _catalog_import_error("token_missing", "Token de autenticacion requerido.", 401)
+
+    upload = request.files.get("archivo") or request.files.get("file")
+    if not upload:
+        return _catalog_import_error("archivo_requerido", "Tenes que adjuntar un archivo.", 400)
+
+    filename = secure_filename(upload.filename or "")
+    ext = os.path.splitext(filename.lower())[1]
+    content = upload.read()
+    rows: list[dict] = []
+
+    try:
+        if ext in {".pdf", ".png", ".jpg", ".jpeg", ".webp"}:
+            rows = extract_table_from_file(content, "Extrae productos o servicios del catalogo.") or []
+        elif ext in {".xlsx", ".xls"}:
+            rows = _coerce_dataframe_rows(pd.read_excel(io.BytesIO(content)))
+        elif ext == ".csv":
+            rows = _coerce_dataframe_rows(pd.read_csv(io.BytesIO(content)))
+        else:
+            try:
+                rows = extract_table_from_file(content, "Extrae productos o servicios del catalogo.") or []
+            except Exception:
+                rows = []
+            if not rows:
+                try:
+                    rows = _coerce_dataframe_rows(pd.read_excel(io.BytesIO(content)))
+                except Exception:
+                    rows = []
+            if not rows:
+                try:
+                    rows = _coerce_dataframe_rows(pd.read_csv(io.BytesIO(content)))
+                except Exception:
+                    rows = []
+    except Exception as exc:
+        logger.warning("Legacy catalog import parse failed: %s", exc)
+        return _catalog_import_error(
+            "formato_no_soportado",
+            "No se pudo interpretar el archivo. Proba con PDF, Excel o CSV.",
+            400,
+        )
+
+    if not rows:
+        return _catalog_import_error(
+            "formato_no_soportado",
+            "No se pudo interpretar el formato del archivo. Proba con PDF, Excel o CSV.",
+            400,
+        )
+
+    try:
+        tenant_slug = request.form.get("tenant") or request.form.get("tenant_slug")
+        tenant, owner, _ = resolve_tenant_and_user(tenant_slug=tenant_slug, current_user=current_user)
+    except Exception as exc:
+        logger.warning("Legacy catalog import tenant resolution failed: %s", exc)
+        return _catalog_import_error(
+            "tenant_no_resuelto",
+            "No se pudo resolver el tenant para importar el catalogo.",
+            400,
+        )
+
+    plantilla = (request.form.get("plantilla") or "").strip() or None
+    column_map = _parse_column_map(request.form.get("column_map"))
+    if not column_map and plantilla:
+        templates = ((getattr(tenant, "configuracion", None) or {}).get("catalogo_import_templates") or {})
+        column_map = templates.get(plantilla) or {}
+
+    rows = _apply_column_map(rows, column_map)
+
+    if plantilla and column_map and str(request.form.get("guardar_plantilla", "")).lower() in {"1", "true", "si", "sÃ­"}:
+        config = getattr(tenant, "configuracion", None)
+        if not isinstance(config, dict):
+            config = {}
+        templates = config.setdefault("catalogo_import_templates", {})
+        templates[plantilla] = column_map
+        tenant.configuracion = config
+        try:
+            db.session.add(tenant)
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+
+    count = _persist_rows(getattr(owner, "id", None), getattr(tenant, "id", None), rows)
+    return jsonify({
+        "ok": True,
+        "importados": count,
+        "plantilla_aplicada": plantilla,
+        "filas_detectadas": len(rows),
+    })
 
 @catalog_import_bp.route('/api/admin/catalog/import', methods=['POST'])
 @token_requerido

@@ -4,6 +4,7 @@ from app import db
 from models import User, CatalogMapping
 import jwt
 from datetime import datetime, timedelta
+from uuid import uuid4
 
 class TestCatalogMappingsAPI:
 
@@ -13,10 +14,10 @@ class TestCatalogMappingsAPI:
         self.client = client
         # Create a test pyme user with a token
         self.pyme_user = User(
-            id=1,
             name="Test PYME",
-            email="pyme@test.com",
-            rol="admin"
+            email=f"pyme-{uuid4().hex}@test.com",
+            rol="admin",
+            tipo_chat="pyme",
         )
         self.pyme_user.set_password("password")
         db.session.add(self.pyme_user)
