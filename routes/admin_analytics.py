@@ -228,9 +228,10 @@ def _build_whatsapp_funnel_payload(filters, *, window_minutes: int = 60) -> dict
             ),
             "unique_contacts": len(
                 {
-                    str((row.metadata_payload or {}).get("contact_key")).strip()
+                    str((metadata or {}).get("contact_key")).strip()
                     for row in filtered_events
-                    if isinstance(row.metadata_payload, dict) and (row.metadata_payload or {}).get("contact_key")
+                    for metadata in [getattr(row, "metadata_payload", None)]
+                    if isinstance(metadata, dict) and (metadata or {}).get("contact_key")
                 }
             ),
         },

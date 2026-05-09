@@ -2,33 +2,18 @@ import unittest
 from unittest.mock import patch
 from pathlib import Path
 import shutil
+import jwt
+import importlib
 from flask import Flask
 from extensions import db
 from config import TestConfig
 from models import User
-from functools import wraps
 
 
 class WhatsappPromocionarTest(unittest.TestCase):
     def setUp(self):
-        def fake_token(f):
-            @wraps(f)
-            def wrapper(*a, **k):
-                return f(self.admin_user, *a, **k)
-            return wrapper
-
-        def fake_admin(f):
-            @wraps(f)
-            def wrapper(*a, **k):
-                return f(*a, **k)
-            return wrapper
-
-        self.token_patcher = patch('utils.auth_helpers.token_requerido', fake_token)
-        self.admin_patcher = patch('utils.auth_helpers.admin_o_empleado_requerido', fake_admin)
-        self.token_patcher.start()
-        self.admin_patcher.start()
-
-        promo_module = __import__('routes.whatsapp_promocionar', fromlist=['whatsapp_promocionar_bp'])
+        promo_module = importlib.import_module('routes.whatsapp_promocionar')
+        promo_module = importlib.reload(promo_module)
         self.promo_module = promo_module
 
         self.app = Flask(__name__)
@@ -43,29 +28,33 @@ class WhatsappPromocionarTest(unittest.TestCase):
         self.other_admin = User(name='Other', email='o@o.com', password_hash='x', rol='admin')
         db.session.add_all([self.admin_user, self.other_admin])
         db.session.flush()
-        # Tie admins to their own empresa for clarity
-        self.admin_user.empresa_id = self.admin_user.id
-        self.other_admin.empresa_id = self.other_admin.id
+        # Admin users are owners in this auth model; employees point to empresa_id.
+        self.admin_user.empresa_id = None
+        self.other_admin.empresa_id = None
 
         self.client_user = User(
             name='Cliente1', email='c1@c.com', password_hash='x',
-            telefono='+123', acepta_marketing=True, empresa_id=self.admin_user.empresa_id
+            telefono='+123', acepta_marketing=True, empresa_id=self.admin_user.id
         )
         self.other_client = User(
             name='Cliente2', email='c2@c.com', password_hash='x',
-            telefono='+456', acepta_marketing=True, empresa_id=self.other_admin.empresa_id
+            telefono='+456', acepta_marketing=True, empresa_id=self.other_admin.id
         )
         db.session.add_all([self.client_user, self.other_client])
         db.session.commit()
 
         self.client = self.app.test_client()
+        token = jwt.encode(
+            {"user_id": self.admin_user.id},
+            self.app.config["SECRET_KEY"],
+            algorithm="HS256",
+        )
+        self.auth_headers = {"Authorization": f"Bearer {token}"}
 
     def tearDown(self):
         db.session.remove()
         db.drop_all()
         self.app_context.pop()
-        self.token_patcher.stop()
-        self.admin_patcher.stop()
 
     @patch('routes.whatsapp_promocionar.enviar_imagen_whatsapp', return_value=True)
     def test_rate_limit(self, mock_send):
@@ -81,7 +70,7 @@ class WhatsappPromocionarTest(unittest.TestCase):
                 'link': 'https://x',
                 'url_imagen': 'http://img'
             }
-            resp1 = self.client.post('/api/whatsapp/promocionar', json=payload)
+            resp1 = self.client.post('/api/whatsapp/promocionar', json=payload, headers=self.auth_headers)
             self.assertEqual(resp1.status_code, 200)
             self.assertEqual(resp1.get_json()['enviados'], 1)
             mock_send.assert_called_once_with(
@@ -89,7 +78,7 @@ class WhatsappPromocionarTest(unittest.TestCase):
                 'Promo\n\nDesc\nhttps://x',
                 'http://img'
             )
-            resp2 = self.client.post('/api/whatsapp/promocionar', json=payload)
+            resp2 = self.client.post('/api/whatsapp/promocionar', json=payload, headers=self.auth_headers)
             self.assertEqual(resp2.status_code, 429)
         finally:
             self.promo_module.RATE_LIMIT_DIR = orig
@@ -106,6 +95,7 @@ class WhatsappPromocionarTest(unittest.TestCase):
         try:
             # Elevate admin to super_admin to allow global broadcast
             self.admin_user.rol = 'super_admin'
+            db.session.commit()
             payload = {
                 'titulo': 'Promo',
                 'descripcion': 'Desc',
@@ -113,7 +103,7 @@ class WhatsappPromocionarTest(unittest.TestCase):
                 'url_imagen': 'http://img',
                 'todos': True
             }
-            self.client.post('/api/whatsapp/promocionar', json=payload)
+            self.client.post('/api/whatsapp/promocionar', json=payload, headers=self.auth_headers)
 
             from routes.whatsapp_promocionar import _ultimo_envio, _puede_enviar
             last_global = _ultimo_envio(None)
@@ -134,7 +124,7 @@ class WhatsappPromocionarTest(unittest.TestCase):
         orig = self.promo_module.RATE_LIMIT_DIR
         self.promo_module.RATE_LIMIT_DIR = tmp_dir
         try:
-            resp = self.client.get('/api/whatsapp/promocionar')
+            resp = self.client.get('/api/whatsapp/promocionar', headers=self.auth_headers)
             self.assertEqual(resp.status_code, 200)
             data = resp.get_json()
             self.assertTrue(data['puede_enviar'])
@@ -146,8 +136,8 @@ class WhatsappPromocionarTest(unittest.TestCase):
                 'link': 'https://x',
                 'url_imagen': 'http://img'
             }
-            self.client.post('/api/whatsapp/promocionar', json=payload)
-            resp2 = self.client.get('/api/whatsapp/promocionar')
+            self.client.post('/api/whatsapp/promocionar', json=payload, headers=self.auth_headers)
+            resp2 = self.client.get('/api/whatsapp/promocionar', headers=self.auth_headers)
             self.assertEqual(resp2.status_code, 200)
             data2 = resp2.get_json()
             self.assertFalse(data2['puede_enviar'])

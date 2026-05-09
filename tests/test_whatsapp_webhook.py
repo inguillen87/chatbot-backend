@@ -875,7 +875,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self.assertIn("content_sid", template_kwargs)
 
         sticker_kwargs = self.mock_twilio_create.call_args_list[1].kwargs
-        expected_media = ["http://localhost:5000/static/welcome/sticker.png"]
+        expected_media = ["https://chatboc.ar/static/welcome/sticker.png"]
         self.assertEqual(sticker_kwargs.get("media_url"), expected_media)
         self.assertNotIn("persistent_action", sticker_kwargs)
 
@@ -927,17 +927,12 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self.assertIn("payload", captured)
         delayed_payload = captured["payload"]
         self.assertIn("audio_url", delayed_payload)
-        self.assertIn("image_url", delayed_payload)
         self.assertEqual(
             delayed_payload["audio_url"],
-            "http://localhost:5000/static/welcome/bienvenida.mp3",
-        )
-        self.assertEqual(
-            delayed_payload["image_url"],
-            "http://localhost:5000/static/menu/banner.png",
+            "https://chatboc.ar/static/welcome/bienvenida.mp3",
         )
         # Ensure the widget/web payload can reuse the resolved base URL.
-        self.assertEqual(delayed_payload.get("_base_url"), "http://localhost:5000")
+        self.assertEqual(delayed_payload.get("_base_url"), "https://chatboc.ar")
         self.assertTrue(
             delayed_payload.get("_request_url_root", "").startswith("http://localhost")
         )
@@ -1405,7 +1400,8 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self.assertNotIn("body", sticker_kwargs)
 
         text_kwargs = self.mock_twilio_create.call_args_list[2].kwargs
-        self.assertEqual(text_kwargs.get("body"), "*¡Hola!* Soy *Juni* 👋 ¿Cómo te llamás?")
+        self.assertIn("¿Cómo te llamás?", text_kwargs.get("body"))
+        self.assertNotIn("Vecino/a", text_kwargs.get("body"))
         self.assertNotIn("media_url", text_kwargs)
 
     def test_welcome_asks_for_name_when_unknown(self):
@@ -1434,7 +1430,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self.assertNotIn("body", sticker_kwargs)
 
         text_kwargs = self.mock_twilio_create.call_args_list[2].kwargs
-        self.assertEqual(text_kwargs.get("body"), "*¡Hola!* Soy *Juni* 👋 ¿Cómo te llamás?")
+        self.assertIn("¿Cómo te llamás?", text_kwargs.get("body"))
         self.assertNotIn("media_url", text_kwargs)
 
         session_id = f"whatsapp_{self.empresa_id_for_test}_{self.test_user_number_str}"

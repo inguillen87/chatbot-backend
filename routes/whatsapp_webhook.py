@@ -101,6 +101,19 @@ def _build_sensitive_action_confirmation_text(selected_option: dict) -> str:
     )
 
 
+def _selected_option_text_for_bot(selected_option: Optional[dict[str, Any]]) -> Optional[str]:
+    """Return the human-facing label that should be sent to the bot layer."""
+
+    if not selected_option:
+        return None
+    value = selected_option.get("category_name") or selected_option.get("texto")
+    if not value:
+        return None
+    cleaned = re.sub(r"[*_`~]", "", str(value)).strip()
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    return cleaned or None
+
+
 def _sync_education_whatsapp_context(
     session_context: ChatSessionContext,
     tenant_profile,
@@ -1658,7 +1671,7 @@ def whatsapp_webhook():
 
                 greeting_name = f"{assistant_name} de {tenant_name}" if assistant_name else tenant_name
 
-                if not template_sent and user_name is not None:
+                if user_name is not None:
                     greeting = (
                         f"*¡Hola, {user_name}!* Acá *{greeting_name}* \U0001F44B"
                         if user_name
@@ -2295,6 +2308,11 @@ def whatsapp_webhook():
 
         # User explicitly confirmed. Start from a clean draft.
         _reset_municipio_context_for_menu(session_context_db_entry)
+
+    if selected_option and str(post_vars.get("Body", "")).strip().isdigit():
+        selected_text = _selected_option_text_for_bot(selected_option)
+        if selected_text:
+            message_body = selected_text
 
     # --- Live Chat Routing (WhatsApp -> Admin panel) ---
     human_chat_active = bool(

@@ -10225,10 +10225,13 @@ def responder_municipio(
             return _finalize_response(response)
 
     if intent_name == "iniciar_reclamo":
-        logger_actual.info("Claim initiation intent detected. Bypassing LLM and showing reclamos menu.")
-        response = handle_main_menu_action("mostrar_menu_reclamos", context, chat_db_context)
-        if response:
-            return _finalize_response(response)
+        logger_actual.info("Claim initiation intent detected. Bypassing LLM and showing reclamo categories.")
+        response = _get_reclamos_menu()
+        contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_SELECCION_DE_LISTA.name
+        contexto_municipio_actual["menu_opciones"] = response.get("options_list", [])
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+        return _finalize_response(response)
 
     if intent_name == "consultar_reclamo":
         logger_actual.info("Claim status check intent detected. Bypassing LLM.")
