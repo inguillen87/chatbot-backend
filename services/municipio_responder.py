@@ -1023,7 +1023,11 @@ class ReclamoFlowHandler:
         try:
             owner_user = self.context.get('user_obj')
             municipio_id = getattr(owner_user, 'municipio_id', None)
+            if not isinstance(municipio_id, (int, str)):
+                municipio_id = None
             owner_user_id = getattr(owner_user, 'id', None)
+            if not isinstance(owner_user_id, (int, str)):
+                owner_user_id = None
 
             query = MunicipioTicket.query
             if municipio_id:
@@ -1085,6 +1089,8 @@ class ReclamoFlowHandler:
         try:
             anon_id = self.context.get('anon_id')
             current_session_id = getattr(self.chat_db_context, "chat_session_id", None)
+            if not isinstance(current_session_id, (int, str)):
+                current_session_id = None
             if anon_id:
                 previous_session = (
                     ChatSessionContext.query.filter(ChatSessionContext.anon_id == anon_id)
@@ -10226,10 +10232,35 @@ def responder_municipio(
 
     if intent_name == "consultar_reclamo":
         logger_actual.info("Claim status check intent detected. Bypassing LLM.")
+        ticket_match = re.search(r"\b(?:m[-\s]*)?(\d{5,})\b", pregunta_str or "", re.IGNORECASE)
+        if ticket_match:
+            contexto_municipio_actual["numero_ticket_consulta"] = ticket_match.group(1)
+            contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_NUMERO_TICKET.name
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+            return _finalize_response({
+                "message_body": "Ingresa el PIN de 6 digitos asociado al ticket.",
+                "fuente": "intent_consultar_reclamo_con_numero",
+            })
         return _finalize_response({
             "message_body": "Para consultar el estado de tu reclamo, por favor ingresá el número de ticket.",
             "fuente": "intent_consultar_reclamo"
         })
+    normalized_for_ticket_status = normalizar_texto(pregunta_str or "")
+    ticket_match = re.search(r"\b(?:m[-\s]*)?(\d{5,})\b", pregunta_str or "", re.IGNORECASE)
+    if (
+        ticket_match
+        and any(token in normalized_for_ticket_status for token in ("ticket", "reclamo", "seguimiento", "estado"))
+    ):
+        contexto_municipio_actual["numero_ticket_consulta"] = ticket_match.group(1)
+        contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_NUMERO_TICKET.name
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+        return _finalize_response({
+            "message_body": "Ingresa el PIN de 6 digitos asociado al ticket.",
+            "fuente": "ticket_status_number_detected",
+        })
+
     # --- END INTENT CLASSIFICATION ---
 
     # If the user is asking for a general point of interest (e.g., farmacias,
