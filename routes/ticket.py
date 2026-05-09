@@ -2856,7 +2856,8 @@ def send_ticket_history(current_user: User, tipo: str, ticket_id: int, anon_id: 
             # Por ahora, usamos el email del usuario que realiza la acción como fallback.
             email_agente = current_user.email
 
-        destinos = [d for d in [email_cliente, email_agente] if d]
+        email_solicitante = getattr(current_user, "email", None) if current_user else None
+        destinos = list(dict.fromkeys(d for d in [email_cliente, email_agente, email_solicitante] if d))
         if not destinos:
             return jsonify({"error": "No se encontraron correos de destino válidos para el cliente o el agente."}), 400
 

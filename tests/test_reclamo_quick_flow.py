@@ -415,9 +415,9 @@ def test_ticket_confirmation_uses_stored_context(monkeypatch, owner_user):
         captured.update(data)
         return {"nro_ticket": "T-1"}
 
-    from services.ticket_service import servicio_tickets
+    import services.municipio_responder as municipio_responder
 
-    monkeypatch.setattr(servicio_tickets, "crear_nuevo_ticket", fake_crear_nuevo_ticket)
+    monkeypatch.setattr(municipio_responder.servicio_tickets, "crear_nuevo_ticket", fake_crear_nuevo_ticket)
 
     preset = {
         "categoria": "Arbolado",

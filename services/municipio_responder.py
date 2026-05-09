@@ -316,6 +316,22 @@ def _normalize_phone_value(value: Any) -> Optional[str]:
     return formatted or telefono
 
 
+def _phone_from_anon_id(value: Any) -> Optional[str]:
+    """Extract a usable phone number from WhatsApp-style anon ids."""
+    if not value:
+        return None
+    raw = str(value).strip()
+    candidates = []
+    candidates.extend(re.findall(r"\+\d{6,20}", raw))
+    candidates.extend(re.findall(r"\d{8,20}", raw))
+    candidates.append(raw)
+    for candidate in candidates:
+        normalized = _normalize_phone_value(candidate)
+        if normalized:
+            return normalized
+    return None
+
+
 def _ensure_sugerencia_address(datos: Dict[str, Any]) -> None:
     if datos.get("direccion"):
         return
@@ -1007,6 +1023,7 @@ class ReclamoFlowHandler:
         try:
             owner_user = self.context.get('user_obj')
             municipio_id = getattr(owner_user, 'municipio_id', None)
+            owner_user_id = getattr(owner_user, 'id', None)
 
             query = MunicipioTicket.query
             if municipio_id:
@@ -1020,6 +1037,32 @@ class ReclamoFlowHandler:
                 if ticket_by_anon:
                     last_ticket = ticket_by_anon
                     logger.info(f"Prefilling contact data from last ticket {last_ticket.nro_ticket} found by anon_id.")
+                if not last_ticket:
+                    anon_phone = _phone_from_anon_id(anon_id)
+                    if anon_phone:
+                        phone_candidates = [
+                            anon_phone,
+                            anon_phone.replace("+", ""),
+                            str(anon_id).strip(),
+                        ]
+                        ticket_by_phone = (
+                            query.filter(MunicipioTicket.telefono_vecino.in_(phone_candidates))
+                            .order_by(MunicipioTicket.fecha.desc())
+                            .first()
+                        )
+                        if not ticket_by_phone and owner_user_id and owner_user_id != municipio_id:
+                            ticket_by_phone = (
+                                MunicipioTicket.query.filter_by(municipio_id=owner_user_id)
+                                .filter(MunicipioTicket.telefono_vecino.in_(phone_candidates))
+                                .order_by(MunicipioTicket.fecha.desc())
+                                .first()
+                            )
+                        if ticket_by_phone:
+                            last_ticket = ticket_by_phone
+                            logger.info(
+                                "Prefilling contact data from last ticket %s found by phone.",
+                                last_ticket.nro_ticket,
+                            )
         except Exception as e:
             logger.warning(f"Error fetching last ticket for prefill: {e}")
 
@@ -1036,6 +1079,34 @@ class ReclamoFlowHandler:
         _apply_prefill('telefono', contacto_cache.get('telefono'))
         _apply_prefill('dni', contacto_cache.get('dni'))
 
+        # 3.b. From another stored chat session with the same anon id. This
+        # keeps WhatsApp/web users from having to repeat contact data every time
+        # a new backend chat_session_id is opened.
+        try:
+            anon_id = self.context.get('anon_id')
+            current_session_id = getattr(self.chat_db_context, "chat_session_id", None)
+            if anon_id:
+                previous_session = (
+                    ChatSessionContext.query.filter(ChatSessionContext.anon_id == anon_id)
+                    .filter(ChatSessionContext.chat_session_id != current_session_id)
+                    .order_by(ChatSessionContext.last_updated.desc())
+                    .first()
+                )
+                previous_contact = (
+                    (previous_session.context_data or {})
+                    .get(CONTEXTO_MUNICIPIO, {})
+                    .get('contacto_usuario', {})
+                    if previous_session
+                    else {}
+                )
+                if isinstance(previous_contact, dict):
+                    _apply_prefill('nombre', previous_contact.get('nombre'))
+                    _apply_prefill('email', previous_contact.get('email'))
+                    _apply_prefill('telefono', previous_contact.get('telefono'))
+                    _apply_prefill('dni', previous_contact.get('dni'))
+        except Exception as e:
+            logger.warning("Error fetching previous session contact for prefill: %s", e)
+
         # 4. From the viewer profile if available
         if viewer:
             _apply_prefill('nombre', getattr(viewer, 'name', None))
@@ -1047,7 +1118,7 @@ class ReclamoFlowHandler:
         _apply_prefill('nombre', self.context.get('profile_name'))
 
         # 6. From anon_id as a fallback for phone number
-        _apply_prefill('telefono', self.context.get('anon_id'))
+        _apply_prefill('telefono', _phone_from_anon_id(self.context.get('anon_id')))
 
         # Remember any newly found data in the session cache
         for campo in ['nombre', 'dni', 'email', 'telefono']:
@@ -1833,6 +1904,27 @@ def _maybe_route_menu_input_to_llm(
         return None
 
     logger_actual = current_app.logger if has_app_context() else logger
+
+    reclamo_options = [
+        {"texto": category}
+        for category in RECLAMO_KEYWORDS.keys()
+        if category != "Otros"
+    ]
+    reclamo_category = find_reclamo_category_by_input(pregunta_str, reclamo_options)
+    if reclamo_category:
+        logger_actual.info(
+            "Free-form menu input looks like a reclamo. Starting guided reclamo flow without LLM."
+        )
+        handler = ReclamoFlowHandler(context, chat_db_context)
+        response_dict = handler.start_flow(
+            datos_iniciales={"descripcion": pregunta_str.strip()},
+            categoria_inicial=reclamo_category,
+        )
+        contexto_municipio_actual["estado_conversacion"] = "EN_FLUJO_RECLAMO"
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+        return response_dict
+
     logger_actual.info(
         "Free-form sentence detected while waiting for a menu selection. Escalating to LLM."
     )
@@ -4055,6 +4147,65 @@ def _handle_ticket_creation(contexto_municipio_actual, context, datos_estructura
     return response_payload, contexto_municipio_actual
 
 
+def _is_confirmation_text(user_input: str, action: str | None = None) -> bool:
+    normalized = normalizar_texto(user_input or "")
+    action_normalized = normalizar_texto(action or "")
+    return (
+        action_normalized in {"confirmar_reclamo_si", "reclamo_confirmar_si", "confirmar_si"}
+        or normalized in {"si", "s", "ok", "dale", "confirmo", "confirmar", "acepto", "aceptar"}
+        or normalized.startswith("si ")
+    )
+
+
+def _create_legacy_reclamo_from_confirmation(contexto_municipio_actual: dict, context: dict) -> dict:
+    datos = dict(contexto_municipio_actual.get("datos_parciales_llm_reclamo") or {})
+    ubicacion = datos.get("ubicacion") or datos.get("direccion")
+    coordenadas = datos.get("coordenadas")
+    owner_user = context.get("user_obj")
+
+    ticket_data = {
+        "pregunta": context.get("pregunta_actual_usuario") or datos.get("descripcion") or "",
+        "asunto": f"Reclamo: {datos.get('categoria') or 'General'}",
+        "categoria": datos.get("categoria") or "Reclamo General",
+        "detalles": datos.get("descripcion"),
+        "descripcion": datos.get("descripcion"),
+        "direccion": ubicacion,
+        "nombre_vecino": datos.get("nombre") or datos.get("nombre_usuario_detectado"),
+        "telefono_vecino": datos.get("telefono") or datos.get("telefono_detectado"),
+        "email_vecino": datos.get("email") or datos.get("email_detectado"),
+        "dni_vecino": datos.get("dni"),
+        "municipio_id": getattr(owner_user, "municipio_id", None) or getattr(owner_user, "id", None),
+        "tenant_id": getattr(owner_user, "tenant_id", None),
+        "anon_id": context.get("anon_id"),
+        "estado": "nuevo",
+        "canal_ingreso": context.get("channel"),
+    }
+    if isinstance(coordenadas, dict):
+        ticket_data["latitud"] = coordenadas.get("lat") or coordenadas.get("latitude")
+        ticket_data["longitud"] = (
+            coordenadas.get("lng")
+            or coordenadas.get("lon")
+            or coordenadas.get("longitude")
+        )
+
+    ticket_data = {key: value for key, value in ticket_data.items() if value is not None}
+    ticket_creado = servicio_tickets.crear_nuevo_ticket("municipio", ticket_data)
+    nro_ticket = (
+        ticket_creado.get("nro_ticket")
+        if isinstance(ticket_creado, dict)
+        else getattr(ticket_creado, "nro_ticket", None)
+    )
+    contexto_municipio_actual["estado_conversacion"] = None
+    contexto_municipio_actual.pop("datos_parciales_llm_reclamo", None)
+    return {
+        "success": True,
+        "message_body": f"Tu reclamo fue creado con éxito. Ticket: *{nro_ticket or 'registrado'}*.",
+        "message_type": "text",
+        "data": ticket_creado,
+        "fuente": "legacy_reclamo_confirmacion_sin_llm",
+    }
+
+
 def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, chat_db_context, contexto_municipio_actual, demo_metadata=None):
     logger_actual = app.logger if app else (current_app.logger if has_app_context() else logging.getLogger(__name__))
     datos_actuales = {} # Initialize to prevent UnboundLocalError
@@ -5961,11 +6112,16 @@ def extract_reclamo_details_from_text(
 
     llm_details = {}
     if needs_llm:
-        llm_details = extract_complaint_details_llm(
-            user_input,
-            default_localidad=default_localidad,
-            default_provincia=default_provincia,
-        ) or {}
+        try:
+            llm_details = extract_complaint_details_llm(
+                user_input,
+                default_localidad=default_localidad,
+                default_provincia=default_provincia,
+            ) or {}
+        except TypeError:
+            # Backward compatibility for tests and older integrations that
+            # monkeypatch this extractor with the historic single-arg callable.
+            llm_details = extract_complaint_details_llm(user_input) or {}
 
     if llm_details:
         if llm_details.get("tipo_problema") and "categoria_sugerida" not in details:
@@ -8581,6 +8737,23 @@ def _get_ayuda_menu():
     }
 
 def _get_reclamos_menu():
+    opciones = [
+        {"texto": "*Volver al inicio*", "id_accion": "0", "action_id": "menu_principal", "category_name": "Volver al inicio"},
+        {"texto": "Luminaria", "id_accion": "1", "category_name": "Luminaria"},
+        {"texto": "Arbolado", "id_accion": "2", "category_name": "Arbolado"},
+        {"texto": "Limpieza y riego", "id_accion": "3", "category_name": "Limpieza y riego"},
+        {"texto": "Arreglo de calle", "id_accion": "4", "category_name": "Arreglo de calle"},
+        {"texto": "Perdida de agua", "id_accion": "5", "category_name": "Pérdida de agua"},
+        {"texto": "Otros", "id_accion": "6", "category_name": "Otros"},
+        {"texto": "Cancelar", "action_id": "cancelar"},
+    ]
+    return {
+        "message_body": "Elegí una opción para tu reclamo:",
+        "message_type": "interactive_buttons",
+        "options_list": opciones,
+        "fuente": "submenu_reclamos_estandar_v5",
+        "generar_audio": True,
+    }
     """Devuelve la estructura del menú de reclamos estandarizado, con íconos y negritas."""
     iconos = {
         "arbol caido": "🌳",
@@ -9152,6 +9325,16 @@ def responder_municipio(
 
     # 1. Handle active conversation states first.
     if estado_conversacion:
+        if estado_conversacion == ConversationState.ESPERANDO_CONFIRMACION_RECLAMO.name:
+            if _is_confirmation_text(pregunta_str, action or received_payload.get("action_id")):
+                response = _create_legacy_reclamo_from_confirmation(
+                    contexto_municipio_actual,
+                    context,
+                )
+                if chat_db_context:
+                    flag_modified(chat_db_context, "context_data")
+                return _finalize_response(response)
+
         if estado_conversacion == 'ESPERANDO_CONFIRMACION_STT':
             transcript_pendiente = contexto_municipio_actual.get('stt_transcript_pendiente')
             contexto_municipio_actual['estado_conversacion'] = None
@@ -9684,6 +9867,30 @@ def responder_municipio(
         esperando_llm_sugerencia = contexto_municipio_actual.get("esperando_info_llm_sugerencia")
         esperando_llm_ubicacion = esperando_llm in ["ubicacion", "direccion"]
         esperando_llm_sugerencia_ubicacion = esperando_llm_sugerencia in ["ubicacion", "direccion"]
+
+        if estado_actual == ConversationState.ESPERANDO_DIRECCION_RECLAMO.name:
+            ubicacion_payload = received_payload.get("ubicacion_usuario", {}) or {}
+            datos_parciales = contexto_municipio_actual.setdefault("datos_parciales_llm_reclamo", {})
+            datos_parciales["ubicacion"] = (
+                ubicacion_payload.get("address")
+                or ubicacion_payload.get("label")
+                or "Ubicación compartida"
+            )
+            if ubicacion_payload.get("latitude") is not None and ubicacion_payload.get("longitude") is not None:
+                datos_parciales["coordenadas"] = {
+                    "lat": ubicacion_payload.get("latitude"),
+                    "lng": ubicacion_payload.get("longitude"),
+                }
+            contexto_municipio_actual["estado_conversacion"] = "ESPERANDO_DATOS_PERSONALES"
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+            return _finalize_response(
+                {
+                    "message_body": "Perfecto, ya tengo la ubicación. Para finalizar, pasame tus datos personales.",
+                    "fuente": "legacy_reclamo_location_capture",
+                }
+            )
+
         skip_proactive = (
             estado_actual in [
                 ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name,
@@ -9995,12 +10202,14 @@ def responder_municipio(
         intent, intent_payload = intent_classifier.classify(pregunta_str)
         logger_actual.info(f"[IntentClassifier] Classified intent: {intent} with payload: {intent_payload}")
 
-    if intent == "saludar":
+    intent_name = intent.get("categoria") if isinstance(intent, dict) else intent
+
+    if intent_name == "saludar":
         # Safeguard: Do not treat numeric inputs as greetings even if classified as such.
         # This prevents accidental resets when users select menu options by number.
         if pregunta_str and pregunta_str.strip().isdigit():
             logger_actual.info(f"Ignored greeting intent for numeric input '{pregunta_str}'.")
-            intent = None
+            intent_name = None
         else:
             logger_actual.info("Greeting intent detected. Bypassing LLM and showing main menu.")
             handler = GreetingHandler(context)
@@ -10009,13 +10218,13 @@ def responder_municipio(
                 flag_modified(chat_db_context, "context_data")
             return _finalize_response(response)
 
-    if intent == "iniciar_reclamo":
+    if intent_name == "iniciar_reclamo":
         logger_actual.info("Claim initiation intent detected. Bypassing LLM and showing reclamos menu.")
         response = handle_main_menu_action("mostrar_menu_reclamos", context, chat_db_context)
         if response:
             return _finalize_response(response)
 
-    if intent == "consultar_reclamo":
+    if intent_name == "consultar_reclamo":
         logger_actual.info("Claim status check intent detected. Bypassing LLM.")
         return _finalize_response({
             "message_body": "Para consultar el estado de tu reclamo, por favor ingresá el número de ticket.",

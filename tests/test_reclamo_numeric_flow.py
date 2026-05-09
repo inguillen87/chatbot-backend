@@ -9,8 +9,12 @@ class TestReclamoNumericFlow(unittest.TestCase):
         self.app_context = self.app.app_context()
         self.app_context.push()
         db.create_all()
-        rubro = Rubro(id=1, clave='municipio', nombre='municipio')
-        owner = User(id=1, tipo_chat='municipio', rol='admin', email='admin@test.com', name='Admin', rubro=rubro, municipio_id=1)
+        rubro = db.session.get(Rubro, 1) or Rubro(id=1, clave='municipio', nombre='municipio')
+        owner = db.session.get(User, 1) or User(id=1, tipo_chat='municipio', rol='admin', email='admin@test.com', name='Admin', rubro=rubro, municipio_id=1)
+        owner.rubro = rubro
+        owner.tipo_chat = 'municipio'
+        owner.rol = 'admin'
+        owner.municipio_id = 1
         owner.set_password('pass')
         db.session.add_all([rubro, owner])
         db.session.commit()

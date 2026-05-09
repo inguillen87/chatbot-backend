@@ -981,11 +981,12 @@ class ServicioTickets:
 
         estado_actual = _estado_publico(getattr(ticket, "estado", None))
         if estado_actual:
+            tiene_eventos_de_estado = any(evento.get("tipo") == "estado" for evento in timeline)
             estado_ya_registrado = any(
                 evento.get("tipo") == "estado" and evento.get("estado") == estado_actual
                 for evento in timeline
             )
-            if not estado_ya_registrado:
+            if not estado_ya_registrado and not (tiene_eventos_de_estado and estado_actual in {"nuevo", "abierto", "open"}):
                 fecha_estado = getattr(ticket, "ultima_actividad", None) or ticket.fecha
                 timeline.append(
                     {

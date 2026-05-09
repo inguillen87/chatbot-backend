@@ -116,7 +116,7 @@ def test_respuestas_alias_reuses_handler(client, monkeypatch):
     assert saved_calls["slug"] == "demo-encuesta"
     assert saved_calls["payload"] == {"respuesta": "ok"}
     assert saved_calls["ctx"]["ip"] == "1.1.1.1"
-    assert saved_calls["preferred_tenant_id"] == 4
+    assert saved_calls["preferred_tenant_id"] == client.application.config["PUBLIC_ENCUESTAS_DEFAULT_TENANT_ID"]
 
 
 def test_responder_accepts_form_payload(client, monkeypatch):
@@ -146,7 +146,7 @@ def test_responder_accepts_form_payload(client, monkeypatch):
     assert captured["slug"] == "demo-encuesta"
     assert captured["payload"]["respuestas"] == respuestas
     assert captured["ctx"]["ip"] == "2.2.2.2"
-    assert captured["preferred_tenant_id"] == 4
+    assert captured["preferred_tenant_id"] == client.application.config["PUBLIC_ENCUESTAS_DEFAULT_TENANT_ID"]
 
 
 def test_responder_parses_respuestas_field_from_form(client, monkeypatch):
