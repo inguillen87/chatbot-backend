@@ -255,3 +255,18 @@ Mejora aditiva para que la experiencia inicial no quede colgada en "Cargando dem
 - `GET /api/public/realtime/voice-capabilities` conserva ruta canonica y agrega aliases publicos para compatibilidad de widget.
 - Se agregaron PDFs demo en `data/demo_catalogs/{colegios,gobiernos,empresas}` y script regenerador `scripts/generate_demo_catalog_assets.py`.
 - Se agrego handoff frontend: `docs/BACKEND_TO_FRONTEND_SYNC_DEMO_LANDING_WIDGET_2026-05-08.md`.
+
+## Full Platform QA 2026-05-09
+
+Validacion y mejoras aditivas sobre lo existente, sin crear app paralela:
+
+- WhatsApp/webhook/voz/realtime/promocionar/funnel quedo verde localmente: 74 tests passed.
+- Catalogo/Qdrant/import legacy/catalog mappings quedo verde localmente: 26 tests passed.
+- Pedidos/market/rewards/order preview quedo verde localmente: 9 tests passed.
+- Educacion/colegios/KB/rubros education profile quedo verde localmente: 12 tests passed.
+- Se blindaron tests de analytics/Qdrant y educacion para usar `TestingConfig`/SQLite y evitar tocar Render/Postgres desde local.
+- `POST /api/admin/catalogo/importar` conserva compatibilidad legacy con errores JSON y soporte de `column_map`, `plantilla` y `guardar_plantilla`.
+- WhatsApp mapea opciones numericas a labels humanos antes de llamar al bot y envia bienvenida completa: template, sticker/media y saludo textual.
+- Reclamos por WhatsApp pasan directo a categorias accionables cuando el usuario pide iniciar un reclamo.
+- Taxonomia educativa mejora labels visibles: `Documentación`, `Agenda académica`, `Tesorería`.
+- Se agrego handoff frontend: `docs/BACKEND_TO_FRONTEND_SYNC_FULL_PLATFORM_QA_2026-05-09.md`.

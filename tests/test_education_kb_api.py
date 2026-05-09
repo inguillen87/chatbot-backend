@@ -1,13 +1,14 @@
 import unittest
 import time
 from app import create_app, db
+from config import TestingConfig
 from models import CatalogoItem, TenantProfile, User
 from utils.auth_helpers import generar_token
 
 class TestEducationKBApi(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.app = create_app()
+        cls.app = create_app(TestingConfig)
 
     def setUp(self):
         self.app_context = self.app.app_context()

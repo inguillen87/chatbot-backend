@@ -1,5 +1,6 @@
 import unittest
 from app import create_app, db
+from config import TestingConfig
 from models import CatalogoItem, TenantProfile, User
 import time
 from services.education_kb_service import education_kb_service
@@ -7,7 +8,7 @@ from services.education_kb_service import education_kb_service
 class TestEducationKBServices(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.app = create_app()
+        cls.app = create_app(TestingConfig)
 
     def setUp(self):
         self.app_context = self.app.app_context()
