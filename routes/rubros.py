@@ -1,6 +1,7 @@
 from flask import Blueprint, jsonify, current_app, request
 from models import Rubro
 from services.demo_registry import load_demo_rubros
+from services.demo_pillar_catalog import catalog_resources_for_rubro, curated_demo_rubros
 
 # Define blueprint without prefix here so it can be mounted flexibly in app.py
 # (e.g. at /rubros AND /api/rubros)
@@ -80,6 +81,78 @@ def _education_profile_for_rubro(item: dict) -> dict:
     }
 
 
+_DEMO_ROOTS = {
+    "gobierno": {"id": 1, "nombre": "Soluciones para Sector Publico", "clave": "gobierno"},
+    "empresas": {"id": 2, "nombre": "Soluciones para Empresas", "clave": "empresas"},
+    "educacion": {"id": 3, "nombre": "Colegios e instituciones educativas", "clave": "educacion"},
+}
+
+
+def _demo_parent_id(sector: str | None, tipo_chat: str | None = None) -> int:
+    normalized_sector = str(sector or "").strip().lower()
+    normalized_tipo = str(tipo_chat or "").strip().lower()
+    if normalized_sector == "educacion":
+        return 3
+    if normalized_sector == "gobierno" or normalized_tipo == "municipio":
+        return 1
+    return 2
+
+
+def _ensure_demo_roots(lista_rubros: list[dict]) -> None:
+    existing_ids = {item.get("id") for item in lista_rubros}
+    existing_claves = {str(item.get("clave") or "").strip().lower() for item in lista_rubros}
+    for root in _DEMO_ROOTS.values():
+        if root["id"] in existing_ids or root["clave"] in existing_claves:
+            continue
+        lista_rubros.append(
+            {
+                "id": root["id"],
+                "nombre": root["nombre"],
+                "clave": root["clave"],
+                "descripcion": "Pilar demo Chatboc",
+                "padre_id": None,
+                "es_publico": True,
+                "is_virtual": True,
+                "demo_pillar": True,
+            }
+        )
+
+
+def _append_curated_demo_rubros(lista_rubros: list[dict]) -> None:
+    existing_claves = {
+        str(item.get("clave") or item.get("key") or "").strip().lower()
+        for item in lista_rubros
+    }
+    for curated in curated_demo_rubros():
+        clave = str(curated.get("slug") or curated.get("key") or "").strip().lower()
+        if not clave or clave in existing_claves:
+            continue
+        sector = str(curated.get("sector") or curated.get("pillar") or "").strip().lower()
+        virtual_item = {
+            "id": None,
+            "nombre": curated.get("label") or clave,
+            "clave": clave,
+            "descripcion": f"Demo {curated.get('label') or clave}",
+            "es_publico": True,
+            "padre_id": _demo_parent_id(sector, curated.get("tipo_chat")),
+            "is_virtual": True,
+            "demo": {
+                "key": clave,
+                "slug": clave,
+                "label": curated.get("label") or clave,
+                "tipo_chat": curated.get("tipo_chat"),
+                "segment": sector,
+                "subsegment": curated.get("subvertical"),
+                "resources": curated.get("resources") or catalog_resources_for_rubro(clave, sector),
+                "sample_prompts": curated.get("sample_prompts") or [],
+            },
+        }
+        virtual_item["education_profile"] = _education_profile_for_rubro(virtual_item)
+        virtual_item["widget_preview"] = _widget_preview_for_rubro(virtual_item)
+        lista_rubros.append(virtual_item)
+        existing_claves.add(clave)
+
+
 @rubros_bp.route("/", methods=["GET"], strict_slashes=False)
 def get_all_rubros():
     """Return the list of rubros."""
@@ -154,14 +227,8 @@ def get_all_rubros():
             lista_rubros.append(virtual_item)
 
         if demo_mode_enabled:
-            # Ensure roots exist if we have orphans and list was empty or partial
-            has_roots = any(r['id'] in (1, 2) for r in lista_rubros if r.get('id'))
-            if not has_roots:
-                 # Virtual roots if DB is empty
-                 if not any(r['id'] == 1 for r in lista_rubros):
-                     lista_rubros.append({"id": 1, "nombre": "Soluciones para Sector Público", "padre_id": None, "es_publico": True, "is_virtual": True})
-                 if not any(r['id'] == 2 for r in lista_rubros):
-                     lista_rubros.append({"id": 2, "nombre": "Soluciones para Empresas", "padre_id": None, "es_publico": True, "is_virtual": True})
+            _ensure_demo_roots(lista_rubros)
+            _append_curated_demo_rubros(lista_rubros)
 
         # Check for format=tree
         if request.args.get("format") == "tree":

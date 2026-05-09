@@ -14,6 +14,16 @@ from routes.auth import (
 from services.tenant_resolver import resolve_tenant_only
 from services.demo_experience_contract import build_demo_experience_contract
 from services.demo_registry import load_demo_rubros
+from services.demo_pillar_catalog import (
+    DEMO_PILLAR_CONTRACT_VERSION,
+    catalog_resources_for_rubro,
+    curated_demo_rubros,
+    default_rubro_for_sector,
+    demo_pillars,
+    demo_pillar_keys,
+    normalize_demo_sector,
+    sector_for_rubro,
+)
 from services.education_contracts import (
     build_education_admin_menu,
     build_education_profile,
@@ -81,6 +91,20 @@ def _safe_demo_rubros() -> list[dict[str, Any]]:
     return items
 
 
+def _payload_slug(value: Any) -> str:
+    if isinstance(value, dict):
+        value = value.get("slug") or value.get("key") or value.get("id") or value.get("label")
+    return str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+
+
+def _first_payload_slug(data: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = _payload_slug(data.get(key))
+        if value:
+            return value
+    return ""
+
+
 def _first_education_tenant_for_demo() -> TenantProfile | None:
     candidates = TenantProfile.query.filter_by(is_active=True).order_by(TenantProfile.id.asc()).all()
     for tenant in candidates:
@@ -94,6 +118,7 @@ def _normalize_rubro(item: dict[str, Any]) -> dict[str, Any]:
     label = item.get("label") or slug
     text = " ".join([fold_text(slug), fold_text(label), fold_text(item.get("vertical"))])
     is_education = any(keyword in text for keyword in ("colegio", "escuela", "educacion", "instituto", "jardin"))
+    sector = "educacion" if is_education else item.get("sector") or sector_for_rubro(slug)
     return {
         "slug": slug,
         "key": item.get("key") or slug,
@@ -101,7 +126,11 @@ def _normalize_rubro(item: dict[str, Any]) -> dict[str, Any]:
         "tipo_chat": item.get("tipo_chat"),
         "tenant_slug": item.get("tenant_slug") or slug,
         "vertical": "educacion" if is_education else item.get("vertical"),
-        "sector": "educacion" if is_education else item.get("sector"),
+        "subvertical": item.get("subvertical"),
+        "sector": sector,
+        "pillar": item.get("pillar") or sector,
+        "resources": item.get("resources") or catalog_resources_for_rubro(slug, sector),
+        "sample_prompts": item.get("sample_prompts") or [],
     }
 
 
@@ -259,15 +288,32 @@ def demo_catalog_v2():
     rubros = [_normalize_rubro(item) for item in (legacy_payload or {}).get("tenant_demos") or []]
     if not rubros:
         rubros = [_normalize_rubro(item) for item in _safe_demo_rubros()]
-    gobierno = [r for r in rubros if (r.get("tipo_chat") or "").lower() == "municipio"]
-    empresas = [r for r in rubros if (r.get("tipo_chat") or "").lower() == "pyme"]
+    seen_slugs = {str(item.get("slug") or item.get("key") or "").lower() for item in rubros}
+    for curated in curated_demo_rubros():
+        curated_slug = str(curated.get("slug") or curated.get("key") or "").lower()
+        if curated_slug and curated_slug not in seen_slugs:
+            rubros.append(_normalize_rubro(curated))
+            seen_slugs.add(curated_slug)
+
+    def _is_education_rubro(rubro: dict[str, Any]) -> bool:
+        inferred_sector = sector_for_rubro(rubro.get("slug") or rubro.get("key") or rubro.get("label"))
+        return (
+            (rubro.get("vertical") or "").lower() == "educacion"
+            or (rubro.get("sector") or "").lower() == "educacion"
+            or inferred_sector == "educacion"
+            or any(
+                keyword in fold_text(rubro.get("label") or rubro.get("slug"))
+                for keyword in ("colegio", "escuela", "educacion", "instituto", "jardin")
+            )
+        )
+
     educacion = [
         r
         for r in rubros
-        if (r.get("vertical") or "").lower() == "educacion"
-        or (r.get("sector") or "").lower() == "educacion"
-        or any(keyword in fold_text(r.get("label") or r.get("slug")) for keyword in ("colegio", "escuela", "educacion", "instituto", "jardin"))
+        if _is_education_rubro(r)
     ]
+    gobierno = [r for r in rubros if (r.get("tipo_chat") or "").lower() == "municipio" and not _is_education_rubro(r)]
+    empresas = [r for r in rubros if (r.get("tipo_chat") or "").lower() == "pyme" and not _is_education_rubro(r)]
     if not educacion:
         educacion = [
             {
@@ -280,16 +326,38 @@ def demo_catalog_v2():
                 "sector": "educacion",
             }
         ]
+    pillars = demo_pillars()
+    pillar_categories = {pillar.get("key"): pillar.get("categories") or [] for pillar in pillars}
 
     return jsonify(
         {
             "contract_version": "demo.catalog.v2",
-            "sectors": ["gobierno", "empresas", "educacion"],
+            "pillar_contract_version": DEMO_PILLAR_CONTRACT_VERSION,
+            "sectors": ["educacion", "gobierno", "empresas"],
+            "pillars": pillars,
             "rubros": rubros,
             "sector_groups": [
-                {"key": "gobierno", "label": "Gobiernos y municipios", "rubros": gobierno},
-                {"key": "empresas", "label": "Empresas y pymes", "rubros": empresas},
-                {"key": "educacion", "label": "Colegios e instituciones educativas", "rubros": educacion},
+                {
+                    "key": "educacion",
+                    "label": "Colegios e instituciones educativas",
+                    "default_rubro": default_rubro_for_sector("educacion"),
+                    "rubros": educacion,
+                    "categories": pillar_categories.get("educacion", []),
+                },
+                {
+                    "key": "gobierno",
+                    "label": "Gobiernos y municipios",
+                    "default_rubro": default_rubro_for_sector("gobierno"),
+                    "rubros": gobierno,
+                    "categories": pillar_categories.get("gobierno", []),
+                },
+                {
+                    "key": "empresas",
+                    "label": "Empresas y pymes",
+                    "default_rubro": default_rubro_for_sector("empresas"),
+                    "rubros": empresas,
+                    "categories": pillar_categories.get("empresas", []),
+                },
             ],
         }
     )
@@ -298,15 +366,37 @@ def demo_catalog_v2():
 @v2_demo_bp.route("/session", methods=["POST"])
 def demo_session_v2():
     data = request.get_json(silent=True) or {}
-    sector = str(data.get("sector") or "").strip().lower()
-    rubro = str(data.get("rubro") or "").strip().lower()
-    tenant_slug = str(data.get("tenant_slug") or "").strip().lower()
+    sector = normalize_demo_sector(
+        data.get("sector")
+        or data.get("pillar")
+        or data.get("segment")
+        or data.get("vertical")
+        or ""
+    )
+    rubro = _first_payload_slug(
+        data,
+        "rubro",
+        "rubro_slug",
+        "rubro_key",
+        "rubro_clave",
+        "category",
+        "category_slug",
+        "demo_rubro",
+        "subvertical",
+    )
+    tenant_slug = _first_payload_slug(data, "tenant_slug", "tenant", "slug")
+
+    if not sector:
+        sector = sector_for_rubro(rubro) or "empresas"
+    if sector not in set(demo_pillar_keys()):
+        inferred_sector = sector_for_rubro(sector) or sector_for_rubro(rubro)
+        sector = inferred_sector or sector
 
     if sector not in {"gobierno", "empresas", "educacion"}:
         return _error_response("sector debe ser 'gobierno', 'empresas' o 'educacion'", 400, "validation_error", "send_valid_sector")
 
     if not rubro and not tenant_slug:
-        return _error_response("rubro o tenant_slug es obligatorio", 400, "validation_error", "send_rubro_or_tenant_slug")
+        rubro = default_rubro_for_sector(sector)
 
     tenant = None
     if tenant_slug:
@@ -385,6 +475,13 @@ def demo_session_v2():
         "animation_tokens": animation_tokens,
         "chat_bootstrap": chat_bootstrap,
         "education": education_payload,
+        "pillar_selector": {
+            "contract_version": DEMO_PILLAR_CONTRACT_VERSION,
+            "selected_sector": sector,
+            "selected_rubro": rubro or tenant.slug,
+            "pillars": demo_pillars(),
+        },
+        "catalog_resources": catalog_resources_for_rubro(rubro or tenant.slug, sector),
     }
 
     return _json_response(
@@ -395,6 +492,8 @@ def demo_session_v2():
             "tenant_slug": tenant.slug,
             "tenant": _tenant_dict(tenant),
             "workspace": workspace,
+            "pillar_selector": workspace["pillar_selector"],
+            "catalog_resources": workspace["catalog_resources"],
             "chat_bootstrap": chat_bootstrap,
             "experience_blueprint": experience,
             "first_visit": workspace["first_visit"],

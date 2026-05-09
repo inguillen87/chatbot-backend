@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 from flask import Flask
 
-from routes.public_resolver import WIDGET_CONFIG_CONTRACT_VERSION, public_resolver_bp
+from routes.public_resolver import WIDGET_CONFIG_CONTRACT_VERSION, public_municipios_bp, public_resolver_bp
 from services.tenant_resolver import TenantResolutionError
 
 
@@ -20,6 +20,7 @@ class PublicResolverWidgetConfigContractTestCase(unittest.TestCase):
         self.app = Flask(__name__)
         self.app.config["ENABLE_DEMO_MODE"] = False
         self.app.register_blueprint(public_resolver_bp)
+        self.app.register_blueprint(public_municipios_bp)
         self.client = self.app.test_client()
 
     def test_widget_config_includes_contract_version(self):
@@ -52,6 +53,16 @@ class PublicResolverWidgetConfigContractTestCase(unittest.TestCase):
         self.assertEqual(body["provider"], "openai_realtime")
         self.assertEqual(body["recommended_model"], "gpt-realtime-2")
         self.assertIn("colegio", body["verticals"])
+
+    def test_realtime_voice_capabilities_legacy_public_alias_returns_platform_contract(self):
+        response = self.client.open("/public/realtime/voice-capabilities", method="OPTIONS")
+
+        self.assertEqual(response.status_code, 200)
+
+        response = self.client.get("/public/realtime/voice-capabilities")
+        self.assertEqual(response.status_code, 200)
+        body = response.get_json()
+        self.assertEqual(body["contract_version"], "realtime.voice_capabilities.v1")
 
     def test_landing_experience_with_tenant_uses_resolver(self):
         with patch("routes.public_resolver.resolve_tenant_only", return_value=_FakeTenant()):

@@ -2,6 +2,7 @@ import os
 import unittest
 
 os.environ.setdefault("FLASK_SKIP_GLOBAL_APP", "1")
+os.environ.setdefault("TESTING", "1")
 
 from app import create_app, db
 from config import Config
@@ -46,10 +47,13 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         payload = resp.get_json()
         self.assertEqual(payload.get("contract_version"), "demo.catalog.v2")
-        self.assertEqual(payload.get("sectors"), ["gobierno", "empresas", "educacion"])
+        self.assertEqual(payload.get("sectors"), ["educacion", "gobierno", "empresas"])
+        self.assertEqual(payload.get("pillar_contract_version"), "demo.pillars.v1")
+        self.assertTrue(any(pillar.get("key") == "empresas" for pillar in payload.get("pillars") or []))
         self.assertIn("rubros", payload)
         self.assertIn("sector_groups", payload)
         self.assertTrue(any(group.get("key") == "educacion" for group in payload.get("sector_groups") or []))
+        self.assertTrue(any((item.get("resources") or []) for item in payload.get("rubros") or []))
 
         flattened = str(payload).lower()
         self.assertNotIn("password", flattened)
@@ -112,6 +116,50 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertEqual(((payload.get("chat_seed") or {}).get("chat_bootstrap") or {}).get("endpoint"), "/ask/pyme")
         self.assertTrue((chat_bootstrap.get("supports") or {}).get("audio"))
         self.assertTrue((chat_bootstrap.get("supports") or {}).get("image"))
+
+    def test_v2_demo_session_accepts_sector_only_for_guided_pillar_start(self):
+        owner = User(name="Colegio Demo", email="colegio-sector@test.com", password_hash="hash", tipo_chat="pyme")
+        db.session.add(owner)
+        db.session.flush()
+        tenant = TenantProfile(
+            slug="colegio-sector",
+            nombre="Colegio Sector Demo",
+            tipo="pyme",
+            pyme_id=owner.id,
+            is_active=True,
+            vertical="educacion",
+            subvertical="colegio_privado",
+            capabilities_json={"education": {"enabled": True}},
+        )
+        db.session.add(tenant)
+        db.session.commit()
+
+        resp = self.client.post("/api/v2/demo/session", json={"sector": "colegios"})
+
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.get_json()
+        workspace = payload.get("workspace") or {}
+        selector = workspace.get("pillar_selector") or {}
+        self.assertEqual(selector.get("contract_version"), "demo.pillars.v1")
+        self.assertEqual(selector.get("selected_sector"), "educacion")
+        self.assertEqual(selector.get("selected_rubro"), "colegios")
+        self.assertTrue(workspace.get("catalog_resources"))
+        self.assertEqual((payload.get("chat_bootstrap") or {}).get("endpoint"), "/ask/pyme")
+
+    def test_v2_demo_session_accepts_rubro_slug_alias(self):
+        owner = User(name="Alias Demo", email="alias-demo@test.com", password_hash="hash", tipo_chat="pyme")
+        db.session.add(owner)
+        db.session.flush()
+        tenant = TenantProfile(slug="ferreteria", nombre="Ferreteria Demo", tipo="pyme", pyme_id=owner.id, is_active=True)
+        db.session.add(tenant)
+        db.session.commit()
+
+        resp = self.client.post("/api/v2/demo/session", json={"sector": "empresas", "rubro_slug": "ferreteria"})
+
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.get_json()
+        self.assertEqual(payload.get("tenant_slug"), "ferreteria")
+        self.assertEqual((payload.get("chat_bootstrap") or {}).get("payload", {}).get("rubro"), "ferreteria")
 
     def test_v2_demo_session_from_rubro_returns_matching_chat_bootstrap(self):
         owner = User(name="Demo Rubro", email="demo-rubro@test.com", password_hash="hash", tipo_chat="pyme")

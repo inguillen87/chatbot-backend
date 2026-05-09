@@ -659,6 +659,8 @@ def create_realtime_session():
 
 
 @public_resolver_bp.route("/realtime/voice-capabilities", methods=["GET", "OPTIONS"], provide_automatic_options=False)
+@public_municipios_bp.route("/public/realtime/voice-capabilities", methods=["GET", "OPTIONS"], provide_automatic_options=False)
+@public_municipios_bp.route("/realtime/voice-capabilities", methods=["GET", "OPTIONS"], provide_automatic_options=False)
 @cross_origin(origins="*", automatic_options=False)
 def realtime_voice_capabilities():
     if request.method == "OPTIONS":

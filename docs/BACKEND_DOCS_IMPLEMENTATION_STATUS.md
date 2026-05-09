@@ -243,3 +243,15 @@ Verificacion Operational Intelligence ejecutada:
 - `tests.test_estadisticas_heatmap`
 - `tests.test_municipal_tickets_map_data`
 - `tests.test_ticket_realtime_state`
+
+## Demo Landing / Widget 2026-05-08
+
+Mejora aditiva para que la experiencia inicial no quede colgada en "Cargando demos" y muestre los tres pilares comerciales:
+
+- `services/demo_pillar_catalog.py` agrega `demo.pillars.v1` con `educacion`, `gobierno` y `empresas`.
+- `GET /api/v2/demo/catalog` devuelve `pillars`, `sector_groups[].categories`, recursos PDF demo y prompts por categoria.
+- `POST /api/v2/demo/session` acepta sector/pillar/categoria/rubro con aliases (`colegios`, `Soluciones para Empresas`, `rubro_slug`, `category_slug`) y usa el rubro default del pilar cuando frontend no manda `tenant_slug`.
+- `/rubros/?format=tree` y `/api/rubros/?format=tree` en demo mode incluyen la raiz `Colegios e instituciones educativas`.
+- `GET /api/public/realtime/voice-capabilities` conserva ruta canonica y agrega aliases publicos para compatibilidad de widget.
+- Se agregaron PDFs demo en `data/demo_catalogs/{colegios,gobiernos,empresas}` y script regenerador `scripts/generate_demo_catalog_assets.py`.
+- Se agrego handoff frontend: `docs/BACKEND_TO_FRONTEND_SYNC_DEMO_LANDING_WIDGET_2026-05-08.md`.
