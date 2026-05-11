@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import json
+import re
 import requests
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
@@ -33,6 +35,7 @@ from services.notification_dispatcher import dispatch_order_update
 from utils.auth_helpers import token_requerido
 from utils.permissions import require_role
 from socket_service import emit_tenant_update
+from services.gcs_service import upload_to_gcs
 
 
 market_bp = Blueprint("market", __name__, url_prefix="/api/market")
@@ -69,6 +72,94 @@ def _resolve_tenant(slug: str) -> TenantProfile:
 
 def _tenant_owner(tenant: TenantProfile) -> Optional[User]:
     return tenant.municipio or tenant.pyme
+
+
+_CATALOG_IMAGE_KEYS = (
+    "imagen_url",
+    "image_url",
+    "foto",
+    "foto_url",
+    "photo",
+    "photo_url",
+    "thumbnail",
+    "thumbnail_url",
+)
+
+_CATALOG_GALLERY_KEYS = (
+    "gallery_urls",
+    "imagenes",
+    "images",
+    "image_urls",
+    "fotos",
+    "photos",
+)
+
+
+def _split_image_values(value) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        raw_values = value
+    elif isinstance(value, dict):
+        raw_values = list(value.values())
+    else:
+        text = str(value).strip()
+        if not text:
+            return []
+        if text.startswith("["):
+            try:
+                parsed = json.loads(text)
+                raw_values = parsed if isinstance(parsed, list) else [text]
+            except Exception:
+                raw_values = [text]
+        else:
+            raw_values = re.split(r"[\n;,|]+", text)
+
+    urls: list[str] = []
+    for raw in raw_values:
+        candidate = str(raw or "").strip()
+        if candidate and candidate not in urls:
+            urls.append(candidate)
+    return urls[:12]
+
+
+def _image_payload_from_product_payload(payload: dict) -> tuple[str | None, list[str]]:
+    primary = None
+    for key in _CATALOG_IMAGE_KEYS:
+        value = payload.get(key)
+        if value:
+            primary = str(value).strip()
+            break
+
+    gallery: list[str] = []
+    for key in _CATALOG_GALLERY_KEYS:
+        gallery.extend(_split_image_values(payload.get(key)))
+    if primary and primary not in gallery:
+        gallery.insert(0, primary)
+    if not primary and gallery:
+        primary = gallery[0]
+    return primary, list(dict.fromkeys(gallery))[:12]
+
+
+def _merge_product_image_metadata(producto: CatalogoItem, payload: dict) -> None:
+    primary, gallery = _image_payload_from_product_payload(payload)
+    if primary is not None:
+        producto.imagen_url = primary
+
+    existing = producto.extra_metadata if isinstance(producto.extra_metadata, dict) else {}
+    metadata = dict(existing)
+    if gallery:
+        metadata["gallery_urls"] = gallery
+        metadata["image_count"] = len(gallery)
+        metadata["image_status"] = "ready"
+    elif "imagen_url" in payload or "image_url" in payload or "gallery_urls" in payload or "imagenes" in payload:
+        metadata.setdefault("gallery_urls", [])
+        metadata["image_status"] = "missing"
+    if payload.get("image_alt") or payload.get("alt"):
+        metadata["image_alt"] = payload.get("image_alt") or payload.get("alt")
+    if payload.get("image_source"):
+        metadata["image_source"] = payload.get("image_source")
+    producto.extra_metadata = metadata
 
 
 def _resolve_session_identifier() -> str:
@@ -1110,6 +1201,7 @@ def _resolve_admin_tenant(user, payload):
     abort(400, "Tenant required")
 
 def _serialize_catalog_item(item):
+    metadata = item.extra_metadata if isinstance(item.extra_metadata, dict) else {}
     # Standard serialization
     return {
         "id": item.id,
@@ -1120,6 +1212,10 @@ def _serialize_catalog_item(item):
         "moneda": item.moneda,
         "stock": item.cantidad,
         "imagen_url": item.imagen_url,
+        "image_url": item.imagen_url,
+        "gallery_urls": metadata.get("gallery_urls") or ([item.imagen_url] if item.imagen_url else []),
+        "image_status": metadata.get("image_status") or ("ready" if item.imagen_url else "missing"),
+        "image_alt": metadata.get("image_alt"),
         "categoria": item.categoria,
         "sku": item.sku,
         "disponible": item.disponible
@@ -1156,10 +1252,10 @@ def admin_create_product(current_user):
         precio_monetario=precio_decimal,
         moneda=(payload.get("moneda") or payload.get("currency") or "ARS").upper(),
         categoria=payload.get("categoria"),
-        imagen_url=payload.get("imagen_url") or payload.get("image_url"),
         pdf_url=payload.get("pdf_url"),
         disponible=bool(payload.get("disponible", True)),
     )
+    _merge_product_image_metadata(producto, payload)
     db.session.add(producto)
     db.session.commit()
     emit_tenant_update(tenant.slug, 'catalog_update', {})
@@ -1183,8 +1279,8 @@ def admin_update_product(current_user, product_id: int):
         producto.descripcion = payload.get("descripcion") or payload.get("description")
     if "categoria" in payload:
         producto.categoria = payload.get("categoria")
-    if "imagen_url" in payload or "image_url" in payload:
-        producto.imagen_url = payload.get("imagen_url") or payload.get("image_url")
+    if any(key in payload for key in (*_CATALOG_IMAGE_KEYS, *_CATALOG_GALLERY_KEYS, "image_alt", "alt", "image_source")):
+        _merge_product_image_metadata(producto, payload)
     if "pdf_url" in payload:
         producto.pdf_url = payload.get("pdf_url")
     if "moneda" in payload or "currency" in payload:
@@ -1207,6 +1303,67 @@ def admin_update_product(current_user, product_id: int):
     db.session.commit()
     emit_tenant_update(tenant.slug, 'catalog_update', {})
     return jsonify(_serialize_catalog_item(producto))
+
+
+@market_admin_bp.post("/catalog/<int:product_id>/images")
+@token_requerido
+@require_role("admin", "super_admin")
+def admin_upload_product_image(current_user, product_id: int):
+    payload = {}
+    payload.update(request.args.to_dict())
+    payload.update(request.form.to_dict())
+    tenant = _resolve_admin_tenant(current_user, payload)
+
+    producto = CatalogoItem.query.filter_by(id=product_id, tenant_id=tenant.id).first()
+    if producto is None:
+        return jsonify({"error": "Producto no encontrado"}), 404
+
+    uploaded = []
+    for file in request.files.getlist("image") + request.files.getlist("images") + request.files.getlist("file"):
+        if not file or not file.filename:
+            continue
+        if not (file.mimetype or "").lower().startswith("image/"):
+            return jsonify({"error": "Solo se permiten imagenes para este endpoint"}), 400
+        result = upload_to_gcs(file, kind="catalog_product_images")
+        if not result:
+            return jsonify({"error": "No se pudo subir la imagen"}), 500
+        uploaded.append(result["public_url"])
+
+    direct_urls = _split_image_values(payload.get("image_url") or payload.get("imagen_url"))
+    uploaded.extend(url for url in direct_urls if url not in uploaded)
+
+    if not uploaded:
+        return jsonify({"error": "Adjunta una imagen o envia image_url"}), 400
+
+    metadata = producto.extra_metadata if isinstance(producto.extra_metadata, dict) else {}
+    gallery = list(metadata.get("gallery_urls") or [])
+    replace = str(payload.get("replace") or "").strip().lower() in {"1", "true", "si", "sí"}
+    if replace:
+        gallery = []
+    for url in uploaded:
+        if url not in gallery:
+            gallery.append(url)
+
+    primary = payload.get("primary_image_url") or (uploaded[0] if str(payload.get("make_primary", "true")).lower() not in {"0", "false", "no"} else producto.imagen_url)
+    _merge_product_image_metadata(
+        producto,
+        {
+            "imagen_url": primary,
+            "gallery_urls": gallery,
+            "image_source": "admin_upload",
+            "image_alt": payload.get("image_alt") or payload.get("alt"),
+        },
+    )
+    db.session.commit()
+    emit_tenant_update(tenant.slug, 'catalog_update', {"product_id": producto.id, "source": "product_image_upload"})
+    return jsonify(
+        {
+            "ok": True,
+            "contract_version": "market.product_images.v1",
+            "product": _serialize_catalog_item(producto),
+            "uploaded_urls": uploaded,
+        }
+    )
 
 
 @market_admin_bp.delete("/catalog/<int:product_id>")

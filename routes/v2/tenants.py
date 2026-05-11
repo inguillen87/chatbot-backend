@@ -80,7 +80,7 @@ def create_demo_session_token(*, tenant_slug: str, sector: str, rubro: str | Non
     return _sign_demo_session(demo_payload)
 
 
-def _tenant_slug_from_demo_session_token(raw: Optional[str]) -> Optional[str]:
+def decode_demo_session_token(raw: Optional[str]) -> Optional[dict[str, Any]]:
     raw = (raw or "").strip()
     if not raw:
         return None
@@ -91,6 +91,14 @@ def _tenant_slug_from_demo_session_token(raw: Optional[str]) -> Optional[str]:
         return None
 
     if payload.get("kind") != "demo_session":
+        return None
+
+    return payload if isinstance(payload, dict) else None
+
+
+def _tenant_slug_from_demo_session_token(raw: Optional[str]) -> Optional[str]:
+    payload = decode_demo_session_token(raw)
+    if not payload:
         return None
 
     slug = payload.get("tenant_slug")
@@ -119,7 +127,12 @@ def resolve_tenant_v2(*, required: bool = True, explicit_slug: Optional[str] = N
     if auth_tenant:
         slug_candidates.append(auth_tenant)
 
-    demo_session_token = request.headers.get("X-Demo-Session") or request.args.get("demo_session_id")
+    demo_session_token = (
+        request.headers.get("X-Demo-Session")
+        or request.headers.get("X-Demo-Session-Id")
+        or request.args.get("demo_session_id")
+        or request.args.get("session")
+    )
     if not demo_session_token and request.method in {"POST", "PUT", "PATCH"}:
         demo_session_token = (request.get_json(silent=True) or {}).get("demo_session_id")
     demo_tenant_slug = _tenant_slug_from_demo_session_token(demo_session_token)

@@ -347,30 +347,33 @@ def demo_catalog_v2():
         {
             "contract_version": "demo.catalog.v2",
             "pillar_contract_version": DEMO_PILLAR_CONTRACT_VERSION,
-            "sectors": ["educacion", "gobierno", "empresas"],
+            "sectors": ["gobierno", "empresas", "educacion"],
             "pillars": pillars,
             "rubros": rubros,
             "sector_groups": [
                 {
-                    "key": "educacion",
-                    "label": "Colegios e instituciones educativas",
-                    "default_rubro": default_rubro_for_sector("educacion"),
-                    "rubros": educacion,
-                    "categories": pillar_categories.get("educacion", []),
-                },
-                {
                     "key": "gobierno",
-                    "label": "Gobiernos y municipios",
+                    "label": "Gobiernos",
+                    "tenant_slug": "municipio",
                     "default_rubro": default_rubro_for_sector("gobierno"),
                     "rubros": gobierno,
                     "categories": pillar_categories.get("gobierno", []),
                 },
                 {
                     "key": "empresas",
-                    "label": "Empresas y pymes",
+                    "label": "Empresas",
+                    "tenant_slug": "bodega",
                     "default_rubro": default_rubro_for_sector("empresas"),
                     "rubros": empresas,
                     "categories": pillar_categories.get("empresas", []),
+                },
+                {
+                    "key": "educacion",
+                    "label": "Colegios",
+                    "tenant_slug": "colegio-demo",
+                    "default_rubro": default_rubro_for_sector("educacion"),
+                    "rubros": educacion,
+                    "categories": pillar_categories.get("educacion", []),
                 },
             ],
         }
@@ -418,6 +421,13 @@ def demo_session_v2():
             tenant = resolve_tenant_only(tenant_slug=tenant_slug, require_explicit_slug=True)
         except Exception:
             tenant = None
+        if not tenant:
+            if sector == "educacion" or tenant_slug in {"colegio-demo", "colegios", "colegio"}:
+                tenant = _first_education_tenant_for_demo() or _first_active_tenant_for_demo("pyme")
+            elif sector == "gobierno" or tenant_slug in {"municipio", "municipios"}:
+                tenant = _first_active_tenant_for_demo("municipio")
+            elif sector == "empresas" or tenant_slug in {"bodega", "empresa", "pyme"}:
+                tenant = _first_active_tenant_for_demo("pyme")
         if not tenant:
             return _error_response("Tenant no encontrado", 404, "tenant_not_found", "check_tenant_slug")
     else:

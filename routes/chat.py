@@ -33,6 +33,7 @@ from services.contact_intake import missing_contact_fields, resolve_contact_snap
 from services.notifications import enviar_notificacion_sms, enviar_notificacion_whatsapp_con_plantilla
 from services.email_service import enviar_email
 from services.conversation_resolver import ConversationResolver
+from routes.v2.tenants import decode_demo_session_token
 from utils.auth_helpers import (
     anon_o_token_requerido,
     obtener_entity_token,
@@ -53,6 +54,45 @@ DEMO_MENU_HOME_ACTION = f"{DEMO_MENU_PREFIX}:home"
 DEMO_MENU_ROOT_ID = "demo_menu_root"
 DEMO_SEGMENT_PREFIX = "demo_segment"
 DEMO_LEAD_ACTION_ID = "open_demo_form"
+
+
+def _demo_session_token_from_request() -> str | None:
+    auth_header = request.headers.get("Authorization") or ""
+    bearer = ""
+    if auth_header.lower().startswith("bearer "):
+        bearer = auth_header.split(None, 1)[1].strip()
+
+    payload = request.get_json(silent=True) if request.is_json else None
+    if not isinstance(payload, dict):
+        payload = {}
+
+    candidates = [
+        request.headers.get("X-Demo-Session-Id"),
+        request.headers.get("X-Demo-Session"),
+        request.args.get("demo_session_id"),
+        request.args.get("session"),
+        payload.get("demo_session_id"),
+        payload.get("session_id"),
+        payload.get("session"),
+        bearer,
+    ]
+    for candidate in candidates:
+        candidate = str(candidate or "").strip()
+        if candidate and decode_demo_session_token(candidate):
+            return candidate
+    return None
+
+
+def _resolve_demo_session_payload() -> dict:
+    token = _demo_session_token_from_request()
+    payload = decode_demo_session_token(token) if token else None
+    return payload if isinstance(payload, dict) else {}
+
+
+def _owner_for_tenant_profile(tenant: TenantProfile | None) -> User | None:
+    if not tenant:
+        return None
+    return tenant.municipio or tenant.pyme
 
 
 def _extract_text_value(payload) -> str:
@@ -498,6 +538,7 @@ def _owner_context_is_trusted(owner_user: Optional[User], resolution_source: Opt
         "static_entity_token",
         "explicit_entity_token",
         "session_owner_context",
+        "demo_session_tenant",
     }
 
 
@@ -1639,6 +1680,63 @@ def _procesar_chat(
             if chat_context_obj:
                 chat_context_obj.context_data = contexto_chat
 
+        request_payload = request.get_json(silent=True) if request.is_json else {}
+        if not isinstance(request_payload, dict):
+            request_payload = {}
+        demo_session_payload = _resolve_demo_session_payload()
+        demo_request_active = bool(
+            request_payload.get("demo_mode")
+            or request_payload.get("demo_session_id")
+            or request_payload.get("session_id")
+            or request.headers.get("X-Demo-Session-Id")
+            or request.headers.get("X-Demo-Session")
+            or demo_session_payload
+        )
+        demo_tenant_slug = str(
+            demo_session_payload.get("tenant_slug")
+            or request_payload.get("tenant_slug")
+            or request.args.get("tenant_slug")
+            or ""
+        ).strip().lower()
+
+        if demo_request_active:
+            contexto_chat["demo_session"] = True
+            contexto_chat["demo_session_source"] = "v2_demo"
+            if demo_session_payload:
+                contexto_chat["demo_sector"] = demo_session_payload.get("sector")
+                contexto_chat["demo_rubro_clave"] = demo_session_payload.get("rubro") or demo_session_payload.get("tenant_slug")
+                contexto_chat["demo_key"] = demo_session_payload.get("rubro") or demo_session_payload.get("tenant_slug")
+
+            if demo_tenant_slug and not _owner_context_is_trusted(owner_user, owner_resolution_source):
+                tenant_for_demo = (
+                    TenantProfile.query.filter(func.lower(TenantProfile.slug) == demo_tenant_slug)
+                    .order_by(TenantProfile.id.desc())
+                    .first()
+                )
+                tenant_owner = _owner_for_tenant_profile(tenant_for_demo)
+                if tenant_owner:
+                    owner_user = tenant_owner
+                    owner_resolution_source = "demo_session_tenant"
+                    contexto_chat["resolved_owner_user_id"] = tenant_owner.id
+                    contexto_chat["resolved_owner_tipo_chat"] = (
+                        getattr(tenant_owner, "tipo_chat", None)
+                        or getattr(tenant_for_demo, "tipo", None)
+                        or tipo_chat
+                    )
+                    contexto_chat["resolved_owner_resolution_source"] = owner_resolution_source
+                    if not rubro_clave:
+                        rubro_clave = (
+                            demo_session_payload.get("rubro")
+                            or request_payload.get("rubro")
+                            or request_payload.get("rubro_clave")
+                            or demo_tenant_slug
+                        )
+                    if not rubro_id and getattr(tenant_owner, "rubro_id", None):
+                        rubro_id = tenant_owner.rubro_id
+
+            if chat_context_obj:
+                flag_modified(chat_context_obj, "context_data")
+
         is_public_landing = _is_public_landing_request()
         explicit_entity_token = bool(obtener_entity_token())
 
@@ -1667,7 +1765,8 @@ def _procesar_chat(
                 owner_resolution_source = "session_owner_context"
 
         demo_session_activa = bool(
-            isinstance(contexto_chat, dict) and contexto_chat.get("demo_session")
+            demo_request_active
+            or (isinstance(contexto_chat, dict) and contexto_chat.get("demo_session"))
         )
 
         def _sync_demo_session_flag() -> None:
@@ -1754,7 +1853,7 @@ def _procesar_chat(
             and (is_init_request or message_count_this_session == 0)
         )
 
-        if is_municipal_request and not force_demo_selector_flow and isinstance(contexto_chat, dict):
+        if is_municipal_request and not demo_request_active and not force_demo_selector_flow and isinstance(contexto_chat, dict):
             demo_keys_to_clear = (
                 "demo_session",
                 "demo_owner_user_id",
@@ -2512,6 +2611,41 @@ def _procesar_chat(
             f"❌ Error crítico en _procesar_chat. Details: {error_details}. Exception: {e}",
             exc_info=True
         )
+        public_or_demo = bool(
+            locals().get("demo_request_active")
+            or locals().get("demo_session_activa")
+            or _is_public_landing_request()
+        )
+        if public_or_demo:
+            request_id = (
+                request.headers.get("X-Request-Id")
+                or getattr(g, "request_id", None)
+                or uuid.uuid4().hex
+            )
+            g.request_id = request_id
+            message = "La conversacion sigue disponible en modo normal. Reintenta el mensaje o elegi una accion del demo."
+            fallback = {
+                "contract_version": "chat.runtime_fallback.v1",
+                "message_body": message,
+                "respuesta": message,
+                "fuente": "chat_runtime_fallback",
+                "retryable": True,
+                "request_id": request_id,
+                "error": {
+                    "code": 200,
+                    "message": "chat_runtime_degraded",
+                    "reason_code": "chat_runtime_degraded",
+                },
+                "botones": [
+                    {"texto": "Crear ticket", "action": "crear_ticket", "action_id": "crear_ticket"},
+                    {"texto": "Consultar estado", "action": "consultar_estado", "action_id": "consultar_estado"},
+                    {"texto": "Hablar con una persona", "action": "derivar_humano", "action_id": "derivar_humano"},
+                ],
+            }
+            response = jsonify(fallback)
+            response.status_code = 200
+            response.headers["X-Request-Id"] = request_id
+            return response
         return jsonify({"error": {"code": 500, "message": "Error interno del servidor."}}), 500 # NEW FORMAT
 
 @chat_bp.route("/ask", methods=["POST", "OPTIONS"])

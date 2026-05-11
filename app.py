@@ -426,6 +426,9 @@ def create_app(config_class=Config):
             "X-Tenant-Slug",
             "X-Tenant-Id",
             "X-Widget-Token",
+            "X-Demo-Session",
+            "X-Demo-Session-Id",
+            "Idempotency-Key",
             "X-Token",
             "x-token",
             "X-Whatsapp-Dst",
@@ -444,6 +447,8 @@ def create_app(config_class=Config):
             expose_headers=[
                 "Content-Type",
                 "Authorization",
+                "X-Request-Id",
+                "X-Correlation-Id",
                 "X-Anon-Id",
                 "Anon-Id",
                 "X-Contact-Key",
@@ -492,6 +497,8 @@ def create_app(config_class=Config):
             if not _origin_is_allowed(origin):
                 return resp
 
+            resp.headers.setdefault("X-Request-Id", _request_id())
+
             # Override any duplicate CORS headers emitted upstream so browsers
             # don't reject responses with repeated origins.
             resp.headers["Access-Control-Allow-Origin"] = origin
@@ -501,6 +508,10 @@ def create_app(config_class=Config):
             # "x-anon-id" are accepted by browsers.
             resp.headers["Access-Control-Allow-Headers"] = ", ".join(allow_headers)
             resp.headers["Access-Control-Allow-Methods"] = ", ".join(allow_methods)
+            resp.headers["Access-Control-Expose-Headers"] = (
+                "Content-Type, Authorization, X-Request-Id, X-Correlation-Id, "
+                "X-Anon-Id, Anon-Id, X-Contact-Key, X-Conversation-Id"
+            )
 
             vary_header = resp.headers.get("Vary")
             if vary_header:

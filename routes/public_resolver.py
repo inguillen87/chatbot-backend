@@ -258,6 +258,35 @@ def _resolve_widget_api_base(tenant: TenantProfile, cfg: dict) -> str:
     return "https://api.chatboc.ar"
 
 
+def _socket_realtime_contract(cfg: dict) -> dict:
+    enabled_raw = cfg.get("socket_enabled")
+    if enabled_raw is None:
+        enabled_raw = cfg.get("live_chat_socket_enabled")
+    if enabled_raw is None:
+        enabled_raw = current_app.config.get("PUBLIC_SOCKET_IO_ENABLED")
+    if enabled_raw is None:
+        enabled_raw = os.environ.get("PUBLIC_SOCKET_IO_ENABLED")
+
+    socket_enabled = bool(enabled_raw) if isinstance(enabled_raw, bool) else str(enabled_raw or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "si",
+        "sí",
+        "enabled",
+    }
+    socket_url = cfg.get("socket_url") or cfg.get("socket_io_url")
+    if socket_enabled and not socket_url:
+        socket_url = current_app.config.get("PUBLIC_SOCKET_IO_URL") or os.environ.get("PUBLIC_SOCKET_IO_URL") or "/api/socket.io"
+
+    return {
+        "socket_enabled": socket_enabled,
+        "socket_url": socket_url if socket_enabled else None,
+        "fallback_mode": "socket_io_enabled" if socket_enabled else "polling_disabled",
+        "path": "/api/socket.io" if socket_enabled else None,
+    }
+
+
 
 
 def _support_channels_payload(tenant: TenantProfile, cfg: dict) -> dict:
@@ -271,14 +300,21 @@ def _support_channels_payload(tenant: TenantProfile, cfg: dict) -> dict:
     realtime_voice = build_realtime_voice_capabilities(tenant, cfg, current_app.config)
     realtime_model = realtime_voice.get("recommended_model")
     realtime_voice_name = realtime_voice.get("voice")
+    socket_realtime = _socket_realtime_contract(cfg)
+    live_status = build_live_chat_status(
+        schedule_override=(cfg.get("live_chat_schedule") if isinstance(cfg.get("live_chat_schedule"), dict) else None)
+    )
+    live_chat_available = bool(live_status.get("available")) and bool(socket_realtime.get("socket_enabled"))
 
     return {
         "live_chat": {
-            **build_live_chat_status(
-                schedule_override=(cfg.get("live_chat_schedule") if isinstance(cfg.get("live_chat_schedule"), dict) else None)
-            ),
+            **live_status,
+            "available": live_chat_available,
             "channel": "ticket_chat",
-            "realtime": True,
+            "realtime": bool(socket_realtime.get("socket_enabled")),
+            "socket_enabled": bool(socket_realtime.get("socket_enabled")),
+            "socket_url": socket_realtime.get("socket_url"),
+            "fallback_mode": socket_realtime.get("fallback_mode"),
             "media": {"text": True, "image": True, "audio": True, "file": True},
         },
         "whatsapp": {
@@ -664,12 +700,16 @@ def create_realtime_session():
 @cross_origin(origins="*", automatic_options=False)
 def realtime_voice_capabilities():
     if request.method == "OPTIONS":
-        return jsonify({"ok": True})
+        response = jsonify({"ok": True})
+        response.headers["X-Request-Id"] = str(request.headers.get("X-Request-Id") or getattr(g, "request_id", None) or os.urandom(8).hex())
+        return response
 
     widget_token = _extract_widget_token()
     tenant_slug = request.args.get("tenant") or request.args.get("tenant_slug") or request.args.get("slug")
     tenant = None
     cfg = {}
+    request_id = str(request.headers.get("X-Request-Id") or getattr(g, "request_id", None) or os.urandom(8).hex())
+    g.request_id = request_id
 
     if tenant_slug or widget_token:
         try:
@@ -680,17 +720,23 @@ def realtime_voice_capabilities():
             )
             cfg = _normalize_widget_config(tenant.configuracion, tenant.widget_settings)
         except TenantResolutionError as exc:
-            return (
-                jsonify(
-                    {
-                        "contract_version": REALTIME_VOICE_CONTRACT_VERSION,
-                        "error": {"code": 404, "message": str(exc)},
-                    }
-                ),
-                404,
+            payload = build_realtime_voice_capabilities(None, {}, current_app.config)
+            payload.update(
+                {
+                    "request_id": request_id,
+                    "status_code": 200,
+                    "reason_code": "tenant_resolution_failed",
+                    "retryable": False,
+                    "action_hint": "send tenant_slug or X-Tenant-Slug",
+                    "error": {"code": 404, "message": str(exc)},
+                }
             )
+            response = jsonify(payload)
+            response.headers["X-Request-Id"] = request_id
+            return response
 
     payload = build_realtime_voice_capabilities(tenant, cfg, current_app.config)
+    payload["request_id"] = request_id
     if tenant:
         payload["tenant"] = {
             "id": tenant.id,
@@ -698,7 +744,9 @@ def realtime_voice_capabilities():
             "tipo": tenant.tipo,
             "nombre": tenant.nombre,
         }
-    return jsonify(payload)
+    response = jsonify(payload)
+    response.headers["X-Request-Id"] = request_id
+    return response
 
 
 @public_resolver_bp.route("/realtime/action-event", methods=["POST", "OPTIONS"], provide_automatic_options=False)
@@ -899,6 +947,7 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
     embed_snippet = f"<script src='{script_url}' async {attr_snippet}></script>"
 
     support_channels = _support_channels_payload(tenant, cfg)
+    realtime_contract = _socket_realtime_contract(cfg)
     rubro_profile = _tenant_rubro_profile(tenant)
     demo_trial = _demo_trial_payload_for_widget(tenant, cfg)
     quick_menu = _quick_menu_for_widget(tenant)
@@ -954,8 +1003,10 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
         "iframe_url": iframe_url,
         "attributes": attrs,
         "support_channels": support_channels,
+        "realtime": realtime_contract,
         "enterprise_iteration": {
             "realtime": {
+                **realtime_contract,
                 "session_endpoint": "/api/public/realtime/session",
                 "capabilities_endpoint": "/api/public/realtime/voice-capabilities",
                 "action_event_endpoint": "/api/public/realtime/action-event",
@@ -1013,6 +1064,7 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
         "builder_config": builder_config,
         "marketplace": marketplace,
         "support_channels": support_channels,
+        "realtime": realtime_contract,
         "rubro_profile": rubro_profile,
         "demo_trial": demo_trial,
         "quick_menu": quick_menu,
@@ -1529,6 +1581,8 @@ def widget_config():
         "widget": widget_payload,
         "builder_config": widget_payload.get("builder_config", {}),
         "quick_menu": widget_payload.get("quick_menu", []),
+        "support_channels": widget_payload.get("support_channels", {}),
+        "realtime": widget_payload.get("realtime", {}),
         "realtime_voice": (widget_payload.get("support_channels", {}).get("voice_call", {}).get("capabilities")),
         "rubro_profile": widget_payload.get("rubro_profile", {}),
         "experience_blueprint": widget_payload.get("experience_blueprint", {}),

@@ -11,6 +11,7 @@ import json
 import logging
 import uuid
 import hashlib
+import re
 import pandas as pd
 
 UPLOAD_FOLDER = os.path.join(os.getcwd(), "temp_uploads")
@@ -62,20 +63,123 @@ def _apply_column_map(rows: list[dict], column_map: dict) -> list[dict]:
     return mapped_rows
 
 
+_IMAGE_KEYS = (
+    "imagen_url",
+    "image_url",
+    "foto",
+    "foto_url",
+    "photo",
+    "photo_url",
+    "thumbnail",
+    "thumbnail_url",
+)
+
+_GALLERY_KEYS = (
+    "gallery_urls",
+    "imagenes",
+    "images",
+    "image_urls",
+    "fotos",
+    "photos",
+)
+
+
+def _split_image_values(value) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        raw_values = value
+    elif isinstance(value, dict):
+        raw_values = list(value.values())
+    else:
+        text = str(value).strip()
+        if not text:
+            return []
+        if text.startswith("["):
+            try:
+                parsed = json.loads(text)
+                raw_values = parsed if isinstance(parsed, list) else [text]
+            except Exception:
+                raw_values = [text]
+        else:
+            raw_values = re.split(r"[\n;,|]+", text)
+
+    urls: list[str] = []
+    for raw in raw_values:
+        url = str(raw or "").strip()
+        if url and url not in urls:
+            urls.append(url)
+    return urls[:12]
+
+
+def _product_images_from_row(row: dict) -> tuple[str | None, list[str]]:
+    primary = None
+    for key in _IMAGE_KEYS:
+        if row.get(key):
+            primary = str(row.get(key)).strip()
+            break
+
+    gallery: list[str] = []
+    for key in _GALLERY_KEYS:
+        gallery.extend(_split_image_values(row.get(key)))
+    if primary and primary not in gallery:
+        gallery.insert(0, primary)
+    if not primary and gallery:
+        primary = gallery[0]
+    return primary, list(dict.fromkeys(gallery))[:12]
+
+
+def _normalize_rows_for_images(rows: list[dict]) -> tuple[list[dict], dict]:
+    normalized: list[dict] = []
+    with_images = 0
+    missing_images = 0
+    for row in rows:
+        mapped = dict(row)
+        primary, gallery = _product_images_from_row(mapped)
+        if primary:
+            mapped["imagen_url"] = primary
+            with_images += 1
+        else:
+            missing_images += 1
+        if gallery:
+            mapped["gallery_urls"] = gallery
+        normalized.append(mapped)
+
+    return normalized, {
+        "contract_version": "catalog.import_images.v1",
+        "with_images": with_images,
+        "missing_images": missing_images,
+        "accepted_columns": [*_IMAGE_KEYS, *_GALLERY_KEYS],
+        "embedded_pdf_image_extraction": "best_effort_pending",
+    }
+
+
 def _persist_rows(owner_id: int, tenant_id: int, rows: list[dict]) -> int:
     count = 0
     for row in rows:
         title = row.get("nombre") or row.get("titulo") or row.get("title") or row.get("producto")
         if not title:
             continue
+        primary_image, gallery_urls = _product_images_from_row(row)
+        metadata = row.get("extra_metadata") if isinstance(row.get("extra_metadata"), dict) else {}
+        metadata = dict(metadata)
+        if gallery_urls:
+            metadata["gallery_urls"] = gallery_urls
+            metadata["image_status"] = "ready"
+        else:
+            metadata["image_status"] = "missing"
         item = CatalogoItem(
             user_id=owner_id,
             tenant_id=tenant_id,
             sku=str(row.get("sku") or row.get("codigo") or f"IMP-{uuid.uuid4().hex[:8]}"),
             nombre=str(title),
+            descripcion=str(row.get("descripcion") or row.get("description") or "") or None,
             precio=str(row.get("precio") or row.get("price") or ""),
             precio_monetario=0.0,
             categoria=row.get("categoria") or row.get("category"),
+            marca=row.get("marca") or row.get("brand"),
+            imagen_url=primary_image,
+            extra_metadata=metadata,
             disponible=True,
             modalidad="venta",
         )
