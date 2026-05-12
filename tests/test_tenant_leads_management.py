@@ -259,6 +259,7 @@ def test_public_live_chat_schedule_aliases_never_404_for_demo_widget(client, app
         "/colegio-demo/live-chat/schedule",
         "/api/demo/live-chat/schedule",
         "/demo/live-chat/schedule",
+        "/api/public/tenants/colegio-demo/live-chat/schedule",
     ):
         resp = client.get(path, query_string={"tenant_slug": "colegio-demo", "tenant": "colegio-demo"})
         assert resp.status_code == 200

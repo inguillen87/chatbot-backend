@@ -161,6 +161,25 @@ class ApiV2FoundationTest(unittest.TestCase):
             self.assertEqual((workspace.get("chat_bootstrap") or {}).get("endpoint"), "/ask/pyme")
             self.assertEqual(((payload.get("chat_bootstrap") or {}).get("headers") or {}).get("X-Tenant-Slug"), tenant.slug)
 
+    def test_v2_demo_admin_preview_returns_sector_contract(self):
+        resp = self.client.get("/api/v2/demo/admin-preview?sector=educacion&tenant_slug=colegio-demo")
+
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.get_json()
+        self.assertEqual(payload.get("contract_version"), "demo.admin_preview.v1")
+        self.assertEqual(payload.get("sector"), "educacion")
+        self.assertEqual(payload.get("tenant_slug"), "colegio-demo")
+        self.assertTrue(payload.get("modules"))
+        self.assertTrue(payload.get("cards"))
+        self.assertEqual((payload.get("frontend_contract") or {}).get("render_as"), "demo_admin_preview")
+        self.assertTrue((payload.get("catalog") or {}).get("download_endpoint"))
+
+    def test_v2_demo_catalog_asset_alias_serves_pdf(self):
+        resp = self.client.get("/api/v2/demo/catalog-assets/colegio-demo.pdf")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("application/pdf", resp.headers.get("Content-Type", ""))
+
     def test_v2_demo_session_accepts_sector_only_for_guided_pillar_start(self):
         owner = User(name="Colegio Demo", email="colegio-sector@test.com", password_hash="hash", tipo_chat="pyme")
         db.session.add(owner)

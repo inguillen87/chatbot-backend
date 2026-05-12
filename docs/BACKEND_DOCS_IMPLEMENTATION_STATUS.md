@@ -476,3 +476,24 @@ Verificacion ejecutada:
 
 - `test_venv\Scripts\python.exe scripts\local_platform_smoke.py`
 - `tests/test_v2_saas_contracts.py`
+
+## Public Demo Route QA 2026-05-12
+
+Mejora aditiva para cerrar errores visibles de landing, rutas publicas, demo y widget embebido:
+
+- Se agrego lista de slugs publicos reservados para que rutas como `casos`, `pymes`, `empresas`, `municipios`, `gobiernos`, `colegios`, `sectores`, `precios` y `opinar` no se intenten resolver como tenants reales.
+- `GET /api/public/tenants/{slug}/catalog` y `/public/tenants/{slug}/catalog` degradan a JSON `public.catalog_resolution.v1` con `items=[]`, `cart.enabled=false`, `request_id` y CORS OK cuando el slug es reservado, el tenant no existe o falta owner de catalogo.
+- `GET /api/public/tenants/{tenant_slug}/public-navigation` y `/public/tenants/{tenant_slug}/public-navigation` devuelven `tenant.public_navigation.v1` para que frontend pueda deshabilitar `Noticias`, `Eventos`, `Encuestas`, `Nuevo reclamo` o `Catalogo` sin navegar a paginas rotas.
+- `GET /api/v2/demo/admin-preview` devuelve `demo.admin_preview.v1` para `educacion`, `gobierno` y `empresas`, con modulos, cards, timeline y catalogo.
+- `GET /api/v2/demo/catalog-assets/{archivo}.pdf` sirve aliases de catalogos demo para colegios, gobiernos y empresas.
+- `GET /api/public/tenants/{tenant_slug}/live-chat/schedule` queda cubierto por `live_chat.schedule.v1` degradable, igual que los aliases cacheados previos.
+
+Verificacion ejecutada:
+
+- `tests/test_public_tenant_catalog_alias.py`
+- `tests/test_tenant_leads_management.py::test_public_live_chat_schedule_aliases_never_404_for_demo_widget`
+- `tests/test_tenant_leads_management.py::test_public_api_live_chat_schedule_alias_includes_socket_hints`
+- `tests/test_tenant_leads_management.py::test_tenant_live_chat_schedule_config_and_public_status`
+- `tests/test_api_v2_foundation.py`
+- `tests/test_public_resolver_widget_config_contract.py`
+- `tests/test_widget_settings.py`

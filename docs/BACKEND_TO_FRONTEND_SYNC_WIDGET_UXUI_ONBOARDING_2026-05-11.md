@@ -316,3 +316,30 @@ Verificacion backend:
 - `tests/test_public_tenant_catalog_alias.py::test_widget_user_tenant_history_returns_cart_claims_and_orders`
 - `tests/test_public_tenant_catalog_alias.py::test_widget_user_register_and_link_session_are_degradable_json`
 - `tests/test_tenant_leads_management.py::test_public_live_chat_schedule_aliases_never_404_for_demo_widget`
+
+## 13. Public demo route QA 2026-05-12
+
+Backend aplicado:
+
+- Los slugs publicos de marketing (`demo`, `casos`, `pymes`, `empresas`, `municipios`, `gobiernos`, `colegios`, `sectores`, `precios`, `opinar`, etc.) ya no se resuelven como tenants reales en endpoints publicos tenant-aware.
+- `GET /api/public/tenants/{slug}/catalog` y `/public/tenants/{slug}/catalog` devuelven `public.catalog_resolution.v1` con `items: []`, `cart.enabled=false`, `request_id` y CORS OK cuando el slug es reservado o no resuelve tenant.
+- `GET /api/public/tenants/{tenant_slug}/public-navigation` y `/public/tenants/{tenant_slug}/public-navigation` devuelven `tenant.public_navigation.v1` con items habilitados/deshabilitados para que frontend no navegue a 404.
+- `GET /api/v2/demo/admin-preview?sector=educacion|gobierno|empresas&tenant_slug=...` devuelve `demo.admin_preview.v1` con modulos, cards, timeline y catalogo demo.
+- `GET /api/v2/demo/catalog-assets/{archivo}.pdf` sirve aliases de catalogos demo para colegios, gobiernos y empresas.
+- `GET /api/public/tenants/{tenant_slug}/live-chat/schedule` y `/public/tenants/{tenant_slug}/live-chat/schedule` quedan cubiertos por `live_chat.schedule.v1` degradable.
+
+Pedido frontend:
+
+- Mantener slugs de marketing como rutas publicas o redirects a `/demo`; no tratarlos como `tenant_slug`.
+- Usar `public-navigation` para ocultar/deshabilitar botoneras publicas cuando el modulo no esta disponible.
+- Usar `demo.admin_preview.v1` para la demo integrada de colegio/municipio/empresa en lugar de hardcodear cards y timeline.
+- Si un catalogo publico responde `public.catalog_resolution.v1`, mostrar estado vacio limpio y no reintentar contra Render directo.
+- Si un slug reservado responde `public.reserved_slug.v1`, redirigir o sugerir `/demo` sin mostrar error tecnico.
+
+Verificacion backend:
+
+- `tests/test_public_tenant_catalog_alias.py::test_reserved_public_slug_catalog_degrades_to_json`
+- `tests/test_public_tenant_catalog_alias.py::test_public_navigation_contract_disables_unavailable_items`
+- `tests/test_public_tenant_catalog_alias.py::test_reserved_public_slug_navigation_returns_reserved_json`
+- `tests/test_api_v2_foundation.py::ApiV2FoundationTest::test_v2_demo_admin_preview_returns_sector_contract`
+- `tests/test_api_v2_foundation.py::ApiV2FoundationTest::test_v2_demo_catalog_asset_alias_serves_pdf`

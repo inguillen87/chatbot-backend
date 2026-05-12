@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import timezone
 import uuid
 
 from flask import Blueprint, request, jsonify, g, current_app
@@ -25,6 +25,51 @@ from middleware.tenant_context import require_tenant
 from services.catalog_seed import ensure_seed_catalog
 
 public_tenant_bp = Blueprint('public_tenant_bp', __name__)
+
+RESERVED_PUBLIC_SLUGS = {
+    "demo",
+    "casos",
+    "casos-de-uso",
+    "use-cases",
+    "pymes",
+    "empresas",
+    "municipios",
+    "gobiernos",
+    "colegios",
+    "escuelas",
+    "sectores",
+    "precios",
+    "opinar",
+}
+
+
+def _normalize_public_slug(value: object) -> str:
+    return str(value or "").strip().lower()
+
+
+def _is_reserved_public_slug(value: object) -> bool:
+    return _normalize_public_slug(value) in RESERVED_PUBLIC_SLUGS
+
+
+def _reserved_slug_payload(slug: object) -> dict:
+    return {
+        "contract_version": "public.reserved_slug.v1",
+        "ok": False,
+        "reserved_slug": _normalize_public_slug(slug),
+        "reason_code": "reserved_public_route",
+        "action_hint": "Use /demo, /api/v2/demo/catalog or a real tenant_slug.",
+    }
+
+
+def _catalog_resolution_payload(slug: object, *, reason_code: str = "tenant_resolution_failed") -> dict:
+    return {
+        "contract_version": "public.catalog_resolution.v1",
+        "ok": False,
+        "tenant_slug": _normalize_public_slug(slug),
+        "reason_code": reason_code,
+        "items": [],
+        "cart": {"enabled": False},
+    }
 
 def _add_cors_headers(response):
     origin = request.headers.get('Origin', '*')
@@ -85,11 +130,16 @@ def _get_tenant_from_request(slug: str):
             .first()
         )
 
+    if _is_reserved_public_slug(slug):
+        return None
+
     tenant = TenantProfile.query.filter_by(slug=slug).first()
     if tenant:
         return tenant
 
     fallback_slug = request.args.get("tenant") or request.args.get("tenant_slug")
+    if _is_reserved_public_slug(fallback_slug):
+        return None
     if fallback_slug and fallback_slug != slug:
         tenant = TenantProfile.query.filter_by(slug=fallback_slug).first()
         if tenant:
@@ -423,9 +473,20 @@ def get_widget_config(slug):
     if request.method == 'OPTIONS':
         return _add_cors_headers(jsonify({"ok": True}))
 
+    if _is_reserved_public_slug(slug) or _is_reserved_public_slug(request.args.get("tenant_slug")) or _is_reserved_public_slug(request.args.get("tenant")):
+        return _public_json(_reserved_slug_payload(slug), 404)
+
     tenant = _get_tenant_from_request(slug)
     if not tenant:
-        return jsonify({"error": "Tenant not found"}), 404
+        return _public_json(
+            {
+                "contract_version": "public.widget_config_resolution.v1",
+                "ok": False,
+                "reason_code": "tenant_resolution_failed",
+                "error": {"code": 404, "message": "Tenant not found"},
+            },
+            404,
+        )
 
     from routes.pwa_public import public_tenant_widget_config
 
@@ -454,9 +515,12 @@ def get_catalog(slug):
     if request.method == 'OPTIONS':
         return _add_cors_headers(jsonify({"ok": True}))
 
+    if _is_reserved_public_slug(slug) or _is_reserved_public_slug(request.args.get("tenant_slug")) or _is_reserved_public_slug(request.args.get("tenant")):
+        return _public_json(_catalog_resolution_payload(slug, reason_code="reserved_public_route"))
+
     tenant = _get_tenant_from_request(slug)
     if not tenant:
-        return jsonify({"error": "Tenant not found"}), 404
+        return _public_json(_catalog_resolution_payload(slug))
 
     owner = _resolve_catalog_owner(tenant)
     if not owner:
@@ -466,8 +530,7 @@ def get_catalog(slug):
             tenant.municipio_id,
             tenant.pyme_id,
         )
-        response = jsonify([])
-        return _add_cors_headers(response)
+        return _public_json(_catalog_resolution_payload(tenant.slug, reason_code="tenant_owner_missing"))
 
     ensure_seed_catalog(owner, tenant)
     categoria = request.args.get("categoria")
@@ -612,6 +675,81 @@ def public_widget_commerce_session():
         },
     }
     return _public_json(payload)
+
+
+@public_tenant_bp.route('/api/public/tenants/<slug>/public-navigation', methods=['GET', 'OPTIONS'])
+@public_tenant_bp.route('/public/tenants/<slug>/public-navigation', methods=['GET', 'OPTIONS'])
+def public_tenant_navigation(slug):
+    if request.method == 'OPTIONS':
+        return _public_json({"ok": True, "contract_version": "tenant.public_navigation.v1"})
+
+    if _is_reserved_public_slug(slug) or _is_reserved_public_slug(request.args.get("tenant_slug")) or _is_reserved_public_slug(request.args.get("tenant")):
+        return _public_json(_reserved_slug_payload(slug), 404)
+
+    tenant = _get_tenant_from_request(slug)
+    if not tenant:
+        return _public_json(
+            {
+                "contract_version": "tenant.public_navigation.v1",
+                "ok": False,
+                "reason_code": "tenant_resolution_failed",
+                "items": [],
+                "error": {"code": 404, "message": "Tenant not found"},
+            },
+            404,
+        )
+
+    owner = _resolve_catalog_owner(tenant)
+    has_catalog = bool(owner and (tenant.pyme_id or (tenant.tipo or "").lower() == "pyme"))
+    has_news = bool(owner and tenant.municipio_id)
+    has_surveys = bool(tenant.encuestas_tenant_id or tenant.municipio_id or tenant.pyme_id)
+    base_route = f"/t/{tenant.slug}"
+    items = [
+        {"id": "home", "label": "Inicio", "route": base_route, "enabled": True},
+        {
+            "id": "news",
+            "label": "Noticias",
+            "route": f"{base_route}/noticias",
+            "enabled": has_news,
+            "empty_state": "Todavia no hay noticias publicadas.",
+        },
+        {
+            "id": "events",
+            "label": "Eventos",
+            "route": f"{base_route}/eventos",
+            "enabled": has_news,
+            "empty_state": "Todavia no hay eventos publicados.",
+        },
+        {
+            "id": "surveys",
+            "label": "Encuestas",
+            "route": f"{base_route}/encuestas",
+            "enabled": has_surveys,
+            "empty_state": "Todavia no hay encuestas publicadas.",
+        },
+        {
+            "id": "new_claim",
+            "label": "Nuevo reclamo",
+            "route": f"{base_route}/reclamos/nuevo",
+            "enabled": bool(owner),
+            "empty_state": "Este canal todavia no esta disponible.",
+        },
+        {
+            "id": "catalog",
+            "label": "Catalogo",
+            "route": f"{base_route}/catalogo",
+            "enabled": has_catalog,
+            "empty_state": "Todavia no hay catalogo publicado.",
+        },
+    ]
+    return _public_json(
+        {
+            "contract_version": "tenant.public_navigation.v1",
+            "tenant_slug": tenant.slug,
+            "items": items,
+            "frontend_contract": {"render_as": "tenant_public_navigation"},
+        }
+    )
 
 
 @public_tenant_bp.route('/api/public/widget-user/tenant-history', methods=['GET', 'OPTIONS'])
@@ -796,6 +934,8 @@ def tenant_config_api(current_user):
 
 @public_tenant_bp.route('/api/<slug>/live-chat/schedule', methods=['GET', 'OPTIONS'])
 @public_tenant_bp.route('/<slug>/live-chat/schedule', methods=['GET', 'OPTIONS'])
+@public_tenant_bp.route('/api/public/tenants/<slug>/live-chat/schedule', methods=['GET', 'OPTIONS'])
+@public_tenant_bp.route('/public/tenants/<slug>/live-chat/schedule', methods=['GET', 'OPTIONS'])
 def public_live_chat_schedule(slug):
     if request.method == 'OPTIONS':
         return _add_cors_headers(jsonify({"ok": True}))

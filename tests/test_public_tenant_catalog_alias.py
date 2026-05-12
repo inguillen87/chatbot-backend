@@ -86,6 +86,50 @@ def test_public_catalog_options_allows_x_token_header(client):
     assert "x-token" in allow_headers
 
 
+def test_reserved_public_slug_catalog_degrades_to_json(client):
+    for path in (
+        "/api/public/tenants/casos/catalog?tenant_slug=casos&tenant=casos",
+        "/public/tenants/casos/catalog?tenant_slug=casos&tenant=casos",
+    ):
+        resp = client.get(path, headers={"Origin": "https://www.chatboc.ar"})
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["contract_version"] == "public.catalog_resolution.v1"
+        assert body["ok"] is False
+        assert body["reason_code"] == "reserved_public_route"
+        assert body["items"] == []
+        assert body["cart"]["enabled"] is False
+        assert body["request_id"]
+        assert resp.headers.get("Access-Control-Allow-Origin") == "https://www.chatboc.ar"
+
+
+def test_public_navigation_contract_disables_unavailable_items(client):
+    tenant = _seed_pyme_tenant_with_catalog()
+
+    resp = client.get(f"/api/public/tenants/{tenant.slug}/public-navigation")
+
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body["contract_version"] == "tenant.public_navigation.v1"
+    assert body["tenant_slug"] == tenant.slug
+    items = {item["id"]: item for item in body["items"]}
+    assert items["home"]["enabled"] is True
+    assert items["catalog"]["enabled"] is True
+    assert items["news"]["enabled"] is False
+    assert items["news"]["empty_state"]
+
+
+def test_reserved_public_slug_navigation_returns_reserved_json(client):
+    resp = client.get("/api/public/tenants/precios/public-navigation", headers={"Origin": "https://www.chatboc.ar"})
+
+    assert resp.status_code == 404
+    body = resp.get_json()
+    assert body["contract_version"] == "public.reserved_slug.v1"
+    assert body["reason_code"] == "reserved_public_route"
+    assert body["request_id"]
+    assert resp.headers.get("Access-Control-Allow-Origin") == "https://www.chatboc.ar"
+
+
 def test_widget_commerce_session_returns_embedded_operating_contract(client):
     tenant = _seed_pyme_tenant_with_catalog()
 

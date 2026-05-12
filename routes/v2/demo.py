@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 import uuid
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, current_app, jsonify, request, send_from_directory
 
 from models import TenantProfile
 from routes.auth import (
@@ -89,6 +90,24 @@ def _error_response(message: str, status_code: int, reason_code: str, action_hin
         },
         status_code,
     )
+
+
+def _demo_catalog_asset_response(filename: str):
+    aliases = {
+        "colegio-demo.pdf": ("colegios", "catalogo-demo-colegios.pdf"),
+        "colegios-demo.pdf": ("colegios", "catalogo-demo-colegios.pdf"),
+        "municipio-demo.pdf": ("gobiernos", "catalogo-demo-gobiernos.pdf"),
+        "gobierno-demo.pdf": ("gobiernos", "catalogo-demo-gobiernos.pdf"),
+        "empresa-demo.pdf": ("empresas", "catalogo-demo-empresas.pdf"),
+        "empresas-demo.pdf": ("empresas", "catalogo-demo-empresas.pdf"),
+    }
+    clean = str(filename or "").strip().replace("\\", "/").split("/")[-1]
+    folder, asset_name = aliases.get(clean, ("", clean))
+    base_dir = Path(current_app.root_path) / "data" / "demo_catalogs"
+    if folder:
+        base_dir = base_dir / folder
+    response = send_from_directory(base_dir, asset_name, as_attachment=False)
+    return _with_public_cors(response)
 
 
 def _tenant_dict(tenant: TenantProfile) -> dict[str, Any]:
@@ -406,6 +425,123 @@ def demo_catalog_v2():
             ],
         }
     )
+
+
+def _admin_preview_for_sector(sector: str, tenant_slug: str = "") -> dict[str, Any]:
+    normalized = normalize_demo_sector(sector or tenant_slug or "empresas")
+    if normalized not in {"educacion", "gobierno", "empresas"}:
+        slug_hint = str(tenant_slug or normalized or "").lower()
+        if any(token in slug_hint for token in ("colegio", "escuela", "educacion")):
+            normalized = "educacion"
+        elif any(token in slug_hint for token in ("municipio", "gobierno", "ciudad")):
+            normalized = "gobierno"
+        else:
+            normalized = sector_for_rubro(normalized) or "empresas"
+
+    presets: dict[str, dict[str, Any]] = {
+        "educacion": {
+            "title": "Panel demo para direccion escolar",
+            "subtitle": "Colegio privado integral",
+            "modules": [
+                {"id": "summary", "label": "Resumen", "enabled": True},
+                {"id": "cases", "label": "Casos escolares", "enabled": True},
+                {"id": "families", "label": "Familias", "enabled": True},
+                {"id": "surveys", "label": "Encuestas", "enabled": True},
+            ],
+            "cards": [
+                {"label": "Casos abiertos", "value": "18", "detail": "inasistencias y documentacion"},
+                {"label": "Familias activas", "value": "342", "detail": "contactos vinculados"},
+                {"label": "Tiempo respuesta", "value": "4 min", "detail": "promedio demo"},
+            ],
+            "timeline": [
+                {"label": "Familia inicia consulta", "status": "done"},
+                {"label": "Secretaria recibe el caso", "status": "active"},
+                {"label": "Equipo directivo ve seguimiento", "status": "pending"},
+            ],
+            "catalog_title": "Colegio privado integral",
+            "catalog_file": "colegio-demo.pdf",
+        },
+        "gobierno": {
+            "title": "Panel demo para gestion ciudadana",
+            "subtitle": "Municipio inteligente",
+            "modules": [
+                {"id": "summary", "label": "Resumen", "enabled": True},
+                {"id": "claims", "label": "Reclamos", "enabled": True},
+                {"id": "heatmap", "label": "Mapa operativo", "enabled": True},
+                {"id": "surveys", "label": "Encuestas", "enabled": True},
+            ],
+            "cards": [
+                {"label": "Reclamos abiertos", "value": "42", "detail": "por zona y prioridad"},
+                {"label": "SLA en riesgo", "value": "3", "detail": "requieren atencion"},
+                {"label": "Consultas resueltas", "value": "1.280", "detail": "este mes demo"},
+            ],
+            "timeline": [
+                {"label": "Vecino envia ubicacion", "status": "done"},
+                {"label": "Mesa de entrada clasifica", "status": "active"},
+                {"label": "Cuadrilla recibe tarea", "status": "pending"},
+            ],
+            "catalog_title": "Guia demo gobiernos",
+            "catalog_file": "municipio-demo.pdf",
+        },
+        "empresas": {
+            "title": "Panel demo para ventas y soporte",
+            "subtitle": "Empresa con catalogo y pedidos",
+            "modules": [
+                {"id": "summary", "label": "Resumen", "enabled": True},
+                {"id": "catalog", "label": "Catalogo", "enabled": True},
+                {"id": "orders", "label": "Pedidos", "enabled": True},
+                {"id": "customers", "label": "Clientes", "enabled": True},
+            ],
+            "cards": [
+                {"label": "Pedidos abiertos", "value": "24", "detail": "web, widget y WhatsApp"},
+                {"label": "Productos listos", "value": "86%", "detail": "con imagen y precio"},
+                {"label": "Leads nuevos", "value": "31", "detail": "ultimos 7 dias"},
+            ],
+            "timeline": [
+                {"label": "Cliente consulta catalogo", "status": "done"},
+                {"label": "Agente arma pedido", "status": "active"},
+                {"label": "Checkout o asesor comercial", "status": "pending"},
+            ],
+            "catalog_title": "Catalogo demo empresas",
+            "catalog_file": "empresa-demo.pdf",
+        },
+    }
+    preset = presets[normalized]
+    return {
+        "contract_version": "demo.admin_preview.v1",
+        "sector": normalized,
+        "tenant_slug": tenant_slug or {"educacion": "colegio-demo", "gobierno": "municipio", "empresas": "bodega"}[normalized],
+        "title": preset["title"],
+        "subtitle": preset["subtitle"],
+        "modules": preset["modules"],
+        "cards": preset["cards"],
+        "timeline": preset["timeline"],
+        "catalog": {
+            "enabled": True,
+            "title": preset["catalog_title"],
+            "download_endpoint": f"/api/v2/demo/catalog-assets/{preset['catalog_file']}",
+        },
+        "frontend_contract": {"render_as": "demo_admin_preview"},
+    }
+
+
+@v2_demo_bp.route("/admin-preview", methods=["GET", "OPTIONS"])
+def demo_admin_preview_v2():
+    if request.method == "OPTIONS":
+        return _options_response()
+
+    sector = request.args.get("sector") or request.args.get("pilar") or request.args.get("vertical") or ""
+    tenant_slug = request.args.get("tenant_slug") or request.args.get("tenant") or ""
+    if not sector:
+        sector = sector_for_rubro(tenant_slug) or tenant_slug or "empresas"
+    return _json_response(_admin_preview_for_sector(sector, tenant_slug=str(tenant_slug or "").strip().lower()))
+
+
+@v2_demo_bp.route("/catalog-assets/<path:filename>", methods=["GET", "OPTIONS"])
+def demo_catalog_asset_v2(filename: str):
+    if request.method == "OPTIONS":
+        return _options_response()
+    return _demo_catalog_asset_response(filename)
 
 
 @v2_demo_bp.route("/session", methods=["POST", "OPTIONS"])
