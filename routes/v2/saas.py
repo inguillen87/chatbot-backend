@@ -3,6 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
+from urllib.parse import quote_plus
 import uuid
 
 from flask import Blueprint, current_app, g, jsonify, request
@@ -78,12 +79,15 @@ def _error_response(message: str, status_code: int, reason_code: str, action_hin
 
 
 def _tenant_slug_from_request(path_slug: str | None = None) -> str:
+    body = request.get_json(silent=True) if request.method in {"POST", "PUT", "PATCH"} else None
+    body_slug = body.get("tenant_slug") if isinstance(body, dict) else None
     return (
         path_slug
         or request.headers.get("X-Tenant-Slug")
         or request.headers.get("X-Tenant")
         or request.args.get("tenant_slug")
         or request.args.get("tenant")
+        or body_slug
         or ""
     ).strip()
 
@@ -1107,6 +1111,108 @@ def whatsapp_experience_v2(current_user, tenant_slug: str | None = None):
     if error:
         return error
     return _json_response(build_whatsapp_experience(tenant, app_config=current_app.config))
+
+
+def _twilio_sandbox_number() -> str:
+    raw = (
+        current_app.config.get("TWILIO_WHATSAPP_SANDBOX_NUMBER")
+        or current_app.config.get("TWILIO_SANDBOX_WHATSAPP_NUMBER")
+        or current_app.config.get("TWILIO_WHATSAPP_NUMBER_SANDBOX")
+        or "+14155238886"
+    )
+    value = str(raw or "").strip()
+    if value.startswith("whatsapp:"):
+        value = value.replace("whatsapp:", "", 1)
+    return value or "+14155238886"
+
+
+def _twilio_sandbox_join_phrase(payload: Mapping[str, Any]) -> str:
+    return str(
+        payload.get("join_phrase")
+        or current_app.config.get("TWILIO_WHATSAPP_SANDBOX_JOIN_PHRASE")
+        or current_app.config.get("TWILIO_SANDBOX_JOIN_PHRASE")
+        or "join brief-yesterday"
+    ).strip()
+
+
+@v2_saas_bp.route("/whatsapp/sandbox-session", methods=["OPTIONS"])
+@v2_saas_bp.route("/tenants/<string:tenant_slug>/whatsapp/sandbox-session", methods=["OPTIONS"])
+def whatsapp_sandbox_session_options_v2(tenant_slug: str | None = None):
+    return _json_response({"ok": True, "contract_version": "whatsapp.sandbox_session.v1"})
+
+
+@v2_saas_bp.route("/whatsapp/sandbox-session", methods=["POST"])
+@v2_saas_bp.route("/tenants/<string:tenant_slug>/whatsapp/sandbox-session", methods=["POST"])
+@token_requerido
+@require_role("admin", "empleado", "super_admin")
+def whatsapp_sandbox_session_v2(current_user, tenant_slug: str | None = None):
+    tenant, error = _resolve_tenant_or_error(current_user, tenant_slug)
+    if error:
+        return error
+
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict):
+        payload = {}
+
+    sandbox_number = _twilio_sandbox_number()
+    join_phrase = _twilio_sandbox_join_phrase(payload)
+    rubro = str(payload.get("rubro") or tenant.subvertical or tenant.vertical or tenant.tipo or "").strip()
+    brief = str(payload.get("brief") or "Probar menu del tenant y crear un caso/pedido/reclamo").strip()
+    test_message = str(payload.get("test_message") or "Hola, quiero probar el asistente").strip()
+    menu_preview = payload.get("menu_preview") if isinstance(payload.get("menu_preview"), list) else []
+    wa_number = "".join(ch for ch in sandbox_number if ch.isdigit())
+    wa_deeplink = f"https://wa.me/{wa_number}?text={quote_plus(join_phrase)}"
+
+    cfg = tenant.configuracion if isinstance(tenant.configuracion, dict) else {}
+    sandbox_sessions = cfg.get("whatsapp_sandbox_sessions")
+    if not isinstance(sandbox_sessions, list):
+        sandbox_sessions = []
+    session_id = f"wsp_sandbox_{uuid.uuid4().hex[:12]}"
+    sandbox_sessions.append(
+        {
+            "id": session_id,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "whatsapp": payload.get("whatsapp"),
+            "join_phrase": join_phrase,
+            "rubro": rubro,
+            "brief": brief,
+            "test_message": test_message,
+            "source": payload.get("source") or "tenant_integrations_panel",
+        }
+    )
+    cfg["whatsapp_sandbox_sessions"] = sandbox_sessions[-20:]
+    tenant.configuracion = cfg
+    flag_modified(tenant, "configuracion")
+    db.session.commit()
+
+    return _json_response(
+        {
+            "contract_version": "whatsapp.sandbox_session.v1",
+            "ok": True,
+            "tenant": _tenant_ref(tenant),
+            "twilio": {
+                "provider": "twilio_sandbox",
+                "sandbox_number": f"whatsapp:{sandbox_number}",
+                "display_number": "+1 (415) 523-8886" if wa_number == "14155238886" else sandbox_number,
+                "join_phrase": join_phrase,
+                "wa_deeplink": wa_deeplink,
+            },
+            "demo_context": {
+                "tenant_slug": tenant.slug,
+                "rubro": rubro,
+                "brief": brief,
+                "test_message": test_message,
+                "quick_menu": menu_preview,
+                "widget_config_endpoint": f"/api/public/tenants/{tenant.slug}/widget-config",
+            },
+            "session": {
+                "id": session_id,
+                "mode": "copy_or_deeplink",
+                "sends_real_message": False,
+                "source": payload.get("source") or "tenant_integrations_panel",
+            },
+        }
+    )
 
 
 @v2_saas_bp.route("/superadmin/executive-summary", methods=["GET"])

@@ -370,6 +370,61 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertTrue(payload["queues"]["missing_price"])
         self.assertEqual(payload["frontend_contract"]["render_as"], "catalog_quality_command_center")
 
+    def test_whatsapp_sandbox_session_returns_deeplink_contract(self):
+        response = self.client.post(
+            f"/api/v2/tenants/{self.tenant.slug}/whatsapp/sandbox-session",
+            headers={**self._auth(self.owner), "X-Request-Id": "sandbox-1"},
+            json={
+                "tenant_slug": self.tenant.slug,
+                "whatsapp": "+5491111111111",
+                "join_phrase": "join brief-yesterday",
+                "rubro": "colegio",
+                "brief": "Probar menu del tenant y crear un caso escolar",
+                "test_message": "Hola, quiero probar el asistente",
+                "menu_preview": [{"id": "casos", "label": "Casos escolares"}],
+                "source": "tenant_integrations_panel",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload.get("contract_version"), "whatsapp.sandbox_session.v1")
+        self.assertTrue(payload.get("ok"))
+        self.assertEqual(payload.get("request_id"), "sandbox-1")
+        self.assertEqual(payload["tenant"]["slug"], self.tenant.slug)
+        self.assertEqual(payload["twilio"]["sandbox_number"], "whatsapp:+14155238886")
+        self.assertIn("wa.me/14155238886", payload["twilio"]["wa_deeplink"])
+        self.assertEqual(payload["demo_context"]["rubro"], "colegio")
+        self.assertFalse(payload["session"]["sends_real_message"])
+
+    def test_admin_catalog_exposes_and_saves_draft_endpoint(self):
+        get_response = self.client.get(
+            f"/api/admin/tenants/{self.tenant.slug}/catalog",
+            headers=self._auth(self.owner),
+        )
+
+        self.assertEqual(get_response.status_code, 200)
+        get_payload = get_response.get_json()
+        self.assertEqual(get_payload["draft_endpoint"], f"/api/admin/tenants/{self.tenant.slug}/catalog/draft")
+        self.assertEqual(get_payload["links"]["draft_endpoint"], f"/api/admin/tenants/{self.tenant.slug}/catalog/draft")
+
+        draft_response = self.client.put(
+            f"/api/admin/tenants/{self.tenant.slug}/catalog/draft",
+            headers=self._auth(self.owner),
+            json={
+                "source": "tenant_catalog_editor",
+                "title": "Borrador escolar",
+                "items": [{"nombre": "Uniforme", "imagen_url": "https://cdn.example.com/u.jpg"}],
+            },
+        )
+
+        self.assertEqual(draft_response.status_code, 200)
+        draft_payload = draft_response.get_json()
+        self.assertEqual(draft_payload.get("contract_version"), "tenant.catalog_draft.v1")
+        self.assertTrue(draft_payload.get("ok"))
+        refreshed = db.session.get(TenantProfile, self.tenant.id)
+        self.assertEqual(refreshed.configuracion["catalog_draft"]["title"], "Borrador escolar")
+
     def test_superadmin_executive_summary_contract(self):
         response = self.client.get(
             "/api/v2/superadmin/executive-summary",

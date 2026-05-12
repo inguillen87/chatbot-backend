@@ -1,6 +1,8 @@
 from flask import Blueprint, request, jsonify, g, current_app
 import requests
+import uuid
 from sqlalchemy import func
+from sqlalchemy.orm.attributes import flag_modified
 from datetime import datetime, timezone, timedelta
 
 from utils.auth_helpers import token_requerido
@@ -602,8 +604,66 @@ def admin_get_catalog(current_user, slug):
         "view_url": f"{base_web}/{tenant.slug}/catalogo",
         "download_url": f"{base_api}/api/public/tenants/{tenant.slug}/catalog/download?format=pdf",
         "download_url_json": f"{base_api}/api/public/tenants/{tenant.slug}/catalog/download?format=json",
+        "links": {
+            "draft_endpoint": f"/api/admin/tenants/{tenant.slug}/catalog/draft",
+            "items_endpoint": f"/api/admin/tenants/{tenant.slug}/catalog/items",
+            "publish_endpoint": f"/api/admin/tenants/{tenant.slug}/catalog/publish",
+        },
+        "draft_endpoint": f"/api/admin/tenants/{tenant.slug}/catalog/draft",
         "has_pdf": has_pdf,
     })
+
+
+@admin_tenant_bp.route('/api/admin/tenants/<slug>/catalog/draft', methods=['OPTIONS'])
+def admin_catalog_draft_options(slug):
+    return _cors_preflight_response()
+
+
+@admin_tenant_bp.route('/api/admin/tenants/<slug>/catalog/draft', methods=['PUT'])
+@token_requerido
+@require_tenant
+def admin_save_catalog_draft(current_user, slug):
+    tenant = _resolve_admin_tenant(current_user, slug)
+    if not tenant:
+        return jsonify({"error": "Tenant not found"}), 404
+
+    if not _is_authorized_for_tenant(current_user, tenant):
+        return jsonify({"error": "Unauthorized"}), 403
+
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict):
+        payload = {}
+
+    cfg = tenant.configuracion if isinstance(tenant.configuracion, dict) else {}
+    request_id = (request.headers.get("X-Request-Id") or request.headers.get("X-Correlation-Id") or uuid.uuid4().hex).strip()
+    saved_at = datetime.now(timezone.utc).isoformat()
+    draft = {
+        "contract_version": "tenant.catalog_draft.v1",
+        "saved_at": saved_at,
+        "source": payload.get("source") or "tenant_catalog_editor",
+        "title": payload.get("title") or payload.get("titulo"),
+        "description": payload.get("description") or payload.get("descripcion"),
+        "items": payload.get("items") if isinstance(payload.get("items"), list) else [],
+        "raw": payload,
+    }
+    cfg["catalog_draft"] = draft
+    tenant.configuracion = cfg
+    flag_modified(tenant, "configuracion")
+    db.session.commit()
+
+    response = jsonify(
+        {
+            "ok": True,
+            "contract_version": "tenant.catalog_draft.v1",
+            "tenant_slug": tenant.slug,
+            "status": "draft",
+            "saved_at": draft["saved_at"],
+            "draft_endpoint": f"/api/admin/tenants/{tenant.slug}/catalog/draft",
+            "request_id": request_id,
+        }
+    )
+    response.headers["X-Request-Id"] = request_id
+    return response
 
 
 @admin_tenant_bp.route('/api/admin/tenants/<slug>/catalog/publish', methods=['OPTIONS'])

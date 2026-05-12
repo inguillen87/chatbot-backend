@@ -497,3 +497,19 @@ Verificacion ejecutada:
 - `tests/test_api_v2_foundation.py`
 - `tests/test_public_resolver_widget_config_contract.py`
 - `tests/test_widget_settings.py`
+
+## Twilio Sandbox + Integraciones 2026-05-12
+
+Mejora aditiva para que el panel tenant pueda probar WhatsApp Sandbox y el editor de catalogo no dependa solo de borrador local:
+
+- `POST /api/v2/tenants/{tenant_slug}/whatsapp/sandbox-session` devuelve `whatsapp.sandbox_session.v1` con tenant, numero sandbox, join phrase, deeplink `wa.me`, contexto de demo, quick menu recibido por frontend y `request_id`.
+- `POST /api/v2/whatsapp/sandbox-session` queda como alias tenant-aware; puede resolver `tenant_slug` desde header, query o body.
+- El endpoint no envia mensajes reales; guarda ultimas sesiones de prueba en `tenant.configuracion.whatsapp_sandbox_sessions` para trazabilidad del panel.
+- `GET /api/admin/tenants/{tenant_slug}/catalog` expone `draft_endpoint` y `links.draft_endpoint`.
+- `PUT /api/admin/tenants/{tenant_slug}/catalog/draft` guarda `tenant.catalog_draft.v1` en `tenant.configuracion.catalog_draft` para persistir borradores entre dispositivos.
+- Se mantiene `live_chat.schedule.v1` degradable y `socket_enabled=false` mientras Socket.IO no este publicado.
+
+Verificacion ejecutada:
+
+- `tests/test_v2_saas_contracts.py::V2SaasContractsTest::test_whatsapp_sandbox_session_returns_deeplink_contract`
+- `tests/test_v2_saas_contracts.py::V2SaasContractsTest::test_admin_catalog_exposes_and_saves_draft_endpoint`

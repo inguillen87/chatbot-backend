@@ -208,3 +208,54 @@ Colegios:
 - `tests/test_v2_saas_contracts.py` cubre `whatsapp.experience.v1`, admin-experience y superadmin command center.
 - `tests/test_realtime_voice_profiles.py` cubre modelo realtime default `gpt-realtime`, tools y verticales.
 - `tests/test_public_resolver_widget_config_contract.py` cubre `GET /api/public/realtime/voice-capabilities`.
+
+## Twilio Sandbox + Integraciones 2026-05-12
+
+Backend aplicado:
+
+- `POST /api/v2/tenants/{tenant_slug}/whatsapp/sandbox-session`.
+- Alias: `POST /api/v2/whatsapp/sandbox-session`.
+- `OPTIONS` disponible para ambos paths.
+- El alias global resuelve `tenant_slug` desde `X-Tenant-Slug`, query string o body.
+- La respuesta usa `whatsapp.sandbox_session.v1` y no envia mensajes reales por Twilio; entrega texto/deeplink listo para que el usuario abra WhatsApp Sandbox.
+- El backend guarda las ultimas sesiones de prueba en `tenant.configuracion.whatsapp_sandbox_sessions` para soporte/trazabilidad del panel.
+
+Shape estable:
+
+```json
+{
+  "contract_version": "whatsapp.sandbox_session.v1",
+  "ok": true,
+  "tenant": { "slug": "junin-1" },
+  "twilio": {
+    "provider": "twilio_sandbox",
+    "sandbox_number": "whatsapp:+14155238886",
+    "join_phrase": "join brief-yesterday",
+    "wa_deeplink": "https://wa.me/14155238886?text=join+brief-yesterday"
+  },
+  "demo_context": {
+    "tenant_slug": "junin-1",
+    "rubro": "colegio",
+    "brief": "Probar menu del tenant",
+    "test_message": "Hola, quiero probar el asistente",
+    "quick_menu": [],
+    "widget_config_endpoint": "/api/public/tenants/junin-1/widget-config"
+  },
+  "session": {
+    "mode": "copy_or_deeplink",
+    "sends_real_message": false
+  },
+  "request_id": "req_..."
+}
+```
+
+Catalogo draft:
+
+- `GET /api/admin/tenants/{tenant_slug}/catalog` ahora expone `draft_endpoint` y `links.draft_endpoint`.
+- `PUT /api/admin/tenants/{tenant_slug}/catalog/draft` guarda `tenant.catalog_draft.v1` en backend.
+- Frontend puede seguir usando borrador local si falla la red, pero ya tiene endpoint remoto para persistir entre dispositivos.
+
+Verificacion adicional:
+
+- `tests/test_v2_saas_contracts.py::V2SaasContractsTest::test_whatsapp_sandbox_session_returns_deeplink_contract`
+- `tests/test_v2_saas_contracts.py::V2SaasContractsTest::test_admin_catalog_exposes_and_saves_draft_endpoint`
