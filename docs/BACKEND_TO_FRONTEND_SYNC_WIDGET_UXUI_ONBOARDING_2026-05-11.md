@@ -205,6 +205,7 @@ Regla frontend:
 Implementado:
 
 - Selector plataforma en `/api/public/widget-config` para host `chatboc.ar` sin tenant.
+- Deteccion de host plataforma compatible con proxy/deploy: `Host`, `X-Forwarded-Host`, `X-Original-Host`, `X-Host`, `Origin` y `Referer`.
 - `public.widget_onboarding.v1`.
 - `widget.ui_hints.v1`.
 - `suppress_global_widget=false` fuera de integracion.
@@ -216,6 +217,7 @@ Implementado:
 Backend queda alineado con el QA de onboarding del widget:
 
 - `GET /api/public/widget-config` sin tenant en host plataforma devuelve `tenant.slug: chatboc-platform` y `tenant.tipo: platform`.
+- Si el request llega desde Vercel/proxy con host interno de Render pero `X-Forwarded-Host: www.chatboc.ar`, backend tambien devuelve el selector plataforma.
 - `onboarding.contract_version` es `public.widget_onboarding.v1`.
 - `onboarding.mode` es `platform_sector_selector`.
 - `onboarding.selection_endpoint` es `/api/v2/demo/session`.

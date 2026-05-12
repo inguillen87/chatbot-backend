@@ -188,6 +188,7 @@ Mejora aditiva para que WhatsApp quede conectado con panel tenant, demo, widget,
 - `content_modules` expone calidad de catalogo/imagenes, encuestas/votaciones, noticias/eventos, promociones y links configurables por tenant.
 - Se agrego handoff frontend: `docs/BACKEND_TO_FRONTEND_SYNC_WHATSAPP_OPERATIONS_2026-05-12.md`.
 - QA frontend 2026-05-12: se confirmaron alias tenant-aware, `request_id`/`X-Request-Id`, modulo `widget_whatsapp` con endpoint canonico, video con `analysis_ready:false`, voz gated por `voice_calls.enabled + native_speech_to_speech`, tracking publico JSON y fallback `timeline_only`.
+- QA boton de prueba 2026-05-12: cuando el canal tiene numero configurado, `whatsapp.experience.v1.channel` publica `test_endpoint`, `test_method` y `test_label` apuntando al endpoint legacy real `POST /api/notifications/whatsapp/test`; si el canal no esta listo no se publica el boton.
 
 Verificacion ejecutada:
 
@@ -409,6 +410,7 @@ Verificacion ejecutada:
 Alineacion con el QA frontend del widget en landing:
 
 - `GET /api/public/widget-config` sin tenant en host plataforma devuelve `public.widget_config.v1` con `tenant.slug=chatboc-platform`, `tenant.tipo=platform`, `public.widget_onboarding.v1` y `mode=platform_sector_selector`.
+- La deteccion de host plataforma contempla deploy con proxy (`X-Forwarded-Host`, `X-Original-Host`, `X-Host`, `Origin`, `Referer`) para que `www.chatboc.ar` no caiga en un tenant default cuando Render recibe un host interno.
 - `quick_menu` top-level y `onboarding.quick_menu` quedan sincronizados con tres opciones backend-first: Colegios, Gobiernos y Empresas.
 - Cada opcion trae `label`, `sector`, `tenant_slug` y `rubro` para iniciar `POST /api/v2/demo/session`.
 - `ui_hints` mantiene `widget.ui_hints.v1`, `max_visible_quick_replies=3` y composer compacto.
@@ -424,6 +426,7 @@ Verificacion ejecutada:
 
 Mejora aditiva para pasar de contratos desbloqueados a operacion monitoreable y drawer 360:
 
+- Se agrega smoke local aislado `scripts/local_platform_smoke.py` con SQLite en memoria para validar contratos sin tocar produccion ni la base real.
 - `GET /api/v2/inbox/omnichannel` mantiene `inbox.omnichannel.v1`, pero cada item ahora trae `detail_endpoint`, `attachments`, `sla`, `allowed_actions`, `next_steps`, `source_metadata`, `map.can_render` y `frontend_contract.render_as=inbox_360_drawer`.
 - `GET /api/v2/inbox/omnichannel/{ticket_id}` devuelve `inbox.omnichannel.detail.v1` con el mismo item enriquecido para drawer 360.
 - Las acciones existentes de inbox siguen en `/api/v2/inbox/omnichannel/{ticket_id}/actions` y usan el mismo payload enriquecido al responder.
@@ -434,4 +437,5 @@ Mejora aditiva para pasar de contratos desbloqueados a operacion monitoreable y 
 
 Verificacion ejecutada:
 
+- `test_venv\Scripts\python.exe scripts\local_platform_smoke.py`
 - `tests/test_v2_saas_contracts.py`

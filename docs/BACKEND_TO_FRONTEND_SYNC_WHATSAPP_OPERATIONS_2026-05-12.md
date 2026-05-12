@@ -32,6 +32,9 @@ Contrato:
     "number": "whatsapp:+100",
     "webhook": "/webhook/whatsapp",
     "status_webhook": "/twilio/whatsapp/status",
+    "test_endpoint": "/api/notifications/whatsapp/test",
+    "test_method": "POST",
+    "test_label": "Probar canal",
     "reason_code": null
   },
   "enterprise_rules": {
@@ -187,6 +190,7 @@ Colegios:
 - `GET /api/v2/tenants/{tenant_slug}/whatsapp/experience` queda cubierto como alias tenant-aware.
 - `GET /api/v2/tenant/admin-experience` incluye resumen `whatsapp` y el modulo `widget_whatsapp`.
 - El modulo `widget_whatsapp` expone `label: "Widget/WhatsApp/Voz"` y `endpoint: "/api/v2/whatsapp/experience"`.
+- Si el canal tiene numero configurado, `channel` expone `test_endpoint`, `test_method` y `test_label`; si falta configuracion, backend no publica esos campos y frontend no muestra boton de prueba.
 - Video se mantiene como adjunto con `analysis_ready: false`.
 - Voz se habilita solo con `conversation_intelligence.voice_calls.enabled` y `capabilities.native_speech_to_speech`.
 - Tracking conserva `experience_endpoint` para claim/order y `fallback_when_no_coordinates: "timeline_only"`.

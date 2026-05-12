@@ -87,6 +87,21 @@ class PublicResolverWidgetConfigContractTestCase(unittest.TestCase):
         self.assertFalse(body["support_channels"]["live_chat"]["socket_enabled"])
         self.assertFalse(body["suppress_global_widget"])
 
+    def test_widget_config_without_tenant_uses_forwarded_platform_host(self):
+        response = self.client.get(
+            "/api/public/widget-config",
+            headers={
+                "Host": "chatbot-backend-2e14.onrender.com",
+                "X-Forwarded-Host": "www.chatboc.ar",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.get_json()
+        self.assertEqual(body["tenant"]["slug"], "chatboc-platform")
+        self.assertEqual(body["onboarding"]["mode"], "platform_sector_selector")
+        self.assertFalse(body["realtime"]["socket_enabled"])
+
     def test_landing_experience_without_tenant_returns_platform_contract(self):
         response = self.client.get("/api/public/landing-experience")
 

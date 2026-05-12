@@ -4,7 +4,7 @@ import json
 import os
 from urllib import error as urllib_error
 from urllib import request as urllib_request
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlparse
 from flask import Blueprint, jsonify, request, g, current_app
 from flask_cors import cross_origin
 from sqlalchemy import desc
@@ -331,8 +331,30 @@ def _platform_hostnames() -> set[str]:
 
 
 def _is_platform_widget_host() -> bool:
-    host = (request.host or "").split(":", 1)[0].strip().lower()
-    return host in _platform_hostnames()
+    candidates = [
+        request.host,
+        request.headers.get("X-Forwarded-Host"),
+        request.headers.get("X-Original-Host"),
+        request.headers.get("X-Host"),
+        request.headers.get("Origin"),
+        request.headers.get("Referer"),
+    ]
+    platform_hosts = _platform_hostnames()
+    for value in candidates:
+        host = _normalize_header_host(value)
+        if host in platform_hosts:
+            return True
+    return False
+
+
+def _normalize_header_host(value: str | None) -> str:
+    if not value:
+        return ""
+    first_value = str(value).split(",", 1)[0].strip()
+    if "://" in first_value:
+        parsed = urlparse(first_value)
+        first_value = parsed.netloc or parsed.path
+    return first_value.split(":", 1)[0].strip().lower()
 
 
 def _default_tenant_slug_for_pillar(key: str) -> str:

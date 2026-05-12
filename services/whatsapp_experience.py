@@ -335,19 +335,33 @@ def build_whatsapp_experience(
     channel_ready = bool(number)
     content = _content_modules_payload(tenant)
     tracking = _tracking_modules_payload(tenant)
+    channel = {
+        "provider": "twilio_whatsapp",
+        "enabled": channel_ready,
+        "number": number,
+        "webhook": "/webhook/whatsapp",
+        "status_webhook": "/twilio/whatsapp/status",
+        "reason_code": None if channel_ready else "whatsapp_number_not_configured",
+    }
+    if channel_ready:
+        channel.update(
+            {
+                "test_endpoint": "/api/notifications/whatsapp/test",
+                "test_method": "POST",
+                "test_label": "Probar canal",
+                "test_payload_hint": {
+                    "recipient": "whatsapp:+549...",
+                    "body": "Mensaje de prueba",
+                    "metadata": {},
+                },
+            }
+        )
 
     return {
         "contract_version": WHATSAPP_EXPERIENCE_CONTRACT_VERSION,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "tenant": _tenant_ref(tenant),
-        "channel": {
-            "provider": "twilio_whatsapp",
-            "enabled": channel_ready,
-            "number": number,
-            "webhook": "/webhook/whatsapp",
-            "status_webhook": "/twilio/whatsapp/status",
-            "reason_code": None if channel_ready else "whatsapp_number_not_configured",
-        },
+        "channel": channel,
         "enterprise_rules": _enterprise_rule_payload(tenant),
         "contact_window": _contact_window_payload(tenant),
         "conversation_intelligence": _conversation_intelligence_payload(tenant, cfg, app_config),
