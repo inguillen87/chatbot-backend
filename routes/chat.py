@@ -1683,19 +1683,48 @@ def _procesar_chat(
         request_payload = request.get_json(silent=True) if request.is_json else {}
         if not isinstance(request_payload, dict):
             request_payload = {}
+        chat_bootstrap_payload = request_payload.get("chat_bootstrap") if isinstance(request_payload.get("chat_bootstrap"), dict) else {}
+        chat_bootstrap_inner_payload = (
+            chat_bootstrap_payload.get("payload")
+            if isinstance(chat_bootstrap_payload.get("payload"), dict)
+            else {}
+        )
+        effective_tenant_marker = (
+            request.headers.get("X-Tenant-Slug")
+            or request.args.get("tenant_slug")
+            or request.args.get("tenant")
+            or request_payload.get("tenant_slug")
+            or chat_bootstrap_payload.get("tenant_slug")
+            or chat_bootstrap_inner_payload.get("tenant_slug")
+        )
+        effective_rubro_marker = (
+            request_payload.get("rubro")
+            or request_payload.get("rubro_clave")
+            or request_payload.get("rubro_slug")
+            or chat_bootstrap_inner_payload.get("rubro")
+            or chat_bootstrap_inner_payload.get("rubro_clave")
+        )
         demo_session_payload = _resolve_demo_session_payload()
-        demo_request_active = bool(
+        has_chat_session_marker = bool(request.headers.get("X-Chat-Session-Id"))
+        has_demo_context_marker = bool(
             request_payload.get("demo_mode")
             or request_payload.get("demo_session_id")
             or request_payload.get("session_id")
             or request.headers.get("X-Demo-Session-Id")
             or request.headers.get("X-Demo-Session")
+            or effective_tenant_marker
+            or effective_rubro_marker
             or demo_session_payload
         )
+        suppress_legacy_demo_selector = bool(has_demo_context_marker or has_chat_session_marker)
+        demo_request_active = has_demo_context_marker
         demo_tenant_slug = str(
             demo_session_payload.get("tenant_slug")
             or request_payload.get("tenant_slug")
+            or chat_bootstrap_payload.get("tenant_slug")
+            or chat_bootstrap_inner_payload.get("tenant_slug")
             or request.args.get("tenant_slug")
+            or request.headers.get("X-Tenant-Slug")
             or ""
         ).strip().lower()
 
@@ -1706,6 +1735,9 @@ def _procesar_chat(
                 contexto_chat["demo_sector"] = demo_session_payload.get("sector")
                 contexto_chat["demo_rubro_clave"] = demo_session_payload.get("rubro") or demo_session_payload.get("tenant_slug")
                 contexto_chat["demo_key"] = demo_session_payload.get("rubro") or demo_session_payload.get("tenant_slug")
+            elif effective_rubro_marker or demo_tenant_slug:
+                contexto_chat["demo_rubro_clave"] = effective_rubro_marker or demo_tenant_slug
+                contexto_chat["demo_key"] = effective_rubro_marker or demo_tenant_slug
 
             if demo_tenant_slug and not _owner_context_is_trusted(owner_user, owner_resolution_source):
                 tenant_for_demo = (
@@ -1729,6 +1761,8 @@ def _procesar_chat(
                             demo_session_payload.get("rubro")
                             or request_payload.get("rubro")
                             or request_payload.get("rubro_clave")
+                            or chat_bootstrap_inner_payload.get("rubro")
+                            or chat_bootstrap_inner_payload.get("rubro_clave")
                             or demo_tenant_slug
                         )
                     if not rubro_id and getattr(tenant_owner, "rubro_id", None):
@@ -1843,6 +1877,7 @@ def _procesar_chat(
             and tenant_slug_hint in {"municipio", "pyme"}
             and not _owner_context_is_trusted(owner_user, owner_resolution_source)
             and not demo_session_activa
+            and not suppress_legacy_demo_selector
         )
 
         should_show_public_demo_selector = (
@@ -1850,6 +1885,7 @@ def _procesar_chat(
             and is_anonymous
             and not _owner_context_is_trusted(owner_user, owner_resolution_source)
             and not demo_session_activa
+            and not suppress_legacy_demo_selector
             and (is_init_request or message_count_this_session == 0)
         )
 
@@ -2751,9 +2787,37 @@ def widget_config():
 
     return jsonify(config)
 
-@chat_bp.route("/live-chat/schedule", methods=["GET"])
-@chat_bp.route("/api/live-chat/schedule", methods=["GET"])
+def _live_chat_schedule_public_response(status: dict):
+    status.setdefault("contract_version", "live_chat.schedule.v1")
+    status.setdefault("enabled", False)
+    status.setdefault("available", False)
+    status["socket_transport_hint"] = "disabled"
+    status["socket_transports"] = []
+    status["socket_fallback_enabled"] = False
+    status["socket_enabled"] = False
+    status["realtime"] = False
+    status["fallback_mode"] = "http_chat"
+    response = jsonify(status)
+    origin = request.headers.get("Origin")
+    if origin:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers["Access-Control-Allow-Headers"] = (
+            "Content-Type,Authorization,X-Tenant-Slug,X-Widget-Token,"
+            "X-Chat-Session-Id,X-Demo-Session-Id,X-Anon-Id,Anon-Id,Idempotency-Key"
+        )
+        response.headers["Access-Control-Allow-Methods"] = "GET,OPTIONS"
+        response.headers["Access-Control-Expose-Headers"] = "X-Request-Id"
+    response.headers.setdefault("X-Request-Id", uuid.uuid4().hex)
+    return response
+
+
+@chat_bp.route("/live-chat/schedule", methods=["GET", "OPTIONS"])
+@chat_bp.route("/api/live-chat/schedule", methods=["GET", "OPTIONS"])
 def live_chat_schedule():
+    if request.method == "OPTIONS":
+        return _live_chat_schedule_public_response({"ok": True})
+
     tenant_slug = str(request.args.get("tenant_slug") or request.args.get("tenant") or "").strip().lower()
     try:
         if tenant_slug:
@@ -2764,19 +2828,13 @@ def live_chat_schedule():
                     status = build_live_chat_status(schedule_override=schedule_cfg)
                     status["tenant_slug"] = tenant.slug
                     status["source"] = "tenant_config"
-                    status.setdefault("socket_transport_hint", "polling")
-                    status.setdefault("socket_transports", ["polling"])
-                    status.setdefault("socket_fallback_enabled", True)
-                    return jsonify(status)
+                    return _live_chat_schedule_public_response(status)
     except Exception as exc:
         current_app.logger.warning("[live_chat_schedule] tenant lookup failed for %s: %s", tenant_slug, exc)
 
     status = build_live_chat_status()
     status["source"] = "global_config"
-    status.setdefault("socket_transport_hint", "polling")
-    status.setdefault("socket_transports", ["polling"])
-    status.setdefault("socket_fallback_enabled", True)
-    return jsonify(status)
+    return _live_chat_schedule_public_response(status)
 
 @chat_bp.route("/config/google-maps-key", methods=["GET"])
 def google_maps_key():

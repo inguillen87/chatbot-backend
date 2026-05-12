@@ -208,6 +208,7 @@ Implementado:
 - Deteccion de host plataforma compatible con proxy/deploy: `Host`, `X-Forwarded-Host`, `X-Original-Host`, `X-Host`, `Origin` y `Referer`.
 - `public.widget_onboarding.v1`.
 - `widget.ui_hints.v1`.
+- `ui_hints.accessibility` con opt-ins white-label para dislexia, texto simple, alto contraste, controles grandes, captions, reduced motion y target tactil minimo.
 - `suppress_global_widget=false` fuera de integracion.
 - `media_capabilities`, `conversion_ctas`, `animation_tokens` y `onboarding` top-level.
 - Tests backend para contrato plataforma/tenant.
@@ -225,6 +226,7 @@ Backend queda alineado con el QA de onboarding del widget:
 - `quick_menu` top-level y `onboarding.quick_menu` traen las mismas opciones.
 - Cada item de `quick_menu[]` trae `label`, `sector`, `tenant_slug` y `rubro`.
 - `ui_hints.contract_version` es `widget.ui_hints.v1` y `max_visible_quick_replies` queda en `3`.
+- `ui_hints.accessibility` queda disponible para que frontend tenga un unico acceso compacto a preferencias inclusivas sin llenar el header.
 - `realtime.socket_enabled` y `visibility_rules.allow_websocket` quedan en `false` para landing global mientras Socket.IO no este publicado.
 - `support_channels.live_chat.socket_enabled` queda en `false`; frontend no debe mostrar badge Live ni intentar `/socket.io`.
 - `POST /api/v2/demo/session` acepta los payloads del selector para `educacion`, `gobierno` y `empresas`, y devuelve `workspace.chat_bootstrap` con `X-Demo-Session-Id`, `X-Chat-Session-Id` y `X-Tenant-Slug`.
@@ -233,3 +235,84 @@ Verificacion backend:
 
 - `tests/test_public_resolver_widget_config_contract.py`
 - `tests/test_api_v2_foundation.py`
+
+## 10. Runtime fix widget demo 2026-05-12
+
+Reporte de produccion:
+
+- El widget abre profesional, pero despues aparece el mensaje legacy: "Bienvenido al showroom interactivo..." y vuelve a pedir elegir rubro.
+- El frontend intenta `GET /api/colegio-demo/live-chat/schedule`, `/colegio-demo/live-chat/schedule`, `/api/demo/live-chat/schedule` y `/demo/live-chat/schedule`, recibiendo 404/CORS.
+
+Backend aplicado:
+
+- `DEMO_WELCOME_MESSAGE` default ya no menciona "showroom interactivo" ni "elegi el rubro".
+- `GET /api/<slug>/live-chat/schedule` y `GET /<slug>/live-chat/schedule` responden `live_chat.schedule.v1` con CORS.
+- Si el tenant demo todavia no existe en la base deployada, el schedule degrada a JSON 200 con `fallback_reason=tenant_not_found_schedule_fallback`, `socket_enabled=false`, `realtime=false`, `socket_transport_hint=disabled` y `fallback_mode=http_chat`.
+- Los aliases `/api/demo/live-chat/schedule` y `/demo/live-chat/schedule` quedan cubiertos cuando frontend manda `tenant_slug=colegio-demo`.
+
+Pedido frontend:
+
+- Si todavia aparece "Bienvenido al showroom interactivo...", revisar fallback local/cacheado del bundle: backend ya no lo emite por default.
+- No reabrir selector de rubros despues de `demo.session.v2`; usar `workspace.chat_bootstrap`, `workspace.quick_replies` y `workspace.education.quick_menu`.
+- No hacer fallback directo a `https://chatbot-backend-2e14.onrender.com/...` para schedule; usar same-origin y degradar con el JSON `live_chat.schedule.v1`.
+
+Verificacion backend:
+
+- `tests/test_tenant_leads_management.py::test_public_live_chat_schedule_aliases_never_404_for_demo_widget`
+- `tests/test_config_demo_mode_flag.py`
+
+## 11. Demo landing/widget runtime compat 2026-05-12
+
+Reporte de produccion:
+
+- Bundles/cache viejos todavia podian llamar `POST /api/v2/demo/session`, `/v2/demo/session`, `/api/v1/demo/session` o `/v1/demo/session`.
+- En algunos deploys esas rutas viejas devolvian 404/405 o preflight CORS no OK.
+
+Backend aplicado:
+
+- `POST /api/v2/demo/session` mantiene `demo.session.v2` como ruta canonica.
+- `POST /v2/demo/session`, `POST /api/v1/demo/session` y `POST /v1/demo/session` delegan al mismo contrato canonico.
+- Los cuatro paths aceptan `OPTIONS` y responden JSON con `X-Request-Id`.
+- CORS publico expone `X-Request-Id` y acepta headers de widget/demo: `X-Tenant-Slug`, `X-Widget-Token`, `X-Chat-Session-Id`, `X-Demo-Session-Id`, `X-Anon-Id`, `Anon-Id` e `Idempotency-Key`.
+- Si hay error, la respuesta sigue siendo JSON accionable, no HTML ni 405 sin CORS.
+- `landing.public_experience.v1` quedo saneado para copy comercial visible: no muestra palabras tecnicas como backend, contrato, endpoint, fallback, 404 o deploy en textos de cliente.
+
+Pedido frontend:
+
+- Mantener el flujo nuevo local-first para landing/demo publico.
+- Si todavia aparecen llamadas a `/api/v1/demo/session` o `/v1/demo/session`, invalidar cache/CDN/service worker; backend las tolera por compatibilidad pero ya no deberian ser necesarias.
+- En copy visible de landing/demo/widget, usar lenguaje comercial: experiencia guiada, acciones listas, seguimiento, atencion automatizada, derivacion humana, catalogos y consultas.
+
+Verificacion backend:
+
+- `tests/test_api_v2_foundation.py::ApiV2FoundationTest::test_demo_session_canonical_and_legacy_aliases_delegate_to_v2_with_cors`
+- `tests/test_public_resolver_widget_config_contract.py::PublicResolverWidgetConfigContractTest::test_landing_experience_visible_copy_is_commercial`
+
+## 12. Embedded widget commerce + user portal 2026-05-12
+
+Backend aplicado:
+
+- `GET /api/public/widget-commerce-session` devuelve `public.widget_commerce_session.v1` para que el script embebido opere como widget completo: chat, catalogo, carrito, checkout, portal e historial.
+- El contrato resuelve tenant por `tenant_slug`, `tenant`, `widget_token`, `X-Tenant-Slug`, `X-Widget-Token`, `X-Chat-Session-Id` y `X-Demo-Session-Id`.
+- El bundle apunta a endpoints existentes: catalogo publico, carrito PWA, catalog quality, checkout preview/session, auth/widget bootstrap e historial.
+- `GET /api/public/widget-user/tenant-history` devuelve `public.widget_user_tenant_history.v1` con items de reclamos/casos, pedidos, mensajes y resumen de carrito filtrados por tenant + `anon_id`/`chat_session_id` cuando existen.
+- `POST /api/public/widget-user/register` y `POST /api/public/widget-user/link-session` devuelven JSON degradable para que frontend pueda conservar carrito/historial mientras se conecta identidad real.
+- El carrito anonimo se conserva usando la logica existente de `X-Anon-Id` / `X-Chat-Session-Id`; no se creo un carrito paralelo.
+- El bundle embebido expone `accessibility` con los mismos defaults inclusivos para portal/catalogo/carrito.
+- `GET /api/live-chat/schedule`, `/live-chat/schedule`, `/api/{tenant_slug}/live-chat/schedule` y `/{tenant_slug}/live-chat/schedule` devuelven `live_chat.schedule.v1` con `socket_enabled=false`, `socket_transport_hint=disabled` y `fallback_mode=http_chat` cuando realtime/socket no esta publicado.
+- `/api/ask/*` ya no debe emitir el selector legacy cuando llegan marcadores de contexto (`X-Demo-Session-Id`, `X-Chat-Session-Id`, `X-Tenant-Slug`, `tenant_slug`, `demo_session_id`, `chat_bootstrap.payload.rubro` o `chat_bootstrap.payload.rubro_clave`).
+
+Pedido frontend:
+
+- El script embebido debe consultar `GET /api/public/widget-commerce-session` apenas tenga `widget_token` o `tenant_slug`.
+- Si `frontend_contract.render_as=embedded_tenant_operating_widget`, renderizar chat primero, y catalogo/carrito/portal como acciones compactas.
+- Usar `portal.history_endpoint` para mostrar historial del visitante y mantener el carrito visible si `cart.items_count > 0`.
+- Si `live_chat.socket_enabled=false`, no abrir Socket.IO ni mostrar badge Live.
+- No volver al selector de rubro cuando ya exista `chat_bootstrap`, `tenant_slug`, `entityToken`, `X-Chat-Session-Id` o rubro efectivo.
+
+Verificacion backend:
+
+- `tests/test_public_tenant_catalog_alias.py::test_widget_commerce_session_returns_embedded_operating_contract`
+- `tests/test_public_tenant_catalog_alias.py::test_widget_user_tenant_history_returns_cart_claims_and_orders`
+- `tests/test_public_tenant_catalog_alias.py::test_widget_user_register_and_link_session_are_degradable_json`
+- `tests/test_tenant_leads_management.py::test_public_live_chat_schedule_aliases_never_404_for_demo_widget`

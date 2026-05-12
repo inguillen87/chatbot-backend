@@ -1,5 +1,5 @@
 from app import db
-from models import CatalogoItem, TenantProfile, User
+from models import CatalogoItem, MarketCart, MarketCartItem, MunicipioTicket, PymePedido, TenantProfile, User
 
 
 def _seed_pyme_tenant_with_catalog():
@@ -84,3 +84,114 @@ def test_public_catalog_options_allows_x_token_header(client):
     assert resp.status_code == 200
     allow_headers = resp.headers.get("Access-Control-Allow-Headers", "").lower()
     assert "x-token" in allow_headers
+
+
+def test_widget_commerce_session_returns_embedded_operating_contract(client):
+    tenant = _seed_pyme_tenant_with_catalog()
+
+    resp = client.get(
+        "/api/public/widget-commerce-session",
+        query_string={"tenant_slug": tenant.slug},
+        headers={
+            "Origin": "https://www.chatboc.ar",
+            "X-Chat-Session-Id": "chat_public_1",
+            "X-Anon-Id": "anon_public_1",
+        },
+    )
+
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body["contract_version"] == "public.widget_commerce_session.v1"
+    assert body["tenant"]["slug"] == tenant.slug
+    assert body["session"]["chat_session_id"] == "chat_public_1"
+    assert body["session"]["anon_id"] == "anon_public_1"
+    assert body["catalog"]["endpoint"] == f"/api/public/tenants/{tenant.slug}/catalog"
+    assert body["cart"]["allow_guest_cart"] is True
+    assert body["portal"]["history_endpoint"] == "/api/public/widget-user/tenant-history"
+    assert body["accessibility"]["enabled"] is True
+    assert body["accessibility"]["allow_dyslexia_mode"] is True
+    assert body["accessibility"]["allow_high_contrast"] is True
+    assert body["accessibility"]["allow_large_controls"] is True
+    assert body["accessibility"]["captions_enabled"] is True
+    assert body["accessibility"]["respect_prefers_reduced_motion"] is True
+    assert body["accessibility"]["touch_target_min_px"] == 44
+    assert body["frontend_contract"]["render_as"] == "embedded_tenant_operating_widget"
+    assert resp.headers.get("Access-Control-Allow-Origin") == "https://www.chatboc.ar"
+    assert resp.headers.get("X-Request-Id")
+
+
+def test_widget_user_tenant_history_returns_cart_claims_and_orders(client):
+    tenant = _seed_pyme_tenant_with_catalog()
+    owner = tenant.pyme
+
+    cart = MarketCart(tenant_id=tenant.id, session_id="chat_public_2", status="open")
+    db.session.add(cart)
+    db.session.flush()
+    item = CatalogoItem.query.filter_by(tenant_id=tenant.id).first()
+    db.session.add(
+        MarketCartItem(
+            cart_id=cart.id,
+            product_id=item.id,
+            quantity=2,
+            name_snapshot=item.nombre,
+            price_text=item.precio,
+        )
+    )
+    ticket = MunicipioTicket(
+        pregunta="Necesito seguimiento",
+        asunto="Reclamo demo",
+        categoria="servicio",
+        municipio_id=owner.id,
+        tenant_id=tenant.id,
+        anon_id="anon_public_2",
+        canal_ingreso="widget",
+    )
+    pedido = PymePedido(
+        pyme_id=owner.id,
+        asunto="Pedido web",
+        detalles="{}",
+        monto_total=100.0,
+        tenant_id=tenant.id,
+        nombre_cliente="Cliente Demo",
+    )
+    db.session.add_all([ticket, pedido])
+    db.session.commit()
+
+    resp = client.get(
+        "/api/public/widget-user/tenant-history",
+        query_string={"tenant_slug": tenant.slug},
+        headers={"X-Chat-Session-Id": "chat_public_2", "X-Anon-Id": "anon_public_2"},
+    )
+
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body["contract_version"] == "public.widget_user_tenant_history.v1"
+    assert body["tenant_slug"] == tenant.slug
+    assert body["profile"]["can_register"] is True
+    assert body["cart"]["items_count"] == 2
+    kinds = {item["kind"] for item in body["items"]}
+    assert "claim" in kinds
+    assert "order" in kinds
+
+
+def test_widget_user_register_and_link_session_are_degradable_json(client):
+    tenant = _seed_pyme_tenant_with_catalog()
+
+    register_resp = client.post(
+        "/api/public/widget-user/register",
+        query_string={"tenant_slug": tenant.slug},
+        json={"name": "Cliente Demo", "email": "cliente@test.com"},
+        headers={"X-Chat-Session-Id": "chat_public_3", "X-Anon-Id": "anon_public_3"},
+    )
+    assert register_resp.status_code == 200
+    assert register_resp.get_json()["contract_version"] == "public.widget_user_register.v1"
+
+    link_resp = client.post(
+        "/api/public/widget-user/link-session",
+        query_string={"tenant_slug": tenant.slug},
+        headers={"X-Chat-Session-Id": "chat_public_3", "X-Anon-Id": "anon_public_3"},
+    )
+    assert link_resp.status_code == 200
+    body = link_resp.get_json()
+    assert body["contract_version"] == "public.widget_user_link_session.v1"
+    assert body["linked"] is True

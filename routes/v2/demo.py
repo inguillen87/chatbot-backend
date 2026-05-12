@@ -34,6 +34,7 @@ from services.education_contracts import (
 from routes.v2.tenants import create_demo_session_token
 
 v2_demo_bp = Blueprint("v2_demo", __name__, url_prefix="/api/v2/demo")
+demo_compat_bp = Blueprint("demo_compat", __name__)
 
 
 def _request_id() -> str:
@@ -48,7 +49,31 @@ def _json_response(payload: dict[str, Any], status: int = 200):
     response = jsonify(body)
     response.status_code = status
     response.headers["X-Request-Id"] = request_id
+    return _with_public_cors(response)
+
+
+def _with_public_cors(response):
+    origin = request.headers.get("Origin") or "*"
+    response.headers["Access-Control-Allow-Origin"] = origin
+    response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = (
+        "Content-Type,Authorization,X-Tenant-Slug,X-Widget-Token,"
+        "X-Chat-Session-Id,X-Demo-Session-Id,X-Anon-Id,Anon-Id,"
+        "Idempotency-Key,X-Request-Id"
+    )
+    response.headers["Access-Control-Expose-Headers"] = "X-Request-Id"
+    if origin != "*":
+        response.headers["Access-Control-Allow-Credentials"] = "true"
     return response
+
+
+def _options_response():
+    return _json_response(
+        {
+            "ok": True,
+            "contract_version": "demo.session.compat.v1",
+        }
+    )
 
 
 def _error_response(message: str, status_code: int, reason_code: str, action_hint: str):
@@ -294,8 +319,11 @@ def _chat_bootstrap(
     }
 
 
-@v2_demo_bp.route("/catalog", methods=["GET"])
+@v2_demo_bp.route("/catalog", methods=["GET", "OPTIONS"])
 def demo_catalog_v2():
+    if request.method == "OPTIONS":
+        return _options_response()
+
     legacy_response = legacy_demo_catalog()
     legacy_payload = legacy_response.get_json(silent=True) if hasattr(legacy_response, "get_json") else {}
 
@@ -343,7 +371,7 @@ def demo_catalog_v2():
     pillars = demo_pillars()
     pillar_categories = {pillar.get("key"): pillar.get("categories") or [] for pillar in pillars}
 
-    return jsonify(
+    return _json_response(
         {
             "contract_version": "demo.catalog.v2",
             "pillar_contract_version": DEMO_PILLAR_CONTRACT_VERSION,
@@ -380,8 +408,14 @@ def demo_catalog_v2():
     )
 
 
-@v2_demo_bp.route("/session", methods=["POST"])
+@v2_demo_bp.route("/session", methods=["POST", "OPTIONS"])
+@demo_compat_bp.route("/v2/demo/session", methods=["POST", "OPTIONS"])
+@demo_compat_bp.route("/api/v1/demo/session", methods=["POST", "OPTIONS"])
+@demo_compat_bp.route("/v1/demo/session", methods=["POST", "OPTIONS"])
 def demo_session_v2():
+    if request.method == "OPTIONS":
+        return _options_response()
+
     data = request.get_json(silent=True) or {}
     sector = normalize_demo_sector(
         data.get("sector")

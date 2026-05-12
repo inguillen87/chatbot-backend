@@ -122,6 +122,45 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertTrue((chat_bootstrap.get("supports") or {}).get("audio"))
         self.assertTrue((chat_bootstrap.get("supports") or {}).get("image"))
 
+    def test_demo_session_canonical_and_legacy_aliases_delegate_to_v2_with_cors(self):
+        owner = User(name="Colegio Demo", email="colegio-compat@test.com", password_hash="hash", tipo_chat="pyme")
+        db.session.add(owner)
+        db.session.flush()
+        tenant = TenantProfile(
+            slug="colegio-demo",
+            nombre="Colegio Demo",
+            tipo="pyme",
+            pyme_id=owner.id,
+            vertical="educacion",
+        )
+        db.session.add(tenant)
+        db.session.commit()
+
+        for path in ("/api/v2/demo/session", "/v2/demo/session", "/api/v1/demo/session", "/v1/demo/session"):
+            options = self.client.open(
+                path,
+                method="OPTIONS",
+                headers={"Origin": "https://www.chatboc.ar"},
+            )
+            self.assertEqual(options.status_code, 200)
+            self.assertEqual(options.headers.get("Access-Control-Allow-Origin"), "https://www.chatboc.ar")
+            self.assertIn("X-Request-Id", options.headers.get("Access-Control-Expose-Headers", ""))
+
+            resp = self.client.post(
+                path,
+                json={"sector": "educacion", "tenant_slug": "colegio-demo", "rubro": "colegio-demo"},
+                headers={"Origin": "https://www.chatboc.ar"},
+            )
+            self.assertEqual(resp.status_code, 200)
+            payload = resp.get_json()
+            workspace = payload.get("workspace") or {}
+            self.assertEqual(payload.get("contract_version"), "demo.session.v2")
+            self.assertEqual(payload.get("tenant_slug"), "colegio-demo")
+            self.assertEqual(resp.headers.get("Access-Control-Allow-Origin"), "https://www.chatboc.ar")
+            self.assertIn("request_id", payload)
+            self.assertEqual((workspace.get("chat_bootstrap") or {}).get("endpoint"), "/ask/pyme")
+            self.assertEqual(((payload.get("chat_bootstrap") or {}).get("headers") or {}).get("X-Tenant-Slug"), tenant.slug)
+
     def test_v2_demo_session_accepts_sector_only_for_guided_pillar_start(self):
         owner = User(name="Colegio Demo", email="colegio-sector@test.com", password_hash="hash", tipo_chat="pyme")
         db.session.add(owner)

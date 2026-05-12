@@ -81,6 +81,14 @@ class PublicResolverWidgetConfigContractTestCase(unittest.TestCase):
         self.assertEqual(body["ui_hints"]["contract_version"], "widget.ui_hints.v1")
         self.assertEqual(body["ui_hints"]["density"], "compact")
         self.assertEqual(body["ui_hints"]["max_visible_quick_replies"], 3)
+        accessibility = body["ui_hints"]["accessibility"]
+        self.assertTrue(accessibility["enabled"])
+        self.assertTrue(accessibility["allow_dyslexia_mode"])
+        self.assertTrue(accessibility["allow_high_contrast"])
+        self.assertTrue(accessibility["allow_large_controls"])
+        self.assertTrue(accessibility["captions_enabled"])
+        self.assertTrue(accessibility["respect_prefers_reduced_motion"])
+        self.assertEqual(accessibility["touch_target_min_px"], 44)
         self.assertFalse(body["realtime"]["socket_enabled"])
         self.assertFalse(body["visibility_rules"]["allow_websocket"])
         self.assertFalse(body["support_channels"]["live_chat"]["realtime"])
@@ -110,6 +118,48 @@ class PublicResolverWidgetConfigContractTestCase(unittest.TestCase):
         self.assertEqual(body["contract_version"], "public.landing_experience.v1")
         self.assertEqual(body["experience_kind"], "platform")
         self.assertEqual(body["hero"]["h1"], "Chatboc")
+
+    def test_landing_experience_visible_copy_is_commercial(self):
+        response = self.client.get("/api/public/landing-experience")
+
+        self.assertEqual(response.status_code, 200)
+        body = response.get_json()
+        visible_keys = {
+            "tagline",
+            "eyebrow",
+            "h1",
+            "subtitle",
+            "trust_line",
+            "label",
+            "title",
+            "body",
+            "detail",
+            "purpose",
+            "q",
+            "a",
+            "alt",
+            "text",
+        }
+        banned = ("backend", "contrato", "backend-first", "endpoint", "fallback", "404", "deploy")
+
+        def collect_visible(value, key=""):
+            if isinstance(value, dict):
+                texts = []
+                for child_key, child_value in value.items():
+                    texts.extend(collect_visible(child_value, str(child_key)))
+                return texts
+            if isinstance(value, list):
+                texts = []
+                for item in value:
+                    texts.extend(collect_visible(item, key))
+                return texts
+            if isinstance(value, str) and key in visible_keys:
+                return [value.lower()]
+            return []
+
+        visible_copy = "\n".join(collect_visible(body))
+        for word in banned:
+            self.assertNotIn(word, visible_copy)
 
     def test_realtime_voice_capabilities_returns_platform_contract(self):
         response = self.client.get("/api/public/realtime/voice-capabilities")

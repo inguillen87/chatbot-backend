@@ -148,7 +148,7 @@ def _hero_for_kind(kind: str) -> dict[str, Any]:
         "primary_cta": {"label": "Probar demo", "href": "/demo", "intent": "start_demo"},
         "secondary_cta": {"label": "Ver casos de uso", "href": "/casos", "intent": "view_use_cases"},
         "tertiary_cta": {"label": "Hablar con ventas", "href": "/contacto", "intent": "sales_contact"},
-        "trust_line": "Sin app paralela: widget, WhatsApp, tickets, encuestas, mapas y analytics trabajando sobre los mismos contratos.",
+        "trust_line": "Widget, WhatsApp, tickets, encuestas, mapas y analiticas trabajando como una sola operacion.",
         "media": {
             "type": "product_ui_composite",
             "rule": "Use real product screenshots, dashboard previews or generated bitmap product mockups; avoid abstract gradient-only hero.",
@@ -173,7 +173,7 @@ def _sections_for_kind(kind: str) -> list[dict[str, Any]]:
             "id": "choose_and_chat",
             "label": "Elegir rubro y empezar",
             "title": "La demo tiene que sentirse viva desde el primer click.",
-            "body": "El usuario elige municipio, pyme o colegio y entra a un chat con acciones reales, quick replies del backend y media lista para probar.",
+            "body": "El usuario elige municipio, pyme o colegio y entra a un chat con acciones listas, respuestas rapidas y multimedia para probar.",
             "visual": "demo_selector_plus_chat",
             "cta": {"label": "Abrir selector", "href": "/demo"},
         },
@@ -197,7 +197,7 @@ def _sections_for_kind(kind: str) -> list[dict[str, Any]]:
             "id": "verticals",
             "label": "Verticales",
             "title": "Pymes, gobiernos y colegios, con el mismo motor.",
-            "body": "La interfaz cambia por contrato y contexto; la logica no se duplica. Eso hace que el producto crezca sin desorden.",
+            "body": "La experiencia se adapta a cada organizacion sin duplicar pantallas ni desordenar la operacion.",
             "visual": "vertical_cards",
             "cards": [
                 {"id": "pymes", "title": "Pymes", "href": "/pymes", "icon": "store"},
@@ -214,7 +214,7 @@ def _adjacent_pages() -> list[dict[str, Any]]:
             "id": "demo",
             "path": "/demo",
             "title": "Demo interactiva",
-            "purpose": "Elegir sector/rubro y entrar al chat real con bootstrap backend.",
+            "purpose": "Elegir sector o rubro y entrar a una experiencia guiada de chat.",
             "primary_components": ["sector_selector", "rubro_grid", "chat_preview", "lead_capture"],
             "source_endpoints": ["/api/v2/demo/catalog", "/api/v2/demo/session"],
         },
@@ -268,12 +268,12 @@ def _proof_and_pricing() -> dict[str, Any]:
         ],
         "pricing_teaser": {
             "title": "Planes simples, implementacion acompaniada.",
-            "body": "La landing no debe inventar precios si no vienen del backend. Usar CTA a propuesta o demo.",
+            "body": "Cuando el precio depende del caso, guiamos a una propuesta o una demo personalizada.",
             "cta": {"label": "Solicitar propuesta", "href": "/contacto"},
         },
         "faq": [
-            {"q": "Se puede probar sin configurar todo?", "a": "Si. La demo usa contratos publicos y rubros de prueba."},
-            {"q": "Funciona con WhatsApp?", "a": "Si. El backend soporta texto, audio, imagenes, archivos y ubicacion."},
+            {"q": "Se puede probar sin configurar todo?", "a": "Si. La demo usa rubros de prueba y una experiencia lista para conversar."},
+            {"q": "Funciona con WhatsApp?", "a": "Si. La plataforma soporta texto, audio, imagenes, archivos y ubicacion."},
             {"q": "Sirve para colegios y municipios?", "a": "Si. Son verticales sobre la misma plataforma."},
         ],
     }
@@ -315,7 +315,7 @@ def build_landing_experience_contract(tenant: Any = None, *, page: str | None = 
             "primary_intents": ["start_demo", "sales_contact", "lead_capture"],
         },
         "content_rules": [
-            "Use this contract as copy source; do not hardcode municipality, pyme or school copy inside React components.",
+            "Use this payload as copy source; keep municipality, pyme and school text configurable.",
             "Make the first viewport signal Chatboc or the tenant brand clearly.",
             "Use real product UI, dashboard previews or generated bitmap product mockups for hero media.",
             "Avoid one-color palettes; combine primary, accent and warm tokens with neutral surfaces.",

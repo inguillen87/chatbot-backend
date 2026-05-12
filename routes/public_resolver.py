@@ -397,6 +397,17 @@ def _widget_ui_hints(*, mode: str = "tenant") -> dict:
             "desktop_height_px": 680,
             "avoid_nested_cards": True,
         },
+        "accessibility": {
+            "enabled": True,
+            "default_simplified_text": False,
+            "allow_dyslexia_mode": True,
+            "allow_high_contrast": True,
+            "allow_large_controls": True,
+            "captions_enabled": True,
+            "respect_prefers_reduced_motion": True,
+            "single_visible_header_entry": True,
+            "touch_target_min_px": 44,
+        },
         "rules": {
             "do_not_render_unknown_backend_actions": True,
             "hide_socket_errors_when_realtime_disabled": True,

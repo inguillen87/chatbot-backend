@@ -370,6 +370,7 @@ Mejora aditiva para el widget global de landing y la primera experiencia:
 - Selector global muestra tres pilares: `Colegios`, `Gobiernos`, `Empresas`, con `tenant_slug`, `sector` y `rubro` para iniciar `POST /api/v2/demo/session`.
 - Widget tenant agrega `onboarding.mode=tenant_quick_menu` y mantiene `quick_menu` backend-driven.
 - Se agrega `widget.ui_hints.v1` para UI compacta: maximo 3 quick replies visibles, acciones de composer como iconos, header liviano, botones extra colapsados.
+- `widget.ui_hints.v1` incluye `accessibility` para dislexia, texto simple, alto contraste, controles grandes, captions, reduced motion y target tactil minimo.
 - Se exponen top-level `onboarding`, `media_capabilities`, `conversion_ctas`, `animation_tokens` y `ui_hints` para que frontend no tenga que buscar dentro de objetos anidados.
 - `suppress_global_widget` ahora es `false` fuera de integracion y `true` solo para preview/integracion.
 - Handoff frontend: `docs/BACKEND_TO_FRONTEND_SYNC_WIDGET_UXUI_ONBOARDING_2026-05-11.md`.
@@ -416,11 +417,47 @@ Alineacion con el QA frontend del widget en landing:
 - `ui_hints` mantiene `widget.ui_hints.v1`, `max_visible_quick_replies=3` y composer compacto.
 - `realtime.socket_enabled=false`, `visibility_rules.allow_websocket=false` y `support_channels.live_chat.socket_enabled=false` para que landing no conecte `/socket.io` ni muestre badge Live si no esta habilitado.
 - `POST /api/v2/demo/session` acepta los payloads del selector para `educacion`, `gobierno` y `empresas`; devuelve `workspace.chat_bootstrap` con endpoint canonico, headers `X-Demo-Session-Id`, `X-Chat-Session-Id`, `X-Tenant-Slug`, media capabilities, conversion CTAs y animation tokens.
+- Runtime fix 2026-05-12: el default `DEMO_WELCOME_MESSAGE` ya no reabre el selector legacy de rubros; los aliases publicos `GET /api/<slug>/live-chat/schedule`, `GET /<slug>/live-chat/schedule`, `/api/demo/live-chat/schedule` y `/demo/live-chat/schedule` devuelven JSON 200/CORS con `live_chat.schedule.v1` aun si el tenant demo todavia no existe.
 
 Verificacion ejecutada:
 
+- `tests/test_config_demo_mode_flag.py`
+- `tests/test_tenant_leads_management.py::test_public_live_chat_schedule_aliases_never_404_for_demo_widget`
 - `tests/test_public_resolver_widget_config_contract.py`
 - `tests/test_api_v2_foundation.py`
+
+## Demo landing/widget runtime compat 2026-05-12
+
+Mejora aditiva para que bundles cacheados del frontend no rompan el flujo publico de demos:
+
+- `POST /api/v2/demo/session` queda como ruta canonica de `demo.session.v2`.
+- `POST /v2/demo/session`, `POST /api/v1/demo/session` y `POST /v1/demo/session` quedan como aliases degradables del mismo contrato.
+- Los cuatro paths aceptan `OPTIONS`, devuelven JSON y exponen `X-Request-Id`.
+- CORS publico acepta los headers usados por widget/demo (`X-Tenant-Slug`, `X-Widget-Token`, `X-Chat-Session-Id`, `X-Demo-Session-Id`, `X-Anon-Id`, `Anon-Id`, `Idempotency-Key`).
+- `landing.public_experience.v1` se ajusto para que el copy visible sea comercial y no muestre lenguaje tecnico interno.
+
+Verificacion ejecutada:
+
+- `tests/test_api_v2_foundation.py::ApiV2FoundationTest::test_demo_session_canonical_and_legacy_aliases_delegate_to_v2_with_cors`
+- `tests/test_public_resolver_widget_config_contract.py::PublicResolverWidgetConfigContractTest::test_landing_experience_visible_copy_is_commercial`
+
+## Embedded widget commerce + user portal 2026-05-12
+
+Mejora aditiva para que el script embebido de cada tenant sea una experiencia SaaS completa y white-label:
+
+- `GET /api/public/widget-commerce-session` devuelve `public.widget_commerce_session.v1` con tenant, session, catalogo, carrito, checkout, portal, historial, accesibilidad y contrato frontend.
+- `GET /api/public/widget-user/tenant-history` devuelve `public.widget_user_tenant_history.v1` filtrado por tenant y, cuando existe, por `anon_id`/`chat_session_id`.
+- `POST /api/public/widget-user/register` y `POST /api/public/widget-user/link-session` devuelven contratos JSON degradables para asociar sesion anonima, carrito e historial sin perder contexto.
+- El bundle reutiliza los endpoints existentes de catalogo, PWA cart, checkout, tracking y auth/widget; no crea un carrito paralelo.
+- `GET /api/live-chat/schedule`, `/live-chat/schedule`, `/api/{tenant_slug}/live-chat/schedule` y `/{tenant_slug}/live-chat/schedule` degradan a `socket_enabled=false`, `socket_transport_hint=disabled` y `fallback_mode=http_chat`.
+- `/api/ask/*` evita emitir el selector legacy cuando llegan marcadores de tenant/demo/chat bootstrap.
+
+Verificacion ejecutada:
+
+- `tests/test_public_tenant_catalog_alias.py`
+- `tests/test_tenant_leads_management.py::test_public_live_chat_schedule_aliases_never_404_for_demo_widget`
+- `tests/test_tenant_leads_management.py::test_public_api_live_chat_schedule_alias_includes_socket_hints`
+- `tests/test_tenant_leads_management.py::test_tenant_live_chat_schedule_config_and_public_status`
 
 ## Production QA + Inbox 360 2026-05-12
 

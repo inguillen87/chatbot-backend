@@ -220,9 +220,10 @@ def test_tenant_live_chat_schedule_config_and_public_status(client, app):
     public_body = public_resp.get_json()
     assert public_body["tenant_slug"] == tenant.slug
     assert public_body["source"] == "tenant_config"
-    assert public_body.get("socket_transport_hint") == "polling"
-    assert public_body.get("socket_transports") == ["polling"]
-    assert public_body.get("socket_fallback_enabled") is True
+    assert public_body.get("socket_transport_hint") == "disabled"
+    assert public_body.get("socket_transports") == []
+    assert public_body.get("socket_fallback_enabled") is False
+    assert public_body.get("fallback_mode") == "http_chat"
 
 
 
@@ -246,9 +247,33 @@ def test_public_api_live_chat_schedule_alias_includes_socket_hints(client, app):
     assert resp.status_code == 200
     body = resp.get_json()
     assert body.get("tenant_slug") == tenant.slug
-    assert body.get("socket_transport_hint") == "polling"
-    assert body.get("socket_transports") == ["polling"]
-    assert body.get("socket_fallback_enabled") is True
+    assert body.get("socket_transport_hint") == "disabled"
+    assert body.get("socket_transports") == []
+    assert body.get("socket_fallback_enabled") is False
+    assert body.get("fallback_mode") == "http_chat"
+
+
+def test_public_live_chat_schedule_aliases_never_404_for_demo_widget(client, app):
+    for path in (
+        "/api/colegio-demo/live-chat/schedule",
+        "/colegio-demo/live-chat/schedule",
+        "/api/demo/live-chat/schedule",
+        "/demo/live-chat/schedule",
+    ):
+        resp = client.get(path, query_string={"tenant_slug": "colegio-demo", "tenant": "colegio-demo"})
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body.get("contract_version") == "live_chat.schedule.v1"
+        assert body.get("tenant_slug") == "colegio-demo"
+        assert body.get("socket_transport_hint") == "disabled"
+        assert body.get("socket_transports") == []
+        assert body.get("socket_enabled") is False
+        assert body.get("realtime") is False
+        assert body.get("fallback_mode") == "http_chat"
+
+        options_resp = client.open(path, method="OPTIONS")
+        assert options_resp.status_code == 200
+        assert options_resp.headers.get("Access-Control-Allow-Origin")
 
 def test_tenant_unread_ticket_summary(client, app):
     owner = User(email="owner-unread@test.com", name="Owner Unread", rol="admin", tipo_chat="pyme")

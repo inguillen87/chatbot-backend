@@ -1,7 +1,23 @@
+from datetime import datetime, timezone
+import uuid
+
 from flask import Blueprint, request, jsonify, g, current_app
 from sqlalchemy import func, or_
 
-from models import CatalogoItem, TenantProfile, TenantConfig, User, WidgetSettings, db
+from models import (
+    CatalogoItem,
+    Conversacion,
+    MarketCart,
+    MunicipioTicket,
+    PymePedido,
+    PymeTicket,
+    TenantProfile,
+    TenantConfig,
+    TenantTicket,
+    User,
+    WidgetSettings,
+    db,
+)
 from routes.auth import token_requerido
 from routes.catalogo import _formatear_producto
 from routes.carrito import _product_query_for_tenant
@@ -17,11 +33,40 @@ def _add_cors_headers(response):
         'Access-Control-Allow-Headers',
         'Content-Type,Authorization,X-Tenant,X-Requested-With,X-Anon-Id,'
         'X-Chat-Session-Id,X-Entity-Token,X-Widget-Token,X-Owner-Token,'
-        'X-Widget-Key,X-Token,x-token',
+        'X-Widget-Key,X-Token,x-token,X-Demo-Session-Id,Anon-Id,Idempotency-Key',
     )
     response.headers.add('Access-Control-Allow-Methods', 'GET,POST,OPTIONS,PUT,DELETE,PATCH')
+    response.headers.add('Access-Control-Expose-Headers', 'X-Request-Id')
     response.headers.add('Access-Control-Allow-Credentials', 'true')
     return response
+
+
+def _request_id() -> str:
+    incoming = (request.headers.get("X-Request-Id") or "").strip()
+    return incoming or uuid.uuid4().hex
+
+
+def _public_json(payload: dict, status: int = 200):
+    request_id = _request_id()
+    body = dict(payload)
+    body.setdefault("request_id", request_id)
+    response = jsonify(body)
+    response.status_code = status
+    response.headers["X-Request-Id"] = request_id
+    return _add_cors_headers(response)
+
+
+def _iso_datetime(value):
+    if not value:
+        return None
+    if isinstance(value, str):
+        return value
+    try:
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.isoformat()
+    except Exception:
+        return None
 
 def _get_tenant_from_request(slug: str):
     """Resolve tenant with compatibility fallbacks used by public widget/catalog routes."""
@@ -72,12 +117,17 @@ def _get_tenant_from_request(slug: str):
     }
     resolved_tipo = alias_tipo_map.get(alias_slug)
     if resolved_tipo:
-        return (
+        tenants = (
             TenantProfile.query.filter_by(tipo=resolved_tipo)
             .filter(TenantProfile.is_active.is_(True))
             .order_by(TenantProfile.created_at.asc(), TenantProfile.id.asc())
-            .first()
+            .all()
         )
+        for candidate in tenants:
+            owner_id = candidate.pyme_id or candidate.municipio_id
+            if owner_id and CatalogoItem.query.filter_by(tenant_id=candidate.id, user_id=owner_id).first():
+                return candidate
+        return tenants[0] if tenants else None
 
     return None
 
@@ -98,6 +148,229 @@ def _resolve_catalog_owner(tenant: TenantProfile):
 
     return None
 
+
+def _resolve_public_widget_tenant() -> TenantProfile | None:
+    """Resolve the tenant for embedded widget/commerce endpoints."""
+
+    widget_token = (
+        request.args.get("widget_token")
+        or request.args.get("entityToken")
+        or request.headers.get("X-Widget-Token")
+        or request.headers.get("X-Entity-Token")
+    )
+    tenant_slug = (
+        request.args.get("tenant_slug")
+        or request.args.get("tenant")
+        or request.args.get("slug")
+        or request.headers.get("X-Tenant-Slug")
+        or request.headers.get("X-Tenant")
+    )
+    if tenant_slug:
+        tenant = _get_tenant_from_request(str(tenant_slug))
+        if tenant:
+            return tenant
+
+    if widget_token:
+        try:
+            from services.tenant_resolver import resolve_tenant_only
+
+            return resolve_tenant_only(
+                widget_token=widget_token,
+                tenant_slug=tenant_slug,
+                host=request.headers.get("X-Forwarded-Host") or request.host,
+                require_explicit_slug=False,
+            )
+        except Exception:
+            current_app.logger.info("[public_widget] widget token did not resolve tenant", exc_info=True)
+
+    return None
+
+
+def _tenant_public_summary(tenant: TenantProfile) -> dict:
+    return {
+        "slug": tenant.slug,
+        "tipo": tenant.tipo,
+        "vertical": tenant.vertical or ("gobierno" if tenant.tipo == "municipio" else "empresas"),
+        "subvertical": tenant.subvertical,
+        "display_name": tenant.nombre,
+        "nombre": tenant.nombre,
+        "logo_url": tenant.logo_url,
+    }
+
+
+def _session_context_payload() -> dict:
+    chat_session_id = (
+        request.headers.get("X-Chat-Session-Id")
+        or request.headers.get("X-Demo-Session-Id")
+        or request.args.get("chat_session_id")
+        or request.args.get("demo_session_id")
+        or request.args.get("session")
+        or f"chat_{uuid.uuid4().hex[:16]}"
+    )
+    anon_id = (
+        request.headers.get("X-Anon-Id")
+        or request.headers.get("Anon-Id")
+        or request.args.get("anon_id")
+        or request.cookies.get("chatboc_anon_id")
+        or request.cookies.get("anon_id")
+        or f"anon_{uuid.uuid4().hex[:16]}"
+    )
+    return {
+        "chat_session_id": str(chat_session_id),
+        "anon_id": str(anon_id),
+        "is_authenticated": bool(getattr(g, "user", None)),
+        "can_checkout_as_guest": True,
+        "can_link_account": True,
+    }
+
+
+def _cart_counts_for_tenant(tenant: TenantProfile, session_payload: dict) -> dict:
+    session_ids = {
+        str(session_payload.get("chat_session_id") or ""),
+        str(session_payload.get("anon_id") or ""),
+    }
+    session_ids = {value for value in session_ids if value}
+    cart = None
+    if session_ids:
+        cart = (
+            MarketCart.legacy_safe_query()
+            .filter(MarketCart.tenant_id == tenant.id, MarketCart.status == "open")
+            .filter(MarketCart.session_id.in_(session_ids))
+            .order_by(MarketCart.updated_at.desc())
+            .first()
+        )
+    items_count = 0
+    if cart:
+        try:
+            items_count = sum(int(item.quantity or 0) for item in cart.items.all())
+        except Exception:
+            items_count = 0
+    return {
+        "items_count": items_count,
+        "summary_endpoint": "/api/pwa/public/cart",
+        "items_endpoint": "/api/pwa/public/cart",
+    }
+
+
+def _public_history_item(
+    *,
+    item_id: str,
+    kind: str,
+    channel: str,
+    title: str,
+    status: str | None,
+    created_at,
+    detail_endpoint: str | None = None,
+    extra: dict | None = None,
+) -> dict:
+    payload = {
+        "id": item_id,
+        "kind": kind,
+        "channel": channel,
+        "title": title,
+        "status": status or "recibido",
+        "created_at": _iso_datetime(created_at),
+    }
+    if detail_endpoint:
+        payload["detail_endpoint"] = detail_endpoint
+    if extra:
+        payload.update(extra)
+    return payload
+
+
+def _widget_history_items(tenant: TenantProfile, session_payload: dict, limit: int = 30) -> list[dict]:
+    items: list[dict] = []
+    chat_session_id = str(session_payload.get("chat_session_id") or "")
+    anon_id = str(session_payload.get("anon_id") or "")
+
+    tenant_tickets = (
+        TenantTicket.query.filter_by(tenant_id=tenant.id)
+        .order_by(TenantTicket.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    for ticket in tenant_tickets:
+        if anon_id and ticket.fingerprint and anon_id not in str(ticket.fingerprint):
+            continue
+        items.append(
+            _public_history_item(
+                item_id=f"tenant_ticket_{ticket.id}",
+                kind="claim",
+                channel=ticket.origen or "widget",
+                title=ticket.categoria or ticket.descripcion[:80] or "Caso",
+                status=ticket.estado,
+                created_at=ticket.created_at,
+                detail_endpoint=f"/api/public/tracking/experience?kind=claim&code=TT-{ticket.id}",
+            )
+        )
+
+    for model, kind, channel, code_prefix in (
+        (MunicipioTicket, "claim", "widget", "M"),
+        (PymeTicket, "claim", "widget", "P"),
+    ):
+        query = model.query.filter(model.tenant_id == tenant.id)
+        if anon_id:
+            query = query.filter(or_(model.anon_id == anon_id, model.anon_id.is_(None)))
+        for ticket in query.order_by(model.fecha.desc()).limit(limit).all():
+            code = getattr(ticket, "nro_ticket", None) or ticket.id
+            pin = getattr(ticket, "consulta_pin", None)
+            detail = f"/api/public/tracking/experience?kind=claim&code={code_prefix}-{code}"
+            if pin:
+                detail = f"{detail}&pin={pin}"
+            items.append(
+                _public_history_item(
+                    item_id=f"{model.__tablename__}_{ticket.id}",
+                    kind=kind,
+                    channel=getattr(ticket, "canal_ingreso", None) or channel,
+                    title=getattr(ticket, "asunto", None) or getattr(ticket, "categoria", None) or "Caso",
+                    status=getattr(ticket, "estado", None),
+                    created_at=getattr(ticket, "fecha", None),
+                    detail_endpoint=detail,
+                )
+            )
+
+    pedidos = (
+        PymePedido.query.filter_by(tenant_id=tenant.id)
+        .order_by(PymePedido.fecha.desc())
+        .limit(limit)
+        .all()
+    )
+    for pedido in pedidos:
+        items.append(
+            _public_history_item(
+                item_id=f"order_{pedido.id}",
+                kind="order",
+                channel="widget",
+                title=pedido.asunto or f"Pedido {pedido.nro_pedido}",
+                status=pedido.estado,
+                created_at=pedido.fecha,
+                detail_endpoint=f"/api/public/tracking/experience?kind=order&code={pedido.nro_pedido}",
+                extra={"amount": pedido.monto_total},
+            )
+        )
+
+    if chat_session_id:
+        messages = (
+            Conversacion.query.filter_by(session_id=chat_session_id)
+            .order_by(Conversacion.timestamp.desc())
+            .limit(10)
+            .all()
+        )
+        for message in messages:
+            title = getattr(message, "pregunta", None) or "Mensaje"
+            items.append(
+                _public_history_item(
+                    item_id=f"message_{message.id}",
+                    kind="message",
+                    channel="widget",
+                    title=str(title)[:90],
+                    status="registrado",
+                    created_at=message.timestamp,
+                )
+            )
+
+    items.sort(key=lambda item: item.get("created_at") or "", reverse=True)
+    return items[:limit]
 
 
 @public_tenant_bp.route('/api/public/tenants/<slug>/menu', methods=['GET', 'OPTIONS'])
@@ -255,6 +528,175 @@ def get_catalog(slug):
     response = jsonify(productos)
     return _add_cors_headers(response)
 
+
+@public_tenant_bp.route('/api/public/widget-commerce-session', methods=['GET', 'OPTIONS'])
+def public_widget_commerce_session():
+    if request.method == 'OPTIONS':
+        return _public_json({"ok": True, "contract_version": "public.widget_commerce_session.v1"})
+
+    tenant = _resolve_public_widget_tenant()
+    if not tenant:
+        return _public_json(
+            {
+                "contract_version": "public.widget_commerce_session.v1",
+                "status_code": 404,
+                "reason_code": "tenant_resolution_failed",
+                "retryable": False,
+                "action_hint": "send widget_token, tenant_slug or X-Tenant-Slug",
+                "error": {"code": 404, "message": "Tenant no encontrado"},
+            },
+            404,
+        )
+
+    session_payload = _session_context_payload()
+    catalog_enabled = bool((tenant.tipo or "").lower() == "pyme" or tenant.pyme_id)
+    cart_enabled = catalog_enabled
+    checkout_base = f"/api/v2/tenants/{tenant.slug}/payments"
+
+    payload = {
+        "contract_version": "public.widget_commerce_session.v1",
+        "tenant": _tenant_public_summary(tenant),
+        "session": session_payload,
+        "catalog": {
+            "enabled": catalog_enabled,
+            "endpoint": f"/api/public/tenants/{tenant.slug}/catalog",
+            "pwa_endpoint": f"/api/pwa/public/catalog?tenant={tenant.slug}",
+            "quality_endpoint": f"/api/v2/tenants/{tenant.slug}/catalog/quality",
+        },
+        "cart": {
+            "enabled": cart_enabled,
+            "summary_endpoint": "/api/pwa/public/cart",
+            "items_endpoint": "/api/pwa/public/cart",
+            "add_endpoint": "/api/pwa/public/cart/add",
+            "update_endpoint": "/api/pwa/public/cart/update",
+            "remove_endpoint": "/api/pwa/public/cart/remove",
+            "checkout_preview_endpoint": f"{checkout_base}/checkout-preview",
+            "checkout_session_endpoint": f"{checkout_base}/checkout-session",
+            "allow_guest_cart": True,
+            "requires_contact_before_checkout": True,
+            **_cart_counts_for_tenant(tenant, session_payload),
+        },
+        "portal": {
+            "enabled": True,
+            "login_endpoint": "/auth/widget/bootstrap",
+            "register_endpoint": "/api/public/widget-user/register",
+            "link_session_endpoint": "/api/public/widget-user/link-session",
+            "history_endpoint": "/api/public/widget-user/tenant-history",
+        },
+        "history": {
+            "channels": ["widget", "whatsapp", "voice", "orders", "claims", "surveys"],
+            "endpoint": "/api/public/widget-user/tenant-history",
+        },
+        "accessibility": {
+            "enabled": True,
+            "default_simplified_text": False,
+            "allow_dyslexia_mode": True,
+            "allow_high_contrast": True,
+            "allow_large_controls": True,
+            "captions_enabled": True,
+            "respect_prefers_reduced_motion": True,
+            "single_visible_header_entry": True,
+            "touch_target_min_px": 44,
+            "features": ["dyslexia", "plain_language", "high_contrast", "large_controls", "reading_ruler"],
+        },
+        "live_chat": {
+            "schedule_endpoint": f"/api/{tenant.slug}/live-chat/schedule",
+            "enabled": False,
+            "socket_enabled": False,
+            "fallback_mode": "http_chat",
+        },
+        "frontend_contract": {
+            "render_as": "embedded_tenant_operating_widget",
+            "primary_actions": ["chat", "catalog", "cart", "portal"],
+            "empty_state_behavior": "chat_first_catalog_when_enabled",
+        },
+    }
+    return _public_json(payload)
+
+
+@public_tenant_bp.route('/api/public/widget-user/tenant-history', methods=['GET', 'OPTIONS'])
+def public_widget_user_tenant_history():
+    if request.method == 'OPTIONS':
+        return _public_json({"ok": True, "contract_version": "public.widget_user_tenant_history.v1"})
+
+    tenant = _resolve_public_widget_tenant()
+    if not tenant:
+        return _public_json(
+            {
+                "contract_version": "public.widget_user_tenant_history.v1",
+                "status_code": 404,
+                "reason_code": "tenant_resolution_failed",
+                "retryable": False,
+                "action_hint": "send widget_token, tenant_slug or X-Tenant-Slug",
+                "error": {"code": 404, "message": "Tenant no encontrado"},
+            },
+            404,
+        )
+
+    session_payload = _session_context_payload()
+    payload = {
+        "contract_version": "public.widget_user_tenant_history.v1",
+        "tenant_slug": tenant.slug,
+        "profile": {
+            "is_authenticated": session_payload["is_authenticated"],
+            "contact": None,
+            "can_register": True,
+            "can_link_whatsapp": True,
+            "anon_id": session_payload["anon_id"],
+            "chat_session_id": session_payload["chat_session_id"],
+        },
+        "items": _widget_history_items(tenant, session_payload),
+        "cart": _cart_counts_for_tenant(tenant, session_payload),
+    }
+    return _public_json(payload)
+
+
+@public_tenant_bp.route('/api/public/widget-user/register', methods=['POST', 'OPTIONS'])
+def public_widget_user_register():
+    if request.method == 'OPTIONS':
+        return _public_json({"ok": True, "contract_version": "public.widget_user_register.v1"})
+
+    tenant = _resolve_public_widget_tenant()
+    payload = request.get_json(silent=True) or {}
+    session_payload = _session_context_payload()
+    return _public_json(
+        {
+            "ok": True,
+            "contract_version": "public.widget_user_register.v1",
+            "tenant_slug": getattr(tenant, "slug", None),
+            "status": "pending_verification",
+            "profile": {
+                "contact": {
+                    "name": payload.get("name") or payload.get("nombre"),
+                    "email": payload.get("email"),
+                    "phone": payload.get("phone") or payload.get("telefono"),
+                },
+                "anon_id": session_payload["anon_id"],
+                "chat_session_id": session_payload["chat_session_id"],
+            },
+            "next_action": "verify_contact_or_continue_as_guest",
+        }
+    )
+
+
+@public_tenant_bp.route('/api/public/widget-user/link-session', methods=['POST', 'OPTIONS'])
+def public_widget_user_link_session():
+    if request.method == 'OPTIONS':
+        return _public_json({"ok": True, "contract_version": "public.widget_user_link_session.v1"})
+
+    tenant = _resolve_public_widget_tenant()
+    session_payload = _session_context_payload()
+    return _public_json(
+        {
+            "ok": True,
+            "contract_version": "public.widget_user_link_session.v1",
+            "tenant_slug": getattr(tenant, "slug", None),
+            "linked": True,
+            "session": session_payload,
+            "preserved": ["cart", "history", "chat"],
+        }
+    )
+
 # --- Fix for missing /api/tenant/config endpoint ---
 
 @public_tenant_bp.route('/api/tenant/config', methods=['GET', 'PUT', 'OPTIONS'])
@@ -353,6 +795,7 @@ def tenant_config_api(current_user):
 # --- Fix for missing /api/<slug>/live-chat/schedule ---
 
 @public_tenant_bp.route('/api/<slug>/live-chat/schedule', methods=['GET', 'OPTIONS'])
+@public_tenant_bp.route('/<slug>/live-chat/schedule', methods=['GET', 'OPTIONS'])
 def public_live_chat_schedule(slug):
     if request.method == 'OPTIONS':
         return _add_cors_headers(jsonify({"ok": True}))
@@ -361,24 +804,49 @@ def public_live_chat_schedule(slug):
     # We might want to pass the tenant slug to build_live_chat_status if it supports tenant-specific schedules
     # For now, assuming global or default logic, but checking tenant existence first
 
+    requested_slug = (
+        request.args.get("tenant_slug")
+        or request.args.get("tenant")
+        or slug
+        or "demo"
+    )
     tenant = _get_tenant_from_request(slug)
-    if not tenant:
-         return jsonify({"error": "Tenant not found"}), 404
 
     # If build_live_chat_status accepts a tenant, pass it.
     # Checking source code of services/live_chat_schedule.py would be ideal, but for the fix:
     try:
         # Assuming it returns a dict
         schedule_cfg = None
-        if isinstance(tenant.configuracion, dict):
+        if tenant and isinstance(tenant.configuracion, dict):
             schedule_cfg = tenant.configuracion.get("live_chat_schedule")
         status = build_live_chat_status(schedule_override=schedule_cfg if isinstance(schedule_cfg, dict) else None)
-        status["tenant_slug"] = tenant.slug
+        status["tenant_slug"] = tenant.slug if tenant else str(requested_slug).strip().lower()
         status["source"] = "tenant_config" if isinstance(schedule_cfg, dict) else "global_config"
-        status.setdefault("socket_transport_hint", "polling")
-        status.setdefault("socket_transports", ["polling"])
-        status.setdefault("socket_fallback_enabled", True)
+        status["contract_version"] = "live_chat.schedule.v1"
+        status["fallback_reason"] = None if tenant else "tenant_not_found_schedule_fallback"
+        status.setdefault("enabled", False)
+        status.setdefault("available", False)
+        status["socket_transport_hint"] = "disabled"
+        status["socket_transports"] = []
+        status["socket_fallback_enabled"] = False
+        status["socket_enabled"] = False
+        status["realtime"] = False
+        status["fallback_mode"] = "http_chat"
         return _add_cors_headers(jsonify(status))
     except Exception as e:
         current_app.logger.error(f"Error getting schedule: {e}")
-        return jsonify({"error": "Internal Error"}), 500
+        response = jsonify({
+            "contract_version": "live_chat.schedule.v1",
+            "enabled": False,
+            "available": False,
+            "tenant_slug": str(requested_slug).strip().lower(),
+            "source": "error_fallback",
+            "fallback_reason": "schedule_error",
+            "socket_transport_hint": "disabled",
+            "socket_transports": [],
+            "socket_fallback_enabled": False,
+            "socket_enabled": False,
+            "realtime": False,
+            "fallback_mode": "http_chat",
+        })
+        return _add_cors_headers(response)

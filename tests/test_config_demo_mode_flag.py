@@ -33,6 +33,14 @@ class ConfigDemoModeFlagTestCase(unittest.TestCase):
             cfg = self._load_config_module()
             self.assertTrue(cfg.Config.ENABLE_DEMO_MODE)
 
+    def test_demo_welcome_message_does_not_reopen_legacy_rubro_selector(self):
+        with patch.dict(os.environ, {"DEMO_WELCOME_MESSAGE": ""}, clear=False):
+            cfg = self._load_config_module()
+            message = cfg.Config.DEMO_WELCOME_MESSAGE.lower()
+            self.assertNotIn("showroom interactivo", message)
+            self.assertNotIn("elegi el rubro", message)
+            self.assertNotIn("elegí el rubro", message)
+
 
 if __name__ == "__main__":
     unittest.main()
