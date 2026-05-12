@@ -39,6 +39,7 @@ from services.realtime_voice_profiles import (
     build_realtime_voice_capabilities,
     build_realtime_voice_instructions,
     infer_realtime_voice_vertical,
+    resolve_realtime_fallback_model,
     resolve_realtime_model,
     resolve_realtime_voice,
 )
@@ -541,7 +542,12 @@ def _support_channels_payload(tenant: TenantProfile, cfg: dict) -> dict:
         or getattr(tenant, "whatsapp_sender_id", None)
         or getattr(owner, "telefono", None)
     )
+    voice_enabled = _config_flag(cfg, "realtime_voice_enabled", default=True)
     realtime_voice = build_realtime_voice_capabilities(tenant, cfg, current_app.config)
+    realtime_voice["enabled"] = bool(voice_enabled)
+    if not voice_enabled:
+        realtime_voice["reason_code"] = "voice_not_enabled"
+        realtime_voice.setdefault("features", {})["tool_calling"] = False
     realtime_model = realtime_voice.get("recommended_model")
     realtime_voice_name = realtime_voice.get("voice")
     socket_realtime = _socket_realtime_contract(cfg)
@@ -569,7 +575,7 @@ def _support_channels_payload(tenant: TenantProfile, cfg: dict) -> dict:
             "media": {"text": True, "image": True, "audio": True, "file": True},
         },
         "voice_call": {
-            "enabled": bool(cfg.get("realtime_voice_enabled", True)),
+            "enabled": bool(voice_enabled),
             "channel": "voice_call",
             "realtime_bridge": True,
             "provider": "openai_realtime",
@@ -791,15 +797,20 @@ def _audit_realtime_event(tenant: TenantProfile, *, event_name: str, channel: st
         current_app.logger.exception("[realtime] failed auditing event=%s tenant=%s", event_name, tenant.slug)
 
 
-def _build_realtime_session_payload(tenant: TenantProfile, cfg: dict, *, channel: str) -> dict:
+def _build_realtime_session_payload(tenant: TenantProfile, cfg: dict, *, channel: str, request_payload: dict | None = None) -> dict:
     """Build OpenAI Realtime session payload for widget voice/video channels."""
 
+    request_payload = request_payload if isinstance(request_payload, dict) else {}
+    transports = request_payload.get("transports") if isinstance(request_payload.get("transports"), dict) else {}
     tenant_name = tenant.nombre or "Chatboc"
-    model = resolve_realtime_model(cfg, current_app.config)
-    voice = resolve_realtime_voice(cfg, current_app.config)
+    model = str(request_payload.get("model") or request_payload.get("recommended_model") or resolve_realtime_model(cfg, current_app.config))
+    fallback_model = str(request_payload.get("fallback_model") or resolve_realtime_fallback_model(cfg, current_app.config))
+    voice = str(request_payload.get("voice") or resolve_realtime_voice(cfg, current_app.config))
+    transport = str(request_payload.get("transport") or transports.get("browser") or "webrtc")
+    requested_profile = str(request_payload.get("profile") or request_payload.get("realtime_profile") or "realtime_voice_native")
     modalities = ["audio", "text"] if channel == "voice" else ["audio", "text", "video"]
     avatar_enabled = bool(cfg.get("widget_avatar_enabled", True))
-    voice_vertical = infer_realtime_voice_vertical(tenant)
+    voice_vertical = str(request_payload.get("active_vertical") or infer_realtime_voice_vertical(tenant))
 
     instructions = (
         f"Sos un asistente inclusivo de {tenant_name}. "
@@ -832,12 +843,15 @@ def _build_realtime_session_payload(tenant: TenantProfile, cfg: dict, *, channel
             "tenant_slug": tenant.slug,
             "tenant_type": tenant.tipo,
             "channel": channel,
+            "transport": transport,
             "avatar_enabled": avatar_enabled,
             "avatar_type": cfg.get("widget_avatar_type") or "robot",
             "avatar_persona": cfg.get("widget_avatar_persona") or "chatboc_assistant",
             "business_flows": ["crear_reclamo", "crear_pedido", "crear_caso_escolar", "consultas_generales", "derivar_humano"],
-            "realtime_profile": "realtime_voice_native",
+            "realtime_profile": requested_profile,
             "active_vertical": voice_vertical,
+            "recommended_model": model,
+            "fallback_model": fallback_model,
             "capabilities_contract": REALTIME_VOICE_CONTRACT_VERSION,
         },
     }
@@ -895,7 +909,7 @@ def create_realtime_session():
         _audit_realtime_event(tenant, event_name="realtime_session_failed", channel=channel, metadata={"reason": "openai_api_key_missing"})
         return _realtime_error_response("openai_api_key_missing", 503)
 
-    session_payload = _build_realtime_session_payload(tenant, cfg, channel=channel)
+    session_payload = _build_realtime_session_payload(tenant, cfg, channel=channel, request_payload=payload)
 
     req = urllib_request.Request(
         url="https://api.openai.com/v1/realtime/sessions",
@@ -967,6 +981,14 @@ def realtime_voice_capabilities():
             payload = build_realtime_voice_capabilities(None, {}, current_app.config)
             payload["enabled"] = False
             payload.setdefault("features", {})["tool_calling"] = False
+            payload["support_channels"] = {
+                "voice_call": {
+                    "enabled": False,
+                    "channel": "voice_call",
+                    "provider": "openai_realtime",
+                    "session_endpoint": "/api/public/realtime/session",
+                }
+            }
             payload.update(
                 {
                     "request_id": request_id,
@@ -989,6 +1011,14 @@ def realtime_voice_capabilities():
         payload.setdefault("features", {})["tool_calling"] = False
         payload["action_hint"] = "enable realtime_voice_enabled for this tenant"
     payload["request_id"] = request_id
+    payload["support_channels"] = {
+        "voice_call": {
+            "enabled": bool(voice_enabled),
+            "channel": "voice_call",
+            "provider": "openai_realtime",
+            "session_endpoint": "/api/public/realtime/session",
+        }
+    }
     if tenant:
         payload["tenant"] = {
             "id": tenant.id,

@@ -236,6 +236,67 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertTrue(payload["employees"])
         self.assertIn("educacion", payload["coverage"]["categorias"])
 
+    def test_employee_routing_contract_scope_update_and_auto_assign(self):
+        unassigned = TenantTicket(
+            tenant_id=self.tenant.id,
+            user_id=self.owner.id,
+            categoria="educacion",
+            descripcion="Necesito retirar documentacion",
+            estado="nuevo",
+            origen="whatsapp",
+            datos_extra={"title": "Retiro de documentacion", "zone": "centro", "channel": "whatsapp"},
+        )
+        db.session.add(unassigned)
+        db.session.commit()
+
+        response = self.client.get(
+            "/api/v2/employee-routing",
+            headers={**self._auth(self.owner), "X-Request-Id": "routing-1"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload.get("contract_version"), "employee.routing.v1")
+        self.assertEqual(payload.get("request_id"), "routing-1")
+        self.assertGreaterEqual(payload["queues"]["unassigned_count"], 1)
+        recommendation = next(item for item in payload["recommendations"] if item["ticket"]["id"] == unassigned.id)
+        self.assertEqual(recommendation["suggested_assignee"]["id"], self.employee.id)
+        self.assertIn("category_match", recommendation["reasons"])
+
+        scope_response = self.client.patch(
+            f"/api/v2/employees/{self.employee.id}/routing-scope",
+            json={
+                "categorias": ["educacion", "pagos"],
+                "zonas": ["centro", "norte"],
+                "channels": ["whatsapp", "widget"],
+                "permisos": ["tickets_assign", "orders_assign"],
+            },
+            headers=self._auth(self.owner),
+        )
+
+        self.assertEqual(scope_response.status_code, 200)
+        scope_payload = scope_response.get_json()
+        self.assertEqual(scope_payload.get("contract_version"), "employee.routing_scope.v1")
+        self.assertIn("pagos", scope_payload["employee"]["scope"]["categorias"])
+        self.assertIn("widget", scope_payload["employee"]["scope"]["channels"])
+
+        assign_response = self.client.post(
+            "/api/v2/employee-routing/auto-assign",
+            json={
+                "dry_run": False,
+                "tickets": [{"source_model": "TenantTicket", "id": unassigned.id}],
+            },
+            headers={**self._auth(self.owner), "X-Request-Id": "routing-assign-1"},
+        )
+
+        self.assertEqual(assign_response.status_code, 200)
+        assign_payload = assign_response.get_json()
+        self.assertEqual(assign_payload.get("contract_version"), "employee.routing.auto_assign.v1")
+        self.assertEqual(assign_payload.get("request_id"), "routing-assign-1")
+        self.assertEqual(assign_payload["applied_count"], 1)
+        refreshed = db.session.get(TenantTicket, unassigned.id)
+        self.assertEqual(refreshed.datos_extra["assignee_id"], self.employee.id)
+
     def test_tenant_health_contract(self):
         response = self.client.get("/api/v2/tenant-health", headers=self._auth(self.owner))
 
@@ -246,6 +307,50 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertIn("integrations", payload)
         self.assertIn("queues", payload)
         self.assertIn("recommended_actions", payload)
+
+    def test_catalog_quality_contract_surfaces_image_price_and_stock_gaps(self):
+        db.session.add(
+            CatalogoItem(
+                user_id=self.owner.id,
+                tenant_id=self.tenant.id,
+                nombre="Remera sin foto",
+                descripcion="Producto para completar desde marketplace.",
+                categoria="indumentaria",
+                precio="2500",
+                cantidad="12",
+                disponible=True,
+            )
+        )
+        db.session.add(
+            CatalogoItem(
+                user_id=self.owner.id,
+                tenant_id=self.tenant.id,
+                nombre="Cuaderno sin precio",
+                descripcion="Falta precio para poder vender.",
+                categoria="libreria",
+                imagen_url="https://cdn.example.com/cuaderno.jpg",
+                cantidad="20",
+                disponible=True,
+            )
+        )
+        db.session.commit()
+
+        response = self.client.get(
+            "/api/v2/catalog/quality",
+            headers={**self._auth(self.owner), "X-Request-Id": "catalog-quality-1"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload.get("contract_version"), "catalog.quality.v1")
+        self.assertEqual(payload.get("request_id"), "catalog-quality-1")
+        self.assertEqual(payload["tenant"]["slug"], self.tenant.slug)
+        self.assertGreaterEqual(payload["summary"]["products"], 3)
+        self.assertGreaterEqual(payload["summary"]["missing_images"], 1)
+        self.assertGreaterEqual(payload["summary"]["missing_price"], 1)
+        self.assertTrue(payload["queues"]["missing_images"])
+        self.assertTrue(payload["queues"]["missing_price"])
+        self.assertEqual(payload["frontend_contract"]["render_as"], "catalog_quality_command_center")
 
     def test_superadmin_executive_summary_contract(self):
         response = self.client.get(
@@ -316,9 +421,20 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertGreaterEqual(payload["profile"]["readiness"]["score"], 0)
         self.assertEqual(payload["operations"]["dashboard"]["contract_version"], "operations.dashboard.v1")
         self.assertEqual(payload["operations"]["freshness"]["contract_version"], "operations.freshness.v1")
+        self.assertIsInstance(payload["operations"]["freshness"]["summary"]["can_render_heatmap"], bool)
         self.assertEqual(payload["lead_capture"]["summary"]["open"], 1)
+        lead_item = payload["lead_capture"]["items"][0]
+        self.assertIn("ticket_id", lead_item)
+        self.assertIn("intent", lead_item)
+        self.assertIn("next_action", lead_item)
         self.assertEqual(payload["surveys_votings"]["summary"]["live_votes"], 1)
         self.assertEqual(payload["marketplace"]["summary"]["products"], 1)
+        self.assertIn("with_images", payload["marketplace"]["summary"])
+        self.assertIn("missing_images", payload["marketplace"]["summary"])
+        self.assertIn("products_without_image", payload["marketplace"]["summary"])
+        self.assertIn("bulk_import_status", payload["marketplace"]["summary"])
+        self.assertEqual(payload["marketplace"]["quality"]["contract_version"], "catalog.quality.v1")
+        self.assertEqual(payload["marketplace"]["quality"]["summary"]["products"], 1)
         self.assertEqual(payload["whatsapp"]["contract_version"], "whatsapp.experience.v1")
         self.assertTrue(payload["whatsapp"]["channel"]["enabled"])
         self.assertTrue(payload["whatsapp"]["conversation_intelligence"]["inputs"]["image"]["enabled"])
@@ -330,6 +446,14 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertIn("surveys_votings", module_ids)
         self.assertIn("marketplace", module_ids)
         self.assertIn("education", module_ids)
+        for module in payload["modules"]:
+            self.assertIn("secondary_endpoints", module)
+            self.assertIn("widgets", module)
+        for section in payload["education"]["admin_menu"]["panel_sections"]:
+            self.assertIn("endpoint", section)
+            self.assertIn("route", section)
+            self.assertIn("widgets", section)
+            self.assertIn("secondary_endpoints", section)
 
     def test_whatsapp_experience_contract_connects_channel_content_tracking_and_admin_panel(self):
         response = self.client.get(
@@ -376,7 +500,17 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertIn("tenant_creation", payload)
         self.assertEqual(payload["tenant_creation"]["endpoint"], "/api/admin/tenants")
         self.assertTrue(payload["tenants"]["items"])
-        self.assertEqual(payload["tenants"]["items"][0]["tenant"]["slug"], self.tenant.slug)
+        tenant_item = payload["tenants"]["items"][0]
+        self.assertEqual(tenant_item["tenant"]["slug"], self.tenant.slug)
+        self.assertEqual(tenant_item["tenant_slug"], self.tenant.slug)
+        self.assertEqual(tenant_item["display_name"], self.tenant.nombre)
+        self.assertIn("health_score", tenant_item)
+        self.assertIn("status", tenant_item)
+        self.assertIn("risk_reason", tenant_item)
+        if payload["tenants"]["top_risky"]:
+            risky_item = payload["tenants"]["top_risky"][0]
+            self.assertIn("tenant_slug", risky_item)
+            self.assertIn("risk_reason", risky_item)
         self.assertIn("drilldown_endpoint_template", payload["frontend_contract"])
 
 

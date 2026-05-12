@@ -99,11 +99,13 @@ Contrato:
   },
   "tracking": {
     "claims": {
+      "experience_endpoint": "/api/public/tracking/experience?kind=claim&code={code}&pin={pin}",
       "public_status_endpoint": "/tickets/public/status",
       "public_status_alias": "/api/tickets/public/status",
       "tracking_page_template": "/tracking/claim/{nro_ticket}"
     },
     "orders": {
+      "experience_endpoint": "/api/public/tracking/experience?kind=order&code={code}",
       "tracking_page_template": "/tracking/order/{nro_pedido}",
       "payment_status_endpoint": "/api/v2/payments/status"
     },
@@ -141,6 +143,7 @@ Contrato:
    - Punto actual con pulso.
    - Barra de progreso de ruta.
    - Fallback a timeline si no hay ubicacion.
+   - Usar `GET /api/public/tracking/experience` como contrato principal para widget/demo/WhatsApp.
 6. En WhatsApp admin, mostrar modulos de contenido: catalogo, encuestas/votaciones, noticias, eventos, promociones y links.
 7. Si `catalog.image_coverage_rate` es bajo, mostrar tareas accionables: subir imagen, reemplazar imagen, importar CSV/XLSX/PDF, generar catalogo PDF.
 8. Para llamadas, mostrar CTA solo si `conversation_intelligence.voice_calls.enabled` y `capabilities.native_speech_to_speech` son true.

@@ -49,6 +49,14 @@ Respuesta:
     "whatsapp_followup": true,
     "post_call_receipt": true,
     "human_handoff": true
+  },
+  "support_channels": {
+    "voice_call": {
+      "enabled": true,
+      "channel": "voice_call",
+      "provider": "openai_realtime",
+      "session_endpoint": "/api/public/realtime/session"
+    }
   }
 }
 ```
@@ -75,6 +83,43 @@ Frontend deberia renderizar CTA de llamada solo si:
 
 - `realtime_voice.features.tool_calling === true`
 - `support_channels.voice_call.enabled === true`
+
+Si voz esta apagada por tenant, backend responde HTTP 200 degradable:
+
+```json
+{
+  "contract_version": "realtime.voice_capabilities.v1",
+  "enabled": false,
+  "reason_code": "voice_not_enabled",
+  "features": {
+    "tool_calling": false
+  },
+  "support_channels": {
+    "voice_call": {
+      "enabled": false
+    }
+  },
+  "request_id": "req_123"
+}
+```
+
+`POST /api/public/realtime/session` acepta los campos que frontend toma del contrato publico:
+
+```json
+{
+  "tenant_slug": "municipio",
+  "widget_token": "...",
+  "channel": "voice",
+  "model": "gpt-realtime",
+  "fallback_model": "gpt-realtime",
+  "voice": "marin",
+  "transport": "webrtc",
+  "profile": "realtime_voice_native",
+  "active_vertical": "municipio"
+}
+```
+
+Backend usa `model`/`recommended_model`, `fallback_model`, `voice`, `transport`, `profile` y `active_vertical` como metadata y payload de sesion. Si no vienen, resuelve desde tenant/env.
 
 ## Verticales soportadas
 
@@ -104,21 +149,9 @@ Colegios:
 
 ## Pedido para frontend
 
-1. En demo/widget/landing, mostrar opcion "Llamar ahora" o "Probar llamada IA" cuando `realtime_voice` venga habilitado.
-2. Mostrar badges de confianza: "Voz en tiempo real", "Interrupciones naturales", "Resumen por WhatsApp", "Derivacion humana".
-3. Para colegios, usar starters:
-   - "Justificar inasistencia"
-   - "Consultar secretaria"
-   - "Hablar con el colegio"
-4. Para pymes, usar starters:
-   - "Consultar disponibilidad"
-   - "Tomar pedido por voz"
-   - "Hablar con ventas"
-5. Para municipios, usar starters:
-   - "Iniciar reclamo"
-   - "Consultar tramite"
-   - "Hablar con operador"
-6. Si el modelo devuelve/solicita herramienta desde WebRTC, frontend debe convertirlo en action-event o mantener la UI en estado "derivando/registrando" hasta que backend confirme.
+1. En demo/widget/landing, mostrar opcion "Llamar ahora" o "Probar llamada IA" solo cuando `realtime_voice.features.tool_calling === true` y `support_channels.voice_call.enabled === true`.
+2. Badges y starters son backend-first: usar `trust_badges`, `badges`, `badge_labels`, `starter_messages`, `voice_starters` o `starters` si llegan. Si no llegan, no inventar starters por vertical.
+3. Si el modelo devuelve/solicita herramienta desde WebRTC, frontend debe convertirlo en `POST /api/public/realtime/action-event` o mantener la UI en estado "derivando/registrando" hasta que backend confirme.
 
 ## Backend implementado
 
@@ -126,4 +159,5 @@ Colegios:
 - `services/voice_stream_service.py`: stream Twilio -> OpenAI Realtime con `gpt-realtime` por defecto, herramientas por vertical y `crear_caso_escolar`.
 - `services/realtime_session_service.py`: sesiones WebRTC legacy actualizadas a modelo realtime actual y voz configurable.
 - `routes/public_resolver.py`: contrato publico de capacidades y widget config enriquecido.
-- Tests: `tests/test_realtime_voice_profiles.py` y cobertura publica en `tests/test_public_resolver_widget_config_contract.py`.
+- `POST /api/public/realtime/session` respeta campos de contrato enviados por frontend (`model`, `fallback_model`, `voice`, `transport`, `profile`, `active_vertical`).
+- Tests: `tests/test_realtime_voice_profiles.py`, `tests/test_public_resolver_widget_config_contract.py` y `tests/test_widget_settings.py`.

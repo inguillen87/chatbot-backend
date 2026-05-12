@@ -6,7 +6,6 @@ from decimal import Decimal
 from typing import Any
 
 from models import MarketOrder, MunicipioTicket, OrderEvent, PedidoConversacional, PymePedido, TenantProfile, TicketComentario
-from services.commerce_unified import serialize_unified_order
 
 
 TRACKING_EXPERIENCE_CONTRACT_VERSION = "tracking.experience.v1"
@@ -192,6 +191,111 @@ def _legacy_order_items(details: Any) -> list[dict[str, Any]]:
     return items
 
 
+def _order_snapshot(order: Any) -> dict[str, Any]:
+    if isinstance(order, PymePedido):
+        return {
+            "id": f"legacy:{order.id}",
+            "source_model": "PymePedido",
+            "source_id": order.id,
+            "legacy_number": order.nro_pedido,
+            "tenant_id": order.tenant_id,
+            "status": order.estado,
+            "channel": "whatsapp",
+            "contact": {
+                "name": order.nombre_cliente,
+                "email": order.email_cliente,
+                "phone": order.telefono_cliente,
+            },
+            "totals": {
+                "monetary": _as_float(order.monto_total) or 0.0,
+                "points": 0,
+                "currency": "ARS",
+            },
+            "items": _legacy_order_items(order.detalles),
+            "metadata": {"direccion": order.direccion, "pyme_id": order.pyme_id},
+            "created_at": _iso(order.fecha),
+            "updated_at": _iso(order.fecha),
+        }
+
+    if isinstance(order, MarketOrder):
+        items = []
+        for item in getattr(order, "items", []) or []:
+            items.append(
+                {
+                    "id": item.id,
+                    "product_id": item.product_id,
+                    "title": item.name_snapshot,
+                    "quantity": item.quantity,
+                    "unit_price": _as_float(item.price_monetary),
+                    "points": item.price_points,
+                    "currency": item.currency,
+                    "modalidad": item.modalidad,
+                }
+            )
+        return {
+            "id": f"market:{order.id}",
+            "source_model": "MarketOrder",
+            "source_id": order.id,
+            "tenant_id": order.tenant_id,
+            "status": order.status,
+            "channel": order.channel or "web",
+            "contact": {
+                "name": order.contact_name,
+                "phone": order.contact_phone,
+            },
+            "totals": {
+                "monetary": _as_float(order.total_monetary) or 0.0,
+                "points": order.total_points or 0,
+                "currency": order.currency or "ARS",
+            },
+            "items": items,
+            "metadata": order.metadata_payload if isinstance(order.metadata_payload, dict) else {},
+            "created_at": _iso(order.created_at),
+            "updated_at": _iso(order.updated_at),
+        }
+
+    if isinstance(order, PedidoConversacional):
+        metadata = order.metadata_payload if isinstance(order.metadata_payload, dict) else {}
+        contacto = metadata.get("contacto") if isinstance(metadata.get("contacto"), dict) else {}
+        return {
+            "id": f"conversational:{order.id}",
+            "source_model": "PedidoConversacional",
+            "source_id": order.id,
+            "tenant_id": order.tenant_id,
+            "status": order.estado,
+            "channel": order.origen or "whatsapp",
+            "contact": {
+                "name": contacto.get("nombre"),
+                "email": contacto.get("email"),
+                "phone": contacto.get("telefono"),
+            },
+            "totals": {
+                "monetary": _as_float(order.monto_monetario) or 0.0,
+                "points": order.monto_puntos or 0,
+                "currency": metadata.get("currency") or "ARS",
+            },
+            "items": order.items or [],
+            "metadata": metadata,
+            "created_at": _iso(order.created_at),
+            "updated_at": _iso(order.updated_at),
+        }
+
+    return {
+        "id": str(getattr(order, "id", "")),
+        "source_model": order.__class__.__name__,
+        "source_id": getattr(order, "id", None),
+        "tenant_id": getattr(order, "tenant_id", None),
+        "status": getattr(order, "status", None) or getattr(order, "estado", None),
+        "channel": getattr(order, "channel", None),
+        "contact": {},
+        "totals": {},
+        "items": [],
+        "metadata": {},
+        "created_at": _iso(getattr(order, "created_at", None) or getattr(order, "fecha", None)),
+        "updated_at": _iso(getattr(order, "updated_at", None) or getattr(order, "fecha", None)),
+    }
+
+
 def build_claim_tracking_experience(ticket: MunicipioTicket, tenant: TenantProfile | None = None) -> dict[str, Any]:
     location = {
         "address": getattr(ticket, "direccion", None),
@@ -249,7 +353,7 @@ def build_claim_tracking_experience(ticket: MunicipioTicket, tenant: TenantProfi
 
 
 def build_order_tracking_experience(order: Any, tenant: TenantProfile | None = None) -> dict[str, Any]:
-    serialized = serialize_unified_order(order)
+    serialized = _order_snapshot(order)
     source = serialized.get("source_model")
     status = serialized.get("status")
     items = serialized.get("items") or []

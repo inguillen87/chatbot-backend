@@ -167,10 +167,12 @@ Mejora aditiva sobre SaaS P1/P2 para que cada PyME, colegio, municipio o rama de
 - `tenant.lead_capture.v1` unifica tickets/leads recientes de `TenantTicket`, `MunicipioTicket` y `PymeTicket`, con endpoints para inbox y leads legacy.
 - `GET /api/v2/superadmin/command-center` devuelve `contract_version: superadmin.command_center.v1` con KPIs multi-tenant, ranking de riesgo, readiness por tenant, lead capture y contrato para crear tenants via `/api/admin/tenants`.
 - Se agrego handoff frontend: `docs/BACKEND_TO_FRONTEND_SYNC_TENANT_ADMIN_PROFILE_2026-05-12.md`.
+- QA de contrato 2026-05-12: `modules[]` siempre trae `secondary_endpoints/widgets`, `lead_capture.items[]` trae `ticket_id/intent/next_action`, `marketplace.summary` trae aliases de imagenes y `bulk_import_status`, `operations.freshness.summary.can_render_heatmap` es booleano, `education.admin_menu.panel_sections[]` trae `endpoint/secondary_endpoints/widgets` y `superadmin.command_center.tenants.*` trae aliases top-level `tenant_slug/display_name/health_score/status/risk_reason`.
 
 Verificacion ejecutada:
 
-- `tests/test_v2_saas_contracts.py` (`9 passed` tras sumar WhatsApp operations).
+- `tests/test_v2_saas_contracts.py` (`11 passed` tras QA tenant admin/superadmin).
+- Suite ampliada con API v2 foundation, operational analytics, SaaS, realtime voice, public resolver, tracking, catalog quality y widget settings (`57 passed`).
 
 ## WhatsApp operations hub 2026-05-12
 
@@ -182,13 +184,48 @@ Mejora aditiva para que WhatsApp quede conectado con panel tenant, demo, widget,
 - `conversation_intelligence.inputs` declara soporte para texto, emojis, ubicacion, imagenes, notas de voz, archivos/PDF y video como adjunto.
 - `conversation_intelligence.voice_calls` usa `realtime.voice_capabilities.v1` con `gpt-realtime` por defecto, WebRTC para browser, WebSocket server-side y puente Twilio/SIP para telefono.
 - `tracking.courier_style_map` define contrato para mapa/timeline tipo courier con `pulse_current_step`, `route_progress` y `status_transition`, degradando a timeline si no hay coordenadas.
+- `GET /api/public/tracking/experience` y `GET /tracking/api/experience` devuelven `tracking.experience.v1` para reclamos (`kind=claim&code=M-...&pin=...`) y pedidos (`kind=order&code=...`) con estado, hitos, timeline, mapa, acciones y contrato frontend.
 - `content_modules` expone calidad de catalogo/imagenes, encuestas/votaciones, noticias/eventos, promociones y links configurables por tenant.
 - Se agrego handoff frontend: `docs/BACKEND_TO_FRONTEND_SYNC_WHATSAPP_OPERATIONS_2026-05-12.md`.
 
 Verificacion ejecutada:
 
 - `tests/test_v2_saas_contracts.py` (`9 passed`).
-- Suite ampliada con API v2 foundation, operational analytics, SaaS, realtime voice y public resolver (`39 passed`).
+- `tests/test_tracking_experience_contract.py` (`3 passed`).
+- Suite ampliada con API v2 foundation, operational analytics, SaaS, realtime voice, public resolver y tracking experience (`42 passed`).
+
+## Employee routing matrix 2026-05-12
+
+Mejora aditiva para que el panel tenant pueda asignar reclamos/tickets/pedidos operativos por empleado, categoria, zona, canal y carga:
+
+- `services/employee_routing.py` centraliza `employee.routing.v1` usando `User.accesibilidad.employee_scope`, `TenantTicket`, `MunicipioTicket` y `PymeTicket`.
+- `GET /api/v2/employee-routing` y `GET /api/v2/tenants/{tenant_slug}/employee-routing` devuelven dimensiones, empleados, workload, cola sin asignar y recomendaciones con score/razones.
+- `PATCH /api/v2/employees/{employee_id}/routing-scope` actualiza categorias, zonas, canales y permisos del empleado sin crear tablas nuevas; tambien sincroniza `ticket_categorias` legacy.
+- `POST /api/v2/employee-routing/auto-assign` permite preview (`dry_run: true`) o aplicar asignacion (`dry_run: false`) sobre `TenantTicket`, `MunicipioTicket` y `PymeTicket`.
+- `GET /api/v2/tenant/admin-experience` agrega resumen `employee_routing` y el modulo `employees` apunta tambien a `/api/v2/employee-routing`.
+- Se actualizo handoff frontend: `docs/BACKEND_TO_FRONTEND_SYNC_TENANT_ADMIN_PROFILE_2026-05-12.md`.
+
+Verificacion ejecutada:
+
+- `tests/test_v2_saas_contracts.py` (`10 passed`).
+- Suite ampliada con API v2 foundation, operational analytics, SaaS, realtime voice, public resolver, tracking experience y employee routing (`43 passed`).
+
+## Marketplace catalog quality 2026-05-12
+
+Mejora aditiva sobre marketplace/catalogo existente para que PyMEs, colegios y municipios puedan vender/mejorar catalogos importados sin crear un CRUD paralelo:
+
+- `services/catalog_quality.py` centraliza `catalog.quality.v1` y conserva la funcion legacy `evaluate_catalog_quality` usada por document intelligence.
+- `GET /api/v2/catalog/quality` y `GET /api/v2/tenants/{tenant_slug}/catalog/quality` devuelven resumen de productos, ready-to-sell, productos sin imagen/precio/stock/descripcion, imports recientes, capabilities y contrato frontend.
+- `tenant.marketplace_ops.v1` ahora incluye `quality.summary`, colas de calidad y endpoint `/api/v2/catalog/quality`.
+- `GET /api/v2/tenant/admin-experience` mantiene el modulo `marketplace`, ahora con widget `catalog_quality`.
+- `PATCH /api/admin/tenants/{slug}/catalog/items/{item_id}` acepta `imagen_url`, `image_url`, `gallery_urls`, `imagenes`, `images`, `promocion_info`, `external_url` y `checkout_type`, ademas de los campos previos.
+- El importador legacy `/api/admin/catalogo/importar` y el flujo nuevo `/api/admin/catalog/import` siguen usando deteccion de imagenes por columnas (`imagen_url`, `image_url`, `foto`, `gallery_urls`, `imagenes`, etc.).
+- Se actualizo handoff frontend: `docs/BACKEND_TO_FRONTEND_SYNC_TENANT_ADMIN_PROFILE_2026-05-12.md`.
+
+Verificacion ejecutada:
+
+- `tests/test_catalog_quality.py`
+- `tests/test_v2_saas_contracts.py`
 
 ## SaaS P2 commerce y operaciones 2026-05-01
 
@@ -347,3 +384,21 @@ Cierre de blockers runtime reportados por frontend/prod:
 - Upload multimedia agrega `request_id` y headers CORS para `X-Widget-Token`, `X-Tenant-Slug`, `X-Demo-Session-Id` e `Idempotency-Key`.
 - `POST /api/admin/catalogo/importar` mantiene errores JSON `{ codigo, mensaje }`; metodos `GET`, `PUT`, `PATCH`, `DELETE` devuelven `method_not_allowed` en JSON.
 - Handoff frontend: `docs/BACKEND_TO_FRONTEND_SYNC_FULL_PLATFORM_QA_2026-05-11.md`.
+
+## Realtime Voice QA 2026-05-12
+
+Alineacion con el QA frontend de voz realtime:
+
+- `GET /api/public/realtime/voice-capabilities` mantiene HTTP 200 degradable y `request_id`.
+- El contrato conserva `recommended_model: "gpt-realtime"` y `fallback_model: "gpt-realtime"` por defecto, con overrides por tenant/env.
+- La respuesta de capabilities agrega `support_channels.voice_call.enabled` para que frontend use la misma regla que widget-config.
+- Si `realtime_voice_enabled=false`, capabilities y widget-config devuelven `enabled:false`, `reason_code=voice_not_enabled` y `features.tool_calling=false`.
+- `GET /api/public/widget-config` publica `support_channels.voice_call.enabled` y `realtime_voice.features.tool_calling` sincronizados.
+- `POST /api/public/realtime/session` acepta `model`/`recommended_model`, `fallback_model`, `voice`, `transport`, `profile` y `active_vertical` desde el contrato publico.
+- Badges/starters quedan backend-first: frontend debe usar los campos que lleguen y no inventar starters locales por vertical.
+
+Verificacion ejecutada:
+
+- `tests/test_realtime_voice_profiles.py`
+- `tests/test_public_resolver_widget_config_contract.py`
+- `tests/test_widget_settings.py`

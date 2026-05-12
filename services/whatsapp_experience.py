@@ -229,6 +229,7 @@ def _tracking_modules_payload(tenant: TenantProfile) -> dict[str, Any]:
             "enabled": ticket_count + municipio_count + pyme_ticket_count > 0,
             "total": ticket_count + municipio_count + pyme_ticket_count,
             "open": open_ticket_count,
+            "experience_endpoint": "/api/public/tracking/experience?kind=claim&code={code}&pin={pin}",
             "public_status_endpoint": "/tickets/public/status",
             "public_status_alias": "/api/tickets/public/status",
             "tracking_page_template": "/tracking/claim/{nro_ticket}",
@@ -237,6 +238,7 @@ def _tracking_modules_payload(tenant: TenantProfile) -> dict[str, Any]:
         "orders": {
             "enabled": order_count > 0,
             "total": order_count,
+            "experience_endpoint": "/api/public/tracking/experience?kind=order&code={code}",
             "tracking_page_template": "/tracking/order/{nro_pedido}",
             "payment_status_endpoint": "/api/v2/payments/status",
         },

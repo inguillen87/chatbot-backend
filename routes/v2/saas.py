@@ -27,6 +27,13 @@ from models import (
 )
 from routes.v2.tenants import V2TenantResolutionError, resolve_tenant_v2
 from services.education_contracts import build_education_admin_menu, build_education_profile, is_education_tenant
+from services.employee_routing import (
+    build_employee_routing_payload,
+    employee_ref,
+    find_ticket_for_assignment,
+    normalize_scope_list,
+)
+from services.catalog_quality import build_catalog_quality_payload
 from services.operational_intelligence import build_operational_dashboard, build_operational_freshness
 from services.v2.sla_service import is_ticket_overdue
 from services.whatsapp_experience import build_whatsapp_experience
@@ -439,6 +446,11 @@ def _marketplace_ops_summary(tenant: TenantProfile) -> dict[str, Any]:
     products_query = CatalogoItem.query.filter_by(tenant_id=tenant.id)
     products_count = _safe_count(products_query)
     with_images = _safe_count(CatalogoItem.query.filter(CatalogoItem.tenant_id == tenant.id, CatalogoItem.imagen_url.isnot(None)))
+    quality = build_catalog_quality_payload(tenant, limit=8)
+    quality_summary = quality.get("summary") or {}
+    latest_imports = ((quality.get("imports") or {}).get("latest") or [])
+    latest_import_status = (latest_imports[0] or {}).get("status") if latest_imports else None
+    products_missing_images = max(0, products_count - with_images)
     try:
         orders_count = MarketOrder.legacy_safe_count(tenant_id=tenant.id)
         pending_orders = MarketOrder.legacy_safe_count(MarketOrder.status.in_(["pending", "created", "confirmed"]), tenant_id=tenant.id)
@@ -450,14 +462,29 @@ def _marketplace_ops_summary(tenant: TenantProfile) -> dict[str, Any]:
         "contract_version": "tenant.marketplace_ops.v1",
         "summary": {
             "products": products_count,
+            "with_images": with_images,
+            "missing_images": products_missing_images,
+            "products_without_image": products_missing_images,
             "products_with_images": with_images,
-            "products_missing_images": max(0, products_count - with_images),
+            "products_missing_images": products_missing_images,
             "image_coverage_rate": round((with_images / products_count) * 100, 2) if products_count else 100.0,
+            "ready_to_sell": quality_summary.get("ready_to_sell", 0),
+            "missing_price": quality_summary.get("missing_price", 0),
+            "missing_stock": quality_summary.get("missing_stock", 0),
+            "ready_rate": quality_summary.get("ready_rate", 100.0),
             "orders": orders_count,
             "pending_orders": pending_orders,
+            "bulk_import_status": latest_import_status or "idle",
+        },
+        "quality": {
+            "contract_version": quality.get("contract_version"),
+            "summary": quality_summary,
+            "queues": quality.get("queues"),
+            "endpoint": "/api/v2/catalog/quality",
         },
         "media_capabilities": {
             "product_images": True,
+            "product_gallery": True,
             "bulk_import": ["csv", "xlsx", "txt", "pdf"],
             "image_extraction_from_import": True,
             "manual_image_upload": True,
@@ -466,7 +493,9 @@ def _marketplace_ops_summary(tenant: TenantProfile) -> dict[str, Any]:
         "endpoints": {
             "items": f"/api/admin/tenants/{tenant.slug}/catalog/items",
             "catalog": f"/api/admin/tenants/{tenant.slug}/catalog",
+            "catalog_quality": "/api/v2/catalog/quality",
             "bulk_import": "/api/admin/catalogo/importar",
+            "bulk_import_v2": "/api/admin/catalog/import",
             "orders": f"/api/admin/tenants/{tenant.slug}/orders",
         },
     }
@@ -474,14 +503,19 @@ def _marketplace_ops_summary(tenant: TenantProfile) -> dict[str, Any]:
 
 def _ticket_item_from_tenant(ticket: TenantTicket, source: str = "tenant_ticket") -> dict[str, Any]:
     extra = _ticket_extra(ticket)
+    status = ticket.estado
+    intent = extra.get("intent") or extra.get("action") or extra.get("lead_intent") or ticket.categoria
     return {
         "source": source,
         "id": ticket.id,
+        "ticket_id": ticket.id,
         "title": extra.get("title") or ticket.categoria or f"Ticket {ticket.id}",
-        "status": ticket.estado,
-        "stage": extra.get("lead_stage") or ticket.estado,
+        "status": status,
+        "stage": extra.get("lead_stage") or status,
         "channel": _ticket_channel(ticket),
         "category": ticket.categoria,
+        "intent": intent,
+        "next_action": extra.get("next_action") or ("assign_or_reply" if str(status or "").lower() not in _CLOSED_TICKET_STATES else "view_history"),
         "origin": ticket.origen,
         "contact": extra.get("contact") if isinstance(extra.get("contact"), dict) else {},
         "location": {"lat": ticket.latitud, "lng": ticket.longitud, "address": extra.get("address")},
@@ -493,14 +527,20 @@ def _ticket_item_from_tenant(ticket: TenantTicket, source: str = "tenant_ticket"
 def _ticket_item_from_legacy(ticket: Any, source: str) -> dict[str, Any]:
     created_at = getattr(ticket, "fecha", None)
     updated_at = getattr(ticket, "ultima_actividad", None) or created_at
+    status = getattr(ticket, "estado", None)
+    category = getattr(ticket, "categoria", None)
+    ticket_id = getattr(ticket, "id", None)
     return {
         "source": source,
-        "id": getattr(ticket, "id", None),
-        "title": getattr(ticket, "asunto", None) or getattr(ticket, "categoria", None) or f"Ticket {getattr(ticket, 'id', '')}",
-        "status": getattr(ticket, "estado", None),
-        "stage": getattr(ticket, "estado", None),
+        "id": ticket_id,
+        "ticket_id": ticket_id,
+        "title": getattr(ticket, "asunto", None) or category or f"Ticket {getattr(ticket, 'id', '')}",
+        "status": status,
+        "stage": status,
         "channel": getattr(ticket, "canal_ingreso", None) or "web",
-        "category": getattr(ticket, "categoria", None),
+        "category": category,
+        "intent": category or source,
+        "next_action": "assign_or_reply" if str(status or "").lower() not in _CLOSED_TICKET_STATES else "view_history",
         "origin": source,
         "contact": {
             "name": getattr(ticket, "nombre_vecino", None) or getattr(ticket, "nombre_cliente", None),
@@ -615,15 +655,16 @@ def _admin_modules_payload(tenant: TenantProfile, *, education_profile: dict[str
             "label": "Equipo y cobertura",
             "route": f"{base}/employees",
             "endpoint": "/api/v2/employee-coverage",
-            "widgets": ["coverage", "workload", "assignment"],
+            "secondary_endpoints": ["/api/v2/employee-routing", "/api/v2/employees/{employee_id}/routing-scope"],
+            "widgets": ["coverage", "workload", "routing_rules", "assignment"],
         },
         {
             "id": "marketplace",
             "label": "Marketplace y catalogo",
             "route": f"{base}/marketplace",
             "endpoint": f"/api/admin/tenants/{tenant.slug}/catalog/items",
-            "secondary_endpoints": ["/api/admin/catalogo/importar", f"/api/admin/tenants/{tenant.slug}/orders"],
-            "widgets": ["bulk_import", "image_coverage", "orders", "pdf_catalog"],
+            "secondary_endpoints": ["/api/v2/catalog/quality", "/api/admin/catalogo/importar", "/api/admin/catalog/import", f"/api/admin/tenants/{tenant.slug}/orders"],
+            "widgets": ["catalog_quality", "bulk_import", "image_coverage", "orders", "pdf_catalog"],
         },
         {
             "id": "widget_whatsapp",
@@ -649,6 +690,9 @@ def _admin_modules_payload(tenant: TenantProfile, *, education_profile: dict[str
                 "widgets": ["family_context", "school_cases", "attendance", "communications"],
             }
         )
+    for module in modules:
+        module.setdefault("secondary_endpoints", [])
+        module.setdefault("widgets", [])
     return modules
 
 
@@ -668,6 +712,7 @@ def _build_tenant_admin_experience_payload(
     education_profile = build_education_profile(tenant)
     readiness = _tenant_readiness_payload(tenant, marketplace=marketplace, health=health)
     whatsapp = build_whatsapp_experience(tenant, app_config=app_config)
+    employee_routing = build_employee_routing_payload(tenant)
 
     return {
         "contract_version": "tenant.admin_experience.v1",
@@ -696,6 +741,15 @@ def _build_tenant_admin_experience_payload(
         "lead_capture": lead_capture,
         "surveys_votings": surveys,
         "marketplace": marketplace,
+        "employee_routing": {
+            "contract_version": employee_routing.get("contract_version"),
+            "summary": {
+                "employees": len(employee_routing.get("employees") or []),
+                "unassigned": ((employee_routing.get("queues") or {}).get("unassigned_count") or 0),
+                "recommendations": len(employee_routing.get("recommendations") or []),
+            },
+            "endpoint": "/api/v2/employee-routing",
+        },
         "whatsapp": {
             "contract_version": whatsapp.get("contract_version"),
             "channel": whatsapp.get("channel"),
@@ -738,16 +792,33 @@ def _build_superadmin_command_center_payload(*, start_date: datetime, end_date: 
         health = _tenant_health_payload(tenant)
         lead_capture = _tenant_lead_capture_summary(tenant, limit=5)
         readiness = _tenant_readiness_payload(tenant, marketplace=_marketplace_ops_summary(tenant), health=health)
+        tenant_ref = _tenant_ref(tenant)
+        health_block = health.get("health") or {}
         metrics = health.get("metrics") or {}
+        health_score = float(health_block.get("score") or 0)
+        risk_reason = "none"
+        if int(metrics.get("overdue_tickets") or 0) > 0:
+            risk_reason = "overdue_tickets"
+        elif str(health_block.get("status") or "") in {"warning", "critical"}:
+            risk_reason = "tenant_health_warning"
+        elif readiness.get("missing"):
+            risk_reason = "readiness_incomplete"
         total_open += int(metrics.get("open_tickets") or 0)
         total_overdue += int(metrics.get("overdue_tickets") or 0)
         total_leads += int((lead_capture.get("summary") or {}).get("open") or 0)
-        total_health += float((health.get("health") or {}).get("score") or 0)
+        total_health += health_score
         tenant_items.append(
             {
-                "tenant": _tenant_ref(tenant),
+                "slug": tenant_ref.get("slug"),
+                "tenant_slug": tenant_ref.get("slug"),
+                "display_name": tenant_ref.get("nombre"),
+                "tenant_name": tenant_ref.get("nombre"),
+                "health_score": health_score,
+                "status": health_block.get("status") or ("active" if tenant_ref.get("is_active") else "inactive"),
+                "risk_reason": risk_reason,
+                "tenant": tenant_ref,
                 "owner": _tenant_owner_ref(tenant),
-                "health": health.get("health"),
+                "health": health_block,
                 "metrics": metrics,
                 "readiness": readiness,
                 "lead_capture": lead_capture.get("summary"),
@@ -848,6 +919,153 @@ def employee_coverage_v2(current_user, tenant_slug: str | None = None):
         return error
     payload = _coverage_items(tenant)
     return _json_response({"contract_version": "employee.coverage.v1", "tenant": _tenant_ref(tenant), **payload})
+
+
+@v2_saas_bp.route("/employee-routing", methods=["GET"])
+@v2_saas_bp.route("/tenants/<string:tenant_slug>/employee-routing", methods=["GET"])
+@token_requerido
+@require_role("admin", "empleado", "super_admin")
+def employee_routing_v2(current_user, tenant_slug: str | None = None):
+    tenant, error = _resolve_tenant_or_error(current_user, tenant_slug)
+    if error:
+        return error
+    return _json_response(build_employee_routing_payload(tenant))
+
+
+@v2_saas_bp.route("/employees/<int:employee_id>/routing-scope", methods=["PATCH", "POST"])
+@v2_saas_bp.route("/tenants/<string:tenant_slug>/employees/<int:employee_id>/routing-scope", methods=["PATCH", "POST"])
+@token_requerido
+@require_role("admin", "super_admin")
+def update_employee_routing_scope_v2(current_user, employee_id: int, tenant_slug: str | None = None):
+    tenant, error = _resolve_tenant_or_error(current_user, tenant_slug)
+    if error:
+        return error
+
+    employee = User.query.filter_by(id=employee_id, tenant_id=tenant.id, es_empleado=True).first()
+    if not employee:
+        return _error_response("Empleado no encontrado para este tenant", 404, "employee_not_found", "choose_valid_employee")
+
+    payload = request.get_json(silent=True) or {}
+    raw_scope = payload.get("employee_scope") if isinstance(payload.get("employee_scope"), dict) else payload
+    categorias = normalize_scope_list(raw_scope.get("categorias") or raw_scope.get("categories"))
+    zonas = normalize_scope_list(raw_scope.get("zonas") or raw_scope.get("zones"))
+    channels = normalize_scope_list(raw_scope.get("channels") or raw_scope.get("canales"))
+    permisos = normalize_scope_list(raw_scope.get("permisos") or raw_scope.get("permissions"))
+
+    data = deepcopy(employee.accesibilidad) if isinstance(employee.accesibilidad, dict) else {}
+    data["employee_scope"] = {
+        "categorias": categorias,
+        "zonas": zonas,
+        "channels": channels,
+        "permisos": permisos,
+    }
+    employee.accesibilidad = data
+    employee.categorias_lista = categorias
+    flag_modified(employee, "accesibilidad")
+    db.session.add(employee)
+    db.session.commit()
+
+    return _json_response(
+        {
+            "contract_version": "employee.routing_scope.v1",
+            "tenant": _tenant_ref(tenant),
+            "employee": employee_ref(employee),
+        }
+    )
+
+
+def _apply_employee_assignment(ticket: Any, assignee: User, actor: User) -> dict[str, Any]:
+    now = datetime.now(timezone.utc)
+    if isinstance(ticket, TenantTicket):
+        extra = dict(ticket.datos_extra) if isinstance(ticket.datos_extra, dict) else {}
+        extra["assignee_id"] = assignee.id
+        extra["assignee_name"] = assignee.name
+        extra["assignee_email"] = assignee.email
+        _append_ticket_event(extra, action="assign", actor=actor, body=f"Asignado a {assignee.name}")
+        ticket.datos_extra = extra
+        ticket.updated_at = now
+        flag_modified(ticket, "datos_extra")
+    elif isinstance(ticket, (MunicipioTicket, PymeTicket)):
+        ticket.asignado_a_id = assignee.id
+        ticket.asignado_en = now
+        if isinstance(ticket, MunicipioTicket):
+            ticket.ultima_actividad = now
+    db.session.add(ticket)
+    return {"assignee_id": assignee.id, "assignee_name": assignee.name, "assigned_at": now.isoformat()}
+
+
+@v2_saas_bp.route("/employee-routing/auto-assign", methods=["POST"])
+@v2_saas_bp.route("/tenants/<string:tenant_slug>/employee-routing/auto-assign", methods=["POST"])
+@token_requerido
+@require_role("admin", "super_admin")
+def employee_routing_auto_assign_v2(current_user, tenant_slug: str | None = None):
+    tenant, error = _resolve_tenant_or_error(current_user, tenant_slug)
+    if error:
+        return error
+
+    payload = request.get_json(silent=True) or {}
+    dry_run = payload.get("dry_run", True) is not False
+    limit = max(1, min(int(payload.get("limit", 25) or 25), 100))
+    routing = build_employee_routing_payload(tenant)
+    recommendations = routing.get("recommendations") or []
+    explicit_tickets = payload.get("tickets") if isinstance(payload.get("tickets"), list) else []
+    if explicit_tickets:
+        wanted = {
+            (str(item.get("source_model") or ""), int(item.get("id") or item.get("ticket_id") or 0))
+            for item in explicit_tickets
+            if str(item.get("source_model") or "") and str(item.get("id") or item.get("ticket_id") or "").isdigit()
+        }
+        recommendations = [
+            item
+            for item in recommendations
+            if (
+                str((item.get("ticket") or {}).get("source_model") or ""),
+                int((item.get("ticket") or {}).get("id") or 0),
+            )
+            in wanted
+        ]
+
+    results = []
+    for item in recommendations[:limit]:
+        ticket_ref = item.get("ticket") or {}
+        assignee_ref = item.get("suggested_assignee") or {}
+        assignee_id = assignee_ref.get("id") or assignee_ref.get("employee_id")
+        ticket_id = ticket_ref.get("id") or ticket_ref.get("ticket_id")
+        source_model = str(ticket_ref.get("source_model") or "")
+        applied = False
+        assignment = None
+        if assignee_id and ticket_id and not dry_run:
+            assignee = User.query.filter_by(id=int(assignee_id), tenant_id=tenant.id, es_empleado=True).first()
+            ticket = find_ticket_for_assignment(tenant, source_model, int(ticket_id))
+            if assignee and ticket:
+                assignment = _apply_employee_assignment(ticket, assignee, current_user)
+                applied = True
+        results.append({**item, "applied": applied, "assignment": assignment})
+
+    if not dry_run:
+        db.session.commit()
+
+    return _json_response(
+        {
+            "contract_version": "employee.routing.auto_assign.v1",
+            "tenant": _tenant_ref(tenant),
+            "dry_run": dry_run,
+            "applied_count": len([item for item in results if item.get("applied")]),
+            "items": results,
+        }
+    )
+
+
+@v2_saas_bp.route("/catalog/quality", methods=["GET"])
+@v2_saas_bp.route("/tenants/<string:tenant_slug>/catalog/quality", methods=["GET"])
+@token_requerido
+@require_role("admin", "empleado", "super_admin")
+def catalog_quality_v2(current_user, tenant_slug: str | None = None):
+    tenant, error = _resolve_tenant_or_error(current_user, tenant_slug)
+    if error:
+        return error
+    limit = max(1, min(int(request.args.get("limit", 20) or 20), 100))
+    return _json_response(build_catalog_quality_payload(tenant, limit=limit))
 
 
 @v2_saas_bp.route("/tenant-health", methods=["GET"])

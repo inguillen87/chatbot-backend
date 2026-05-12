@@ -737,6 +737,8 @@ def admin_update_catalog_item(current_user, slug, item_id: int):
         item.descripcion = payload.get("descripcion")
     if "descripcion_corta" in payload:
         item.descripcion_corta = payload.get("descripcion_corta")
+    if "promocion_info" in payload:
+        item.promocion_info = payload.get("promocion_info")
     if "sku" in payload:
         item.sku = payload.get("sku")
     if "marca" in payload:
@@ -749,17 +751,41 @@ def admin_update_catalog_item(current_user, slug, item_id: int):
         item.unidad = payload.get("unidad")
     if "disponible" in payload:
         item.disponible = bool(payload.get("disponible"))
+
+    metadata = item.extra_metadata if isinstance(item.extra_metadata, dict) else {}
+    metadata = dict(metadata)
+
+    image_url = payload.get("imagen_url") if "imagen_url" in payload else payload.get("image_url")
+    if image_url is not None:
+        image_url = str(image_url).strip()
+        item.imagen_url = image_url or None
+        metadata["image_status"] = "ready" if item.imagen_url else "missing"
+
+    gallery_urls = payload.get("gallery_urls")
+    if gallery_urls is None:
+        gallery_urls = payload.get("imagenes") or payload.get("images")
+    if gallery_urls is not None:
+        if isinstance(gallery_urls, str):
+            gallery_urls = [gallery_urls]
+        if not isinstance(gallery_urls, list):
+            return jsonify({"error": "gallery_urls must be a list"}), 400
+        metadata["gallery_urls"] = [str(url).strip() for url in gallery_urls if str(url).strip()][:12]
+
+    if "external_url" in payload:
+        item.external_url = payload.get("external_url")
+    if "checkout_type" in payload:
+        item.checkout_type = str(payload.get("checkout_type") or "chatboc").strip()[:50] or "chatboc"
+
     if "extra_metadata" in payload and isinstance(payload.get("extra_metadata"), dict):
-        item.extra_metadata = payload.get("extra_metadata")
+        metadata.update(payload.get("extra_metadata"))
 
     if "personalization_options" in payload:
         try:
             sanitized_options = _sanitize_personalization_options_for_storage(payload.get("personalization_options"))
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
-        metadata = item.extra_metadata if isinstance(item.extra_metadata, dict) else {}
         metadata["personalization_options"] = sanitized_options
-        item.extra_metadata = metadata
+    item.extra_metadata = metadata
 
     if "precio" in payload:
         precio_raw = payload.get("precio")

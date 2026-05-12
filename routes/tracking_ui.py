@@ -6,8 +6,83 @@ from datetime import datetime
 from services.ticket_service import servicio_tickets
 from socket_service import emit_new_chat_message
 import random
+import uuid
+from services.tracking_experience import (
+    TRACKING_EXPERIENCE_CONTRACT_VERSION,
+    build_claim_tracking_experience,
+    build_order_tracking_experience,
+    resolve_order_by_code,
+    resolve_tenant_for_order,
+)
 
 tracking_ui_bp = Blueprint('tracking_ui_bp', __name__)
+
+
+def _tracking_request_id() -> str:
+    incoming = (request.headers.get("X-Request-Id") or request.headers.get("X-Correlation-Id") or "").strip()
+    return incoming or uuid.uuid4().hex
+
+
+def _tracking_json(payload: dict, status: int = 200):
+    request_id = _tracking_request_id()
+    body = dict(payload)
+    body.setdefault("request_id", request_id)
+    response = jsonify(body)
+    response.status_code = status
+    response.headers["X-Request-Id"] = request_id
+    return response
+
+
+def _tracking_error(message: str, status_code: int, reason_code: str, action_hint: str):
+    return _tracking_json(
+        {
+            "contract_version": TRACKING_EXPERIENCE_CONTRACT_VERSION,
+            "status_code": status_code,
+            "reason_code": reason_code,
+            "retryable": False,
+            "action_hint": action_hint,
+            "error": {"code": status_code, "message": message},
+        },
+        status_code,
+    )
+
+
+@tracking_ui_bp.route('/tracking/api/experience', methods=['GET'])
+@tracking_ui_bp.route('/api/public/tracking/experience', methods=['GET'])
+def tracking_experience():
+    kind = (request.args.get("kind") or request.args.get("type") or "").strip().lower()
+    code = (
+        request.args.get("code")
+        or request.args.get("nro_ticket")
+        or request.args.get("nro_pedido")
+        or request.args.get("order_id")
+        or ""
+    ).strip()
+
+    if kind not in {"claim", "order", "reclamo", "pedido"}:
+        return _tracking_error("kind debe ser claim/order.", 400, "invalid_tracking_kind", "send_kind_claim_or_order")
+    if not code:
+        return _tracking_error("code requerido.", 400, "tracking_code_required", "send_tracking_code")
+
+    if kind in {"claim", "reclamo"}:
+        pin = (request.args.get("pin") or "").strip()
+        if not pin:
+            return _tracking_error("pin requerido.", 400, "tracking_pin_required", "send_pin")
+        normalized = code.upper()
+        normalized = normalized[2:] if normalized.startswith(("M-", "S-")) else normalized
+        ticket = MunicipioTicket.query.filter_by(nro_ticket=normalized, consulta_pin=pin).first()
+        if not ticket:
+            return _tracking_error("Reclamo no encontrado.", 404, "claim_not_found", "check_code_and_pin")
+        tenant = TenantProfile.query.get(ticket.tenant_id) if ticket.tenant_id else None
+        if not tenant and ticket.municipio_id:
+            tenant = TenantProfile.query.filter_by(municipio_id=ticket.municipio_id).first()
+        return _tracking_json(build_claim_tracking_experience(ticket, tenant))
+
+    order = resolve_order_by_code(code)
+    if not order:
+        return _tracking_error("Pedido no encontrado.", 404, "order_not_found", "check_order_code")
+    tenant = resolve_tenant_for_order(order)
+    return _tracking_json(build_order_tracking_experience(order, tenant))
 
 @tracking_ui_bp.route('/tracking/order/<nro_pedido>')
 def tracking_page(nro_pedido):

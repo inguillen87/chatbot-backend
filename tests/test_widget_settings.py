@@ -1,4 +1,6 @@
+import json
 import unittest
+from unittest.mock import patch
 
 try:
     from app import create_app
@@ -129,6 +131,21 @@ class WidgetSettingsTests(unittest.TestCase):
         self.assertEqual(attrs.get("data-realtime-video-enabled"), "false")
         self.assertFalse(widget_data["widget"]["support_channels"]["video_call"]["enabled"])
 
+    def test_widget_config_disables_voice_cta_when_realtime_voice_disabled(self):
+        self.tenant.configuracion = {"realtime_voice_enabled": False, "widget_tokens": [self.owner.token]}
+        db.session.add(self.tenant)
+        db.session.commit()
+
+        widget_resp = self.client.get(
+            f"/api/public/widget-config?tenant={self.tenant.slug}",
+        )
+
+        self.assertEqual(widget_resp.status_code, 200)
+        widget_data = widget_resp.get_json()
+        self.assertFalse(widget_data["support_channels"]["voice_call"]["enabled"])
+        self.assertFalse(widget_data["realtime_voice"]["enabled"])
+        self.assertFalse(widget_data["realtime_voice"]["features"]["tool_calling"])
+
     def test_public_realtime_session_requires_openai_key(self):
         self.app.config["OPENAI_API_KEY"] = ""
         response = self.client.post(
@@ -149,6 +166,46 @@ class WidgetSettingsTests(unittest.TestCase):
         payload = response.get_json()
         self.assertEqual(payload.get("error"), "widget_token_invalid")
 
+    @patch("routes.public_resolver.urllib_request.urlopen")
+    def test_public_realtime_session_accepts_frontend_contract_fields(self, mock_urlopen):
+        class MockOpenAIResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return json.dumps({"id": "sess_123", "client_secret": {"value": "ek_mock"}}).encode("utf-8")
+
+        mock_urlopen.return_value = MockOpenAIResponse()
+        self.app.config["OPENAI_API_KEY"] = "mock-key"
+
+        response = self.client.post(
+            "/api/public/realtime/session",
+            json={
+                "tenant_slug": self.tenant.slug,
+                "channel": "voice",
+                "widget_token": self.owner.token,
+                "model": "gpt-realtime",
+                "fallback_model": "gpt-realtime",
+                "voice": "marin",
+                "transport": "webrtc",
+                "profile": "realtime_voice_native",
+                "active_vertical": "municipio",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["model"], "gpt-realtime")
+        self.assertEqual(payload["avatar"]["fallback_model"], "gpt-realtime")
+        self.assertEqual(payload["avatar"]["transport"], "webrtc")
+        self.assertEqual(payload["avatar"]["active_vertical"], "municipio")
+        request_obj = mock_urlopen.call_args.args[0]
+        upstream_payload = json.loads(request_obj.data.decode("utf-8"))
+        self.assertEqual(upstream_payload["model"], "gpt-realtime")
+        self.assertEqual(upstream_payload["voice"], "marin")
 
     def test_public_realtime_action_event_rejects_unknown_action(self):
         response = self.client.post(

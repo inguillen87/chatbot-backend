@@ -89,6 +89,8 @@ class PublicResolverWidgetConfigContractTestCase(unittest.TestCase):
         self.assertEqual(body["contract_version"], "realtime.voice_capabilities.v1")
         self.assertEqual(body["provider"], "openai_realtime")
         self.assertEqual(body["recommended_model"], "gpt-realtime")
+        self.assertEqual(body["fallback_model"], "gpt-realtime")
+        self.assertTrue(body["support_channels"]["voice_call"]["enabled"])
         self.assertIn("colegio", body["verticals"])
         self.assertIn("request_id", body)
 
@@ -115,6 +117,7 @@ class PublicResolverWidgetConfigContractTestCase(unittest.TestCase):
         self.assertFalse(body["enabled"])
         self.assertEqual(body["reason_code"], "voice_not_enabled")
         self.assertFalse(body["features"]["tool_calling"])
+        self.assertFalse(body["support_channels"]["voice_call"]["enabled"])
 
     def test_landing_experience_with_tenant_uses_resolver(self):
         with patch("routes.public_resolver.resolve_tenant_only", return_value=_FakeTenant()):
