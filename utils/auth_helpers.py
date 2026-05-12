@@ -23,6 +23,8 @@ _WIDGET_ALLOWED_PREFIXES: Tuple[str, ...] = (
     "/api/market/",
     "/market/",
     "/api/ask",
+    "/api/archivos/upload/chat_attachment",
+    "/archivos/upload/chat_attachment",
     "/api/profile-name",
     "/api/widget",
     "/api/live-chat",

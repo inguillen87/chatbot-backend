@@ -1,5 +1,6 @@
 import os
 import unittest
+from unittest.mock import patch
 
 os.environ.setdefault("FLASK_SKIP_GLOBAL_APP", "1")
 os.environ.setdefault("TESTING", "1")
@@ -47,12 +48,16 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         payload = resp.get_json()
         self.assertEqual(payload.get("contract_version"), "demo.catalog.v2")
-        self.assertEqual(payload.get("sectors"), ["educacion", "gobierno", "empresas"])
+        self.assertEqual(payload.get("sectors"), ["gobierno", "empresas", "educacion"])
         self.assertEqual(payload.get("pillar_contract_version"), "demo.pillars.v1")
         self.assertTrue(any(pillar.get("key") == "empresas" for pillar in payload.get("pillars") or []))
         self.assertIn("rubros", payload)
         self.assertIn("sector_groups", payload)
         self.assertTrue(any(group.get("key") == "educacion" for group in payload.get("sector_groups") or []))
+        sector_groups = {group.get("key"): group for group in payload.get("sector_groups") or []}
+        self.assertEqual((sector_groups.get("gobierno") or {}).get("tenant_slug"), "municipio")
+        self.assertEqual((sector_groups.get("empresas") or {}).get("tenant_slug"), "bodega")
+        self.assertEqual((sector_groups.get("educacion") or {}).get("tenant_slug"), "colegio-demo")
         self.assertTrue(any((item.get("resources") or []) for item in payload.get("rubros") or []))
 
         flattened = str(payload).lower()
@@ -218,6 +223,71 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertEqual((payload.get("experience_blueprint") or {}).get("experience_type"), "education")
         self.assertTrue((workspace.get("education") or {}).get("whatsapp_playbook"))
         self.assertTrue(any("inasistencia" in (item.get("label") or "").lower() for item in workspace.get("quick_replies") or []))
+
+    def test_v2_demo_session_accepts_spanish_aliases_from_frontend(self):
+        owner = User(name="Colegio Alias", email="colegio-alias@test.com", password_hash="hash", tipo_chat="pyme")
+        db.session.add(owner)
+        db.session.flush()
+        tenant = TenantProfile(
+            slug="colegio-demo",
+            nombre="Colegio Demo",
+            tipo="pyme",
+            pyme_id=owner.id,
+            is_active=True,
+            vertical="educacion",
+            subvertical="colegio_privado",
+            capabilities_json={"education": {"enabled": True}},
+        )
+        db.session.add(tenant)
+        db.session.commit()
+
+        resp = self.client.post(
+            "/api/v2/demo/session",
+            json={
+                "sector": "educacion",
+                "pilar": "colegios",
+                "categoria": "colegio-demo",
+                "rubro": "colegio-demo",
+            },
+            headers={"X-Request-Id": "demo-aliases-1"},
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.get_json()
+        self.assertEqual(payload.get("tenant_slug"), "colegio-demo")
+        self.assertEqual(payload.get("request_id"), "demo-aliases-1")
+        self.assertEqual((payload.get("chat_bootstrap") or {}).get("endpoint"), "/ask/pyme")
+        self.assertEqual((payload.get("chat_bootstrap") or {}).get("payload", {}).get("rubro"), "colegio-demo")
+
+    def test_api_ask_municipio_alias_degrades_runtime_errors_for_cached_frontend(self):
+        owner = User(name="Municipio Demo", email="municipio-alias@test.com", password_hash="hash", tipo_chat="municipio", rol="admin")
+        db.session.add(owner)
+        db.session.flush()
+        db.session.add(TenantProfile(slug="municipio", nombre="Municipio Demo", tipo="municipio", municipio_id=owner.id, is_active=True))
+        db.session.commit()
+
+        with patch("services.logic.responder_chatboc", side_effect=RuntimeError("runtime boom")):
+            resp = self.client.post(
+                "/api/ask/municipio?tenant_slug=municipio",
+                json={"pregunta": "hola", "demo_mode": True, "tenant_slug": "municipio"},
+                headers={
+                    "Origin": "https://www.chatboc.ar",
+                    "X-Chat-Session-Id": "demo-runtime-alias-1",
+                    "X-Request-Id": "runtime-alias-1",
+                },
+            )
+
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.get_json()
+        self.assertEqual(payload.get("contract_version"), "chat.runtime_fallback.v1")
+        self.assertEqual(payload.get("request_id"), "runtime-alias-1")
+        self.assertTrue(payload.get("respuesta_usuario"))
+        self.assertIsInstance(payload.get("botones"), list)
+
+    def test_api_upload_chat_attachment_alias_has_preflight(self):
+        resp = self.client.open("/api/archivos/upload/chat_attachment", method="OPTIONS")
+
+        self.assertIn(resp.status_code, {200, 204})
 
     def test_v2_tenant_route_requires_explicit_tenant_context(self):
         resp = self.client.get("/api/v2/tenants/current")

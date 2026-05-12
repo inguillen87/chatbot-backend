@@ -65,7 +65,9 @@ def cors_options_response():
         # Consider if '*' is appropriate or if a more specific origin list should be used
         response.headers['Access-Control-Allow-Origin'] = '*'
     response.headers['Access-Control-Allow-Headers'] = (
-        'Authorization, Content-Type, Origin, Accept, X-Anon-Id, Anon-Id, x-entity-token, x-chat-session-id'
+        'Authorization, Content-Type, Origin, Accept, X-Anon-Id, Anon-Id, '
+        'X-Entity-Token, X-Widget-Token, X-Tenant-Slug, X-Chat-Session-Id, '
+        'X-Demo-Session-Id, X-Demo-Session, Idempotency-Key, X-Request-Id'
     )
     # Ensure all methods intended to be covered by CORS are listed, including OPTIONS itself
     # The methods listed here should ideally match or be a superset of those in apply_cors for consistency
@@ -521,7 +523,9 @@ def apply_cors(response):
     else:
         response.headers['Access-Control-Allow-Origin'] = '*'
     response.headers['Access-Control-Allow-Headers'] = (
-        'Authorization, Content-Type, Origin, Accept, X-Anon-Id, Anon-Id, x-entity-token, x-chat-session-id'
+        'Authorization, Content-Type, Origin, Accept, X-Anon-Id, Anon-Id, '
+        'X-Entity-Token, X-Widget-Token, X-Tenant-Slug, X-Chat-Session-Id, '
+        'X-Demo-Session-Id, X-Demo-Session, Idempotency-Key, X-Request-Id'
     )
     response.headers['Access-Control-Allow-Methods'] = 'GET,POST,OPTIONS'
     response.headers['Access-Control-Allow-Credentials'] = 'true'
@@ -565,13 +569,23 @@ def upload_chat_attachment(current_user=None, anon_id=None, owner_user=None):
     No lo asocia a ningún ticket, solo lo sube y crea los registros.
     Devuelve la metadata para que el frontend la use en la llamada a /ask.
     """
+    request_id = request.headers.get("X-Request-Id") or uuid.uuid4().hex
+
+    def _json(payload: dict, status: int = 200):
+        body = dict(payload)
+        body.setdefault("request_id", request_id)
+        response = jsonify(body)
+        response.status_code = status
+        response.headers["X-Request-Id"] = request_id
+        return response
+
     if 'file' not in request.files:
-        return jsonify({'error': 'No se encontró el campo de archivo "file"'}), 400
+        return _json({"error": "No se encontro el campo de archivo file"}, 400)
 
     file = request.files['file']
 
     if file.filename == '':
-        return jsonify({'error': 'No se seleccionó ningún archivo'}), 400
+        return _json({"error": "No se selecciono ningun archivo"}, 400)
 
     # Validaciones de seguridad
     raw_mime_type = file.content_type or file.mimetype or ""
@@ -579,7 +593,7 @@ def upload_chat_attachment(current_user=None, anon_id=None, owner_user=None):
 
     if normalized_mime_type not in ALLOWED_CHAT_MIMES:
         display_mime = raw_mime_type or "desconocido"
-        return jsonify({'error': f'Tipo de archivo no permitido: {display_mime}'}), 400
+        return _json({"error": f"Tipo de archivo no permitido: {display_mime}"}, 400)
 
     # El tamaño se valida dentro de gcs_service
 
@@ -600,7 +614,7 @@ def upload_chat_attachment(current_user=None, anon_id=None, owner_user=None):
         )
 
         if not adjunto:
-            return jsonify({'error': 'Error al procesar y guardar el archivo.'}), 500
+            return _json({"error": "Error al procesar y guardar el archivo."}, 500)
 
         # Commit here to ensure adjunto.id is populated
         db.session.commit()
@@ -632,11 +646,11 @@ def upload_chat_attachment(current_user=None, anon_id=None, owner_user=None):
             "meta": meta_data,
         }
 
-        return jsonify({
+        return _json({
             "ok": True,
             "attachmentInfo": attachment_info_payload,
-        }), 200
+        }, 200)
 
     except Exception as e:
-        current_app.logger.error(f"Error crítico en upload_chat_attachment: {e}", exc_info=True)
-        return jsonify({'error': 'Error interno del servidor.'}), 500
+        current_app.logger.error("Error critico en upload_chat_attachment: %s", e, exc_info=True)
+        return _json({"error": "Error interno del servidor."}, 500)

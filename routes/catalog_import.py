@@ -198,8 +198,10 @@ def _legacy_catalog_current_user():
     return user
 
 
-@catalog_import_bp.route('/api/admin/catalogo/importar', methods=['GET'])
+@catalog_import_bp.route('/api/admin/catalogo/importar', methods=['GET', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'])
 def legacy_catalog_import_method_not_allowed():
+    if request.method == "OPTIONS":
+        return jsonify({"ok": True})
     return _catalog_import_error(
         "method_not_allowed",
         "Method not allowed. Use POST para importar un catalogo.",
@@ -277,6 +279,7 @@ def legacy_catalog_import():
         column_map = templates.get(plantilla) or {}
 
     rows = _apply_column_map(rows, column_map)
+    rows, image_summary = _normalize_rows_for_images(rows)
 
     if plantilla and column_map and str(request.form.get("guardar_plantilla", "")).lower() in {"1", "true", "si", "sÃ­"}:
         config = getattr(tenant, "configuracion", None)
@@ -297,6 +300,8 @@ def legacy_catalog_import():
         "importados": count,
         "plantilla_aplicada": plantilla,
         "filas_detectadas": len(rows),
+        "image_summary": image_summary,
+        "imagenes_detectadas": image_summary.get("with_images", 0),
     })
 
 @catalog_import_bp.route('/api/admin/catalog/import', methods=['POST'])
@@ -347,17 +352,27 @@ def create_import_session(current_user):
         # Process upload
         extraction_result = pipeline.process_upload_preview(upload.id, path, file.mimetype, rubro_slug)
 
+        items = extraction_result.get('items') or []
+        if isinstance(items, list):
+            normalized_items, image_summary = _normalize_rows_for_images(items)
+            extraction_result['items'] = normalized_items
+            extraction_result['image_summary'] = image_summary
+            items = normalized_items
+        else:
+            image_summary = {"with_images": 0, "missing_images": 0}
+
         # Store full result
         upload.preview_data = extraction_result
         upload.warnings = extraction_result.get('warnings', [])
         upload.engine_used = extraction_result.get('engine', 'unknown')
         upload.stats = {
             "confidence": extraction_result.get('confidence', 0),
-            "total_rows": len(extraction_result.get('items', []))
+            "total_rows": len(items),
+            "with_images": image_summary.get("with_images", 0),
+            "missing_images": image_summary.get("missing_images", 0),
         }
 
         # Validation Logic
-        items = extraction_result.get('items') or []
         if not items:
              upload.status = "failed"
              upload.errors = extraction_result.get('errors', []) + ["No structured data found"]
@@ -405,10 +420,19 @@ def update_import_preview(current_user, upload_id):
     if not upload:
         return jsonify({"error": "Not found"}), 404
 
-    data = request.json
+    data = request.json or {}
     if 'preview_data' in data:
         # User is manually correcting the data
-        upload.preview_data = data['preview_data']
+        preview = data['preview_data'] or {}
+        items = preview.get("items") or preview.get("rows") or []
+        if isinstance(items, list):
+            normalized_items, image_summary = _normalize_rows_for_images(items)
+            if "rows" in preview and "items" not in preview:
+                preview["rows"] = normalized_items
+            else:
+                preview["items"] = normalized_items
+            preview["image_summary"] = image_summary
+        upload.preview_data = preview
         upload.status = "ready_to_commit"
 
     db.session.commit()
@@ -428,6 +452,13 @@ def commit_import_session(current_user, upload_id):
 
     preview = upload.preview_data or {}
     items = preview.get('items') or preview.get('rows') or []
+    if isinstance(items, list):
+        items, image_summary = _normalize_rows_for_images(items)
+        preview["items"] = items
+        preview["image_summary"] = image_summary
+        upload.preview_data = preview
+    else:
+        image_summary = {"with_images": 0, "missing_images": 0}
     count = 0
 
     from services.qdrant_service import index_catalog_item
@@ -483,6 +514,18 @@ def commit_import_session(current_user, upload_id):
         item_obj.categoria = item.get('category') or item.get('categoria')
         item_obj.moneda = item.get('currency') or item.get('moneda') or 'ARS'
         item_obj.marca = item.get('brand') or item.get('marca')
+        item_obj.descripcion = item.get('description') or item.get('descripcion') or item_obj.descripcion
+        primary_image, gallery_urls = _product_images_from_row(item)
+        if primary_image is not None:
+            item_obj.imagen_url = primary_image
+        metadata = item_obj.extra_metadata if isinstance(item_obj.extra_metadata, dict) else {}
+        metadata = dict(metadata)
+        if gallery_urls:
+            metadata["gallery_urls"] = gallery_urls
+            metadata["image_status"] = "ready"
+        elif not item_obj.imagen_url:
+            metadata["image_status"] = "missing"
+        item_obj.extra_metadata = metadata
 
         db.session.flush()
 
@@ -503,12 +546,13 @@ def commit_import_session(current_user, upload_id):
                 item_data = {
                     "id": item_obj.id,
                     "nombre": item_obj.nombre,
-                    "descripcion": "",
+                    "descripcion": item_obj.descripcion or "",
                     "precio": float(item_obj.precio_monetario or 0),
                     "rubro": rubro_nombre,
                     "stock": 0,
                     "user_id": owner_user_id or tenant.id,
                     "tenant_id": tenant.id,
+                    "imagen_url": item_obj.imagen_url,
                 }
                 index_catalog_item(tenant.id, item_data, embedding_list[0])
 
@@ -520,4 +564,4 @@ def commit_import_session(current_user, upload_id):
     upload.status = "committed"
     db.session.commit()
 
-    return jsonify({"success": True, "count": count})
+    return jsonify({"success": True, "count": count, "image_summary": image_summary})

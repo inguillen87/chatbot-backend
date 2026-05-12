@@ -101,3 +101,42 @@ def test_template_loaded_when_column_map_missing(client, app, monkeypatch):
     assert resp.is_json
     assert resp.get_json()["plantilla_aplicada"] == "mi_plantilla"
     assert captured_rows["rows"][0]["nombre"] == "B"
+
+
+def test_import_preserves_image_columns_for_marketplace(client, monkeypatch):
+    captured_rows = {}
+
+    def _persist(owner_id, tenant_id, rows):
+        captured_rows["rows"] = rows
+        return len(rows)
+
+    monkeypatch.setattr(catalog_import, "_persist_rows", _persist)
+    monkeypatch.setattr(
+        catalog_import,
+        "extract_table_from_file",
+        lambda *args, **kwargs: [
+            {
+                "titulo": "Campera escolar",
+                "imagen": "https://cdn.example.com/campera.jpg",
+                "imagenes": "https://cdn.example.com/campera.jpg; https://cdn.example.com/detalle.jpg",
+            }
+        ],
+    )
+
+    resp = client.post(
+        "/api/admin/catalogo/importar",
+        data={
+            "archivo": (io.BytesIO(b"data"), "catalogo.pdf"),
+            "column_map": "{\"titulo\": \"nombre\", \"imagen\": \"imagen_url\", \"imagenes\": \"gallery_urls\"}",
+        },
+        content_type="multipart/form-data",
+    )
+
+    body = resp.get_json()
+    assert resp.status_code == 200
+    assert body["image_summary"]["with_images"] == 1
+    assert captured_rows["rows"][0]["imagen_url"] == "https://cdn.example.com/campera.jpg"
+    assert captured_rows["rows"][0]["gallery_urls"] == [
+        "https://cdn.example.com/campera.jpg",
+        "https://cdn.example.com/detalle.jpg",
+    ]

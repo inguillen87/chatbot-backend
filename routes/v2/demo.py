@@ -385,7 +385,9 @@ def demo_session_v2():
     data = request.get_json(silent=True) or {}
     sector = normalize_demo_sector(
         data.get("sector")
+        or data.get("pilar")
         or data.get("pillar")
+        or data.get("pilar_key")
         or data.get("segment")
         or data.get("vertical")
         or ""
@@ -396,12 +398,22 @@ def demo_session_v2():
         "rubro_slug",
         "rubro_key",
         "rubro_clave",
+        "categoria",
+        "categoria_slug",
+        "category_key",
         "category",
         "category_slug",
         "demo_rubro",
         "subvertical",
     )
-    tenant_slug = _first_payload_tenant_slug(data, "tenant_slug", "tenant", "slug")
+    tenant_slug = _first_payload_tenant_slug(
+        data,
+        "tenant_slug",
+        "tenant",
+        "slug",
+        "tenantSlug",
+        "tenant_key",
+    )
 
     if not sector:
         sector = sector_for_rubro(rubro) or "empresas"

@@ -508,14 +508,32 @@ def responder_chatboc(
         if fuente_val.startswith("demo_") or response_data.get("demo_selector_mode"):
             response_data["skip_audio_generation"] = True
 
-    # Always enable audio responses for accessibility
     context_data = chat_db_context.context_data if chat_db_context else {}
+    source_is_audio = bool(context_data.get("source_is_audio")) if isinstance(context_data, dict) else False
+    audio_channels = {"voice", "phone", "call", "twilio_voice", "realtime_voice"}
+    channel_wants_audio = str(channel or "").strip().lower() in audio_channels
+    auto_tts_for_text = os.getenv("TTS_AUTO_GENERATE_FOR_TEXT", "false").lower() in {"1", "true", "yes", "on"}
+    user_wants_audio = bool(
+        current_user
+        and getattr(current_user, "preferences", None)
+        and current_user.preferences.get("audio_response_enabled")
+    )
+    should_generate_audio = source_is_audio or channel_wants_audio or auto_tts_for_text or user_wants_audio
+
     if (
         isinstance(response_data, dict)
         and not response_data.get('generar_audio')
         and not response_data.get('skip_audio_generation')
+        and should_generate_audio
     ):
         response_data['generar_audio'] = True
+
+    if (
+        isinstance(response_data, dict)
+        and response_data.get('generar_audio')
+        and not should_generate_audio
+    ):
+        response_data['skip_audio_generation'] = True
 
     # --- Audio Response Generation ---
     if (

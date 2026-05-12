@@ -270,3 +270,46 @@ Validacion y mejoras aditivas sobre lo existente, sin crear app paralela:
 - Reclamos por WhatsApp pasan directo a categorias accionables cuando el usuario pide iniciar un reclamo.
 - Taxonomia educativa mejora labels visibles: `Documentación`, `Agenda académica`, `Tesorería`.
 - Se agrego handoff frontend: `docs/BACKEND_TO_FRONTEND_SYNC_FULL_PLATFORM_QA_2026-05-09.md`.
+
+## Runtime + Marketplace 2026-05-11
+
+Mejoras aditivas sobre runtime publico, demo/widget y marketplace:
+
+- Sesiones demo (`demo_session_id`, `X-Demo-Session-Id`, `X-Demo-Session`) ahora resuelven owner/tenant/rubro para `/api/ask/*` sin login.
+- Si el chat publico/demo tiene una excepcion interna, backend responde `chat.runtime_fallback.v1` con HTTP 200, `request_id` y acciones recuperables.
+- CORS publico permite `X-Demo-Session`, `X-Demo-Session-Id`, `Idempotency-Key` y expone `X-Request-Id`/`X-Correlation-Id`.
+- `GET /api/v2/demo/catalog` estabiliza orden y `tenant_slug` default para `gobierno`, `empresas` y `educacion`.
+- Widget config publica `support_channels.live_chat.socket_enabled` y `realtime.socket_enabled`; por defecto no habilita Socket.IO si el backend/proxy no esta listo.
+- `GET /api/public/realtime/voice-capabilities` devuelve `request_id` y JSON accionable incluso cuando no resuelve tenant.
+- Marketplace serializa `image_url`, `gallery_urls`, `image_status` e `image_alt`.
+- Crear/editar producto acepta aliases de imagen (`imagen_url`, `image_url`, `foto`, `thumbnail`, `gallery_urls`, `imagenes`, `images`).
+- Nuevo `POST /api/admin/market/catalog/{product_id}/images` para subir/reemplazar imagen principal y galeria.
+- Importacion CSV/Excel/TXT/PDF detecta columnas de imagen, devuelve `image_summary` y persiste imagenes al confirmar preview/Qdrant.
+- TTS dejo de generarse automaticamente en web/demo; queda limitado a audio/voz/preferencia o `TTS_AUTO_GENERATE_FOR_TEXT=true`.
+- Cohere fallback usa `COHERE_CHAT_MODEL=command-a-03-2025` y API v2 por defecto.
+- Se agrego handoff frontend: `docs/BACKEND_TO_FRONTEND_SYNC_RUNTIME_MARKETPLACE_2026-05-11.md`.
+
+## Widget UX/UI Onboarding 2026-05-11
+
+Mejora aditiva para el widget global de landing y la primera experiencia:
+
+- `GET /api/public/widget-config` en hosts plataforma (`chatboc.ar`, `www.chatboc.ar`, localhost) sin tenant/token devuelve selector global `public.widget_onboarding.v1`.
+- Selector global muestra tres pilares: `Colegios`, `Gobiernos`, `Empresas`, con `tenant_slug`, `sector` y `rubro` para iniciar `POST /api/v2/demo/session`.
+- Widget tenant agrega `onboarding.mode=tenant_quick_menu` y mantiene `quick_menu` backend-driven.
+- Se agrega `widget.ui_hints.v1` para UI compacta: maximo 3 quick replies visibles, acciones de composer como iconos, header liviano, botones extra colapsados.
+- Se exponen top-level `onboarding`, `media_capabilities`, `conversion_ctas`, `animation_tokens` y `ui_hints` para que frontend no tenga que buscar dentro de objetos anidados.
+- `suppress_global_widget` ahora es `false` fuera de integracion y `true` solo para preview/integracion.
+- Handoff frontend: `docs/BACKEND_TO_FRONTEND_SYNC_WIDGET_UXUI_ONBOARDING_2026-05-11.md`.
+
+## Full Platform Runtime QA 2026-05-11
+
+Cierre de blockers runtime reportados por frontend/prod:
+
+- `POST /api/ask`, `/api/ask/pyme` y `/api/ask/municipio` quedan como aliases compatibles de `/ask/*` y degradan errores 500 a `chat.runtime_fallback.v1` con `request_id`.
+- `POST /api/v2/demo/session` acepta aliases frontend en espanol: `pilar`, `categoria`, `categoria_slug`, `tenantSlug` y `tenant_key`.
+- `GET /api/public/realtime/voice-capabilities` agrega `enabled`; si el tenant tiene voice apagado responde `200` degradable con `reason_code=voice_not_enabled` y `features.tool_calling=false`.
+- `GET /api/public/widget-config` expone `visibility_rules.allow_websocket` para que frontend no intente Socket.IO cuando no esta disponible.
+- `POST /api/archivos/upload/chat_attachment` queda como alias compatible de `/archivos/upload/chat_attachment`.
+- Upload multimedia agrega `request_id` y headers CORS para `X-Widget-Token`, `X-Tenant-Slug`, `X-Demo-Session-Id` e `Idempotency-Key`.
+- `POST /api/admin/catalogo/importar` mantiene errores JSON `{ codigo, mensaje }`; metodos `GET`, `PUT`, `PATCH`, `DELETE` devuelven `method_not_allowed` en JSON.
+- Handoff frontend: `docs/BACKEND_TO_FRONTEND_SYNC_FULL_PLATFORM_QA_2026-05-11.md`.

@@ -17,3 +17,10 @@ New variables introduced for Multi-tenant Modules:
 ## General
 *   `ADMIN_EMAIL`: (Existing) Fallback email for admin notifications.
 *   `APP_BASE_URL`: Base URL for links generated in emails (e.g., `https://chatboc.ar`).
+
+## AI providers
+*   `OPENAI_API_KEY`: OpenAI API key used by chat, vision, audio and realtime flows.
+*   `OPENAI_CHAT_MODEL_DEFAULT`: Default OpenAI chat model. Current backend default is `gpt-4o-mini`.
+*   `COHERE_API_KEY`: Cohere API key used only as LLM fallback.
+*   `COHERE_CHAT_MODEL`: Cohere chat fallback model. Default is `command-a-03-2025`; the old `command-r` alias is deprecated.
+*   `COHERE_CHAT_API_VERSION`: Cohere chat API version. Default is `v2`, with `v1` retained for compatibility.

@@ -97,3 +97,11 @@ def test_method_not_allowed_returns_json(client):
     assert body["codigo"] == "method_not_allowed"
     assert "method" in body["mensaje"].lower()
     assert response.headers["Content-Type"].startswith("application/json")
+
+
+def test_unsupported_method_returns_json_not_html(client):
+    response = client.put("/api/admin/catalogo/importar")
+
+    assert response.status_code == 405
+    assert response.is_json
+    assert response.get_json()["codigo"] == "method_not_allowed"

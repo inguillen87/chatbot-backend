@@ -22,6 +22,7 @@ from routes.pwa_public import _build_public_cart_url
 
 from utils.auth_helpers import _is_jwt_token
 from services.demo_registry import load_demo_rubros
+from services.demo_pillar_catalog import DEMO_PILLAR_CONTRACT_VERSION, demo_pillars
 from services.demo_experience_contract import build_demo_experience_contract
 from services.landing_experience_contract import (
     LANDING_EXPERIENCE_CONTRACT_VERSION,
@@ -47,6 +48,7 @@ public_municipios_bp = Blueprint("public_municipios_bp", __name__)
 TENANT_PROFILE_CONTRACT_VERSION = "public.tenant_profile.v1"
 WIDGET_CONFIG_CONTRACT_VERSION = "public.widget_config.v1"
 LEAD_CAPTURE_CONTRACT_VERSION = "public.lead_capture.v1"
+WIDGET_ONBOARDING_CONTRACT_VERSION = "public.widget_onboarding.v1"
 
 
 _REALTIME_SESSION_RATE_LIMIT_WINDOW_SECONDS = 60
@@ -258,6 +260,23 @@ def _resolve_widget_api_base(tenant: TenantProfile, cfg: dict) -> str:
     return "https://api.chatboc.ar"
 
 
+def _config_flag(cfg: dict | None, *keys: str, default: bool = False) -> bool:
+    if not isinstance(cfg, dict):
+        return default
+    for key in keys:
+        if key not in cfg:
+            continue
+        value = cfg.get(key)
+        if isinstance(value, bool):
+            return value
+        normalized = str(value or "").strip().lower()
+        if normalized in {"1", "true", "yes", "si", "sí", "enabled", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "disabled", "off"}:
+            return False
+    return default
+
+
 def _socket_realtime_contract(cfg: dict) -> dict:
     enabled_raw = cfg.get("socket_enabled")
     if enabled_raw is None:
@@ -284,6 +303,231 @@ def _socket_realtime_contract(cfg: dict) -> dict:
         "socket_url": socket_url if socket_enabled else None,
         "fallback_mode": "socket_io_enabled" if socket_enabled else "polling_disabled",
         "path": "/api/socket.io" if socket_enabled else None,
+    }
+
+
+def _widget_visibility_rules(*, realtime: dict, voice_enabled: bool = True, video_enabled: bool = False) -> dict:
+    allow_websocket = bool((realtime or {}).get("socket_enabled"))
+    return {
+        "contract_version": "widget.visibility_rules.v1",
+        "allow_websocket": allow_websocket,
+        "allow_realtime_live_chat": allow_websocket,
+        "allow_voice_call": bool(voice_enabled),
+        "allow_video_call": bool(video_enabled),
+        "socket_path": (realtime or {}).get("path") if allow_websocket else None,
+        "fallback_mode": (realtime or {}).get("fallback_mode") or "polling_disabled",
+    }
+
+
+def _platform_hostnames() -> set[str]:
+    configured = current_app.config.get("PUBLIC_PLATFORM_DOMAINS") or os.environ.get("PUBLIC_PLATFORM_DOMAINS")
+    values = {"chatboc.ar", "www.chatboc.ar", "localhost", "127.0.0.1", "::1"}
+    if isinstance(configured, str):
+        values.update(item.strip().lower() for item in configured.split(",") if item.strip())
+    elif isinstance(configured, (list, tuple, set)):
+        values.update(str(item).strip().lower() for item in configured if str(item).strip())
+    return values
+
+
+def _is_platform_widget_host() -> bool:
+    host = (request.host or "").split(":", 1)[0].strip().lower()
+    return host in _platform_hostnames()
+
+
+def _default_tenant_slug_for_pillar(key: str) -> str:
+    return {
+        "gobierno": "municipio",
+        "empresas": "bodega",
+        "educacion": "colegio-demo",
+    }.get((key or "").strip().lower(), "bodega")
+
+
+def _widget_ui_hints(*, mode: str = "tenant") -> dict:
+    return {
+        "contract_version": "widget.ui_hints.v1",
+        "mode": mode,
+        "density": "compact",
+        "max_visible_quick_replies": 3,
+        "collapse_extra_quick_replies": True,
+        "composer": {
+            "single_row_actions": True,
+            "icon_buttons_only": True,
+            "show_labels_on_hover": True,
+            "hide_disabled_actions": True,
+            "send_button_always_visible": True,
+        },
+        "toolbar": {
+            "position": "composer",
+            "avoid_header_action_overload": True,
+            "show": ["attach_file", "share_location", "record_audio", "emoji"],
+            "collapse": ["whatsapp", "voice_call", "video_call", "catalog"],
+        },
+        "messages": {
+            "max_bubble_width": 0.86,
+            "compact_system_cards": True,
+            "truncate_long_intro": True,
+            "show_full_intro_link": True,
+        },
+        "layout": {
+            "mobile_full_height": True,
+            "desktop_width_px": 420,
+            "desktop_height_px": 680,
+            "avoid_nested_cards": True,
+        },
+        "rules": {
+            "do_not_render_unknown_backend_actions": True,
+            "hide_socket_errors_when_realtime_disabled": True,
+            "show_request_id_only_in_debug_or_error_details": True,
+        },
+    }
+
+
+def _platform_widget_config_payload() -> dict:
+    pillars = demo_pillars()
+    sector_groups = []
+    quick_menu = []
+    for pillar in pillars:
+        key = str(pillar.get("key") or "").strip()
+        if not key:
+            continue
+        tenant_slug = _default_tenant_slug_for_pillar(key)
+        categories = []
+        for category in pillar.get("categories") or []:
+            categories.append(
+                {
+                    "slug": category.get("slug"),
+                    "label": category.get("label"),
+                    "tipo_chat": category.get("tipo_chat"),
+                    "vertical": category.get("vertical"),
+                    "subvertical": category.get("subvertical"),
+                    "tenant_slug": tenant_slug,
+                    "sample_prompts": category.get("sample_prompts") or [],
+                    "resources": category.get("resources") or [],
+                }
+            )
+        sector_groups.append(
+            {
+                "key": key,
+                "label": pillar.get("label"),
+                "description": pillar.get("description"),
+                "tenant_slug": tenant_slug,
+                "default_rubro": pillar.get("default_rubro"),
+                "default_tipo_chat": pillar.get("default_tipo_chat"),
+                "vertical": pillar.get("vertical"),
+                "categories": categories,
+            }
+        )
+        quick_menu.append(
+            {
+                "id": f"select_{key}",
+                "label": pillar.get("label"),
+                "intent": "select_demo_sector",
+                "sector": key,
+                "tenant_slug": tenant_slug,
+                "rubro": pillar.get("default_rubro"),
+                "action_id": f"demo_select_sector:{key}",
+            }
+        )
+
+    experience = build_demo_experience_contract(
+        tenant_type="pyme",
+        rubro_label="Chatboc",
+        max_messages=10,
+        vertical=None,
+    )
+    media_capabilities = experience.get("media_capabilities") or {}
+    realtime = _socket_realtime_contract({})
+    visibility_rules = _widget_visibility_rules(realtime=realtime, voice_enabled=True, video_enabled=False)
+    voice_capabilities = build_realtime_voice_capabilities(None, {}, current_app.config)
+    live_status = build_live_chat_status()
+    live_status["available"] = False
+    live_status["realtime"] = False
+    live_status["socket_enabled"] = False
+    live_status["socket_url"] = None
+    live_status["fallback_mode"] = "polling_disabled"
+    support_channels = {
+        "live_chat": live_status,
+        "whatsapp": {
+            "enabled": False,
+            "number": None,
+            "channel": "whatsapp",
+            "media": {"text": True, "image": True, "audio": True, "file": True},
+        },
+        "voice_call": {
+            "enabled": True,
+            "channel": "voice_call",
+            "provider": "openai_realtime",
+            "contract_version": REALTIME_VOICE_CONTRACT_VERSION,
+            "capabilities": voice_capabilities,
+            "media": {"audio": True, "text": True},
+        },
+        "video_call": {
+            "enabled": False,
+            "channel": "video_call",
+            "provider": "openai_realtime",
+            "reason_code": "video_call_disabled_until_frontend_surface_ready",
+            "media": {"audio": True, "video": True, "text": True},
+        },
+    }
+    onboarding = {
+        "contract_version": WIDGET_ONBOARDING_CONTRACT_VERSION,
+        "mode": "platform_sector_selector",
+        "title": "Que queres probar?",
+        "subtitle": "Elegi un rubro y el agente abre una demo lista para conversar.",
+        "entry_question": "Que tipo de organizacion queres simular?",
+        "required_step": "select_sector",
+        "autostart_after_selection": True,
+        "selection_endpoint": "/api/v2/demo/session",
+        "catalog_endpoint": "/api/v2/demo/catalog",
+        "chat_header_policy": "use_chat_bootstrap_from_demo_session",
+        "sector_groups": sector_groups,
+    }
+    builder_config = {
+        "quick_menu": quick_menu,
+        "onboarding": onboarding,
+        "demo_catalog": {
+            "contract_version": DEMO_PILLAR_CONTRACT_VERSION,
+            "sectors": [group["key"] for group in sector_groups],
+            "sector_groups": sector_groups,
+        },
+        "media_capabilities": media_capabilities,
+        "support_channels": support_channels,
+        "realtime": realtime,
+        "visibility_rules": visibility_rules,
+        "ui_hints": _widget_ui_hints(mode="platform_selector"),
+        "experience_blueprint": experience,
+        "animation_tokens": experience.get("animation_tokens") or {},
+        "first_visit": experience.get("first_visit") or {},
+    }
+    return {
+        "contract_version": WIDGET_CONFIG_CONTRACT_VERSION,
+        "tenant": {
+            "slug": "chatboc-platform",
+            "tipo": "platform",
+            "nombre": "Chatboc",
+            "white_label": False,
+        },
+        "widget": {
+            "mode": "platform_selector",
+            "quick_menu": quick_menu,
+            "onboarding": onboarding,
+            "media_capabilities": media_capabilities,
+            "support_channels": support_channels,
+            "realtime": realtime,
+            "visibility_rules": visibility_rules,
+            "ui_hints": builder_config["ui_hints"],
+        },
+        "builder_config": builder_config,
+        "quick_menu": quick_menu,
+        "onboarding": onboarding,
+        "demo_catalog": builder_config["demo_catalog"],
+        "media_capabilities": media_capabilities,
+        "support_channels": support_channels,
+        "realtime": realtime,
+        "visibility_rules": visibility_rules,
+        "ui_hints": builder_config["ui_hints"],
+        "suppress_global_widget": False,
+        "integration_preview": False,
     }
 
 
@@ -721,6 +965,8 @@ def realtime_voice_capabilities():
             cfg = _normalize_widget_config(tenant.configuracion, tenant.widget_settings)
         except TenantResolutionError as exc:
             payload = build_realtime_voice_capabilities(None, {}, current_app.config)
+            payload["enabled"] = False
+            payload.setdefault("features", {})["tool_calling"] = False
             payload.update(
                 {
                     "request_id": request_id,
@@ -736,6 +982,12 @@ def realtime_voice_capabilities():
             return response
 
     payload = build_realtime_voice_capabilities(tenant, cfg, current_app.config)
+    voice_enabled = _config_flag(cfg, "realtime_voice_enabled", default=True)
+    payload["enabled"] = voice_enabled
+    if not voice_enabled:
+        payload["reason_code"] = "voice_not_enabled"
+        payload.setdefault("features", {})["tool_calling"] = False
+        payload["action_hint"] = "enable realtime_voice_enabled for this tenant"
     payload["request_id"] = request_id
     if tenant:
         payload["tenant"] = {
@@ -904,8 +1156,8 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
         "data-realtime-voice": resolve_realtime_voice(cfg, current_app.config),
         "data-realtime-transport": "webrtc",
         "data-realtime-profile": "realtime_voice_native",
-        "data-realtime-voice-enabled": str(bool(cfg.get("realtime_voice_enabled", True))).lower(),
-        "data-realtime-video-enabled": str(bool(cfg.get("realtime_video_enabled", False))).lower(),
+        "data-realtime-voice-enabled": str(_config_flag(cfg, "realtime_voice_enabled", default=True)).lower(),
+        "data-realtime-video-enabled": str(_config_flag(cfg, "realtime_video_enabled", default=False)).lower(),
         "data-avatar-enabled": str(bool(cfg.get("widget_avatar_enabled", True))).lower(),
         "data-avatar-type": cfg.get("widget_avatar_type") or "robot",
         "data-avatar-persona": cfg.get("widget_avatar_persona") or "chatboc_assistant",
@@ -948,6 +1200,11 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
 
     support_channels = _support_channels_payload(tenant, cfg)
     realtime_contract = _socket_realtime_contract(cfg)
+    visibility_rules = _widget_visibility_rules(
+        realtime=realtime_contract,
+        voice_enabled=_config_flag(cfg, "realtime_voice_enabled", default=True),
+        video_enabled=_config_flag(cfg, "realtime_video_enabled", default=False),
+    )
     rubro_profile = _tenant_rubro_profile(tenant)
     demo_trial = _demo_trial_payload_for_widget(tenant, cfg)
     quick_menu = _quick_menu_for_widget(tenant)
@@ -1004,6 +1261,8 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
         "attributes": attrs,
         "support_channels": support_channels,
         "realtime": realtime_contract,
+        "visibility_rules": visibility_rules,
+        "ui_hints": _widget_ui_hints(mode="tenant"),
         "enterprise_iteration": {
             "realtime": {
                 **realtime_contract,
@@ -1050,6 +1309,16 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
         "media_capabilities": media_capabilities,
         "conversion_ctas": conversion_ctas,
         "animation_tokens": animation_tokens,
+        "onboarding": {
+            "contract_version": WIDGET_ONBOARDING_CONTRACT_VERSION,
+            "mode": "tenant_quick_menu",
+            "title": welcome_title,
+            "subtitle": welcome_subtitle,
+            "entry_question": "Que necesitas resolver?",
+            "quick_menu": quick_menu,
+            "autostart_after_selection": False,
+            "chat_header_policy": "use_tenant_widget_config",
+        },
     }
     if education_payload:
         builder_config["education"] = education_payload
@@ -1065,6 +1334,8 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
         "marketplace": marketplace,
         "support_channels": support_channels,
         "realtime": realtime_contract,
+        "visibility_rules": visibility_rules,
+        "ui_hints": builder_config["ui_hints"],
         "rubro_profile": rubro_profile,
         "demo_trial": demo_trial,
         "quick_menu": quick_menu,
@@ -1076,6 +1347,7 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
         "media_capabilities": media_capabilities,
         "conversion_ctas": conversion_ctas,
         "animation_tokens": animation_tokens,
+        "onboarding": builder_config["onboarding"],
         "widget_token": canonical_token,
         "widget_token_cookie_name": current_app.config.get("WIDGET_TOKEN_COOKIE_NAME", "widget_token"),
         "education": education_payload,
@@ -1551,6 +1823,15 @@ def widget_config():
     tenant_slug = request.args.get("tenant") or request.args.get("slug")
     whatsapp_destination_number = request.args.get("whatsapp_destination_number")
 
+    if (
+        not widget_token
+        and not tenant_slug
+        and not whatsapp_destination_number
+        and _is_platform_widget_host()
+    ):
+        response = jsonify(_platform_widget_config_payload())
+        return _log_widget_public_request(response, tenant="chatboc-platform")
+
     try:
         tenant = resolve_tenant_only(
             whatsapp_destination_number=whatsapp_destination_number,
@@ -1581,6 +1862,12 @@ def widget_config():
         "widget": widget_payload,
         "builder_config": widget_payload.get("builder_config", {}),
         "quick_menu": widget_payload.get("quick_menu", []),
+        "onboarding": widget_payload.get("onboarding", {}),
+        "media_capabilities": widget_payload.get("media_capabilities", {}),
+        "conversion_ctas": widget_payload.get("conversion_ctas", {}),
+        "animation_tokens": widget_payload.get("animation_tokens", {}),
+        "ui_hints": widget_payload.get("ui_hints", {}),
+        "visibility_rules": widget_payload.get("visibility_rules", {}),
         "support_channels": widget_payload.get("support_channels", {}),
         "realtime": widget_payload.get("realtime", {}),
         "realtime_voice": (widget_payload.get("support_channels", {}).get("voice_call", {}).get("capabilities")),
@@ -1590,7 +1877,7 @@ def widget_config():
         # The integration builder renders its own preview iframe; the global
         # site-wide widget bubble must stay hidden to avoid duplicated widgets
         # on /t/[tenant]/integracion.
-        "suppress_global_widget": True,
+        "suppress_global_widget": is_integration_preview,
         "integration_preview": is_integration_preview,
     }
 

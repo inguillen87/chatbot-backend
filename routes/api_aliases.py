@@ -38,6 +38,7 @@ from routes.auth import (
     demo_catalog,
     login_demo,
 )
+from routes.archivos import upload_chat_attachment, upload_chat_attachment_options
 from routes.chat import ask, ask_municipio, ask_pyme
 from routes.carrito import agregar, carrito_root, eliminar, vaciar, actualizar
 from routes.estadisticas import (
@@ -101,6 +102,64 @@ def _normalized_request_id() -> str:
         if cleaned:
             return cleaned
     return uuid.uuid4().hex
+
+
+def _degraded_chat_alias_response(*, request_id: str, source: str):
+    message = (
+        "La conversacion sigue disponible en modo demo. "
+        "Podes escribir una consulta, adjuntar informacion o elegir una accion para continuar."
+    )
+    response = jsonify(
+        {
+            "contract_version": "chat.runtime_fallback.v1",
+            "respuesta_usuario": message,
+            "respuesta": message,
+            "message_body": message,
+            "botones": [
+                {"texto": "Crear ticket", "action": "crear_ticket", "action_id": "crear_ticket"},
+                {"texto": "Consultar estado", "action": "consultar_estado", "action_id": "consultar_estado"},
+                {"texto": "Hablar con una persona", "action": "derivar_humano", "action_id": "derivar_humano"},
+            ],
+            "actions": [],
+            "ticket": None,
+            "request_id": request_id,
+            "fuente": source,
+            "error": {
+                "code": 200,
+                "message": "chat_runtime_degraded",
+                "reason_code": "chat_runtime_degraded",
+            },
+        }
+    )
+    response.status_code = 200
+    response.headers["X-Request-Id"] = request_id
+    return response
+
+
+def _chat_alias(view_func, *, source: str):
+    request_id = _normalized_request_id()
+    if request.method == "OPTIONS":
+        response = jsonify({"ok": True, "request_id": request_id})
+        response.headers["X-Request-Id"] = request_id
+        return response
+
+    try:
+        response = make_response(view_func())
+    except Exception as exc:  # pragma: no cover - defensive runtime guard
+        current_app.logger.exception("[api_aliases] %s failed: %s", request.path, exc)
+        return _degraded_chat_alias_response(request_id=request_id, source=source)
+
+    if response.status_code >= 500:
+        current_app.logger.warning(
+            "[api_aliases] %s degraded status=%s request_id=%s",
+            request.path,
+            response.status_code,
+            request_id,
+        )
+        return _degraded_chat_alias_response(request_id=request_id, source=source)
+
+    response.headers.setdefault("X-Request-Id", request_id)
+    return response
 
 
 @api_aliases_bp.route("/auth/admin/login", methods=["POST", "OPTIONS"], strict_slashes=False)
@@ -211,17 +270,27 @@ def me_alias():
 
 @api_aliases_bp.route("/ask", methods=["POST", "OPTIONS"], strict_slashes=False)
 def ask_alias():
-    return ask()
+    return _chat_alias(ask, source="api_ask_alias")
 
 
 @api_aliases_bp.route("/ask/pyme", methods=["POST", "OPTIONS"], strict_slashes=False)
 def ask_pyme_alias():
-    return ask_pyme()
+    return _chat_alias(ask_pyme, source="api_ask_pyme_alias")
 
 
 @api_aliases_bp.route("/ask/municipio", methods=["POST", "OPTIONS"], strict_slashes=False)
 def ask_municipio_alias():
-    return ask_municipio()
+    return _chat_alias(ask_municipio, source="api_ask_municipio_alias")
+
+
+@api_aliases_bp.route("/archivos/upload/chat_attachment", methods=["OPTIONS"], strict_slashes=False)
+def upload_chat_attachment_options_alias():
+    return upload_chat_attachment_options()
+
+
+@api_aliases_bp.route("/archivos/upload/chat_attachment", methods=["POST"], strict_slashes=False)
+def upload_chat_attachment_alias():
+    return upload_chat_attachment()
 
 
 def _options_ok():

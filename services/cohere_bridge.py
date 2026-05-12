@@ -16,11 +16,61 @@ except Exception as e:
     logger.error(f"Failed to initialize Cohere client: {e}")
     co = None
 
+try:
+    co_v2 = cohere.ClientV2()
+except Exception as e:
+    logger.warning(f"Failed to initialize Cohere ClientV2: {e}")
+    co_v2 = None
+
+
+def _cohere_chat_model() -> str:
+    return os.getenv("COHERE_CHAT_MODEL", "command-a-03-2025")
+
+
+def _extract_response_text(response) -> str:
+    text = getattr(response, "text", None)
+    if isinstance(text, str) and text.strip():
+        return text.strip()
+
+    message = getattr(response, "message", None)
+    content = getattr(message, "content", None) if message is not None else None
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict):
+                parts.append(str(item.get("text") or ""))
+            else:
+                parts.append(str(getattr(item, "text", "") or ""))
+        joined = "".join(parts).strip()
+        if joined:
+            return joined
+    if isinstance(content, str):
+        return content.strip()
+
+    return ""
+
+
+def _parse_llm_json(raw_response_text: str) -> dict:
+    raw_response_text = raw_response_text.strip()
+    if raw_response_text.startswith("```json"):
+        raw_response_text = raw_response_text[len("```json"):].strip()
+    if raw_response_text.endswith("```"):
+        raw_response_text = raw_response_text[:-len("```")].strip()
+    parsed_response = json.loads(raw_response_text)
+    parsed_response.setdefault('message_body', parsed_response.get('respuesta_usuario', ''))
+    parsed_response.setdefault('accion_backend', 'responder_directamente')
+    if not isinstance(parsed_response.get('datos_estructura'), dict):
+        parsed_response['datos_estructura'] = {}
+    if not isinstance(parsed_response.get('botones'), list):
+        parsed_response['botones'] = []
+    parsed_response.setdefault('pedir_info', None)
+    return parsed_response
+
 def llamar_cohere(app, mensaje_usuario: str, usuario: dict, historial: list, chat_session_id: str) -> tuple[dict, dict]:
     """
     Calls the Cohere API and formats the response to be compatible with the application's structure.
     """
-    if not co:
+    if not co and not co_v2:
         raise ConnectionError("Cohere client is not initialized. Check API key.")
 
     # 1. Format the history for Cohere's chat endpoint
@@ -53,33 +103,33 @@ def llamar_cohere(app, mensaje_usuario: str, usuario: dict, historial: list, cha
     logger.info(f"Sending to Cohere. Message: {message[:100]}...")
 
     try:
-        # 3. Make the API call
-        response = co.chat(
-            message=message,
-            chat_history=chat_history,
-            preamble=preamble,
-            model="command-r",  # A good default model
-            temperature=0.3,
-        )
+        model = _cohere_chat_model()
+        if co_v2 and os.getenv("COHERE_CHAT_API_VERSION", "v2").lower() == "v2":
+            messages = [{"role": "system", "content": preamble}]
+            for item in chat_history:
+                role = "user" if item.get("role") == "USER" else "assistant"
+                messages.append({"role": role, "content": item.get("message", "")})
+            messages.append({"role": "user", "content": message})
+            response = co_v2.chat(
+                model=model,
+                messages=messages,
+                temperature=0.3,
+            )
+        else:
+            response = co.chat(
+                message=message,
+                chat_history=chat_history,
+                preamble=preamble,
+                model=model,
+                temperature=0.3,
+            )
 
-        raw_response_text = response.text.strip()
+        raw_response_text = _extract_response_text(response)
         logger.info(f"Response from Cohere (raw): {raw_response_text}")
 
-        # 4. Parse the response
-        # This assumes Cohere returns a JSON string similar to OpenAI's.
-        # This might need significant adjustment based on actual Cohere output.
-        if raw_response_text.startswith("```json"):
-            raw_response_text = raw_response_text[len("```json"):].strip()
-        if raw_response_text.endswith("```"):
-            raw_response_text = raw_response_text[:-len("```")].strip()
+        parsed_response = _parse_llm_json(raw_response_text)
 
-        parsed_response = json.loads(raw_response_text)
-
-        # Ensure the response has the keys our application expects
-        parsed_response.setdefault('message_body', parsed_response.get('respuesta_usuario', ''))
-        parsed_response.setdefault('accion_backend', 'responder_directamente')
-
-        return parsed_response, {}
+        return parsed_response, {"model_used": model}
 
     except Exception as e:
         logger.error(f"Error calling Cohere API: {e}", exc_info=True)
