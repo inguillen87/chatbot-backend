@@ -446,6 +446,9 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertIn("surveys_votings", module_ids)
         self.assertIn("marketplace", module_ids)
         self.assertIn("education", module_ids)
+        whatsapp_module = next(item for item in payload["modules"] if item["id"] == "widget_whatsapp")
+        self.assertEqual(whatsapp_module["label"], "Widget/WhatsApp/Voz")
+        self.assertEqual(whatsapp_module["endpoint"], "/api/v2/whatsapp/experience")
         for module in payload["modules"]:
             self.assertIn("secondary_endpoints", module)
             self.assertIn("widgets", module)
@@ -465,6 +468,7 @@ class V2SaasContractsTest(unittest.TestCase):
         payload = response.get_json()
         self.assertEqual(payload.get("contract_version"), "whatsapp.experience.v1")
         self.assertEqual(payload.get("request_id"), "whatsapp-exp-1")
+        self.assertEqual(response.headers.get("X-Request-Id"), "whatsapp-exp-1")
         self.assertEqual(payload["tenant"]["slug"], self.tenant.slug)
         self.assertTrue(payload["channel"]["enabled"])
         self.assertEqual(payload["enterprise_rules"]["max_outbound_per_hour"], 200)
@@ -472,6 +476,9 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertTrue(payload["conversation_intelligence"]["inputs"]["emoji"]["enabled"])
         self.assertTrue(payload["conversation_intelligence"]["inputs"]["location"]["enabled"])
         self.assertTrue(payload["conversation_intelligence"]["inputs"]["audio_note"]["enabled"])
+        self.assertTrue(payload["conversation_intelligence"]["inputs"]["video"]["enabled"])
+        self.assertFalse(payload["conversation_intelligence"]["inputs"]["video"]["analysis_ready"])
+        self.assertTrue(payload["conversation_intelligence"]["voice_calls"]["enabled"])
         self.assertTrue(payload["conversation_intelligence"]["voice_calls"]["capabilities"]["native_speech_to_speech"])
         self.assertEqual(payload["content_modules"]["catalog"]["items"], 1)
         self.assertEqual(payload["content_modules"]["catalog"]["items_with_images"], 1)
@@ -481,10 +488,23 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(payload["content_modules"]["links"]["tenant_config_links"], 1)
         self.assertEqual(payload["tracking"]["claims"]["open"], 1)
         self.assertEqual(payload["tracking"]["orders"]["total"], 1)
+        self.assertEqual(payload["tracking"]["claims"]["experience_endpoint"], "/api/public/tracking/experience?kind=claim&code={code}&pin={pin}")
+        self.assertEqual(payload["tracking"]["orders"]["experience_endpoint"], "/api/public/tracking/experience?kind=order&code={code}")
+        self.assertEqual(payload["tracking"]["courier_style_map"]["render_contract"]["fallback_when_no_coordinates"], "timeline_only")
         self.assertIn("route_progress", payload["tracking"]["courier_style_map"]["render_contract"]["animations"])
         self.assertEqual(payload["admin_panel"]["inbox"], "/api/v2/inbox/omnichannel")
         self.assertTrue(payload["education"]["enabled"])
         self.assertEqual(payload["frontend_contract"]["render_as"], "whatsapp_operations_hub")
+
+        alias_response = self.client.get(
+            f"/api/v2/tenants/{self.tenant.slug}/whatsapp/experience",
+            headers={**self._auth(self.super_admin), "X-Request-Id": "whatsapp-exp-alias-1"},
+        )
+        self.assertEqual(alias_response.status_code, 200)
+        alias_payload = alias_response.get_json()
+        self.assertEqual(alias_payload.get("contract_version"), "whatsapp.experience.v1")
+        self.assertEqual(alias_payload.get("request_id"), "whatsapp-exp-alias-1")
+        self.assertEqual(alias_payload["tenant"]["slug"], self.tenant.slug)
 
     def test_superadmin_command_center_contract(self):
         response = self.client.get(

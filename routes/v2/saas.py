@@ -668,7 +668,7 @@ def _admin_modules_payload(tenant: TenantProfile, *, education_profile: dict[str
         },
         {
             "id": "widget_whatsapp",
-            "label": "Widget, WhatsApp y voz",
+            "label": "Widget/WhatsApp/Voz",
             "route": f"{base}/channels",
             "endpoint": "/api/v2/whatsapp/experience",
             "secondary_endpoints": [

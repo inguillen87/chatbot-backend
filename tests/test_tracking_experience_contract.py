@@ -100,12 +100,14 @@ class TrackingExperienceContractTest(unittest.TestCase):
         payload = response.get_json()
         self.assertEqual(payload["contract_version"], "tracking.experience.v1")
         self.assertEqual(payload["request_id"], "track-claim-1")
+        self.assertEqual(response.headers.get("X-Request-Id"), "track-claim-1")
         self.assertEqual(payload["kind"], "claim")
         self.assertEqual(payload["tenant"]["slug"], self.tenant.slug)
         self.assertEqual(payload["resource"]["code"], "M-123456")
         self.assertEqual(payload["status"]["current_stage"], "en_proceso")
         self.assertTrue(payload["map"]["has_coordinates"])
         self.assertIn("route_progress", payload["map"]["animations"])
+        self.assertEqual(payload["map"]["fallback_when_no_coordinates"], "timeline_only")
         self.assertTrue(any(item["type"] == "comment" for item in payload["timeline"]))
 
     def test_public_order_tracking_experience_returns_items_and_progress(self):
@@ -123,6 +125,7 @@ class TrackingExperienceContractTest(unittest.TestCase):
         self.assertEqual(payload["status"]["current_stage"], "preparando")
         self.assertEqual(payload["items"][0]["title"], "Taladro")
         self.assertTrue(payload["map"]["has_coordinates"])
+        self.assertEqual(payload["map"]["fallback_when_no_coordinates"], "timeline_only")
         self.assertEqual(payload["frontend_contract"]["render_as"], "tracking_map_timeline")
 
     def test_claim_tracking_requires_pin(self):
@@ -132,6 +135,7 @@ class TrackingExperienceContractTest(unittest.TestCase):
         payload = response.get_json()
         self.assertEqual(payload["reason_code"], "tracking_pin_required")
         self.assertEqual(payload["contract_version"], "tracking.experience.v1")
+        self.assertIn("request_id", payload)
 
 
 if __name__ == "__main__":

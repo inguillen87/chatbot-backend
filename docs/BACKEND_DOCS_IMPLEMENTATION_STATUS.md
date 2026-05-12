@@ -187,6 +187,7 @@ Mejora aditiva para que WhatsApp quede conectado con panel tenant, demo, widget,
 - `GET /api/public/tracking/experience` y `GET /tracking/api/experience` devuelven `tracking.experience.v1` para reclamos (`kind=claim&code=M-...&pin=...`) y pedidos (`kind=order&code=...`) con estado, hitos, timeline, mapa, acciones y contrato frontend.
 - `content_modules` expone calidad de catalogo/imagenes, encuestas/votaciones, noticias/eventos, promociones y links configurables por tenant.
 - Se agrego handoff frontend: `docs/BACKEND_TO_FRONTEND_SYNC_WHATSAPP_OPERATIONS_2026-05-12.md`.
+- QA frontend 2026-05-12: se confirmaron alias tenant-aware, `request_id`/`X-Request-Id`, modulo `widget_whatsapp` con endpoint canonico, video con `analysis_ready:false`, voz gated por `voice_calls.enabled + native_speech_to_speech`, tracking publico JSON y fallback `timeline_only`.
 
 Verificacion ejecutada:
 

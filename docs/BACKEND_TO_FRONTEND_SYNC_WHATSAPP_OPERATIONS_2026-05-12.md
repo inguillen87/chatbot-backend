@@ -181,6 +181,17 @@ Colegios:
 - No mostrar botones de llamada, audio, imagen o ubicacion si backend los deshabilita.
 - Usar `request_id` en errores y soporte.
 
+## QA frontend 2026-05-12 confirmado
+
+- `GET /api/v2/whatsapp/experience` responde `whatsapp.experience.v1` con `request_id` y header `X-Request-Id`.
+- `GET /api/v2/tenants/{tenant_slug}/whatsapp/experience` queda cubierto como alias tenant-aware.
+- `GET /api/v2/tenant/admin-experience` incluye resumen `whatsapp` y el modulo `widget_whatsapp`.
+- El modulo `widget_whatsapp` expone `label: "Widget/WhatsApp/Voz"` y `endpoint: "/api/v2/whatsapp/experience"`.
+- Video se mantiene como adjunto con `analysis_ready: false`.
+- Voz se habilita solo con `conversation_intelligence.voice_calls.enabled` y `capabilities.native_speech_to_speech`.
+- Tracking conserva `experience_endpoint` para claim/order y `fallback_when_no_coordinates: "timeline_only"`.
+- `GET /api/public/tracking/experience` responde JSON con `tracking.experience.v1`, `request_id`, timeline, status, mapa/render contract y errores JSON accionables.
+
 ## Referencias tecnologia voz
 
 - OpenAI Realtime WebRTC: https://platform.openai.com/docs/guides/realtime-webrtc
