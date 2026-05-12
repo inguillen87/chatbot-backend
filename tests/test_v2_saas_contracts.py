@@ -397,6 +397,39 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(payload["demo_context"]["rubro"], "colegio")
         self.assertFalse(payload["session"]["sends_real_message"])
 
+    def test_whatsapp_sandbox_setup_and_test_contracts_are_backend_first(self):
+        setup_response = self.client.get(
+            f"/api/v2/tenants/{self.tenant.slug}/whatsapp/sandbox-setup",
+            headers={**self._auth(self.owner), "X-Request-Id": "sandbox-setup-1"},
+        )
+
+        self.assertEqual(setup_response.status_code, 200)
+        setup = setup_response.get_json()
+        self.assertEqual(setup["contract_version"], "whatsapp.sandbox_setup.v1")
+        self.assertEqual(setup["request_id"], "sandbox-setup-1")
+        self.assertEqual(setup["tenant_slug"], self.tenant.slug)
+        self.assertEqual(setup["provider"], "twilio_whatsapp")
+        self.assertTrue(setup["sandbox"]["enabled"])
+        self.assertEqual(setup["sandbox"]["join_number"], "whatsapp:+14155238886")
+        self.assertEqual(setup["test"]["endpoint"], f"/api/v2/tenants/{self.tenant.slug}/whatsapp/sandbox-test")
+        self.assertEqual(setup["frontend_contract"]["render_as"], "whatsapp_sandbox_onboarding")
+        self.assertIsInstance(setup["demo_context"]["quick_menu"], list)
+
+        test_response = self.client.post(
+            f"/api/v2/tenants/{self.tenant.slug}/whatsapp/sandbox-test",
+            json={"to": "+5491111111111", "message": "Hola menu"},
+            headers={**self._auth(self.owner), "X-Request-Id": "sandbox-test-1"},
+        )
+
+        self.assertEqual(test_response.status_code, 200)
+        payload = test_response.get_json()
+        self.assertEqual(payload["contract_version"], "whatsapp.sandbox_test.v1")
+        self.assertEqual(payload["request_id"], "sandbox-test-1")
+        self.assertFalse(payload["sends_real_message"])
+        self.assertEqual(payload["mode"], "copy_or_deeplink")
+        self.assertIn("wa.me/14155238886", payload["twilio"]["wa_deeplink"])
+        self.assertEqual(payload["message_preview"]["message"], "Hola menu")
+
     def test_admin_catalog_exposes_and_saves_draft_endpoint(self):
         get_response = self.client.get(
             f"/api/admin/tenants/{self.tenant.slug}/catalog",

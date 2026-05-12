@@ -283,3 +283,27 @@ Verificacion:
 - `tests/test_public_tenant_catalog_alias.py::test_widget_user_tenant_history_returns_cart_claims_and_orders`
 - `tests/test_public_tenant_catalog_alias.py::test_pwa_public_cart_summary_and_items_aliases`
 - `scripts/local_platform_smoke.py` -> 11/11 OK.
+
+## WhatsApp Sandbox guiado 2026-05-12
+
+Backend agregado para que Integraciones no invente pasos ni copy por tenant:
+
+- `GET /api/v2/tenants/{tenant_slug}/whatsapp/sandbox-setup`
+- Alias: `GET /api/v2/whatsapp/sandbox-setup`
+- `POST /api/v2/tenants/{tenant_slug}/whatsapp/sandbox-test`
+- Alias: `POST /api/v2/whatsapp/sandbox-test`
+- `OPTIONS` disponible para los cuatro paths.
+
+`whatsapp.sandbox_setup.v1` entrega:
+
+- numero sandbox, frase `join`, deeplink `wa.me` y QR URL;
+- instrucciones backend-first;
+- `demo_context` con `sector`, `tenant_slug`, `rubro`, `brief`, `test_message` y `quick_menu`;
+- `test.endpoint` solo cuando el sandbox esta habilitado;
+- `frontend_contract.render_as = whatsapp_sandbox_onboarding`.
+
+`whatsapp.sandbox_test.v1` no envia mensajes reales; devuelve `copy_text`, deeplink y preview para que el admin pruebe desde WhatsApp Sandbox sin romper produccion.
+
+Verificacion:
+
+- `tests/test_v2_saas_contracts.py::V2SaasContractsTest::test_whatsapp_sandbox_setup_and_test_contracts_are_backend_first`
