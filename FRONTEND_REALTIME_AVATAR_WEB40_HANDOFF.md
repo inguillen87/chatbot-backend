@@ -4,7 +4,7 @@
 Habilitar en el widget web una experiencia multimodal en tiempo real (chat + llamada + videollamada con avatar robótico) con soporte inclusivo para usuarios que no quieren/no pueden escribir o enviar notas de voz.
 
 ## Estado backend entregado
-El backend ya expone metadata para integrar **OpenAI Realtime (gpt-realtime-1.5)** en la configuración pública del widget.
+El backend ya expone metadata para integrar **OpenAI Realtime (gpt-realtime)** en la configuración pública del widget.
 
 ### 1) Nuevos canales en `support_channels`
 En `GET /api/public/widget-config?tenant=<slug>` ahora llegan:
@@ -14,7 +14,7 @@ En `GET /api/public/widget-config?tenant=<slug>` ahora llegan:
 Campos relevantes:
 - `enabled`
 - `provider = "openai_realtime"`
-- `model = "gpt-realtime-1.5"` (o override por tenant)
+- `model = "gpt-realtime"` (o override por tenant)
 - `features` (barge-in, captions, accesibilidad, transferencia humano)
 
 ### 2) Nuevos atributos para el script/widget
@@ -42,7 +42,7 @@ Body recomendado:
 
 Respuesta:
 - `session`: payload de OpenAI Realtime Sessions (incluye credenciales efímeras/client secret).
-- `model`: modelo efectivo (default `gpt-realtime-1.5`).
+- `model`: modelo efectivo (default `gpt-realtime`).
 - `avatar`: metadata de avatar/persona para el runtime visual.
 
 Fallbacks:

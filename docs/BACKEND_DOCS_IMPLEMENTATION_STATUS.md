@@ -123,7 +123,7 @@ Pendientes honestos de siguiente ola:
 
 Mejora aditiva sobre la base existente de Twilio Voice/Media Streams y OpenAI Realtime:
 
-- Default realtime actualizado a `gpt-realtime-2`; fallback documentado `gpt-realtime-1.5`.
+- Default realtime actualizado a `gpt-realtime`; fallback configurable por env/tenant.
 - `services/realtime_voice_profiles.py` centraliza contrato `realtime.voice_capabilities.v1`, perfiles por vertical, tools e instrucciones de voz.
 - `GET /api/public/realtime/voice-capabilities` expone capacidades de llamadas para landing/widget/demo.
 - `GET /api/public/widget-config` agrega `realtime_voice` y atributos `data-realtime-model`, `data-realtime-fallback-model`, `data-realtime-voice`, `data-realtime-transport` y `data-realtime-profile`.
@@ -155,6 +155,40 @@ Contratos nuevos para destrabar secciones enterprise:
 Verificacion SaaS P1 ejecutada:
 
 - `tests.test_v2_saas_contracts`
+
+## Tenant admin profile + superadmin command center 2026-05-12
+
+Mejora aditiva sobre SaaS P1/P2 para que cada PyME, colegio, municipio o rama de gobierno tenga un perfil operativo completo sin crear una app paralela:
+
+- `GET /api/v2/tenant/admin-experience` y `GET /api/v2/tenants/{slug}/admin-experience` devuelven `contract_version: tenant.admin_experience.v1` con perfil, readiness, health, operaciones, freshness, leads/tickets, encuestas/votaciones, marketplace, modulos y seccion educativa cuando aplica.
+- `tenant.readiness.v1` consolida checks de perfil, branding, widget, WhatsApp, equipo, catalogo, encuestas y SLA.
+- `tenant.marketplace_ops.v1` expone conteos de productos, cobertura de imagenes, pedidos y capacidades de bulk import/imagenes/PDF catalog.
+- `tenant.surveys_ops.v1` resume encuestas, votaciones live y respuestas para el panel tenant.
+- `tenant.lead_capture.v1` unifica tickets/leads recientes de `TenantTicket`, `MunicipioTicket` y `PymeTicket`, con endpoints para inbox y leads legacy.
+- `GET /api/v2/superadmin/command-center` devuelve `contract_version: superadmin.command_center.v1` con KPIs multi-tenant, ranking de riesgo, readiness por tenant, lead capture y contrato para crear tenants via `/api/admin/tenants`.
+- Se agrego handoff frontend: `docs/BACKEND_TO_FRONTEND_SYNC_TENANT_ADMIN_PROFILE_2026-05-12.md`.
+
+Verificacion ejecutada:
+
+- `tests/test_v2_saas_contracts.py` (`9 passed` tras sumar WhatsApp operations).
+
+## WhatsApp operations hub 2026-05-12
+
+Mejora aditiva para que WhatsApp quede conectado con panel tenant, demo, widget, encuestas, noticias/eventos, promociones, catalogos, URLs y tracking de reclamos/pedidos:
+
+- `services/whatsapp_experience.py` centraliza `whatsapp.experience.v1` sin duplicar los flujos existentes.
+- `GET /api/v2/whatsapp/experience` y `GET /api/v2/tenants/{tenant_slug}/whatsapp/experience` devuelven estado del canal, reglas enterprise, ventana 24h, inteligencia conversacional, modulos de contenido, tracking y endpoints del panel admin.
+- `GET /api/v2/tenant/admin-experience` agrega resumen `whatsapp` y el modulo `widget_whatsapp` apunta al nuevo endpoint operativo.
+- `conversation_intelligence.inputs` declara soporte para texto, emojis, ubicacion, imagenes, notas de voz, archivos/PDF y video como adjunto.
+- `conversation_intelligence.voice_calls` usa `realtime.voice_capabilities.v1` con `gpt-realtime` por defecto, WebRTC para browser, WebSocket server-side y puente Twilio/SIP para telefono.
+- `tracking.courier_style_map` define contrato para mapa/timeline tipo courier con `pulse_current_step`, `route_progress` y `status_transition`, degradando a timeline si no hay coordenadas.
+- `content_modules` expone calidad de catalogo/imagenes, encuestas/votaciones, noticias/eventos, promociones y links configurables por tenant.
+- Se agrego handoff frontend: `docs/BACKEND_TO_FRONTEND_SYNC_WHATSAPP_OPERATIONS_2026-05-12.md`.
+
+Verificacion ejecutada:
+
+- `tests/test_v2_saas_contracts.py` (`9 passed`).
+- Suite ampliada con API v2 foundation, operational analytics, SaaS, realtime voice y public resolver (`39 passed`).
 
 ## SaaS P2 commerce y operaciones 2026-05-01
 

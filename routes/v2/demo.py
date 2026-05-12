@@ -459,6 +459,8 @@ def demo_session_v2():
             return _error_response("No se pudo resolver tenant demo", 404, "tenant_resolution_failed", "send_tenant_slug")
 
     tenant_type = (tenant.tipo or "pyme").strip().lower()
+    if rubro and tenant.slug and rubro.replace("_", "-") == tenant.slug:
+        rubro = tenant.slug
     education_profile = build_education_profile(tenant, rubro_label=tenant.nombre)
     vertical = "educacion" if sector == "educacion" or education_profile.get("is_education") else tenant.vertical
     experience = build_demo_experience_contract(

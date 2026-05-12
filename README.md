@@ -29,7 +29,7 @@ selection instructions to maintain full visibility of all choices.
   pronunciations friendly for usuarios rioplatenses.
 - Realtime voice calls (Twilio Media Streams) now use a dedicated model
   setting: `OPENAI_REALTIME_SPEECH_MODEL` (fallback compatible with
-  `OPENAI_REALTIME_MODEL`), defaulting to `gpt-realtime-1.5`. This is scoped to
+  `OPENAI_REALTIME_MODEL`), defaulting to `gpt-realtime`. This is scoped to
   live speech sessions and does not change the regular chat-model defaults.
 - Chat model selection is now channel-aware and configurable: use
   `OPENAI_CHAT_MODEL_DEFAULT` as base, plus `OPENAI_CHAT_MODEL_WHATSAPP` and

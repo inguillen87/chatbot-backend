@@ -13,18 +13,18 @@ from services.realtime_voice_profiles import (
 
 
 class RealtimeVoiceProfilesTestCase(unittest.TestCase):
-    def test_defaults_to_realtime_2_with_1_5_fallback(self):
+    def test_defaults_to_current_realtime_model(self):
         capabilities = build_realtime_voice_capabilities()
 
         self.assertEqual(capabilities["contract_version"], REALTIME_VOICE_CONTRACT_VERSION)
         self.assertEqual(capabilities["recommended_model"], DEFAULT_REALTIME_VOICE_MODEL)
-        self.assertEqual(capabilities["fallback_model"], "gpt-realtime-1.5")
+        self.assertEqual(capabilities["fallback_model"], "gpt-realtime")
         self.assertTrue(capabilities["native_speech_to_speech"])
 
     def test_config_can_override_model_without_losing_fallback(self):
-        model = resolve_realtime_model({"openai_realtime_model": "gpt-realtime-1.5"})
+        model = resolve_realtime_model({"openai_realtime_model": "gpt-realtime-custom"})
 
-        self.assertEqual(model, "gpt-realtime-1.5")
+        self.assertEqual(model, "gpt-realtime-custom")
 
     def test_school_tenant_gets_school_case_tool(self):
         tenant = SimpleNamespace(

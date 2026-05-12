@@ -1,6 +1,6 @@
 import os
 import unittest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import jwt
 
@@ -8,7 +8,22 @@ os.environ.setdefault("FLASK_SKIP_GLOBAL_APP", "1")
 
 from app import create_app, db
 from config import Config
-from models import Notification, NotificationTemplate, TenantProfile, TenantTicket, User
+from models import (
+    CatalogoItem,
+    EncEncuesta,
+    EncRespuesta,
+    MunicipioPost,
+    Notification,
+    NotificationTemplate,
+    PedidoConversacional,
+    Promocion,
+    TenantConfig,
+    TenantProfile,
+    TenantTicket,
+    User,
+    WhatsAppContactState,
+    WhatsAppEnterpriseRule,
+)
 
 
 class V2SaasTestConfig(Config):
@@ -37,6 +52,8 @@ class V2SaasContractsTest(unittest.TestCase):
             slug="saas-tenant",
             nombre="SaaS Tenant",
             tipo="pyme",
+            vertical="educacion",
+            subvertical="colegio",
             pyme_id=self.owner.id,
             configuracion={"widget_tokens": ["widget-saas"], "mercadopago_access_token": "mp-token"},
             whatsapp_sender_id="whatsapp:+100",
@@ -105,6 +122,81 @@ class V2SaasContractsTest(unittest.TestCase):
                 idempotency_key="notif-1",
             )
         )
+        db.session.add(
+            CatalogoItem(
+                user_id=self.owner.id,
+                tenant_id=self.tenant.id,
+                nombre="Uniforme escolar",
+                descripcion="Chomba institucional",
+                categoria="indumentaria",
+                imagen_url="https://cdn.example.com/uniforme.jpg",
+                promocion_info="10% off familia",
+            )
+        )
+        db.session.add(
+            PedidoConversacional(
+                tenant_id=self.tenant.id,
+                user_id=self.owner.id,
+                estado="preparando",
+                origen="whatsapp",
+                monto_monetario=1500,
+                items=[{"nombre": "Uniforme escolar", "cantidad": 1}],
+            )
+        )
+        db.session.add(
+            MunicipioPost(
+                municipio_id=self.owner.id,
+                tipo_post="noticia",
+                titulo="Reunion de familias",
+                descripcion="Comunicado para familias del colegio.",
+            )
+        )
+        db.session.add(
+            Promocion(
+                pyme_user_id=self.owner.id,
+                nombre_promocion="Promo vuelta a clases",
+                descripcion_publica="Descuento en uniformes.",
+                tipo_promocion="TOTAL_CARRITO_DESCUENTO_PORCENTAJE",
+                valor_descuento=10,
+            )
+        )
+        db.session.add(
+            TenantConfig(
+                tenant_id=self.tenant.id,
+                key="links",
+                channel="whatsapp",
+                json_value={"links": [{"label": "Portal familias", "url": "https://demo.chatboc.ar/familias"}]},
+            )
+        )
+        db.session.add(
+            WhatsAppEnterpriseRule(
+                tenant_id=self.tenant.id,
+                enforce_template_outside_24h=True,
+                max_outbound_per_hour=200,
+                quiet_hours_start=22,
+                quiet_hours_end=7,
+                blocked_keywords=["spam"],
+            )
+        )
+        db.session.add(
+            WhatsAppContactState(
+                tenant_id=self.tenant.id,
+                recipient="whatsapp:+5491111111111",
+                last_inbound_at=datetime.now(timezone.utc),
+            )
+        )
+        encuesta = EncEncuesta(
+            tenant_id=self.tenant.id,
+            slug="voto-saas",
+            titulo="Votacion comedor",
+            tipo="votacion",
+            estado="publicada",
+            es_votacion_envivo=True,
+            mostrar_resultados_envivo=True,
+        )
+        db.session.add(encuesta)
+        db.session.flush()
+        db.session.add(EncRespuesta(encuesta_id=encuesta.id, tenant_id=self.tenant.id, canal="widget"))
 
         self.super_admin = User(name="Super", email="super@test.com", rol="super_admin")
         self.super_admin.set_password("secret123")
@@ -208,6 +300,84 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(payload.get("request_id"), "inbox-action-1")
         self.assertTrue(payload["ticket"]["timeline"])
         self.assertTrue(any(item.get("body") == "Estamos revisando tu caso." for item in payload["ticket"]["timeline"]))
+
+    def test_tenant_admin_experience_contract_unifies_profile_operations_and_modules(self):
+        response = self.client.get(
+            "/api/v2/tenant/admin-experience",
+            headers={**self._auth(self.owner), "X-Request-Id": "admin-exp-1"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload.get("contract_version"), "tenant.admin_experience.v1")
+        self.assertEqual(payload.get("request_id"), "admin-exp-1")
+        self.assertEqual(payload["tenant"]["slug"], self.tenant.slug)
+        self.assertEqual(payload["profile"]["vertical"], "educacion")
+        self.assertGreaterEqual(payload["profile"]["readiness"]["score"], 0)
+        self.assertEqual(payload["operations"]["dashboard"]["contract_version"], "operations.dashboard.v1")
+        self.assertEqual(payload["operations"]["freshness"]["contract_version"], "operations.freshness.v1")
+        self.assertEqual(payload["lead_capture"]["summary"]["open"], 1)
+        self.assertEqual(payload["surveys_votings"]["summary"]["live_votes"], 1)
+        self.assertEqual(payload["marketplace"]["summary"]["products"], 1)
+        self.assertEqual(payload["whatsapp"]["contract_version"], "whatsapp.experience.v1")
+        self.assertTrue(payload["whatsapp"]["channel"]["enabled"])
+        self.assertTrue(payload["whatsapp"]["conversation_intelligence"]["inputs"]["image"]["enabled"])
+        self.assertIn("route_progress", payload["whatsapp"]["tracking"]["courier_style_map"]["render_contract"]["animations"])
+        self.assertEqual(payload["education"]["profile"]["is_education"], True)
+        module_ids = {item["id"] for item in payload["modules"]}
+        self.assertIn("inbox", module_ids)
+        self.assertIn("analytics", module_ids)
+        self.assertIn("surveys_votings", module_ids)
+        self.assertIn("marketplace", module_ids)
+        self.assertIn("education", module_ids)
+
+    def test_whatsapp_experience_contract_connects_channel_content_tracking_and_admin_panel(self):
+        response = self.client.get(
+            "/api/v2/whatsapp/experience",
+            headers={**self._auth(self.owner), "X-Request-Id": "whatsapp-exp-1"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload.get("contract_version"), "whatsapp.experience.v1")
+        self.assertEqual(payload.get("request_id"), "whatsapp-exp-1")
+        self.assertEqual(payload["tenant"]["slug"], self.tenant.slug)
+        self.assertTrue(payload["channel"]["enabled"])
+        self.assertEqual(payload["enterprise_rules"]["max_outbound_per_hour"], 200)
+        self.assertEqual(payload["contact_window"]["active_24h"], 1)
+        self.assertTrue(payload["conversation_intelligence"]["inputs"]["emoji"]["enabled"])
+        self.assertTrue(payload["conversation_intelligence"]["inputs"]["location"]["enabled"])
+        self.assertTrue(payload["conversation_intelligence"]["inputs"]["audio_note"]["enabled"])
+        self.assertTrue(payload["conversation_intelligence"]["voice_calls"]["capabilities"]["native_speech_to_speech"])
+        self.assertEqual(payload["content_modules"]["catalog"]["items"], 1)
+        self.assertEqual(payload["content_modules"]["catalog"]["items_with_images"], 1)
+        self.assertGreaterEqual(payload["content_modules"]["surveys_votings"]["responses"], 1)
+        self.assertEqual(payload["content_modules"]["news_events"]["by_type"]["noticia"], 1)
+        self.assertTrue(payload["content_modules"]["promotions"]["enabled"])
+        self.assertEqual(payload["content_modules"]["links"]["tenant_config_links"], 1)
+        self.assertEqual(payload["tracking"]["claims"]["open"], 1)
+        self.assertEqual(payload["tracking"]["orders"]["total"], 1)
+        self.assertIn("route_progress", payload["tracking"]["courier_style_map"]["render_contract"]["animations"])
+        self.assertEqual(payload["admin_panel"]["inbox"], "/api/v2/inbox/omnichannel")
+        self.assertTrue(payload["education"]["enabled"])
+        self.assertEqual(payload["frontend_contract"]["render_as"], "whatsapp_operations_hub")
+
+    def test_superadmin_command_center_contract(self):
+        response = self.client.get(
+            "/api/v2/superadmin/command-center",
+            headers={**self._auth(self.super_admin), "X-Request-Id": "command-center-1"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload.get("contract_version"), "superadmin.command_center.v1")
+        self.assertEqual(payload.get("request_id"), "command-center-1")
+        self.assertEqual(payload["summary"]["tenants"], 1)
+        self.assertIn("tenant_creation", payload)
+        self.assertEqual(payload["tenant_creation"]["endpoint"], "/api/admin/tenants")
+        self.assertTrue(payload["tenants"]["items"])
+        self.assertEqual(payload["tenants"]["items"][0]["tenant"]["slug"], self.tenant.slug)
+        self.assertIn("drilldown_endpoint_template", payload["frontend_contract"])
 
 
 if __name__ == "__main__":

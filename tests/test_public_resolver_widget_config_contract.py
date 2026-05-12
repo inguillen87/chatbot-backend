@@ -88,7 +88,7 @@ class PublicResolverWidgetConfigContractTestCase(unittest.TestCase):
         body = response.get_json()
         self.assertEqual(body["contract_version"], "realtime.voice_capabilities.v1")
         self.assertEqual(body["provider"], "openai_realtime")
-        self.assertEqual(body["recommended_model"], "gpt-realtime-2")
+        self.assertEqual(body["recommended_model"], "gpt-realtime")
         self.assertIn("colegio", body["verticals"])
         self.assertIn("request_id", body)
 

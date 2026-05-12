@@ -2,17 +2,34 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Mapping
 import uuid
 
-from flask import Blueprint, g, jsonify, request
+from flask import Blueprint, current_app, g, jsonify, request
 from sqlalchemy import func
 from sqlalchemy.orm.attributes import flag_modified
 
 from extensions import db
-from models import Notification, NotificationTemplate, TenantProfile, TenantTicket, User
+from models import (
+    CatalogoItem,
+    EncEncuesta,
+    EncRespuesta,
+    MarketOrder,
+    MunicipioTicket,
+    Notification,
+    NotificationTemplate,
+    PublicSurvey,
+    PublicSurveyResponse,
+    PymeTicket,
+    TenantProfile,
+    TenantTicket,
+    User,
+)
 from routes.v2.tenants import V2TenantResolutionError, resolve_tenant_v2
+from services.education_contracts import build_education_admin_menu, build_education_profile, is_education_tenant
+from services.operational_intelligence import build_operational_dashboard, build_operational_freshness
 from services.v2.sla_service import is_ticket_overdue
+from services.whatsapp_experience import build_whatsapp_experience
 from utils.auth_helpers import token_requerido
 from utils.permissions import require_role
 
@@ -94,7 +111,51 @@ def _tenant_ref(tenant: TenantProfile) -> dict[str, Any]:
         "slug": tenant.slug,
         "nombre": tenant.nombre,
         "tipo": tenant.tipo,
+        "vertical": tenant.vertical,
+        "subvertical": tenant.subvertical,
         "plan": tenant.plan,
+        "is_active": bool(getattr(tenant, "is_active", True)),
+    }
+
+
+def _iso(value: Any) -> str | None:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return None
+
+
+def _date_range_from_request(default_days: int = 30) -> tuple[datetime, datetime]:
+    now = datetime.now(timezone.utc)
+    start_date = now - timedelta(days=default_days)
+    end_date = now
+
+    from_str = request.args.get("from")
+    to_str = request.args.get("to")
+
+    if from_str:
+        try:
+            start_date = datetime.fromisoformat(from_str.replace("Z", "+00:00"))
+        except ValueError:
+            pass
+    if to_str:
+        try:
+            end_date = datetime.fromisoformat(to_str.replace("Z", "+00:00"))
+        except ValueError:
+            pass
+
+    return start_date, end_date
+
+
+def _tenant_owner_ref(tenant: TenantProfile) -> dict[str, Any] | None:
+    owner = tenant.pyme or tenant.municipio
+    if not owner:
+        return None
+    return {
+        "id": owner.id,
+        "name": owner.name,
+        "email": owner.email,
+        "role": owner.rol,
+        "tenant_slug": owner.tenant_slug,
     }
 
 
@@ -317,6 +378,448 @@ def _tenant_health_payload(tenant: TenantProfile) -> dict[str, Any]:
     }
 
 
+def _safe_count(query) -> int:
+    try:
+        return int(query.count() or 0)
+    except Exception:
+        return 0
+
+
+def _survey_ops_summary(tenant: TenantProfile) -> dict[str, Any]:
+    encuestas = EncEncuesta.query.filter_by(tenant_id=tenant.id).all()
+    public_surveys = PublicSurvey.query.filter_by(tenant_id=tenant.id).all()
+    public_survey_ids = [survey.id for survey in public_surveys]
+    public_responses = 0
+    if public_survey_ids:
+        public_responses = _safe_count(PublicSurveyResponse.query.filter(PublicSurveyResponse.survey_id.in_(public_survey_ids)))
+    legacy_responses = _safe_count(EncRespuesta.query.filter_by(tenant_id=tenant.id))
+    live_votes = [
+        encuesta
+        for encuesta in encuestas
+        if bool(getattr(encuesta, "es_votacion_envivo", False))
+        or "vot" in str(getattr(encuesta, "tipo", "") or "").lower()
+        or "vot" in str(getattr(encuesta, "titulo", "") or "").lower()
+    ]
+    active = [
+        encuesta
+        for encuesta in encuestas
+        if str(getattr(encuesta, "estado", "") or "").lower() in {"publicada", "activa", "active", "published"}
+    ]
+    return {
+        "contract_version": "tenant.surveys_ops.v1",
+        "summary": {
+            "surveys": len(encuestas),
+            "public_surveys": len(public_surveys),
+            "active": len(active),
+            "live_votes": len(live_votes),
+            "responses": legacy_responses + public_responses,
+            "public_responses": public_responses,
+        },
+        "items": [
+            {
+                "id": encuesta.id,
+                "slug": encuesta.slug,
+                "title": encuesta.titulo,
+                "type": encuesta.tipo,
+                "status": encuesta.estado,
+                "is_live_vote": bool(encuesta in live_votes),
+                "show_live_results": bool(getattr(encuesta, "mostrar_resultados_envivo", False)),
+            }
+            for encuesta in encuestas[:12]
+        ],
+        "endpoints": {
+            "admin": "/api/v2/surveys",
+            "analytics": "/api/v2/analytics/operations/dashboard",
+            "draft": "/api/v2/surveys/draft",
+        },
+    }
+
+
+def _marketplace_ops_summary(tenant: TenantProfile) -> dict[str, Any]:
+    products_query = CatalogoItem.query.filter_by(tenant_id=tenant.id)
+    products_count = _safe_count(products_query)
+    with_images = _safe_count(CatalogoItem.query.filter(CatalogoItem.tenant_id == tenant.id, CatalogoItem.imagen_url.isnot(None)))
+    try:
+        orders_count = MarketOrder.legacy_safe_count(tenant_id=tenant.id)
+        pending_orders = MarketOrder.legacy_safe_count(MarketOrder.status.in_(["pending", "created", "confirmed"]), tenant_id=tenant.id)
+    except Exception:
+        orders_count = 0
+        pending_orders = 0
+
+    return {
+        "contract_version": "tenant.marketplace_ops.v1",
+        "summary": {
+            "products": products_count,
+            "products_with_images": with_images,
+            "products_missing_images": max(0, products_count - with_images),
+            "image_coverage_rate": round((with_images / products_count) * 100, 2) if products_count else 100.0,
+            "orders": orders_count,
+            "pending_orders": pending_orders,
+        },
+        "media_capabilities": {
+            "product_images": True,
+            "bulk_import": ["csv", "xlsx", "txt", "pdf"],
+            "image_extraction_from_import": True,
+            "manual_image_upload": True,
+            "pdf_catalog_generation": True,
+        },
+        "endpoints": {
+            "items": f"/api/admin/tenants/{tenant.slug}/catalog/items",
+            "catalog": f"/api/admin/tenants/{tenant.slug}/catalog",
+            "bulk_import": "/api/admin/catalogo/importar",
+            "orders": f"/api/admin/tenants/{tenant.slug}/orders",
+        },
+    }
+
+
+def _ticket_item_from_tenant(ticket: TenantTicket, source: str = "tenant_ticket") -> dict[str, Any]:
+    extra = _ticket_extra(ticket)
+    return {
+        "source": source,
+        "id": ticket.id,
+        "title": extra.get("title") or ticket.categoria or f"Ticket {ticket.id}",
+        "status": ticket.estado,
+        "stage": extra.get("lead_stage") or ticket.estado,
+        "channel": _ticket_channel(ticket),
+        "category": ticket.categoria,
+        "origin": ticket.origen,
+        "contact": extra.get("contact") if isinstance(extra.get("contact"), dict) else {},
+        "location": {"lat": ticket.latitud, "lng": ticket.longitud, "address": extra.get("address")},
+        "created_at": _iso(ticket.created_at),
+        "updated_at": _iso(ticket.updated_at),
+    }
+
+
+def _ticket_item_from_legacy(ticket: Any, source: str) -> dict[str, Any]:
+    created_at = getattr(ticket, "fecha", None)
+    updated_at = getattr(ticket, "ultima_actividad", None) or created_at
+    return {
+        "source": source,
+        "id": getattr(ticket, "id", None),
+        "title": getattr(ticket, "asunto", None) or getattr(ticket, "categoria", None) or f"Ticket {getattr(ticket, 'id', '')}",
+        "status": getattr(ticket, "estado", None),
+        "stage": getattr(ticket, "estado", None),
+        "channel": getattr(ticket, "canal_ingreso", None) or "web",
+        "category": getattr(ticket, "categoria", None),
+        "origin": source,
+        "contact": {
+            "name": getattr(ticket, "nombre_vecino", None) or getattr(ticket, "nombre_cliente", None),
+            "phone": getattr(ticket, "telefono", None),
+            "email": getattr(ticket, "email", None),
+        },
+        "location": {
+            "lat": getattr(ticket, "latitud", None),
+            "lng": getattr(ticket, "longitud", None),
+            "address": getattr(ticket, "direccion", None),
+        },
+        "created_at": _iso(created_at),
+        "updated_at": _iso(updated_at),
+    }
+
+
+def _tenant_lead_capture_summary(tenant: TenantProfile, limit: int = 20) -> dict[str, Any]:
+    tenant_rows = TenantTicket.query.filter_by(tenant_id=tenant.id).order_by(TenantTicket.updated_at.desc()).limit(limit).all()
+    municipio_rows = MunicipioTicket.query.filter_by(tenant_id=tenant.id).order_by(MunicipioTicket.fecha.desc()).limit(limit).all()
+    pyme_rows = PymeTicket.query.filter_by(tenant_id=tenant.id).order_by(PymeTicket.fecha.desc()).limit(limit).all()
+
+    items = [_ticket_item_from_tenant(ticket) for ticket in tenant_rows]
+    items.extend(_ticket_item_from_legacy(ticket, "municipio_ticket") for ticket in municipio_rows)
+    items.extend(_ticket_item_from_legacy(ticket, "pyme_ticket") for ticket in pyme_rows)
+    items.sort(key=lambda item: item.get("updated_at") or item.get("created_at") or "", reverse=True)
+    items = items[:limit]
+
+    open_items = [item for item in items if str(item.get("status") or "").lower() not in _CLOSED_TICKET_STATES]
+    demo_items = [
+        item
+        for item in items
+        if str(item.get("origin") or "").lower() in {"demo", "landing", "widget", "pwa"}
+        or str(item.get("channel") or "").lower() in {"widget", "web", "landing"}
+    ]
+    return {
+        "contract_version": "tenant.lead_capture.v1",
+        "summary": {
+            "total_recent": len(items),
+            "open": len(open_items),
+            "demo_or_widget": len(demo_items),
+            "channels": sorted({str(item.get("channel") or "unknown") for item in items}),
+        },
+        "items": items,
+        "endpoints": {
+            "tenant_leads": f"/api/admin/tenants/{tenant.slug}/leads",
+            "omnichannel_inbox": "/api/v2/inbox/omnichannel",
+            "tickets": "/api/v2/tickets",
+        },
+    }
+
+
+def _tenant_readiness_payload(tenant: TenantProfile, *, marketplace: dict[str, Any], health: dict[str, Any]) -> dict[str, Any]:
+    cfg = tenant.configuracion if isinstance(tenant.configuracion, dict) else {}
+    market_summary = marketplace.get("summary") or {}
+    checks = {
+        "profile": bool(tenant.nombre and tenant.slug and tenant.tipo),
+        "branding": bool(tenant.logo_url or tenant.tema or tenant.theme_json),
+        "widget": bool(tenant.widget_settings or tenant.widget_config or cfg.get("widget_tokens")),
+        "whatsapp": bool(tenant.whatsapp_sender_id or cfg.get("whatsapp_sender_id")),
+        "team": User.query.filter_by(tenant_id=tenant.id, es_empleado=True).count() > 0,
+        "catalog": int(market_summary.get("products") or 0) > 0,
+        "surveys": EncEncuesta.query.filter_by(tenant_id=tenant.id).count() > 0 or PublicSurvey.query.filter_by(tenant_id=tenant.id).count() > 0,
+        "sla": int((health.get("metrics") or {}).get("overdue_tickets") or 0) == 0,
+    }
+    completed = sum(1 for ok in checks.values() if ok)
+    score = round((completed / len(checks)) * 100, 2)
+    return {
+        "contract_version": "tenant.readiness.v1",
+        "score": score,
+        "completed": completed,
+        "total": len(checks),
+        "checks": checks,
+        "missing": [key for key, ok in checks.items() if not ok],
+    }
+
+
+def _admin_modules_payload(tenant: TenantProfile, *, education_profile: dict[str, Any]) -> list[dict[str, Any]]:
+    base = f"/t/{tenant.slug}"
+    modules = [
+        {
+            "id": "profile",
+            "label": "Perfil operativo",
+            "route": f"{base}/profile",
+            "endpoint": "/api/v2/tenant/admin-experience",
+            "widgets": ["readiness", "branding", "capabilities", "integrations"],
+        },
+        {
+            "id": "inbox",
+            "label": "Inbox omnicanal",
+            "route": f"{base}/inbox",
+            "endpoint": "/api/v2/inbox/omnichannel",
+            "widgets": ["tickets", "timeline", "presence", "handoff"],
+        },
+        {
+            "id": "analytics",
+            "label": "Metricas y mapas",
+            "route": f"{base}/analytics",
+            "endpoint": "/api/v2/analytics/operations/dashboard",
+            "secondary_endpoints": ["/api/v2/analytics/operations/heatmap", "/api/v2/analytics/operations/freshness"],
+            "widgets": ["kpis", "heatmap", "trends", "action_center"],
+        },
+        {
+            "id": "surveys_votings",
+            "label": "Encuestas y votaciones",
+            "route": f"{base}/surveys",
+            "endpoint": "/api/v2/surveys",
+            "secondary_endpoints": ["/api/v2/surveys/draft"],
+            "widgets": ["public_surveys", "live_votes", "responses", "comments"],
+        },
+        {
+            "id": "employees",
+            "label": "Equipo y cobertura",
+            "route": f"{base}/employees",
+            "endpoint": "/api/v2/employee-coverage",
+            "widgets": ["coverage", "workload", "assignment"],
+        },
+        {
+            "id": "marketplace",
+            "label": "Marketplace y catalogo",
+            "route": f"{base}/marketplace",
+            "endpoint": f"/api/admin/tenants/{tenant.slug}/catalog/items",
+            "secondary_endpoints": ["/api/admin/catalogo/importar", f"/api/admin/tenants/{tenant.slug}/orders"],
+            "widgets": ["bulk_import", "image_coverage", "orders", "pdf_catalog"],
+        },
+        {
+            "id": "widget_whatsapp",
+            "label": "Widget, WhatsApp y voz",
+            "route": f"{base}/channels",
+            "endpoint": "/api/v2/whatsapp/experience",
+            "secondary_endpoints": [
+                f"/api/public/tenants/{tenant.slug}/widget-config",
+                "/api/public/realtime/voice-capabilities",
+                "/api/v2/notifications/hooks",
+            ],
+            "widgets": ["channel_health", "quick_menu", "media_capabilities", "realtime_voice", "tracking", "notifications"],
+        },
+    ]
+    if education_profile.get("is_education"):
+        modules.append(
+            {
+                "id": "education",
+                "label": "Operacion colegio",
+                "route": f"{base}/educacion",
+                "endpoint": "/api/v1/education/admin/menu",
+                "secondary_endpoints": ["/api/v1/education/operations/summary", "/api/v1/education/cases?envelope=1"],
+                "widgets": ["family_context", "school_cases", "attendance", "communications"],
+            }
+        )
+    return modules
+
+
+def _build_tenant_admin_experience_payload(
+    tenant: TenantProfile,
+    *,
+    start_date: datetime,
+    end_date: datetime,
+    app_config: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    health = _tenant_health_payload(tenant)
+    dashboard = build_operational_dashboard(tenant, start_date, end_date)
+    freshness = build_operational_freshness(tenant, start_date, end_date)
+    marketplace = _marketplace_ops_summary(tenant)
+    surveys = _survey_ops_summary(tenant)
+    lead_capture = _tenant_lead_capture_summary(tenant)
+    education_profile = build_education_profile(tenant)
+    readiness = _tenant_readiness_payload(tenant, marketplace=marketplace, health=health)
+    whatsapp = build_whatsapp_experience(tenant, app_config=app_config)
+
+    return {
+        "contract_version": "tenant.admin_experience.v1",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "period": {"from": _iso(start_date), "to": _iso(end_date)},
+        "tenant": _tenant_ref(tenant),
+        "owner": _tenant_owner_ref(tenant),
+        "profile": {
+            "display_name": tenant.nombre,
+            "status": "active" if getattr(tenant, "is_active", True) else "inactive",
+            "tipo": tenant.tipo,
+            "vertical": "educacion" if is_education_tenant(tenant) else (tenant.vertical or tenant.tipo),
+            "subvertical": tenant.subvertical,
+            "plan": tenant.plan,
+            "domain": tenant.dominio,
+            "logo_url": tenant.logo_url,
+            "theme_config": tenant.get_theme_config() if hasattr(tenant, "get_theme_config") else {},
+            "readiness": readiness,
+        },
+        "modules": _admin_modules_payload(tenant, education_profile=education_profile),
+        "health": health,
+        "operations": {
+            "dashboard": dashboard,
+            "freshness": freshness,
+        },
+        "lead_capture": lead_capture,
+        "surveys_votings": surveys,
+        "marketplace": marketplace,
+        "whatsapp": {
+            "contract_version": whatsapp.get("contract_version"),
+            "channel": whatsapp.get("channel"),
+            "conversation_intelligence": whatsapp.get("conversation_intelligence"),
+            "tracking": whatsapp.get("tracking"),
+            "content_modules": whatsapp.get("content_modules"),
+            "endpoint": "/api/v2/whatsapp/experience",
+        },
+        "education": {
+            "profile": education_profile,
+            "admin_menu": build_education_admin_menu(tenant) if education_profile.get("is_education") else None,
+        },
+        "frontend_contract": {
+            "render_as": "tenant_admin_operating_system",
+            "primary_refresh_seconds": 30,
+            "recommended_views": [
+                "profile_header",
+                "operations_summary",
+                "inbox_board",
+                "heatmap",
+                "surveys_votings",
+                "marketplace_catalog_quality",
+                "whatsapp_operations_hub",
+                "employee_coverage",
+            ],
+            "empty_state_behavior": "show_module_readiness_and_next_best_actions",
+        },
+    }
+
+
+def _build_superadmin_command_center_payload(*, start_date: datetime, end_date: datetime, limit: int = 50) -> dict[str, Any]:
+    tenants = TenantProfile.query.order_by(TenantProfile.created_at.desc()).limit(limit).all()
+    tenant_items = []
+    total_open = 0
+    total_overdue = 0
+    total_leads = 0
+    total_health = 0.0
+
+    for tenant in tenants:
+        health = _tenant_health_payload(tenant)
+        lead_capture = _tenant_lead_capture_summary(tenant, limit=5)
+        readiness = _tenant_readiness_payload(tenant, marketplace=_marketplace_ops_summary(tenant), health=health)
+        metrics = health.get("metrics") or {}
+        total_open += int(metrics.get("open_tickets") or 0)
+        total_overdue += int(metrics.get("overdue_tickets") or 0)
+        total_leads += int((lead_capture.get("summary") or {}).get("open") or 0)
+        total_health += float((health.get("health") or {}).get("score") or 0)
+        tenant_items.append(
+            {
+                "tenant": _tenant_ref(tenant),
+                "owner": _tenant_owner_ref(tenant),
+                "health": health.get("health"),
+                "metrics": metrics,
+                "readiness": readiness,
+                "lead_capture": lead_capture.get("summary"),
+                "routes": {
+                    "profile_360": f"/api/v2/tenants/{tenant.slug}/admin-experience",
+                    "legacy_profile_360": f"/api/admin/tenants/{tenant.slug}/profile-360",
+                    "impersonate": f"/api/admin/tenants/{tenant.slug}/impersonate",
+                },
+            }
+        )
+
+    risky = [
+        item
+        for item in tenant_items
+        if str((item.get("health") or {}).get("status") or "") in {"warning", "critical"}
+        or int((item.get("metrics") or {}).get("overdue_tickets") or 0) > 0
+    ]
+    risky.sort(key=lambda item: ((item.get("health") or {}).get("score") or 0, -int((item.get("metrics") or {}).get("overdue_tickets") or 0)))
+
+    return {
+        "contract_version": "superadmin.command_center.v1",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "period": {"from": _iso(start_date), "to": _iso(end_date)},
+        "summary": {
+            "tenants": len(tenant_items),
+            "active_tenants": len([item for item in tenant_items if (item.get("tenant") or {}).get("is_active")]),
+            "avg_health_score": round(total_health / len(tenant_items), 2) if tenant_items else 100.0,
+            "open_tickets": total_open,
+            "overdue_tickets": total_overdue,
+            "open_leads": total_leads,
+            "risky_tenants": len(risky),
+        },
+        "tenants": {
+            "items": tenant_items,
+            "top_risky": risky[:10],
+        },
+        "tenant_creation": {
+            "endpoint": "/api/admin/tenants",
+            "method": "POST",
+            "required_fields": ["nombre", "tipo"],
+            "optional_fields": ["slug", "plan", "owner_email", "vertical", "subvertical"],
+            "supported_types": ["pyme", "municipio"],
+            "supported_verticals": ["empresas", "gobierno", "educacion"],
+        },
+        "lead_capture": {
+            "endpoint": "/api/admin/leads/strategic-overview",
+            "recent_by_tenant": [
+                {"tenant": item["tenant"], "summary": item.get("lead_capture") or {}}
+                for item in tenant_items[:20]
+            ],
+        },
+        "recommended_actions": [
+            {
+                "kind": "review_risky_tenants",
+                "priority": "high" if total_overdue else "medium",
+                "message": "Revisar tenants con health bajo, SLA vencido o readiness incompleta.",
+            },
+            {
+                "kind": "standardize_profile_modules",
+                "priority": "medium",
+                "message": "Usar admin-experience como fuente unica para perfil, panel operativo y modulos.",
+            },
+        ],
+        "frontend_contract": {
+            "render_as": "superadmin_command_center",
+            "primary_refresh_seconds": 60,
+            "recommended_views": ["tenant_grid", "health_ranking", "lead_pipeline", "tenant_creation", "profile_360_drawer"],
+            "drilldown_endpoint_template": "/api/v2/tenants/{tenant_slug}/admin-experience",
+        },
+    }
+
+
 def _templates_payload(tenant_id: int) -> list[dict[str, Any]]:
     rows = NotificationTemplate.query.filter_by(tenant_id=tenant_id).order_by(NotificationTemplate.created_at.desc()).all()
     return [
@@ -356,6 +859,36 @@ def tenant_health_v2(current_user, tenant_slug: str | None = None):
     if error:
         return error
     return _json_response(_tenant_health_payload(tenant))
+
+
+@v2_saas_bp.route("/tenant/admin-experience", methods=["GET"])
+@v2_saas_bp.route("/tenants/<string:tenant_slug>/admin-experience", methods=["GET"])
+@token_requerido
+@require_role("admin", "empleado", "super_admin")
+def tenant_admin_experience_v2(current_user, tenant_slug: str | None = None):
+    tenant, error = _resolve_tenant_or_error(current_user, tenant_slug)
+    if error:
+        return error
+
+    start_date, end_date = _date_range_from_request(default_days=30)
+    payload = _build_tenant_admin_experience_payload(
+        tenant,
+        start_date=start_date,
+        end_date=end_date,
+        app_config=current_app.config,
+    )
+    return _json_response(payload)
+
+
+@v2_saas_bp.route("/whatsapp/experience", methods=["GET"])
+@v2_saas_bp.route("/tenants/<string:tenant_slug>/whatsapp/experience", methods=["GET"])
+@token_requerido
+@require_role("admin", "empleado", "super_admin")
+def whatsapp_experience_v2(current_user, tenant_slug: str | None = None):
+    tenant, error = _resolve_tenant_or_error(current_user, tenant_slug)
+    if error:
+        return error
+    return _json_response(build_whatsapp_experience(tenant, app_config=current_app.config))
 
 
 @v2_saas_bp.route("/superadmin/executive-summary", methods=["GET"])
@@ -408,6 +941,17 @@ def executive_summary_v2(current_user):
             else [],
         }
     )
+
+
+@v2_saas_bp.route("/superadmin/command-center", methods=["GET"])
+@v2_saas_bp.route("/super-admin/command-center", methods=["GET"])
+@token_requerido
+@require_role("super_admin")
+def superadmin_command_center_v2(current_user):
+    start_date, end_date = _date_range_from_request(default_days=30)
+    limit = max(1, min(int(request.args.get("limit", 50) or 50), 200))
+    payload = _build_superadmin_command_center_payload(start_date=start_date, end_date=end_date, limit=limit)
+    return _json_response(payload)
 
 
 @v2_saas_bp.route("/notifications/hooks", methods=["GET", "POST"])

@@ -4,8 +4,8 @@ Objetivo: mejorar llamadas de WhatsApp/telefono con voz nativa Realtime, sin vol
 
 ## Decisiones backend
 
-- Modelo recomendado por defecto: `gpt-realtime-2`.
-- Fallback operativo: `gpt-realtime-1.5`.
+- Modelo recomendado por defecto: `gpt-realtime`.
+- Fallback operativo configurable: por defecto `gpt-realtime`.
 - Voz default: `marin`, configurable por tenant con `openai_realtime_voice`.
 - No se depreca V1 ni se duplica app: se mejora el stream actual y se agregan contratos publicos.
 - El telefono usa audio `g711_ulaw` para Twilio Media Streams.
@@ -30,8 +30,8 @@ Respuesta:
 {
   "contract_version": "realtime.voice_capabilities.v1",
   "provider": "openai_realtime",
-  "recommended_model": "gpt-realtime-2",
-  "fallback_model": "gpt-realtime-1.5",
+  "recommended_model": "gpt-realtime",
+  "fallback_model": "gpt-realtime",
   "voice": "marin",
   "active_vertical": "municipio|pyme|colegio|general",
   "native_speech_to_speech": true,
@@ -123,7 +123,7 @@ Colegios:
 ## Backend implementado
 
 - `services/realtime_voice_profiles.py`: perfiles, tools y contrato por vertical.
-- `services/voice_stream_service.py`: stream Twilio -> OpenAI Realtime con `gpt-realtime-2`, herramientas por vertical y `crear_caso_escolar`.
+- `services/voice_stream_service.py`: stream Twilio -> OpenAI Realtime con `gpt-realtime` por defecto, herramientas por vertical y `crear_caso_escolar`.
 - `services/realtime_session_service.py`: sesiones WebRTC legacy actualizadas a modelo realtime actual y voz configurable.
 - `routes/public_resolver.py`: contrato publico de capacidades y widget config enriquecido.
 - Tests: `tests/test_realtime_voice_profiles.py` y cobertura publica en `tests/test_public_resolver_widget_config_contract.py`.

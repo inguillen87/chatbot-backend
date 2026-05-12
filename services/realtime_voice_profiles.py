@@ -7,8 +7,8 @@ from services.education_contracts import is_education_tenant
 
 
 REALTIME_VOICE_CONTRACT_VERSION = "realtime.voice_capabilities.v1"
-DEFAULT_REALTIME_VOICE_MODEL = "gpt-realtime-2"
-FALLBACK_REALTIME_VOICE_MODEL = "gpt-realtime-1.5"
+DEFAULT_REALTIME_VOICE_MODEL = "gpt-realtime"
+FALLBACK_REALTIME_VOICE_MODEL = "gpt-realtime"
 DEFAULT_REALTIME_VOICE = "marin"
 
 

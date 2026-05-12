@@ -2626,11 +2626,14 @@ def _procesar_chat(
             message = "La conversacion sigue disponible en modo normal. Reintenta el mensaje o elegi una accion del demo."
             fallback = {
                 "contract_version": "chat.runtime_fallback.v1",
+                "respuesta_usuario": message,
                 "message_body": message,
                 "respuesta": message,
                 "fuente": "chat_runtime_fallback",
                 "retryable": True,
                 "request_id": request_id,
+                "actions": [],
+                "ticket": None,
                 "error": {
                     "code": 200,
                     "message": "chat_runtime_degraded",

@@ -1,0 +1,350 @@
+from __future__ import annotations
+
+import json
+from datetime import datetime, timezone
+from decimal import Decimal
+from typing import Any
+
+from models import MarketOrder, MunicipioTicket, OrderEvent, PedidoConversacional, PymePedido, TenantProfile, TicketComentario
+from services.commerce_unified import serialize_unified_order
+
+
+TRACKING_EXPERIENCE_CONTRACT_VERSION = "tracking.experience.v1"
+
+CLAIM_MILESTONES = [
+    {"key": "recibido", "label": "Recibido"},
+    {"key": "validando", "label": "Validando"},
+    {"key": "asignado", "label": "Asignado"},
+    {"key": "en_proceso", "label": "En proceso"},
+    {"key": "resuelto", "label": "Resuelto"},
+    {"key": "cerrado", "label": "Cerrado"},
+]
+
+ORDER_MILESTONES = [
+    {"key": "recibido", "label": "Recibido"},
+    {"key": "confirmado", "label": "Confirmado"},
+    {"key": "pendiente_pago", "label": "Pago"},
+    {"key": "pagado", "label": "Pagado"},
+    {"key": "preparando", "label": "Preparando"},
+    {"key": "en_camino", "label": "En camino"},
+    {"key": "entregado", "label": "Entregado"},
+]
+
+_CLAIM_STATUS_TO_STAGE = {
+    "nuevo": "recibido",
+    "open": "recibido",
+    "abierto": "recibido",
+    "pendiente": "validando",
+    "validando": "validando",
+    "asignado": "asignado",
+    "en_proceso": "en_proceso",
+    "in_progress": "en_proceso",
+    "resuelto": "resuelto",
+    "resolved": "resuelto",
+    "cerrado": "cerrado",
+    "closed": "cerrado",
+}
+
+_ORDER_STATUS_TO_STAGE = {
+    "open": "recibido",
+    "submitted": "recibido",
+    "pending": "confirmado",
+    "pendiente": "confirmado",
+    "confirmed": "confirmado",
+    "confirmado": "confirmado",
+    "pending_payment": "pendiente_pago",
+    "pendiente_pago": "pendiente_pago",
+    "paid": "pagado",
+    "pagado": "pagado",
+    "processing": "preparando",
+    "preparing": "preparando",
+    "preparando": "preparando",
+    "shipped": "en_camino",
+    "enviado": "en_camino",
+    "en_camino": "en_camino",
+    "delivered": "entregado",
+    "entregado": "entregado",
+    "completed": "entregado",
+    "completado": "entregado",
+}
+
+
+def _iso(value: Any) -> str | None:
+    if not isinstance(value, datetime):
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.isoformat()
+
+
+def _as_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, Decimal):
+        return float(value)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _tenant_ref(tenant: TenantProfile | None) -> dict[str, Any] | None:
+    if tenant is None:
+        return None
+    return {
+        "id": tenant.id,
+        "slug": tenant.slug,
+        "nombre": tenant.nombre,
+        "tipo": tenant.tipo,
+        "vertical": tenant.vertical,
+        "subvertical": tenant.subvertical,
+        "logo_url": tenant.logo_url,
+        "theme_config": tenant.get_theme_config() if hasattr(tenant, "get_theme_config") else {},
+    }
+
+
+def _stage_payload(raw_status: Any, *, kind: str) -> dict[str, Any]:
+    normalized = str(raw_status or "").strip().lower()
+    if kind == "claim":
+        milestones = CLAIM_MILESTONES
+        current = _CLAIM_STATUS_TO_STAGE.get(normalized, "recibido")
+    else:
+        milestones = ORDER_MILESTONES
+        current = _ORDER_STATUS_TO_STAGE.get(normalized, "recibido")
+
+    current_index = next((idx for idx, item in enumerate(milestones) if item["key"] == current), 0)
+    items = []
+    for idx, item in enumerate(milestones):
+        state = "pending"
+        if idx < current_index:
+            state = "complete"
+        elif idx == current_index:
+            state = "current"
+        items.append({**item, "state": state, "index": idx})
+
+    progress = round((current_index / max(1, len(milestones) - 1)) * 100, 2)
+    return {
+        "raw_status": raw_status,
+        "current_stage": current,
+        "progress_percent": progress,
+        "milestones": items,
+    }
+
+
+def _tracking_map(location: dict[str, Any]) -> dict[str, Any]:
+    has_coordinates = location.get("lat") is not None and location.get("lng") is not None
+    return {
+        "enabled": True,
+        "has_coordinates": bool(has_coordinates),
+        "center": {"lat": location.get("lat"), "lng": location.get("lng")} if has_coordinates else None,
+        "layers": ["origin", "current_status", "destination_or_claim_location", "timeline_events"],
+        "animations": ["pulse_current_step", "route_progress", "status_transition"],
+        "fallback_when_no_coordinates": "timeline_only",
+    }
+
+
+def _comment_timeline(comments_rel: Any) -> list[dict[str, Any]]:
+    if not hasattr(comments_rel, "order_by"):
+        return []
+    try:
+        comments = comments_rel.order_by(TicketComentario.fecha.asc()).limit(20).all()
+    except Exception:
+        try:
+            comments = comments_rel.order_by("fecha").limit(20).all()
+        except Exception:
+            comments = []
+
+    items = []
+    for comment in comments:
+        items.append(
+            {
+                "id": getattr(comment, "id", None),
+                "type": "comment",
+                "label": "Mensaje",
+                "message": getattr(comment, "comentario", None),
+                "author": "team" if getattr(comment, "es_admin", False) else "customer",
+                "created_at": _iso(getattr(comment, "fecha", None)),
+                "source": getattr(comment, "origen", None),
+            }
+        )
+    return items
+
+
+def _legacy_order_items(details: Any) -> list[dict[str, Any]]:
+    try:
+        parsed = json.loads(details or "[]")
+    except (TypeError, ValueError):
+        parsed = []
+    if not isinstance(parsed, list):
+        return []
+    items = []
+    for item in parsed:
+        if not isinstance(item, dict):
+            continue
+        items.append(
+            {
+                "title": item.get("nombre") or item.get("title") or item.get("producto"),
+                "quantity": item.get("cantidad") or item.get("quantity") or 1,
+                "unit_price": _as_float(item.get("precio") or item.get("unit_price")),
+                "image_url": item.get("imagen_url") or item.get("image_url"),
+            }
+        )
+    return items
+
+
+def build_claim_tracking_experience(ticket: MunicipioTicket, tenant: TenantProfile | None = None) -> dict[str, Any]:
+    location = {
+        "address": getattr(ticket, "direccion", None),
+        "district": getattr(ticket, "distrito", None),
+        "lat": getattr(ticket, "latitud", None),
+        "lng": getattr(ticket, "longitud", None),
+    }
+    timeline = [
+        {
+            "id": f"claim-created-{ticket.id}",
+            "type": "claim.created",
+            "label": "Reclamo recibido",
+            "message": getattr(ticket, "asunto", None) or getattr(ticket, "categoria", None),
+            "created_at": _iso(getattr(ticket, "fecha", None)),
+        },
+        {
+            "id": f"claim-status-{ticket.id}",
+            "type": "claim.status",
+            "label": "Estado actual",
+            "status": getattr(ticket, "estado", None),
+            "created_at": _iso(getattr(ticket, "ultima_actividad", None) or getattr(ticket, "fecha", None)),
+        },
+    ]
+    timeline.extend(_comment_timeline(getattr(ticket, "comentarios", None)))
+
+    code = str(getattr(ticket, "nro_ticket", "") or "")
+    display_code = code if code.upper().startswith(("M-", "S-")) else f"M-{code}"
+    return {
+        "contract_version": TRACKING_EXPERIENCE_CONTRACT_VERSION,
+        "kind": "claim",
+        "tenant": _tenant_ref(tenant),
+        "resource": {
+            "id": ticket.id,
+            "code": display_code,
+            "category": getattr(ticket, "categoria", None),
+            "subject": getattr(ticket, "asunto", None) or getattr(ticket, "categoria", None),
+            "channel": getattr(ticket, "canal_ingreso", None),
+            "created_at": _iso(getattr(ticket, "fecha", None)),
+            "updated_at": _iso(getattr(ticket, "ultima_actividad", None)),
+        },
+        "status": _stage_payload(getattr(ticket, "estado", None), kind="claim"),
+        "location": location,
+        "map": _tracking_map(location),
+        "timeline": [item for item in timeline if item.get("created_at") or item.get("message") or item.get("status")],
+        "actions": [
+            {"id": "send_message", "label": "Enviar mensaje", "endpoint": "/tracking/api/send-claim-message"},
+            {"id": "open_tracking_page", "label": "Abrir seguimiento", "url": f"/tracking/claim/{code}"},
+        ],
+        "frontend_contract": {
+            "render_as": "tracking_map_timeline",
+            "primary_refresh_seconds": 30,
+            "empty_state_behavior": "timeline_only_when_no_coordinates",
+        },
+    }
+
+
+def build_order_tracking_experience(order: Any, tenant: TenantProfile | None = None) -> dict[str, Any]:
+    serialized = serialize_unified_order(order)
+    source = serialized.get("source_model")
+    status = serialized.get("status")
+    items = serialized.get("items") or []
+    code = serialized.get("legacy_number") or serialized.get("id") or str(getattr(order, "id", ""))
+    location = {
+        "address": getattr(order, "direccion", None) or (serialized.get("metadata") or {}).get("direccion"),
+        "lat": getattr(order, "latitud", None),
+        "lng": getattr(order, "longitud", None),
+    }
+    if source == "PymePedido" and not items:
+        items = _legacy_order_items(getattr(order, "detalles", None))
+
+    timeline = [
+        {
+            "id": f"order-created-{serialized.get('id')}",
+            "type": "order.created",
+            "label": "Pedido recibido",
+            "created_at": serialized.get("created_at"),
+        },
+        {
+            "id": f"order-status-{serialized.get('id')}",
+            "type": "order.status",
+            "label": "Estado actual",
+            "status": status,
+            "created_at": serialized.get("updated_at") or serialized.get("created_at"),
+        },
+    ]
+    if isinstance(order, MarketOrder) and hasattr(order, "events"):
+        events = order.events.order_by(OrderEvent.created_at.asc()).limit(20).all()
+        for event in events:
+            payload = event.payload if isinstance(event.payload, dict) else {}
+            timeline.append(
+                {
+                    "id": f"event-{event.id}",
+                    "type": event.type,
+                    "label": payload.get("message") or event.type,
+                    "status": payload.get("status"),
+                    "created_at": _iso(event.created_at),
+                }
+            )
+
+    return {
+        "contract_version": TRACKING_EXPERIENCE_CONTRACT_VERSION,
+        "kind": "order",
+        "tenant": _tenant_ref(tenant),
+        "resource": {
+            "id": serialized.get("id"),
+            "code": code,
+            "source_model": source,
+            "channel": serialized.get("channel"),
+            "created_at": serialized.get("created_at"),
+            "updated_at": serialized.get("updated_at"),
+        },
+        "status": _stage_payload(status, kind="order"),
+        "customer": serialized.get("contact") or {},
+        "totals": serialized.get("totals") or {},
+        "items": items,
+        "location": location,
+        "map": _tracking_map(location),
+        "timeline": [item for item in timeline if item.get("created_at") or item.get("status") or item.get("label")],
+        "actions": [
+            {"id": "send_message", "label": "Enviar mensaje", "endpoint": "/tracking/api/send-message"},
+            {"id": "open_tracking_page", "label": "Abrir seguimiento", "url": f"/tracking/order/{code}"},
+        ],
+        "frontend_contract": {
+            "render_as": "tracking_map_timeline",
+            "primary_refresh_seconds": 30,
+            "empty_state_behavior": "timeline_only_when_no_coordinates",
+        },
+    }
+
+
+def resolve_order_by_code(code: str):
+    normalized = (code or "").strip()
+    if not normalized:
+        return None
+    pedido = PymePedido.query.filter_by(nro_pedido=normalized).first()
+    if pedido:
+        return pedido
+    lowered = normalized.lower()
+    for prefix, model in (("market:", MarketOrder), ("mo-", MarketOrder), ("conversational:", PedidoConversacional), ("pc-", PedidoConversacional)):
+        if lowered.startswith(prefix):
+            raw_id = lowered.split(prefix, 1)[1]
+            if raw_id.isdigit():
+                return model.query.get(int(raw_id))
+    if normalized.isdigit():
+        return MarketOrder.query.get(int(normalized)) or PedidoConversacional.query.get(int(normalized))
+    return None
+
+
+def resolve_tenant_for_order(order: Any) -> TenantProfile | None:
+    tenant_id = getattr(order, "tenant_id", None)
+    if tenant_id:
+        return TenantProfile.query.get(tenant_id)
+    pyme_id = getattr(order, "pyme_id", None)
+    if pyme_id:
+        return TenantProfile.query.filter_by(pyme_id=pyme_id).first()
+    return None
