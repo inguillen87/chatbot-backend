@@ -1795,6 +1795,137 @@ class ChatSessionContext(db.Model):
     def __repr__(self):
         return f"<ChatSessionContext id={self.chat_session_id} user_id={self.user_id} anon_id={self.anon_id}>"
 
+
+class OmnichannelConversation(db.Model):
+    __tablename__ = "omnichannel_conversation"
+
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=True, index=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True, index=True)
+    anon_id = db.Column(db.String(80), nullable=True, index=True)
+    status = db.Column(db.String(30), nullable=False, default="open", index=True)
+    priority = db.Column(db.String(20), nullable=False, default="normal", index=True)
+    tags = db.Column(JSONType, nullable=True)
+    assigned_team_id = db.Column(db.Integer, nullable=True, index=True)
+    assigned_agent_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True, index=True)
+    created_at = db.Column(db.DateTime(timezone=True), default=get_local_now, nullable=False)
+    last_activity_at = db.Column(db.DateTime(timezone=True), default=get_local_now, nullable=False, index=True)
+
+    user = db.relationship("User", foreign_keys=[user_id], backref=db.backref("omnichannel_conversations", lazy="dynamic"))
+    assigned_agent = db.relationship("User", foreign_keys=[assigned_agent_id], backref=db.backref("assigned_omnichannel_conversations", lazy="dynamic"))
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "tenant_id": self.tenant_id,
+            "user_id": self.user_id,
+            "anon_id": self.anon_id,
+            "status": self.status,
+            "priority": self.priority,
+            "tags": list(self.tags or []),
+            "assigned_team_id": self.assigned_team_id,
+            "assigned_agent_id": self.assigned_agent_id,
+            "created_at": datetime_to_iso_utc(self.created_at),
+            "last_activity_at": datetime_to_iso_utc(self.last_activity_at),
+        }
+
+
+class OmnichannelChannelSession(db.Model):
+    __tablename__ = "omnichannel_channel_session"
+
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    conversation_id = db.Column(
+        db.String(36),
+        db.ForeignKey("omnichannel_conversation.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    channel = db.Column(db.String(40), nullable=False, index=True)
+    external_key = db.Column(db.String(140), nullable=True, index=True)
+    legacy_chat_session_id = db.Column(db.String(64), nullable=True, index=True)
+    metadata_json = db.Column("metadata", JSONType, nullable=True)
+    created_at = db.Column(db.DateTime(timezone=True), default=get_local_now, nullable=False)
+    last_activity_at = db.Column(db.DateTime(timezone=True), default=get_local_now, nullable=False, index=True)
+
+    conversation = db.relationship(
+        "OmnichannelConversation",
+        backref=db.backref(
+            "channel_sessions",
+            lazy="dynamic",
+            cascade="all, delete-orphan",
+        ),
+    )
+
+    __table_args__ = (
+        Index("ix_omnichannel_channel_session_channel_external", "channel", "external_key"),
+    )
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "conversation_id": self.conversation_id,
+            "channel": self.channel,
+            "external_key": self.external_key,
+            "legacy_chat_session_id": self.legacy_chat_session_id,
+            "metadata": self.metadata_json or {},
+            "created_at": datetime_to_iso_utc(self.created_at),
+            "last_activity_at": datetime_to_iso_utc(self.last_activity_at),
+        }
+
+
+class OmnichannelMessage(db.Model):
+    __tablename__ = "omnichannel_message"
+
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    conversation_id = db.Column(
+        db.String(36),
+        db.ForeignKey("omnichannel_conversation.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    channel_session_id = db.Column(
+        db.String(36),
+        db.ForeignKey("omnichannel_channel_session.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    direction = db.Column(db.String(20), nullable=False, default="inbound", index=True)
+    payload = db.Column(JSONType, nullable=False)
+    attachments = db.Column(JSONType, nullable=True)
+    external_message_id = db.Column(db.String(140), nullable=True, index=True)
+    created_at = db.Column(db.DateTime(timezone=True), default=get_local_now, nullable=False, index=True)
+
+    conversation = db.relationship(
+        "OmnichannelConversation",
+        backref=db.backref(
+            "messages",
+            lazy="dynamic",
+            cascade="all, delete-orphan",
+            order_by="OmnichannelMessage.created_at.asc()",
+        ),
+    )
+    channel_session = db.relationship(
+        "OmnichannelChannelSession",
+        backref=db.backref(
+            "messages",
+            lazy="dynamic",
+            cascade="all, delete-orphan",
+            order_by="OmnichannelMessage.created_at.asc()",
+        ),
+    )
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "conversation_id": self.conversation_id,
+            "channel_session_id": self.channel_session_id,
+            "direction": self.direction,
+            "payload": self.payload or {},
+            "attachments": list(self.attachments or []),
+            "external_message_id": self.external_message_id,
+            "created_at": datetime_to_iso_utc(self.created_at),
+        }
+
 print("✅ models.py fue importado con éxito y contiene modelos.")
 
 
