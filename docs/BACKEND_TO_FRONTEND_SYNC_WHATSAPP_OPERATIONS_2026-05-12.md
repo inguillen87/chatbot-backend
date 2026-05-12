@@ -259,3 +259,27 @@ Verificacion adicional:
 
 - `tests/test_v2_saas_contracts.py::V2SaasContractsTest::test_whatsapp_sandbox_session_returns_deeplink_contract`
 - `tests/test_v2_saas_contracts.py::V2SaasContractsTest::test_admin_catalog_exposes_and_saves_draft_endpoint`
+
+## Widget embebido + carrito + portal 2026-05-12
+
+Backend ya expone:
+
+- `GET /api/public/widget-commerce-session`.
+- `GET /api/public/widget-user/tenant-history`.
+- `POST /api/public/widget-user/register`.
+- `POST /api/public/widget-user/link-session`.
+
+Ajuste aplicado para el contrato frontend:
+
+- `session.widget_session_token` identifica la sesion anonima/registrada del widget sin exigir login.
+- `cart.summary_endpoint` ahora apunta a `/api/pwa/public/cart/summary`.
+- `cart.items_endpoint` ahora apunta a `/api/pwa/public/cart/items`.
+- Se mantiene `cart.legacy_endpoint: /api/pwa/public/cart` para compatibilidad.
+- `GET /api/pwa/public/cart/summary` y `GET /api/pwa/public/cart/items` son aliases de solo lectura del resumen/items actual.
+
+Verificacion:
+
+- `tests/test_public_tenant_catalog_alias.py::test_widget_commerce_session_returns_embedded_operating_contract`
+- `tests/test_public_tenant_catalog_alias.py::test_widget_user_tenant_history_returns_cart_claims_and_orders`
+- `tests/test_public_tenant_catalog_alias.py::test_pwa_public_cart_summary_and_items_aliases`
+- `scripts/local_platform_smoke.py` -> 11/11 OK.

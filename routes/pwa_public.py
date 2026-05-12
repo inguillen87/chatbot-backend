@@ -399,6 +399,8 @@ def public_cart_url():
 
 
 @pwa_public_bp.get("/cart")
+@pwa_public_bp.get("/cart/summary")
+@pwa_public_bp.get("/cart/items")
 @cross_origin(**_cors_kwargs(["GET"]))
 def public_cart_summary():
     tenant = _require_tenant()

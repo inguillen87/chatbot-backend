@@ -268,6 +268,7 @@ def _session_context_payload() -> dict:
     return {
         "chat_session_id": str(chat_session_id),
         "anon_id": str(anon_id),
+        "widget_session_token": f"wst_{uuid.uuid5(uuid.NAMESPACE_URL, f'{chat_session_id}:{anon_id}').hex[:24]}",
         "is_authenticated": bool(getattr(g, "user", None)),
         "can_checkout_as_guest": True,
         "can_link_account": True,
@@ -297,8 +298,9 @@ def _cart_counts_for_tenant(tenant: TenantProfile, session_payload: dict) -> dic
             items_count = 0
     return {
         "items_count": items_count,
-        "summary_endpoint": "/api/pwa/public/cart",
-        "items_endpoint": "/api/pwa/public/cart",
+        "summary_endpoint": "/api/pwa/public/cart/summary",
+        "items_endpoint": "/api/pwa/public/cart/items",
+        "legacy_endpoint": "/api/pwa/public/cart",
     }
 
 
@@ -628,8 +630,9 @@ def public_widget_commerce_session():
         },
         "cart": {
             "enabled": cart_enabled,
-            "summary_endpoint": "/api/pwa/public/cart",
-            "items_endpoint": "/api/pwa/public/cart",
+            "summary_endpoint": "/api/pwa/public/cart/summary",
+            "items_endpoint": "/api/pwa/public/cart/items",
+            "legacy_endpoint": "/api/pwa/public/cart",
             "add_endpoint": "/api/pwa/public/cart/add",
             "update_endpoint": "/api/pwa/public/cart/update",
             "remove_endpoint": "/api/pwa/public/cart/remove",

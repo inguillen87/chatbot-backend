@@ -149,7 +149,11 @@ def test_widget_commerce_session_returns_embedded_operating_contract(client):
     assert body["tenant"]["slug"] == tenant.slug
     assert body["session"]["chat_session_id"] == "chat_public_1"
     assert body["session"]["anon_id"] == "anon_public_1"
+    assert body["session"]["widget_session_token"].startswith("wst_")
     assert body["catalog"]["endpoint"] == f"/api/public/tenants/{tenant.slug}/catalog"
+    assert body["cart"]["summary_endpoint"] == "/api/pwa/public/cart/summary"
+    assert body["cart"]["items_endpoint"] == "/api/pwa/public/cart/items"
+    assert body["cart"]["legacy_endpoint"] == "/api/pwa/public/cart"
     assert body["cart"]["allow_guest_cart"] is True
     assert body["portal"]["history_endpoint"] == "/api/public/widget-user/tenant-history"
     assert body["accessibility"]["enabled"] is True
@@ -213,9 +217,28 @@ def test_widget_user_tenant_history_returns_cart_claims_and_orders(client):
     assert body["tenant_slug"] == tenant.slug
     assert body["profile"]["can_register"] is True
     assert body["cart"]["items_count"] == 2
+    assert body["cart"]["summary_endpoint"] == "/api/pwa/public/cart/summary"
+    assert body["cart"]["items_endpoint"] == "/api/pwa/public/cart/items"
     kinds = {item["kind"] for item in body["items"]}
     assert "claim" in kinds
     assert "order" in kinds
+
+
+def test_pwa_public_cart_summary_and_items_aliases(client):
+    tenant = _seed_pyme_tenant_with_catalog()
+
+    for path in ("/api/pwa/public/cart/summary", "/api/pwa/public/cart/items"):
+        resp = client.get(
+            path,
+            query_string={"tenant": tenant.slug},
+            headers={"Origin": "https://www.chatboc.ar", "X-Chat-Session-Id": "chat_public_alias"},
+        )
+
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["items_count"] == 0
+        assert body["items"] == []
+        assert resp.headers.get("Access-Control-Allow-Origin") == "https://www.chatboc.ar"
 
 
 def test_widget_user_register_and_link_session_are_degradable_json(client):
