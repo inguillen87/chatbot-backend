@@ -105,6 +105,80 @@ Pantalla tenant profile:
 - Marketplace debe mostrar cobertura de imagenes: productos sin imagen, bulk import y accion de editar/subir imagen.
 - En colegios, renderizar `education.admin_menu.panel_sections[]` y `education.profile.media_inputs`.
 
+### Inbox 360 premium
+
+Endpoints:
+
+`GET /api/v2/inbox/omnichannel`
+
+`GET /api/v2/inbox/omnichannel/{ticket_id}`
+
+El listado sigue respondiendo `inbox.omnichannel.v1`, pero cada item ahora trae contrato de drawer 360:
+
+```json
+{
+  "id": 123,
+  "ticket_id": 123,
+  "detail_endpoint": "/api/v2/inbox/omnichannel/123",
+  "conversation_id": "conv_123",
+  "title": "Consulta por beca",
+  "description": "Detalle del ticket",
+  "status": "nuevo",
+  "priority": "high",
+  "channel": "whatsapp",
+  "category": "educacion",
+  "intent": "consulta_beca",
+  "assignee": { "id": 10, "name": "Mesa de entrada", "email": "mesa@test.com" },
+  "contact": {},
+  "location": { "lat": -34.6, "lng": -58.4, "address": "..." },
+  "map": {
+    "can_render": true,
+    "fallback_when_no_coordinates": "timeline_only"
+  },
+  "attachments": [],
+  "sla": {
+    "status": "ok",
+    "overdue": false,
+    "priority": "high",
+    "first_response_due_at": null,
+    "resolution_due_at": null,
+    "next_update_due_at": null
+  },
+  "timeline": [],
+  "allowed_actions": [
+    { "id": "reply", "label": "Responder", "endpoint": "/api/v2/inbox/omnichannel/123/actions" },
+    { "id": "assign", "label": "Asignar", "endpoint": "/api/v2/inbox/omnichannel/123/actions" }
+  ],
+  "next_steps": [],
+  "source_metadata": {
+    "origin": "whatsapp",
+    "channel": "whatsapp",
+    "demo_session_id": "demo_...",
+    "widget_id": "landing-widget",
+    "contact_key": "whatsapp:+549..."
+  },
+  "frontend_contract": {
+    "render_as": "inbox_360_drawer"
+  }
+}
+```
+
+El detalle responde:
+
+```json
+{
+  "contract_version": "inbox.omnichannel.detail.v1",
+  "item": {}
+}
+```
+
+Frontend recomendado:
+
+- Usar `GET /api/v2/inbox/omnichannel` para lista/drawer inicial.
+- Abrir drawer 360 con `detail_endpoint` cuando el usuario entra a un lead/ticket.
+- Renderizar timeline, adjuntos, SLA, mapa, origen demo/widget/WhatsApp, proximo paso y acciones permitidas desde backend.
+- Si `map.can_render=false`, mostrar timeline sin mapa.
+
 ## 4. Nuevo command center superadmin
 
 Endpoint:
@@ -325,7 +399,65 @@ Frontend debe renderizar:
 - Editor de scope por empleado con chips de categorias, zonas, canales y permisos.
 - Workload por empleado para evitar sobrecargar siempre a la misma persona.
 
-## 7. Verificacion backend
+## 7. Production smoke / soporte
+
+Endpoints protegidos:
+
+`GET /api/v2/platform/production-smoke`
+
+`GET /api/v2/production-smoke`
+
+`GET /api/v2/tenants/{tenant_slug}/production-smoke`
+
+Devuelve `platform.production_smoke.v1`:
+
+```json
+{
+  "contract_version": "platform.production_smoke.v1",
+  "status": "pass|warning|fail",
+  "summary": {
+    "total": 8,
+    "passed": 8,
+    "failed": 0,
+    "critical_failed": 0
+  },
+  "checks": [
+    {
+      "id": "widget_platform_onboarding",
+      "ok": true,
+      "status": "pass",
+      "endpoint": "/api/public/widget-config"
+    },
+    {
+      "id": "inbox_360",
+      "ok": true,
+      "endpoint": "/api/v2/inbox/omnichannel"
+    }
+  ],
+  "frontend_contract": {
+    "render_as": "production_smoke_report",
+    "fail_http_query_param": "fail_http=1"
+  }
+}
+```
+
+Checks actuales:
+
+- Rutas criticas registradas: widget-config, demo/session, ask, realtime, inbox, tenant admin, WhatsApp, catalog quality, tracking.
+- Widget landing selector plataforma.
+- Socket deshabilitado si no hay contrato valido.
+- Tenant Admin OS.
+- Catalog quality.
+- WhatsApp Operations Hub.
+- Inbox 360.
+
+Frontend/superadmin recomendado:
+
+- Mostrarlo como herramienta interna de soporte, no como pantalla publica.
+- Si `status=fail`, mostrar `checks[]` con endpoint y detalles.
+- Para monitores externos se puede llamar con `?fail_http=1` para recibir HTTP 500 cuando haya falla critica.
+
+## 8. Verificacion backend
 
 Test agregado:
 
@@ -342,3 +474,5 @@ Cobertura nueva:
 - `employee.routing.v1`
 - `employee.routing_scope.v1`
 - `employee.routing.auto_assign.v1`
+- `inbox.omnichannel.detail.v1`
+- `platform.production_smoke.v1`

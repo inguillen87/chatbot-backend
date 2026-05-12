@@ -1172,6 +1172,211 @@ def superadmin_command_center_v2(current_user):
     return _json_response(payload)
 
 
+def _smoke_check(
+    check_id: str,
+    *,
+    ok: bool,
+    label: str,
+    severity: str = "critical",
+    details: Mapping[str, Any] | None = None,
+    endpoint: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "id": check_id,
+        "label": label,
+        "ok": bool(ok),
+        "status": "pass" if ok else "fail",
+        "severity": severity,
+        "endpoint": endpoint,
+        "details": dict(details or {}),
+    }
+
+
+def _routes_available(paths: list[str]) -> dict[str, bool]:
+    registered = {str(rule.rule) for rule in current_app.url_map.iter_rules()}
+    return {path: path in registered for path in paths}
+
+
+def _resolve_smoke_tenant(current_user: User, tenant_slug: str | None = None) -> tuple[TenantProfile | None, Any]:
+    if current_user.rol == "super_admin":
+        resolved_slug = tenant_slug or _tenant_slug_from_request()
+        if resolved_slug:
+            tenant = TenantProfile.query.filter_by(slug=resolved_slug).first()
+            if tenant:
+                return tenant, None
+            return None, _error_response("Tenant no encontrado", 404, "tenant_not_found", "check_tenant_slug")
+        tenant = TenantProfile.query.order_by(TenantProfile.created_at.desc()).first()
+        if tenant:
+            return tenant, None
+        return None, None
+    return _resolve_tenant_or_error(current_user, tenant_slug)
+
+
+@v2_saas_bp.route("/production-smoke", methods=["GET"])
+@v2_saas_bp.route("/platform/production-smoke", methods=["GET"])
+@v2_saas_bp.route("/tenants/<string:tenant_slug>/production-smoke", methods=["GET"])
+@token_requerido
+@require_role("admin", "super_admin")
+def production_smoke_v2(current_user, tenant_slug: str | None = None):
+    tenant, error = _resolve_smoke_tenant(current_user, tenant_slug)
+    if error:
+        return error
+
+    start_date, end_date = _date_range_from_request(default_days=7)
+    required_routes = [
+        "/api/public/widget-config",
+        "/api/v2/demo/session",
+        "/ask/pyme",
+        "/ask/municipio",
+        "/api/ask/pyme",
+        "/api/ask/municipio",
+        "/api/public/realtime/voice-capabilities",
+        "/api/v2/inbox/omnichannel",
+        "/api/v2/tenant/admin-experience",
+        "/api/v2/whatsapp/experience",
+        "/api/v2/catalog/quality",
+        "/api/public/tracking/experience",
+    ]
+    route_status = _routes_available(required_routes)
+    checks = [
+        _smoke_check(
+            "routes_registered",
+            ok=all(route_status.values()),
+            label="Rutas criticas registradas",
+            endpoint="flask.url_map",
+            details={"routes": route_status},
+        )
+    ]
+
+    try:
+        from routes.public_resolver import _platform_widget_config_payload
+
+        widget_payload = _platform_widget_config_payload()
+        onboarding = widget_payload.get("onboarding") or {}
+        quick_menu = widget_payload.get("quick_menu") or []
+        realtime = widget_payload.get("realtime") or {}
+        checks.append(
+            _smoke_check(
+                "widget_platform_onboarding",
+                ok=(
+                    widget_payload.get("contract_version") == "public.widget_config.v1"
+                    and (widget_payload.get("tenant") or {}).get("slug") == "chatboc-platform"
+                    and onboarding.get("mode") == "platform_sector_selector"
+                    and len(quick_menu) >= 3
+                ),
+                label="Widget landing selector plataforma",
+                endpoint="/api/public/widget-config",
+                details={
+                    "tenant": widget_payload.get("tenant"),
+                    "onboarding_mode": onboarding.get("mode"),
+                    "quick_menu_count": len(quick_menu),
+                },
+            )
+        )
+        checks.append(
+            _smoke_check(
+                "socket_disabled_for_landing",
+                ok=not bool(realtime.get("socket_enabled")) or bool(realtime.get("socket_url")),
+                label="Socket.IO no se abre sin contrato valido",
+                endpoint="/api/public/widget-config",
+                details={"realtime": realtime, "visibility_rules": widget_payload.get("visibility_rules")},
+            )
+        )
+    except Exception as exc:
+        checks.append(
+            _smoke_check(
+                "widget_platform_onboarding",
+                ok=False,
+                label="Widget landing selector plataforma",
+                endpoint="/api/public/widget-config",
+                details={"error": str(exc)},
+            )
+        )
+
+    if tenant:
+        marketplace = _marketplace_ops_summary(tenant)
+        admin_payload = _build_tenant_admin_experience_payload(tenant, start_date=start_date, end_date=end_date, app_config=current_app.config)
+        whatsapp = build_whatsapp_experience(tenant, app_config=current_app.config)
+        freshness = (admin_payload.get("operations") or {}).get("freshness") or {}
+        first_ticket = TenantTicket.query.filter_by(tenant_id=tenant.id).order_by(TenantTicket.updated_at.desc()).first()
+        inbox_item = _inbox_ticket_payload(first_ticket) if first_ticket else None
+        checks.extend(
+            [
+                _smoke_check(
+                    "tenant_admin_experience",
+                    ok=admin_payload.get("contract_version") == "tenant.admin_experience.v1"
+                    and bool(admin_payload.get("modules"))
+                    and isinstance(((freshness.get("summary") or {}).get("can_render_heatmap")), bool),
+                    label="Tenant Admin OS listo",
+                    endpoint="/api/v2/tenant/admin-experience",
+                    details={
+                        "modules": [item.get("id") for item in admin_payload.get("modules") or []],
+                        "can_render_heatmap": (freshness.get("summary") or {}).get("can_render_heatmap"),
+                    },
+                ),
+                _smoke_check(
+                    "catalog_quality",
+                    ok=marketplace.get("quality", {}).get("contract_version") == "catalog.quality.v1"
+                    and "media_capabilities" in marketplace,
+                    label="Marketplace quality e imagenes",
+                    endpoint="/api/v2/catalog/quality",
+                    details={"summary": marketplace.get("summary")},
+                ),
+                _smoke_check(
+                    "whatsapp_operations",
+                    ok=whatsapp.get("contract_version") == "whatsapp.experience.v1"
+                    and "conversation_intelligence" in whatsapp
+                    and "tracking" in whatsapp,
+                    label="WhatsApp Operations Hub",
+                    endpoint="/api/v2/whatsapp/experience",
+                    details={
+                        "channel_enabled": (whatsapp.get("channel") or {}).get("enabled"),
+                        "voice_enabled": ((whatsapp.get("conversation_intelligence") or {}).get("voice_calls") or {}).get("enabled"),
+                    },
+                ),
+                _smoke_check(
+                    "inbox_360",
+                    ok=not first_ticket
+                    or (
+                        bool(inbox_item)
+                        and "timeline" in inbox_item
+                        and "sla" in inbox_item
+                        and "allowed_actions" in inbox_item
+                        and "source_metadata" in inbox_item
+                    ),
+                    label="Inbox 360 drawer contract",
+                    endpoint="/api/v2/inbox/omnichannel",
+                    details={"has_ticket": bool(first_ticket), "ticket_id": getattr(first_ticket, "id", None)},
+                ),
+            ]
+        )
+
+    failed = [item for item in checks if not item.get("ok")]
+    warnings = [item for item in failed if item.get("severity") != "critical"]
+    critical = [item for item in failed if item.get("severity") == "critical"]
+    status = "pass" if not failed else "warning" if warnings and not critical else "fail"
+    payload = {
+        "contract_version": "platform.production_smoke.v1",
+        "status": status,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "tenant": _tenant_ref(tenant) if tenant else None,
+        "summary": {
+            "total": len(checks),
+            "passed": len([item for item in checks if item.get("ok")]),
+            "failed": len(failed),
+            "critical_failed": len(critical),
+        },
+        "checks": checks,
+        "frontend_contract": {
+            "render_as": "production_smoke_report",
+            "recommended_refresh_seconds": 120,
+            "fail_http_query_param": "fail_http=1",
+        },
+    }
+    http_status = 500 if status == "fail" and request.args.get("fail_http") == "1" else 200
+    return _json_response(payload, http_status)
+
+
 @v2_saas_bp.route("/notifications/hooks", methods=["GET", "POST"])
 @token_requerido
 @require_role("admin", "empleado", "super_admin")
@@ -1236,43 +1441,7 @@ def omnichannel_inbox_v2(current_user):
 
     limit = max(1, min(int(request.args.get("limit", 50) or 50), 200))
     tickets = TenantTicket.query.filter_by(tenant_id=tenant.id).order_by(TenantTicket.updated_at.desc()).limit(limit).all()
-    items = []
-    for ticket in tickets:
-        extra = _ticket_extra(ticket)
-        comments = extra.get("comments") if isinstance(extra.get("comments"), list) else []
-        timeline = []
-        for comment in comments[-20:]:
-            if not isinstance(comment, dict):
-                continue
-            origin = comment.get("origin") or ("admin_panel" if comment.get("visibility") == "internal" else "public_tracking")
-            timeline.append(
-                {
-                    "id": comment.get("id"),
-                    "origin": origin,
-                    "body": comment.get("body") or "",
-                    "visibility": comment.get("visibility") or "public",
-                    "created_at": comment.get("created_at"),
-                }
-            )
-        items.append(
-            {
-                "id": ticket.id,
-                "ticket_id": ticket.id,
-                "conversation_id": extra.get("conversation_id") or f"ticket-{ticket.id}",
-                "title": extra.get("title") or ticket.categoria or f"Ticket {ticket.id}",
-                "status": ticket.estado,
-                "priority": extra.get("priority") or "medium",
-                "channel": _ticket_channel(ticket),
-                "category": ticket.categoria,
-                "assignee": {"id": extra.get("assignee_id"), "name": None} if extra.get("assignee_id") else None,
-                "contact": extra.get("contact") if isinstance(extra.get("contact"), dict) else {},
-                "location": {"lat": ticket.latitud, "lng": ticket.longitud, "address": extra.get("address")},
-                "timeline": timeline,
-                "presence": {"viewers": [], "locked_by": None},
-                "actions": ["assign", "reply", "handoff", "close"],
-                "updated_at": ticket.updated_at.isoformat() if ticket.updated_at else None,
-            }
-        )
+    items = [_inbox_ticket_payload(ticket) for ticket in tickets]
 
     return _json_response(
         {
@@ -1284,29 +1453,133 @@ def omnichannel_inbox_v2(current_user):
                 "open": len([item for item in items if str(item.get("status") or "").lower() not in _CLOSED_TICKET_STATES]),
                 "unassigned": len([item for item in items if not item.get("assignee")]),
             },
+            "frontend_contract": {
+                "render_as": "omnichannel_inbox",
+                "detail_endpoint_template": "/api/v2/inbox/omnichannel/{ticket_id}",
+                "drawer_contract": "inbox.omnichannel.detail.v1",
+            },
         }
     )
 
 
-def _inbox_ticket_payload(ticket: TenantTicket) -> dict[str, Any]:
-    extra = _ticket_extra(ticket)
+def _attachment_items(extra: Mapping[str, Any]) -> list[dict[str, Any]]:
+    raw = (
+        extra.get("attachments")
+        or extra.get("attachmentInfo")
+        or extra.get("attachment_info")
+        or extra.get("uploaded_file_info")
+        or extra.get("files")
+        or []
+    )
+    if isinstance(raw, dict):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return []
+    items: list[dict[str, Any]] = []
+    for index, item in enumerate(raw):
+        if not isinstance(item, dict):
+            continue
+        url = item.get("url") or item.get("file_url") or item.get("public_url")
+        mime_type = item.get("mimeType") or item.get("mime_type") or item.get("content_type")
+        items.append(
+            {
+                "id": item.get("id") or item.get("key") or f"attachment-{index + 1}",
+                "name": item.get("name") or item.get("filename") or item.get("file_name") or f"Adjunto {index + 1}",
+                "url": url,
+                "mimeType": mime_type,
+                "size": item.get("size") or item.get("bytes"),
+                "kind": item.get("kind") or ("image" if str(mime_type or "").startswith("image/") else "file"),
+                "source": item.get("source") or "chat_attachment",
+            }
+        )
+    return items
+
+
+def _timeline_items(extra: Mapping[str, Any], *, limit: int = 30) -> list[dict[str, Any]]:
     comments = extra.get("comments") if isinstance(extra.get("comments"), list) else []
     timeline = []
-    for comment in comments[-30:]:
+    for comment in comments[-limit:]:
         if not isinstance(comment, dict):
             continue
         origin = comment.get("origin") or ("admin_panel" if comment.get("visibility") == "internal" else "public_tracking")
         timeline.append(
             {
                 "id": comment.get("id"),
+                "type": comment.get("type") or "message",
                 "origin": origin,
                 "body": comment.get("body") or "",
                 "visibility": comment.get("visibility") or "public",
                 "created_at": comment.get("created_at"),
                 "actor": comment.get("actor") if isinstance(comment.get("actor"), dict) else None,
                 "action": comment.get("action"),
+                "attachments": _attachment_items(comment),
             }
         )
+    return timeline
+
+
+def _ticket_sla_payload(ticket: TenantTicket, extra: Mapping[str, Any]) -> dict[str, Any]:
+    sla = extra.get("sla") if isinstance(extra.get("sla"), dict) else {}
+    overdue = is_ticket_overdue(ticket)
+    status = "breached" if overdue else str(extra.get("sla_status") or extra.get("sla_state") or "ok")
+    return {
+        "status": status,
+        "overdue": overdue,
+        "priority": extra.get("priority") or "medium",
+        "first_response_due_at": sla.get("first_response_due_at"),
+        "resolution_due_at": sla.get("resolution_due_at"),
+        "next_update_due_at": sla.get("next_update_due_at"),
+        "paused": bool(sla.get("paused")),
+    }
+
+
+def _allowed_inbox_actions(ticket: TenantTicket, extra: Mapping[str, Any]) -> list[dict[str, Any]]:
+    status = str(ticket.estado or "").lower()
+    base_endpoint = f"/api/v2/inbox/omnichannel/{ticket.id}/actions"
+    actions = [
+        {"id": "reply", "label": "Responder", "method": "POST", "endpoint": base_endpoint, "requires": ["body"]},
+        {"id": "assign", "label": "Asignar", "method": "POST", "endpoint": base_endpoint, "requires": ["assignee_id"]},
+        {"id": "handoff", "label": "Derivar", "method": "POST", "endpoint": base_endpoint, "requires": ["channel"]},
+        {"id": "set_priority", "label": "Cambiar prioridad", "method": "POST", "endpoint": base_endpoint, "requires": ["priority"]},
+    ]
+    if status in _CLOSED_TICKET_STATES:
+        actions.append({"id": "reopen", "label": "Reabrir", "method": "POST", "endpoint": base_endpoint, "requires": []})
+    else:
+        actions.append({"id": "close", "label": "Cerrar", "method": "POST", "endpoint": base_endpoint, "requires": [], "destructive": True})
+    return actions
+
+
+def _next_steps(ticket: TenantTicket, extra: Mapping[str, Any]) -> list[dict[str, Any]]:
+    steps = []
+    if not extra.get("assignee_id"):
+        steps.append({"id": "assign_owner", "label": "Asignar responsable", "action": "assign", "priority": "high"})
+    if str(ticket.estado or "").lower() not in _CLOSED_TICKET_STATES:
+        steps.append({"id": "reply_customer", "label": "Responder al contacto", "action": "reply", "priority": "medium"})
+    if ticket.latitud is None and ticket.longitud is None and not extra.get("address"):
+        steps.append({"id": "collect_location", "label": "Pedir ubicacion si aplica", "action": "reply", "priority": "low"})
+    if _ticket_channel(ticket) == "whatsapp":
+        steps.append({"id": "whatsapp_followup", "label": "Continuar por WhatsApp", "action": "reply", "priority": "medium"})
+    return steps[:4]
+
+
+def _source_metadata(ticket: TenantTicket, extra: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "origin": ticket.origen,
+        "channel": _ticket_channel(ticket),
+        "conversation_id": extra.get("conversation_id") or f"ticket-{ticket.id}",
+        "chat_session_id": extra.get("chat_session_id") or extra.get("session_id"),
+        "demo_session_id": extra.get("demo_session_id"),
+        "widget_id": extra.get("widget_id"),
+        "contact_key": extra.get("contact_key"),
+        "whatsapp_message_id": extra.get("whatsapp_message_id"),
+        "lead_source": extra.get("lead_source") or ticket.origen,
+        "demo_mode": bool(extra.get("demo_mode")),
+    }
+
+
+def _inbox_ticket_payload(ticket: TenantTicket) -> dict[str, Any]:
+    extra = _ticket_extra(ticket)
+    timeline = _timeline_items(extra)
 
     assignee = None
     if extra.get("assignee_id"):
@@ -1320,20 +1593,60 @@ def _inbox_ticket_payload(ticket: TenantTicket) -> dict[str, Any]:
         "id": ticket.id,
         "ticket_id": ticket.id,
         "conversation_id": extra.get("conversation_id") or f"ticket-{ticket.id}",
+        "detail_endpoint": f"/api/v2/inbox/omnichannel/{ticket.id}",
         "title": extra.get("title") or ticket.categoria or f"Ticket {ticket.id}",
+        "description": ticket.descripcion,
+        "preview_text": extra.get("preview_text") or ticket.descripcion,
         "status": ticket.estado,
         "priority": extra.get("priority") or "medium",
         "channel": _ticket_channel(ticket),
         "category": ticket.categoria,
+        "intent": extra.get("intent") or extra.get("lead_intent") or ticket.categoria,
         "assignee": assignee,
         "contact": extra.get("contact") if isinstance(extra.get("contact"), dict) else {},
         "location": {"lat": ticket.latitud, "lng": ticket.longitud, "address": extra.get("address")},
+        "map": {
+            "can_render": ticket.latitud is not None and ticket.longitud is not None,
+            "fallback_when_no_coordinates": "timeline_only",
+        },
+        "attachments": _attachment_items(extra),
+        "sla": _ticket_sla_payload(ticket, extra),
         "timeline": timeline,
         "presence": extra.get("presence") if isinstance(extra.get("presence"), dict) else {"viewers": [], "locked_by": None},
-        "actions": ["assign", "reply", "handoff", "close", "reopen"],
+        "actions": [item["id"] for item in _allowed_inbox_actions(ticket, extra)],
+        "allowed_actions": _allowed_inbox_actions(ticket, extra),
+        "next_steps": _next_steps(ticket, extra),
+        "source_metadata": _source_metadata(ticket, extra),
         "handoff": extra.get("handoff") if isinstance(extra.get("handoff"), dict) else None,
+        "created_at": ticket.created_at.isoformat() if ticket.created_at else None,
         "updated_at": ticket.updated_at.isoformat() if ticket.updated_at else None,
+        "frontend_contract": {
+            "render_as": "inbox_360_drawer",
+            "timeline_component": "conversation_timeline",
+            "map_fallback": "timeline_only",
+        },
     }
+
+
+@v2_saas_bp.route("/inbox/omnichannel/<int:ticket_id>", methods=["GET"])
+@token_requerido
+@require_role("admin", "empleado", "super_admin")
+def omnichannel_inbox_detail_v2(current_user, ticket_id: int):
+    tenant, error = _resolve_tenant_or_error(current_user)
+    if error:
+        return error
+    ticket = TenantTicket.query.filter_by(id=ticket_id, tenant_id=tenant.id).first()
+    if not ticket:
+        return _error_response("Ticket no encontrado", 404, "ticket_not_found", "refresh_inbox")
+    item = _inbox_ticket_payload(ticket)
+    return _json_response(
+        {
+            "contract_version": "inbox.omnichannel.detail.v1",
+            "tenant": _tenant_ref(tenant),
+            "item": item,
+            "ticket": item,
+        }
+    )
 
 
 def _append_ticket_event(extra: dict[str, Any], *, action: str, actor: User, body: str, visibility: str = "internal") -> None:

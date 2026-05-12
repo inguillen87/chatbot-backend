@@ -403,3 +403,35 @@ Verificacion ejecutada:
 - `tests/test_realtime_voice_profiles.py`
 - `tests/test_public_resolver_widget_config_contract.py`
 - `tests/test_widget_settings.py`
+
+## Widget onboarding QA 2026-05-12
+
+Alineacion con el QA frontend del widget en landing:
+
+- `GET /api/public/widget-config` sin tenant en host plataforma devuelve `public.widget_config.v1` con `tenant.slug=chatboc-platform`, `tenant.tipo=platform`, `public.widget_onboarding.v1` y `mode=platform_sector_selector`.
+- `quick_menu` top-level y `onboarding.quick_menu` quedan sincronizados con tres opciones backend-first: Colegios, Gobiernos y Empresas.
+- Cada opcion trae `label`, `sector`, `tenant_slug` y `rubro` para iniciar `POST /api/v2/demo/session`.
+- `ui_hints` mantiene `widget.ui_hints.v1`, `max_visible_quick_replies=3` y composer compacto.
+- `realtime.socket_enabled=false`, `visibility_rules.allow_websocket=false` y `support_channels.live_chat.socket_enabled=false` para que landing no conecte `/socket.io` ni muestre badge Live si no esta habilitado.
+- `POST /api/v2/demo/session` acepta los payloads del selector para `educacion`, `gobierno` y `empresas`; devuelve `workspace.chat_bootstrap` con endpoint canonico, headers `X-Demo-Session-Id`, `X-Chat-Session-Id`, `X-Tenant-Slug`, media capabilities, conversion CTAs y animation tokens.
+
+Verificacion ejecutada:
+
+- `tests/test_public_resolver_widget_config_contract.py`
+- `tests/test_api_v2_foundation.py`
+
+## Production QA + Inbox 360 2026-05-12
+
+Mejora aditiva para pasar de contratos desbloqueados a operacion monitoreable y drawer 360:
+
+- `GET /api/v2/inbox/omnichannel` mantiene `inbox.omnichannel.v1`, pero cada item ahora trae `detail_endpoint`, `attachments`, `sla`, `allowed_actions`, `next_steps`, `source_metadata`, `map.can_render` y `frontend_contract.render_as=inbox_360_drawer`.
+- `GET /api/v2/inbox/omnichannel/{ticket_id}` devuelve `inbox.omnichannel.detail.v1` con el mismo item enriquecido para drawer 360.
+- Las acciones existentes de inbox siguen en `/api/v2/inbox/omnichannel/{ticket_id}/actions` y usan el mismo payload enriquecido al responder.
+- `GET /api/v2/platform/production-smoke`, `GET /api/v2/production-smoke` y `GET /api/v2/tenants/{tenant_slug}/production-smoke` devuelven `platform.production_smoke.v1`.
+- El smoke protegido valida rutas criticas, widget onboarding, socket disabled, tenant admin experience, catalog quality, WhatsApp operations e inbox 360.
+- `?fail_http=1` permite que monitores externos reciban HTTP 500 cuando haya falla critica; por defecto responde JSON 200 con `status`.
+- Se actualizo handoff frontend: `docs/BACKEND_TO_FRONTEND_SYNC_TENANT_ADMIN_PROFILE_2026-05-12.md`.
+
+Verificacion ejecutada:
+
+- `tests/test_v2_saas_contracts.py`

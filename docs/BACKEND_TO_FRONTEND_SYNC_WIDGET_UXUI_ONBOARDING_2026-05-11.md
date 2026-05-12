@@ -28,7 +28,8 @@ Shape:
     "autostart_after_selection": true,
     "selection_endpoint": "/api/v2/demo/session",
     "catalog_endpoint": "/api/v2/demo/catalog",
-    "chat_header_policy": "use_chat_bootstrap_from_demo_session"
+    "chat_header_policy": "use_chat_bootstrap_from_demo_session",
+    "quick_menu": []
   },
   "quick_menu": [
     {
@@ -209,3 +210,24 @@ Implementado:
 - `suppress_global_widget=false` fuera de integracion.
 - `media_capabilities`, `conversion_ctas`, `animation_tokens` y `onboarding` top-level.
 - Tests backend para contrato plataforma/tenant.
+
+## 9. QA frontend 2026-05-12 confirmado
+
+Backend queda alineado con el QA de onboarding del widget:
+
+- `GET /api/public/widget-config` sin tenant en host plataforma devuelve `tenant.slug: chatboc-platform` y `tenant.tipo: platform`.
+- `onboarding.contract_version` es `public.widget_onboarding.v1`.
+- `onboarding.mode` es `platform_sector_selector`.
+- `onboarding.selection_endpoint` es `/api/v2/demo/session`.
+- `onboarding.catalog_endpoint` es `/api/v2/demo/catalog`.
+- `quick_menu` top-level y `onboarding.quick_menu` traen las mismas opciones.
+- Cada item de `quick_menu[]` trae `label`, `sector`, `tenant_slug` y `rubro`.
+- `ui_hints.contract_version` es `widget.ui_hints.v1` y `max_visible_quick_replies` queda en `3`.
+- `realtime.socket_enabled` y `visibility_rules.allow_websocket` quedan en `false` para landing global mientras Socket.IO no este publicado.
+- `support_channels.live_chat.socket_enabled` queda en `false`; frontend no debe mostrar badge Live ni intentar `/socket.io`.
+- `POST /api/v2/demo/session` acepta los payloads del selector para `educacion`, `gobierno` y `empresas`, y devuelve `workspace.chat_bootstrap` con `X-Demo-Session-Id`, `X-Chat-Session-Id` y `X-Tenant-Slug`.
+
+Verificacion backend:
+
+- `tests/test_public_resolver_widget_config_contract.py`
+- `tests/test_api_v2_foundation.py`

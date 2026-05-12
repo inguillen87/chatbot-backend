@@ -481,6 +481,7 @@ def _platform_widget_config_payload() -> dict:
         "selection_endpoint": "/api/v2/demo/session",
         "catalog_endpoint": "/api/v2/demo/catalog",
         "chat_header_policy": "use_chat_bootstrap_from_demo_session",
+        "quick_menu": quick_menu,
         "sector_groups": sector_groups,
     }
     builder_config = {

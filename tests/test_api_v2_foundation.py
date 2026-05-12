@@ -259,6 +259,62 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertEqual((payload.get("chat_bootstrap") or {}).get("endpoint"), "/ask/pyme")
         self.assertEqual((payload.get("chat_bootstrap") or {}).get("payload", {}).get("rubro"), "colegio-demo")
 
+    def test_v2_demo_session_accepts_widget_onboarding_payloads_for_three_pillars(self):
+        pyme_owner = User(name="Bodega Demo", email="bodega-widget@test.com", password_hash="hash", tipo_chat="pyme")
+        colegio_owner = User(name="Colegio Widget", email="colegio-widget@test.com", password_hash="hash", tipo_chat="pyme")
+        municipio_owner = User(name="Municipio Widget", email="municipio-widget@test.com", password_hash="hash", tipo_chat="municipio")
+        db.session.add_all([pyme_owner, colegio_owner, municipio_owner])
+        db.session.flush()
+        db.session.add_all(
+            [
+                TenantProfile(slug="bodega", nombre="Bodega Demo", tipo="pyme", pyme_id=pyme_owner.id, is_active=True),
+                TenantProfile(
+                    slug="colegio-demo",
+                    nombre="Colegio Demo",
+                    tipo="pyme",
+                    pyme_id=colegio_owner.id,
+                    is_active=True,
+                    vertical="educacion",
+                    subvertical="colegio_privado",
+                    capabilities_json={"education": {"enabled": True}},
+                ),
+                TenantProfile(slug="municipio", nombre="Municipio Demo", tipo="municipio", municipio_id=municipio_owner.id, is_active=True),
+            ]
+        )
+        db.session.commit()
+
+        cases = [
+            ("educacion", "colegio-demo", "colegio-demo", "/ask/pyme"),
+            ("gobierno", "municipio", "municipio", "/ask/municipio"),
+            ("empresas", "bodega", "bodega", "/ask/pyme"),
+        ]
+        for sector, tenant_slug, rubro, endpoint in cases:
+            with self.subTest(sector=sector):
+                resp = self.client.post(
+                    "/api/v2/demo/session",
+                    json={"sector": sector, "tenant_slug": tenant_slug, "rubro": rubro},
+                    headers={"X-Request-Id": f"widget-onboarding-{sector}"},
+                )
+
+                self.assertEqual(resp.status_code, 200)
+                payload = resp.get_json()
+                workspace = payload.get("workspace") or {}
+                chat_bootstrap = workspace.get("chat_bootstrap") or {}
+                headers = chat_bootstrap.get("headers") or {}
+                self.assertEqual(payload.get("request_id"), f"widget-onboarding-{sector}")
+                self.assertEqual(payload.get("tenant_slug"), tenant_slug)
+                self.assertEqual((payload.get("tenant") or {}).get("slug"), tenant_slug)
+                self.assertEqual(chat_bootstrap.get("endpoint"), endpoint)
+                self.assertEqual(headers.get("X-Demo-Session-Id"), payload.get("demo_session_id"))
+                self.assertEqual(headers.get("X-Chat-Session-Id"), payload.get("demo_session_id"))
+                self.assertEqual(headers.get("X-Tenant-Slug"), tenant_slug)
+                self.assertEqual((chat_bootstrap.get("payload") or {}).get("tenant_slug"), tenant_slug)
+                self.assertEqual((chat_bootstrap.get("payload") or {}).get("rubro"), rubro)
+                self.assertTrue(workspace.get("media_capabilities"))
+                self.assertTrue(workspace.get("conversion_ctas"))
+                self.assertTrue(workspace.get("animation_tokens"))
+                self.assertTrue(workspace.get("quick_replies") or ((workspace.get("education") or {}).get("quick_menu")))
+
     def test_api_ask_municipio_alias_degrades_runtime_errors_for_cached_frontend(self):
         owner = User(name="Municipio Demo", email="municipio-alias@test.com", password_hash="hash", tipo_chat="municipio", rol="admin")
         db.session.add(owner)

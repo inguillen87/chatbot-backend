@@ -94,10 +94,28 @@ class V2SaasContractsTest(unittest.TestCase):
                 "title": "Consulta por beca",
                 "priority": "high",
                 "assignee_id": self.employee.id,
+                "assignee_name": self.employee.name,
+                "assignee_email": self.employee.email,
+                "conversation_id": "conv-beca-1",
+                "demo_session_id": "demo-beca-1",
+                "widget_id": "landing-widget",
+                "contact_key": "whatsapp:+5491111111111",
+                "intent": "consulta_beca",
+                "contact": {"name": "Familia Gomez", "phone": "+5491111111111"},
                 "zone": "centro",
                 "channel": "whatsapp",
+                "attachments": [
+                    {
+                        "id": "att-1",
+                        "name": "comprobante.jpg",
+                        "url": "https://cdn.example.com/comprobante.jpg",
+                        "mimeType": "image/jpeg",
+                    }
+                ],
                 "comments": [{"id": 1, "body": "Hola", "visibility": "public", "created_at": "2026-05-01T12:00:00Z"}],
             },
+            latitud=-34.6,
+            longitud=-58.4,
         )
         db.session.add(self.ticket)
 
@@ -389,8 +407,53 @@ class V2SaasContractsTest(unittest.TestCase):
         payload = response.get_json()
         self.assertEqual(payload.get("contract_version"), "inbox.omnichannel.v1")
         self.assertEqual(payload["summary"]["total"], 1)
-        self.assertEqual(payload["items"][0]["channel"], "whatsapp")
-        self.assertTrue(payload["items"][0]["timeline"])
+        item = payload["items"][0]
+        self.assertEqual(item["channel"], "whatsapp")
+        self.assertTrue(item["timeline"])
+        self.assertEqual(item["conversation_id"], "conv-beca-1")
+        self.assertTrue(item["attachments"])
+        self.assertIn("sla", item)
+        self.assertIn("allowed_actions", item)
+        self.assertIn("next_steps", item)
+        self.assertEqual(item["source_metadata"]["demo_session_id"], "demo-beca-1")
+        self.assertTrue(item["map"]["can_render"])
+        self.assertEqual(item["frontend_contract"]["render_as"], "inbox_360_drawer")
+        self.assertEqual(payload["frontend_contract"]["drawer_contract"], "inbox.omnichannel.detail.v1")
+
+    def test_omnichannel_inbox_detail_contract_for_drawer_360(self):
+        response = self.client.get(
+            f"/api/v2/inbox/omnichannel/{self.ticket.id}",
+            headers={**self._auth(self.owner), "X-Request-Id": "inbox-detail-1"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload.get("contract_version"), "inbox.omnichannel.detail.v1")
+        self.assertEqual(payload.get("request_id"), "inbox-detail-1")
+        item = payload["item"]
+        self.assertEqual(item["ticket_id"], self.ticket.id)
+        self.assertTrue(item["allowed_actions"])
+        self.assertTrue(any(action["id"] == "reply" for action in item["allowed_actions"]))
+        self.assertEqual(item["source_metadata"]["contact_key"], "whatsapp:+5491111111111")
+        self.assertEqual(item["sla"]["priority"], "high")
+
+    def test_production_smoke_contract_checks_critical_runtime_surfaces(self):
+        response = self.client.get(
+            "/api/v2/platform/production-smoke",
+            headers={**self._auth(self.super_admin), "X-Request-Id": "smoke-1"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload.get("contract_version"), "platform.production_smoke.v1")
+        self.assertEqual(payload.get("request_id"), "smoke-1")
+        self.assertIn(payload["status"], {"pass", "warning", "fail"})
+        check_ids = {item["id"] for item in payload["checks"]}
+        self.assertIn("widget_platform_onboarding", check_ids)
+        self.assertIn("socket_disabled_for_landing", check_ids)
+        self.assertIn("tenant_admin_experience", check_ids)
+        self.assertIn("inbox_360", check_ids)
+        self.assertEqual(payload["frontend_contract"]["render_as"], "production_smoke_report")
 
     def test_omnichannel_inbox_action_updates_ticket(self):
         response = self.client.post(
