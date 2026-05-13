@@ -1906,6 +1906,32 @@ def list_encuestas(tenant_id: int, estado: Optional[str] = None) -> List[EncEncu
     return query.order_by(EncEncuesta.created_at.desc()).all()
 
 
+def _public_encuestas_list_options() -> List[Any]:
+    options: List[Any] = [joinedload(EncEncuesta.links)]
+    try:
+        options.append(
+            load_only(
+                EncEncuesta.id,
+                EncEncuesta.tenant_id,
+                EncEncuesta.slug,
+                EncEncuesta.titulo,
+                EncEncuesta.descripcion,
+                EncEncuesta.tipo,
+                EncEncuesta.estado,
+                EncEncuesta.inicio_at,
+                EncEncuesta.fin_at,
+                EncEncuesta.es_votacion_envivo,
+                EncEncuesta.mostrar_resultados_envivo,
+                EncEncuesta.permitir_comentarios,
+                EncEncuesta.created_at,
+                EncEncuesta.updated_at,
+            )
+        )
+    except (AttributeError, TypeError):
+        pass
+    return [option for option in options if option is not None]
+
+
 def list_public_encuestas_for_tenant(
     tenant_id: int,
     limit: int = 10,
@@ -1916,7 +1942,7 @@ def list_public_encuestas_for_tenant(
     safe_limit = min(safe_limit, 25)
     candidate_limit = max(safe_limit * 4, 25)
     query = (
-        EncEncuesta.query.options(joinedload(EncEncuesta.links))
+        EncEncuesta.query.options(*_public_encuestas_list_options())
         .filter(EncEncuesta.tenant_id == tenant_id)
         .filter(EncEncuesta.estado == "publicada")
         .order_by(

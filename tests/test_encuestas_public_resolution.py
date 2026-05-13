@@ -536,6 +536,35 @@ def test_list_public_encuestas_falls_back_to_slug(client):
         )
 
 
+def test_public_encuestas_listing_uses_lightweight_summary(client, monkeypatch):
+    with client.application.app_context():
+        encuesta = EncEncuesta(
+            tenant_id=4,
+            slug="consulta-liviana",
+            titulo="Consulta liviana",
+            descripcion="No debe cargar preguntas ni resultados",
+            tipo="opinion",
+            estado="publicada",
+            mostrar_resultados_envivo=True,
+        )
+        db.session.add(encuesta)
+        db.session.commit()
+
+    def explode_serializer(*_args, **_kwargs):
+        raise AssertionError("public listing must not use the detail serializer")
+
+    monkeypatch.setattr("routes.encuestas_public.serialize_public_encuesta", explode_serializer)
+
+    response = client.get("/api/public/encuestas/v1?tenant_id=4")
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["contract_version"] == "encuestas.public_list.v1"
+    item = next(item for item in data["items"] if item["slug"] == "consulta-liviana")
+    assert item["contract_version"] == "encuestas.public.v1"
+    assert item["titulo"] == "Consulta liviana"
+    assert item["url_publica"].endswith("/e/consulta-liviana")
+
+
 def test_get_public_encuesta_prefers_active_published_when_link_slug_is_duplicated(client):
     with client.application.app_context():
         shared_public_slug = "movilidad-y-transporte-junin"

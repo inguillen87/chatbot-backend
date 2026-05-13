@@ -267,6 +267,49 @@ def _public_target_base_url() -> str:
     return request.host_url.rstrip("/")
 
 
+def _isoformat_or_none(value: Any) -> Optional[str]:
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return None
+
+
+def _serialize_public_encuesta_summary(
+    encuesta: Any,
+    slug_publico: str,
+    base_url: str,
+) -> Dict[str, Any]:
+    """Build a lightweight list item without loading questions or live results."""
+
+    if isinstance(encuesta, Mapping):
+        data = dict(encuesta)
+        slug = slug_publico or data.get("slug")
+        data["slug"] = slug
+        data.setdefault("slug_publico", slug)
+        data.setdefault("contract_version", "encuestas.public.v1")
+        data["url_publica"] = f"{base_url}/e/{slug}"
+        return data
+
+    slug = slug_publico or getattr(encuesta, "slug", None)
+    return {
+        "contract_version": "encuestas.public.v1",
+        "id": getattr(encuesta, "id", None),
+        "tenant_id": getattr(encuesta, "tenant_id", None),
+        "slug": slug,
+        "slug_publico": slug,
+        "titulo": getattr(encuesta, "titulo", None),
+        "descripcion": getattr(encuesta, "descripcion", None),
+        "tipo": getattr(encuesta, "tipo", None),
+        "inicio_at": _isoformat_or_none(getattr(encuesta, "inicio_at", None)),
+        "fin_at": _isoformat_or_none(getattr(encuesta, "fin_at", None)),
+        "created_at": _isoformat_or_none(getattr(encuesta, "created_at", None)),
+        "updated_at": _isoformat_or_none(getattr(encuesta, "updated_at", None)),
+        "es_votacion_envivo": bool(getattr(encuesta, "es_votacion_envivo", False)),
+        "mostrar_resultados_envivo": bool(getattr(encuesta, "mostrar_resultados_envivo", False)),
+        "permitir_comentarios": bool(getattr(encuesta, "permitir_comentarios", False)),
+        "url_publica": f"{base_url}/e/{slug}",
+    }
+
+
 def _resolve_comment_social_providers() -> list[dict]:
     configured = current_app.config.get("SURVEY_COMMENT_SOCIAL_PROVIDERS")
     if isinstance(configured, list) and configured:
@@ -754,9 +797,9 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
         base_url = _public_target_base_url()
         payload = []
         for encuesta, slug in encuestas:
-            data = _attach_comment_social_config(serialize_public_encuesta(encuesta, slug_publico=slug))
-            data.setdefault("contract_version", "encuestas.public.v1")
-            data["url_publica"] = f"{base_url}/e/{slug}"
+            data = _attach_comment_social_config(
+                _serialize_public_encuesta_summary(encuesta, slug, base_url)
+            )
             payload.append(data)
 
         if request.path.rstrip("/").endswith("/v1"):
