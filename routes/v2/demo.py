@@ -272,6 +272,58 @@ def _media_supports(media_capabilities: dict[str, Any]) -> dict[str, bool]:
     }
 
 
+def _allowed_actions_from_experience(experience: dict[str, Any]) -> list[dict[str, Any]]:
+    actions: list[dict[str, Any]] = []
+    for source_list in (
+        experience.get("quick_actions") or [],
+        (experience.get("conversion_ctas") or {}).get("actions") or [],
+    ):
+        for source in source_list:
+            if not isinstance(source, dict):
+                continue
+            action_id = source.get("intent") or source.get("id") or source.get("key")
+            if not action_id:
+                continue
+            actions.append(
+                {
+                    "id": str(source.get("id") or action_id),
+                    "intent": str(action_id),
+                    "label": source.get("label") or source.get("title") or str(action_id),
+                    "endpoint": source.get("endpoint") or "/ask",
+                    "enabled": bool(source.get("enabled", True)),
+                }
+            )
+    seen: set[str] = set()
+    unique: list[dict[str, Any]] = []
+    for action in actions:
+        key = str(action.get("intent") or action.get("id"))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(action)
+    return unique
+
+
+def _tracking_contract_for_demo(sector: str, tenant_slug: str) -> dict[str, Any]:
+    normalized = normalize_demo_sector(sector)
+    claim_endpoint = "/api/public/tracking/experience?kind=claim&code={code}&pin={pin}"
+    order_endpoint = "/api/public/tracking/experience?kind=order&code={code}"
+    return {
+        "contract_version": "demo.tracking.v1",
+        "enabled": True,
+        "tenant_slug": tenant_slug,
+        "fallback_when_no_coordinates": "timeline_only",
+        "claim": {
+            "enabled": normalized in {"educacion", "gobierno"},
+            "experience_endpoint": claim_endpoint,
+        },
+        "order": {
+            "enabled": normalized == "empresas",
+            "experience_endpoint": order_endpoint,
+        },
+    }
+
+
 def _chat_bootstrap(
     *,
     tenant: TenantProfile,
@@ -291,8 +343,16 @@ def _chat_bootstrap(
     return {
         "contract_version": "demo.chat_bootstrap.v1",
         "endpoint": endpoint,
+        "same_origin_endpoint": f"/api{endpoint}" if endpoint.startswith("/ask") else endpoint,
         "fallback_endpoint": "/ask",
         "method": "POST",
+        "response_contract": "chat.response.v1",
+        "runtime_contract": {
+            "server_side_ai": True,
+            "frontend_llm_keys_allowed": False,
+            "lead_capture_source": "backend_action_handlers",
+            "error_contract": "shared.error.v1",
+        },
         "headers": {
             "X-Chat-Session-Id": demo_session_id,
             "X-Demo-Session-Id": demo_session_id,
@@ -329,8 +389,15 @@ def _chat_bootstrap(
         },
         "initial_prompt": first_prompt,
         "supports": _media_supports(media_capabilities),
+        "lead_result_contract": {
+            "created_key": "lead.created",
+            "lead_id_key": "lead.lead_id",
+            "ticket_id_key": "lead.ticket_id",
+            "detail_endpoint_template": "/api/v2/inbox/omnichannel/{ticket_id}",
+        },
         "notes": [
             "Enviar siempre X-Chat-Session-Id.",
+            "El endpoint responde con IA server-side; el frontend no debe llamar OpenAI directo.",
             "Para imagen/archivo subir primero a /archivos/upload/chat_attachment y luego llamar al endpoint con attachmentInfo.",
             "Para audio enviar multipart al endpoint con campo audio_file.",
             "Para ubicacion enviar payload JSON con location.",
@@ -389,6 +456,14 @@ def demo_catalog_v2():
         ]
     pillars = demo_pillars()
     pillar_categories = {pillar.get("key"): pillar.get("categories") or [] for pillar in pillars}
+    resources_by_id: dict[str, dict[str, Any]] = {}
+    for rubro_item in rubros:
+        for resource in rubro_item.get("resources") or []:
+            if not isinstance(resource, dict):
+                continue
+            resource_id = str(resource.get("id") or resource.get("url") or resource.get("label") or "").strip()
+            if resource_id and resource_id not in resources_by_id:
+                resources_by_id[resource_id] = resource
 
     return _json_response(
         {
@@ -397,6 +472,7 @@ def demo_catalog_v2():
             "sectors": ["gobierno", "empresas", "educacion"],
             "pillars": pillars,
             "rubros": rubros,
+            "resources": list(resources_by_id.values()),
             "sector_groups": [
                 {
                     "key": "gobierno",
@@ -645,6 +721,9 @@ def demo_session_v2():
     media_capabilities = experience.get("media_capabilities") or {}
     conversion_ctas = experience.get("conversion_ctas") or {}
     animation_tokens = experience.get("animation_tokens") or {}
+    allowed_actions = _allowed_actions_from_experience(experience)
+    tracking = _tracking_contract_for_demo(sector, tenant.slug)
+    admin_preview_endpoint = f"/api/v2/demo/admin-preview?sector={sector}&tenant_slug={tenant.slug}"
 
     demo_session_id = create_demo_session_token(tenant_slug=tenant.slug, sector=sector, rubro=rubro or tenant.slug)
     chat_bootstrap = _chat_bootstrap(
@@ -678,6 +757,9 @@ def demo_session_v2():
         "sample_conversations": experience.get("sample_conversations") or [],
         "trust_signals": experience.get("trust_signals") or [],
         "lead_capture": experience.get("lead_capture") or {},
+        "allowed_actions": allowed_actions,
+        "tracking": tracking,
+        "admin_preview_endpoint": admin_preview_endpoint,
         "media_capabilities": media_capabilities,
         "conversion_ctas": conversion_ctas,
         "animation_tokens": animation_tokens,
@@ -690,6 +772,12 @@ def demo_session_v2():
             "pillars": demo_pillars(),
         },
         "catalog_resources": catalog_resources_for_rubro(rubro or tenant.slug, sector),
+        "runtime_contract": {
+            "demo_data_source": "backend_tenant_contracts",
+            "local_mock_allowed": False,
+            "requires_demo_session_id": True,
+            "chat_response_contract": "chat.response.v1",
+        },
     }
 
     return _json_response(
@@ -706,6 +794,9 @@ def demo_session_v2():
             "experience_blueprint": experience,
             "first_visit": workspace["first_visit"],
             "sample_conversations": workspace["sample_conversations"],
+            "allowed_actions": allowed_actions,
+            "tracking": tracking,
+            "admin_preview_endpoint": admin_preview_endpoint,
             "trust_signals": workspace["trust_signals"],
             "lead_capture": workspace["lead_capture"],
             "media_capabilities": media_capabilities,

@@ -59,6 +59,7 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertEqual((sector_groups.get("empresas") or {}).get("tenant_slug"), "bodega")
         self.assertEqual((sector_groups.get("educacion") or {}).get("tenant_slug"), "colegio-demo")
         self.assertTrue(any((item.get("resources") or []) for item in payload.get("rubros") or []))
+        self.assertTrue(payload.get("resources"))
 
         flattened = str(payload).lower()
         self.assertNotIn("password", flattened)
@@ -110,7 +111,11 @@ class ApiV2FoundationTest(unittest.TestCase):
         chat_bootstrap = payload.get("chat_bootstrap") or {}
         self.assertEqual(chat_bootstrap.get("contract_version"), "demo.chat_bootstrap.v1")
         self.assertEqual(chat_bootstrap.get("endpoint"), "/ask/pyme")
+        self.assertEqual(chat_bootstrap.get("same_origin_endpoint"), "/api/ask/pyme")
         self.assertEqual(chat_bootstrap.get("fallback_endpoint"), "/ask")
+        self.assertEqual(chat_bootstrap.get("response_contract"), "chat.response.v1")
+        self.assertTrue((chat_bootstrap.get("runtime_contract") or {}).get("server_side_ai"))
+        self.assertFalse((chat_bootstrap.get("runtime_contract") or {}).get("frontend_llm_keys_allowed"))
         self.assertEqual((chat_bootstrap.get("headers") or {}).get("X-Chat-Session-Id"), payload.get("demo_session_id"))
         self.assertEqual((chat_bootstrap.get("headers") or {}).get("X-Tenant-Slug"), tenant.slug)
         self.assertEqual((chat_bootstrap.get("query") or {}).get("tenant_slug"), tenant.slug)
@@ -121,6 +126,11 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertEqual(((payload.get("chat_seed") or {}).get("chat_bootstrap") or {}).get("endpoint"), "/ask/pyme")
         self.assertTrue((chat_bootstrap.get("supports") or {}).get("audio"))
         self.assertTrue((chat_bootstrap.get("supports") or {}).get("image"))
+        self.assertEqual((workspace.get("runtime_contract") or {}).get("chat_response_contract"), "chat.response.v1")
+        self.assertFalse((workspace.get("runtime_contract") or {}).get("local_mock_allowed"))
+        self.assertTrue(workspace.get("allowed_actions"))
+        self.assertEqual((workspace.get("tracking") or {}).get("contract_version"), "demo.tracking.v1")
+        self.assertIn("/api/v2/demo/admin-preview", workspace.get("admin_preview_endpoint") or "")
 
     def test_demo_session_canonical_and_legacy_aliases_delegate_to_v2_with_cors(self):
         owner = User(name="Colegio Demo", email="colegio-compat@test.com", password_hash="hash", tipo_chat="pyme")
@@ -397,6 +407,58 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertEqual(payload.get("request_id"), "runtime-alias-1")
         self.assertTrue(payload.get("respuesta_usuario"))
         self.assertIsInstance(payload.get("botones"), list)
+
+    def test_demo_chat_alias_returns_chat_response_contract_with_lead_shape(self):
+        owner = User(name="Colegio Demo", email="colegio-chat-contract@test.com", password_hash="hash", tipo_chat="pyme")
+        db.session.add(owner)
+        db.session.flush()
+        db.session.add(
+            TenantProfile(
+                slug="colegio-demo",
+                nombre="Colegio Demo",
+                tipo="pyme",
+                pyme_id=owner.id,
+                is_active=True,
+                vertical="educacion",
+            )
+        )
+        db.session.commit()
+
+        backend_payload = {
+            "message_body": "Perfecto, dejo el caso preparado para secretaria.",
+            "botones": [{"texto": "Ver seguimiento", "action_id": "tracking"}],
+            "ticket_id": 456,
+        }
+        with patch("services.logic.responder_chatboc", return_value=backend_payload):
+            resp = self.client.post(
+                "/api/ask/pyme?tenant_slug=colegio-demo",
+                json={
+                    "pregunta": "Necesito consultar admisiones",
+                    "demo_mode": True,
+                    "tenant_slug": "colegio-demo",
+                    "rubro": "colegios",
+                },
+                headers={
+                    "Origin": "https://www.chatboc.ar",
+                    "X-Chat-Session-Id": "demo-chat-contract-1",
+                    "X-Demo-Session-Id": "demo-chat-contract-1",
+                    "X-Tenant-Slug": "colegio-demo",
+                    "X-Request-Id": "chat-contract-1",
+                },
+            )
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.headers.get("X-Request-Id"), "chat-contract-1")
+        payload = resp.get_json()
+        self.assertEqual(payload.get("contract_version"), "chat.response.v1")
+        self.assertEqual(payload.get("request_id"), "chat-contract-1")
+        self.assertEqual(payload.get("conversation_id"), "demo-chat-contract-1")
+        self.assertEqual(payload.get("message"), "Perfecto, dejo el caso preparado para secretaria.")
+        self.assertIsInstance(payload.get("messages"), list)
+        self.assertEqual((payload.get("lead") or {}).get("ticket_id"), 456)
+        self.assertEqual((payload.get("lead") or {}).get("detail_endpoint"), "/api/v2/inbox/omnichannel/456")
+        self.assertTrue((payload.get("runtime_contract") or {}).get("server_side_ai"))
+        self.assertFalse((payload.get("runtime_contract") or {}).get("frontend_llm_keys_allowed"))
 
     def test_api_upload_chat_attachment_alias_has_preflight(self):
         resp = self.client.open("/api/archivos/upload/chat_attachment", method="OPTIONS")

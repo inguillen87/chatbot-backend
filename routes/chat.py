@@ -6,7 +6,7 @@ import re
 import uuid  # Added for chat_session_id generation
 from copy import deepcopy
 from urllib.parse import urljoin
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from collections import OrderedDict
 
 # Add project root to sys.path for this routes file
@@ -606,6 +606,133 @@ def _build_widget_ux_context(
             "preferred_handoff_channels": ["widget", "whatsapp", "voice"],
         },
     }
+
+
+def _first_present_value(*values: Any) -> Any:
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, str) and not value.strip():
+            continue
+        return value
+    return None
+
+
+def _chat_response_text(payload: Dict[str, Any]) -> str:
+    text = _first_present_value(
+        payload.get("message"),
+        payload.get("message_body"),
+        payload.get("respuesta"),
+        payload.get("respuesta_usuario"),
+        payload.get("message_to_user"),
+        payload.get("texto"),
+    )
+    if isinstance(text, dict):
+        text = _first_present_value(text.get("text"), text.get("texto"), text.get("content"))
+    return str(text or "").strip()
+
+
+def _normalize_quick_replies_for_chat_response(payload: Dict[str, Any]) -> list[dict[str, Any]]:
+    source = _first_present_value(payload.get("quick_replies"), payload.get("botones"), payload.get("options_list"))
+    if not isinstance(source, list):
+        return []
+
+    normalized: list[dict[str, Any]] = []
+    for index, item in enumerate(source, start=1):
+        if isinstance(item, dict):
+            label = str(_first_present_value(item.get("label"), item.get("texto"), item.get("title"), item.get("text")) or "").strip()
+            action_id = str(_first_present_value(item.get("action_id"), item.get("action"), item.get("id"), item.get("payload"), label) or "").strip()
+            if not label:
+                continue
+            normalized.append(
+                {
+                    "id": str(_first_present_value(item.get("id"), action_id, f"quick_{index}") or f"quick_{index}"),
+                    "label": label,
+                    "action_id": action_id or label,
+                    "payload": _first_present_value(item.get("payload"), item.get("value"), action_id, label),
+                }
+            )
+        else:
+            label = str(item or "").strip()
+            if label:
+                normalized.append({"id": f"quick_{index}", "label": label, "action_id": label, "payload": label})
+    return normalized
+
+
+def _build_demo_chat_lead_contract(payload: Dict[str, Any]) -> dict[str, Any]:
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    ticket = payload.get("ticket") if isinstance(payload.get("ticket"), dict) else {}
+    lead = payload.get("lead") if isinstance(payload.get("lead"), dict) else {}
+
+    ticket_id = _first_present_value(
+        lead.get("ticket_id"),
+        payload.get("ticket_id"),
+        data.get("ticket_id"),
+        ticket.get("id"),
+        ticket.get("ticket_id"),
+    )
+    lead_id = _first_present_value(
+        lead.get("lead_id"),
+        payload.get("lead_id"),
+        data.get("lead_id"),
+        ticket_id,
+    )
+    created = bool(_first_present_value(lead.get("created"), payload.get("lead_created"), ticket_id, lead_id))
+    detail_endpoint = _first_present_value(
+        lead.get("detail_endpoint"),
+        payload.get("detail_endpoint"),
+        data.get("detail_endpoint"),
+        f"/api/v2/inbox/omnichannel/{ticket_id}" if ticket_id else None,
+    )
+
+    return {
+        "created": bool(created),
+        "lead_id": lead_id,
+        "ticket_id": ticket_id,
+        "detail_endpoint": detail_endpoint,
+    }
+
+
+def _apply_demo_chat_response_contract(
+    payload: Dict[str, Any],
+    *,
+    chat_session_id: str | None,
+    demo_session_active: bool,
+) -> None:
+    if not demo_session_active or not isinstance(payload, dict):
+        return
+
+    legacy_contract = payload.get("contract_version")
+    if legacy_contract and legacy_contract != "chat.response.v1":
+        payload.setdefault("legacy_contract_version", legacy_contract)
+
+    request_id = (
+        request.headers.get("X-Request-Id")
+        or getattr(g, "request_id", None)
+        or uuid.uuid4().hex
+    )
+    g.request_id = request_id
+
+    message = _chat_response_text(payload)
+    quick_replies = _normalize_quick_replies_for_chat_response(payload)
+
+    payload["contract_version"] = "chat.response.v1"
+    payload.setdefault("request_id", request_id)
+    payload.setdefault("conversation_id", chat_session_id or payload.get("chat_session_id") or payload.get("session_id"))
+    payload["message"] = message
+    if not payload.get("messages"):
+        payload["messages"] = [{"role": "assistant", "content": message}] if message else []
+    payload["quick_replies"] = quick_replies
+    payload.setdefault("actions", [])
+    payload["lead"] = _build_demo_chat_lead_contract(payload)
+    payload.setdefault(
+        "runtime_contract",
+        {
+            "server_side_ai": True,
+            "frontend_llm_keys_allowed": False,
+            "lead_capture_source": "backend_action_handlers",
+        },
+    )
 
 
 def _activate_demo_session(
@@ -2554,6 +2681,11 @@ def _procesar_chat(
             )
 
         normalize_response_payload(resultado)
+        _apply_demo_chat_response_contract(
+            resultado,
+            chat_session_id=chat_session_id_header,
+            demo_session_active=demo_session_activa,
+        )
 
         # Si el usuario es anónimo y la acción requiere datos personales, pedir solo los faltantes.
         if is_anonymous and resultado and resultado.get("accion_backend") in ["crear_reclamo", "iniciar_reclamo"]:
@@ -2626,7 +2758,10 @@ def _procesar_chat(
         current_app.logger.debug(
             "Returning HTTP response", extra={"payload": resultado}
         )
-        return jsonify(resultado), 200
+        response = jsonify(resultado)
+        if isinstance(resultado, dict) and resultado.get("request_id"):
+            response.headers["X-Request-Id"] = str(resultado["request_id"])
+        return response, 200
 
     except Exception as e:
         db.session.rollback()
