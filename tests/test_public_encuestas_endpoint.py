@@ -102,8 +102,20 @@ def test_public_survey_error_response_has_reason_and_request_id(app):
 
     assert status == 403
     payload = response.get_json()
+    assert payload["contract_version"] == "encuestas.public_error.v1"
     assert payload["reason_code"] == "survey_not_published"
     assert payload["retryable"] is False
     assert payload["action_hint"] == "view_other_surveys"
     assert payload["request_id"] == "req-survey-1"
     assert response.headers["X-Request-Id"] == "req-survey-1"
+
+
+def test_public_survey_v1_missing_slug_returns_contract(client):
+    response = client.get("/api/public/encuestas/v1/no-existe")
+
+    assert response.status_code == 404
+    payload = response.get_json()
+    assert payload["contract_version"] == "encuestas.public_error.v1"
+    assert payload["status_code"] == 404
+    assert payload["action_hint"] == "go_home"
+    assert payload["request_id"]

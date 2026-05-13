@@ -394,6 +394,7 @@ def _public_error_response(err: EncuestaError, *, fallback_reason: Optional[str]
     if status_code == 404:
         action_hint = "go_home"
 
+    payload.setdefault("contract_version", "encuestas.public_error.v1")
     payload.setdefault("status_code", status_code)
     if reason_code:
         payload["reason_code"] = reason_code
