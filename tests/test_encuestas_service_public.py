@@ -72,3 +72,22 @@ def test_list_public_encuestas_respects_model_schedule(monkeypatch):
     )
 
     assert resultados == [(active, "52e3e4")]
+
+
+def test_bootstrap_sample_is_disabled_by_default(client, monkeypatch):
+    client.application.config["ENABLE_DEMO_MODE"] = False
+    client.application.config["ALLOW_SURVEY_DEMO_SEEDING"] = False
+
+    monkeypatch.setattr(encuestas_service, "_BOOTSTRAP_SAMPLE_ENABLED", False)
+    monkeypatch.setattr(
+        encuestas_service,
+        "ensure_enc_encuesta_schema",
+        lambda *_args, **_kwargs: None,
+    )
+
+    def fail_profile(_tenant_id):
+        raise AssertionError("bootstrap profiles must not be inspected in production defaults")
+
+    monkeypatch.setattr(encuestas_service, "_match_bootstrap_profile", fail_profile)
+
+    encuestas_service._bootstrap_sample_if_needed(tenant_id=4)

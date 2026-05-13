@@ -205,7 +205,7 @@ def _current_app_logger():
         return None
 
 
-_BOOTSTRAP_SAMPLE_ENABLED = _env_flag("ENCUESTAS_BOOTSTRAP_SAMPLE", default=True)
+_BOOTSTRAP_SAMPLE_ENABLED = _env_flag("ENCUESTAS_BOOTSTRAP_SAMPLE", default=False)
 
 
 _AUTO_SEED_SEGMENT_KEY = "auto_seed_demo"
@@ -219,6 +219,17 @@ _BOOTSTRAP_CONFIG_DEFAULT_PATH = (
     / "encuestas_bootstrap"
     / "templates.json"
 )
+
+
+def _demo_seed_runtime_allowed() -> bool:
+    try:
+        if bool(current_app.config.get("ENABLE_DEMO_MODE", False)):
+            return True
+        if bool(current_app.config.get("ALLOW_SURVEY_DEMO_SEEDING", False)):
+            return True
+    except RuntimeError:
+        pass
+    return _env_flag("ALLOW_SURVEY_DEMO_SEEDING", default=False)
 
 
 def _bootstrap_config_path() -> Path:
@@ -1519,11 +1530,11 @@ def publicar_encuesta(encuesta_id: int, user: Any) -> Tuple[EncEncuesta, EncLink
 
     slug_publico = _slugify(f"{encuesta.slug}-{secrets.token_hex(3)}")
     link = EncLink(
-        encuesta=encuesta,
+        encuesta_id=encuesta.id,
         slug_publico=slug_publico,
         canal="web",
     )
-    encuesta.links.append(link)
+    db.session.add(link)
 
     auto_seed_cfg = _get_auto_seed_config(encuesta)
     auto_seed_params: Optional[Dict[str, Any]] = None
@@ -1552,7 +1563,7 @@ def publicar_encuesta(encuesta_id: int, user: Any) -> Tuple[EncEncuesta, EncLink
         getattr(user, "id", None),
     )
 
-    if auto_seed_params:
+    if auto_seed_params and _demo_seed_runtime_allowed():
         try:
             seed_encuesta_respuestas_demo(
                 encuesta.id,
@@ -1570,6 +1581,11 @@ def publicar_encuesta(encuesta_id: int, user: Any) -> Tuple[EncEncuesta, EncLink
                 "[encuestas] Error al generar respuestas demo para la encuesta %s tras publicarla",
                 encuesta.id,
             )
+    elif auto_seed_params:
+        current_app.logger.info(
+            "[encuestas] Auto seed demo omitido para encuesta %s: modo demo deshabilitado",
+            encuesta.id,
+        )
 
     return encuesta, link
 
@@ -1707,7 +1723,7 @@ def _bootstrap_sample_if_needed(tenant_id: int) -> None:
     # Safety net if migrations lag: ensure the reward column exists to avoid 500s
     ensure_enc_encuesta_schema(db.session)
 
-    if not _BOOTSTRAP_SAMPLE_ENABLED:
+    if not (_BOOTSTRAP_SAMPLE_ENABLED or _demo_seed_runtime_allowed()):
         return
 
     profile = _match_bootstrap_profile(tenant_id)
