@@ -396,6 +396,20 @@ def test_public_encuestas_v1_aliases_resolve_public_slug(client):
     assert legacy_response.get_json()["slug"] == slug_publico
 
 
+def test_public_encuestas_listing_does_not_bootstrap_demo_data(client, monkeypatch):
+    def fail_bootstrap(_tenant_id):
+        raise AssertionError("public survey listing must not bootstrap demo data")
+
+    monkeypatch.setattr("services.encuestas_service._bootstrap_sample_if_needed", fail_bootstrap)
+
+    response = client.get("/api/public/encuestas/v1?tenant_id=4")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["contract_version"] == "encuestas.public_list.v1"
+    assert payload["request_id"]
+
+
 def test_public_encuestas_v1_missing_slug_returns_public_error_contract(client):
     response = client.get(
         "/api/public/encuestas/v1/votacion-en-vivo-luis-petri",

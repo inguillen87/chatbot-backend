@@ -1912,7 +1912,9 @@ def list_public_encuestas_for_tenant(
 ) -> List[Tuple[EncEncuesta, str]]:
     """Return active public surveys for a tenant along with their public slugs."""
 
-    _bootstrap_sample_if_needed(tenant_id)
+    safe_limit = limit if limit and limit > 0 else 10
+    safe_limit = min(safe_limit, 25)
+    candidate_limit = max(safe_limit * 4, 25)
     query = (
         EncEncuesta.query.options(joinedload(EncEncuesta.links))
         .filter(EncEncuesta.tenant_id == tenant_id)
@@ -1921,11 +1923,11 @@ def list_public_encuestas_for_tenant(
             EncEncuesta.created_at.desc(),
             EncEncuesta.id.desc(),
         )
+        .limit(candidate_limit)
     )
 
     encuestas = query.all()
     resultados: List[Tuple[EncEncuesta, str]] = []
-    max_items = limit if limit and limit > 0 else None
 
     for encuesta in encuestas:
         if not encuesta.esta_activa():
@@ -1934,7 +1936,7 @@ def list_public_encuestas_for_tenant(
         if not slug_publico:
             continue
         resultados.append((encuesta, slug_publico))
-        if max_items and len(resultados) >= max_items:
+        if len(resultados) >= safe_limit:
             break
 
     return resultados
@@ -2125,7 +2127,8 @@ def get_public_encuesta(
             payload={"reason_code": "survey_not_published"},
         )
 
-    _ensure_demo_public_window(encuesta)
+    if current_app.config.get("ENABLE_DEMO_MODE"):
+        _ensure_demo_public_window(encuesta)
     if not encuesta.esta_activa():
         raise EncuestaError(
             "La encuesta no está en su ventana de participación",
