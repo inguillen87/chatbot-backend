@@ -717,6 +717,7 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
         return response
 
     @bp.route("", methods=["GET", "OPTIONS"])
+    @bp.route("/v1", methods=["GET", "OPTIONS"])
     def listar_publicas():
         if request.method == "OPTIONS":
             return "", 204

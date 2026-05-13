@@ -1222,12 +1222,63 @@ def tenant_admin_experience_v2(current_user, tenant_slug: str | None = None):
         return error
 
     start_date, end_date = _date_range_from_request(default_days=30)
-    payload = _build_tenant_admin_experience_payload(
-        tenant,
-        start_date=start_date,
-        end_date=end_date,
-        app_config=current_app.config,
-    )
+    try:
+        payload = _build_tenant_admin_experience_payload(
+            tenant,
+            start_date=start_date,
+            end_date=end_date,
+            app_config=current_app.config,
+        )
+    except Exception as exc:  # pragma: no cover - defensive production guard
+        current_app.logger.exception("[tenant_admin_experience] degraded payload for tenant=%s", getattr(tenant, "slug", None))
+        fallback_modules = [
+            {
+                "id": "inbox",
+                "label": "Inbox omnicanal",
+                "route": f"/t/{tenant.slug}/inbox",
+                "endpoint": "/api/v2/inbox/omnichannel",
+                "secondary_endpoints": [],
+                "widgets": ["tickets"],
+            },
+            {
+                "id": "analytics",
+                "label": "Metricas y mapas",
+                "route": f"/t/{tenant.slug}/analytics",
+                "endpoint": "/api/v2/analytics/operations/dashboard",
+                "secondary_endpoints": [],
+                "widgets": ["kpis", "heatmap"],
+            },
+            {
+                "id": "employees",
+                "label": "Equipo y cobertura",
+                "route": f"/t/{tenant.slug}/employees",
+                "endpoint": "/api/v2/employee-routing",
+                "secondary_endpoints": [],
+                "widgets": ["assignment"],
+            },
+        ]
+        payload = {
+            "contract_version": "tenant.admin_experience.v1",
+            "tenant": _tenant_ref(tenant),
+            "period": {"from": _iso(start_date), "to": _iso(end_date)},
+            "modules": fallback_modules,
+            "navigation": _admin_navigation_payload(tenant, fallback_modules),
+            "health": {
+                "contract_version": "tenant.health.v1",
+                "status": "degraded",
+                "reason_code": "admin_experience_source_failed",
+            },
+            "frontend_contract": {
+                "render_as": "tenant_admin_operating_system",
+                "empty_state_behavior": "show_module_readiness_and_next_best_actions",
+            },
+            "error": {
+                "code": 200,
+                "message": "admin_experience_degraded",
+                "reason_code": "source_failed",
+                "detail": str(exc),
+            },
+        }
     return _json_response(payload)
 
 

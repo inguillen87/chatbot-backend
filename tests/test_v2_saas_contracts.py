@@ -1,6 +1,7 @@
 import os
 import unittest
 from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
 import jwt
 
@@ -597,11 +598,13 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertIn("surveys_votings", module_ids)
         self.assertIn("marketplace", module_ids)
         self.assertIn("education", module_ids)
+        self.assertNotIn("portal", module_ids)
         self.assertEqual(payload["navigation"]["contract_version"], "tenant.admin_navigation.v1")
         quick_action_ids = {item["id"] for item in payload["navigation"]["quick_actions"]}
         self.assertIn("open_surveys", quick_action_ids)
         self.assertIn("open_employees", quick_action_ids)
         self.assertIn("open_heatmap", quick_action_ids)
+        self.assertNotIn("open_portal", quick_action_ids)
         self.assertIn("workspace", payload["navigation"]["hide_legacy_tabs"])
         self.assertEqual(payload["admin_panel_widgets"]["contract_version"], "tenant.admin_panel_widgets.v1")
         hero_widget_ids = {item["id"] for item in payload["admin_panel_widgets"]["hero_widgets"]}
@@ -623,6 +626,24 @@ class V2SaasContractsTest(unittest.TestCase):
             self.assertIn("route", section)
             self.assertIn("widgets", section)
             self.assertIn("secondary_endpoints", section)
+
+    def test_tenant_admin_experience_degrades_to_json_when_source_fails(self):
+        with patch("routes.v2.saas.build_operational_dashboard", side_effect=RuntimeError("analytics down")):
+            response = self.client.get(
+                "/api/v2/tenant/admin-experience",
+                headers={**self._auth(self.owner), "X-Request-Id": "admin-exp-degraded-1"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload.get("contract_version"), "tenant.admin_experience.v1")
+        self.assertEqual(payload.get("request_id"), "admin-exp-degraded-1")
+        self.assertEqual(payload["health"]["status"], "degraded")
+        self.assertEqual(payload["health"]["reason_code"], "admin_experience_source_failed")
+        module_ids = {item["id"] for item in payload["modules"]}
+        self.assertIn("inbox", module_ids)
+        self.assertIn("analytics", module_ids)
+        self.assertNotIn("portal", module_ids)
 
     def test_whatsapp_experience_contract_connects_channel_content_tracking_and_admin_panel(self):
         response = self.client.get(

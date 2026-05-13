@@ -155,7 +155,12 @@ def test_widget_commerce_session_returns_embedded_operating_contract(client):
     assert body["cart"]["items_endpoint"] == "/api/pwa/public/cart/items"
     assert body["cart"]["legacy_endpoint"] == "/api/pwa/public/cart"
     assert body["cart"]["allow_guest_cart"] is True
+    assert body["portal"]["enabled"] is True
+    assert body["portal"]["label"] == "Mi actividad"
+    assert body["portal"]["view_url"] == f"/portal/{tenant.slug}"
     assert body["portal"]["history_endpoint"] == "/api/public/widget-user/tenant-history"
+    assert body["portal"]["scope"] == "end_user_tenant_history"
+    assert "portal" in body["frontend_contract"]["primary_actions"]
     assert body["accessibility"]["enabled"] is True
     assert body["accessibility"]["allow_dyslexia_mode"] is True
     assert body["accessibility"]["allow_high_contrast"] is True

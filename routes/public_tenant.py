@@ -644,10 +644,13 @@ def public_widget_commerce_session():
         },
         "portal": {
             "enabled": True,
+            "label": "Mi actividad",
+            "view_url": f"/portal/{tenant.slug}",
             "login_endpoint": "/auth/widget/bootstrap",
             "register_endpoint": "/api/public/widget-user/register",
             "link_session_endpoint": "/api/public/widget-user/link-session",
             "history_endpoint": "/api/public/widget-user/tenant-history",
+            "scope": "end_user_tenant_history",
         },
         "history": {
             "channels": ["widget", "whatsapp", "voice", "orders", "claims", "surveys"],
