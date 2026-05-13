@@ -366,19 +366,30 @@ def test_share_endpoint_handles_alias_without_link(client):
 def test_public_encuestas_v1_aliases_resolve_public_slug(client):
     slug = "votacion-en-vivo-luis-petri"
     slug_publico = "votacion-en-vivo-luis-petri"
+    client.application.config["PUBLIC_ENCUESTAS_DEFAULT_TENANT_ID"] = 4
     _create_public_encuesta(slug, slug_publico)
 
     list_response = client.get("/api/public/encuestas/v1")
     assert list_response.status_code == 200
     assert list_response.is_json
+    list_payload = list_response.get_json()
+    assert list_payload["contract_version"] == "encuestas.public_list.v1"
+    assert list_payload["request_id"]
+    assert list_payload["items"][0]["contract_version"] == "encuestas.public.v1"
 
     api_response = client.get(f"/api/public/encuestas/v1/{slug_publico}")
     assert api_response.status_code == 200
-    assert api_response.get_json()["slug"] == slug_publico
+    api_payload = api_response.get_json()
+    assert api_payload["contract_version"] == "encuestas.public.v1"
+    assert api_payload["slug"] == slug_publico
+    assert api_payload["request_id"]
 
     legacy_list_response = client.get("/public/encuestas/v1")
     assert legacy_list_response.status_code == 200
     assert legacy_list_response.is_json
+    legacy_list_payload = legacy_list_response.get_json()
+    assert legacy_list_payload["contract_version"] == "encuestas.public_list.v1"
+    assert legacy_list_payload["items"][0]["slug"] == slug_publico
 
     legacy_response = client.get(f"/public/encuestas/v1/{slug_publico}")
     assert legacy_response.status_code == 200

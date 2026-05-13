@@ -933,8 +933,24 @@ def token_requerido(f):
             return _finalize_response('', status_code)
 
         def _auth_error(message: str, status_code: int = 401, code: str = "token_expired"):
-            payload = {"error": {"code": status_code, "message": message}}
-            return _finalize_response(jsonify(payload), status_code)
+            request_id = (
+                request.headers.get("X-Request-Id")
+                or request.headers.get("X-Correlation-Id")
+                or getattr(g, "request_id", None)
+                or uuid.uuid4().hex
+            )
+            g.request_id = request_id
+            payload = {
+                "contract_version": "shared.error.v1",
+                "status_code": status_code,
+                "reason_code": code,
+                "retryable": False,
+                "request_id": request_id,
+                "error": {"code": status_code, "message": message},
+            }
+            response = _finalize_response(jsonify(payload), status_code)
+            response.headers.setdefault("X-Request-Id", request_id)
+            return response
 
         # Siempre intentar recuperar el token para exponerlo a las vistas que lo necesiten.
         raw_token = obtener_token()

@@ -695,6 +695,7 @@ def _admin_modules_payload(tenant: TenantProfile, *, education_profile: dict[str
             }
         )
     for module in modules:
+        module.setdefault("audience", "admin")
         module.setdefault("secondary_endpoints", [])
         module.setdefault("widgets", [])
     return modules
@@ -707,6 +708,7 @@ def _admin_navigation_payload(tenant: TenantProfile, modules: list[dict[str, Any
             "label": module.get("label"),
             "route": module.get("route"),
             "endpoint": module.get("endpoint"),
+            "audience": module.get("audience") or "admin",
             "visible": True,
         }
         for module in modules
@@ -1237,6 +1239,7 @@ def tenant_admin_experience_v2(current_user, tenant_slug: str | None = None):
                 "label": "Inbox omnicanal",
                 "route": f"/t/{tenant.slug}/inbox",
                 "endpoint": "/api/v2/inbox/omnichannel",
+                "audience": "admin",
                 "secondary_endpoints": [],
                 "widgets": ["tickets"],
             },
@@ -1245,6 +1248,7 @@ def tenant_admin_experience_v2(current_user, tenant_slug: str | None = None):
                 "label": "Metricas y mapas",
                 "route": f"/t/{tenant.slug}/analytics",
                 "endpoint": "/api/v2/analytics/operations/dashboard",
+                "audience": "admin",
                 "secondary_endpoints": [],
                 "widgets": ["kpis", "heatmap"],
             },
@@ -1253,6 +1257,7 @@ def tenant_admin_experience_v2(current_user, tenant_slug: str | None = None):
                 "label": "Equipo y cobertura",
                 "route": f"/t/{tenant.slug}/employees",
                 "endpoint": "/api/v2/employee-routing",
+                "audience": "admin",
                 "secondary_endpoints": [],
                 "widgets": ["assignment"],
             },

@@ -755,8 +755,22 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
         payload = []
         for encuesta, slug in encuestas:
             data = _attach_comment_social_config(serialize_public_encuesta(encuesta, slug_publico=slug))
+            data.setdefault("contract_version", "encuestas.public.v1")
             data["url_publica"] = f"{base_url}/e/{slug}"
             payload.append(data)
+
+        if request.path.rstrip("/").endswith("/v1"):
+            request_id = _resolve_request_id()
+            response = jsonify(
+                {
+                    "contract_version": "encuestas.public_list.v1",
+                    "items": payload,
+                    "count": len(payload),
+                    "request_id": request_id,
+                }
+            )
+            response.headers.setdefault("X-Request-Id", request_id)
+            return response
 
         return jsonify(payload)
 
@@ -768,7 +782,13 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
             encuesta = _load_public_encuesta_for_request(slug, preview_user=preview_user)
         except EncuestaError as err:
             return _public_error_response(err)
-        return jsonify(_attach_comment_social_config(serialize_public_encuesta(encuesta, slug_publico=slug)))
+        payload = _attach_comment_social_config(serialize_public_encuesta(encuesta, slug_publico=slug))
+        payload.setdefault("contract_version", "encuestas.public.v1")
+        request_id = _resolve_request_id()
+        payload.setdefault("request_id", request_id)
+        response = jsonify(payload)
+        response.headers.setdefault("X-Request-Id", request_id)
+        return response
 
     def _handle_responder(slug: str):
         ip = _extract_ip()
