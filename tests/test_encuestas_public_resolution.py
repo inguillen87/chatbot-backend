@@ -385,6 +385,26 @@ def test_public_encuestas_v1_aliases_resolve_public_slug(client):
     assert legacy_response.get_json()["slug"] == slug_publico
 
 
+def test_public_encuestas_v1_missing_slug_returns_public_error_contract(client):
+    response = client.get(
+        "/api/public/encuestas/v1/votacion-en-vivo-luis-petri",
+        headers={"Origin": "https://www.chatboc.ar"},
+    )
+
+    assert response.status_code == 404
+    assert response.is_json
+    payload = response.get_json()
+    assert payload["contract_version"] == "encuestas.public_error.v1"
+    assert payload["status_code"] == 404
+    assert payload["action_hint"] == "go_home"
+    assert payload["request_id"]
+    assert response.headers["X-Request-Id"] == payload["request_id"]
+
+    legacy_response = client.get("/public/encuestas/v1/votacion-en-vivo-luis-petri")
+    assert legacy_response.status_code == 404
+    assert legacy_response.get_json()["contract_version"] == "encuestas.public_error.v1"
+
+
 def test_share_endpoint_renders_accessible_html(client, monkeypatch):
     monkeypatch.setitem(
         client.application.config,

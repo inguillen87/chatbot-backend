@@ -188,6 +188,7 @@ def _hero_conversation_demo(kind: str) -> dict[str, Any]:
                     "kind": "image",
                     "label": "Foto",
                     "preview_url": "/static/demo/municipio/reclamo-semaforo.jpg",
+                    "image_url": "/static/demo/municipio/reclamo-semaforo.jpg",
                     "detail": "Evidencia visual adjunta al reclamo.",
                 },
                 {
@@ -221,6 +222,19 @@ def _hero_conversation_demo(kind: str) -> dict[str, Any]:
                     "traceable_target": "ticket",
                 },
                 "summary_items": ["categoria", "prioridad", "zona", "evidencia", "equipo_sugerido"],
+                "facts": [
+                    {"label": "Entrada", "value": "Foto, audio y ubicacion"},
+                    {"label": "Salida operativa", "value": "Ticket con equipo sugerido"},
+                ],
+                "details": {
+                    "operational_summary": "Reclamo municipal trazable con evidencia, zona y prioridad.",
+                    "panel_target": "inbox",
+                },
+                "attributes": {
+                    "vertical": "gobierno",
+                    "workflow": "reclamo_con_evidencia",
+                    "traceable": True,
+                },
             },
             "result": {
                 "kind": "ticket",
@@ -243,6 +257,7 @@ def _hero_conversation_demo(kind: str) -> dict[str, Any]:
                     "kind": "image",
                     "label": "Foto",
                     "preview_url": "/static/demo/bodega/producto-detectado.jpg",
+                    "image_url": "/static/demo/bodega/producto-detectado.jpg",
                     "detail": "Imagen usada para sugerir producto del catalogo real.",
                 },
                 {"kind": "text", "label": "Cantidad", "detail": "Dos unidades solicitadas por el comprador."},
@@ -264,6 +279,19 @@ def _hero_conversation_demo(kind: str) -> dict[str, Any]:
                     "traceable_target": "order_or_lead",
                 },
                 "summary_items": ["producto", "cantidad", "carrito", "checkout"],
+                "facts": [
+                    {"label": "Entrada", "value": "Foto y cantidad"},
+                    {"label": "Salida operativa", "value": "Carrito invitado o lead comercial"},
+                ],
+                "details": {
+                    "operational_summary": "Consulta comercial convertida en carrito, pedido o lead segun capacidades del tenant.",
+                    "panel_target": "marketplace",
+                },
+                "attributes": {
+                    "vertical": "empresas",
+                    "workflow": "catalogo_carrito_checkout",
+                    "traceable": True,
+                },
             },
             "result": {
                 "kind": "order",
@@ -307,6 +335,19 @@ def _hero_conversation_demo(kind: str) -> dict[str, Any]:
                     "traceable_target": "school_case",
                 },
                 "summary_items": ["tramite", "familia", "adjunto", "equipo"],
+                "facts": [
+                    {"label": "Entrada", "value": "Solicitud y adjunto"},
+                    {"label": "Salida operativa", "value": "Caso escolar derivado"},
+                ],
+                "details": {
+                    "operational_summary": "Tramite escolar con documentacion y derivacion administrativa.",
+                    "panel_target": "education",
+                },
+                "attributes": {
+                    "vertical": "educacion",
+                    "workflow": "tramite_escolar_con_adjunto",
+                    "traceable": True,
+                },
             },
             "result": {
                 "kind": "case",
@@ -353,6 +394,19 @@ def _hero_conversation_demo(kind: str) -> dict[str, Any]:
                     "traceable_target": "survey_response",
                 },
                 "summary_items": ["voto", "comentario", "segmento", "resultados"],
+                "facts": [
+                    {"label": "Entrada", "value": "Voto, comentario y zona"},
+                    {"label": "Salida operativa", "value": "Participacion segmentada"},
+                ],
+                "details": {
+                    "operational_summary": "Participacion ciudadana con resultados, comentarios y segmento territorial.",
+                    "panel_target": "surveys",
+                },
+                "attributes": {
+                    "vertical": "participacion",
+                    "workflow": "votacion_en_vivo",
+                    "traceable": True,
+                },
             },
             "result": {
                 "kind": "survey_response",
