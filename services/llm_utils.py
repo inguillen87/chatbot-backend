@@ -1470,8 +1470,6 @@ def generar_descripcion_natural_de_imagen(elementos: str) -> str:
         return elementos # Fallback a los elementos crudos
 
 
-print("Done with llm_utils.py basic execution tests.")
-
 def extraer_lista_pedido_de_texto_con_llm(texto_ocr: str, pyme_id_context: Optional[int] = None) -> List[Dict[str, Any]]:
     """
     Utiliza un LLM para extraer una lista de productos y cantidades de un texto OCR.

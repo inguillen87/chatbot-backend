@@ -443,6 +443,12 @@ class Config:
 
     SESSION_TYPE = 'sqlalchemy'
     SESSION_SQLALCHEMY_TABLE = 'flask_sessions'
+    RATELIMIT_STORAGE_URI = _env_first(
+        "RATELIMIT_STORAGE_URI",
+        "REDIS_URL",
+        "UPSTASH_REDIS_URL",
+        default="memory://",
+    )
     # Nombre del cookie adicional que almacena el token de acceso como
     # respaldo en caso de que la sesión basada en cookies falle
     AUTH_TOKEN_COOKIE_NAME = os.getenv("AUTH_TOKEN_COOKIE_NAME", "auth_token")

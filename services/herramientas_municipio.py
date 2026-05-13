@@ -4,6 +4,7 @@ import os
 import re
 import unicodedata
 import requests
+from flask import has_app_context
 from geopy.exc import GeocoderServiceError, GeocoderTimedOut
 import services.google_maps_service as google_maps_service
 from services.config_loader import cargar_configuracion_municipio
@@ -504,6 +505,10 @@ def _cargar_keywords_desde_db() -> None:
     """Refresca el cache de palabras clave consultando los tickets previos."""
     from time import time
     global _DYNAMIC_KEYWORD_CACHE, _CACHE_LAST_LOAD
+    if not has_app_context():
+        _CACHE_LAST_LOAD = time()
+        logger.debug("Se pospone cache de keywords: no hay application context activo")
+        return
     try:
         rows = (
             MunicipioTicket.query.with_entities(

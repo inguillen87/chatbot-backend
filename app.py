@@ -22,19 +22,6 @@ from typing import Pattern
 from dotenv import load_dotenv
 
 load_dotenv()  # override=False por defecto para respetar variables ya definidas
-
-# --- Modo "solo migraciones" para que Alembic no cargue nada pesado ---
-MIGRATIONS_ONLY = os.getenv("FLASK_MIGRATIONS_ONLY") == "1"
-
-# Desactivar greendns SIEMPRE antes de importar eventlet (evita getaddrinfo 'type')
-os.environ.setdefault("EVENTLET_NO_GREENDNS", "YES")
-
-# Solo en runtime normal (no durante migraciones) parcheamos con eventlet
-if not MIGRATIONS_ONLY and not TESTING_MODE:
-    import eventlet
-    # Ya parcheado arriba, pero mantenemos consistencia si hay lógica duplicada
-    # eventlet.monkey_patch()
-
 from flask import Flask, request, current_app, g, jsonify
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.exceptions import HTTPException
@@ -278,32 +265,32 @@ def create_app(config_class=Config):
 
     # --- Diagnóstico de sesión (solo en runtime normal) ---
     if not MIGRATIONS_ONLY:
-        print("--- DIAGNÓSTICO DE SESIÓN (desde app.py) ---")
         session_ext = Session()
         secret_key = app.config.get("SECRET_KEY")
-        print(
-            "SECRET_KEY configurada: "
-            f"{'sí' if secret_key else 'no'}"
+        app.logger.info(
+            "Session config: secret_key=%s secure=%s samesite=%s type=%s domain=%s",
+            "configured" if secret_key else "missing",
+            app.config.get("SESSION_COOKIE_SECURE"),
+            app.config.get("SESSION_COOKIE_SAMESITE"),
+            app.config.get("SESSION_TYPE"),
+            app.config.get("SESSION_COOKIE_DOMAIN"),
         )
-        print(f"SESSION_COOKIE_SECURE: {app.config.get('SESSION_COOKIE_SECURE')}")
-        print(f"SESSION_COOKIE_SAMESITE: {app.config.get('SESSION_COOKIE_SAMESITE')}")
-        print(f"SESSION_TYPE: {app.config.get('SESSION_TYPE')}")
-        print(f"SESSION_COOKIE_DOMAIN: {app.config.get('SESSION_COOKIE_DOMAIN')}")
-        print("-----------------------------")
 
         # Rutas de prueba de sesión
-        @app.route('/poner-memoria')
-        def poner_memoria():
-            from flask import session
-            session['clave_de_prueba'] = 'funciona!'
-            return "<h1>Memoria establecida. Ahora andá a /leer-memoria</h1>"
+        if app.config.get("ENABLE_DEBUG_SESSION_ROUTES"):
+            @app.route("/poner-memoria")
+            def poner_memoria():
+                from flask import session
 
-        @app.route('/leer-memoria')
-        def leer_memoria():
-            from flask import session
-            valor = session.get('clave_de_prueba', '¡LA MEMORIA ESTÁ VACÍA!')
-            return f"<h1>El valor guardado en la memoria es: {valor}</h1>"
+                session["clave_de_prueba"] = "funciona!"
+                return jsonify({"ok": True, "next": "/leer-memoria"})
 
+            @app.route("/leer-memoria")
+            def leer_memoria():
+                from flask import session
+
+                valor = session.get("clave_de_prueba")
+                return jsonify({"ok": bool(valor), "value": valor})
         # Log de headers/cookies
         @app.before_request
         def log_headers():
