@@ -51,6 +51,9 @@ class PublicCatalogAndCartTest(unittest.TestCase):
         data = response.get_json()
         self.assertGreaterEqual(len(data), 3)
         self.assertTrue(all("catalogo_item_id" in prod for prod in data))
+        self.assertTrue(all(prod.get("catalog_item_id") == prod.get("catalogo_item_id") for prod in data))
+        self.assertTrue(all(prod.get("tenant_id") == self.tenant.id for prod in data))
+        self.assertTrue(all(prod.get("tenant_slug") == self.tenant.slug for prod in data))
         self.assertGreater(CatalogoItem.query.filter_by(user_id=self.owner.id).count(), 0)
 
     def test_public_cart_flow(self):

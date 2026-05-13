@@ -365,7 +365,9 @@ def public_catalog():
             }
         )
         prod["catalogo_item_id"] = item.id
+        prod["catalog_item_id"] = item.id
         prod["tenant_id"] = tenant.id
+        prod["tenant_slug"] = tenant.slug
         productos.append(prod)
 
     if search_text:

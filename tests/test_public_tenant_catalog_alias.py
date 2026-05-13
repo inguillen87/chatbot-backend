@@ -36,6 +36,9 @@ def test_public_catalog_alias_slug_pyme_uses_active_pyme_tenant(client):
     payload = resp.get_json()
     assert isinstance(payload, list)
     assert len(payload) >= 1
+    assert all(item.get("tenant_id") for item in payload)
+    assert all(item.get("tenant_slug") for item in payload)
+    assert all(item.get("catalogo_item_id") == item.get("catalog_item_id") for item in payload)
 
 
 def test_public_catalog_alias_prefers_query_tenant_slug_over_type_alias(client):
@@ -47,6 +50,9 @@ def test_public_catalog_alias_prefers_query_tenant_slug_over_type_alias(client):
     payload = resp.get_json()
     assert isinstance(payload, list)
     assert len(payload) >= 1
+    assert all(item["tenant_id"] == tenant.id for item in payload)
+    assert all(item["tenant_slug"] == tenant.slug for item in payload)
+    assert all(item["catalogo_item_id"] == item["catalog_item_id"] for item in payload)
 
 
 def test_public_catalog_legacy_alias_without_api_prefix(client):
