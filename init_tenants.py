@@ -1,11 +1,23 @@
 
 import json
 import os
+import builtins
+import sys
 import uuid
 from sqlalchemy import text
 from database import db
 from models import User, TenantProfile, Rubro, WidgetSettings, WidgetConfig
 from werkzeug.security import generate_password_hash
+
+
+def _safe_console_text(value):
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    return str(value).encode(encoding, errors="replace").decode(encoding, errors="replace")
+
+
+def print(*args, **kwargs):  # noqa: A001 - keep legacy bootstrap output safe.
+    builtins.print(*[_safe_console_text(arg) for arg in args], **kwargs)
+
 
 def fix_schema_issues():
     """Applies direct schema fixes for missing columns or constraints."""

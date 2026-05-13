@@ -79,7 +79,6 @@ def _coerce_reference_time(at: Optional[datetime]) -> datetime:
 
 JSONType = JSONB().with_variant(SQLITE_JSON, "sqlite")
 
-print("Importing models.py")
 
 
 class CatalogoModalidad(str, Enum):
@@ -1794,9 +1793,6 @@ class ChatSessionContext(db.Model):
 
     def __repr__(self):
         return f"<ChatSessionContext id={self.chat_session_id} user_id={self.user_id} anon_id={self.anon_id}>"
-
-print("✅ models.py fue importado con éxito y contiene modelos.")
-
 
 class TicketRealtimeState(db.Model):
     __tablename__ = "ticket_realtime_state"

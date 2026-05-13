@@ -95,6 +95,14 @@ def _describe_database_uri(database_uri: str | None) -> str:
     except Exception:
         return "<configured>"
 
+
+def _truthy_env(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in {"1", "true", "t", "yes", "y"}
+
+
+def _running_on_render() -> bool:
+    return os.getenv("RENDER", "").strip().lower() == "true" or bool(os.getenv("RENDER_EXTERNAL_URL"))
+
 # En migraciones NO importamos socket_service ni blueprints
 if not MIGRATIONS_ONLY:
     # SocketIO real
@@ -107,9 +115,9 @@ if os.environ.get("FLASK_ENV") != "production" and not MIGRATIONS_ONLY:
     local_cred_path = os.path.join("data", "google_service_key.json")
     if os.path.exists(local_cred_path):
         os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = local_cred_path
-        print(f"✅ LOCAL DEV: Set GOOGLE_APPLICATION_CREDENTIALS to '{local_cred_path}'")
+        print(f"LOCAL DEV: Set GOOGLE_APPLICATION_CREDENTIALS to '{local_cred_path}'")
     else:
-        print(f"⚠️ LOCAL DEV: Credential file not found at '{local_cred_path}'. Google services may fail.")
+        print(f"LOCAL DEV: Credential file not found at '{local_cred_path}'. Google services may fail.")
 
 # Listener para SQLite (no afecta Postgres; se envuelve en try/except)
 def my_on_connect_listener(dbapi_connection, connection_record):
@@ -829,6 +837,14 @@ def create_app(config_class=Config):
     if not MIGRATIONS_ONLY:
         runtime_schema_sync_enabled = bool(app.config.get("ENABLE_RUNTIME_SCHEMA_SYNC"))
         runtime_tenant_init_enabled = bool(app.config.get("ENABLE_RUNTIME_TENANT_INIT"))
+        if _running_on_render() and not _truthy_env("ALLOW_RUNTIME_BOOTSTRAP_ON_RENDER"):
+            if runtime_schema_sync_enabled or runtime_tenant_init_enabled:
+                app.logger.warning(
+                    "Runtime bootstrap ignored on Render. "
+                    "Run migrations/bootstrap explicitly or set ALLOW_RUNTIME_BOOTSTRAP_ON_RENDER=true."
+                )
+            runtime_schema_sync_enabled = False
+            runtime_tenant_init_enabled = False
 
         if runtime_schema_sync_enabled or runtime_tenant_init_enabled:
             with app.app_context():
