@@ -184,15 +184,43 @@ def _hero_conversation_demo(kind: str) -> dict[str, Any]:
             "user_message": "Te mando foto, audio y ubicacion de un semaforo caido.",
             "agent_message": "Recibi la evidencia, clasifique el reclamo, marque la zona y lo deje listo para seguimiento.",
             "inputs": [
-                {"kind": "image", "label": "Foto"},
-                {"kind": "audio", "label": "Audio"},
-                {"kind": "location", "label": "Ubicacion"},
+                {
+                    "kind": "image",
+                    "label": "Foto",
+                    "preview_url": "/static/demo/municipio/reclamo-semaforo.jpg",
+                    "detail": "Evidencia visual adjunta al reclamo.",
+                },
+                {
+                    "kind": "audio",
+                    "label": "Nota de voz",
+                    "detail": "Transcripcion resumida por IA para clasificar el reclamo.",
+                },
+                {
+                    "kind": "location",
+                    "label": "Ubicacion",
+                    "address": "Av. San Martin y Rivadavia",
+                    "lat": -34.6083,
+                    "lng": -58.3712,
+                    "detail": "Punto operativo para mapa y derivacion.",
+                },
             ],
             "action": {
                 "label": "Reclamo creado",
                 "detail": "Ticket con categoria, prioridad, zona, evidencia y equipo sugerido.",
                 "status": "Listo para operar",
                 "creates": "ticket",
+                "fields": [
+                    {"label": "Categoria", "value": "Semaforo"},
+                    {"label": "Prioridad", "value": "Alta"},
+                    {"label": "Equipo sugerido", "value": "Transito"},
+                    {"label": "Seguimiento", "value": "Codigo y PIN"},
+                ],
+                "metadata": {
+                    "requires_location": True,
+                    "supports_media": ["image", "audio", "location"],
+                    "traceable_target": "ticket",
+                },
+                "summary_items": ["categoria", "prioridad", "zona", "evidencia", "equipo_sugerido"],
             },
             "result": {
                 "kind": "ticket",
@@ -201,6 +229,7 @@ def _hero_conversation_demo(kind: str) -> dict[str, Any]:
                 "tracking": "codigo_y_pin",
             },
             "highlights": ["mapa operativo", "asignacion sugerida", "seguimiento ciudadano"],
+            "workflow_steps": ["Entiende texto y adjuntos", "Crea ticket real", "Sugiere equipo", "Deja seguimiento"],
             "cta": {"label": "Probar reclamo real", "href": "/demo?sector=gobierno"},
         },
         {
@@ -210,14 +239,31 @@ def _hero_conversation_demo(kind: str) -> dict[str, Any]:
             "user_message": "Te mando una foto del producto y quiero comprar dos unidades.",
             "agent_message": "Detecte el producto, prepare el carrito invitado y deje el pedido listo para continuar.",
             "inputs": [
-                {"kind": "image", "label": "Foto"},
-                {"kind": "text", "label": "Cantidad"},
+                {
+                    "kind": "image",
+                    "label": "Foto",
+                    "preview_url": "/static/demo/bodega/producto-detectado.jpg",
+                    "detail": "Imagen usada para sugerir producto del catalogo real.",
+                },
+                {"kind": "text", "label": "Cantidad", "detail": "Dos unidades solicitadas por el comprador."},
             ],
             "action": {
                 "label": "Pedido iniciado",
                 "detail": "Carrito invitado con producto, cantidad, contacto pendiente y checkout cuando el tenant lo habilita.",
                 "status": "Listo para vender",
                 "creates": "order_or_lead",
+                "fields": [
+                    {"label": "Producto", "value": "Detectado desde catalogo"},
+                    {"label": "Cantidad", "value": "2 unidades"},
+                    {"label": "Carrito", "value": "Invitado"},
+                    {"label": "Checkout", "value": "Segun tenant"},
+                ],
+                "metadata": {
+                    "requires_catalog": True,
+                    "allows_guest_cart": True,
+                    "traceable_target": "order_or_lead",
+                },
+                "summary_items": ["producto", "cantidad", "carrito", "checkout"],
             },
             "result": {
                 "kind": "order",
@@ -226,6 +272,7 @@ def _hero_conversation_demo(kind: str) -> dict[str, Any]:
                 "tracking": "pedido_y_carrito",
             },
             "highlights": ["catalogo real", "carrito invitado", "seguimiento comercial"],
+            "workflow_steps": ["Detecta producto", "Arma carrito", "Pide contacto", "Deja pedido o lead"],
             "cta": {"label": "Probar venta real", "href": "/demo?sector=empresas"},
         },
         {
@@ -235,14 +282,31 @@ def _hero_conversation_demo(kind: str) -> dict[str, Any]:
             "user_message": "Necesito un certificado de alumno regular y adjunto el DNI.",
             "agent_message": "Identifique el tramite, guarde el adjunto y genere el caso para el equipo administrativo.",
             "inputs": [
-                {"kind": "file", "label": "Adjunto"},
-                {"kind": "text", "label": "Solicitud"},
+                {
+                    "kind": "file",
+                    "label": "Adjunto",
+                    "thumbnail_url": "/static/demo/colegio/documento-adjunto.png",
+                    "detail": "Documento asociado al tramite escolar.",
+                },
+                {"kind": "text", "label": "Solicitud", "detail": "Certificado de alumno regular."},
             ],
             "action": {
                 "label": "Caso escolar creado",
                 "detail": "Caso con familia, tramite, documentacion y derivacion al equipo correspondiente.",
                 "status": "Listo para gestionar",
                 "creates": "school_case",
+                "fields": [
+                    {"label": "Tramite", "value": "Certificado"},
+                    {"label": "Equipo", "value": "Secretaria"},
+                    {"label": "Adjunto", "value": "DNI recibido"},
+                    {"label": "Derivacion", "value": "Administrativa"},
+                ],
+                "metadata": {
+                    "requires_attachment": True,
+                    "sensitive_escalation": False,
+                    "traceable_target": "school_case",
+                },
+                "summary_items": ["tramite", "familia", "adjunto", "equipo"],
             },
             "result": {
                 "kind": "case",
@@ -251,6 +315,7 @@ def _hero_conversation_demo(kind: str) -> dict[str, Any]:
                 "tracking": "caso_escolar",
             },
             "highlights": ["adjuntos procesados", "derivacion cuidada", "historial escolar"],
+            "workflow_steps": ["Reconoce tramite", "Valida adjunto", "Crea caso", "Deriva a secretaria"],
             "cta": {"label": "Probar caso escolar", "href": "/demo?sector=educacion"},
         },
         {
@@ -262,13 +327,32 @@ def _hero_conversation_demo(kind: str) -> dict[str, Any]:
             "inputs": [
                 {"kind": "choice", "label": "Voto"},
                 {"kind": "text", "label": "Comentario"},
-                {"kind": "location", "label": "Zona"},
+                {
+                    "kind": "location",
+                    "label": "Zona",
+                    "address": "Barrio Centro",
+                    "lat": -34.6037,
+                    "lng": -58.3816,
+                    "detail": "Segmento territorial para resultados y comentarios.",
+                },
             ],
             "action": {
                 "label": "Participacion registrada",
                 "detail": "Respuesta con resultados en vivo, comentario moderable y segmento territorial cuando hay ubicacion.",
                 "status": "Listo para analizar",
                 "creates": "survey_response",
+                "fields": [
+                    {"label": "Participacion", "value": "Voto y comentario"},
+                    {"label": "Segmento", "value": "Zona"},
+                    {"label": "Resultados", "value": "En vivo si esta habilitado"},
+                    {"label": "Moderacion", "value": "Comentario revisable"},
+                ],
+                "metadata": {
+                    "requires_survey": True,
+                    "supports_live_results": True,
+                    "traceable_target": "survey_response",
+                },
+                "summary_items": ["voto", "comentario", "segmento", "resultados"],
             },
             "result": {
                 "kind": "survey_response",
@@ -277,6 +361,7 @@ def _hero_conversation_demo(kind: str) -> dict[str, Any]:
                 "tracking": "resultados_en_vivo",
             },
             "highlights": ["resultados en vivo", "comentarios", "segmentos"],
+            "workflow_steps": ["Registra voto", "Guarda comentario", "Segmenta respuesta", "Actualiza resultados"],
             "cta": {"label": "Probar votacion", "href": "/demo?sector=gobierno&flow=encuestas"},
         },
     ]
