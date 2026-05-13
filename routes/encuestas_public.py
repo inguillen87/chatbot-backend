@@ -384,6 +384,8 @@ def _public_error_response(err: EncuestaError, *, fallback_reason: Optional[str]
     payload = err.to_dict() if hasattr(err, "to_dict") else {"error": str(err)}
     status_code = int(getattr(err, "status_code", 500) or 500)
     reason_code = payload.get("reason_code") or fallback_reason
+    if status_code == 404 and not reason_code:
+        reason_code = "survey_not_found"
     retryable = status_code >= 500
     action_hint_map = {
         "survey_not_published": "view_other_surveys",
@@ -394,7 +396,11 @@ def _public_error_response(err: EncuestaError, *, fallback_reason: Optional[str]
     if status_code == 404:
         action_hint = "go_home"
 
-    payload.setdefault("contract_version", "encuestas.public_error.v1")
+    if status_code == 404 and reason_code == "survey_not_found":
+        payload["contract_version"] = "public.survey_resolution.v1"
+        payload.setdefault("list_endpoint", "/api/public/encuestas")
+    else:
+        payload.setdefault("contract_version", "encuestas.public_error.v1")
     payload.setdefault("status_code", status_code)
     if reason_code:
         payload["reason_code"] = reason_code

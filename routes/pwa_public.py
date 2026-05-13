@@ -294,6 +294,19 @@ def _lookup_catalog_item(owner: User, tenant: TenantProfile, payload: Dict[str, 
     return None
 
 
+def _catalog_item_belongs_to_other_tenant(tenant: TenantProfile, payload: Dict[str, object]) -> bool:
+    identifier = _coerce_item_id(payload.get("catalogo_item_id") or payload.get("item_id"))
+    if identifier is None:
+        return False
+    item = CatalogoItem.query.options(*CatalogoItem.legacy_safe_options()).filter(CatalogoItem.id == identifier).first()
+    if not item:
+        return False
+    if item.tenant_id is not None:
+        return item.tenant_id != tenant.id
+    owner_id = tenant.municipio_id or tenant.pyme_id
+    return bool(owner_id and item.user_id != owner_id)
+
+
 def _normalize_quantity(value: object, default: int = 1, min_value: int = 1) -> int:
     try:
         cantidad = int(value)
@@ -431,6 +444,20 @@ def public_cart_add():
     payload = request.get_json(silent=True) or {}
     item = _lookup_catalog_item(owner, tenant, payload)
     if not item:
+        if _catalog_item_belongs_to_other_tenant(tenant, payload):
+            request_id = request.headers.get("X-Request-Id") or getattr(g, "request_id", None) or f"req_{uuid.uuid4().hex}"
+            response = jsonify(
+                {
+                    "contract_version": "public.cart_error.v1",
+                    "ok": False,
+                    "reason_code": "cross_tenant_catalog_item",
+                    "error": "El producto no pertenece al tenant del carrito.",
+                    "tenant_slug": tenant.slug,
+                    "request_id": request_id,
+                }
+            )
+            response.headers.setdefault("X-Request-Id", request_id)
+            return response, 409
         return jsonify({"error": "Producto no encontrado"}), 404
 
     cantidad = _normalize_quantity(payload.get("cantidad", 1))

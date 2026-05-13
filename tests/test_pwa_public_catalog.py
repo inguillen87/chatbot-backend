@@ -46,7 +46,7 @@ class PublicCatalogAndCartTest(unittest.TestCase):
         self.app_context.pop()
 
     def test_public_catalog_seeds_items(self):
-        response = self.client.get(f"/api/pwa/public/catalog?tenant_id={self.tenant.id}")
+        response = self.client.get(f"/api/pwa/public/catalog?tenant={self.tenant.slug}")
         self.assertEqual(response.status_code, 200)
         data = response.get_json()
         self.assertGreaterEqual(len(data), 3)
@@ -54,14 +54,14 @@ class PublicCatalogAndCartTest(unittest.TestCase):
         self.assertGreater(CatalogoItem.query.filter_by(user_id=self.owner.id).count(), 0)
 
     def test_public_cart_flow(self):
-        catalog_resp = self.client.get(f"/api/pwa/public/catalog?tenant_id={self.tenant.id}")
+        catalog_resp = self.client.get(f"/api/pwa/public/catalog?tenant={self.tenant.slug}")
         self.assertEqual(catalog_resp.status_code, 200)
         catalog = catalog_resp.get_json()
         first_item = next(prod for prod in catalog if "pt" in (prod.get("precio_texto", "").lower()))
         item_id = first_item["catalogo_item_id"]
 
         add_resp = self.client.post(
-            f"/api/pwa/public/cart/add?tenant_id={self.tenant.id}",
+            f"/api/pwa/public/cart/add?tenant={self.tenant.slug}",
             json={"catalogo_item_id": item_id, "cantidad": 2},
         )
         self.assertEqual(add_resp.status_code, 200)
@@ -74,7 +74,7 @@ class PublicCatalogAndCartTest(unittest.TestCase):
         self.assertGreater(rewards.get("balance_resumen", {}).get("saldo_disponible", 0), rewards.get("balance_resumen", {}).get("saldo_estimado_post_compra", 0))
 
         update_resp = self.client.post(
-            f"/api/pwa/public/cart/update?tenant_id={self.tenant.id}",
+            f"/api/pwa/public/cart/update?tenant={self.tenant.slug}",
             json={"catalogo_item_id": item_id, "cantidad": 1},
         )
         self.assertEqual(update_resp.status_code, 200)
@@ -82,14 +82,14 @@ class PublicCatalogAndCartTest(unittest.TestCase):
         self.assertEqual(updated["items_count"], 1)
 
         remove_resp = self.client.post(
-            f"/api/pwa/public/cart/remove?tenant_id={self.tenant.id}",
+            f"/api/pwa/public/cart/remove?tenant={self.tenant.slug}",
             json={"catalogo_item_id": item_id},
         )
         self.assertEqual(remove_resp.status_code, 200)
         emptied = remove_resp.get_json()
         self.assertEqual(emptied["items_count"], 0)
 
-        clear_resp = self.client.post(f"/api/pwa/public/cart/clear?tenant_id={self.tenant.id}")
+        clear_resp = self.client.post(f"/api/pwa/public/cart/clear?tenant={self.tenant.slug}")
         self.assertEqual(clear_resp.status_code, 200)
         cleared = clear_resp.get_json()
         self.assertEqual(cleared["items_count"], 0)
@@ -111,7 +111,7 @@ class PublicCatalogAndCartTest(unittest.TestCase):
         db.session.commit()
 
         add_resp = self.client.post(
-            f"/api/pwa/public/cart/add?tenant_id={self.tenant.id}",
+            f"/api/pwa/public/cart/add?tenant={self.tenant.slug}",
             json={"catalogo_item_id": money_item.id, "cantidad": 1},
         )
 
@@ -123,14 +123,57 @@ class PublicCatalogAndCartTest(unittest.TestCase):
         self.assertTrue(checkout_options["requires_contact_or_auth"])
         self.assertFalse(summary["checkout_preview"]["payment_ready"])
 
+    def test_public_cart_rejects_cross_tenant_catalog_item(self):
+        other_owner = User(
+            name="Bodega Demo",
+            email="bodega-cross@example.com",
+            password_hash="hash",
+            tipo_chat="pyme",
+        )
+        db.session.add(other_owner)
+        db.session.flush()
+        other_tenant = TenantProfile(
+            slug="bodega-cross",
+            nombre="Bodega Cross",
+            tipo="pyme",
+            pyme_id=other_owner.id,
+        )
+        db.session.add(other_tenant)
+        db.session.flush()
+        other_item = CatalogoItem(
+            user_id=other_owner.id,
+            tenant_id=other_tenant.id,
+            nombre="Producto ajeno",
+            categoria="Demo",
+            precio="1000",
+            modalidad="venta",
+            sku="cross-item",
+        )
+        db.session.add(other_item)
+        db.session.commit()
+
+        response = self.client.post(
+            f"/api/pwa/public/cart/add?tenant={self.tenant.slug}",
+            json={"catalogo_item_id": other_item.id, "cantidad": 1},
+            headers={"X-Request-Id": "cart-cross-1"},
+        )
+
+        self.assertEqual(response.status_code, 409)
+        payload = response.get_json()
+        self.assertEqual(payload["contract_version"], "public.cart_error.v1")
+        self.assertEqual(payload["reason_code"], "cross_tenant_catalog_item")
+        self.assertEqual(payload["tenant_slug"], self.tenant.slug)
+        self.assertEqual(payload["request_id"], "cart-cross-1")
+        self.assertEqual(response.headers.get("X-Request-Id"), "cart-cross-1")
+
     def test_catalog_prices_and_rewards_endpoint(self):
-        response = self.client.get(f"/api/pwa/public/catalog?tenant_id={self.tenant.id}")
+        response = self.client.get(f"/api/pwa/public/catalog?tenant={self.tenant.slug}")
         self.assertEqual(response.status_code, 200)
         data = response.get_json()
         self.assertTrue(any(item.get("precio_texto") for item in data))
         self.assertTrue(all(item.get("imagen_url") for item in data))
 
-        rewards_resp = self.client.get(f"/api/pwa/public/rewards?tenant_id={self.tenant.id}")
+        rewards_resp = self.client.get(f"/api/pwa/public/rewards?tenant={self.tenant.slug}")
         self.assertEqual(rewards_resp.status_code, 200)
         rewards = rewards_resp.get_json()
         self.assertIn("saldo_demo_puntos", rewards)
@@ -140,6 +183,7 @@ class PublicCatalogAndCartTest(unittest.TestCase):
         # Crear item con URL CDN no disponible y validar que se devuelva un fallback
         legacy_item = CatalogoItem(
             user_id=self.owner.id,
+            tenant_id=self.tenant.id,
             nombre="Kit escolar solidario",
             categoria="Educación",
             descripcion="Mochila, útiles y abrigo.",
@@ -152,7 +196,7 @@ class PublicCatalogAndCartTest(unittest.TestCase):
         db.session.add(legacy_item)
         db.session.commit()
 
-        resp = self.client.get(f"/api/pwa/public/catalog?tenant_id={self.tenant.id}")
+        resp = self.client.get(f"/api/pwa/public/catalog?tenant={self.tenant.slug}")
         self.assertEqual(resp.status_code, 200)
         items = resp.get_json()
 

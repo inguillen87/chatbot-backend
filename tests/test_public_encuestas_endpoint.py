@@ -115,7 +115,10 @@ def test_public_survey_v1_missing_slug_returns_contract(client):
 
     assert response.status_code == 404
     payload = response.get_json()
-    assert payload["contract_version"] == "encuestas.public_error.v1"
+    assert payload["contract_version"] == "public.survey_resolution.v1"
+    assert payload["reason_code"] == "survey_not_found"
+    assert payload["retryable"] is False
+    assert payload["list_endpoint"] == "/api/public/encuestas"
     assert payload["status_code"] == 404
     assert payload["action_hint"] == "go_home"
     assert payload["request_id"]

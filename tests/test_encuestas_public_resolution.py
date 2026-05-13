@@ -394,7 +394,10 @@ def test_public_encuestas_v1_missing_slug_returns_public_error_contract(client):
     assert response.status_code == 404
     assert response.is_json
     payload = response.get_json()
-    assert payload["contract_version"] == "encuestas.public_error.v1"
+    assert payload["contract_version"] == "public.survey_resolution.v1"
+    assert payload["reason_code"] == "survey_not_found"
+    assert payload["retryable"] is False
+    assert payload["list_endpoint"] == "/api/public/encuestas"
     assert payload["status_code"] == 404
     assert payload["action_hint"] == "go_home"
     assert payload["request_id"]
@@ -402,7 +405,7 @@ def test_public_encuestas_v1_missing_slug_returns_public_error_contract(client):
 
     legacy_response = client.get("/public/encuestas/v1/votacion-en-vivo-luis-petri")
     assert legacy_response.status_code == 404
-    assert legacy_response.get_json()["contract_version"] == "encuestas.public_error.v1"
+    assert legacy_response.get_json()["contract_version"] == "public.survey_resolution.v1"
 
 
 def test_share_endpoint_renders_accessible_html(client, monkeypatch):
