@@ -6,6 +6,7 @@ import uuid
 # --- Modo "solo migraciones" o "testing" para evitar carga pesada de eventlet ---
 MIGRATIONS_ONLY = os.getenv("FLASK_MIGRATIONS_ONLY") == "1"
 TESTING_MODE = os.getenv("TESTING") == "1" or "pytest" in sys.modules
+os.environ.setdefault("EVENTLET_NO_GREENDNS", "YES")
 
 # Monkey patch must happen before importing any other modules that might use threads/sockets
 # Solo en runtime normal (no migraciones, no testing)
@@ -141,7 +142,7 @@ def my_on_connect_listener(dbapi_connection, connection_record):
 def create_app(config_class=Config):
     app = Flask(__name__)
     app.url_map.strict_slashes = False
-    print("Creating app...")
+    app.logger.info("Creating app")
 
     # Detrás de proxy/reverse-proxy
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
@@ -151,12 +152,12 @@ def create_app(config_class=Config):
     security_errors = validate_runtime_security(app.config)
     if security_errors:
         raise RuntimeError(" ".join(security_errors))
-    print(f"Loaded config: {config_class}")
-    print(
-        "Database URI: "
-        f"{_describe_database_uri(app.config.get('SQLALCHEMY_DATABASE_URI'))}"
+    app.logger.info("Loaded config: %s", config_class)
+    app.logger.info(
+        "Database URI: %s",
+        _describe_database_uri(app.config.get("SQLALCHEMY_DATABASE_URI")),
     )
-    print(f"DB object: {db}")
+    app.logger.debug("DB object: %s", db)
 
     if str(app.config.get("SQLALCHEMY_DATABASE_URI", "")).startswith("sqlite"):
         configured_engine_opts = dict(app.config.get("SQLALCHEMY_ENGINE_OPTIONS") or {})
