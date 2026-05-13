@@ -273,6 +273,16 @@ def _catalog_import_preview_contract(upload: CatalogUpload, *, request_id: str |
     if image_summary is None:
         rows, image_summary = _normalize_rows_for_images(rows)
     quality_summary = _catalog_quality_summary(rows)
+    pages_count = (
+        preview.get("pages")
+        or preview.get("page_count")
+        or preview.get("pages_count")
+        or preview.get("total_pages")
+    )
+    try:
+        pages_count = int(pages_count) if pages_count is not None else None
+    except (TypeError, ValueError):
+        pages_count = None
     source_size = None
     upload_path = os.path.join(UPLOAD_FOLDER, f"{upload.filename}")
     if os.path.exists(upload_path):
@@ -288,6 +298,8 @@ def _catalog_import_preview_contract(upload: CatalogUpload, *, request_id: str |
             "source_file": {
                 "name": upload.filename,
                 "type": upload.mime_type,
+                "pages": pages_count,
+                "rows": len(rows),
                 "size": source_size,
                 "status": upload.status,
                 "processor": upload.processor_slug,

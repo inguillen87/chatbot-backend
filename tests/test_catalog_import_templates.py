@@ -152,6 +152,7 @@ def test_import_preview_contract_is_editable_and_manual_commit(app):
         processor_slug="generic_v2",
         engine_used="test",
         preview_data={
+            "pages": 1,
             "items": [
                 {
                     "nombre": "Producto listo",
@@ -171,6 +172,8 @@ def test_import_preview_contract_is_editable_and_manual_commit(app):
 
     assert payload["contract_version"] == "catalog.import_preview.v1"
     assert payload["request_id"] == "import-77"
+    assert payload["source_file"]["pages"] == 1
+    assert payload["source_file"]["rows"] == 2
     assert payload["commit_endpoint"] == "/api/admin/catalog/import/77/commit"
     assert payload["publish_policy"] == "manual_commit_required"
     assert payload["frontend_contract"]["editable_rows"] is True
