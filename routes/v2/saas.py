@@ -700,6 +700,128 @@ def _admin_modules_payload(tenant: TenantProfile, *, education_profile: dict[str
     return modules
 
 
+def _admin_navigation_payload(tenant: TenantProfile, modules: list[dict[str, Any]]) -> dict[str, Any]:
+    primary = [
+        {
+            "id": module.get("id"),
+            "label": module.get("label"),
+            "route": module.get("route"),
+            "endpoint": module.get("endpoint"),
+            "visible": True,
+        }
+        for module in modules
+        if module.get("id") in {"profile", "inbox", "analytics", "surveys_votings", "employees", "marketplace", "widget_whatsapp"}
+    ]
+    base = f"/t/{tenant.slug}"
+    return {
+        "contract_version": "tenant.admin_navigation.v1",
+        "primary": primary,
+        "quick_actions": [
+            {
+                "id": "open_operations",
+                "label": "Tablero",
+                "route": f"{base}/analytics",
+                "endpoint": "/api/v2/analytics/operations/dashboard",
+                "icon": "layout-dashboard",
+                "visible": True,
+            },
+            {
+                "id": "open_heatmap",
+                "label": "Mapa",
+                "route": f"{base}/analytics?view=heatmap",
+                "endpoint": "/api/v2/analytics/operations/heatmap",
+                "icon": "map",
+                "visible": True,
+            },
+            {
+                "id": "open_surveys",
+                "label": "Encuestas",
+                "route": f"{base}/surveys",
+                "admin_route": f"/admin/encuestas?tenant_slug={tenant.slug}",
+                "endpoint": "/api/v2/surveys",
+                "icon": "clipboard-list",
+                "visible": True,
+            },
+            {
+                "id": "open_employees",
+                "label": "Equipo",
+                "route": f"{base}/employees",
+                "endpoint": "/api/v2/employee-routing",
+                "icon": "users",
+                "visible": True,
+            },
+            {
+                "id": "open_inbox",
+                "label": "Reclamos",
+                "route": f"{base}/inbox",
+                "endpoint": "/api/v2/inbox/omnichannel",
+                "icon": "inbox",
+                "visible": True,
+            },
+        ],
+        "inbox_tabs": [
+            {"id": "open", "label": "Abiertos", "visible": True},
+            {"id": "assigned", "label": "Asignados", "visible": True},
+            {"id": "unassigned", "label": "Sin asignar", "visible": True},
+            {"id": "resolved", "label": "Resueltos", "visible": True},
+        ],
+        "hide_legacy_tabs": ["workspace", "live_bridge", "templates"],
+    }
+
+
+def _admin_panel_widgets_payload(tenant: TenantProfile, *, dashboard: dict[str, Any], employee_routing: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "contract_version": "tenant.admin_panel_widgets.v1",
+        "layout": "operational_command_center",
+        "hero_widgets": [
+            {
+                "id": "operations_summary",
+                "label": "Resumen operativo",
+                "render_as": "kpi_summary",
+                "endpoint": "/api/v2/analytics/operations/dashboard",
+                "data": dashboard.get("summary") or dashboard.get("metrics") or {},
+                "empty_state": "Todavia no hay actividad suficiente para calcular el resumen.",
+            },
+            {
+                "id": "heatmap_summary",
+                "label": "Mapa de calor",
+                "render_as": "heatmap_preview",
+                "endpoint": "/api/v2/analytics/operations/heatmap",
+                "can_render_heatmap": True,
+                "empty_state": "Compartiendo ubicaciones o reclamos con direccion se activa este mapa.",
+            },
+            {
+                "id": "location_widget",
+                "label": "Ubicacion y cobertura",
+                "render_as": "location_coverage",
+                "endpoint": "/api/v2/analytics/operations/heatmap",
+                "map_style_endpoint": "/api/map/config",
+                "empty_state": "Configura zonas o genera reclamos con ubicacion para ver cobertura territorial.",
+            },
+            {
+                "id": "employee_assignment",
+                "label": "Equipo y asignacion",
+                "render_as": "assignment_queue",
+                "endpoint": "/api/v2/employee-routing",
+                "summary": {
+                    "employees": len(employee_routing.get("employees") or []),
+                    "unassigned": ((employee_routing.get("queues") or {}).get("unassigned_count") or 0),
+                    "categories": len((employee_routing.get("routing_rules") or {}).get("categories") or []),
+                },
+                "empty_state": "Carga empleados y reglas por categoria para asignar tickets sin ruido.",
+            },
+        ],
+        "ticket_workspace": {
+            "render_as": "focused_ticket_board",
+            "primary_actions": ["review_unassigned", "auto_assign", "assign_by_category", "change_status", "handoff_human"],
+            "employees_endpoint": "/api/v2/employee-routing",
+            "routing_scope_endpoint": "/api/v2/employees/{employee_id}/routing-scope",
+            "auto_assign_endpoint": "/api/v2/employee-routing/auto-assign",
+            "recommended_filters": ["estado", "categoria", "asignado_a", "canal", "prioridad"],
+        },
+    }
+
+
 def _build_tenant_admin_experience_payload(
     tenant: TenantProfile,
     *,
@@ -717,6 +839,7 @@ def _build_tenant_admin_experience_payload(
     readiness = _tenant_readiness_payload(tenant, marketplace=marketplace, health=health)
     whatsapp = build_whatsapp_experience(tenant, app_config=app_config)
     employee_routing = build_employee_routing_payload(tenant)
+    modules = _admin_modules_payload(tenant, education_profile=education_profile)
 
     return {
         "contract_version": "tenant.admin_experience.v1",
@@ -736,7 +859,13 @@ def _build_tenant_admin_experience_payload(
             "theme_config": tenant.get_theme_config() if hasattr(tenant, "get_theme_config") else {},
             "readiness": readiness,
         },
-        "modules": _admin_modules_payload(tenant, education_profile=education_profile),
+        "modules": modules,
+        "navigation": _admin_navigation_payload(tenant, modules),
+        "admin_panel_widgets": _admin_panel_widgets_payload(
+            tenant,
+            dashboard=dashboard,
+            employee_routing=employee_routing,
+        ),
         "health": health,
         "operations": {
             "dashboard": dashboard,

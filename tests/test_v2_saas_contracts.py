@@ -597,6 +597,21 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertIn("surveys_votings", module_ids)
         self.assertIn("marketplace", module_ids)
         self.assertIn("education", module_ids)
+        self.assertEqual(payload["navigation"]["contract_version"], "tenant.admin_navigation.v1")
+        quick_action_ids = {item["id"] for item in payload["navigation"]["quick_actions"]}
+        self.assertIn("open_surveys", quick_action_ids)
+        self.assertIn("open_employees", quick_action_ids)
+        self.assertIn("open_heatmap", quick_action_ids)
+        self.assertIn("workspace", payload["navigation"]["hide_legacy_tabs"])
+        self.assertEqual(payload["admin_panel_widgets"]["contract_version"], "tenant.admin_panel_widgets.v1")
+        hero_widget_ids = {item["id"] for item in payload["admin_panel_widgets"]["hero_widgets"]}
+        self.assertIn("location_widget", hero_widget_ids)
+        self.assertIn("heatmap_summary", hero_widget_ids)
+        self.assertIn("employee_assignment", hero_widget_ids)
+        self.assertEqual(
+            payload["admin_panel_widgets"]["ticket_workspace"]["auto_assign_endpoint"],
+            "/api/v2/employee-routing/auto-assign",
+        )
         whatsapp_module = next(item for item in payload["modules"] if item["id"] == "widget_whatsapp")
         self.assertEqual(whatsapp_module["label"], "Widget/WhatsApp/Voz")
         self.assertEqual(whatsapp_module["endpoint"], "/api/v2/whatsapp/experience")

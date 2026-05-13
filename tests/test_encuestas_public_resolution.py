@@ -363,6 +363,20 @@ def test_share_endpoint_handles_alias_without_link(client):
     assert payload["slug"] == slug
 
 
+def test_public_encuestas_v1_aliases_resolve_public_slug(client):
+    slug = "votacion-en-vivo-luis-petri"
+    slug_publico = "votacion-en-vivo-luis-petri"
+    _create_public_encuesta(slug, slug_publico)
+
+    api_response = client.get(f"/api/public/encuestas/v1/{slug_publico}")
+    assert api_response.status_code == 200
+    assert api_response.get_json()["slug"] == slug_publico
+
+    legacy_response = client.get(f"/public/encuestas/v1/{slug_publico}")
+    assert legacy_response.status_code == 200
+    assert legacy_response.get_json()["slug"] == slug_publico
+
+
 def test_share_endpoint_renders_accessible_html(client, monkeypatch):
     monkeypatch.setitem(
         client.application.config,

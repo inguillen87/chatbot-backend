@@ -16,7 +16,8 @@ from flask import Blueprint, abort, current_app, jsonify, make_response, request
 from flask_cors import cross_origin
 
 from routes.admin_ai import get_bot_settings, update_bot_settings
-from routes.analytics import analytics_event_ingest
+from routes.analytics import analytics_event_ingest, analytics_identity_coverage
+from routes.analytics_routes import get_latest_report, trigger_generate_report
 from services.analytics.config import get_config
 from routes.admin_analytics import (
     admin_analytics_export_csv,
@@ -25,6 +26,7 @@ from routes.admin_analytics import (
     admin_analytics_overview,
     admin_analytics_dashboard,
     admin_analytics_hub,
+    admin_analytics_whatsapp_funnel,
 )
 from routes.auth import (
     chatuser_login_panel,
@@ -294,7 +296,10 @@ def upload_chat_attachment_alias():
 
 
 def _options_ok():
-    return jsonify({"ok": True})
+    request_id = _normalized_request_id()
+    response = jsonify({"ok": True, "request_id": request_id})
+    response.headers["X-Request-Id"] = request_id
+    return response
 
 
 @api_aliases_bp.route("/analytics/event", methods=["POST", "OPTIONS"], strict_slashes=False)
@@ -304,6 +309,27 @@ def analytics_event_alias():
     if not get_config().feature_enabled:
         abort(404)
     return analytics_event_ingest()
+
+
+@api_aliases_bp.route("/analytics/identity/coverage", methods=["GET", "OPTIONS"], strict_slashes=False)
+def analytics_identity_coverage_alias():
+    if request.method == "OPTIONS":
+        return _options_ok()
+    return analytics_identity_coverage()
+
+
+@public_aliases_bp.route("/analytics/report/latest", methods=["GET", "OPTIONS"], strict_slashes=False)
+def analytics_report_latest_root_alias():
+    if request.method == "OPTIONS":
+        return _options_ok()
+    return get_latest_report()
+
+
+@public_aliases_bp.route("/analytics/report/generate", methods=["POST", "OPTIONS"], strict_slashes=False)
+def analytics_report_generate_root_alias():
+    if request.method == "OPTIONS":
+        return _options_ok()
+    return trigger_generate_report()
 
 
 @api_aliases_bp.route("/admin/analytics/overview", methods=["GET"], strict_slashes=False)
@@ -326,6 +352,14 @@ def admin_analytics_dashboard_alias():
 @api_aliases_bp.route("/admin/analytics/hub", methods=["GET"], strict_slashes=False)
 def admin_analytics_hub_alias():
     return admin_analytics_hub()
+
+
+@api_aliases_bp.route("/admin/analytics/whatsapp-funnel", methods=["GET", "OPTIONS"], strict_slashes=False)
+def admin_analytics_whatsapp_funnel_alias():
+    if request.method == "OPTIONS":
+        return _options_ok()
+    return admin_analytics_whatsapp_funnel()
+
 
 @api_aliases_bp.route("/admin/analytics/export.csv", methods=["GET"], strict_slashes=False)
 def admin_analytics_export_csv_alias():

@@ -480,8 +480,17 @@ def _survey_voting_for_demo(sector: str, tenant_slug: str) -> dict[str, Any]:
         "tenant_slug": tenant_slug,
         "admin_endpoint": "/api/v2/surveys",
         "draft_endpoint": "/api/v2/surveys/draft",
-        "public_response_endpoint_template": "/api/v2/public/surveys/{survey_slug}/respond",
+        "create_endpoint": "/api/v2/surveys/draft",
+        "respond_endpoint": "/api/public/encuestas/{survey_slug}/responder",
+        "results_endpoint": "/api/public/encuestas/{survey_slug}/live-results",
+        "comments_endpoint": "/api/public/encuestas/{survey_slug}/comentarios",
+        "public_response_endpoint_template": "/api/public/encuestas/{survey_slug}/responder",
         "analytics_endpoint_template": "/api/v2/surveys/{survey_id}/analytics",
+        "frontend_contract": {
+            "render_as": "survey_voting_module",
+            "show_only_when_enabled": True,
+            "empty_state_behavior": "hide_primary_action_until_active_survey",
+        },
     }
 
 

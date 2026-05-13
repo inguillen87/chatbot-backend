@@ -12,7 +12,52 @@ from utils.auth_helpers import obtener_token, user_from_token
 analytics_v2_bp = Blueprint('analytics_v2_bp', __name__, url_prefix='/api/analytics')
 
 def _request_id() -> str:
-    return (request.headers.get("X-Request-Id") or request.headers.get("X-Correlation-Id") or "").strip() or "analytics-unknown"
+    return (request.headers.get("X-Request-Id") or request.headers.get("X-Correlation-Id") or "").strip() or f"req_{datetime.utcnow().strftime('%Y%m%d%H%M%S%f')}"
+
+
+def _cors_origin() -> str | None:
+    origin = (request.headers.get("Origin") or "").strip()
+    if not origin:
+        return None
+    allowed = current_app.config.get("CORS_ALLOWED_ORIGINS") or current_app.config.get("ALLOWED_ORIGINS") or []
+    if isinstance(allowed, str):
+        allowed = [item.strip() for item in allowed.split(",") if item.strip()]
+    normalized = origin.lower()
+    if (
+        origin in allowed
+        or normalized.endswith(".chatboc.ar")
+        or normalized == "https://www.chatboc.ar"
+        or normalized.startswith("http://localhost")
+        or normalized.startswith("http://127.0.0.1")
+    ):
+        return origin
+    return None
+
+
+@analytics_v2_bp.before_request
+def _analytics_v2_options():
+    if request.method == "OPTIONS":
+        response = jsonify({"ok": True, "request_id": _request_id()})
+        response.headers["X-Request-Id"] = _request_id()
+        return response
+    return None
+
+
+@analytics_v2_bp.after_request
+def _analytics_v2_cors(response):
+    origin = _cors_origin()
+    if origin:
+        response.headers.setdefault("Access-Control-Allow-Origin", origin)
+        response.headers.setdefault("Access-Control-Allow-Credentials", "true")
+        response.headers.setdefault("Vary", "Origin")
+        response.headers.setdefault("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        response.headers.setdefault(
+            "Access-Control-Allow-Headers",
+            "Authorization, Content-Type, X-Requested-With, X-Request-Id, X-Entity-Token, X-Tenant-Slug, X-Debug-Tenant",
+        )
+        response.headers.setdefault("Access-Control-Expose-Headers", "X-Request-Id")
+    response.headers.setdefault("X-Request-Id", _request_id())
+    return response
 
 
 def _api_error(error: str, *, status: int, code: str) -> tuple:
@@ -326,9 +371,24 @@ def get_latest_report():
 
     if cached:
         cached['_cached'] = True
+        cached.setdefault("contract_version", "analytics.report.latest.v1")
+        cached.setdefault("request_id", _request_id())
         return jsonify(cached)
 
-    return _api_error("No cached report found", status=404, code="report_not_found")
+    return jsonify(
+        {
+            "contract_version": "analytics.report.latest.v1",
+            "ok": True,
+            "available": False,
+            "report": None,
+            "summary": None,
+            "items": [],
+            "reason_code": "report_not_generated",
+            "message": "Todavia no hay un informe generado para este periodo.",
+            "generate_endpoint": "/api/analytics/report/generate",
+            "request_id": _request_id(),
+        }
+    )
 
 @analytics_v2_bp.route('/report/generate', methods=['POST'])
 @api_login_required

@@ -154,6 +154,162 @@ def _normalize_rows_for_images(rows: list[dict]) -> tuple[list[dict], dict]:
     }
 
 
+def _guess_catalog_column_type(key: str, values: list) -> str:
+    normalized = str(key or "").strip().lower()
+    if normalized in {"precio", "price", "precio_monetario", "stock"}:
+        return "number"
+    if normalized in {"imagen_url", "image_url", "foto", "gallery_urls", "imagenes", "images"}:
+        return "image"
+    if normalized in {"external_url", "url", "link"}:
+        return "url"
+    if normalized in {"disponible", "published", "activo"}:
+        return "boolean"
+    numeric = 0
+    for value in values:
+        try:
+            float(str(value).replace(",", ".").strip())
+            numeric += 1
+        except (TypeError, ValueError):
+            pass
+    if values and numeric >= max(1, len(values) // 2):
+        return "number"
+    return "text"
+
+
+def _catalog_columns(rows: list[dict]) -> list[dict]:
+    keys: list[str] = []
+    for row in rows:
+        for key in row.keys():
+            key_text = str(key)
+            if key_text not in keys:
+                keys.append(key_text)
+    columns = []
+    for key in keys:
+        values = [row.get(key) for row in rows if row.get(key) not in (None, "")]
+        columns.append(
+            {
+                "key": key,
+                "label": key.replace("_", " ").strip().title(),
+                "type": _guess_catalog_column_type(key, values[:20]),
+                "confidence": 0.9 if values else 0.4,
+                "sample_values": [str(value) for value in values[:3]],
+            }
+        )
+    return columns
+
+
+def _catalog_quality_summary(rows: list[dict]) -> dict:
+    total = len(rows)
+    without_price = 0
+    without_stock = 0
+    without_image = 0
+    without_short_description = 0
+    ready = 0
+    for row in rows:
+        price = row.get("precio") or row.get("price") or row.get("precio_monetario")
+        stock = row.get("stock") or row.get("existencias") or row.get("cantidad")
+        description = row.get("descripcion") or row.get("description") or row.get("descripcion_corta")
+        image, gallery = _product_images_from_row(row)
+        missing_price = price in (None, "")
+        missing_stock = stock in (None, "")
+        missing_image = not image and not gallery
+        missing_description = not str(description or "").strip()
+        without_price += int(missing_price)
+        without_stock += int(missing_stock)
+        without_image += int(missing_image)
+        without_short_description += int(missing_description)
+        if not missing_price and not missing_image and not missing_description:
+            ready += 1
+    return {
+        "total_rows": total,
+        "ready_to_publish": ready,
+        "without_price": without_price,
+        "without_stock": without_stock,
+        "without_image": without_image,
+        "without_short_description": without_short_description,
+    }
+
+
+def _catalog_rows_sample(rows: list[dict], warnings: list | None = None) -> list[dict]:
+    warnings = warnings or []
+    sample = []
+    for index, row in enumerate(rows[:25]):
+        row_warnings = []
+        if not (row.get("nombre") or row.get("titulo") or row.get("title") or row.get("producto")):
+            row_warnings.append("missing_name")
+        if not (row.get("precio") or row.get("price") or row.get("precio_monetario")):
+            row_warnings.append("missing_price")
+        image, gallery = _product_images_from_row(row)
+        if not image and not gallery:
+            row_warnings.append("missing_image")
+        sample.append({"row_index": index, "cells": row, "warnings": row_warnings})
+    if not sample and warnings:
+        sample.append({"row_index": None, "cells": {}, "warnings": warnings[:5]})
+    return sample
+
+
+def _catalog_suggested_actions(quality_summary: dict, image_summary: dict) -> list[dict]:
+    actions = []
+    if quality_summary.get("without_image"):
+        actions.append({"id": "complete_images", "label": "Completar imagenes", "reason_code": "missing_images"})
+    if quality_summary.get("without_price"):
+        actions.append({"id": "review_prices", "label": "Revisar precios", "reason_code": "missing_prices"})
+    if quality_summary.get("without_stock"):
+        actions.append({"id": "review_stock", "label": "Revisar stock", "reason_code": "missing_stock"})
+    if quality_summary.get("ready_to_publish"):
+        actions.append({"id": "publish_ready", "label": "Publicar listos", "reason_code": "ready_to_publish"})
+    if not actions:
+        actions.append({"id": "review_rows", "label": "Revisar filas", "reason_code": "manual_review"})
+    return actions
+
+
+def _catalog_import_preview_contract(upload: CatalogUpload, *, request_id: str | None = None) -> dict:
+    base = upload.to_dict()
+    preview = base.get("preview_data") if isinstance(base.get("preview_data"), dict) else {}
+    rows = preview.get("items") or preview.get("rows") or []
+    if not isinstance(rows, list):
+        rows = []
+    image_summary = preview.get("image_summary") if isinstance(preview.get("image_summary"), dict) else None
+    if image_summary is None:
+        rows, image_summary = _normalize_rows_for_images(rows)
+    quality_summary = _catalog_quality_summary(rows)
+    source_size = None
+    upload_path = os.path.join(UPLOAD_FOLDER, f"{upload.filename}")
+    if os.path.exists(upload_path):
+        try:
+            source_size = os.path.getsize(upload_path)
+        except OSError:
+            source_size = None
+    base.update(
+        {
+            "contract_version": "catalog.import_preview.v1",
+            "upload_id": upload.id,
+            "request_id": request_id or request.headers.get("X-Request-Id") or f"req_{uuid.uuid4().hex}",
+            "source_file": {
+                "name": upload.filename,
+                "type": upload.mime_type,
+                "size": source_size,
+                "status": upload.status,
+                "processor": upload.processor_slug,
+                "engine": upload.engine_used,
+            },
+            "columns": _catalog_columns(rows),
+            "rows_sample": _catalog_rows_sample(rows, base.get("warnings") or base.get("errors")),
+            "image_summary": image_summary,
+            "quality_summary": quality_summary,
+            "suggested_actions": _catalog_suggested_actions(quality_summary, image_summary),
+            "commit_endpoint": f"/api/admin/catalog/import/{upload.id}/commit",
+            "publish_policy": "manual_commit_required",
+            "frontend_contract": {
+                "render_as": "catalog_import_preview",
+                "editable_rows": True,
+                "publish_requires_admin_confirmation": True,
+            },
+        }
+    )
+    return base
+
+
 def _persist_rows(owner_id: int, tenant_id: int, rows: list[dict]) -> int:
     count = 0
     for row in rows:
@@ -390,8 +546,7 @@ def create_import_session(current_user):
         db.session.commit()
         return jsonify({"error": "Processing failed", "details": str(e)}), 500
 
-    resp = upload.to_dict()
-    resp['upload_id'] = resp['id']
+    resp = _catalog_import_preview_contract(upload)
     return jsonify(resp)
 
 @catalog_import_bp.route('/api/admin/catalog/import/<int:upload_id>', methods=['OPTIONS'])
@@ -407,9 +562,7 @@ def get_import_session(current_user, upload_id):
     if not upload:
         return jsonify({"error": "Not found"}), 404
 
-    resp = upload.to_dict()
-    resp['upload_id'] = resp['id']
-    return jsonify(resp)
+    return jsonify(_catalog_import_preview_contract(upload))
 
 @catalog_import_bp.route('/api/admin/catalog/import/<int:upload_id>', methods=['PUT'])
 @token_requerido
@@ -436,7 +589,7 @@ def update_import_preview(current_user, upload_id):
         upload.status = "ready_to_commit"
 
     db.session.commit()
-    return jsonify(upload.to_dict())
+    return jsonify(_catalog_import_preview_contract(upload))
 
 @catalog_import_bp.route('/api/admin/catalog/import/<int:upload_id>/commit', methods=['POST'])
 @token_requerido

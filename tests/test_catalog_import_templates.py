@@ -140,3 +140,42 @@ def test_import_preserves_image_columns_for_marketplace(client, monkeypatch):
         "https://cdn.example.com/campera.jpg",
         "https://cdn.example.com/detalle.jpg",
     ]
+
+
+def test_import_preview_contract_is_editable_and_manual_commit(app):
+    upload = catalog_import.CatalogUpload(
+        id=77,
+        tenant_id=1,
+        filename="catalogo.csv",
+        mime_type="text/csv",
+        status="ready_to_commit",
+        processor_slug="generic_v2",
+        engine_used="test",
+        preview_data={
+            "items": [
+                {
+                    "nombre": "Producto listo",
+                    "precio": "1200",
+                    "stock": "5",
+                    "descripcion": "Descripcion corta",
+                    "imagen_url": "https://cdn.example.com/p.jpg",
+                },
+                {"nombre": "Producto incompleto"},
+            ]
+        },
+        warnings=[],
+    )
+
+    with app.test_request_context("/api/admin/catalog/import/77", headers={"X-Request-Id": "import-77"}):
+        payload = catalog_import._catalog_import_preview_contract(upload)
+
+    assert payload["contract_version"] == "catalog.import_preview.v1"
+    assert payload["request_id"] == "import-77"
+    assert payload["commit_endpoint"] == "/api/admin/catalog/import/77/commit"
+    assert payload["publish_policy"] == "manual_commit_required"
+    assert payload["frontend_contract"]["editable_rows"] is True
+    assert payload["quality_summary"]["ready_to_publish"] == 1
+    assert payload["quality_summary"]["without_price"] == 1
+    assert payload["image_summary"]["with_images"] == 1
+    assert payload["rows_sample"][1]["warnings"]
+    assert any(action["id"] == "review_prices" for action in payload["suggested_actions"])

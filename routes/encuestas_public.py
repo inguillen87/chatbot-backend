@@ -753,6 +753,7 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
         return jsonify(payload)
 
     @bp.route("/<slug>", methods=["GET"])
+    @bp.route("/v1/<slug>", methods=["GET"])
     def obtener_encuesta(slug: str):
         preview_user = _resolve_preview_user()
         try:
@@ -807,18 +808,21 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
         return response, 201
 
     @bp.route("/<slug>/responder", methods=["POST", "OPTIONS"])
+    @bp.route("/v1/<slug>/responder", methods=["POST", "OPTIONS"])
     def responder(slug: str):
         if request.method == "OPTIONS":
             return "", 204
         return _handle_responder(slug)
 
     @bp.route("/<slug>/respuestas", methods=["POST", "OPTIONS"])
+    @bp.route("/v1/<slug>/respuestas", methods=["POST", "OPTIONS"])
     def responder_alias(slug: str):
         if request.method == "OPTIONS":
             return "", 204
         return _handle_responder(slug)
 
     @bp.route("/<slug>/live-results", methods=["GET", "OPTIONS"])
+    @bp.route("/v1/<slug>/live-results", methods=["GET", "OPTIONS"])
     def live_results(slug: str):
         if request.method == "OPTIONS":
             return "", 204
@@ -850,6 +854,7 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
             return _public_error_response(wrapped)
 
     @bp.route("/<slug>/comentarios", methods=["GET", "POST", "OPTIONS"])
+    @bp.route("/v1/<slug>/comentarios", methods=["GET", "POST", "OPTIONS"])
     def comentarios(slug: str):
         if request.method == "OPTIONS":
             return "", 204
@@ -917,6 +922,7 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
         return jsonify(items)
 
     @bp.route("/<slug>/comentarios/<int:comentario_id>/reportar", methods=["POST", "OPTIONS"])
+    @bp.route("/v1/<slug>/comentarios/<int:comentario_id>/reportar", methods=["POST", "OPTIONS"])
     def reportar_comment(slug: str, comentario_id: int):
         if request.method == "OPTIONS":
             return "", 204
@@ -930,6 +936,7 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
             return _public_error_response(err)
 
     @bp.route("/<slug>/qr")
+    @bp.route("/v1/<slug>/qr")
     def qr(slug: str):
         preview_user = _resolve_preview_user()
 

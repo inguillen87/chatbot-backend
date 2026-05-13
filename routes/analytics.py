@@ -55,11 +55,59 @@ ANALYTICS_CANONICAL_EVENT_NAMES = [
 ]
 
 
+def _analytics_request_id() -> str:
+    raw = request.headers.get("X-Request-Id") or request.headers.get("X-Correlation-Id")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    return f"req_{uuid.uuid4().hex}"
+
+
+def _analytics_cors_origin() -> str | None:
+    origin = (request.headers.get("Origin") or "").strip()
+    if not origin:
+        return None
+    allowed = current_app.config.get("CORS_ALLOWED_ORIGINS") or current_app.config.get("ALLOWED_ORIGINS") or []
+    if isinstance(allowed, str):
+        allowed = [item.strip() for item in allowed.split(",") if item.strip()]
+    normalized = origin.lower()
+    if (
+        origin in allowed
+        or normalized == "https://www.chatboc.ar"
+        or normalized.endswith(".chatboc.ar")
+        or normalized.startswith("http://localhost")
+        or normalized.startswith("http://127.0.0.1")
+    ):
+        return origin
+    return None
+
+
 @analytics_bp.before_request
-def _ensure_feature_enabled() -> None:
+def _ensure_feature_enabled():
+    if request.method == "OPTIONS":
+        response = jsonify({"ok": True, "request_id": _analytics_request_id()})
+        response.headers["X-Request-Id"] = _analytics_request_id()
+        return response
     config = get_config()
     if not config.feature_enabled:
         abort(404)
+    return None
+
+
+@analytics_bp.after_request
+def _analytics_add_cors(response):
+    origin = _analytics_cors_origin()
+    if origin:
+        response.headers.setdefault("Access-Control-Allow-Origin", origin)
+        response.headers.setdefault("Access-Control-Allow-Credentials", "true")
+        response.headers.setdefault("Vary", "Origin")
+        response.headers.setdefault("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        response.headers.setdefault(
+            "Access-Control-Allow-Headers",
+            "Authorization, Content-Type, X-Requested-With, X-Request-Id, X-Entity-Token, X-Tenant-Slug, X-Debug-Tenant",
+        )
+        response.headers.setdefault("Access-Control-Expose-Headers", "X-Request-Id")
+    response.headers.setdefault("X-Request-Id", _analytics_request_id())
+    return response
 
 
 
