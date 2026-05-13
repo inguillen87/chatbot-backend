@@ -324,6 +324,184 @@ def _tracking_contract_for_demo(sector: str, tenant_slug: str) -> dict[str, Any]
     }
 
 
+def _sales_story_for_demo(sector: str, tenant_name: str) -> dict[str, Any]:
+    normalized = normalize_demo_sector(sector)
+    if normalized == "educacion":
+        return {
+            "contract_version": "demo.sales_story.v1",
+            "problem": "Las familias escriben por muchos canales y el equipo administrativo pierde contexto, adjuntos y seguimiento.",
+            "promise": "Chatboc convierte consultas escolares en casos trazables con IA, derivacion humana y panel operativo.",
+            "value_path": [
+                "La familia consulta por widget o WhatsApp.",
+                "La IA pide solo alumno, curso, fecha o adjunto cuando corresponde.",
+                "El colegio recibe el caso con contexto, prioridad y siguiente paso.",
+            ],
+            "commercial_cta": "Ver como quedaria para la comunidad de " + tenant_name,
+        }
+    if normalized == "gobierno":
+        return {
+            "contract_version": "demo.sales_story.v1",
+            "problem": "Los reclamos llegan incompletos, sin ubicacion o por canales dispersos.",
+            "promise": "Chatboc ordena reclamos, tramites, comentarios y encuestas en un flujo ciudadano medible.",
+            "value_path": [
+                "El vecino envia texto, foto, audio o ubicacion.",
+                "La IA clasifica, pide faltantes y crea seguimiento.",
+                "El equipo ve bandeja, mapa operativo y estado publico por codigo.",
+            ],
+            "commercial_cta": "Probar atencion ciudadana con trazabilidad",
+        }
+    return {
+        "contract_version": "demo.sales_story.v1",
+        "problem": "Las consultas comerciales se pierden entre chat, WhatsApp, catalogo y pagos.",
+        "promise": "Chatboc une catalogo, carrito invitado, pedidos, leads e historial en una experiencia white-label.",
+        "value_path": [
+            "El visitante consulta productos o servicios.",
+            "La IA responde con contexto del rubro y propone pedido, checkout o asesor.",
+            "El panel conserva lead, carrito, pedido e historial omnicanal.",
+        ],
+        "commercial_cta": "Probar ventas asistidas para " + tenant_name,
+    }
+
+
+def _consulting_playbook_for_demo(sector: str) -> dict[str, Any]:
+    normalized = normalize_demo_sector(sector)
+    if normalized == "educacion":
+        return {
+            "contract_version": "demo.consulting_playbook.v1",
+            "diagnosis": ["canales dispersos", "equipo administrativo saturado", "adjuntos sin trazabilidad", "casos sensibles sin ruta clara"],
+            "detected_processes": ["inasistencias", "certificados", "admisiones", "pagos", "comunicados", "convivencia"],
+            "handoff_rules": ["convivencia sensible", "salud o datos personales", "familia solicita humano", "caso incompleto por mas de dos turnos"],
+            "required_data": ["adulto responsable", "alumno", "curso", "motivo", "fecha", "adjunto cuando aplique"],
+            "followup_rules": ["crear caso escolar", "notificar equipo administrativo", "mantener historial por tenant", "ofrecer seguimiento publico si aplica"],
+        }
+    if normalized == "gobierno":
+        return {
+            "contract_version": "demo.consulting_playbook.v1",
+            "diagnosis": ["reclamos incompletos", "ubicaciones ambiguas", "falta de estado publico", "baja lectura de demanda territorial"],
+            "detected_processes": ["reclamos", "tramites", "estado por codigo", "mapa operativo", "encuestas", "comentarios"],
+            "handoff_rules": ["urgencia", "riesgo ciudadano", "datos sensibles", "vecino pide operador", "categoria no configurada"],
+            "required_data": ["categoria", "descripcion", "ubicacion", "contacto opcional", "foto/audio si existe"],
+            "followup_rules": ["crear ticket", "generar codigo y PIN", "actualizar timeline", "mostrar mapa solo con coordenadas"],
+        }
+    return {
+        "contract_version": "demo.consulting_playbook.v1",
+        "diagnosis": ["catalogo desordenado", "carritos abandonados", "leads sin contexto", "pedidos por canales separados"],
+        "detected_processes": ["catalogo", "carrito invitado", "checkout", "pedido", "comprobante", "seguimiento", "recuperacion de historial"],
+        "handoff_rules": ["compra mayorista", "duda compleja", "pago o envio sensible", "cliente pide asesor"],
+        "required_data": ["producto o necesidad", "cantidad", "contacto", "direccion/envio si aplica", "comprobante si aplica"],
+        "followup_rules": ["crear pedido o lead", "conservar anon_id", "vincular usuario al registrarse", "mostrar tracking de pedido"],
+    }
+
+
+def _wow_flows_for_demo(sector: str) -> list[dict[str, Any]]:
+    normalized = normalize_demo_sector(sector)
+    if normalized == "educacion":
+        return [
+            {"id": "absence_certificate", "label": "Inasistencia con certificado", "trigger": "foto o archivo", "creates": "school_case", "primary": True},
+            {"id": "admissions_lead", "label": "Consulta de admisiones", "trigger": "interes comercial", "creates": "lead", "primary": True},
+            {"id": "sensitive_handoff", "label": "Caso sensible con derivacion", "trigger": "convivencia o datos sensibles", "creates": "handoff", "primary": True},
+            {"id": "community_survey", "label": "Encuesta por comunidad", "trigger": "tenant con encuesta activa", "creates": "survey_response", "primary": False},
+        ]
+    if normalized == "gobierno":
+        return [
+            {"id": "claim_with_location", "label": "Reclamo con foto, audio o ubicacion", "trigger": "media o mapa", "creates": "ticket", "primary": True},
+            {"id": "status_by_code", "label": "Estado por codigo y PIN", "trigger": "codigo de seguimiento", "creates": "tracking_view", "primary": True},
+            {"id": "operations_map", "label": "Mapa operativo", "trigger": "ticket con coordenadas", "creates": "map_event", "primary": True},
+            {"id": "live_vote", "label": "Votacion ciudadana", "trigger": "tenant con votacion activa", "creates": "survey_response", "primary": False},
+        ]
+    return [
+        {"id": "guest_cart", "label": "Catalogo y carrito invitado", "trigger": "consulta de producto", "creates": "cart_or_order", "primary": True},
+        {"id": "checkout_preview", "label": "Checkout y comprobante", "trigger": "carrito listo", "creates": "checkout_intent", "primary": True},
+        {"id": "commercial_lead", "label": "Lead comercial con historial", "trigger": "interes alto", "creates": "lead", "primary": True},
+        {"id": "order_tracking", "label": "Seguimiento de pedido", "trigger": "codigo de pedido", "creates": "tracking_view", "primary": True},
+    ]
+
+
+def _live_modules_for_demo(sector: str) -> list[dict[str, Any]]:
+    normalized = normalize_demo_sector(sector)
+    base = [
+        {"id": "inbox", "label": "Inbox omnicanal", "enabled": True, "endpoint": "/api/v2/inbox/omnichannel", "primary": True},
+        {"id": "human_handoff", "label": "Derivacion humana", "enabled": True, "endpoint": "/api/v2/inbox/omnichannel/actions", "primary": True},
+        {"id": "analytics", "label": "Analiticas", "enabled": True, "endpoint": "/api/v2/analytics/overview", "primary": True},
+        {"id": "surveys_votings", "label": "Encuestas y votaciones", "enabled": True, "endpoint": "/api/v2/surveys", "primary": False},
+    ]
+    if normalized in {"educacion", "gobierno"}:
+        base.extend(
+            [
+                {"id": "claims", "label": "Reclamos/casos", "enabled": True, "endpoint": "/api/v2/inbox/omnichannel", "primary": True},
+                {"id": "map", "label": "Mapa operativo", "enabled": normalized == "gobierno", "endpoint": "/api/v2/analytics/operations/heatmap", "primary": normalized == "gobierno"},
+                {"id": "comments", "label": "Comentarios", "enabled": True, "endpoint": "/api/v2/inbox/omnichannel", "primary": False},
+            ]
+        )
+    else:
+        base.extend(
+            [
+                {"id": "catalog", "label": "Catalogo", "enabled": True, "endpoint": "/api/public/tenants/{tenant_slug}/catalog", "primary": True},
+                {"id": "cart", "label": "Carrito invitado", "enabled": True, "endpoint": "/api/pwa/public/cart/items", "primary": True},
+                {"id": "orders", "label": "Pedidos", "enabled": True, "endpoint": "/api/public/tracking/experience?kind=order&code={code}", "primary": True},
+            ]
+        )
+    return base
+
+
+def _openai_runtime_for_demo(sector: str, allowed_actions: list[dict[str, Any]]) -> dict[str, Any]:
+    normalized = normalize_demo_sector(sector)
+    if normalized == "educacion":
+        prompt_profile = "Asistente escolar prudente: equipo administrativo, familias, inasistencias, certificados, pagos, comunicados y derivacion sensible."
+        safety = ["no diagnosticar salud", "no exponer datos de menores", "derivar convivencia sensible", "confirmar antes de crear caso"]
+        tools = ["crear_caso_escolar", "capturar_lead_admisiones", "derivar_humano", "registrar_adjunto"]
+    elif normalized == "gobierno":
+        prompt_profile = "Asistente ciudadano: reclamos, tramites, ubicacion, foto/audio, estado por codigo y mapa operativo."
+        safety = ["no prometer plazos no configurados", "pedir ubicacion si falta", "derivar urgencias", "confirmar antes de crear ticket"]
+        tools = ["crear_reclamo", "consulta_estado_ticket", "registrar_ubicacion", "derivar_humano"]
+    else:
+        prompt_profile = "Asistente comercial: catalogo, carrito, checkout, pedido, comprobante, lead e historial de compra."
+        safety = ["no inventar stock", "no inventar descuentos", "no procesar pagos fuera del checkout", "derivar compra compleja"]
+        tools = ["buscar_catalogo", "agregar_item_carrito", "crear_pedido", "capturar_lead", "derivar_humano"]
+    return {
+        "contract_version": "demo.openai_runtime.v1",
+        "provider": "openai_server_side",
+        "prompt_profile": prompt_profile,
+        "tools": tools,
+        "safety_rules": safety,
+        "actionable_intents": [action.get("intent") for action in allowed_actions if action.get("enabled")],
+        "frontend_api_keys_allowed": False,
+        "response_contract": "chat.response.v1",
+    }
+
+
+def _survey_voting_for_demo(sector: str, tenant_slug: str) -> dict[str, Any]:
+    normalized = normalize_demo_sector(sector)
+    return {
+        "contract_version": "demo.survey_voting.v1",
+        "enabled": normalized in {"educacion", "gobierno"},
+        "primary_action_enabled": False,
+        "availability_rule": "visible_when_tenant_has_active_survey",
+        "tenant_slug": tenant_slug,
+        "admin_endpoint": "/api/v2/surveys",
+        "draft_endpoint": "/api/v2/surveys/draft",
+        "public_response_endpoint_template": "/api/v2/public/surveys/{survey_slug}/respond",
+        "analytics_endpoint_template": "/api/v2/surveys/{survey_id}/analytics",
+    }
+
+
+def _commercial_demo_bundle(
+    *,
+    sector: str,
+    tenant_slug: str,
+    tenant_name: str,
+    allowed_actions: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "sales_story": _sales_story_for_demo(sector, tenant_name),
+        "consulting_playbook": _consulting_playbook_for_demo(sector),
+        "wow_flows": _wow_flows_for_demo(sector),
+        "live_modules": _live_modules_for_demo(sector),
+        "openai_runtime": _openai_runtime_for_demo(sector, allowed_actions),
+        "survey_voting": _survey_voting_for_demo(sector, tenant_slug),
+    }
+
+
 def _chat_bootstrap(
     *,
     tenant: TenantProfile,
@@ -454,6 +632,22 @@ def demo_catalog_v2():
                 "sector": "educacion",
             }
         ]
+    for rubro_item in rubros:
+        rubro_sector = rubro_item.get("sector") or sector_for_rubro(rubro_item.get("slug") or rubro_item.get("key")) or "empresas"
+        bundle = _commercial_demo_bundle(
+            sector=rubro_sector,
+            tenant_slug=str(rubro_item.get("tenant_slug") or rubro_item.get("slug") or ""),
+            tenant_name=str(rubro_item.get("label") or rubro_item.get("slug") or "Demo Chatboc"),
+            allowed_actions=[],
+        )
+        rubro_item.setdefault("sales_story", bundle["sales_story"])
+        rubro_item.setdefault("consulting_playbook", bundle["consulting_playbook"])
+        rubro_item.setdefault("wow_flows", bundle["wow_flows"])
+        rubro_item.setdefault("live_modules", bundle["live_modules"])
+        rubro_item.setdefault("openai_runtime", bundle["openai_runtime"])
+        rubro_item.setdefault("survey_voting", bundle["survey_voting"])
+        rubro_item.setdefault("admin_preview_endpoint", f"/api/v2/demo/admin-preview?sector={rubro_sector}&tenant_slug={rubro_item.get('tenant_slug') or rubro_item.get('slug')}")
+
     pillars = demo_pillars()
     pillar_categories = {pillar.get("key"): pillar.get("categories") or [] for pillar in pillars}
     resources_by_id: dict[str, dict[str, Any]] = {}
@@ -525,14 +719,14 @@ def _admin_preview_for_sector(sector: str, tenant_slug: str = "") -> dict[str, A
                 {"id": "surveys", "label": "Encuestas", "enabled": True},
             ],
             "cards": [
-                {"label": "Casos abiertos", "value": "18", "detail": "inasistencias y documentacion"},
-                {"label": "Familias activas", "value": "342", "detail": "contactos vinculados"},
-                {"label": "Tiempo respuesta", "value": "4 min", "detail": "promedio demo"},
+                {"label": "Casos creados en esta sesion", "value": "0", "detail": "se actualiza cuando el chat crea un caso"},
+                {"label": "Adjuntos recibidos", "value": "0", "detail": "certificados, comprobantes o autorizaciones"},
+                {"label": "Derivaciones humanas", "value": "0", "detail": "equipo administrativo, admisiones o convivencia"},
             ],
             "timeline": [
-                {"label": "Familia inicia consulta", "status": "done"},
-                {"label": "Secretaria recibe el caso", "status": "active"},
-                {"label": "Equipo directivo ve seguimiento", "status": "pending"},
+                {"label": "Familia inicia consulta", "status": "setup"},
+                {"label": "IA pide datos necesarios", "status": "waiting_for_session"},
+                {"label": "Equipo administrativo recibe caso trazable", "status": "waiting_for_session"},
             ],
             "catalog_title": "Colegio privado integral",
             "catalog_file": "colegio-demo.pdf",
@@ -547,14 +741,14 @@ def _admin_preview_for_sector(sector: str, tenant_slug: str = "") -> dict[str, A
                 {"id": "surveys", "label": "Encuestas", "enabled": True},
             ],
             "cards": [
-                {"label": "Reclamos abiertos", "value": "42", "detail": "por zona y prioridad"},
-                {"label": "SLA en riesgo", "value": "3", "detail": "requieren atencion"},
-                {"label": "Consultas resueltas", "value": "1.280", "detail": "este mes demo"},
+                {"label": "Reclamos creados en esta sesion", "value": "0", "detail": "se actualiza cuando el chat crea un ticket"},
+                {"label": "Ubicaciones capturadas", "value": "0", "detail": "mapa disponible cuando hay coordenadas"},
+                {"label": "Comentarios ciudadanos", "value": "0", "detail": "mensajes y actualizaciones del caso"},
             ],
             "timeline": [
-                {"label": "Vecino envia ubicacion", "status": "done"},
-                {"label": "Mesa de entrada clasifica", "status": "active"},
-                {"label": "Cuadrilla recibe tarea", "status": "pending"},
+                {"label": "Vecino envia ubicacion", "status": "setup"},
+                {"label": "IA clasifica y pide faltantes", "status": "waiting_for_session"},
+                {"label": "Equipo ve ticket y mapa", "status": "waiting_for_session"},
             ],
             "catalog_title": "Guia demo gobiernos",
             "catalog_file": "municipio-demo.pdf",
@@ -569,29 +763,55 @@ def _admin_preview_for_sector(sector: str, tenant_slug: str = "") -> dict[str, A
                 {"id": "customers", "label": "Clientes", "enabled": True},
             ],
             "cards": [
-                {"label": "Pedidos abiertos", "value": "24", "detail": "web, widget y WhatsApp"},
-                {"label": "Productos listos", "value": "86%", "detail": "con imagen y precio"},
-                {"label": "Leads nuevos", "value": "31", "detail": "ultimos 7 dias"},
+                {"label": "Pedidos creados en esta sesion", "value": "0", "detail": "se actualiza cuando el chat crea pedido"},
+                {"label": "Items en carrito invitado", "value": "0", "detail": "se sincroniza por anon_id o widget token"},
+                {"label": "Leads comerciales", "value": "0", "detail": "asesor recibe contexto de compra"},
             ],
             "timeline": [
-                {"label": "Cliente consulta catalogo", "status": "done"},
-                {"label": "Agente arma pedido", "status": "active"},
-                {"label": "Checkout o asesor comercial", "status": "pending"},
+                {"label": "Cliente consulta catalogo", "status": "setup"},
+                {"label": "IA propone carrito o asesor", "status": "waiting_for_session"},
+                {"label": "Panel conserva pedido y seguimiento", "status": "waiting_for_session"},
             ],
             "catalog_title": "Catalogo demo empresas",
             "catalog_file": "empresa-demo.pdf",
         },
     }
     preset = presets[normalized]
+    resolved_tenant_slug = tenant_slug or {"educacion": "colegio-demo", "gobierno": "municipio", "empresas": "bodega"}[normalized]
+    allowed_actions: list[dict[str, Any]] = []
+    commercial = _commercial_demo_bundle(
+        sector=normalized,
+        tenant_slug=resolved_tenant_slug,
+        tenant_name=preset["subtitle"],
+        allowed_actions=allowed_actions,
+    )
     return {
         "contract_version": "demo.admin_preview.v1",
         "sector": normalized,
-        "tenant_slug": tenant_slug or {"educacion": "colegio-demo", "gobierno": "municipio", "empresas": "bodega"}[normalized],
+        "tenant_slug": resolved_tenant_slug,
         "title": preset["title"],
         "subtitle": preset["subtitle"],
         "modules": preset["modules"],
         "cards": preset["cards"],
         "timeline": preset["timeline"],
+        "session_activity": {
+            "contract_version": "demo.session_activity.v1",
+            "source": "session_generated_events",
+            "has_session_data": False,
+            "empty_state": "Inicia la demo y envia un mensaje para crear actividad real en este panel.",
+            "items": [],
+        },
+        "operations": {
+            "contract_version": "demo.operations_preview.v1",
+            "data_policy": "session_events_only",
+            "setup_message": "Sin actividad real todavia. El panel se llena con leads, tickets, pedidos o encuestas creadas por la demo.",
+        },
+        "sales_story": commercial["sales_story"],
+        "consulting_playbook": commercial["consulting_playbook"],
+        "wow_flows": commercial["wow_flows"],
+        "live_modules": commercial["live_modules"],
+        "openai_runtime": commercial["openai_runtime"],
+        "survey_voting": commercial["survey_voting"],
         "catalog": {
             "enabled": True,
             "title": preset["catalog_title"],
@@ -724,6 +944,12 @@ def demo_session_v2():
     allowed_actions = _allowed_actions_from_experience(experience)
     tracking = _tracking_contract_for_demo(sector, tenant.slug)
     admin_preview_endpoint = f"/api/v2/demo/admin-preview?sector={sector}&tenant_slug={tenant.slug}"
+    commercial = _commercial_demo_bundle(
+        sector=sector,
+        tenant_slug=tenant.slug,
+        tenant_name=tenant.nombre or "Demo Chatboc",
+        allowed_actions=allowed_actions,
+    )
 
     demo_session_id = create_demo_session_token(tenant_slug=tenant.slug, sector=sector, rubro=rubro or tenant.slug)
     chat_bootstrap = _chat_bootstrap(
@@ -757,6 +983,12 @@ def demo_session_v2():
         "sample_conversations": experience.get("sample_conversations") or [],
         "trust_signals": experience.get("trust_signals") or [],
         "lead_capture": experience.get("lead_capture") or {},
+        "sales_story": commercial["sales_story"],
+        "consulting_playbook": commercial["consulting_playbook"],
+        "wow_flows": commercial["wow_flows"],
+        "live_modules": commercial["live_modules"],
+        "openai_runtime": commercial["openai_runtime"],
+        "survey_voting": commercial["survey_voting"],
         "allowed_actions": allowed_actions,
         "tracking": tracking,
         "admin_preview_endpoint": admin_preview_endpoint,
@@ -794,6 +1026,12 @@ def demo_session_v2():
             "experience_blueprint": experience,
             "first_visit": workspace["first_visit"],
             "sample_conversations": workspace["sample_conversations"],
+            "sales_story": commercial["sales_story"],
+            "consulting_playbook": commercial["consulting_playbook"],
+            "wow_flows": commercial["wow_flows"],
+            "live_modules": commercial["live_modules"],
+            "openai_runtime": commercial["openai_runtime"],
+            "survey_voting": commercial["survey_voting"],
             "allowed_actions": allowed_actions,
             "tracking": tracking,
             "admin_preview_endpoint": admin_preview_endpoint,
@@ -812,6 +1050,12 @@ def demo_session_v2():
                 "open_widget": bool(onboarding.get("open_widget", True)),
                 "starter_prompts": onboarding.get("starter_prompts") or [],
                 "sample_conversations": workspace["sample_conversations"],
+                "sales_story": commercial["sales_story"],
+                "consulting_playbook": commercial["consulting_playbook"],
+                "wow_flows": commercial["wow_flows"],
+                "live_modules": commercial["live_modules"],
+                "openai_runtime": commercial["openai_runtime"],
+                "survey_voting": commercial["survey_voting"],
                 "media_capabilities": media_capabilities,
                 "conversion_ctas": conversion_ctas,
                 "chat_bootstrap": chat_bootstrap,
