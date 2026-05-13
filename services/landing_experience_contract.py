@@ -141,10 +141,14 @@ def _hero_for_kind(kind: str) -> dict[str, Any]:
         "pyme": "Acompana consultas, catalogos, pedidos, pagos y derivaciones humanas desde web y WhatsApp.",
         "educacion": "Ayuda a familias con asistencia, comunicados, secretaria, adjuntos y casos sensibles con derivacion cuidada.",
     }
-    return {
+    hero = {
         "eyebrow": "SaaS omnicanal con agentes IA",
+        "headline": "Converti conversaciones en casos, pedidos y decisiones operativas",
         "h1": titles.get(kind, titles["platform"]),
+        "subheadline": "Texto, audio, imagenes, archivos y ubicaciones entran por web o WhatsApp; Chatboc entiende, acciona y deja seguimiento.",
         "subtitle": subtitles.get(kind, subtitles["platform"]),
+        "conversation_title": "Demo real de atencion",
+        "conversation_subtitle": "Elegi un caso y mira que accion deja en el panel.",
         "primary_cta": {"label": "Probar demo", "href": "/demo", "intent": "start_demo"},
         "secondary_cta": {"label": "Ver casos de uso", "href": "/casos", "intent": "view_use_cases"},
         "tertiary_cta": {"label": "Hablar con ventas", "href": "/contacto", "intent": "sales_contact"},
@@ -163,6 +167,134 @@ def _hero_for_kind(kind: str) -> dict[str, Any]:
                 {"role": "user", "text": "Tambien te mando una foto."},
                 {"role": "assistant", "text": "Perfecto. La adjunto al ticket y aviso al equipo correspondiente."},
             ],
+        },
+    }
+    hero["conversation_demo"] = _hero_conversation_demo(kind)
+    hero["demo_conversation"] = hero["conversation_demo"]
+    hero["workflow_steps"] = ["Mensaje entendido", "Datos accionables", "Caso visible en panel"]
+    return hero
+
+
+def _hero_conversation_demo(kind: str) -> dict[str, Any]:
+    flows = [
+        {
+            "id": "gobierno-reclamo-ubicacion",
+            "label": "Gobiernos",
+            "sector": "gobierno",
+            "user_message": "Te mando foto, audio y ubicacion de un semaforo caido.",
+            "agent_message": "Recibi la evidencia, clasifique el reclamo, marque la zona y lo deje listo para seguimiento.",
+            "inputs": [
+                {"kind": "image", "label": "Foto"},
+                {"kind": "audio", "label": "Audio"},
+                {"kind": "location", "label": "Ubicacion"},
+            ],
+            "action": {
+                "label": "Reclamo creado",
+                "detail": "Ticket con categoria, prioridad, zona, evidencia y equipo sugerido.",
+                "status": "Listo para operar",
+                "creates": "ticket",
+            },
+            "result": {
+                "kind": "ticket",
+                "traceable": True,
+                "panel": "inbox",
+                "tracking": "codigo_y_pin",
+            },
+            "highlights": ["mapa operativo", "asignacion sugerida", "seguimiento ciudadano"],
+            "cta": {"label": "Probar reclamo real", "href": "/demo?sector=gobierno"},
+        },
+        {
+            "id": "pyme-pedido-carrito",
+            "label": "PyMEs",
+            "sector": "empresas",
+            "user_message": "Te mando una foto del producto y quiero comprar dos unidades.",
+            "agent_message": "Detecte el producto, prepare el carrito invitado y deje el pedido listo para continuar.",
+            "inputs": [
+                {"kind": "image", "label": "Foto"},
+                {"kind": "text", "label": "Cantidad"},
+            ],
+            "action": {
+                "label": "Pedido iniciado",
+                "detail": "Carrito invitado con producto, cantidad, contacto pendiente y checkout cuando el tenant lo habilita.",
+                "status": "Listo para vender",
+                "creates": "order_or_lead",
+            },
+            "result": {
+                "kind": "order",
+                "traceable": True,
+                "panel": "marketplace",
+                "tracking": "pedido_y_carrito",
+            },
+            "highlights": ["catalogo real", "carrito invitado", "seguimiento comercial"],
+            "cta": {"label": "Probar venta real", "href": "/demo?sector=empresas"},
+        },
+        {
+            "id": "colegio-certificado-caso",
+            "label": "Colegios",
+            "sector": "educacion",
+            "user_message": "Necesito un certificado de alumno regular y adjunto el DNI.",
+            "agent_message": "Identifique el tramite, guarde el adjunto y genere el caso para el equipo administrativo.",
+            "inputs": [
+                {"kind": "file", "label": "Adjunto"},
+                {"kind": "text", "label": "Solicitud"},
+            ],
+            "action": {
+                "label": "Caso escolar creado",
+                "detail": "Caso con familia, tramite, documentacion y derivacion al equipo correspondiente.",
+                "status": "Listo para gestionar",
+                "creates": "school_case",
+            },
+            "result": {
+                "kind": "case",
+                "traceable": True,
+                "panel": "education",
+                "tracking": "caso_escolar",
+            },
+            "highlights": ["adjuntos procesados", "derivacion cuidada", "historial escolar"],
+            "cta": {"label": "Probar caso escolar", "href": "/demo?sector=educacion"},
+        },
+        {
+            "id": "encuestas-votacion-en-vivo",
+            "label": "Encuestas",
+            "sector": "participacion",
+            "user_message": "Quiero votar una prioridad del barrio y dejar un comentario.",
+            "agent_message": "Registre la participacion, actualice resultados en vivo y deje el comentario disponible para analisis.",
+            "inputs": [
+                {"kind": "choice", "label": "Voto"},
+                {"kind": "text", "label": "Comentario"},
+                {"kind": "location", "label": "Zona"},
+            ],
+            "action": {
+                "label": "Participacion registrada",
+                "detail": "Respuesta con resultados en vivo, comentario moderable y segmento territorial cuando hay ubicacion.",
+                "status": "Listo para analizar",
+                "creates": "survey_response",
+            },
+            "result": {
+                "kind": "survey_response",
+                "traceable": True,
+                "panel": "surveys",
+                "tracking": "resultados_en_vivo",
+            },
+            "highlights": ["resultados en vivo", "comentarios", "segmentos"],
+            "cta": {"label": "Probar votacion", "href": "/demo?sector=gobierno&flow=encuestas"},
+        },
+    ]
+    preferred_by_kind = {
+        "municipio": "gobierno-reclamo-ubicacion",
+        "pyme": "pyme-pedido-carrito",
+        "educacion": "colegio-certificado-caso",
+    }
+    preferred = preferred_by_kind.get(kind)
+    if preferred:
+        flows.sort(key=lambda item: 0 if item["id"] == preferred else 1)
+    return {
+        "contract_version": "landing.hero_conversation_demo.v1",
+        "flows": flows,
+        "rules": {
+            "traceable_actions_only": True,
+            "hide_result_without_action": True,
+            "hide_steps_without_workflow_steps": True,
         },
     }
 

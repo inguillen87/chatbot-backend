@@ -25,6 +25,18 @@ class LandingExperienceContractTestCase(unittest.TestCase):
         self.assertEqual(payload["contract_version"], LANDING_EXPERIENCE_CONTRACT_VERSION)
         self.assertEqual(payload["experience_kind"], "platform")
         self.assertEqual(payload["hero"]["h1"], "Chatboc")
+        self.assertEqual(payload["hero"]["conversation_demo"]["contract_version"], "landing.hero_conversation_demo.v1")
+        self.assertTrue(payload["hero"]["workflow_steps"])
+        flows = payload["hero"]["conversation_demo"]["flows"]
+        self.assertGreaterEqual(len(flows), 4)
+        for flow in flows:
+            self.assertTrue(flow.get("action"))
+            self.assertTrue(flow.get("result", {}).get("traceable"))
+            self.assertTrue(flow.get("cta", {}).get("href"))
+        self.assertIn("gobierno-reclamo-ubicacion", {flow["id"] for flow in flows})
+        self.assertIn("pyme-pedido-carrito", {flow["id"] for flow in flows})
+        self.assertIn("colegio-certificado-caso", {flow["id"] for flow in flows})
+        self.assertIn("encuestas-votacion-en-vivo", {flow["id"] for flow in flows})
         self.assertTrue(payload["hero"]["media"]["assets"])
         self.assertIn("primary", payload["design_tokens"]["color"])
         self.assertIn("accent", payload["design_tokens"]["color"])
@@ -46,6 +58,7 @@ class LandingExperienceContractTestCase(unittest.TestCase):
         self.assertEqual(payload["brand"]["logo"]["source"], "tenant")
         self.assertEqual(payload["selected_page"], "colegios")
         self.assertEqual(payload["design_tokens"]["color"]["primary"], "#0ea5e9")
+        self.assertEqual(payload["hero"]["conversation_demo"]["flows"][0]["id"], "colegio-certificado-caso")
 
 
 if __name__ == "__main__":
