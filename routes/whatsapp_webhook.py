@@ -355,6 +355,7 @@ def _handle_education_whatsapp_turn(
                 "message_type": "interactive_buttons",
                 "options_list": [{"texto": "Menu colegio", "action_id": "menu_colegio"}],
                 "fuente": "education_whatsapp_pending_expired",
+                "_context_keys_to_delete": ["education_pending_case"],
             }
 
         ticket = _create_education_whatsapp_ticket(
@@ -372,12 +373,15 @@ def _handle_education_whatsapp_turn(
         db.session.add(session_context)
         db.session.commit()
         if ticket:
-            return build_education_case_ack_payload(ticket, intent=pending_case.get("intent"))
+            payload = build_education_case_ack_payload(ticket, intent=pending_case.get("intent"))
+            payload["_context_keys_to_delete"] = ["education_pending_case"]
+            return payload
         return {
             "message_body": "Recibi el detalle, pero no pude crear el ticket escolar en este momento. Te derivo con secretaria.",
             "message_type": "interactive_buttons",
             "options_list": [{"texto": "Hablar con secretaria", "action_id": "derivar_humano"}],
             "fuente": "education_whatsapp_case_error",
+            "_context_keys_to_delete": ["education_pending_case"],
         }
 
     return None
@@ -2698,6 +2702,9 @@ def whatsapp_webhook():
             merged_context = {**db_context, **updated_context}
         else:
             merged_context = db_context
+
+        for key_to_delete in bot_response_dict.get("_context_keys_to_delete") or []:
+            merged_context.pop(key_to_delete, None)
 
         _log("info", "[CONTEXT_WHATSAPP] Contexto fusionado para guardar: %s", merged_context)
 

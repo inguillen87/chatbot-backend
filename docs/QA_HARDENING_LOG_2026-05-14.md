@@ -1,0 +1,159 @@
+# QA Hardening Log - 2026-05-14
+
+## Objetivo
+
+Registrar cada prueba realista que se haga sobre Chatboc y convertirla en una mejora concreta o en una tarea pendiente clara. La regla es simple:
+
+- Si durante QA aparece algo roto y es acotado, se corrige en el momento.
+- Si requiere una tanda mayor, se documenta aca con evidencia, riesgo y criterio de cierre.
+- No se mezclan responsabilidades: backend arregla contratos, persistencia, sesiones, acciones, datos y errores; frontend arregla UX, render, estados visuales y performance.
+
+## Estado Actual
+
+### Corregido
+
+- `POST /ask/municipio` ya no debe persistir `demo_session_id` JWT como `chat_session_context.chat_session_id`.
+- Cuando no llega `X-Chat-Session-Id`, backend debe derivar un `sid_...` estable desde `demo_session_id`.
+- Demo chat con `demo_session_id` invalido debe responder JSON accionable, no 500.
+- Webhook WhatsApp municipio crea reclamos por texto, foto, ubicacion y audio transcripto.
+- Foto enviada antes de confirmar reclamo queda asociada al `MunicipioTicket` como adjunto.
+- Reclamo con ubicacion persiste `latitud` y `longitud`.
+- Pedido PYME Cuatro Fincas persiste `detalles[]` con lineas reales, total, cliente y telefono.
+- Pedido PYME prioriza nombre real de WhatsApp/contacto sobre placeholders como `Vecino/a`.
+- Tracking de pedidos usa `/tracking/order/{nro_pedido}` sin duplicar rutas.
+- Twilio Sandbox `+14155238886` queda cubierto por QA reproducible con un tenant colegio `qa-colegio-sandbox`.
+- WhatsApp colegio por sandbox crea caso escolar real desde menu + accion + audio/ubicacion.
+- Al crear el caso escolar, el backend limpia `education_pending_case` para que el siguiente mensaje no quede pegado al caso anterior.
+
+### Evidencia Ejecutada
+
+- Tests focalizados:
+  - `tests/test_api_v2_foundation.py::ApiV2FoundationTest::test_demo_ask_municipio_does_not_persist_jwt_as_chat_session_id`
+  - `tests/test_api_v2_foundation.py::ApiV2FoundationTest::test_ask_municipio_demo_session_creates_short_chat_context`
+  - `tests/test_api_v2_foundation.py::ApiV2FoundationTest::test_ask_municipio_demo_session_without_header_reuses_stable_chat_context`
+  - `tests/test_api_v2_foundation.py::ApiV2FoundationTest::test_ask_invalid_demo_session_returns_json_error`
+  - `tests/test_pyme_order_extraction.py`
+  - `tests/test_reclamo_flow_contact_merge.py`
+  - `tests/test_education_routes.py`
+- Resultado actualizado: `41 passed`, `3 subtests passed`.
+- QA WhatsApp simulada con webhook Twilio firmado:
+  - `18/18` requests respondieron `200`.
+  - Delta creado: `3` tickets municipales, `1` pedido PYME, `1` ticket/caso escolar, `3` adjuntos.
+  - Ticket texto+foto verificado con `foto_url_directa` y `archivos=1`.
+  - Ticket ubicacion verificado con coordenadas.
+  - Pedido Cuatro Fincas verificado con cliente `QA Bodega`, total y lineas.
+  - Colegio sandbox verificado con `SchoolCaseAlias`: `ticket_type=pyme`, `case_type=inasistencia`, `channel=whatsapp`.
+  - Contexto colegio verificado sin `education_pending_case` despues de crear el caso.
+
+## Pendientes Detectados Para Siguiente Tanda
+
+### P0 - Continuidad real frontend/backend en demo
+
+Riesgo:
+Si frontend no envia `X-Chat-Session-Id` o `chat_session_id` del contrato `/api/v2/demo/session`, backend ya estabiliza con `sid_...`, pero frontend deberia usar la sesion explicita para evitar ambiguedades y mejorar trazabilidad.
+
+Criterio de cierre:
+
+- Frontend envia `chat_session_id` en header `X-Chat-Session-Id` o payload para todos los turnos demo.
+- Backend mantiene fallback `sid_...` desde `demo_session_id`.
+- Logs de Render muestran una sola sesion por demo.
+
+### P0 - Admin preview debe reflejar tickets/pedidos reales recientes
+
+Riesgo:
+La demo crea tickets/pedidos reales, pero si `GET /api/v2/demo/admin-preview` no consulta los ultimos casos creados, frontend puede mostrar un panel que no refleja la conversacion.
+
+Criterio de cierre:
+
+- Crear reclamo desde demo.
+- Consultar admin preview.
+- Ver el mismo ticket o un resumen trazable del ticket en `cards`, `timeline`, `modules` o `map.points`.
+- Si no hay datos reales, no publicar metrica ni mapa.
+
+### P1 - Heatmap y analytics operativas
+
+Riesgo:
+Hay servicios de analytics/heatmap, pero hay que validar endpoint por endpoint para evitar publicar puntos, metricas o series inventadas.
+
+Criterio de cierre:
+
+- Heatmap devuelve puntos solo desde tickets con coordenadas reales.
+- Si no hay puntos, devuelve lista vacia y `enabled=false` o estado equivalente.
+- Dashboard no muestra metricas sin fuente.
+- Tests cubren caso con puntos y caso sin puntos.
+
+### P1 - Encuestas/votaciones
+
+Riesgo:
+Existen endpoints/modulos, pero falta QA completa de crear, listar, responder, resultados y errores JSON.
+
+Criterio de cierre:
+
+- Responder encuesta publica crea respuesta real.
+- Resultados agregan solo datos reales.
+- Errores devuelven JSON con `request_id`.
+- No se publican votos fake en demo/landing.
+
+### P1 - Empleados, roles y asignacion
+
+Riesgo:
+La logica existe dispersa. Falta contrato SaaS duro para crear empleados, asignar tickets y filtrar bandejas por permisos.
+
+Criterio de cierre:
+
+- Crear empleado por tenant.
+- Asignar ticket/reclamo a empleado.
+- Listar bandeja por empleado.
+- Validar permisos por rol.
+- Tests cubren tenant isolation.
+
+### P1 - Subida de catalogos PYME
+
+Riesgo:
+La venta depende de que subir catalogo sea profesional y confiable. Falta QA de upload real, parsing, indexacion, preview y busqueda/pedido.
+
+Criterio de cierre:
+
+- Subir catalogo PDF/CSV/XLSX.
+- Backend parsea productos con precio, moneda, stock/categoria si existen.
+- Catalogo queda consultable.
+- Pedido desde WhatsApp usa productos reales del catalogo.
+- Errores de parsing devuelven JSON accionable.
+
+### P2 - Config local de media/cloud
+
+Riesgo:
+En local aparece `Cloudinary api_secret` faltante y Google credentials ausentes. El flujo cae a fallback local, pero la QA puede confundirse con errores de infraestructura.
+
+Criterio de cierre:
+
+- Documentar envs minimas para QA local.
+- Silenciar degradaciones esperadas como warning controlado.
+- Mantener error fuerte solo cuando el flujo realmente no pueda continuar.
+
+## Regla De Trabajo Para Proximas Pruebas
+
+Cada recorrido nuevo debe terminar con una de estas salidas:
+
+- Fix aplicado y verificado.
+- Test agregado.
+- Entrada nueva en este log con prioridad, evidencia y criterio de cierre.
+- Handoff para frontend si el problema es visual o de interaccion.
+
+## Comandos Base De Verificacion
+
+```powershell
+$env:FLASK_SKIP_GLOBAL_APP='1'
+$env:PYTHONIOENCODING='utf-8'
+.\test_venv\Scripts\python.exe -m pytest tests\test_api_v2_foundation.py tests\test_pyme_order_extraction.py tests\test_reclamo_flow_contact_merge.py -q
+```
+
+```powershell
+$env:FLASK_SKIP_GLOBAL_APP='1'
+$env:ENABLE_RUNTIME_SCHEMA_SYNC='0'
+$env:ENABLE_RUNTIME_TENANT_INIT='0'
+$env:STARTUP_RUNTIME_BOOTSTRAP='0'
+$env:WHATSAPP_AUDIO_ENABLED='0'
+$env:PYTHONIOENCODING='utf-8'
+.\test_venv\Scripts\python.exe scripts\qa_whatsapp_flows.py
+```
