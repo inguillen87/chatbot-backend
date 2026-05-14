@@ -129,45 +129,8 @@ def _motion_tokens() -> dict[str, Any]:
 
 
 def _hero_for_kind(kind: str) -> dict[str, Any]:
-    titles = {
-        "platform": "Chatboc",
-        "municipio": "Atencion ciudadana con IA",
-        "pyme": "Ventas y soporte con IA",
-        "educacion": "Asistente escolar omnicanal",
-    }
-    subtitles = {
-        "platform": "Un agente IA que atiende, vende, crea tickets, entiende audios, imagenes y ubicaciones, y deja datos listos para operar.",
-        "municipio": "Recibi reclamos, tramites, consultas y ubicaciones con seguimiento, mapas y trazabilidad.",
-        "pyme": "Acompana consultas, catalogos, pedidos, pagos y derivaciones humanas desde web y WhatsApp.",
-        "educacion": "Ayuda a familias con asistencia, comunicados, secretaria, adjuntos y casos sensibles con derivacion cuidada.",
-    }
     hero = {
-        "eyebrow": "SaaS omnicanal con agentes IA",
-        "headline": "Converti conversaciones en operaciones reales",
-        "h1": titles.get(kind, titles["platform"]),
-        "subheadline": "Web y WhatsApp reciben texto, audio, imagenes, archivos y ubicaciones. Chatboc pide los datos justos y deja casos, pedidos o leads listos para operar.",
-        "subtitle": subtitles.get(kind, subtitles["platform"]),
-        "conversation_title": "WhatsApp operativo",
-        "conversation_subtitle": "Un caso entra, el agente pide datos y deja una accion trazable.",
-        "primary_cta": {"label": "Probar una conversacion real", "href": "/demo", "intent": "start_demo"},
-        "secondary_cta": {"label": "Hablar con ventas", "href": "/contacto", "intent": "sales_contact"},
-        "tertiary_cta": {"label": "Hablar con ventas", "href": "/contacto", "intent": "sales_contact"},
-        "trust_line": "Widget, WhatsApp, tickets, encuestas, mapas y analiticas trabajando como una sola operacion.",
-        "media": {
-            "type": "product_ui_composite",
-            "rule": "Use real product screenshots, dashboard previews or generated bitmap product mockups; avoid abstract gradient-only hero.",
-            "assets": [
-                {"id": "municipio_dashboard", "url": "/static/demo/municipio/dashboard-preview.svg", "alt": "Dashboard municipal con reclamos y mapas"},
-                {"id": "pyme_dashboard", "url": "/static/demo/bodega/dashboard-preview.svg", "alt": "Dashboard comercial con pedidos y catalogo"},
-                {"id": "surveys_public", "url": "/static/encuestas/participacion_ciudadana.png", "alt": "Participacion ciudadana y encuestas"},
-            ],
-            "chat_preview": [
-                {"role": "user", "text": "Quiero hacer un reclamo y mandar ubicacion."},
-                {"role": "assistant", "text": "Te ayudo. Recibi la ubicacion, clasifico el caso y lo dejo con seguimiento."},
-                {"role": "user", "text": "Tambien te mando una foto."},
-                {"role": "assistant", "text": "Perfecto. La adjunto al ticket y aviso al equipo correspondiente."},
-            ],
-        },
+        "contract_scope": "operational_demo_data",
     }
     hero["conversation_demo"] = _hero_conversation_demo(kind)
     hero["demo_conversation"] = hero["conversation_demo"]
