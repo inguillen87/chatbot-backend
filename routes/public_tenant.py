@@ -11,6 +11,7 @@ from models import (
     MunicipioTicket,
     PymePedido,
     PymeTicket,
+    TenantFollower,
     TenantProfile,
     TenantConfig,
     TenantTicket,
@@ -23,6 +24,7 @@ from routes.catalogo import _formatear_producto
 from routes.carrito import _product_query_for_tenant
 from middleware.tenant_context import require_tenant
 from services.catalog_seed import ensure_seed_catalog
+from services.user_merge import merge_anon_into_user
 
 public_tenant_bp = Blueprint('public_tenant_bp', __name__)
 
@@ -268,14 +270,21 @@ def _tenant_public_summary(tenant: TenantProfile) -> dict:
 
 
 def _session_context_payload() -> dict:
+    demo_session_id = (
+        request.headers.get("X-Demo-Session-Id")
+        or request.args.get("demo_session_id")
+        or ""
+    )
     chat_session_id = (
         request.headers.get("X-Chat-Session-Id")
-        or request.headers.get("X-Demo-Session-Id")
         or request.args.get("chat_session_id")
-        or request.args.get("demo_session_id")
         or request.args.get("session")
+        or demo_session_id
         or f"chat_{uuid.uuid4().hex[:16]}"
     )
+    chat_session_id = str(chat_session_id)
+    if len(chat_session_id) > 36 or (chat_session_id.startswith("eyJ") and "." in chat_session_id):
+        chat_session_id = f"sid_{uuid.uuid5(uuid.NAMESPACE_URL, chat_session_id).hex[:28]}"
     anon_id = (
         request.headers.get("X-Anon-Id")
         or request.headers.get("Anon-Id")
@@ -285,7 +294,8 @@ def _session_context_payload() -> dict:
         or f"anon_{uuid.uuid4().hex[:16]}"
     )
     return {
-        "chat_session_id": str(chat_session_id),
+        "chat_session_id": chat_session_id,
+        "demo_session_id": str(demo_session_id) if demo_session_id else None,
         "anon_id": str(anon_id),
         "widget_session_token": f"wst_{uuid.uuid5(uuid.NAMESPACE_URL, f'{chat_session_id}:{anon_id}').hex[:24]}",
         "is_authenticated": bool(getattr(g, "user", None)),
@@ -442,6 +452,29 @@ def _widget_history_items(tenant: TenantProfile, session_payload: dict, limit: i
 
     items.sort(key=lambda item: item.get("created_at") or "", reverse=True)
     return items[:limit]
+
+
+def _tenant_resolution_error_payload(contract_version: str) -> tuple[dict, int]:
+    reserved_slug = _reserved_public_slug_from_request()
+    if reserved_slug:
+        return _reserved_slug_payload(reserved_slug), 404
+    return (
+        {
+            "contract_version": contract_version,
+            "ok": False,
+            "reason_code": "tenant_resolution_failed",
+            "message": "No se pudo resolver el tenant del widget.",
+        },
+        404,
+    )
+
+
+def _ensure_tenant_follower(user: User, tenant: TenantProfile) -> bool:
+    existing = TenantFollower.query.filter_by(user_id=user.id, tenant_id=tenant.id).first()
+    if existing:
+        return False
+    db.session.add(TenantFollower(user_id=user.id, tenant_id=tenant.id, notifications_enabled=True))
+    return True
 
 
 @public_tenant_bp.route('/api/public/tenants/<slug>/menu', methods=['GET', 'OPTIONS'])
@@ -639,7 +672,17 @@ def public_widget_commerce_session():
         )
 
     session_payload = _session_context_payload()
-    catalog_enabled = bool((tenant.tipo or "").lower() == "pyme" or tenant.pyme_id)
+    owner = _resolve_catalog_owner(tenant)
+    has_catalog_items = bool(
+        owner
+        and CatalogoItem.query.options(*CatalogoItem.legacy_safe_options())
+        .filter_by(tenant_id=tenant.id, user_id=owner.id)
+        .first()
+    )
+    catalog_enabled = bool(
+        owner
+        and ((tenant.tipo or "").lower() == "pyme" or tenant.pyme_id or has_catalog_items)
+    )
     cart_enabled = catalog_enabled
     checkout_base = f"/api/v2/tenants/{tenant.slug}/payments"
 
@@ -830,24 +873,105 @@ def public_widget_user_register():
         return _public_json({"ok": True, "contract_version": "public.widget_user_register.v1"})
 
     tenant = _resolve_public_widget_tenant()
+    if not tenant:
+        payload, status = _tenant_resolution_error_payload("public.widget_user_register.v1")
+        return _public_json(payload, status)
+
     payload = request.get_json(silent=True) or {}
     session_payload = _session_context_payload()
+    name = (payload.get("name") or payload.get("nombre") or "").strip()
+    email = (payload.get("email") or "").strip().lower()
+    phone = (payload.get("phone") or payload.get("telefono") or "").strip()
+
+    field_errors = {}
+    if not name:
+        field_errors["name"] = "required"
+    if not email and not phone:
+        field_errors["contact"] = "email_or_phone_required"
+    if field_errors:
+        return _public_json(
+            {
+                "ok": False,
+                "contract_version": "public.widget_user_register.v1",
+                "tenant_slug": tenant.slug,
+                "reason_code": "validation_failed",
+                "required_fields": ["name", "email_or_phone"],
+                "field_errors": field_errors,
+            },
+            400,
+        )
+
+    existing_user = User.query.filter(func.lower(User.email) == email).first() if email else None
+    if existing_user and existing_user.anon_id != session_payload.get("anon_id"):
+        return _public_json(
+            {
+                "ok": True,
+                "contract_version": "public.widget_user_register.v1",
+                "tenant_slug": tenant.slug,
+                "status": "verification_required",
+                "reason_code": "contact_already_registered",
+                "profile": {
+                    "is_registered": False,
+                    "contact": {"name": name, "email": email or None, "phone": phone or None},
+                    "anon_id": session_payload["anon_id"],
+                    "chat_session_id": session_payload["chat_session_id"],
+                },
+                "next_action": "verify_contact_or_login",
+                "login_endpoint": "/auth/widget/bootstrap",
+            }
+        )
+
+    user = existing_user or User.create_or_get_by_anon(session_payload.get("anon_id"), name)
+    status = "linked_existing" if existing_user else "registered"
+    if email and str(user.email or "").endswith("@passkey.chatboc"):
+        user.email = email
+
+    if name and (not user.name or str(user.name).startswith("Ciudadano")):
+        user.name = name
+    if phone and not getattr(user, "telefono", None):
+        user.telefono = phone
+    if not getattr(user, "tenant_id", None):
+        user.tenant_id = tenant.id
+    if not getattr(user, "tenant_slug", None):
+        user.tenant_slug = tenant.slug
+
+    db.session.add(user)
+    db.session.flush()
+    follower_created = _ensure_tenant_follower(user, tenant)
+    merge_stats = merge_anon_into_user(
+        session_payload.get("anon_id"),
+        user,
+        session_ids=[session_payload.get("chat_session_id")],
+        tenant_id=tenant.id,
+    )
     return _public_json(
         {
             "ok": True,
             "contract_version": "public.widget_user_register.v1",
-            "tenant_slug": getattr(tenant, "slug", None),
-            "status": "pending_verification",
+            "tenant_slug": tenant.slug,
+            "status": status,
             "profile": {
+                "user_id": user.id,
+                "is_registered": True,
                 "contact": {
-                    "name": payload.get("name") or payload.get("nombre"),
-                    "email": payload.get("email"),
-                    "phone": payload.get("phone") or payload.get("telefono"),
+                    "name": user.name,
+                    "email": email or None,
+                    "phone": phone or getattr(user, "telefono", None),
                 },
                 "anon_id": session_payload["anon_id"],
                 "chat_session_id": session_payload["chat_session_id"],
             },
-            "next_action": "verify_contact_or_continue_as_guest",
+            "tenant_follow": {
+                "linked": True,
+                "created": follower_created,
+                "notifications_enabled": True,
+            },
+            "merge": merge_stats,
+            "portal": {
+                "view_url": f"/portal/{tenant.slug}",
+                "history_endpoint": "/api/public/widget-user/tenant-history",
+            },
+            "next_action": "open_portal_or_continue_chat",
         }
     )
 
@@ -858,14 +982,53 @@ def public_widget_user_link_session():
         return _public_json({"ok": True, "contract_version": "public.widget_user_link_session.v1"})
 
     tenant = _resolve_public_widget_tenant()
+    if not tenant:
+        payload, status = _tenant_resolution_error_payload("public.widget_user_link_session.v1")
+        return _public_json(payload, status)
+
     session_payload = _session_context_payload()
+    user = User.query.filter_by(anon_id=session_payload.get("anon_id")).first()
+
+    if user is None:
+        return _public_json(
+            {
+                "ok": False,
+                "contract_version": "public.widget_user_link_session.v1",
+                "tenant_slug": tenant.slug,
+                "linked": False,
+                "reason_code": "registration_required",
+                "required_fields": ["name", "email_or_phone"],
+                "register_endpoint": "/api/public/widget-user/register",
+                "session": session_payload,
+            }
+        )
+
+    follower_created = _ensure_tenant_follower(user, tenant)
+    merge_stats = merge_anon_into_user(
+        session_payload.get("anon_id"),
+        user,
+        session_ids=[session_payload.get("chat_session_id")],
+        tenant_id=tenant.id,
+    )
     return _public_json(
         {
             "ok": True,
             "contract_version": "public.widget_user_link_session.v1",
-            "tenant_slug": getattr(tenant, "slug", None),
+            "tenant_slug": tenant.slug,
             "linked": True,
+            "profile": {
+                "user_id": user.id,
+                "name": user.name,
+                "email": user.email if not str(user.email or "").endswith("@passkey.chatboc") else None,
+                "phone": getattr(user, "telefono", None),
+            },
+            "tenant_follow": {
+                "linked": True,
+                "created": follower_created,
+                "notifications_enabled": True,
+            },
             "session": session_payload,
+            "merge": merge_stats,
             "preserved": ["cart", "history", "chat"],
         }
     )

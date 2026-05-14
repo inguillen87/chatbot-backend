@@ -34,14 +34,23 @@ OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 # Solo para el canal de voz realtime (Twilio <-> OpenAI Realtime).
 # No impacta los modelos de chat estándar del bot.
 OPENAI_REALTIME_MODEL = resolve_realtime_model(app_config=os.environ)
-OPENAI_REALTIME_URL = (
-    f"wss://api.openai.com/v1/realtime?model={OPENAI_REALTIME_MODEL}"
+OPENAI_REALTIME_URL = os.environ.get(
+    "OPENAI_REALTIME_WS_URL",
+    f"wss://api.openai.com/v1/realtime?model={OPENAI_REALTIME_MODEL}",
 )
+OPENAI_REALTIME_BETA_HEADER = os.environ.get("OPENAI_REALTIME_BETA_HEADER")
 
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
 
 # WhatsApp (para resumen post-llamada)
+
+
+def _openai_realtime_headers() -> dict[str, str]:
+    headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
+    if OPENAI_REALTIME_BETA_HEADER:
+        headers["OpenAI-Beta"] = OPENAI_REALTIME_BETA_HEADER
+    return headers
 
 
 class VoiceStreamService:
@@ -537,10 +546,7 @@ class VoiceStreamService:
         try:
             self.openai_ws = ws_connect(
                 OPENAI_REALTIME_URL,
-                additional_headers={
-                    "Authorization": f"Bearer {OPENAI_API_KEY}",
-                    "OpenAI-Beta": "realtime=v1",
-                },
+                additional_headers=_openai_realtime_headers(),
             )
             logger.info("[VOICE] Connected to OpenAI Realtime API")
 

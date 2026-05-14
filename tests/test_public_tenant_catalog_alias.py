@@ -1,5 +1,5 @@
 from app import db
-from models import CatalogoItem, MarketCart, MarketCartItem, MunicipioTicket, PymePedido, TenantProfile, User
+from models import CatalogoItem, MarketCart, MarketCartItem, MunicipioTicket, PymePedido, TenantFollower, TenantProfile, User
 
 
 def _seed_pyme_tenant_with_catalog():
@@ -20,6 +20,38 @@ def _seed_pyme_tenant_with_catalog():
         precio="100",
         cantidad="10",
         disponible=True,
+    )
+    db.session.add(item)
+    db.session.commit()
+
+    return tenant
+
+
+def _seed_municipio_tenant_with_catalog():
+    owner = User(email="mauricio@junin.test", name="Municipio de Junin", rol="admin", tipo_chat="municipio")
+    owner.set_password("123456")
+    db.session.add(owner)
+    db.session.commit()
+
+    tenant = TenantProfile(
+        slug="municipio",
+        nombre="Municipio de Junin",
+        tipo="municipio",
+        municipio_id=owner.id,
+        vertical="gobierno",
+    )
+    db.session.add(tenant)
+    db.session.commit()
+
+    item = CatalogoItem(
+        user_id=owner.id,
+        tenant_id=tenant.id,
+        nombre="Canje puntos verdes",
+        categoria="Participacion ciudadana",
+        precio="800 pts",
+        cantidad="100",
+        disponible=True,
+        modalidad="canje",
     )
     db.session.add(item)
     db.session.commit()
@@ -179,6 +211,32 @@ def test_widget_commerce_session_returns_embedded_operating_contract(client):
     assert resp.headers.get("X-Request-Id")
 
 
+def test_municipio_widget_external_contract_enables_portal_and_real_catalog_cart(client):
+    tenant = _seed_municipio_tenant_with_catalog()
+
+    resp = client.get(
+        "/api/public/widget-commerce-session",
+        query_string={"tenant_slug": tenant.slug, "tenant": tenant.slug},
+        headers={
+            "Origin": "https://external-widget-test.local",
+            "X-Chat-Session-Id": "chat_junin_external",
+            "X-Anon-Id": "anon_junin_external",
+        },
+    )
+
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body["contract_version"] == "public.widget_commerce_session.v1"
+    assert body["tenant"]["slug"] == tenant.slug
+    assert body["tenant"]["vertical"] == "gobierno"
+    assert body["catalog"]["enabled"] is True
+    assert body["cart"]["enabled"] is True
+    assert body["portal"]["enabled"] is True
+    assert body["portal"]["view_url"] == f"/portal/{tenant.slug}"
+    assert "portal" in body["frontend_contract"]["primary_actions"]
+    assert resp.headers.get("Access-Control-Allow-Origin") == "https://external-widget-test.local"
+
+
 def test_reserved_media_slug_widget_endpoints_degrade_to_json(client):
     for path in (
         "/api/public/widget-commerce-session?tenant_slug=media&tenant=media",
@@ -309,3 +367,68 @@ def test_widget_user_register_and_link_session_are_degradable_json(client):
     body = link_resp.get_json()
     assert body["contract_version"] == "public.widget_user_link_session.v1"
     assert body["linked"] is True
+
+
+def test_widget_user_register_links_municipio_anon_history_cart_and_follower(client):
+    tenant = _seed_municipio_tenant_with_catalog()
+    owner = tenant.municipio
+    cart = MarketCart(tenant_id=tenant.id, session_id="chat_public_muni", status="open")
+    db.session.add(cart)
+    db.session.flush()
+    item = CatalogoItem.query.filter_by(tenant_id=tenant.id).first()
+    db.session.add(
+        MarketCartItem(
+            cart_id=cart.id,
+            product_id=item.id,
+            quantity=1,
+            name_snapshot=item.nombre,
+            price_text=item.precio,
+        )
+    )
+    db.session.add(
+        MunicipioTicket(
+            pregunta="Luminaria rota en la esquina",
+            asunto="Alumbrado publico",
+            categoria="alumbrado",
+            municipio_id=owner.id,
+            tenant_id=tenant.id,
+            anon_id="anon_public_muni",
+            canal_ingreso="widget",
+        )
+    )
+    db.session.commit()
+
+    register_resp = client.post(
+        "/api/public/widget-user/register",
+        query_string={"tenant_slug": tenant.slug},
+        json={"name": "Vecino Junin", "phone": "+5492610000000"},
+        headers={
+            "Origin": "https://external-widget-test.local",
+            "X-Chat-Session-Id": "chat_public_muni",
+            "X-Anon-Id": "anon_public_muni",
+        },
+    )
+
+    assert register_resp.status_code == 200
+    body = register_resp.get_json()
+    assert body["contract_version"] == "public.widget_user_register.v1"
+    assert body["status"] == "registered"
+    assert body["tenant_slug"] == tenant.slug
+    assert body["profile"]["is_registered"] is True
+    assert body["tenant_follow"]["linked"] is True
+    assert body["merge"]["municipio_tickets"] == 1
+    assert body["merge"]["market_carts"] == 1
+
+    user_id = body["profile"]["user_id"]
+    assert TenantFollower.query.filter_by(user_id=user_id, tenant_id=tenant.id).first() is not None
+    assert MarketCart.query.filter_by(session_id="chat_public_muni").first().user_id == user_id
+    assert MunicipioTicket.query.filter_by(asunto="Alumbrado publico").first().user_id == user_id
+
+    history_resp = client.get(
+        "/api/public/widget-user/tenant-history",
+        query_string={"tenant_slug": tenant.slug},
+        headers={"X-Chat-Session-Id": "chat_public_muni", "X-Anon-Id": "anon_public_muni"},
+    )
+    history = history_resp.get_json()
+    assert history["cart"]["items_count"] == 1
+    assert "claim" in {entry["kind"] for entry in history["items"]}

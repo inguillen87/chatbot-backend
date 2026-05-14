@@ -29,7 +29,7 @@ def _create_tenant_with_owner():
     owner.token = generar_token(owner.id, owner.rol, None, None, None)
 
     tenant = TenantProfile(
-        slug="demo",
+        slug="tenant-demo",
         nombre="Demo Municipio",
         tipo="municipio",
         municipio=owner,

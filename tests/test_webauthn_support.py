@@ -5,11 +5,14 @@ from config import TestConfig
 from extensions import db
 from models import (
     ChatSessionContext,
+    MarketCart,
+    MarketOrder,
     MunicipioTicket,
     PublicSurvey,
     PublicSurveyResponse,
     PymeTicket,
     SugerenciaCiudadano,
+    TenantProfile,
     TicketComentario,
     User,
     generate_token,
@@ -32,6 +35,8 @@ class WebAuthnSupportTests(unittest.TestCase):
         cls.app_context.pop()
 
     def setUp(self):
+        db.session.query(MarketOrder).delete()
+        db.session.query(MarketCart).delete()
         db.session.query(ChatSessionContext).delete()
         db.session.query(PublicSurveyResponse).delete()
         db.session.query(PublicSurvey).delete()
@@ -39,6 +44,7 @@ class WebAuthnSupportTests(unittest.TestCase):
         db.session.query(TicketComentario).delete()
         db.session.query(MunicipioTicket).delete()
         db.session.query(PymeTicket).delete()
+        db.session.query(TenantProfile).delete()
         db.session.query(User).delete()
         db.session.commit()
 
@@ -94,11 +100,32 @@ class WebAuthnSupportTests(unittest.TestCase):
         db.session.add(encuesta)
         db.session.commit()
 
+        tenant = TenantProfile(
+            slug="merge-tenant",
+            nombre="Tenant Merge",
+            tipo="pyme",
+            pyme_id=user.id,
+        )
+        db.session.add(tenant)
+        db.session.flush()
+
         respuesta = PublicSurveyResponse(
             survey_id=encuesta.id,
             anon_id=anon_id,
         )
         chat_context = ChatSessionContext(anon_id=anon_id)
+        cart = MarketCart(
+            tenant_id=tenant.id,
+            session_id="chat-merge-001",
+            contact_key=f"session:{anon_id}",
+            status="open",
+        )
+        order = MarketOrder(
+            tenant_id=tenant.id,
+            session_id="chat-merge-001",
+            contact_key="session:chat-merge-001",
+            status="pending",
+        )
 
         db.session.add_all(
             [
@@ -108,16 +135,20 @@ class WebAuthnSupportTests(unittest.TestCase):
                 sugerencia,
                 respuesta,
                 chat_context,
+                cart,
+                order,
             ]
         )
         db.session.commit()
 
-        stats = merge_anon_into_user(anon_id, user)
+        stats = merge_anon_into_user(anon_id, user, session_ids=["chat-merge-001"], tenant_id=tenant.id)
 
         self.assertGreaterEqual(stats["tickets"], 2)
         self.assertEqual(stats["chat_contexts"], 1)
         self.assertEqual(stats["sugerencias"], 1)
         self.assertEqual(stats["encuestas"], 1)
+        self.assertEqual(stats["market_carts"], 1)
+        self.assertEqual(stats["market_orders"], 1)
 
         self.assertEqual(MunicipioTicket.query.first().user_id, user.id)
         self.assertIsNone(MunicipioTicket.query.first().anon_id)
@@ -131,6 +162,8 @@ class WebAuthnSupportTests(unittest.TestCase):
         self.assertIsNone(PublicSurveyResponse.query.first().anon_id)
         self.assertEqual(ChatSessionContext.query.first().user_id, user.id)
         self.assertIsNone(ChatSessionContext.query.first().anon_id)
+        self.assertEqual(MarketCart.query.first().user_id, user.id)
+        self.assertEqual(MarketOrder.query.first().user_id, user.id)
 
 
 if __name__ == "__main__":

@@ -10,6 +10,8 @@ REALTIME_VOICE_CONTRACT_VERSION = "realtime.voice_capabilities.v1"
 DEFAULT_REALTIME_VOICE_MODEL = "gpt-realtime"
 FALLBACK_REALTIME_VOICE_MODEL = "gpt-realtime"
 DEFAULT_REALTIME_VOICE = "marin"
+DEFAULT_PHONE_PRIMARY_TRANSPORT = "openai_realtime_sip"
+DEFAULT_PHONE_BRIDGE_TRANSPORT = "twilio_media_streams"
 
 
 def _get(mapping: Mapping[str, Any] | None, *keys: str) -> Any:
@@ -250,8 +252,27 @@ def build_realtime_voice_capabilities(
         "transports": {
             "browser": "webrtc",
             "server": "websocket",
-            "phone_bridge": "twilio_media_streams",
+            "phone_primary": str(
+                _get(cfg, "openai_realtime_phone_primary_transport")
+                or _get(app_config, "OPENAI_REALTIME_PHONE_PRIMARY_TRANSPORT")
+                or os.environ.get("OPENAI_REALTIME_PHONE_PRIMARY_TRANSPORT")
+                or DEFAULT_PHONE_PRIMARY_TRANSPORT
+            ),
+            "phone_bridge": str(
+                _get(cfg, "openai_realtime_phone_bridge_transport")
+                or _get(app_config, "OPENAI_REALTIME_PHONE_BRIDGE_TRANSPORT")
+                or os.environ.get("OPENAI_REALTIME_PHONE_BRIDGE_TRANSPORT")
+                or DEFAULT_PHONE_BRIDGE_TRANSPORT
+            ),
+            "legacy_phone_fallback": "twilio_gather_tts",
             "sip_ready": True,
+            "media_streams_ready": True,
+        },
+        "cost_latency_policy": {
+            "primary_voice_runtime": "openai_realtime_native_audio",
+            "external_tts": "fallback_only",
+            "external_stt": "fallback_only",
+            "reason": "native_speech_to_speech_reduces_round_trips",
         },
         "media": {
             "input": ["audio", "text", "image_context"],
@@ -291,6 +312,7 @@ def build_realtime_voice_capabilities(
             "session_endpoint": "/api/public/realtime/session",
             "capabilities_endpoint": "/api/public/realtime/voice-capabilities",
             "phone_webhook": "/twilio/voice/inbound",
+            "legacy_phone_webhook": "/voice/welcome",
             "show_call_cta": True,
             "show_captions": True,
             "show_handoff_state": True,

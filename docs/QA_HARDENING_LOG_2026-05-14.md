@@ -120,6 +120,25 @@ Criterio de cierre:
 - Pedido desde WhatsApp usa productos reales del catalogo.
 - Errores de parsing devuelven JSON accionable.
 
+### P0 - Llamadas Realtime, no TTS/Gather por defecto
+
+Riesgo:
+Las llamadas no deben depender del loop legacy `Gather` + TTS. Ese camino agrega latencia, costo y peor experiencia. La ruta primaria debe ser voz nativa OpenAI Realtime; SIP directo es el destino tecnico, y Twilio Media Streams queda como puente operativo mientras se termina la configuracion de trunking.
+
+Estado aplicado:
+
+- `/voice/welcome` ahora deriva por defecto al stream realtime y solo usa `Gather` + TTS si `VOICE_LEGACY_GATHER_ENABLED=true`.
+- `/twilio/voice/inbound` mantiene el contrato Twilio Media Streams hacia `/twilio/voice/stream`.
+- El contrato `realtime.voice_capabilities.v1` declara `phone_primary=openai_realtime_sip`, `phone_bridge=twilio_media_streams` y TTS/STT externo como fallback only.
+- `VoiceStreamService` deja de enviar el header beta fijo `realtime=v1`; si hace falta compatibilidad se puede setear `OPENAI_REALTIME_BETA_HEADER`.
+
+Criterio de cierre:
+
+- Configurar Twilio Elastic SIP Trunk hacia OpenAI Realtime SIP para llamadas entrantes.
+- Agregar webhook OpenAI `realtime.call.incoming` para aceptar/rechazar llamadas con modelo, voz, instrucciones y tools por tenant.
+- Mantener Twilio Media Streams como fallback hasta validar Junin, bodega y colegio sandbox en llamadas reales.
+- Registrar evento post-llamada y acciones trazables: ticket, pedido o caso escolar.
+
 ### P2 - Config local de media/cloud
 
 Riesgo:

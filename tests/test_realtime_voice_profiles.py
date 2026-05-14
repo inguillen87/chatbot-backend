@@ -20,6 +20,9 @@ class RealtimeVoiceProfilesTestCase(unittest.TestCase):
         self.assertEqual(capabilities["recommended_model"], DEFAULT_REALTIME_VOICE_MODEL)
         self.assertEqual(capabilities["fallback_model"], "gpt-realtime")
         self.assertTrue(capabilities["native_speech_to_speech"])
+        self.assertEqual(capabilities["transports"]["phone_primary"], "openai_realtime_sip")
+        self.assertEqual(capabilities["transports"]["phone_bridge"], "twilio_media_streams")
+        self.assertEqual(capabilities["cost_latency_policy"]["external_tts"], "fallback_only")
 
     def test_config_can_override_model_without_losing_fallback(self):
         model = resolve_realtime_model({"openai_realtime_model": "gpt-realtime-custom"})

@@ -22,6 +22,57 @@ voice_bp = Blueprint('voice', __name__)
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
 logger = logging.getLogger(__name__)
 
+
+def _is_truthy(value) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _legacy_voice_gather_enabled() -> bool:
+    return _is_truthy(
+        current_app.config.get("VOICE_LEGACY_GATHER_ENABLED")
+        or os.environ.get("VOICE_LEGACY_GATHER_ENABLED")
+    )
+
+
+def _validate_twilio_request() -> bool:
+    if not TWILIO_AUTH_TOKEN:
+        return True
+    validator = RequestValidator(TWILIO_AUTH_TOKEN)
+    return validator.validate(
+        request.url,
+        request.form,
+        request.headers.get('X-Twilio-Signature', ''),
+    )
+
+
+def _voice_stream_twiml_response() -> Response:
+    response = VoiceResponse()
+
+    call_sid = request.form.get('CallSid')
+    from_number = request.form.get('From')
+    to_number = request.form.get('To')
+    source_chat_session_id = request.values.get("chat_session_id")
+
+    backend_url = current_app.config.get("BACKEND_URL", "http://localhost:8080")
+    ws_url = backend_url.replace("http://", "ws://").replace("https://", "wss://")
+    stream_url = f"{ws_url}/twilio/voice/stream"
+
+    response.pause(length=1)
+
+    connect = Connect()
+    stream = connect.stream(url=stream_url)
+    stream.parameter(name="from_number", value=from_number)
+    stream.parameter(name="to_number", value=to_number)
+    stream.parameter(name="call_sid", value=call_sid)
+    if source_chat_session_id:
+        stream.parameter(name="chat_session_id", value=source_chat_session_id)
+
+    response.append(connect)
+    response.say("Lo siento, hubo un error de conexion. Por favor intenta mas tarde.", language="es-AR")
+
+    return Response(str(response), mimetype='text/xml')
+
+
 @voice_bp.route('/api/realtime/session', methods=['POST'])
 @token_requerido
 def create_webrtc_session(current_user, owner_user, anon_id):
@@ -55,16 +106,16 @@ def voice_fallback():
 @voice_bp.route('/voice/welcome', methods=['POST'])
 def voice_welcome():
     """
-    Endpoint for the initial call greeting (Legacy TwiML).
-    Retained for backward compatibility or simple flows if needed.
+    Compatibility endpoint for older Twilio webhooks.
+    By default, calls are upgraded to OpenAI Realtime through Twilio Media Streams.
     """
     response = VoiceResponse()
 
-    # 1. Validate Request
-    if TWILIO_AUTH_TOKEN:
-        validator = RequestValidator(TWILIO_AUTH_TOKEN)
-        if not validator.validate(request.url, request.form, request.headers.get('X-Twilio-Signature', '')):
-           return "Forbidden", 403
+    if not _validate_twilio_request():
+        return "Forbidden", 403
+
+    if not _legacy_voice_gather_enabled():
+        return _voice_stream_twiml_response()
 
     user_phone = request.form.get("To", "").replace("whatsapp:", "").strip()
     bot_phone = request.form.get("From", "").replace("whatsapp:", "").strip()
@@ -143,53 +194,13 @@ def voice_welcome():
 @voice_bp.route('/twilio/voice/inbound', methods=['POST'])
 def voice_inbound_stream():
     """
-    New Endpoint for Inbound Calls using Twilio Media Streams & OpenAI Realtime.
+    Primary endpoint for inbound calls using Twilio Media Streams & OpenAI Realtime.
     Returns TwiML with <Connect><Stream>.
     """
-    response = VoiceResponse()
+    if not _validate_twilio_request():
+        return "Forbidden", 403
 
-    # 1. Validate Request
-    if TWILIO_AUTH_TOKEN:
-        validator = RequestValidator(TWILIO_AUTH_TOKEN)
-        # Using request.url might be HTTP if behind proxy.
-        if not validator.validate(request.url, request.form, request.headers.get('X-Twilio-Signature', '')):
-           return "Forbidden", 403
-
-    # Extract call details to pass to the stream (via custom parameters if needed,
-    # or just use the callSid in the stream URL params)
-    call_sid = request.form.get('CallSid')
-    from_number = request.form.get('From')
-    to_number = request.form.get('To')
-    source_chat_session_id = request.values.get("chat_session_id")
-
-    # We can pass context via query params to the WebSocket URL
-    # Assuming the app is running on a domain, we need to construct the wss URL
-    # current_app.config['BACKEND_URL'] is usually http(s). We need ws(s).
-    backend_url = current_app.config.get("BACKEND_URL", "http://localhost:8080")
-    ws_url = backend_url.replace("http://", "ws://").replace("https://", "wss://")
-
-    # Updated path as per requirement
-    stream_url = f"{ws_url}/twilio/voice/stream"
-
-    # Add a polite filler to prevent silence/robotic noise while connecting
-    response.pause(length=1)
-
-    # The greeting will be handled by the AI Stream immediately upon connection.
-    connect = Connect()
-    stream = connect.stream(url=stream_url)
-    # Pass metadata to the stream context
-    stream.parameter(name="from_number", value=from_number)
-    stream.parameter(name="to_number", value=to_number)
-    stream.parameter(name="call_sid", value=call_sid)
-    if source_chat_session_id:
-        stream.parameter(name="chat_session_id", value=source_chat_session_id)
-
-    response.append(connect)
-
-    # Fallback if stream fails
-    response.say("Lo siento, hubo un error de conexión. Por favor intenta más tarde.")
-
-    return Response(str(response), mimetype='text/xml')
+    return _voice_stream_twiml_response()
 
 @voice_bp.route('/twilio/voice/transfer', methods=['POST'])
 def voice_transfer():
