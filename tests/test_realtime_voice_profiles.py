@@ -33,6 +33,7 @@ class RealtimeVoiceProfilesTestCase(unittest.TestCase):
         )
         self.assertTrue(translation["channels"]["realtime_voice_call"])
         self.assertTrue(translation["channels"]["admin_transcript"])
+        self.assertEqual(translation["dedicated_realtime_translation"]["model"], "gpt-realtime-translate")
 
     def test_translation_policy_can_be_tenant_configured(self):
         policy = build_multilingual_translation_policy(

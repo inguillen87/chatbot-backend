@@ -7,8 +7,9 @@ from services.education_contracts import is_education_tenant
 
 
 REALTIME_VOICE_CONTRACT_VERSION = "realtime.voice_capabilities.v1"
-DEFAULT_REALTIME_VOICE_MODEL = "gpt-realtime"
+DEFAULT_REALTIME_VOICE_MODEL = "gpt-realtime-2"
 FALLBACK_REALTIME_VOICE_MODEL = "gpt-realtime"
+DEFAULT_REALTIME_TRANSLATION_MODEL = "gpt-realtime-translate"
 DEFAULT_REALTIME_VOICE = "marin"
 DEFAULT_PHONE_PRIMARY_TRANSPORT = "openai_realtime_sip"
 DEFAULT_PHONE_BRIDGE_TRANSPORT = "twilio_media_streams"
@@ -133,6 +134,15 @@ def build_multilingual_translation_policy(
             or "mirror_user_language"
         ),
         "admin_record_language": "es",
+        "dedicated_realtime_translation": {
+            "model": str(
+                _get(cfg, "openai_realtime_translation_model", "realtime_translation_model")
+                or _get(app_config, "OPENAI_REALTIME_TRANSLATION_MODEL")
+                or os.environ.get("OPENAI_REALTIME_TRANSLATION_MODEL")
+                or DEFAULT_REALTIME_TRANSLATION_MODEL
+            ),
+            "use_when": "live_interpreter_or_caption_mode",
+        },
         "channels": {
             "realtime_voice_call": True,
             "whatsapp_audio_note": True,
@@ -391,7 +401,8 @@ def build_realtime_voice_capabilities(
         },
         "features": {
             "barge_in": True,
-            "server_vad": True,
+            "semantic_vad": True,
+            "server_vad": False,
             "tool_calling": True,
             "whatsapp_followup": True,
             "post_call_receipt": True,

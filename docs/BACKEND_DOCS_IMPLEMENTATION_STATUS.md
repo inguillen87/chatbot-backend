@@ -123,7 +123,7 @@ Pendientes honestos de siguiente ola:
 
 Mejora aditiva sobre la base existente de Twilio Voice/Media Streams y OpenAI Realtime:
 
-- Default realtime actualizado a `gpt-realtime`; fallback configurable por env/tenant.
+- Default realtime actualizado a `gpt-realtime-2`; fallback configurable por env/tenant.
 - `services/realtime_voice_profiles.py` centraliza contrato `realtime.voice_capabilities.v1`, perfiles por vertical, tools e instrucciones de voz.
 - `GET /api/public/realtime/voice-capabilities` expone capacidades de llamadas para landing/widget/demo.
 - `GET /api/public/widget-config` agrega `realtime_voice` y atributos `data-realtime-model`, `data-realtime-fallback-model`, `data-realtime-voice`, `data-realtime-transport` y `data-realtime-profile`.
@@ -182,7 +182,7 @@ Mejora aditiva para que WhatsApp quede conectado con panel tenant, demo, widget,
 - `GET /api/v2/whatsapp/experience` y `GET /api/v2/tenants/{tenant_slug}/whatsapp/experience` devuelven estado del canal, reglas enterprise, ventana 24h, inteligencia conversacional, modulos de contenido, tracking y endpoints del panel admin.
 - `GET /api/v2/tenant/admin-experience` agrega resumen `whatsapp` y el modulo `widget_whatsapp` apunta al nuevo endpoint operativo.
 - `conversation_intelligence.inputs` declara soporte para texto, emojis, ubicacion, imagenes, notas de voz, archivos/PDF y video como adjunto.
-- `conversation_intelligence.voice_calls` usa `realtime.voice_capabilities.v1` con `gpt-realtime` por defecto, WebRTC para browser, WebSocket server-side y puente Twilio/SIP para telefono.
+- `conversation_intelligence.voice_calls` usa `realtime.voice_capabilities.v1` con `gpt-realtime-2` por defecto, WebRTC para browser, WebSocket server-side y puente Twilio/SIP para telefono.
 - `tracking.courier_style_map` define contrato para mapa/timeline tipo courier con `pulse_current_step`, `route_progress` y `status_transition`, degradando a timeline si no hay coordenadas.
 - `GET /api/public/tracking/experience` y `GET /tracking/api/experience` devuelven `tracking.experience.v1` para reclamos (`kind=claim&code=M-...&pin=...`) y pedidos (`kind=order&code=...`) con estado, hitos, timeline, mapa, acciones y contrato frontend.
 - `content_modules` expone calidad de catalogo/imagenes, encuestas/votaciones, noticias/eventos, promociones y links configurables por tenant.
@@ -393,7 +393,7 @@ Cierre de blockers runtime reportados por frontend/prod:
 Alineacion con el QA frontend de voz realtime:
 
 - `GET /api/public/realtime/voice-capabilities` mantiene HTTP 200 degradable y `request_id`.
-- El contrato conserva `recommended_model: "gpt-realtime"` y `fallback_model: "gpt-realtime"` por defecto, con overrides por tenant/env.
+- El contrato conserva `recommended_model: "gpt-realtime-2"` y `fallback_model: "gpt-realtime"` por defecto, con overrides por tenant/env.
 - La respuesta de capabilities agrega `support_channels.voice_call.enabled` para que frontend use la misma regla que widget-config.
 - Si `realtime_voice_enabled=false`, capabilities y widget-config devuelven `enabled:false`, `reason_code=voice_not_enabled` y `features.tool_calling=false`.
 - `GET /api/public/widget-config` publica `support_channels.voice_call.enabled` y `realtime_voice.features.tool_calling` sincronizados.

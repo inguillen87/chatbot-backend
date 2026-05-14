@@ -198,23 +198,29 @@ class WidgetSettingsTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         payload = response.get_json()
-        self.assertEqual(payload["model"], "gpt-realtime")
+        self.assertEqual(payload["model"], "gpt-realtime-2")
         self.assertEqual(payload["avatar"]["fallback_model"], "gpt-realtime")
         self.assertEqual(payload["avatar"]["transport"], "webrtc")
         self.assertEqual(payload["avatar"]["active_vertical"], "municipio")
+        self.assertEqual(payload["avatar"]["requested_model_ignored"], "gpt-realtime")
+        self.assertEqual(payload["avatar"]["openai_realtime_contract"], "client_secrets.v2")
         self.assertEqual(payload["avatar"]["translation"]["target_language"], "es")
         self.assertTrue(payload["avatar"]["translation"]["channels"]["realtime_voice_call"])
         request_obj = mock_urlopen.call_args.args[0]
         upstream_payload = json.loads(request_obj.data.decode("utf-8"))
-        self.assertEqual(upstream_payload["model"], "gpt-realtime")
-        self.assertEqual(upstream_payload["voice"], "marin")
-        self.assertEqual(upstream_payload["metadata"]["translation"]["target_language"], "es")
-        self.assertIn("ingles", upstream_payload["instructions"])
-        self.assertIn("portugues", upstream_payload["instructions"])
+        self.assertEqual(request_obj.full_url, "https://api.openai.com/v1/realtime/client_secrets")
+        self.assertEqual(upstream_payload["session"]["type"], "realtime")
+        self.assertEqual(upstream_payload["session"]["model"], "gpt-realtime-2")
+        self.assertEqual(upstream_payload["session"]["output_modalities"], ["audio"])
+        self.assertEqual(upstream_payload["session"]["audio"]["output"]["voice"], "marin")
+        self.assertEqual(upstream_payload["session"]["audio"]["input"]["turn_detection"]["type"], "semantic_vad")
+        self.assertEqual(upstream_payload["session"]["tracing"]["metadata"]["openai_endpoint"], "/v1/realtime/client_secrets")
+        self.assertIn("ingles", upstream_payload["session"]["instructions"])
+        self.assertIn("portugues", upstream_payload["session"]["instructions"])
         self.assertIsNone(request_obj.get_header("Openai-beta"))
 
     @patch("routes.public_resolver.urllib_request.urlopen")
-    def test_public_realtime_session_supports_legacy_beta_header_opt_in(self, mock_urlopen):
+    def test_public_realtime_session_ignores_legacy_beta_header_env(self, mock_urlopen):
         class MockOpenAIResponse:
             def __enter__(self):
                 return self
@@ -227,7 +233,7 @@ class WidgetSettingsTests(unittest.TestCase):
 
         mock_urlopen.return_value = MockOpenAIResponse()
         self.app.config["OPENAI_API_KEY"] = "mock-key"
-        self.app.config["OPENAI_REALTIME_BETA_HEADER"] = "realtime=v1"
+        self.app.config["OPENAI_REALTIME_BETA_HEADER"] = "legacy-header-should-be-ignored"
 
         response = self.client.post(
             "/api/public/realtime/session",
@@ -240,7 +246,7 @@ class WidgetSettingsTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         request_obj = mock_urlopen.call_args.args[0]
-        self.assertEqual(request_obj.get_header("Openai-beta"), "realtime=v1")
+        self.assertIsNone(request_obj.get_header("Openai-beta"))
 
     def test_public_realtime_action_event_rejects_unknown_action(self):
         response = self.client.post(

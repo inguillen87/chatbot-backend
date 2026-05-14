@@ -39,6 +39,7 @@ from services.realtime_voice_profiles import (
     build_multilingual_translation_policy,
     build_realtime_voice_capabilities,
     build_realtime_voice_instructions,
+    build_realtime_voice_tools,
     infer_realtime_voice_vertical,
     resolve_realtime_fallback_model,
     resolve_realtime_model,
@@ -75,6 +76,19 @@ _REALTIME_ACTION_EVENT_ALLOWED = {
     "consulta_estado_ticket",
     "finalizar_pedido_pyme",
 }
+
+OPENAI_REALTIME_CLIENT_SECRETS_URL = "https://api.openai.com/v1/realtime/client_secrets"
+
+
+def _realtime_audio_format(value: str | dict | None, *, default: str = "pcm16") -> dict:
+    if isinstance(value, dict):
+        return value
+    normalized = str(value or default).strip().lower().replace("-", "_")
+    if normalized in {"g711_ulaw", "ulaw", "pcmu", "mulaw", "audio/pcmu"}:
+        return {"type": "audio/pcmu"}
+    if normalized in {"g711_alaw", "alaw", "pcma", "audio/pcma"}:
+        return {"type": "audio/pcma"}
+    return {"type": "audio/pcm", "rate": 24000}
 
 
 def _log_widget_public_request(response, tenant=None, *, entity_token=None):
@@ -843,80 +857,94 @@ def _audit_realtime_event(tenant: TenantProfile, *, event_name: str, channel: st
 
 
 def _build_realtime_session_payload(tenant: TenantProfile, cfg: dict, *, channel: str, request_payload: dict | None = None) -> dict:
-    """Build OpenAI Realtime session payload for widget voice/video channels."""
+    """Build OpenAI Realtime 2 client-secret payload for widget voice/video channels."""
 
     request_payload = request_payload if isinstance(request_payload, dict) else {}
     transports = request_payload.get("transports") if isinstance(request_payload.get("transports"), dict) else {}
     tenant_name = tenant.nombre or "Chatboc"
-    model = str(request_payload.get("model") or request_payload.get("recommended_model") or resolve_realtime_model(cfg, current_app.config))
-    fallback_model = str(request_payload.get("fallback_model") or resolve_realtime_fallback_model(cfg, current_app.config))
+    requested_model = request_payload.get("model") or request_payload.get("recommended_model")
+    model = str(resolve_realtime_model(cfg, current_app.config))
+    fallback_model = str(resolve_realtime_fallback_model(cfg, current_app.config))
     voice = str(request_payload.get("voice") or resolve_realtime_voice(cfg, current_app.config))
     transport = str(request_payload.get("transport") or transports.get("browser") or "webrtc")
     requested_profile = str(request_payload.get("profile") or request_payload.get("realtime_profile") or "realtime_voice_native")
-    modalities = ["audio", "text"] if channel == "voice" else ["audio", "text", "video"]
     avatar_enabled = bool(cfg.get("widget_avatar_enabled", True))
     voice_vertical = str(request_payload.get("active_vertical") or infer_realtime_voice_vertical(tenant))
     translation_policy = build_multilingual_translation_policy(cfg, current_app.config)
-
-    instructions = (
-        f"Sos un asistente inclusivo de {tenant_name}. "
-        "Atendé consultas generales, ayudá a crear reclamos municipales, crear pedidos y derivar a humano cuando corresponda. "
-        "Hablá en español rioplatense, con tono profesional, empático y directo. "
-        "Si faltan datos obligatorios para ejecutar una acción, pedilos de forma breve. "
-        "Confirmá claramente cuando una acción se completa. "
-        "Priorizá accesibilidad: frases cortas, opción de repetir, y validación de comprensión. "
-    )
+    session_metadata = {
+        "tenant_slug": tenant.slug,
+        "tenant_type": tenant.tipo,
+        "channel": channel,
+        "transport": transport,
+        "avatar_enabled": avatar_enabled,
+        "avatar_type": cfg.get("widget_avatar_type") or "robot",
+        "avatar_persona": cfg.get("widget_avatar_persona") or "chatboc_assistant",
+        "business_flows": ["crear_reclamo", "crear_pedido", "crear_caso_escolar", "consultas_generales", "derivar_humano"],
+        "realtime_profile": requested_profile,
+        "active_vertical": voice_vertical,
+        "recommended_model": model,
+        "fallback_model": fallback_model,
+        "requested_model_ignored": str(requested_model) if requested_model and str(requested_model) != model else None,
+        "capabilities_contract": REALTIME_VOICE_CONTRACT_VERSION,
+        "openai_realtime_contract": "client_secrets.v2",
+        "openai_endpoint": "/v1/realtime/client_secrets",
+        "translation": translation_policy,
+    }
 
     return {
-        "model": model,
-        "modalities": modalities,
-        "voice": voice,
-        "instructions": build_realtime_voice_instructions(
-            tenant_name=tenant_name,
-            vertical=voice_vertical,
-            user_name=None,
-            user_address=None,
-            translation_policy=translation_policy,
-        ),
-        "input_audio_format": cfg.get("openai_realtime_input_audio_format") or "pcm16",
-        "output_audio_format": cfg.get("openai_realtime_output_audio_format") or "pcm16",
-        "turn_detection": {
-            "type": "server_vad",
-            "threshold": cfg.get("openai_realtime_vad_threshold", 0.5),
-            "prefix_padding_ms": cfg.get("openai_realtime_vad_prefix_padding_ms", 300),
-            "silence_duration_ms": cfg.get("openai_realtime_vad_silence_ms", 500),
+        "expires_after": {
+            "anchor": "created_at",
+            "seconds": int(cfg.get("openai_realtime_client_secret_ttl_seconds") or 600),
         },
-        "metadata": {
-            "tenant_slug": tenant.slug,
-            "tenant_type": tenant.tipo,
-            "channel": channel,
-            "transport": transport,
-            "avatar_enabled": avatar_enabled,
-            "avatar_type": cfg.get("widget_avatar_type") or "robot",
-            "avatar_persona": cfg.get("widget_avatar_persona") or "chatboc_assistant",
-            "business_flows": ["crear_reclamo", "crear_pedido", "crear_caso_escolar", "consultas_generales", "derivar_humano"],
-            "realtime_profile": requested_profile,
-            "active_vertical": voice_vertical,
-            "recommended_model": model,
-            "fallback_model": fallback_model,
-            "capabilities_contract": REALTIME_VOICE_CONTRACT_VERSION,
-            "translation": translation_policy,
+        "session": {
+            "type": "realtime",
+            "model": model,
+            "output_modalities": ["audio"],
+            "instructions": build_realtime_voice_instructions(
+                tenant_name=tenant_name,
+                vertical=voice_vertical,
+                user_name=None,
+                user_address=None,
+                translation_policy=translation_policy,
+            ),
+            "audio": {
+                "input": {
+                    "format": _realtime_audio_format(cfg.get("openai_realtime_input_audio_format") or "pcm16"),
+                    "noise_reduction": {"type": cfg.get("openai_realtime_noise_reduction") or "near_field"},
+                    "turn_detection": {
+                        "type": cfg.get("openai_realtime_turn_detection_type") or "semantic_vad",
+                        "eagerness": cfg.get("openai_realtime_semantic_vad_eagerness") or "auto",
+                        "create_response": True,
+                        "interrupt_response": True,
+                    },
+                    "transcription": {
+                        "model": cfg.get("openai_realtime_transcription_model") or "gpt-4o-mini-transcribe",
+                    },
+                },
+                "output": {
+                    "format": _realtime_audio_format(cfg.get("openai_realtime_output_audio_format") or "pcm16"),
+                    "voice": voice,
+                    "speed": float(cfg.get("openai_realtime_voice_speed") or 1.0),
+                },
+            },
+            "tools": build_realtime_voice_tools(voice_vertical),
+            "tool_choice": "auto",
+            "max_output_tokens": "inf",
+            "tracing": {
+                "workflow_name": "chatboc_realtime_voice",
+                "group_id": tenant.slug,
+                "metadata": {k: v for k, v in session_metadata.items() if k != "translation" and v is not None},
+            },
         },
+        "metadata": {k: v for k, v in session_metadata.items() if v is not None},
     }
 
 
 def _openai_realtime_session_headers(api_key: str) -> dict[str, str]:
-    headers = {
+    return {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
-    beta_header = (
-        current_app.config.get("OPENAI_REALTIME_BETA_HEADER")
-        or os.environ.get("OPENAI_REALTIME_BETA_HEADER")
-    )
-    if beta_header:
-        headers["OpenAI-Beta"] = str(beta_header)
-    return headers
 
 
 @public_resolver_bp.route("/realtime/session", methods=["POST", "OPTIONS"], provide_automatic_options=False)
@@ -972,11 +1000,15 @@ def create_realtime_session():
         return _realtime_error_response("openai_api_key_missing", 503)
 
     session_payload = _build_realtime_session_payload(tenant, cfg, channel=channel, request_payload=payload)
+    openai_payload = {
+        "expires_after": session_payload["expires_after"],
+        "session": session_payload["session"],
+    }
 
     req = urllib_request.Request(
-        url="https://api.openai.com/v1/realtime/sessions",
+        url=OPENAI_REALTIME_CLIENT_SECRETS_URL,
         method="POST",
-        data=json.dumps(session_payload).encode("utf-8"),
+        data=json.dumps(openai_payload).encode("utf-8"),
         headers=_openai_realtime_session_headers(api_key),
     )
 
@@ -994,13 +1026,19 @@ def create_realtime_session():
         _audit_realtime_event(tenant, event_name="realtime_session_failed", channel=channel, metadata={"reason": "openai_unavailable"})
         return _realtime_error_response("openai_realtime_unavailable", 502)
 
-    _audit_realtime_event(tenant, event_name="realtime_session_created", channel=channel, metadata={"model": session_payload.get("model")})
+    if session_data.get("value") and not session_data.get("client_secret"):
+        session_data["client_secret"] = {
+            "value": session_data.get("value"),
+            "expires_at": session_data.get("expires_at"),
+        }
+
+    _audit_realtime_event(tenant, event_name="realtime_session_created", channel=channel, metadata={"model": session_payload["session"].get("model")})
 
     public_payload = {
         "ok": True,
         "tenant": tenant.slug,
         "channel": channel,
-        "model": session_payload.get("model"),
+        "model": session_payload["session"].get("model"),
         "avatar": session_payload.get("metadata", {}),
         "session": session_data,
     }

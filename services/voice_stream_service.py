@@ -39,7 +39,6 @@ OPENAI_REALTIME_URL = os.environ.get(
     "OPENAI_REALTIME_WS_URL",
     f"wss://api.openai.com/v1/realtime?model={OPENAI_REALTIME_MODEL}",
 )
-OPENAI_REALTIME_BETA_HEADER = os.environ.get("OPENAI_REALTIME_BETA_HEADER")
 
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
@@ -48,10 +47,18 @@ TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
 
 
 def _openai_realtime_headers() -> dict[str, str]:
-    headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
-    if OPENAI_REALTIME_BETA_HEADER:
-        headers["OpenAI-Beta"] = OPENAI_REALTIME_BETA_HEADER
-    return headers
+    return {"Authorization": f"Bearer {OPENAI_API_KEY}"}
+
+
+def _realtime_audio_format(value: str | dict | None, *, default: str = "g711_ulaw") -> dict:
+    if isinstance(value, dict):
+        return value
+    normalized = str(value or default).strip().lower().replace("-", "_")
+    if normalized in {"g711_ulaw", "ulaw", "pcmu", "mulaw", "audio/pcmu"}:
+        return {"type": "audio/pcmu"}
+    if normalized in {"g711_alaw", "alaw", "pcma", "audio/pcma"}:
+        return {"type": "audio/pcma"}
+    return {"type": "audio/pcm", "rate": 24000}
 
 
 class VoiceStreamService:
@@ -624,20 +631,32 @@ class VoiceStreamService:
                     session_update = {
                         "type": "session.update",
                         "session": {
-                            "modalities": ["text", "audio"],
+                            "type": "realtime",
+                            "model": OPENAI_REALTIME_MODEL,
+                            "output_modalities": ["audio"],
                             "instructions": self._get_system_instruction(),
-                            "voice": voice_name,
-                            "input_audio_format": "g711_ulaw",
-                            "output_audio_format": "g711_ulaw",
-                            "turn_detection": {
-                                "type": "server_vad",
-                                "threshold": voice_cfg.get("openai_realtime_vad_threshold", 0.45),
-                                "prefix_padding_ms": voice_cfg.get("openai_realtime_vad_prefix_padding_ms", 250),
-                                "silence_duration_ms": voice_cfg.get("openai_realtime_vad_silence_ms", 420),
-                                "create_response": True,
-                                "interrupt_response": True,
+                            "audio": {
+                                "input": {
+                                    "format": _realtime_audio_format(voice_cfg.get("openai_realtime_input_audio_format") or "g711_ulaw"),
+                                    "noise_reduction": {"type": voice_cfg.get("openai_realtime_noise_reduction") or "near_field"},
+                                    "turn_detection": {
+                                        "type": voice_cfg.get("openai_realtime_turn_detection_type") or "semantic_vad",
+                                        "eagerness": voice_cfg.get("openai_realtime_semantic_vad_eagerness") or "auto",
+                                        "create_response": True,
+                                        "interrupt_response": True,
+                                    },
+                                    "transcription": {
+                                        "model": voice_cfg.get("openai_realtime_transcription_model") or "gpt-4o-mini-transcribe",
+                                    },
+                                },
+                                "output": {
+                                    "format": _realtime_audio_format(voice_cfg.get("openai_realtime_output_audio_format") or "g711_ulaw"),
+                                    "voice": voice_name,
+                                    "speed": float(voice_cfg.get("openai_realtime_voice_speed") or 1.0),
+                                },
                             },
                             "tools": self.tools,
+                            "tool_choice": "auto",
                         },
                     }
                     self.openai_ws.send(json.dumps(session_update))
@@ -663,7 +682,7 @@ class VoiceStreamService:
                             {
                                 "type": "response.create",
                                 "response": {
-                                    "modalities": ["text", "audio"],
+                                    "output_modalities": ["audio"],
                                     "instructions": greeting_text,
                                 },
                             }

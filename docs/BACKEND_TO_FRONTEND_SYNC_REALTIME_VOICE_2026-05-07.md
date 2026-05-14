@@ -4,10 +4,10 @@ Objetivo: mejorar llamadas de WhatsApp/telefono con voz nativa Realtime, sin vol
 
 ## Decisiones backend
 
-- Modelo recomendado por defecto: `gpt-realtime`.
+- Modelo recomendado por defecto: `gpt-realtime-2`.
 - Fallback operativo configurable: por defecto `gpt-realtime`.
 - Voz default: `marin`, configurable por tenant con `openai_realtime_voice`.
-- No se depreca V1 ni se duplica app: se mejora el stream actual y se agregan contratos publicos.
+- No se usa el endpoint deprecated `/v1/realtime/sessions`: el backend genera credenciales efimeras con `/v1/realtime/client_secrets`.
 - El telefono usa audio `g711_ulaw` para Twilio Media Streams.
 - El widget/browser sigue usando WebRTC desde `/api/public/realtime/session`.
 
@@ -30,7 +30,7 @@ Respuesta:
 {
   "contract_version": "realtime.voice_capabilities.v1",
   "provider": "openai_realtime",
-  "recommended_model": "gpt-realtime",
+  "recommended_model": "gpt-realtime-2",
   "fallback_model": "gpt-realtime",
   "voice": "marin",
   "active_vertical": "municipio|pyme|colegio|general",
@@ -44,7 +44,8 @@ Respuesta:
   },
   "features": {
     "barge_in": true,
-    "server_vad": true,
+    "semantic_vad": true,
+    "server_vad": false,
     "tool_calling": true,
     "whatsapp_followup": true,
     "post_call_receipt": true,
@@ -110,7 +111,7 @@ Si voz esta apagada por tenant, backend responde HTTP 200 degradable:
   "tenant_slug": "municipio",
   "widget_token": "...",
   "channel": "voice",
-  "model": "gpt-realtime",
+  "model": "gpt-realtime-2",
   "fallback_model": "gpt-realtime",
   "voice": "marin",
   "transport": "webrtc",
@@ -119,7 +120,7 @@ Si voz esta apagada por tenant, backend responde HTTP 200 degradable:
 }
 ```
 
-Backend usa `model`/`recommended_model`, `fallback_model`, `voice`, `transport`, `profile` y `active_vertical` como metadata y payload de sesion. Si no vienen, resuelve desde tenant/env.
+Backend resuelve `model` desde tenant/env para evitar que un frontend viejo degrade a `gpt-realtime`; si frontend manda un modelo anterior, queda registrado como `requested_model_ignored`. `voice`, `transport`, `profile` y `active_vertical` se mantienen como metadata operativa.
 
 ## Verticales soportadas
 
@@ -156,8 +157,8 @@ Colegios:
 ## Backend implementado
 
 - `services/realtime_voice_profiles.py`: perfiles, tools y contrato por vertical.
-- `services/voice_stream_service.py`: stream Twilio -> OpenAI Realtime con `gpt-realtime` por defecto, herramientas por vertical y `crear_caso_escolar`.
-- `services/realtime_session_service.py`: sesiones WebRTC legacy actualizadas a modelo realtime actual y voz configurable.
+- `services/voice_stream_service.py`: stream Twilio -> OpenAI Realtime con `gpt-realtime-2` por defecto, schema actual `output_modalities` + `audio`, herramientas por vertical y `crear_caso_escolar`.
+- `services/realtime_session_service.py`: sesiones WebRTC actualizadas a `/v1/realtime/client_secrets`, modelo realtime actual y voz configurable.
 - `routes/public_resolver.py`: contrato publico de capacidades y widget config enriquecido.
-- `POST /api/public/realtime/session` respeta campos de contrato enviados por frontend (`model`, `fallback_model`, `voice`, `transport`, `profile`, `active_vertical`).
+- `POST /api/public/realtime/session` usa `client_secrets.v2`, schema actual y respeta campos visuales/contextuales enviados por frontend (`voice`, `transport`, `profile`, `active_vertical`) sin permitir downgrade de modelo.
 - Tests: `tests/test_realtime_voice_profiles.py`, `tests/test_public_resolver_widget_config_contract.py` y `tests/test_widget_settings.py`.

@@ -17,7 +17,16 @@ class RealtimeSessionService:
     """
 
     def __init__(self):
-        self.openai_url = "https://api.openai.com/v1/realtime/sessions"
+        self.openai_url = "https://api.openai.com/v1/realtime/client_secrets"
+
+    @staticmethod
+    def _audio_format(value: str | None = None) -> dict:
+        normalized = str(value or "pcm16").strip().lower().replace("-", "_")
+        if normalized in {"g711_ulaw", "ulaw", "pcmu", "mulaw", "audio/pcmu"}:
+            return {"type": "audio/pcmu"}
+        if normalized in {"g711_alaw", "alaw", "pcma", "audio/pcma"}:
+            return {"type": "audio/pcma"}
+        return {"type": "audio/pcm", "rate": 24000}
 
     def create_session(self, tenant_id: int, user_id: Optional[int] = None, anon_id: Optional[str] = None) -> Dict[str, Any]:
         """
@@ -39,19 +48,36 @@ class RealtimeSessionService:
         }
 
         payload = {
-            "model": model,
-            "modalities": ["audio", "text"],
-            "voice": voice,
-            "instructions": (
-                "Sos un asistente realtime de Chatboc. Habla en espanol argentino, "
-                "con respuestas breves, claras y orientadas a resolver. "
-                "No inventes tickets, pedidos, precios ni confirmaciones."
-            ),
-            "turn_detection": {
-                "type": "server_vad",
-                "threshold": 0.45,
-                "prefix_padding_ms": 250,
-                "silence_duration_ms": 420,
+            "expires_after": {"anchor": "created_at", "seconds": 600},
+            "session": {
+                "type": "realtime",
+                "model": model,
+                "output_modalities": ["audio"],
+                "instructions": (
+                    "Sos un asistente realtime de Chatboc. Habla en espanol argentino, "
+                    "con respuestas breves, claras y orientadas a resolver. "
+                    "Entende tambien ingles y portugues; responde en el idioma del usuario "
+                    "y deja los datos operativos normalizados en espanol. "
+                    "No inventes tickets, pedidos, precios ni confirmaciones."
+                ),
+                "audio": {
+                    "input": {
+                        "format": self._audio_format("pcm16"),
+                        "noise_reduction": {"type": "near_field"},
+                        "turn_detection": {
+                            "type": "semantic_vad",
+                            "eagerness": "auto",
+                            "create_response": True,
+                            "interrupt_response": True,
+                        },
+                        "transcription": {"model": "gpt-4o-mini-transcribe"},
+                    },
+                    "output": {
+                        "format": self._audio_format("pcm16"),
+                        "voice": voice,
+                        "speed": 1.0,
+                    },
+                },
             },
         }
 
@@ -65,10 +91,12 @@ class RealtimeSessionService:
                 return {"error": "Error al generar sesión de voz", "status_code": resp.status_code}
 
             data = resp.json()
+            client_secret = data.get("client_secret", {}).get("value") or data.get("value")
 
             return {
-                "client_secret": data.get("client_secret", {}).get("value"),
+                "client_secret": client_secret,
                 "session_id": str(uuid.uuid4()), # our internal reference
+                "openai_session": data.get("session") or {},
                 "model": model,
                 "voice": voice,
                 "status_code": 200
