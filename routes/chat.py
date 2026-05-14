@@ -69,6 +69,44 @@ def _normalize_chat_session_id(value: str | None) -> str:
     return f"sid_{digest}"
 
 
+def _request_json_payload() -> dict:
+    payload = request.get_json(silent=True) if request.is_json else None
+    return payload if isinstance(payload, dict) else {}
+
+
+def _resolve_chat_session_id_from_request() -> tuple[str, str | None, str]:
+    """Resolve a DB-safe chat session id, preferring explicit short ids.
+
+    Demo tokens are valid routing/session credentials, but they do not fit the
+    chat_session_context.chat_session_id VARCHAR(36) column. When a frontend
+    only sends demo_session_id, derive a stable sid_* from that token instead
+    of opening a fresh UUID per message.
+    """
+
+    payload = _request_json_payload()
+    explicit_candidates = [
+        ("header:X-Chat-Session-Id", request.headers.get("X-Chat-Session-Id")),
+        ("query:chat_session_id", request.args.get("chat_session_id")),
+        ("query:session_id", request.args.get("session_id")),
+        ("payload:chat_session_id", payload.get("chat_session_id")),
+        ("payload:session_id", payload.get("session_id")),
+    ]
+    for source, value in explicit_candidates:
+        raw = str(value or "").strip()
+        if raw:
+            return _normalize_chat_session_id(raw), raw, source
+
+    demo_session_token = _demo_session_token_from_request()
+    if demo_session_token:
+        return _normalize_chat_session_id(demo_session_token), demo_session_token, "demo_session_id"
+
+    raw_demo_candidate = next(iter(_demo_session_token_candidates_from_request()), None)
+    if raw_demo_candidate:
+        return _normalize_chat_session_id(raw_demo_candidate), raw_demo_candidate, "demo_session_candidate"
+
+    return _normalize_chat_session_id(None), None, "generated"
+
+
 def _demo_session_token_from_request() -> str | None:
     for candidate in _demo_session_token_candidates_from_request():
         if decode_demo_session_token(candidate):
@@ -82,9 +120,7 @@ def _demo_session_token_candidates_from_request() -> list[str]:
     if auth_header.lower().startswith("bearer "):
         bearer = auth_header.split(None, 1)[1].strip()
 
-    payload = request.get_json(silent=True) if request.is_json else None
-    if not isinstance(payload, dict):
-        payload = {}
+    payload = _request_json_payload()
 
     candidates = [
         request.headers.get("X-Demo-Session-Id"),
@@ -1591,15 +1627,17 @@ def _procesar_chat(
             400,
         )
 
-    raw_chat_session_id_header = request.headers.get("X-Chat-Session-Id")
-    chat_session_id_header = _normalize_chat_session_id(raw_chat_session_id_header)
+    chat_session_id_header, raw_chat_session_id_header, chat_session_source = _resolve_chat_session_id_from_request()
     if not raw_chat_session_id_header:
-        current_app.logger.warning(f"X-Chat-Session-Id not found. Generated new: {chat_session_id_header}")
+        current_app.logger.warning("Chat session id not found. Generated new: %s", chat_session_id_header)
     elif raw_chat_session_id_header != chat_session_id_header:
         current_app.logger.info(
-            "Normalized overlong X-Chat-Session-Id to %s",
+            "Normalized overlong chat session candidate from %s to %s",
+            chat_session_source,
             chat_session_id_header,
         )
+    else:
+        current_app.logger.info("Using chat session id from %s: %s", chat_session_source, chat_session_id_header)
 
     def _emit_socket_payload(payload: object) -> None:
         """Emite un mensaje por Socket.IO si hay una sesión web activa."""
@@ -1662,6 +1700,8 @@ def _procesar_chat(
         initial_context_data = {
             "source_chat_session_id": raw_chat_session_id_header,
         } if raw_chat_session_id_header and raw_chat_session_id_header != chat_session_id_header else {}
+        initial_context_data["chat_session_id"] = chat_session_id_header
+        initial_context_data["chat_session_source"] = chat_session_source
         raw_demo_session_token_for_context = next(iter(_demo_session_token_candidates_from_request()), None)
         demo_session_payload_for_context = decode_demo_session_token(raw_demo_session_token_for_context) if raw_demo_session_token_for_context else {}
         if raw_demo_session_token_for_context:
@@ -2621,29 +2661,23 @@ def _procesar_chat(
         # The chat endpoint is only responsible for passing the attachmentInfo.
         analisis_archivo_resultado = None
 
-        # Leer el X-Chat-Session-Id del header
-        raw_chat_session_id_header = request.headers.get("X-Chat-Session-Id")
-        chat_session_id_header = _normalize_chat_session_id(raw_chat_session_id_header)
-
-        if not raw_chat_session_id_header:
-            # Fallback: Generar un nuevo ID si no viene en el header.
-            # Idealmente, el frontend SIEMPRE deberia enviarlo.
-            current_app.logger.warning(f"X-Chat-Session-Id no encontrado en headers. Generando uno nuevo: {chat_session_id_header}")
-        elif raw_chat_session_id_header != chat_session_id_header:
-            current_app.logger.info(
-                "Normalized overlong X-Chat-Session-Id to %s",
-                chat_session_id_header,
-            )
-        current_app.logger.info(f"Usando Chat Session ID (from header or generated): {chat_session_id_header}")
+        current_app.logger.info(
+            "Usando Chat Session ID resuelto previamente (%s): %s",
+            chat_session_source,
+            chat_session_id_header,
+        )
 
         # Cargar o crear el contexto de la base de datos
-        chat_context_obj = ChatSessionContext.query.filter_by(chat_session_id=chat_session_id_header).first()
+        if not chat_context_obj:
+            chat_context_obj = ChatSessionContext.query.filter_by(chat_session_id=chat_session_id_header).first()
 
         if not chat_context_obj:
             current_app.logger.info(f"No se encontró ChatSessionContext. Creando uno nuevo.")
             initial_context_data = {
                 "source_chat_session_id": raw_chat_session_id_header,
             } if raw_chat_session_id_header and raw_chat_session_id_header != chat_session_id_header else {}
+            initial_context_data["chat_session_id"] = chat_session_id_header
+            initial_context_data["chat_session_source"] = chat_session_source
             demo_session_token_for_context = _demo_session_token_from_request()
             raw_demo_session_token_for_context = demo_session_token_for_context or next(iter(_demo_session_token_candidates_from_request()), None)
             demo_session_payload_for_context = decode_demo_session_token(demo_session_token_for_context) if demo_session_token_for_context else {}
@@ -2661,6 +2695,11 @@ def _procesar_chat(
             # No hacer commit aquí todavía, se hará después de procesar el chat
         else:
             current_app.logger.info(f"ChatSessionContext cargado. User_id: {chat_context_obj.user_id}, Anon_id: {chat_context_obj.anon_id}")
+            if chat_context_obj.context_data is None:
+                chat_context_obj.context_data = {}
+            if isinstance(chat_context_obj.context_data, dict):
+                chat_context_obj.context_data.setdefault("chat_session_id", chat_session_id_header)
+                chat_context_obj.context_data.setdefault("chat_session_source", chat_session_source)
 
 
             # Detect if user just logged in with this session
@@ -2700,6 +2739,8 @@ def _procesar_chat(
             uploaded_file_info=uploaded_file_info,
             location=location,
             chat_db_context=chat_context_obj,
+            chat_session_uuid=chat_session_id_header,
+            channel=channel,
             action_id=action_id,
             anon_id=anon_id
         )

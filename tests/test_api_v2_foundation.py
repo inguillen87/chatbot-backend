@@ -552,6 +552,39 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertLessEqual(len(context.chat_session_id), 36)
         self.assertEqual((context.context_data or {}).get("demo_session_id"), demo_session_id)
 
+    def test_ask_municipio_demo_session_without_header_reuses_stable_chat_context(self):
+        from routes.v2.tenants import create_demo_session_token
+
+        owner = User(name="Municipio Stable", email="municipio-stable@test.com", password_hash="hash", tipo_chat="municipio", rol="admin")
+        db.session.add(owner)
+        db.session.flush()
+        db.session.add(TenantProfile(slug="municipio", nombre="Municipio Stable", tipo="municipio", municipio_id=owner.id, is_active=True))
+        db.session.commit()
+
+        captured_session_ids = []
+
+        def fake_responder(*args, **kwargs):
+            captured_session_ids.append(kwargs.get("chat_session_uuid"))
+            return {"message_body": "Caso recibido."}
+
+        demo_session_id = create_demo_session_token(tenant_slug="municipio", sector="gobierno", rubro="gobierno")
+        with patch("services.logic.responder_chatboc", side_effect=fake_responder):
+            for question in ("__INIT__", "Quiero iniciar un reclamo por alumbrado publico."):
+                resp = self.client.post(
+                    f"/api/ask/municipio?tenant_slug=municipio&demo_session_id={demo_session_id}",
+                    json={"pregunta": question, "demo_mode": True, "tenant_slug": "municipio"},
+                    headers={"Origin": "https://www.chatboc.ar"},
+                )
+                self.assertEqual(resp.status_code, 200)
+
+        contexts = ChatSessionContext.query.all()
+        self.assertEqual(len(contexts), 1)
+        self.assertTrue(contexts[0].chat_session_id.startswith("sid_"))
+        self.assertLessEqual(len(contexts[0].chat_session_id), 36)
+        self.assertNotEqual(contexts[0].chat_session_id, demo_session_id)
+        self.assertEqual((contexts[0].context_data or {}).get("demo_session_id"), demo_session_id)
+        self.assertEqual(captured_session_ids, [contexts[0].chat_session_id, contexts[0].chat_session_id])
+
     def test_ask_invalid_demo_session_returns_json_error(self):
         invalid_demo_session_id = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.invalid.signature"
 
