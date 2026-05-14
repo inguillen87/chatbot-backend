@@ -91,6 +91,7 @@ class LandingExperienceContractTestCase(unittest.TestCase):
                     self.assertNotIn("preview_url", item)
                     self.assertNotIn("thumbnail_url", item)
                     self.assertNotIn("image_url", item)
+            self.assertNotIn("metrics", flow)
 
     def test_tenant_landing_contract_keeps_only_tenant_identity_and_operational_flows(self):
         payload = build_landing_experience_contract(_Tenant(), page="colegios")
