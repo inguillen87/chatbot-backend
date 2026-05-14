@@ -439,13 +439,18 @@ class CrearReclamoActionHandler(BaseActionHandler):
         if ubicacion_llm:
             lower_ubi = ubicacion_llm.lower()
             # Stricter heuristic: if it's long and has 'descripción' or looks like narrative
-            if "descripción es" in lower_ubi or "problema es" in lower_ubi or len(lower_ubi.split()) > 12:
+            has_valid_coordinates = lat_coord is not None and lon_coord is not None
+            if (
+                "descripción es" in lower_ubi
+                or "problema es" in lower_ubi
+                or (len(lower_ubi.split()) > 12 and not has_valid_coordinates)
+            ):
                 # Likely a description or junk text
                 if not descripcion:
                     descripcion = ubicacion_llm # Move to description if empty
                 logger.info(f"[VALIDATION] Location rejected (too long or narrative): {ubicacion_llm}")
                 ubicacion_llm = None
-            elif not _ubicacion_es_valida(ubicacion_llm):
+            elif not _ubicacion_es_valida(ubicacion_llm) and not has_valid_coordinates:
                 logger.info(f"[VALIDATION] Ubicacion invalida detectada: {ubicacion_llm}")
                 ubicacion_llm = None
 

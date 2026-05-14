@@ -1620,7 +1620,10 @@ class ReclamoFlowHandler:
             if k == "direccion":
                 datos_reclamo.setdefault("direccion_contacto", v)
                 continue
-            if k == "nombre" and not _is_plausible_name(str(v)):
+            if k == "nombre" and (
+                normalizar_texto(str(v)) in {"soy", "nombre"}
+                or not _is_plausible_name(str(v))
+            ):
                 continue
             if k == "nombre" and re.search(r"\b(dni|documento|telefono|tel[eé]fono|email|correo)\b", str(v), re.IGNORECASE):
                 continue
