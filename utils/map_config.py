@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from typing import Dict
+from urllib.parse import urlparse
 
 from flask import current_app
 
@@ -24,6 +25,11 @@ def _get_config_value(name: str) -> str:
 
 
 DEFAULT_STYLE_URL = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json"
+_RESERVED_UNVERIFIED_STYLE_HOSTS = {"maps.chatboc.ar"}
+
+
+def _truthy(value: str) -> bool:
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _normalize_style_url(style_url: str, maptiler_key: str) -> str:
@@ -54,6 +60,24 @@ def _normalize_style_url(style_url: str, maptiler_key: str) -> str:
     return style_url
 
 
+def _safe_style_url(style_url: str) -> tuple[str, str, str | None]:
+    """Avoid publishing known-unavailable style hosts to the frontend."""
+
+    if not style_url:
+        return "", "missing", None
+
+    try:
+        host = (urlparse(style_url).hostname or "").strip().lower()
+    except Exception:
+        host = ""
+
+    allow_unverified = _truthy(_get_config_value("MAPLIBRE_ALLOW_UNVERIFIED_STYLE_URL"))
+    if host in _RESERVED_UNVERIFIED_STYLE_HOSTS and not allow_unverified:
+        return DEFAULT_STYLE_URL, "fallback_default", "configured_style_host_unavailable"
+
+    return style_url, "configured", None
+
+
 def get_map_config() -> Dict[str, str]:
     """Expose the map provider configuration expected by modern frontends.
 
@@ -77,6 +101,7 @@ def get_map_config() -> Dict[str, str]:
         or DEFAULT_STYLE_URL,
         maptiler_key,
     )
+    style_url, style_url_source, style_url_warning = _safe_style_url(style_url)
 
     provider = "none"
     available_providers = []
@@ -107,4 +132,6 @@ def get_map_config() -> Dict[str, str]:
         "google_maps_key": google_key,
         "maptiler_key": maptiler_key,
         "style_url": style_url,
+        "style_url_source": style_url_source,
+        "style_url_warning": style_url_warning,
     }

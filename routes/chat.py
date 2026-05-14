@@ -3156,3 +3156,16 @@ def live_chat_schedule():
 @chat_bp.route("/config/google-maps-key", methods=["GET"])
 def google_maps_key():
     return jsonify(get_map_config())
+
+
+@chat_bp.route("/api/map/config", methods=["GET", "OPTIONS"])
+@chat_bp.route("/map/config", methods=["GET", "OPTIONS"])
+def public_map_config():
+    if request.method == "OPTIONS":
+        return "", 204
+
+    payload = dict(get_map_config() or {})
+    payload.setdefault("contract_version", "public.map_config.v1")
+    response = jsonify(payload)
+    response.headers.setdefault("Cache-Control", "public, max-age=300")
+    return response

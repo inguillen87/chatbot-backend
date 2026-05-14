@@ -256,6 +256,40 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertTrue(payload["employees"])
         self.assertIn("educacion", payload["coverage"]["categorias"])
 
+    def test_employee_coverage_exposes_setup_dimensions_without_tickets(self):
+        owner = User(name="Owner Municipio", email="owner-municipio@test.com", rol="admin", tenant_slug="muni-empty")
+        owner.set_password("secret123")
+        db.session.add(owner)
+        db.session.flush()
+
+        tenant = TenantProfile(
+            slug="muni-empty",
+            nombre="Municipio Empty",
+            tipo="municipio",
+            municipio_id=owner.id,
+            configuracion={},
+        )
+        db.session.add(tenant)
+        db.session.flush()
+        owner.tenant_id = tenant.id
+        db.session.commit()
+
+        headers = {**self._auth(owner), "X-Tenant-Slug": tenant.slug, "X-Request-Id": "coverage-empty-1"}
+        response = self.client.get(
+            f"/api/v2/tenants/{tenant.slug}/employee-coverage",
+            headers=headers,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload.get("request_id"), "coverage-empty-1")
+        self.assertGreater(payload["summary"]["total_dimensions"], 0)
+        self.assertTrue(payload["coverage"]["categorias"])
+        self.assertIn("whatsapp", payload["coverage"]["channels"])
+        self.assertIn("web", payload["coverage"]["channels"])
+        self.assertIn("municipio_baseline_taxonomy", payload["coverage"]["dimension_sources"]["categorias"])
+        self.assertTrue(any(alert["reason_code"] == "no_employees" for alert in payload["alerts"]))
+
     def test_employee_routing_contract_scope_update_and_auto_assign(self):
         unassigned = TenantTicket(
             tenant_id=self.tenant.id,

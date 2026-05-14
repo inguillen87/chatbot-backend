@@ -3,12 +3,15 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from models import MunicipioTicket, PymeTicket, TenantProfile, TenantTicket, User
+from models import CatalogoItem, CategoriaTicket, MunicipioTicket, PymeTicket, TenantProfile, TenantTicket, User
+from services.categorias_municipio import CATEGORIAS_RECLAMO
+from services.education_contracts import education_case_taxonomy, is_education_tenant
 
 
 EMPLOYEE_ROUTING_CONTRACT_VERSION = "employee.routing.v1"
 
 _CLOSED_STATES = {"resuelto", "cerrado", "closed", "resolved", "entregado", "completed", "completado"}
+_DEFAULT_OPERATIONAL_CHANNELS = ("web", "whatsapp")
 
 
 def normalize_scope_list(values: Any, *, limit: int = 30) -> list[str]:
@@ -60,6 +63,118 @@ def tenant_ref(tenant: TenantProfile) -> dict[str, Any]:
         "tipo": tenant.tipo,
         "vertical": tenant.vertical,
         "subvertical": tenant.subvertical,
+    }
+
+
+def _tenant_config(tenant: TenantProfile) -> dict[str, Any]:
+    return tenant.configuracion if isinstance(getattr(tenant, "configuracion", None), dict) else {}
+
+
+def _append_config_values(target: set[str], cfg: dict[str, Any], *keys: str) -> None:
+    for key in keys:
+        values = cfg.get(key)
+        if isinstance(values, dict):
+            values = values.get("items") or values.get("values") or values.get("list")
+        if isinstance(values, str):
+            values = [item.strip() for item in values.split(",")]
+        if not isinstance(values, list):
+            continue
+        target.update(normalize_scope_list(values, limit=80))
+
+
+def tenant_operational_dimensions(tenant: TenantProfile, ticket_snapshots: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """Return real/configured dimensions useful for employee routing screens."""
+
+    cfg = _tenant_config(tenant)
+    routing_cfg = cfg.get("employee_routing") if isinstance(cfg.get("employee_routing"), dict) else {}
+    categories: set[str] = set()
+    zones: set[str] = set()
+    channels: set[str] = set()
+    sources: dict[str, list[str]] = {"categorias": [], "zonas": [], "channels": []}
+
+    for item in ticket_snapshots or []:
+        category = _norm(item.get("category"), "")
+        zone = _norm(item.get("zone"), "")
+        channel = _norm(item.get("channel"), "")
+        if category and category != "sin_categoria":
+            categories.add(category)
+        if zone and zone != "sin_zona":
+            zones.add(zone)
+        if channel:
+            channels.add(channel)
+    if ticket_snapshots:
+        sources["categorias"].append("open_tickets")
+        sources["zonas"].append("open_tickets")
+        sources["channels"].append("open_tickets")
+
+    persisted_categories = [
+        str(row.nombre or "").strip().lower()
+        for row in CategoriaTicket.query.filter_by(tenant_id=tenant.id).all()
+        if str(row.nombre or "").strip()
+    ]
+    if persisted_categories:
+        categories.update(persisted_categories)
+        sources["categorias"].append("categorias_ticket")
+
+    _append_config_values(
+        categories,
+        routing_cfg,
+        "categorias",
+        "categories",
+        "ticket_categories",
+        "default_ticket_categories",
+    )
+    _append_config_values(
+        categories,
+        cfg,
+        "employee_categories",
+        "ticket_categories",
+        "categorias_ticket",
+        "default_ticket_categories",
+    )
+    if routing_cfg or cfg:
+        sources["categorias"].append("tenant_config")
+
+    if not categories and is_education_tenant(tenant):
+        categories.update(normalize_scope_list([item["key"] for item in education_case_taxonomy()]))
+        sources["categorias"].append("education_taxonomy")
+
+    if not categories and str(tenant.tipo or "").lower() in {"municipio", "gobierno"}:
+        categories.update(normalize_scope_list(list(CATEGORIAS_RECLAMO), limit=80))
+        sources["categorias"].append("municipio_baseline_taxonomy")
+
+    if not categories and str(tenant.tipo or "").lower() in {"pyme", "empresa", "commerce"}:
+        owner_id = getattr(tenant, "pyme_id", None) or getattr(tenant, "municipio_id", None)
+        query = CatalogoItem.query.filter(CatalogoItem.categoria.isnot(None))
+        if tenant.id:
+            query = query.filter((CatalogoItem.tenant_id == tenant.id) | (CatalogoItem.user_id == owner_id))
+        catalog_categories = [str(row[0] or "").strip().lower() for row in query.with_entities(CatalogoItem.categoria).distinct().limit(80).all()]
+        categories.update(normalize_scope_list(catalog_categories, limit=80))
+        if catalog_categories:
+            sources["categorias"].append("catalog_categories")
+
+    _append_config_values(zones, routing_cfg, "zonas", "zones", "barrios", "districts", "operational_zones")
+    _append_config_values(zones, cfg, "zonas", "zones", "barrios", "districts", "operational_zones")
+    if zones:
+        sources["zonas"].append("tenant_config")
+
+    _append_config_values(channels, routing_cfg, "channels", "canales")
+    _append_config_values(channels, cfg, "channels", "canales")
+    if not channels:
+        channels.update(_DEFAULT_OPERATIONAL_CHANNELS)
+        sources["channels"].append("platform_defaults")
+    else:
+        sources["channels"].append("tenant_config")
+
+    if cfg.get("voice_enabled") or cfg.get("realtime_voice_enabled") or cfg.get("calls_enabled"):
+        channels.add("voice")
+        sources["channels"].append("tenant_voice_config")
+
+    return {
+        "categorias": sorted(categories),
+        "zonas": sorted(zones),
+        "channels": sorted(channels),
+        "sources": {key: sorted(set(value)) for key, value in sources.items() if value},
     }
 
 
@@ -207,10 +322,11 @@ def build_employee_routing_payload(tenant: TenantProfile) -> dict[str, Any]:
     workloads = workload_by_employee(tenant)
     tickets = [_ticket_snapshot(ticket) for ticket in _tenant_tickets(tenant)]
     unassigned = [ticket for ticket in tickets if not ticket.get("assignee_id")]
+    supported_dimensions = tenant_operational_dimensions(tenant, tickets)
 
-    categories = sorted({ticket["category"] for ticket in tickets})
-    zones = sorted({ticket["zone"] for ticket in tickets})
-    channels = sorted({ticket["channel"] for ticket in tickets})
+    categories = sorted(set(supported_dimensions["categorias"]) | {ticket["category"] for ticket in tickets})
+    zones = sorted(set(supported_dimensions["zonas"]) | {ticket["zone"] for ticket in tickets if ticket["zone"] != "sin_zona"})
+    channels = sorted(set(supported_dimensions["channels"]) | {ticket["channel"] for ticket in tickets})
 
     employee_items = []
     for emp in employees:
@@ -244,6 +360,7 @@ def build_employee_routing_payload(tenant: TenantProfile) -> dict[str, Any]:
             "categorias": categories,
             "zonas": zones,
             "channels": channels,
+            "sources": supported_dimensions.get("sources") or {},
         },
         "employees": employee_items,
         "queues": {

@@ -90,6 +90,8 @@ Backend mantiene estos campos en el shape para que el frontend no tenga que adiv
 - `lead_capture.items[]` trae `id`, `ticket_id`, `status`, `channel`, `created_at`, `contact`, `intent` y `next_action`.
 - `marketplace.summary` trae aliases directos `with_images`, `missing_images`, `products_without_image` y `bulk_import_status`.
 - `operations.freshness.summary.can_render_heatmap` es booleano.
+- Mapas deben pedir configuracion a `GET /api/map/config` y usar `style_url` del backend. No hardcodear `maps.chatboc.ar/...`; si ese host no esta verificado, backend devuelve fallback MapLibre publico con `style_url_warning`.
+- `employee-coverage` y `employee-routing` ahora exponen dimensiones de setup aunque no haya tickets abiertos: categorias base reales por vertical, canales soportados y `coverage.dimension_sources`.
 - `education.admin_menu.panel_sections[]` trae siempre `id`, `label`, `route`, `endpoint`, `secondary_endpoints` y `widgets`.
 - `superadmin.command_center.tenants.items[]` y `top_risky[]` traen aliases top-level `slug`, `tenant_slug`, `display_name`, `tenant_name`, `health_score`, `status` y `risk_reason`, ademas del objeto `tenant`.
 
@@ -101,7 +103,8 @@ Pantalla tenant profile:
 - Tabs o sidebar: Resumen, Inbox, Mapa, Encuestas/Votaciones, Marketplace, Equipo, Canales.
 - Cards densas, no landing-style, con estados empty/degraded/ready desde `operations.freshness`.
 - Un drawer 360 para cada ticket/lead usando `lead_capture.items[]` y `/api/v2/inbox/omnichannel`.
-- Mapa operativo con layers de tickets, surveys y analytics events desde `/api/v2/analytics/operations/heatmap`.
+- Mapa operativo con layers de tickets, surveys y analytics events desde `/api/v2/analytics/operations/heatmap`; leer provider/style desde `/api/map/config`.
+- Charts/Recharts: no montar graficos cuando el panel esta colapsado/oculto o mide 0. Usar contenedor con `min-height >= 220px`, `min-width >= 280px` y medir antes de renderizar para evitar `width(-1)/height(-1)`.
 - Marketplace debe mostrar cobertura de imagenes: productos sin imagen, bulk import y accion de editar/subir imagen.
 - En colegios, renderizar `education.admin_menu.panel_sections[]` y `education.profile.media_inputs`.
 

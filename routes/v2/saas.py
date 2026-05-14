@@ -33,6 +33,7 @@ from services.employee_routing import (
     employee_ref,
     find_ticket_for_assignment,
     normalize_scope_list,
+    tenant_operational_dimensions,
 )
 from services.catalog_quality import build_catalog_quality_payload
 from services.demo_sandbox_contract import build_demo_whatsapp_sandbox_contract, sandbox_context_from_contract
@@ -216,16 +217,23 @@ def _employee_workload(tenant_id: int, employee_id: int) -> int:
 def _coverage_items(tenant: TenantProfile) -> dict[str, Any]:
     employees = User.query.filter_by(tenant_id=tenant.id, es_empleado=True).order_by(User.id.asc()).all()
     open_tickets = _open_tickets(tenant.id)
-
-    categories = sorted({str(ticket.categoria or "sin_categoria").strip().lower() for ticket in open_tickets})
-    channels = sorted({_ticket_channel(ticket) for ticket in open_tickets})
-    zones = sorted(
+    ticket_snapshots = [
         {
-            str(_ticket_extra(ticket).get("zone") or _ticket_extra(ticket).get("zona") or _ticket_extra(ticket).get("address") or "sin_zona")
+            "category": str(ticket.categoria or "sin_categoria").strip().lower(),
+            "zone": str(_ticket_extra(ticket).get("zone") or _ticket_extra(ticket).get("zona") or _ticket_extra(ticket).get("address") or "sin_zona")
             .strip()
-            .lower()
-            for ticket in open_tickets
+            .lower(),
+            "channel": _ticket_channel(ticket),
         }
+        for ticket in open_tickets
+    ]
+    supported_dimensions = tenant_operational_dimensions(tenant, ticket_snapshots)
+
+    categories = sorted(set(supported_dimensions["categorias"]) | {item["category"] for item in ticket_snapshots if item["category"] != "sin_categoria"})
+    channels = sorted(set(supported_dimensions["channels"]) | {item["channel"] for item in ticket_snapshots if item["channel"]})
+    zones = sorted(
+        set(supported_dimensions["zonas"])
+        | {item["zone"] for item in ticket_snapshots if item["zone"] != "sin_zona"}
     )
 
     category_map: dict[str, list[dict[str, Any]]] = {category: [] for category in categories}
@@ -288,6 +296,7 @@ def _coverage_items(tenant: TenantProfile) -> dict[str, Any]:
             "categorias": category_map,
             "zonas": zone_map,
             "channels": channel_map,
+            "dimension_sources": supported_dimensions.get("sources") or {},
             "uncovered_categories": uncovered_categories,
             "uncovered_zones": uncovered_zones,
             "uncovered_channels": uncovered_channels,
