@@ -127,6 +127,8 @@ Backend resuelve `model` desde tenant/env para evitar que un frontend viejo degr
 Municipios:
 
 - Crear reclamo por voz.
+- Consultar estado de reclamo por voz.
+- Consultar tramites/turnos/requisitos por voz.
 - Pedir solo datos faltantes.
 - Separar descripcion de ubicacion.
 - Enviar comprobante/resumen por WhatsApp.
@@ -137,12 +139,14 @@ PyMEs:
 - Venta consultiva.
 - Consultar producto/servicio.
 - Crear pedido confirmado.
+- Consultar estado de pedido.
 - Confirmar entrega/retiro y contacto.
 - No inventar precios o stock.
 
 Colegios:
 
 - Crear `crear_caso_escolar` por llamada.
+- Consultar `consultar_caso_escolar` por llamada.
 - Casos: secretaria, preceptoria, inasistencia, comunicados, agenda, documentacion, cobranza, admisiones, convivencia, mantenimiento, tecnologia, transporte y comedor.
 - Vincula a `SchoolCaseAlias` cuando hay colegio/familia resoluble.
 - Envia resumen por WhatsApp y permite sumar imagen/audio/archivo luego.
@@ -153,11 +157,13 @@ Colegios:
 1. En demo/widget/landing, mostrar opcion "Llamar ahora" o "Probar llamada IA" solo cuando `realtime_voice.features.tool_calling === true` y `support_channels.voice_call.enabled === true`.
 2. Badges y starters son backend-first: usar `trust_badges`, `badges`, `badge_labels`, `starter_messages`, `voice_starters` o `starters` si llegan. Si no llegan, no inventar starters por vertical.
 3. Si el modelo devuelve/solicita herramienta desde WebRTC, frontend debe convertirlo en `POST /api/public/realtime/action-event` o mantener la UI en estado "derivando/registrando" hasta que backend confirme.
+4. Para videollamada, mostrarla como canal visual solo si `support_channels.video_call.enabled === true`; no prometer analisis de video en vivo hasta que backend publique una capacidad explicita `live_video_analysis: true`.
+5. En llamadas web, mostrar captions/estado corto: "escuchando", "procesando", "registrando", "comprobante enviado". No mostrar menus largos ni logs tecnicos.
 
 ## Backend implementado
 
-- `services/realtime_voice_profiles.py`: perfiles, tools y contrato por vertical.
-- `services/voice_stream_service.py`: stream Twilio -> OpenAI Realtime con `gpt-realtime-2` por defecto, schema actual `output_modalities` + `audio`, herramientas por vertical y `crear_caso_escolar`.
+- `services/realtime_voice_profiles.py`: perfiles, tools y contrato por vertical; incluye crear/consultar para reclamos, pedidos y casos escolares.
+- `services/voice_stream_service.py`: stream Twilio -> OpenAI Realtime con `gpt-realtime-2` por defecto, schema actual `output_modalities` + `audio`, herramientas por vertical, consultas de estado y `crear_caso_escolar`.
 - `services/realtime_session_service.py`: sesiones WebRTC actualizadas a `/v1/realtime/client_secrets`, modelo realtime actual y voz configurable.
 - `routes/public_resolver.py`: contrato publico de capacidades y widget config enriquecido.
 - `POST /api/public/realtime/session` usa `client_secrets.v2`, schema actual y respeta campos visuales/contextuales enviados por frontend (`voice`, `transport`, `profile`, `active_vertical`) sin permitir downgrade de modelo.

@@ -9,7 +9,7 @@ from websockets.sync.client import connect as ws_connect
 from simple_websocket.errors import ConnectionClosed
 from twilio.rest import Client as TwilioClient
 
-from models import WhatsappNumero, ChatSessionContext, User, TenantProfile, MunicipioTicket, PymeTicket
+from models import WhatsappNumero, ChatSessionContext, User, TenantProfile, MunicipioTicket, PymeTicket, PymePedido
 from extensions import db
 from sqlalchemy import func
 from sqlalchemy.orm import joinedload
@@ -92,64 +92,6 @@ class VoiceStreamService:
         self.response_id = None
         self.cancel_pending = False
 
-        # Tools definitions
-        self.tools = [
-            {
-                "type": "function",
-                "name": "crear_reclamo",
-                "description": "Registra un nuevo reclamo municipal.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "categoria": {"type": "string", "description": "Categoría del reclamo (ej: Alumbrado, Limpieza)"},
-                        "descripcion": {"type": "string", "description": "Qué pasó"},
-                        "ubicacion": {"type": "string", "description": "Dónde ocurrió (dirección)"},
-                    },
-                    "required": ["descripcion", "ubicacion"],
-                },
-            },
-            {
-                "type": "function",
-                "name": "crear_pedido",
-                "description": "Registra un nuevo pedido de venta.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "items": {"type": "string", "description": "Productos y cantidades"},
-                        "direccion_entrega": {"type": "string", "description": "Dirección de entrega (si aplica)"},
-                    },
-                    "required": ["items"],
-                },
-            },
-            {
-                "type": "function",
-                "name": "transferir_humano",
-                "description": "Transfiere la llamada a un agente humano.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"motivo": {"type": "string"}},
-                    "required": ["motivo"],
-                },
-            },
-            {
-                "type": "function",
-                "name": "finalizar_llamada",
-                "description": "Corta la llamada telefónica.",
-                "parameters": {"type": "object", "properties": {}, "required": []},
-            },
-            {
-                "type": "function",
-                "name": "consultar_producto",
-                "description": "Busca un producto en el catálogo por nombre y devuelve precio y stock.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "nombre": {"type": "string", "description": "Nombre o descripción del producto a buscar"}
-                    },
-                    "required": ["nombre"],
-                },
-            },
-        ]
         self.voice_vertical = "general"
         self.tools = build_realtime_voice_tools(self.voice_vertical)
 
@@ -304,6 +246,131 @@ class VoiceStreamService:
                 safe_flag_modified(source_context, "context_data")
 
         db.session.commit()
+
+    def _latest_context_value(self, *keys: str):
+        stack = [self.context_data_snapshot] if isinstance(self.context_data_snapshot, dict) else []
+        seen = set()
+        while stack:
+            item = stack.pop(0)
+            if not isinstance(item, dict):
+                continue
+            item_id = id(item)
+            if item_id in seen:
+                continue
+            seen.add(item_id)
+            for key in keys:
+                value = item.get(key)
+                if value not in (None, ""):
+                    return value
+            for value in item.values():
+                if isinstance(value, dict):
+                    stack.append(value)
+        return None
+
+    @staticmethod
+    def _voice_compact_text(text: str | None, *, max_chars: int = 360) -> str:
+        cleaned = re.sub(r"https?://\S+", "", str(text or ""))
+        cleaned = re.sub(r"[*_`#>\[\]()]", "", cleaned)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        if len(cleaned) <= max_chars:
+            return cleaned
+        return cleaned[: max_chars - 1].rstrip() + "..."
+
+    @staticmethod
+    def _normalize_ticket_number(value) -> str | None:
+        if value in (None, ""):
+            return None
+        text = str(value).strip()
+        text = re.sub(r"^(ticket|reclamo|caso)\s*#?\s*", "", text, flags=re.IGNORECASE)
+        text = text.replace("M-", "").replace("S-", "").replace("#", "").strip()
+        return text or None
+
+    def _find_municipio_ticket_for_voice(self, nro_ticket=None, pin=None):
+        context_nro = self.last_ticket_nro or self._latest_context_value("latest_ticket_nro", "last_ticket_code")
+        context_pin = self._latest_context_value("latest_ticket_pin", "consulta_pin")
+        explicit_nro = nro_ticket not in (None, "")
+        nro = self._normalize_ticket_number(nro_ticket or context_nro)
+        pin_value = str(pin or context_pin or "").strip()
+        if not nro:
+            return None, "missing_ticket"
+        if explicit_nro and not pin_value and str(context_nro or "") != str(nro_ticket or ""):
+            return None, "missing_pin"
+
+        candidates = list(dict.fromkeys([nro, str(nro), f"M-{nro}", f"S-{nro}"]))
+        query = MunicipioTicket.query.filter(MunicipioTicket.nro_ticket.in_(candidates))
+        if pin_value:
+            query = query.filter(MunicipioTicket.consulta_pin == pin_value)
+        tenant_id = getattr(self.tenant_profile, "id", None)
+        municipio_id = getattr(self.tenant_profile, "municipio_id", None) or getattr(self.owner_user, "id", None)
+        if tenant_id:
+            query = query.filter(MunicipioTicket.tenant_id == tenant_id)
+        elif municipio_id:
+            query = query.filter(MunicipioTicket.municipio_id == municipio_id)
+        ticket = query.order_by(MunicipioTicket.fecha.desc()).first()
+        if ticket:
+            return ticket, None
+        if not pin_value:
+            return None, "missing_pin"
+        return None, "not_found"
+
+    def _find_pyme_order_for_voice(self, nro_pedido=None):
+        nro = str(nro_pedido or self.last_order_nro or self._latest_context_value("latest_order_nro") or "").strip()
+        if not nro:
+            return None, "missing_order"
+        query = PymePedido.query.filter(PymePedido.nro_pedido == nro)
+        tenant_id = getattr(self.tenant_profile, "id", None)
+        pyme_id = getattr(self.tenant_profile, "pyme_id", None) or getattr(self.owner_user, "id", None)
+        if tenant_id:
+            query = query.filter(PymePedido.tenant_id == tenant_id)
+        elif pyme_id:
+            query = query.filter(PymePedido.pyme_id == pyme_id)
+        pedido = query.order_by(PymePedido.fecha.desc()).first()
+        return (pedido, None) if pedido else (None, "not_found")
+
+    def _find_school_case_for_voice(self, school_case_id=None):
+        latest_case = self._latest_context_value("latest_school_case")
+        if isinstance(latest_case, dict):
+            latest_id = latest_case.get("school_case_id") or latest_case.get("id")
+        else:
+            latest_id = None
+        raw_id = school_case_id or latest_id
+        if raw_id in (None, ""):
+            return None, None, "missing_case"
+        try:
+            alias_id = int(str(raw_id).replace("#", "").strip())
+        except (TypeError, ValueError):
+            return None, None, "invalid_case"
+
+        from models_education import SchoolCaseAlias
+
+        query = SchoolCaseAlias.query.filter_by(id=alias_id)
+        tenant_id = getattr(self.tenant_profile, "id", None)
+        if tenant_id:
+            query = query.filter(SchoolCaseAlias.tenant_id == tenant_id)
+        alias = query.first()
+        if not alias:
+            return None, None, "not_found"
+        ticket = PymeTicket.query.get(alias.ticket_id) if alias.ticket_type == "pyme" else MunicipioTicket.query.get(alias.ticket_id)
+        return alias, ticket, None
+
+    def _send_tool_result(self, call_id, result: str, *, create_response: bool = True) -> None:
+        if not self.openai_ws:
+            return
+        self.openai_ws.send(
+            json.dumps(
+                {
+                    "type": "conversation.item.create",
+                    "item": {
+                        "type": "function_call_output",
+                        "call_id": call_id,
+                        "output": result,
+                    },
+                }
+            )
+        )
+        if create_response:
+            self.openai_ws.send(json.dumps({"type": "response.create"}))
+            self.response_active = True
 
     def _resolve_context(self, from_number, to_number, call_sid):
         """
@@ -491,60 +558,6 @@ class VoiceStreamService:
             translation_policy=build_multilingual_translation_policy(voice_cfg, current_app.config),
         )
 
-        tenant_name = self._resolve_tenant_name()
-        tenant_tipo = "municipio"
-
-        if self.tenant_profile:
-            tenant_tipo = self.tenant_profile.tipo or tenant_tipo
-
-        identity = self._resolve_identity_from_context(self.context_data_snapshot)
-        user_name = (
-            sanitize_profile_name(getattr(self.user, "name", None))
-            or identity.get("nombre")
-            or "Vecino"
-        )
-        user_addr = getattr(self.user, "direccion", None) or identity.get("direccion") or ""
-
-        known_data_str = f"Datos conocidos del usuario: Nombre: {user_name}."
-        if user_addr:
-            known_data_str += f" Dirección guardada: {user_addr}."
-
-        prompt = (
-            f"Sos el asistente telefónico de {tenant_name}. "
-            "Hablas en español argentino neutro (usá 'vos', sin jerga). "
-            "Tono: amable, empático y profesional. "
-            "Respuestas MUY cortas: 1 o 2 oraciones. "
-            "Objetivo: resolver rápido. "
-            f"{known_data_str} "
-            "Regla PRIORITARIA: Si el nombre del usuario es 'Vecino' o desconocido, TU PRIMERA PRIORIDAD es decir: 'No tengo tu nombre agendado, ¿cómo te llamas?' "
-            "Si ya conocés el nombre del usuario, saludalo usando su nombre. "
-            "IMPORTANTE: No confundas saludos como 'Hola', 'Buenas', 'Hola hola' con el nombre del usuario. Si dice 'Hola', preguntá el nombre. "
-            "Regla CRÍTICA: NUNCA inventes tickets, números o confirmaciones. "
-            "Solo confirmás ticket/pedido cuando la herramienta devuelve el número. "
-            "Si el usuario da varios datos en una sola frase (categoría, ubicación, descripción), separalos y NO vuelvas a pedir lo que ya dijo. "
-            "DISTINGUISH CLEARLY: 'Don Bosco 55' is a location. 'Tree fallen' is a description. Never mix them in the tool arguments. "
-            "SUMMARIZE the description for the tool. Do not send the full raw transcript. Ex: 'Árbol caído en garage'. "
-            "Be empathetic and human: 'Uy, qué problema', 'Entiendo', 'Lo siento', 'Ya mismo lo dejo asentado'. "
-            "Regla: si falta un dato (ubicación/categoría/descr), preguntalo directo. "
-            "Si falta la categoría pero hay descripción suficiente, inferila sin preguntar. "
-            "Si el usuario menciona esquina/cruce, incluí ambas calles (ej: 'Don Bosco y Sarmiento'). "
-            "Cuando tengas lo mínimo, ejecutá la herramienta correspondiente. "
-            "IMPORTANTE: Si el usuario corrige la dirección o descripción DESPUÉS de que ya creaste el ticket, NO vuelvas a llamar a crear_reclamo. "
-            "Simplemente decile que tomaste nota de la corrección. "
-            "Al finalizar, confirmá el número con una frase breve, por ejemplo: "
-            "'Tu reclamo quedó cargado con el número [Nro]'. "
-            "Avisá que se envió el comprobante por WhatsApp. "
-            "Si el usuario confirma que ya está todo listo o dice 'no', 'nada más', 'listo' o 'perfecto', "
-            "saludá y ejecutá finalizar_llamada."
-        )
-
-        # Si podés detectar tipo tenant: municipio vs pyme
-        # (si no, el modelo decide por intención)
-        if tenant_tipo == "pyme":
-            prompt += " Si la intención es compra, registrá un pedido. Si es consulta general, respondé breve."
-
-        return prompt
-
     # ----------------------------
     # Main loop
     # ----------------------------
@@ -703,6 +716,71 @@ class VoiceStreamService:
     # ----------------------------
     def handle_openai_message(self, data):
         msg_type = data.get("type")
+
+        if msg_type == "response.created":
+            self.response_active = True
+            response_payload = data.get("response") or {}
+            self.response_id = data.get("response_id") or response_payload.get("id") or data.get("id")
+            self.cancel_pending = False
+            return
+
+        if msg_type in ("response.canceled", "response.cancelled", "response.failed"):
+            self.response_active = False
+            self.response_id = None
+            self.cancel_pending = False
+            return
+
+        if msg_type == "response.audio.delta":
+            audio_payload = data.get("delta")
+            if audio_payload:
+                self.ws.send(
+                    json.dumps(
+                        {
+                            "event": "media",
+                            "streamSid": self.stream_sid,
+                            "media": {"payload": audio_payload},
+                        }
+                    )
+                )
+            self.response_active = True
+            return
+
+        if msg_type == "input_audio_buffer.speech_started":
+            self.ws.send(json.dumps({"event": "clear", "streamSid": self.stream_sid}))
+            if self.response_active and not self.cancel_pending and self.openai_ws:
+                cancel_payload = {"type": "response.cancel"}
+                if self.response_id:
+                    cancel_payload["response_id"] = self.response_id
+                self.openai_ws.send(json.dumps(cancel_payload))
+                self.response_active = False
+                self.cancel_pending = True
+            return
+
+        if msg_type == "response.function_call_arguments.done":
+            self.execute_tool(data.get("call_id"), data.get("name"), data.get("arguments"))
+            return
+
+        if msg_type in ("response.done", "response.completed"):
+            self.response_active = False
+            self.response_id = None
+            self.cancel_pending = False
+            if self.pending_end_call:
+                self.pending_end_call = False
+                self._safe_end_call_twilio()
+            return
+
+        if msg_type == "error":
+            error_info = data.get("error", {})
+            if error_info.get("code") == "response_cancel_not_active":
+                logger.warning(f"[VOICE] OpenAI warning: {data}")
+                self.response_active = False
+                self.response_id = None
+                self.cancel_pending = False
+                return
+            logger.error(f"[VOICE] OpenAI error: {data}")
+            return
+
+        return
 
         if msg_type == "response.created":
             self.response_active = True
@@ -943,6 +1021,8 @@ class VoiceStreamService:
                     else None
                 )
                 chat_data = session_context.context_data if session_context else {}
+                if isinstance(chat_data, dict):
+                    self.context_data_snapshot = chat_data
 
                 # ----------------------------
                 # COLEGIO: Caso escolar
@@ -1374,6 +1454,85 @@ class VoiceStreamService:
                     res = handler.execute(action_args)
 
                     result = res.get("message_to_user") or "No encontré información sobre ese producto."
+
+                # ----------------------------
+                # MUNICIPIO: Estado de reclamo
+                # ----------------------------
+                elif name == "consultar_estado_reclamo":
+                    ticket, reason = self._find_municipio_ticket_for_voice(
+                        args.get("nro_ticket") or args.get("id_ticket_mencionado"),
+                        args.get("pin") or args.get("consulta_pin"),
+                    )
+                    if reason == "missing_ticket":
+                        result = "Necesito el numero de reclamo para consultar el estado."
+                    elif reason == "missing_pin":
+                        result = "Necesito el PIN de consulta para validar ese reclamo."
+                    elif reason == "not_found":
+                        result = "No encontre ese reclamo con los datos recibidos. Revisemos numero y PIN."
+                    else:
+                        asunto = getattr(ticket, "asunto", None) or getattr(ticket, "categoria", None) or "reclamo"
+                        estado = getattr(ticket, "estado", None) or "sin estado"
+                        result = self._voice_compact_text(
+                            f"El reclamo {ticket.nro_ticket} sobre {asunto} esta en estado {estado}."
+                        )
+
+                # ----------------------------
+                # MUNICIPIO: Tramites
+                # ----------------------------
+                elif name == "consultar_tramite":
+                    from services.actions.municipio_actions import ConsultarInfoTramiteActionHandler
+
+                    ctx = {
+                        "user_obj": self.owner_user,
+                        "viewer_user_obj": self.user,
+                        "channel": "voice",
+                        "chat_db_context_data": chat_data,
+                    }
+                    handler = ConsultarInfoTramiteActionHandler(ctx)
+                    res = handler.execute(
+                        {
+                            "nombre_tramite": args.get("nombre_tramite")
+                            or args.get("tramite")
+                            or args.get("categoria")
+                        }
+                    )
+                    result = self._voice_compact_text(
+                        res.get("message_to_user") or "No encontre informacion de ese tramite."
+                    )
+
+                # ----------------------------
+                # PYME: Estado de pedido
+                # ----------------------------
+                elif name == "consultar_estado_pedido":
+                    pedido, reason = self._find_pyme_order_for_voice(args.get("nro_pedido"))
+                    if reason == "missing_order":
+                        result = "Necesito el numero de pedido para consultar el estado."
+                    elif reason == "not_found":
+                        result = "No encontre ese pedido para este comercio. Revisemos el numero."
+                    else:
+                        monto = getattr(pedido, "monto_total", None)
+                        monto_text = f" Total registrado: {monto}." if monto is not None else ""
+                        result = self._voice_compact_text(
+                            f"El pedido {pedido.nro_pedido} esta en estado {pedido.estado}.{monto_text}"
+                        )
+
+                # ----------------------------
+                # COLEGIO: Estado de caso escolar
+                # ----------------------------
+                elif name == "consultar_caso_escolar":
+                    alias, ticket, reason = self._find_school_case_for_voice(args.get("school_case_id"))
+                    if reason == "missing_case":
+                        result = "Necesito el numero de caso escolar para consultar el seguimiento."
+                    elif reason == "invalid_case":
+                        result = "Ese numero de caso escolar no parece valido. Repetimelo por favor."
+                    elif reason == "not_found":
+                        result = "No encontre ese caso escolar para este colegio."
+                    else:
+                        estado = getattr(ticket, "estado", None) or "registrado"
+                        case_type = getattr(alias, "case_type", None) or "consulta"
+                        result = self._voice_compact_text(
+                            f"El caso escolar {alias.id}, de tipo {case_type}, esta en estado {estado}."
+                        )
 
                 # ----------------------------
                 # Transferir humano

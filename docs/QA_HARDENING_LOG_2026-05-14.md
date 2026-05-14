@@ -354,6 +354,27 @@ $env:TWILIO_AUTH_TOKEN='<token real o staging>'
 
 No usar este modo contra produccion sin snapshot/ventana de QA, porque escribe contextos, tickets, pedidos y adjuntos.
 
+### P0 - Voz Realtime con paridad operativa por rubro
+
+Estado aplicado:
+
+- El perfil Realtime de voz ahora publica herramientas accionables por rubro, no solo creacion:
+  - Municipio: crear reclamo, consultar estado de reclamo y consultar tramite.
+  - PyME: consultar producto, crear pedido y consultar estado de pedido.
+  - Colegio: crear caso escolar y consultar caso escolar.
+- El prompt de voz evita recitar menus completos y fuerza turnos cortos: proximo paso probable, un dato faltante por vez y confirmacion solo con resultado de herramienta.
+- `VoiceStreamService` elimina definiciones legacy de tools hardcodeadas y usa el contrato central de `realtime_voice_profiles`.
+- La llamada puede consultar el ultimo ticket, pedido o caso creado en la sesion sin pedir datos repetidos cuando ya estan en contexto.
+- Barge-in validado: cuando el usuario interrumpe, Twilio recibe `clear` y OpenAI recibe `response.cancel`.
+
+Pendiente para QA real post-deploy:
+
+- Llamar a Junin y crear/consultar reclamo por voz.
+- Llamar a Cuatro Fincas y crear/consultar pedido por voz.
+- Usar sandbox Twilio colegio para crear/consultar caso escolar.
+- Validar que foto, ubicacion, archivo y audio sigan entrando por WhatsApp como continuacion del comprobante enviado post-llamada.
+- Videollamada todavia debe tratarse como canal visual/frontend; backend tiene Realtime audio y contrato de soporte, pero no debe prometer analisis de video en vivo hasta conectar captura multimodal real.
+
 ## Regla De Trabajo Para Proximas Pruebas
 
 Cada recorrido nuevo debe terminar con una de estas salidas:

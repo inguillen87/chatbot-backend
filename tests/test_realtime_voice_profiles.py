@@ -86,6 +86,7 @@ class RealtimeVoiceProfilesTestCase(unittest.TestCase):
 
         self.assertEqual(vertical, "colegio")
         self.assertIn("crear_caso_escolar", tools)
+        self.assertIn("consultar_caso_escolar", tools)
         self.assertIn("inasistencias", instructions)
 
     def test_municipio_and_pyme_keep_different_actions(self):
@@ -93,9 +94,12 @@ class RealtimeVoiceProfilesTestCase(unittest.TestCase):
         pyme_tools = [tool["name"] for tool in build_realtime_voice_tools("pyme")]
 
         self.assertIn("crear_reclamo", municipio_tools)
+        self.assertIn("consultar_estado_reclamo", municipio_tools)
+        self.assertIn("consultar_tramite", municipio_tools)
         self.assertNotIn("crear_pedido", municipio_tools)
         self.assertIn("crear_pedido", pyme_tools)
         self.assertIn("consultar_producto", pyme_tools)
+        self.assertIn("consultar_estado_pedido", pyme_tools)
 
 
 if __name__ == "__main__":

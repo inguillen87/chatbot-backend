@@ -15,9 +15,9 @@ DEFAULT_PHONE_PRIMARY_TRANSPORT = "openai_realtime_sip"
 DEFAULT_PHONE_BRIDGE_TRANSPORT = "twilio_media_streams"
 DEFAULT_TRANSLATION_TARGET_LANGUAGE = "es"
 DEFAULT_SUPPORTED_TRANSLATION_LANGUAGES = (
-    {"code": "es", "label": "Español"},
+    {"code": "es", "label": "Espanol"},
     {"code": "en", "label": "English"},
-    {"code": "pt", "label": "Português"},
+    {"code": "pt", "label": "Portugues"},
 )
 
 
@@ -203,6 +203,31 @@ _MUNICIPIO_TOOLS: list[dict[str, Any]] = [
             "required": ["descripcion", "ubicacion"],
         },
     },
+    {
+        "type": "function",
+        "name": "consultar_estado_reclamo",
+        "description": "Consulta el estado de un reclamo municipal existente. Usa el ultimo reclamo de la sesion si el usuario dice que quiere ver el que acaba de crear.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "nro_ticket": {"type": "string", "description": "Numero de reclamo o ticket si el usuario lo menciona."},
+                "pin": {"type": "string", "description": "PIN de consulta si el usuario lo menciona."},
+            },
+            "required": [],
+        },
+    },
+    {
+        "type": "function",
+        "name": "consultar_tramite",
+        "description": "Busca informacion de un tramite municipal, turno o requisito sin crear reclamo.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "nombre_tramite": {"type": "string", "description": "Nombre del tramite, por ejemplo licencia, habilitacion, libre deuda o poda."},
+            },
+            "required": ["nombre_tramite"],
+        },
+    },
 ]
 
 _PYME_TOOLS: list[dict[str, Any]] = [
@@ -231,6 +256,18 @@ _PYME_TOOLS: list[dict[str, Any]] = [
             "required": ["items"],
         },
     },
+    {
+        "type": "function",
+        "name": "consultar_estado_pedido",
+        "description": "Consulta el estado de un pedido de venta existente. Usa el ultimo pedido de la sesion si corresponde.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "nro_pedido": {"type": "string", "description": "Numero de pedido si el usuario lo menciona."},
+            },
+            "required": [],
+        },
+    },
 ]
 
 _COLEGIO_TOOLS: list[dict[str, Any]] = [
@@ -254,6 +291,18 @@ _COLEGIO_TOOLS: list[dict[str, Any]] = [
                 "sensitivity_level": {"type": "string", "description": "normal, private, sensitive o critical."},
             },
             "required": ["descripcion"],
+        },
+    },
+    {
+        "type": "function",
+        "name": "consultar_caso_escolar",
+        "description": "Consulta el estado de un caso escolar existente. Usa el ultimo caso de la sesion si el usuario no recuerda el numero.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "school_case_id": {"type": "string", "description": "Numero de caso escolar si el usuario lo menciona."},
+            },
+            "required": [],
         },
     },
 ]
@@ -301,7 +350,7 @@ def build_realtime_voice_instructions(
         multilingual_rules = (
             f"Idiomas soportados: {supported_codes}. "
             "Si el usuario habla en ingles o portugues, entendelo sin pedir que cambie de idioma. "
-            "Respondé en el idioma del usuario, salvo que pida traduccion o que ya haya preferencia guardada. "
+            "Responde en el idioma del usuario, salvo que pida traduccion o que ya haya preferencia guardada. "
             f"Para herramientas, tickets, pedidos, casos escolares y panel admin, normaliza categoria, resumen y estado al idioma operativo '{target_language}'. "
             "Conserva nombres propios, direcciones, productos, cursos, codigos y telefonos en su forma original. "
             "Si un admin o usuario pide traduccion, entrega una version breve en ambos idiomas relevantes. "
@@ -314,6 +363,7 @@ def build_realtime_voice_instructions(
         "Frases cortas: una o dos oraciones por turno. Deja hablar e interrumpe con naturalidad si el usuario corrige. "
         f"{known_data} "
         f"{multilingual_rules}"
+        "No recites menus completos salvo que el usuario pida opciones. En llamada, propone el proximo paso mas probable y pregunta un solo dato. "
         "No inventes tickets, pedidos, pagos, turnos, stock ni confirmaciones. Solo confirma cuando una herramienta devuelve resultado. "
         "Si falta un dato obligatorio, pedi solo ese dato. Si el usuario ya dio varios datos, no los vuelvas a pedir. "
         "Si hay enojo, urgencia, datos sensibles, riesgo o pedido explicito de persona, usa transferir_humano. "
@@ -326,18 +376,21 @@ def build_realtime_voice_instructions(
             "Perfil municipio: ayuda con reclamos, seguimiento, consultas generales y tramites. "
             "Para reclamos, separa descripcion de ubicacion. Inferi categoria si la descripcion es clara. "
             "Ejemplos: alumbrado, arbolado, limpieza, baches, transito, seguridad, zoonosis, habilitaciones y turnos. "
+            "Si pide estado de reclamo, usa consultar_estado_reclamo. Si pide licencia, turno o requisitos, usa consultar_tramite. "
             "Al crear reclamo, avisa que enviaremos el comprobante por WhatsApp y que puede responder con foto o ubicacion."
         )
     if vertical == "pyme":
         return base + (
             "Perfil pyme: vende de forma consultiva, entiende necesidad, recomienda opciones, consulta producto si hace falta y crea pedido solo con items confirmados. "
             "No presiones: ayuda a elegir, confirma variantes, cantidad, entrega/retiro y datos de contacto. "
+            "Si pide estado de compra o entrega, usa consultar_estado_pedido. "
             "Si no hay stock o precio confiable, no inventes; ofrece derivar o dejar consulta."
         )
     if vertical == "colegio":
         return base + (
             "Perfil colegio: atende familias, alumnos y personal con secretaria, asistencia, inasistencias, comunicados, agenda, documentacion, pagos, admisiones, convivencia y mantenimiento. "
             "Crea caso escolar cuando haya una consulta accionable. Para inasistencia pedi alumno, curso, fecha y motivo si faltan. "
+            "Si pide seguimiento de un caso, usa consultar_caso_escolar. "
             "Para convivencia, salud, retiro de alumnos o datos privados, cuida la privacidad y deriva a humano si corresponde. "
             "Si menciona certificados, comprobantes o autorizaciones, avisa que puede enviar imagen o archivo por WhatsApp luego del llamado."
         )
@@ -412,20 +465,20 @@ def build_realtime_voice_capabilities(
             "municipio": {
                 "label": "Municipios",
                 "actions": tool_names_for_vertical("municipio"),
-                "intents": ["crear_reclamo", "consultar_estado", "tramites", "derivar_humano"],
-                "frontend_prompts": ["Iniciar reclamo por llamada", "Consultar tramite", "Hablar con operador"],
+                "intents": ["crear_reclamo", "consultar_estado_reclamo", "consultar_tramite", "derivar_humano"],
+                "frontend_prompts": ["Iniciar reclamo por llamada", "Consultar estado", "Consultar tramite", "Hablar con operador"],
             },
             "pyme": {
                 "label": "PyMEs",
                 "actions": tool_names_for_vertical("pyme"),
-                "intents": ["consulta_producto", "venta_consultiva", "crear_pedido", "derivar_humano"],
-                "frontend_prompts": ["Llamar para comprar", "Consultar disponibilidad", "Tomar pedido por voz"],
+                "intents": ["consulta_producto", "venta_consultiva", "crear_pedido", "consultar_estado_pedido", "derivar_humano"],
+                "frontend_prompts": ["Llamar para comprar", "Consultar disponibilidad", "Tomar pedido por voz", "Consultar pedido"],
             },
             "colegio": {
                 "label": "Colegios",
                 "actions": tool_names_for_vertical("colegio"),
-                "intents": ["inasistencia", "secretaria", "comunicados", "admisiones", "convivencia"],
-                "frontend_prompts": ["Justificar inasistencia", "Consultar secretaria", "Hablar con el colegio"],
+                "intents": ["inasistencia", "secretaria", "comunicados", "admisiones", "convivencia", "consultar_caso_escolar"],
+                "frontend_prompts": ["Justificar inasistencia", "Consultar secretaria", "Consultar caso", "Hablar con el colegio"],
             },
         },
         "frontend": {
