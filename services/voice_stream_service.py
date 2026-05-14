@@ -730,7 +730,7 @@ class VoiceStreamService:
             self.cancel_pending = False
             return
 
-        if msg_type == "response.audio.delta":
+        if msg_type in ("response.audio.delta", "response.output_audio.delta"):
             audio_payload = data.get("delta")
             if audio_payload:
                 self.ws.send(

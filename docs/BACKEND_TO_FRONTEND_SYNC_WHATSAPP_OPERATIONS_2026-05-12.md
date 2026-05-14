@@ -68,7 +68,7 @@ Contrato:
       "enabled": true,
       "capabilities": {
         "contract_version": "realtime.voice_capabilities.v1",
-        "recommended_model": "gpt-realtime-2",
+        "recommended_model": "gpt-realtime",
         "native_speech_to_speech": true
       }
     }
@@ -201,12 +201,12 @@ Colegios:
 - OpenAI Realtime WebRTC: https://platform.openai.com/docs/guides/realtime-webrtc
 - OpenAI Realtime WebSocket: https://platform.openai.com/docs/guides/realtime-websocket
 - OpenAI Realtime conversations: https://platform.openai.com/docs/guides/realtime-model-capabilities
-- Modelo `gpt-realtime-2`: https://developers.openai.com/api/docs/models/gpt-realtime-2
+- Modelo `gpt-realtime`: https://platform.openai.com/docs/models/gpt-realtime
 
 ## Verificacion backend
 
 - `tests/test_v2_saas_contracts.py` cubre `whatsapp.experience.v1`, admin-experience y superadmin command center.
-- `tests/test_realtime_voice_profiles.py` cubre modelo realtime default `gpt-realtime-2`, tools y verticales.
+- `tests/test_realtime_voice_profiles.py` cubre modelo realtime default `gpt-realtime`, tools y verticales.
 - `tests/test_public_resolver_widget_config_contract.py` cubre `GET /api/public/realtime/voice-capabilities`.
 
 ## Twilio Sandbox + Integraciones 2026-05-12

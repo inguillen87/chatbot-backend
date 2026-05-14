@@ -166,7 +166,7 @@ Estado aplicado:
 
 - `/voice/welcome` ahora deriva por defecto al stream realtime y solo usa `Gather` + TTS si `VOICE_LEGACY_GATHER_ENABLED=true`.
 - `/twilio/voice/inbound` mantiene el contrato Twilio Media Streams hacia `/twilio/voice/stream`.
-- El contrato `realtime.voice_capabilities.v1` declara `gpt-realtime-2` como default, fallback `gpt-realtime`, `phone_primary=openai_realtime_sip`, `phone_bridge=twilio_media_streams` y TTS/STT externo como fallback only.
+- El contrato `realtime.voice_capabilities.v1` declara `gpt-realtime` como default oficial, `phone_primary=openai_realtime_sip`, `phone_bridge=twilio_media_streams` y TTS/STT externo como fallback only.
 - `VoiceStreamService` deja de enviar `OpenAI-Beta: realtime=v1`; el env legacy `OPENAI_REALTIME_BETA_HEADER` ya no se usa para forzar Realtime v1.
 - `POST /api/public/realtime/session` migra el upstream a `/v1/realtime/client_secrets` y publica `client_secrets.v2`.
 - `OpenAIResponsesProvider` usa Responses API cuando el SDK la expone y conserva fallback a Chat Completions para compatibilidad.

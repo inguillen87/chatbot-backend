@@ -149,7 +149,7 @@ class PublicResolverWidgetConfigContractTestCase(unittest.TestCase):
         body = response.get_json()
         self.assertEqual(body["contract_version"], "realtime.voice_capabilities.v1")
         self.assertEqual(body["provider"], "openai_realtime")
-        self.assertEqual(body["recommended_model"], "gpt-realtime-2")
+        self.assertEqual(body["recommended_model"], "gpt-realtime")
         self.assertEqual(body["fallback_model"], "gpt-realtime")
         self.assertTrue(body["features"]["semantic_vad"])
         self.assertFalse(body["features"]["server_vad"])

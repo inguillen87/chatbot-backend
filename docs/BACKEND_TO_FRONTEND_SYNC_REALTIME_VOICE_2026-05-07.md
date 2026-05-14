@@ -4,7 +4,7 @@ Objetivo: mejorar llamadas de WhatsApp/telefono con voz nativa Realtime, sin vol
 
 ## Decisiones backend
 
-- Modelo recomendado por defecto: `gpt-realtime-2`.
+- Modelo recomendado por defecto: `gpt-realtime`.
 - Fallback operativo configurable: por defecto `gpt-realtime`.
 - Voz default: `marin`, configurable por tenant con `openai_realtime_voice`.
 - No se usa el endpoint deprecated `/v1/realtime/sessions`: el backend genera credenciales efimeras con `/v1/realtime/client_secrets`.
@@ -30,7 +30,7 @@ Respuesta:
 {
   "contract_version": "realtime.voice_capabilities.v1",
   "provider": "openai_realtime",
-  "recommended_model": "gpt-realtime-2",
+  "recommended_model": "gpt-realtime",
   "fallback_model": "gpt-realtime",
   "voice": "marin",
   "active_vertical": "municipio|pyme|colegio|general",
@@ -111,7 +111,7 @@ Si voz esta apagada por tenant, backend responde HTTP 200 degradable:
   "tenant_slug": "municipio",
   "widget_token": "...",
   "channel": "voice",
-  "model": "gpt-realtime-2",
+  "model": "gpt-realtime",
   "fallback_model": "gpt-realtime",
   "voice": "marin",
   "transport": "webrtc",
@@ -120,7 +120,7 @@ Si voz esta apagada por tenant, backend responde HTTP 200 degradable:
 }
 ```
 
-Backend resuelve `model` desde tenant/env para evitar que un frontend viejo degrade a `gpt-realtime`; si frontend manda un modelo anterior, queda registrado como `requested_model_ignored`. `voice`, `transport`, `profile` y `active_vertical` se mantienen como metadata operativa.
+Backend resuelve `model` desde tenant/env para evitar que un frontend viejo use un preview/beta; si frontend manda un modelo anterior, queda registrado como `requested_model_ignored`. `voice`, `transport`, `profile` y `active_vertical` se mantienen como metadata operativa.
 
 ## Verticales soportadas
 
@@ -163,7 +163,7 @@ Colegios:
 ## Backend implementado
 
 - `services/realtime_voice_profiles.py`: perfiles, tools y contrato por vertical; incluye crear/consultar para reclamos, pedidos y casos escolares.
-- `services/voice_stream_service.py`: stream Twilio -> OpenAI Realtime con `gpt-realtime-2` por defecto, schema actual `output_modalities` + `audio`, herramientas por vertical, consultas de estado y `crear_caso_escolar`.
+- `services/voice_stream_service.py`: stream Twilio -> OpenAI Realtime con `gpt-realtime` por defecto, schema actual `output_modalities` + `audio`, herramientas por vertical, consultas de estado y `crear_caso_escolar`.
 - `services/realtime_session_service.py`: sesiones WebRTC actualizadas a `/v1/realtime/client_secrets`, modelo realtime actual y voz configurable.
 - `routes/public_resolver.py`: contrato publico de capacidades y widget config enriquecido.
 - `POST /api/public/realtime/session` usa `client_secrets.v2`, schema actual y respeta campos visuales/contextuales enviados por frontend (`voice`, `transport`, `profile`, `active_vertical`) sin permitir downgrade de modelo.

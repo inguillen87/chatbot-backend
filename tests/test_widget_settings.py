@@ -187,7 +187,7 @@ class WidgetSettingsTests(unittest.TestCase):
                 "tenant_slug": self.tenant.slug,
                 "channel": "voice",
                 "widget_token": self.owner.token,
-                "model": "gpt-realtime",
+                "model": "gpt-4o-realtime-preview",
                 "fallback_model": "gpt-realtime",
                 "voice": "marin",
                 "transport": "webrtc",
@@ -198,11 +198,11 @@ class WidgetSettingsTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         payload = response.get_json()
-        self.assertEqual(payload["model"], "gpt-realtime-2")
+        self.assertEqual(payload["model"], "gpt-realtime")
         self.assertEqual(payload["avatar"]["fallback_model"], "gpt-realtime")
         self.assertEqual(payload["avatar"]["transport"], "webrtc")
         self.assertEqual(payload["avatar"]["active_vertical"], "municipio")
-        self.assertEqual(payload["avatar"]["requested_model_ignored"], "gpt-realtime")
+        self.assertEqual(payload["avatar"]["requested_model_ignored"], "gpt-4o-realtime-preview")
         self.assertEqual(payload["avatar"]["openai_realtime_contract"], "client_secrets.v2")
         self.assertEqual(payload["avatar"]["translation"]["target_language"], "es")
         self.assertTrue(payload["avatar"]["translation"]["channels"]["realtime_voice_call"])
@@ -210,7 +210,7 @@ class WidgetSettingsTests(unittest.TestCase):
         upstream_payload = json.loads(request_obj.data.decode("utf-8"))
         self.assertEqual(request_obj.full_url, "https://api.openai.com/v1/realtime/client_secrets")
         self.assertEqual(upstream_payload["session"]["type"], "realtime")
-        self.assertEqual(upstream_payload["session"]["model"], "gpt-realtime-2")
+        self.assertEqual(upstream_payload["session"]["model"], "gpt-realtime")
         self.assertEqual(upstream_payload["session"]["output_modalities"], ["audio"])
         self.assertEqual(upstream_payload["session"]["audio"]["output"]["voice"], "marin")
         self.assertEqual(upstream_payload["session"]["audio"]["input"]["turn_detection"]["type"], "semantic_vad")

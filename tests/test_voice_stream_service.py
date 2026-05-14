@@ -14,17 +14,19 @@ class _FakeSocket:
 
 class VoiceStreamServiceMessageTests(unittest.TestCase):
     def test_audio_delta_forwards_media_to_twilio(self):
-        twilio_ws = _FakeSocket()
-        service = VoiceStreamService(twilio_ws)
-        service.stream_sid = "stream-1"
+        for event_type in ("response.audio.delta", "response.output_audio.delta"):
+            with self.subTest(event_type=event_type):
+                twilio_ws = _FakeSocket()
+                service = VoiceStreamService(twilio_ws)
+                service.stream_sid = "stream-1"
 
-        service.handle_openai_message({"type": "response.audio.delta", "delta": "abc"})
+                service.handle_openai_message({"type": event_type, "delta": "abc"})
 
-        self.assertEqual(
-            twilio_ws.messages,
-            [{"event": "media", "streamSid": "stream-1", "media": {"payload": "abc"}}],
-        )
-        self.assertTrue(service.response_active)
+                self.assertEqual(
+                    twilio_ws.messages,
+                    [{"event": "media", "streamSid": "stream-1", "media": {"payload": "abc"}}],
+                )
+                self.assertTrue(service.response_active)
 
     def test_barge_in_clears_twilio_and_cancels_openai_response(self):
         twilio_ws = _FakeSocket()
