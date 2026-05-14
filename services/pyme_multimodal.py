@@ -295,7 +295,7 @@ def render_cart_summary(state: PymeSessionState) -> str:
 
 
 _QUANTITY_RE = re.compile(
-    r"(?:^|\b)(\d{1,4})(?:\s*(?:x|unid(?:ad(?:es)?)?|caja(?:s)?|botellas?|pack|packs))?",
+    r"(?:^|\b)(\d{1,3})\s*(?:x|unid(?:ad(?:es)?)?|caja(?:s)?|botellas?|pack|packs)\b|(?:^|\b)(\d{1,3})(?=\s+[A-Za-zÀ-ÿ])",
     re.IGNORECASE,
 )
 
@@ -305,7 +305,7 @@ def _extract_quantity_from_text(text: str) -> int:
     if not match:
         return 1
     try:
-        value = int(match.group(1))
+        value = int(match.group(1) or match.group(2))
         return max(1, value)
     except Exception:  # pragma: no cover - defensive
         return 1

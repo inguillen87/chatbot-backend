@@ -375,6 +375,36 @@ def url_descargar_catalogo_pyme(pyme_id: int) -> str:
 
 import ast
 
+
+_ORDER_CONTEXT_STOP_RE = re.compile(
+    r"\b(?:soy|me\s+llamo|mi\s+nombre\s+es|tel(?:e|é)fono|whatsapp|email|correo|enviar\s+a|env(?:i|í)o\s+a|entregar\s+en|direcci(?:o|ó)n|domicilio)\b",
+    re.IGNORECASE,
+)
+_ORDER_LEADING_NOISE_RE = re.compile(
+    r"^\s*(?:hola|buenas|buenos\s+d[ií]as|buenas\s+tardes|buenas\s+noches|por\s+favor|quiero|necesito|busco|me\s+das|podr[ií]a|quisiera|comprar|pedir|agregar|sumar|armar|hacer\s+un\s+pedido\s+de|hacer\s+pedido\s+de|un\s+pedido\s+de)\b[,\s:;-]*",
+    re.IGNORECASE,
+)
+
+
+def _strip_order_context_noise(texto: str) -> str:
+    if not texto:
+        return ""
+    cleaned = str(texto).strip()
+    stop_match = _ORDER_CONTEXT_STOP_RE.search(cleaned)
+    if stop_match:
+        cleaned = cleaned[: stop_match.start()]
+    return cleaned.strip(" ,.;:-")
+
+
+def _clean_order_segment(segmento: str) -> str:
+    cleaned = str(segmento or "").strip(" ,.;:-")
+    previous = None
+    while cleaned and previous != cleaned:
+        previous = cleaned
+        cleaned = _ORDER_LEADING_NOISE_RE.sub("", cleaned).strip(" ,.;:-")
+    return cleaned
+
+
 def extraer_productos_llm(texto: str) -> list[dict]:
     prompt = (
         "Analiza el MENSAJE DEL USUARIO para extraer productos, sus cantidades numéricas y sus unidades de medida específicas si se mencionan (ej. 'kilos', 'cajas', 'paquetes', 'docenas', 'metros'). "
@@ -426,11 +456,14 @@ def extraer_productos_llm(texto: str) -> list[dict]:
     return []
 
 def extraer_productos_regex(texto: str) -> list[dict]:
-    partes = re.split(r",\s*(?![^()]*\))|\s+y\s+(?![^()]*\))", texto)
+    texto_pedido = _strip_order_context_noise(texto)
+    partes = re.split(r",\s*(?![^()]*\))|\s+y\s+(?![^()]*\))", texto_pedido)
     items: list[dict] = []
     pattern = re.compile(r"^\s*(\d+\.?\d*|\d+)\s*([a-zA-Záéíóúñ/\-]+(?:\s+[a-zA-Záéíóúñ/\-]+)*)?\s*(?:de\s+)?(.+)", re.IGNORECASE)
     for p_str in partes:
-        p_str = p_str.strip()
+        p_str = _clean_order_segment(p_str)
+        if not p_str:
+            continue
         match = pattern.match(p_str)
         if match:
             try:

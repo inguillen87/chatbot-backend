@@ -1,6 +1,7 @@
 from flask import Blueprint, request, jsonify, abort, current_app, g, has_app_context  # Basic Flask components
 from twilio.request_validator import RequestValidator  # For validating Twilio requests
 from twilio.rest import Client  # For sending messages via Twilio
+import logging
 import os  # For accessing environment variables
 import requests
 import io
@@ -61,6 +62,7 @@ from services.education_case_service import (
 
 # Define the blueprint for WhatsApp webhooks
 webhook_bp = Blueprint('whatsapp_webhook', __name__)
+logger = logging.getLogger(__name__)
 
 # Twilio imposes a 1600 character limit on message bodies. When the bot
 # generates very long responses (e.g. large contact lists) the request can
@@ -90,6 +92,23 @@ SENSITIVE_MENU_ACTIONS = {
 }
 SENSITIVE_ACTION_CONFIRM_ACCEPT = {"1", "si", "sí", "confirmar", "ok", "dale"}
 SENSITIVE_ACTION_CONFIRM_REJECT = {"2", "no", "cancelar", "menu", "menú"}
+
+
+def _safe_log_value(value: Any) -> str:
+    """Return ASCII-safe text so WhatsApp logs never break local consoles."""
+
+    try:
+        text = str(value)
+    except Exception:
+        text = repr(value)
+    return text.encode("ascii", "backslashreplace").decode("ascii")
+
+
+def _log(level: str, message: str, *args: Any, exc_info: bool = False) -> None:
+    target_logger = current_app.logger if has_app_context() else logger
+    safe_message = _safe_log_value(message)
+    safe_args = tuple(_safe_log_value(arg) for arg in args)
+    getattr(target_logger, level)(safe_message, *safe_args, exc_info=exc_info)
 
 
 def _build_sensitive_action_confirmation_text(selected_option: dict) -> str:
@@ -1282,16 +1301,19 @@ if TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN:
     twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
     validator = RequestValidator(TWILIO_AUTH_TOKEN)
 else:
-    print("Warning: TWILIO_ACCOUNT_SID or TWILIO_AUTH_TOKEN environment variables not set. Twilio client and validator will not be initialized.")
+    _log(
+        "warning",
+        "TWILIO_ACCOUNT_SID or TWILIO_AUTH_TOKEN environment variables not set. Twilio client and validator will not be initialized.",
+    )
     twilio_client = None
     validator = None
 
 @webhook_bp.route("/webhook/whatsapp", methods=["POST"])
 def whatsapp_webhook():
-    print("Whatsapp webhook called!")
-    print(f"Request form: {request.form}")
+    _log("info", "Whatsapp webhook called.")
+    _log("debug", "Request form: %s", request.form)
     if not validator:
-        print("Error: Twilio RequestValidator not initialized. Ensure TWILIO_AUTH_TOKEN is set.")
+        _log("error", "Twilio RequestValidator not initialized. Ensure TWILIO_AUTH_TOKEN is set.")
         abort(500, "Twilio validator not configured")
 
     signature = request.headers.get("X-Twilio-Signature", "")
@@ -1327,7 +1349,12 @@ def whatsapp_webhook():
 
     client_user = whatsapp_mapping.user
     if not client_user:
-        print(f"Error: No user associated with WhatsappNumero id {whatsapp_mapping.id} for number {to_number_cleaned}.")
+        _log(
+            "error",
+            "No user associated with WhatsappNumero id %s for number %s.",
+            whatsapp_mapping.id,
+            to_number_cleaned,
+        )
         return "Internal configuration error: WhatsApp number mapped to non-existent user.", 500
 
     # Store the owner entity on ``flask.g`` so downstream helpers (like the
@@ -2160,7 +2187,7 @@ def whatsapp_webhook():
                 current_app.logger.error(f"Error al geocodificar inversamente {latitud, longitud}: {e}")
         if label:
             location_info["label"] = label
-        print(f"Received location data: {location_info}")
+        _log("info", "Received location data: %s", location_info)
     else:
         coordenadas = extraer_coordenadas_de_url_google_maps(incoming_text)
         if coordenadas:
@@ -2458,7 +2485,12 @@ def whatsapp_webhook():
 
     try:
         if not bypass_bot_logic:
-            print(f"Calling responder_chatboc for session_id: {chat_session_id_internal}, owner_user: {client_user.name}")
+            _log(
+                "info",
+                "Calling responder_chatboc for session_id: %s, owner_user: %s",
+                chat_session_id_internal,
+                client_user.name,
+            )
 
             interpretacion_media_data = None
             if uploaded_file_info:
@@ -2567,11 +2599,15 @@ def whatsapp_webhook():
                         "pedir_info": faltan_contactos,
                     }
 
-            print(f"Raw response from responder_chatboc: {bot_response_dict}")
+            _log("debug", "Raw response from responder_chatboc: %s", bot_response_dict)
 
             # Validate the response from the bot logic
             if not isinstance(bot_response_dict, dict):
-                print(f"Warning: responder_chatboc did not return a dictionary. Response: {bot_response_dict}")
+                _log(
+                    "warning",
+                    "responder_chatboc did not return a dictionary. Response: %s",
+                    bot_response_dict,
+                )
                 # Keep the default error response initialized earlier
                 bot_response_dict = {
                     'message_body': "Lo siento, hubo un error interno al procesar tu mensaje.",
@@ -2580,21 +2616,28 @@ def whatsapp_webhook():
 
             # Ensure context_data is a dict for saving
             if not isinstance(session_context_db_entry.context_data, dict):
-                print(f"Warning: context_data in session_context_db_entry is not a dict. Resetting. Data: {session_context_db_entry.context_data}")
+                _log(
+                    "warning",
+                    "context_data in session_context_db_entry is not a dict. Resetting. Data: %s",
+                    session_context_db_entry.context_data,
+                )
                 session_context_db_entry.context_data = {
                     "historial_chat": [{"role": "system", "content": "Context was reset due to invalid format."}],
                     "estado_conversacion": "error_context"
                 }
 
     except Exception as e:
-        print(f"Error calling real chatbot logic (responder_chatboc): {e}")
-        import traceback
-        traceback.print_exc() # Log full traceback for debugging
+        _log("error", "Error calling real chatbot logic (responder_chatboc): %s", e, exc_info=True)
         # bot_response_dict is already set to a default error message, so we just log and continue
 
     # Update respuesta_del_bot_text for logging from the final bot_response_dict
     respuesta_del_bot_text = bot_response_dict.get("message_body", "")
-    print(f"Bot response text for logging: '{respuesta_del_bot_text}', Session context to save: {session_context_db_entry.context_data}")
+    _log(
+        "debug",
+        "Bot response text for logging: %s. Session context to save: %s",
+        respuesta_del_bot_text,
+        session_context_db_entry.context_data,
+    )
 
     # --- Format Response and Save Session ---
     formatted_whatsapp_payload = {}
@@ -2629,8 +2672,8 @@ def whatsapp_webhook():
 
         # The existing context from the database
         db_context = session_context_db_entry.context_data or {}
-        current_app.logger.info(f"[CONTEXT_WHATSAPP] Contexto de la base de datos: {db_context}")
-        current_app.logger.info(f"[CONTEXT_WHATSAPP] Contexto actualizado del turno actual: {updated_context}")
+        _log("info", "[CONTEXT_WHATSAPP] Contexto de la base de datos: %s", db_context)
+        _log("info", "[CONTEXT_WHATSAPP] Contexto actualizado del turno actual: %s", updated_context)
 
 
         # Merge the contexts
@@ -2639,7 +2682,7 @@ def whatsapp_webhook():
         else:
             merged_context = db_context
 
-        current_app.logger.info(f"[CONTEXT_WHATSAPP] Contexto fusionado para guardar: {merged_context}")
+        _log("info", "[CONTEXT_WHATSAPP] Contexto fusionado para guardar: %s", merged_context)
 
 
         # Save the merged context
@@ -2647,13 +2690,22 @@ def whatsapp_webhook():
         safe_flag_modified(session_context_db_entry, "context_data")
         db.session.add(session_context_db_entry)
         db.session.commit()
-        print(f"Session saved for {chat_session_id_internal}. Context: {session_context_db_entry.context_data}")
+        _log(
+            "info",
+            "Session saved for %s. Context: %s",
+            chat_session_id_internal,
+            session_context_db_entry.context_data,
+        )
 
     except Exception as e:
         db.session.rollback()
-        print(f"Error formatting response or saving session for {chat_session_id_internal}: {e}")
-        import traceback
-        traceback.print_exc()
+        _log(
+            "error",
+            "Error formatting response or saving session for %s: %s",
+            chat_session_id_internal,
+            e,
+            exc_info=True,
+        )
 
     # --- Send Response via Twilio ---
     if twilio_client:
@@ -2754,7 +2806,12 @@ def whatsapp_webhook():
                         db.session.commit()
 
                         main_message = twilio_client.messages.create(**message_params)
-                        print(f"Mensaje principal (interactivo) enviado a {from_number_raw}, SID: {main_message.sid}")
+                        _log(
+                            "info",
+                            "Mensaje principal (interactivo) enviado a %s, SID: %s",
+                            from_number_raw,
+                            main_message.sid,
+                        )
 
                         for idx, chunk in enumerate(remaining_chunks, start=2):
                             followup_params = {
@@ -2763,7 +2820,14 @@ def whatsapp_webhook():
                                 'body': chunk,
                             }
                             followup_message = twilio_client.messages.create(**followup_params)
-                            print(f"Mensaje adicional {idx}/{len(chunks)} enviado a {from_number_raw}, SID: {followup_message.sid}")
+                            _log(
+                                "info",
+                                "Mensaje adicional %s/%s enviado a %s, SID: %s",
+                                idx,
+                                len(chunks),
+                                from_number_raw,
+                                followup_message.sid,
+                            )
                         sent_interactive_chunk = True
                     else:
                         interactive_payload = None
@@ -2780,7 +2844,13 @@ def whatsapp_webhook():
                         'body': first_chunk,
                     }
                     main_message = twilio_client.messages.create(**first_chunk_params)
-                    print(f"Mensaje parte 1/{len(chunks)} enviado a {from_number_raw}, SID: {main_message.sid}")
+                    _log(
+                        "info",
+                        "Mensaje parte 1/%s enviado a %s, SID: %s",
+                        len(chunks),
+                        from_number_raw,
+                        main_message.sid,
+                    )
 
                     if session_context_db_entry.context_data['pending_chunks']:
                         more_payload = {
@@ -2809,7 +2879,12 @@ def whatsapp_webhook():
                 db.session.add(session_context_db_entry)
                 db.session.commit()
                 main_message = twilio_client.messages.create(**message_params)
-                print(f"Mensaje principal enviado a {from_number_raw}, SID: {main_message.sid}")
+                _log(
+                    "info",
+                    "Mensaje principal enviado a %s, SID: %s",
+                    from_number_raw,
+                    main_message.sid,
+                )
 
             audio_enabled = bool(
                 current_app.config.get("WHATSAPP_AUDIO_ENABLED", True)
@@ -2835,14 +2910,17 @@ def whatsapp_webhook():
                     }
                     current_app.logger.debug(f"Sending WhatsApp audio params: {audio_message_params}")
                     audio_message = twilio_client.messages.create(**audio_message_params)
-                    print(f"Mensaje de audio enviado a {from_number_raw}, SID: {audio_message.sid}")
+                    _log(
+                        "info",
+                        "Mensaje de audio enviado a %s, SID: %s",
+                        from_number_raw,
+                        audio_message.sid,
+                    )
 
         except Exception as e:
-            print(f"Error al enviar mensaje de Twilio: {e}")
-            import traceback
-            traceback.print_exc()
+            _log("error", "Error al enviar mensaje de Twilio: %s", e, exc_info=True)
     else:
-        print("Warning: Twilio client no inicializado. No se puede enviar respuesta por WhatsApp.")
+        _log("warning", "Twilio client no inicializado. No se puede enviar respuesta por WhatsApp.")
 
     # Schedule delayed menu or follow-up payload if requested
     if (
