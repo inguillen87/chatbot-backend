@@ -30,9 +30,23 @@ class LandingExperienceContractTestCase(unittest.TestCase):
         self.assertNotIn("navigation", payload)
         self.assertNotIn("sections", payload)
         self.assertEqual(payload["hero"]["contract_scope"], "operational_demo_data")
+        self.assertEqual(payload["hero"]["headline"], "Converti conversaciones en operaciones reales")
+        self.assertEqual(
+            payload["hero"]["subheadline"],
+            "Chatboc atiende por web o WhatsApp, pide los datos justos y deja casos, pedidos o leads listos para operar.",
+        )
+        self.assertEqual(payload["hero"]["conversation_title"], "WhatsApp operativo")
+        self.assertEqual(
+            payload["hero"]["conversation_subtitle"],
+            "Un caso entra, el agente pide datos y deja una accion trazable.",
+        )
+        self.assertEqual(payload["hero"]["primary_cta"]["href"], "/demo")
+        self.assertEqual(payload["hero"]["secondary_cta"]["href"], "/contacto")
         self.assertEqual(payload["hero"]["conversation_demo"]["contract_version"], "landing.hero_conversation_demo.v1")
-        self.assertTrue(payload["runtime_rules"]["frontend_owns_copy_and_visual_design"])
+        self.assertTrue(payload["runtime_rules"]["frontend_owns_visual_design"])
+        self.assertTrue(payload["runtime_rules"]["backend_owns_visible_copy"])
         self.assertTrue(payload["runtime_rules"]["backend_owns_sessions_actions_and_traceability"])
+        self.assertTrue(payload["runtime_rules"]["do_not_publish_frontend_mock_data"])
         self.assertTrue(payload["hero"]["workflow_steps"])
         flows = payload["hero"]["conversation_demo"]["flows"]
         self.assertGreaterEqual(len(flows), 4)

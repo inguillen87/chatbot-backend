@@ -102,7 +102,7 @@ def test_reserved_public_slug_catalog_degrades_to_json(client):
         body = resp.get_json()
         assert body["contract_version"] == "public.catalog_resolution.v1"
         assert body["ok"] is False
-        assert body["reason_code"] == "reserved_public_route"
+        assert body["reason_code"] == "reserved_public_slug"
         assert body["items"] == []
         assert body["cart"]["enabled"] is False
         assert body["request_id"]
@@ -131,7 +131,7 @@ def test_reserved_public_slug_navigation_returns_reserved_json(client):
     assert resp.status_code == 404
     body = resp.get_json()
     assert body["contract_version"] == "public.reserved_slug.v1"
-    assert body["reason_code"] == "reserved_public_route"
+    assert body["reason_code"] == "reserved_public_slug"
     assert body["request_id"]
     assert resp.headers.get("Access-Control-Allow-Origin") == "https://www.chatboc.ar"
 
@@ -177,6 +177,23 @@ def test_widget_commerce_session_returns_embedded_operating_contract(client):
     assert body["frontend_contract"]["render_as"] == "embedded_tenant_operating_widget"
     assert resp.headers.get("Access-Control-Allow-Origin") == "https://www.chatboc.ar"
     assert resp.headers.get("X-Request-Id")
+
+
+def test_reserved_media_slug_widget_endpoints_degrade_to_json(client):
+    for path in (
+        "/api/public/widget-commerce-session?tenant_slug=media&tenant=media",
+        "/api/public/widget-user/tenant-history?tenant_slug=media&tenant=media",
+        "/api/public/tenants/media/widget-config?tenant_slug=media&tenant=media",
+    ):
+        resp = client.get(path, headers={"Origin": "https://www.chatboc.ar"})
+        assert resp.status_code == 404
+        body = resp.get_json()
+        assert body["contract_version"] == "public.reserved_slug.v1"
+        assert body["reason_code"] == "reserved_public_slug"
+        assert body["reserved_slug"] == "media"
+        assert body["request_id"]
+        assert resp.headers.get("Access-Control-Allow-Origin") == "https://www.chatboc.ar"
+        assert resp.headers.get("X-Request-Id")
 
 
 def test_widget_user_tenant_history_returns_cart_claims_and_orders(client):

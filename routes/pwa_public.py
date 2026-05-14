@@ -38,10 +38,34 @@ pwa_public_bp = Blueprint("pwa_public", __name__, url_prefix="/api/pwa/public")
 public_api_bp = Blueprint("public_api", __name__, url_prefix="/api/public")
 pwa_tenant_info_bp = Blueprint("pwa_tenant_info", __name__)
 
+RESERVED_PUBLIC_SLUGS = {"media", "static", "assets", "public", "demo", "casos", "precios"}
+
 
 def _request_id() -> str:
     incoming = (request.headers.get("X-Request-Id") or "").strip()
     return incoming or uuid.uuid4().hex
+
+
+def _is_reserved_public_slug(value: object) -> bool:
+    return str(value or "").strip().lower() in RESERVED_PUBLIC_SLUGS
+
+
+def _reserved_public_slug_response(slug: object):
+    request_id = _request_id()
+    normalized = str(slug or "").strip().lower()
+    response = jsonify(
+        {
+            "contract_version": "public.reserved_slug.v1",
+            "ok": False,
+            "reserved_slug": normalized,
+            "reason_code": "reserved_public_slug",
+            "action_hint": "Use /demo, /api/v2/demo/catalog or a real tenant_slug.",
+            "request_id": request_id,
+        }
+    )
+    response.status_code = 404
+    response.headers["X-Request-Id"] = request_id
+    return response
 
 
 def _tenant_resolution_error_payload(request_id: str) -> Dict[str, object]:
@@ -655,6 +679,13 @@ def list_news():
 def public_tenant_widget_config(tenant_slug: str):
     from services.tenant_resolver import resolve_tenant_only, TenantResolutionError
     from routes.public_resolver import _build_widget_embed_payload
+
+    if (
+        _is_reserved_public_slug(tenant_slug)
+        or _is_reserved_public_slug(request.args.get("tenant_slug"))
+        or _is_reserved_public_slug(request.args.get("tenant"))
+    ):
+        return _reserved_public_slug_response(tenant_slug)
 
     try:
         tenant = resolve_tenant_only(tenant_slug=tenant_slug, require_explicit_slug=False)

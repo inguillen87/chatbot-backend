@@ -118,12 +118,16 @@ class PublicResolverWidgetConfigContractTestCase(unittest.TestCase):
         self.assertEqual(body["contract_version"], "public.landing_experience.v1")
         self.assertEqual(body["experience_kind"], "platform")
         self.assertEqual(body["hero"]["contract_scope"], "operational_demo_data")
+        self.assertEqual(body["hero"]["headline"], "Converti conversaciones en operaciones reales")
+        self.assertEqual(body["hero"]["primary_cta"]["href"], "/demo")
+        self.assertEqual(body["hero"]["secondary_cta"]["href"], "/contacto")
         self.assertEqual(body["hero"]["conversation_demo"]["contract_version"], "landing.hero_conversation_demo.v1")
-        self.assertTrue(body["runtime_rules"]["frontend_owns_copy_and_visual_design"])
+        self.assertTrue(body["runtime_rules"]["frontend_owns_visual_design"])
+        self.assertTrue(body["runtime_rules"]["backend_owns_visible_copy"])
         self.assertNotIn("brand", body)
         self.assertNotIn("design_tokens", body)
 
-    def test_landing_experience_does_not_publish_frontend_copy_or_visual_tokens(self):
+    def test_landing_experience_does_not_publish_frontend_visual_tokens_or_page_sections(self):
         response = self.client.get("/api/public/landing-experience")
 
         self.assertEqual(response.status_code, 200)

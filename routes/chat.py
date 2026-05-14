@@ -70,6 +70,13 @@ def _normalize_chat_session_id(value: str | None) -> str:
 
 
 def _demo_session_token_from_request() -> str | None:
+    for candidate in _demo_session_token_candidates_from_request():
+        if decode_demo_session_token(candidate):
+            return candidate
+    return None
+
+
+def _demo_session_token_candidates_from_request() -> list[str]:
     auth_header = request.headers.get("Authorization") or ""
     bearer = ""
     if auth_header.lower().startswith("bearer "):
@@ -89,11 +96,12 @@ def _demo_session_token_from_request() -> str | None:
         payload.get("session"),
         bearer,
     ]
+    normalized = []
     for candidate in candidates:
         candidate = str(candidate or "").strip()
-        if candidate and decode_demo_session_token(candidate):
-            return candidate
-    return None
+        if candidate:
+            normalized.append(candidate)
+    return normalized
 
 
 def _resolve_demo_session_payload() -> dict:
@@ -1606,13 +1614,20 @@ def _procesar_chat(
 
     if not chat_context_obj:
         current_app.logger.info(f"No ChatSessionContext found for {chat_session_id_header}. Creating new one.")
+        initial_context_data = {
+            "source_chat_session_id": raw_chat_session_id_header,
+        } if raw_chat_session_id_header and raw_chat_session_id_header != chat_session_id_header else {}
+        raw_demo_session_token_for_context = next(iter(_demo_session_token_candidates_from_request()), None)
+        demo_session_payload_for_context = decode_demo_session_token(raw_demo_session_token_for_context) if raw_demo_session_token_for_context else {}
+        if raw_demo_session_token_for_context:
+            initial_context_data["demo_session_id"] = raw_demo_session_token_for_context
+        if isinstance(demo_session_payload_for_context, dict) and demo_session_payload_for_context:
+            initial_context_data["demo_session_payload"] = demo_session_payload_for_context
         chat_context_obj = ChatSessionContext(
             chat_session_id=chat_session_id_header,
             user_id=getattr(actor_principal, 'id', None),
             anon_id=anon_id if not actor_principal else None,
-            context_data={
-                "source_chat_session_id": raw_chat_session_id_header,
-            } if raw_chat_session_id_header and raw_chat_session_id_header != chat_session_id_header else {}
+            context_data=initial_context_data
         )
         db.session.add(chat_context_obj)
         try:
@@ -1851,7 +1866,11 @@ def _procesar_chat(
             or chat_bootstrap_inner_payload.get("rubro")
             or chat_bootstrap_inner_payload.get("rubro_clave")
         )
-        demo_session_payload = _resolve_demo_session_payload()
+        demo_session_token = _demo_session_token_from_request()
+        raw_demo_session_token = demo_session_token or next(iter(_demo_session_token_candidates_from_request()), None)
+        demo_session_payload = decode_demo_session_token(demo_session_token) if demo_session_token else {}
+        if not isinstance(demo_session_payload, dict):
+            demo_session_payload = {}
         has_chat_session_marker = bool(request.headers.get("X-Chat-Session-Id"))
         has_demo_context_marker = bool(
             request_payload.get("demo_mode")
@@ -1916,6 +1935,12 @@ def _procesar_chat(
                         rubro_id = tenant_owner.rubro_id
 
             if chat_context_obj:
+                data = chat_context_obj.context_data if isinstance(chat_context_obj.context_data, dict) else {}
+                if raw_demo_session_token:
+                    data["demo_session_id"] = raw_demo_session_token
+                if demo_session_payload:
+                    data["demo_session_payload"] = demo_session_payload
+                chat_context_obj.context_data = data
                 flag_modified(chat_context_obj, "context_data")
 
         is_public_landing = _is_public_landing_request()
@@ -2571,13 +2596,21 @@ def _procesar_chat(
 
         if not chat_context_obj:
             current_app.logger.info(f"No se encontró ChatSessionContext. Creando uno nuevo.")
+            initial_context_data = {
+                "source_chat_session_id": raw_chat_session_id_header,
+            } if raw_chat_session_id_header and raw_chat_session_id_header != chat_session_id_header else {}
+            demo_session_token_for_context = _demo_session_token_from_request()
+            raw_demo_session_token_for_context = demo_session_token_for_context or next(iter(_demo_session_token_candidates_from_request()), None)
+            demo_session_payload_for_context = decode_demo_session_token(demo_session_token_for_context) if demo_session_token_for_context else {}
+            if raw_demo_session_token_for_context:
+                initial_context_data["demo_session_id"] = raw_demo_session_token_for_context
+            if isinstance(demo_session_payload_for_context, dict) and demo_session_payload_for_context:
+                initial_context_data["demo_session_payload"] = demo_session_payload_for_context
             chat_context_obj = ChatSessionContext(
                 chat_session_id=chat_session_id_header,
                 user_id=getattr(actor_principal, 'id', None), # Asociar con usuario logueado si existe
                 anon_id=anon_id if not actor_principal else None, # Asociar con anon_id si no hay usuario logueado
-                context_data={
-                    "source_chat_session_id": raw_chat_session_id_header,
-                } if raw_chat_session_id_header and raw_chat_session_id_header != chat_session_id_header else {}
+                context_data=initial_context_data
             )
             db.session.add(chat_context_obj)
             # No hacer commit aquí todavía, se hará después de procesar el chat

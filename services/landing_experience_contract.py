@@ -23,6 +23,12 @@ def _tenant_kind(tenant: Any = None) -> str:
 def _hero_for_kind(kind: str) -> dict[str, Any]:
     hero = {
         "contract_scope": "operational_demo_data",
+        "headline": "Converti conversaciones en operaciones reales",
+        "subheadline": "Chatboc atiende por web o WhatsApp, pide los datos justos y deja casos, pedidos o leads listos para operar.",
+        "conversation_title": "WhatsApp operativo",
+        "conversation_subtitle": "Un caso entra, el agente pide datos y deja una accion trazable.",
+        "primary_cta": {"label": "Probar una conversacion real", "href": "/demo", "intent": "start_demo"},
+        "secondary_cta": {"label": "Hablar con ventas", "href": "/contacto", "intent": "sales_contact"},
     }
     hero["conversation_demo"] = _hero_conversation_demo(kind)
     hero["demo_conversation"] = hero["conversation_demo"]
@@ -309,7 +315,8 @@ def _hero_conversation_demo(kind: str) -> dict[str, Any]:
             "traceable_actions_only": True,
             "hide_result_without_action": True,
             "hide_steps_without_workflow_steps": True,
-            "frontend_owns_copy_and_visual_design": True,
+            "frontend_owns_visual_design": True,
+            "backend_owns_visible_copy": True,
         },
     }
 
@@ -337,7 +344,8 @@ def build_landing_experience_contract(tenant: Any = None, *, page: str | None = 
             "primary_intents": ["start_demo", "lead_capture"],
         },
         "runtime_rules": {
-            "frontend_owns_copy_and_visual_design": True,
+            "frontend_owns_visual_design": True,
+            "backend_owns_visible_copy": True,
             "backend_owns_sessions_actions_and_traceability": True,
             "do_not_publish_frontend_mock_data": True,
         },

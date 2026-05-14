@@ -7,7 +7,7 @@ os.environ.setdefault("TESTING", "1")
 
 from app import create_app, db
 from config import Config
-from models import TenantProfile, User
+from models import ChatSessionContext, TenantProfile, User
 
 
 class V2BaseTestConfig(Config):
@@ -123,7 +123,9 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertEqual(chat_bootstrap.get("response_contract"), "chat.response.v1")
         self.assertTrue((chat_bootstrap.get("runtime_contract") or {}).get("server_side_ai"))
         self.assertFalse((chat_bootstrap.get("runtime_contract") or {}).get("frontend_llm_keys_allowed"))
-        self.assertEqual((chat_bootstrap.get("headers") or {}).get("X-Chat-Session-Id"), payload.get("demo_session_id"))
+        self.assertEqual((chat_bootstrap.get("headers") or {}).get("X-Chat-Session-Id"), payload.get("session_id"))
+        self.assertEqual((chat_bootstrap.get("headers") or {}).get("X-Demo-Session-Id"), payload.get("demo_session_id"))
+        self.assertLessEqual(len(payload.get("session_id") or ""), 36)
         self.assertEqual((chat_bootstrap.get("headers") or {}).get("X-Tenant-Slug"), tenant.slug)
         self.assertEqual((chat_bootstrap.get("query") or {}).get("tenant_slug"), tenant.slug)
         self.assertEqual((chat_bootstrap.get("payload") or {}).get("tipo_chat"), "pyme")
@@ -398,7 +400,8 @@ class ApiV2FoundationTest(unittest.TestCase):
                 self.assertEqual((payload.get("tenant") or {}).get("slug"), tenant_slug)
                 self.assertEqual(chat_bootstrap.get("endpoint"), endpoint)
                 self.assertEqual(headers.get("X-Demo-Session-Id"), payload.get("demo_session_id"))
-                self.assertEqual(headers.get("X-Chat-Session-Id"), payload.get("demo_session_id"))
+                self.assertEqual(headers.get("X-Chat-Session-Id"), payload.get("session_id"))
+                self.assertLessEqual(len(payload.get("session_id") or ""), 36)
                 self.assertEqual(headers.get("X-Tenant-Slug"), tenant_slug)
                 self.assertEqual((chat_bootstrap.get("payload") or {}).get("tenant_slug"), tenant_slug)
                 self.assertEqual((chat_bootstrap.get("payload") or {}).get("rubro"), rubro)
@@ -431,6 +434,32 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertEqual(payload.get("request_id"), "runtime-alias-1")
         self.assertTrue(payload.get("respuesta_usuario"))
         self.assertIsInstance(payload.get("botones"), list)
+
+    def test_demo_ask_municipio_does_not_persist_jwt_as_chat_session_id(self):
+        from routes.v2.tenants import create_demo_session_token
+
+        owner = User(name="Municipio Demo JWT", email="municipio-jwt@test.com", password_hash="hash", tipo_chat="municipio", rol="admin")
+        db.session.add(owner)
+        db.session.flush()
+        db.session.add(TenantProfile(slug="municipio", nombre="Municipio Demo", tipo="municipio", municipio_id=owner.id, is_active=True))
+        db.session.commit()
+
+        demo_session_id = create_demo_session_token(tenant_slug="municipio", sector="gobierno", rubro="gobierno")
+        with patch("services.logic.responder_chatboc", side_effect=RuntimeError("runtime boom")):
+            resp = self.client.post(
+                f"/api/ask/municipio?tenant_slug=municipio&demo_session_id={demo_session_id}",
+                json={"pregunta": "hola", "demo_mode": True, "tenant_slug": "municipio"},
+                headers={"Origin": "https://www.chatboc.ar", "X-Request-Id": "demo-jwt-chat-1"},
+            )
+
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.get_json()
+        self.assertEqual(payload.get("contract_version"), "chat.runtime_fallback.v1")
+        contexts = ChatSessionContext.query.all()
+        self.assertEqual(len(contexts), 1)
+        self.assertLessEqual(len(contexts[0].chat_session_id), 36)
+        self.assertNotEqual(contexts[0].chat_session_id, demo_session_id)
+        self.assertEqual((contexts[0].context_data or {}).get("demo_session_id"), demo_session_id)
 
     def test_demo_chat_alias_returns_chat_response_contract_with_lead_shape(self):
         owner = User(name="Colegio Demo", email="colegio-chat-contract@test.com", password_hash="hash", tipo_chat="pyme")

@@ -37,6 +37,10 @@ RESERVED_PUBLIC_SLUGS = {
     "gobiernos",
     "colegios",
     "escuelas",
+    "media",
+    "static",
+    "assets",
+    "public",
     "sectores",
     "precios",
     "opinar",
@@ -51,12 +55,25 @@ def _is_reserved_public_slug(value: object) -> bool:
     return _normalize_public_slug(value) in RESERVED_PUBLIC_SLUGS
 
 
+def _reserved_public_slug_from_request() -> str:
+    for value in (
+        request.args.get("tenant_slug"),
+        request.args.get("tenant"),
+        request.args.get("slug"),
+        request.headers.get("X-Tenant-Slug"),
+        request.headers.get("X-Tenant"),
+    ):
+        if _is_reserved_public_slug(value):
+            return _normalize_public_slug(value)
+    return ""
+
+
 def _reserved_slug_payload(slug: object) -> dict:
     return {
         "contract_version": "public.reserved_slug.v1",
         "ok": False,
         "reserved_slug": _normalize_public_slug(slug),
-        "reason_code": "reserved_public_route",
+        "reason_code": "reserved_public_slug",
         "action_hint": "Use /demo, /api/v2/demo/catalog or a real tenant_slug.",
     }
 
@@ -518,7 +535,7 @@ def get_catalog(slug):
         return _add_cors_headers(jsonify({"ok": True}))
 
     if _is_reserved_public_slug(slug) or _is_reserved_public_slug(request.args.get("tenant_slug")) or _is_reserved_public_slug(request.args.get("tenant")):
-        return _public_json(_catalog_resolution_payload(slug, reason_code="reserved_public_route"))
+        return _public_json(_catalog_resolution_payload(slug, reason_code="reserved_public_slug"))
 
     tenant = _get_tenant_from_request(slug)
     if not tenant:
@@ -600,6 +617,10 @@ def get_catalog(slug):
 def public_widget_commerce_session():
     if request.method == 'OPTIONS':
         return _public_json({"ok": True, "contract_version": "public.widget_commerce_session.v1"})
+
+    reserved_slug = _reserved_public_slug_from_request()
+    if reserved_slug:
+        return _public_json(_reserved_slug_payload(reserved_slug), 404)
 
     tenant = _resolve_public_widget_tenant()
     if not tenant:
@@ -764,6 +785,10 @@ def public_tenant_navigation(slug):
 def public_widget_user_tenant_history():
     if request.method == 'OPTIONS':
         return _public_json({"ok": True, "contract_version": "public.widget_user_tenant_history.v1"})
+
+    reserved_slug = _reserved_public_slug_from_request()
+    if reserved_slug:
+        return _public_json(_reserved_slug_payload(reserved_slug), 404)
 
     tenant = _resolve_public_widget_tenant()
     if not tenant:

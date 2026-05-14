@@ -2019,15 +2019,26 @@ def _public_request_id() -> str:
     return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:32]
 
 
-def _lead_error_response(message: str, status_code: int, reason_code: str, action_hint: str):
+def _lead_error_response(
+    message: str,
+    status_code: int,
+    reason_code: str,
+    action_hint: str,
+    *,
+    required_fields: list[str] | None = None,
+    field_errors: dict[str, str] | None = None,
+):
     request_id = _public_request_id()
     response = jsonify(
         {
-            "contract_version": "shared.error.v1",
+            "contract_version": LEAD_CAPTURE_CONTRACT_VERSION,
+            "ok": False,
             "status_code": status_code,
             "reason_code": reason_code,
             "retryable": status_code >= 500,
             "action_hint": action_hint,
+            "required_fields": required_fields or [],
+            "field_errors": field_errors or {},
             "request_id": request_id,
             "error": {"code": status_code, "message": message},
             "message": message,
@@ -2239,6 +2250,10 @@ def capture_public_lead():
             400,
             "validation_error",
             "send_name_email_or_phone",
+            required_fields=["nombre", "email", "telefono"],
+            field_errors={
+                "contact": "Enviar al menos nombre, email o telefono para registrar el lead.",
+            },
         )
 
     anon_id = (

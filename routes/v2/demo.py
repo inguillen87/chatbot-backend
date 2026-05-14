@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+import hashlib
 import uuid
 
 from flask import Blueprint, current_app, jsonify, request, send_from_directory
@@ -41,6 +42,16 @@ demo_compat_bp = Blueprint("demo_compat", __name__)
 def _request_id() -> str:
     incoming = (request.headers.get("X-Request-Id") or "").strip()
     return incoming or uuid.uuid4().hex
+
+
+def _stable_demo_chat_session_id(demo_session_id: str | None) -> str:
+    token = str(demo_session_id or "").strip()
+    if not token:
+        return str(uuid.uuid4())
+    if len(token) <= 36:
+        return token
+    digest = hashlib.sha256(token.encode("utf-8")).hexdigest()[:32]
+    return f"sid_{digest}"
 
 
 def _json_response(payload: dict[str, Any], status: int = 200):
@@ -531,6 +542,7 @@ def _chat_bootstrap(
     endpoint = _chat_endpoint_for_tenant_type(tenant_type)
     canonical_rubro = (rubro or tenant.slug or tenant_type or "").strip().lower()
     first_prompt = next((item.get("payload") or item.get("label") for item in quick_replies if item.get("label")), "")
+    chat_session_id = _stable_demo_chat_session_id(demo_session_id)
 
     return {
         "contract_version": "demo.chat_bootstrap.v1",
@@ -546,7 +558,7 @@ def _chat_bootstrap(
             "error_contract": "shared.error.v1",
         },
         "headers": {
-            "X-Chat-Session-Id": demo_session_id,
+            "X-Chat-Session-Id": chat_session_id,
             "X-Demo-Session-Id": demo_session_id,
             "X-Tenant-Slug": tenant.slug,
         },
@@ -562,6 +574,7 @@ def _chat_bootstrap(
             "vertical": vertical,
             "education_profile": education_profile,
             "demo_session_id": demo_session_id,
+            "chat_session_id": chat_session_id,
             "demo_mode": True,
         },
         "context": {
@@ -571,6 +584,7 @@ def _chat_bootstrap(
             "tenant_tipo": tenant_type,
             "vertical": vertical,
             "demo_session_id": demo_session_id,
+            "chat_session_id": chat_session_id,
         },
         "start_event": {
             "type": "demo_chat_start",
@@ -588,7 +602,7 @@ def _chat_bootstrap(
             "detail_endpoint_template": "/api/v2/inbox/omnichannel/{ticket_id}",
         },
         "notes": [
-            "Enviar siempre X-Chat-Session-Id.",
+            "Enviar X-Chat-Session-Id como id corto y X-Demo-Session-Id como token de demo.",
             "El endpoint responde con IA server-side; el frontend no debe llamar OpenAI directo.",
             "Para imagen/archivo subir primero a /archivos/upload/chat_attachment y luego llamar al endpoint con attachmentInfo.",
             "Para audio enviar multipart al endpoint con campo audio_file.",
@@ -966,6 +980,7 @@ def demo_session_v2():
     )
 
     demo_session_id = create_demo_session_token(tenant_slug=tenant.slug, sector=sector, rubro=rubro or tenant.slug)
+    chat_session_id = _stable_demo_chat_session_id(demo_session_id)
     chat_bootstrap = _chat_bootstrap(
         tenant=tenant,
         tenant_type=tenant_type,
@@ -1030,7 +1045,8 @@ def demo_session_v2():
         {
             "contract_version": "demo.session.v2",
             "demo_session_id": demo_session_id,
-            "session_id": demo_session_id,
+            "session_id": chat_session_id,
+            "chat_session_id": chat_session_id,
             "tenant_slug": tenant.slug,
             "tenant": _tenant_dict(tenant),
             "workspace": workspace,

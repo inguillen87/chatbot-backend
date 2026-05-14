@@ -100,3 +100,29 @@ def test_public_lead_capture_normalizes_long_chat_session_id(client):
     assert len(ctx.chat_session_id) <= 36
     assert (ctx.context_data or {}).get("source_chat_session_id") == long_session_id
     assert (ctx.context_data or {}).get("lead_profile", {}).get("source_chat_session_id") == long_session_id
+
+
+def test_public_lead_capture_validation_error_is_contract_json(client):
+    resp = client.post(
+        "/api/public/lead-capture?tenant_slug=municipio&tenant=municipio",
+        json={
+            "tenant_slug": "municipio",
+            "sector": "gobierno",
+            "source": "landing.hero",
+            "message": "Quiero probar una demo",
+            "demo_session_id": "demo-token",
+            "chat_session_id": "chat-lead-validation-1",
+            "anon_id": "anon-lead-validation-1",
+        },
+        headers={"Origin": "https://www.chatboc.ar", "X-Request-Id": "lead-validation-1"},
+    )
+
+    assert resp.status_code == 400
+    payload = resp.get_json()
+    assert payload["ok"] is False
+    assert payload["contract_version"] == "public.lead_capture.v1"
+    assert payload["request_id"] == "lead-validation-1"
+    assert payload["reason_code"] == "validation_error"
+    assert payload["required_fields"] == ["nombre", "email", "telefono"]
+    assert "contact" in payload["field_errors"]
+    assert resp.headers.get("X-Request-Id") == "lead-validation-1"
