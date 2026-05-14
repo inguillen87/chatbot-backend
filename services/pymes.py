@@ -97,6 +97,33 @@ def _normalize_user_input(value: Optional[str]) -> str:
     return cleaned
 
 
+GENERIC_CUSTOMER_NAMES = {
+    "",
+    "anonimo",
+    "cliente",
+    "sin nombre",
+    "unknown",
+    "usuario",
+    "vecina",
+    "vecino",
+    "vecino/a",
+}
+
+
+def _is_generic_customer_name(value: Optional[str]) -> bool:
+    return _normalize_user_input(value) in GENERIC_CUSTOMER_NAMES
+
+
+def _first_real_customer_name(*values: Optional[str]) -> Optional[str]:
+    for value in values:
+        if not value:
+            continue
+        candidate = re.sub(r"\s+", " ", str(value)).strip()
+        if candidate and not _is_generic_customer_name(candidate):
+            return candidate
+    return None
+
+
 RAW_GREETING_KEYWORDS = {
     "hola",
     "buenas",
@@ -651,21 +678,29 @@ def _build_pyme_order_success_payload(context: dict, handler_response: dict) -> 
     if not isinstance(cliente_info, dict):
         cliente_info = {}
 
-    # Name Resolution Logic - improved to prioritize real names
+    # Name resolution prioritizes WhatsApp/profile contact data over generated placeholders.
     pyme_ctx = context.get(CONTEXTO_PYME, {})
-    nombre_cliente = cliente_info.get("nombre")
-
-    if not nombre_cliente:
-        nombre_cliente = pyme_ctx.get("nombre_cliente")
-
+    chat_context_data = context.get("chat_db_context_data")
+    if not isinstance(chat_context_data, dict):
+        chat_context_data = {}
+    contact_cache = chat_context_data.get("contact_cache")
+    if not isinstance(contact_cache, dict):
+        contact_cache = {}
+    resolved_contact = chat_context_data.get("resolved_contact")
+    if not isinstance(resolved_contact, dict):
+        resolved_contact = {}
     viewer = context.get("viewer_user_obj")
     candidate_user_name = getattr(viewer, "name", None) if viewer else None
-
-    # Trust authenticated user profile name if available and not generic
-    if candidate_user_name and candidate_user_name.lower() not in ["vecino/a", "cliente", "usuario", "unknown"]:
-        # If we currently have no name, or a generic name, overwrite it
-        if not nombre_cliente or nombre_cliente.lower() in ["cliente", "vecino/a", "vecino"]:
-            nombre_cliente = candidate_user_name
+    nombre_cliente = _first_real_customer_name(
+        cliente_info.get("nombre"),
+        pyme_ctx.get("nombre_cliente"),
+        context.get("profile_name"),
+        chat_context_data.get("profile_name"),
+        contact_cache.get("nombre"),
+        resolved_contact.get("nombre"),
+        candidate_user_name,
+        getattr(viewer, "nombre", None) if viewer else None,
+    )
 
     if not nombre_cliente:
         nombre_cliente = "Cliente"
@@ -1992,17 +2027,34 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
         nombre_pyme_display = config_data["nombre_pyme"]
     pyme_ctx_actual["nombre_pyme_cache"] = nombre_pyme_display
 
-    usuario_nombre = (
-        getattr(viewer_user, "name", None)
-        or getattr(viewer_user, "nombre", None)
-        or pyme_ctx_actual.get("nombre_cliente")
-        or "Cliente"
-    )
-
     profile_name = kwargs.get("profile_name")
-    if profile_name and not getattr(viewer_user, "name", None):
-        usuario_nombre = profile_name
-        pyme_ctx_actual.setdefault("nombre_cliente", profile_name)
+    context_data = chat_db_context.context_data if isinstance(chat_db_context.context_data, dict) else {}
+    contact_cache = context_data.get("contact_cache")
+    if not isinstance(contact_cache, dict):
+        contact_cache = {}
+    resolved_contact = context_data.get("resolved_contact")
+    if not isinstance(resolved_contact, dict):
+        resolved_contact = {}
+    viewer_name = getattr(viewer_user, "name", None) or getattr(viewer_user, "nombre", None)
+    usuario_nombre = _first_real_customer_name(
+        profile_name,
+        context_data.get("profile_name"),
+        contact_cache.get("nombre"),
+        resolved_contact.get("nombre"),
+        viewer_name,
+        pyme_ctx_actual.get("nombre_cliente"),
+    ) or "Cliente"
+
+    if not _is_generic_customer_name(usuario_nombre):
+        pyme_ctx_actual["nombre_cliente"] = usuario_nombre
+    if getattr(viewer_user, "email", None):
+        pyme_ctx_actual.setdefault("email_cliente", getattr(viewer_user, "email", None))
+    if getattr(viewer_user, "telefono", None):
+        pyme_ctx_actual.setdefault("telefono_cliente", getattr(viewer_user, "telefono", None))
+    elif anon_id:
+        pyme_ctx_actual.setdefault("telefono_cliente", anon_id)
+    if getattr(viewer_user, "direccion", None):
+        pyme_ctx_actual.setdefault("direccion_cliente", getattr(viewer_user, "direccion", None))
 
     rubro_info_value = (
         rubro_nombre_contexto.lower()
@@ -2017,11 +2069,16 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
             "user_id": getattr(owner_user, "id", None),
             "cliente_id": getattr(viewer_user, "id", None),
             "viewer_user_obj": viewer_user,
+            "profile_name": profile_name,
             "nombre_pyme": nombre_pyme_display,
             "rubro_nombre": rubro_nombre_contexto or rubro_info_value or "general",
             "rubro_slug": rubro_slug,
             "channel": channel,
             "chat_session_uuid": kwargs.get("chat_session_uuid"),
+            "nombre_cliente": pyme_ctx_actual.get("nombre_cliente") or usuario_nombre,
+            "telefono_cliente": pyme_ctx_actual.get("telefono_cliente"),
+            "email_cliente": pyme_ctx_actual.get("email_cliente"),
+            "direccion_cliente": pyme_ctx_actual.get("direccion_cliente"),
         }
     )
 
@@ -2198,6 +2255,10 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
                             "config": config_data,
                             "viewer_user_id": getattr(viewer_user, "id", None),
                             "request_id": request_id,
+                            "nombre_cliente": pyme_ctx_actual.get("nombre_cliente") or usuario_nombre,
+                            "telefono_cliente": pyme_ctx_actual.get("telefono_cliente"),
+                            "email_cliente": pyme_ctx_actual.get("email_cliente"),
+                            "direccion_cliente": pyme_ctx_actual.get("direccion_cliente"),
                         },
                         channel=channel,
                         parsed_items=extraer_productos_pedido(transcripcion)
@@ -2286,6 +2347,10 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
                 "config": config_data,
                 "viewer_user_id": getattr(viewer_user, "id", None),
                 "request_id": request_id,
+                "nombre_cliente": pyme_ctx_actual.get("nombre_cliente") or usuario_nombre,
+                "telefono_cliente": pyme_ctx_actual.get("telefono_cliente"),
+                "email_cliente": pyme_ctx_actual.get("email_cliente"),
+                "direccion_cliente": pyme_ctx_actual.get("direccion_cliente"),
             },
             channel=channel,
             parsed_items=parsed_items,
@@ -2319,6 +2384,10 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
                             "config": config_data,
                             "viewer_user_id": getattr(viewer_user, "id", None),
                             "request_id": request_id,
+                            "nombre_cliente": pyme_ctx_actual.get("nombre_cliente") or usuario_nombre,
+                            "telefono_cliente": pyme_ctx_actual.get("telefono_cliente"),
+                            "email_cliente": pyme_ctx_actual.get("email_cliente"),
+                            "direccion_cliente": pyme_ctx_actual.get("direccion_cliente"),
                         },
                         channel=channel,
                         parsed_items=extraer_productos_pedido(texto_audio)

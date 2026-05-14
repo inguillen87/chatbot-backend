@@ -594,6 +594,7 @@ def handle_keyword_intent(
             state,
             owner_user_id,
             context.get("viewer_user_id"),
+            context=context,
             request_id=request_id,
         )
         if not pedido:
@@ -772,28 +773,57 @@ def persist_order(
     owner_user_id: Optional[int],
     viewer_user_id: Optional[int],
     *,
+    context: Optional[Dict[str, Any]] = None,
     request_id: Optional[str] = None,
 ) -> Optional[PymePedido]:
     if not state.cart.get("items") or not owner_user_id:
         return None
 
-    detalles = {
-        "items": state.cart.get("items"),
-        "currency": state.cart.get("currency", "ARS"),
-        "subtotal": state.cart.get("subtotal", 0.0),
-        "total": state.cart.get("total", state.cart.get("subtotal", 0.0)),
-        "delivery": state.delivery,
-    }
+    context = context or {}
+    currency = state.cart.get("currency", "ARS")
+    detalles_items: List[Dict[str, Any]] = []
+    for item in state.cart.get("items", []):
+        if not isinstance(item, dict):
+            continue
+        qty = item.get("qty") or item.get("cantidad") or 1
+        unit_price = item.get("unitPrice") or item.get("precio_unitario") or 0.0
+        try:
+            qty_int = max(1, int(float(qty)))
+        except (TypeError, ValueError):
+            qty_int = 1
+        try:
+            unit_price_float = float(unit_price)
+        except (TypeError, ValueError):
+            unit_price_float = 0.0
+        metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        detalles_items.append(
+            {
+                "nombre": item.get("title") or item.get("nombre") or item.get("sku") or "Producto",
+                "nombre_producto": item.get("title") or item.get("nombre") or item.get("sku") or "Producto",
+                "sku": item.get("sku"),
+                "cantidad": qty_int,
+                "precio_unitario": unit_price_float,
+                "precio_unitario_original": unit_price_float,
+                "subtotal": unit_price_float * qty_int,
+                "subtotal_con_descuento": unit_price_float * qty_int,
+                "moneda": item.get("currency") or currency,
+                "presentacion": metadata.get("presentacion"),
+            }
+        )
 
-    total = detalles["total"]
+    total = state.cart.get("total", state.cart.get("subtotal", 0.0))
+    direccion = state.delivery.get("address") or context.get("direccion_cliente") or context.get("direccion")
 
     pedido = PymePedido(
         owner_user_id,
         "Pedido generado desde el asistente",
-        json.dumps(detalles, ensure_ascii=False),
+        json.dumps(detalles_items, ensure_ascii=False),
         monto_total=total,
         user_id=viewer_user_id,
-        direccion=state.delivery.get("address"),
+        nombre_cliente=context.get("nombre_cliente") or context.get("nombre"),
+        email_cliente=context.get("email_cliente") or context.get("email"),
+        telefono_cliente=context.get("telefono_cliente") or context.get("telefono"),
+        direccion=direccion,
         latitud=state.delivery.get("lat"),
         longitud=state.delivery.get("lng"),
     )

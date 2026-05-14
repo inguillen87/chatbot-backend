@@ -2527,6 +2527,7 @@ def whatsapp_webhook():
                 kwargs_for_bot["vertical"] = "educacion"
             if uploaded_file_info:
                 kwargs_for_bot["uploaded_file_info"] = uploaded_file_info
+                kwargs_for_bot["archivo_id_para_asociar"] = uploaded_file_info.get("id")
                 mime_type = uploaded_file_info.get("mime_type", "")
                 if mime_type.startswith("image/"):
                     # Also add the specific keys the old flow handler expects

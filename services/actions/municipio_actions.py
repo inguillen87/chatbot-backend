@@ -838,12 +838,48 @@ class CrearReclamoActionHandler(BaseActionHandler):
             logger.info(f"Ticket {nro_ticket_str} creado exitosamente.")
 
             try:
-                from models import MunicipioTicket, db
+                from models import ArchivoAdjunto, MunicipioTicket, TicketComentario, db
                 from routes.ticket import serialize_ticket_to_json
                 from socket_service import emit_new_ticket
 
                 ticket_obj = db.session.get(MunicipioTicket, ticket_creado.get("id"))
                 if ticket_obj:
+                    archivo_id_para_asociar = (
+                        action_data.get("archivo_id_para_asociar")
+                        or datos_parciales_llm.get("archivo_id_para_asociar")
+                        or self.context.get("archivo_id_para_asociar")
+                    )
+                    if archivo_id_para_asociar:
+                        try:
+                            archivo_id_int = int(archivo_id_para_asociar)
+                        except (TypeError, ValueError):
+                            archivo_id_int = None
+                        if archivo_id_int:
+                            adjunto = db.session.get(ArchivoAdjunto, archivo_id_int)
+                            if adjunto:
+                                adjunto.municipio_ticket_id = ticket_obj.id
+                                if not getattr(ticket_obj, "foto_url_directa", None):
+                                    ticket_obj.foto_url_directa = adjunto.url
+                                db.session.add(adjunto)
+                                db.session.add(ticket_obj)
+                                db.session.add(
+                                    TicketComentario(
+                                        municipio_ticket_id=ticket_obj.id,
+                                        comentario="[SISTEMA] Vecino adjuntó evidencia al crear el reclamo por WhatsApp.",
+                                        user_id=getattr(viewer_user, "id", None),
+                                        es_admin=False,
+                                        origen="whatsapp",
+                                        estado_ticket=ticket_obj.estado,
+                                        archivo_adjunto_id=adjunto.id,
+                                    )
+                                )
+                                db.session.commit()
+                            else:
+                                logger.warning(
+                                    "No se encontró ArchivoAdjunto %s para asociar al ticket %s.",
+                                    archivo_id_para_asociar,
+                                    nro_ticket_str,
+                                )
                     ticket_json = serialize_ticket_to_json(ticket_obj, "municipio")
                     emit_new_ticket(ticket_json)
                 else:

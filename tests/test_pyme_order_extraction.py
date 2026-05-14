@@ -1,4 +1,9 @@
-from services.pymes import _normalize_order_tracking_base_url, extraer_productos_pedido
+from services.pymes import (
+    CONTEXTO_PYME,
+    _build_pyme_order_success_payload,
+    _normalize_order_tracking_base_url,
+    extraer_productos_pedido,
+)
 from services.pyme_multimodal import _extract_quantity_from_text
 from services.ticket_utils import formatear_ticket_respuesta
 
@@ -36,3 +41,28 @@ def test_tracking_pedido_usa_base_publica_sin_duplicar_path():
         button.get("url") == "https://chatboc.ar/tracking/order/PED-20260514-ABC"
         for button in buttons
     )
+
+
+def test_payload_pedido_prioriza_profile_name_sobre_vecino_placeholder():
+    payload = _build_pyme_order_success_payload(
+        {
+            CONTEXTO_PYME: {"nombre_cliente": "Vecino/a"},
+            "profile_name": "QA Bodega",
+            "chat_db_context_data": {
+                "profile_name": "QA Bodega",
+                "contact_cache": {"nombre": "QA Bodega"},
+            },
+        },
+        {
+            "data": {
+                "nro_pedido": "PED-1",
+                "pedido_id": 10,
+                "monto_total": 1000,
+                "cart_summary": {"items_detalle": []},
+                "cliente": {"nombre": "Vecino/a"},
+            },
+            "message_body": "Pedido registrado",
+        },
+    )
+
+    assert "Pedido recibido, QA Bodega" in payload["message_body"]

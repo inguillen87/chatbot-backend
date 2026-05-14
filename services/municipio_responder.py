@@ -1545,8 +1545,11 @@ class ReclamoFlowHandler:
         # a picture directly without first pressing "Sí, agregar foto".
         foto_url = payload.get("foto_url") or self.context.get("foto_url")
         es_foto = payload.get("es_foto") or self.context.get("es_foto")
+        archivo_id = payload.get("archivo_id_para_asociar") or self.context.get("archivo_id_para_asociar")
         if es_foto and foto_url:
             self.flow_context['datos_reclamo']['foto_url'] = foto_url
+            if archivo_id:
+                self.flow_context['datos_reclamo']['archivo_id_para_asociar'] = archivo_id
             return self.ask_for_contact_details()
 
         no_words = {"no", "omitir", "omitilo", "sin foto", "ninguna"}
@@ -1707,6 +1710,7 @@ class ReclamoFlowHandler:
                 "telefono": datos.get("telefono"),
                 "descripcion_resumida": datos.get("descripcion_resumida"),
                 "foto_url_adjunta": datos.get("foto_url"),
+                "archivo_id_para_asociar": datos.get("archivo_id_para_asociar") or self.context.get("archivo_id_para_asociar"),
             }
             handler = CrearReclamoActionHandler(self.context)
             result = handler.execute(action_data)
