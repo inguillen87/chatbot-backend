@@ -49,6 +49,16 @@ public_municipios_bp = Blueprint("public_municipios_bp", __name__)
 TENANT_PROFILE_CONTRACT_VERSION = "public.tenant_profile.v1"
 WIDGET_CONFIG_CONTRACT_VERSION = "public.widget_config.v1"
 LEAD_CAPTURE_CONTRACT_VERSION = "public.lead_capture.v1"
+
+
+def _normalize_public_chat_session_id(value: str | None) -> str:
+    candidate = str(value or "").strip()
+    if not candidate:
+        return ""
+    if len(candidate) <= 36:
+        return candidate
+    digest = hashlib.sha256(candidate.encode("utf-8")).hexdigest()[:32]
+    return f"sid_{digest}"
 WIDGET_ONBOARDING_CONTRACT_VERSION = "public.widget_onboarding.v1"
 
 
@@ -2245,10 +2255,11 @@ def capture_public_lead():
         telefono=telefono,
     )
 
-    session_id = (
+    raw_session_id = (
         str(payload.get("chat_session_id") or "").strip()
         or str(request.headers.get("X-Chat-Session-Id") or "").strip()
     )
+    session_id = _normalize_public_chat_session_id(raw_session_id)
     idempotency_key = _lead_idempotency_key(
         payload=payload,
         tenant=tenant,
@@ -2264,7 +2275,14 @@ def capture_public_lead():
     if session_id:
         context_obj = ChatSessionContext.query.get(session_id)
         if not context_obj:
-            context_obj = ChatSessionContext(chat_session_id=session_id, anon_id=anon_id or user.anon_id, user_id=user.id)
+            context_obj = ChatSessionContext(
+                chat_session_id=session_id,
+                anon_id=anon_id or user.anon_id,
+                user_id=user.id,
+                context_data={"source_chat_session_id": raw_session_id}
+                if raw_session_id and raw_session_id != session_id
+                else {},
+            )
     elif anon_id:
         context_obj = (
             ChatSessionContext.query
@@ -2297,6 +2315,8 @@ def capture_public_lead():
             lead_profile["tenant_slug"] = tenant.slug
             lead_profile["tenant_id"] = tenant.id
             lead_profile["tenant_tipo"] = tenant.tipo
+        if raw_session_id and raw_session_id != session_id:
+            lead_profile["source_chat_session_id"] = raw_session_id
         if idempotency_key:
             lead_profile["idempotency_key"] = idempotency_key
         lead_profile["request_id"] = request_id

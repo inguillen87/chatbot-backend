@@ -69,3 +69,34 @@ def test_public_lead_capture_persists_profile_ticket_and_event(client):
     assert retry_payload["ticket_id"] == ticket.id
     assert retry_payload["deduplicated"] is True
     assert TenantTicket.query.filter_by(fingerprint="lead-key-1").count() == 1
+
+
+def test_public_lead_capture_normalizes_long_chat_session_id(client):
+    owner = User(email="ownerlead2@test.com", name="Owner", rol="admin", tipo_chat="pyme")
+    owner.set_password("pass")
+    db.session.add(owner)
+    db.session.commit()
+
+    tenant = TenantProfile(slug="lead-tenant-2", nombre="Lead Tenant 2", tipo="pyme", pyme_id=owner.id)
+    db.session.add(tenant)
+    db.session.commit()
+
+    long_session_id = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9." + ("x" * 160)
+    resp = client.post(
+        "/api/public/lead-capture?tenant_slug=lead-tenant-2",
+        json={
+            "nombre": "Lead Demo",
+            "telefono": "+5491112345678",
+            "interes": "demo gobierno",
+            "chat_session_id": long_session_id,
+            "anon_id": "anon-lead-2",
+        },
+        headers={"Idempotency-Key": "lead-key-2"},
+    )
+
+    assert resp.status_code == 200
+    ctx = ChatSessionContext.query.filter(ChatSessionContext.chat_session_id.like("sid_%")).first()
+    assert ctx is not None
+    assert len(ctx.chat_session_id) <= 36
+    assert (ctx.context_data or {}).get("source_chat_session_id") == long_session_id
+    assert (ctx.context_data or {}).get("lead_profile", {}).get("source_chat_session_id") == long_session_id

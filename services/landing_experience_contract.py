@@ -143,14 +143,14 @@ def _hero_for_kind(kind: str) -> dict[str, Any]:
     }
     hero = {
         "eyebrow": "SaaS omnicanal con agentes IA",
-        "headline": "Converti conversaciones en casos, pedidos y decisiones operativas",
+        "headline": "Converti conversaciones en operaciones reales",
         "h1": titles.get(kind, titles["platform"]),
-        "subheadline": "Texto, audio, imagenes, archivos y ubicaciones entran por web o WhatsApp; Chatboc entiende, acciona y deja seguimiento.",
+        "subheadline": "Web y WhatsApp reciben texto, audio, imagenes, archivos y ubicaciones. Chatboc pide los datos justos y deja casos, pedidos o leads listos para operar.",
         "subtitle": subtitles.get(kind, subtitles["platform"]),
-        "conversation_title": "Demo real de atencion",
-        "conversation_subtitle": "Elegi un caso y mira que accion deja en el panel.",
-        "primary_cta": {"label": "Probar demo", "href": "/demo", "intent": "start_demo"},
-        "secondary_cta": {"label": "Ver casos de uso", "href": "/casos", "intent": "view_use_cases"},
+        "conversation_title": "WhatsApp operativo",
+        "conversation_subtitle": "Un caso entra, el agente pide datos y deja una accion trazable.",
+        "primary_cta": {"label": "Probar una conversacion real", "href": "/demo", "intent": "start_demo"},
+        "secondary_cta": {"label": "Hablar con ventas", "href": "/contacto", "intent": "sales_contact"},
         "tertiary_cta": {"label": "Hablar con ventas", "href": "/contacto", "intent": "sales_contact"},
         "trust_line": "Widget, WhatsApp, tickets, encuestas, mapas y analiticas trabajando como una sola operacion.",
         "media": {
@@ -187,8 +187,6 @@ def _hero_conversation_demo(kind: str) -> dict[str, Any]:
                 {
                     "kind": "image",
                     "label": "Foto",
-                    "preview_url": "/static/demo/municipio/reclamo-semaforo.jpg",
-                    "image_url": "/static/demo/municipio/reclamo-semaforo.jpg",
                     "detail": "Evidencia visual adjunta al reclamo.",
                 },
                 {
@@ -256,8 +254,6 @@ def _hero_conversation_demo(kind: str) -> dict[str, Any]:
                 {
                     "kind": "image",
                     "label": "Foto",
-                    "preview_url": "/static/demo/bodega/producto-detectado.jpg",
-                    "image_url": "/static/demo/bodega/producto-detectado.jpg",
                     "detail": "Imagen usada para sugerir producto del catalogo real.",
                 },
                 {"kind": "text", "label": "Cantidad", "detail": "Dos unidades solicitadas por el comprador."},
@@ -313,7 +309,6 @@ def _hero_conversation_demo(kind: str) -> dict[str, Any]:
                 {
                     "kind": "file",
                     "label": "Adjunto",
-                    "thumbnail_url": "/static/demo/colegio/documento-adjunto.png",
                     "detail": "Documento asociado al tramite escolar.",
                 },
                 {"kind": "text", "label": "Solicitud", "detail": "Certificado de alumno regular."},
