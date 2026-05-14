@@ -36,6 +36,7 @@ from services.education_contracts import (
 )
 from services.realtime_voice_profiles import (
     REALTIME_VOICE_CONTRACT_VERSION,
+    build_multilingual_translation_policy,
     build_realtime_voice_capabilities,
     build_realtime_voice_instructions,
     infer_realtime_voice_vertical,
@@ -855,6 +856,7 @@ def _build_realtime_session_payload(tenant: TenantProfile, cfg: dict, *, channel
     modalities = ["audio", "text"] if channel == "voice" else ["audio", "text", "video"]
     avatar_enabled = bool(cfg.get("widget_avatar_enabled", True))
     voice_vertical = str(request_payload.get("active_vertical") or infer_realtime_voice_vertical(tenant))
+    translation_policy = build_multilingual_translation_policy(cfg, current_app.config)
 
     instructions = (
         f"Sos un asistente inclusivo de {tenant_name}. "
@@ -874,6 +876,7 @@ def _build_realtime_session_payload(tenant: TenantProfile, cfg: dict, *, channel
             vertical=voice_vertical,
             user_name=None,
             user_address=None,
+            translation_policy=translation_policy,
         ),
         "input_audio_format": cfg.get("openai_realtime_input_audio_format") or "pcm16",
         "output_audio_format": cfg.get("openai_realtime_output_audio_format") or "pcm16",
@@ -897,8 +900,23 @@ def _build_realtime_session_payload(tenant: TenantProfile, cfg: dict, *, channel
             "recommended_model": model,
             "fallback_model": fallback_model,
             "capabilities_contract": REALTIME_VOICE_CONTRACT_VERSION,
+            "translation": translation_policy,
         },
     }
+
+
+def _openai_realtime_session_headers(api_key: str) -> dict[str, str]:
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    beta_header = (
+        current_app.config.get("OPENAI_REALTIME_BETA_HEADER")
+        or os.environ.get("OPENAI_REALTIME_BETA_HEADER")
+    )
+    if beta_header:
+        headers["OpenAI-Beta"] = str(beta_header)
+    return headers
 
 
 @public_resolver_bp.route("/realtime/session", methods=["POST", "OPTIONS"], provide_automatic_options=False)
@@ -959,11 +977,7 @@ def create_realtime_session():
         url="https://api.openai.com/v1/realtime/sessions",
         method="POST",
         data=json.dumps(session_payload).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-            "OpenAI-Beta": "realtime=v1",
-        },
+        headers=_openai_realtime_session_headers(api_key),
     )
 
     try:

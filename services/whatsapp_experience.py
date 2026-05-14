@@ -24,6 +24,7 @@ from models import (
 )
 from services.education_contracts import build_education_whatsapp_playbook, is_education_tenant
 from services.realtime_voice_profiles import build_realtime_voice_capabilities
+from services.audio_transcription_service import audio_translation_capabilities
 
 
 WHATSAPP_EXPERIENCE_CONTRACT_VERSION = "whatsapp.experience.v1"
@@ -276,6 +277,7 @@ def _conversation_intelligence_payload(tenant: TenantProfile, cfg: Mapping[str, 
                 "enabled": True,
                 "mode": "transcribe_then_reason",
                 "upgrade_path": "realtime_voice_for_calls_native_speech_to_speech",
+                "translation": audio_translation_capabilities(),
             },
             "file_pdf_doc": {"enabled": True, "uses": ["catalog_import", "invoice", "order_note", "school_document"]},
             "video": {

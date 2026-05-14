@@ -21,6 +21,7 @@ from services.whatsapp_sender import send_whatsapp_message
 from services.config_loader import cargar_configuracion_municipio
 from services.voice_session_service import resolve_voice_chat_session_id
 from services.realtime_voice_profiles import (
+    build_multilingual_translation_policy,
     build_realtime_voice_instructions,
     build_realtime_voice_tools,
     infer_realtime_voice_vertical,
@@ -474,11 +475,13 @@ class VoiceStreamService:
             tenant_tipo=getattr(self.tenant_profile, "tipo", None) if self.tenant_profile else None,
         )
         self.tools = build_realtime_voice_tools(self.voice_vertical)
+        voice_cfg = self._resolve_voice_config()
         return build_realtime_voice_instructions(
             tenant_name=tenant_name_for_voice,
             vertical=self.voice_vertical,
             user_name=user_name_for_voice,
             user_address=user_addr_for_voice,
+            translation_policy=build_multilingual_translation_policy(voice_cfg, current_app.config),
         )
 
         tenant_name = self._resolve_tenant_name()

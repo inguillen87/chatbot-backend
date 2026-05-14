@@ -168,6 +168,8 @@ Estado aplicado:
 - `/twilio/voice/inbound` mantiene el contrato Twilio Media Streams hacia `/twilio/voice/stream`.
 - El contrato `realtime.voice_capabilities.v1` declara `phone_primary=openai_realtime_sip`, `phone_bridge=twilio_media_streams` y TTS/STT externo como fallback only.
 - `VoiceStreamService` deja de enviar el header beta fijo `realtime=v1`; si hace falta compatibilidad se puede setear `OPENAI_REALTIME_BETA_HEADER`.
+- `POST /api/public/realtime/session` tambien deja `OpenAI-Beta` como opt-in por `OPENAI_REALTIME_BETA_HEADER`, para operar GA/latest por defecto.
+- Se agrego politica multidioma `es/en/pt`: llamadas realtime y notas de voz detectan idioma, responden al usuario en su idioma y normalizan campos operativos al español para admin.
 
 Criterio de cierre:
 

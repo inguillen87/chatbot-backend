@@ -16,6 +16,9 @@ from collections import OrderedDict
 # in CI) to avoid initialization errors.
 http_client = httpx.Client(proxy=None, trust_env=False)
 openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY", "test"), http_client=http_client)
+DEFAULT_STT_MODEL = "gpt-4o-mini-transcribe"
+AUTO_LANGUAGE_MARKERS = {"", "auto", "detect", "none", "null"}
+SUPPORTED_TRANSLATION_LANGUAGES = ("es", "en", "pt")
 
 
 def normalize_spanish_transcription(text: str) -> str:
@@ -47,17 +50,42 @@ def _stt_provider_order() -> list[str]:
     return list(OrderedDict.fromkeys(normalized))
 
 
+def resolve_transcription_language() -> str | None:
+    """Return the configured STT language or None for automatic detection."""
+
+    language = os.getenv("OPENAI_STT_LANGUAGE", "auto").strip().lower()
+    if language in AUTO_LANGUAGE_MARKERS:
+        return None
+    return language
+
+
+def audio_translation_capabilities() -> dict:
+    """Public contract fragment for audio-note translation support."""
+
+    return {
+        "enabled": True,
+        "mode": "transcribe_detect_translate_for_reasoning",
+        "transcription_model": os.getenv("OPENAI_STT_MODEL", DEFAULT_STT_MODEL),
+        "language_detection": resolve_transcription_language() is None,
+        "supported_languages": list(SUPPORTED_TRANSLATION_LANGUAGES),
+        "target_language": os.getenv("TRANSLATION_TARGET_LANGUAGE", "es"),
+        "preserve_original_transcript": True,
+    }
+
+
 def _transcribe_with_openai(audio_bytes: bytes, filename: str) -> str | None:
-    language = os.getenv("OPENAI_STT_LANGUAGE", "es")
-    model = os.getenv("OPENAI_STT_MODEL", "whisper-1")
+    language = resolve_transcription_language()
+    model = os.getenv("OPENAI_STT_MODEL", DEFAULT_STT_MODEL)
 
     with io.BytesIO(audio_bytes) as audio_file:
         audio_file.name = filename
-        transcription = openai_client.audio.transcriptions.create(
-            model=model,
-            file=audio_file,
-            language=language,
-        )
+        payload = {
+            "model": model,
+            "file": audio_file,
+        }
+        if language:
+            payload["language"] = language
+        transcription = openai_client.audio.transcriptions.create(**payload)
 
     return getattr(transcription, "text", None)
 
@@ -113,7 +141,10 @@ def transcribe_audio_from_url(url: str, mime_type: str, account_sid: str = None,
                 text = None
 
             if text:
-                return normalize_spanish_transcription(text)
+                language = resolve_transcription_language()
+                if language == "es":
+                    return normalize_spanish_transcription(text)
+                return text
 
         return None
 

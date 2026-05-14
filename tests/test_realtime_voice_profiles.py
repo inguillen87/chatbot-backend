@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from services.realtime_voice_profiles import (
     DEFAULT_REALTIME_VOICE_MODEL,
     REALTIME_VOICE_CONTRACT_VERSION,
+    build_multilingual_translation_policy,
     build_realtime_voice_capabilities,
     build_realtime_voice_instructions,
     build_realtime_voice_tools,
@@ -23,6 +24,40 @@ class RealtimeVoiceProfilesTestCase(unittest.TestCase):
         self.assertEqual(capabilities["transports"]["phone_primary"], "openai_realtime_sip")
         self.assertEqual(capabilities["transports"]["phone_bridge"], "twilio_media_streams")
         self.assertEqual(capabilities["cost_latency_policy"]["external_tts"], "fallback_only")
+        translation = capabilities["translation"]
+        self.assertTrue(translation["enabled"])
+        self.assertEqual(translation["target_language"], "es")
+        self.assertEqual(
+            {language["code"] for language in translation["supported_languages"]},
+            {"es", "en", "pt"},
+        )
+        self.assertTrue(translation["channels"]["realtime_voice_call"])
+        self.assertTrue(translation["channels"]["admin_transcript"])
+
+    def test_translation_policy_can_be_tenant_configured(self):
+        policy = build_multilingual_translation_policy(
+            {
+                "translation_enabled": False,
+                "translation_supported_languages": "es,pt,fr",
+                "translation_target_language": "pt",
+            }
+        )
+
+        self.assertFalse(policy["enabled"])
+        self.assertEqual(policy["target_language"], "pt")
+        self.assertEqual([language["code"] for language in policy["supported_languages"]], ["es", "pt"])
+
+    def test_realtime_instructions_include_multilingual_rules(self):
+        instructions = build_realtime_voice_instructions(
+            tenant_name="Municipio Inteligente",
+            vertical="municipio",
+            translation_policy=build_multilingual_translation_policy(),
+        )
+
+        self.assertIn("ingles", instructions)
+        self.assertIn("portugues", instructions)
+        self.assertIn("panel admin", instructions)
+        self.assertIn("Conserva nombres propios", instructions)
 
     def test_config_can_override_model_without_losing_fallback(self):
         model = resolve_realtime_model({"openai_realtime_model": "gpt-realtime-custom"})

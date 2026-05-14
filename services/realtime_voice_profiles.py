@@ -12,6 +12,12 @@ FALLBACK_REALTIME_VOICE_MODEL = "gpt-realtime"
 DEFAULT_REALTIME_VOICE = "marin"
 DEFAULT_PHONE_PRIMARY_TRANSPORT = "openai_realtime_sip"
 DEFAULT_PHONE_BRIDGE_TRANSPORT = "twilio_media_streams"
+DEFAULT_TRANSLATION_TARGET_LANGUAGE = "es"
+DEFAULT_SUPPORTED_TRANSLATION_LANGUAGES = (
+    {"code": "es", "label": "Español"},
+    {"code": "en", "label": "English"},
+    {"code": "pt", "label": "Português"},
+)
 
 
 def _get(mapping: Mapping[str, Any] | None, *keys: str) -> Any:
@@ -59,6 +65,87 @@ def resolve_realtime_voice(
         or os.environ.get("OPENAI_REALTIME_VOICE")
         or DEFAULT_REALTIME_VOICE
     )
+
+
+def _bool_config(
+    cfg: Mapping[str, Any] | None,
+    app_config: Mapping[str, Any] | None,
+    key: str,
+    env_key: str,
+    *,
+    default: bool,
+) -> bool:
+    value = _get(cfg, key) if cfg else None
+    if value is None:
+        value = _get(app_config, env_key) if app_config else None
+    if value is None:
+        value = os.environ.get(env_key)
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _language_codes(raw: Any) -> list[str]:
+    if isinstance(raw, str):
+        candidates = [part.strip().lower() for part in raw.split(",")]
+    elif isinstance(raw, (list, tuple, set)):
+        candidates = [str(part).strip().lower() for part in raw]
+    else:
+        candidates = []
+    allowed = {"es", "en", "pt"}
+    result = [code for code in candidates if code in allowed]
+    return list(dict.fromkeys(result)) or [item["code"] for item in DEFAULT_SUPPORTED_TRANSLATION_LANGUAGES]
+
+
+def build_multilingual_translation_policy(
+    cfg: Mapping[str, Any] | None = None,
+    app_config: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    supported_codes = _language_codes(
+        _get(cfg, "translation_supported_languages", "supported_languages")
+        or _get(app_config, "TRANSLATION_SUPPORTED_LANGUAGES")
+        or os.environ.get("TRANSLATION_SUPPORTED_LANGUAGES")
+    )
+    languages_by_code = {item["code"]: item for item in DEFAULT_SUPPORTED_TRANSLATION_LANGUAGES}
+    target_language = str(
+        _get(cfg, "translation_target_language", "admin_default_language", "default_language")
+        or _get(app_config, "TRANSLATION_TARGET_LANGUAGE")
+        or os.environ.get("TRANSLATION_TARGET_LANGUAGE")
+        or DEFAULT_TRANSLATION_TARGET_LANGUAGE
+    ).strip().lower()
+    if target_language not in supported_codes:
+        target_language = DEFAULT_TRANSLATION_TARGET_LANGUAGE
+
+    return {
+        "enabled": _bool_config(
+            cfg,
+            app_config,
+            "translation_enabled",
+            "TRANSLATION_ENABLED",
+            default=True,
+        ),
+        "supported_languages": [languages_by_code[code] for code in supported_codes],
+        "target_language": target_language,
+        "user_response_mode": str(
+            _get(cfg, "translation_user_response_mode")
+            or _get(app_config, "TRANSLATION_USER_RESPONSE_MODE")
+            or os.environ.get("TRANSLATION_USER_RESPONSE_MODE")
+            or "mirror_user_language"
+        ),
+        "admin_record_language": "es",
+        "channels": {
+            "realtime_voice_call": True,
+            "whatsapp_audio_note": True,
+            "web_audio_note": True,
+            "admin_transcript": True,
+        },
+        "rules": {
+            "preserve_original_text": True,
+            "normalize_business_fields_to_spanish": True,
+            "do_not_translate_names_addresses_or_product_names": True,
+            "ask_language_preference_when_unclear": True,
+        },
+    }
 
 
 def infer_realtime_voice_vertical(tenant: Any = None, *, tenant_tipo: str | None = None) -> str:
@@ -183,6 +270,7 @@ def build_realtime_voice_instructions(
     vertical: str,
     user_name: str | None = None,
     user_address: str | None = None,
+    translation_policy: Mapping[str, Any] | None = None,
 ) -> str:
     known = []
     if user_name:
@@ -191,12 +279,31 @@ def build_realtime_voice_instructions(
         known.append(f"Direccion guardada: {user_address}.")
     known_data = " ".join(known) if known else "Nombre y datos del usuario aun no confirmados."
 
+    translation_policy = translation_policy or build_multilingual_translation_policy()
+    supported_codes = ", ".join(
+        item.get("code", "")
+        for item in translation_policy.get("supported_languages", [])
+        if isinstance(item, Mapping) and item.get("code")
+    ) or "es, en, pt"
+    target_language = translation_policy.get("target_language") or DEFAULT_TRANSLATION_TARGET_LANGUAGE
+    multilingual_rules = ""
+    if translation_policy.get("enabled", True):
+        multilingual_rules = (
+            f"Idiomas soportados: {supported_codes}. "
+            "Si el usuario habla en ingles o portugues, entendelo sin pedir que cambie de idioma. "
+            "Respondé en el idioma del usuario, salvo que pida traduccion o que ya haya preferencia guardada. "
+            f"Para herramientas, tickets, pedidos, casos escolares y panel admin, normaliza categoria, resumen y estado al idioma operativo '{target_language}'. "
+            "Conserva nombres propios, direcciones, productos, cursos, codigos y telefonos en su forma original. "
+            "Si un admin o usuario pide traduccion, entrega una version breve en ambos idiomas relevantes. "
+        )
+
     base = (
         f"Sos el asistente telefonico realtime de {tenant_name}. "
         "Este canal es voz nativa en tiempo real: escucha, razona y responde en audio sin pedirle al usuario que escriba. "
         "Habla en espanol argentino neutro, con vos, tono cercano, profesional y muy claro. "
         "Frases cortas: una o dos oraciones por turno. Deja hablar e interrumpe con naturalidad si el usuario corrige. "
         f"{known_data} "
+        f"{multilingual_rules}"
         "No inventes tickets, pedidos, pagos, turnos, stock ni confirmaciones. Solo confirma cuando una herramienta devuelve resultado. "
         "Si falta un dato obligatorio, pedi solo ese dato. Si el usuario ya dio varios datos, no los vuelvas a pedir. "
         "Si hay enojo, urgencia, datos sensibles, riesgo o pedido explicito de persona, usa transferir_humano. "
@@ -239,6 +346,7 @@ def build_realtime_voice_capabilities(
     model = resolve_realtime_model(cfg, app_config)
     fallback_model = resolve_realtime_fallback_model(cfg, app_config)
     voice = resolve_realtime_voice(cfg, app_config)
+    translation_policy = build_multilingual_translation_policy(cfg, app_config)
 
     return {
         "contract_version": REALTIME_VOICE_CONTRACT_VERSION,
@@ -249,6 +357,7 @@ def build_realtime_voice_capabilities(
         "active_vertical": vertical,
         "native_speech_to_speech": True,
         "avoid_external_stt_tts_loop": True,
+        "translation": translation_policy,
         "transports": {
             "browser": "webrtc",
             "server": "websocket",
