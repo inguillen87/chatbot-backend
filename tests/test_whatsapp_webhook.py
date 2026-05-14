@@ -1438,6 +1438,94 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self.assertTrue(ctx.context_data.get("awaiting_user_name"))
 
 
+    def test_welcome_uses_stored_name_with_sticker(self):
+        self._set_owner_tipo_chat("municipio")
+        self._create_confirmed_session()
+        self.mock_validator.validate.return_value = True
+        self.app.config["WELCOME_TEMPLATE_SID"] = "fake_template_sid"
+        self.app.config["WELCOME_MEDIA_URL"] = "https://example.com/sticker.webp"
+
+        session_id = f"whatsapp_{self.empresa_id_for_test}_{self.test_user_number_str}"
+        ctx = ChatSessionContext.query.filter_by(chat_session_id=session_id).first()
+        context_data = dict(ctx.context_data or {})
+        context_data["profile_name"] = "Marcelo"
+        context_data[CONTEXTO_MUNICIPIO] = {
+            "contacto_usuario": {"nombre": "Marcelo"},
+        }
+        ctx.context_data = context_data
+        db.session.add(ctx)
+        db.session.commit()
+
+        payload = {
+            "To": f"whatsapp:{self.test_whatsapp_number_str}",
+            "From": f"whatsapp:{self.test_user_number_str}",
+            "Body": "hola",
+        }
+        headers = {"X-Twilio-Signature": "dummy_signature_valid"}
+
+        response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.mock_twilio_create.call_count, 3)
+
+        template_kwargs = self.mock_twilio_create.call_args_list[0].kwargs
+        self.assertEqual(json.loads(template_kwargs["content_variables"]).get("1"), "Marcelo")
+
+        sticker_kwargs = self.mock_twilio_create.call_args_list[1].kwargs
+        self.assertEqual(sticker_kwargs.get("media_url"), [self.app.config["WELCOME_MEDIA_URL"]])
+
+        greeting_kwargs = self.mock_twilio_create.call_args_list[2].kwargs
+        self.assertIn("Marcelo", greeting_kwargs.get("body"))
+        self.assertNotIn("Cómo te llamás", greeting_kwargs.get("body"))
+
+    def test_name_reply_sends_personalized_sticker_and_remembers_name(self):
+        self._set_owner_tipo_chat("municipio")
+        self._create_confirmed_session()
+        self.mock_validator.validate.return_value = True
+        self.app.config["WELCOME_MEDIA_URL"] = "https://example.com/sticker.webp"
+
+        session_id = f"whatsapp_{self.empresa_id_for_test}_{self.test_user_number_str}"
+        ctx = ChatSessionContext.query.filter_by(chat_session_id=session_id).first()
+        context_data = dict(ctx.context_data or {})
+        context_data["awaiting_user_name"] = True
+        context_data["_welcome_state"] = {"sticker": {"last_sent_ts": time.time()}}
+        ctx.context_data = context_data
+        db.session.add(ctx)
+        db.session.commit()
+
+        payload = {
+            "To": f"whatsapp:{self.test_whatsapp_number_str}",
+            "From": f"whatsapp:{self.test_user_number_str}",
+            "Body": "Soy Marcelo",
+        }
+        headers = {"X-Twilio-Signature": "dummy_signature_valid"}
+
+        with patch("routes.whatsapp_webhook.extract_multiple_contact_details_llm", return_value={"nombre": "Marcelo"}), \
+             patch("routes.whatsapp_webhook.responder_chatboc", return_value={"message_body": "Menú", "options_list": []}), \
+             patch("routes.whatsapp_webhook._send_delayed_payload") as mock_delayed:
+            response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.mock_twilio_create.call_count, 2)
+
+        sticker_kwargs = self.mock_twilio_create.call_args_list[0].kwargs
+        self.assertEqual(sticker_kwargs.get("media_url"), [self.app.config["WELCOME_MEDIA_URL"]])
+
+        greeting_kwargs = self.mock_twilio_create.call_args_list[1].kwargs
+        self.assertIn("Marcelo", greeting_kwargs.get("body"))
+        mock_delayed.assert_called_once()
+
+        ctx = ChatSessionContext.query.filter_by(chat_session_id=session_id).first()
+        self.assertFalse(ctx.context_data.get("awaiting_user_name"))
+        self.assertEqual(ctx.context_data.get("profile_name"), "Marcelo")
+        municipio_ctx = ctx.context_data.get(CONTEXTO_MUNICIPIO, {})
+        self.assertEqual(municipio_ctx.get("contacto_usuario", {}).get("nombre"), "Marcelo")
+        self.assertTrue(
+            ctx.context_data.get("_welcome_state", {})
+            .get("sticker", {})
+            .get("personalized_name_sent_ts")
+        )
+
     def test_whatsapp_webhook_invalid_signature(self):
         # Arrange
         self.mock_validator.validate.return_value = False # Simulate invalid signature

@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Chatboc Junin Widget Contract Test</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: #101317;
+        color: #eef2f5;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+      }
+      main {
+        width: min(1040px, 100%);
+        display: grid;
+        gap: 16px;
+      }
+      section {
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.06);
+        padding: 16px;
+      }
+      h1, h2 {
+        margin: 0 0 10px;
+        line-height: 1.15;
+      }
+      p {
+        margin: 0 0 12px;
+        color: #b8c2cc;
+      }
+      label {
+        display: grid;
+        gap: 6px;
+        font-size: 13px;
+        color: #cbd5df;
+      }
+      input {
+        width: 100%;
+        box-sizing: border-box;
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        border-radius: 6px;
+        padding: 10px 12px;
+        background: rgba(0, 0, 0, 0.22);
+        color: inherit;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 12px;
+      }
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+      button {
+        border: 0;
+        border-radius: 6px;
+        padding: 10px 12px;
+        color: #071016;
+        background: #77d5a3;
+        font-weight: 700;
+        cursor: pointer;
+      }
+      button.secondary {
+        background: #9fc4ff;
+      }
+      pre {
+        min-height: 320px;
+        max-height: 560px;
+        overflow: auto;
+        margin: 0;
+        padding: 14px;
+        border-radius: 8px;
+        background: #07090c;
+        color: #d8f7df;
+        font-size: 12px;
+        line-height: 1.45;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section>
+        <h1>Junin widget external contract test</h1>
+        <p>Sirve esta pagina desde otro origin para validar contratos publicos, CORS, sesion anonima, registro, historial y carrito.</p>
+        <div class="grid">
+          <label>
+            API base
+            <input id="apiBase" value="http://127.0.0.1:5000" />
+          </label>
+          <label>
+            Tenant
+            <input id="tenant" value="municipio" />
+          </label>
+          <label>
+            X-Chat-Session-Id
+            <input id="chatSession" />
+          </label>
+          <label>
+            X-Anon-Id
+            <input id="anonId" />
+          </label>
+          <label>
+            Nombre registro
+            <input id="name" value="Vecino Junin" />
+          </label>
+          <label>
+            Telefono registro
+            <input id="phone" value="+5492610000000" />
+          </label>
+        </div>
+      </section>
+
+      <section>
+        <h2>Acciones</h2>
+        <div class="actions">
+          <button data-action="widgetConfig">widget-config</button>
+          <button data-action="commerce">commerce-session</button>
+          <button data-action="history">tenant-history</button>
+          <button data-action="cart" class="secondary">cart summary</button>
+          <button data-action="register" class="secondary">register</button>
+          <button data-action="link" class="secondary">link-session</button>
+        </div>
+      </section>
+
+      <section>
+        <h2>Respuesta</h2>
+        <pre id="output">Sin ejecutar.</pre>
+      </section>
+    </main>
+
+    <script>
+      const byId = (id) => document.getElementById(id);
+      const storageKey = "chatboc-junin-contract-test";
+      const saved = JSON.parse(localStorage.getItem(storageKey) || "{}");
+      byId("chatSession").value = saved.chatSession || `chat_ext_${crypto.randomUUID()}`;
+      byId("anonId").value = saved.anonId || `anon_ext_${crypto.randomUUID()}`;
+
+      function state() {
+        const next = {
+          apiBase: byId("apiBase").value.replace(/\/$/, ""),
+          tenant: byId("tenant").value.trim() || "municipio",
+          chatSession: byId("chatSession").value.trim(),
+          anonId: byId("anonId").value.trim(),
+          name: byId("name").value.trim(),
+          phone: byId("phone").value.trim(),
+        };
+        localStorage.setItem(storageKey, JSON.stringify(next));
+        return next;
+      }
+
+      async function call(path, options = {}) {
+        const current = state();
+        const response = await fetch(`${current.apiBase}${path}`, {
+          ...options,
+          headers: {
+            "Content-Type": "application/json",
+            "X-Chat-Session-Id": current.chatSession,
+            "X-Anon-Id": current.anonId,
+            ...(options.headers || {}),
+          },
+        });
+        const text = await response.text();
+        let body;
+        try {
+          body = JSON.parse(text);
+        } catch {
+          body = text;
+        }
+        return {
+          status: response.status,
+          request_id: response.headers.get("x-request-id"),
+          allow_origin: response.headers.get("access-control-allow-origin"),
+          body,
+        };
+      }
+
+      const actions = {
+        widgetConfig: () => {
+          const { tenant } = state();
+          return call(`/api/public/tenants/${encodeURIComponent(tenant)}/widget-config?tenant_slug=${encodeURIComponent(tenant)}`);
+        },
+        commerce: () => {
+          const { tenant } = state();
+          return call(`/api/public/widget-commerce-session?tenant_slug=${encodeURIComponent(tenant)}&tenant=${encodeURIComponent(tenant)}`);
+        },
+        history: () => {
+          const { tenant } = state();
+          return call(`/api/public/widget-user/tenant-history?tenant_slug=${encodeURIComponent(tenant)}`);
+        },
+        cart: () => {
+          const { tenant } = state();
+          return call(`/api/pwa/public/cart/summary?tenant=${encodeURIComponent(tenant)}&tenant_slug=${encodeURIComponent(tenant)}`);
+        },
+        register: () => {
+          const { tenant, name, phone } = state();
+          return call(`/api/public/widget-user/register?tenant_slug=${encodeURIComponent(tenant)}`, {
+            method: "POST",
+            body: JSON.stringify({ name, phone }),
+          });
+        },
+        link: () => {
+          const { tenant } = state();
+          return call(`/api/public/widget-user/link-session?tenant_slug=${encodeURIComponent(tenant)}`, {
+            method: "POST",
+            body: JSON.stringify({}),
+          });
+        },
+      };
+
+      document.querySelectorAll("button[data-action]").forEach((button) => {
+        button.addEventListener("click", async () => {
+          byId("output").textContent = "Ejecutando...";
+          try {
+            const result = await actions[button.dataset.action]();
+            byId("output").textContent = JSON.stringify(result, null, 2);
+          } catch (error) {
+            byId("output").textContent = String(error && error.stack ? error.stack : error);
+          }
+        });
+      });
+    </script>
+  </body>
+</html>

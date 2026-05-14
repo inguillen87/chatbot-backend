@@ -42,7 +42,7 @@ from services.response_formatter import render_audio_text
 from services.tts_orchestrator import generar_audio
 from utils.response_utils import normalize_response_payload
 from utils.whatsapp import enviar_mensaje_whatsapp_con_fallback
-from services.contact_service import resolve_contact
+from services.contact_service import resolve_contact, sanitize_profile_name
 from services.ticket_service import servicio_tickets
 from services.education_contracts import (
     build_education_case_ack_payload,
@@ -92,6 +92,7 @@ SENSITIVE_MENU_ACTIONS = {
 }
 SENSITIVE_ACTION_CONFIRM_ACCEPT = {"1", "si", "sí", "confirmar", "ok", "dale"}
 SENSITIVE_ACTION_CONFIRM_REJECT = {"2", "no", "cancelar", "menu", "menú"}
+GENERIC_CONTACT_NAMES = {"vecino", "vecina", "vecino/a", "usuario", "anonimo", "anonimo/a"}
 
 
 def _safe_log_value(value: Any) -> str:
@@ -147,6 +148,145 @@ def _selected_option_text_for_bot(selected_option: Optional[dict[str, Any]]) -> 
     cleaned = re.sub(r"[*_`~]", "", str(value)).strip()
     cleaned = re.sub(r"\s+", " ", cleaned)
     return cleaned or None
+
+
+def _clean_contact_name(value: Optional[Any]) -> Optional[str]:
+    cleaned = sanitize_profile_name(str(value).strip() if value is not None else None)
+    if not cleaned:
+        return None
+    if cleaned.strip().lower() in GENERIC_CONTACT_NAMES:
+        return None
+    return cleaned.strip()
+
+
+def _context_contact_name(context_data: Optional[dict[str, Any]]) -> Optional[str]:
+    if not isinstance(context_data, dict):
+        return None
+
+    candidates: list[Any] = [context_data.get("profile_name")]
+    contact_cache = context_data.get("contact_cache")
+    if isinstance(contact_cache, dict):
+        candidates.append(contact_cache.get("nombre"))
+
+    municipio_ctx = context_data.get(CONTEXTO_MUNICIPIO)
+    if isinstance(municipio_ctx, dict):
+        candidates.append(municipio_ctx.get("profile_name"))
+        contacto_usuario = municipio_ctx.get("contacto_usuario")
+        if isinstance(contacto_usuario, dict):
+            candidates.append(contacto_usuario.get("nombre"))
+
+    for candidate in candidates:
+        cleaned = _clean_contact_name(candidate)
+        if cleaned:
+            return cleaned
+    return None
+
+
+def _remember_contact_name(session_context: ChatSessionContext, name: Optional[str]) -> Optional[str]:
+    cleaned = _clean_contact_name(name)
+    if not cleaned or not session_context:
+        return None
+    if not isinstance(session_context.context_data, dict):
+        session_context.context_data = {}
+
+    context_data = session_context.context_data
+    context_data["profile_name"] = cleaned
+    contact_cache = context_data.setdefault("contact_cache", {})
+    if isinstance(contact_cache, dict):
+        contact_cache["nombre"] = cleaned
+
+    municipio_ctx = context_data.setdefault(CONTEXTO_MUNICIPIO, {})
+    if isinstance(municipio_ctx, dict):
+        municipio_ctx["profile_name"] = cleaned
+        contacto_usuario = municipio_ctx.setdefault("contacto_usuario", {})
+        if isinstance(contacto_usuario, dict):
+            contacto_usuario["nombre"] = cleaned
+
+    safe_flag_modified(session_context, "context_data")
+    return cleaned
+
+
+def _resolve_welcome_user_name(
+    *,
+    end_user: Optional[User],
+    session_context: ChatSessionContext,
+    profile_name: Optional[str],
+    resolved_contact: Optional[dict[str, Any]],
+) -> Optional[str]:
+    candidates = [
+        _context_contact_name(session_context.context_data if session_context else None),
+        getattr(end_user, "name", None) if end_user else None,
+        (resolved_contact or {}).get("nombre"),
+        profile_name,
+    ]
+    for candidate in candidates:
+        cleaned = _clean_contact_name(candidate)
+        if cleaned:
+            return cleaned
+    return None
+
+
+def _extract_requested_contact_name(raw_text: str, extracted: Optional[dict[str, Any]] = None) -> Optional[str]:
+    candidates: list[Any] = []
+    if isinstance(extracted, dict):
+        candidates.append(extracted.get("nombre"))
+    candidates.append(raw_text)
+
+    for candidate in candidates:
+        if not candidate:
+            continue
+        cleaned = str(candidate).strip()
+        cleaned = re.sub(
+            r"^(soy|me llamo|mi nombre es|nombre|nombre:)\s+",
+            "",
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+        cleaned = re.sub(r"\s+", " ", cleaned).strip(" .,!;:¡!¿?")
+        cleaned = _clean_contact_name(cleaned)
+        if not cleaned:
+            continue
+        if any(char.isdigit() for char in cleaned):
+            continue
+        if len(cleaned) > 80 or len(cleaned.split()) > 4:
+            continue
+        return cleaned
+    return None
+
+
+def _send_welcome_sticker(
+    *,
+    to_number_raw: str,
+    from_number_raw: str,
+    resolved_sticker_url: Optional[str],
+    session_context: ChatSessionContext,
+    state_key: str,
+) -> bool:
+    if not twilio_client or not resolved_sticker_url:
+        return False
+    if not isinstance(session_context.context_data, dict):
+        session_context.context_data = {}
+    welcome_state = session_context.context_data.setdefault("_welcome_state", {})
+    sticker_state = welcome_state.setdefault("sticker", {})
+    if sticker_state.get("disabled") or sticker_state.get(state_key):
+        return False
+    try:
+        twilio_client.messages.create(
+            from_=to_number_raw,
+            to=from_number_raw,
+            media_url=[resolved_sticker_url],
+        )
+        sent_ts = time.time()
+        sticker_state[state_key] = sent_ts
+        sticker_state["last_sent_ts"] = sent_ts
+        safe_flag_modified(session_context, "context_data")
+        current_app.logger.info("[WELCOME] Sticker sent for %s.", state_key)
+        return True
+    except Exception as exc:
+        sticker_state["disabled"] = True
+        safe_flag_modified(session_context, "context_data")
+        current_app.logger.warning("[WELCOME] Failed to send welcome sticker for %s: %s", state_key, exc)
+        return False
 
 
 def _sync_education_whatsapp_context(
@@ -1552,14 +1692,20 @@ def whatsapp_webhook():
             try:
                 template_sid = current_app.config.get("WELCOME_TEMPLATE_SID")
                 sticker_cooldown = current_app.config.get("WELCOME_STICKER_COOLDOWN_SECONDS", 300)
-                # Prioritize DB name, then WhatsApp profile name. Avoid generic
-                # "vecino" fallback so the bot either personalizes or greets
-                # without a name and lets downstream logic ask for it.
-                user_name = getattr(end_user, "name", "")
-                if not user_name or user_name.lower() in {"vecino", "vecina", "vecino/a"}:
-                    user_name = (post_vars.get("ProfileName") or "").strip()
-
-                if user_name.lower() in {"vecino", "vecina", "vecino/a"}:
+                profile_name_from_request = _clean_contact_name(post_vars.get("ProfileName"))
+                resolved_contact_for_welcome = resolve_contact(
+                    from_number_cleaned,
+                    profile_name_from_request,
+                )
+                user_name = _resolve_welcome_user_name(
+                    end_user=end_user,
+                    session_context=session_context_db_entry,
+                    profile_name=profile_name_from_request,
+                    resolved_contact=resolved_contact_for_welcome,
+                )
+                if user_name:
+                    _remember_contact_name(session_context_db_entry, user_name)
+                else:
                     user_name = ""
 
                 municipio_config = {}
@@ -1754,19 +1900,16 @@ def whatsapp_webhook():
                 if tenant_config:
                     municipio_config.update(tenant_config)
 
-                profile_name = (post_vars.get("ProfileName") or "").strip()
-                if profile_name.lower() in {"vecino", "vecina", "vecino/a"}:
-                    profile_name = ""
+                profile_name = (
+                    user_name
+                    or _context_contact_name(session_context_db_entry.context_data)
+                    or _clean_contact_name(post_vars.get("ProfileName"))
+                )
                 resolved_contact = resolve_contact(from_number_cleaned, profile_name or None)
                 if resolved_contact and not profile_name:
-                    profile_name = resolved_contact.get("nombre") or ""
+                    profile_name = _clean_contact_name(resolved_contact.get("nombre"))
                 if profile_name:
-                    session_context_db_entry.context_data["profile_name"] = profile_name
-                    contexto_municipio_actual = session_context_db_entry.context_data.setdefault(CONTEXTO_MUNICIPIO, {})
-                    contacto_usuario = contexto_municipio_actual.setdefault("contacto_usuario", {})
-                    if isinstance(contacto_usuario, dict) and not contacto_usuario.get("nombre"):
-                        contacto_usuario["nombre"] = profile_name
-                    safe_flag_modified(session_context_db_entry, "context_data")
+                    _remember_contact_name(session_context_db_entry, profile_name)
 
                 menu_context = {
                     "user_obj": client_user,
@@ -1874,10 +2017,29 @@ def whatsapp_webhook():
             except Exception as e:
                 current_app.logger.error(f"[WELCOME] Name extraction failed: {e}")
                 extracted = {}
-            new_name = extracted.get("nombre") or name_candidate
-            update_user_profile(end_user, {"name": new_name})
+            new_name = _extract_requested_contact_name(name_candidate, extracted)
+            if not new_name:
+                if twilio_client:
+                    twilio_client.messages.create(
+                        from_=to_number_raw,
+                        to=from_number_raw,
+                        body="No pude tomar tu nombre. Decime por favor como te llamas.",
+                    )
+                return "OK", 200
+
+            if end_user:
+                update_user_profile(end_user, {"name": new_name})
+            _remember_contact_name(session_context_db_entry, new_name)
             session_context_db_entry.context_data.pop("awaiting_user_name", None)
+            personalized_sticker_sent = _send_welcome_sticker(
+                to_number_raw=to_number_raw,
+                from_number_raw=from_number_raw,
+                resolved_sticker_url=resolved_sticker_url,
+                session_context=session_context_db_entry,
+                state_key="personalized_name_sent_ts",
+            )
             safe_flag_modified(session_context_db_entry, "context_data")
+            db.session.add(session_context_db_entry)
             db.session.commit()
             if twilio_client:
                 twilio_client.messages.create(
@@ -1917,7 +2079,11 @@ def whatsapp_webhook():
                         for url in [resolved_sticker_url, configured_sticker_url]
                         if url
                     ]
-                    if sticker_payload:
+                    if (
+                        sticker_payload
+                        and not personalized_sticker_sent
+                        and not sticker_state.get("disabled", False)
+                    ):
                         welcome_response_payload["_welcome_sticker_urls"] = sticker_payload
                         welcome_response_payload["_preserve_welcome_header"] = True
                     else:

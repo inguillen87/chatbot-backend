@@ -35,7 +35,16 @@ Registrar cada prueba realista que se haga sobre Chatboc y convertirla en una me
   - `tests/test_pyme_order_extraction.py`
   - `tests/test_reclamo_flow_contact_merge.py`
   - `tests/test_education_routes.py`
+- Tests widget/portal/realtime:
+  - `tests/test_webauthn_support.py`
+  - `tests/test_public_tenant_catalog_alias.py`
+  - `tests/test_realtime_session.py`
+  - `tests/test_widget_settings.py`
+  - `tests/test_realtime_voice_profiles.py`
+  - `tests/test_public_resolver_widget_config_contract.py`
+  - `tests/test_voice_realtime_routes.py`
 - Resultado actualizado: `41 passed`, `3 subtests passed`.
+- Resultado widget/portal/realtime actualizado: `48 passed`.
 - QA WhatsApp simulada con webhook Twilio firmado:
   - `18/18` requests respondieron `200`.
   - Delta creado: `3` tickets municipales, `1` pedido PYME, `1` ticket/caso escolar, `3` adjuntos.
@@ -139,6 +148,28 @@ Criterio de cierre:
 - Mantener Twilio Media Streams como fallback hasta validar Junin, bodega y colegio sandbox en llamadas reales.
 - Registrar evento post-llamada y acciones trazables: ticket, pedido o caso escolar.
 
+### P0 - Widget externo, portal ciudadano y seguimiento
+
+Estado aplicado:
+
+- `merge_anon_into_user` ahora adopta tambien `MarketCart` y `MarketOrder` por `anon_id`, `chat_session_id` y `contact_key=session:<id>`.
+- `POST /api/public/widget-user/register` valida `name` + `email_or_phone`, crea/vincula usuario provisional, crea `TenantFollower`, migra historial/carrito/chat y devuelve contrato JSON con `merge`.
+- `POST /api/public/widget-user/link-session` vincula la sesion si ya existe usuario provisional por `anon_id`; si no, responde JSON accionable con `registration_required`.
+- `GET /api/public/widget-commerce-session` habilita catalogo/carrito para municipio solo si hay catalogo real asociado al tenant, no por placeholder.
+- `demo_session_id` largo ya no queda publicado como `session.chat_session_id` en contratos publicos del widget; se deriva `sid_...` corto.
+- Se agrego `docs/widget_junin_external_contract_test.html` como pagina externa de prueba por contrato.
+
+Riesgo:
+
+Frontend todavia debe implementar la experiencia visual completa: portal ciudadano anonimo, registro progresivo, seguimiento de reclamos, canjes de puntos y estado de carrito sin mezclar portal admin.
+
+Criterio de cierre:
+
+- Servir la pagina externa de prueba contra backend local o staging.
+- Confirmar que el widget carga tenant `municipio`, mantiene `anon_id`/`chat_session_id`, abre historial, permite registro y no pierde carrito/reclamos.
+- Frontend renderiza `/portal/:tenant` con historial anonimo antes de login y con CTA de registro progresivo.
+- Seguimiento de reclamo muestra timeline, adjuntos y mapa solo con datos reales.
+
 ### P2 - Config local de media/cloud
 
 Riesgo:
@@ -149,6 +180,21 @@ Criterio de cierre:
 - Documentar envs minimas para QA local.
 - Silenciar degradaciones esperadas como warning controlado.
 - Mantener error fuerte solo cuando el flujo realmente no pueda continuar.
+
+### P1 - WhatsApp saludo inicial con sticker y nombre
+
+Estado aplicado:
+
+- El webhook resuelve nombre por prioridad: contexto guardado, usuario DB, contacto resuelto y `ProfileName` de WhatsApp.
+- Se ignoran nombres genericos como `Vecino/a` para no personalizar mal.
+- Si el bot pregunta el nombre y el usuario responde, se guarda en `profile_name`, `contact_cache` y `contexto_municipio.contacto_usuario.nombre`.
+- Al capturar el nombre preguntado, se manda sticker de bienvenida personalizado una sola vez por sesion y se evita duplicarlo luego como header del menu diferido.
+- Tests agregados en `tests/test_whatsapp_webhook.py`.
+
+Criterio de cierre:
+
+- Probar en sandbox real que el primer `hola` con nombre guardado envia template/sticker/saludo personalizado.
+- Probar en sandbox real que, si no hay nombre, primero pregunta y luego al responder el nombre envia sticker + saludo personalizado.
 
 ## Regla De Trabajo Para Proximas Pruebas
 
