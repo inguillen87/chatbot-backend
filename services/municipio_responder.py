@@ -1615,7 +1615,16 @@ class ReclamoFlowHandler:
 
         datos_reclamo = self.flow_context['datos_reclamo']
         for k, v in contact_details.items():
-            if v:
+            if not v:
+                continue
+            if k == "direccion":
+                datos_reclamo.setdefault("direccion_contacto", v)
+                continue
+            if k == "nombre" and not _is_plausible_name(str(v)):
+                continue
+            if k == "nombre" and re.search(r"\b(dni|documento|telefono|tel[eé]fono|email|correo)\b", str(v), re.IGNORECASE):
+                continue
+            if k in {"nombre", "dni", "email", "telefono"}:
                 datos_reclamo[k] = v
         self.flow_context['state'] = ReclamoState.ESPERANDO_CONFIRMACION.name
         return self.get_confirmation_message()
@@ -5815,6 +5824,8 @@ def _strip_leading_phrases(text: str) -> str:
         return cleaned
 
     patterns = [
+        r"^(?:registrar|iniciar|hacer|cargar|abrir)\s+(?:un\s+)?reclamo\s+(?:por|sobre|de)?\s*",
+        r"^(?:un\s+)?reclamo\s+(?:por|sobre|de)\s+",
         r"^(hola|buenos dias|buen dia|buenas tardes|buenas noches|buenas)\s*[!,\-:]*\s*",
         r"^(hola\s+)?(?:que\s+tal|buenas)\s*[!,\-:]*\s*",
         r"^(?:me\s+gustaria|me\s+gustaría|quisiera|necesito|quiero|solicito|pido|deseo|podria|podrian|podrían|podríamos|podrías)\s+(?:que\s+)?",
@@ -5846,6 +5857,36 @@ def _strip_trailing_phrases(text: str) -> str:
     for pattern in trailing_patterns:
         cleaned = re.sub(pattern, "", cleaned, flags=re.IGNORECASE).strip()
 
+    return cleaned or text.strip()
+
+
+def _extract_reclamo_issue_phrase(text: str) -> str:
+    """Return the problem phrase, excluding greeting/contact lead-in when possible."""
+
+    if not text:
+        return text
+
+    cleaned = _strip_trailing_phrases(_strip_leading_phrases(text))
+    patterns = [
+        r"\b(?:registrar|iniciar|hacer|cargar|abrir)\s+(?:un\s+)?reclamo\s+(?:por|sobre|de)\s+(?P<desc>.+)",
+        r"\breclamo\s+(?:por|sobre|de)\s+(?P<desc>.+)",
+        r"\b(?:hay|tengo|tenemos|veo)\s+(?P<desc>.+)",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            cleaned = match.group("desc").strip()
+            break
+
+    cleaned = _strip_trailing_phrases(_strip_leading_phrases(cleaned))
+    cleaned = re.split(
+        r"\b(?:soy|mi\s+nombre\s+es|me\s+llamo|telefono|celular|whatsapp|email|correo|dni|documento)\b",
+        cleaned,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0].strip(" ,.;:-")
+    cleaned = re.sub(r"^(?:un|una)\s+", "", cleaned, flags=re.IGNORECASE).strip()
     return cleaned or text.strip()
 
 
@@ -5916,6 +5957,47 @@ def _clean_location_fragment(fragment: str | None, *, max_words: int = 7) -> str
     return cleaned or None
 
 
+def _normalize_reclamo_address_candidate(value: str | None) -> str | None:
+    if not value:
+        return None
+
+    cleaned = _clean_location_fragment(value, max_words=8)
+    if not cleaned:
+        return None
+
+    parts = re.split(r"\b(?:en|sobre|por)\s+", cleaned, flags=re.IGNORECASE)
+    for part in reversed(parts):
+        part = part.strip(" ,.;:-")
+        if part and re.search(r"\d", part):
+            cleaned = part
+            break
+
+    cleaned = re.sub(r"^(?:de|del|la|el)\s+", "", cleaned, flags=re.IGNORECASE)
+    return cleaned.strip(" ,.;:-") or None
+
+
+def _strip_address_from_reclamo_description(description: str | None, address: str | None) -> str | None:
+    if not description:
+        return description
+
+    cleaned = description.strip()
+    if address:
+        pattern = re.compile(
+            r"\b(?:en|sobre|por)?\s*" + re.escape(address.strip()) + r"\b.*$",
+            flags=re.IGNORECASE,
+        )
+        cleaned = pattern.sub("", cleaned).strip(" ,.;:-")
+
+    cleaned = re.split(
+        r"\b(?:distrito|barrio|localidad|ciudad|provincia)\b",
+        cleaned,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0].strip(" ,.;:-")
+    cleaned = re.sub(r"^(?:un|una)\s+", "", cleaned, flags=re.IGNORECASE).strip()
+    return cleaned or description.strip()
+
+
 def _looks_like_address(value: str | None) -> bool:
     if not value:
         return False
@@ -5942,6 +6024,14 @@ def _looks_like_address(value: str | None) -> bool:
         "basura",
         "quema",
         "poda",
+        "alumbrado",
+        "apagada",
+        "apagado",
+        "luminaria",
+        "semaforo",
+        "semaforos",
+        "reclamo",
+        "problema",
     }
     if any(term in normalized for term in complaint_terms):
         return False
@@ -6088,7 +6178,7 @@ def extract_reclamo_details_from_text(
     if not user_input:
         return details
 
-    cleaned_description = _strip_trailing_phrases(_strip_leading_phrases(user_input))
+    cleaned_description = _extract_reclamo_issue_phrase(user_input)
     if cleaned_description:
         cleaned_description = re.sub(r"\s{2,}", " ", cleaned_description).strip()
         if not _is_placeholder_description(cleaned_description):
@@ -6131,7 +6221,7 @@ def extract_reclamo_details_from_text(
     if "direccion_sugerida" not in details:
         match = re.search(r"\b(?:en|sobre|por)\s+([A-Za-zÀ-ÿ'\s]+?\d{1,5})\b", user_input, re.IGNORECASE)
         if match:
-            candidate = match.group(1).strip()
+            candidate = _normalize_reclamo_address_candidate(match.group(1).strip())
             if _looks_like_address(candidate):
                 details["direccion_sugerida"] = candidate
 
@@ -6139,7 +6229,7 @@ def extract_reclamo_details_from_text(
         # Simple fallback: first street + number sequence.
         match = re.search(r"([A-Za-zÀ-ÿ'\s]+\d{1,5})", user_input)
         if match:
-            candidate = match.group(1).strip()
+            candidate = _normalize_reclamo_address_candidate(match.group(1).strip())
             if _looks_like_address(candidate):
                 details["direccion_sugerida"] = candidate
 
@@ -6165,12 +6255,15 @@ def extract_reclamo_details_from_text(
             continue
         if target_key == "direccion_sugerida":
             existing_address = details.get(target_key)
+            value = _normalize_reclamo_address_candidate(value)
             if _should_update_address_candidate(existing_address, value):
                 details[target_key] = value
         elif target_key not in details:
             details[target_key] = value
 
-    direccion_candidate = details.get("direccion_sugerida")
+    direccion_candidate = _normalize_reclamo_address_candidate(details.get("direccion_sugerida"))
+    if direccion_candidate:
+        details["direccion_sugerida"] = direccion_candidate
     refined_candidate = _refine_intersection_candidate(user_input, direccion_candidate)
     if refined_candidate and refined_candidate != direccion_candidate:
         details["direccion_sugerida"] = refined_candidate
@@ -6217,13 +6310,16 @@ def extract_reclamo_details_from_text(
                 continue
             if target_key == "direccion_sugerida":
                 existing = details.get(target_key)
+                value = _normalize_reclamo_address_candidate(value)
                 if _should_update_address_candidate(existing, value):
                     details[target_key] = value
                 continue
             if target_key not in details or target_key == "descripcion_sugerida":
                 details[target_key] = value
 
-    direccion_candidate = details.get("direccion_sugerida")
+    direccion_candidate = _normalize_reclamo_address_candidate(details.get("direccion_sugerida"))
+    if direccion_candidate:
+        details["direccion_sugerida"] = direccion_candidate
     if direccion_candidate and not _looks_like_address(direccion_candidate):
         details.pop("direccion_sugerida", None)
 
@@ -6254,6 +6350,15 @@ def extract_reclamo_details_from_text(
         details.pop("direccion", None)
         if not details.get("direccion_sugerida"):
             details.pop("direccion_sugerida", None)
+
+    direccion_para_descripcion = details.get("direccion_sugerida") or details.get("direccion")
+    descripcion_final = details.get("descripcion_sugerida") or details.get("descripcion")
+    descripcion_limpia = _strip_address_from_reclamo_description(
+        descripcion_final, direccion_para_descripcion
+    )
+    if descripcion_limpia and not _is_placeholder_description(descripcion_limpia):
+        details["descripcion_sugerida"] = descripcion_limpia
+        details["descripcion"] = descripcion_limpia
 
     nombre_final = details.get("nombre")
     if nombre_final and not _is_plausible_name(nombre_final):

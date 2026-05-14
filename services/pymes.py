@@ -29,7 +29,6 @@ from services.qdrant_search import (
 )
 from services.faq_matcher_spacy import buscar_en_faq_spacy
 from services.utils_placeholders import sugerencias_por_rubro
-from services.logic import es_rubro_publico
 from services.ticket_service import servicio_tickets
 from services.ticket_utils import formatear_ticket_respuesta, remove_buttons_with_urls_in_message
 from services.webinfo import obtener_info_web
@@ -460,6 +459,14 @@ def extraer_productos_regex(texto: str) -> list[dict]:
     partes = re.split(r",\s*(?![^()]*\))|\s+y\s+(?![^()]*\))", texto_pedido)
     items: list[dict] = []
     pattern = re.compile(r"^\s*(\d+\.?\d*|\d+)\s*([a-zA-Záéíóúñ/\-]+(?:\s+[a-zA-Záéíóúñ/\-]+)*)?\s*(?:de\s+)?(.+)", re.IGNORECASE)
+    pattern = re.compile(
+        r"^\s*(\d+(?:[.,]\d+)?)\s*([A-Za-zÀ-ÿ/\-]+(?:\s+[A-Za-zÀ-ÿ/\-]+)*)?\s*(?:de\s+)?(.+)",
+        re.IGNORECASE,
+    )
+    pattern = re.compile(
+        r"^\s*(\d+(?:[.,]\d+)?)\s*(?:(unidades?|unidad|botellas?|cajas?|packs?|pack|kg|kilos?|litros?|lts?|metros?|docenas?)\s+)?(?:de\s+)?(.+)",
+        re.IGNORECASE,
+    )
     for p_str in partes:
         p_str = _clean_order_segment(p_str)
         if not p_str:
@@ -471,7 +478,7 @@ def extraer_productos_regex(texto: str) -> list[dict]:
                 if unidad_str and len(unidad_str.split()) > 2: nombre_str = f"{unidad_str} {nombre_str}".strip(); unidad_str = None
                 if nombre_str.lower().endswith(" de"): nombre_str = nombre_str[:-3].strip()
                 if nombre_str:
-                    item_data = {"nombre": nombre, "cantidad": int(float(cantidad_str.replace(',','.')))}
+                    item_data = {"nombre": nombre_str, "cantidad": int(float(cantidad_str.replace(',','.')))}
                     if unidad_str and unidad_str.lower() not in ["unidad", "unidades"]: item_data["unidad"] = unidad_str.lower()
                     items.append(item_data)
             except: pass
@@ -492,6 +499,25 @@ def extraer_productos_pedido(texto: str) -> list[dict]:
     items_regex = extraer_productos_regex(texto)
     if items_regex: return items_regex
     return extraer_productos_llm(texto)
+
+
+def _normalize_order_tracking_base_url(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+
+    base = str(value).strip().rstrip("/")
+    if not base or not re.match(r"^https?://", base, flags=re.IGNORECASE):
+        return None
+
+    if "localhost" in base or "127.0.0.1" in base:
+        return "https://chatboc.ar"
+
+    for suffix in ("/pyme/pedidos", "/tracking/order", "/tracking/claim", "/chat"):
+        if base.lower().endswith(suffix):
+            base = base[: -len(suffix)].rstrip("/")
+
+    return base or None
+
 
 def formatear_carrito_desde_summary(summary_cart_obj: dict, context: dict = None) -> str:
     if not summary_cart_obj or not summary_cart_obj.get("items_detalle"):
@@ -711,22 +737,24 @@ def _build_pyme_order_success_payload(context: dict, handler_response: dict) -> 
              app_base_url = "https://chatboc.ar"
 
         if app_base_url:
-            base_tracking_url = f"{app_base_url.rstrip('/')}/pyme/pedidos"
+            base_tracking_url = _normalize_order_tracking_base_url(app_base_url)
 
         if not base_tracking_url:
-            base_tracking_url = current_app.config.get("PYME_PEDIDOS_PUBLIC_URL")
+            base_tracking_url = _normalize_order_tracking_base_url(
+                current_app.config.get("PYME_PEDIDOS_PUBLIC_URL")
+            )
         if not base_tracking_url:
             panel_url = current_app.config.get("PANEL_URL")
             if panel_url:
-                base_tracking_url = f"{panel_url.rstrip('/')}/pyme/pedidos"
+                base_tracking_url = _normalize_order_tracking_base_url(panel_url)
         if not base_tracking_url:
             backend_url = current_app.config.get("BACKEND_URL")
             if backend_url:
-                base_tracking_url = f"{backend_url.rstrip('/')}/pyme/pedidos"
+                base_tracking_url = _normalize_order_tracking_base_url(backend_url)
 
     # Final fallback if nothing else is set
     if not base_tracking_url:
-        base_tracking_url = "https://www.chatboc.ar/pyme/pedidos"
+        base_tracking_url = "https://www.chatboc.ar"
 
     message_body, base_buttons = formatear_ticket_respuesta(
         "pedido",

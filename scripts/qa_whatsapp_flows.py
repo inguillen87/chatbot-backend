@@ -78,6 +78,7 @@ def _signed_headers(url: str, data: dict) -> dict:
 
 
 def _twilio_form(case: WhatsappCase) -> dict:
+    profile_name = case.extra.get("_ProfileName") or f"QA {case.label}"
     form = {
         "SmsMessageSid": f"SM{uuid.uuid4().hex[:30]}",
         "MessageSid": f"SM{uuid.uuid4().hex[:30]}",
@@ -85,10 +86,10 @@ def _twilio_form(case: WhatsappCase) -> dict:
         "From": f"whatsapp:{_normalize(case.from_number)}",
         "To": f"whatsapp:{_normalize(case.to_number)}",
         "Body": case.body,
-        "ProfileName": f"QA {case.label}",
+        "ProfileName": profile_name,
         "NumMedia": "0",
     }
-    form.update(case.extra)
+    form.update({k: v for k, v in case.extra.items() if not k.startswith("_")})
     return form
 
 
@@ -114,6 +115,7 @@ def main():
     junin_from = f"+54926155{run_seed}"
     junin_audio_from = f"+54926156{run_seed}"
     bodega_from = f"+54926157{run_seed}"
+    junin_location_from = f"+54926158{run_seed}"
 
     cases = [
         WhatsappCase(
@@ -121,26 +123,7 @@ def main():
             to_number="+17432643718",
             from_number=junin_from,
             body=f"Hola, soy QA Texto, email qa.texto@example.com, telefono {junin_from}. Quiero registrar un reclamo por luminaria apagada en Av San Martin 123, distrito Centro, Junin.",
-            extra={},
-        ),
-        WhatsappCase(
-            label="junin_confirmacion_reclamo",
-            to_number="+17432643718",
-            from_number=junin_from,
-            body="Confirmo los datos. Crear el reclamo.",
-            extra={},
-        ),
-        WhatsappCase(
-            label="junin_ubicacion",
-            to_number="+17432643718",
-            from_number=junin_from,
-            body="Te comparto la ubicacion del reclamo.",
-            extra={
-                "Latitude": "-34.5889",
-                "Longitude": "-60.9462",
-                "Address": "Av San Martin 123, Junin, Buenos Aires",
-                "Label": "Alumbrado apagado",
-            },
+            extra={"_ProfileName": "QA Junin Texto"},
         ),
         WhatsappCase(
             label="junin_imagen",
@@ -148,6 +131,7 @@ def main():
             from_number=junin_from,
             body="Adjunto foto del problema.",
             extra={
+                "_ProfileName": "QA Junin Texto",
                 "NumMedia": "1",
                 "MediaUrl0": "https://media.local/qa-junin-luz.png",
                 "MediaContentType0": "image/png",
@@ -155,11 +139,67 @@ def main():
             },
         ),
         WhatsappCase(
+            label="junin_dni_reclamo",
+            to_number="+17432643718",
+            from_number=junin_from,
+            body="Mi DNI es 30111222.",
+            extra={"_ProfileName": "QA Junin Texto"},
+        ),
+        WhatsappCase(
+            label="junin_confirmacion_reclamo",
+            to_number="+17432643718",
+            from_number=junin_from,
+            body="1",
+            extra={"_ProfileName": "QA Junin Texto"},
+        ),
+        WhatsappCase(
+            label="junin_ubicacion_inicio",
+            to_number="+17432643718",
+            from_number=junin_location_from,
+            body="Hola, quiero registrar un reclamo por luminaria apagada.",
+            extra={"_ProfileName": "QA Junin Ubicacion"},
+        ),
+        WhatsappCase(
+            label="junin_ubicacion_compartida",
+            to_number="+17432643718",
+            from_number=junin_location_from,
+            body="Te comparto la ubicacion del reclamo.",
+            extra={
+                "_ProfileName": "QA Junin Ubicacion",
+                "Latitude": "-34.5889",
+                "Longitude": "-60.9462",
+                "Address": "Av San Martin 123, Junin, Buenos Aires",
+                "Label": "Alumbrado apagado",
+            },
+        ),
+        WhatsappCase(
+            label="junin_ubicacion_sin_foto",
+            to_number="+17432643718",
+            from_number=junin_location_from,
+            body="No, omitir foto.",
+            extra={"_ProfileName": "QA Junin Ubicacion"},
+        ),
+        WhatsappCase(
+            label="junin_ubicacion_datos",
+            to_number="+17432643718",
+            from_number=junin_location_from,
+            body=f"Soy QA Ubicacion, DNI 30222333, email qa.ubicacion@example.com, telefono {junin_location_from}.",
+            extra={"_ProfileName": "QA Junin Ubicacion"},
+        ),
+        WhatsappCase(
+            label="junin_ubicacion_confirmar",
+            to_number="+17432643718",
+            from_number=junin_location_from,
+            body="1",
+            extra={"_ProfileName": "QA Junin Ubicacion"},
+        ),
+        WhatsappCase(
             label="junin_audio",
             to_number="+17432643718",
             from_number=junin_audio_from,
             body="",
             extra={
+                "_ProfileName": "QA Junin Audio",
                 "NumMedia": "1",
                 "MediaUrl0": "https://media.local/qa-junin-audio.ogg",
                 "MediaContentType0": "audio/ogg",
@@ -167,18 +207,39 @@ def main():
             },
         ),
         WhatsappCase(
+            label="junin_audio_sin_foto",
+            to_number="+17432643718",
+            from_number=junin_audio_from,
+            body="No, omitir foto.",
+            extra={"_ProfileName": "QA Junin Audio"},
+        ),
+        WhatsappCase(
+            label="junin_audio_datos",
+            to_number="+17432643718",
+            from_number=junin_audio_from,
+            body=f"Soy QA Audio, DNI 30333444, email qa.audio@example.com, telefono {junin_audio_from}.",
+            extra={"_ProfileName": "QA Junin Audio"},
+        ),
+        WhatsappCase(
+            label="junin_audio_confirmar",
+            to_number="+17432643718",
+            from_number=junin_audio_from,
+            body="1",
+            extra={"_ProfileName": "QA Junin Audio"},
+        ),
+        WhatsappCase(
             label="cuatro_fincas_pedido",
             to_number="+18564858589",
             from_number=bodega_from,
             body=f"Hola, quiero comprar 2 botellas de Malbec y 1 Cabernet. Soy QA Bodega, telefono {bodega_from}. Enviar a Godoy Cruz 456.",
-            extra={},
+            extra={"_ProfileName": "QA Bodega"},
         ),
         WhatsappCase(
             label="cuatro_fincas_confirmar",
             to_number="+18564858589",
             from_number=bodega_from,
             body="Confirmar pedido.",
-            extra={},
+            extra={"_ProfileName": "QA Bodega"},
         ),
     ]
 

@@ -572,8 +572,10 @@ def formatear_ticket_respuesta(
 
         # Ensure base URL is clean (strip /chat if present in legacy config to get root)
         base_url_clean = base_chat_url
-        if "/chat" in base_chat_url and tracking_path != "/chat":
-             base_url_clean = base_chat_url.replace("/chat", "")
+        if tracking_path != "/chat" and base_url_clean.rstrip("/").lower().endswith("/chat"):
+             base_url_clean = base_url_clean.rstrip("/")[: -len("/chat")]
+        if tipo == "pedido" and base_url_clean.rstrip("/").lower().endswith("/pyme/pedidos"):
+            base_url_clean = base_url_clean.rstrip("/")[: -len("/pyme/pedidos")]
 
         if base_url_clean.endswith('/'):
             base_url_clean = base_url_clean[:-1]

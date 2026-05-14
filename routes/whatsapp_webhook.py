@@ -111,6 +111,22 @@ def _log(level: str, message: str, *args: Any, exc_info: bool = False) -> None:
     getattr(target_logger, level)(safe_message, *safe_args, exc_info=exc_info)
 
 
+def _as_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "y", "on", "si", "sí"}:
+            return True
+        if normalized in {"0", "false", "no", "n", "off", ""}:
+            return False
+    return bool(value)
+
+
 def _build_sensitive_action_confirmation_text(selected_option: dict) -> str:
     label = (selected_option or {}).get("texto") or "esta acción"
     return (
@@ -2887,8 +2903,14 @@ def whatsapp_webhook():
                 )
 
             audio_enabled = bool(
-                current_app.config.get("WHATSAPP_AUDIO_ENABLED", True)
-                or bot_response_dict.get("force_audio_whatsapp")
+                _as_bool(
+                    current_app.config.get(
+                        "WHATSAPP_AUDIO_ENABLED",
+                        os.getenv("WHATSAPP_AUDIO_ENABLED"),
+                    ),
+                    default=True,
+                )
+                or _as_bool(bot_response_dict.get("force_audio_whatsapp"))
             )
             if audio_enabled:
                 _ensure_welcome_audio_payload(bot_response_dict)

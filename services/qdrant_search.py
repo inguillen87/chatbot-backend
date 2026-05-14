@@ -5,7 +5,6 @@ import re
 from typing import List, Optional, Dict, Any, Tuple
 from collections import OrderedDict, Counter
 from .qdrant_utils import get_qdrant_client, verificar_y_crear_coleccion_qdrant
-from services.logic import es_rubro_publico
 from .embedding_service import embed_textos_llm as embed_textos
 
 # from collections import Counter # Ya está importado arriba
@@ -36,6 +35,8 @@ CATALOGO_MUNICIPIO = "catalogo_municipio"
 
 def coleccion_catalogo_para_rubro(rubro) -> str:
     """Devuelve el nombre de colección Qdrant según el rubro."""
+    from services.logic import es_rubro_publico
+
     return CATALOGO_MUNICIPIO if es_rubro_publico(rubro) else CATALOGO_PYME
 
 
