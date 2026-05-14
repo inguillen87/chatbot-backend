@@ -284,6 +284,73 @@ Resultado local:
 - 30 tests OK en `tests.test_api_v2_foundation`.
 - 62 tests OK en suite combinada de demo/landing/SaaS/public resolver/lead capture.
 
+### P0 - Smoke local repetible de demo, widget, perfil e integracion
+
+Estado aplicado:
+
+- `scripts/local_platform_smoke.py` usa SQLite in-memory y no toca Render, Twilio, WhatsApp ni la DB real.
+- El seed ahora separa owners por pilar: colegio, municipio y bodega.
+- El smoke valida:
+  - `/api/v2/health`.
+  - `/api/public/widget-config` como selector platform.
+  - `/api/v2/demo/session` para educacion, gobierno y empresas.
+  - `POST /api/ask/municipio` con `demo_session_id`, `X-Chat-Session-Id`, ubicacion y foto.
+  - `GET /api/v2/demo/admin-preview` filtrado por `chat_session_id`, con ticket real y mapa real.
+  - `/api/public/realtime/voice-capabilities`.
+  - `/api/v2/tenant/admin-experience`, `/api/v2/whatsapp/experience`, `/api/v2/catalog/quality`, `/api/v2/inbox/omnichannel`, `/api/v2/platform/production-smoke`.
+
+Comando:
+
+```powershell
+.\test_venv\Scripts\python.exe scripts\local_platform_smoke.py
+```
+
+Resultado local:
+
+- 13 checks OK.
+- El reclamo demo de gobierno crea `MunicipioTicket` real con `canal_ingreso=web_demo_widget`.
+- El admin preview devuelve `session_activity.has_session_data=true`, `cards[0].value=1` y `map.enabled=true`.
+
+### P0 - QA WhatsApp aislada por defecto
+
+Estado aplicado:
+
+- `scripts/qa_whatsapp_flows.py` ahora setea `TESTING=1` antes de importar `app`, evitando `eventlet` en Windows.
+- Por defecto usa `LocalWhatsappQAConfig` con SQLite in-memory.
+- Solo usa DB configurada si se setea explicitamente `QA_WHATSAPP_USE_CONFIGURED_DB=1`.
+- Seedea mappings locales para:
+  - Junin: `+1 (743) 264-3718`.
+  - Cuatro Fincas: `+1 (856) 485-8589`.
+  - Twilio Sandbox colegio: `+1 (415) 523-8886`.
+- Usa fake Twilio client: no envia mensajes reales.
+- Usa fake storage para adjuntos: no toca Cloudinary, R2 ni `static/uploads`.
+- Usa fake transcripcion para audio de municipio/colegio.
+
+Comando seguro:
+
+```powershell
+$env:TWILIO_AUTH_TOKEN='local-token'
+$env:TWILIO_ACCOUNT_SID='AC_LOCAL_TEST'
+.\test_venv\Scripts\python.exe scripts\qa_whatsapp_flows.py
+```
+
+Resultado local:
+
+- Junin texto, imagen, ubicacion y audio: 200 OK.
+- Cuatro Fincas pedido y confirmacion: 200 OK.
+- Colegio sandbox menu, seleccion de inasistencia y audio/ubicacion: 200 OK.
+- Delta validado: 5 contextos, 3 reclamos municipio, 1 ticket pyme/colegio, 1 pedido pyme, 3 adjuntos, 1 alias de caso escolar.
+
+Uso contra DB configurada:
+
+```powershell
+$env:QA_WHATSAPP_USE_CONFIGURED_DB='1'
+$env:TWILIO_AUTH_TOKEN='<token real o staging>'
+.\test_venv\Scripts\python.exe scripts\qa_whatsapp_flows.py
+```
+
+No usar este modo contra produccion sin snapshot/ventana de QA, porque escribe contextos, tickets, pedidos y adjuntos.
+
 ## Regla De Trabajo Para Proximas Pruebas
 
 Cada recorrido nuevo debe terminar con una de estas salidas:

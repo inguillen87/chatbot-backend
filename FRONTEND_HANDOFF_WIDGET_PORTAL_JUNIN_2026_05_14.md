@@ -370,3 +370,46 @@ Frontend no debe inventar respuesta local si no llega esto: mostrar error humano
 - Si `ticket.detail_endpoint` existe, el CTA debe ser "Ver seguimiento" o equivalente.
 - Pasar `chat_session_id` tambien al admin preview cuando frontend lo tenga: `/api/v2/demo/admin-preview?sector=gobierno&tenant_slug=municipio&chat_session_id=...`.
 - No volver a mostrar "Crear ticket" debajo de un ticket ya creado; usar "Adjuntar evidencia", "Enviar ubicacion", "Consultar estado".
+
+## Update QA backend - 2026-05-14
+
+Backend dejo dos recorridos repetibles para que frontend valide sin mocks:
+
+```powershell
+.\test_venv\Scripts\python.exe scripts\local_platform_smoke.py
+```
+
+Ese smoke valida landing/demo/widget/admin con DB in-memory. Caso clave para frontend:
+
+- Crea demo session gobierno.
+- Envia `POST /api/ask/municipio` con `X-Chat-Session-Id`, `demo_session_id`, ubicacion y foto.
+- Recibe `fuente=demo_municipio_runtime`, `ticket`, `result.traceable=true`.
+- Consulta `GET /api/v2/demo/admin-preview?...&chat_session_id=...`.
+- Admin preview devuelve `cards`, `map.points` y `session_activity.items` reales de esa sesion.
+
+```powershell
+$env:TWILIO_AUTH_TOKEN='local-token'
+$env:TWILIO_ACCOUNT_SID='AC_LOCAL_TEST'
+.\test_venv\Scripts\python.exe scripts\qa_whatsapp_flows.py
+```
+
+Ese QA simula WhatsApp con fake Twilio, fake storage y fake transcripcion. No toca Twilio real ni DB real por defecto.
+
+Flujos cubiertos:
+
+- Junin reclamo por texto, imagen, ubicacion y audio.
+- Cuatro Fincas pedido de vinos y confirmacion.
+- Colegio sandbox: menu, justificar inasistencia, audio/ubicacion.
+
+### Tareas frontend que salen de esta QA
+
+- Agregar un recorrido E2E visual que reproduzca el caso `demo_gobierno_chat_creates_traceable_claim`.
+- En `/demo`, preservar el `chat_session_id` de `workspace.chat_bootstrap.session.chat_session_id` durante toda la conversacion.
+- Al pedir admin preview, pasar el mismo `chat_session_id`; si no, el panel queda en cero por diseno.
+- En integraciones/WhatsApp sandbox, mostrar que el modo de prueba es `copy_or_deeplink` y no prometer envio automatico desde backend.
+- Para WhatsApp Tech Provider, renderizar el contrato como onboarding Chatboc; no mostrar Twilio Console al usuario final.
+- En perfil/integracion, diferenciar:
+  - sandbox demo: prueba guiada con 10 mensajes y numeros de prueba;
+  - produccion: onboarding Tech Provider/Embedded Signup y estado de provisioning.
+- Para adjuntos de WhatsApp/widget, mostrar estados compactos: recibido, transcripto, asociado a ticket/pedido/caso.
+- Para colegio, si backend devuelve `education_context` o `school_case_alias`, mostrar seguimiento escolar y no mezclarlo con ecommerce.

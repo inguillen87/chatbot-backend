@@ -31,7 +31,7 @@ if str(ROOT) not in sys.path:
 
 from app import create_app, db  # noqa: E402
 from config import Config  # noqa: E402
-from models import CatalogoItem, TenantProfile, TenantTicket, User  # noqa: E402
+from models import CatalogoItem, MunicipioTicket, TenantProfile, TenantTicket, User  # noqa: E402
 
 
 class LocalSmokeConfig(Config):
@@ -60,9 +60,31 @@ def _auth_headers(app, user: User, tenant_slug: str) -> dict[str, str]:
 
 
 def _seed_data() -> User:
-    owner = User(name="Smoke Admin", email="smoke-admin@test.local", rol="admin", tenant_slug="colegio-demo")
+    owner = User(
+        name="Smoke Colegio Admin",
+        email="smoke-colegio-admin@test.local",
+        rol="admin",
+        tipo_chat="pyme",
+        tenant_slug="colegio-demo",
+    )
     owner.set_password("secret123")
-    db.session.add(owner)
+    municipio_owner = User(
+        name="Smoke Municipio Admin",
+        email="smoke-municipio-admin@test.local",
+        rol="admin",
+        tipo_chat="municipio",
+        tenant_slug="municipio",
+    )
+    municipio_owner.set_password("secret123")
+    bodega_owner = User(
+        name="Smoke Bodega Admin",
+        email="smoke-bodega-admin@test.local",
+        rol="admin",
+        tipo_chat="pyme",
+        tenant_slug="bodega",
+    )
+    bodega_owner.set_password("secret123")
+    db.session.add_all([owner, municipio_owner, bodega_owner])
     db.session.flush()
 
     tenants = [
@@ -81,7 +103,7 @@ def _seed_data() -> User:
             tipo="municipio",
             vertical="gobierno",
             subvertical="municipio",
-            municipio_id=owner.id,
+            municipio_id=municipio_owner.id,
             configuracion={"widget_tokens": ["widget-municipio"]},
         ),
         TenantProfile(
@@ -90,7 +112,7 @@ def _seed_data() -> User:
             tipo="pyme",
             vertical="pyme",
             subvertical="bebidas",
-            pyme_id=owner.id,
+            pyme_id=bodega_owner.id,
             configuracion={"widget_tokens": ["widget-bodega"]},
         ),
     ]
@@ -98,7 +120,9 @@ def _seed_data() -> User:
     db.session.flush()
 
     owner.tenant_id = tenants[0].id
-    db.session.add(owner)
+    municipio_owner.tenant_id = tenants[1].id
+    bodega_owner.tenant_id = tenants[2].id
+    db.session.add_all([owner, municipio_owner, bodega_owner])
     db.session.add(
         TenantTicket(
             tenant_id=tenants[0].id,
@@ -130,7 +154,7 @@ def _seed_data() -> User:
     )
     db.session.add(
         CatalogoItem(
-            user_id=owner.id,
+            user_id=bodega_owner.id,
             tenant_id=tenants[2].id,
             nombre="Vino demo",
             descripcion="Producto demo para smoke",
@@ -187,6 +211,8 @@ def run() -> int:
             )
         )
 
+        gobierno_bootstrap: dict[str, Any] = {}
+        gobierno_demo_session_id = ""
         for sector, tenant_slug, rubro, endpoint in [
             ("educacion", "colegio-demo", "colegio-demo", "/ask/pyme"),
             ("gobierno", "municipio", "municipio", "/ask/municipio"),
@@ -199,6 +225,9 @@ def run() -> int:
             )
             body = _json(resp)
             bootstrap = (body.get("workspace") or {}).get("chat_bootstrap") or body.get("chat_bootstrap") or {}
+            if sector == "gobierno":
+                gobierno_bootstrap = bootstrap
+                gobierno_demo_session_id = str(body.get("demo_session_id") or "")
             results.append(
                 _check(
                     f"demo_session_{sector}",
@@ -211,6 +240,76 @@ def run() -> int:
                         "tenant_slug": body.get("tenant_slug"),
                         "endpoint": bootstrap.get("endpoint"),
                         "supports": bootstrap.get("supports"),
+                    },
+                )
+            )
+
+        if gobierno_bootstrap and gobierno_demo_session_id:
+            chat_session_id = str(((gobierno_bootstrap.get("session") or {}).get("chat_session_id") or "")).strip()
+            ask_headers = {
+                "Origin": "http://127.0.0.1:5173",
+                "X-Request-Id": "local-smoke-gobierno-claim",
+                "X-Chat-Session-Id": chat_session_id,
+                "X-Demo-Session-Id": gobierno_demo_session_id,
+                "X-Tenant-Slug": "municipio",
+            }
+            resp = client.post(
+                f"/api/ask/municipio?tenant_slug=municipio&demo_session_id={gobierno_demo_session_id}",
+                json={
+                    "pregunta": "Quiero reportar un bache con ubicacion y foto.",
+                    "demo_mode": True,
+                    "tenant_slug": "municipio",
+                    "location": {
+                        "lat": -34.5889,
+                        "lng": -60.9462,
+                        "address": "Av San Martin 123, Junin",
+                    },
+                    "attachmentInfo": {
+                        "id": "att-local-smoke-bache",
+                        "url": "https://example.com/bache.jpg",
+                        "mimeType": "image/jpeg",
+                        "name": "bache.jpg",
+                    },
+                },
+                headers=ask_headers,
+            )
+            body = _json(resp)
+            results.append(
+                _check(
+                    "demo_gobierno_chat_creates_traceable_claim",
+                    resp.status_code == 200
+                    and body.get("fuente") == "demo_municipio_runtime"
+                    and (body.get("ticket") or {}).get("category") == "Baches y calzada"
+                    and (body.get("session") or {}).get("chat_session_id") == chat_session_id
+                    and MunicipioTicket.query.filter_by(canal_ingreso="web_demo_widget").count() == 1,
+                    resp.status_code,
+                    {
+                        "source": body.get("fuente"),
+                        "ticket": body.get("ticket"),
+                        "session": body.get("session"),
+                    },
+                )
+            )
+
+            resp = client.get(
+                f"/api/v2/demo/admin-preview?sector=gobierno&tenant_slug=municipio&chat_session_id={chat_session_id}",
+                headers={"X-Request-Id": "local-smoke-gobierno-preview"},
+            )
+            body = _json(resp)
+            results.append(
+                _check(
+                    "demo_gobierno_admin_preview_reflects_session_claim",
+                    resp.status_code == 200
+                    and body.get("contract_version") == "demo.admin_preview.v1"
+                    and (body.get("session_activity") or {}).get("has_session_data") is True
+                    and (body.get("cards") or [{}])[0].get("value") == "1"
+                    and (body.get("map") or {}).get("enabled") is True
+                    and len((body.get("map") or {}).get("points") or []) == 1,
+                    resp.status_code,
+                    {
+                        "cards": body.get("cards"),
+                        "map": body.get("map"),
+                        "session_activity": body.get("session_activity"),
                     },
                 )
             )

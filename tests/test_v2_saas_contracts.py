@@ -6,6 +6,7 @@ from unittest.mock import patch
 import jwt
 
 os.environ.setdefault("FLASK_SKIP_GLOBAL_APP", "1")
+os.environ.setdefault("TESTING", "1")
 
 from app import create_app, db
 from config import Config

@@ -13,6 +13,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 os.environ.setdefault("FLASK_SKIP_GLOBAL_APP", "1")
+os.environ.setdefault("TESTING", "1")
 os.environ.setdefault("ENABLE_RUNTIME_SCHEMA_SYNC", "0")
 os.environ.setdefault("ENABLE_RUNTIME_TENANT_INIT", "0")
 os.environ.setdefault("STARTUP_RUNTIME_BOOTSTRAP", "0")
@@ -23,8 +24,9 @@ from twilio.request_validator import RequestValidator
 from werkzeug.security import generate_password_hash
 
 from app import create_app
+from config import Config
 from database import db
-from models import ArchivoAdjunto, ChatSessionContext, MunicipioTicket, PymePedido, PymeTicket, TenantProfile, User, WhatsappNumero
+from models import ArchivoAdjunto, CatalogoItem, ChatSessionContext, MunicipioTicket, PymePedido, PymeTicket, Rubro, TenantProfile, User, WhatsappNumero
 from models_education import AcademicLevel, Campus, CourseSection, Guardian, School, SchoolCaseAlias, Shift, Student, StudentGuardianRelation
 
 
@@ -57,6 +59,17 @@ class FakeHttpResponse:
 
     def raise_for_status(self):
         return None
+
+
+class LocalWhatsappQAConfig(Config):
+    TESTING = True
+    ENABLE_DEMO_MODE = True
+    SECRET_KEY = "local-whatsapp-qa-secret-only-for-tests"
+    SQLALCHEMY_DATABASE_URI = "sqlite:///:memory:"
+    SQLALCHEMY_ENGINE_OPTIONS = {"connect_args": {"check_same_thread": False}}
+    ENABLE_RUNTIME_SCHEMA_SYNC = False
+    ENABLE_RUNTIME_TENANT_INIT = False
+    WTF_CSRF_ENABLED = False
 
 
 def _safe_print(label: str, payload=None) -> None:
@@ -292,6 +305,156 @@ def _ensure_education_sandbox_setup(*, sandbox_to: str, guardian_phone: str):
     return mapping
 
 
+def _ensure_core_whatsapp_setup(*, junin_to: str, bodega_to: str):
+    """Seed local WhatsApp mappings for isolated QA runs.
+
+    By default this script runs against an in-memory SQLite database so QA does
+    not mutate the configured developer, staging or production database.
+    """
+
+    junin_to = _normalize(junin_to)
+    bodega_to = _normalize(bodega_to)
+
+    municipio_rubro, _ = _get_or_create_model(
+        Rubro,
+        clave="municipio-inteligente",
+        defaults={"nombre": "Municipio Inteligente", "es_publico": True},
+    )
+    bodega_rubro, _ = _get_or_create_model(
+        Rubro,
+        clave="bodega",
+        defaults={"nombre": "Bodega", "es_publico": False},
+    )
+
+    municipio_owner, _ = _get_or_create_model(
+        User,
+        email="qa-junin@chatboc.local",
+        defaults={
+            "name": "Municipio Junin QA",
+            "password_hash": generate_password_hash("qa-whatsapp", method="pbkdf2:sha256"),
+            "rol": "admin",
+            "tipo_chat": "municipio",
+            "tenant_slug": "junin",
+            "nombre_empresa": "Municipio de Junin",
+            "telefono": junin_to,
+            "plan": "demo",
+            "email_verified": True,
+            "acepto_terminos": True,
+            "rubro_id": municipio_rubro.id,
+        },
+    )
+    municipio_owner.tipo_chat = "municipio"
+    municipio_owner.rubro_id = municipio_rubro.id
+    municipio_owner.telefono = junin_to
+
+    municipio_tenant, _ = _get_or_create_model(
+        TenantProfile,
+        slug="junin",
+        defaults={
+            "nombre": "Municipio de Junin QA",
+            "tipo": "municipio",
+            "vertical": "gobierno",
+            "subvertical": "municipio",
+            "municipio_id": municipio_owner.id,
+            "is_active": True,
+            "whatsapp_sender_id": junin_to,
+            "configuracion": {"widget_tokens": ["widget-junin-qa"]},
+        },
+    )
+    municipio_tenant.tipo = "municipio"
+    municipio_tenant.vertical = "gobierno"
+    municipio_tenant.subvertical = "municipio"
+    municipio_tenant.municipio_id = municipio_owner.id
+    municipio_tenant.whatsapp_sender_id = junin_to
+    municipio_tenant.is_active = True
+    municipio_owner.tenant_id = municipio_tenant.id
+    municipio_owner.tenant_slug = municipio_tenant.slug
+
+    bodega_owner, _ = _get_or_create_model(
+        User,
+        email="qa-cuatro-fincas@chatboc.local",
+        defaults={
+            "name": "Cuatro Fincas QA",
+            "password_hash": generate_password_hash("qa-whatsapp", method="pbkdf2:sha256"),
+            "rol": "admin",
+            "tipo_chat": "pyme",
+            "tenant_slug": "cuatro-fincas",
+            "nombre_empresa": "Cuatro Fincas Winery",
+            "telefono": bodega_to,
+            "plan": "demo",
+            "email_verified": True,
+            "acepto_terminos": True,
+            "rubro_id": bodega_rubro.id,
+        },
+    )
+    bodega_owner.tipo_chat = "pyme"
+    bodega_owner.rubro_id = bodega_rubro.id
+    bodega_owner.telefono = bodega_to
+
+    bodega_tenant, _ = _get_or_create_model(
+        TenantProfile,
+        slug="cuatro-fincas",
+        defaults={
+            "nombre": "Cuatro Fincas Winery QA",
+            "tipo": "pyme",
+            "vertical": "pyme",
+            "subvertical": "bodega",
+            "pyme_id": bodega_owner.id,
+            "is_active": True,
+            "whatsapp_sender_id": bodega_to,
+            "configuracion": {"widget_tokens": ["widget-cuatro-fincas-qa"]},
+        },
+    )
+    bodega_tenant.tipo = "pyme"
+    bodega_tenant.vertical = "pyme"
+    bodega_tenant.subvertical = "bodega"
+    bodega_tenant.pyme_id = bodega_owner.id
+    bodega_tenant.whatsapp_sender_id = bodega_to
+    bodega_tenant.is_active = True
+    bodega_owner.tenant_id = bodega_tenant.id
+    bodega_owner.tenant_slug = bodega_tenant.slug
+
+    for number, owner in [(junin_to, municipio_owner), (bodega_to, bodega_owner)]:
+        mapping = WhatsappNumero.query.filter_by(numero_whatsapp=number).first()
+        if not mapping:
+            mapping = WhatsappNumero(numero_whatsapp=number, user_id=owner.id, is_active=True)
+            db.session.add(mapping)
+        else:
+            mapping.user_id = owner.id
+            mapping.is_active = True
+
+    existing_products = CatalogoItem.query.filter_by(tenant_id=bodega_tenant.id).count()
+    if existing_products == 0:
+        db.session.add_all(
+            [
+                CatalogoItem(
+                    user_id=bodega_owner.id,
+                    tenant_id=bodega_tenant.id,
+                    nombre="Malbec Reserva",
+                    descripcion="Vino tinto Malbec de Cuatro Fincas.",
+                    precio="12000",
+                    cantidad="24",
+                    categoria="vinos",
+                    imagen_url="https://example.com/malbec.jpg",
+                    disponible=True,
+                ),
+                CatalogoItem(
+                    user_id=bodega_owner.id,
+                    tenant_id=bodega_tenant.id,
+                    nombre="Cabernet Franc",
+                    descripcion="Cabernet para pedidos demo por WhatsApp.",
+                    precio="14000",
+                    cantidad="18",
+                    categoria="vinos",
+                    imagen_url="https://example.com/cabernet.jpg",
+                    disponible=True,
+                ),
+            ]
+        )
+
+    db.session.commit()
+
+
 def _fake_transcribe_audio_from_url(url: str, *args, **kwargs) -> str:
     if "colegio" in str(url).lower():
         return (
@@ -305,8 +468,34 @@ def _fake_transcribe_audio_from_url(url: str, *args, **kwargs) -> str:
     )
 
 
+def _fake_create_attachment_with_thumbnail(file_storage, user_id=None, session_id=None):
+    filename = getattr(file_storage, "filename", None) or f"qa_media_{uuid.uuid4().hex[:8]}"
+    mime_type = getattr(file_storage, "content_type", None) or "application/octet-stream"
+    try:
+        pos = file_storage.stream.tell()
+        file_storage.stream.seek(0, os.SEEK_END)
+        size = file_storage.stream.tell()
+        file_storage.stream.seek(pos)
+    except Exception:
+        size = 0
+    adjunto = ArchivoAdjunto(
+        user_id=user_id,
+        session_id=session_id,
+        filename=filename,
+        nombre_original=filename,
+        mime=mime_type,
+        tamano=size,
+        tipo="chat_adjunto",
+        url=f"https://qa.local/media/{filename}",
+    )
+    db.session.add(adjunto)
+    db.session.flush()
+    return adjunto
+
+
 def main():
-    app = create_app()
+    isolated_db = not _truthy_env("QA_WHATSAPP_USE_CONFIGURED_DB")
+    app = create_app(LocalWhatsappQAConfig if isolated_db else None)
     base_url = os.environ.get("QA_WEBHOOK_BASE_URL", "http://localhost")
     endpoint = f"{base_url.rstrip('/')}/webhook/whatsapp"
     fake_twilio = FakeTwilioClient()
@@ -319,20 +508,22 @@ def main():
     bodega_from = f"+54926157{run_seed}"
     junin_location_from = f"+54926158{run_seed}"
     colegio_from = f"+54926159{run_seed}"
+    junin_to = os.environ.get("QA_JUNIN_TO", "+17432643718")
+    bodega_to = os.environ.get("QA_BODEGA_TO", "+18564858589")
     sandbox_to = os.environ.get("QA_TWILIO_SANDBOX_TO", "+14155238886")
     os.environ["QA_AUDIO_PHONE"] = junin_audio_from
 
     cases = [
         WhatsappCase(
             label="junin_texto_reclamo",
-            to_number="+17432643718",
+            to_number=junin_to,
             from_number=junin_from,
             body=f"Hola, soy QA Texto, email qa.texto@example.com, telefono {junin_from}. Quiero registrar un reclamo por luminaria apagada en Av San Martin 123, distrito Centro, Junin.",
             extra={"_ProfileName": "QA Junin Texto"},
         ),
         WhatsappCase(
             label="junin_imagen",
-            to_number="+17432643718",
+            to_number=junin_to,
             from_number=junin_from,
             body="Adjunto foto del problema.",
             extra={
@@ -345,28 +536,28 @@ def main():
         ),
         WhatsappCase(
             label="junin_dni_reclamo",
-            to_number="+17432643718",
+            to_number=junin_to,
             from_number=junin_from,
             body="Mi DNI es 30111222.",
             extra={"_ProfileName": "QA Junin Texto"},
         ),
         WhatsappCase(
             label="junin_confirmacion_reclamo",
-            to_number="+17432643718",
+            to_number=junin_to,
             from_number=junin_from,
             body="1",
             extra={"_ProfileName": "QA Junin Texto"},
         ),
         WhatsappCase(
             label="junin_ubicacion_inicio",
-            to_number="+17432643718",
+            to_number=junin_to,
             from_number=junin_location_from,
             body="Hola, quiero registrar un reclamo por luminaria apagada.",
             extra={"_ProfileName": "QA Junin Ubicacion"},
         ),
         WhatsappCase(
             label="junin_ubicacion_compartida",
-            to_number="+17432643718",
+            to_number=junin_to,
             from_number=junin_location_from,
             body="Te comparto la ubicacion del reclamo.",
             extra={
@@ -379,28 +570,28 @@ def main():
         ),
         WhatsappCase(
             label="junin_ubicacion_sin_foto",
-            to_number="+17432643718",
+            to_number=junin_to,
             from_number=junin_location_from,
             body="No, omitir foto.",
             extra={"_ProfileName": "QA Junin Ubicacion"},
         ),
         WhatsappCase(
             label="junin_ubicacion_datos",
-            to_number="+17432643718",
+            to_number=junin_to,
             from_number=junin_location_from,
             body=f"Soy QA Ubicacion, DNI 30222333, email qa.ubicacion@example.com, telefono {junin_location_from}.",
             extra={"_ProfileName": "QA Junin Ubicacion"},
         ),
         WhatsappCase(
             label="junin_ubicacion_confirmar",
-            to_number="+17432643718",
+            to_number=junin_to,
             from_number=junin_location_from,
             body="1",
             extra={"_ProfileName": "QA Junin Ubicacion"},
         ),
         WhatsappCase(
             label="junin_audio",
-            to_number="+17432643718",
+            to_number=junin_to,
             from_number=junin_audio_from,
             body="",
             extra={
@@ -413,35 +604,35 @@ def main():
         ),
         WhatsappCase(
             label="junin_audio_sin_foto",
-            to_number="+17432643718",
+            to_number=junin_to,
             from_number=junin_audio_from,
             body="No, omitir foto.",
             extra={"_ProfileName": "QA Junin Audio"},
         ),
         WhatsappCase(
             label="junin_audio_datos",
-            to_number="+17432643718",
+            to_number=junin_to,
             from_number=junin_audio_from,
             body=f"Soy QA Audio, DNI 30333444, email qa.audio@example.com, telefono {junin_audio_from}.",
             extra={"_ProfileName": "QA Junin Audio"},
         ),
         WhatsappCase(
             label="junin_audio_confirmar",
-            to_number="+17432643718",
+            to_number=junin_to,
             from_number=junin_audio_from,
             body="1",
             extra={"_ProfileName": "QA Junin Audio"},
         ),
         WhatsappCase(
             label="cuatro_fincas_pedido",
-            to_number="+18564858589",
+            to_number=bodega_to,
             from_number=bodega_from,
             body=f"Hola, quiero comprar 2 botellas de Malbec y 1 Cabernet. Soy QA Bodega, telefono {bodega_from}. Enviar a Godoy Cruz 456.",
             extra={"_ProfileName": "QA Bodega"},
         ),
         WhatsappCase(
             label="cuatro_fincas_confirmar",
-            to_number="+18564858589",
+            to_number=bodega_to,
             from_number=bodega_from,
             body="Confirmar pedido.",
             extra={"_ProfileName": "QA Bodega"},
@@ -449,6 +640,10 @@ def main():
     ]
 
     with app.app_context():
+        if isolated_db:
+            db.create_all()
+            _ensure_core_whatsapp_setup(junin_to=junin_to, bodega_to=bodega_to)
+
         if _truthy_env("QA_ENABLE_EDUCATION_SANDBOX", "1"):
             mapping = _ensure_education_sandbox_setup(sandbox_to=sandbox_to, guardian_phone=colegio_from)
             _safe_print(
@@ -517,6 +712,9 @@ def main():
         before = _row_counts("whatsapp_")
 
         with app.test_client() as client, patch("routes.whatsapp_webhook.twilio_client", fake_twilio), patch(
+            "routes.whatsapp_webhook.create_attachment_with_thumbnail",
+            side_effect=_fake_create_attachment_with_thumbnail,
+        ), patch(
             "routes.whatsapp_webhook.requests.get",
             return_value=FakeHttpResponse(png_1x1),
         ), patch(
@@ -548,6 +746,10 @@ def main():
         _safe_print("twilio_messages", json.dumps(fake_twilio.messages.sent, ensure_ascii=False, default=str)[:4000])
         if failures:
             raise RuntimeError(f"Fallaron casos WhatsApp QA: {failures}")
+
+        if isolated_db:
+            db.session.remove()
+            db.drop_all()
 
 
 if __name__ == "__main__":
