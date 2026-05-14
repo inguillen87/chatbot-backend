@@ -117,49 +117,23 @@ class PublicResolverWidgetConfigContractTestCase(unittest.TestCase):
         body = response.get_json()
         self.assertEqual(body["contract_version"], "public.landing_experience.v1")
         self.assertEqual(body["experience_kind"], "platform")
-        self.assertEqual(body["hero"]["h1"], "Chatboc")
+        self.assertEqual(body["hero"]["contract_scope"], "operational_demo_data")
+        self.assertEqual(body["hero"]["conversation_demo"]["contract_version"], "landing.hero_conversation_demo.v1")
+        self.assertTrue(body["runtime_rules"]["frontend_owns_copy_and_visual_design"])
+        self.assertNotIn("brand", body)
+        self.assertNotIn("design_tokens", body)
 
-    def test_landing_experience_visible_copy_is_commercial(self):
+    def test_landing_experience_does_not_publish_frontend_copy_or_visual_tokens(self):
         response = self.client.get("/api/public/landing-experience")
 
         self.assertEqual(response.status_code, 200)
         body = response.get_json()
-        visible_keys = {
-            "tagline",
-            "eyebrow",
-            "h1",
-            "subtitle",
-            "trust_line",
-            "label",
-            "title",
-            "body",
-            "detail",
-            "purpose",
-            "q",
-            "a",
-            "alt",
-            "text",
-        }
-        banned = ("backend", "contrato", "backend-first", "endpoint", "fallback", "404", "deploy")
-
-        def collect_visible(value, key=""):
-            if isinstance(value, dict):
-                texts = []
-                for child_key, child_value in value.items():
-                    texts.extend(collect_visible(child_value, str(child_key)))
-                return texts
-            if isinstance(value, list):
-                texts = []
-                for item in value:
-                    texts.extend(collect_visible(item, key))
-                return texts
-            if isinstance(value, str) and key in visible_keys:
-                return [value.lower()]
-            return []
-
-        visible_copy = "\n".join(collect_visible(body))
-        for word in banned:
-            self.assertNotIn(word, visible_copy)
+        self.assertNotIn("navigation", body)
+        self.assertNotIn("sections", body)
+        self.assertNotIn("proof_bar", body)
+        self.assertNotIn("pricing_teaser", body)
+        self.assertNotIn("faq", body)
+        self.assertNotIn("motion", body)
 
     def test_realtime_voice_capabilities_returns_platform_contract(self):
         response = self.client.get("/api/public/realtime/voice-capabilities")
