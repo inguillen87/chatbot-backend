@@ -146,6 +146,46 @@ PLACEHOLDER_DESCRIPTIONS_NORMALIZED = {
     if normalized
 }
 
+_TICKET_STATUS_LOOKUP_MARKERS = {
+    "estado",
+    "seguimiento",
+    "ticket",
+    "pin",
+    "codigo",
+    "nro",
+    "numero de reclamo",
+    "mi reclamo",
+    "consultar reclamo",
+    "ver reclamo",
+    "como va",
+}
+
+_TICKET_NUMBER_CONTACT_CONTEXT = {
+    "telefono",
+    "tel",
+    "cel",
+    "celular",
+    "whatsapp",
+    "wsp",
+    "contacto",
+}
+
+
+def _looks_like_ticket_status_lookup(text: str | None) -> bool:
+    normalized = normalizar_texto(text or "")
+    return any(marker in normalized for marker in _TICKET_STATUS_LOOKUP_MARKERS)
+
+
+def _extract_ticket_lookup_number(text: str | None):
+    raw = text or ""
+    for match in re.finditer(r"\b(?:m[-\s]*)?(\d{5,})\b", raw, re.IGNORECASE):
+        window = raw[max(0, match.start() - 28): min(len(raw), match.end() + 28)]
+        normalized_window = normalizar_texto(window)
+        if any(marker in normalized_window for marker in _TICKET_NUMBER_CONTACT_CONTEXT):
+            continue
+        return match
+    return None
+
 
 def formatear_opciones(opciones: Optional[Sequence[Dict[str, Any]]]) -> List[Dict[str, Any]]:
     """Normaliza una lista de opciones para respuestas interactivas.
@@ -4774,7 +4814,10 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                 # Eliminar el historial de la conversación general anterior.
                 contexto_municipio_actual.pop("historial_conversacion_general_llm", None)
                 # Reiniciar el contexto específico del reclamo.
-                contexto_municipio_actual["datos_parciales_llm_reclamo"] = {}
+                datos_precargados_reclamo = contexto_municipio_actual.get("datos_parciales_llm_reclamo")
+                if not isinstance(datos_precargados_reclamo, dict):
+                    datos_precargados_reclamo = {}
+                contexto_municipio_actual["datos_parciales_llm_reclamo"] = dict(datos_precargados_reclamo)
                 contexto_municipio_actual["historial_llm_reclamo"] = []
 
             # Asegurarse de que datos_parciales_llm_reclamo exista si no fue creado arriba
@@ -4794,7 +4837,7 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                 location_ctx.get("latitude") and location_ctx.get("longitude")
             )
             if existing_coords and not nuevos_datos.get("coordenadas"):
-                if isinstance(nuevos_datos.get("ubicacion"), str):
+                if isinstance(nuevos_datos.get("ubicacion"), str) and _is_placeholder_description(nuevos_datos.get("ubicacion")):
                     nuevos_datos.pop("ubicacion", None)
             datos_actuales.update(nuevos_datos)
             contexto_municipio_actual["datos_parciales_llm_reclamo"] = datos_actuales
@@ -4855,10 +4898,14 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                     contexto_municipio_actual["expected_fields_llm_reclamo"] = normalized_pending_fields
                     contexto_municipio_actual["esperando_info_llm_reclamo"] = normalized_pending_fields[0]
                     contexto_municipio_actual["esperando_info_llm"] = normalized_pending_fields[0]
-                    respuesta_usuario_llm = _build_missing_reclamo_prompt(
+                    backend_missing_prompt = _build_missing_reclamo_prompt(
                         normalized_pending_fields,
                         datos_actuales,
                     )
+                    if respuesta_usuario_llm and respuesta_usuario_llm not in backend_missing_prompt:
+                        respuesta_usuario_llm = f"{respuesta_usuario_llm}\n{backend_missing_prompt}"
+                    else:
+                        respuesta_usuario_llm = backend_missing_prompt
                     if not botones_llm:
                         botones_llm = [
                             {"texto": "Menú", "action_id": "menu_principal"},
@@ -5080,7 +5127,7 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                     location_ctx.get("latitude") and location_ctx.get("longitude")
                 )
                 if existing_coords and not nuevos_datos.get("coordenadas"):
-                    if isinstance(nuevos_datos.get("ubicacion"), str):
+                    if isinstance(nuevos_datos.get("ubicacion"), str) and _is_placeholder_description(nuevos_datos.get("ubicacion")):
                         nuevos_datos.pop("ubicacion", None)
                 if nuevos_datos:
                     datos_actuales.update(nuevos_datos)
@@ -5172,6 +5219,26 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                     contexto_municipio_actual["estado_conversacion"] = estado_conversacion_para_llm
                 else:
                     contexto_municipio_actual["estado_conversacion"] = ConversationState.CONVERSACION_GENERAL_LLM.name
+
+            if estado_conversacion_para_llm == ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name:
+                datos_reclamo_actuales = contexto_municipio_actual.get("datos_parciales_llm_reclamo", {})
+                if isinstance(datos_reclamo_actuales, dict) and datos_reclamo_actuales:
+                    logger_actual.info(
+                        "[HANDLE_LLM] Validando datos parciales de reclamo con handler tras respuesta directa."
+                    )
+                    handler = CrearReclamoActionHandler(context)
+                    handler_response = handler.execute(datos_reclamo_actuales)
+                    pending_fields = _normalize_pedir_info_fields(handler_response.get("pedir_info"))
+                    if pending_fields:
+                        contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
+                        contexto_municipio_actual["expected_fields_llm_reclamo"] = pending_fields
+                        contexto_municipio_actual["esperando_info_llm_reclamo"] = pending_fields[0]
+                        contexto_municipio_actual["esperando_info_llm"] = pending_fields[0]
+                    else:
+                        contexto_municipio_actual.pop("esperando_info_llm_reclamo", None)
+                        contexto_municipio_actual.pop("esperando_info_llm", None)
+                        contexto_municipio_actual.pop("expected_fields_llm_reclamo", None)
+                    return handler_response, contexto_municipio_actual
 
             contexto_municipio_actual.setdefault("historial_conversacion_general_llm", []).append(nuevo_turno_historial)
             if (
@@ -10233,9 +10300,15 @@ def responder_municipio(
             flag_modified(chat_db_context, "context_data")
         return _finalize_response(response)
 
+    if intent_name == "consultar_reclamo" and not _looks_like_ticket_status_lookup(pregunta_str):
+        logger_actual.info(
+            "Claim status intent ignored because text looks like a new claim, not a status lookup."
+        )
+        intent_name = None
+
     if intent_name == "consultar_reclamo":
         logger_actual.info("Claim status check intent detected. Bypassing LLM.")
-        ticket_match = re.search(r"\b(?:m[-\s]*)?(\d{5,})\b", pregunta_str or "", re.IGNORECASE)
+        ticket_match = _extract_ticket_lookup_number(pregunta_str)
         if ticket_match:
             contexto_municipio_actual["numero_ticket_consulta"] = ticket_match.group(1)
             contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_NUMERO_TICKET.name
@@ -10250,10 +10323,10 @@ def responder_municipio(
             "fuente": "intent_consultar_reclamo"
         })
     normalized_for_ticket_status = normalizar_texto(pregunta_str or "")
-    ticket_match = re.search(r"\b(?:m[-\s]*)?(\d{5,})\b", pregunta_str or "", re.IGNORECASE)
+    ticket_match = _extract_ticket_lookup_number(pregunta_str)
     if (
         ticket_match
-        and any(token in normalized_for_ticket_status for token in ("ticket", "reclamo", "seguimiento", "estado"))
+        and _looks_like_ticket_status_lookup(normalized_for_ticket_status)
     ):
         contexto_municipio_actual["numero_ticket_consulta"] = ticket_match.group(1)
         contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_NUMERO_TICKET.name
