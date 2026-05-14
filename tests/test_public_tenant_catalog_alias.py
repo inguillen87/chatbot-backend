@@ -197,6 +197,10 @@ def test_reserved_media_slug_widget_endpoints_degrade_to_json(client):
         assert resp.headers.get("X-Request-Id")
 
 
+def test_media_reserved_slug_does_not_bootstrap_tenant_widget(client):
+    test_reserved_media_slug_widget_endpoints_degrade_to_json(client)
+
+
 def test_demo_catalogs_reserved_slug_does_not_bootstrap_widget_config(client):
     resp = client.get(
         "/api/public/tenants/demo-catalogs/widget-config?tenant_slug=demo-catalogs&tenant=demo-catalogs",

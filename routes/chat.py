@@ -764,11 +764,22 @@ def _apply_demo_chat_response_contract(
     quick_replies = _normalize_quick_replies_for_chat_response(payload)
 
     payload["contract_version"] = "chat.response.v1"
+    payload.setdefault("contract_aliases", ["chat.runtime.v1"])
     payload.setdefault("request_id", request_id)
-    payload.setdefault("conversation_id", chat_session_id or payload.get("chat_session_id") or payload.get("session_id"))
+    conversation_id = chat_session_id or payload.get("chat_session_id") or payload.get("session_id")
+    payload.setdefault("conversation_id", conversation_id)
+    demo_session_token = _demo_session_token_from_request()
+    payload.setdefault(
+        "session",
+        {
+            "chat_session_id": conversation_id,
+            "demo_session_id": demo_session_token,
+        },
+    )
     payload["message"] = message
     if not payload.get("messages"):
         payload["messages"] = [{"role": "assistant", "content": message}] if message else []
+    payload.setdefault("assistant_message", {"role": "assistant", "content": message} if message else None)
     payload["quick_replies"] = quick_replies
     payload.setdefault("actions", [])
     payload["lead"] = _build_demo_chat_lead_contract(payload)

@@ -91,7 +91,9 @@ class ApiV2FoundationTest(unittest.TestCase):
         payload = resp.get_json()
         workspace = payload.get("workspace") or {}
         self.assertEqual(payload.get("contract_version"), "demo.session.v2")
+        self.assertIn("demo.session.v1", payload.get("contract_aliases") or [])
         self.assertEqual(payload.get("tenant_slug"), tenant.slug)
+        self.assertEqual((payload.get("tenant") or {}).get("sector"), "empresas")
         self.assertEqual(payload.get("request_id"), "demo-contract-1")
         self.assertEqual(resp.headers.get("X-Request-Id"), "demo-contract-1")
         self.assertEqual(workspace.get("title"), tenant.nombre)
@@ -151,6 +153,45 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertTrue(workspace.get("allowed_actions"))
         self.assertEqual((workspace.get("tracking") or {}).get("contract_version"), "demo.tracking.v1")
         self.assertIn("/api/v2/demo/admin-preview", workspace.get("admin_preview_endpoint") or "")
+
+    def test_demo_session_returns_short_chat_session_id(self):
+        owner = User(name="Demo Short Session", email="demo-short-session@test.com", password_hash="hash", tipo_chat="pyme")
+        db.session.add(owner)
+        db.session.flush()
+        tenant = TenantProfile(slug="demo-short-session", nombre="Demo Short Session", tipo="pyme", pyme_id=owner.id)
+        db.session.add(tenant)
+        db.session.commit()
+
+        resp = self.client.post(
+            "/api/v2/demo/session",
+            json={"sector": "empresas", "tenant_slug": tenant.slug},
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.get_json()
+        self.assertTrue(payload.get("demo_session_id"))
+        self.assertTrue(payload.get("chat_session_id"))
+        self.assertEqual(payload.get("session_id"), payload.get("chat_session_id"))
+        self.assertLessEqual(len(payload.get("chat_session_id") or ""), 36)
+        self.assertEqual((payload.get("workspace") or {}).get("chat_bootstrap", {}).get("headers", {}).get("X-Chat-Session-Id"), payload.get("chat_session_id"))
+
+    def test_demo_session_jwt_not_used_as_chat_session_id(self):
+        owner = User(name="Demo JWT Session", email="demo-jwt-session@test.com", password_hash="hash", tipo_chat="pyme")
+        db.session.add(owner)
+        db.session.flush()
+        tenant = TenantProfile(slug="demo-jwt-session", nombre="Demo JWT Session", tipo="pyme", pyme_id=owner.id)
+        db.session.add(tenant)
+        db.session.commit()
+
+        resp = self.client.post(
+            "/api/v2/demo/session",
+            json={"sector": "empresas", "tenant_slug": tenant.slug},
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.get_json()
+        self.assertNotEqual(payload.get("demo_session_id"), payload.get("chat_session_id"))
+        self.assertLessEqual(len(payload.get("chat_session_id") or ""), 36)
 
     def test_demo_session_canonical_and_legacy_aliases_delegate_to_v2_with_cors(self):
         owner = User(name="Colegio Demo", email="colegio-compat@test.com", password_hash="hash", tipo_chat="pyme")
@@ -212,6 +253,16 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertEqual((payload.get("openai_runtime") or {}).get("provider"), "openai_server_side")
         self.assertEqual((payload.get("frontend_contract") or {}).get("render_as"), "demo_admin_preview")
         self.assertTrue((payload.get("catalog") or {}).get("download_endpoint"))
+
+    def test_demo_admin_preview_has_no_fake_metrics(self):
+        resp = self.client.get("/api/v2/demo/admin-preview?sector=gobierno&tenant_slug=municipio")
+
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.get_json()
+        self.assertEqual(payload.get("contract_version"), "demo.admin_preview.v1")
+        self.assertEqual(payload.get("metrics"), [])
+        self.assertEqual((payload.get("map") or {}).get("enabled"), False)
+        self.assertEqual((payload.get("map") or {}).get("points"), [])
 
     def test_v2_demo_catalog_asset_alias_serves_pdf(self):
         resp = self.client.get("/api/v2/demo/catalog-assets/colegio-demo.pdf")
@@ -463,6 +514,33 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertLessEqual(len(contexts[0].chat_session_id), 36)
         self.assertNotEqual(contexts[0].chat_session_id, demo_session_id)
         self.assertEqual((contexts[0].context_data or {}).get("demo_session_id"), demo_session_id)
+
+    def test_ask_municipio_demo_session_creates_short_chat_context(self):
+        from routes.v2.tenants import create_demo_session_token
+
+        owner = User(name="Municipio Context", email="municipio-context@test.com", password_hash="hash", tipo_chat="municipio", rol="admin")
+        db.session.add(owner)
+        db.session.flush()
+        db.session.add(TenantProfile(slug="municipio", nombre="Municipio Context", tipo="municipio", municipio_id=owner.id, is_active=True))
+        db.session.commit()
+
+        demo_session_id = create_demo_session_token(tenant_slug="municipio", sector="gobierno", rubro="gobierno")
+        with patch("services.logic.responder_chatboc", return_value={"message_body": "Caso recibido.", "ticket_id": 123}):
+            resp = self.client.post(
+                f"/api/ask/municipio?tenant_slug=municipio&demo_session_id={demo_session_id}",
+                json={"pregunta": "hola", "demo_mode": True, "tenant_slug": "municipio"},
+                headers={"Origin": "https://www.chatboc.ar", "X-Request-Id": "demo-context-1"},
+            )
+
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.get_json()
+        self.assertEqual(payload.get("contract_version"), "chat.response.v1")
+        self.assertIn("chat.runtime.v1", payload.get("contract_aliases") or [])
+        self.assertEqual((payload.get("session") or {}).get("demo_session_id"), demo_session_id)
+        context = ChatSessionContext.query.first()
+        self.assertIsNotNone(context)
+        self.assertLessEqual(len(context.chat_session_id), 36)
+        self.assertEqual((context.context_data or {}).get("demo_session_id"), demo_session_id)
 
     def test_ask_invalid_demo_session_returns_json_error(self):
         invalid_demo_session_id = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.invalid.signature"

@@ -78,6 +78,20 @@ class LandingExperienceContractTestCase(unittest.TestCase):
         self.assertEqual(payload["conversion"]["demo_session_endpoint"], "/api/v2/demo/session")
         self.assertEqual(payload["conversion"]["admin_preview_endpoint"], "/api/v2/demo/admin-preview")
 
+    def test_landing_experience_returns_traceable_conversation_demo(self):
+        payload = build_landing_experience_contract()
+        flows = payload["hero"]["conversation_demo"]["flows"]
+
+        self.assertTrue(flows)
+        self.assertTrue(all(flow.get("action") for flow in flows))
+        self.assertTrue(all((flow.get("result") or {}).get("traceable") is True for flow in flows))
+        for flow in flows:
+            for item in flow.get("inputs") or []:
+                if item.get("kind") == "image":
+                    self.assertNotIn("preview_url", item)
+                    self.assertNotIn("thumbnail_url", item)
+                    self.assertNotIn("image_url", item)
+
     def test_tenant_landing_contract_keeps_only_tenant_identity_and_operational_flows(self):
         payload = build_landing_experience_contract(_Tenant(), page="colegios")
 

@@ -73,6 +73,41 @@ def test_public_lead_capture_persists_profile_ticket_and_event(client):
     assert TenantTicket.query.filter_by(fingerprint="lead-key-1").count() == 1
 
 
+def test_public_lead_capture_creates_lead_from_landing_demo(client):
+    owner = User(email="ownerlanding@test.com", name="Owner Landing", rol="admin", tipo_chat="municipio")
+    owner.set_password("pass")
+    db.session.add(owner)
+    db.session.commit()
+
+    tenant = TenantProfile(slug="municipio", nombre="Municipio", tipo="municipio", municipio_id=owner.id)
+    db.session.add(tenant)
+    db.session.commit()
+
+    resp = client.post(
+        "/api/public/lead-capture?tenant_slug=municipio",
+        json={
+            "tenant_slug": "municipio",
+            "sector": "gobierno",
+            "source": "landing_demo",
+            "name": "Marcelo",
+            "email": "marcelo@example.com",
+            "phone": "2611234567",
+            "message": "Quiero probar reclamos con ubicacion.",
+            "demo_session_id": "demo-token-landing",
+            "chat_session_id": "chat-landing-lead-1",
+            "anon_id": "anon-landing-lead-1",
+        },
+        headers={"X-Request-Id": "landing-lead-1"},
+    )
+
+    assert resp.status_code == 200
+    payload = resp.get_json()
+    assert payload["contract_version"] == "public.lead_capture.v1"
+    assert payload["ok"] is True
+    assert payload["lead"]["status"] == "created"
+    assert payload["ticket_id"]
+
+
 def test_public_lead_capture_normalizes_long_chat_session_id(client):
     owner = User(email="ownerlead2@test.com", name="Owner", rol="admin", tipo_chat="pyme")
     owner.set_password("pass")
@@ -129,3 +164,7 @@ def test_public_lead_capture_validation_error_is_contract_json(client):
     assert "contact" in payload["field_errors"]
     assert payload["field_errors"]["phone"]
     assert resp.headers.get("X-Request-Id") == "lead-validation-1"
+
+
+def test_public_lead_capture_validation_returns_field_errors(client):
+    test_public_lead_capture_validation_error_is_contract_json(client)

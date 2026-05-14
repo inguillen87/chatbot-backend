@@ -121,12 +121,13 @@ def _demo_catalog_asset_response(filename: str):
     return _with_public_cors(response)
 
 
-def _tenant_dict(tenant: TenantProfile) -> dict[str, Any]:
+def _tenant_dict(tenant: TenantProfile, *, sector: str | None = None) -> dict[str, Any]:
     return {
         "id": tenant.id,
         "slug": tenant.slug,
         "nombre": tenant.nombre,
         "tipo": tenant.tipo,
+        "sector": sector,
         "vertical": tenant.vertical,
         "subvertical": tenant.subvertical,
     }
@@ -1050,11 +1051,12 @@ def demo_session_v2():
     return _json_response(
         {
             "contract_version": "demo.session.v2",
+            "contract_aliases": ["demo.session.v1"],
             "demo_session_id": demo_session_id,
             "session_id": chat_session_id,
             "chat_session_id": chat_session_id,
             "tenant_slug": tenant.slug,
-            "tenant": _tenant_dict(tenant),
+            "tenant": _tenant_dict(tenant, sector=sector),
             "workspace": workspace,
             "pillar_selector": workspace["pillar_selector"],
             "catalog_resources": workspace["catalog_resources"],
