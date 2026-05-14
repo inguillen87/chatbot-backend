@@ -14,15 +14,169 @@ def _lead_capture_contract() -> dict[str, Any]:
         "contract_version": "public.lead_capture.form.v1",
         "enabled": True,
         "endpoint": "/api/public/lead-capture",
+        "title": "Deja tus datos y seguimos por WhatsApp, email o llamada",
+        "description": "Pedimos solo lo necesario para retomar tu demo con contexto y contactarte desde el equipo comercial.",
         "fields": [
-            {"id": "name", "label": "Nombre", "type": "text", "required": True},
-            {"id": "phone", "label": "Telefono", "type": "tel", "required": False},
-            {"id": "email", "label": "Email", "type": "email", "required": False},
-            {"id": "message", "label": "Mensaje", "type": "textarea", "required": False},
+            {"id": "name", "label": "Nombre", "type": "text", "required": True, "autocomplete": "name"},
+            {"id": "phone", "label": "WhatsApp o telefono", "type": "tel", "required": False, "autocomplete": "tel"},
+            {"id": "email", "label": "Email", "type": "email", "required": False, "autocomplete": "email"},
+            {"id": "message", "label": "Que queres probar?", "type": "textarea", "required": False},
         ],
         "required_fields": ["name"],
         "required_any_of": [["phone", "email"]],
         "submit_contract": "public.lead_capture.v1",
+        "payload_keys": {
+            "tenant_slug": "tenant_slug",
+            "source": "source",
+            "sector": "sector",
+            "name": "name",
+            "phone": "phone",
+            "email": "email",
+            "message": "message",
+            "demo_session_id": "demo_session_id",
+            "chat_session_id": "chat_session_id",
+            "anon_id": "anon_id",
+        },
+        "progressive_capture": {
+            "enabled": True,
+            "minimum_first_step": ["name"],
+            "minimum_contact_step": ["phone", "email"],
+            "recommended_order": ["name", "phone", "email", "message"],
+            "allow_chat_prefill": True,
+        },
+        "success_state": {
+            "contract_version": "public.lead_capture.success.v1",
+            "title": "Listo, ya tenemos tu consulta",
+            "body": "Un asesor puede continuar por WhatsApp, email o llamada con el contexto de la demo.",
+            "next_actions": ["open_demo_again", "open_whatsapp", "wait_sales_contact"],
+        },
+        "validation_state": {
+            "contract_version": "public.lead_capture.validation.v1",
+            "required_fields": ["name"],
+            "required_any_of": [["phone", "email"]],
+            "render_as": "inline_field_errors",
+        },
+    }
+
+
+def _conversion_journey_contract(kind: str) -> dict[str, Any]:
+    demo_sector = {
+        "municipio": "gobierno",
+        "pyme": "empresas",
+        "educacion": "educacion",
+    }.get(kind, "gobierno")
+    demo_tenant = {
+        "municipio": "municipio",
+        "pyme": "bodega",
+        "educacion": "colegio-demo",
+    }.get(kind, "municipio")
+    tenant_type = {
+        "municipio": "municipio",
+        "pyme": "pyme",
+        "educacion": "educacion",
+    }.get(kind, "platform")
+    return {
+        "contract_version": "public.conversion_journey.v1",
+        "goal": "convert_visitor_to_demo_lead_or_tenant",
+        "default_sector": demo_sector,
+        "default_tenant_slug": demo_tenant,
+        "entrypoints": [
+            {
+                "id": "landing_primary_cta",
+                "label": "Probar una conversacion real",
+                "intent": "start_demo",
+                "href": f"/demo?sector={demo_sector}",
+            },
+            {
+                "id": "landing_sales_cta",
+                "label": "Hablar con ventas",
+                "intent": "lead_capture",
+                "href": "/contacto",
+            },
+            {
+                "id": "widget_lead_capture",
+                "label": "Dejar mis datos",
+                "intent": "lead_capture",
+                "endpoint": "/api/public/lead-capture",
+            },
+        ],
+        "steps": [
+            {
+                "id": "load_landing_contract",
+                "owner": "frontend",
+                "endpoint": "/api/public/landing-experience",
+                "stores": ["anon_id"],
+                "success_criteria": "hero_and_conversion_contract_loaded",
+            },
+            {
+                "id": "choose_demo",
+                "owner": "frontend",
+                "endpoint": "/api/v2/demo/catalog",
+                "payload": {"sector": demo_sector, "tenant_type": tenant_type},
+                "success_criteria": "sector_and_rubro_selected",
+            },
+            {
+                "id": "start_demo_session",
+                "owner": "backend",
+                "method": "POST",
+                "endpoint": "/api/v2/demo/session",
+                "payload": {"sector": demo_sector, "tenant_slug": demo_tenant, "source": "landing_conversion"},
+                "stores": ["demo_session_id", "chat_session_id", "tenant.slug", "workspace.chat_bootstrap"],
+                "success_criteria": "short_chat_session_id_and_runtime_contract_returned",
+            },
+            {
+                "id": "run_conversation",
+                "owner": "backend",
+                "method": "POST",
+                "endpoint": "/ask/{tenant_slug}",
+                "headers": ["X-Chat-Session-Id", "X-Anon-Id"],
+                "supports_inputs": ["text", "image", "audio", "location", "file"],
+                "success_criteria": "assistant_message_or_action_contract_returned",
+            },
+            {
+                "id": "capture_lead",
+                "owner": "backend",
+                "method": "POST",
+                "endpoint": "/api/public/lead-capture",
+                "required_fields": ["name"],
+                "required_any_of": [["phone", "email"]],
+                "payload_context": ["tenant_slug", "sector", "source", "demo_session_id", "chat_session_id", "anon_id"],
+                "success_criteria": "lead_ticket_created_for_sales_followup",
+            },
+            {
+                "id": "tenant_signup_intent",
+                "owner": "backend",
+                "method": "POST",
+                "endpoint": "/api/public/lead-capture",
+                "payload": {
+                    "source": "tenant_signup_interest",
+                    "interest": "crear_tenant",
+                    "tenant_type": tenant_type,
+                },
+                "success_criteria": "commercial_lead_created_until_self_serve_signup_exists",
+            },
+            {
+                "id": "activate_whatsapp_after_tenant_exists",
+                "owner": "backend",
+                "requires_auth": True,
+                "endpoint": "/api/v2/tenants/{tenant_slug}/whatsapp/tech-provider",
+                "success_criteria": "tech_provider_contract_loaded_without_twilio_console",
+            },
+        ],
+        "frontend_rules": {
+            "preserve_session": ["anon_id", "chat_session_id", "demo_session_id"],
+            "do_not_post_empty_leads": True,
+            "do_not_use_demo_session_as_chat_session": True,
+            "do_not_show_twilio_console_steps": True,
+            "ask_contact_before_submit": True,
+            "hide_missing_backend_data": True,
+        },
+        "handoff_targets": {
+            "sales_panel": "tenant_ticket:lead_capture",
+            "superadmin_followup": "lead_capture_created",
+            "tenant_creation": "manual_or_future_self_serve",
+            "whatsapp_activation": "twilio_tech_provider",
+        },
     }
 
 
@@ -359,6 +513,7 @@ def build_landing_experience_contract(tenant: Any = None, *, page: str | None = 
             "demo_catalog_endpoint": "/api/v2/demo/catalog",
             "demo_session_endpoint": "/api/v2/demo/session",
             "admin_preview_endpoint": "/api/v2/demo/admin-preview",
+            "journey": _conversion_journey_contract(kind),
             "primary_intents": ["start_demo", "lead_capture"],
         },
         "runtime_rules": {

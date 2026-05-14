@@ -31,6 +31,7 @@ from services.live_chat_schedule import build_live_chat_status
 from services.demo_registry import load_demo_rubros, demo_rubro_for_token
 from services.common_utils import validar_email, validar_telefono, formatear_telefono_e164
 from services.contact_intake import missing_contact_fields, resolve_contact_snapshot
+from services.demo_municipio_runtime import handle_demo_municipio_message
 from services.notifications import enviar_notificacion_sms, enviar_notificacion_whatsapp_con_plantilla
 from services.email_service import enviar_email
 from services.conversation_resolver import ConversationResolver
@@ -1762,6 +1763,7 @@ def _procesar_chat(
             tipo_chat = tipo_chat_fijo or 'municipio'
             rubro_id = request.form.get('rubro_id')
             rubro_clave = request.form.get('rubro_clave')
+            attachment_info = None
             uploaded_file_info = None
             archivo_adjunto_id = None
             location = None
@@ -2726,24 +2728,53 @@ def _procesar_chat(
                 # Fetch metadata if needed, but for now just passing the ID is sufficient for logic
                 uploaded_file_info = attachment_info
 
+        demo_runtime_result = None
+        if (
+            demo_flow_active
+            and tipo_chat == "municipio"
+            and current_app.config.get("DEMO_MUNICIPIO_RUNTIME_ENABLED", True)
+        ):
+            try:
+                demo_runtime_result = handle_demo_municipio_message(
+                    question=pregunta,
+                    action_id=action_id,
+                    attachment_info=uploaded_file_info or attachment_info,
+                    location=location,
+                    chat_db_context=chat_context_obj,
+                    owner_user=owner_del_bot,
+                    anon_id=anon_id,
+                    chat_session_id=chat_session_id_header,
+                    demo_session_payload=demo_session_payload if isinstance(demo_session_payload, dict) else {},
+                )
+            except Exception as demo_runtime_exc:
+                current_app.logger.warning(
+                    "[DEMO_MUNICIPIO_RUNTIME] skipped for session=%s: %s",
+                    chat_session_id_header,
+                    demo_runtime_exc,
+                    exc_info=True,
+                )
+
         # --- Core Chat Logic Execution ---
-        resultado = responder_chatboc(
-            pregunta,
-            owner_user=owner_del_bot,
-            current_user=actor_principal,
-            contexto_previo=contexto_previo,
-            tipo_chat=tipo_chat,
-            rubro_id=rubro_id,
-            rubro_clave=rubro_clave,
-            rubro_obj=rubro_obj_global,
-            uploaded_file_info=uploaded_file_info,
-            location=location,
-            chat_db_context=chat_context_obj,
-            chat_session_uuid=chat_session_id_header,
-            channel=channel,
-            action_id=action_id,
-            anon_id=anon_id
-        )
+        if demo_runtime_result is not None:
+            resultado = demo_runtime_result
+        else:
+            resultado = responder_chatboc(
+                pregunta,
+                owner_user=owner_del_bot,
+                current_user=actor_principal,
+                contexto_previo=contexto_previo,
+                tipo_chat=tipo_chat,
+                rubro_id=rubro_id,
+                rubro_clave=rubro_clave,
+                rubro_obj=rubro_obj_global,
+                uploaded_file_info=uploaded_file_info,
+                location=location,
+                chat_db_context=chat_context_obj,
+                chat_session_uuid=chat_session_id_header,
+                channel=channel,
+                action_id=action_id,
+                anon_id=anon_id
+            )
 
         # Después de que responder_chatboc y sus sub-funciones hayan modificado chat_context_obj.context_data,
         # limpiamos el flag temporal 'just_logged_in_flag' si existe, para que no afecte a futuros mensajes.

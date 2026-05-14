@@ -27,6 +27,13 @@ Registrar cada prueba realista que se haga sobre Chatboc y convertirla en una me
 - Twilio Sandbox `+14155238886` queda cubierto por QA reproducible con un tenant colegio `qa-colegio-sandbox`.
 - WhatsApp colegio por sandbox crea caso escolar real desde menu + accion + audio/ubicacion.
 - Al crear el caso escolar, el backend limpia `education_pending_case` para que el siguiente mensaje no quede pegado al caso anterior.
+- Onboarding WhatsApp Tech Provider expone contrato backend-first para activar clientes sin mostrar Twilio Console.
+- El contrato Tech Provider declara `manual_twilio_console_allowed=false`, `customer_sees_twilio_console=false` y `show_twilio_brand=false`.
+- `POST /api/v2/tenants/:tenant_slug/whatsapp/tech-provider/provision` persiste plan dry-run sin llamar API live cuando `TWILIO_TECH_PROVIDER_LIVE_ENABLED=false`.
+- `POST /api/v2/tenants/:tenant_slug/whatsapp/tech-provider/embedded-signup` persiste `waba_id`, `phone_number_id`, `session_id` y deja `next_action=register_whatsapp_sender_via_senders_api`.
+- `GET /api/public/landing-experience` expone `conversion.journey` para guiar landing -> demo -> lead -> tenant -> WhatsApp sin rutas inventadas en frontend.
+- `lead_capture` expone captura progresiva, estados de exito/validacion y payload keys para que frontend no postee formularios vacios.
+- `POST /api/public/lead-capture` devuelve `frontend_contract`, `follow_up` y `next_actions` comerciales para superadmin/ventas.
 
 ### Evidencia Ejecutada
 
@@ -51,10 +58,20 @@ Registrar cada prueba realista que se haga sobre Chatboc y convertirla en una me
   - `tests/test_api_v2_foundation.py::ApiV2FoundationTest::test_v2_demo_session_returns_workspace_contract`
   - `tests/test_v2_saas_contracts.py::V2SaasContractsTest::test_whatsapp_sandbox_session_returns_deeplink_contract`
   - `tests/test_v2_saas_contracts.py::V2SaasContractsTest::test_whatsapp_sandbox_setup_and_test_contracts_are_backend_first`
+- Tests Tech Provider WhatsApp:
+  - `tests/test_v2_saas_contracts.py::V2SaasContractsTest::test_twilio_tech_provider_onboarding_contract_hides_twilio_console`
+  - `tests/test_v2_saas_contracts.py::V2SaasContractsTest::test_twilio_tech_provider_provision_dry_run_persists_plan_without_live_api`
+- Tests conversion frontend/backend:
+  - `tests/test_landing_experience_contract.py`
+  - `tests/test_public_resolver_widget_config_contract.py::PublicResolverWidgetConfigContractTestCase::test_landing_experience_without_tenant_returns_platform_contract`
+  - `tests/test_public_resolver_widget_config_contract.py::PublicResolverWidgetConfigContractTestCase::test_landing_experience_does_not_publish_frontend_visual_tokens_or_page_sections`
+  - `tests/test_public_lead_capture.py`
 - Resultado actualizado: `41 passed`, `3 subtests passed`.
 - Resultado widget/portal/realtime actualizado: `48 passed`.
 - Resultado sandbox WhatsApp demo focalizado: `4 passed`.
-- Resultado contratos v2 foundation + SaaS: `44 passed`, `3 subtests passed`.
+- Resultado contratos v2 foundation + SaaS: `46 passed`, `3 subtests passed`.
+- Resultado SaaS completo con Tech Provider: `19 passed`.
+- Resultado contratos publicos + SaaS + lead capture: `65 passed`, `3 subtests passed`.
 - QA WhatsApp simulada con webhook Twilio firmado:
   - `18/18` requests respondieron `200`.
   - Delta creado: `3` tickets municipales, `1` pedido PYME, `1` ticket/caso escolar, `3` adjuntos.
@@ -181,6 +198,29 @@ Criterio de cierre:
 - Frontend renderiza `/portal/:tenant` con historial anonimo antes de login y con CTA de registro progresivo.
 - Seguimiento de reclamo muestra timeline, adjuntos y mapa solo con datos reales.
 
+### P0 - WhatsApp Tech Provider productivo
+
+Estado aplicado:
+
+- `GET /api/v2/tenants/:tenant_slug/whatsapp/tech-provider` publica contrato `twilio.tech_provider.v1` para frontend.
+- `POST /api/v2/tenants/:tenant_slug/whatsapp/tech-provider/provision` arma plan de provisioning, persiste estado y en modo live crea subcuenta Twilio con la Account API.
+- En modo live el backend se detiene luego de crear subcuenta si no existe estrategia segura para guardar token/API key de la subcuenta.
+- `POST /api/v2/tenants/:tenant_slug/whatsapp/tech-provider/embedded-signup` persiste resultado de Meta Embedded Signup y deja el siguiente paso trazable.
+- Frontend handoff actualizado para no mostrar consola Twilio ni pasos manuales al cliente final.
+
+Riesgo:
+
+Activar WhatsApp productivo completo requiere cerrar secret store para credenciales de subcuenta, Messaging Service API, Senders API, polling de estado y webhooks por tenant. La automatizacion no puede saltear Login/OTP/aprobaciones de Meta ni avisos obligatorios del programa dentro de Embedded Signup; solo encapsula el flujo dentro del panel Chatboc y evita Twilio Console.
+
+Criterio de cierre:
+
+- Definir secret store para `subaccount_auth_token` o API Keys por subcuenta.
+- Crear Messaging Service por subcuenta.
+- Registrar/asociar sender WhatsApp despues de Embedded Signup.
+- Polling de sender hasta aprobado/online.
+- Guardar `messaging_service_sid`, `sender_sid`, `waba_id`, `phone_number_id` y estado productivo en `tenant.configuracion.twilio_tech_provider`.
+- Enviar y recibir mensaje real por el numero del tenant sin que el cliente abra Twilio Console.
+
 ### P2 - Config local de media/cloud
 
 Riesgo:
@@ -206,6 +246,43 @@ Criterio de cierre:
 
 - Probar en sandbox real que el primer `hola` con nombre guardado envia template/sticker/saludo personalizado.
 - Probar en sandbox real que, si no hay nombre, primero pregunta y luego al responder el nombre envia sticker + saludo personalizado.
+
+### P0 - Demo municipio conversacional real
+
+Evidencia:
+
+- En la demo web, "Donde reporto baches con ubicacion?" respondia con estacionamiento.
+- "Quiero iniciar un reclamo por alumbrado publico." caia en menu generico.
+- El panel admin demo quedaba en cero aunque el usuario estuviera intentando crear un reclamo.
+
+Estado aplicado:
+
+- Nuevo runtime backend `services/demo_municipio_runtime.py` para demo gobierno/municipio.
+- `POST /ask/municipio` en demo intercepta reclamos operativos antes del responder legacy.
+- Crea o actualiza `MunicipioTicket` real con `canal_ingreso=web_demo_widget`.
+- Guarda comentarios/evidencias en `TicketComentario` y `detalles.demo_runtime=true`.
+- Soporta contrato de texto, imagen, audio, video, archivo, ubicacion, emoji, llamada y videollamada como capacidades declaradas.
+- Licencia responde como tramite guiado sin crear ticket falso.
+- Baches clasifica como `Baches y calzada`, no estacionamiento.
+- `GET /api/v2/demo/admin-preview?sector=gobierno&tenant_slug=municipio` muestra cards, mapa y actividad solo con tickets reales de demo.
+
+Criterio de cierre:
+
+- En browser local, repetir flujo `/demo?sector=gobierno`: alumbrado, baches con ubicacion, foto y consultar estado.
+- Confirmar que el frontend muestra el ticket, el PIN, los adjuntos y el mapa sin botones duplicados.
+- Confirmar que Render ya no muestra 500 por JWT y que tampoco reaparece respuesta de estacionamiento para baches.
+
+Tests:
+
+```powershell
+.\test_venv\Scripts\python.exe -m unittest tests.test_api_v2_foundation -v
+.\test_venv\Scripts\python.exe -m unittest tests.test_api_v2_foundation tests.test_v2_saas_contracts tests.test_landing_experience_contract tests.test_public_resolver_widget_config_contract tests.test_public_lead_capture -v
+```
+
+Resultado local:
+
+- 30 tests OK en `tests.test_api_v2_foundation`.
+- 62 tests OK en suite combinada de demo/landing/SaaS/public resolver/lead capture.
 
 ## Regla De Trabajo Para Proximas Pruebas
 

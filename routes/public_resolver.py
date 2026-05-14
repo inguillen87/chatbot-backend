@@ -2003,11 +2003,22 @@ def _build_lead_capture_ack(tenant: TenantProfile | None) -> dict:
     tenant_name = getattr(tenant, "nombre", None) or "nuestro equipo"
     return {
         "ok": True,
-        "message_body": f"¡Gracias! Ya registramos tu interés. En breve estaremos en contacto desde {tenant_name}.",
-        "respuesta": f"¡Gracias! Ya registramos tu interés. En breve estaremos en contacto desde {tenant_name}.",
+        "message_body": f"Gracias! Ya registramos tu interes. En breve estaremos en contacto desde {tenant_name}.",
+        "respuesta": f"Gracias! Ya registramos tu interes. En breve estaremos en contacto desde {tenant_name}.",
         "message_type": "text",
         "fuente": "lead_capture",
         "contract_version": LEAD_CAPTURE_CONTRACT_VERSION,
+        "frontend_contract": {
+            "render_as": "lead_capture_success",
+            "title": "Listo, ya tenemos tu consulta",
+            "body": "El equipo puede continuar por WhatsApp, email o llamada con el contexto de la demo.",
+            "show_retry": False,
+        },
+        "follow_up": {
+            "status": "queued_for_sales",
+            "channels": ["whatsapp", "email", "phone"],
+            "owner_panel": "superadmin_leads",
+        },
     }
 
 
@@ -2040,6 +2051,12 @@ def _lead_error_response(
             "required_fields": required_fields or [],
             "field_errors": field_errors or {},
             "request_id": request_id,
+            "frontend_contract": {
+                "render_as": "lead_capture_validation",
+                "title": "Faltan datos para contactarte",
+                "body": "Pedimos nombre y al menos un WhatsApp/telefono o email.",
+                "focus_first_error": True,
+            },
             "error": {"code": status_code, "message": message},
             "message": message,
         }
@@ -2430,7 +2447,10 @@ def capture_public_lead():
             "deduplicated": deduplicated,
             "idempotency_key": idempotency_key,
             "next_actions": [
-                {"id": "open_lead", "label": "Abrir lead", "endpoint": f"/api/v2/tickets/{lead_ticket.id}"}
+                {"id": "open_lead", "label": "Abrir lead", "endpoint": f"/api/v2/tickets/{lead_ticket.id}"},
+                {"id": "send_whatsapp", "label": "Enviar WhatsApp", "requires": ["phone"]},
+                {"id": "send_email", "label": "Enviar email", "requires": ["email"]},
+                {"id": "schedule_call", "label": "Agendar llamada", "requires": ["phone_or_email"]},
             ]
             if lead_ticket
             else [],

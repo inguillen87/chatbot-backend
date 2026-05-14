@@ -40,6 +40,14 @@ def test_public_lead_capture_persists_profile_ticket_and_event(client):
     assert payload["lead"]["id"] == payload["lead_id"]
     assert payload["lead"]["status"] == "created"
     assert payload["idempotency_key"] == "lead-key-1"
+    assert payload["frontend_contract"]["render_as"] == "lead_capture_success"
+    assert payload["follow_up"]["status"] == "queued_for_sales"
+    assert {action["id"] for action in payload["next_actions"]} >= {
+        "open_lead",
+        "send_whatsapp",
+        "send_email",
+        "schedule_call",
+    }
 
     user = User.query.filter_by(email="maria@example.com").first()
     assert user is not None
@@ -161,6 +169,7 @@ def test_public_lead_capture_validation_error_is_contract_json(client):
     assert payload["request_id"] == "lead-validation-1"
     assert payload["reason_code"] == "validation_failed"
     assert payload["required_fields"] == ["name", "phone_or_email"]
+    assert payload["frontend_contract"]["render_as"] == "lead_capture_validation"
     assert "contact" in payload["field_errors"]
     assert payload["field_errors"]["phone"]
     assert payload["field_errors"]["name"]

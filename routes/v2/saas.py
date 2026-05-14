@@ -37,6 +37,11 @@ from services.employee_routing import (
 from services.catalog_quality import build_catalog_quality_payload
 from services.demo_sandbox_contract import build_demo_whatsapp_sandbox_contract, sandbox_context_from_contract
 from services.operational_intelligence import build_operational_dashboard, build_operational_freshness
+from services.twilio_tech_provider import (
+    build_twilio_tech_provider_contract,
+    merge_twilio_state,
+    provision_twilio_subaccount,
+)
 from services.v2.sla_service import is_ticket_overdue
 from services.whatsapp_experience import build_whatsapp_experience
 from utils.auth_helpers import token_requerido
@@ -1297,6 +1302,88 @@ def whatsapp_experience_v2(current_user, tenant_slug: str | None = None):
     if error:
         return error
     return _json_response(build_whatsapp_experience(tenant, app_config=current_app.config))
+
+
+@v2_saas_bp.route("/whatsapp/tech-provider", methods=["GET"])
+@v2_saas_bp.route("/tenants/<string:tenant_slug>/whatsapp/tech-provider", methods=["GET"])
+@token_requerido
+@require_role("admin", "super_admin")
+def whatsapp_tech_provider_v2(current_user, tenant_slug: str | None = None):
+    tenant, error = _resolve_tenant_or_error(current_user, tenant_slug)
+    if error:
+        return error
+    return _json_response(build_twilio_tech_provider_contract(tenant, current_app.config))
+
+
+@v2_saas_bp.route("/whatsapp/tech-provider/provision", methods=["POST"])
+@v2_saas_bp.route("/tenants/<string:tenant_slug>/whatsapp/tech-provider/provision", methods=["POST"])
+@token_requerido
+@require_role("admin", "super_admin")
+def whatsapp_tech_provider_provision_v2(current_user, tenant_slug: str | None = None):
+    tenant, error = _resolve_tenant_or_error(current_user, tenant_slug)
+    if error:
+        return error
+
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict):
+        payload = {}
+
+    result = provision_twilio_subaccount(tenant, payload, current_app.config)
+    merged_state = merge_twilio_state(tenant, result.get("state_patch") or {})
+    flag_modified(tenant, "configuracion")
+    db.session.commit()
+    return _json_response(
+        {
+            **result,
+            "tenant": _tenant_ref(tenant),
+            "state": {
+                "status": merged_state.get("status"),
+                "last_step": merged_state.get("last_step"),
+                "twilio_account_sid": merged_state.get("twilio_account_sid"),
+                "messaging_service_sid": merged_state.get("messaging_service_sid"),
+                "sender_sid": merged_state.get("sender_sid"),
+                "sender_id": merged_state.get("sender_id"),
+                "updated_at": merged_state.get("updated_at"),
+            },
+            "contract": build_twilio_tech_provider_contract(tenant, current_app.config),
+        },
+        200 if result.get("ok", True) else 400,
+    )
+
+
+@v2_saas_bp.route("/whatsapp/tech-provider/embedded-signup", methods=["POST"])
+@v2_saas_bp.route("/tenants/<string:tenant_slug>/whatsapp/tech-provider/embedded-signup", methods=["POST"])
+@token_requerido
+@require_role("admin", "super_admin")
+def whatsapp_tech_provider_embedded_signup_v2(current_user, tenant_slug: str | None = None):
+    tenant, error = _resolve_tenant_or_error(current_user, tenant_slug)
+    if error:
+        return error
+
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict):
+        payload = {}
+    state_patch = {
+        "status": "pending_sender_registration",
+        "last_step": "embedded_signup_completed",
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "waba_id": payload.get("waba_id") or payload.get("wabaId"),
+        "phone_number_id": payload.get("phone_number_id") or payload.get("phoneNumberId"),
+        "embedded_signup_session_id": payload.get("session_id") or payload.get("sessionId"),
+    }
+    merged_state = merge_twilio_state(tenant, state_patch)
+    flag_modified(tenant, "configuracion")
+    db.session.commit()
+    return _json_response(
+        {
+            "contract_version": "twilio.tech_provider.embedded_signup.v1",
+            "ok": True,
+            "tenant": _tenant_ref(tenant),
+            "state": merged_state,
+            "next_action": "register_whatsapp_sender_via_senders_api",
+            "contract": build_twilio_tech_provider_contract(tenant, current_app.config),
+        }
+    )
 
 
 def _twilio_sandbox_number() -> str:

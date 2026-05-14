@@ -122,6 +122,8 @@ class PublicResolverWidgetConfigContractTestCase(unittest.TestCase):
         self.assertEqual(body["hero"]["primary_cta"]["href"], "/demo")
         self.assertEqual(body["hero"]["secondary_cta"]["href"], "/contacto")
         self.assertEqual(body["hero"]["conversation_demo"]["contract_version"], "landing.hero_conversation_demo.v1")
+        self.assertEqual(body["conversion"]["journey"]["contract_version"], "public.conversion_journey.v1")
+        self.assertTrue(body["conversion"]["journey"]["frontend_rules"]["do_not_post_empty_leads"])
         self.assertTrue(body["runtime_rules"]["frontend_owns_visual_design"])
         self.assertTrue(body["runtime_rules"]["backend_owns_visible_copy"])
         self.assertNotIn("brand", body)
@@ -138,6 +140,7 @@ class PublicResolverWidgetConfigContractTestCase(unittest.TestCase):
         self.assertNotIn("pricing_teaser", body)
         self.assertNotIn("faq", body)
         self.assertNotIn("motion", body)
+        self.assertIn("journey", body["conversion"])
 
     def test_realtime_voice_capabilities_returns_platform_contract(self):
         response = self.client.get("/api/public/realtime/voice-capabilities")

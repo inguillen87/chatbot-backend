@@ -3,11 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 import hashlib
+import json
 import uuid
 
 from flask import Blueprint, current_app, jsonify, request, send_from_directory
 
-from models import TenantProfile, WhatsappNumero
+from models import MunicipioTicket, TenantProfile, WhatsappNumero
 from routes.auth import (
     _first_active_tenant_for_demo,
     _resolve_demo_tenant_slug,
@@ -795,7 +796,162 @@ def demo_catalog_v2():
     )
 
 
-def _admin_preview_for_sector(sector: str, tenant_slug: str = "") -> dict[str, Any]:
+def _demo_ticket_details(ticket: MunicipioTicket) -> dict[str, Any]:
+    try:
+        parsed = json.loads(ticket.detalles or "{}")
+    except Exception:
+        parsed = {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _is_runtime_demo_ticket(ticket: MunicipioTicket) -> bool:
+    details = _demo_ticket_details(ticket)
+    return bool(
+        details.get("demo_runtime")
+        or details.get("source") == "demo_municipio_runtime"
+        or str(ticket.canal_ingreso or "") == "web_demo_widget"
+    ) and str(ticket.categoria or "") != "lead_demo_prospecto"
+
+
+def _resolve_preview_tenant(tenant_slug: str) -> TenantProfile | None:
+    slug = str(tenant_slug or "").strip().lower()
+    if not slug:
+        return None
+    try:
+        return resolve_tenant_only(tenant_slug=slug, require_explicit_slug=True)
+    except Exception:
+        return None
+
+
+def _recent_demo_municipio_tickets(tenant_slug: str, chat_session_id: str = "") -> list[MunicipioTicket]:
+    tenant = _resolve_preview_tenant(tenant_slug)
+    session_filter = str(chat_session_id or "").strip()
+    query = MunicipioTicket.query.order_by(MunicipioTicket.fecha.desc()).limit(80)
+    tickets: list[MunicipioTicket] = []
+    for ticket in query.all():
+        if tenant:
+            same_tenant = bool(getattr(ticket, "tenant_id", None) and ticket.tenant_id == tenant.id)
+            same_owner = bool(getattr(tenant, "municipio_id", None) and ticket.municipio_id == tenant.municipio_id)
+            if not same_tenant and not same_owner:
+                continue
+        if _is_runtime_demo_ticket(ticket):
+            if session_filter:
+                details = _demo_ticket_details(ticket)
+                if str(details.get("chat_session_id") or "") != session_filter:
+                    continue
+            tickets.append(ticket)
+    return tickets[:10]
+
+
+def _apply_gobierno_session_activity(preset: dict[str, Any], tenant_slug: str, chat_session_id: str = "") -> dict[str, Any]:
+    tickets = _recent_demo_municipio_tickets(tenant_slug, chat_session_id=chat_session_id)
+    if not tickets:
+        return {
+            "cards": preset["cards"],
+            "modules": preset["modules"],
+            "timeline": preset["timeline"],
+            "map": {
+                "enabled": False,
+                "points": [],
+                "empty_state": "Disponible cuando la sesion genere ubicaciones reales.",
+            },
+            "session_activity": {
+                "contract_version": "demo.session_activity.v1",
+                "source": "session_generated_events",
+                "has_session_data": False,
+                "empty_state": "Inicia la demo y envia un mensaje para crear actividad real en este panel.",
+                "items": [],
+            },
+        }
+
+    points: list[dict[str, Any]] = []
+    items: list[dict[str, Any]] = []
+    comments_count = 0
+    for ticket in tickets:
+        details = _demo_ticket_details(ticket)
+        try:
+            comments_count += ticket.comentarios.count()
+        except Exception:
+            comments_count += len(details.get("events") or [])
+        if ticket.latitud is not None and ticket.longitud is not None:
+            points.append(
+                {
+                    "id": f"ticket-{ticket.id}",
+                    "lat": ticket.latitud,
+                    "lng": ticket.longitud,
+                    "label": ticket.categoria or "Reclamo",
+                    "status": ticket.estado,
+                    "ticket_id": ticket.id,
+                    "ticket_code": ticket.nro_ticket,
+                    "address": ticket.direccion,
+                    "weight": 1,
+                }
+            )
+        items.append(
+            {
+                "id": f"ticket-{ticket.id}",
+                "type": "ticket",
+                "label": ticket.asunto or ticket.categoria or "Reclamo ciudadano",
+                "status": ticket.estado,
+                "category": ticket.categoria,
+                "ticket_id": ticket.id,
+                "ticket_code": ticket.nro_ticket,
+                "detail_endpoint": f"/api/v2/inbox/omnichannel/{ticket.id}",
+                "has_location": bool(ticket.latitud is not None and ticket.longitud is not None),
+                "media_count": len(details.get("media") or []),
+            }
+        )
+
+    modules = []
+    for module in preset["modules"]:
+        cloned = dict(module)
+        if cloned.get("id") == "heatmap":
+            cloned["enabled"] = bool(points)
+            if points:
+                cloned.pop("empty_state", None)
+        modules.append(cloned)
+
+    cards = [
+        {
+            "label": "Reclamos creados en esta sesion",
+            "value": str(len(tickets)),
+            "detail": "tickets reales generados por el runtime demo",
+        },
+        {
+            "label": "Ubicaciones capturadas",
+            "value": str(len(points)),
+            "detail": "puntos reales listos para mapa operativo",
+        },
+        {
+            "label": "Mensajes y evidencias",
+            "value": str(comments_count),
+            "detail": "turnos de chat, adjuntos o ubicaciones guardadas",
+        },
+    ]
+    timeline = [
+        {"label": "Vecino envia reclamo o evidencia", "status": "done"},
+        {"label": "Backend crea ticket trazable", "status": "done"},
+        {"label": "Equipo ve bandeja y mapa si hay coordenadas", "status": "done" if points else "waiting_for_location"},
+    ]
+    return {
+        "cards": cards,
+        "modules": modules,
+        "timeline": timeline,
+        "map": {
+            "enabled": bool(points),
+            "points": points,
+            "empty_state": None if points else "Disponible cuando la sesion genere ubicaciones reales.",
+        },
+        "session_activity": {
+            "contract_version": "demo.session_activity.v1",
+            "source": "session_generated_events",
+            "has_session_data": True,
+            "items": items,
+        },
+    }
+
+
+def _admin_preview_for_sector(sector: str, tenant_slug: str = "", chat_session_id: str = "") -> dict[str, Any]:
     normalized = normalize_demo_sector(sector or tenant_slug or "empresas")
     if normalized not in {"educacion", "gobierno", "empresas"}:
         slug_hint = str(tenant_slug or normalized or "").lower()
@@ -876,6 +1032,27 @@ def _admin_preview_for_sector(sector: str, tenant_slug: str = "") -> dict[str, A
     }
     preset = presets[normalized]
     resolved_tenant_slug = tenant_slug or {"educacion": "colegio-demo", "gobierno": "municipio", "empresas": "bodega"}[normalized]
+    real_activity = (
+        _apply_gobierno_session_activity(preset, resolved_tenant_slug, chat_session_id=chat_session_id)
+        if normalized == "gobierno"
+        else {
+            "cards": preset["cards"],
+            "modules": preset["modules"],
+            "timeline": preset["timeline"],
+            "map": {
+                "enabled": False,
+                "points": [],
+                "empty_state": "Disponible cuando la sesion genere ubicaciones reales.",
+            },
+            "session_activity": {
+                "contract_version": "demo.session_activity.v1",
+                "source": "session_generated_events",
+                "has_session_data": False,
+                "empty_state": "Inicia la demo y envia un mensaje para crear actividad real en este panel.",
+                "items": [],
+            },
+        }
+    )
     allowed_actions: list[dict[str, Any]] = []
     commercial = _commercial_demo_bundle(
         sector=normalized,
@@ -889,22 +1066,12 @@ def _admin_preview_for_sector(sector: str, tenant_slug: str = "") -> dict[str, A
         "tenant_slug": resolved_tenant_slug,
         "title": preset["title"],
         "subtitle": preset["subtitle"],
-        "modules": preset["modules"],
-        "cards": preset["cards"],
-        "timeline": preset["timeline"],
+        "modules": real_activity["modules"],
+        "cards": real_activity["cards"],
+        "timeline": real_activity["timeline"],
         "metrics": [],
-        "map": {
-            "enabled": False,
-            "points": [],
-            "empty_state": "Disponible cuando la sesion genere ubicaciones reales.",
-        },
-        "session_activity": {
-            "contract_version": "demo.session_activity.v1",
-            "source": "session_generated_events",
-            "has_session_data": False,
-            "empty_state": "Inicia la demo y envia un mensaje para crear actividad real en este panel.",
-            "items": [],
-        },
+        "map": real_activity["map"],
+        "session_activity": real_activity["session_activity"],
         "operations": {
             "contract_version": "demo.operations_preview.v1",
             "data_policy": "session_events_only",
@@ -932,9 +1099,16 @@ def demo_admin_preview_v2():
 
     sector = request.args.get("sector") or request.args.get("pilar") or request.args.get("vertical") or ""
     tenant_slug = request.args.get("tenant_slug") or request.args.get("tenant") or ""
+    chat_session_id = request.args.get("chat_session_id") or request.headers.get("X-Chat-Session-Id") or ""
     if not sector:
         sector = sector_for_rubro(tenant_slug) or tenant_slug or "empresas"
-    return _json_response(_admin_preview_for_sector(sector, tenant_slug=str(tenant_slug or "").strip().lower()))
+    return _json_response(
+        _admin_preview_for_sector(
+            sector,
+            tenant_slug=str(tenant_slug or "").strip().lower(),
+            chat_session_id=str(chat_session_id or "").strip(),
+        )
+    )
 
 
 @v2_demo_bp.route("/catalog-assets/<path:filename>", methods=["GET", "OPTIONS"])

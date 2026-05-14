@@ -441,6 +441,71 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(payload["message_preview"]["message"], "Hola menu")
         self.assertEqual(payload["whatsapp_sandbox"]["trial_policy"]["max_messages"], 10)
 
+    def test_twilio_tech_provider_onboarding_contract_hides_twilio_console(self):
+        self.app.config.update(
+            TWILIO_ACCOUNT_SID="ACparent",
+            TWILIO_AUTH_TOKEN="secret",
+            TWILIO_META_APP_ID="meta-app",
+            TWILIO_META_EMBEDDED_SIGNUP_CONFIG_ID="cfg-123",
+            TWILIO_TECH_PROVIDER_LIVE_ENABLED=False,
+        )
+
+        response = self.client.get(
+            f"/api/v2/tenants/{self.tenant.slug}/whatsapp/tech-provider",
+            headers={**self._auth(self.owner), "X-Request-Id": "tech-provider-1"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["contract_version"], "twilio.tech_provider.v1")
+        self.assertEqual(payload["request_id"], "tech-provider-1")
+        self.assertEqual(payload["provider"], "twilio_tech_provider")
+        self.assertFalse(payload["automation"]["customer_sees_twilio_console"])
+        self.assertFalse(payload["automation"]["manual_twilio_console_allowed"])
+        self.assertTrue(payload["automation"]["env"]["ready"])
+        self.assertEqual(payload["frontend_contract"]["render_as"], "twilio_tech_provider_onboarding")
+        self.assertFalse(payload["frontend_contract"]["show_twilio_brand"])
+        self.assertTrue(any(step["id"] == "create_subaccount" for step in payload["api_workflow"]))
+        self.assertIn("/webhook/whatsapp", payload["webhooks"]["inbound_message_url"])
+
+    def test_twilio_tech_provider_provision_dry_run_persists_plan_without_live_api(self):
+        self.app.config.update(
+            TWILIO_ACCOUNT_SID="ACparent",
+            TWILIO_AUTH_TOKEN="secret",
+            TWILIO_META_APP_ID="meta-app",
+            TWILIO_META_EMBEDDED_SIGNUP_CONFIG_ID="cfg-123",
+            TWILIO_TECH_PROVIDER_LIVE_ENABLED=False,
+        )
+
+        response = self.client.post(
+            f"/api/v2/tenants/{self.tenant.slug}/whatsapp/tech-provider/provision",
+            headers={**self._auth(self.owner), "X-Request-Id": "tech-provider-provision-1"},
+            json={"phone_number": "+5491112223333", "display_name": "Colegio SaaS"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["contract_version"], "twilio.tech_provider.provisioning.v1")
+        self.assertEqual(payload["mode"], "dry_run")
+        self.assertEqual(payload["state"]["status"], "provisioning_plan_ready")
+        self.assertTrue(any(step["id"] == "embedded_signup" for step in payload["steps"]))
+        refreshed = db.session.get(TenantProfile, self.tenant.id)
+        state = refreshed.configuracion["twilio_tech_provider"]
+        self.assertEqual(state["requested_phone_number"], "+5491112223333")
+        self.assertEqual(state["display_name"], "Colegio SaaS")
+
+        signup_response = self.client.post(
+            f"/api/v2/tenants/{self.tenant.slug}/whatsapp/tech-provider/embedded-signup",
+            headers={**self._auth(self.owner), "X-Request-Id": "tech-provider-signup-1"},
+            json={"waba_id": "123456789", "phone_number_id": "987654321", "session_id": "fb-session"},
+        )
+
+        self.assertEqual(signup_response.status_code, 200)
+        signup = signup_response.get_json()
+        self.assertEqual(signup["contract_version"], "twilio.tech_provider.embedded_signup.v1")
+        self.assertEqual(signup["state"]["waba_id"], "123456789")
+        self.assertEqual(signup["next_action"], "register_whatsapp_sender_via_senders_api")
+
     def test_admin_catalog_exposes_and_saves_draft_endpoint(self):
         get_response = self.client.get(
             f"/api/admin/tenants/{self.tenant.slug}/catalog",

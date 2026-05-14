@@ -12,6 +12,105 @@ Renderizar una experiencia publica premium para municipio Junin sin inventar dat
 
 ## Contratos backend listos
 
+### Conversion completa: landing -> demo -> lead -> tenant -> WhatsApp
+
+Usar como mapa principal de integracion para que la experiencia sea simple desde el primer contacto:
+
+```txt
+GET /api/public/landing-experience
+```
+
+Campos nuevos/relevantes:
+
+```json
+{
+  "conversion": {
+    "lead_capture": {
+      "contract_version": "public.lead_capture.form.v1",
+      "fields": [],
+      "required_fields": ["name"],
+      "required_any_of": [["phone", "email"]],
+      "progressive_capture": {},
+      "success_state": {},
+      "validation_state": {}
+    },
+    "journey": {
+      "contract_version": "public.conversion_journey.v1",
+      "steps": [],
+      "frontend_rules": {}
+    }
+  }
+}
+```
+
+Reglas frontend:
+
+- Renderizar landing, demo y widget desde `conversion.journey`, no desde rutas hardcodeadas dispersas.
+- Persistir `anon_id`, `demo_session_id` y `chat_session_id` durante todo el recorrido.
+- No enviar `POST /api/public/lead-capture` hasta tener `name` y `phone` o `email`.
+- Prefillear el formulario con datos ya capturados por chat cuando existan.
+- Si el usuario quiere crear/registrar tenant y aun no hay self-service completo, enviar lead con `source=tenant_signup_interest` e `interest=crear_tenant`.
+- Despues de crear tenant, mostrar integracion WhatsApp desde `GET /api/v2/tenants/:tenant_slug/whatsapp/tech-provider`.
+- No mostrar pasos de Twilio Console, ni inventar estados de activacion. Usar el contrato Tech Provider.
+- Success de lead usa `frontend_contract.render_as=lead_capture_success`.
+- Errores de validacion usan `frontend_contract.render_as=lead_capture_validation`.
+- En el superadmin/ventas, usar `next_actions`: abrir lead, WhatsApp, email y llamada solo si el canal requerido existe.
+
+### Onboarding WhatsApp Tech Provider
+
+Usar cuando un tenant quiera activar WhatsApp productivo sin abrir Twilio Console. El cliente debe ver solo Chatboc y un flujo guiado dentro del panel.
+
+```txt
+GET /api/v2/tenants/:tenant_slug/whatsapp/tech-provider
+POST /api/v2/tenants/:tenant_slug/whatsapp/tech-provider/provision
+POST /api/v2/tenants/:tenant_slug/whatsapp/tech-provider/embedded-signup
+```
+
+Respuesta principal:
+
+```json
+{
+  "contract_version": "twilio.tech_provider.v1",
+  "provider": "twilio_tech_provider",
+  "automation": {
+    "mode": "api_first",
+    "manual_twilio_console_allowed": false,
+    "customer_sees_twilio_console": false,
+    "env": {
+      "ready": true,
+      "missing": []
+    }
+  },
+  "embedded_signup": {
+    "enabled": true,
+    "required_customer_action": "login_with_facebook_embedded_signup",
+    "completion_endpoint": "/api/v2/tenants/municipio/whatsapp/tech-provider/embedded-signup"
+  },
+  "api_workflow": [],
+  "frontend_contract": {
+    "render_as": "twilio_tech_provider_onboarding",
+    "show_twilio_brand": false,
+    "show_manual_console_steps": false,
+    "primary_action": "start_embedded_signup",
+    "show_phone_choice": true,
+    "show_progress_steps": true
+  },
+  "limitations": []
+}
+```
+
+Reglas frontend:
+
+- Renderizar como onboarding Chatboc, no como tutorial de Twilio.
+- No mostrar links a Twilio Console, logos de Twilio ni pasos manuales de consola.
+- Mostrar progreso desde `api_workflow`: subcuenta, messaging service, embedded signup, sender y estado.
+- Si `automation.env.ready=false`, mostrar configuracion pendiente para superadmin/plataforma, no para el cliente final.
+- `POST /provision` prepara/persiste plan en dry-run si live mode esta apagado; no debe prometer activacion productiva.
+- `POST /embedded-signup` se llama cuando Meta Embedded Signup devuelve `waba_id`, `phone_number_id` y `session_id`.
+- Mostrar `limitations` como mensajes humanos: login Meta embebido, OTP del numero y aprobaciones Meta. No decir que Chatboc puede saltear esos pasos.
+- Si Meta/Twilio muestran un aviso obligatorio dentro del popup de Embedded Signup, no ocultarlo ni taparlo; fuera de ese popup la experiencia debe seguir siendo Chatboc.
+- Despues de `next_action=register_whatsapp_sender_via_senders_api`, frontend debe quedar en estado "activacion en proceso" hasta que backend publique sender listo.
+
 ### Sandbox WhatsApp demo sin login
 
 Usar cuando una persona entra a probar Chatboc sin usuario ni contrasena y quiere elegir rubro desde una botonera:
@@ -218,3 +317,56 @@ Esa pagina no reemplaza el widget final: solo valida contratos, CORS, sesiones, 
 - Errores JSON se muestran como estados humanos, no como stack/HTML.
 - Si un endpoint devuelve `reserved_public_slug`, no reintentar en loop.
 - Si `registration_required`, abrir formulario minimo: nombre + telefono/email.
+
+## Update backend demo municipio - 2026-05-14
+
+Backend agrego runtime demo especifico para gobierno/municipio en `POST /ask/municipio`.
+
+### Lo que frontend debe mandar
+
+- Mantener `X-Chat-Session-Id` desde `workspace.chat_bootstrap.headers`.
+- Mantener `demo_session_id` en query/header/payload.
+- Enviar texto en `pregunta`.
+- Enviar ubicacion como:
+
+```json
+{
+  "location": {
+    "lat": -34.61,
+    "lng": -58.44,
+    "address": "Av. San Martin 123"
+  }
+}
+```
+
+- Enviar adjuntos como `attachmentInfo` con `id`, `url`, `mimeType` y `name`.
+- Para audio o video, usar el mismo contrato de adjuntos si ya existe archivo subido; si es multipart de audio, backend transcribe y procesa el texto.
+
+### Respuesta esperada
+
+Cuando el usuario pide baches, alumbrado, semaforo, residuos, reclamo, manda foto/audio/video/archivo o comparte ubicacion, backend responde `chat.response.v1` con:
+
+- `fuente: "demo_municipio_runtime"`.
+- `ticket` con `id`, `nro_ticket`, `consulta_pin`, `status`, `category`, `lat`, `lng`, `detail_endpoint`.
+- `result.kind: "ticket"` y `result.traceable: true`.
+- `actions[0]` con `creates: "ticket"` y campos operativos.
+- `media_understanding.supports`: text, image, audio, video, file, location, emoji, voice_call, video_call.
+
+Frontend no debe inventar respuesta local si no llega esto: mostrar error humano o `empty_states.runtime_unavailable`.
+
+### Admin preview
+
+`GET /api/v2/demo/admin-preview?sector=gobierno&tenant_slug=municipio` ahora refleja tickets reales creados por el runtime demo:
+
+- `cards[0].value`: reclamos reales creados.
+- `cards[1].value`: ubicaciones reales capturadas.
+- `map.enabled=true` solo si hay lat/lng reales.
+- `session_activity.has_session_data=true` solo si existe actividad real.
+
+### UX pendiente frontend
+
+- Mostrar el ticket creado como resultado principal, no como boton suelto.
+- Cuando `media_understanding.received` incluya `image`, `audio`, `video`, `file` o `location`, mostrar chips/adjuntos compactos.
+- Si `ticket.detail_endpoint` existe, el CTA debe ser "Ver seguimiento" o equivalente.
+- Pasar `chat_session_id` tambien al admin preview cuando frontend lo tenga: `/api/v2/demo/admin-preview?sector=gobierno&tenant_slug=municipio&chat_session_id=...`.
+- No volver a mostrar "Crear ticket" debajo de un ticket ya creado; usar "Adjuntar evidencia", "Enviar ubicacion", "Consultar estado".

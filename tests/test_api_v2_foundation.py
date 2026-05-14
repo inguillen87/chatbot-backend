@@ -7,7 +7,7 @@ os.environ.setdefault("TESTING", "1")
 
 from app import create_app, db
 from config import Config
-from models import ChatSessionContext, TenantProfile, User, WhatsappNumero
+from models import ChatSessionContext, MunicipioTicket, TenantProfile, User, WhatsappNumero
 
 
 class V2BaseTestConfig(Config):
@@ -648,7 +648,113 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertLessEqual(len(contexts[0].chat_session_id), 36)
         self.assertNotEqual(contexts[0].chat_session_id, demo_session_id)
         self.assertEqual((contexts[0].context_data or {}).get("demo_session_id"), demo_session_id)
-        self.assertEqual(captured_session_ids, [contexts[0].chat_session_id, contexts[0].chat_session_id])
+        self.assertEqual(captured_session_ids, [contexts[0].chat_session_id])
+        self.assertEqual(MunicipioTicket.query.count(), 1)
+        ticket = MunicipioTicket.query.first()
+        self.assertEqual(ticket.categoria, "Alumbrado publico")
+        self.assertEqual(ticket.canal_ingreso, "web_demo_widget")
+
+    def test_demo_municipio_runtime_creates_claim_for_baches_not_parking(self):
+        from routes.v2.tenants import create_demo_session_token
+
+        owner = User(name="Municipio Baches", email="municipio-baches@test.com", password_hash="hash", tipo_chat="municipio", rol="admin")
+        db.session.add(owner)
+        db.session.flush()
+        db.session.add(TenantProfile(slug="municipio", nombre="Municipio Baches", tipo="municipio", municipio_id=owner.id, is_active=True))
+        db.session.commit()
+
+        demo_session_id = create_demo_session_token(tenant_slug="municipio", sector="gobierno", rubro="gobierno")
+        resp = self.client.post(
+            f"/api/ask/municipio?tenant_slug=municipio&demo_session_id={demo_session_id}",
+            json={
+                "pregunta": "Donde reporto baches con ubicacion?",
+                "demo_mode": True,
+                "tenant_slug": "municipio",
+                "location": {"lat": -34.61, "lng": -58.44, "address": "Av. San Martin 123"},
+            },
+            headers={"Origin": "https://www.chatboc.ar", "X-Request-Id": "demo-baches-1"},
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.get_json()
+        body = (payload.get("message_body") or "").lower()
+        self.assertEqual(payload.get("fuente"), "demo_municipio_runtime")
+        self.assertIn("reclamo", body)
+        self.assertNotIn("estacionamiento", body)
+        self.assertEqual((payload.get("ticket") or {}).get("category"), "Baches y calzada")
+
+        ticket = MunicipioTicket.query.first()
+        self.assertIsNotNone(ticket)
+        self.assertEqual(ticket.categoria, "Baches y calzada")
+        self.assertEqual(ticket.latitud, -34.61)
+        self.assertEqual(ticket.longitud, -58.44)
+        self.assertEqual(ticket.direccion, "Av. San Martin 123")
+
+        chat_session_id = (payload.get("session") or {}).get("chat_session_id")
+        preview = self.client.get(
+            f"/api/v2/demo/admin-preview?sector=gobierno&tenant_slug=municipio&chat_session_id={chat_session_id}"
+        )
+        self.assertEqual(preview.status_code, 200)
+        preview_payload = preview.get_json()
+        self.assertTrue((preview_payload.get("session_activity") or {}).get("has_session_data"))
+        self.assertEqual((preview_payload.get("cards") or [])[0].get("value"), "1")
+        self.assertTrue((preview_payload.get("map") or {}).get("enabled"))
+        self.assertEqual(len((preview_payload.get("map") or {}).get("points") or []), 1)
+
+    def test_demo_municipio_runtime_answers_license_without_generic_menu(self):
+        from routes.v2.tenants import create_demo_session_token
+
+        owner = User(name="Municipio Licencia", email="municipio-licencia@test.com", password_hash="hash", tipo_chat="municipio", rol="admin")
+        db.session.add(owner)
+        db.session.flush()
+        db.session.add(TenantProfile(slug="municipio", nombre="Municipio Licencia", tipo="municipio", municipio_id=owner.id, is_active=True))
+        db.session.commit()
+
+        demo_session_id = create_demo_session_token(tenant_slug="municipio", sector="gobierno", rubro="gobierno")
+        resp = self.client.post(
+            f"/api/ask/municipio?tenant_slug=municipio&demo_session_id={demo_session_id}",
+            json={"pregunta": "Necesito saber como sacar un turno para licencia.", "demo_mode": True, "tenant_slug": "municipio"},
+            headers={"Origin": "https://www.chatboc.ar"},
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.get_json()
+        body = payload.get("message_body") or ""
+        self.assertEqual(payload.get("fuente"), "demo_municipio_runtime")
+        self.assertIn("licencia", body.lower())
+        self.assertNotIn("Elegí una opción", body)
+        self.assertEqual(MunicipioTicket.query.count(), 0)
+
+    def test_demo_municipio_runtime_accepts_image_attachment_for_claim(self):
+        from routes.v2.tenants import create_demo_session_token
+
+        owner = User(name="Municipio Imagen", email="municipio-imagen@test.com", password_hash="hash", tipo_chat="municipio", rol="admin")
+        db.session.add(owner)
+        db.session.flush()
+        db.session.add(TenantProfile(slug="municipio", nombre="Municipio Imagen", tipo="municipio", municipio_id=owner.id, is_active=True))
+        db.session.commit()
+
+        demo_session_id = create_demo_session_token(tenant_slug="municipio", sector="gobierno", rubro="gobierno")
+        image_url = "https://example.com/luminaria.jpg"
+        resp = self.client.post(
+            f"/api/ask/municipio?tenant_slug=municipio&demo_session_id={demo_session_id}",
+            json={
+                "pregunta": "Se rompio una luminaria, mando foto",
+                "demo_mode": True,
+                "tenant_slug": "municipio",
+                "attachmentInfo": {"id": "att-demo-1", "url": image_url, "mimeType": "image/jpeg", "name": "luminaria.jpg"},
+            },
+            headers={"Origin": "https://www.chatboc.ar"},
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.get_json()
+        self.assertEqual(payload.get("fuente"), "demo_municipio_runtime")
+        self.assertIn("image", ((payload.get("media_understanding") or {}).get("received") or []))
+        ticket = MunicipioTicket.query.first()
+        self.assertIsNotNone(ticket)
+        self.assertEqual(ticket.categoria, "Alumbrado publico")
+        self.assertEqual(ticket.foto_url_directa, image_url)
 
     def test_ask_invalid_demo_session_returns_json_error(self):
         invalid_demo_session_id = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.invalid.signature"

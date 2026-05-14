@@ -79,8 +79,20 @@ class LandingExperienceContractTestCase(unittest.TestCase):
         self.assertTrue(payload["conversion"]["lead_capture"]["fields"])
         self.assertEqual(payload["conversion"]["lead_capture"]["required_fields"], ["name"])
         self.assertEqual(payload["conversion"]["lead_capture"]["required_any_of"], [["phone", "email"]])
+        self.assertTrue(payload["conversion"]["lead_capture"]["progressive_capture"]["enabled"])
+        self.assertEqual(payload["conversion"]["lead_capture"]["success_state"]["contract_version"], "public.lead_capture.success.v1")
+        self.assertEqual(payload["conversion"]["lead_capture"]["validation_state"]["render_as"], "inline_field_errors")
         self.assertEqual(payload["conversion"]["demo_session_endpoint"], "/api/v2/demo/session")
         self.assertEqual(payload["conversion"]["admin_preview_endpoint"], "/api/v2/demo/admin-preview")
+        journey = payload["conversion"]["journey"]
+        self.assertEqual(journey["contract_version"], "public.conversion_journey.v1")
+        self.assertEqual(journey["goal"], "convert_visitor_to_demo_lead_or_tenant")
+        self.assertTrue(any(step["id"] == "start_demo_session" for step in journey["steps"]))
+        self.assertTrue(any(step["id"] == "capture_lead" for step in journey["steps"]))
+        self.assertTrue(any(step["id"] == "tenant_signup_intent" for step in journey["steps"]))
+        self.assertTrue(any(step["id"] == "activate_whatsapp_after_tenant_exists" for step in journey["steps"]))
+        self.assertTrue(journey["frontend_rules"]["do_not_post_empty_leads"])
+        self.assertTrue(journey["frontend_rules"]["do_not_show_twilio_console_steps"])
 
     def test_landing_experience_returns_traceable_conversation_demo(self):
         payload = build_landing_experience_contract()
