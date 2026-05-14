@@ -160,11 +160,28 @@ def test_public_lead_capture_validation_error_is_contract_json(client):
     assert payload["contract_version"] == "public.lead_capture.v1"
     assert payload["request_id"] == "lead-validation-1"
     assert payload["reason_code"] == "validation_failed"
-    assert payload["required_fields"] == ["name", "phone"]
+    assert payload["required_fields"] == ["name", "phone_or_email"]
     assert "contact" in payload["field_errors"]
     assert payload["field_errors"]["phone"]
+    assert payload["field_errors"]["name"]
     assert resp.headers.get("X-Request-Id") == "lead-validation-1"
 
 
 def test_public_lead_capture_validation_returns_field_errors(client):
     test_public_lead_capture_validation_error_is_contract_json(client)
+
+
+def test_public_lead_capture_requires_contact_method_even_with_name(client):
+    resp = client.post(
+        "/api/public/lead-capture?tenant_slug=municipio&tenant=municipio",
+        json={"name": "Marcelo", "message": "Quiero demo"},
+        headers={"X-Request-Id": "lead-validation-contact-1"},
+    )
+
+    assert resp.status_code == 400
+    payload = resp.get_json()
+    assert payload["contract_version"] == "public.lead_capture.v1"
+    assert payload["request_id"] == "lead-validation-contact-1"
+    assert payload["reason_code"] == "validation_failed"
+    assert payload["required_fields"] == ["name", "phone_or_email"]
+    assert payload["field_errors"]["contact"] == "phone_or_email_required"

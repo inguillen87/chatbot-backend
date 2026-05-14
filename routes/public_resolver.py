@@ -2244,18 +2244,22 @@ def capture_public_lead():
     mensaje = str(payload.get("mensaje") or payload.get("message") or "").strip()
     interes = str(payload.get("interes") or payload.get("interest") or "").strip()
 
-    if not (nombre or email or telefono):
+    field_errors: dict[str, str] = {}
+    if not nombre:
+        field_errors["name"] = "required"
+    if not (email or telefono):
+        field_errors["contact"] = "phone_or_email_required"
+        field_errors["phone"] = "required_without_email"
+        field_errors["email"] = "required_without_phone"
+
+    if field_errors:
         return _lead_error_response(
-            "nombre/email/telefono requerido",
+            "nombre y telefono o email requeridos",
             400,
             "validation_failed",
-            "send_name_email_or_phone",
-            required_fields=["name", "phone"],
-            field_errors={
-                "contact": "Enviar al menos nombre, email o telefono para registrar el lead.",
-                "name": "required_without_email_or_phone",
-                "phone": "required_without_name_or_email",
-            },
+            "send_name_and_phone_or_email",
+            required_fields=["name", "phone_or_email"],
+            field_errors=field_errors,
         )
 
     anon_id = (

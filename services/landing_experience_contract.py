@@ -9,6 +9,23 @@ LANDING_EXPERIENCE_CONTRACT_VERSION = "public.landing_experience.v1"
 LANDING_OPERATIONAL_CONTRACT_VERSION = "landing.operational_contract.v1"
 
 
+def _lead_capture_contract() -> dict[str, Any]:
+    return {
+        "contract_version": "public.lead_capture.form.v1",
+        "enabled": True,
+        "endpoint": "/api/public/lead-capture",
+        "fields": [
+            {"id": "name", "label": "Nombre", "type": "text", "required": True},
+            {"id": "phone", "label": "Telefono", "type": "tel", "required": False},
+            {"id": "email", "label": "Email", "type": "email", "required": False},
+            {"id": "message", "label": "Mensaje", "type": "textarea", "required": False},
+        ],
+        "required_fields": ["name"],
+        "required_any_of": [["phone", "email"]],
+        "submit_contract": "public.lead_capture.v1",
+    }
+
+
 def _tenant_kind(tenant: Any = None) -> str:
     if tenant and is_education_tenant(tenant):
         return "educacion"
@@ -338,6 +355,7 @@ def build_landing_experience_contract(tenant: Any = None, *, page: str | None = 
         "conversion": {
             "contract_version": LANDING_OPERATIONAL_CONTRACT_VERSION,
             "lead_capture_endpoint": "/api/public/lead-capture",
+            "lead_capture": _lead_capture_contract(),
             "demo_catalog_endpoint": "/api/v2/demo/catalog",
             "demo_session_endpoint": "/api/v2/demo/session",
             "admin_preview_endpoint": "/api/v2/demo/admin-preview",

@@ -549,14 +549,24 @@ def _chat_bootstrap(
         "contract_version": "demo.chat_bootstrap.v1",
         "endpoint": endpoint,
         "same_origin_endpoint": f"/api{endpoint}" if endpoint.startswith("/ask") else endpoint,
-        "fallback_endpoint": "/ask",
+        "fallback_endpoint": None,
         "method": "POST",
         "response_contract": "chat.response.v1",
+        "session": {
+            "chat_session_id": chat_session_id,
+            "demo_session_id": demo_session_id,
+        },
         "runtime_contract": {
             "server_side_ai": True,
             "frontend_llm_keys_allowed": False,
             "lead_capture_source": "backend_action_handlers",
             "error_contract": "shared.error.v1",
+        },
+        "empty_states": {
+            "runtime_unavailable": {
+                "title": "Demo conversacional no disponible",
+                "description": "No pudimos iniciar la respuesta en este momento. Reintenta en unos segundos o deja tus datos para seguimiento.",
+            }
         },
         "headers": {
             "X-Chat-Session-Id": chat_session_id,
@@ -1032,6 +1042,9 @@ def demo_session_v2():
         "conversion_ctas": conversion_ctas,
         "animation_tokens": animation_tokens,
         "chat_bootstrap": chat_bootstrap,
+        "empty_states": {
+            "runtime_unavailable": chat_bootstrap["empty_states"]["runtime_unavailable"],
+        },
         "education": education_payload,
         "pillar_selector": {
             "contract_version": DEMO_PILLAR_CONTRACT_VERSION,

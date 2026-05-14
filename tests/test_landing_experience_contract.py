@@ -75,6 +75,10 @@ class LandingExperienceContractTestCase(unittest.TestCase):
         self.assertNotIn("preview_url", image_input)
         self.assertNotIn("image_url", image_input)
         self.assertEqual(payload["conversion"]["lead_capture_endpoint"], "/api/public/lead-capture")
+        self.assertEqual(payload["conversion"]["lead_capture"]["endpoint"], "/api/public/lead-capture")
+        self.assertTrue(payload["conversion"]["lead_capture"]["fields"])
+        self.assertEqual(payload["conversion"]["lead_capture"]["required_fields"], ["name"])
+        self.assertEqual(payload["conversion"]["lead_capture"]["required_any_of"], [["phone", "email"]])
         self.assertEqual(payload["conversion"]["demo_session_endpoint"], "/api/v2/demo/session")
         self.assertEqual(payload["conversion"]["admin_preview_endpoint"], "/api/v2/demo/admin-preview")
 
