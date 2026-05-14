@@ -164,6 +164,7 @@ def build_demo_whatsapp_sandbox_contract(
     join_phrase: str,
     source: str = "demo_profile_panel",
     max_messages: int = DEFAULT_SANDBOX_MESSAGE_LIMIT,
+    provider: str = "twilio_sandbox",
 ) -> dict[str, Any]:
     normalized_sector = normalize_demo_sector(sector)
     rubro_slug = str(rubro or tenant_slug or "").strip().lower()
@@ -172,7 +173,9 @@ def build_demo_whatsapp_sandbox_contract(
         sandbox_number = sandbox_number.replace("whatsapp:", "", 1)
     join_phrase = str(join_phrase or "join brief-yesterday").strip()
     wa_number = _digits(sandbox_number)
-    wa_deeplink = f"https://wa.me/{wa_number}?text={quote_plus(join_phrase)}" if wa_number else None
+    requires_join_phrase = provider == "twilio_sandbox"
+    activation_message = join_phrase if requires_join_phrase else f"Hola, quiero probar la demo de {rubro_slug}."
+    wa_deeplink = f"https://wa.me/{wa_number}?text={quote_plus(activation_message)}" if wa_number else None
     resources = catalog_resources_for_rubro(rubro_slug, normalized_sector)
 
     return {
@@ -182,13 +185,15 @@ def build_demo_whatsapp_sandbox_contract(
         "tenant_slug": tenant_slug,
         "sector": normalized_sector,
         "rubro": rubro_slug,
-        "provider": "twilio_sandbox",
+        "provider": provider,
         "sandbox": {
             "number": f"whatsapp:{sandbox_number}",
             "display_number": _display_number(sandbox_number),
-            "join_phrase": join_phrase,
+            "join_phrase": join_phrase if requires_join_phrase else None,
+            "activation_message": activation_message,
             "wa_deeplink": wa_deeplink,
             "qr_url": f"https://api.qrserver.com/v1/create-qr-code/?size=220x220&data={quote_plus(wa_deeplink)}" if wa_deeplink else None,
+            "requires_join_phrase": requires_join_phrase,
         },
         "trial_policy": demo_trial_policy(max_messages=max_messages),
         "rubro_options": _rubro_options(normalized_sector),

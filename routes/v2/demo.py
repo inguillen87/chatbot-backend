@@ -7,7 +7,7 @@ import uuid
 
 from flask import Blueprint, current_app, jsonify, request, send_from_directory
 
-from models import TenantProfile
+from models import TenantProfile, WhatsappNumero
 from routes.auth import (
     _first_active_tenant_for_demo,
     _resolve_demo_tenant_slug,
@@ -26,6 +26,7 @@ from services.demo_pillar_catalog import (
     normalize_demo_sector,
     sector_for_rubro,
 )
+from services.demo_sandbox_contract import build_demo_whatsapp_sandbox_contract
 from services.education_contracts import (
     build_education_admin_menu,
     build_education_profile,
@@ -52,6 +53,27 @@ def _stable_demo_chat_session_id(demo_session_id: str | None) -> str:
         return token
     digest = hashlib.sha256(token.encode("utf-8")).hexdigest()[:32]
     return f"sid_{digest}"
+
+
+def _twilio_sandbox_number() -> str:
+    raw = (
+        current_app.config.get("TWILIO_WHATSAPP_SANDBOX_NUMBER")
+        or current_app.config.get("TWILIO_SANDBOX_WHATSAPP_NUMBER")
+        or current_app.config.get("TWILIO_WHATSAPP_NUMBER_SANDBOX")
+        or "+14155238886"
+    )
+    value = str(raw or "").strip()
+    if value.startswith("whatsapp:"):
+        value = value.replace("whatsapp:", "", 1)
+    return value or "+14155238886"
+
+
+def _twilio_sandbox_join_phrase() -> str:
+    return str(
+        current_app.config.get("TWILIO_WHATSAPP_SANDBOX_JOIN_PHRASE")
+        or current_app.config.get("TWILIO_SANDBOX_JOIN_PHRASE")
+        or "join brief-yesterday"
+    ).strip()
 
 
 def _json_response(payload: dict[str, Any], status: int = 200):
@@ -86,6 +108,13 @@ def _options_response():
             "contract_version": "demo.session.compat.v1",
         }
     )
+
+
+def _request_payload() -> dict[str, Any]:
+    if request.method == "POST":
+        payload = request.get_json(silent=True) or {}
+        return payload if isinstance(payload, dict) else {}
+    return dict(request.args.items())
 
 
 def _error_response(message: str, status_code: int, reason_code: str, action_hint: str):
@@ -131,6 +160,36 @@ def _tenant_dict(tenant: TenantProfile, *, sector: str | None = None) -> dict[st
         "vertical": tenant.vertical,
         "subvertical": tenant.subvertical,
     }
+
+
+def _tenant_owner_user_id(tenant: TenantProfile) -> int | None:
+    return getattr(tenant, "municipio_id", None) or getattr(tenant, "pyme_id", None)
+
+
+def _demo_whatsapp_number_for_tenant(tenant: TenantProfile) -> str | None:
+    cfg = tenant.configuracion if isinstance(tenant.configuracion, dict) else {}
+    candidates = [
+        getattr(tenant, "whatsapp_sender_id", None),
+        cfg.get("whatsapp_number"),
+        cfg.get("numero_whatsapp"),
+        cfg.get("sandbox_number"),
+    ]
+    for candidate in candidates:
+        value = str(candidate or "").strip()
+        if value:
+            return value.replace("whatsapp:", "", 1)
+
+    owner_id = _tenant_owner_user_id(tenant)
+    if not owner_id:
+        return None
+    mapping = (
+        WhatsappNumero.query.filter_by(user_id=owner_id, is_active=True)
+        .order_by(WhatsappNumero.updated_at.desc(), WhatsappNumero.id.desc())
+        .first()
+    )
+    if not mapping:
+        return None
+    return str(mapping.numero_whatsapp or "").replace("whatsapp:", "", 1).strip() or None
 
 
 def _safe_demo_rubros() -> list[dict[str, Any]]:
@@ -885,6 +944,85 @@ def demo_catalog_asset_v2(filename: str):
     return _demo_catalog_asset_response(filename)
 
 
+@v2_demo_bp.route("/whatsapp-sandbox", methods=["GET", "POST", "OPTIONS"])
+def demo_whatsapp_sandbox_launcher_v2():
+    if request.method == "OPTIONS":
+        return _json_response({"ok": True, "contract_version": "demo.whatsapp_sandbox_launcher.v1"})
+
+    payload = _request_payload()
+    requested_rubro = str(payload.get("rubro") or payload.get("subvertical") or "").strip()
+    requested_sector = str(payload.get("sector") or sector_for_rubro(requested_rubro) or "empresas").strip()
+    sector = normalize_demo_sector(requested_sector)
+    rubro = requested_rubro or default_rubro_for_sector(sector)
+    tenant_slug = str(payload.get("tenant_slug") or payload.get("tenant") or "").strip()
+
+    tenant = None
+    if tenant_slug:
+        try:
+            tenant = resolve_tenant_only(tenant_slug=tenant_slug, require_explicit_slug=True)
+        except Exception:
+            tenant = None
+    if not tenant:
+        candidate = _resolve_demo_tenant_slug(rubro)
+        if candidate:
+            try:
+                tenant = resolve_tenant_only(tenant_slug=candidate, require_explicit_slug=True)
+            except Exception:
+                tenant = None
+    if not tenant:
+        if sector == "educacion":
+            tenant = _first_education_tenant_for_demo() or _first_active_tenant_for_demo("pyme")
+        else:
+            tenant = _first_active_tenant_for_demo("municipio" if sector == "gobierno" else "pyme")
+    if not tenant:
+        return _error_response("No se pudo resolver tenant demo", 404, "tenant_resolution_failed", "send_sector_or_tenant_slug")
+
+    demo_session_id = create_demo_session_token(tenant_slug=tenant.slug, sector=sector, rubro=rubro or tenant.slug)
+    chat_session_id = _stable_demo_chat_session_id(demo_session_id)
+    join_phrase = str(payload.get("join_phrase") or _twilio_sandbox_join_phrase()).strip()
+    demo_whatsapp_number = _demo_whatsapp_number_for_tenant(tenant)
+    whatsapp_sandbox = build_demo_whatsapp_sandbox_contract(
+        tenant_slug=tenant.slug,
+        sector=sector,
+        rubro=rubro or tenant.slug,
+        sandbox_number=demo_whatsapp_number or _twilio_sandbox_number(),
+        join_phrase=join_phrase,
+        source=str(payload.get("source") or "public_demo_profile"),
+        provider="twilio_whatsapp_number" if demo_whatsapp_number else "twilio_sandbox",
+    )
+
+    return _json_response(
+        {
+            "contract_version": "demo.whatsapp_sandbox_launcher.v1",
+            "ok": True,
+            "requires_auth": False,
+            "tenant": _tenant_dict(tenant, sector=sector),
+            "session": {
+                "demo_session_id": demo_session_id,
+                "chat_session_id": chat_session_id,
+                "max_messages": (whatsapp_sandbox.get("trial_policy") or {}).get("max_messages"),
+            },
+            "whatsapp_sandbox": whatsapp_sandbox,
+            "trial_policy": whatsapp_sandbox.get("trial_policy"),
+            "supported_inputs": whatsapp_sandbox.get("supported_inputs"),
+            "scenario_scripts": whatsapp_sandbox.get("scenario_scripts"),
+            "catalog": whatsapp_sandbox.get("catalog"),
+            "surveys_votings": whatsapp_sandbox.get("surveys_votings"),
+            "frontend_contract": {
+                "render_as": "anonymous_whatsapp_sandbox_launcher",
+                "requires_auth": False,
+                "allow_sector_switch": True,
+                "allow_rubro_switch": True,
+                "show_qr": True,
+                "show_trial_counter": True,
+                "show_catalog_resources": True,
+                "show_survey_voting_entry": True,
+                "do_not_publish_mock_results": True,
+            },
+        }
+    )
+
+
 @v2_demo_bp.route("/session", methods=["POST", "OPTIONS"])
 @demo_compat_bp.route("/v2/demo/session", methods=["POST", "OPTIONS"])
 @demo_compat_bp.route("/api/v1/demo/session", methods=["POST", "OPTIONS"])
@@ -1009,6 +1147,16 @@ def demo_session_v2():
         vertical=vertical,
         education_profile=education_profile if education_profile.get("is_education") else None,
     )
+    demo_whatsapp_number = _demo_whatsapp_number_for_tenant(tenant)
+    whatsapp_sandbox = build_demo_whatsapp_sandbox_contract(
+        tenant_slug=tenant.slug,
+        sector=sector,
+        rubro=rubro or tenant.slug,
+        sandbox_number=demo_whatsapp_number or _twilio_sandbox_number(),
+        join_phrase=_twilio_sandbox_join_phrase(),
+        source="public_demo_session",
+        provider="twilio_whatsapp_number" if demo_whatsapp_number else "twilio_sandbox",
+    )
     education_payload = None
     if education_profile.get("is_education"):
         education_payload = {
@@ -1042,6 +1190,7 @@ def demo_session_v2():
         "conversion_ctas": conversion_ctas,
         "animation_tokens": animation_tokens,
         "chat_bootstrap": chat_bootstrap,
+        "whatsapp_sandbox": whatsapp_sandbox,
         "empty_states": {
             "runtime_unavailable": chat_bootstrap["empty_states"]["runtime_unavailable"],
         },
@@ -1088,6 +1237,7 @@ def demo_session_v2():
             "admin_preview_endpoint": admin_preview_endpoint,
             "trust_signals": workspace["trust_signals"],
             "lead_capture": workspace["lead_capture"],
+            "whatsapp_sandbox": whatsapp_sandbox,
             "media_capabilities": media_capabilities,
             "conversion_ctas": conversion_ctas,
             "animation_tokens": animation_tokens,
@@ -1110,6 +1260,7 @@ def demo_session_v2():
                 "media_capabilities": media_capabilities,
                 "conversion_ctas": conversion_ctas,
                 "chat_bootstrap": chat_bootstrap,
+                "whatsapp_sandbox": whatsapp_sandbox,
                 "education": education_payload,
             },
             "quick_replies": quick_replies,

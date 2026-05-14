@@ -396,6 +396,10 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(payload["twilio"]["sandbox_number"], "whatsapp:+14155238886")
         self.assertIn("wa.me/14155238886", payload["twilio"]["wa_deeplink"])
         self.assertEqual(payload["demo_context"]["rubro"], "colegio")
+        self.assertEqual(payload["whatsapp_sandbox"]["contract_version"], "demo.whatsapp_sandbox.v1")
+        self.assertEqual(payload["whatsapp_sandbox"]["trial_policy"]["max_messages"], 10)
+        self.assertTrue(payload["whatsapp_sandbox"]["scenario_scripts"])
+        self.assertTrue(payload["demo_context"]["trial_policy"])
         self.assertFalse(payload["session"]["sends_real_message"])
 
     def test_whatsapp_sandbox_setup_and_test_contracts_are_backend_first(self):
@@ -415,6 +419,11 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(setup["test"]["endpoint"], f"/api/v2/tenants/{self.tenant.slug}/whatsapp/sandbox-test")
         self.assertEqual(setup["frontend_contract"]["render_as"], "whatsapp_sandbox_onboarding")
         self.assertIsInstance(setup["demo_context"]["quick_menu"], list)
+        self.assertEqual(setup["whatsapp_sandbox"]["contract_version"], "demo.whatsapp_sandbox.v1")
+        self.assertTrue(setup["whatsapp_sandbox"]["supported_inputs"]["audio"])
+        self.assertTrue(setup["whatsapp_sandbox"]["supported_inputs"]["image"])
+        self.assertTrue(setup["whatsapp_sandbox"]["supported_inputs"]["location"])
+        self.assertTrue(setup["whatsapp_sandbox"]["supported_inputs"]["file"])
 
         test_response = self.client.post(
             f"/api/v2/tenants/{self.tenant.slug}/whatsapp/sandbox-test",
@@ -430,6 +439,7 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(payload["mode"], "copy_or_deeplink")
         self.assertIn("wa.me/14155238886", payload["twilio"]["wa_deeplink"])
         self.assertEqual(payload["message_preview"]["message"], "Hola menu")
+        self.assertEqual(payload["whatsapp_sandbox"]["trial_policy"]["max_messages"], 10)
 
     def test_admin_catalog_exposes_and_saves_draft_endpoint(self):
         get_response = self.client.get(

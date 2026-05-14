@@ -12,6 +12,70 @@ Renderizar una experiencia publica premium para municipio Junin sin inventar dat
 
 ## Contratos backend listos
 
+### Sandbox WhatsApp demo sin login
+
+Usar cuando una persona entra a probar Chatboc sin usuario ni contrasena y quiere elegir rubro desde una botonera:
+
+```txt
+GET /api/v2/demo/whatsapp-sandbox?sector=empresas&rubro=bodega
+POST /api/v2/demo/whatsapp-sandbox
+```
+
+Payload opcional:
+
+```json
+{
+  "sector": "gobierno|empresas|educacion",
+  "rubro": "bodega|ferreteria|colegio|municipio",
+  "tenant_slug": "opcional",
+  "source": "public_demo_profile"
+}
+```
+
+Respuesta principal:
+
+```json
+{
+  "contract_version": "demo.whatsapp_sandbox_launcher.v1",
+  "requires_auth": false,
+  "session": {
+    "demo_session_id": "token-largo",
+    "chat_session_id": "sid_corto",
+    "max_messages": 10
+  },
+  "whatsapp_sandbox": {
+    "contract_version": "demo.whatsapp_sandbox.v1",
+    "sandbox": {
+      "display_number": "+1 (415) 523-8886",
+      "join_phrase": "join ... o null si es numero dedicado",
+      "activation_message": "Mensaje inicial para abrir WhatsApp",
+      "requires_join_phrase": true,
+      "wa_deeplink": "https://wa.me/...",
+      "qr_url": "https://..."
+    },
+    "trial_policy": {
+      "max_messages": 10,
+      "free_inputs": ["text", "image", "audio", "location", "file"]
+    },
+    "scenario_scripts": [],
+    "catalog": {},
+    "surveys_votings": {}
+  }
+}
+```
+
+Reglas frontend:
+
+- No pedir login para mostrar este launcher.
+- Renderizar selector de sector/rubro desde `whatsapp_sandbox.rubro_options`.
+- Mostrar QR/deeplink/frase de union desde `whatsapp_sandbox.sandbox`.
+- Si `requires_join_phrase=false`, no mostrar paso de union a sandbox: abrir directo con `activation_message`.
+- Mostrar contador de 10 mensajes desde `trial_policy.max_messages`.
+- Mostrar scripts sugeridos desde `scenario_scripts`, sin simular resultados.
+- Mostrar catalogo PDF/Excel solo si `catalog.resources` o `catalog.pdf_excel_upload_demo.enabled` viene del backend.
+- Mostrar entrada a encuestas/votaciones solo si `surveys_votings.enabled=true`.
+- No inventar tickets, pedidos, casos escolares, votos, precios ni metricas.
+
 ### Widget externo
 
 Usar:

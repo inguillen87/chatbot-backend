@@ -20,6 +20,9 @@ Registrar cada prueba realista que se haga sobre Chatboc y convertirla en una me
 - Reclamo con ubicacion persiste `latitud` y `longitud`.
 - Pedido PYME Cuatro Fincas persiste `detalles[]` con lineas reales, total, cliente y telefono.
 - Pedido PYME prioriza nombre real de WhatsApp/contacto sobre placeholders como `Vecino/a`.
+- Demo session publica y endpoints SaaS exponen `whatsapp_sandbox` con limite de 10 mensajes, inputs soportados y scripts por rubro.
+- `GET/POST /api/v2/demo/whatsapp-sandbox` permite iniciar launcher WhatsApp demo sin login, con `demo_session_id` largo separado de `chat_session_id` corto.
+- El launcher publico usa numero WhatsApp dedicado del tenant si existe; Twilio Sandbox queda como fallback con frase `join`.
 - Tracking de pedidos usa `/tracking/order/{nro_pedido}` sin duplicar rutas.
 - Twilio Sandbox `+14155238886` queda cubierto por QA reproducible con un tenant colegio `qa-colegio-sandbox`.
 - WhatsApp colegio por sandbox crea caso escolar real desde menu + accion + audio/ubicacion.
@@ -43,11 +46,19 @@ Registrar cada prueba realista que se haga sobre Chatboc y convertirla en una me
   - `tests/test_realtime_voice_profiles.py`
   - `tests/test_public_resolver_widget_config_contract.py`
   - `tests/test_voice_realtime_routes.py`
+- Tests sandbox WhatsApp demo:
+  - `tests/test_api_v2_foundation.py::ApiV2FoundationTest::test_public_whatsapp_sandbox_launcher_requires_no_auth_and_exposes_trial_contract`
+  - `tests/test_api_v2_foundation.py::ApiV2FoundationTest::test_v2_demo_session_returns_workspace_contract`
+  - `tests/test_v2_saas_contracts.py::V2SaasContractsTest::test_whatsapp_sandbox_session_returns_deeplink_contract`
+  - `tests/test_v2_saas_contracts.py::V2SaasContractsTest::test_whatsapp_sandbox_setup_and_test_contracts_are_backend_first`
 - Resultado actualizado: `41 passed`, `3 subtests passed`.
 - Resultado widget/portal/realtime actualizado: `48 passed`.
+- Resultado sandbox WhatsApp demo focalizado: `4 passed`.
+- Resultado contratos v2 foundation + SaaS: `44 passed`, `3 subtests passed`.
 - QA WhatsApp simulada con webhook Twilio firmado:
   - `18/18` requests respondieron `200`.
   - Delta creado: `3` tickets municipales, `1` pedido PYME, `1` ticket/caso escolar, `3` adjuntos.
+  - Re-ejecutada despues del contrato sandbox publico; se mantuvo `18/18` OK.
   - Ticket texto+foto verificado con `foto_url_directa` y `archivos=1`.
   - Ticket ubicacion verificado con coordenadas.
   - Pedido Cuatro Fincas verificado con cliente `QA Bodega`, total y lineas.

@@ -7,7 +7,7 @@ os.environ.setdefault("TESTING", "1")
 
 from app import create_app, db
 from config import Config
-from models import ChatSessionContext, TenantProfile, User
+from models import ChatSessionContext, TenantProfile, User, WhatsappNumero
 
 
 class V2BaseTestConfig(Config):
@@ -163,6 +163,71 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertTrue(workspace.get("allowed_actions"))
         self.assertEqual((workspace.get("tracking") or {}).get("contract_version"), "demo.tracking.v1")
         self.assertIn("/api/v2/demo/admin-preview", workspace.get("admin_preview_endpoint") or "")
+        whatsapp_sandbox = workspace.get("whatsapp_sandbox") or {}
+        self.assertEqual(whatsapp_sandbox.get("contract_version"), "demo.whatsapp_sandbox.v1")
+        self.assertEqual((whatsapp_sandbox.get("trial_policy") or {}).get("max_messages"), 10)
+        self.assertTrue((whatsapp_sandbox.get("supported_inputs") or {}).get("image"))
+        self.assertTrue((whatsapp_sandbox.get("supported_inputs") or {}).get("audio"))
+        self.assertTrue((whatsapp_sandbox.get("supported_inputs") or {}).get("location"))
+        self.assertTrue((whatsapp_sandbox.get("supported_inputs") or {}).get("file"))
+        self.assertTrue(whatsapp_sandbox.get("scenario_scripts"))
+        self.assertEqual((payload.get("whatsapp_sandbox") or {}).get("contract_version"), "demo.whatsapp_sandbox.v1")
+        self.assertEqual(((payload.get("chat_seed") or {}).get("whatsapp_sandbox") or {}).get("contract_version"), "demo.whatsapp_sandbox.v1")
+
+    def test_public_whatsapp_sandbox_launcher_requires_no_auth_and_exposes_trial_contract(self):
+        owner = User(name="Bodega Demo", email="bodega-sandbox@test.com", password_hash="hash", tipo_chat="pyme")
+        db.session.add(owner)
+        db.session.flush()
+        tenant = TenantProfile(
+            slug="bodega",
+            nombre="Bodega Demo",
+            tipo="pyme",
+            pyme_id=owner.id,
+            vertical="empresas",
+            subvertical="bodega",
+        )
+        db.session.add(tenant)
+        db.session.add(WhatsappNumero(numero_whatsapp="+18564858589", user_id=owner.id, is_active=True))
+        db.session.commit()
+
+        options = self.client.open(
+            "/api/v2/demo/whatsapp-sandbox",
+            method="OPTIONS",
+            headers={"Origin": "https://www.chatboc.ar"},
+        )
+        self.assertEqual(options.status_code, 200)
+        self.assertEqual(options.headers.get("Access-Control-Allow-Origin"), "https://www.chatboc.ar")
+
+        resp = self.client.post(
+            "/api/v2/demo/whatsapp-sandbox",
+            json={"sector": "empresas", "rubro": "bodega", "source": "public_demo_profile"},
+            headers={"X-Request-Id": "sandbox-public-1"},
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.get_json()
+        contract = payload.get("whatsapp_sandbox") or {}
+        self.assertEqual(payload.get("contract_version"), "demo.whatsapp_sandbox_launcher.v1")
+        self.assertFalse(payload.get("requires_auth"))
+        self.assertEqual(payload.get("request_id"), "sandbox-public-1")
+        self.assertEqual((payload.get("session") or {}).get("max_messages"), 10)
+        self.assertLessEqual(len((payload.get("session") or {}).get("chat_session_id") or ""), 36)
+        self.assertNotEqual((payload.get("session") or {}).get("demo_session_id"), (payload.get("session") or {}).get("chat_session_id"))
+        self.assertEqual(contract.get("contract_version"), "demo.whatsapp_sandbox.v1")
+        self.assertEqual(contract.get("provider"), "twilio_whatsapp_number")
+        self.assertEqual((contract.get("sandbox") or {}).get("display_number"), "+18564858589")
+        self.assertIn("wa.me/18564858589", (contract.get("sandbox") or {}).get("wa_deeplink") or "")
+        self.assertFalse((contract.get("sandbox") or {}).get("requires_join_phrase"))
+        self.assertIn("probar la demo", (contract.get("sandbox") or {}).get("activation_message") or "")
+        self.assertEqual((contract.get("trial_policy") or {}).get("max_messages"), 10)
+        self.assertTrue((contract.get("supported_inputs") or {}).get("image"))
+        self.assertTrue((contract.get("supported_inputs") or {}).get("audio"))
+        self.assertTrue((contract.get("supported_inputs") or {}).get("location"))
+        self.assertTrue((contract.get("supported_inputs") or {}).get("file"))
+        self.assertTrue(contract.get("scenario_scripts"))
+        self.assertTrue((contract.get("catalog") or {}).get("enabled"))
+        self.assertTrue((contract.get("catalog") or {}).get("resources"))
+        self.assertFalse((payload.get("frontend_contract") or {}).get("requires_auth"))
 
     def test_demo_session_returns_short_chat_session_id(self):
         owner = User(name="Demo Short Session", email="demo-short-session@test.com", password_hash="hash", tipo_chat="pyme")

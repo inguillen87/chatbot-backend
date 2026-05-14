@@ -35,6 +35,7 @@ from services.employee_routing import (
     normalize_scope_list,
 )
 from services.catalog_quality import build_catalog_quality_payload
+from services.demo_sandbox_contract import build_demo_whatsapp_sandbox_contract, sandbox_context_from_contract
 from services.operational_intelligence import build_operational_dashboard, build_operational_freshness
 from services.v2.sla_service import is_ticket_overdue
 from services.whatsapp_experience import build_whatsapp_experience
@@ -1337,15 +1338,28 @@ def _sandbox_demo_context(tenant: TenantProfile, payload: Mapping[str, Any] | No
     payload = payload or {}
     sector = str(payload.get("sector") or tenant.vertical or ("gobierno" if tenant.tipo == "municipio" else "empresas")).strip()
     rubro = str(payload.get("rubro") or tenant.subvertical or tenant.vertical or tenant.tipo or "").strip()
-    return {
-        "sector": sector,
-        "tenant_slug": tenant.slug,
-        "rubro": rubro,
-        "brief": str(payload.get("brief") or "Probar menu del tenant y crear un caso/pedido/reclamo").strip(),
-        "test_message": str(payload.get("test_message") or "Hola, quiero probar el asistente").strip(),
-        "quick_menu": payload.get("menu_preview") if isinstance(payload.get("menu_preview"), list) else _sandbox_quick_menu(tenant),
-        "widget_config_endpoint": f"/api/public/tenants/{tenant.slug}/widget-config",
-    }
+    contract = build_demo_whatsapp_sandbox_contract(
+        tenant_slug=tenant.slug,
+        sector=sector,
+        rubro=rubro,
+        sandbox_number=_twilio_sandbox_number(),
+        join_phrase=_twilio_sandbox_join_phrase(payload),
+        source=str(payload.get("source") or "tenant_integrations_panel"),
+    )
+    context = sandbox_context_from_contract(contract)
+    context.update(
+        {
+            "sector": sector,
+            "tenant_slug": tenant.slug,
+            "rubro": rubro,
+            "brief": str(payload.get("brief") or "Probar menu del tenant y crear un caso/pedido/reclamo").strip(),
+            "test_message": str(payload.get("test_message") or "Hola, quiero probar el asistente").strip(),
+            "quick_menu": payload.get("menu_preview") if isinstance(payload.get("menu_preview"), list) else _sandbox_quick_menu(tenant),
+            "widget_config_endpoint": f"/api/public/tenants/{tenant.slug}/widget-config",
+            "whatsapp_sandbox": contract,
+        }
+    )
+    return context
 
 
 @v2_saas_bp.route("/whatsapp/sandbox-session", methods=["OPTIONS"])
@@ -1417,7 +1431,12 @@ def whatsapp_sandbox_session_v2(current_user, tenant_slug: str | None = None):
                 "test_message": test_message,
                 "quick_menu": demo_context["quick_menu"],
                 "widget_config_endpoint": f"/api/public/tenants/{tenant.slug}/widget-config",
+                "trial_policy": demo_context.get("trial_policy"),
+                "supported_inputs": demo_context.get("supported_inputs"),
+                "catalog": demo_context.get("catalog"),
+                "surveys_votings": demo_context.get("surveys_votings"),
             },
+            "whatsapp_sandbox": demo_context.get("whatsapp_sandbox"),
             "session": {
                 "id": session_id,
                 "mode": "copy_or_deeplink",
@@ -1476,6 +1495,7 @@ def whatsapp_sandbox_setup_v2(current_user, tenant_slug: str | None = None):
                 ],
             },
             "demo_context": demo_context,
+            "whatsapp_sandbox": demo_context.get("whatsapp_sandbox"),
             "test": {
                 "endpoint": f"/api/v2/tenants/{tenant.slug}/whatsapp/sandbox-test",
                 "method": "POST",
@@ -1523,6 +1543,7 @@ def whatsapp_sandbox_test_v2(current_user, tenant_slug: str | None = None):
     join_phrase = _twilio_sandbox_join_phrase(payload)
     wa_number = "".join(ch for ch in sandbox_number if ch.isdigit())
     message = str(payload.get("message") or payload.get("test_message") or "Hola, quiero probar el asistente").strip()
+    demo_context = _sandbox_demo_context(tenant, payload)
 
     return _json_response(
         {
@@ -1542,7 +1563,8 @@ def whatsapp_sandbox_test_v2(current_user, tenant_slug: str | None = None):
                 "message": message,
                 "copy_text": f"{join_phrase}\n\n{message}",
             },
-            "demo_context": _sandbox_demo_context(tenant, payload),
+            "demo_context": demo_context,
+            "whatsapp_sandbox": demo_context.get("whatsapp_sandbox"),
             "next_action": "open_whatsapp_or_copy_instructions",
         }
     )
