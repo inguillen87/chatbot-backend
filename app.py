@@ -750,7 +750,7 @@ def create_app(config_class=Config):
     app.register_blueprint(
         municipal_bp, url_prefix="/api", name="municipal_bp_api"
     )
-    app.register_blueprint(empleados_bp, url_prefix="/api", name="empleados_bp_api")
+    app.register_blueprint(empleados_bp, url_prefix="/api/empleados", name="empleados_bp_api")
     app.register_blueprint(market_bp)
     app.register_blueprint(market_admin_bp)
     # Register portal API with v1 prefix (primary)
