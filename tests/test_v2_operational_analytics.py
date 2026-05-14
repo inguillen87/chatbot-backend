@@ -183,6 +183,53 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertIn("surveys", (payload.get("render_contract") or {}).get("layers") or [])
         self.assertIn("analytics_events", (payload.get("render_contract") or {}).get("layers") or [])
 
+    def test_operations_heatmap_empty_without_real_coordinates(self):
+        empty_admin = User(name="empty-admin", email="empty-admin@test.com", rol="admin", tenant_slug="empty-tenant")
+        empty_admin.set_password("secret123")
+        db.session.add(empty_admin)
+        db.session.flush()
+        empty_tenant = TenantProfile(slug="empty-tenant", nombre="Empty Tenant", tipo="municipio", municipio_id=empty_admin.id)
+        db.session.add(empty_tenant)
+        db.session.flush()
+        empty_admin.tenant_id = empty_tenant.id
+        db.session.add(
+            TenantTicket(
+                tenant_id=empty_tenant.id,
+                user_id=empty_admin.id,
+                categoria="reclamos",
+                descripcion="Reclamo sin coordenadas",
+                estado="nuevo",
+                origen="web",
+                datos_extra={"title": "Sin geo", "priority": "high", "channel": "web"},
+            )
+        )
+        db.session.commit()
+
+        token = jwt.encode(
+            {
+                "user_id": empty_admin.id,
+                "rol": empty_admin.rol,
+                "tenant_slug": empty_admin.tenant_slug,
+                "exp": datetime.utcnow() + timedelta(hours=1),
+            },
+            self.app.config["SECRET_KEY"],
+            algorithm="HS256",
+        )
+        response = self.client.get(
+            "/api/v2/analytics/operations/heatmap",
+            headers={"Authorization": f"Bearer {token}", "X-Tenant-Slug": empty_tenant.slug},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload.get("contract_version"), "operations.heatmap.v1")
+        self.assertEqual((payload.get("summary") or {}).get("points"), 0)
+        self.assertEqual(payload.get("points"), [])
+        self.assertEqual(payload.get("cells"), [])
+        self.assertEqual(payload.get("hotspots"), [])
+        self.assertFalse((payload.get("render_contract") or {}).get("can_render_heatmap"))
+        self.assertEqual((payload.get("render_contract") or {}).get("state"), "empty")
+
     def test_operations_action_center_returns_prioritized_actions(self):
         response = self.client.get(
             "/api/v2/analytics/operations/action-center",

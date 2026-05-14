@@ -2105,8 +2105,9 @@ def get_heatmap(
     encuesta = get_encuesta(encuesta_id)
     respuestas = _collect_respuestas(encuesta, filtros)
     points, cells = _aggregate_heatmap_cells(respuestas, resolution=resolution)
+    allow_synthetic = bool(_as_bool((filtros or {}).get("allow_synthetic_geo") or (filtros or {}).get("include_synthetic_geo")))
     used_synthetic_points = False
-    if not points and respuestas:
+    if allow_synthetic and not points and respuestas:
         synthetic_points = _build_synthetic_heatmap_points(encuesta, respuestas)
         if synthetic_points:
             points = synthetic_points
@@ -2119,6 +2120,8 @@ def get_heatmap(
             "unique_cells": len(cells),
             "has_coordinates": bool(points),
             "using_synthetic_points": used_synthetic_points,
+            "can_render_heatmap": bool(points or cells),
+            "empty_reason": None if points or cells else "no_real_geo_points",
         }
     )
     points_geojson = build_feature_collection(points)
@@ -2160,6 +2163,8 @@ def get_heatmap(
         "source_keys": ["points", "cells", "metadata.map_layers.heatmap"],
         "chart_hierarchy": ["echarts", "recharts", "plotly"],
         "map_hierarchy": [provider_hint, "maplibre", "google"],
+        "can_render_heatmap": bool(points or cells),
+        "empty_reason": None if points or cells else "no_real_geo_points",
     }
     return {
         "points": points,

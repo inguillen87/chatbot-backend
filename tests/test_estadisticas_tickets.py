@@ -213,24 +213,15 @@ class EstadisticasTicketsRouteTest(unittest.TestCase):
             satisfactorio=None,
         )
 
-    @patch('routes.estadisticas._demo_heatmap')
     @patch('routes.estadisticas.build_stats_for_municipio')
     @patch('routes.estadisticas.servicio_tickets')
-    def test_estadisticas_tickets_usa_fallback_demo_si_no_hay_puntos(
+    def test_estadisticas_tickets_no_inventa_heatmap_si_no_hay_puntos(
         self,
         mock_servicio,
         mock_stats,
-        mock_demo,
     ):
         mock_servicio.obtener_tickets_con_ubicacion_para_mapa.return_value = []
         mock_stats.return_value = {"resumen": {}}
-        mock_demo.return_value = [
-            {
-                "location": {"lat": -33.009, "lng": -68.485},
-                "weight": 5,
-                "fuente": "demo",
-            }
-        ]
         current_user = SimpleNamespace(municipio_id=9, rubro_id=None)
         import routes.estadisticas as estats
 
@@ -239,8 +230,11 @@ class EstadisticasTicketsRouteTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         payload = response.get_json()
-        self.assertEqual(payload["heatmap"], mock_demo.return_value)
-        mock_demo.assert_called_once_with('municipio')
+        self.assertEqual(payload["heatmap"], [])
+        self.assertEqual(payload["heatmap_cells"], [])
+        self.assertEqual(payload["render_contract"]["state"], "empty")
+        self.assertFalse(payload["render_contract"]["can_render_heatmap"])
+        self.assertEqual(payload["metadata"]["map"]["heatmap"]["empty_reason"], "no_real_geo_points")
 
 
 if __name__ == '__main__':

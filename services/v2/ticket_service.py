@@ -6,6 +6,7 @@ import copy
 
 from flask import g, request
 from sqlalchemy import or_
+from sqlalchemy.orm.attributes import flag_modified
 
 from extensions import db
 from models import TenantTicket, User, TicketComentario
@@ -144,6 +145,17 @@ def create_ticket(*, tenant, actor_user: User | None, payload: dict[str, Any]) -
         status = "nuevo"
 
     location = payload.get("location") if isinstance(payload.get("location"), dict) else {}
+    assignee_id = payload.get("assignee_id")
+    if assignee_id not in (None, ""):
+        try:
+            assignee_id = int(assignee_id)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("assignee_id invalido") from exc
+        assignee = User.query.filter_by(id=assignee_id, tenant_id=tenant.id).first()
+        assignee_role = str(getattr(assignee, "rol", "") or "").lower() if assignee else ""
+        is_assignable = bool(getattr(assignee, "es_empleado", False)) or assignee_role in {"empleado", "employee", "admin", "tenant_admin"}
+        if not assignee or not is_assignable:
+            raise ValueError("assignee_not_found")
 
     ticket = TenantTicket(
         tenant_id=tenant.id,
@@ -162,7 +174,7 @@ def create_ticket(*, tenant, actor_user: User | None, payload: dict[str, Any]) -
             "conversation_id": payload.get("conversation_id"),
             "contact": payload.get("contact") if isinstance(payload.get("contact"), dict) else {},
             "address": location.get("address"),
-            "assignee_id": payload.get("assignee_id"),
+            "assignee_id": assignee_id,
             "comments": [],
             "source": payload.get("source") or "api_v2",
         },
@@ -311,6 +323,17 @@ def patch_ticket(*, tenant, actor_user: User | None, ticket: TenantTicket, paylo
     if "assignee_id" in payload:
         previous = extra.get("assignee_id")
         new_assignee = payload.get("assignee_id")
+        if new_assignee not in (None, ""):
+            try:
+                new_assignee_int = int(new_assignee)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("assignee_id invalido") from exc
+            assignee = User.query.filter_by(id=new_assignee_int, tenant_id=tenant.id).first()
+            assignee_role = str(getattr(assignee, "rol", "") or "").lower() if assignee else ""
+            is_assignable = bool(getattr(assignee, "es_empleado", False)) or assignee_role in {"empleado", "employee", "admin", "tenant_admin"}
+            if not assignee or not is_assignable:
+                raise LookupError("assignee_not_found")
+            new_assignee = assignee.id
         if str(previous or "") != str(new_assignee or ""):
             extra["assignee_id"] = new_assignee
             record_ticket_event(
@@ -327,6 +350,7 @@ def patch_ticket(*, tenant, actor_user: User | None, ticket: TenantTicket, paylo
     ticket.datos_extra = extra
     policies = get_policies_for_tenant(tenant)
     apply_sla_to_ticket(ticket, policies, force_recalculate=True)
+    flag_modified(ticket, "datos_extra")
     db.session.add(ticket)
     return ticket
 

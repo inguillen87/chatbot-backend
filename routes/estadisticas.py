@@ -8,7 +8,6 @@ from services.ticket_service import servicio_tickets
 from services.municipal_stats import build_stats_for_municipio, StatsFilters
 from services.metricas_service import MetricasService
 from models import User
-from services.demo_geo import generate_demo_points
 from utils.heatmap import aggregate_heatmap_points, build_feature_collection, enrich_heatmap_points
 from utils.map_config import get_map_config
 from utils.tenant import get_current_tenant, get_current_tenant_profile, get_current_tenant_slug
@@ -185,31 +184,37 @@ def _resolve_tenant_profile_or_error(args) -> object:
     return tenant
 
 
-def _demo_heatmap(scope: str) -> list[dict]:
-    demo_points = generate_demo_points(scope=scope, count=90 if scope == "municipio" else 70)
-    heatmap: list[dict] = []
-    for point in demo_points:
-        weight = point.get("count")
-        if weight is None:
-            total = point.get("total", 0)
-            weight = max(1, int(round(total / 2500))) if total else 1
-        heatmap.append(
-            {
-                "lat": point["lat"],
-                "lng": point["lon"],
-                "location": {"lat": point["lat"], "lng": point["lon"]},
-                "weight": weight,
-                "categoria": point.get("categoria"),
-                "estado": point.get("estado"),
-                "barrio": point.get("barrio"),
-                "fuente": "demo",
+def _mark_empty_heatmap_payload(payload: dict[str, object], *, key: str = "heatmap") -> None:
+    map_config = get_map_config()
+    if map_config:
+        payload.setdefault("map_config", map_config)
+    payload[key] = []
+    payload[f"{key}_cells"] = []
+    payload[f"{key}_geojson"] = {"type": "FeatureCollection", "features": []}
+    payload[f"{key}_cells_geojson"] = {"type": "FeatureCollection", "features": []}
+    metadata = payload.setdefault("metadata", {})
+    if isinstance(metadata, dict):
+        map_metadata = metadata.setdefault("map", {})
+        if isinstance(map_metadata, dict):
+            map_metadata[key] = {
+                "point_count": 0,
+                "cell_count": 0,
+                "can_render_heatmap": False,
+                "empty_reason": "no_real_geo_points",
+                "rendering": {
+                    "recommended_engine": "maplibre-gl",
+                    "supports_animations": False,
+                    "supports_clusters": False,
+                    "supports_heatmap": False,
+                },
             }
-        )
-    enrich_heatmap_points(
-        heatmap,
-        property_keys=("categoria", "estado", "barrio", "fuente"),
-    )
-    return heatmap
+    payload["render_contract"] = {
+        "module": key,
+        "state": "empty",
+        "can_render_heatmap": False,
+        "empty_reason": "no_real_geo_points",
+        "source_keys": [key, f"{key}_cells", f"metadata.map.{key}"],
+    }
 
 
 
@@ -319,7 +324,7 @@ def _augment_heatmap_payload(payload: dict[str, object], *, key: str = "heatmap"
         preferred_format = "geojson"
 
     provider_hint = map_config.get("provider") if isinstance(map_config, dict) else None
-    if not provider_hint or provider_hint == "none":
+    if not provider_hint or provider_hint in {"none", "google"}:
         provider_hint = "maplibre"
 
     layers = payload.setdefault("map_layers", {})
@@ -742,9 +747,6 @@ def estadisticas_dashboard(current_user):
         estado=estado_param,
         satisfactorio=satisfactorio,
     )
-    if not heatmap:
-        heatmap = _demo_heatmap(tipo)
-
     metadata = {
         "municipio_id": municipio_id,
         "rubro_id": rubro_id,
@@ -767,7 +769,10 @@ def estadisticas_dashboard(current_user):
         ),
     }
 
-    _augment_heatmap_payload(payload)
+    if heatmap:
+        _augment_heatmap_payload(payload)
+    else:
+        _mark_empty_heatmap_payload(payload)
 
     if tipo == "municipio":
         if stats_filters:
@@ -890,12 +895,12 @@ def mapa_calor_datos(current_user):
         )
         return jsonify({"error": "server_error", "detail": "Error interno"}), 500
 
-    if not puntos:
-        puntos = _demo_heatmap(tipo_ticket)
-
     payload: dict[str, object] = {"heatmap": puntos}
 
-    _augment_heatmap_payload(payload)
+    if puntos:
+        _augment_heatmap_payload(payload)
+    else:
+        _mark_empty_heatmap_payload(payload)
 
     if tipo_ticket == "municipio":
         if stats_filters:
@@ -1008,11 +1013,14 @@ def estadisticas_tickets(current_user):
         )
         return jsonify({"error": "server_error", "detail": "Error interno"}), 500
 
-    heatmap = puntos or _demo_heatmap(tipo)
+    heatmap = puntos or []
 
     respuesta: dict[str, object] = {"heatmap": heatmap}
 
-    _augment_heatmap_payload(respuesta)
+    if heatmap:
+        _augment_heatmap_payload(respuesta)
+    else:
+        _mark_empty_heatmap_payload(respuesta)
 
     if tipo == "municipio":
         if stats_filters:

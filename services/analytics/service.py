@@ -39,8 +39,6 @@ from .repository import (
     pyme_pedido_query,
     pyme_ticket_query,
 )
-from services.demo_geo import generate_demo_heatmap_cells, generate_demo_points
-
 
 def _filters_cache_key(filters: AnalyticsFilters, *extra: Any) -> Tuple:
     return (
@@ -1046,22 +1044,23 @@ def _geo_heatmap_no_cache(filters: AnalyticsFilters) -> Dict[str, Any]:
         payload = _generate_geo_from_tickets(tickets, filters)
 
     if not payload:
-        demo_cells = generate_demo_heatmap_cells(scope=filters.scope)
         meta = _build_meta(
             empty=True,
-            source="demo",
+            source="database",
             warnings=[
-                "Sin datos georreferenciados para los filtros solicitados; se muestran puntos de ejemplo."
+                "Sin datos georreferenciados reales para los filtros solicitados."
             ],
         )
-        meta["map"] = _map_meta(_style_hint_from_records(demo_cells, weight_key="count"))
+        meta["map"] = _map_meta({})
+        meta["can_render_heatmap"] = False
         return {
-            "cells": _attach_intensity(demo_cells),
+            "cells": [],
             "meta": meta,
             "render_contract": {
                 "module": "heatmap",
-                "state": "demo_fallback",
+                "state": "empty",
                 "source_keys": ["cells", "meta.map"],
+                "empty_reason": "no_real_geo_cells",
             },
         }
     meta["empty"] = False
@@ -1113,24 +1112,23 @@ def _geo_points_no_cache(filters: AnalyticsFilters, limit: int) -> Dict[str, Any
             if pedido.latitud is not None and pedido.longitud is not None
         ]
     if not points:
-        demo_count = limit if limit and limit > 0 else 72
-        demo_count = min(demo_count, 180)
         meta = _build_meta(
             empty=True,
-            source="demo",
+            source="database",
             warnings=[
-                "No hay puntos georreferenciados; se generaron puntos de ejemplo para mantener el mapa operativo."
+                "No hay puntos georreferenciados reales para los filtros solicitados."
             ],
         )
-        demo_points = generate_demo_points(scope=filters.scope, count=demo_count)
-        meta["map"] = _map_meta(_style_hint_from_records(demo_points, weight_key="count"))
+        meta["map"] = _map_meta({})
+        meta["can_render_heatmap"] = False
         return {
-            "points": demo_points,
+            "points": [],
             "meta": meta,
             "render_contract": {
                 "module": "points",
-                "state": "demo_fallback",
+                "state": "empty",
                 "source_keys": ["points", "meta.map"],
+                "empty_reason": "no_real_geo_points",
             },
         }
     meta["empty"] = False

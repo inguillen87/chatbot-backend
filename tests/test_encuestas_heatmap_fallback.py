@@ -16,7 +16,7 @@ class TestConfig(Config):
     SQLALCHEMY_ENGINE_OPTIONS = {"connect_args": {"check_same_thread": False}}
 
 
-def test_heatmap_fallback_generates_synthetic_points_without_coordinates():
+def test_heatmap_without_coordinates_returns_empty_by_default():
     app = create_app(TestConfig)
     with app.app_context():
         db.create_all()
@@ -44,10 +44,19 @@ def test_heatmap_fallback_generates_synthetic_points_without_coordinates():
         db.session.commit()
 
         payload = get_heatmap(encuesta.id)
-        assert payload["points"]
-        assert payload["metadata"]["using_synthetic_points"] is True
-        assert payload["metadata"]["has_coordinates"] is True
-        assert payload["points"][0].get("synthetic") is True
+        assert payload["points"] == []
+        assert payload["cells"] == []
+        assert payload["metadata"]["using_synthetic_points"] is False
+        assert payload["metadata"]["has_coordinates"] is False
+        assert payload["metadata"]["can_render_heatmap"] is False
+        assert payload["metadata"]["empty_reason"] == "no_real_geo_points"
+        assert payload["render_contract"]["state"] == "empty"
+        assert payload["render_contract"]["can_render_heatmap"] is False
+
+        synthetic_payload = get_heatmap(encuesta.id, {"allow_synthetic_geo": True})
+        assert synthetic_payload["points"]
+        assert synthetic_payload["metadata"]["using_synthetic_points"] is True
+        assert synthetic_payload["points"][0].get("synthetic") is True
 
         db.session.remove()
         db.drop_all()

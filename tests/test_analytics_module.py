@@ -177,7 +177,7 @@ def test_geo_heatmap(client):
     assert data['meta']['map']['provider_aliases']['maptiler'] == 'maplibre'
     assert 'available_providers' in data['meta']['map']
     assert data['render_contract']['module'] == 'heatmap'
-    assert data['render_contract']['state'] in {'ready', 'demo_fallback'}
+    assert data['render_contract']['state'] in {'ready', 'empty'}
     assert response.headers.get('X-Request-Id')
     assert 'analytics_geo_heatmap' in (response.headers.get('Server-Timing') or '')
 
@@ -197,7 +197,7 @@ def test_geo_points_contract_headers(client):
     data = response.get_json()
     assert data['points']
     assert data['render_contract']['module'] == 'points'
-    assert data['render_contract']['state'] in {'ready', 'demo_fallback'}
+    assert data['render_contract']['state'] in {'ready', 'empty'}
     assert data['meta']['map']['fallback_provider'] == 'maplibre'
     assert response.headers.get('X-Request-Id')
     assert 'analytics_geo_points' in (response.headers.get('Server-Timing') or '')

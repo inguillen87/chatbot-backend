@@ -92,6 +92,27 @@ class V2TicketsApiTest(unittest.TestCase):
             headers=headers,
         )
         self.assertEqual(resp.status_code, 400)
+        payload = resp.get_json() or {}
+        self.assertEqual(payload.get("contract_version"), "shared.error.v1")
+        self.assertEqual(payload.get("reason_code"), "missing_tenant")
+        self.assertTrue(payload.get("request_id"))
+
+    def test_create_ticket_rejects_cross_tenant_assignee_with_json_contract(self):
+        headers = {**self._auth_header(self.employee), "X-Tenant-Slug": "tenant-1", "X-Request-Id": "ticket-assignee-1"}
+        other_employee = self._create_user("empleado@t2.test", "empleado", tenant_slug="tenant-2", tenant_id=self.tenant_2.id)
+        db.session.commit()
+
+        resp = self.client.post(
+            "/api/v2/tickets",
+            json={"title": "Asignacion", "description": "No debe cruzar tenant", "assignee_id": other_employee.id},
+            headers=headers,
+        )
+
+        self.assertEqual(resp.status_code, 400)
+        payload = resp.get_json() or {}
+        self.assertEqual(payload.get("contract_version"), "shared.error.v1")
+        self.assertEqual(payload.get("reason_code"), "validation_failed")
+        self.assertEqual(payload.get("request_id"), "ticket-assignee-1")
 
     def test_list_does_not_mix_tenants(self):
         headers_t1 = {**self._auth_header(self.employee), "X-Tenant-Slug": "tenant-1"}
@@ -129,6 +150,22 @@ class V2TicketsApiTest(unittest.TestCase):
         events = (events_resp.get_json() or {}).get("items") or []
         types = [e.get("event_type") for e in events]
         self.assertIn("ticket.status_changed", types)
+
+    def test_patch_assigns_employee_and_blocks_cross_tenant_employee(self):
+        headers = {**self._auth_header(self.employee), "X-Tenant-Slug": "tenant-1"}
+        created = self.client.post("/api/v2/tickets", json={"title": "A", "description": "A"}, headers=headers).get_json()
+        ticket_id = created["id"]
+
+        patch = self.client.patch(f"/api/v2/tickets/{ticket_id}", json={"assignee_id": self.employee.id}, headers=headers)
+        self.assertEqual(patch.status_code, 200)
+        patched_payload = patch.get_json() or {}
+        self.assertEqual((patched_payload.get("ticket") or {}).get("assignee_id"), self.employee.id)
+
+        other_employee = self._create_user("empleado-patch@t2.test", "empleado", tenant_slug="tenant-2", tenant_id=self.tenant_2.id)
+        db.session.commit()
+        blocked = self.client.patch(f"/api/v2/tickets/{ticket_id}", json={"assignee_id": other_employee.id}, headers=headers)
+        self.assertEqual(blocked.status_code, 404)
+        self.assertEqual((blocked.get_json() or {}).get("reason_code"), "assignee_not_found")
 
     def test_internal_comment_hidden_for_end_user(self):
         admin_headers = {**self._auth_header(self.admin), "X-Tenant-Slug": "tenant-1"}

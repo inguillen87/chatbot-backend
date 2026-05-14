@@ -674,6 +674,8 @@ def build_operational_heatmap(
         "period": {"from": _iso(start_date), "to": _iso(end_date)},
         "render_contract": {
             "state": "ready" if points else "empty",
+            "can_render_heatmap": bool(points),
+            "empty_reason": None if points else "no_real_geo_points",
             "map_engine": "maplibre",
             "layers": ["tickets", "surveys", "analytics_events"],
             "point_format": {"lat": "number", "lng": "number", "weight": "number"},
@@ -681,6 +683,7 @@ def build_operational_heatmap(
         "summary": {
             "points": len(points),
             "cells": len(cell_items),
+            "can_render_heatmap": bool(points),
             "ticket_points": len([point for point in points if point["source"] == "ticket"]),
             "survey_points": len([point for point in points if point["source"] == "survey"]),
             "event_points": len([point for point in points if point["source"] == "analytics_event"]),

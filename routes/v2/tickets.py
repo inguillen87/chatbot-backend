@@ -100,9 +100,18 @@ def create_ticket_v2():
         db.session.commit()
     except ValueError as exc:
         db.session.rollback()
-        return jsonify({"error": str(exc)}), 400
+        return _error_response(str(exc), 400, "validation_failed", "fix_ticket_payload")
 
-    return jsonify(serialize_ticket(ticket, viewer=_viewer())), 201
+    serialized = serialize_ticket(ticket, viewer=_viewer())
+    return _json_response(
+        {
+            **serialized,
+            "contract_version": "tickets.v2.detail",
+            "ok": True,
+            "ticket": serialized,
+        },
+        201,
+    )
 
 
 @v2_tickets_bp.route("/tickets/<int:ticket_id>", methods=["PATCH"])
@@ -113,17 +122,30 @@ def patch_ticket_v2(ticket_id: int):
 
     ticket = TenantTicket.query.get(ticket_id)
     if not ticket or ticket.tenant_id != tenant.id:
-        return jsonify({"error": "ticket no encontrado"}), 404
+        return _error_response("ticket no encontrado", 404, "ticket_not_found", "refresh_tickets")
 
     payload = request.get_json(silent=True) or {}
     try:
         updated = patch_ticket(tenant=tenant, actor_user=_viewer(), ticket=ticket, payload=payload)
         db.session.commit()
-    except LookupError:
+    except LookupError as exc:
         db.session.rollback()
-        return jsonify({"error": "ticket no encontrado"}), 404
+        if str(exc) == "assignee_not_found":
+            return _error_response("Empleado no encontrado para este tenant", 404, "assignee_not_found", "choose_valid_assignee")
+        return _error_response("ticket no encontrado", 404, "ticket_not_found", "refresh_tickets")
+    except ValueError as exc:
+        db.session.rollback()
+        return _error_response(str(exc), 400, "validation_failed", "fix_ticket_payload")
 
-    return jsonify(serialize_ticket(updated, viewer=_viewer()))
+    serialized = serialize_ticket(updated, viewer=_viewer())
+    return _json_response(
+        {
+            **serialized,
+            "contract_version": "tickets.v2.detail",
+            "ok": True,
+            "ticket": serialized,
+        }
+    )
 
 
 @v2_tickets_bp.route("/tickets/<int:ticket_id>/comments", methods=["POST"])
@@ -134,7 +156,7 @@ def add_ticket_comment_v2(ticket_id: int):
 
     ticket = TenantTicket.query.get(ticket_id)
     if not ticket or ticket.tenant_id != tenant.id:
-        return jsonify({"error": "ticket no encontrado"}), 404
+        return _error_response("ticket no encontrado", 404, "ticket_not_found", "refresh_tickets")
 
     payload = request.get_json(silent=True) or {}
     try:
@@ -148,9 +170,18 @@ def add_ticket_comment_v2(ticket_id: int):
         db.session.commit()
     except ValueError as exc:
         db.session.rollback()
-        return jsonify({"error": str(exc)}), 400
+        return _error_response(str(exc), 400, "validation_failed", "fix_comment_payload")
 
-    return jsonify(serialize_comment(comment)), 201
+    serialized = serialize_comment(comment)
+    return _json_response(
+        {
+            **serialized,
+            "contract_version": "tickets.v2.comment",
+            "ok": True,
+            "comment": serialized,
+        },
+        201,
+    )
 
 
 @v2_tickets_bp.route("/tickets/<int:ticket_id>/events", methods=["GET"])
@@ -161,7 +192,7 @@ def list_ticket_events_v2(ticket_id: int):
 
     ticket = TenantTicket.query.get(ticket_id)
     if not ticket or ticket.tenant_id != tenant.id:
-        return jsonify({"error": "ticket no encontrado"}), 404
+        return _error_response("ticket no encontrado", 404, "ticket_not_found", "refresh_tickets")
 
     events = list_ticket_events(tenant_id=tenant.id, ticket_id=ticket.id)
     items = [
@@ -176,4 +207,4 @@ def list_ticket_events_v2(ticket_id: int):
         }
         for event in events
     ]
-    return jsonify({"items": items})
+    return _json_response({"contract_version": "tickets.v2.events", "items": items})
