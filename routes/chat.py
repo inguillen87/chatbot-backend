@@ -1,5 +1,6 @@
 import sys
 import os
+import hashlib
 import logging
 import random
 import re
@@ -54,6 +55,18 @@ DEMO_MENU_HOME_ACTION = f"{DEMO_MENU_PREFIX}:home"
 DEMO_MENU_ROOT_ID = "demo_menu_root"
 DEMO_SEGMENT_PREFIX = "demo_segment"
 DEMO_LEAD_ACTION_ID = "open_demo_form"
+
+
+def _normalize_chat_session_id(value: str | None) -> str:
+    """Return a stable DB-safe chat session id for varchar(36) storage."""
+
+    candidate = str(value or "").strip()
+    if not candidate:
+        return str(uuid.uuid4())
+    if len(candidate) <= 36:
+        return candidate
+    digest = hashlib.sha256(candidate.encode("utf-8")).hexdigest()[:32]
+    return f"sid_{digest}"
 
 
 def _demo_session_token_from_request() -> str | None:
@@ -1525,10 +1538,15 @@ def _procesar_chat(
     channel = "web"  # Define channel for this processing function
     original_user_payload = None
     # --- Session and Context Initialization ---
-    chat_session_id_header = request.headers.get("X-Chat-Session-Id")
-    if not chat_session_id_header:
-        chat_session_id_header = str(uuid.uuid4())
+    raw_chat_session_id_header = request.headers.get("X-Chat-Session-Id")
+    chat_session_id_header = _normalize_chat_session_id(raw_chat_session_id_header)
+    if not raw_chat_session_id_header:
         current_app.logger.warning(f"X-Chat-Session-Id not found. Generated new: {chat_session_id_header}")
+    elif raw_chat_session_id_header != chat_session_id_header:
+        current_app.logger.info(
+            "Normalized overlong X-Chat-Session-Id to %s",
+            chat_session_id_header,
+        )
 
     def _emit_socket_payload(payload: object) -> None:
         """Emite un mensaje por Socket.IO si hay una sesión web activa."""
@@ -1592,7 +1610,9 @@ def _procesar_chat(
             chat_session_id=chat_session_id_header,
             user_id=getattr(actor_principal, 'id', None),
             anon_id=anon_id if not actor_principal else None,
-            context_data={}
+            context_data={
+                "source_chat_session_id": raw_chat_session_id_header,
+            } if raw_chat_session_id_header and raw_chat_session_id_header != chat_session_id_header else {}
         )
         db.session.add(chat_context_obj)
         try:
@@ -2325,7 +2345,7 @@ def _procesar_chat(
         if isinstance(contexto_chat, dict):
             lead_state = str(contexto_chat.get("demo_lead_capture_state") or "").strip().lower()
             lead_text = _extract_text_value(original_user_payload)
-            lead_chat_session_id = request.headers.get("X-Chat-Session-Id") or str(uuid.uuid4())
+            lead_chat_session_id = _normalize_chat_session_id(request.headers.get("X-Chat-Session-Id"))
             rubro_demo_label = str(
                 contexto_chat.get("demo_display_name")
                 or rubro_para_log
@@ -2532,14 +2552,18 @@ def _procesar_chat(
         analisis_archivo_resultado = None
 
         # Leer el X-Chat-Session-Id del header
-        chat_session_id_header = request.headers.get("X-Chat-Session-Id")
+        raw_chat_session_id_header = request.headers.get("X-Chat-Session-Id")
+        chat_session_id_header = _normalize_chat_session_id(raw_chat_session_id_header)
 
-        if not chat_session_id_header:
+        if not raw_chat_session_id_header:
             # Fallback: Generar un nuevo ID si no viene en el header.
-            # Idealmente, el frontend SIEMPRE debería enviarlo.
-            chat_session_id_header = str(uuid.uuid4())
+            # Idealmente, el frontend SIEMPRE deberia enviarlo.
             current_app.logger.warning(f"X-Chat-Session-Id no encontrado en headers. Generando uno nuevo: {chat_session_id_header}")
-
+        elif raw_chat_session_id_header != chat_session_id_header:
+            current_app.logger.info(
+                "Normalized overlong X-Chat-Session-Id to %s",
+                chat_session_id_header,
+            )
         current_app.logger.info(f"Usando Chat Session ID (from header or generated): {chat_session_id_header}")
 
         # Cargar o crear el contexto de la base de datos
@@ -2551,7 +2575,9 @@ def _procesar_chat(
                 chat_session_id=chat_session_id_header,
                 user_id=getattr(actor_principal, 'id', None), # Asociar con usuario logueado si existe
                 anon_id=anon_id if not actor_principal else None, # Asociar con anon_id si no hay usuario logueado
-                context_data={} # Inicializar con datos vacíos
+                context_data={
+                    "source_chat_session_id": raw_chat_session_id_header,
+                } if raw_chat_session_id_header and raw_chat_session_id_header != chat_session_id_header else {}
             )
             db.session.add(chat_context_obj)
             # No hacer commit aquí todavía, se hará después de procesar el chat
@@ -2864,11 +2890,17 @@ def set_profile_name():
         secure=current_app.config.get("SESSION_COOKIE_SECURE", True),
     )
 
-    chat_session_id = request.headers.get("X-Chat-Session-Id")
+    raw_chat_session_id = request.headers.get("X-Chat-Session-Id")
+    chat_session_id = _normalize_chat_session_id(raw_chat_session_id) if raw_chat_session_id else None
     if chat_session_id:
         chat_context_obj = ChatSessionContext.query.filter_by(chat_session_id=chat_session_id).first()
         if not chat_context_obj:
-            chat_context_obj = ChatSessionContext(chat_session_id=chat_session_id, context_data={})
+            chat_context_obj = ChatSessionContext(
+                chat_session_id=chat_session_id,
+                context_data={
+                    "source_chat_session_id": raw_chat_session_id,
+                } if raw_chat_session_id and raw_chat_session_id != chat_session_id else {},
+            )
             db.session.add(chat_context_obj)
         if chat_context_obj.context_data is None:
             chat_context_obj.context_data = {}
