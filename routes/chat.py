@@ -110,6 +110,32 @@ def _resolve_demo_session_payload() -> dict:
     return payload if isinstance(payload, dict) else {}
 
 
+def _invalid_demo_session_token_from_request() -> str | None:
+    for candidate in _demo_session_token_candidates_from_request():
+        if _is_jwt_token(candidate) and not decode_demo_session_token(candidate):
+            return candidate
+    return None
+
+
+def _demo_session_error_response(reason_code: str, message: str, status_code: int = 400):
+    request_id = request.headers.get("X-Request-Id") or getattr(g, "request_id", None) or uuid.uuid4().hex
+    g.request_id = request_id
+    response = jsonify(
+        {
+            "contract_version": "shared.error.v1",
+            "ok": False,
+            "request_id": request_id,
+            "reason_code": reason_code,
+            "message": message,
+            "retryable": False,
+            "error": {"code": status_code, "message": message},
+        }
+    )
+    response.status_code = status_code
+    response.headers["X-Request-Id"] = request_id
+    return response
+
+
 def _owner_for_tenant_profile(tenant: TenantProfile | None) -> User | None:
     if not tenant:
         return None
@@ -1546,6 +1572,14 @@ def _procesar_chat(
     channel = "web"  # Define channel for this processing function
     original_user_payload = None
     # --- Session and Context Initialization ---
+    invalid_demo_session_token = _invalid_demo_session_token_from_request()
+    if invalid_demo_session_token:
+        return _demo_session_error_response(
+            "demo_session_expired",
+            "La sesion de demo no es valida o vencio. Inicia una demo nueva.",
+            400,
+        )
+
     raw_chat_session_id_header = request.headers.get("X-Chat-Session-Id")
     chat_session_id_header = _normalize_chat_session_id(raw_chat_session_id_header)
     if not raw_chat_session_id_header:

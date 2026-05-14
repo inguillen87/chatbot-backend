@@ -765,7 +765,7 @@ def _admin_preview_for_sector(sector: str, tenant_slug: str = "") -> dict[str, A
             "modules": [
                 {"id": "summary", "label": "Resumen", "enabled": True},
                 {"id": "claims", "label": "Reclamos", "enabled": True},
-                {"id": "heatmap", "label": "Mapa operativo", "enabled": True},
+                {"id": "heatmap", "label": "Mapa operativo", "enabled": False, "empty_state": "Disponible cuando la sesion genere puntos con coordenadas."},
                 {"id": "surveys", "label": "Encuestas", "enabled": True},
             ],
             "cards": [
@@ -822,6 +822,12 @@ def _admin_preview_for_sector(sector: str, tenant_slug: str = "") -> dict[str, A
         "modules": preset["modules"],
         "cards": preset["cards"],
         "timeline": preset["timeline"],
+        "metrics": [],
+        "map": {
+            "enabled": False,
+            "points": [],
+            "empty_state": "Disponible cuando la sesion genere ubicaciones reales.",
+        },
         "session_activity": {
             "contract_version": "demo.session_activity.v1",
             "source": "session_generated_events",

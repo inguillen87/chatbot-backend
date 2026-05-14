@@ -191,9 +191,24 @@ def test_reserved_media_slug_widget_endpoints_degrade_to_json(client):
         assert body["contract_version"] == "public.reserved_slug.v1"
         assert body["reason_code"] == "reserved_public_slug"
         assert body["reserved_slug"] == "media"
+        assert body["slug"] == "media"
         assert body["request_id"]
         assert resp.headers.get("Access-Control-Allow-Origin") == "https://www.chatboc.ar"
         assert resp.headers.get("X-Request-Id")
+
+
+def test_demo_catalogs_reserved_slug_does_not_bootstrap_widget_config(client):
+    resp = client.get(
+        "/api/public/tenants/demo-catalogs/widget-config?tenant_slug=demo-catalogs&tenant=demo-catalogs",
+        headers={"Origin": "https://www.chatboc.ar"},
+    )
+
+    assert resp.status_code == 404
+    body = resp.get_json()
+    assert body["contract_version"] == "public.reserved_slug.v1"
+    assert body["reason_code"] == "reserved_public_slug"
+    assert body["slug"] == "demo-catalogs"
+    assert resp.headers.get("Access-Control-Allow-Origin") == "https://www.chatboc.ar"
 
 
 def test_widget_user_tenant_history_returns_cart_claims_and_orders(client):

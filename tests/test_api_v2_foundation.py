@@ -201,6 +201,9 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertEqual(payload.get("tenant_slug"), "colegio-demo")
         self.assertTrue(payload.get("modules"))
         self.assertTrue(payload.get("cards"))
+        self.assertEqual(payload.get("metrics"), [])
+        self.assertEqual((payload.get("map") or {}).get("enabled"), False)
+        self.assertEqual((payload.get("map") or {}).get("points"), [])
         self.assertEqual((payload.get("session_activity") or {}).get("has_session_data"), False)
         self.assertEqual((payload.get("operations") or {}).get("data_policy"), "session_events_only")
         self.assertEqual((payload.get("sales_story") or {}).get("contract_version"), "demo.sales_story.v1")
@@ -460,6 +463,23 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertLessEqual(len(contexts[0].chat_session_id), 36)
         self.assertNotEqual(contexts[0].chat_session_id, demo_session_id)
         self.assertEqual((contexts[0].context_data or {}).get("demo_session_id"), demo_session_id)
+
+    def test_ask_invalid_demo_session_returns_json_error(self):
+        invalid_demo_session_id = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.invalid.signature"
+
+        resp = self.client.post(
+            f"/api/ask/municipio?tenant_slug=municipio&demo_session_id={invalid_demo_session_id}",
+            json={"pregunta": "hola", "demo_mode": True, "tenant_slug": "municipio"},
+            headers={"Origin": "https://www.chatboc.ar", "X-Request-Id": "invalid-demo-session-1"},
+        )
+
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.headers.get("X-Request-Id"), "invalid-demo-session-1")
+        payload = resp.get_json()
+        self.assertEqual(payload.get("contract_version"), "shared.error.v1")
+        self.assertFalse(payload.get("ok"))
+        self.assertEqual(payload.get("reason_code"), "demo_session_expired")
+        self.assertIn("request_id", payload)
 
     def test_demo_chat_alias_returns_chat_response_contract_with_lead_shape(self):
         owner = User(name="Colegio Demo", email="colegio-chat-contract@test.com", password_hash="hash", tipo_chat="pyme")

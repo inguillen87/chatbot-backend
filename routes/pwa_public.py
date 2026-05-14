@@ -38,7 +38,22 @@ pwa_public_bp = Blueprint("pwa_public", __name__, url_prefix="/api/pwa/public")
 public_api_bp = Blueprint("public_api", __name__, url_prefix="/api/public")
 pwa_tenant_info_bp = Blueprint("pwa_tenant_info", __name__)
 
-RESERVED_PUBLIC_SLUGS = {"media", "static", "assets", "public", "demo", "casos", "precios"}
+RESERVED_PUBLIC_SLUGS = {
+    "media",
+    "static",
+    "assets",
+    "public",
+    "demo",
+    "demo-catalogs",
+    "casos",
+    "precios",
+    "sectores",
+    "colegios",
+    "municipios",
+    "gobiernos",
+    "empresas",
+    "pymes",
+}
 
 
 def _request_id() -> str:
@@ -58,6 +73,7 @@ def _reserved_public_slug_response(slug: object):
             "contract_version": "public.reserved_slug.v1",
             "ok": False,
             "reserved_slug": normalized,
+            "slug": normalized,
             "reason_code": "reserved_public_slug",
             "action_hint": "Use /demo, /api/v2/demo/catalog or a real tenant_slug.",
             "request_id": request_id,

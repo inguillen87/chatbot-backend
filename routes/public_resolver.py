@@ -2248,11 +2248,13 @@ def capture_public_lead():
         return _lead_error_response(
             "nombre/email/telefono requerido",
             400,
-            "validation_error",
+            "validation_failed",
             "send_name_email_or_phone",
-            required_fields=["nombre", "email", "telefono"],
+            required_fields=["name", "phone"],
             field_errors={
                 "contact": "Enviar al menos nombre, email o telefono para registrar el lead.",
+                "name": "required_without_email_or_phone",
+                "phone": "required_without_name_or_email",
             },
         )
 
@@ -2414,6 +2416,10 @@ def capture_public_lead():
             if tenant
             else None,
             "lead_id": f"lead_{lead_ticket.id}" if lead_ticket else None,
+            "lead": {
+                "id": f"lead_{lead_ticket.id}" if lead_ticket else None,
+                "status": "created" if lead_ticket else "captured_without_tenant",
+            },
             "ticket_id": lead_ticket.id if lead_ticket else None,
             "ticket_type": "tenant_ticket" if lead_ticket else None,
             "status": "nuevo" if lead_ticket else "captured_without_tenant",

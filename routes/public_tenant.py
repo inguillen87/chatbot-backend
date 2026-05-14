@@ -28,6 +28,7 @@ public_tenant_bp = Blueprint('public_tenant_bp', __name__)
 
 RESERVED_PUBLIC_SLUGS = {
     "demo",
+    "demo-catalogs",
     "casos",
     "casos-de-uso",
     "use-cases",
@@ -73,6 +74,7 @@ def _reserved_slug_payload(slug: object) -> dict:
         "contract_version": "public.reserved_slug.v1",
         "ok": False,
         "reserved_slug": _normalize_public_slug(slug),
+        "slug": _normalize_public_slug(slug),
         "reason_code": "reserved_public_slug",
         "action_hint": "Use /demo, /api/v2/demo/catalog or a real tenant_slug.",
     }
