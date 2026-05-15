@@ -78,15 +78,27 @@ def _resolve_tenant_or_error(current_user):
     return tenant, None
 
 
-def _date_range():
+def _date_range(default_days: int = 7):
     now = datetime.utcnow()
-    default_start = now - timedelta(days=7)
+    default_start = now - timedelta(days=default_days)
 
     from_str = request.args.get("from")
     to_str = request.args.get("to")
+    range_mode = (request.args.get("range") or request.args.get("scope") or "").strip().lower()
+    days_str = request.args.get("days")
 
     start_date = default_start
     end_date = now
+
+    if days_str:
+        try:
+            days = max(1, min(int(days_str), 3650))
+            start_date = now - timedelta(days=days)
+        except ValueError:
+            pass
+
+    if range_mode in {"all", "historical", "historico"}:
+        start_date = datetime(1970, 1, 1)
 
     if from_str:
         try:
@@ -101,6 +113,25 @@ def _date_range():
             pass
 
     return start_date, end_date
+
+
+def _csv_values(*names: str) -> list[str]:
+    values: list[str] = []
+    for name in names:
+        for raw in request.args.getlist(name):
+            values.extend(part.strip() for part in str(raw or "").split(",") if part.strip())
+    return values
+
+
+def _heatmap_segment_filters() -> dict[str, list[str]]:
+    filters = {
+        "category": _csv_values("categoria", "categorias", "category", "categories"),
+        "gender": _csv_values("genero", "gender", "sexo"),
+        "age_range": _csv_values("rango_edad", "age_range", "edad", "age"),
+        "source": _csv_values("source", "fuente"),
+        "channel": _csv_values("channel", "canal"),
+    }
+    return {key: value for key, value in filters.items() if value}
 
 
 @v2_analytics_bp.route("/overview", methods=["GET"])
@@ -225,8 +256,8 @@ def operations_heatmap_v2(current_user):
     if error:
         return error
 
-    start_date, end_date = _date_range()
-    payload = build_operational_heatmap(tenant, start_date, end_date)
+    start_date, end_date = _date_range(default_days=365)
+    payload = build_operational_heatmap(tenant, start_date, end_date, segment_filters=_heatmap_segment_filters())
     return _json_response(payload)
 
 

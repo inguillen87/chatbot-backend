@@ -82,6 +82,22 @@ Endpoint:
 
 `GET /api/v2/analytics/operations/heatmap`
 
+Filtros soportados:
+
+- `days`: ventana movil en dias, hasta 3650.
+- `range=all` / `scope=historical`: usa historico completo disponible, con limite de puntos del backend.
+- `categoria` / `category`
+- `genero` / `gender` / `sexo`
+- `rango_edad` / `age_range`
+- `source`
+- `channel` / `canal`
+
+Los filtros aceptan valores separados por coma o parametros repetidos. Ejemplo:
+
+`GET /api/v2/analytics/operations/heatmap?categoria=reclamos&genero=femenino&rango_edad=60_plus`
+
+`GET /api/v2/analytics/operations/heatmap?range=all&source=tickets`
+
 Contrato:
 
 ```json
@@ -93,21 +109,57 @@ Contrato:
     "state": "ready",
     "map_engine": "maplibre",
     "layers": ["tickets", "surveys", "analytics_events"],
-    "point_format": { "lat": "number", "lng": "number", "weight": "number" }
+    "point_format": { "lat": "number", "lng": "number", "weight": "number" },
+    "segment_filters": ["categoria", "genero", "rango_edad", "source", "channel"],
+    "category_layers": true,
+    "demographics_source": "metadata_fields_only"
   },
   "summary": {
     "points": 0,
     "cells": 0,
     "ticket_points": 0,
     "survey_points": 0,
-    "event_points": 0
+    "event_points": 0,
+    "points_with_gender": 0,
+    "points_with_age": 0,
+    "unknown_gender_points": 0,
+    "unknown_age_points": 0,
+    "filtered": false
   },
+  "applied_filters": {},
+  "segments": {
+    "category": [],
+    "gender": [],
+    "age_range": [],
+    "channel": [],
+    "source": []
+  },
+  "demographics": {
+    "source": "real_metadata_only",
+    "gender": [],
+    "age_ranges": [],
+    "known_gender_points": 0,
+    "known_age_points": 0,
+    "unknown_gender_points": 0,
+    "unknown_age_points": 0
+  },
+  "category_layers": [],
   "bounds": {},
   "points": [],
   "cells": [],
   "hotspots": []
 }
 ```
+
+Reglas de datos:
+
+- El mapa solo usa coordenadas reales de tickets/reclamos, respuestas de encuestas y eventos analytics.
+- Para municipios, el mapa incluye reclamos nuevos por `tenant_id` y reclamos historicos por `municipio_id` del tenant. Esto evita perder bases legacy como Junin.
+- La ventana default del heatmap es 365 dias. Para historico completo, frontend debe mandar `range=all` o `scope=historical`.
+- Categoria, canal, fuente, genero y rango etario salen de columnas o metadata existentes. Si genero/edad no existen, backend devuelve `unknown`.
+- Backend no expone edad exacta por punto geolocalizado; normaliza a rangos (`menor_18`, `18_24`, `25_34`, `35_44`, `45_59`, `60_plus`) para reducir riesgo de identificacion.
+- Frontend debe mostrar `unknown` como "sin dato" y no inventar edad, genero, barrio, categoria ni intensidad.
+- `category_layers[]` permite renderizar capas por categoria sin hardcodear nombres del frontend.
 
 ### Action center
 

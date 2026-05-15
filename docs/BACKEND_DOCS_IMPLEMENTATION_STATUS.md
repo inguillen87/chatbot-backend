@@ -283,7 +283,9 @@ Mejora aditiva para analytics, tickets/reclamos, WhatsApp, chats en vivo, emplea
 - `GET /api/v2/analytics/operations/action-center` devuelve `contract_version: operations.action_center.v1`.
 - `GET /api/v2/analytics/operations/freshness` devuelve `contract_version: operations.freshness.v1` con estado por fuente (`fresh`, `stale`, `empty`) para dashboards y mapas degradables.
 - El dashboard une `TenantTicket`, `MunicipioTicket`, `PymeTicket`, `AnalyticsEventV2`, `ChatSessionContext`, `TicketRealtimeState`, `EncEncuesta`, `EncRespuesta`, `PublicSurvey`, `PublicSurveyResponse` y empleados `User`.
-- Heatmap combina capas `tickets`, `surveys` y `analytics_events`, con `points`, `cells`, `hotspots`, `bounds` y `render_contract` para MapLibre.
+- Heatmap combina capas `tickets`, `surveys` y `analytics_events`, con `points`, `cells`, `hotspots`, `bounds`, `category_layers`, `segments` y `render_contract` para MapLibre.
+- `GET /api/v2/analytics/operations/heatmap` soporta filtros reales por `categoria/category`, `genero/gender/sexo`, `rango_edad/age_range`, `source` y `channel/canal`; genero y edad salen de metadata/columnas existentes y quedan como `unknown` cuando no estan capturados.
+- En municipios, el heatmap agrega reclamos por `tenant_id` y legacy por `municipio_id` del tenant, con default 365 dias y soporte `days=N` / `range=all` para analizar historico amplio de bases como Junin.
 - `trends` compara el periodo actual contra el periodo anterior del mismo tamano.
 - `next_best_actions` recomienda acciones proactivas: revisar vencidos, asignar tickets, cubrir empleados, impulsar votaciones, monitorear WhatsApp, revisar handoffs e inspeccionar hotspots.
 

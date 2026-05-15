@@ -8,7 +8,7 @@ os.environ.setdefault("FLASK_SKIP_GLOBAL_APP", "1")
 
 from app import create_app, db
 from config import Config
-from models import AnalyticsEventV2, ChatSessionContext, EncEncuesta, EncRespuesta, TenantProfile, TenantTicket, TicketRealtimeState, User
+from models import AnalyticsEventV2, ChatSessionContext, EncEncuesta, EncRespuesta, MunicipioTicket, TenantProfile, TenantTicket, TicketRealtimeState, User
 
 
 class V2OperationalAnalyticsTestConfig(Config):
@@ -28,12 +28,12 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         db.create_all()
         self.client = self.app.test_client()
 
-        self.admin = User(name="ops-admin", email="ops-admin@test.com", rol="admin", tenant_slug="ops-tenant")
-        self.admin.set_password("secret123")
+        self.admin = User(name="Mauricio Junin", email="mauricio@junin.com", rol="admin", tenant_slug="junin")
+        self.admin.set_password("123456")
         db.session.add(self.admin)
         db.session.flush()
 
-        self.tenant = TenantProfile(slug="ops-tenant", nombre="Ops Tenant", tipo="municipio", municipio_id=self.admin.id)
+        self.tenant = TenantProfile(slug="junin", nombre="Municipalidad de Junin", tipo="municipio", municipio_id=self.admin.id)
         db.session.add(self.tenant)
         db.session.flush()
         self.admin.tenant_id = self.tenant.id
@@ -68,10 +68,44 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
                 "assignee_id": self.employee.id,
                 "sla_status": "breached",
                 "zone": "centro",
+                "genero": "femenino",
+                "edad": 67,
             },
         )
         db.session.add(self.ticket)
         db.session.flush()
+        db.session.add(
+            MunicipioTicket(
+                municipio_id=self.admin.id,
+                tenant_id=None,
+                pregunta="Arbol caido sobre calle municipal",
+                asunto="Arbol caido",
+                categoria="arbolado",
+                estado="nuevo",
+                canal_ingreso="whatsapp",
+                distrito="Centro",
+                latitud=-34.6034,
+                longitud=-58.3812,
+                detalles='{"genero": "no_binario", "edad": 45}',
+                fecha=now,
+            )
+        )
+        db.session.add(
+            MunicipioTicket(
+                municipio_id=self.admin.id,
+                tenant_id=None,
+                pregunta="Reclamo historico con ubicacion",
+                asunto="Reclamo historico",
+                categoria="historico",
+                estado="cerrado",
+                canal_ingreso="web",
+                distrito="La Colonia",
+                latitud=-34.61,
+                longitud=-58.39,
+                detalles='{"genero": "femenino", "edad": 39}',
+                fecha=now - timedelta(days=800),
+            )
+        )
 
         encuesta = EncEncuesta(
             tenant_id=self.tenant.id,
@@ -93,6 +127,9 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
                 lng=-58.382,
                 canal="widget",
                 barrio="Centro",
+                genero="masculino",
+                edad=34,
+                metadata_payload={"categoria": "votacion_plaza"},
                 submitted_at=now,
             )
         )
@@ -103,6 +140,7 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
                 channel="whatsapp",
                 event_name="message_in",
                 session_id="session-ops",
+                metadata_payload={"categoria": "consulta", "gender": "femenino", "age": 22},
                 lat=-34.6038,
                 lng=-58.3817,
                 ts=now,
@@ -160,7 +198,7 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertEqual(payload.get("contract_version"), "operations.dashboard.v1")
         self.assertEqual(payload.get("request_id"), "ops-dashboard-1")
         self.assertEqual(response.headers.get("X-Request-Id"), "ops-dashboard-1")
-        self.assertEqual((payload.get("summary") or {}).get("open_tickets"), 1)
+        self.assertEqual((payload.get("summary") or {}).get("open_tickets"), 2)
         self.assertEqual((payload.get("summary") or {}).get("overdue_tickets"), 1)
         self.assertEqual((payload.get("surveys") or {}).get("summary", {}).get("votaciones_live"), 1)
         self.assertEqual((payload.get("chats") or {}).get("summary", {}).get("whatsapp_messages"), 1)
@@ -176,12 +214,99 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.get_json()
         self.assertEqual(payload.get("contract_version"), "operations.heatmap.v1")
-        self.assertEqual((payload.get("summary") or {}).get("ticket_points"), 1)
-        self.assertGreaterEqual((payload.get("summary") or {}).get("points"), 3)
+        self.assertEqual((payload.get("summary") or {}).get("ticket_points"), 2)
+        self.assertGreaterEqual((payload.get("summary") or {}).get("points"), 4)
         self.assertTrue(payload.get("cells"))
         self.assertIn("tickets", (payload.get("render_contract") or {}).get("layers") or [])
         self.assertIn("surveys", (payload.get("render_contract") or {}).get("layers") or [])
         self.assertIn("analytics_events", (payload.get("render_contract") or {}).get("layers") or [])
+        self.assertTrue(payload.get("category_layers"))
+        self.assertEqual((payload.get("demographics") or {}).get("source"), "real_metadata_only")
+        self.assertGreaterEqual((payload.get("summary") or {}).get("points_with_gender"), 3)
+        self.assertGreaterEqual((payload.get("summary") or {}).get("points_with_age"), 3)
+
+        categories = {item.get("key") for item in (payload.get("segments") or {}).get("category") or []}
+        genders = {item.get("key") for item in (payload.get("segments") or {}).get("gender") or []}
+        age_ranges = {item.get("key") for item in (payload.get("segments") or {}).get("age_range") or []}
+        self.assertIn("reclamos", categories)
+        self.assertIn("arbolado", categories)
+        self.assertIn("votacion_plaza", categories)
+        self.assertIn("consulta", categories)
+        self.assertIn("femenino", genders)
+        self.assertIn("masculino", genders)
+        self.assertIn("no_binario", genders)
+        self.assertIn("18_24", age_ranges)
+        self.assertIn("25_34", age_ranges)
+        self.assertIn("45_59", age_ranges)
+        self.assertIn("60_plus", age_ranges)
+
+    def test_operations_heatmap_filters_by_demographics(self):
+        response = self.client.get(
+            "/api/v2/analytics/operations/heatmap?genero=femenino&edad=22",
+            headers=self._auth(),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual((payload.get("summary") or {}).get("points"), 1)
+        self.assertTrue((payload.get("summary") or {}).get("filtered"))
+        self.assertEqual((payload.get("applied_filters") or {}).get("gender"), ["femenino"])
+        self.assertEqual((payload.get("applied_filters") or {}).get("age_range"), ["18_24"])
+        point = (payload.get("points") or [])[0]
+        self.assertEqual(point.get("category"), "consulta")
+        self.assertEqual(point.get("gender"), "femenino")
+        self.assertEqual(point.get("age_range"), "18_24")
+        self.assertNotIn("age", point)
+
+    def test_operations_heatmap_filters_by_category_and_source_alias(self):
+        response = self.client.get(
+            "/api/v2/analytics/operations/heatmap?categoria=reclamos&source=tickets",
+            headers=self._auth(),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual((payload.get("summary") or {}).get("points"), 1)
+        point = (payload.get("points") or [])[0]
+        self.assertEqual(point.get("category"), "reclamos")
+        self.assertEqual(point.get("source"), "ticket")
+        self.assertEqual((payload.get("applied_filters") or {}).get("category"), ["reclamos"])
+        self.assertEqual((payload.get("applied_filters") or {}).get("source"), ["tickets"])
+
+    def test_operations_heatmap_includes_legacy_municipio_owner_tickets(self):
+        response = self.client.get(
+            "/api/v2/analytics/operations/heatmap?categoria=arbolado&source=tickets",
+            headers=self._auth(),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual((payload.get("summary") or {}).get("points"), 1)
+        point = (payload.get("points") or [])[0]
+        self.assertEqual(point.get("record_source"), "municipio_ticket")
+        self.assertEqual(point.get("category"), "arbolado")
+        self.assertEqual(point.get("gender"), "no_binario")
+        self.assertEqual(point.get("age_range"), "45_59")
+
+    def test_operations_heatmap_can_use_full_historical_range(self):
+        default_response = self.client.get(
+            "/api/v2/analytics/operations/heatmap?categoria=historico&source=tickets",
+            headers=self._auth(),
+        )
+        self.assertEqual(default_response.status_code, 200)
+        self.assertEqual((default_response.get_json().get("summary") or {}).get("points"), 0)
+
+        response = self.client.get(
+            "/api/v2/analytics/operations/heatmap?range=all&categoria=historico&source=tickets",
+            headers=self._auth(),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual((payload.get("summary") or {}).get("points"), 1)
+        point = (payload.get("points") or [])[0]
+        self.assertEqual(point.get("category"), "historico")
+        self.assertEqual(point.get("age_range"), "35_44")
 
     def test_operations_heatmap_empty_without_real_coordinates(self):
         empty_admin = User(name="empty-admin", email="empty-admin@test.com", rol="admin", tenant_slug="empty-tenant")
@@ -261,7 +386,7 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertIn("tickets", sources)
         self.assertIn("analytics_events", sources)
         self.assertIn("heatmap", sources)
-        self.assertEqual(sources["tickets"].get("period_count"), 1)
+        self.assertEqual(sources["tickets"].get("period_count"), 2)
         self.assertGreaterEqual(sources["heatmap"].get("period_count"), 1)
         self.assertEqual((payload.get("frontend_contract") or {}).get("render_as"), "analytics_freshness")
 

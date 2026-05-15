@@ -3,6 +3,9 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Any
+import json
+
+from sqlalchemy import or_
 
 from models import (
     AnalyticsEventV2,
@@ -96,6 +99,152 @@ def _priority_weight(priority: str, status: str) -> float:
     return round(priority_score.get(_norm(priority, "normal"), 1.0) * status_score, 2)
 
 
+def _json_object(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+        except (TypeError, ValueError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _first_value(data: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in data and data.get(key) not in (None, ""):
+            return data.get(key)
+    return None
+
+
+def _normalize_gender(value: Any) -> str:
+    raw = _norm(value, "unknown")
+    mapping = {
+        "f": "femenino",
+        "female": "femenino",
+        "fem": "femenino",
+        "mujer": "femenino",
+        "femenino": "femenino",
+        "m": "masculino",
+        "male": "masculino",
+        "masc": "masculino",
+        "hombre": "masculino",
+        "masculino": "masculino",
+        "nb": "no_binario",
+        "non_binary": "no_binario",
+        "no_binario": "no_binario",
+        "no binario": "no_binario",
+    }
+    return mapping.get(raw, raw if raw else "unknown")
+
+
+def _age_range(age: Any, explicit_range: Any = None, birth_year: Any = None) -> str:
+    explicit = _norm(explicit_range, "")
+    if explicit:
+        return explicit
+    try:
+        age_int = int(age) if age not in (None, "") else None
+    except (TypeError, ValueError):
+        age_int = None
+    if age_int is None and birth_year not in (None, ""):
+        try:
+            age_int = datetime.now(timezone.utc).year - int(birth_year)
+        except (TypeError, ValueError):
+            age_int = None
+    if age_int is None:
+        return "unknown"
+    if age_int < 18:
+        return "menor_18"
+    if age_int < 25:
+        return "18_24"
+    if age_int < 35:
+        return "25_34"
+    if age_int < 45:
+        return "35_44"
+    if age_int < 60:
+        return "45_59"
+    return "60_plus"
+
+
+def _demographics_from_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    profile = _json_object(metadata.get("demographics")) or _json_object(metadata.get("perfil_demografico"))
+    merged = {**metadata, **profile}
+    age = _first_value(merged, "edad", "age")
+    gender = _first_value(merged, "genero", "gender", "sexo")
+    age_range = _age_range(age, _first_value(merged, "rango_edad", "age_range", "rango_etario"), _first_value(merged, "anio_nacimiento", "birth_year"))
+    return {
+        "gender": _normalize_gender(gender),
+        "age": int(age) if str(age or "").strip().isdigit() else None,
+        "age_range": age_range,
+        "source": "metadata" if gender is not None or age is not None or age_range != "unknown" else "missing",
+    }
+
+
+def _segment_items(counter: Counter, *, limit: int = 20) -> list[dict[str, Any]]:
+    total = sum(int(value or 0) for value in counter.values())
+    items = []
+    for key, count in counter.most_common(limit):
+        value = int(count or 0)
+        items.append(
+            {
+                "key": key,
+                "label": key,
+                "count": value,
+                "share": round((value / total) * 100, 2) if total else 0.0,
+            }
+        )
+    return items
+
+
+def _normalize_filter_values(values: Any) -> set[str]:
+    if isinstance(values, str):
+        values = [item.strip() for item in values.split(",")]
+    if not isinstance(values, list):
+        return set()
+    return {_norm(item, "") for item in values if _norm(item, "")}
+
+
+def _normalize_age_range_filter_values(values: Any) -> set[str]:
+    normalized = set()
+    for value in _normalize_filter_values(values):
+        normalized.add(_age_range(value) if value.isdigit() else value)
+    return normalized
+
+
+def _normalized_heatmap_filter_values(key: str, values: Any) -> set[str]:
+    return _normalize_age_range_filter_values(values) if key == "age_range" else _normalize_filter_values(values)
+
+
+def _point_matches_filters(point: dict[str, Any], filters: dict[str, Any]) -> bool:
+    filter_map = {
+        "category": point.get("category"),
+        "gender": point.get("gender"),
+        "age_range": point.get("age_range"),
+        "source": point.get("source"),
+        "channel": point.get("channel"),
+    }
+    for key, raw_values in (filters or {}).items():
+        allowed = _normalized_heatmap_filter_values(key, raw_values)
+        if not allowed:
+            continue
+        if key == "source":
+            source_allowed = set(allowed)
+            aliases = {
+                "tickets": "ticket",
+                "surveys": "survey",
+                "analytics_events": "analytics_event",
+                "events": "analytics_event",
+            }
+            source_allowed.update(aliases.get(value, value) for value in allowed)
+            if _norm(filter_map.get(key), "") not in source_allowed:
+                return False
+            continue
+        if _norm(filter_map.get(key), "") not in allowed:
+            return False
+    return True
+
+
 def _tenant_ticket_record(ticket: TenantTicket) -> dict[str, Any]:
     extra = _as_dict(ticket.datos_extra)
     status = _norm(ticket.estado, "nuevo")
@@ -113,6 +262,7 @@ def _tenant_ticket_record(ticket: TenantTicket) -> dict[str, Any]:
         "zone": _norm(extra.get("zone") or extra.get("zona") or extra.get("address"), "sin_zona"),
         "lat": ticket.latitud,
         "lng": ticket.longitud,
+        "demographics": _demographics_from_metadata(extra),
         "created_at": getattr(ticket, "created_at", None),
         "updated_at": getattr(ticket, "updated_at", None),
         "overdue": status in _OVERDUE_STATES or _norm(extra.get("sla_status") or extra.get("sla_state"), "") in _OVERDUE_STATES,
@@ -122,6 +272,7 @@ def _tenant_ticket_record(ticket: TenantTicket) -> dict[str, Any]:
 def _municipio_ticket_record(ticket: MunicipioTicket) -> dict[str, Any]:
     status = _norm(ticket.estado, "nuevo")
     channel = _norm(getattr(ticket, "canal_ingreso", None), "web")
+    details = _json_object(getattr(ticket, "detalles", None))
     return {
         "source": "municipio_ticket",
         "id": ticket.id,
@@ -134,6 +285,7 @@ def _municipio_ticket_record(ticket: MunicipioTicket) -> dict[str, Any]:
         "zone": _norm(ticket.distrito or ticket.direccion, "sin_zona"),
         "lat": ticket.latitud,
         "lng": ticket.longitud,
+        "demographics": _demographics_from_metadata(details),
         "created_at": ticket.fecha,
         "updated_at": ticket.ultima_actividad or ticket.fecha,
         "overdue": status in _OVERDUE_STATES,
@@ -154,6 +306,7 @@ def _pyme_ticket_record(ticket: PymeTicket) -> dict[str, Any]:
         "zone": "sin_zona",
         "lat": None,
         "lng": None,
+        "demographics": {"gender": "unknown", "age": None, "age_range": "unknown", "source": "missing"},
         "created_at": ticket.fecha,
         "updated_at": ticket.fecha,
         "overdue": status in _OVERDUE_STATES,
@@ -166,13 +319,21 @@ def _collect_ticket_records(tenant: TenantProfile, start_date: datetime, end_dat
     tenant_tickets = _between(TenantTicket.query.filter_by(tenant_id=tenant.id), TenantTicket.created_at, start_date, end_date).all()
     records.extend(_tenant_ticket_record(ticket) for ticket in tenant_tickets)
 
-    municipio_tickets = _between(MunicipioTicket.query.filter_by(tenant_id=tenant.id), MunicipioTicket.fecha, start_date, end_date).all()
+    municipio_tickets = _between(_municipio_ticket_query(tenant), MunicipioTicket.fecha, start_date, end_date).all()
     records.extend(_municipio_ticket_record(ticket) for ticket in municipio_tickets)
 
     pyme_tickets = _between(PymeTicket.query.filter_by(tenant_id=tenant.id), PymeTicket.fecha, start_date, end_date).all()
     records.extend(_pyme_ticket_record(ticket) for ticket in pyme_tickets)
 
     return records
+
+
+def _municipio_ticket_query(tenant: TenantProfile):
+    conditions = [MunicipioTicket.tenant_id == tenant.id]
+    municipio_id = getattr(tenant, "municipio_id", None)
+    if municipio_id:
+        conditions.append(MunicipioTicket.municipio_id == municipio_id)
+    return MunicipioTicket.query.filter(or_(*conditions))
 
 
 def _ticket_metrics(records: list[dict[str, Any]]) -> dict[str, Any]:
@@ -429,7 +590,7 @@ def build_operational_freshness(tenant: TenantProfile, start_date: datetime, end
     ticket_records = _collect_ticket_records(tenant, start_date, end_date)
     ticket_latest = _max_datetime(
         _latest_from_query(TenantTicket.query.filter_by(tenant_id=tenant.id), TenantTicket.created_at),
-        _latest_from_query(MunicipioTicket.query.filter_by(tenant_id=tenant.id), MunicipioTicket.fecha),
+        _latest_from_query(_municipio_ticket_query(tenant), MunicipioTicket.fecha),
         _latest_from_query(PymeTicket.query.filter_by(tenant_id=tenant.id), PymeTicket.fecha),
     )
 
@@ -564,67 +725,94 @@ def build_operational_heatmap(
     *,
     ticket_records: list[dict[str, Any]] | None = None,
     max_points: int = 1000,
+    segment_filters: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     records = ticket_records if ticket_records is not None else _collect_ticket_records(tenant, start_date, end_date)
     points: list[dict[str, Any]] = []
+    filters = segment_filters or {}
 
     for record in records:
         if record.get("lat") is None or record.get("lng") is None:
             continue
-        points.append(
-            {
-                "source": "ticket",
-                "id": f"{record['source']}:{record['id']}",
-                "lat": float(record["lat"]),
-                "lng": float(record["lng"]),
-                "weight": _priority_weight(record["priority"], record["status"]),
-                "category": record["category"],
-                "channel": record["channel"],
-                "status": record["status"],
-                "label": record["title"],
-                "timestamp": _iso(record.get("created_at")),
-            }
-        )
+        demographics = _as_dict(record.get("demographics"))
+        point = {
+            "source": "ticket",
+            "record_source": record["source"],
+            "id": f"{record['source']}:{record['id']}",
+            "lat": float(record["lat"]),
+            "lng": float(record["lng"]),
+            "weight": _priority_weight(record["priority"], record["status"]),
+            "category": record["category"],
+            "channel": record["channel"],
+            "status": record["status"],
+            "label": record["title"],
+            "timestamp": _iso(record.get("created_at")),
+            "gender": demographics.get("gender") or "unknown",
+            "age_range": demographics.get("age_range") or "unknown",
+            "demographics_source": demographics.get("source") or "missing",
+        }
+        if _point_matches_filters(point, filters):
+            points.append(point)
 
     survey_responses = _between(EncRespuesta.query.filter_by(tenant_id=tenant.id), EncRespuesta.submitted_at, start_date, end_date).filter(
         EncRespuesta.lat.isnot(None),
         EncRespuesta.lng.isnot(None),
     ).limit(max_points).all()
     for response in survey_responses:
-        points.append(
+        metadata = _as_dict(response.metadata_payload)
+        demographics = _demographics_from_metadata(
             {
-                "source": "survey",
-                "id": f"survey_response:{response.id}",
-                "lat": float(response.lat),
-                "lng": float(response.lng),
-                "weight": 0.8,
-                "category": "survey_response",
-                "channel": _norm(response.canal, "survey"),
-                "status": "submitted",
-                "label": response.barrio or response.ciudad or "Respuesta de encuesta",
-                "timestamp": _iso(response.submitted_at),
+                **metadata,
+                "genero": response.genero,
+                "edad": response.edad,
+                "rango_etario": response.rango_etario,
+                "anio_nacimiento": response.anio_nacimiento,
             }
         )
+        point = {
+            "source": "survey",
+            "record_source": "survey_response",
+            "id": f"survey_response:{response.id}",
+            "lat": float(response.lat),
+            "lng": float(response.lng),
+            "weight": 0.8,
+            "category": _norm(metadata.get("categoria") or metadata.get("category"), "survey_response"),
+            "channel": _norm(response.canal, "survey"),
+            "status": "submitted",
+            "label": response.barrio or response.ciudad or "Respuesta de encuesta",
+            "timestamp": _iso(response.submitted_at),
+            "gender": demographics.get("gender") or "unknown",
+            "age_range": demographics.get("age_range") or "unknown",
+            "demographics_source": demographics.get("source") or "missing",
+        }
+        if _point_matches_filters(point, filters):
+            points.append(point)
 
     events = _between(AnalyticsEventV2.query.filter_by(tenant_id=tenant.id), AnalyticsEventV2.ts, start_date, end_date).filter(
         AnalyticsEventV2.lat.isnot(None),
         AnalyticsEventV2.lng.isnot(None),
     ).limit(max_points).all()
     for event in events:
-        points.append(
-            {
-                "source": "analytics_event",
-                "id": f"analytics_event:{event.id}",
-                "lat": float(event.lat),
-                "lng": float(event.lng),
-                "weight": 0.6,
-                "category": _norm(event.event_name, "event"),
-                "channel": _norm(event.channel, "unknown"),
-                "status": "event",
-                "label": event.event_name,
-                "timestamp": _iso(event.ts),
-            }
-        )
+        metadata = _as_dict(event.metadata_payload)
+        demographics = _demographics_from_metadata(metadata)
+        point = {
+            "source": "analytics_event",
+            "record_source": "analytics_event",
+            "id": f"analytics_event:{event.id}",
+            "lat": float(event.lat),
+            "lng": float(event.lng),
+            "weight": 0.6,
+            "category": _norm(metadata.get("categoria") or metadata.get("category") or event.event_name, "event"),
+            "channel": _norm(event.channel, "unknown"),
+            "status": "event",
+            "label": event.event_name,
+            "timestamp": _iso(event.ts),
+            "gender": demographics.get("gender") or "unknown",
+            "age_range": demographics.get("age_range") or "unknown",
+            "demographics_source": demographics.get("source") or "missing",
+        }
+        if _point_matches_filters(point, filters):
+            points.append(point)
 
     points = points[:max_points]
     cells: dict[str, dict[str, Any]] = {}
@@ -640,12 +828,18 @@ def build_operational_heatmap(
                 "count": 0,
                 "sources": Counter(),
                 "categories": Counter(),
+                "channels": Counter(),
+                "genders": Counter(),
+                "age_ranges": Counter(),
             },
         )
         cell["weight"] += float(point.get("weight") or 1.0)
         cell["count"] += 1
         cell["sources"][point["source"]] += 1
         cell["categories"][point["category"]] += 1
+        cell["channels"][point.get("channel") or "unknown"] += 1
+        cell["genders"][point.get("gender") or "unknown"] += 1
+        cell["age_ranges"][point.get("age_range") or "unknown"] += 1
 
     cell_items = []
     for cell in cells.values():
@@ -658,15 +852,47 @@ def build_operational_heatmap(
                 "count": cell["count"],
                 "sources": _counter(cell["sources"], limit=5),
                 "top_categories": _counter(cell["categories"], limit=5),
+                "top_channels": _counter(cell["channels"], limit=5),
+                "demographics": {
+                    "gender": _segment_items(cell["genders"], limit=5),
+                    "age_ranges": _segment_items(cell["age_ranges"], limit=5),
+                },
             }
         )
     cell_items.sort(key=lambda item: (item["weight"], item["count"]), reverse=True)
+
+    category_counter = Counter(point.get("category") or "unknown" for point in points)
+    gender_counter = Counter(point.get("gender") or "unknown" for point in points)
+    age_range_counter = Counter(point.get("age_range") or "unknown" for point in points)
+    channel_counter = Counter(point.get("channel") or "unknown" for point in points)
+    source_counter = Counter(point.get("source") or "unknown" for point in points)
+
+    category_layers = []
+    for category, count in category_counter.most_common(20):
+        category_points = [point for point in points if point.get("category") == category]
+        category_layers.append(
+            {
+                "key": category,
+                "label": category,
+                "count": int(count),
+                "weight": round(sum(float(point.get("weight") or 1.0) for point in category_points), 2),
+                "points": category_points[:100],
+            }
+        )
 
     bounds = None
     if points:
         lats = [point["lat"] for point in points]
         lngs = [point["lng"] for point in points]
         bounds = {"north": max(lats), "south": min(lats), "east": max(lngs), "west": min(lngs)}
+
+    normalized_filters = {
+        key: sorted(_normalized_heatmap_filter_values(key, value))
+        for key, value in filters.items()
+        if _normalized_heatmap_filter_values(key, value)
+    }
+    points_with_gender = len([point for point in points if point.get("gender") not in (None, "unknown")])
+    points_with_age = len([point for point in points if point.get("age_range") not in (None, "unknown")])
 
     return {
         "contract_version": "operations.heatmap.v1",
@@ -679,6 +905,9 @@ def build_operational_heatmap(
             "map_engine": "maplibre",
             "layers": ["tickets", "surveys", "analytics_events"],
             "point_format": {"lat": "number", "lng": "number", "weight": "number"},
+            "segment_filters": ["categoria", "genero", "rango_edad", "source", "channel"],
+            "category_layers": True,
+            "demographics_source": "metadata_fields_only",
         },
         "summary": {
             "points": len(points),
@@ -687,7 +916,30 @@ def build_operational_heatmap(
             "ticket_points": len([point for point in points if point["source"] == "ticket"]),
             "survey_points": len([point for point in points if point["source"] == "survey"]),
             "event_points": len([point for point in points if point["source"] == "analytics_event"]),
+            "points_with_gender": points_with_gender,
+            "points_with_age": points_with_age,
+            "unknown_gender_points": len(points) - points_with_gender,
+            "unknown_age_points": len(points) - points_with_age,
+            "filtered": bool(normalized_filters),
         },
+        "applied_filters": normalized_filters,
+        "segments": {
+            "category": _segment_items(category_counter),
+            "gender": _segment_items(gender_counter),
+            "age_range": _segment_items(age_range_counter),
+            "channel": _segment_items(channel_counter),
+            "source": _segment_items(source_counter),
+        },
+        "demographics": {
+            "source": "real_metadata_only",
+            "gender": _segment_items(gender_counter),
+            "age_ranges": _segment_items(age_range_counter),
+            "known_gender_points": points_with_gender,
+            "known_age_points": points_with_age,
+            "unknown_gender_points": len(points) - points_with_gender,
+            "unknown_age_points": len(points) - points_with_age,
+        },
+        "category_layers": category_layers,
         "bounds": bounds,
         "points": points,
         "cells": cell_items,
