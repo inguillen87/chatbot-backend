@@ -4,6 +4,7 @@ from models import (
     Categoria,
     MunicipioTicket,
     PymeTicket,
+    TenantProfile,
     TicketComentario,
     User,
     db,
@@ -12,9 +13,11 @@ from routes.auth import token_requerido, solo_admin_requerido
 from services.logic import es_rubro_publico
 import uuid
 from datetime import datetime, timedelta
-from sqlalchemy import func
+from sqlalchemy import func, or_
+from sqlalchemy.orm.attributes import flag_modified
 from routes.ticket import TICKET_ALLOWED_STATES
 from services.categorias_municipio import CATEGORIAS_RECLAMO
+from services.employee_routing import normalize_scope_list, tenant_open_ticket_snapshots, tenant_operational_dimensions
 
 def _normalize_categorias_input(categorias_raw):
     """Normaliza una lista de categorías proveniente del frontend.
@@ -74,6 +77,58 @@ def _serialize_empleado_categorias(user: User) -> tuple[list[dict], list[str]]:
         for nombre in categorias_limpias
     ]
     return serializadas, categorias_limpias
+
+
+def _tenant_for_current_user(current_user: User) -> TenantProfile | None:
+    if getattr(current_user, "tenant_id", None):
+        tenant = db.session.get(TenantProfile, current_user.tenant_id)
+        if tenant:
+            return tenant
+    if getattr(current_user, "tipo_chat", None) == "municipio":
+        return TenantProfile.query.filter(
+            or_(
+                TenantProfile.municipio_id == current_user.id,
+                TenantProfile.id == getattr(current_user, "municipio_id", None),
+            )
+        ).first()
+    if getattr(current_user, "tipo_chat", None) in {"pyme", "empresa"}:
+        return TenantProfile.query.filter_by(pyme_id=current_user.id).first()
+    return TenantProfile.query.filter_by(slug=getattr(current_user, "tenant_slug", None)).first()
+
+
+def _employee_scope_payload(
+    categorias: list[str] | None,
+    *,
+    scope_raw: dict | None = None,
+    default_channels: list[str] | None = None,
+) -> dict:
+    scope_raw = scope_raw if isinstance(scope_raw, dict) else {}
+    return {
+        "categorias": normalize_scope_list(scope_raw.get("categorias") or scope_raw.get("categories") or categorias or []),
+        "zonas": normalize_scope_list(scope_raw.get("zonas") or scope_raw.get("zones")),
+        "channels": normalize_scope_list(scope_raw.get("channels") or scope_raw.get("canales") or default_channels or ["web", "whatsapp"]),
+        "permisos": normalize_scope_list(scope_raw.get("permisos") or scope_raw.get("permissions") or ["tickets_read", "tickets_update"]),
+    }
+
+
+def _sync_employee_scope(user: User, categorias: list[str] | None, scope_raw: dict | None = None) -> dict:
+    data = user.accesibilidad if isinstance(user.accesibilidad, dict) else {}
+    data["employee_scope"] = _employee_scope_payload(categorias, scope_raw=scope_raw)
+    user.accesibilidad = data
+    user.categorias_lista = data["employee_scope"]["categorias"]
+    flag_modified(user, "accesibilidad")
+    return data["employee_scope"]
+
+
+def _empleados_query(current_user: User):
+    tenant = _tenant_for_current_user(current_user)
+    ownership_filters = [User.empresa_id == current_user.id]
+    if tenant:
+        ownership_filters.append(User.tenant_id == tenant.id)
+    return User.query.filter(
+        or_(*ownership_filters),
+        or_(User.rol == "empleado", User.es_empleado.is_(True)),
+    )
 
 
 def _resolver_categorias_municipio(
@@ -157,11 +212,7 @@ empleados_bp = Blueprint('empleados', __name__, url_prefix='/empleados')
 @solo_admin_requerido
 def listar_empleados(current_user: User):
     """Lista los empleados asociados al usuario actual."""
-    empleados = (
-        User.query.filter_by(empresa_id=current_user.id, rol='empleado')
-        .order_by(User.name.asc())
-        .all()
-    )
+    empleados = _empleados_query(current_user).order_by(User.name.asc()).all()
     datos = []
     fecha_inicio_mes = datetime.utcnow() - timedelta(days=30)
     ticket_query_base, TicketModel = _build_ticket_query_for_owner(current_user)
@@ -193,9 +244,13 @@ def listar_empleados(current_user: User):
             "name": e.name or "",
             "email": e.email or "",
             "rol": e.rol,
+            "tenant_id": e.tenant_id,
+            "tenant_slug": e.tenant_slug,
+            "es_empleado": bool(e.es_empleado),
             # Evitamos valores None en la lista de categorías
             "categorias": categorias_serializadas,
             "categoria_ids": [c["id"] for c in categorias_serializadas if c.get("id")],
+            "scope": (e.accesibilidad or {}).get("employee_scope") if isinstance(e.accesibilidad, dict) else {},
             "tickets_respondidos_mes": tickets_respondidos_mes,
             "tickets_abiertos_categoria": open_tickets,
         })
@@ -256,6 +311,10 @@ def obtener_categorias_empleado(current_user: User):
                 CatalogoItem.categoria
             ).distinct()
             categorias_set.update(item[0] for item in catalogo_categorias if item and item[0])
+        tenant = _tenant_for_current_user(current_user)
+        if tenant:
+            dimensiones = tenant_operational_dimensions(tenant, tenant_open_ticket_snapshots(tenant))
+            categorias_set.update(dimensiones.get("categorias") or [])
     except Exception:
         # Si hay algún problema consultando la base, devolvemos las categorías
         # base en lugar de propagar un error al frontend.
@@ -300,12 +359,17 @@ def crear_empleado(current_user: User):
         return jsonify({"error": "Datos inválidos"}), 400
     if User.query.filter_by(email=email.strip().lower()).first():
         return jsonify({"error": "Email ya registrado"}), 400
+    tenant = _tenant_for_current_user(current_user)
+    scope_raw = data.get("scope") if isinstance(data.get("scope"), dict) else {}
     nuevo = User(
         name=name.strip(),
         email=email.strip().lower(),
         token=str(uuid.uuid4()),
         rol='empleado',
         empresa_id=current_user.id,
+        tenant_id=tenant.id if tenant else None,
+        tenant_slug=tenant.slug if tenant else current_user.tenant_slug,
+        es_empleado=True,
         tipo_chat=current_user.tipo_chat
         or (
             "municipio" if es_rubro_publico(current_user.rubro) else "pyme"
@@ -314,6 +378,7 @@ def crear_empleado(current_user: User):
     )
     if categorias_db:
         nuevo.categorias = categorias_db
+    _sync_employee_scope(nuevo, categorias_normalizadas or [], scope_raw)
     nuevo.set_password(password)
     db.session.add(nuevo)
     try:
@@ -330,13 +395,16 @@ def crear_empleado(current_user: User):
         "rol": nuevo.rol,
         "categorias": categorias_serializadas,
         "categoria_ids": [c["id"] for c in categorias_serializadas if c.get("id")],
+        "scope": (nuevo.accesibilidad or {}).get("employee_scope") if isinstance(nuevo.accesibilidad, dict) else {},
+        "tenant_id": nuevo.tenant_id,
+        "tenant_slug": nuevo.tenant_slug,
     }), 201
 
 @empleados_bp.route('/<int:emp_id>/historial', methods=['GET'])
 @token_requerido
 @solo_admin_requerido
 def historial_empleado(current_user: User, emp_id: int):
-    empleado = User.query.filter_by(id=emp_id, empresa_id=current_user.id, rol='empleado').first()
+    empleado = _empleados_query(current_user).filter(User.id == emp_id).first()
     if not empleado:
         return jsonify({'error': 'Empleado no encontrado o no pertenece a su empresa'}), 404
 
@@ -377,7 +445,7 @@ def historial_empleado(current_user: User, emp_id: int):
 @solo_admin_requerido
 def obtener_empleado(current_user: User, emp_id: int):
     """Devuelve los datos de un empleado específico."""
-    empleado = User.query.filter_by(id=emp_id, empresa_id=current_user.id, rol='empleado').first()
+    empleado = _empleados_query(current_user).filter(User.id == emp_id).first()
     if not empleado:
         return jsonify({"error": "Empleado no encontrado"}), 404
 
@@ -409,6 +477,7 @@ def obtener_empleado(current_user: User, emp_id: int):
         "rol": empleado.rol,
         "categorias": categorias_serializadas,
         "categoria_ids": [c["id"] for c in categorias_serializadas if c.get("id")],
+        "scope": (empleado.accesibilidad or {}).get("employee_scope") if isinstance(empleado.accesibilidad, dict) else {},
         "tickets_respondidos_mes": tickets_respondidos_mes,
         "tickets_abiertos_categoria": open_tickets,
     })
@@ -419,7 +488,7 @@ def obtener_empleado(current_user: User, emp_id: int):
 @solo_admin_requerido
 def actualizar_empleado(current_user: User, emp_id: int):
     """Actualiza los datos básicos de un empleado."""
-    empleado = User.query.filter_by(id=emp_id, empresa_id=current_user.id, rol='empleado').first()
+    empleado = _empleados_query(current_user).filter(User.id == emp_id).first()
     if not empleado:
         return jsonify({"error": "Empleado no encontrado"}), 404
     data = request.get_json(silent=True) or {}
@@ -450,6 +519,8 @@ def actualizar_empleado(current_user: User, emp_id: int):
         empleado.ticket_categorias = ",".join(categorias_norm or [])
         if categorias_db:
             empleado.categorias = categorias_db
+        scope_raw = data.get("scope") if isinstance(data.get("scope"), dict) else None
+        _sync_employee_scope(empleado, categorias_norm or [], scope_raw)
     try:
         db.session.commit()
     except Exception:
@@ -479,6 +550,7 @@ def actualizar_empleado(current_user: User, emp_id: int):
         "rol": empleado.rol,
         "categorias": categorias_serializadas,
         "categoria_ids": [c["id"] for c in categorias_serializadas if c.get("id")],
+        "scope": (empleado.accesibilidad or {}).get("employee_scope") if isinstance(empleado.accesibilidad, dict) else {},
         "tickets_abiertos_categoria": open_tickets,
     })
 
@@ -488,7 +560,7 @@ def actualizar_empleado(current_user: User, emp_id: int):
 @solo_admin_requerido
 def eliminar_empleado(current_user: User, emp_id: int):
     """Elimina un empleado de la empresa."""
-    empleado = User.query.filter_by(id=emp_id, empresa_id=current_user.id, rol='empleado').first()
+    empleado = _empleados_query(current_user).filter(User.id == emp_id).first()
     if not empleado:
         return jsonify({"error": "Empleado no encontrado"}), 404
     db.session.delete(empleado)
@@ -498,4 +570,3 @@ def eliminar_empleado(current_user: User, emp_id: int):
         db.session.rollback()
         return jsonify({"error": "Error al eliminar"}), 500
     return jsonify({"mensaje": "Empleado eliminado"})
-

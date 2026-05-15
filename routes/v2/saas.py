@@ -33,7 +33,9 @@ from services.employee_routing import (
     employee_ref,
     find_ticket_for_assignment,
     normalize_scope_list,
+    tenant_open_ticket_snapshots,
     tenant_operational_dimensions,
+    workload_by_employee,
 )
 from services.catalog_quality import build_catalog_quality_payload
 from services.demo_sandbox_contract import build_demo_whatsapp_sandbox_contract, sandbox_context_from_contract
@@ -216,17 +218,8 @@ def _employee_workload(tenant_id: int, employee_id: int) -> int:
 
 def _coverage_items(tenant: TenantProfile) -> dict[str, Any]:
     employees = User.query.filter_by(tenant_id=tenant.id, es_empleado=True).order_by(User.id.asc()).all()
-    open_tickets = _open_tickets(tenant.id)
-    ticket_snapshots = [
-        {
-            "category": str(ticket.categoria or "sin_categoria").strip().lower(),
-            "zone": str(_ticket_extra(ticket).get("zone") or _ticket_extra(ticket).get("zona") or _ticket_extra(ticket).get("address") or "sin_zona")
-            .strip()
-            .lower(),
-            "channel": _ticket_channel(ticket),
-        }
-        for ticket in open_tickets
-    ]
+    ticket_snapshots = tenant_open_ticket_snapshots(tenant)
+    workloads = workload_by_employee(tenant)
     supported_dimensions = tenant_operational_dimensions(tenant, ticket_snapshots)
 
     categories = sorted(set(supported_dimensions["categorias"]) | {item["category"] for item in ticket_snapshots if item["category"] != "sin_categoria"})
@@ -268,7 +261,7 @@ def _coverage_items(tenant: TenantProfile) -> dict[str, Any]:
                 "email": emp.email,
                 "roles": [getattr(emp, "rol", None)] if getattr(emp, "rol", None) else [],
                 "scope": scope,
-                "workload_open_tickets": _employee_workload(tenant.id, emp.id),
+                "workload_open_tickets": workloads.get(emp.id, 0),
                 "coverage_score": normalized_score,
             }
         )
@@ -303,7 +296,7 @@ def _coverage_items(tenant: TenantProfile) -> dict[str, Any]:
         },
         "summary": {
             "employees": len(employees),
-            "open_tickets": len(open_tickets),
+            "open_tickets": len(ticket_snapshots),
             "coverage_rate": coverage_rate,
             "covered_dimensions": covered_dimensions,
             "total_dimensions": total_dimensions,

@@ -14,6 +14,7 @@ from models import (
     CatalogoItem,
     EncEncuesta,
     EncRespuesta,
+    MunicipioTicket,
     MunicipioPost,
     Notification,
     NotificationTemplate,
@@ -289,6 +290,79 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertIn("web", payload["coverage"]["channels"])
         self.assertIn("municipio_baseline_taxonomy", payload["coverage"]["dimension_sources"]["categorias"])
         self.assertTrue(any(alert["reason_code"] == "no_employees" for alert in payload["alerts"]))
+
+    def test_employee_routing_includes_legacy_municipio_tickets_by_owner(self):
+        owner = User(name="Owner Municipio Legacy", email="owner-muni-legacy@test.com", rol="admin", tipo_chat="municipio", tenant_slug="muni-legacy")
+        owner.set_password("secret123")
+        db.session.add(owner)
+        db.session.flush()
+
+        tenant = TenantProfile(
+            slug="muni-legacy",
+            nombre="Municipio Legacy",
+            tipo="municipio",
+            municipio_id=owner.id,
+        )
+        db.session.add(tenant)
+        db.session.flush()
+        owner.tenant_id = tenant.id
+
+        employee = User(
+            name="Alumbrado",
+            email="alumbrado@test.com",
+            rol="empleado",
+            tenant_id=tenant.id,
+            tenant_slug=tenant.slug,
+            es_empleado=True,
+            accesibilidad={
+                "employee_scope": {
+                    "categorias": ["alumbrado"],
+                    "zonas": ["centro"],
+                    "channels": ["whatsapp"],
+                    "permisos": ["tickets_assign"],
+                }
+            },
+        )
+        employee.set_password("secret123")
+        db.session.add(employee)
+        db.session.flush()
+
+        ticket = MunicipioTicket(
+            pregunta="Poste sin luz",
+            asunto="Alumbrado publico",
+            categoria="alumbrado",
+            municipio_id=owner.id,
+            tenant_id=None,
+            estado="nuevo",
+            direccion="Plaza principal",
+            distrito="centro",
+            canal_ingreso="whatsapp",
+        )
+        db.session.add(ticket)
+        db.session.commit()
+
+        response = self.client.get(
+            f"/api/v2/tenants/{tenant.slug}/employee-routing",
+            headers={**self._auth(owner), "X-Tenant-Slug": tenant.slug, "X-Request-Id": "routing-legacy-muni-1"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        legacy_item = next(item for item in payload["queues"]["open"] if item["source_model"] == "MunicipioTicket" and item["id"] == ticket.id)
+        self.assertEqual(legacy_item["category"], "alumbrado")
+        recommendation = next(item for item in payload["recommendations"] if item["ticket"]["id"] == ticket.id)
+        self.assertEqual(recommendation["suggested_assignee"]["id"], employee.id)
+
+        assign_response = self.client.post(
+            f"/api/v2/tenants/{tenant.slug}/employee-routing/auto-assign",
+            json={"dry_run": False, "tickets": [{"source_model": "MunicipioTicket", "id": ticket.id}]},
+            headers={**self._auth(owner), "X-Tenant-Slug": tenant.slug, "X-Request-Id": "assign-legacy-muni-1"},
+        )
+
+        self.assertEqual(assign_response.status_code, 200)
+        self.assertEqual(assign_response.get_json()["applied_count"], 1)
+        refreshed = db.session.get(MunicipioTicket, ticket.id)
+        self.assertEqual(refreshed.asignado_a_id, employee.id)
 
     def test_employee_routing_contract_scope_update_and_auto_assign(self):
         unassigned = TenantTicket(

@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
+from sqlalchemy import or_
+
 from models import CatalogoItem, CategoriaTicket, MunicipioTicket, PymeTicket, TenantProfile, TenantTicket, User
 from services.categorias_municipio import CATEGORIAS_RECLAMO
 from services.education_contracts import education_case_taxonomy, is_education_tenant
@@ -239,6 +241,30 @@ def _ticket_snapshot(ticket: Any) -> dict[str, Any]:
     }
 
 
+def municipio_ticket_query_for_tenant(tenant: TenantProfile):
+    conditions = []
+    if getattr(tenant, "id", None):
+        conditions.append(MunicipioTicket.tenant_id == tenant.id)
+    if getattr(tenant, "municipio_id", None):
+        conditions.append(MunicipioTicket.municipio_id == tenant.municipio_id)
+    if not conditions:
+        return MunicipioTicket.query.filter(False)
+    return MunicipioTicket.query.filter(or_(*conditions))
+
+
+def pyme_ticket_query_for_tenant(tenant: TenantProfile):
+    conditions = []
+    if getattr(tenant, "id", None):
+        conditions.append(PymeTicket.tenant_id == tenant.id)
+    owner = User.query.get(getattr(tenant, "pyme_id", None)) if getattr(tenant, "pyme_id", None) else None
+    rubro_id = getattr(owner, "rubro_id", None)
+    if rubro_id:
+        conditions.append(PymeTicket.rubro_id == rubro_id)
+    if not conditions:
+        return PymeTicket.query.filter(False)
+    return PymeTicket.query.filter(or_(*conditions))
+
+
 def _tenant_tickets(tenant: TenantProfile) -> list[Any]:
     tickets: list[Any] = [
         ticket
@@ -247,15 +273,19 @@ def _tenant_tickets(tenant: TenantProfile) -> list[Any]:
     ]
     tickets.extend(
         ticket
-        for ticket in MunicipioTicket.query.filter_by(tenant_id=tenant.id).all()
+        for ticket in municipio_ticket_query_for_tenant(tenant).all()
         if _open(ticket.estado)
     )
     tickets.extend(
         ticket
-        for ticket in PymeTicket.query.filter_by(tenant_id=tenant.id).all()
+        for ticket in pyme_ticket_query_for_tenant(tenant).all()
         if _open(ticket.estado)
     )
     return tickets
+
+
+def tenant_open_ticket_snapshots(tenant: TenantProfile) -> list[dict[str, Any]]:
+    return [_ticket_snapshot(ticket) for ticket in _tenant_tickets(tenant)]
 
 
 def workload_by_employee(tenant: TenantProfile) -> dict[int, int]:
@@ -320,7 +350,7 @@ def best_employee_for_ticket(ticket: dict[str, Any], employees: list[User], work
 def build_employee_routing_payload(tenant: TenantProfile) -> dict[str, Any]:
     employees = User.query.filter_by(tenant_id=tenant.id, es_empleado=True).order_by(User.id.asc()).all()
     workloads = workload_by_employee(tenant)
-    tickets = [_ticket_snapshot(ticket) for ticket in _tenant_tickets(tenant)]
+    tickets = tenant_open_ticket_snapshots(tenant)
     unassigned = [ticket for ticket in tickets if not ticket.get("assignee_id")]
     supported_dimensions = tenant_operational_dimensions(tenant, tickets)
 
@@ -387,7 +417,7 @@ def find_ticket_for_assignment(tenant: TenantProfile, source_model: str, ticket_
     if source == "TenantTicket":
         return TenantTicket.query.filter_by(id=ticket_id, tenant_id=tenant.id).first()
     if source == "MunicipioTicket":
-        return MunicipioTicket.query.filter_by(id=ticket_id, tenant_id=tenant.id).first()
+        return municipio_ticket_query_for_tenant(tenant).filter(MunicipioTicket.id == ticket_id).first()
     if source == "PymeTicket":
-        return PymeTicket.query.filter_by(id=ticket_id, tenant_id=tenant.id).first()
+        return pyme_ticket_query_for_tenant(tenant).filter(PymeTicket.id == ticket_id).first()
     return None

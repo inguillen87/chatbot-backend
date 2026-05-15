@@ -1,7 +1,7 @@
 from flask import Blueprint, request, jsonify, g, current_app
 import requests
 import uuid
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm.attributes import flag_modified
 from datetime import datetime, timezone, timedelta
 
@@ -41,6 +41,11 @@ from services.tenant_resolver import apply_tenant_alias
 from services.live_chat_schedule import build_live_chat_status, build_schedule_from_config
 from services.operational_scoring import build_ticket_priority_score
 from services.ticket_realtime_state import build_ticket_collaboration_state
+from services.employee_routing import (
+    normalize_scope_list,
+    tenant_operational_dimensions,
+    workload_by_employee,
+)
 
 admin_tenant_bp = Blueprint('admin_tenant_bp', __name__)
 
@@ -471,10 +476,13 @@ def _build_tenant_heatmap_summary_payload(tenant: TenantProfile, *, limit_points
 
 
 def _build_employee_coverage_payload(tenant: TenantProfile) -> dict:
-    category_map = {}
-    zone_map = {}
+    supported_dimensions = tenant_operational_dimensions(tenant)
+    category_map = {categoria: [] for categoria in supported_dimensions.get('categorias', [])}
+    zone_map = {zona: [] for zona in supported_dimensions.get('zonas', [])}
+    channel_map = {channel: [] for channel in supported_dimensions.get('channels', [])}
     permission_map = {}
     employees = []
+    workloads = workload_by_employee(tenant)
 
     for emp in User.query.filter_by(tenant_id=tenant.id, es_empleado=True).all():
         scope = _employee_scope(emp)
@@ -483,22 +491,44 @@ def _build_employee_coverage_payload(tenant: TenantProfile) -> dict:
             'name': emp.name,
             'email': emp.email,
             'scope': scope,
+            'workload_open_tickets': workloads.get(emp.id, 0),
         })
         for categoria in scope.get('categorias', []):
             category_map.setdefault(categoria, []).append({'employee_id': emp.id, 'name': emp.name})
         for zona in scope.get('zonas', []):
             zone_map.setdefault(zona, []).append({'employee_id': emp.id, 'name': emp.name})
+        for channel in scope.get('channels', []):
+            channel_map.setdefault(channel, []).append({'employee_id': emp.id, 'name': emp.name})
         for permiso in scope.get('permisos', []):
             permission_map.setdefault(permiso, []).append({'employee_id': emp.id, 'name': emp.name})
+
+    total_dimensions = len(category_map) + len(zone_map) + len(channel_map)
+    covered_dimensions = (
+        sum(1 for value in category_map.values() if value)
+        + sum(1 for value in zone_map.values() if value)
+        + sum(1 for value in channel_map.values() if value)
+    )
 
     return {
         'tenant_id': tenant.id,
         'tenant_slug': tenant.slug,
         'employees': employees,
+        'supported_dimensions': supported_dimensions,
         'coverage': {
             'categorias': category_map,
             'zonas': zone_map,
+            'channels': channel_map,
             'permisos': permission_map,
+            'dimension_sources': supported_dimensions.get('sources') or {},
+            'uncovered_categories': [key for key, value in category_map.items() if not value],
+            'uncovered_zones': [key for key, value in zone_map.items() if not value],
+            'uncovered_channels': [key for key, value in channel_map.items() if not value],
+        },
+        'summary': {
+            'employees': len(employees),
+            'coverage_rate': round((covered_dimensions / total_dimensions) * 100, 2) if total_dimensions else 100.0,
+            'covered_dimensions': covered_dimensions,
+            'total_dimensions': total_dimensions,
         },
     }
 
@@ -1192,21 +1222,36 @@ def _employee_scope(emp: User) -> dict:
     categorias = scope.get('categorias') if isinstance(scope.get('categorias'), list) else []
     zonas = scope.get('zonas') if isinstance(scope.get('zonas'), list) else []
     permisos = scope.get('permisos') if isinstance(scope.get('permisos'), list) else []
+    channels = scope.get('channels') if isinstance(scope.get('channels'), list) else []
+    if not categorias and getattr(emp, "ticket_categorias", None):
+        categorias = normalize_scope_list(emp.ticket_categorias)
     return {
-        'categorias': [str(c).strip() for c in categorias if str(c).strip()][:30],
-        'zonas': [str(z).strip() for z in zonas if str(z).strip()][:30],
-        'permisos': [str(p).strip() for p in permisos if str(p).strip()][:30],
+        'categorias': normalize_scope_list(categorias),
+        'zonas': normalize_scope_list(zonas),
+        'permisos': normalize_scope_list(permisos),
+        'channels': normalize_scope_list(channels),
     }
 
 
-def _set_employee_scope(emp: User, *, categorias: list[str], zonas: list[str], permisos: list[str]) -> None:
+def _set_employee_scope(
+    emp: User,
+    *,
+    categorias: list[str],
+    zonas: list[str],
+    permisos: list[str],
+    channels: list[str] | None = None,
+) -> None:
     data = emp.accesibilidad if isinstance(emp.accesibilidad, dict) else {}
+    categorias_norm = normalize_scope_list(categorias)
     data['employee_scope'] = {
-        'categorias': categorias,
-        'zonas': zonas,
-        'permisos': permisos,
+        'categorias': categorias_norm,
+        'zonas': normalize_scope_list(zonas),
+        'permisos': normalize_scope_list(permisos),
+        'channels': normalize_scope_list(channels or []),
     }
     emp.accesibilidad = data
+    emp.categorias_lista = categorias_norm
+    flag_modified(emp, "accesibilidad")
 
 
 def _scope_match_score(*, categoria: str, zona: str, scope: dict) -> int:
@@ -1224,13 +1269,22 @@ def _scope_match_score(*, categoria: str, zona: str, scope: dict) -> int:
 
 def _employee_open_workload(tenant_id: int, employee_id: int) -> int:
     active_states = {'nuevo', 'pendiente', 'en_proceso'}
+    tenant = db.session.get(TenantProfile, tenant_id)
+    municipio_conditions = [MunicipioTicket.tenant_id == tenant_id]
+    pyme_conditions = [PymeTicket.tenant_id == tenant_id]
+    if tenant and getattr(tenant, "municipio_id", None):
+        municipio_conditions.append(MunicipioTicket.municipio_id == tenant.municipio_id)
+    if tenant and getattr(tenant, "pyme_id", None):
+        owner = db.session.get(User, tenant.pyme_id)
+        if getattr(owner, "rubro_id", None):
+            pyme_conditions.append(PymeTicket.rubro_id == owner.rubro_id)
     m_count = MunicipioTicket.query.filter(
-        MunicipioTicket.tenant_id == tenant_id,
+        or_(*municipio_conditions),
         MunicipioTicket.asignado_a_id == employee_id,
         MunicipioTicket.estado.in_(list(active_states)),
     ).count()
     p_count = PymeTicket.query.filter(
-        PymeTicket.tenant_id == tenant_id,
+        or_(*pyme_conditions),
         PymeTicket.asignado_a_id == employee_id,
         PymeTicket.estado.in_(list(active_states)),
     ).count()
@@ -1260,8 +1314,8 @@ def create_employee(current_user):
         return jsonify({'error': 'Unauthorized'}), 403
 
     data = request.json or {}
-    email = data.get('email')
-    name = data.get('name')
+    email = str(data.get('email') or '').strip().lower()
+    name = str(data.get('name') or '').strip()
     password = data.get('password')
 
     if not email or not password:
@@ -1274,6 +1328,8 @@ def create_employee(current_user):
         email=email,
         name=name or email.split('@')[0],
         tenant_id=tenant.id,
+        tenant_slug=tenant.slug,
+        tipo_chat=tenant.tipo,
         es_empleado=True,
         rol='empleado'
     )
@@ -1283,6 +1339,8 @@ def create_employee(current_user):
 
     # Asignar roles
     roles = data.get('roles', ['empleado'])
+    if not isinstance(roles, list):
+        roles = ['empleado']
     for role_name in roles:
         role = Role.query.filter_by(name=role_name).first()
         if not role:
@@ -1296,20 +1354,42 @@ def create_employee(current_user):
             db.session.add(ur)
 
     # Asignar categorías
-    category_ids = data.get('categories', [])
+    raw_categories = data.get('categories') or data.get('categorias') or []
+    if isinstance(raw_categories, str):
+        raw_categories = [raw_categories]
+    if not isinstance(raw_categories, list):
+        raw_categories = []
+    category_ids = []
+    category_labels = []
+    for item in raw_categories:
+        if isinstance(item, dict):
+            value = item.get("id")
+            label = item.get("nombre") or item.get("label") or item.get("value")
+        else:
+            value = item
+            label = item
+        if str(value or "").isdigit():
+            category_ids.append(int(value))
+        elif str(label or "").strip():
+            category_labels.append(str(label).strip())
+    category_names: list[str] = []
     if category_ids:
         valid_cats = CategoriaTicket.query.filter(
             CategoriaTicket.id.in_(category_ids),
             CategoriaTicket.tenant_id == tenant.id
         ).all()
         user.categorias_ticket = valid_cats
+        category_names.extend(cat.nombre for cat in valid_cats if cat.nombre)
+    category_names.extend(category_labels)
 
     scope_raw = data.get('scope') if isinstance(data.get('scope'), dict) else {}
+    scope_categories = normalize_scope_list(scope_raw.get('categorias') or scope_raw.get('categories') or category_names)
     _set_employee_scope(
         user,
-        categorias=[str(v).strip() for v in (scope_raw.get('categorias') or []) if str(v).strip()][:30],
-        zonas=[str(v).strip() for v in (scope_raw.get('zonas') or []) if str(v).strip()][:30],
-        permisos=[str(v).strip() for v in (scope_raw.get('permisos') or []) if str(v).strip()][:30],
+        categorias=scope_categories,
+        zonas=normalize_scope_list(scope_raw.get('zonas') or scope_raw.get('zones')),
+        permisos=normalize_scope_list(scope_raw.get('permisos') or scope_raw.get('permissions') or ["tickets_read", "tickets_update"]),
+        channels=normalize_scope_list(scope_raw.get('channels') or scope_raw.get('canales') or ["web", "whatsapp"]),
     )
 
     db.session.commit()
@@ -1331,6 +1411,8 @@ def create_employee(current_user):
             'categories': [cat.id for cat in getattr(user, 'categorias_ticket', [])],
             'scope': _employee_scope(user),
         },
+        'coverage_endpoint': f'/api/admin/tenants/{tenant.slug}/employees/coverage',
+        'routing_endpoint': '/api/v2/employee-routing',
     }), 201
 
 @admin_tenant_bp.route('/api/admin/employees/<int:user_id>/roles', methods=['POST'])
@@ -1352,7 +1434,7 @@ def assign_role(current_user, user_id):
          return jsonify({'error': 'Missing role name'}), 400
 
     user = User.query.get(user_id)
-    if not user:
+    if not user or user.tenant_id != tenant.id or not user.es_empleado:
         return jsonify({'error': 'User not found'}), 404
 
     role = Role.query.filter_by(name=role_name).first()
@@ -1393,9 +1475,17 @@ def assign_categories(current_user, user_id):
     ).all()
 
     user.categorias_ticket = valid_cats
+    scope = _employee_scope(user)
+    _set_employee_scope(
+        user,
+        categorias=[cat.nombre for cat in valid_cats if cat.nombre],
+        zonas=scope.get('zonas') or [],
+        permisos=scope.get('permisos') or [],
+        channels=scope.get('channels') or [],
+    )
     db.session.commit()
 
-    return jsonify({'message': 'Categories updated', 'count': len(valid_cats)}), 200
+    return jsonify({'message': 'Categories updated', 'count': len(valid_cats), 'scope': _employee_scope(user)}), 200
 
 
 @admin_tenant_bp.route('/api/admin/employees/<int:user_id>/scope', methods=['PUT'])
@@ -1413,11 +1503,12 @@ def update_employee_scope(current_user, user_id):
         return jsonify({'error': 'Employee not found'}), 404
 
     data = request.get_json(silent=True) or {}
-    categorias = [str(v).strip() for v in (data.get('categorias') or []) if str(v).strip()][:30]
-    zonas = [str(v).strip() for v in (data.get('zonas') or []) if str(v).strip()][:30]
-    permisos = [str(v).strip() for v in (data.get('permisos') or []) if str(v).strip()][:30]
+    categorias = normalize_scope_list(data.get('categorias') or data.get('categories'))
+    zonas = normalize_scope_list(data.get('zonas') or data.get('zones'))
+    permisos = normalize_scope_list(data.get('permisos') or data.get('permissions'))
+    channels = normalize_scope_list(data.get('channels') or data.get('canales'))
 
-    _set_employee_scope(user, categorias=categorias, zonas=zonas, permisos=permisos)
+    _set_employee_scope(user, categorias=categorias, zonas=zonas, permisos=permisos, channels=channels)
     db.session.commit()
     return jsonify({'ok': True, 'employee_id': user.id, 'scope': _employee_scope(user)})
 
@@ -2086,12 +2177,19 @@ def list_ticket_categories_by_slug(current_user, slug):
              return jsonify({'error': 'Unauthorized'}), 403
 
     categories = CategoriaTicket.query.filter_by(tenant_id=tenant.id).all()
-
-    return jsonify([{
+    items = [{
         "id": c.id,
         "nombre": c.nombre,
         "tipo": c.tipo
-    } for c in categories])
+    } for c in categories]
+    if not items:
+        dimensions = tenant_operational_dimensions(tenant)
+        items = [
+            {"id": None, "nombre": categoria, "tipo": "ticket", "source": "operational_dimensions"}
+            for categoria in dimensions.get("categorias", [])
+        ]
+
+    return jsonify(items)
 
 @admin_tenant_bp.route('/api/admin/tenants/<slug>/integrations/<string:integration_type>/sync', methods=['POST'])
 @token_requerido
