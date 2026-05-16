@@ -3,13 +3,25 @@ import json
 import time
 import logging
 import re
+import math
+import unicodedata
 
 from flask import current_app
 from websockets.sync.client import connect as ws_connect
 from simple_websocket.errors import ConnectionClosed
 from twilio.rest import Client as TwilioClient
 
-from models import WhatsappNumero, ChatSessionContext, User, TenantProfile, MunicipioTicket, PymeTicket, PymePedido
+from models import (
+    AnalyticsEventV2,
+    WhatsappNumero,
+    ChatSessionContext,
+    User,
+    TenantProfile,
+    TenantTicket,
+    MunicipioTicket,
+    PymeTicket,
+    PymePedido,
+)
 from extensions import db
 from sqlalchemy import func
 from sqlalchemy.orm import joinedload
@@ -44,6 +56,18 @@ TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
 
 # WhatsApp (para resumen post-llamada)
+
+GRAN_MENDOZA_POINTS = {
+    "mendoza": (-32.8895, -68.8458),
+    "ciudad": (-32.8895, -68.8458),
+    "capital": (-32.8895, -68.8458),
+    "godoy cruz": (-32.9286, -68.8404),
+    "guaymallen": (-32.8833, -68.7333),
+    "maipu": (-32.9833, -68.7833),
+    "lujan": (-33.0396, -68.8797),
+    "lujan de cuyo": (-33.0396, -68.8797),
+    "las heras": (-32.8521, -68.8284),
+}
 
 
 def _openai_realtime_headers() -> dict[str, str]:
@@ -352,6 +376,404 @@ class VoiceStreamService:
             return None, None, "not_found"
         ticket = PymeTicket.query.get(alias.ticket_id) if alias.ticket_type == "pyme" else MunicipioTicket.query.get(alias.ticket_id)
         return alias, ticket, None
+
+    @staticmethod
+    def _coerce_float(value) -> float | None:
+        if value in (None, ""):
+            return None
+        try:
+            return float(str(value).replace(",", "."))
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+        radius_km = 6371.0
+        phi1 = math.radians(lat1)
+        phi2 = math.radians(lat2)
+        delta_phi = math.radians(lat2 - lat1)
+        delta_lambda = math.radians(lng2 - lng1)
+        a = (
+            math.sin(delta_phi / 2) ** 2
+            + math.cos(phi1) * math.cos(phi2) * math.sin(delta_lambda / 2) ** 2
+        )
+        return radius_km * (2 * math.atan2(math.sqrt(a), math.sqrt(1 - a)))
+
+    def _geo_point_from_text_or_coords(self, text=None, lat=None, lng=None) -> tuple[float, float] | None:
+        lat_value = self._coerce_float(lat)
+        lng_value = self._coerce_float(lng)
+        if lat_value is not None and lng_value is not None:
+            return lat_value, lng_value
+
+        normalized = str(text or "").strip().lower()
+        if not normalized:
+            return None
+        normalized = unicodedata.normalize("NFKD", normalized).encode("ascii", "ignore").decode("ascii")
+        for key, point in GRAN_MENDOZA_POINTS.items():
+            if key in normalized:
+                return point
+        return None
+
+    def _tenant_origin_point(self, cfg: dict | None) -> tuple[float, float]:
+        cfg = cfg if isinstance(cfg, dict) else {}
+        lat = (
+            cfg.get("shipping_origin_lat")
+            or cfg.get("latitud")
+            or cfg.get("lat")
+            or cfg.get("latitude")
+        )
+        lng = (
+            cfg.get("shipping_origin_lng")
+            or cfg.get("longitud")
+            or cfg.get("lng")
+            or cfg.get("longitude")
+        )
+        point = self._geo_point_from_text_or_coords(cfg.get("direccion") or cfg.get("address"), lat, lng)
+        return point or GRAN_MENDOZA_POINTS["mendoza"]
+
+    def _estimate_delivery_quote(self, args: dict, session_context: ChatSessionContext | None) -> str:
+        cfg = self._resolve_voice_config()
+        origin_text = args.get("origen") or cfg.get("shipping_origin_label") or cfg.get("direccion")
+        origin = self._geo_point_from_text_or_coords(origin_text) or self._tenant_origin_point(cfg)
+        destination = self._geo_point_from_text_or_coords(
+            args.get("destino") or args.get("direccion_entrega"),
+            args.get("lat_destino") or args.get("lat"),
+            args.get("lng_destino") or args.get("lng") or args.get("lon"),
+        )
+        if not destination:
+            return "Necesito una zona, direccion o ubicacion de Gran Mendoza para cotizar el envio."
+
+        km = round(self._haversine_km(origin[0], origin[1], destination[0], destination[1]), 1)
+        base_ars = int(cfg.get("delivery_base_ars") or cfg.get("shipping_base_ars") or 1300)
+        per_km_ars = int(cfg.get("delivery_km_ars") or cfg.get("shipping_km_ars") or 320)
+        minimum_ars = int(cfg.get("delivery_minimum_ars") or 1500)
+        estimate = max(minimum_ars, int(round(base_ars + (km * per_km_ars), -2)))
+        monto_pedido = self._coerce_float(args.get("monto_pedido"))
+        free_threshold = self._coerce_float(cfg.get("free_shipping_threshold_ars"))
+        free_shipping = bool(free_threshold and monto_pedido and monto_pedido >= free_threshold)
+        if free_shipping:
+            estimate = 0
+        eta_min = max(20, int(18 + km * 3))
+        eta_max = eta_min + 12
+
+        quote = {
+            "source": "voice_realtime",
+            "origin": origin_text or "sede",
+            "destination": args.get("destino") or args.get("direccion_entrega"),
+            "distance_km": km,
+            "estimated_cost_ars": estimate,
+            "eta_minutes_min": eta_min,
+            "eta_minutes_max": eta_max,
+            "free_shipping": free_shipping,
+        }
+        if session_context:
+            self._update_session_contexts(session_context, {"latest_delivery_quote": quote})
+
+        if self.tenant_profile:
+            db.session.add(
+                AnalyticsEventV2(
+                    tenant_id=self.tenant_profile.id,
+                    tenant_type=self.tenant_profile.tipo,
+                    user_id=getattr(self.user, "id", None),
+                    channel="voice_realtime",
+                    event_name="delivery_quote_created",
+                    session_id=self.chat_session_id,
+                    metadata_payload=quote,
+                )
+            )
+            db.session.commit()
+
+        cost_text = "bonificado" if free_shipping else f"{estimate} pesos aprox"
+        return (
+            f"El envio esta estimado en {km} kilometros. "
+            f"Costo: {cost_text}. Demora aproximada: {eta_min} a {eta_max} minutos. "
+            "Lo tomo como estimacion hasta confirmar el pedido."
+        )
+
+    def _resolve_commercial_lead_tenant(self) -> TenantProfile | None:
+        platform_tenant = TenantProfile.query.filter_by(slug="chatboc-platform").first()
+        if platform_tenant:
+            return platform_tenant
+        if self.tenant_profile:
+            return self.tenant_profile
+        return TenantProfile.query.filter(TenantProfile.is_active == True).order_by(TenantProfile.id.asc()).first()
+
+    def _capture_commercial_lead(self, args: dict, session_context: ChatSessionContext | None) -> str:
+        tenant = self._resolve_commercial_lead_tenant()
+        if not tenant:
+            return "No pude registrar el lead porque no hay un tenant operativo configurado."
+
+        nombre = sanitize_profile_name(args.get("nombre")) or sanitize_profile_name(getattr(self.user, "name", None))
+        telefono = str(args.get("telefono") or getattr(self.user, "telefono", None) or self._normalize_phone(self.from_number) or "").strip()
+        email = str(args.get("email") or getattr(self.user, "email", None) or "").strip().lower()
+        necesidad = str(args.get("necesidad") or args.get("mensaje") or "").strip()
+        if not nombre:
+            return "Necesito el nombre de la persona para dejar el contacto comercial."
+        if not (telefono or email):
+            return "Necesito un telefono o email para guardar el lead comercial."
+        if not necesidad:
+            return "Necesito saber que quiere automatizar para guardar bien el lead."
+
+        details = {
+            "source": "voice_realtime",
+            "lead_profile": {
+                "nombre": nombre,
+                "telefono": telefono,
+                "email": email,
+                "organizacion": args.get("organizacion"),
+                "rubro": args.get("rubro"),
+                "necesidad": necesidad,
+                "source_tenant_slug": getattr(self.tenant_profile, "slug", None),
+                "call_sid": self.call_sid,
+                "from_number": self._normalize_phone(self.from_number),
+            },
+            "lead_stage": "nuevo",
+        }
+        ticket = TenantTicket(
+            tenant_id=tenant.id,
+            user_id=getattr(self.user, "id", None),
+            categoria="lead_capture",
+            descripcion=necesidad,
+            estado="nuevo",
+            origen="voice",
+            datos_extra=details,
+        )
+        db.session.add(ticket)
+        db.session.flush()
+        db.session.add(
+            AnalyticsEventV2(
+                tenant_id=tenant.id,
+                tenant_type=tenant.tipo,
+                user_id=getattr(self.user, "id", None),
+                channel="voice_realtime",
+                event_name="voice_commercial_lead_created",
+                session_id=self.chat_session_id,
+                metadata_payload={"lead_ticket_id": ticket.id, **details},
+                entity_ref=f"tenant_ticket:{ticket.id}",
+            )
+        )
+        if session_context:
+            self._update_session_contexts(
+                session_context,
+                {
+                    "latest_commercial_lead_ticket_id": ticket.id,
+                    "latest_commercial_lead": details["lead_profile"],
+                },
+            )
+        else:
+            db.session.commit()
+
+        return (
+            f"Listo {nombre}. Deje tu solicitud registrada para el equipo comercial con el codigo {ticket.id}. "
+            "Te van a contactar por WhatsApp o email para armar la propuesta."
+        )
+
+    def _register_school_payment_intent(self, args: dict, session_context: ChatSessionContext | None) -> str:
+        from services.education_contracts import is_education_tenant
+
+        if not is_education_tenant(self.tenant_profile):
+            return "Este canal no esta configurado como colegio. Te derivo con una persona para pagos."
+        if not self.tenant_profile:
+            return "No pude identificar el colegio para registrar la intencion de pago."
+
+        concepto = str(args.get("concepto") or "").strip()
+        if not concepto:
+            return "Necesito saber que concepto queres pagar: cuota, matricula, comedor, transporte u otro."
+        phone = str(args.get("telefono") or getattr(self.user, "telefono", None) or self._normalize_phone(self.from_number) or "").strip()
+        details = {
+            "source": "voice_realtime",
+            "payment_intent": {
+                "concepto": concepto,
+                "monto": args.get("monto"),
+                "alumno": args.get("alumno"),
+                "curso": args.get("curso"),
+                "nombre_pagador": args.get("nombre_pagador") or sanitize_profile_name(getattr(self.user, "name", None)),
+                "telefono": phone,
+                "email": args.get("email") or getattr(self.user, "email", None),
+                "call_sid": self.call_sid,
+            },
+            "payment_status": "intent_registered",
+        }
+        description = f"Intencion de pago escolar: {concepto}"
+        if args.get("alumno"):
+            description += f" - Alumno: {args.get('alumno')}"
+        ticket = TenantTicket(
+            tenant_id=self.tenant_profile.id,
+            user_id=getattr(self.user, "id", None),
+            categoria="school_payment_intent",
+            descripcion=description,
+            estado="nuevo",
+            origen="voice",
+            datos_extra=details,
+        )
+        db.session.add(ticket)
+        db.session.flush()
+        db.session.add(
+            AnalyticsEventV2(
+                tenant_id=self.tenant_profile.id,
+                tenant_type=self.tenant_profile.tipo,
+                user_id=getattr(self.user, "id", None),
+                channel="voice_realtime",
+                event_name="school_payment_intent_created",
+                session_id=self.chat_session_id,
+                metadata_payload={"ticket_id": ticket.id, **details},
+                entity_ref=f"tenant_ticket:{ticket.id}",
+            )
+        )
+
+        payment_url = None
+        if isinstance(self.tenant_profile.configuracion, dict):
+            payment_url = (
+                self.tenant_profile.configuracion.get("school_payment_checkout_url")
+                or self.tenant_profile.configuracion.get("payment_link_url")
+            )
+        if session_context:
+            updates = {
+                "latest_school_payment_intent_id": ticket.id,
+                "latest_school_payment_intent": details["payment_intent"],
+            }
+            if payment_url:
+                updates["latest_school_payment_url"] = payment_url
+            self._update_session_contexts(session_context, updates)
+        else:
+            db.session.commit()
+
+        if payment_url and phone:
+            try:
+                send_whatsapp_message(
+                    phone,
+                    (
+                        f"Registramos tu intencion de pago por {concepto}. "
+                        f"Link de pago del colegio: {payment_url}"
+                    ),
+                    from_number=self._resolve_whatsapp_sender(),
+                )
+            except Exception as ex:
+                logger.warning(f"[VOICE] Could not send school payment WhatsApp link: {ex}")
+
+        if payment_url:
+            return (
+                f"Deje registrada la intencion de pago #{ticket.id} por {concepto}. "
+                "Te envio el link de pago por WhatsApp. El pago queda confirmado solo cuando impacte el comprobante."
+            )
+        return (
+            f"Deje registrada la intencion de pago #{ticket.id} por {concepto}. "
+            "El colegio va a continuar el cobro desde el panel."
+        )
+
+    def _register_operational_request(self, args: dict, session_context: ChatSessionContext | None) -> str:
+        tenant = self.tenant_profile or self._resolve_commercial_lead_tenant()
+        if not tenant:
+            return "No pude registrar la solicitud porque no hay un tenant operativo configurado."
+
+        request_type = str(args.get("tipo_solicitud") or "consulta").strip().lower()
+        request_type = re.sub(r"[^a-z0-9_ -]", "", request_type).replace(" ", "_") or "consulta"
+        allowed_types = {
+            "consulta",
+            "reclamo",
+            "sugerencia",
+            "certificado",
+            "boleta_pago",
+            "pago_a_revisar",
+            "tramite",
+            "turno",
+            "pedido",
+            "otro",
+        }
+        if request_type not in allowed_types:
+            request_type = "otro"
+
+        descripcion = str(args.get("descripcion") or args.get("detalle") or "").strip()
+        if not descripcion:
+            return "Necesito una descripcion breve para registrar la solicitud."
+
+        categoria = str(args.get("categoria") or request_type).strip()[:80]
+        ubicacion = str(args.get("ubicacion") or "").strip()
+        point = self._geo_point_from_text_or_coords(ubicacion)
+        nombre = sanitize_profile_name(args.get("nombre")) or sanitize_profile_name(getattr(self.user, "name", None))
+        telefono = str(args.get("telefono") or getattr(self.user, "telefono", None) or self._normalize_phone(self.from_number) or "").strip()
+        email = str(args.get("email") or getattr(self.user, "email", None) or "").strip().lower()
+        details = {
+            "source": "voice_realtime",
+            "request_type": request_type,
+            "asunto": args.get("asunto"),
+            "categoria": categoria,
+            "ubicacion": ubicacion,
+            "identificador": args.get("identificador"),
+            "contacto": {
+                "nombre": nombre,
+                "telefono": telefono,
+                "email": email,
+            },
+            "tenant_slug": getattr(tenant, "slug", None),
+            "tenant_tipo": getattr(tenant, "tipo", None),
+            "call_sid": self.call_sid,
+            "from_number": self._normalize_phone(self.from_number),
+        }
+        ticket = TenantTicket(
+            tenant_id=tenant.id,
+            user_id=getattr(self.user, "id", None),
+            categoria=f"voice:{categoria}"[:80],
+            descripcion=descripcion,
+            estado="nuevo",
+            origen="voice",
+            latitud=point[0] if point else None,
+            longitud=point[1] if point else None,
+            datos_extra=details,
+        )
+        db.session.add(ticket)
+        db.session.flush()
+        db.session.add(
+            AnalyticsEventV2(
+                tenant_id=tenant.id,
+                tenant_type=tenant.tipo,
+                user_id=getattr(self.user, "id", None),
+                channel="voice_realtime",
+                event_name="operational_request_created",
+                session_id=self.chat_session_id,
+                metadata_payload={"ticket_id": ticket.id, **details},
+                lat=point[0] if point else None,
+                lng=point[1] if point else None,
+                entity_ref=f"tenant_ticket:{ticket.id}",
+            )
+        )
+
+        updates = {
+            "latest_operational_request_id": ticket.id,
+            "latest_operational_request": {
+                "id": ticket.id,
+                "type": request_type,
+                "category": categoria,
+                "description": descripcion,
+                "address": ubicacion,
+                "status": "nuevo",
+            },
+        }
+        if session_context:
+            self._update_session_contexts(session_context, updates)
+        else:
+            db.session.commit()
+
+        whatsapp_target = telefono
+        if whatsapp_target:
+            try:
+                send_whatsapp_message(
+                    whatsapp_target,
+                    (
+                        f"Registramos tu solicitud #{ticket.id} en {getattr(tenant, 'nombre', 'Chatboc')}.\n"
+                        f"Tipo: {request_type.replace('_', ' ')}\n"
+                        f"Detalle: {descripcion}\n\n"
+                        "Podes responder este WhatsApp con imagen, audio, ubicacion o archivo si queres sumar informacion."
+                    ),
+                    from_number=self._resolve_whatsapp_sender(),
+                )
+            except Exception as ex:
+                logger.warning(f"[VOICE] Could not send operational request WhatsApp summary: {ex}")
+
+        return (
+            f"Listo. Registre la solicitud con seguimiento numero {ticket.id}. "
+            "Queda disponible para el equipo en el panel."
+        )
 
     def _send_tool_result(self, call_id, result: str, *, create_response: bool = True) -> None:
         if not self.openai_ws:
@@ -1533,6 +1955,30 @@ class VoiceStreamService:
                         result = self._voice_compact_text(
                             f"El caso escolar {alias.id}, de tipo {case_type}, esta en estado {estado}."
                         )
+
+                # ----------------------------
+                # SaaS comercial: Lead Chatboc
+                # ----------------------------
+                elif name == "capturar_lead_comercial":
+                    result = self._capture_commercial_lead(args, session_context)
+
+                # ----------------------------
+                # PYME: Cotizacion de envio
+                # ----------------------------
+                elif name == "cotizar_envio":
+                    result = self._estimate_delivery_quote(args, session_context)
+
+                # ----------------------------
+                # COLEGIO: Intencion de pago
+                # ----------------------------
+                elif name == "registrar_intencion_pago_colegio":
+                    result = self._register_school_payment_intent(args, session_context)
+
+                # ----------------------------
+                # Multi-rubro: solicitud operativa generica
+                # ----------------------------
+                elif name == "registrar_solicitud_operativa":
+                    result = self._register_operational_request(args, session_context)
 
                 # ----------------------------
                 # Transferir humano

@@ -3,7 +3,13 @@ import uuid
 import requests
 from typing import Dict, Any, Optional
 from flask import current_app
+from models import TenantProfile
 from services.realtime_voice_profiles import (
+    build_chatboc_bot_avatar_contract,
+    build_multilingual_translation_policy,
+    build_realtime_voice_instructions,
+    build_realtime_voice_tools,
+    infer_realtime_voice_vertical,
     resolve_realtime_model,
     resolve_realtime_voice,
 )
@@ -41,6 +47,11 @@ class RealtimeSessionService:
 
         model = resolve_realtime_model(app_config=current_app.config)
         voice = resolve_realtime_voice(app_config=current_app.config)
+        tenant = TenantProfile.query.get(tenant_id) if tenant_id else None
+        cfg = tenant.configuracion if tenant and isinstance(tenant.configuracion, dict) else {}
+        vertical = infer_realtime_voice_vertical(tenant)
+        translation_policy = build_multilingual_translation_policy(cfg, current_app.config)
+        avatar_contract = build_chatboc_bot_avatar_contract(cfg, current_app.config)
 
         headers = {
             "Authorization": f"Bearer {api_key}",
@@ -53,12 +64,10 @@ class RealtimeSessionService:
                 "type": "realtime",
                 "model": model,
                 "output_modalities": ["audio"],
-                "instructions": (
-                    "Sos un asistente realtime de Chatboc. Habla en espanol argentino, "
-                    "con respuestas breves, claras y orientadas a resolver. "
-                    "Entende tambien ingles y portugues; responde en el idioma del usuario "
-                    "y deja los datos operativos normalizados en espanol. "
-                    "No inventes tickets, pedidos, precios ni confirmaciones."
+                "instructions": build_realtime_voice_instructions(
+                    tenant_name=(tenant.nombre if tenant else "Chatboc"),
+                    vertical=vertical,
+                    translation_policy=translation_policy,
                 ),
                 "audio": {
                     "input": {
@@ -78,6 +87,8 @@ class RealtimeSessionService:
                         "speed": 1.0,
                     },
                 },
+                "tools": build_realtime_voice_tools(vertical),
+                "tool_choice": "auto",
             },
         }
 
@@ -99,6 +110,8 @@ class RealtimeSessionService:
                 "openai_session": data.get("session") or {},
                 "model": model,
                 "voice": voice,
+                "active_vertical": vertical,
+                "avatar_contract": avatar_contract,
                 "status_code": 200
             }
 

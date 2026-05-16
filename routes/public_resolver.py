@@ -35,7 +35,9 @@ from services.education_contracts import (
     education_quick_menu,
 )
 from services.realtime_voice_profiles import (
+    CHATBOC_BOT_AVATAR_CONTRACT_VERSION,
     REALTIME_VOICE_CONTRACT_VERSION,
+    build_chatboc_bot_avatar_contract,
     build_multilingual_translation_policy,
     build_realtime_voice_capabilities,
     build_realtime_voice_instructions,
@@ -71,6 +73,11 @@ _REALTIME_RATE_BUCKET_MAX_KEYS = 10000
 _REALTIME_ACTION_EVENT_ALLOWED = {
     "crear_reclamo",
     "crear_pedido",
+    "cotizar_envio",
+    "crear_caso_escolar",
+    "registrar_intencion_pago_colegio",
+    "capturar_lead_comercial",
+    "registrar_solicitud_operativa",
     "consultas_generales",
     "derivar_humano",
     "consulta_estado_ticket",
@@ -660,9 +667,7 @@ def _support_channels_payload(tenant: TenantProfile, cfg: dict) -> dict:
             "fallback_model": realtime_voice.get("fallback_model"),
             "voice": realtime_voice_name,
             "avatar": {
-                "enabled": bool(cfg.get("widget_avatar_enabled", True)),
-                "type": cfg.get("widget_avatar_type") or "robot",
-                "persona": cfg.get("widget_avatar_persona") or "chatboc_assistant",
+                **build_chatboc_bot_avatar_contract(cfg, current_app.config),
             },
             "media": {"audio": True, "video": True, "text": True},
             "features": {
@@ -868,27 +873,41 @@ def _build_realtime_session_payload(tenant: TenantProfile, cfg: dict, *, channel
     voice = str(request_payload.get("voice") or resolve_realtime_voice(cfg, current_app.config))
     transport = str(request_payload.get("transport") or transports.get("browser") or "webrtc")
     requested_profile = str(request_payload.get("profile") or request_payload.get("realtime_profile") or "realtime_voice_native")
-    avatar_enabled = bool(cfg.get("widget_avatar_enabled", True))
     voice_vertical = str(request_payload.get("active_vertical") or infer_realtime_voice_vertical(tenant))
     translation_policy = build_multilingual_translation_policy(cfg, current_app.config)
+    avatar_contract = build_chatboc_bot_avatar_contract(cfg, current_app.config)
+    avatar_enabled = bool(avatar_contract.get("enabled", True))
     session_metadata = {
         "tenant_slug": tenant.slug,
         "tenant_type": tenant.tipo,
         "channel": channel,
         "transport": transport,
         "avatar_enabled": avatar_enabled,
-        "avatar_type": cfg.get("widget_avatar_type") or "robot",
-        "avatar_persona": cfg.get("widget_avatar_persona") or "chatboc_assistant",
-        "business_flows": ["crear_reclamo", "crear_pedido", "crear_caso_escolar", "consultas_generales", "derivar_humano"],
+        "avatar_type": avatar_contract.get("type") or "chatboc_bot",
+        "avatar_persona": avatar_contract.get("persona") or "bot_chatboc",
+        "avatar_display_name": avatar_contract.get("display_name") or "BOT Chatboc",
+        "business_flows": [
+            "crear_reclamo",
+            "crear_pedido",
+            "cotizar_envio",
+            "crear_caso_escolar",
+            "registrar_intencion_pago_colegio",
+            "capturar_lead_comercial",
+            "registrar_solicitud_operativa",
+            "consultas_generales",
+            "derivar_humano",
+        ],
         "realtime_profile": requested_profile,
         "active_vertical": voice_vertical,
         "recommended_model": model,
         "fallback_model": fallback_model,
         "requested_model_ignored": str(requested_model) if requested_model and str(requested_model) != model else None,
         "capabilities_contract": REALTIME_VOICE_CONTRACT_VERSION,
+        "avatar_contract_version": CHATBOC_BOT_AVATAR_CONTRACT_VERSION,
         "openai_realtime_contract": "client_secrets.v2",
         "openai_endpoint": "/v1/realtime/client_secrets",
         "translation": translation_policy,
+        "avatar_contract": avatar_contract,
     }
 
     return {
@@ -933,7 +952,11 @@ def _build_realtime_session_payload(tenant: TenantProfile, cfg: dict, *, channel
             "tracing": {
                 "workflow_name": "chatboc_realtime_voice",
                 "group_id": tenant.slug,
-                "metadata": {k: v for k, v in session_metadata.items() if k != "translation" and v is not None},
+                "metadata": {
+                    k: v
+                    for k, v in session_metadata.items()
+                    if k not in {"translation", "avatar_contract"} and v is not None
+                },
             },
         },
         "metadata": {k: v for k, v in session_metadata.items() if v is not None},
@@ -1040,6 +1063,7 @@ def create_realtime_session():
         "channel": channel,
         "model": session_payload["session"].get("model"),
         "avatar": session_payload.get("metadata", {}),
+        "avatar_contract": session_payload.get("metadata", {}).get("avatar_contract"),
         "session": session_data,
     }
     response = jsonify(public_payload)
@@ -1240,6 +1264,7 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
     logo_badge_style = ux.get("logo_badge_style") or cfg.get("widget_logo_badge_style") or "ring"
     cursor_trail = bool(ux.get("cursor_trail", cfg.get("widget_cursor_trail", False)))
     ambient_particles = bool(ux.get("ambient_particles", cfg.get("widget_ambient_particles", False)))
+    avatar_contract = build_chatboc_bot_avatar_contract(cfg, current_app.config)
 
     attrs = {
         "data-owner-token": canonical_token,
@@ -1284,9 +1309,12 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
         "data-realtime-profile": "realtime_voice_native",
         "data-realtime-voice-enabled": str(_config_flag(cfg, "realtime_voice_enabled", default=True)).lower(),
         "data-realtime-video-enabled": str(_config_flag(cfg, "realtime_video_enabled", default=False)).lower(),
-        "data-avatar-enabled": str(bool(cfg.get("widget_avatar_enabled", True))).lower(),
-        "data-avatar-type": cfg.get("widget_avatar_type") or "robot",
-        "data-avatar-persona": cfg.get("widget_avatar_persona") or "chatboc_assistant",
+        "data-avatar-enabled": str(bool(avatar_contract.get("enabled", True))).lower(),
+        "data-avatar-contract-version": avatar_contract.get("contract_version"),
+        "data-avatar-type": avatar_contract.get("type") or "chatboc_bot",
+        "data-avatar-persona": avatar_contract.get("persona") or "bot_chatboc",
+        "data-avatar-display-name": avatar_contract.get("display_name") or "BOT Chatboc",
+        "data-avatar-state-source": avatar_contract.get("state_source") or "realtime_events",
         "data-font-family": cfg.get("font_family") or "inherit",
         "data-bubble-shape": cfg.get("bubble_shape") or "round",
         "data-singleton": "true",
@@ -1386,6 +1414,7 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
         "iframe_url": iframe_url,
         "attributes": attrs,
         "support_channels": support_channels,
+        "avatar": avatar_contract,
         "realtime": realtime_contract,
         "visibility_rules": visibility_rules,
         "ui_hints": _widget_ui_hints(mode="tenant"),
@@ -1400,6 +1429,7 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
                 "fallback_model": attrs.get("data-realtime-fallback-model"),
                 "voice": attrs.get("data-realtime-voice"),
                 "contract_version": REALTIME_VOICE_CONTRACT_VERSION,
+                "avatar": avatar_contract,
                 "active_vertical": (support_channels.get("voice_call", {}).get("capabilities") or {}).get("active_vertical"),
                 "voice_handoff": {
                     "enabled": True,
@@ -1459,6 +1489,7 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
         "builder_config": builder_config,
         "marketplace": marketplace,
         "support_channels": support_channels,
+        "avatar": avatar_contract,
         "realtime": realtime_contract,
         "visibility_rules": visibility_rules,
         "ui_hints": builder_config["ui_hints"],
@@ -1569,8 +1600,9 @@ def _normalize_widget_config(config: dict | None, widget_settings=None) -> dict:
     cfg.setdefault("realtime_video_enabled", False)
     cfg.setdefault("openai_realtime_model", resolve_realtime_model(app_config=current_app.config))
     cfg.setdefault("widget_avatar_enabled", True)
-    cfg.setdefault("widget_avatar_type", "robot")
-    cfg.setdefault("widget_avatar_persona", "chatboc_assistant")
+    cfg.setdefault("widget_avatar_type", "chatboc_bot")
+    cfg.setdefault("widget_avatar_persona", "bot_chatboc")
+    cfg.setdefault("widget_avatar_display_name", "BOT Chatboc")
 
     return cfg
 

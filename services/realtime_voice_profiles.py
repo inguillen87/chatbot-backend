@@ -7,6 +7,7 @@ from services.education_contracts import is_education_tenant
 
 
 REALTIME_VOICE_CONTRACT_VERSION = "realtime.voice_capabilities.v1"
+CHATBOC_BOT_AVATAR_CONTRACT_VERSION = "chatboc.avatar.v1"
 DEFAULT_REALTIME_VOICE_MODEL = "gpt-realtime"
 FALLBACK_REALTIME_VOICE_MODEL = "gpt-realtime"
 DEFAULT_REALTIME_TRANSLATION_MODEL = "gpt-realtime-translate"
@@ -18,6 +19,15 @@ DEFAULT_SUPPORTED_TRANSLATION_LANGUAGES = (
     {"code": "es", "label": "Espanol"},
     {"code": "en", "label": "English"},
     {"code": "pt", "label": "Portugues"},
+)
+DEFAULT_CHATBOC_BOT_AVATAR_STATES = (
+    "idle",
+    "listening",
+    "thinking",
+    "speaking",
+    "tool_success",
+    "handoff",
+    "error",
 )
 
 
@@ -66,6 +76,74 @@ def resolve_realtime_voice(
         or os.environ.get("OPENAI_REALTIME_VOICE")
         or DEFAULT_REALTIME_VOICE
     )
+
+
+def build_chatboc_bot_avatar_contract(
+    cfg: Mapping[str, Any] | None = None,
+    app_config: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Contract for the animated BOT Chatboc mascot.
+
+    Backend publishes behavior/state semantics. Frontend owns the actual
+    animation, layout and asset loading, and must not render broken image URLs.
+    """
+
+    display_name = str(
+        _get(cfg, "widget_avatar_display_name", "avatar_display_name")
+        or _get(app_config, "CHATBOC_BOT_AVATAR_DISPLAY_NAME")
+        or os.environ.get("CHATBOC_BOT_AVATAR_DISPLAY_NAME")
+        or "BOT Chatboc"
+    )
+    mascot_asset_base = str(
+        _get(cfg, "widget_avatar_asset_base_url", "avatar_asset_base_url")
+        or _get(app_config, "CHATBOC_BOT_AVATAR_ASSET_BASE_URL")
+        or os.environ.get("CHATBOC_BOT_AVATAR_ASSET_BASE_URL")
+        or ""
+    ).strip().rstrip("/")
+
+    assets = {}
+    if mascot_asset_base:
+        assets = {
+            state: f"{mascot_asset_base}/{state}.png"
+            for state in DEFAULT_CHATBOC_BOT_AVATAR_STATES
+        }
+
+    return {
+        "contract_version": CHATBOC_BOT_AVATAR_CONTRACT_VERSION,
+        "enabled": _bool_config(
+            cfg,
+            app_config,
+            "widget_avatar_enabled",
+            "CHATBOC_BOT_AVATAR_ENABLED",
+            default=True,
+        ),
+        "type": "chatboc_bot",
+        "persona": "bot_chatboc",
+        "display_name": display_name,
+        "role": "assistant_mascot",
+        "render_as": "animated_mascot",
+        "state_source": "realtime_events",
+        "states": list(DEFAULT_CHATBOC_BOT_AVATAR_STATES),
+        "animation_profile": {
+            "idle": "breathing",
+            "listening": "ear_pulse",
+            "thinking": "processing_orbit",
+            "speaking": "mouth_wave",
+            "tool_success": "checkmark_bounce",
+            "handoff": "agent_transfer",
+            "error": "soft_attention",
+        },
+        "asset_policy": {
+            "assets_required": False,
+            "frontend_must_probe_assets": True,
+            "fallback": "render_vector_or_existing_logo_without_broken_image",
+        },
+        "assets": assets,
+        "caption_policy": {
+            "show_live_captions": True,
+            "show_translated_caption_when_available": True,
+        },
+    }
 
 
 def _bool_config(
@@ -172,6 +250,56 @@ def infer_realtime_voice_vertical(tenant: Any = None, *, tenant_tipo: str | None
 _BASE_TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
+        "name": "capturar_lead_comercial",
+        "description": (
+            "Registra un lead comercial trazable cuando la persona quiere automatizar "
+            "su negocio, municipio, colegio o pedir una propuesta de Chatboc. "
+            "Usala solo despues de pedir nombre y al menos telefono o email."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "nombre": {"type": "string", "description": "Nombre de la persona interesada."},
+                "telefono": {"type": "string", "description": "Telefono o WhatsApp de contacto."},
+                "email": {"type": "string", "description": "Email de contacto si lo menciona."},
+                "organizacion": {"type": "string", "description": "Nombre del negocio, colegio, municipio o empresa."},
+                "rubro": {"type": "string", "description": "Rubro o sector que quiere automatizar."},
+                "necesidad": {"type": "string", "description": "Que quiere mejorar o automatizar."},
+                "origen": {"type": "string", "description": "Canal de origen, por ejemplo voz, widget, whatsapp o demo."},
+            },
+            "required": ["nombre", "necesidad"],
+        },
+    },
+    {
+        "type": "function",
+        "name": "registrar_solicitud_operativa",
+        "description": (
+            "Registra una solicitud trazable para cualquier tenant/rubro cuando no existe "
+            "una herramienta vertical mas especifica. Sirve para consultas, reclamos, "
+            "sugerencias, certificados, boletas, pagos a revisar, turnos, pedidos generales "
+            "u otros tramites de entidades gubernamentales o no gubernamentales."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "tipo_solicitud": {
+                    "type": "string",
+                    "description": "consulta, reclamo, sugerencia, certificado, boleta_pago, tramite, turno, pedido, pago_a_revisar u otro.",
+                },
+                "asunto": {"type": "string", "description": "Titulo breve de la solicitud."},
+                "descripcion": {"type": "string", "description": "Resumen claro de lo que necesita la persona."},
+                "categoria": {"type": "string", "description": "Categoria operativa si se puede inferir del rubro."},
+                "ubicacion": {"type": "string", "description": "Direccion o referencia si aplica."},
+                "nombre": {"type": "string", "description": "Nombre de la persona si se conoce."},
+                "telefono": {"type": "string", "description": "Telefono o WhatsApp si se conoce."},
+                "email": {"type": "string", "description": "Email si se conoce."},
+                "identificador": {"type": "string", "description": "DNI, legajo, numero de cliente, alumno, cuenta o comprobante si lo menciona."},
+            },
+            "required": ["tipo_solicitud", "descripcion"],
+        },
+    },
+    {
+        "type": "function",
         "name": "transferir_humano",
         "description": "Transfiere la llamada a un agente humano cuando el usuario pide ayuda humana, hay riesgo, enojo o una consulta sensible.",
         "parameters": {
@@ -258,6 +386,25 @@ _PYME_TOOLS: list[dict[str, Any]] = [
     },
     {
         "type": "function",
+        "name": "cotizar_envio",
+        "description": (
+            "Cotiza costo y tiempo estimado de envio para una pyme usando distancia "
+            "aproximada en Gran Mendoza. No confirma compra ni cobra; solo devuelve una estimacion."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "origen": {"type": "string", "description": "Sucursal o zona de salida. Si no se menciona, usar la sede del comercio."},
+                "destino": {"type": "string", "description": "Direccion, zona o departamento de entrega."},
+                "lat_destino": {"type": "number", "description": "Latitud de destino si el usuario compartio ubicacion."},
+                "lng_destino": {"type": "number", "description": "Longitud de destino si el usuario compartio ubicacion."},
+                "monto_pedido": {"type": "number", "description": "Monto estimado del pedido si ya existe."},
+            },
+            "required": ["destino"],
+        },
+    },
+    {
+        "type": "function",
         "name": "consultar_estado_pedido",
         "description": "Consulta el estado de un pedido de venta existente. Usa el ultimo pedido de la sesion si corresponde.",
         "parameters": {
@@ -303,6 +450,27 @@ _COLEGIO_TOOLS: list[dict[str, Any]] = [
                 "school_case_id": {"type": "string", "description": "Numero de caso escolar si el usuario lo menciona."},
             },
             "required": [],
+        },
+    },
+    {
+        "type": "function",
+        "name": "registrar_intencion_pago_colegio",
+        "description": (
+            "Registra una intencion de pago de cuota, matricula, comedor, transporte u otro concepto escolar. "
+            "No confirma pago ni genera recibo salvo que el backend devuelva un checkout real."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "alumno": {"type": "string", "description": "Nombre del alumno si se menciona."},
+                "curso": {"type": "string", "description": "Curso o grado si se menciona."},
+                "concepto": {"type": "string", "description": "Cuota, matricula, comedor, transporte u otro concepto."},
+                "monto": {"type": "number", "description": "Monto si el usuario lo menciona."},
+                "nombre_pagador": {"type": "string", "description": "Nombre de madre, padre o responsable."},
+                "telefono": {"type": "string", "description": "Telefono de contacto."},
+                "email": {"type": "string", "description": "Email de contacto."},
+            },
+            "required": ["concepto"],
         },
     },
 ]
@@ -366,6 +534,8 @@ def build_realtime_voice_instructions(
         "No recites menus completos salvo que el usuario pida opciones. En llamada, propone el proximo paso mas probable y pregunta un solo dato. "
         "No inventes tickets, pedidos, pagos, turnos, stock ni confirmaciones. Solo confirma cuando una herramienta devuelve resultado. "
         "Si falta un dato obligatorio, pedi solo ese dato. Si el usuario ya dio varios datos, no los vuelvas a pedir. "
+        "Si la persona consulta como automatizar su negocio, colegio, empresa o municipio, detecta rubro, necesidad y contacto; despues usa capturar_lead_comercial. "
+        "Para cualquier rubro no cubierto por herramientas especificas, registra consultas, reclamos, sugerencias, certificados, boletas, turnos o pedidos con registrar_solicitud_operativa. "
         "Si hay enojo, urgencia, datos sensibles, riesgo o pedido explicito de persona, usa transferir_humano. "
         "Cuando el usuario diga listo, nada mas, gracias o perfecto, despedi breve y usa finalizar_llamada. "
     )
@@ -383,6 +553,7 @@ def build_realtime_voice_instructions(
         return base + (
             "Perfil pyme: vende de forma consultiva, entiende necesidad, recomienda opciones, consulta producto si hace falta y crea pedido solo con items confirmados. "
             "No presiones: ayuda a elegir, confirma variantes, cantidad, entrega/retiro y datos de contacto. "
+            "Si pide costo de envio, distancia o tiempo de entrega, usa cotizar_envio antes de prometer precio final. "
             "Si pide estado de compra o entrega, usa consultar_estado_pedido. "
             "Si no hay stock o precio confiable, no inventes; ofrece derivar o dejar consulta."
         )
@@ -391,12 +562,15 @@ def build_realtime_voice_instructions(
             "Perfil colegio: atende familias, alumnos y personal con secretaria, asistencia, inasistencias, comunicados, agenda, documentacion, pagos, admisiones, convivencia y mantenimiento. "
             "Crea caso escolar cuando haya una consulta accionable. Para inasistencia pedi alumno, curso, fecha y motivo si faltan. "
             "Si pide seguimiento de un caso, usa consultar_caso_escolar. "
+            "Si quiere pagar cuota o concepto escolar, usa registrar_intencion_pago_colegio; no digas que esta pagado sin checkout o comprobante real. "
             "Para convivencia, salud, retiro de alumnos o datos privados, cuida la privacidad y deriva a humano si corresponde. "
             "Si menciona certificados, comprobantes o autorizaciones, avisa que puede enviar imagen o archivo por WhatsApp luego del llamado."
         )
     return base + (
-        "Perfil general SaaS: identifica si la necesidad es municipal, comercial o escolar, y usa la herramienta adecuada. "
-        "Mantene la conversacion orientada a resolver y capturar un lead util."
+        "Perfil general multi-rubro: identifica el tipo de organizacion y la necesidad real. "
+        "Si hay una solicitud operativa accionable, usa registrar_solicitud_operativa con tipo, descripcion, contacto y ubicacion si aplica. "
+        "Si la conversacion es comercial para vender Chatboc, usa capturar_lead_comercial. "
+        "No prometas certificados, pagos, precios, stock ni resoluciones si no hay dato o herramienta real."
     )
 
 
@@ -410,10 +584,12 @@ def build_realtime_voice_capabilities(
     fallback_model = resolve_realtime_fallback_model(cfg, app_config)
     voice = resolve_realtime_voice(cfg, app_config)
     translation_policy = build_multilingual_translation_policy(cfg, app_config)
+    avatar_contract = build_chatboc_bot_avatar_contract(cfg, app_config)
 
     return {
         "contract_version": REALTIME_VOICE_CONTRACT_VERSION,
         "provider": "openai_realtime",
+        "api_generation": "realtime_ga_client_secrets_v2",
         "recommended_model": model,
         "fallback_model": fallback_model,
         "voice": voice,
@@ -421,6 +597,7 @@ def build_realtime_voice_capabilities(
         "native_speech_to_speech": True,
         "avoid_external_stt_tts_loop": True,
         "translation": translation_policy,
+        "avatar": avatar_contract,
         "transports": {
             "browser": "webrtc",
             "server": "websocket",
@@ -465,20 +642,26 @@ def build_realtime_voice_capabilities(
             "municipio": {
                 "label": "Municipios",
                 "actions": tool_names_for_vertical("municipio"),
-                "intents": ["crear_reclamo", "consultar_estado_reclamo", "consultar_tramite", "derivar_humano"],
+                "intents": ["crear_reclamo", "consultar_estado_reclamo", "consultar_tramite", "registrar_solicitud_operativa", "capturar_lead_comercial", "derivar_humano"],
                 "frontend_prompts": ["Iniciar reclamo por llamada", "Consultar estado", "Consultar tramite", "Hablar con operador"],
             },
             "pyme": {
                 "label": "PyMEs",
                 "actions": tool_names_for_vertical("pyme"),
-                "intents": ["consulta_producto", "venta_consultiva", "crear_pedido", "consultar_estado_pedido", "derivar_humano"],
-                "frontend_prompts": ["Llamar para comprar", "Consultar disponibilidad", "Tomar pedido por voz", "Consultar pedido"],
+                "intents": ["consulta_producto", "venta_consultiva", "crear_pedido", "cotizar_envio", "consultar_estado_pedido", "registrar_solicitud_operativa", "capturar_lead_comercial", "derivar_humano"],
+                "frontend_prompts": ["Llamar para comprar", "Consultar disponibilidad", "Cotizar envio", "Tomar pedido por voz", "Consultar pedido"],
             },
             "colegio": {
                 "label": "Colegios",
                 "actions": tool_names_for_vertical("colegio"),
-                "intents": ["inasistencia", "secretaria", "comunicados", "admisiones", "convivencia", "consultar_caso_escolar"],
-                "frontend_prompts": ["Justificar inasistencia", "Consultar secretaria", "Consultar caso", "Hablar con el colegio"],
+                "intents": ["inasistencia", "secretaria", "comunicados", "admisiones", "convivencia", "registrar_intencion_pago_colegio", "consultar_caso_escolar", "registrar_solicitud_operativa", "capturar_lead_comercial"],
+                "frontend_prompts": ["Justificar inasistencia", "Pagar cuota", "Consultar secretaria", "Consultar caso", "Hablar con el colegio"],
+            },
+            "general": {
+                "label": "Otros rubros",
+                "actions": tool_names_for_vertical("general"),
+                "intents": ["registrar_solicitud_operativa", "capturar_lead_comercial", "derivar_humano"],
+                "frontend_prompts": ["Registrar consulta", "Registrar reclamo", "Pedir certificado o boleta", "Hablar con una persona"],
             },
         },
         "frontend": {

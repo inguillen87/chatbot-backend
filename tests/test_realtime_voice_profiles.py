@@ -87,6 +87,7 @@ class RealtimeVoiceProfilesTestCase(unittest.TestCase):
         self.assertEqual(vertical, "colegio")
         self.assertIn("crear_caso_escolar", tools)
         self.assertIn("consultar_caso_escolar", tools)
+        self.assertIn("registrar_solicitud_operativa", tools)
         self.assertIn("inasistencias", instructions)
 
     def test_municipio_and_pyme_keep_different_actions(self):
@@ -96,10 +97,22 @@ class RealtimeVoiceProfilesTestCase(unittest.TestCase):
         self.assertIn("crear_reclamo", municipio_tools)
         self.assertIn("consultar_estado_reclamo", municipio_tools)
         self.assertIn("consultar_tramite", municipio_tools)
+        self.assertIn("registrar_solicitud_operativa", municipio_tools)
         self.assertNotIn("crear_pedido", municipio_tools)
         self.assertIn("crear_pedido", pyme_tools)
         self.assertIn("consultar_producto", pyme_tools)
         self.assertIn("consultar_estado_pedido", pyme_tools)
+        self.assertIn("registrar_solicitud_operativa", pyme_tools)
+
+    def test_general_vertical_can_register_operational_requests_for_any_rubro(self):
+        capabilities = build_realtime_voice_capabilities(SimpleNamespace(tipo="ong", nombre="ONG Demo"))
+        general_tools = [tool["name"] for tool in build_realtime_voice_tools("general")]
+
+        self.assertEqual(capabilities["active_vertical"], "general")
+        self.assertIn("general", capabilities["verticals"])
+        self.assertIn("registrar_solicitud_operativa", general_tools)
+        self.assertIn("capturar_lead_comercial", general_tools)
+        self.assertIn("registrar_solicitud_operativa", capabilities["verticals"]["general"]["actions"])
 
 
 if __name__ == "__main__":

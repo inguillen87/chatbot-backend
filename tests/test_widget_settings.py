@@ -117,6 +117,11 @@ class WidgetSettingsTests(unittest.TestCase):
         self.assertIn("data-avatar-enabled", attrs)
         self.assertIn("data-avatar-type", attrs)
         self.assertIn("data-avatar-persona", attrs)
+        self.assertEqual(attrs["data-avatar-contract-version"], "chatboc.avatar.v1")
+        self.assertEqual(attrs["data-avatar-type"], "chatboc_bot")
+        self.assertEqual(attrs["data-avatar-persona"], "bot_chatboc")
+        self.assertEqual(attrs["data-avatar-display-name"], "BOT Chatboc")
+        self.assertEqual(widget_data["builder_config"]["avatar"]["type"], "chatboc_bot")
         self.assertEqual(widget_data["widget"]["builder_config"]["enterprise_iteration"]["realtime"]["voice_handoff"]["supports_whatsapp_followup"], True)
 
 
@@ -204,6 +209,10 @@ class WidgetSettingsTests(unittest.TestCase):
         self.assertEqual(payload["avatar"]["active_vertical"], "municipio")
         self.assertEqual(payload["avatar"]["requested_model_ignored"], "gpt-4o-realtime-preview")
         self.assertEqual(payload["avatar"]["openai_realtime_contract"], "client_secrets.v2")
+        self.assertEqual(payload["avatar"]["avatar_type"], "chatboc_bot")
+        self.assertEqual(payload["avatar"]["avatar_persona"], "bot_chatboc")
+        self.assertEqual(payload["avatar_contract"]["contract_version"], "chatboc.avatar.v1")
+        self.assertEqual(payload["avatar_contract"]["display_name"], "BOT Chatboc")
         self.assertEqual(payload["avatar"]["translation"]["target_language"], "es")
         self.assertTrue(payload["avatar"]["translation"]["channels"]["realtime_voice_call"])
         request_obj = mock_urlopen.call_args.args[0]
@@ -217,7 +226,31 @@ class WidgetSettingsTests(unittest.TestCase):
         self.assertEqual(upstream_payload["session"]["tracing"]["metadata"]["openai_endpoint"], "/v1/realtime/client_secrets")
         self.assertIn("ingles", upstream_payload["session"]["instructions"])
         self.assertIn("portugues", upstream_payload["session"]["instructions"])
+        tool_names = {tool["name"] for tool in upstream_payload["session"]["tools"]}
+        self.assertIn("crear_reclamo", tool_names)
+        self.assertIn("capturar_lead_comercial", tool_names)
+        self.assertIn("registrar_solicitud_operativa", tool_names)
         self.assertIsNone(request_obj.get_header("Openai-beta"))
+
+    def test_public_realtime_voice_capabilities_expose_bot_avatar_and_business_tools(self):
+        response = self.client.get(
+            "/api/public/realtime/voice-capabilities",
+            query_string={"tenant": self.tenant.slug},
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["provider"], "openai_realtime")
+        self.assertEqual(payload["api_generation"], "realtime_ga_client_secrets_v2")
+        self.assertEqual(payload["avatar"]["contract_version"], "chatboc.avatar.v1")
+        self.assertEqual(payload["avatar"]["type"], "chatboc_bot")
+        self.assertEqual(payload["avatar"]["persona"], "bot_chatboc")
+        municipio_actions = payload["verticals"]["municipio"]["actions"]
+        self.assertIn("crear_reclamo", municipio_actions)
+        self.assertIn("capturar_lead_comercial", municipio_actions)
+        self.assertIn("registrar_solicitud_operativa", municipio_actions)
+        self.assertIn("registrar_intencion_pago_colegio", payload["verticals"]["colegio"]["actions"])
+        self.assertIn("cotizar_envio", payload["verticals"]["pyme"]["actions"])
+        self.assertIn("registrar_solicitud_operativa", payload["verticals"]["general"]["actions"])
 
     @patch("routes.public_resolver.urllib_request.urlopen")
     def test_public_realtime_session_ignores_legacy_beta_header_env(self, mock_urlopen):

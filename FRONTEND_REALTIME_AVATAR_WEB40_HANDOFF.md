@@ -422,3 +422,167 @@ map.on('load', () => {
   map.addLayer({ id: cfg.layers.points.id, type: 'circle', source: 'events', filter: ['!', ['has', 'point_count']] });
 });
 ```
+
+---
+
+## J. Update 2026-05-16: BOT Chatboc + Realtime GA v2
+
+Backend ahora publica contrato explicito para el avatar de marca y nuevas tools de negocio para voz/video.
+
+### Avatar
+
+Consumir desde:
+
+- `GET /api/public/widget-config?tenant=<slug>`
+- `GET /api/public/realtime/voice-capabilities?tenant=<slug>`
+- `POST /api/public/realtime/session`
+
+Contrato:
+
+```json
+{
+  "avatar": {
+    "contract_version": "chatboc.avatar.v1",
+    "enabled": true,
+    "type": "chatboc_bot",
+    "persona": "bot_chatboc",
+    "display_name": "BOT Chatboc",
+    "render_as": "animated_mascot",
+    "state_source": "realtime_events",
+    "states": ["idle", "listening", "thinking", "speaking", "tool_success", "handoff", "error"]
+  }
+}
+```
+
+Widget attributes nuevos:
+
+- `data-avatar-contract-version`
+- `data-avatar-type`
+- `data-avatar-persona`
+- `data-avatar-display-name`
+- `data-avatar-state-source`
+
+Reglas frontend:
+
+- Renderizar una mascota animada profesional cuando `type=chatboc_bot`.
+- Estados minimos: idle, listening, thinking, speaking, tool_success, handoff, error.
+- No mostrar imagen rota. Si backend no manda assets o falla la carga, usar avatar vectorial/local del frontend.
+- No usar un logo grande como demo de avatar. El avatar debe sentirse personaje/agente.
+
+### Realtime session
+
+Backend mantiene:
+
+- modelo efectivo: `gpt-realtime`
+- endpoint OpenAI: `/v1/realtime/client_secrets`
+- contrato backend: `client_secrets.v2`
+- sin header beta legacy.
+
+Frontend debe pedir session con `widget_token` real:
+
+```json
+{
+  "tenant_slug": "junin-1",
+  "widget_token": "...",
+  "channel": "voice",
+  "transport": "webrtc",
+  "active_vertical": "municipio"
+}
+```
+
+### Tools nuevas que frontend puede reflejar
+
+Las tools llegan en `verticals.<rubro>.actions` y en la session realtime.
+
+Global:
+
+- `capturar_lead_comercial`: crea lead/ticket comercial trazable cuando alguien quiere automatizar un negocio, colegio, municipio o empresa.
+- `registrar_solicitud_operativa`: crea ticket trazable para cualquier rubro/tenant cuando no existe una tool vertical mas especifica.
+
+Municipios:
+
+- `crear_reclamo`
+- `consultar_estado_reclamo`
+- `consultar_tramite`
+
+Pymes:
+
+- `consultar_producto`
+- `crear_pedido`
+- `cotizar_envio`
+- `consultar_estado_pedido`
+
+Colegios:
+
+- `crear_caso_escolar`
+- `registrar_intencion_pago_colegio`
+- `consultar_caso_escolar`
+
+Otros rubros / entidades:
+
+- `registrar_solicitud_operativa`
+- `capturar_lead_comercial`
+- `derivar_humano`
+
+### UX esperado por rubro
+
+Gobierno:
+
+- CTA: "Hacer reclamo por llamada".
+- Confirmacion visual solo si tool devuelve ticket real.
+- Mostrar resumen, categoria, ubicacion, numero y boton de WhatsApp si backend devuelve comprobante.
+
+Pyme:
+
+- CTA por rubro concreto: Bodega, Ferreteria, Almacen antes que "Empresa generica".
+- Flujo: consultar producto -> precio/catalogo real -> cotizar envio -> crear pedido.
+- La cotizacion de envio se renderiza desde backend, no se calcula en frontend.
+- No mostrar total final si backend no lo confirma.
+
+Colegio:
+
+- CTA: "Pagar cuota o consultar secretaria".
+- `registrar_intencion_pago_colegio` NO significa pago realizado. Mostrar estado "intencion registrada" hasta que exista checkout/comprobante real.
+- Si backend devuelve link de pago por WhatsApp o contexto, mostrarlo como accion externa, no como recibo.
+
+Lead comercial Chatboc:
+
+- Si el usuario dice "tengo un negocio y quiero automatizarlo", la UI debe ayudar a pedir:
+  - nombre
+  - telefono o email
+  - rubro
+  - necesidad
+- Tras tool exitosa, mostrar card "Solicitud registrada" con id/ticket si viene.
+
+Rubros genericos o nuevos de DB:
+
+- No bloquear la demo si `active_vertical=general` o si el rubro no es municipio/pyme/colegio.
+- Mostrar menu generico:
+  - Registrar consulta
+  - Registrar reclamo
+  - Sugerencia
+  - Certificado / boleta / tramite
+  - Hablar con una persona
+- Si la tool devuelta es `registrar_solicitud_operativa`, renderizar una card de seguimiento con:
+  - tipo_solicitud
+  - categoria
+  - descripcion
+  - ubicacion si viene
+  - id/ticket
+  - estado
+- Frontend no debe inventar certificados, boletas, pagos, turnos, precios ni resoluciones. Si backend no confirma, mostrar "solicitud registrada" o pedir faltantes.
+
+### Eventos frontend recomendados
+
+Enviar a `/api/public/realtime/action-event` cuando la accion sea confirmada por backend:
+
+- `capturar_lead_comercial`
+- `crear_reclamo`
+- `crear_pedido`
+- `cotizar_envio`
+- `registrar_intencion_pago_colegio`
+- `crear_caso_escolar`
+- `registrar_solicitud_operativa`
+- `derivar_humano`
+
+No emitir `business_action_executed` si solo hubo una intencion del usuario y la tool fallo.
