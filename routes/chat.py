@@ -1965,6 +1965,21 @@ def _procesar_chat(
             if isinstance(chat_bootstrap_inner_payload.get("rubro_tools"), dict)
             else {}
         )
+        rubro_tool_summary_from_payload = (
+            request_payload.get("rubro_tool_summary")
+            if isinstance(request_payload.get("rubro_tool_summary"), dict)
+            else chat_bootstrap_payload.get("rubro_tool_summary")
+            if isinstance(chat_bootstrap_payload.get("rubro_tool_summary"), dict)
+            else chat_bootstrap_inner_payload.get("rubro_tool_summary")
+            if isinstance(chat_bootstrap_inner_payload.get("rubro_tool_summary"), dict)
+            else {}
+        )
+        if (
+            rubro_tool_summary_from_payload
+            and isinstance(demo_metadata_from_payload, dict)
+            and not demo_metadata_from_payload.get("tool_summary")
+        ):
+            demo_metadata_from_payload = {**demo_metadata_from_payload, "tool_summary": rubro_tool_summary_from_payload}
         effective_tenant_marker = (
             request.headers.get("X-Tenant-Slug")
             or request.args.get("tenant_slug")
@@ -2028,6 +2043,8 @@ def _procesar_chat(
                 contexto_chat["rubro_context"] = rubro_context_from_payload
             if rubro_tools_from_payload:
                 contexto_chat["rubro_tools"] = rubro_tools_from_payload
+            if rubro_tool_summary_from_payload:
+                contexto_chat["rubro_tool_summary"] = rubro_tool_summary_from_payload
 
             if demo_tenant_slug and not _owner_context_is_trusted(owner_user, owner_resolution_source):
                 tenant_for_demo = (
@@ -2070,6 +2087,8 @@ def _procesar_chat(
                     data["rubro_context"] = rubro_context_from_payload
                 if rubro_tools_from_payload:
                     data["rubro_tools"] = rubro_tools_from_payload
+                if rubro_tool_summary_from_payload:
+                    data["rubro_tool_summary"] = rubro_tool_summary_from_payload
                 chat_context_obj.context_data = data
                 flag_modified(chat_context_obj, "context_data")
 

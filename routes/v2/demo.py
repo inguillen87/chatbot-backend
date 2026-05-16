@@ -441,6 +441,124 @@ def _safe_demo_json(path: Path) -> Any:
     return None
 
 
+def _non_empty(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        return text or None
+    if isinstance(value, (list, dict)) and not value:
+        return None
+    return value
+
+
+def _tenant_owner_for_tools(tenant: TenantProfile) -> Any:
+    return getattr(tenant, "municipio", None) or getattr(tenant, "pyme", None)
+
+
+def _tenant_runtime_config_for_tools(tenant: TenantProfile) -> dict[str, Any]:
+    cfg = tenant.configuracion if isinstance(tenant.configuracion, dict) else {}
+    owner = _tenant_owner_for_tools(tenant)
+
+    address = (
+        _non_empty(cfg.get("direccion"))
+        or _non_empty(cfg.get("address"))
+        or _non_empty(cfg.get("domicilio"))
+        or _non_empty(getattr(owner, "direccion", None))
+    )
+    city = _non_empty(cfg.get("ciudad")) or _non_empty(getattr(owner, "ciudad", None))
+    lat = (
+        _non_empty(cfg.get("lat"))
+        or _non_empty(cfg.get("latitud"))
+        or _non_empty(getattr(owner, "latitud", None))
+    )
+    lng = (
+        _non_empty(cfg.get("lng"))
+        or _non_empty(cfg.get("lon"))
+        or _non_empty(cfg.get("longitud"))
+        or _non_empty(getattr(owner, "longitud", None))
+    )
+    phone = (
+        _non_empty(cfg.get("telefono"))
+        or _non_empty(cfg.get("phone"))
+        or _non_empty(tenant.dispatch_phone)
+        or _non_empty(getattr(owner, "telefono", None))
+    )
+    whatsapp = (
+        _non_empty((cfg.get("whatsapp") or {}).get("numero") if isinstance(cfg.get("whatsapp"), dict) else None)
+        or _non_empty(cfg.get("numero_whatsapp"))
+        or _non_empty(cfg.get("whatsapp_number"))
+        or _non_empty(tenant.whatsapp_sender_id)
+    )
+    email = (
+        _non_empty((cfg.get("contacto") or {}).get("email") if isinstance(cfg.get("contacto"), dict) else None)
+        or _non_empty(cfg.get("public_email"))
+        or _non_empty(cfg.get("email_contacto"))
+        or _non_empty(tenant.dispatch_email)
+    )
+    website = (
+        _non_empty(cfg.get("web_url"))
+        or _non_empty(cfg.get("website"))
+        or _non_empty(cfg.get("link_web"))
+        or _non_empty(getattr(owner, "link_web", None))
+        or _non_empty(tenant.dominio)
+    )
+
+    runtime: dict[str, Any] = {}
+    if address:
+        runtime["direccion"] = address
+    if city:
+        runtime["ciudad"] = city
+    if lat is not None:
+        runtime["lat"] = lat
+    if lng is not None:
+        runtime["lng"] = lng
+    if address or (lat is not None and lng is not None):
+        runtime["ubicaciones"] = [
+            {
+                "id": "tenant_main_location",
+                "label": tenant.nombre or "Ubicacion principal",
+                "direccion": address or "",
+                "lat": lat,
+                "lng": lng,
+            }
+        ]
+    if phone or email or website:
+        runtime["contacto"] = {
+            "telefono": phone or "",
+            "email": email or "",
+            "web": website or "",
+        }
+    if whatsapp:
+        runtime["whatsapp"] = {"numero": str(whatsapp).replace("whatsapp:", "", 1)}
+    if _non_empty(cfg.get("horarios")) or _non_empty(cfg.get("hours")) or _non_empty(cfg.get("horario_atencion")):
+        runtime["horarios"] = cfg.get("horarios") or cfg.get("hours") or cfg.get("horario_atencion")
+    if isinstance(cfg.get("resources"), list):
+        runtime["resources"] = cfg.get("resources")
+    return runtime
+
+
+def _merge_demo_tool_config(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(base or {})
+    for key, value in (overlay or {}).items():
+        value = _non_empty(value)
+        if value is None:
+            continue
+        if key == "resources" and isinstance(value, list):
+            base_resources = merged.get("resources") if isinstance(merged.get("resources"), list) else []
+            merged["resources"] = [*base_resources, *value]
+        elif key == "ubicaciones" and isinstance(value, list):
+            base_locations = merged.get("ubicaciones") if isinstance(merged.get("ubicaciones"), list) else []
+            merged["ubicaciones"] = [*value, *base_locations]
+        elif isinstance(value, dict) and isinstance(merged.get(key), dict):
+            nested = dict(merged[key])
+            nested.update({nested_key: nested_value for nested_key, nested_value in value.items() if _non_empty(nested_value) is not None})
+            merged[key] = nested
+        else:
+            merged[key] = value
+    return merged
+
+
 def _demo_pyme_file_candidates(rubro: str, tenant: TenantProfile, filename: str) -> list[Path]:
     root = Path(current_app.root_path) / "data" / "pyme" / "rubros"
     slug = _payload_slug(rubro or tenant.slug)
@@ -470,15 +588,17 @@ def _demo_pyme_file_candidates(rubro: str, tenant: TenantProfile, filename: str)
 
 
 def _demo_static_config_for_rubro(*, sector: str, rubro: str, tenant: TenantProfile) -> dict[str, Any]:
+    tenant_config = _tenant_runtime_config_for_tools(tenant)
     if sector == "gobierno":
         raw = _safe_demo_json(Path(current_app.root_path) / "data" / "municipios" / "default" / "config.json")
-        return raw if isinstance(raw, dict) else {}
+        static_config = raw if isinstance(raw, dict) else {}
+        return _merge_demo_tool_config(static_config, tenant_config)
 
     for candidate in _demo_pyme_file_candidates(rubro, tenant, "config.json"):
         raw = _safe_demo_json(candidate)
         if isinstance(raw, dict) and raw:
-            return raw
-    return {}
+            return _merge_demo_tool_config(raw, tenant_config)
+    return tenant_config
 
 
 def _demo_static_faq_for_rubro(*, rubro: str, tenant: TenantProfile) -> list[dict[str, str]]:

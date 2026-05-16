@@ -223,6 +223,15 @@ No inventar:
 
 Si el usuario pide "ubicacion", "telefono", "horarios", "catalogo" o "lista de precios" y la herramienta existe, frontend puede responder con la tarjeta/herramienta local antes o junto al mensaje del chat. Si no existe, debe dejar que el runtime responda o mostrar estado vacio: `Dato no publicado para este rubro`.
 
+Datos reales por tenant:
+
+- Para tenants reales como Junin o una pyme cargada, backend puede publicar herramientas desde la configuracion del tenant.
+- Si `workspace.rubro_tools.locations[].maps_url` existe, usar ese enlace exacto.
+- Si `contact.website` viene sin estilo visual definido, renderizarlo como link simple.
+- Si `hours` es objeto, renderizar pares clave/valor; si es string, renderizarlo textual.
+- Si `price_resources` trae Excel/PDF, mostrar CTA de descarga/abrir; no parsear precios en frontend.
+- Si el usuario esta en un municipio y no hay catalogo comercial, ocultar carrito/catalogo comercial aunque haya contacto/ubicacion.
+
 Ejemplo:
 
 ```json

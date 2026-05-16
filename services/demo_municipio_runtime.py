@@ -118,7 +118,18 @@ def _classify_demo_intent(
     if any(token in text for token in ("licencia", "registro", "carnet", "turno")):
         return {"kind": "info", "category": "Licencias de conducir"}
 
-    if any(token in text for token in ("videollamada", "video llamada", "llamada", "call", "telefono", "operador", "persona")):
+    claim_terms = (
+        "bache", "baches", "pozo", "pozos", "pavimento", "calle rota", "asfalto",
+        "alumbrado", "luminaria", "reclamo", "ticket", "caso", "semaforo",
+    )
+    tool_terms = (
+        "ubicacion", "direccion", "mapa", "maps", "telefono", "whatsapp", "contacto",
+        "horario", "horarios", "catalogo", "lista de precios", "precios", "web",
+    )
+    if ("tool_" in action or any(token in text for token in tool_terms)) and not any(token in text for token in claim_terms):
+        return {"kind": "tool_lookup", "category": "Herramientas publicas"}
+
+    if any(token in text for token in ("videollamada", "video llamada", "llamada", "call", "operador", "persona")):
         return {"kind": "human_handoff", "category": "Atencion personalizada"}
 
     if any(token in text for token in ("encuesta", "votacion", "votar", "sondeo")):
@@ -416,6 +427,140 @@ def _response_for_survey() -> dict[str, Any]:
     }
 
 
+def _tool_summary(chat_db_context: ChatSessionContext | None) -> dict[str, Any]:
+    if not chat_db_context or not isinstance(chat_db_context.context_data, dict):
+        return {}
+    data = chat_db_context.context_data
+    summary = data.get("rubro_tool_summary")
+    if isinstance(summary, dict):
+        return summary
+    metadata = data.get("demo_metadata")
+    if isinstance(metadata, dict) and isinstance(metadata.get("tool_summary"), dict):
+        return metadata["tool_summary"]
+    rubro_tools = data.get("rubro_tools")
+    if isinstance(rubro_tools, dict) and isinstance(rubro_tools.get("llm_context"), dict):
+        return rubro_tools["llm_context"]
+    return {}
+
+
+def _response_for_tool_lookup(question: str, chat_db_context: ChatSessionContext | None) -> dict[str, Any] | None:
+    summary = _tool_summary(chat_db_context)
+    if not summary:
+        return None
+
+    text = _fold(question)
+    wants_location = any(token in text for token in ("ubicacion", "direccion", "mapa", "maps"))
+    wants_contact = any(token in text for token in ("telefono", "whatsapp", "contacto", "web"))
+    wants_hours = any(token in text for token in ("horario", "horarios"))
+    wants_prices = any(token in text for token in ("precio", "precios", "lista"))
+    wants_catalog = any(token in text for token in ("catalogo", "catalogos", "tramite", "tramites"))
+
+    cards: list[dict[str, Any]] = []
+    lines: list[str] = []
+
+    locations = summary.get("locations") if isinstance(summary.get("locations"), list) else []
+    if wants_location and locations:
+        first = locations[0]
+        label = first.get("label") or "Ubicacion"
+        address = first.get("address") or "Direccion publicada"
+        maps_url = first.get("maps_url")
+        lines.append(f"{label}: {address}.")
+        cards.append(
+            {
+                "label": "Ubicacion",
+                "status": "ready",
+                "detail": address,
+                "creates": "tool_result",
+                "fields": [{"label": "Direccion", "value": address}],
+                "metadata": {"maps_url": maps_url, "kind": "location"},
+            }
+        )
+
+    contact = summary.get("contact") if isinstance(summary.get("contact"), dict) else {}
+    if wants_contact and contact:
+        fields = []
+        for key, label in (("phone", "Telefono"), ("whatsapp", "WhatsApp"), ("email", "Email"), ("website", "Web")):
+            if contact.get(key):
+                fields.append({"label": label, "value": contact.get(key)})
+        if fields:
+            lines.append("Contacto: " + " | ".join(f"{item['label']}: {item['value']}" for item in fields) + ".")
+            cards.append(
+                {
+                    "label": "Contacto",
+                    "status": "ready",
+                    "detail": "Canales publicados para este tenant.",
+                    "creates": "tool_result",
+                    "fields": fields,
+                    "metadata": {"kind": "contact"},
+                }
+            )
+
+    hours = summary.get("hours")
+    if wants_hours and hours:
+        if isinstance(hours, dict):
+            hours_text = " | ".join(f"{key}: {value}" for key, value in hours.items())
+        else:
+            hours_text = str(hours)
+        lines.append(f"Horarios: {hours_text}.")
+        cards.append(
+            {
+                "label": "Horarios",
+                "status": "ready",
+                "detail": hours_text,
+                "creates": "tool_result",
+                "fields": [{"label": "Horario", "value": hours_text}],
+                "metadata": {"kind": "hours"},
+            }
+        )
+
+    price_resources = summary.get("price_resources") if isinstance(summary.get("price_resources"), list) else []
+    if wants_prices and price_resources:
+        resource = price_resources[0]
+        lines.append(f"Lista de precios: {resource.get('label')}.")
+        cards.append(
+            {
+                "label": "Lista de precios",
+                "status": "ready",
+                "detail": resource.get("description") or resource.get("label"),
+                "creates": "tool_result",
+                "fields": [{"label": "Recurso", "value": resource.get("label")}],
+                "metadata": {"kind": "price_list", "url": resource.get("url")},
+            }
+        )
+
+    resources = summary.get("resources") if isinstance(summary.get("resources"), list) else []
+    if wants_catalog and resources:
+        resource = resources[0]
+        lines.append(f"Catalogo/recurso: {resource.get('label')}.")
+        cards.append(
+            {
+                "label": "Catalogo",
+                "status": "ready",
+                "detail": resource.get("description") or resource.get("label"),
+                "creates": "tool_result",
+                "fields": [{"label": "Recurso", "value": resource.get("label")}],
+                "metadata": {"kind": "catalog", "url": resource.get("url")},
+            }
+        )
+
+    if not cards:
+        return None
+
+    message = " ".join(lines) or "Tengo herramientas publicadas para este rubro."
+    return {
+        "message_body": message,
+        "respuesta": message,
+        "fuente": DEMO_MUNICIPIO_SOURCE,
+        "accion_backend": "demo_tool_lookup",
+        "rubro_tools_result": {
+            "contract_version": "demo.rubro_tools_result.v1",
+            "matched": [card.get("metadata", {}).get("kind") for card in cards],
+            "source": "chat_session_context.rubro_tool_summary",
+        },
+        "actions": cards,
+    }
+
+
 def _response_for_ticket(ticket: MunicipioTicket, created: bool, details: dict[str, Any], media: dict[str, Any] | None) -> dict[str, Any]:
     has_location = bool(ticket.latitud is not None and ticket.longitud is not None)
     media_labels = [item.get("kind") for item in details.get("media") or [] if isinstance(item, dict) and item.get("kind")]
@@ -502,6 +647,8 @@ def handle_demo_municipio_message(
         return _response_for_info(question)
     if kind == "status_lookup":
         return _response_for_status(chat_db_context)
+    if kind == "tool_lookup":
+        return _response_for_tool_lookup(question, chat_db_context)
     if kind == "human_handoff":
         return _response_for_handoff()
     if kind == "survey":

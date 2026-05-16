@@ -761,6 +761,62 @@ class ApiV2FoundationTest(unittest.TestCase):
             tools.get("faq_preview")[:6],
         )
 
+    def test_v2_demo_session_rubro_tools_use_tenant_runtime_config(self):
+        owner = User(
+            name="Ferreteria Tenant Tools",
+            email="ferreteria-tenant-tools@test.com",
+            password_hash="hash",
+            tipo_chat="pyme",
+            telefono="+5492611111111",
+            direccion="Av Libertador 123, Mendoza",
+            link_web="https://ferreteria.example.com",
+        )
+        db.session.add(owner)
+        db.session.flush()
+        tenant = TenantProfile(
+            slug="ferreteria",
+            nombre="Ferreteria Demo",
+            tipo="pyme",
+            pyme_id=owner.id,
+            is_active=True,
+            dispatch_email="ventas@ferreteria.example.com",
+            configuracion={
+                "lat": -32.8895,
+                "lng": -68.8458,
+                "horarios": {"lunes_viernes": "09:00-18:00"},
+                "resources": [
+                    {
+                        "id": "lista_precios_tenant",
+                        "label": "Lista de precios tenant",
+                        "kind": "spreadsheet",
+                        "url": "https://example.com/lista-precios.xlsx",
+                    }
+                ],
+            },
+        )
+        db.session.add(tenant)
+        db.session.commit()
+
+        resp = self.client.post(
+            "/api/v2/demo/session",
+            json={"sector": "empresas", "rubro": "ferreteria", "source": "landing_widget_rubro_selector", "surface": "widget"},
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        tools = ((resp.get_json().get("workspace") or {}).get("rubro_tools") or {})
+        enabled_tools = {item.get("id"): item for item in tools.get("enabled_tools") or []}
+
+        self.assertIn("location", enabled_tools)
+        self.assertIn("contact", enabled_tools)
+        self.assertIn("hours", enabled_tools)
+        self.assertIn("price_list", enabled_tools)
+        self.assertIn("-32.8895%2C-68.8458", (tools.get("locations") or [{}])[0].get("maps_url") or "")
+        self.assertEqual((tools.get("contact") or {}).get("phone"), "+5492611111111")
+        self.assertEqual((tools.get("contact") or {}).get("email"), "ventas@ferreteria.example.com")
+        self.assertEqual((tools.get("contact") or {}).get("website"), "https://ferreteria.example.com")
+        self.assertEqual((tools.get("hours") or {}).get("lunes_viernes"), "09:00-18:00")
+        self.assertTrue(any(item.get("id") == "lista_precios_tenant" for item in tools.get("price_resources") or []))
+
     def test_v2_demo_session_gobierno_rubro_tools_include_google_maps_location(self):
         owner = User(name="Municipio Tools", email="municipio-tools@test.com", password_hash="hash", tipo_chat="municipio")
         db.session.add(owner)
@@ -790,6 +846,51 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertTrue(locations)
         self.assertIn("google.com/maps", locations[0].get("maps_url") or "")
         self.assertTrue((tools.get("contact") or {}).get("website"))
+
+    def test_demo_municipio_runtime_answers_public_tools_from_session_summary(self):
+        owner = User(name="Municipio Runtime Tools", email="municipio-runtime-tools@test.com", password_hash="hash", tipo_chat="municipio", rol="admin")
+        db.session.add(owner)
+        db.session.flush()
+        db.session.add(
+            TenantProfile(
+                slug="municipio",
+                nombre="Municipio Demo",
+                tipo="municipio",
+                municipio_id=owner.id,
+                is_active=True,
+                dispatch_phone="+5492612222222",
+                configuracion={"horarios": {"atencion": "08:00-13:00"}},
+            )
+        )
+        db.session.commit()
+
+        session_resp = self.client.post(
+            "/api/v2/demo/session",
+            json={"sector": "gobierno", "rubro": "municipio", "source": "landing_widget_selector", "surface": "widget"},
+        )
+        self.assertEqual(session_resp.status_code, 200)
+        session_payload = session_resp.get_json()
+        bootstrap = (session_payload.get("workspace") or {}).get("chat_bootstrap") or {}
+        bootstrap_payload = bootstrap.get("payload") or {}
+
+        resp = self.client.post(
+            "/api/ask/municipio?tenant_slug=municipio",
+            json={**bootstrap_payload, "pregunta": "Cual es la ubicacion telefono y horarios?", "chat_bootstrap": bootstrap},
+            headers={
+                "Origin": "https://www.chatboc.ar",
+                "X-Chat-Session-Id": (bootstrap.get("headers") or {}).get("X-Chat-Session-Id", "runtime-tools-1"),
+                "X-Demo-Session-Id": (bootstrap.get("headers") or {}).get("X-Demo-Session-Id", ""),
+                "X-Request-Id": "runtime-tools-summary",
+            },
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.get_json()
+        self.assertEqual(payload.get("accion_backend"), "demo_tool_lookup")
+        self.assertIn("Jun", payload.get("message_body") or "")
+        self.assertIn("+5492612222222", payload.get("message_body") or "")
+        self.assertIn("08:00-13:00", payload.get("message_body") or "")
+        self.assertEqual((payload.get("rubro_tools_result") or {}).get("contract_version"), "demo.rubro_tools_result.v1")
 
     def test_ask_pyme_demo_persists_rubro_metadata_from_chat_bootstrap(self):
         owner = User(name="Ferreteria Runtime", email="ferreteria-runtime@test.com", password_hash="hash", tipo_chat="pyme", rol="admin")
@@ -830,6 +931,7 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertEqual((context_data.get("demo_metadata") or {}).get("key"), "ferreteria")
         self.assertIn("ferreteria", (context_data.get("demo_metadata") or {}).get("prompt_context", ""))
         self.assertTrue((context_data.get("demo_metadata") or {}).get("tool_summary"))
+        self.assertTrue(context_data.get("rubro_tool_summary"))
 
     def test_api_ask_municipio_alias_degrades_runtime_errors_for_cached_frontend(self):
         owner = User(name="Municipio Demo", email="municipio-alias@test.com", password_hash="hash", tipo_chat="municipio", rol="admin")

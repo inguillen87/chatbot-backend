@@ -183,8 +183,34 @@ Reglas:
 - `price_list` se habilita si hay recursos de precios, stock, Excel o lista.
 - `location` se habilita si hay direccion/coordenadas y siempre entrega `maps_url`.
 - `faq` se habilita desde `faq.json`, no desde texto inventado.
+- Para tenants reales, backend tambien toma datos desde `TenantProfile.configuracion`, `dispatch_phone`, `dispatch_email`, `whatsapp_sender_id` y datos publicos del owner (`direccion`, `latitud`, `longitud`, `telefono`, `link_web`) cuando existen.
 - `workspace.rubro_tools` lleva el contrato completo para frontend.
 - `chat_bootstrap.payload.rubro_tool_summary` y `demo_metadata.tool_summary` llevan un resumen liviano para que el runtime pueda responder sobre ubicacion, horarios, catalogo y FAQ sin inflar el payload compacto.
+
+Campos tenant recomendados para que la UX sea completa:
+
+```json
+{
+  "configuracion": {
+    "direccion": "Av. Siempre Viva 123",
+    "lat": -32.8895,
+    "lng": -68.8458,
+    "telefono": "+5492611111111",
+    "web_url": "https://cliente.com",
+    "horarios": {
+      "lunes_viernes": "09:00-18:00"
+    },
+    "resources": [
+      {
+        "id": "lista_precios",
+        "label": "Lista de precios",
+        "kind": "spreadsheet",
+        "url": "https://..."
+      }
+    ]
+  }
+}
+```
 
 ## UX/UI Requerido
 
