@@ -201,6 +201,86 @@ Backend debe soportar:
 - No devolver links que manden al navegador a `/api/v2/tickets/{id}` como pagina visual.
 - Si existe `GET /api/v2/tickets/{id}`, debe responder JSON util, pero frontend no debe navegar ahi como vista.
 
+### 4.1 Herramientas por rubro
+
+Cada rubro debe declarar su set operativo en `workspace.rubro_tools` usando `demo.rubro_tools.v1`.
+
+```json
+{
+  "contract_version": "demo.rubro_tools.v1",
+  "sector": "empresas",
+  "rubro": "ferreteria",
+  "tenant_slug": "ferreteria",
+  "display_name": "Ferreteria Demo",
+  "enabled_tools": [
+    {
+      "id": "catalog",
+      "kind": "rubro_tool",
+      "label": "Catalogo",
+      "description": "Recursos publicados para productos, servicios o tramites.",
+      "enabled": true,
+      "action_label": "Abrir catalogo",
+      "action_url": "https://...",
+      "items": [],
+      "fields": [{ "label": "Recursos", "value": 24 }]
+    },
+    {
+      "id": "location",
+      "kind": "rubro_tool",
+      "label": "Ubicacion",
+      "description": "Direcciones con enlace operativo a Google Maps.",
+      "enabled": true,
+      "action_label": "Abrir Google Maps",
+      "action_url": "https://www.google.com/maps/search/?api=1&query=...",
+      "items": [
+        {
+          "label": "Sucursal centro",
+          "address": "Av. San Martin 100",
+          "lat": -34.585,
+          "lng": -60.943,
+          "maps_url": "https://www.google.com/maps/search/?api=1&query=-34.585%2C-60.943"
+        }
+      ]
+    }
+  ],
+  "resources": [],
+  "price_resources": [],
+  "locations": [],
+  "contact": {
+    "phone": "+549...",
+    "whatsapp": "+549...",
+    "email": "ventas@...",
+    "website": "https://..."
+  },
+  "hours": { "lunes_viernes": "09:00-18:00" },
+  "faq_preview": [],
+  "frontend_contract": {
+    "render_as": "tool_tray",
+    "source_path": "workspace.rubro_tools.enabled_tools",
+    "hide_disabled_tools": true,
+    "open_maps_with": "items[].maps_url",
+    "do_not_invent_missing_tools": true
+  }
+}
+```
+
+Herramientas esperadas por rubro cuando existan datos:
+
+- `catalog`: catalogo, productos, servicios o tramites.
+- `price_list`: lista de precios, stock, PDF, Excel o recurso equivalente.
+- `location`: direccion o coordenadas con Google Maps.
+- `contact`: telefono, WhatsApp, email o web.
+- `hours`: horarios de atencion.
+- `faq`: consultas frecuentes del rubro.
+
+Reglas:
+
+- Frontend solo renderiza herramientas con `enabled=true`.
+- Frontend no inventa `label`, `description`, `action_label` ni datos.
+- Si backend no manda ubicacion, no se muestra mapa ni Google Maps.
+- Si backend manda coordenadas o direccion, debe mandar `maps_url` o datos suficientes para construir Google Maps.
+- El resumen para IA debe viajar en `chat_bootstrap.payload.rubro_tool_summary` para que el bot responda con contexto real del rubro.
+
 ### 5. Widget publico
 
 `GET /api/public/widget-config`

@@ -751,6 +751,10 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertTrue(enabled_tools["catalog"].get("items"))
         self.assertTrue(enabled_tools["price_list"].get("items"))
         self.assertTrue(enabled_tools["faq"].get("items"))
+        self.assertEqual(enabled_tools["catalog"].get("action_label"), "Abrir catalogo")
+        self.assertTrue(enabled_tools["catalog"].get("action_url"))
+        self.assertEqual(enabled_tools["price_list"].get("action_label"), "Ver lista de precios")
+        self.assertTrue(enabled_tools["price_list"].get("action_url"))
         self.assertIn("rubro_tool", default_menu_kinds)
         self.assertEqual(
             ((workspace.get("chat_bootstrap") or {}).get("payload") or {}).get("demo_metadata", {}).get("tool_summary", {}).get("faq_preview"),
@@ -810,6 +814,10 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertIn("contact", enabled_tools)
         self.assertIn("hours", enabled_tools)
         self.assertIn("price_list", enabled_tools)
+        self.assertEqual(enabled_tools["location"].get("action_label"), "Abrir Google Maps")
+        self.assertIn("google.com/maps", enabled_tools["location"].get("action_url") or "")
+        self.assertEqual(enabled_tools["contact"].get("action_label"), "Contactar")
+        self.assertIn("wa.me/5492611111111", enabled_tools["contact"].get("action_url") or "")
         self.assertIn("-32.8895%2C-68.8458", (tools.get("locations") or [{}])[0].get("maps_url") or "")
         self.assertEqual((tools.get("contact") or {}).get("phone"), "+5492611111111")
         self.assertEqual((tools.get("contact") or {}).get("email"), "ventas@ferreteria.example.com")
@@ -844,6 +852,8 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertIn("location", enabled_tools)
         self.assertIn("contact", enabled_tools)
         self.assertTrue(locations)
+        self.assertEqual(enabled_tools["location"].get("action_label"), "Abrir Google Maps")
+        self.assertIn("google.com/maps", enabled_tools["location"].get("action_url") or "")
         self.assertIn("google.com/maps", locations[0].get("maps_url") or "")
         self.assertTrue((tools.get("contact") or {}).get("website"))
 

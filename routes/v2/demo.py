@@ -784,6 +784,9 @@ def _demo_tool_contract(
     items: list[dict[str, Any]] | None = None,
     data: Any = None,
     intent: str | None = None,
+    action_label: str | None = None,
+    action_url: str | None = None,
+    fields: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     return {
         "id": key,
@@ -794,7 +797,34 @@ def _demo_tool_contract(
         "enabled": bool(enabled),
         "items": items or [],
         "data": data,
+        "fields": fields or [],
+        "action_label": action_label,
+        "action_url": action_url,
     }
+
+
+def _first_demo_item_url(items: list[dict[str, Any]], *keys: str) -> str | None:
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        for key in keys:
+            value = str(item.get(key) or "").strip()
+            if value:
+                return value
+    return None
+
+
+def _contact_action_url(contact: dict[str, Any]) -> str | None:
+    whatsapp = str(contact.get("whatsapp") or contact.get("phone") or "").strip()
+    if whatsapp:
+        digits = "".join(ch for ch in whatsapp if ch.isdigit())
+        if digits:
+            return f"https://wa.me/{digits}"
+    email = str(contact.get("email") or "").strip()
+    if email:
+        return f"mailto:{email}"
+    website = str(contact.get("website") or "").strip()
+    return website or None
 
 
 def _demo_rubro_tools_contract(
@@ -862,6 +892,9 @@ def _demo_rubro_tools_contract(
             enabled=bool(resources),
             items=resources,
             intent="ver_catalogo",
+            action_label="Abrir catalogo" if resources else None,
+            action_url=_first_demo_item_url(resources, "url", "href"),
+            fields=[{"label": "Recursos", "value": len(resources)}] if resources else [],
         ),
         _demo_tool_contract(
             key="price_list",
@@ -870,6 +903,9 @@ def _demo_rubro_tools_contract(
             enabled=bool(price_resources),
             items=price_resources,
             intent="consultar_precios",
+            action_label="Ver lista de precios" if price_resources else None,
+            action_url=_first_demo_item_url(price_resources, "url", "href"),
+            fields=[{"label": "Listas", "value": len(price_resources)}] if price_resources else [],
         ),
         _demo_tool_contract(
             key="location",
@@ -878,6 +914,9 @@ def _demo_rubro_tools_contract(
             enabled=bool(locations),
             items=locations,
             intent="consultar_ubicacion",
+            action_label="Abrir Google Maps" if locations else None,
+            action_url=_first_demo_item_url(locations, "maps_url", "google_maps_url", "url"),
+            fields=[{"label": "Ubicaciones", "value": len(locations)}] if locations else [],
         ),
         _demo_tool_contract(
             key="contact",
@@ -886,6 +925,14 @@ def _demo_rubro_tools_contract(
             enabled=contact_enabled,
             data=contact if contact_enabled else None,
             intent="consultar_contacto",
+            action_label="Contactar" if contact_enabled else None,
+            action_url=_contact_action_url(contact) if contact_enabled else None,
+            fields=[
+                {"label": "Telefono", "value": contact.get("phone")},
+                {"label": "WhatsApp", "value": contact.get("whatsapp")},
+                {"label": "Email", "value": contact.get("email")},
+                {"label": "Web", "value": contact.get("website")},
+            ] if contact_enabled else [],
         ),
         _demo_tool_contract(
             key="hours",
@@ -894,6 +941,7 @@ def _demo_rubro_tools_contract(
             enabled=bool(hours),
             data=hours if hours else None,
             intent="consultar_horarios",
+            fields=[{"label": "Horarios", "value": hours}] if isinstance(hours, str) else [],
         ),
         _demo_tool_contract(
             key="faq",
@@ -902,6 +950,7 @@ def _demo_rubro_tools_contract(
             enabled=bool(faq_preview),
             items=faq_preview,
             intent="consultar_faq",
+            fields=[{"label": "Preguntas", "value": len(faq_preview)}] if faq_preview else [],
         ),
     ]
 
