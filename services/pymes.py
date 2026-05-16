@@ -1845,6 +1845,10 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
         }
 
     chat_db_context = ensure_session_context(chat_db_context)
+    if demo_metadata is None and isinstance(getattr(chat_db_context, "context_data", None), dict):
+        stored_demo_metadata = chat_db_context.context_data.get("demo_metadata")
+        if isinstance(stored_demo_metadata, dict):
+            demo_metadata = stored_demo_metadata
 
     # --- 1. Procesamiento de Entrada y Carga de Contexto (simplificado) ---
     received_payload = {}
@@ -2116,6 +2120,10 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
             usuario_info_for_llm["demo_description"] = demo_metadata.get("description")
         if demo_metadata.get("faq_preview"):
             usuario_info_for_llm["demo_faq_preview"] = demo_metadata.get("faq_preview")
+        if demo_metadata.get("tools"):
+            usuario_info_for_llm["demo_tools"] = demo_metadata.get("tools")
+        if demo_metadata.get("tool_summary"):
+            usuario_info_for_llm["demo_tool_summary"] = demo_metadata.get("tool_summary")
 
     loc_usuario_texto = getattr(viewer_user, "direccion", None) or pyme_ctx_actual.get("direccion_cliente")
     if loc_usuario_texto:

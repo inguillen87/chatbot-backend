@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote_plus
 import hashlib
 import json
 import uuid
@@ -20,6 +21,7 @@ from services.demo_registry import load_demo_rubros
 from services.demo_pillar_catalog import (
     DEMO_PILLAR_CONTRACT_VERSION,
     catalog_resources_for_rubro,
+    category_for_rubro,
     curated_demo_rubros,
     default_rubro_for_sector,
     demo_pillars,
@@ -118,10 +120,761 @@ def _request_payload() -> dict[str, Any]:
     return dict(request.args.items())
 
 
+def _truthy_payload_flag(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "si", "compact", "widget"}
+
+
+def _demo_session_response_profile(data: dict[str, Any]) -> str:
+    explicit = (
+        data.get("response_profile")
+        or data.get("response_mode")
+        or data.get("render_profile")
+        or data.get("surface")
+        or data.get("mode")
+        or data.get("source")
+    )
+    profile = _payload_slug(explicit)
+    if profile in {
+        "widget",
+        "compact",
+        "selector",
+        "widget_selector",
+        "platform_sector_selector",
+        "landing_widget_selector",
+        "public_widget_selector",
+        "public_widget",
+        "widget_onboarding",
+    }:
+        return "widget_compact"
+    if _truthy_payload_flag(data.get("compact")) or _truthy_payload_flag(data.get("compact_response")):
+        return "widget_compact"
+    return "full"
+
+
+def _payload_search_text(value: Any) -> str:
+    if isinstance(value, dict):
+        parts = [value.get(key) for key in ("sector", "rubro", "slug", "key", "id", "label", "title", "name", "text")]
+        return " ".join(fold_text(part) for part in parts if part)
+    if isinstance(value, (list, tuple)):
+        return " ".join(_payload_search_text(item) for item in value)
+    return fold_text(value)
+
+
+def _infer_demo_sector_from_payload(
+    data: dict[str, Any],
+    *,
+    rubro: str = "",
+    tenant_slug: str = "",
+    current_sector: str = "",
+) -> str:
+    candidates = [
+        current_sector,
+        rubro,
+        tenant_slug,
+        data.get("sector"),
+        data.get("pilar"),
+        data.get("pillar"),
+        data.get("selected_sector"),
+        data.get("selected_pillar"),
+        data.get("segment"),
+        data.get("vertical"),
+        data.get("categoria"),
+        data.get("category"),
+        data.get("label"),
+        data.get("title"),
+        data.get("name"),
+        data.get("id"),
+        data.get("key"),
+        data.get("button_label"),
+        data.get("cta_label"),
+        data.get("text"),
+    ]
+    for candidate in candidates:
+        normalized = normalize_demo_sector(candidate)
+        if normalized in set(demo_pillar_keys()):
+            return normalized
+        inferred = sector_for_rubro(candidate)
+        if inferred:
+            return inferred
+
+    haystack = " ".join(_payload_search_text(candidate) for candidate in candidates if candidate)
+    if any(keyword in haystack for keyword in ("coleg", "escuel", "educacion", "instituto", "jardin", "alumno", "familia", "admisiones")):
+        return "educacion"
+    if any(keyword in haystack for keyword in ("gobierno", "municip", "reclamo", "tramite", "ciudadan", "bache", "alumbrado", "licencia")):
+        return "gobierno"
+    if any(keyword in haystack for keyword in ("empresa", "pyme", "bodega", "ferreter", "catalog", "pedido", "precio", "comercio", "tienda")):
+        return "empresas"
+    return ""
+
+
+def _infer_demo_rubro_from_payload(data: dict[str, Any], *, sector: str = "") -> str:
+    explicit_candidates = [
+        data.get("rubro"),
+        data.get("rubro_slug"),
+        data.get("rubro_key"),
+        data.get("rubro_clave"),
+        data.get("categoria"),
+        data.get("categoria_slug"),
+        data.get("category"),
+        data.get("category_slug"),
+        data.get("category_key"),
+        data.get("demo_rubro"),
+        data.get("subvertical"),
+    ]
+    normalized_sector = normalize_demo_sector(sector)
+    pillar_keys = set(demo_pillar_keys())
+
+    for candidate in explicit_candidates:
+        slug = _payload_slug(candidate)
+        if not slug or slug in pillar_keys:
+            continue
+        category = category_for_rubro(slug)
+        if category and (not normalized_sector or category.get("sector") == normalized_sector):
+            return str(category.get("slug") or slug)
+
+    text_candidates = [
+        data.get("label"),
+        data.get("title"),
+        data.get("name"),
+        data.get("id"),
+        data.get("key"),
+        data.get("button_label"),
+        data.get("cta_label"),
+        data.get("text"),
+    ]
+    haystack = " ".join(_payload_search_text(candidate) for candidate in text_candidates if candidate)
+    if not haystack:
+        return ""
+
+    for pillar in demo_pillars():
+        if normalized_sector and pillar.get("key") != normalized_sector:
+            continue
+        for category in pillar.get("categories") or []:
+            slug = _payload_slug(category.get("slug"))
+            if not slug or slug in pillar_keys:
+                continue
+            label = fold_text(category.get("label") or "")
+            slug_words = fold_text(slug.replace("_", " "))
+            if (label and label in haystack) or (slug_words and slug_words in haystack):
+                return str(category.get("slug") or slug)
+    return ""
+
+
+def _demo_rubro_selector_contract(
+    *,
+    sector: str,
+    selected_rubro: str,
+    response_profile: str,
+) -> dict[str, Any]:
+    categories: list[dict[str, Any]] = []
+    for pillar in demo_pillars():
+        if pillar.get("key") != sector:
+            continue
+        for category in pillar.get("categories") or []:
+            slug = _payload_slug(category.get("slug"))
+            if not slug:
+                continue
+            categories.append(
+                {
+                    "slug": slug,
+                    "label": category.get("label") or slug.replace("_", " ").title(),
+                    "sector": sector,
+                    "tipo_chat": category.get("tipo_chat"),
+                    "vertical": category.get("vertical"),
+                    "subvertical": category.get("subvertical"),
+                    "sample_prompts": category.get("sample_prompts") or [],
+                    "resources": category.get("resources") or [],
+                    "selected": slug == _payload_slug(selected_rubro),
+                    "action_payload": {
+                        "surface": "widget",
+                        "source": "landing_widget_rubro_selector",
+                        "sector": sector,
+                        "rubro": slug,
+                        "label": category.get("label") or slug.replace("_", " ").title(),
+                    },
+                }
+            )
+        break
+
+    return {
+        "contract_version": "demo.rubro_selector.v1",
+        "render_as": "rubro_selector",
+        "response_profile": response_profile,
+        "sector": sector,
+        "selected_rubro": selected_rubro,
+        "requires_selection": sector == "empresas",
+        "open_chat_after_selection": True,
+        "post_endpoint": "/api/v2/demo/session",
+        "categories": categories,
+        "frontend_rule": "Si requires_selection=true, renderizar estas categorias y no enviar __INIT__ todavia.",
+    }
+
+
+def _demo_rubro_context(*, sector: str, rubro: str, tenant: TenantProfile) -> dict[str, Any]:
+    category = category_for_rubro(rubro) or {}
+    slug = _payload_slug(category.get("slug") or rubro or tenant.slug)
+    label = str(category.get("label") or tenant.nombre or slug.replace("_", " ").title()).strip()
+    base = {
+        "contract_version": "demo.rubro_context.v1",
+        "sector": sector,
+        "slug": slug,
+        "label": label,
+        "description": category.get("description") or "",
+        "vertical": category.get("vertical") or tenant.vertical,
+        "subvertical": category.get("subvertical") or tenant.subvertical,
+        "sample_prompts": category.get("sample_prompts") or [],
+        "resources": category.get("resources") or [],
+    }
+
+    pyme_profiles = {
+        "bodega": {
+            "display_name": "Bodega",
+            "description": "Venta de vinos, cajas, promociones, maridajes y pedidos mayoristas.",
+            "prompt_context": (
+                "Demo PYME rubro bodega. Responde como asistente comercial de una bodega: "
+                "habla de vinos, varietales, cajas, maridajes, stock, promociones, envio y retiro. "
+                "No respondas como ferreteria ni comercio generico."
+            ),
+            "quick_actions": [
+                {"id": "ver_vinos", "label": "Ver vinos", "intent": "ver_catalogo_vinos", "description": "Mostrar catalogo de vinos y precios."},
+                {"id": "armar_caja", "label": "Armar caja", "intent": "armar_caja_vinos", "description": "Combinar botellas por gusto y presupuesto."},
+                {"id": "maridaje", "label": "Sugerir maridaje", "intent": "sugerir_maridaje", "description": "Recomendar vino segun comida u ocasion."},
+                {"id": "pedido_mayorista", "label": "Pedido mayorista", "intent": "pedido_mayorista", "description": "Tomar datos para compra mayorista."},
+            ],
+        },
+        "ferreteria": {
+            "display_name": "Ferreteria",
+            "description": "Venta de herramientas, materiales, presupuesto, stock y envios.",
+            "prompt_context": (
+                "Demo PYME rubro ferreteria. Responde como asistente de ferreteria: "
+                "ayuda con herramientas, materiales, medidas, cantidades, presupuestos, stock, envio y retiro. "
+                "No recomiendes vinos ni uses lenguaje de bodega."
+            ),
+            "quick_actions": [
+                {"id": "buscar_producto", "label": "Buscar producto", "intent": "buscar_producto_ferreteria", "description": "Encontrar herramientas o materiales."},
+                {"id": "calcular_materiales", "label": "Calcular materiales", "intent": "calcular_materiales", "description": "Estimar cantidades por medida u obra."},
+                {"id": "armar_presupuesto", "label": "Armar presupuesto", "intent": "armar_presupuesto_ferreteria", "description": "Preparar pedido con precios y stock."},
+                {"id": "coordinar_envio", "label": "Coordinar envio", "intent": "coordinar_envio_retiro", "description": "Resolver entrega, retiro o consulta de sucursal."},
+            ],
+        },
+        "inmobiliaria": {
+            "display_name": "Inmobiliaria",
+            "description": "Consultas por propiedades, requisitos, visitas y tasaciones.",
+            "prompt_context": "Demo PYME rubro inmobiliaria. Prioriza propiedades, visitas, requisitos, tasaciones y seguimiento comercial.",
+            "quick_actions": [
+                {"id": "buscar_propiedad", "label": "Buscar propiedad", "intent": "buscar_propiedad"},
+                {"id": "agendar_visita", "label": "Agendar visita", "intent": "agendar_visita"},
+                {"id": "requisitos", "label": "Consultar requisitos", "intent": "consultar_requisitos"},
+                {"id": "tasacion", "label": "Pedir tasacion", "intent": "pedir_tasacion"},
+            ],
+        },
+        "medico_general": {
+            "display_name": "Clinica o consultorio",
+            "description": "Turnos, consultas, estudios y seguimiento administrativo.",
+            "prompt_context": "Demo PYME rubro salud. Prioriza turnos, estudios, cobertura, preparacion y derivacion administrativa.",
+            "quick_actions": [
+                {"id": "pedir_turno", "label": "Pedir turno", "intent": "pedir_turno"},
+                {"id": "consultar_estudios", "label": "Consultar estudios", "intent": "consultar_estudios"},
+                {"id": "cobertura", "label": "Cobertura", "intent": "consultar_cobertura"},
+                {"id": "hablar_admin", "label": "Hablar con administracion", "intent": "derivar_administracion"},
+            ],
+        },
+        "seguros": {
+            "display_name": "Seguros",
+            "description": "Cotizaciones, polizas, siniestros y documentacion.",
+            "prompt_context": "Demo PYME rubro seguros. Prioriza cotizaciones, coberturas, polizas, siniestros y documentacion.",
+            "quick_actions": [
+                {"id": "cotizar", "label": "Cotizar seguro", "intent": "cotizar_seguro"},
+                {"id": "denunciar_siniestro", "label": "Denunciar siniestro", "intent": "denunciar_siniestro"},
+                {"id": "ver_poliza", "label": "Ver poliza", "intent": "consultar_poliza"},
+                {"id": "documentacion", "label": "Documentacion", "intent": "consultar_documentacion"},
+            ],
+        },
+        "logistica": {
+            "display_name": "Logistica",
+            "description": "Envios, seguimiento, retiros, tarifas y coordinacion operativa.",
+            "prompt_context": "Demo PYME rubro logistica. Prioriza seguimiento, retiros, tarifas, zonas, horarios y novedades de envio.",
+            "quick_actions": [
+                {"id": "cotizar_envio", "label": "Cotizar envio", "intent": "cotizar_envio"},
+                {"id": "seguir_envio", "label": "Seguir envio", "intent": "seguir_envio"},
+                {"id": "coordinar_retiro", "label": "Coordinar retiro", "intent": "coordinar_retiro"},
+                {"id": "zonas", "label": "Ver zonas", "intent": "consultar_zonas"},
+            ],
+        },
+    }
+    generic_pyme = {
+        "display_name": "Comercio general",
+        "description": "Catalogo, pedidos, stock, promociones, envios y seguimiento comercial.",
+        "prompt_context": (
+            "Demo PYME generica. Responde como asistente comercial adaptable: pide rubro o producto si falta contexto, "
+            "ayuda con catalogo, precios, stock, pedido, envio y derivacion a una persona."
+        ),
+        "quick_actions": [
+            {"id": "ver_catalogo", "label": "Ver catalogo", "intent": "ver_catalogo", "description": "Mostrar productos y precios."},
+            {"id": "crear_pedido", "label": "Crear pedido", "intent": "crear_pedido", "description": "Tomar productos, cantidades y contacto."},
+            {"id": "consultar_stock", "label": "Consultar stock", "intent": "consultar_stock", "description": "Validar disponibilidad."},
+            {"id": "hablar_asesor", "label": "Hablar con asesor", "intent": "derivar_humano", "description": "Derivar a una persona."},
+        ],
+    }
+    profile = pyme_profiles.get(slug) if sector == "empresas" else None
+    profile = profile or generic_pyme if sector == "empresas" else {
+        "display_name": label,
+        "description": base["description"],
+        "prompt_context": "",
+        "quick_actions": [],
+    }
+    base.update(profile)
+    base["label"] = profile.get("display_name") or base["label"]
+    return base
+
+
+def _safe_demo_json(path: Path) -> Any:
+    try:
+        if path.is_file():
+            return json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        current_app.logger.warning("No se pudo leer JSON demo %s: %s", path, exc)
+    return None
+
+
+def _demo_pyme_file_candidates(rubro: str, tenant: TenantProfile, filename: str) -> list[Path]:
+    root = Path(current_app.root_path) / "data" / "pyme" / "rubros"
+    slug = _payload_slug(rubro or tenant.slug)
+    tenant_slug = _payload_slug(tenant.slug)
+    candidates: list[Path] = []
+
+    if slug:
+        if tenant_slug:
+            candidates.append(root / slug / tenant_slug / filename)
+        candidates.append(root / slug / filename)
+        rubro_dir = root / slug
+        if rubro_dir.is_dir():
+            for child in sorted(rubro_dir.iterdir(), key=lambda item: item.name):
+                if child.is_dir():
+                    candidates.append(child / filename)
+
+    candidates.append(root / "default" / filename)
+
+    seen: set[str] = set()
+    unique: list[Path] = []
+    for candidate in candidates:
+        key = str(candidate)
+        if key not in seen:
+            seen.add(key)
+            unique.append(candidate)
+    return unique
+
+
+def _demo_static_config_for_rubro(*, sector: str, rubro: str, tenant: TenantProfile) -> dict[str, Any]:
+    if sector == "gobierno":
+        raw = _safe_demo_json(Path(current_app.root_path) / "data" / "municipios" / "default" / "config.json")
+        return raw if isinstance(raw, dict) else {}
+
+    for candidate in _demo_pyme_file_candidates(rubro, tenant, "config.json"):
+        raw = _safe_demo_json(candidate)
+        if isinstance(raw, dict) and raw:
+            return raw
+    return {}
+
+
+def _demo_static_faq_for_rubro(*, rubro: str, tenant: TenantProfile) -> list[dict[str, str]]:
+    raw_items: Any = None
+    for candidate in _demo_pyme_file_candidates(rubro, tenant, "faq.json"):
+        raw_items = _safe_demo_json(candidate)
+        if raw_items:
+            break
+
+    if isinstance(raw_items, dict):
+        raw_items = raw_items.get("items") or raw_items.get("faqs") or raw_items.get("questions") or []
+    if not isinstance(raw_items, list):
+        return []
+
+    normalized: list[dict[str, str]] = []
+    for idx, entry in enumerate(raw_items[:8], start=1):
+        if isinstance(entry, str):
+            question = entry.strip()
+            answer = ""
+            extended_answer = ""
+        elif isinstance(entry, dict):
+            question = str(entry.get("question") or entry.get("pregunta") or entry.get("label") or "").strip()
+            answer = str(entry.get("answer") or entry.get("respuesta") or "").strip()
+            extended_answer = str(entry.get("extended_answer") or entry.get("detalle") or "").strip()
+        else:
+            continue
+        if not question:
+            continue
+        normalized.append(
+            {
+                "id": f"faq_{idx}",
+                "question": question,
+                "answer": answer,
+                "extended_answer": extended_answer,
+            }
+        )
+    return normalized
+
+
+def _normalize_demo_resource(resource: dict[str, Any], index: int) -> dict[str, Any] | None:
+    label = str(
+        resource.get("label")
+        or resource.get("title")
+        or resource.get("name")
+        or resource.get("cta_text")
+        or ""
+    ).strip()
+    url = str(resource.get("url") or resource.get("href") or resource.get("link") or "").strip()
+    if not label or not url:
+        return None
+    kind = str(resource.get("kind") or resource.get("type") or "link").strip().lower()
+    item_id = str(resource.get("id") or _payload_slug(label) or f"resource_{index}").strip()
+    return {
+        "id": item_id,
+        "label": label,
+        "kind": kind,
+        "url": url,
+        "description": str(resource.get("description") or resource.get("detail") or "").strip(),
+        "cta_label": str(resource.get("cta_label") or resource.get("cta_text") or "Abrir").strip(),
+        "highlight": resource.get("highlight"),
+        "availability": resource.get("availability"),
+        "thumbnail": resource.get("thumbnail") or resource.get("thumbnail_url"),
+    }
+
+
+def _merge_demo_resources(*groups: Any) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for group in groups:
+        if not isinstance(group, list):
+            continue
+        for raw in group:
+            if not isinstance(raw, dict):
+                continue
+            item = _normalize_demo_resource(raw, len(merged) + 1)
+            if not item:
+                continue
+            key = item.get("url") or item.get("id")
+            if key in seen:
+                continue
+            seen.add(str(key))
+            merged.append(item)
+    return merged
+
+
+def _google_maps_url(*, address: str | None = None, lat: Any = None, lng: Any = None) -> str | None:
+    lat_value = str(lat or "").strip()
+    lng_value = str(lng or "").strip()
+    if lat_value and lng_value:
+        return f"https://www.google.com/maps/search/?api=1&query={quote_plus(lat_value + ',' + lng_value)}"
+    address_value = str(address or "").strip()
+    if address_value:
+        return f"https://www.google.com/maps/search/?api=1&query={quote_plus(address_value)}"
+    return None
+
+
+def _extract_demo_locations(config: dict[str, Any], tenant: TenantProfile) -> list[dict[str, Any]]:
+    raw_locations = config.get("ubicaciones") or config.get("locations") or config.get("sucursales") or []
+    if isinstance(raw_locations, dict):
+        raw_locations = list(raw_locations.values())
+    if not isinstance(raw_locations, list):
+        raw_locations = []
+
+    locations: list[dict[str, Any]] = []
+    for index, raw in enumerate(raw_locations, start=1):
+        if not isinstance(raw, dict):
+            continue
+        address = str(raw.get("address") or raw.get("direccion") or raw.get("domicilio") or "").strip()
+        lat = raw.get("lat") or raw.get("latitude")
+        lng = raw.get("lng") or raw.get("lon") or raw.get("longitude")
+        maps_url = _google_maps_url(address=address, lat=lat, lng=lng)
+        if not maps_url:
+            continue
+        locations.append(
+            {
+                "id": str(raw.get("id") or f"location_{index}"),
+                "label": str(raw.get("label") or raw.get("nombre") or tenant.nombre or "Ubicacion").strip(),
+                "address": address,
+                "lat": lat,
+                "lng": lng,
+                "maps_url": maps_url,
+            }
+        )
+
+    address = str(config.get("direccion") or config.get("address") or config.get("domicilio") or "").strip()
+    if address and not any(item.get("address") == address for item in locations):
+        maps_url = _google_maps_url(address=address)
+        if maps_url:
+            locations.append(
+                {
+                    "id": "main_location",
+                    "label": str(config.get("ciudad") or tenant.nombre or "Ubicacion principal").strip(),
+                    "address": address,
+                    "lat": None,
+                    "lng": None,
+                    "maps_url": maps_url,
+                }
+            )
+    return locations
+
+
+def _extract_demo_contact(config: dict[str, Any], tenant: TenantProfile) -> dict[str, Any]:
+    contacto = config.get("contacto") if isinstance(config.get("contacto"), dict) else {}
+    whatsapp = config.get("whatsapp") if isinstance(config.get("whatsapp"), dict) else {}
+    phone = (
+        contacto.get("telefono")
+        or contacto.get("phone")
+        or config.get("telefono")
+        or config.get("phone")
+        or whatsapp.get("numero")
+        or _demo_whatsapp_number_for_tenant(tenant)
+    )
+    website = (
+        contacto.get("web")
+        or contacto.get("website")
+        or config.get("web_url")
+        or config.get("website")
+        or config.get("link_web")
+    )
+    return {
+        "phone": str(phone or "").strip(),
+        "whatsapp": str(whatsapp.get("numero") or phone or "").strip(),
+        "email": str(contacto.get("email") or config.get("email") or "").strip(),
+        "website": str(website or "").strip(),
+    }
+
+
+def _extract_demo_hours(config: dict[str, Any]) -> Any:
+    return (
+        config.get("horarios")
+        or config.get("hours")
+        or config.get("horario_atencion")
+        or config.get("opening_hours")
+    )
+
+
+def _demo_tool_contract(
+    *,
+    key: str,
+    label: str,
+    description: str,
+    enabled: bool,
+    items: list[dict[str, Any]] | None = None,
+    data: Any = None,
+    intent: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "id": key,
+        "kind": "rubro_tool",
+        "label": label,
+        "intent": intent or f"tool_{key}",
+        "description": description,
+        "enabled": bool(enabled),
+        "items": items or [],
+        "data": data,
+    }
+
+
+def _demo_rubro_tools_contract(
+    *,
+    sector: str,
+    rubro: str,
+    tenant: TenantProfile,
+    rubro_context: dict[str, Any],
+    catalog_resources: list[dict[str, Any]],
+) -> dict[str, Any]:
+    config = _demo_static_config_for_rubro(sector=sector, rubro=rubro, tenant=tenant)
+    faq_preview = [] if sector == "gobierno" else _demo_static_faq_for_rubro(rubro=rubro, tenant=tenant)
+
+    config_resources = config.get("resources") if isinstance(config.get("resources"), list) else []
+    resources = _merge_demo_resources(catalog_resources, rubro_context.get("resources"), config_resources)
+    government_links = []
+    if sector == "gobierno":
+        if config.get("tramites_web_url"):
+            government_links.append(
+                {
+                    "id": "tramites_web",
+                    "label": "Tramites online",
+                    "kind": "link",
+                    "url": str(config.get("tramites_web_url")),
+                    "description": "Portal publico de tramites.",
+                    "cta_label": "Abrir tramites",
+                }
+            )
+        if config.get("web_url"):
+            government_links.append(
+                {
+                    "id": "sitio_oficial",
+                    "label": "Sitio oficial",
+                    "kind": "link",
+                    "url": str(config.get("web_url")),
+                    "description": "Sitio publico del organismo.",
+                    "cta_label": "Abrir sitio",
+                }
+            )
+    resources = _merge_demo_resources(resources, government_links)
+
+    price_terms = ("precio", "price", "lista", "stock", "excel", "xlsx", "spreadsheet")
+    price_resources = [
+        item
+        for item in resources
+        if any(
+            term
+            in " ".join(
+                str(item.get(field) or "").lower()
+                for field in ("id", "label", "kind", "url", "description", "cta_label")
+            )
+            for term in price_terms
+        )
+    ]
+    locations = _extract_demo_locations(config, tenant)
+    contact = _extract_demo_contact(config, tenant)
+    contact_enabled = any(contact.get(key) for key in ("phone", "whatsapp", "email", "website"))
+    hours = _extract_demo_hours(config)
+
+    tools = [
+        _demo_tool_contract(
+            key="catalog",
+            label="Catalogo",
+            description="Recursos publicados para productos, servicios o tramites.",
+            enabled=bool(resources),
+            items=resources,
+            intent="ver_catalogo",
+        ),
+        _demo_tool_contract(
+            key="price_list",
+            label="Lista de precios",
+            description="Precios, stock o lista descargable cuando el rubro la publica.",
+            enabled=bool(price_resources),
+            items=price_resources,
+            intent="consultar_precios",
+        ),
+        _demo_tool_contract(
+            key="location",
+            label="Ubicacion",
+            description="Direcciones con enlace operativo a Google Maps.",
+            enabled=bool(locations),
+            items=locations,
+            intent="consultar_ubicacion",
+        ),
+        _demo_tool_contract(
+            key="contact",
+            label="Telefono y contacto",
+            description="Canales reales o configurados para contacto.",
+            enabled=contact_enabled,
+            data=contact if contact_enabled else None,
+            intent="consultar_contacto",
+        ),
+        _demo_tool_contract(
+            key="hours",
+            label="Horarios",
+            description="Horarios de atencion publicados por el rubro.",
+            enabled=bool(hours),
+            data=hours if hours else None,
+            intent="consultar_horarios",
+        ),
+        _demo_tool_contract(
+            key="faq",
+            label="Consultas frecuentes",
+            description="Preguntas frecuentes trazables del rubro.",
+            enabled=bool(faq_preview),
+            items=faq_preview,
+            intent="consultar_faq",
+        ),
+    ]
+
+    enabled_tools = [tool for tool in tools if tool.get("enabled")]
+    return {
+        "contract_version": "demo.rubro_tools.v1",
+        "sector": sector,
+        "rubro": rubro,
+        "tenant_slug": tenant.slug,
+        "display_name": rubro_context.get("label") or tenant.nombre,
+        "tools": tools,
+        "enabled_tools": enabled_tools,
+        "resources": resources,
+        "price_resources": price_resources,
+        "locations": locations,
+        "contact": contact if contact_enabled else {},
+        "hours": hours,
+        "faq_preview": faq_preview,
+        "frontend_contract": {
+            "render_as": "tool_tray",
+            "source_path": "workspace.rubro_tools.enabled_tools",
+            "hide_disabled_tools": True,
+            "open_maps_with": "items[].maps_url",
+            "do_not_invent_missing_tools": True,
+        },
+        "llm_context": {
+            "resources": resources[:8],
+            "price_resources": price_resources[:5],
+            "locations": locations[:5],
+            "contact": contact if contact_enabled else {},
+            "hours": hours,
+            "faq_preview": faq_preview[:6],
+        },
+    }
+
+
+def _compact_rubro_tools_contract(rubro_tools: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(rubro_tools, dict):
+        return {}
+    enabled_tools = rubro_tools.get("enabled_tools") if isinstance(rubro_tools.get("enabled_tools"), list) else []
+    return {
+        "contract_version": rubro_tools.get("contract_version") or "demo.rubro_tools.v1",
+        "sector": rubro_tools.get("sector"),
+        "rubro": rubro_tools.get("rubro"),
+        "tenant_slug": rubro_tools.get("tenant_slug"),
+        "display_name": rubro_tools.get("display_name"),
+        "enabled_tools": enabled_tools,
+        "resources": rubro_tools.get("resources") or [],
+        "price_resources": rubro_tools.get("price_resources") or [],
+        "locations": rubro_tools.get("locations") or [],
+        "contact": rubro_tools.get("contact") or {},
+        "hours": rubro_tools.get("hours"),
+        "faq_preview": rubro_tools.get("faq_preview") or [],
+        "frontend_contract": rubro_tools.get("frontend_contract") or {},
+    }
+
+
+def _demo_chat_metadata(
+    *,
+    sector: str,
+    rubro: str,
+    tenant: TenantProfile,
+    rubro_context: dict[str, Any],
+    default_menu: dict[str, Any] | None = None,
+    rubro_tools: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    tool_context = rubro_tools or {}
+    return {
+        "contract_version": "demo.chat_metadata.v1",
+        "key": rubro,
+        "rubro_clave": rubro,
+        "sector": sector,
+        "tenant_slug": tenant.slug,
+        "display_name": rubro_context.get("label") or tenant.nombre,
+        "description": rubro_context.get("description") or "",
+        "prompt_context": rubro_context.get("prompt_context") or "",
+        "quick_actions": (default_menu or {}).get("items") or rubro_context.get("quick_actions") or [],
+        "resources": tool_context.get("resources") or rubro_context.get("resources") or [],
+        "faq_preview": tool_context.get("faq_preview") or rubro_context.get("sample_prompts") or [],
+        "enabled_tool_ids": [
+            str(tool.get("id") or "")
+            for tool in tool_context.get("enabled_tools") or []
+            if isinstance(tool, dict) and tool.get("id")
+        ],
+        "tool_summary": tool_context.get("llm_context") or {},
+    }
+
+
 def _error_response(message: str, status_code: int, reason_code: str, action_hint: str):
     return _json_response(
         {
             "contract_version": "shared.error.v1",
+            "ok": False,
             "status_code": status_code,
             "reason_code": reason_code,
             "retryable": False,
@@ -599,11 +1352,18 @@ def _chat_bootstrap(
     media_capabilities: dict[str, Any],
     vertical: str | None = None,
     education_profile: dict[str, Any] | None = None,
+    rubro_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     endpoint = _chat_endpoint_for_tenant_type(tenant_type)
     canonical_rubro = (rubro or tenant.slug or tenant_type or "").strip().lower()
     first_prompt = next((item.get("payload") or item.get("label") for item in quick_replies if item.get("label")), "")
     chat_session_id = _stable_demo_chat_session_id(demo_session_id)
+    demo_metadata = _demo_chat_metadata(
+        sector=sector,
+        rubro=canonical_rubro,
+        tenant=tenant,
+        rubro_context=rubro_context or {},
+    )
 
     return {
         "contract_version": "demo.chat_bootstrap.v1",
@@ -644,6 +1404,8 @@ def _chat_bootstrap(
             "rubro_clave": canonical_rubro,
             "vertical": vertical,
             "education_profile": education_profile,
+            "rubro_context": rubro_context,
+            "demo_metadata": demo_metadata,
             "demo_session_id": demo_session_id,
             "chat_session_id": chat_session_id,
             "demo_mode": True,
@@ -654,6 +1416,8 @@ def _chat_bootstrap(
             "tenant_slug": tenant.slug,
             "tenant_tipo": tenant_type,
             "vertical": vertical,
+            "rubro_context": rubro_context,
+            "demo_metadata": demo_metadata,
             "demo_session_id": demo_session_id,
             "chat_session_id": chat_session_id,
         },
@@ -679,6 +1443,137 @@ def _chat_bootstrap(
             "Para audio enviar multipart al endpoint con campo audio_file.",
             "Para ubicacion enviar payload JSON con location.",
         ],
+    }
+
+
+def _demo_session_selection_contract(
+    *,
+    sector: str,
+    rubro: str,
+    tenant: TenantProfile,
+    chat_bootstrap: dict[str, Any],
+    quick_replies: list[dict[str, str]],
+    admin_preview_endpoint: str,
+    response_profile: str,
+) -> dict[str, Any]:
+    chat_session_id = (chat_bootstrap.get("session") or {}).get("chat_session_id")
+    demo_session_id = (chat_bootstrap.get("session") or {}).get("demo_session_id")
+    return {
+        "contract_version": "demo.widget_onboarding_result.v1",
+        "ok": True,
+        "status": "ready",
+        "state": "ready",
+        "ready": True,
+        "response_profile": response_profile,
+        "selected_sector": sector,
+        "selected_rubro": rubro or tenant.slug,
+        "tenant_slug": tenant.slug,
+        "tenant_tipo": tenant.tipo,
+        "chat_session_id": chat_session_id,
+        "demo_session_id": demo_session_id,
+        "chat_bootstrap_path": "workspace.chat_bootstrap",
+        "open_chat": True,
+        "close_selector": True,
+        "autostart_chat": True,
+        "send_init_once": True,
+        "admin_preview_endpoint": admin_preview_endpoint,
+        "initial_prompt": chat_bootstrap.get("initial_prompt") or "",
+        "quick_replies": quick_replies[:3],
+        "error_message": None,
+    }
+
+
+def _demo_session_frontend_contract(
+    *,
+    sector: str,
+    rubro: str,
+    tenant: TenantProfile,
+    response_profile: str,
+) -> dict[str, Any]:
+    return {
+        "contract_version": "demo.session_frontend.v1",
+        "render_as": "demo_session_ready",
+        "success_condition": "http_200_and_ok_true",
+        "response_profile": response_profile,
+        "selected_sector": sector,
+        "selected_rubro": rubro or tenant.slug,
+        "tenant_slug": tenant.slug,
+        "use_chat_bootstrap_from": "workspace.chat_bootstrap",
+        "preserve_session_headers": True,
+        "show_error_only_when_ok_false": True,
+        "do_not_infer_endpoint_locally": True,
+    }
+
+
+def _demo_default_menu_contract(
+    *,
+    sector: str,
+    tenant: TenantProfile,
+    quick_replies: list[dict[str, str]],
+    value_cards: list[dict[str, Any]],
+    allowed_actions: list[dict[str, Any]],
+    rubro_context: dict[str, Any] | None = None,
+    rubro_tools: dict[str, Any] | None = None,
+    education_payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    items: list[dict[str, Any]] = []
+
+    def add_item(source: dict[str, Any], *, kind: str = "action") -> None:
+        item_id = str(source.get("id") or source.get("key") or source.get("intent") or source.get("label") or "").strip()
+        label = str(source.get("label") or source.get("title") or source.get("cta_label") or "").strip()
+        intent = str(source.get("intent") or source.get("payload") or item_id).strip()
+        if not item_id or not label:
+            return
+        if any(existing.get("id") == item_id or existing.get("intent") == intent for existing in items):
+            return
+        items.append(
+            {
+                "id": item_id,
+                "label": label,
+                "intent": intent,
+                "description": source.get("description") or source.get("detail") or "",
+                "icon": source.get("icon"),
+                "kind": kind,
+                "enabled": bool(source.get("enabled", True)),
+            }
+        )
+
+    education_menu = (education_payload or {}).get("quick_menu") if isinstance(education_payload, dict) else []
+    rubro_menu = (rubro_context or {}).get("quick_actions") if isinstance(rubro_context, dict) else []
+    enabled_tools = (rubro_tools or {}).get("enabled_tools") if isinstance(rubro_tools, dict) else []
+    for item in rubro_menu or []:
+        if isinstance(item, dict):
+            add_item(item, kind="rubro_action")
+    for item in enabled_tools or []:
+        if isinstance(item, dict):
+            add_item(item, kind="rubro_tool")
+    for item in education_menu or []:
+        if isinstance(item, dict):
+            add_item(item, kind="education_action")
+    for item in value_cards or []:
+        if isinstance(item, dict):
+            add_item(item, kind="action")
+    for item in allowed_actions or []:
+        if isinstance(item, dict):
+            add_item(item, kind="backend_action")
+    if not items:
+        for item in quick_replies or []:
+            if isinstance(item, dict):
+                add_item(item, kind="message")
+
+    return {
+        "contract_version": "demo.default_menu.v1",
+        "render_as": "quick_menu",
+        "source": "backend_demo_session",
+        "selected_sector": sector,
+        "selected_rubro": (rubro_context or {}).get("slug") or tenant.slug,
+        "tenant_slug": tenant.slug,
+        "rubro_context": rubro_context,
+        "max_visible_items": 4,
+        "collapse_extra_items": True,
+        "items": items[:8],
+        "starter_prompts": quick_replies,
+        "empty_state": None if items else "Sin menu predeterminado disponible para este rubro.",
     }
 
 
@@ -1206,6 +2101,7 @@ def demo_session_v2():
         return _options_response()
 
     data = request.get_json(silent=True) or {}
+    response_profile = _demo_session_response_profile(data)
     sector = normalize_demo_sector(
         data.get("sector")
         or data.get("pilar")
@@ -1213,6 +2109,13 @@ def demo_session_v2():
         or data.get("pilar_key")
         or data.get("segment")
         or data.get("vertical")
+        or data.get("selected_sector")
+        or data.get("selected_pillar")
+        or data.get("label")
+        or data.get("title")
+        or data.get("name")
+        or data.get("id")
+        or data.get("key")
         or ""
     )
     rubro = _first_payload_slug(
@@ -1237,7 +2140,11 @@ def demo_session_v2():
         "tenantSlug",
         "tenant_key",
     )
+    requested_rubro = rubro
 
+    inferred_payload_sector = _infer_demo_sector_from_payload(data, rubro=rubro, tenant_slug=tenant_slug, current_sector=sector)
+    if inferred_payload_sector:
+        sector = inferred_payload_sector
     if not sector:
         sector = sector_for_rubro(rubro) or "empresas"
     if sector not in set(demo_pillar_keys()):
@@ -1247,8 +2154,136 @@ def demo_session_v2():
     if sector not in {"gobierno", "empresas", "educacion"}:
         return _error_response("sector debe ser 'gobierno', 'empresas' o 'educacion'", 400, "validation_error", "send_valid_sector")
 
+    inferred_rubro = _infer_demo_rubro_from_payload(data, sector=sector)
+    if inferred_rubro and (
+        not rubro
+        or rubro in set(demo_pillar_keys())
+        or sector_for_rubro(rubro) != sector
+    ):
+        rubro = inferred_rubro
+
+    rubro_was_explicit = bool(
+        inferred_rubro
+        or (
+            requested_rubro
+            and requested_rubro not in set(demo_pillar_keys())
+            and sector_for_rubro(requested_rubro) == sector
+        )
+        or (
+            tenant_slug
+            and category_for_rubro(tenant_slug) is not None
+            and sector_for_rubro(tenant_slug) == sector
+        )
+    )
+
     if not rubro and not tenant_slug:
         rubro = default_rubro_for_sector(sector)
+
+    if sector == "empresas" and response_profile == "widget_compact" and not rubro_was_explicit:
+        selector = _demo_rubro_selector_contract(
+            sector=sector,
+            selected_rubro=rubro,
+            response_profile=response_profile,
+        )
+        selector_menu = [
+            {
+                "id": f"select_{item.get('slug')}",
+                "label": item.get("label"),
+                "intent": f"select_rubro:{item.get('slug')}",
+                "kind": "rubro_selector",
+                "enabled": True,
+                "action_payload": item.get("action_payload"),
+            }
+            for item in selector.get("categories") or []
+        ]
+        default_menu = {
+            "contract_version": "demo.default_menu.v1",
+            "render_as": "rubro_selector",
+            "source": "backend_demo_session",
+            "selected_sector": sector,
+            "selected_rubro": rubro,
+            "tenant_slug": None,
+            "max_visible_items": 6,
+            "collapse_extra_items": True,
+            "items": selector_menu,
+            "starter_prompts": [],
+            "empty_state": None if selector_menu else "Sin rubros disponibles para Empresas.",
+        }
+        widget_onboarding = {
+            "contract_version": "demo.widget_onboarding_result.v1",
+            "ok": True,
+            "status": "select_rubro",
+            "state": "select_rubro",
+            "ready": True,
+            "response_profile": response_profile,
+            "selected_sector": sector,
+            "selected_rubro": rubro,
+            "tenant_slug": None,
+            "chat_session_id": None,
+            "demo_session_id": None,
+            "chat_bootstrap_path": None,
+            "required_next_step": "select_rubro",
+            "requires_rubro_selection": True,
+            "open_chat": False,
+            "close_selector": False,
+            "autostart_chat": False,
+            "send_init_once": False,
+            "default_menu": default_menu,
+            "rubro_selector": selector,
+            "error_message": None,
+        }
+        frontend_contract = {
+            "contract_version": "demo.session_frontend.v1",
+            "render_as": "demo_rubro_selector",
+            "success_condition": "http_200_and_ok_true",
+            "response_profile": response_profile,
+            "selected_sector": sector,
+            "selected_rubro": rubro,
+            "tenant_slug": None,
+            "next_step": "select_rubro",
+            "requires_rubro_selection": True,
+            "open_chat": False,
+            "rubro_selector_path": "workspace.rubro_selector",
+            "preserve_session_headers": False,
+            "show_error_only_when_ok_false": True,
+            "do_not_infer_endpoint_locally": True,
+        }
+        workspace = {
+            "title": "Empresas",
+            "subtitle": "Elegir rubro comercial para probar ventas y soporte con IA.",
+            "welcome_message": "Que rubro de empresa queres simular?",
+            "rubro_selector": selector,
+            "default_menu": default_menu,
+            "quick_menu": selector_menu,
+            "widget_onboarding": widget_onboarding,
+            "frontend_contract": frontend_contract,
+            "runtime_contract": {
+                "demo_data_source": "backend_demo_session",
+                "local_mock_allowed": False,
+                "requires_rubro_before_chat": True,
+                "chat_response_contract": "chat.response.v1",
+            },
+        }
+        return _json_response(
+            {
+                "contract_version": "demo.session.v2",
+                "contract_aliases": ["demo.session.v1"],
+                "ok": True,
+                "ready": True,
+                "status": "ready",
+                "next_step": "select_rubro",
+                "requires_rubro_selection": True,
+                "response_profile": response_profile,
+                "selected_sector": sector,
+                "selected_rubro": rubro,
+                "workspace": workspace,
+                "rubro_selector": selector,
+                "widget_onboarding": widget_onboarding,
+                "frontend_contract": frontend_contract,
+                "default_menu": default_menu,
+                "quick_menu": selector_menu,
+            }
+        )
 
     tenant = None
     if tenant_slug:
@@ -1284,11 +2319,14 @@ def demo_session_v2():
     tenant_type = (tenant.tipo or "pyme").strip().lower()
     if rubro and tenant.slug and rubro.replace("_", "-") == tenant.slug:
         rubro = tenant.slug
-    education_profile = build_education_profile(tenant, rubro_label=tenant.nombre)
+    effective_rubro = rubro or tenant.slug
+    rubro_context = _demo_rubro_context(sector=sector, rubro=effective_rubro, tenant=tenant)
+    experience_rubro_label = rubro_context.get("label") or tenant.nombre
+    education_profile = build_education_profile(tenant, rubro_label=experience_rubro_label)
     vertical = "educacion" if sector == "educacion" or education_profile.get("is_education") else tenant.vertical
     experience = build_demo_experience_contract(
         tenant_type=tenant_type,
-        rubro_label=tenant.nombre,
+        rubro_label=experience_rubro_label,
         vertical=vertical,
         subvertical=tenant.subvertical,
         education_profile=education_profile if education_profile.get("is_education") else None,
@@ -1308,24 +2346,25 @@ def demo_session_v2():
         allowed_actions=allowed_actions,
     )
 
-    demo_session_id = create_demo_session_token(tenant_slug=tenant.slug, sector=sector, rubro=rubro or tenant.slug)
+    demo_session_id = create_demo_session_token(tenant_slug=tenant.slug, sector=sector, rubro=effective_rubro)
     chat_session_id = _stable_demo_chat_session_id(demo_session_id)
     chat_bootstrap = _chat_bootstrap(
         tenant=tenant,
         tenant_type=tenant_type,
         sector=sector,
-        rubro=rubro or tenant.slug,
+        rubro=effective_rubro,
         demo_session_id=demo_session_id,
         quick_replies=quick_replies,
         media_capabilities=media_capabilities,
         vertical=vertical,
         education_profile=education_profile if education_profile.get("is_education") else None,
+        rubro_context=rubro_context,
     )
     demo_whatsapp_number = _demo_whatsapp_number_for_tenant(tenant)
     whatsapp_sandbox = build_demo_whatsapp_sandbox_contract(
         tenant_slug=tenant.slug,
         sector=sector,
-        rubro=rubro or tenant.slug,
+        rubro=effective_rubro,
         sandbox_number=demo_whatsapp_number or _twilio_sandbox_number(),
         join_phrase=_twilio_sandbox_join_phrase(),
         source="public_demo_session",
@@ -1340,11 +2379,21 @@ def demo_session_v2():
             "quick_menu": experience.get("education_quick_menu") or [],
         }
 
+    catalog_resources = catalog_resources_for_rubro(effective_rubro, sector)
+    rubro_tools = _demo_rubro_tools_contract(
+        sector=sector,
+        rubro=effective_rubro,
+        tenant=tenant,
+        rubro_context=rubro_context,
+        catalog_resources=catalog_resources,
+    )
+
     workspace = {
         "title": tenant.nombre or "Demo Chatboc",
         "subtitle": (experience.get("hero") or {}).get("subtitle"),
         "welcome_message": onboarding.get("entry_prompt") or "Que queres probar primero?",
         "quick_replies": quick_replies,
+        "rubro_context": rubro_context,
         "value_cards": _workspace_cards(experience),
         "handoff_labels": _handoff_labels(experience),
         "first_visit": experience.get("first_visit") or {},
@@ -1372,10 +2421,16 @@ def demo_session_v2():
         "pillar_selector": {
             "contract_version": DEMO_PILLAR_CONTRACT_VERSION,
             "selected_sector": sector,
-            "selected_rubro": rubro or tenant.slug,
+            "selected_rubro": effective_rubro,
             "pillars": demo_pillars(),
         },
-        "catalog_resources": catalog_resources_for_rubro(rubro or tenant.slug, sector),
+        "rubro_selector": _demo_rubro_selector_contract(
+            sector=sector,
+            selected_rubro=effective_rubro,
+            response_profile=response_profile,
+        ),
+        "catalog_resources": catalog_resources,
+        "rubro_tools": rubro_tools,
         "runtime_contract": {
             "demo_data_source": "backend_tenant_contracts",
             "local_mock_allowed": False,
@@ -1384,19 +2439,181 @@ def demo_session_v2():
         },
     }
 
+    default_menu = _demo_default_menu_contract(
+        sector=sector,
+        tenant=tenant,
+        quick_replies=quick_replies,
+        value_cards=workspace["value_cards"],
+        allowed_actions=allowed_actions,
+        rubro_context=rubro_context,
+        rubro_tools=rubro_tools,
+        education_payload=education_payload,
+    )
+    demo_metadata = _demo_chat_metadata(
+        sector=sector,
+        rubro=effective_rubro,
+        tenant=tenant,
+        rubro_context=rubro_context,
+        default_menu=default_menu,
+        rubro_tools=rubro_tools,
+    )
+    chat_bootstrap["payload"]["demo_metadata"] = demo_metadata
+    chat_bootstrap["payload"]["rubro_context"] = rubro_context
+    chat_bootstrap["payload"]["rubro_tool_summary"] = rubro_tools.get("llm_context") or {}
+    chat_bootstrap["context"] = {
+        "sector": sector,
+        "rubro": effective_rubro,
+        "tenant_slug": tenant.slug,
+        "tenant_tipo": tenant_type,
+        "vertical": vertical,
+        "demo_session_id": demo_session_id,
+        "chat_session_id": chat_session_id,
+        "rubro_tool_summary": rubro_tools.get("llm_context") or {},
+    }
+    chat_bootstrap["default_menu"] = {
+        "contract_version": "demo.default_menu.v1",
+        "items": default_menu.get("items") or [],
+    }
+    chat_bootstrap["default_menu_path"] = "workspace.default_menu"
+    chat_bootstrap["demo_metadata_path"] = "workspace.demo_metadata"
+    chat_bootstrap["rubro_context_path"] = "workspace.rubro_context"
+    chat_bootstrap["rubro_tools_path"] = "workspace.rubro_tools"
+    workspace["demo_metadata"] = demo_metadata
+    workspace["default_menu"] = default_menu
+    workspace["quick_menu"] = default_menu["items"]
+
+    session_contract = {
+        "demo_session_id": demo_session_id,
+        "chat_session_id": chat_session_id,
+        "session_id": chat_session_id,
+        "tenant_slug": tenant.slug,
+        "sector": sector,
+        "rubro": effective_rubro,
+        "max_messages": (whatsapp_sandbox.get("trial_policy") or {}).get("max_messages"),
+    }
+    widget_onboarding = _demo_session_selection_contract(
+        sector=sector,
+        rubro=effective_rubro,
+        tenant=tenant,
+        chat_bootstrap=chat_bootstrap,
+        quick_replies=quick_replies,
+        admin_preview_endpoint=admin_preview_endpoint,
+        response_profile=response_profile,
+    )
+    widget_onboarding["default_menu"] = default_menu
+    frontend_contract = _demo_session_frontend_contract(
+        sector=sector,
+        rubro=effective_rubro,
+        tenant=tenant,
+        response_profile=response_profile,
+    )
+    requires_rubro_selection = sector == "empresas" and not rubro_was_explicit
+    if requires_rubro_selection:
+        widget_onboarding.update(
+            {
+                "status": "select_rubro",
+                "state": "select_rubro",
+                "required_next_step": "select_rubro",
+                "requires_rubro_selection": True,
+                "open_chat": False,
+                "close_selector": False,
+                "autostart_chat": False,
+                "send_init_once": False,
+                "rubro_selector": workspace["rubro_selector"],
+            }
+        )
+        frontend_contract.update(
+            {
+                "render_as": "demo_rubro_selector",
+                "next_step": "select_rubro",
+                "requires_rubro_selection": True,
+                "open_chat": False,
+                "rubro_selector_path": "workspace.rubro_selector",
+            }
+        )
+    workspace["session"] = session_contract
+    workspace["widget_onboarding"] = widget_onboarding
+    workspace["frontend_contract"] = frontend_contract
+
+    if response_profile == "widget_compact":
+        compact_rubro_tools = _compact_rubro_tools_contract(rubro_tools)
+        compact_workspace = {
+            "title": workspace["title"],
+            "subtitle": workspace["subtitle"],
+            "welcome_message": workspace["welcome_message"],
+            "quick_replies": quick_replies,
+            "quick_menu": default_menu["items"],
+            "default_menu": default_menu,
+            "lead_capture": workspace["lead_capture"],
+            "admin_preview_endpoint": admin_preview_endpoint,
+            "media_capabilities": media_capabilities,
+            "conversion_ctas": conversion_ctas,
+            "chat_bootstrap": chat_bootstrap,
+            "empty_states": workspace["empty_states"],
+            "pillar_selector": workspace["pillar_selector"],
+            "rubro_selector": workspace["rubro_selector"],
+            "rubro_context": rubro_context,
+            "catalog_resources": workspace["catalog_resources"],
+            "rubro_tools": compact_rubro_tools,
+            "whatsapp_sandbox": whatsapp_sandbox,
+            "education": education_payload,
+            "session": session_contract,
+            "widget_onboarding": widget_onboarding,
+            "frontend_contract": frontend_contract,
+            "runtime_contract": workspace["runtime_contract"],
+        }
+        return _json_response(
+            {
+                "contract_version": "demo.session.v2",
+                "contract_aliases": ["demo.session.v1"],
+                "ok": True,
+                "ready": True,
+                "status": "ready",
+                "next_step": "select_rubro" if requires_rubro_selection else "open_chat",
+                "requires_rubro_selection": requires_rubro_selection,
+                "response_profile": response_profile,
+                "demo_session_id": demo_session_id,
+                "session_id": chat_session_id,
+                "chat_session_id": chat_session_id,
+                "session": session_contract,
+                "tenant_slug": tenant.slug,
+                "tenant": _tenant_dict(tenant, sector=sector),
+                "workspace": compact_workspace,
+                "widget_onboarding": widget_onboarding,
+                "frontend_contract": frontend_contract,
+                "default_menu": default_menu,
+                "quick_menu": default_menu["items"],
+                "quick_replies": quick_replies,
+            }
+        )
+
     return _json_response(
         {
             "contract_version": "demo.session.v2",
             "contract_aliases": ["demo.session.v1"],
+            "ok": True,
+            "ready": True,
+            "status": "ready",
+            "next_step": "select_rubro" if requires_rubro_selection else "open_chat",
+            "requires_rubro_selection": requires_rubro_selection,
+            "response_profile": response_profile,
             "demo_session_id": demo_session_id,
             "session_id": chat_session_id,
             "chat_session_id": chat_session_id,
+            "session": session_contract,
             "tenant_slug": tenant.slug,
             "tenant": _tenant_dict(tenant, sector=sector),
             "workspace": workspace,
             "pillar_selector": workspace["pillar_selector"],
+            "rubro_selector": workspace["rubro_selector"],
+            "rubro_context": rubro_context,
+            "demo_metadata": demo_metadata,
             "catalog_resources": workspace["catalog_resources"],
+            "rubro_tools": rubro_tools,
             "chat_bootstrap": chat_bootstrap,
+            "widget_onboarding": widget_onboarding,
+            "frontend_contract": frontend_contract,
+            "default_menu": default_menu,
             "experience_blueprint": experience,
             "first_visit": workspace["first_visit"],
             "sample_conversations": workspace["sample_conversations"],
@@ -1436,7 +2653,11 @@ def demo_session_v2():
                 "chat_bootstrap": chat_bootstrap,
                 "whatsapp_sandbox": whatsapp_sandbox,
                 "education": education_payload,
+                "default_menu": default_menu,
+                "quick_menu": default_menu["items"],
+                "rubro_tools": rubro_tools,
             },
+            "quick_menu": default_menu["items"],
             "quick_replies": quick_replies,
         }
     )

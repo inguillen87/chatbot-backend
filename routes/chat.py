@@ -1938,6 +1938,33 @@ def _procesar_chat(
             if isinstance(chat_bootstrap_payload.get("payload"), dict)
             else {}
         )
+        demo_metadata_from_payload = (
+            request_payload.get("demo_metadata")
+            if isinstance(request_payload.get("demo_metadata"), dict)
+            else chat_bootstrap_payload.get("demo_metadata")
+            if isinstance(chat_bootstrap_payload.get("demo_metadata"), dict)
+            else chat_bootstrap_inner_payload.get("demo_metadata")
+            if isinstance(chat_bootstrap_inner_payload.get("demo_metadata"), dict)
+            else {}
+        )
+        rubro_context_from_payload = (
+            request_payload.get("rubro_context")
+            if isinstance(request_payload.get("rubro_context"), dict)
+            else chat_bootstrap_payload.get("rubro_context")
+            if isinstance(chat_bootstrap_payload.get("rubro_context"), dict)
+            else chat_bootstrap_inner_payload.get("rubro_context")
+            if isinstance(chat_bootstrap_inner_payload.get("rubro_context"), dict)
+            else {}
+        )
+        rubro_tools_from_payload = (
+            request_payload.get("rubro_tools")
+            if isinstance(request_payload.get("rubro_tools"), dict)
+            else chat_bootstrap_payload.get("rubro_tools")
+            if isinstance(chat_bootstrap_payload.get("rubro_tools"), dict)
+            else chat_bootstrap_inner_payload.get("rubro_tools")
+            if isinstance(chat_bootstrap_inner_payload.get("rubro_tools"), dict)
+            else {}
+        )
         effective_tenant_marker = (
             request.headers.get("X-Tenant-Slug")
             or request.args.get("tenant_slug")
@@ -1991,6 +2018,16 @@ def _procesar_chat(
             elif effective_rubro_marker or demo_tenant_slug:
                 contexto_chat["demo_rubro_clave"] = effective_rubro_marker or demo_tenant_slug
                 contexto_chat["demo_key"] = effective_rubro_marker or demo_tenant_slug
+            if demo_metadata_from_payload:
+                contexto_chat["demo_metadata"] = demo_metadata_from_payload
+                if demo_metadata_from_payload.get("key"):
+                    contexto_chat["demo_key"] = demo_metadata_from_payload.get("key")
+                if demo_metadata_from_payload.get("rubro_clave"):
+                    contexto_chat["demo_rubro_clave"] = demo_metadata_from_payload.get("rubro_clave")
+            if rubro_context_from_payload:
+                contexto_chat["rubro_context"] = rubro_context_from_payload
+            if rubro_tools_from_payload:
+                contexto_chat["rubro_tools"] = rubro_tools_from_payload
 
             if demo_tenant_slug and not _owner_context_is_trusted(owner_user, owner_resolution_source):
                 tenant_for_demo = (
@@ -2027,6 +2064,12 @@ def _procesar_chat(
                     data["demo_session_id"] = raw_demo_session_token
                 if demo_session_payload:
                     data["demo_session_payload"] = demo_session_payload
+                if demo_metadata_from_payload:
+                    data["demo_metadata"] = demo_metadata_from_payload
+                if rubro_context_from_payload:
+                    data["rubro_context"] = rubro_context_from_payload
+                if rubro_tools_from_payload:
+                    data["rubro_tools"] = rubro_tools_from_payload
                 chat_context_obj.context_data = data
                 flag_modified(chat_context_obj, "context_data")
 

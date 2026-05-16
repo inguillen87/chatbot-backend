@@ -524,9 +524,16 @@ class ApiV2FoundationTest(unittest.TestCase):
                 workspace = payload.get("workspace") or {}
                 chat_bootstrap = workspace.get("chat_bootstrap") or {}
                 headers = chat_bootstrap.get("headers") or {}
+                session = payload.get("session") or {}
+                default_menu = workspace.get("default_menu") or {}
                 self.assertEqual(payload.get("request_id"), f"widget-onboarding-{sector}")
+                self.assertTrue(payload.get("ok"))
+                self.assertTrue(payload.get("ready"))
+                self.assertEqual(payload.get("status"), "ready")
                 self.assertEqual(payload.get("tenant_slug"), tenant_slug)
                 self.assertEqual((payload.get("tenant") or {}).get("slug"), tenant_slug)
+                self.assertEqual(session.get("demo_session_id"), payload.get("demo_session_id"))
+                self.assertEqual(session.get("chat_session_id"), payload.get("session_id"))
                 self.assertEqual(chat_bootstrap.get("endpoint"), endpoint)
                 self.assertEqual(headers.get("X-Demo-Session-Id"), payload.get("demo_session_id"))
                 self.assertEqual(headers.get("X-Chat-Session-Id"), payload.get("session_id"))
@@ -534,10 +541,295 @@ class ApiV2FoundationTest(unittest.TestCase):
                 self.assertEqual(headers.get("X-Tenant-Slug"), tenant_slug)
                 self.assertEqual((chat_bootstrap.get("payload") or {}).get("tenant_slug"), tenant_slug)
                 self.assertEqual((chat_bootstrap.get("payload") or {}).get("rubro"), rubro)
+                self.assertEqual((payload.get("widget_onboarding") or {}).get("status"), "ready")
+                self.assertTrue((payload.get("widget_onboarding") or {}).get("open_chat"))
+                self.assertEqual((payload.get("frontend_contract") or {}).get("success_condition"), "http_200_and_ok_true")
+                self.assertEqual(default_menu.get("contract_version"), "demo.default_menu.v1")
+                self.assertTrue(default_menu.get("items"))
+                self.assertEqual((chat_bootstrap.get("default_menu") or {}).get("items"), default_menu.get("items"))
                 self.assertTrue(workspace.get("media_capabilities"))
                 self.assertTrue(workspace.get("conversion_ctas"))
                 self.assertTrue(workspace.get("animation_tokens"))
                 self.assertTrue(workspace.get("quick_replies") or ((workspace.get("education") or {}).get("quick_menu")))
+
+    def test_v2_demo_session_widget_selector_accepts_label_and_returns_compact_success(self):
+        owner = User(name="Municipio Widget", email="municipio-label-widget@test.com", password_hash="hash", tipo_chat="municipio")
+        db.session.add(owner)
+        db.session.flush()
+        db.session.add(TenantProfile(slug="municipio", nombre="Municipio Demo", tipo="municipio", municipio_id=owner.id, is_active=True))
+        db.session.commit()
+
+        resp = self.client.post(
+            "/api/v2/demo/session",
+            json={
+                "label": "Gobiernos",
+                "source": "landing_widget_selector",
+                "surface": "widget",
+            },
+            headers={"X-Request-Id": "widget-selector-label-1"},
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.get_json()
+        workspace = payload.get("workspace") or {}
+        session = payload.get("session") or {}
+        chat_bootstrap = workspace.get("chat_bootstrap") or {}
+        self.assertTrue(payload.get("ok"))
+        self.assertEqual(payload.get("status"), "ready")
+        self.assertEqual(payload.get("response_profile"), "widget_compact")
+        self.assertLess(len(resp.get_data()), 90000)
+        self.assertEqual(payload.get("request_id"), "widget-selector-label-1")
+        self.assertEqual((payload.get("tenant") or {}).get("sector"), "gobierno")
+        self.assertEqual(chat_bootstrap.get("endpoint"), "/ask/municipio")
+        self.assertEqual(session.get("chat_session_id"), payload.get("chat_session_id"))
+        self.assertEqual(session.get("demo_session_id"), payload.get("demo_session_id"))
+        self.assertEqual((payload.get("widget_onboarding") or {}).get("status"), "ready")
+        self.assertTrue((payload.get("widget_onboarding") or {}).get("close_selector"))
+        self.assertEqual((payload.get("frontend_contract") or {}).get("render_as"), "demo_session_ready")
+
+    def test_v2_demo_session_widget_selector_inferrs_education_from_cta_text(self):
+        owner = User(name="Colegio Widget", email="colegio-cta-widget@test.com", password_hash="hash", tipo_chat="pyme")
+        db.session.add(owner)
+        db.session.flush()
+        db.session.add(
+            TenantProfile(
+                slug="colegio-demo",
+                nombre="Colegio Demo",
+                tipo="pyme",
+                pyme_id=owner.id,
+                is_active=True,
+                vertical="educacion",
+                subvertical="colegio_privado",
+                capabilities_json={"education": {"enabled": True}},
+            )
+        )
+        db.session.commit()
+
+        resp = self.client.post(
+            "/api/v2/demo/session",
+            json={
+                "label": "Probar colegio",
+                "source": "landing_widget_selector",
+                "surface": "widget",
+            },
+            headers={"X-Request-Id": "widget-selector-colegio-1"},
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.get_json()
+        workspace = payload.get("workspace") or {}
+        chat_bootstrap = workspace.get("chat_bootstrap") or {}
+        default_menu = workspace.get("default_menu") or {}
+        menu_intents = {item.get("intent") for item in default_menu.get("items") or []}
+        self.assertTrue(payload.get("ok"))
+        self.assertEqual(payload.get("response_profile"), "widget_compact")
+        self.assertEqual((payload.get("tenant") or {}).get("sector"), "educacion")
+        self.assertEqual(payload.get("tenant_slug"), "colegio-demo")
+        self.assertEqual(chat_bootstrap.get("endpoint"), "/ask/pyme")
+        self.assertEqual((chat_bootstrap.get("payload") or {}).get("vertical"), "educacion")
+        self.assertEqual(default_menu.get("contract_version"), "demo.default_menu.v1")
+        self.assertIn("justificar_inasistencia", menu_intents)
+        self.assertEqual((payload.get("widget_onboarding") or {}).get("default_menu", {}).get("items"), default_menu.get("items"))
+
+    def test_v2_demo_session_empresas_sector_only_returns_rubro_selector(self):
+        bodega_owner = User(name="Bodega Selector", email="bodega-selector@test.com", password_hash="hash", tipo_chat="pyme")
+        ferreteria_owner = User(name="Ferreteria Selector", email="ferreteria-selector@test.com", password_hash="hash", tipo_chat="pyme")
+        db.session.add_all([bodega_owner, ferreteria_owner])
+        db.session.flush()
+        db.session.add_all(
+            [
+                TenantProfile(slug="bodega", nombre="Bodega Demo", tipo="pyme", pyme_id=bodega_owner.id, is_active=True),
+                TenantProfile(slug="ferreteria", nombre="Ferreteria Demo", tipo="pyme", pyme_id=ferreteria_owner.id, is_active=True),
+            ]
+        )
+        db.session.commit()
+
+        resp = self.client.post(
+            "/api/v2/demo/session",
+            json={
+                "sector": "empresas",
+                "label": "Empresas",
+                "source": "landing_widget_selector",
+                "surface": "widget",
+            },
+            headers={"X-Request-Id": "widget-selector-empresas-rubros"},
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.get_json()
+        workspace = payload.get("workspace") or {}
+        selector = workspace.get("rubro_selector") or {}
+        widget_onboarding = payload.get("widget_onboarding") or {}
+        category_slugs = {item.get("slug") for item in selector.get("categories") or []}
+        self.assertTrue(payload.get("ok"))
+        self.assertTrue(payload.get("requires_rubro_selection"))
+        self.assertEqual(payload.get("next_step"), "select_rubro")
+        self.assertEqual(widget_onboarding.get("status"), "select_rubro")
+        self.assertFalse(widget_onboarding.get("open_chat"))
+        self.assertFalse(widget_onboarding.get("send_init_once"))
+        self.assertEqual(selector.get("contract_version"), "demo.rubro_selector.v1")
+        self.assertIn("bodega", category_slugs)
+        self.assertIn("ferreteria", category_slugs)
+        self.assertEqual((payload.get("frontend_contract") or {}).get("render_as"), "demo_rubro_selector")
+
+    def test_v2_demo_session_pyme_rubro_profiles_are_distinct(self):
+        bodega_owner = User(name="Bodega Profile", email="bodega-profile@test.com", password_hash="hash", tipo_chat="pyme")
+        ferreteria_owner = User(name="Ferreteria Profile", email="ferreteria-profile@test.com", password_hash="hash", tipo_chat="pyme")
+        db.session.add_all([bodega_owner, ferreteria_owner])
+        db.session.flush()
+        db.session.add_all(
+            [
+                TenantProfile(slug="bodega", nombre="Bodega Demo", tipo="pyme", pyme_id=bodega_owner.id, is_active=True),
+                TenantProfile(slug="ferreteria", nombre="Ferreteria Demo", tipo="pyme", pyme_id=ferreteria_owner.id, is_active=True),
+            ]
+        )
+        db.session.commit()
+
+        responses = {}
+        for rubro in ("bodega", "ferreteria"):
+            resp = self.client.post(
+                "/api/v2/demo/session",
+                json={
+                    "sector": "empresas",
+                    "rubro": rubro,
+                    "source": "landing_widget_rubro_selector",
+                    "surface": "widget",
+                },
+            )
+            self.assertEqual(resp.status_code, 200)
+            responses[rubro] = resp.get_json()
+
+        bodega_workspace = responses["bodega"].get("workspace") or {}
+        ferreteria_workspace = responses["ferreteria"].get("workspace") or {}
+        bodega_context = bodega_workspace.get("rubro_context") or {}
+        ferreteria_context = ferreteria_workspace.get("rubro_context") or {}
+        bodega_menu = bodega_workspace.get("default_menu") or {}
+        ferreteria_menu = ferreteria_workspace.get("default_menu") or {}
+        bodega_intents = {item.get("intent") for item in bodega_menu.get("items") or []}
+        ferreteria_intents = {item.get("intent") for item in ferreteria_menu.get("items") or []}
+
+        self.assertEqual(bodega_context.get("slug"), "bodega")
+        self.assertEqual(ferreteria_context.get("slug"), "ferreteria")
+        self.assertIn("vinos", bodega_context.get("prompt_context", ""))
+        self.assertIn("ferreteria", ferreteria_context.get("prompt_context", ""))
+        self.assertIn("ver_catalogo_vinos", bodega_intents)
+        self.assertIn("calcular_materiales", ferreteria_intents)
+        self.assertNotEqual(bodega_menu.get("items"), ferreteria_menu.get("items"))
+        self.assertEqual(
+            (ferreteria_workspace.get("chat_bootstrap") or {}).get("payload", {}).get("demo_metadata", {}).get("key"),
+            "ferreteria",
+        )
+
+    def test_v2_demo_session_pyme_rubro_tools_include_catalog_prices_and_faq(self):
+        owner = User(name="Ferreteria Tools", email="ferreteria-tools@test.com", password_hash="hash", tipo_chat="pyme")
+        db.session.add(owner)
+        db.session.flush()
+        db.session.add(TenantProfile(slug="ferreteria", nombre="Ferreteria Demo", tipo="pyme", pyme_id=owner.id, is_active=True))
+        db.session.commit()
+
+        resp = self.client.post(
+            "/api/v2/demo/session",
+            json={
+                "sector": "empresas",
+                "rubro": "ferreteria",
+                "source": "landing_widget_rubro_selector",
+                "surface": "widget",
+            },
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.get_json()
+        workspace = payload.get("workspace") or {}
+        tools = workspace.get("rubro_tools") or {}
+        enabled_tools = {item.get("id"): item for item in tools.get("enabled_tools") or []}
+        default_menu_kinds = {item.get("kind") for item in (workspace.get("default_menu") or {}).get("items") or []}
+
+        self.assertEqual(tools.get("contract_version"), "demo.rubro_tools.v1")
+        self.assertIn("catalog", enabled_tools)
+        self.assertIn("price_list", enabled_tools)
+        self.assertIn("faq", enabled_tools)
+        self.assertTrue(enabled_tools["catalog"].get("items"))
+        self.assertTrue(enabled_tools["price_list"].get("items"))
+        self.assertTrue(enabled_tools["faq"].get("items"))
+        self.assertIn("rubro_tool", default_menu_kinds)
+        self.assertEqual(
+            ((workspace.get("chat_bootstrap") or {}).get("payload") or {}).get("demo_metadata", {}).get("tool_summary", {}).get("faq_preview"),
+            tools.get("faq_preview")[:6],
+        )
+        self.assertEqual(
+            ((workspace.get("chat_bootstrap") or {}).get("payload") or {}).get("rubro_tool_summary", {}).get("faq_preview"),
+            tools.get("faq_preview")[:6],
+        )
+
+    def test_v2_demo_session_gobierno_rubro_tools_include_google_maps_location(self):
+        owner = User(name="Municipio Tools", email="municipio-tools@test.com", password_hash="hash", tipo_chat="municipio")
+        db.session.add(owner)
+        db.session.flush()
+        db.session.add(TenantProfile(slug="municipio", nombre="Municipio Demo", tipo="municipio", municipio_id=owner.id, is_active=True))
+        db.session.commit()
+
+        resp = self.client.post(
+            "/api/v2/demo/session",
+            json={
+                "sector": "gobierno",
+                "rubro": "municipio",
+                "source": "landing_widget_selector",
+                "surface": "widget",
+            },
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.get_json()
+        tools = ((payload.get("workspace") or {}).get("rubro_tools") or {})
+        enabled_tools = {item.get("id"): item for item in tools.get("enabled_tools") or []}
+        locations = tools.get("locations") or []
+
+        self.assertEqual(tools.get("contract_version"), "demo.rubro_tools.v1")
+        self.assertIn("location", enabled_tools)
+        self.assertIn("contact", enabled_tools)
+        self.assertTrue(locations)
+        self.assertIn("google.com/maps", locations[0].get("maps_url") or "")
+        self.assertTrue((tools.get("contact") or {}).get("website"))
+
+    def test_ask_pyme_demo_persists_rubro_metadata_from_chat_bootstrap(self):
+        owner = User(name="Ferreteria Runtime", email="ferreteria-runtime@test.com", password_hash="hash", tipo_chat="pyme", rol="admin")
+        db.session.add(owner)
+        db.session.flush()
+        db.session.add(TenantProfile(slug="ferreteria", nombre="Ferreteria Demo", tipo="pyme", pyme_id=owner.id, is_active=True))
+        db.session.commit()
+
+        session_resp = self.client.post(
+            "/api/v2/demo/session",
+            json={
+                "sector": "empresas",
+                "rubro": "ferreteria",
+                "source": "landing_widget_rubro_selector",
+                "surface": "widget",
+            },
+        )
+        self.assertEqual(session_resp.status_code, 200)
+        bootstrap = (session_resp.get_json().get("workspace") or {}).get("chat_bootstrap") or {}
+        bootstrap_payload = bootstrap.get("payload") or {}
+
+        with patch("services.logic.responder_chatboc", return_value={"message_body": "ok runtime"}):
+            resp = self.client.post(
+                "/api/ask/pyme?tenant_slug=ferreteria",
+                json={**bootstrap_payload, "pregunta": "hola", "chat_bootstrap": bootstrap},
+                headers={
+                    "Origin": "https://www.chatboc.ar",
+                    "X-Chat-Session-Id": (bootstrap.get("headers") or {}).get("X-Chat-Session-Id", "runtime-ferreteria-1"),
+                    "X-Demo-Session-Id": (bootstrap.get("headers") or {}).get("X-Demo-Session-Id", ""),
+                    "X-Request-Id": "runtime-ferreteria-demo-metadata",
+                },
+            )
+
+        self.assertEqual(resp.status_code, 200)
+        context = ChatSessionContext.query.first()
+        self.assertIsNotNone(context)
+        context_data = context.context_data or {}
+        self.assertEqual((context_data.get("demo_metadata") or {}).get("key"), "ferreteria")
+        self.assertIn("ferreteria", (context_data.get("demo_metadata") or {}).get("prompt_context", ""))
+        self.assertTrue((context_data.get("demo_metadata") or {}).get("tool_summary"))
 
     def test_api_ask_municipio_alias_degrades_runtime_errors_for_cached_frontend(self):
         owner = User(name="Municipio Demo", email="municipio-alias@test.com", password_hash="hash", tipo_chat="municipio", rol="admin")
