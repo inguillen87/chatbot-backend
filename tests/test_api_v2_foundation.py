@@ -166,6 +166,8 @@ class ApiV2FoundationTest(unittest.TestCase):
         whatsapp_sandbox = workspace.get("whatsapp_sandbox") or {}
         self.assertEqual(whatsapp_sandbox.get("contract_version"), "demo.whatsapp_sandbox.v1")
         self.assertEqual((whatsapp_sandbox.get("trial_policy") or {}).get("max_messages"), 10)
+        self.assertTrue((whatsapp_sandbox.get("trial_policy") or {}).get("enforced"))
+        self.assertEqual((((whatsapp_sandbox.get("trial_policy") or {}).get("channels") or {}).get("realtime_video") or {}).get("max_sessions"), 1)
         self.assertTrue((whatsapp_sandbox.get("supported_inputs") or {}).get("image"))
         self.assertTrue((whatsapp_sandbox.get("supported_inputs") or {}).get("audio"))
         self.assertTrue((whatsapp_sandbox.get("supported_inputs") or {}).get("location"))
@@ -220,6 +222,8 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertFalse((contract.get("sandbox") or {}).get("requires_join_phrase"))
         self.assertIn("probar la demo", (contract.get("sandbox") or {}).get("activation_message") or "")
         self.assertEqual((contract.get("trial_policy") or {}).get("max_messages"), 10)
+        self.assertTrue((contract.get("trial_policy") or {}).get("enforced"))
+        self.assertEqual((((contract.get("trial_policy") or {}).get("channels") or {}).get("whatsapp_sandbox") or {}).get("max_messages"), 10)
         self.assertTrue((contract.get("supported_inputs") or {}).get("image"))
         self.assertTrue((contract.get("supported_inputs") or {}).get("audio"))
         self.assertTrue((contract.get("supported_inputs") or {}).get("location"))

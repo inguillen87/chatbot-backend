@@ -70,6 +70,11 @@ _REALTIME_SESSION_RATE_LIMIT_WINDOW_SECONDS = 60
 _REALTIME_SESSION_RATE_LIMIT_MAX_REQUESTS = 20
 _REALTIME_SESSION_RATE_BUCKETS: dict[str, list[float]] = {}
 _REALTIME_RATE_BUCKET_MAX_KEYS = 10000
+_REALTIME_TRIAL_USAGE_BUCKETS: dict[str, list[float]] = {}
+_REALTIME_TRIAL_BUCKET_MAX_KEYS = 20000
+_REALTIME_TRIAL_WINDOW_SECONDS_DEFAULT = 24 * 60 * 60
+_REALTIME_TRIAL_MAX_VOICE_SESSIONS_DEFAULT = 3
+_REALTIME_TRIAL_MAX_VIDEO_SESSIONS_DEFAULT = 1
 _REALTIME_ACTION_EVENT_ALLOWED = {
     "crear_reclamo",
     "crear_pedido",
@@ -85,6 +90,77 @@ _REALTIME_ACTION_EVENT_ALLOWED = {
 }
 
 OPENAI_REALTIME_CLIENT_SECRETS_URL = "https://api.openai.com/v1/realtime/client_secrets"
+
+
+def _bounded_int(value, default: int, *, minimum: int = 0, maximum: int = 100000) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(minimum, min(parsed, maximum))
+
+
+def _demo_upgrade_payload(reason_code: str = "demo_message_limit_reached") -> dict:
+    return {
+        "required": True,
+        "reason_code": reason_code,
+        "lead_capture_endpoint": "/api/public/lead-capture",
+        "lead_capture_fields": ["name", "phone_or_email", "message", "tenant_slug", "sector"],
+        "cta": {
+            "primary": {
+                "id": "open_demo_form",
+                "label": "Dejar mis datos",
+                "action": "open_lead_capture",
+            },
+            "secondary": {
+                "id": "login",
+                "label": "Iniciar sesion",
+                "action": "login",
+            },
+        },
+        "message": "Para seguir usando llamadas, video o mas mensajes, dejanos tus datos y activamos una demo guiada.",
+    }
+
+
+def _realtime_trial_policy(cfg: dict | None = None) -> dict:
+    cfg = cfg if isinstance(cfg, dict) else {}
+    window_seconds = _bounded_int(
+        cfg.get("demo_realtime_trial_window_seconds"),
+        _REALTIME_TRIAL_WINDOW_SECONDS_DEFAULT,
+        minimum=60,
+        maximum=7 * 24 * 60 * 60,
+    )
+    voice_sessions = _bounded_int(
+        cfg.get("demo_realtime_max_voice_sessions"),
+        _REALTIME_TRIAL_MAX_VOICE_SESSIONS_DEFAULT,
+        minimum=0,
+        maximum=100,
+    )
+    video_sessions = _bounded_int(
+        cfg.get("demo_realtime_max_video_sessions"),
+        _REALTIME_TRIAL_MAX_VIDEO_SESSIONS_DEFAULT,
+        minimum=0,
+        maximum=100,
+    )
+    return {
+        "contract_version": "demo.realtime_trial_policy.v1",
+        "enabled": bool(cfg.get("demo_realtime_trial_enabled", True)),
+        "scope": "anonymous_or_sandbox_demo",
+        "window_seconds": window_seconds,
+        "channels": {
+            "voice": {
+                "max_sessions": voice_sessions,
+                "media": ["audio", "text"],
+            },
+            "video": {
+                "max_sessions": video_sessions,
+                "media": ["audio", "video", "text"],
+            },
+        },
+        "upgrade_required_after_limit": True,
+        "limit_reached_reason_code": "realtime_trial_limit_reached",
+        "upgrade": _demo_upgrade_payload("realtime_trial_limit_reached"),
+    }
 
 
 def _realtime_audio_format(value: str | dict | None, *, default: str = "pcm16") -> dict:
@@ -505,6 +581,7 @@ def _platform_widget_config_payload() -> dict:
     realtime = _socket_realtime_contract({})
     visibility_rules = _widget_visibility_rules(realtime=realtime, voice_enabled=True, video_enabled=False)
     voice_capabilities = build_realtime_voice_capabilities(None, {}, current_app.config)
+    realtime_trial_policy = _realtime_trial_policy({})
     live_status = build_live_chat_status()
     live_status["available"] = False
     live_status["realtime"] = False
@@ -525,6 +602,7 @@ def _platform_widget_config_payload() -> dict:
             "provider": "openai_realtime",
             "contract_version": REALTIME_VOICE_CONTRACT_VERSION,
             "capabilities": voice_capabilities,
+            "trial_policy": realtime_trial_policy,
             "media": {"audio": True, "text": True},
         },
         "video_call": {
@@ -532,6 +610,7 @@ def _platform_widget_config_payload() -> dict:
             "channel": "video_call",
             "provider": "openai_realtime",
             "reason_code": "video_call_disabled_until_frontend_surface_ready",
+            "trial_policy": realtime_trial_policy,
             "media": {"audio": True, "video": True, "text": True},
         },
     }
@@ -560,6 +639,7 @@ def _platform_widget_config_payload() -> dict:
         "media_capabilities": media_capabilities,
         "support_channels": support_channels,
         "realtime": realtime,
+        "realtime_trial_policy": realtime_trial_policy,
         "visibility_rules": visibility_rules,
         "ui_hints": _widget_ui_hints(mode="platform_selector"),
         "experience_blueprint": experience,
@@ -621,6 +701,7 @@ def _support_channels_payload(tenant: TenantProfile, cfg: dict) -> dict:
         schedule_override=(cfg.get("live_chat_schedule") if isinstance(cfg.get("live_chat_schedule"), dict) else None)
     )
     live_chat_available = bool(live_status.get("available")) and bool(socket_realtime.get("socket_enabled"))
+    realtime_trial_policy = _realtime_trial_policy(cfg)
 
     return {
         "live_chat": {
@@ -638,6 +719,14 @@ def _support_channels_payload(tenant: TenantProfile, cfg: dict) -> dict:
             "number": whatsapp_number,
             "channel": "whatsapp",
             "realtime_bridge": True,
+            "trial_policy": {
+                "contract_version": "demo.whatsapp_trial_policy.v1",
+                "enabled": bool(cfg.get("demo_trial_enabled", True)),
+                "scope": "anonymous_or_sandbox_demo",
+                "max_messages": _bounded_int(cfg.get("demo_max_messages"), 10, minimum=1, maximum=100),
+                "limit_reached_reason_code": "demo_message_limit_reached",
+                "upgrade": _demo_upgrade_payload("demo_message_limit_reached"),
+            },
             "media": {"text": True, "image": True, "audio": True, "file": True},
         },
         "voice_call": {
@@ -650,6 +739,7 @@ def _support_channels_payload(tenant: TenantProfile, cfg: dict) -> dict:
             "voice": realtime_voice_name,
             "contract_version": REALTIME_VOICE_CONTRACT_VERSION,
             "capabilities": realtime_voice,
+            "trial_policy": realtime_trial_policy,
             "media": {"audio": True, "text": True},
             "features": {
                 "barge_in": True,
@@ -666,6 +756,7 @@ def _support_channels_payload(tenant: TenantProfile, cfg: dict) -> dict:
             "model": realtime_model,
             "fallback_model": realtime_voice.get("fallback_model"),
             "voice": realtime_voice_name,
+            "trial_policy": realtime_trial_policy,
             "avatar": {
                 **build_chatboc_bot_avatar_contract(cfg, current_app.config),
             },
@@ -720,23 +811,29 @@ def _tenant_rubro_profile(tenant: TenantProfile) -> dict:
 def _demo_trial_payload_for_widget(tenant: TenantProfile, cfg: dict) -> dict:
     phrase = str(cfg.get("demo_whatsapp_join_phrase") or "join brief-yesterday").strip()
     number = str(cfg.get("demo_whatsapp_number_e164") or "+14155238886").strip() or "+14155238886"
-    max_messages = cfg.get("demo_max_messages", 10)
-    try:
-        max_messages = max(1, min(int(max_messages), 100))
-    except (TypeError, ValueError):
-        max_messages = 10
+    max_messages = _bounded_int(cfg.get("demo_max_messages"), 10, minimum=1, maximum=100)
+    realtime_trial_policy = _realtime_trial_policy(cfg)
 
     return {
+        "contract_version": "demo.trial_policy.v1",
         "enabled": bool(cfg.get("demo_trial_enabled", True)),
+        "scope": "anonymous_or_sandbox_demo",
         "join_phrase": phrase,
         "display_number": cfg.get("demo_whatsapp_display_number") or "+1 (415) 523-8886",
         "number_e164": number,
         "wa_deeplink": f"https://wa.me/{number.lstrip('+')}?text={quote_plus(phrase)}",
         "limits": {
             "max_messages": max_messages,
+            "widget_chat_max_messages": max_messages,
+            "whatsapp_sandbox_max_messages": max_messages,
+            "realtime_voice_max_sessions": ((realtime_trial_policy.get("channels") or {}).get("voice") or {}).get("max_sessions"),
+            "realtime_video_max_sessions": ((realtime_trial_policy.get("channels") or {}).get("video") or {}).get("max_sessions"),
+            "realtime_window_seconds": realtime_trial_policy.get("window_seconds"),
             "upgrade_required_for": cfg.get("demo_upgrade_required_for") or ["qdrant_catalogo_completo", "automatizaciones_enterprise"],
             "upgrade_message": cfg.get("demo_upgrade_message") or "Límite demo alcanzado. Activá plan Full para continuar.",
         },
+        "realtime_trial_policy": realtime_trial_policy,
+        "upgrade": _demo_upgrade_payload("demo_message_limit_reached"),
     }
 
 
@@ -825,6 +922,89 @@ def _check_realtime_rate_limit(*, tenant_slug: str, widget_token: str | None, ip
     bucket.append(now)
     _REALTIME_SESSION_RATE_BUCKETS[bucket_key] = bucket
     return True
+
+
+def _check_realtime_trial_budget(
+    *,
+    tenant_slug: str,
+    channel: str,
+    cfg: dict,
+    widget_token: str | None,
+    anon_id: str | None,
+    ip: str | None,
+    consume: bool = True,
+) -> tuple[bool, dict]:
+    policy = _realtime_trial_policy(cfg)
+    if not policy.get("enabled", True):
+        return True, {
+            "contract_version": "demo.realtime_trial_usage.v1",
+            "enabled": False,
+            "policy": policy,
+        }
+
+    channel_policy = (policy.get("channels") or {}).get(channel) or {}
+    max_sessions = _bounded_int(channel_policy.get("max_sessions"), 0, minimum=0, maximum=100)
+    window_seconds = _bounded_int(
+        policy.get("window_seconds"),
+        _REALTIME_TRIAL_WINDOW_SECONDS_DEFAULT,
+        minimum=60,
+        maximum=7 * 24 * 60 * 60,
+    )
+    now = datetime.now(timezone.utc).timestamp()
+    token_fragment = (widget_token or "missing")[:24]
+    actor_key = str(anon_id or ip or "unknown").strip() or "unknown"
+    bucket_key = f"{tenant_slug}|{channel}|{actor_key}|{token_fragment}"
+
+    if len(_REALTIME_TRIAL_USAGE_BUCKETS) > _REALTIME_TRIAL_BUCKET_MAX_KEYS:
+        stale_keys = [
+            key
+            for key, values in _REALTIME_TRIAL_USAGE_BUCKETS.items()
+            if not values or now - max(values) > (window_seconds * 2)
+        ]
+        for key in stale_keys[:4000]:
+            _REALTIME_TRIAL_USAGE_BUCKETS.pop(key, None)
+
+    bucket = _REALTIME_TRIAL_USAGE_BUCKETS.get(bucket_key, [])
+    bucket = [ts for ts in bucket if now - ts <= window_seconds]
+    remaining_before = max(0, max_sessions - len(bucket))
+    reset_at_epoch = int((min(bucket) + window_seconds) if bucket else (now + window_seconds))
+    usage = {
+        "contract_version": "demo.realtime_trial_usage.v1",
+        "enabled": True,
+        "channel": channel,
+        "tenant_slug": tenant_slug,
+        "limit": max_sessions,
+        "used": len(bucket),
+        "remaining": remaining_before,
+        "window_seconds": window_seconds,
+        "reset_at_epoch": reset_at_epoch,
+        "policy": policy,
+    }
+
+    if max_sessions <= 0 or len(bucket) >= max_sessions:
+        usage.update(
+            {
+                "ok": False,
+                "reason_code": policy.get("limit_reached_reason_code") or "realtime_trial_limit_reached",
+                "remaining": 0,
+                "upgrade": policy.get("upgrade") or _demo_upgrade_payload("realtime_trial_limit_reached"),
+            }
+        )
+        _REALTIME_TRIAL_USAGE_BUCKETS[bucket_key] = bucket
+        return False, usage
+
+    if consume:
+        bucket.append(now)
+        _REALTIME_TRIAL_USAGE_BUCKETS[bucket_key] = bucket
+    usage.update(
+        {
+            "ok": True,
+            "used": len(bucket),
+            "remaining": max(0, max_sessions - len(bucket)),
+            "reset_at_epoch": int((min(bucket) + window_seconds) if bucket else (now + window_seconds)),
+        }
+    )
+    return True, usage
 
 
 def _realtime_rate_limit_headers() -> dict[str, str]:
@@ -1014,6 +1194,43 @@ def create_realtime_session():
         _audit_realtime_event(tenant, event_name="realtime_session_denied", channel=channel, metadata={"reason": "voice_disabled"})
         return _realtime_error_response("voice_realtime_disabled", 400)
 
+    anon_id = (
+        payload.get("anon_id")
+        or payload.get("anonymous_id")
+        or request.headers.get("X-Anon-Id")
+        or request.cookies.get("chatboc_anon_id")
+        or request.cookies.get("anon_id")
+    )
+    trial_allowed, trial_usage = _check_realtime_trial_budget(
+        tenant_slug=tenant.slug,
+        channel=channel,
+        cfg=cfg,
+        widget_token=widget_token,
+        anon_id=str(anon_id) if anon_id else None,
+        ip=client_ip,
+        consume=False,
+    )
+    if not trial_allowed:
+        _audit_realtime_event(
+            tenant,
+            event_name="realtime_session_trial_limited",
+            channel=channel,
+            metadata={
+                "reason": trial_usage.get("reason_code"),
+                "anon_id_present": bool(anon_id),
+                "limit": trial_usage.get("limit"),
+            },
+        )
+        return _realtime_error_response(
+            "realtime_trial_limit_reached",
+            402,
+            ok=False,
+            reason_code=trial_usage.get("reason_code") or "realtime_trial_limit_reached",
+            trial_policy=trial_usage.get("policy"),
+            trial_usage=trial_usage,
+            upgrade=trial_usage.get("upgrade") or _demo_upgrade_payload("realtime_trial_limit_reached"),
+        )
+
     api_key = current_app.config.get("OPENAI_API_KEY")
     if api_key is None:
         api_key = os.environ.get("OPENAI_API_KEY")
@@ -1055,6 +1272,16 @@ def create_realtime_session():
             "expires_at": session_data.get("expires_at"),
         }
 
+    _, trial_usage = _check_realtime_trial_budget(
+        tenant_slug=tenant.slug,
+        channel=channel,
+        cfg=cfg,
+        widget_token=widget_token,
+        anon_id=str(anon_id) if anon_id else None,
+        ip=client_ip,
+        consume=True,
+    )
+
     _audit_realtime_event(tenant, event_name="realtime_session_created", channel=channel, metadata={"model": session_payload["session"].get("model")})
 
     public_payload = {
@@ -1064,11 +1291,15 @@ def create_realtime_session():
         "model": session_payload["session"].get("model"),
         "avatar": session_payload.get("metadata", {}),
         "avatar_contract": session_payload.get("metadata", {}).get("avatar_contract"),
+        "trial_policy": trial_usage.get("policy"),
+        "trial_usage": {k: v for k, v in trial_usage.items() if k != "policy"},
         "session": session_data,
     }
     response = jsonify(public_payload)
     for key, value in _realtime_rate_limit_headers().items():
         response.headers[key] = value
+    response.headers["X-Trial-Limit"] = str(trial_usage.get("limit", ""))
+    response.headers["X-Trial-Remaining"] = str(trial_usage.get("remaining", ""))
     return _log_widget_public_request(response, tenant, entity_token=widget_token)
 
 
@@ -1100,6 +1331,7 @@ def realtime_voice_capabilities():
         except TenantResolutionError as exc:
             payload = build_realtime_voice_capabilities(None, {}, current_app.config)
             payload["enabled"] = False
+            payload["trial_policy"] = _realtime_trial_policy({})
             payload.setdefault("features", {})["tool_calling"] = False
             payload["support_channels"] = {
                 "voice_call": {
@@ -1126,6 +1358,7 @@ def realtime_voice_capabilities():
     payload = build_realtime_voice_capabilities(tenant, cfg, current_app.config)
     voice_enabled = _config_flag(cfg, "realtime_voice_enabled", default=True)
     payload["enabled"] = voice_enabled
+    payload["trial_policy"] = _realtime_trial_policy(cfg)
     if not voice_enabled:
         payload["reason_code"] = "voice_not_enabled"
         payload.setdefault("features", {})["tool_calling"] = False
@@ -1137,6 +1370,7 @@ def realtime_voice_capabilities():
             "channel": "voice_call",
             "provider": "openai_realtime",
             "session_endpoint": "/api/public/realtime/session",
+            "trial_policy": payload["trial_policy"],
         }
     }
     if tenant:
@@ -1441,6 +1675,8 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
                     "window_seconds": _REALTIME_SESSION_RATE_LIMIT_WINDOW_SECONDS,
                     "max_requests": _REALTIME_SESSION_RATE_LIMIT_MAX_REQUESTS,
                 },
+                "trial_policy": demo_trial.get("realtime_trial_policy"),
+                "upgrade": demo_trial.get("upgrade"),
             },
             "ux": {
                 "must_support": ["captions", "voice_only", "video_to_voice_fallback", "keyboard_navigation"],

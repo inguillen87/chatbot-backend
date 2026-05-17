@@ -143,15 +143,30 @@ def _rubro_options(sector: str, limit: int = 12) -> list[dict[str, Any]]:
 def demo_trial_policy(max_messages: int = DEFAULT_SANDBOX_MESSAGE_LIMIT) -> dict[str, Any]:
     return {
         "contract_version": "demo.trial_policy.v1",
+        "enabled": True,
+        "enforced": True,
         "max_messages": max_messages,
         "scope": "anonymous_or_sandbox_demo",
         "free_inputs": ["text", "image", "audio", "location", "file"],
+        "channels": {
+            "widget_chat": {"max_messages": max_messages},
+            "whatsapp_sandbox": {"max_messages": max_messages},
+            "realtime_voice": {"max_sessions": 3, "window_seconds": 86400},
+            "realtime_video": {"max_sessions": 1, "window_seconds": 86400},
+        },
         "rules": [
             "No requiere usuario ni contrasena para iniciar demo.",
             "El backend debe conservar anon_id/chat_session_id para no perder contexto.",
             "Al llegar al limite, mostrar captura de lead o CTA comercial.",
         ],
         "limit_reached_reason_code": "demo_message_limit_reached",
+        "upgrade_required_after_limit": True,
+        "upgrade": {
+            "required": True,
+            "lead_capture_endpoint": "/api/public/lead-capture",
+            "lead_capture_fields": ["name", "phone_or_email", "message", "tenant_slug", "sector"],
+            "reason_code": "demo_message_limit_reached",
+        },
     }
 
 

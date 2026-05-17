@@ -924,6 +924,20 @@ def _activate_demo_session(
     return changed
 
 
+def _build_trial_upgrade_contract(reason_code: str) -> Dict[str, object]:
+    return {
+        "required": True,
+        "reason_code": reason_code,
+        "lead_capture_endpoint": "/api/public/lead-capture",
+        "lead_capture_fields": ["name", "phone_or_email", "message", "tenant_slug", "sector"],
+        "cta": {
+            "primary": {"id": "open_demo_form", "label": "Dejar mis datos", "action": "open_lead_capture"},
+            "secondary": {"id": "login", "label": "Iniciar sesion", "action": "login"},
+        },
+        "message": "Para seguir usando la demo, dejanos tus datos y activamos una prueba guiada.",
+    }
+
+
 def _build_demo_limit_response(limite: int) -> Dict[str, object]:
     mensaje = (
         "¡Gracias por probar Chatboc! Llegaste al límite de "
@@ -946,7 +960,18 @@ def _build_demo_limit_response(limite: int) -> Dict[str, object]:
         },
     ]
     return {
+        "contract_version": "demo.usage_limit.v1",
+        "ok": False,
         "error": "demo_limit_reached",
+        "reason_code": "demo_message_limit_reached",
+        "trial_policy": {
+            "contract_version": "demo.trial_policy.v1",
+            "scope": "anonymous_or_sandbox_demo",
+            "max_messages": limite,
+            "limit_reached_reason_code": "demo_message_limit_reached",
+            "upgrade_required_after_limit": True,
+        },
+        "upgrade": _build_trial_upgrade_contract("demo_message_limit_reached"),
         "respuesta": mensaje,
         "message_body": mensaje,
         "options_list": botones,
@@ -1880,8 +1905,28 @@ def _procesar_chat(
 
         if is_anonymous:
             # Lógica para usuarios anónimos
-            max_messages = current_app.config.get("ANONYMOUS_MAX_MESSAGES_PER_SESSION", 50)
-            session_timeout_minutes = current_app.config.get("ANONYMOUS_SESSION_TIMEOUT_MINUTES", 15)
+            public_trial_active = bool(
+                _is_public_landing_request()
+                or request.args.get("demo_session_id")
+                or request.headers.get("X-Demo-Session-Id")
+            )
+            if public_trial_active:
+                max_messages = current_app.config.get(
+                    "DEMO_ANONYMOUS_MAX_MESSAGES_PER_SESSION",
+                    current_app.config.get("DEMO_MAX_MESSAGES_PER_SESSION") or 10,
+                )
+                session_timeout_minutes = current_app.config.get("DEMO_ANONYMOUS_SESSION_TIMEOUT_MINUTES", 24 * 60)
+            else:
+                max_messages = current_app.config.get("ANONYMOUS_MAX_MESSAGES_PER_SESSION", 50)
+                session_timeout_minutes = current_app.config.get("ANONYMOUS_SESSION_TIMEOUT_MINUTES", 15)
+            try:
+                max_messages = max(1, int(max_messages))
+            except (TypeError, ValueError):
+                max_messages = 10 if public_trial_active else 50
+            try:
+                session_timeout_minutes = max(1, int(session_timeout_minutes))
+            except (TypeError, ValueError):
+                session_timeout_minutes = 24 * 60 if public_trial_active else 15
 
             last_message_time = db.session.query(func.max(Conversacion.timestamp))                 .filter(Conversacion.session_id == anon_id)                 .scalar()
 
@@ -1900,7 +1945,20 @@ def _procesar_chat(
                 current_app.logger.info(f"Usuario anónimo {anon_id}: {message_count_this_session} mensajes en la sesión actual (límite: {max_messages}).")
 
                 if message_count_this_session >= max_messages and not is_init_request:
+                    reason_code = "anonymous_trial_limit_reached" if public_trial_active else "anonymous_message_limit_reached"
                     return jsonify({
+                        "contract_version": "demo.usage_limit.v1" if public_trial_active else "shared.usage_limit.v1",
+                        "ok": False,
+                        "reason_code": reason_code,
+                        "trial_policy": {
+                            "contract_version": "demo.trial_policy.v1",
+                            "scope": "anonymous_or_sandbox_demo" if public_trial_active else "anonymous_public_chat",
+                            "max_messages": max_messages,
+                            "window_minutes": session_timeout_minutes,
+                            "limit_reached_reason_code": reason_code,
+                            "upgrade_required_after_limit": True,
+                        },
+                        "upgrade": _build_trial_upgrade_contract(reason_code),
                         "error": {"code": 403, "message": "Alcanzaste el límite de mensajes para usuarios invitados."}, # NEW FORMAT
                         "respuesta": "Alcanzaste el límite de mensajes para usuarios invitados. Para continuar, por favor inicia sesión o regístrate.",
                         "botones": [

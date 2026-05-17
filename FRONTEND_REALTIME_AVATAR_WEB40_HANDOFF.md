@@ -586,3 +586,64 @@ Enviar a `/api/public/realtime/action-event` cuando la accion sea confirmada por
 - `derivar_humano`
 
 No emitir `business_action_executed` si solo hubo una intencion del usuario y la tool fallo.
+
+## K. Update 2026-05-16: limites de costo para demos anonimas
+
+Backend ahora publica y aplica limites de trial para evitar uso indefinido de chat, WhatsApp sandbox y Realtime.
+
+### Contratos a leer
+
+- `builder_config.demo_trial`
+- `builder_config.enterprise_iteration.realtime.trial_policy`
+- `support_channels.voice_call.trial_policy`
+- `support_channels.video_call.trial_policy`
+- `support_channels.whatsapp.trial_policy`
+- `realtime_voice.trial_policy`
+
+### Realtime voice/video
+
+`POST /api/public/realtime/session` puede responder:
+
+```json
+{
+  "ok": false,
+  "error": "realtime_trial_limit_reached",
+  "reason_code": "realtime_trial_limit_reached",
+  "trial_usage": {
+    "channel": "video",
+    "limit": 1,
+    "used": 1,
+    "remaining": 0
+  },
+  "upgrade": {
+    "lead_capture_endpoint": "/api/public/lead-capture"
+  }
+}
+```
+
+Reglas frontend:
+
+- No reintentar automaticamente cuando llegue `realtime_trial_limit_reached`.
+- Deshabilitar el boton de llamada/video para esa demo hasta reset o login.
+- Mostrar captura de lead con `upgrade.lead_capture_endpoint`.
+- Mostrar login/registro solo como alternativa, no como unico camino.
+- Enviar `anon_id` en cada request de Realtime para que el limite sea estable.
+
+### Chat widget y WhatsApp sandbox
+
+Cuando backend devuelva `demo_message_limit_reached` o `anonymous_trial_limit_reached`:
+
+- Bloquear composer.
+- Mantener visible el historial.
+- Mostrar CTA de lead/upgrade.
+- No fabricar respuestas locales para extender la demo.
+- Para sandbox, mostrar antes de iniciar: "Incluye hasta N mensajes gratis".
+
+### UX comercial
+
+El corte debe sentirse como conversion, no como error tecnico:
+
+- Titulo sugerido: "Ya viste la demo real. Sigamos con una prueba guiada."
+- Accion primaria: dejar nombre + telefono/email + rubro.
+- Accion secundaria: iniciar sesion.
+- No mostrar stack traces, JSON crudo ni errores rojos si hay `upgrade`.

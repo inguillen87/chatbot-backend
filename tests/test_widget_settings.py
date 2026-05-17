@@ -48,6 +48,13 @@ class WidgetSettingsTests(unittest.TestCase):
         db.create_all()
         self.owner, self.tenant = _create_tenant_with_owner()
         self.client = self.app.test_client()
+        try:
+            from routes import public_resolver
+
+            public_resolver._REALTIME_SESSION_RATE_BUCKETS.clear()
+            public_resolver._REALTIME_TRIAL_USAGE_BUCKETS.clear()
+        except Exception:
+            pass
 
     def tearDown(self):
         db.session.remove()
@@ -123,6 +130,11 @@ class WidgetSettingsTests(unittest.TestCase):
         self.assertEqual(attrs["data-avatar-display-name"], "BOT Chatboc")
         self.assertEqual(widget_data["builder_config"]["avatar"]["type"], "chatboc_bot")
         self.assertEqual(widget_data["widget"]["builder_config"]["enterprise_iteration"]["realtime"]["voice_handoff"]["supports_whatsapp_followup"], True)
+        trial_policy = widget_data["widget"]["builder_config"]["enterprise_iteration"]["realtime"]["trial_policy"]
+        self.assertEqual(trial_policy["contract_version"], "demo.realtime_trial_policy.v1")
+        self.assertEqual(trial_policy["channels"]["voice"]["max_sessions"], 3)
+        self.assertEqual(trial_policy["channels"]["video"]["max_sessions"], 1)
+        self.assertEqual(widget_data["builder_config"]["demo_trial"]["limits"]["whatsapp_sandbox_max_messages"], 10)
 
 
 
@@ -244,6 +256,8 @@ class WidgetSettingsTests(unittest.TestCase):
         self.assertEqual(payload["avatar"]["contract_version"], "chatboc.avatar.v1")
         self.assertEqual(payload["avatar"]["type"], "chatboc_bot")
         self.assertEqual(payload["avatar"]["persona"], "bot_chatboc")
+        self.assertEqual(payload["trial_policy"]["contract_version"], "demo.realtime_trial_policy.v1")
+        self.assertEqual(payload["trial_policy"]["channels"]["voice"]["max_sessions"], 3)
         municipio_actions = payload["verticals"]["municipio"]["actions"]
         self.assertIn("crear_reclamo", municipio_actions)
         self.assertIn("capturar_lead_comercial", municipio_actions)
@@ -280,6 +294,48 @@ class WidgetSettingsTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         request_obj = mock_urlopen.call_args.args[0]
         self.assertIsNone(request_obj.get_header("Openai-beta"))
+
+    @patch("routes.public_resolver.urllib_request.urlopen")
+    def test_public_realtime_session_enforces_demo_trial_budget(self, mock_urlopen):
+        class MockOpenAIResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return json.dumps({"id": "sess_123", "client_secret": {"value": "ek_mock"}}).encode("utf-8")
+
+        mock_urlopen.return_value = MockOpenAIResponse()
+        self.app.config["OPENAI_API_KEY"] = "mock-key"
+        self.tenant.configuracion = {
+            "widget_tokens": [self.owner.token],
+            "realtime_video_enabled": True,
+            "demo_realtime_max_video_sessions": 1,
+            "demo_realtime_trial_window_seconds": 86400,
+        }
+        db.session.add(self.tenant)
+        db.session.commit()
+
+        request_body = {
+            "tenant_slug": self.tenant.slug,
+            "channel": "video",
+            "widget_token": self.owner.token,
+            "anon_id": "anon-demo-video-1",
+        }
+        first = self.client.post("/api/public/realtime/session", json=request_body)
+        second = self.client.post("/api/public/realtime/session", json=request_body)
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 402)
+        payload = second.get_json()
+        self.assertEqual(payload["error"], "realtime_trial_limit_reached")
+        self.assertEqual(payload["reason_code"], "realtime_trial_limit_reached")
+        self.assertEqual(payload["trial_usage"]["limit"], 1)
+        self.assertEqual(payload["trial_usage"]["remaining"], 0)
+        self.assertEqual(payload["upgrade"]["lead_capture_endpoint"], "/api/public/lead-capture")
+        self.assertEqual(mock_urlopen.call_count, 1)
 
     def test_public_realtime_action_event_rejects_unknown_action(self):
         response = self.client.post(
