@@ -755,6 +755,37 @@ def _item_inventory_payload(item: CatalogoItem, tenant: TenantProfile) -> dict:
     )
 
 
+def _catalog_version_for_tenant(tenant: TenantProfile) -> str:
+    cfg = tenant.configuracion if isinstance(getattr(tenant, "configuracion", None), dict) else {}
+    return cfg.get("catalog_version") or f"cat_{tenant.id}_unversioned"
+
+
+def _attach_marketplace_inventory_aliases(
+    product: dict,
+    *,
+    tenant: TenantProfile,
+    item: CatalogoItem | None = None,
+    catalog_version: str | None = None,
+    request_id: str | None = None,
+) -> dict:
+    """Expose frontend-friendly aliases without dropping legacy Spanish fields."""
+    item_id = product.get("catalogo_item_id") or getattr(item, "id", None)
+    product.setdefault("id", item_id)
+    product.setdefault("name", product.get("nombre"))
+    product.setdefault("description", product.get("descripcion") or product.get("descripcion_corta"))
+    product.setdefault(
+        "price",
+        product.get("price_numeric")
+        if product.get("price_numeric") is not None
+        else product.get("precio") or product.get("precio_texto"),
+    )
+    product.setdefault("currency", product.get("moneda") or getattr(item, "moneda", None) or "ARS")
+    product.setdefault("catalog_version", catalog_version or _catalog_version_for_tenant(tenant))
+    if request_id:
+        product.setdefault("request_id", request_id)
+    return product
+
+
 @admin_tenant_bp.route('/api/admin/tenants/<slug>/catalog/publish', methods=['OPTIONS'])
 def admin_catalog_publish_options(slug):
     return _cors_preflight_response()
@@ -1008,6 +1039,7 @@ def admin_update_catalog_item(current_user, slug, item_id: int):
         )
 
     request_id = _request_id()
+    catalog_version = cfg.get("catalog_version") or _catalog_version_for_tenant(tenant)
     formatted = _formatear_producto(
         {
             "nombre": item.nombre,
@@ -1032,6 +1064,14 @@ def admin_update_catalog_item(current_user, slug, item_id: int):
     formatted["stock_quantity"] = formatted["inventory"]["stock_quantity"]
     formatted["stock_status"] = formatted["inventory"]["stock_status"]
     formatted["available_to_sell"] = formatted["inventory"]["available_to_sell"]
+    formatted["price_numeric"] = float(item.precio_monetario) if item.precio_monetario is not None else None
+    _attach_marketplace_inventory_aliases(
+        formatted,
+        tenant=tenant,
+        item=item,
+        catalog_version=catalog_version,
+        request_id=request_id,
+    )
     return jsonify(
         {
             "contract_version": "tenant.catalog_item_update.v1",
@@ -1148,6 +1188,8 @@ def admin_tenant_catalog(current_user, slug):
     sort_key = (request.args.get("sort") or "nombre").strip().lower()
     price_min = request.args.get("precio_min")
     price_max = request.args.get("precio_max")
+    request_id = _request_id()
+    catalog_version = _catalog_version_for_tenant(tenant)
 
     query = _product_query_for_tenant(owner, tenant)
     if categoria:
@@ -1213,6 +1255,13 @@ def admin_tenant_catalog(current_user, slug):
         prod["stock_status"] = prod["inventory"]["stock_status"]
         prod["available_to_sell"] = prod["inventory"]["available_to_sell"]
         prod["price_numeric"] = float(item.precio_monetario) if item.precio_monetario is not None else None
+        _attach_marketplace_inventory_aliases(
+            prod,
+            tenant=tenant,
+            item=item,
+            catalog_version=catalog_version,
+            request_id=request_id,
+        )
         prod["channel_availability"] = {
             "widget": True,
             "whatsapp": True,
@@ -1238,7 +1287,10 @@ def admin_tenant_catalog(current_user, slug):
                     filtrados.append(prod)
             productos = filtrados
 
-    return jsonify(productos)
+    response = jsonify(productos)
+    response.headers["X-Request-Id"] = request_id
+    response.headers["X-Catalog-Version"] = catalog_version
+    return response
 
 @admin_tenant_bp.route('/api/admin/tenants/<slug>/config', methods=['PUT'])
 @token_requerido

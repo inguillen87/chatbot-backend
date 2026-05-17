@@ -1060,6 +1060,11 @@ class DemoOnboardingTestCase(unittest.TestCase):
         self.assertEqual(payload.get("fuente"), "business_widget_order_started")
         data = payload.get("data") or {}
         self.assertFalse(data.get("amount_validated"))
+        self.assertEqual(data.get("status"), "demo_pending_confirmation")
+        self.assertEqual(data.get("stock_status"), "stock_unknown")
+        self.assertEqual((data.get("order") or {}).get("status"), "demo_pending_confirmation")
+        self.assertFalse((data.get("order") or {}).get("amount_validated"))
+        self.assertEqual((data.get("order") or {}).get("stock_status"), "stock_unknown")
         self.assertEqual(PymePedido.query.count(), 1)
 
 

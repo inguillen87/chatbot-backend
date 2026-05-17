@@ -314,10 +314,42 @@ def build_catalog_quality_payload(tenant: TenantProfile, *, limit: int = 20) -> 
         alerts.append({"severity": "high", "reason_code": "products_missing_price", "count": len(missing_price)})
     if missing_stock:
         alerts.append({"severity": "medium", "reason_code": "products_missing_stock", "count": len(missing_stock)})
+    recommendations = [
+        action
+        for action in [
+            {
+                "id": "stock_unknown",
+                "label": "Completar stock",
+                "description": "Hay productos sin estado de stock validado.",
+                "severity": "warning",
+            }
+            if missing_stock
+            else None,
+            {
+                "id": "missing_price",
+                "label": "Completar precios",
+                "description": "Hay productos sin precio publicado.",
+                "severity": "high",
+            }
+            if missing_price
+            else None,
+            {
+                "id": "missing_images",
+                "label": "Agregar imagenes",
+                "description": "Hay productos sin imagen para marketplace, widget o WhatsApp.",
+                "severity": "warning",
+            }
+            if missing_images
+            else None,
+        ]
+        if action
+    ]
 
     return {
         "contract_version": "catalog.quality.v1",
         "generated_at": datetime.now(timezone.utc).isoformat(),
+        "tenant_slug": tenant.slug,
+        "catalog_version": cfg.get("catalog_version") or f"cat_{tenant.id}_unversioned",
         "tenant": {
             "id": tenant.id,
             "slug": tenant.slug,
@@ -327,7 +359,9 @@ def build_catalog_quality_payload(tenant: TenantProfile, *, limit: int = 20) -> 
         },
         "summary": {
             "products": total,
+            "items_total": total,
             "ready_to_sell": len(ready_to_sell),
+            "items_sellable": len(ready_to_sell),
             "missing_images": len(missing_images),
             "missing_price": len(missing_price),
             "missing_stock": len(missing_stock),
@@ -403,6 +437,7 @@ def build_catalog_quality_payload(tenant: TenantProfile, *, limit: int = 20) -> 
             "public_market": f"/market/{tenant.slug}",
         },
         "alerts": alerts,
+        "recommendations": recommendations,
         "recommended_actions": [
             action
             for action in [

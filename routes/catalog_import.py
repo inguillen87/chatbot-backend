@@ -814,15 +814,24 @@ def commit_import_session(current_user, upload_id):
     request_id = request.headers.get("X-Request-Id") or f"req_{uuid.uuid4().hex}"
     return jsonify(
         {
+            "ok": True,
             "success": True,
             "contract_version": "catalog.import_commit.v1",
             "request_id": request_id,
+            "upload_id": upload.id,
             "mode": mode,
             "count": count,
             "created": created_count,
             "updated": updated_count,
             "stock_updated": stock_updated_count,
             "skipped_rows": skipped_rows[:50],
+            "summary": {
+                "created": created_count,
+                "updated": updated_count,
+                "skipped": len(skipped_rows),
+                "errors": 0,
+            },
+            "warnings": [],
             "catalog_version": catalog_version,
             "image_summary": image_summary,
             "inventory_summary": _catalog_inventory_summary(items),

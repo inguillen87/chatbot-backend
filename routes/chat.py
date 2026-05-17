@@ -1157,21 +1157,32 @@ def _demo_widget_runtime_response(
 
         if normalized_action in {"crear_pedido", "preparar_checkout", "checkout", "create_order"}:
             pedido = _persist_demo_pyme_order(tenant=tenant, owner_user=owner_user, question=question_text)
+            order_id = getattr(pedido, "id", None)
+            order_number = getattr(pedido, "nro_pedido", None)
             payload = {
                 "contract_version": "demo.widget_runtime.v1",
                 "ok": True,
                 "success": True,
                 "request_id": request_id,
-                "message_body": "Pedido iniciado. No confirme monto final porque el backend todavia debe validar productos, stock y precio.",
+                "message_body": "Puedo tomar los datos del pedido para mostrarte el flujo. La confirmacion comercial queda deshabilitada en demo.",
                 "message_type": "interactive_buttons",
                 "botones": buttons[:4],
                 "options_list": buttons[:4],
                 "fuente": "business_widget_order_started",
                 "data": {
-                    "order_id": getattr(pedido, "id", None),
-                    "order_number": getattr(pedido, "nro_pedido", None),
-                    "status": getattr(pedido, "estado", "draft") if pedido else "draft",
+                    "order_id": order_id,
+                    "order_number": order_number,
+                    "status": "demo_pending_confirmation",
                     "amount_validated": False,
+                    "stock_status": "stock_unknown",
+                    "order": {
+                        "order_id": order_id,
+                        "order_number": order_number,
+                        "status": "demo_pending_confirmation",
+                        "amount_validated": False,
+                        "stock_status": "stock_unknown",
+                        "items": [],
+                    },
                 },
             }
             normalize_response_payload(payload)

@@ -519,6 +519,12 @@ def test_admin_tenant_catalog_supports_commercial_filters(client, app):
     items = resp.get_json()
     assert len(items) == 1
     assert items[0]["nombre"] == "Producto Promo"
+    assert items[0]["id"] == items[0]["catalogo_item_id"]
+    assert items[0]["name"] == "Producto Promo"
+    assert items[0]["price"] == 1000.0
+    assert items[0]["currency"] == "ARS"
+    assert items[0]["catalog_version"]
+    assert items[0]["request_id"]
     assert items[0]["channel_availability"]["whatsapp"] is True
     assert items[0]["price_numeric"] == 1000.0
     assert items[0]["stock_quantity"] == 4.0
@@ -536,4 +542,9 @@ def test_admin_tenant_catalog_supports_commercial_filters(client, app):
     assert patched["contract_version"] == "tenant.catalog_item_update.v1"
     assert patched["item"]["stock_quantity"] == 18.0
     assert patched["item"]["stock_status"] == "in_stock"
+    assert patched["item"]["id"] == item_id
+    assert patched["item"]["name"] == "Producto Promo"
+    assert patched["item"]["currency"] == "ARS"
+    assert patched["item"]["catalog_version"] == patched["catalog_version"]
+    assert patched["item"]["request_id"] == patched["request_id"]
     assert patched["catalog_version"]
