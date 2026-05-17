@@ -784,15 +784,21 @@ def _demo_tool_contract(
     items: list[dict[str, Any]] | None = None,
     data: Any = None,
     intent: str | None = None,
+    action_id: str | None = None,
     action_label: str | None = None,
     action_url: str | None = None,
+    tool_mode: str | None = None,
     fields: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    resolved_action = action_id or intent or f"tool_{key}"
+    resolved_mode = tool_mode or ("downloadable" if action_url else "chat_action")
     return {
         "id": key,
         "kind": "rubro_tool",
+        "tool_mode": resolved_mode,
         "label": label,
-        "intent": intent or f"tool_{key}",
+        "intent": resolved_action,
+        "action_id": resolved_action if resolved_mode != "downloadable" else None,
         "description": description,
         "enabled": bool(enabled),
         "items": items or [],
