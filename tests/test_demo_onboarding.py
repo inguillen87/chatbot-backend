@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 from app import create_app, db
 from config import Config
-from models import QA, Rubro, User, ChatSessionContext, Conversacion
+from models import QA, Rubro, User, ChatSessionContext, Conversacion, TenantProfile, PymePedido, PymeTicket
 from sqlalchemy.orm.attributes import flag_modified
 
 class DemoConfig(Config):
@@ -856,6 +856,177 @@ class DemoOnboardingTestCase(unittest.TestCase):
         self.assertTrue(demo.get("resources"))
         self.assertTrue(demo.get("faq_preview"))
         self.assertIn("Malbec", demo["faq_preview"][0].get("respuesta", ""))
+
+    def test_education_demo_action_returns_normalized_messages(self):
+        owner = User(
+            name="Colegio Demo",
+            email="colegio-route@test.com",
+            password_hash="hash",
+            tipo_chat="pyme",
+            rubro_id=self.rubro_almacen.id,
+        )
+        db.session.add(owner)
+        db.session.flush()
+        db.session.add(
+            TenantProfile(
+                slug="qa-colegio-sandbox",
+                nombre="QA Colegio Sandbox",
+                tipo="pyme",
+                pyme_id=owner.id,
+                vertical="educacion",
+                subvertical="colegio_general",
+                capabilities_json={"education": {"enabled": True}},
+                is_active=True,
+            )
+        )
+        db.session.commit()
+
+        response = self.client.post(
+            "/api/ask/pyme",
+            json={
+                "pregunta": "",
+                "demo_mode": True,
+                "tenant_slug": "qa-colegio-sandbox",
+                "tipo_chat": "pyme",
+                "action_id": "create_school_case",
+                "education_context": {"is_education": True, "tenant_slug": "qa-colegio-sandbox"},
+            },
+            headers={
+                "Origin": "https://www.chatboc.ar",
+                "X-Chat-Session-Id": "edu-route-session-1",
+                "X-Anon-Id": "anon-edu-route-1",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload.get("messages"))
+        self.assertTrue(payload.get("message_body"))
+        self.assertIn(payload.get("fuente"), {"education_widget_case_prompt", "education_widget_menu"})
+        data = payload.get("data") or {}
+        education_context = data.get("education_context") or {}
+        self.assertTrue(education_context)
+
+    def test_education_live_handoff_creates_visible_ticket(self):
+        owner = User(
+            name="Colegio Handoff",
+            email="colegio-handoff@test.com",
+            password_hash="hash",
+            tipo_chat="pyme",
+            rubro_id=self.rubro_almacen.id,
+        )
+        db.session.add(owner)
+        db.session.flush()
+        db.session.add(
+            TenantProfile(
+                slug="colegio-handoff-demo",
+                nombre="Colegio Handoff Demo",
+                tipo="pyme",
+                pyme_id=owner.id,
+                vertical="educacion",
+                subvertical="colegio_general",
+                capabilities_json={"education": {"enabled": True}},
+                is_active=True,
+            )
+        )
+        db.session.commit()
+
+        with patch("services.pymes.servicio_tickets._notificar_ticket_por_email", return_value=None):
+            response = self.client.post(
+                "/api/ask/pyme",
+                json={
+                    "pregunta": "",
+                    "demo_mode": True,
+                    "tenant_slug": "colegio-handoff-demo",
+                    "tipo_chat": "pyme",
+                    "action_id": "talk_secretary",
+                    "education_context": {"is_education": True, "tenant_slug": "colegio-handoff-demo"},
+                },
+                headers={
+                    "Origin": "https://www.chatboc.ar",
+                    "X-Chat-Session-Id": "edu-route-session-2",
+                    "X-Anon-Id": "anon-edu-route-2",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload.get("messages"))
+        self.assertEqual(payload.get("fuente"), "education_widget_live_handoff")
+        data = payload.get("data") or {}
+        self.assertEqual(data.get("status"), "esperando_agente_en_vivo")
+        self.assertTrue(data.get("ticket_id"))
+        self.assertEqual(PymeTicket.query.count(), 1)
+
+    def test_government_demo_menu_returns_action_buttons_and_messages(self):
+        db.session.add(
+            TenantProfile(
+                slug="municipio-runtime-demo",
+                nombre="Municipio Demo",
+                tipo="municipio",
+                municipio_id=self.muni_user.id,
+                is_active=True,
+            )
+        )
+        db.session.commit()
+
+        response = self.client.post(
+            "/api/ask/municipio",
+            json={
+                "pregunta": "__INIT__",
+                "demo_mode": True,
+                "tenant_slug": "municipio-runtime-demo",
+                "tipo_chat": "municipio",
+                "action_id": "menu_principal",
+            },
+            headers={
+                "Origin": "https://www.chatboc.ar",
+                "X-Chat-Session-Id": "gov-route-session-1",
+                "X-Anon-Id": "anon-gov-route-1",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload.get("messages"))
+        actions = {item.get("action_id") for item in payload.get("options_list") or payload.get("botones") or []}
+        self.assertTrue({"iniciar_reclamo", "info_tramite", "consultar_estado"} & actions)
+
+    def test_business_demo_order_action_returns_draft_without_validated_amount(self):
+        db.session.add(
+            TenantProfile(
+                slug="bodega-runtime-demo",
+                nombre="Bodega Demo",
+                tipo="pyme",
+                pyme_id=self.bodega_user.id,
+                is_active=True,
+            )
+        )
+        db.session.commit()
+
+        response = self.client.post(
+            "/api/ask/pyme",
+            json={
+                "pregunta": "",
+                "demo_mode": True,
+                "tenant_slug": "bodega-runtime-demo",
+                "tipo_chat": "pyme",
+                "action_id": "crear_pedido",
+            },
+            headers={
+                "Origin": "https://www.chatboc.ar",
+                "X-Chat-Session-Id": "business-route-session-1",
+                "X-Anon-Id": "anon-business-route-1",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload.get("messages"))
+        self.assertEqual(payload.get("fuente"), "business_widget_order_started")
+        data = payload.get("data") or {}
+        self.assertFalse(data.get("amount_validated"))
+        self.assertEqual(PymePedido.query.count(), 1)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 import sys
 import os
 import hashlib
+import json
 import logging
 import random
 import re
@@ -32,8 +33,10 @@ from services.demo_registry import load_demo_rubros, demo_rubro_for_token
 from services.education_contracts import (
     build_education_pending_case,
     education_intent_from_action,
+    fold_text,
     education_primary_actions,
     education_prompt_for_intent,
+    is_education_tenant,
 )
 from services.common_utils import validar_email, validar_telefono, formatear_telefono_e164
 from services.contact_intake import missing_contact_fields, resolve_contact_snapshot
@@ -656,6 +659,512 @@ def _tenant_profile_chat_type(tenant: Optional[TenantProfile]) -> Optional[str]:
     if tipo == "municipio":
         return "municipio"
     return "pyme"
+
+
+def _tenant_slug_aliases(value: object) -> list[str]:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return []
+    candidates = [raw]
+    if raw.endswith(".chatboc.ar"):
+        candidates.append(raw[: -len(".chatboc.ar")])
+    if raw.startswith("www."):
+        candidates.append(raw[4:])
+    if "." in raw:
+        candidates.append(raw.split(".", 1)[0])
+    result: list[str] = []
+    for candidate in candidates:
+        candidate = candidate.strip().lower()
+        if candidate and candidate not in result:
+            result.append(candidate)
+    return result
+
+
+def _first_education_tenant_for_chat_demo() -> Optional[TenantProfile]:
+    query = TenantProfile.query.filter(TenantProfile.is_active.is_(True)).order_by(
+        TenantProfile.created_at.asc(),
+        TenantProfile.id.asc(),
+    )
+    for tenant in query.all():
+        if is_education_tenant(tenant):
+            return tenant
+    return _first_active_tenant_for_demo("pyme")
+
+
+def _demo_sector_from_values(*values: object, tipo_chat: str | None = None) -> str:
+    haystack = " ".join(fold_text(value) for value in values if value is not None)
+    if any(token in haystack for token in ("educacion", "education", "colegio", "colegios", "escuela", "instituto", "jardin")):
+        return "educacion"
+    if any(token in haystack for token in ("gobierno", "gobiernos", "municipio", "municipal", "tramite", "reclamo")):
+        return "gobierno"
+    if (tipo_chat or "").strip().lower() == "municipio":
+        return "gobierno"
+    return "empresas"
+
+
+def _resolve_demo_tenant_for_chat(demo_tenant_slug: str | None, sector: str | None) -> Optional[TenantProfile]:
+    aliases = _tenant_slug_aliases(demo_tenant_slug)
+    for alias in aliases:
+        tenant = (
+            TenantProfile.query.filter(func.lower(TenantProfile.slug) == alias)
+            .order_by(TenantProfile.id.desc())
+            .first()
+        )
+        if tenant:
+            return tenant
+
+    inferred_sector = _demo_sector_from_values(sector, demo_tenant_slug)
+    if inferred_sector == "educacion":
+        return _first_education_tenant_for_chat_demo()
+    if inferred_sector == "gobierno":
+        return _first_active_tenant_for_demo("municipio")
+    if inferred_sector == "empresas":
+        return _first_active_tenant_for_demo("pyme")
+    return None
+
+
+def _demo_button(label: str, action_id: str, description: str | None = None) -> dict[str, object]:
+    button = {
+        "id": action_id,
+        "texto": label,
+        "label": label,
+        "title": label,
+        "action": action_id,
+        "action_id": action_id,
+        "intent": action_id,
+        "type": "quick_reply",
+        "enabled": True,
+    }
+    if description:
+        button["description"] = description
+        button["descripcion"] = description
+    return button
+
+
+def _normalized_demo_action_buttons(*sources: object, sector: str = "empresas") -> list[dict[str, object]]:
+    buttons: list[dict[str, object]] = []
+    seen: set[str] = set()
+
+    def add(raw: object) -> None:
+        if isinstance(raw, dict):
+            label = str(
+                raw.get("label")
+                or raw.get("texto")
+                or raw.get("title")
+                or raw.get("text")
+                or ""
+            ).strip()
+            action_id = str(
+                raw.get("action_id")
+                or raw.get("intent")
+                or raw.get("action")
+                or raw.get("id")
+                or raw.get("key")
+                or label
+            ).strip()
+            description = raw.get("description") or raw.get("descripcion") or raw.get("detail")
+        else:
+            label = str(raw or "").strip()
+            action_id = label
+            description = None
+        if not label or not action_id:
+            return
+        key = fold_text(action_id).replace(" ", "_") or fold_text(label).replace(" ", "_")
+        if not key or key in seen:
+            return
+        seen.add(key)
+        buttons.append(_demo_button(label, action_id, str(description) if description else None))
+
+    for source in sources:
+        if isinstance(source, dict):
+            for key in (
+                "primary_actions",
+                "quick_menu",
+                "actions",
+                "quick_actions",
+                "items",
+                "options_list",
+                "botones",
+                "quick_replies",
+            ):
+                nested = source.get(key)
+                if isinstance(nested, list):
+                    for item in nested:
+                        add(item)
+            if any(k in source for k in ("label", "texto", "title", "action_id", "intent", "id")):
+                add(source)
+        elif isinstance(source, list):
+            for item in source:
+                add(item)
+
+    defaults = {
+        "educacion": [
+            _demo_button("Crear caso escolar", "create_school_case", "Abrir seguimiento escolar con secretaria."),
+            _demo_button("Justificar inasistencia", "justify_absence", "Adjuntar motivo, certificado o aviso de ausencia."),
+            _demo_button("Hablar con secretaria", "talk_secretary", "Derivar a una persona administrativa."),
+        ],
+        "gobierno": [
+            _demo_button("Crear reclamo", "iniciar_reclamo", "Registrar un caso ciudadano con seguimiento."),
+            _demo_button("Consultar tramite", "info_tramite", "Ver requisitos y pasos publicados."),
+            _demo_button("Ver estado", "consultar_estado", "Consultar un caso o tramite existente."),
+            _demo_button("Hablar con un agente", "human_handoff", "Derivar a una persona del municipio."),
+        ],
+        "empresas": [
+            _demo_button("Ver catalogo", "ver_catalogo", "Abrir recursos publicados."),
+            _demo_button("Crear pedido", "crear_pedido", "Preparar pedido con datos reales publicados."),
+            _demo_button("Preparar checkout", "preparar_checkout", "Iniciar cierre comercial si aplica."),
+            _demo_button("Hablar con ventas", "derivar_humano", "Derivar a una persona comercial."),
+        ],
+    }
+    for button in defaults.get(sector, defaults["empresas"]):
+        key = fold_text(button.get("action_id")).replace(" ", "_")
+        if key not in seen:
+            seen.add(key)
+            buttons.append(button)
+    return buttons
+
+
+def _next_pyme_ticket_number() -> int:
+    try:
+        current = db.session.query(func.max(PymeTicket.nro_ticket)).scalar()
+        return int(current or 0) + 1
+    except Exception:
+        return int(datetime.utcnow().strftime("%H%M%S"))
+
+
+def _persist_demo_pyme_ticket(
+    *,
+    tenant: Optional[TenantProfile],
+    owner_user: Optional[User],
+    anon_id: Optional[str],
+    asunto: str,
+    categoria: str,
+    pregunta: str,
+    estado: str = "nuevo",
+    archivo_adjunto_id: object = None,
+) -> Optional[PymeTicket]:
+    if not owner_user:
+        return None
+    try:
+        ticket = PymeTicket(
+            tenant_id=getattr(tenant, "id", None),
+            pregunta=pregunta or asunto,
+            asunto=asunto[:200],
+            categoria=categoria[:100],
+            user_id=getattr(owner_user, "id", None),
+            estado=estado[:30],
+            anon_id=anon_id,
+            nro_ticket=_next_pyme_ticket_number(),
+            rubro_id=getattr(owner_user, "rubro_id", None),
+        )
+        db.session.add(ticket)
+        db.session.flush()
+        comment = TicketComentario(
+            pyme_ticket_id=ticket.id,
+            comentario=pregunta or asunto,
+            anon_id=anon_id,
+            origen="widget",
+            estado_ticket=estado[:30],
+        )
+        if archivo_adjunto_id:
+            try:
+                comment.archivo_adjunto_id = int(archivo_adjunto_id)
+            except (TypeError, ValueError):
+                pass
+        db.session.add(comment)
+        return ticket
+    except SQLAlchemyError as exc:
+        db.session.rollback()
+        current_app.logger.warning("[DEMO_WIDGET_RUNTIME] could not persist pyme ticket: %s", exc, exc_info=True)
+        return None
+
+
+def _persist_demo_pyme_order(
+    *,
+    tenant: Optional[TenantProfile],
+    owner_user: Optional[User],
+    question: str,
+) -> Optional[PymePedido]:
+    if not owner_user:
+        return None
+    try:
+        details = [
+            {
+                "nombre": "Pedido demo",
+                "cantidad": 1,
+                "precio": None,
+                "source": "demo_widget_runtime",
+                "note": question or "Pedido iniciado desde menu demo.",
+            }
+        ]
+        pedido = PymePedido(
+            pyme_id=owner_user.id,
+            asunto="Pedido demo desde widget",
+            detalles=json.dumps(details),
+            monto_total=None,
+            tenant_id=getattr(tenant, "id", None),
+            idempotency_key=f"demo-widget-{uuid.uuid4().hex}",
+            channel="widget",
+        )
+        db.session.add(pedido)
+        db.session.flush()
+        return pedido
+    except SQLAlchemyError as exc:
+        db.session.rollback()
+        current_app.logger.warning("[DEMO_WIDGET_RUNTIME] could not persist pyme order: %s", exc, exc_info=True)
+        return None
+
+
+def _demo_widget_runtime_response(
+    *,
+    sector: str,
+    action_id: Optional[str],
+    question: object,
+    contexto_chat: dict,
+    tenant: Optional[TenantProfile],
+    owner_user: Optional[User],
+    anon_id: Optional[str],
+    chat_session_id: Optional[str],
+    chat_db_context: Optional[ChatSessionContext],
+    attachment_info: Optional[dict],
+    demo_session_payload: dict,
+) -> Optional[dict]:
+    normalized_action = fold_text(action_id).replace(" ", "_")
+    question_text = question if isinstance(question, str) else _extract_text_value(question)
+    question_text = str(question_text or "").strip()
+
+    education_context = contexto_chat.get("education_context") if isinstance(contexto_chat.get("education_context"), dict) else {}
+    education_payload = contexto_chat.get("education") if isinstance(contexto_chat.get("education"), dict) else {}
+    demo_metadata = contexto_chat.get("demo_metadata") if isinstance(contexto_chat.get("demo_metadata"), dict) else {}
+    rubro_context = contexto_chat.get("rubro_context") if isinstance(contexto_chat.get("rubro_context"), dict) else {}
+    default_menu = contexto_chat.get("default_menu") if isinstance(contexto_chat.get("default_menu"), dict) else {}
+    buttons = _normalized_demo_action_buttons(
+        education_context,
+        education_payload,
+        demo_metadata,
+        rubro_context,
+        default_menu,
+        contexto_chat.get("demo_quick_actions"),
+        sector=sector,
+    )
+
+    is_menu_request = normalized_action in {"", "menu", "menu_principal", "menu_colegio", "main_menu"} or question_text == "__INIT__"
+    request_id = request.headers.get("X-Request-Id") or getattr(g, "request_id", None) or uuid.uuid4().hex
+    g.request_id = request_id
+
+    if sector == "educacion":
+        intent = education_intent_from_action(action_id, tenant)
+        if is_menu_request or intent == "menu_colegio":
+            payload = {
+                "contract_version": "demo.widget_runtime.v1",
+                "ok": True,
+                "success": True,
+                "request_id": request_id,
+                "message_body": "Estas en la demo escolar. Elegi una opcion para continuar.",
+                "message_type": "interactive_buttons",
+                "botones": buttons[:6],
+                "options_list": buttons[:6],
+                "fuente": "education_widget_menu",
+                "data": {
+                    "sector": "educacion",
+                    "tenant_slug": getattr(tenant, "slug", None),
+                    "chat_id": chat_session_id,
+                    "education_context": {
+                        "is_education": True,
+                        "tenant_slug": getattr(tenant, "slug", None),
+                        "primary_actions": education_primary_actions(),
+                    },
+                },
+            }
+            normalize_response_payload(payload)
+            return payload
+
+        if owner_user and tenant:
+            from services.pymes import responder_pyme as _responder_pyme
+
+            direct_payload = {
+                "pregunta": question_text,
+                "action_id": action_id,
+                "education_context": {
+                    "is_education": True,
+                    "tenant_slug": tenant.slug,
+                },
+            }
+            if attachment_info:
+                direct_payload["uploaded_file_info"] = attachment_info
+                direct_payload["attachment_info"] = attachment_info
+            result = _responder_pyme(
+                direct_payload,
+                owner_user,
+                getattr(owner_user, "rubro", None),
+                viewer_user=None,
+                chat_db_context=chat_db_context,
+                anon_id=anon_id,
+                channel="widget",
+            )
+            if isinstance(result, dict):
+                normalize_response_payload(result)
+            return result
+
+        intent = intent or "tramites_secretaria"
+        prompt = education_prompt_for_intent(intent, tenant)
+        pending_case = build_education_pending_case(intent)
+        if isinstance(contexto_chat, dict):
+            contexto_chat["education_context"] = {
+                "is_education": True,
+                "tenant_slug": getattr(tenant, "slug", None),
+            }
+            contexto_chat["education_pending_case"] = pending_case
+
+        status = "esperando_agente_en_vivo" if intent == "derivar_humano" else "awaiting_detail"
+        categoria = "secretaria" if intent == "derivar_humano" else str(pending_case.get("category") or "secretaria")
+        ticket = None
+        if normalized_action in {"talk_secretary", "derivar_humano", "hablar_secretaria", "human_handoff"} or attachment_info or question_text:
+            ticket = _persist_demo_pyme_ticket(
+                tenant=tenant,
+                owner_user=owner_user,
+                anon_id=anon_id,
+                asunto="Caso escolar desde widget",
+                categoria=categoria,
+                pregunta=question_text or prompt.get("message_body") or "Caso escolar iniciado desde widget.",
+                estado=status,
+                archivo_adjunto_id=(attachment_info or {}).get("id") if isinstance(attachment_info, dict) else None,
+            )
+
+        ticket_id = getattr(ticket, "id", None)
+        ticket_number = getattr(ticket, "nro_ticket", None)
+        body = prompt.get("message_body") or "Contame el detalle y lo dejo encaminado."
+        if status == "esperando_agente_en_vivo":
+            body = "Deje el caso en espera de secretaria. Un administrativo puede tomarlo desde el panel."
+        elif ticket_id:
+            body = f"Listo, deje abierto el caso escolar #{ticket_number or ticket_id}. Podes sumar detalles o adjuntos."
+
+        payload = {
+            "contract_version": "demo.widget_runtime.v1",
+            "ok": True,
+            "success": True,
+            "request_id": request_id,
+            "message_body": body,
+            "message_type": "interactive_buttons",
+            "botones": prompt.get("options_list") or buttons[:3],
+            "options_list": prompt.get("options_list") or buttons[:3],
+            "fuente": "education_widget_live_handoff" if status == "esperando_agente_en_vivo" else "education_widget_case_prompt",
+            "data": {
+                "ticket_id": ticket_id,
+                "chat_id": f"P-{ticket_number or ticket_id}" if ticket_id else chat_session_id,
+                "status": status,
+                "live_chat": {
+                    "status": status,
+                    "availability": "not_published",
+                } if status == "esperando_agente_en_vivo" else {},
+                "school_case": {
+                    **pending_case,
+                    "ticket_id": ticket_id,
+                    "ticket_number": ticket_number,
+                    "tenant_slug": getattr(tenant, "slug", None),
+                    "attachment_id": (attachment_info or {}).get("id") if isinstance(attachment_info, dict) else None,
+                },
+            },
+        }
+        normalize_response_payload(payload)
+        return payload
+
+    if sector == "gobierno":
+        if is_menu_request:
+            payload = {
+                "contract_version": "demo.widget_runtime.v1",
+                "ok": True,
+                "success": True,
+                "request_id": request_id,
+                "message_body": "Estas en la demo de gobierno. Elegi como queres operar.",
+                "message_type": "interactive_buttons",
+                "botones": buttons[:6],
+                "options_list": buttons[:6],
+                "fuente": "government_widget_menu",
+                "data": {
+                    "sector": "gobierno",
+                    "tenant_slug": getattr(tenant, "slug", None),
+                    "chat_id": chat_session_id,
+                },
+            }
+            normalize_response_payload(payload)
+            return payload
+        return None
+
+    if sector == "empresas":
+        if is_menu_request:
+            payload = {
+                "contract_version": "demo.widget_runtime.v1",
+                "ok": True,
+                "success": True,
+                "request_id": request_id,
+                "message_body": "Estas en la demo comercial. Elegi una accion para continuar.",
+                "message_type": "interactive_buttons",
+                "botones": buttons[:6],
+                "options_list": buttons[:6],
+                "fuente": "business_widget_menu",
+                "data": {
+                    "sector": "empresas",
+                    "tenant_slug": getattr(tenant, "slug", None),
+                    "chat_id": chat_session_id,
+                },
+            }
+            normalize_response_payload(payload)
+            return payload
+
+        if normalized_action in {"crear_pedido", "preparar_checkout", "checkout", "create_order"}:
+            pedido = _persist_demo_pyme_order(tenant=tenant, owner_user=owner_user, question=question_text)
+            payload = {
+                "contract_version": "demo.widget_runtime.v1",
+                "ok": True,
+                "success": True,
+                "request_id": request_id,
+                "message_body": "Pedido iniciado. No confirme monto final porque el backend todavia debe validar productos, stock y precio.",
+                "message_type": "interactive_buttons",
+                "botones": buttons[:4],
+                "options_list": buttons[:4],
+                "fuente": "business_widget_order_started",
+                "data": {
+                    "order_id": getattr(pedido, "id", None),
+                    "order_number": getattr(pedido, "nro_pedido", None),
+                    "status": getattr(pedido, "estado", "draft") if pedido else "draft",
+                    "amount_validated": False,
+                },
+            }
+            normalize_response_payload(payload)
+            return payload
+
+        if normalized_action in {"derivar_humano", "hablar_asesor", "hablar_ventas", "human_handoff"}:
+            ticket = _persist_demo_pyme_ticket(
+                tenant=tenant,
+                owner_user=owner_user,
+                anon_id=anon_id,
+                asunto="Handoff comercial desde widget",
+                categoria="ventas",
+                pregunta=question_text or "Cliente en espera de ventas desde demo widget.",
+                estado="esperando_agente_en_vivo",
+            )
+            payload = {
+                "contract_version": "demo.widget_runtime.v1",
+                "ok": True,
+                "success": True,
+                "request_id": request_id,
+                "message_body": "Deje la conversacion en espera de ventas para que un administrador pueda tomarla.",
+                "message_type": "interactive_buttons",
+                "botones": buttons[:4],
+                "options_list": buttons[:4],
+                "fuente": "business_widget_live_handoff",
+                "data": {
+                    "ticket_id": getattr(ticket, "id", None),
+                    "chat_id": f"P-{getattr(ticket, 'nro_ticket', '')}" if ticket else chat_session_id,
+                    "status": "esperando_agente_en_vivo",
+                    "live_chat": {"status": "esperando_agente_en_vivo", "availability": "not_published"},
+                },
+            }
+            normalize_response_payload(payload)
+            return payload
+
+    return None
 
 
 def _should_demo_tenant_override_owner(
@@ -2188,7 +2697,7 @@ def _procesar_chat(
                     reason_code = "anonymous_trial_limit_reached" if public_trial_active else "anonymous_message_limit_reached"
                     request_id = request.headers.get("X-Request-Id") or getattr(g, "request_id", None) or uuid.uuid4().hex
                     g.request_id = request_id
-                    return jsonify({
+                    limit_payload = {
                         "contract_version": "demo.usage_limit.v1" if public_trial_active else "shared.usage_limit.v1",
                         "ok": False,
                         "request_id": request_id,
@@ -2215,7 +2724,9 @@ def _procesar_chat(
                             {"texto": "Iniciar Sesión", "action": "login"},
                             {"texto": "Registrarme Gratis", "action": "register"}
                         ]
-                    }), 403
+                    }
+                    normalize_response_payload(limit_payload)
+                    return jsonify(limit_payload), 403
         else:
             # Lógica para usuarios autenticados
             current_app.logger.info(f"Usuario autenticado: {actor_principal.email} (ID: {actor_principal.id})")
@@ -2282,6 +2793,32 @@ def _procesar_chat(
             if isinstance(chat_bootstrap_inner_payload.get("rubro_tool_summary"), dict)
             else {}
         )
+        workspace_payload = request_payload.get("workspace") if isinstance(request_payload.get("workspace"), dict) else {}
+        education_context_from_payload = (
+            request_payload.get("education_context")
+            if isinstance(request_payload.get("education_context"), dict)
+            else request_payload.get("education_profile")
+            if isinstance(request_payload.get("education_profile"), dict)
+            else workspace_payload.get("education_profile")
+            if isinstance(workspace_payload.get("education_profile"), dict)
+            else {}
+        )
+        education_from_payload = (
+            request_payload.get("education")
+            if isinstance(request_payload.get("education"), dict)
+            else workspace_payload.get("education")
+            if isinstance(workspace_payload.get("education"), dict)
+            else {}
+        )
+        default_menu_from_payload = (
+            request_payload.get("default_menu")
+            if isinstance(request_payload.get("default_menu"), dict)
+            else workspace_payload.get("default_menu")
+            if isinstance(workspace_payload.get("default_menu"), dict)
+            else chat_bootstrap_payload.get("default_menu")
+            if isinstance(chat_bootstrap_payload.get("default_menu"), dict)
+            else {}
+        )
         if (
             rubro_tool_summary_from_payload
             and isinstance(demo_metadata_from_payload, dict)
@@ -2330,6 +2867,7 @@ def _procesar_chat(
             or request.headers.get("X-Tenant-Slug")
             or ""
         ).strip().lower()
+        tenant_for_demo = None
 
         if demo_request_active:
             contexto_chat["demo_session"] = True
@@ -2353,13 +2891,32 @@ def _procesar_chat(
                 contexto_chat["rubro_tools"] = rubro_tools_from_payload
             if rubro_tool_summary_from_payload:
                 contexto_chat["rubro_tool_summary"] = rubro_tool_summary_from_payload
+            if education_context_from_payload:
+                contexto_chat["education_context"] = education_context_from_payload
+            if education_from_payload:
+                contexto_chat["education"] = education_from_payload
+            if default_menu_from_payload:
+                contexto_chat["default_menu"] = default_menu_from_payload
 
             if demo_tenant_slug:
-                tenant_for_demo = (
-                    TenantProfile.query.filter(func.lower(TenantProfile.slug) == demo_tenant_slug)
-                    .order_by(TenantProfile.id.desc())
-                    .first()
+                demo_sector_marker = (
+                    demo_session_payload.get("sector")
+                    or request_payload.get("sector")
+                    or request_payload.get("active_vertical")
+                    or chat_bootstrap_inner_payload.get("sector")
+                    or contexto_chat.get("demo_sector")
                 )
+                tenant_for_demo = _resolve_demo_tenant_for_chat(demo_tenant_slug, demo_sector_marker)
+                if tenant_for_demo:
+                    demo_tenant_slug = tenant_for_demo.slug
+                    contexto_chat["demo_resolved_tenant_slug"] = tenant_for_demo.slug
+                    if is_education_tenant(tenant_for_demo):
+                        contexto_chat["demo_sector"] = "educacion"
+                        contexto_chat["education_context"] = {
+                            **(contexto_chat.get("education_context") if isinstance(contexto_chat.get("education_context"), dict) else {}),
+                            "is_education": True,
+                            "tenant_slug": tenant_for_demo.slug,
+                        }
                 tenant_owner = _owner_for_tenant_profile(tenant_for_demo)
                 demo_tenant_chat_type = _tenant_profile_chat_type(tenant_for_demo)
                 if demo_tenant_chat_type:
@@ -2416,6 +2973,12 @@ def _procesar_chat(
                     data["rubro_tools"] = rubro_tools_from_payload
                 if rubro_tool_summary_from_payload:
                     data["rubro_tool_summary"] = rubro_tool_summary_from_payload
+                if education_context_from_payload:
+                    data["education_context"] = education_context_from_payload
+                if education_from_payload:
+                    data["education"] = education_from_payload
+                if default_menu_from_payload:
+                    data["default_menu"] = default_menu_from_payload
                 chat_context_obj.context_data = data
                 flag_modified(chat_context_obj, "context_data")
 
@@ -3174,11 +3737,82 @@ def _procesar_chat(
                     exc_info=True,
                 )
 
+        v2_widget_runtime_request = bool(
+            request_payload.get("demo_mode")
+            or request_payload.get("tenant_slug")
+            or request.headers.get("X-Demo-Session-Id")
+            or request.headers.get("X-Tenant-Slug")
+            or demo_session_payload
+        )
+        if (
+            demo_flow_active
+            and demo_runtime_result is None
+            and v2_widget_runtime_request
+            and current_app.config.get("DEMO_WIDGET_RUNTIME_ENABLED", True)
+        ):
+            try:
+                runtime_tenant = tenant_for_demo
+                if not runtime_tenant:
+                    runtime_tenant_slug = (
+                        contexto_chat.get("demo_resolved_tenant_slug")
+                        or contexto_chat.get("demo_rubro_clave")
+                        or demo_tenant_slug
+                        if isinstance(contexto_chat, dict)
+                        else demo_tenant_slug
+                    )
+                    runtime_tenant = _resolve_demo_tenant_for_chat(
+                        str(runtime_tenant_slug or ""),
+                        str((contexto_chat or {}).get("demo_sector") or demo_session_payload.get("sector") or ""),
+                    )
+                runtime_sector = _demo_sector_from_values(
+                    (contexto_chat or {}).get("demo_sector"),
+                    demo_session_payload.get("sector"),
+                    getattr(runtime_tenant, "vertical", None),
+                    getattr(runtime_tenant, "subvertical", None),
+                    getattr(runtime_tenant, "slug", None),
+                    rubro_clave,
+                    tipo_chat=tipo_chat,
+                )
+                if runtime_tenant and is_education_tenant(runtime_tenant):
+                    runtime_sector = "educacion"
+                    contexto_chat["education_context"] = {
+                        **(contexto_chat.get("education_context") if isinstance(contexto_chat.get("education_context"), dict) else {}),
+                        "is_education": True,
+                        "tenant_slug": runtime_tenant.slug,
+                    }
+                    if tipo_chat != "pyme":
+                        tipo_chat = "pyme"
+                demo_runtime_result = _demo_widget_runtime_response(
+                    sector=runtime_sector,
+                    action_id=action_id,
+                    question=pregunta,
+                    contexto_chat=contexto_chat,
+                    tenant=runtime_tenant,
+                    owner_user=owner_del_bot,
+                    anon_id=anon_id,
+                    chat_session_id=chat_session_id_header,
+                    chat_db_context=chat_context_obj,
+                    attachment_info=uploaded_file_info or attachment_info,
+                    demo_session_payload=demo_session_payload if isinstance(demo_session_payload, dict) else {},
+                )
+            except Exception as demo_widget_exc:
+                current_app.logger.warning(
+                    "[DEMO_WIDGET_RUNTIME] skipped for session=%s: %s",
+                    chat_session_id_header,
+                    demo_widget_exc,
+                    exc_info=True,
+                )
+
         # --- Core Chat Logic Execution ---
         demo_metadata_for_responder = _demo_metadata_from_context(contexto_chat)
         if demo_runtime_result is not None:
             resultado = demo_runtime_result
         else:
+            education_context_for_responder = (
+                contexto_chat.get("education_context")
+                if isinstance(contexto_chat, dict) and isinstance(contexto_chat.get("education_context"), dict)
+                else None
+            )
             resultado = responder_chatboc(
                 pregunta,
                 owner_user=owner_del_bot,
@@ -3196,6 +3830,7 @@ def _procesar_chat(
                 action_id=action_id,
                 anon_id=anon_id,
                 demo_metadata=demo_metadata_for_responder or None,
+                education_context=education_context_for_responder,
             )
 
         # Después de que responder_chatboc y sus sub-funciones hayan modificado chat_context_obj.context_data,
@@ -3423,6 +4058,7 @@ def _procesar_chat(
         return jsonify({"error": {"code": 500, "message": "Error interno del servidor."}}), 500 # NEW FORMAT
 
 @chat_bp.route("/ask", methods=["POST", "OPTIONS"])
+@chat_bp.route("/api/ask", methods=["POST", "OPTIONS"])
 @anon_o_token_requerido
 def ask(current_user=None, anon_id=None, owner_user=None):
     user = owner_user or current_user
@@ -3430,6 +4066,7 @@ def ask(current_user=None, anon_id=None, owner_user=None):
     return _log_widget_request(response, user)
 
 @chat_bp.route("/ask/pyme", methods=["POST", "OPTIONS"])
+@chat_bp.route("/api/ask/pyme", methods=["POST", "OPTIONS"])
 @anon_o_token_requerido
 def ask_pyme(current_user=None, anon_id=None, owner_user=None):
     user = owner_user or current_user
@@ -3437,6 +4074,7 @@ def ask_pyme(current_user=None, anon_id=None, owner_user=None):
     return _log_widget_request(response, user)
 
 @chat_bp.route("/ask/municipio", methods=["POST", "OPTIONS"])
+@chat_bp.route("/api/ask/municipio", methods=["POST", "OPTIONS"])
 @anon_o_token_requerido
 def ask_municipio(current_user=None, anon_id=None, owner_user=None):
     user = owner_user or current_user

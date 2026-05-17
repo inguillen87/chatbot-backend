@@ -1716,9 +1716,9 @@ def _demo_default_menu_contract(
     items: list[dict[str, Any]] = []
 
     def add_item(source: dict[str, Any], *, kind: str = "action") -> None:
-        item_id = str(source.get("id") or source.get("key") or source.get("intent") or source.get("label") or "").strip()
-        label = str(source.get("label") or source.get("title") or source.get("cta_label") or "").strip()
-        intent = str(source.get("intent") or source.get("payload") or item_id).strip()
+        item_id = str(source.get("id") or source.get("key") or source.get("action_id") or source.get("intent") or source.get("label") or source.get("texto") or "").strip()
+        label = str(source.get("label") or source.get("texto") or source.get("title") or source.get("cta_label") or "").strip()
+        intent = str(source.get("action_id") or source.get("intent") or source.get("action") or source.get("payload") or item_id).strip()
         if not item_id or not label:
             return
         if any(existing.get("id") == item_id or existing.get("intent") == intent for existing in items):
@@ -1728,6 +1728,7 @@ def _demo_default_menu_contract(
                 "id": item_id,
                 "label": label,
                 "intent": intent,
+                "action_id": intent,
                 "description": source.get("description") or source.get("detail") or "",
                 "icon": source.get("icon"),
                 "kind": kind,
@@ -1736,8 +1737,12 @@ def _demo_default_menu_contract(
         )
 
     education_menu = (education_payload or {}).get("quick_menu") if isinstance(education_payload, dict) else []
+    education_primary = (education_payload or {}).get("primary_actions") if isinstance(education_payload, dict) else []
     rubro_menu = (rubro_context or {}).get("quick_actions") if isinstance(rubro_context, dict) else []
     enabled_tools = (rubro_tools or {}).get("enabled_tools") if isinstance(rubro_tools, dict) else []
+    for item in education_primary or []:
+        if isinstance(item, dict):
+            add_item(item, kind="education_primary_action")
     for item in rubro_menu or []:
         if isinstance(item, dict):
             add_item(item, kind="rubro_action")

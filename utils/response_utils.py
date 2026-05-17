@@ -168,11 +168,9 @@ def normalize_response_payload(payload: Any) -> Any:
     )
 
     if canonical_text:
-        payload.setdefault("message_body", canonical_text)
-        payload.setdefault("respuesta", canonical_text)
-        payload.setdefault("respuesta_usuario", canonical_text)
-        payload.setdefault("message_to_user", canonical_text)
-        payload.setdefault("message", canonical_text)
+        for key in ("message_body", "respuesta", "respuesta_usuario", "message_to_user", "message"):
+            if not _first_text(payload.get(key)):
+                payload[key] = canonical_text
 
     if payload.get("options_list") and not payload.get("botones"):
         payload["botones"] = payload.get("options_list")
@@ -188,7 +186,9 @@ def normalize_response_payload(payload: Any) -> Any:
     if final_text:
         if not payload.get("messages"):
             payload["messages"] = [{"role": "assistant", "content": final_text}]
-        payload.setdefault("assistant_message", {"role": "assistant", "content": final_text})
+        assistant_message = payload.get("assistant_message")
+        if not isinstance(assistant_message, MutableMapping) or not _first_text(assistant_message.get("content")):
+            payload["assistant_message"] = {"role": "assistant", "content": final_text}
     else:
         payload.setdefault("messages", [])
         payload.setdefault("assistant_message", None)
