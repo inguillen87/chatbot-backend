@@ -351,6 +351,12 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertIn("application/pdf", resp.headers.get("Content-Type", ""))
 
+    def test_v2_demo_catalog_nested_asset_serves_pdf(self):
+        resp = self.client.get("/api/v2/demo/catalog-assets/colegios/catalogo-demo-colegios.pdf")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("application/pdf", resp.headers.get("Content-Type", ""))
+
     def test_v2_demo_session_accepts_sector_only_for_guided_pillar_start(self):
         owner = User(name="Colegio Demo", email="colegio-sector@test.com", password_hash="hash", tipo_chat="pyme")
         db.session.add(owner)
@@ -378,6 +384,12 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertEqual(selector.get("selected_sector"), "educacion")
         self.assertEqual(selector.get("selected_rubro"), "colegios")
         self.assertTrue(workspace.get("catalog_resources"))
+        self.assertTrue(
+            all(
+                str(resource.get("url") or "").startswith("/api/v2/demo/catalog-assets/")
+                for resource in workspace.get("catalog_resources") or []
+            )
+        )
         self.assertEqual((payload.get("chat_bootstrap") or {}).get("endpoint"), "/ask/pyme")
 
     def test_v2_demo_session_accepts_rubro_slug_alias(self):
@@ -450,7 +462,16 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertEqual((chat_bootstrap.get("payload") or {}).get("vertical"), "educacion")
         self.assertEqual((chat_bootstrap.get("context") or {}).get("vertical"), "educacion")
         self.assertEqual((payload.get("experience_blueprint") or {}).get("experience_type"), "education")
+        self.assertTrue((workspace.get("education_profile") or {}).get("is_education"))
         self.assertTrue((workspace.get("education") or {}).get("whatsapp_playbook"))
+        primary_actions = (workspace.get("education") or {}).get("primary_actions") or []
+        action_ids = {item.get("action_id") for item in primary_actions}
+        self.assertTrue({"create_school_case", "justify_absence", "talk_secretary"}.issubset(action_ids))
+        cta_action_ids = {
+            item.get("action_id")
+            for item in ((payload.get("experience_blueprint") or {}).get("conversion_ctas") or {}).get("actions", [])
+        }
+        self.assertTrue({"create_school_case", "justify_absence", "talk_secretary"}.issubset(cta_action_ids))
         self.assertTrue(any("inasistencia" in (item.get("label") or "").lower() for item in workspace.get("quick_replies") or []))
 
     def test_v2_demo_session_accepts_spanish_aliases_from_frontend(self):

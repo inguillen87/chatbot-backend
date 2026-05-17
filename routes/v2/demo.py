@@ -7,7 +7,7 @@ import hashlib
 import json
 import uuid
 
-from flask import Blueprint, current_app, jsonify, request, send_from_directory
+from flask import Blueprint, abort, current_app, jsonify, request, send_from_directory
 
 from models import MunicipioTicket, TenantProfile, WhatsappNumero
 from routes.auth import (
@@ -1059,16 +1059,42 @@ def _demo_catalog_asset_response(filename: str):
     aliases = {
         "colegio-demo.pdf": ("colegios", "catalogo-demo-colegios.pdf"),
         "colegios-demo.pdf": ("colegios", "catalogo-demo-colegios.pdf"),
+        "catalogo-demo-colegios.pdf": ("colegios", "catalogo-demo-colegios.pdf"),
         "municipio-demo.pdf": ("gobiernos", "catalogo-demo-gobiernos.pdf"),
         "gobierno-demo.pdf": ("gobiernos", "catalogo-demo-gobiernos.pdf"),
+        "catalogo-demo-gobiernos.pdf": ("gobiernos", "catalogo-demo-gobiernos.pdf"),
         "empresa-demo.pdf": ("empresas", "catalogo-demo-empresas.pdf"),
         "empresas-demo.pdf": ("empresas", "catalogo-demo-empresas.pdf"),
+        "catalogo-demo-empresas.pdf": ("empresas", "catalogo-demo-empresas.pdf"),
     }
-    clean = str(filename or "").strip().replace("\\", "/").split("/")[-1]
-    folder, asset_name = aliases.get(clean, ("", clean))
+    allowed_folders = {"colegios", "gobiernos", "empresas"}
+    raw = str(filename or "").strip().replace("\\", "/").strip("/")
+    parts = [part for part in raw.split("/") if part]
+
+    folder = ""
+    asset_name = ""
+    if len(parts) >= 2:
+        folder_candidate = parts[-2].lower()
+        asset_candidate = parts[-1]
+        if folder_candidate in allowed_folders:
+            folder, asset_name = folder_candidate, asset_candidate
+    if not asset_name and parts:
+        clean = parts[-1]
+        folder, asset_name = aliases.get(clean, ("", clean))
+
+    if (
+        not folder
+        or folder not in allowed_folders
+        or not asset_name
+        or ".." in asset_name
+        or "/" in asset_name
+        or "\\" in asset_name
+        or not asset_name.lower().endswith(".pdf")
+    ):
+        abort(404)
+
     base_dir = Path(current_app.root_path) / "data" / "demo_catalogs"
-    if folder:
-        base_dir = base_dir / folder
+    base_dir = base_dir / folder
     response = send_from_directory(base_dir, asset_name, as_attachment=False)
     return _with_public_cors(response)
 
@@ -1573,6 +1599,7 @@ def _chat_bootstrap(
             "rubro_clave": canonical_rubro,
             "vertical": vertical,
             "education_profile": education_profile,
+            "education_context": education_profile,
             "rubro_context": rubro_context,
             "demo_metadata": demo_metadata,
             "demo_session_id": demo_session_id,
@@ -1585,6 +1612,7 @@ def _chat_bootstrap(
             "tenant_slug": tenant.slug,
             "tenant_tipo": tenant_type,
             "vertical": vertical,
+            "education_context": education_profile,
             "rubro_context": rubro_context,
             "demo_metadata": demo_metadata,
             "demo_session_id": demo_session_id,
@@ -2543,9 +2571,11 @@ def demo_session_v2():
     if education_profile.get("is_education"):
         education_payload = {
             "profile": education_profile,
+            "education_profile": education_profile,
             "whatsapp_playbook": build_education_whatsapp_playbook(tenant),
             "admin_menu": build_education_admin_menu(tenant),
             "quick_menu": experience.get("education_quick_menu") or [],
+            "primary_actions": experience.get("education_primary_actions") or [],
         }
 
     catalog_resources = catalog_resources_for_rubro(effective_rubro, sector)
@@ -2587,6 +2617,7 @@ def demo_session_v2():
             "runtime_unavailable": chat_bootstrap["empty_states"]["runtime_unavailable"],
         },
         "education": education_payload,
+        "education_profile": education_profile if education_profile.get("is_education") else None,
         "pillar_selector": {
             "contract_version": DEMO_PILLAR_CONTRACT_VERSION,
             "selected_sector": sector,
@@ -2635,6 +2666,7 @@ def demo_session_v2():
         "tenant_slug": tenant.slug,
         "tenant_tipo": tenant_type,
         "vertical": vertical,
+        "education_context": education_profile if education_profile.get("is_education") else None,
         "demo_session_id": demo_session_id,
         "chat_session_id": chat_session_id,
         "rubro_tool_summary": rubro_tools.get("llm_context") or {},

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from services.education_contracts import education_quick_menu, fold_text
+from services.education_contracts import education_primary_actions, education_quick_menu, fold_text
 
 
 def _is_education_experience(
@@ -498,6 +498,7 @@ def _conversion_ctas_for_tipo(tipo: str) -> dict[str, Any]:
         actions = [
             {
                 "id": "create_school_case",
+                "action_id": "create_school_case",
                 "label": "Crear caso escolar",
                 "intent": "tramites_secretaria",
                 "endpoint": "/ask",
@@ -506,6 +507,7 @@ def _conversion_ctas_for_tipo(tipo: str) -> dict[str, Any]:
             },
             {
                 "id": "justify_absence",
+                "action_id": "justify_absence",
                 "label": "Justificar inasistencia",
                 "intent": "justificar_inasistencia",
                 "endpoint": "/ask",
@@ -514,6 +516,7 @@ def _conversion_ctas_for_tipo(tipo: str) -> dict[str, Any]:
             },
             {
                 "id": "talk_secretary",
+                "action_id": "talk_secretary",
                 "label": "Hablar con secretaria",
                 "intent": "derivar_humano",
                 "endpoint": "/api/v2/inbox/omnichannel/actions",
@@ -662,6 +665,7 @@ def build_demo_experience_contract(
         institution_type=(education_profile or {}).get("institution_type") or "general",
         surface="demo",
     ) if is_education else []
+    primary_actions = education_primary_actions() if is_education else []
 
     return {
         "version": "2026-05-agent-experience-v2",
@@ -671,6 +675,7 @@ def build_demo_experience_contract(
         "subvertical": subvertical,
         "education_profile": education_profile if is_education else None,
         "education_quick_menu": quick_menu,
+        "education_primary_actions": primary_actions,
         "agent_persona": _agent_persona_for_tipo(experience_type, rubro),
         "first_visit": first_visit,
         "guided_onboarding": {

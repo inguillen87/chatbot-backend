@@ -12,6 +12,14 @@ EDUCATION_WHATSAPP_PLAYBOOK_CONTRACT_VERSION = "education.whatsapp_playbook.v1"
 EDUCATION_CASE_INTAKE_CONTRACT_VERSION = "education.case_intake.v1"
 
 
+def education_primary_actions() -> list[dict[str, str]]:
+    return [
+        {"label": "Crear caso escolar", "texto": "Crear caso escolar", "action_id": "create_school_case", "id": "create_school_case"},
+        {"label": "Justificar inasistencia", "texto": "Justificar inasistencia", "action_id": "justify_absence", "id": "justify_absence"},
+        {"label": "Hablar con secretaria", "texto": "Hablar con secretaria", "action_id": "talk_secretary", "id": "talk_secretary"},
+    ]
+
+
 def _repair_mojibake(value: str) -> str:
     try:
         repaired = value.encode("latin1").decode("utf-8")
@@ -363,6 +371,7 @@ def education_quick_menu(
         enriched = {
             **item,
             "contract_version": EDUCATION_QUICK_MENU_CONTRACT_VERSION,
+            "action_id": item.get("intent") or item.get("id"),
             "institution_type": institution,
             "vertical": "educacion",
             "surface": surface,
@@ -383,6 +392,36 @@ def education_menu_item_for_intent(intent: str | None, tenant: Any = None) -> di
     for item in education_quick_menu(tenant, surface="whatsapp"):
         if normalized in {item.get("intent"), item.get("id")}:
             return item
+    return None
+
+
+_EDUCATION_ACTION_ALIASES = {
+    "create_school_case": "tramites_secretaria",
+    "crear_caso_escolar": "tramites_secretaria",
+    "school_case": "tramites_secretaria",
+    "justify_absence": "justificar_inasistencia",
+    "justificar_inasistencia": "justificar_inasistencia",
+    "absence": "justificar_inasistencia",
+    "talk_secretary": "derivar_humano",
+    "hablar_secretaria": "derivar_humano",
+    "hablar_con_secretaria": "derivar_humano",
+    "menu_humano": "derivar_humano",
+    "human_handoff": "derivar_humano",
+    "secretaria": "derivar_humano",
+    "menu_colegio": "menu_colegio",
+    "menu_principal": "menu_colegio",
+}
+
+
+def education_intent_from_action(action: Any, tenant: Any = None) -> str | None:
+    normalized = fold_text(action).replace(" ", "_")
+    if not normalized:
+        return None
+    normalized = _EDUCATION_ACTION_ALIASES.get(normalized, normalized)
+    if normalized in {"menu_colegio", "menu_principal"}:
+        return "menu_colegio"
+    if education_menu_item_for_intent(normalized, tenant):
+        return normalized
     return None
 
 

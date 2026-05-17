@@ -55,6 +55,17 @@ from services.pyme_multimodal import (
 from .llm_utils import extract_multiple_contact_details_llm, resumir_descripcion_producto_llm
 from .common_utils import validar_email, validar_telefono
 from services.llm_orchestrator import llamar_llm_con_fallback # Import for proactive suggestions
+from services.education_case_service import create_school_case_alias_for_ticket, school_case_alias_payload
+from services.education_contracts import (
+    build_education_case_ack_payload,
+    build_education_pending_case,
+    education_primary_actions,
+    build_education_whatsapp_menu_payload,
+    education_intent_from_action,
+    education_menu_item_for_intent,
+    education_prompt_for_intent,
+    is_education_tenant,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +133,251 @@ def _first_real_customer_name(*values: Optional[str]) -> Optional[str]:
         if candidate and not _is_generic_customer_name(candidate):
             return candidate
     return None
+
+
+def _tenant_profile_for_pyme_owner(owner_user: Any, preferred_slug: Optional[str] = None):
+    owner_id = getattr(owner_user, "id", None)
+    if not owner_id:
+        return None
+
+    query = models.TenantProfile.query.filter_by(pyme_id=owner_id, is_active=True)
+    if preferred_slug:
+        tenant = (
+            query.filter(func.lower(models.TenantProfile.slug) == str(preferred_slug).strip().lower())
+            .order_by(models.TenantProfile.id.desc())
+            .first()
+        )
+        if tenant:
+            return tenant
+    return query.order_by(models.TenantProfile.id.desc()).first()
+
+
+def _education_widget_primary_options() -> list[dict[str, Any]]:
+    return education_primary_actions()
+
+
+def _education_case_description(
+    *,
+    message_body: str,
+    uploaded_file_info: dict[str, Any] | None,
+    location_info: dict[str, Any] | None,
+    pending_case: dict[str, Any],
+) -> str:
+    parts: list[str] = []
+    if pending_case.get("label"):
+        parts.append(f"Opcion: {pending_case.get('label')}")
+    if message_body and str(message_body).strip() not in {"__INIT__"}:
+        parts.append(str(message_body).strip())
+    if uploaded_file_info:
+        name = uploaded_file_info.get("name") or uploaded_file_info.get("filename") or uploaded_file_info.get("mime_type") or "adjunto"
+        parts.append(f"Adjunto recibido: {name}")
+    if location_info:
+        address = location_info.get("address") or location_info.get("label") or location_info.get("descripcion")
+        lat = location_info.get("latitude") or location_info.get("lat")
+        lng = location_info.get("longitude") or location_info.get("lng") or location_info.get("lon")
+        if address:
+            parts.append(f"Ubicacion: {address}")
+        elif lat is not None and lng is not None:
+            parts.append(f"Ubicacion compartida: {lat}, {lng}")
+    return "\n".join(part for part in parts if part) or "Consulta escolar recibida desde el widget."
+
+
+def _handle_education_widget_turn(
+    *,
+    tenant_profile: Any,
+    owner_user: Any,
+    viewer_user: Any,
+    anon_id: Optional[str],
+    chat_db_context: Any,
+    pyme_ctx_actual: dict[str, Any],
+    pregunta_str: str,
+    selected_action_id: Optional[str],
+    uploaded_file_info: dict[str, Any] | None,
+    location_info: dict[str, Any] | None,
+    channel: str,
+) -> PymeFlowResult | None:
+    if not tenant_profile or not is_education_tenant(tenant_profile):
+        return None
+
+    context_data = chat_db_context.context_data if isinstance(getattr(chat_db_context, "context_data", None), dict) else {}
+    normalized_action = education_intent_from_action(selected_action_id, tenant_profile)
+
+    if str(pregunta_str or "").strip() == "__INIT__" and not normalized_action:
+        normalized_action = "menu_colegio"
+
+    if normalized_action == "menu_colegio":
+        payload = build_education_whatsapp_menu_payload(tenant_profile, reduced=True)
+        options = _education_widget_primary_options()
+        context_data["last_options_sent"] = options
+        data = dict(payload.get("education_context") or {})
+        data.update(
+            {
+                "render_as": "whatsapp_like_menu",
+                "tenant_slug": getattr(tenant_profile, "slug", None),
+                "quick_menu": payload.get("options_list") or [],
+                "primary_actions": options,
+            }
+        )
+        return PymeFlowResult(
+            message_body=payload.get("message_body") or "Hola. Soy el asistente del colegio. Elegi una opcion o contame que necesitas.",
+            source="education_widget_menu",
+            options_list=options,
+            message_type="interactive_buttons",
+            data={"education_context": data},
+        )
+
+    if normalized_action == "derivar_humano":
+        from services.actions.pyme_actions import DerivarHumanoActionHandlerPyme
+
+        handler_context = {
+            CONTEXTO_PYME: pyme_ctx_actual,
+            "user_obj": owner_user,
+            "viewer_user_obj": viewer_user,
+            "cliente_id": getattr(viewer_user, "id", None),
+            "anon_id": anon_id,
+            "user_id": getattr(owner_user, "id", None),
+            "chat_db_context_data": context_data,
+            "channel": channel,
+            "target_entity_type": "pyme",
+            "pregunta_actual_usuario": pregunta_str or "Solicitud de hablar con secretaria",
+        }
+        handler = DerivarHumanoActionHandlerPyme(handler_context)
+        handler_result = handler.execute({"motivo_derivacion": "Familia solicitando hablar con secretaria"})
+        data = handler_result.get("data", {}) if isinstance(handler_result, dict) else {}
+        ticket_id = data.get("ticket_id") if isinstance(data, dict) else None
+        if ticket_id:
+            alias = create_school_case_alias_for_ticket(
+                tenant_profile=tenant_profile,
+                ticket_type="pyme",
+                ticket_id=ticket_id,
+                case_type="secretaria",
+                channel=channel or "widget",
+                end_user=viewer_user,
+                phone=anon_id,
+                sensitivity_level="normal",
+            )
+            alias_payload = school_case_alias_payload(alias)
+            if alias_payload:
+                data["school_case"] = alias_payload
+                data["school_case_id"] = alias_payload.get("school_case_id")
+        data.update(
+            {
+                "education_context": {
+                    "vertical": "educacion",
+                    "tenant_slug": getattr(tenant_profile, "slug", None),
+                    "handoff_target": "secretaria",
+                }
+            }
+        )
+        return PymeFlowResult(
+            message_body=handler_result.get("message_to_user") or "Deje el aviso para secretaria.",
+            source="education_widget_live_handoff",
+            options_list=[{"texto": "Menu colegio", "action_id": "menu_colegio"}],
+            message_type="interactive_buttons",
+            data=data,
+        )
+
+    if normalized_action:
+        item = education_menu_item_for_intent(normalized_action, tenant_profile) or {}
+        pending_case = build_education_pending_case(normalized_action, item)
+        context_data["education_pending_case"] = pending_case
+        prompt = education_prompt_for_intent(normalized_action, tenant_profile)
+        context_data["last_options_sent"] = prompt.get("options_list") or []
+        return PymeFlowResult(
+            message_body=prompt.get("message_body") or "Contame el detalle y lo registro para secretaria.",
+            source="education_widget_case_prompt",
+            options_list=prompt.get("options_list") or [],
+            message_type="interactive_buttons",
+            data={
+                "education_context": {
+                    "vertical": "educacion",
+                    "tenant_slug": getattr(tenant_profile, "slug", None),
+                    "pending_case": pending_case,
+                }
+            },
+        )
+
+    pending_case = context_data.get("education_pending_case")
+    has_detail = bool((pregunta_str or "").strip() or uploaded_file_info or location_info)
+    if not isinstance(pending_case, dict) or not has_detail:
+        return None
+
+    description = _education_case_description(
+        message_body=pregunta_str,
+        uploaded_file_info=uploaded_file_info,
+        location_info=location_info,
+        pending_case=pending_case,
+    )
+    category = pending_case.get("category") or "secretaria"
+    ticket_data = {
+        "tenant_id": getattr(tenant_profile, "id", None),
+        "user_id": getattr(viewer_user, "id", None),
+        "anon_id": anon_id if not getattr(viewer_user, "id", None) else None,
+        "asunto": f"Colegio - {pending_case.get('label') or 'Consulta escolar'}",
+        "categoria": category,
+        "pregunta": description,
+        "comentario": description,
+        "canal_ingreso": channel or "widget",
+        "estado": "nuevo",
+        "direccion": (location_info or {}).get("address") or (location_info or {}).get("label"),
+        "latitud": (location_info or {}).get("latitude") or (location_info or {}).get("lat"),
+        "longitud": (location_info or {}).get("longitude") or (location_info or {}).get("lng") or (location_info or {}).get("lon"),
+        "nombre_cliente": pyme_ctx_actual.get("nombre_cliente"),
+        "telefono_cliente": pyme_ctx_actual.get("telefono_cliente") or anon_id,
+        "email_cliente": pyme_ctx_actual.get("email_cliente"),
+        "pyme_id": getattr(owner_user, "id", None),
+    }
+    ticket = servicio_tickets.crear_nuevo_ticket("pyme", {k: v for k, v in ticket_data.items() if v is not None})
+    if not ticket:
+        return PymeFlowResult(
+            message_body="Recibi el detalle, pero no pude crear el caso escolar en este momento. Te derivo con secretaria.",
+            source="education_widget_case_error",
+            options_list=[{"texto": "Hablar con secretaria", "action_id": "talk_secretary"}],
+            message_type="interactive_buttons",
+        )
+
+    ticket_id = ticket.get("id") if isinstance(ticket, dict) else None
+    alias = create_school_case_alias_for_ticket(
+        tenant_profile=tenant_profile,
+        ticket_type="pyme",
+        ticket_id=ticket_id,
+        case_type=category,
+        channel=channel or "widget",
+        end_user=viewer_user,
+        phone=anon_id,
+        sensitivity_level=pending_case.get("sensitivity_level"),
+    )
+    alias_payload = school_case_alias_payload(alias)
+    if isinstance(ticket, dict) and alias_payload:
+        ticket["school_case_id"] = alias_payload.get("school_case_id")
+        ticket["school_case"] = alias_payload
+
+    attachment_id = (uploaded_file_info or {}).get("id")
+    if attachment_id and ticket_id:
+        try:
+            adjunto = db.session.get(ArchivoAdjunto, attachment_id)
+            if adjunto:
+                adjunto.pyme_ticket_id = ticket_id
+                db.session.add(adjunto)
+                db.session.commit()
+        except Exception:
+            logger.exception("[EDUCATION_WIDGET] No se pudo asociar adjunto al ticket escolar")
+            db.session.rollback()
+
+    context_data = chat_db_context.context_data if isinstance(getattr(chat_db_context, "context_data", None), dict) else {}
+    context_data.pop("education_pending_case", None)
+    context_data["latest_ticket_id"] = ticket_id
+    if isinstance(ticket, dict):
+        context_data["latest_ticket_nro"] = ticket.get("nro_ticket")
+    chat_db_context.context_data = context_data
+    payload = build_education_case_ack_payload(ticket, intent=pending_case.get("intent"))
+    return PymeFlowResult(
+        message_body=payload.get("message_body") or "Listo, deje tu consulta escolar registrada.",
+        source="education_widget_case_created",
+        options_list=payload.get("options_list") or [],
+        message_type=payload.get("message_type") or "interactive_buttons",
+        data=payload.get("data") or {},
+    )
 
 
 RAW_GREETING_KEYWORDS = {
@@ -1874,7 +2130,9 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
     pyme_ctx_actual = chat_db_context.context_data.setdefault(CONTEXTO_PYME, {})
     education_context = (
         received_payload.get("education_context")
+        or received_payload.get("education_profile")
         or kwargs.get("education_context")
+        or kwargs.get("education_profile")
         or chat_db_context.context_data.get("education_context")
     )
     is_education_context = isinstance(education_context, dict) and bool(education_context)
@@ -1906,10 +2164,13 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
             "options_list": flow_result.options_list or [],
             "message_type": flow_result.message_type or "text",
             "fuente": flow_result.source,
+            "request_id": request_id,
             "contexto_actualizado": {CONTEXTO_PYME: contexto_serializado},
         }
         if flow_result.data:
             final_payload["data"] = flow_result.data
+            if isinstance(final_payload["data"], dict):
+                final_payload["data"].setdefault("request_id", request_id)
         if flow_result.audio_url:
             final_payload["audio_url"] = flow_result.audio_url
         if flow_result.audio_text:
@@ -1998,8 +2259,13 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
     )
     pyme_ctx_actual["rubro_slug"] = rubro_slug
 
-    # Resolve tenant slug for config loading
-    tenant_profile = getattr(owner_user, "tenant_profile_pyme", None)
+    # Resolve tenant slug for config loading. Query explicitly because some
+    # demo owners can have multiple tenant profiles and the uselist=False
+    # relationship emits warnings or picks the wrong vertical.
+    tenant_profile = _tenant_profile_for_pyme_owner(
+        owner_user,
+        preferred_slug=(education_context or {}).get("tenant_slug") if isinstance(education_context, dict) else None,
+    )
     tenant_slug = tenant_profile.slug if tenant_profile else None
 
     nombre_pyme_display = (
@@ -2188,28 +2454,34 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
                 "[PYME_FLOW] media_saved",
                 extra={"media_type": "image", "request_id": request_id},
             )
-            catalog_items = load_catalog(getattr(owner_user, "id", None), rubro_slug)
-            image_result = handle_image_payload(
-                session_state,
-                uploaded_info,
-                catalog_items,
-                request_id=request_id,
-            )
-            return _finalize_early_response(image_result, intent="image_catalog_match")
+            if is_education_context:
+                contextual_notes.append("En contexto escolar, la imagen se trata como adjunto para un caso o tramite.")
+            else:
+                catalog_items = load_catalog(getattr(owner_user, "id", None), rubro_slug)
+                image_result = handle_image_payload(
+                    session_state,
+                    uploaded_info,
+                    catalog_items,
+                    request_id=request_id,
+                )
+                return _finalize_early_response(image_result, intent="image_catalog_match")
         elif mime_type == "application/pdf" or mime_type.endswith("+pdf"):
             contextual_notes.append("El usuario envió un catálogo o lista de precios en PDF.")
             logger_actual.info(
                 "[PYME_FLOW] media_saved",
                 extra={"media_type": "pdf", "request_id": request_id},
             )
-            catalog_items = load_catalog(getattr(owner_user, "id", None), rubro_slug)
-            pdf_result = handle_pdf_payload(
-                session_state,
-                uploaded_info,
-                catalog_items,
-                request_id=request_id,
-            )
-            return _finalize_early_response(pdf_result, intent="pdf_catalog_match")
+            if is_education_context:
+                contextual_notes.append("En contexto escolar, el PDF se adjunta al caso y no se interpreta como catalogo comercial.")
+            else:
+                catalog_items = load_catalog(getattr(owner_user, "id", None), rubro_slug)
+                pdf_result = handle_pdf_payload(
+                    session_state,
+                    uploaded_info,
+                    catalog_items,
+                    request_id=request_id,
+                )
+                return _finalize_early_response(pdf_result, intent="pdf_catalog_match")
         elif mime_type.startswith("audio/"):
             contextual_notes.append("El usuario envió una nota de voz.")
             transcripcion = uploaded_info.get("transcribed_text")
@@ -2316,6 +2588,34 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
         texto_extraido = datos_interpretados_archivo.get("texto_extraido")
         if texto_extraido and texto_extraido.strip():
             contextual_notes.append(f"Texto extraído del archivo: {texto_extraido.strip()}")
+
+    selected_action_id = (
+        received_payload.get("action_id")
+        or received_payload.get("selected_action_id")
+        or received_payload.get("action")
+        or received_payload.get("intent")
+        or kwargs.get("action_id")
+        or kwargs.get("selected_action_id")
+    )
+    if is_education_context:
+        education_result = _handle_education_widget_turn(
+            tenant_profile=tenant_profile,
+            owner_user=owner_user,
+            viewer_user=viewer_user,
+            anon_id=anon_id,
+            chat_db_context=chat_db_context,
+            pyme_ctx_actual=pyme_ctx_actual,
+            pregunta_str=pregunta_str,
+            selected_action_id=selected_action_id,
+            uploaded_file_info=uploaded_info if isinstance(uploaded_info, dict) else None,
+            location_info=ubicacion_payload if isinstance(ubicacion_payload, dict) else None,
+            channel=channel,
+        )
+        if education_result:
+            return _finalize_early_response(
+                education_result,
+                intent=education_intent_from_action(selected_action_id, tenant_profile) or "education_widget",
+            )
 
     if not pregunta_str.strip():
         transcripcion_note = next(

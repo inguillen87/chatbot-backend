@@ -632,6 +632,55 @@ def _owner_context_is_trusted(owner_user: Optional[User], resolution_source: Opt
     }
 
 
+def _tenant_profile_chat_type(tenant: Optional[TenantProfile]) -> Optional[str]:
+    if not tenant:
+        return None
+    tipo = (getattr(tenant, "tipo", None) or "").strip().lower()
+    if tipo == "municipio":
+        return "municipio"
+    return "pyme"
+
+
+def _should_demo_tenant_override_owner(
+    *,
+    tenant: Optional[TenantProfile],
+    tenant_owner: Optional[User],
+    current_owner: Optional[User],
+    current_resolution_source: Optional[str],
+    requested_tipo_chat: Optional[str],
+    is_public_landing: bool,
+    demo_request_active: bool,
+) -> bool:
+    """Allow public demos to follow their selected tenant even with stale widget tokens.
+
+    The public landing can keep a static entity token from a previous demo.
+    Without this guard, selecting "colegios" while a municipio token is still
+    present makes the backend recover to the municipio owner and mixes menus.
+    Authenticated/admin flows are intentionally excluded.
+    """
+
+    if not demo_request_active or not is_public_landing or not tenant_owner:
+        return False
+    if not current_owner:
+        return True
+
+    expected_tipo = _tenant_profile_chat_type(tenant)
+    requested = (requested_tipo_chat or "").strip().lower()
+    current_tipo = (getattr(current_owner, "tipo_chat", None) or "").strip().lower()
+    normalized_source = (current_resolution_source or "").strip().lower()
+
+    if getattr(current_owner, "id", None) == getattr(tenant_owner, "id", None):
+        return False
+
+    if requested and expected_tipo and requested != expected_tipo:
+        return False
+
+    if normalized_source in {"static_entity_token", "explicit_entity_token", "session_owner_context"}:
+        return True
+
+    return bool(expected_tipo and current_tipo and current_tipo != expected_tipo)
+
+
 def _can_restore_session_owner_context(
     *,
     persisted_owner_id: Optional[object],
@@ -2280,19 +2329,38 @@ def _procesar_chat(
             if rubro_tool_summary_from_payload:
                 contexto_chat["rubro_tool_summary"] = rubro_tool_summary_from_payload
 
-            if demo_tenant_slug and not _owner_context_is_trusted(owner_user, owner_resolution_source):
+            if demo_tenant_slug:
                 tenant_for_demo = (
                     TenantProfile.query.filter(func.lower(TenantProfile.slug) == demo_tenant_slug)
                     .order_by(TenantProfile.id.desc())
                     .first()
                 )
                 tenant_owner = _owner_for_tenant_profile(tenant_for_demo)
-                if tenant_owner:
+                demo_tenant_chat_type = _tenant_profile_chat_type(tenant_for_demo)
+                if demo_tenant_chat_type:
+                    contexto_chat["demo_tipo_chat"] = demo_tenant_chat_type
+                should_use_demo_owner = bool(
+                    tenant_owner
+                    and (
+                        not _owner_context_is_trusted(owner_user, owner_resolution_source)
+                        or _should_demo_tenant_override_owner(
+                            tenant=tenant_for_demo,
+                            tenant_owner=tenant_owner,
+                            current_owner=owner_user,
+                            current_resolution_source=owner_resolution_source,
+                            requested_tipo_chat=tipo_chat_fijo or tipo_chat,
+                            is_public_landing=_is_public_landing_request(),
+                            demo_request_active=demo_request_active,
+                        )
+                    )
+                )
+                if should_use_demo_owner:
                     owner_user = tenant_owner
                     owner_resolution_source = "demo_session_tenant"
                     contexto_chat["resolved_owner_user_id"] = tenant_owner.id
                     contexto_chat["resolved_owner_tipo_chat"] = (
-                        getattr(tenant_owner, "tipo_chat", None)
+                        demo_tenant_chat_type
+                        or getattr(tenant_owner, "tipo_chat", None)
                         or getattr(tenant_for_demo, "tipo", None)
                         or tipo_chat
                     )
@@ -2386,7 +2454,13 @@ def _procesar_chat(
             tipo_chat = normalized_value
             _update_tipo_flags()
 
+        demo_tipo_chat_override = None
+        if demo_request_active and _is_public_landing_request() and isinstance(contexto_chat, dict):
+            demo_tipo_chat_override = (contexto_chat.get("demo_tipo_chat") or "").strip().lower() or None
+
         owner_tipo_chat = (getattr(owner_user, "tipo_chat", None) or "").strip().lower()
+        if demo_tipo_chat_override in {"pyme", "municipio"}:
+            owner_tipo_chat = demo_tipo_chat_override
         if tipo_chat_fijo and owner_tipo_chat and tipo_chat_fijo != owner_tipo_chat:
             current_app.logger.info(
                 "[CHAT] endpoint_mismatch auto-recovered: requested=%s owner_tipo=%s owner_id=%s",
@@ -2479,7 +2553,12 @@ def _procesar_chat(
             and _owner_context_is_trusted(owner_user, owner_resolution_source)
         ):
             contexto_chat["resolved_owner_user_id"] = owner_user.id
-            contexto_chat["resolved_owner_tipo_chat"] = (getattr(owner_user, "tipo_chat", None) or tipo_chat or "").strip().lower() or None
+            contexto_chat["resolved_owner_tipo_chat"] = (
+                demo_tipo_chat_override
+                or getattr(owner_user, "tipo_chat", None)
+                or tipo_chat
+                or ""
+            ).strip().lower() or None
             contexto_chat["resolved_owner_resolution_source"] = owner_resolution_source
             if chat_context_obj:
                 flag_modified(chat_context_obj, "context_data")
