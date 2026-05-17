@@ -478,7 +478,11 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertGreaterEqual(payload["summary"]["missing_price"], 1)
         self.assertTrue(payload["queues"]["missing_images"])
         self.assertTrue(payload["queues"]["missing_price"])
+        self.assertEqual(payload["inventory"]["contract_version"], "catalog.inventory_ops.v1")
+        self.assertTrue(payload["inventory"]["columns"]["stock_columns"])
+        self.assertTrue(payload["imports"]["stock_only_import"])
         self.assertEqual(payload["frontend_contract"]["render_as"], "catalog_quality_command_center")
+        self.assertTrue(payload["frontend_contract"]["allow_stock_only_import"])
 
     def test_whatsapp_sandbox_session_returns_deeplink_contract(self):
         response = self.client.post(
@@ -625,6 +629,9 @@ class V2SaasContractsTest(unittest.TestCase):
         get_payload = get_response.get_json()
         self.assertEqual(get_payload["draft_endpoint"], f"/api/admin/tenants/{self.tenant.slug}/catalog/draft")
         self.assertEqual(get_payload["links"]["draft_endpoint"], f"/api/admin/tenants/{self.tenant.slug}/catalog/draft")
+        self.assertEqual(get_payload["contract_version"], "tenant.catalog_admin.v1")
+        self.assertEqual(get_payload["frontend_contract"]["render_as"], "tenant_catalog_inventory_admin")
+        self.assertTrue(get_payload["inventory"]["columns"]["stock_columns"])
 
         draft_response = self.client.put(
             f"/api/admin/tenants/{self.tenant.slug}/catalog/draft",
