@@ -900,6 +900,7 @@ def _demo_rubro_tools_contract(
             intent="ver_catalogo",
             action_label="Abrir catalogo" if resources else None,
             action_url=_first_demo_item_url(resources, "url", "href"),
+            tool_mode="downloadable",
             fields=[{"label": "Recursos", "value": len(resources)}] if resources else [],
         ),
         _demo_tool_contract(
@@ -911,17 +912,18 @@ def _demo_rubro_tools_contract(
             intent="consultar_precios",
             action_label="Ver lista de precios" if price_resources else None,
             action_url=_first_demo_item_url(price_resources, "url", "href"),
+            tool_mode="downloadable",
             fields=[{"label": "Listas", "value": len(price_resources)}] if price_resources else [],
         ),
         _demo_tool_contract(
             key="location",
             label="Ubicacion",
-            description="Direcciones con enlace operativo a Google Maps.",
+            description="Direcciones publicadas por el rubro; las nuevas ubicaciones se envian dentro del chat.",
             enabled=bool(locations),
             items=locations,
             intent="consultar_ubicacion",
-            action_label="Abrir Google Maps" if locations else None,
-            action_url=_first_demo_item_url(locations, "maps_url", "google_maps_url", "url"),
+            action_label="Consultar ubicacion" if locations else None,
+            tool_mode="chat_action",
             fields=[{"label": "Ubicaciones", "value": len(locations)}] if locations else [],
         ),
         _demo_tool_contract(
@@ -932,7 +934,7 @@ def _demo_rubro_tools_contract(
             data=contact if contact_enabled else None,
             intent="consultar_contacto",
             action_label="Contactar" if contact_enabled else None,
-            action_url=_contact_action_url(contact) if contact_enabled else None,
+            tool_mode="chat_action",
             fields=[
                 {"label": "Telefono", "value": contact.get("phone")},
                 {"label": "WhatsApp", "value": contact.get("whatsapp")},
@@ -947,6 +949,8 @@ def _demo_rubro_tools_contract(
             enabled=bool(hours),
             data=hours if hours else None,
             intent="consultar_horarios",
+            action_label="Consultar horarios" if hours else None,
+            tool_mode="chat_action",
             fields=[{"label": "Horarios", "value": hours}] if isinstance(hours, str) else [],
         ),
         _demo_tool_contract(
@@ -956,6 +960,8 @@ def _demo_rubro_tools_contract(
             enabled=bool(faq_preview),
             items=faq_preview,
             intent="consultar_faq",
+            action_label="Consultar" if faq_preview else None,
+            tool_mode="chat_action",
             fields=[{"label": "Preguntas", "value": len(faq_preview)}] if faq_preview else [],
         ),
     ]
@@ -1273,10 +1279,10 @@ def _handoff_labels(experience: dict[str, Any]) -> dict[str, str]:
 def _chat_endpoint_for_tenant_type(tenant_type: str) -> str:
     normalized = (tenant_type or "").strip().lower()
     if normalized == "municipio":
-        return "/ask/municipio"
+        return "/api/ask/municipio"
     if normalized == "pyme":
-        return "/ask/pyme"
-    return "/ask"
+        return "/api/ask/pyme"
+    return "/api/ask"
 
 
 def _media_supports(media_capabilities: dict[str, Any]) -> dict[str, bool]:
@@ -1310,12 +1316,15 @@ def _allowed_actions_from_experience(experience: dict[str, Any]) -> list[dict[st
             action_id = source.get("intent") or source.get("id") or source.get("key")
             if not action_id:
                 continue
+            endpoint = str(source.get("endpoint") or "/api/ask").strip()
+            if endpoint.startswith("/ask"):
+                endpoint = f"/api{endpoint}"
             actions.append(
                 {
                     "id": str(source.get("id") or action_id),
                     "intent": str(action_id),
                     "label": source.get("label") or source.get("title") or str(action_id),
-                    "endpoint": source.get("endpoint") or "/ask",
+                    "endpoint": endpoint,
                     "enabled": bool(source.get("enabled", True)),
                 }
             )
@@ -1328,6 +1337,143 @@ def _allowed_actions_from_experience(experience: dict[str, Any]) -> list[dict[st
         seen.add(key)
         unique.append(action)
     return unique
+
+
+def _operational_action(
+    *,
+    label: str,
+    action_id: str,
+    description: str,
+    payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "label": label,
+        "title": label,
+        "texto": label,
+        "description": description,
+        "action_id": action_id,
+        "intent": action_id,
+        "action": action_id,
+        "type": "quick_reply",
+        "kind": "operational_action",
+        "enabled": True,
+        "payload": payload or {},
+    }
+
+
+def _short_operational_menu_contract(
+    *,
+    sector: str,
+    tenant: TenantProfile,
+    education_payload: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    normalized = normalize_demo_sector(sector)
+    if normalized == "educacion":
+        configured = []
+        if isinstance(education_payload, dict):
+            configured.extend(education_payload.get("primary_actions") or [])
+            configured.extend(education_payload.get("quick_menu") or [])
+        if configured:
+            actions: list[dict[str, Any]] = []
+            seen: set[str] = set()
+            for item in configured:
+                if not isinstance(item, dict):
+                    continue
+                action_id = str(item.get("action_id") or item.get("intent") or item.get("action") or item.get("id") or "").strip()
+                label = str(item.get("label") or item.get("texto") or item.get("title") or "").strip()
+                if not action_id or not label or action_id in seen:
+                    continue
+                seen.add(action_id)
+                actions.append(
+                    _operational_action(
+                        label=label,
+                        action_id=action_id,
+                        description=str(item.get("description") or item.get("descripcion") or ""),
+                        payload=item.get("payload") if isinstance(item.get("payload"), dict) else {},
+                    )
+                )
+                if len(actions) >= 3:
+                    return actions
+        return [
+            _operational_action(
+                label="Crear caso escolar",
+                description="Conta que paso y adjunta foto, audio o PDF si hace falta.",
+                action_id="create_school_case",
+                payload={"education_context": {"is_education": True, "tenant_slug": tenant.slug}},
+            ),
+            _operational_action(
+                label="Justificar inasistencia",
+                description="Carga alumno, curso, fecha, motivo y certificado si existe.",
+                action_id="justify_absence",
+                payload={"education_context": {"is_education": True, "tenant_slug": tenant.slug}},
+            ),
+            _operational_action(
+                label="Hablar con secretaria",
+                description="Crea espera para secretaria o muestra horario real.",
+                action_id="talk_secretary",
+                payload={"education_context": {"is_education": True, "tenant_slug": tenant.slug}},
+            ),
+        ]
+    if normalized == "gobierno":
+        return [
+            _operational_action(
+                label="Crear reclamo",
+                description="Contame que paso. Podes adjuntar foto, audio o ubicacion.",
+                action_id="crear_reclamo",
+                payload={"vertical": "municipio"},
+            ),
+            _operational_action(
+                label="Consultar estado",
+                description="Busca un reclamo por numero o datos de contacto.",
+                action_id="consultar_estado_reclamo",
+            ),
+            _operational_action(
+                label="Consultar tramite",
+                description="Responde desde tramites publicados por el municipio.",
+                action_id="consultar_tramite",
+            ),
+            _operational_action(
+                label="Hablar con una persona",
+                description="Deriva a mesa de atencion si esta disponible.",
+                action_id="derivar_humano",
+            ),
+        ]
+    if normalized == "empresas":
+        return [
+            _operational_action(
+                label="Consultar producto",
+                description="Busca precio, disponibilidad o detalle publicado por el comercio.",
+                action_id="consultar_producto",
+            ),
+            _operational_action(
+                label="Crear pedido",
+                description="Pide datos y confirma el pedido solo con respuesta del backend.",
+                action_id="crear_pedido",
+            ),
+            _operational_action(
+                label="Cotizar envio",
+                description="Usa direccion o ubicacion enviada por el usuario.",
+                action_id="cotizar_envio",
+            ),
+            _operational_action(
+                label="Hablar con ventas",
+                description="Deriva o registra lead comercial.",
+                action_id="capturar_lead_comercial",
+            ),
+        ]
+    return [
+        _operational_action(
+            label="Registrar consulta",
+            description="Deja una solicitud trazable para el equipo.",
+            action_id="registrar_solicitud_operativa",
+            payload={"tipo_solicitud": "consulta"},
+        ),
+        _operational_action(
+            label="Hablar con una persona",
+            description="Pide datos de contacto y deriva al equipo.",
+            action_id="derivar_humano",
+        ),
+    ]
 
 
 def _tracking_contract_for_demo(sector: str, tenant_slug: str) -> dict[str, Any]:
@@ -1558,6 +1704,12 @@ def _chat_bootstrap(
     endpoint = _chat_endpoint_for_tenant_type(tenant_type)
     canonical_rubro = (rubro or tenant.slug or tenant_type or "").strip().lower()
     first_prompt = next((item.get("payload") or item.get("label") for item in quick_replies if item.get("label")), "")
+    anon_id = (
+        request.headers.get("X-Anon-Id")
+        or request.args.get("anon_id")
+        or ((request.get_json(silent=True) or {}).get("anon_id") if request.is_json else None)
+        or ""
+    )
     chat_session_id = _stable_demo_chat_session_id(demo_session_id)
     demo_metadata = _demo_chat_metadata(
         sector=sector,
@@ -1569,7 +1721,7 @@ def _chat_bootstrap(
     return {
         "contract_version": "demo.chat_bootstrap.v1",
         "endpoint": endpoint,
-        "same_origin_endpoint": f"/api{endpoint}" if endpoint.startswith("/ask") else endpoint,
+        "same_origin_endpoint": endpoint,
         "fallback_endpoint": None,
         "method": "POST",
         "response_contract": "chat.response.v1",
@@ -1593,14 +1745,17 @@ def _chat_bootstrap(
             "X-Chat-Session-Id": chat_session_id,
             "X-Demo-Session-Id": demo_session_id,
             "X-Tenant-Slug": tenant.slug,
+            "X-Anon-Id": anon_id,
         },
         "query": {
             "tenant_slug": tenant.slug,
+            "tenant": tenant.slug,
         },
         "payload": {
             "pregunta": "",
             "tipo_chat": tenant_type,
             "tenant_slug": tenant.slug,
+            "tenant": tenant.slug,
             "rubro": canonical_rubro,
             "rubro_clave": canonical_rubro,
             "vertical": vertical,
@@ -1718,6 +1873,7 @@ def _demo_default_menu_contract(
     rubro_context: dict[str, Any] | None = None,
     rubro_tools: dict[str, Any] | None = None,
     education_payload: dict[str, Any] | None = None,
+    primary_actions: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     items: list[dict[str, Any]] = []
 
@@ -1746,6 +1902,9 @@ def _demo_default_menu_contract(
     education_primary = (education_payload or {}).get("primary_actions") if isinstance(education_payload, dict) else []
     rubro_menu = (rubro_context or {}).get("quick_actions") if isinstance(rubro_context, dict) else []
     enabled_tools = (rubro_tools or {}).get("enabled_tools") if isinstance(rubro_tools, dict) else []
+    for item in primary_actions or []:
+        if isinstance(item, dict):
+            add_item(item, kind="operational_action")
     for item in education_primary or []:
         if isinstance(item, dict):
             add_item(item, kind="education_primary_action")
@@ -1779,7 +1938,7 @@ def _demo_default_menu_contract(
         "rubro_context": rubro_context,
         "max_visible_items": 4,
         "collapse_extra_items": True,
-        "items": items[:8],
+        "items": items[:5],
         "starter_prompts": quick_replies,
         "empty_state": None if items else "Sin menu predeterminado disponible para este rubro.",
     }
@@ -2635,12 +2794,54 @@ def demo_session_v2():
         rubro_context=rubro_context,
         catalog_resources=catalog_resources,
     )
+    primary_actions = _short_operational_menu_contract(
+        sector=sector,
+        tenant=tenant,
+        education_payload=education_payload,
+    )
+    if isinstance(education_payload, dict):
+        education_payload["primary_actions"] = primary_actions
+        education_payload["quick_menu"] = primary_actions
+    if isinstance(education_public_profile, dict) and education_public_profile.get("is_education"):
+        education_public_profile["primary_actions"] = primary_actions
+        education_public_profile["quick_menu"] = primary_actions
+    operational_menu = {
+        "contract_version": "demo.operational_menu.v1",
+        "source": "backend_demo_session",
+        "selected_sector": sector,
+        "selected_rubro": effective_rubro,
+        "tenant_slug": tenant.slug,
+        "primary_actions": primary_actions,
+        "quick_menu": primary_actions,
+        "max_visible_items": 5,
+    }
+    vertical_key = "education" if sector == "educacion" else "government" if sector == "gobierno" else "business" if sector == "empresas" else "general"
+    vertical_aliases = {
+        vertical_key: {
+            "contract_version": "demo.vertical_menu.v1",
+            "actions": primary_actions,
+            "primary_actions": primary_actions,
+            "quick_menu": primary_actions,
+        }
+    }
+    if sector == "educacion":
+        vertical_aliases.setdefault("educacion", vertical_aliases[vertical_key])
+    elif sector == "gobierno":
+        vertical_aliases.setdefault("gobierno", vertical_aliases[vertical_key])
+        vertical_aliases.setdefault("municipio", vertical_aliases[vertical_key])
+    elif sector == "empresas":
+        vertical_aliases.setdefault("pyme", vertical_aliases[vertical_key])
+        vertical_aliases.setdefault("commerce", vertical_aliases[vertical_key])
 
     workspace = {
         "title": tenant.nombre or "Demo Chatboc",
         "subtitle": (experience.get("hero") or {}).get("subtitle"),
         "welcome_message": onboarding.get("entry_prompt") or "Que queres probar primero?",
         "quick_replies": quick_replies,
+        "primary_actions": primary_actions,
+        "quick_menu": primary_actions,
+        "operational_menu": operational_menu,
+        "verticals": vertical_aliases,
         "rubro_context": rubro_context,
         "value_cards": _workspace_cards(experience),
         "handoff_labels": _handoff_labels(experience),
@@ -2688,6 +2889,36 @@ def demo_session_v2():
         },
     }
 
+    if sector == "educacion":
+        workspace["education"] = {
+            **(workspace.get("education") or {}),
+            "primary_actions": primary_actions,
+            "quick_menu": primary_actions,
+        }
+        workspace["education_profile"] = {
+            **(workspace.get("education_profile") or {}),
+            "primary_actions": primary_actions,
+            "quick_menu": primary_actions,
+        }
+    elif sector == "gobierno":
+        government_menu = {
+            "contract_version": "demo.government_menu.v1",
+            "primary_actions": primary_actions,
+            "quick_menu": primary_actions,
+        }
+        workspace["government"] = government_menu
+        workspace["gobierno"] = government_menu
+        workspace["municipio"] = government_menu
+    elif sector == "empresas":
+        business_menu = {
+            "contract_version": "demo.business_menu.v1",
+            "primary_actions": primary_actions,
+            "quick_menu": primary_actions,
+        }
+        workspace["pyme"] = business_menu
+        workspace["business"] = business_menu
+        workspace["commerce"] = business_menu
+
     default_menu = _demo_default_menu_contract(
         sector=sector,
         tenant=tenant,
@@ -2697,6 +2928,7 @@ def demo_session_v2():
         rubro_context=rubro_context,
         rubro_tools=rubro_tools,
         education_payload=education_payload,
+        primary_actions=primary_actions,
     )
     demo_metadata = _demo_chat_metadata(
         sector=sector,
@@ -2793,6 +3025,9 @@ def demo_session_v2():
             "welcome_message": workspace["welcome_message"],
             "quick_replies": quick_replies,
             "quick_menu": default_menu["items"],
+            "primary_actions": primary_actions,
+            "operational_menu": operational_menu,
+            "verticals": vertical_aliases,
             "default_menu": default_menu,
             "lead_capture": workspace["lead_capture"],
             "admin_preview_endpoint": admin_preview_endpoint,
@@ -2812,6 +3047,16 @@ def demo_session_v2():
             "frontend_contract": frontend_contract,
             "runtime_contract": workspace["runtime_contract"],
         }
+        if sector == "educacion":
+            compact_workspace["education_profile"] = workspace.get("education_profile")
+        elif sector == "gobierno":
+            compact_workspace["government"] = workspace.get("government")
+            compact_workspace["gobierno"] = workspace.get("gobierno")
+            compact_workspace["municipio"] = workspace.get("municipio")
+        elif sector == "empresas":
+            compact_workspace["pyme"] = workspace.get("pyme")
+            compact_workspace["business"] = workspace.get("business")
+            compact_workspace["commerce"] = workspace.get("commerce")
         return _json_response(
             {
                 "contract_version": "demo.session.v2",
@@ -2832,6 +3077,7 @@ def demo_session_v2():
                 "widget_onboarding": widget_onboarding,
                 "frontend_contract": frontend_contract,
                 "default_menu": default_menu,
+                "primary_actions": primary_actions,
                 "quick_menu": default_menu["items"],
                 "quick_replies": quick_replies,
             }
@@ -2864,6 +3110,7 @@ def demo_session_v2():
             "widget_onboarding": widget_onboarding,
             "frontend_contract": frontend_contract,
             "default_menu": default_menu,
+            "primary_actions": primary_actions,
             "experience_blueprint": experience,
             "first_visit": workspace["first_visit"],
             "sample_conversations": workspace["sample_conversations"],

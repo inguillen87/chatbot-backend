@@ -8,6 +8,10 @@ from statistics import median
 from typing import Any
 
 from models import CatalogUpload, CatalogoItem, MarketOrder, TenantProfile
+from services.catalog_inventory import (
+    inventory_columns_contract,
+    inventory_contract,
+)
 from services.common_utils import parse_precio_flexible
 
 
@@ -251,6 +255,31 @@ def build_catalog_quality_payload(tenant: TenantProfile, *, limit: int = 20) -> 
     missing_images = [item for item in products if not (getattr(item, "imagen_url", None) or "").strip()]
     missing_price = [item for item in products if _price_value(item) is None and str(item.modalidad or "").lower() not in {"donacion"}]
     missing_stock = [item for item in products if _stock_value(item) is None and str(item.modalidad or "").lower() in {"venta", "producto", ""}]
+    cfg = tenant.configuracion if isinstance(getattr(tenant, "configuracion", None), dict) else {}
+    try:
+        low_stock_threshold = float(cfg.get("inventory_low_stock_threshold", 5) or 5)
+    except (TypeError, ValueError):
+        low_stock_threshold = 5
+    inventory_by_id = {
+        item.id: inventory_contract(
+            getattr(item, "cantidad", None),
+            available=item.disponible is not False,
+            low_stock_threshold=low_stock_threshold,
+            source="catalogo_item",
+            updated_at=getattr(item, "timestamp", None),
+        )
+        for item in products
+    }
+    low_stock = [
+        item
+        for item in products
+        if inventory_by_id[item.id].get("stock_status") == "low_stock"
+    ]
+    out_of_stock = [
+        item
+        for item in products
+        if inventory_by_id[item.id].get("stock_status") == "out_of_stock"
+    ]
     unavailable = [item for item in products if item.disponible is False]
     missing_description = [item for item in products if not (getattr(item, "descripcion", None) or "").strip()]
     with_images = len(products) - len(missing_images)
@@ -302,6 +331,9 @@ def build_catalog_quality_payload(tenant: TenantProfile, *, limit: int = 20) -> 
             "missing_images": len(missing_images),
             "missing_price": len(missing_price),
             "missing_stock": len(missing_stock),
+            "stock_unknown": len(missing_stock),
+            "low_stock": len(low_stock),
+            "out_of_stock": len(out_of_stock),
             "missing_description": len(missing_description),
             "unavailable": len(unavailable),
             "orders": orders_count,
@@ -315,19 +347,47 @@ def build_catalog_quality_payload(tenant: TenantProfile, *, limit: int = 20) -> 
             "missing_images": [_queue_item(item, "missing_image", "upload_or_set_image_url") for item in missing_images[:limit]],
             "missing_price": [_queue_item(item, "missing_price", "set_price") for item in missing_price[:limit]],
             "missing_stock": [_queue_item(item, "missing_stock", "set_stock") for item in missing_stock[:limit]],
+            "low_stock": [_queue_item(item, "low_stock", "review_or_restock") for item in low_stock[:limit]],
+            "out_of_stock": [_queue_item(item, "out_of_stock", "mark_unavailable_or_restock") for item in out_of_stock[:limit]],
             "unavailable": [_queue_item(item, "unavailable", "review_availability") for item in unavailable[:limit]],
             "missing_description": [_queue_item(item, "missing_description", "write_short_description") for item in missing_description[:limit]],
+        },
+        "inventory": {
+            "contract_version": "catalog.inventory_ops.v1",
+            "catalog_version": cfg.get("catalog_version"),
+            "last_inventory_update_at": cfg.get("catalog_last_inventory_update_at"),
+            "low_stock_threshold": low_stock_threshold,
+            "summary": {
+                "stock_unknown": len(missing_stock),
+                "low_stock": len(low_stock),
+                "out_of_stock": len(out_of_stock),
+                "ready_for_checkout": sum(
+                    1
+                    for item in products
+                    if inventory_by_id[item.id].get("can_confirm_order")
+                ),
+            },
+            "columns": inventory_columns_contract(),
+            "policy": {
+                "demo_mode": False,
+                "confirm_orders_only_from_backend_stock": True,
+                "frontend_must_not_calculate_stock": True,
+            },
         },
         "imports": {
             "latest": _latest_imports(tenant.id, limit=5),
             "accepted_file_types": ["csv", "xlsx", "xls", "txt", "pdf", "png", "jpg", "jpeg", "webp"],
             "image_columns": ["imagen_url", "image_url", "foto", "foto_url", "gallery_urls", "imagenes", "images"],
+            "inventory_columns": inventory_columns_contract()["stock_columns"],
             "image_extraction_from_import": True,
+            "stock_import": True,
+            "stock_only_import": True,
         },
         "media_capabilities": {
             "manual_image_url_edit": True,
             "gallery_urls": True,
             "bulk_import_images": True,
+            "bulk_import_stock": True,
             "pdf_catalog_generation": True,
             "qdrant_vector_sync": True,
         },
@@ -336,6 +396,8 @@ def build_catalog_quality_payload(tenant: TenantProfile, *, limit: int = 20) -> 
             "item_patch_template": f"/api/admin/tenants/{tenant.slug}/catalog/items/{{item_id}}",
             "bulk_import_legacy": "/api/admin/catalogo/importar",
             "bulk_import_v2": "/api/admin/catalog/import",
+            "stock_only_import_v2": "/api/admin/catalog/import",
+            "inventory_patch_template": f"/api/admin/tenants/{tenant.slug}/catalog/items/{{item_id}}",
             "vector_sync": "/api/admin/catalog/vector-sync",
             "orders": f"/api/admin/tenants/{tenant.slug}/orders",
             "public_market": f"/market/{tenant.slug}",
@@ -354,7 +416,10 @@ def build_catalog_quality_payload(tenant: TenantProfile, *, limit: int = 20) -> 
             "render_as": "catalog_quality_command_center",
             "primary_view": "quality_board",
             "queue_tabs": ["missing_images", "missing_price", "missing_stock", "unavailable", "missing_description"],
+            "inventory_tabs": ["stock_unknown", "low_stock", "out_of_stock"],
             "allow_inline_patch": True,
+            "allow_stock_inline_patch": True,
+            "allow_stock_only_import": True,
             "empty_state_behavior": "show_import_and_first_product_actions",
         },
     }

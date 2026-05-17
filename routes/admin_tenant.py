@@ -33,6 +33,7 @@ from routes.carrito import _product_query_for_tenant
 from services.commerce_unified import dedupe_unified_orders, serialize_unified_order
 from services.common_utils import parse_precio_flexible
 from services.catalog_seed import ensure_seed_catalog
+from services.catalog_inventory import inventory_columns_contract, inventory_contract, new_catalog_version
 from services.embedding_service import embed_textos_llm
 from services.pymes import tiene_archivo_catalogo
 from services.qdrant_service import index_catalog_item
@@ -627,21 +628,53 @@ def admin_get_catalog(current_user, slug):
     has_pdf = bool(owner and tiene_archivo_catalogo(owner.id))
     base_web = current_app.config.get("APP_BASE_URL", "https://chatboc.ar")
     base_api = current_app.config.get("API_BASE_URL", "https://api.chatboc.ar")
+    cfg = tenant.configuracion if isinstance(tenant.configuracion, dict) else {}
+    request_id = _request_id()
 
-    return jsonify({
+    response = jsonify({
+        "contract_version": "tenant.catalog_admin.v1",
+        "request_id": request_id,
         "tenant_slug": tenant.slug,
         "status": "published" if has_pdf else "missing",
+        "catalog_version": cfg.get("catalog_version"),
         "view_url": f"{base_web}/{tenant.slug}/catalogo",
         "download_url": f"{base_api}/api/public/tenants/{tenant.slug}/catalog/download?format=pdf",
         "download_url_json": f"{base_api}/api/public/tenants/{tenant.slug}/catalog/download?format=json",
         "links": {
             "draft_endpoint": f"/api/admin/tenants/{tenant.slug}/catalog/draft",
             "items_endpoint": f"/api/admin/tenants/{tenant.slug}/catalog/items",
+            "item_patch_template": f"/api/admin/tenants/{tenant.slug}/catalog/items/{{item_id}}",
             "publish_endpoint": f"/api/admin/tenants/{tenant.slug}/catalog/publish",
+            "bulk_import_v2": "/api/admin/catalog/import",
+            "stock_only_import_v2": "/api/admin/catalog/import",
+            "quality_endpoint": f"/api/v2/tenants/{tenant.slug}/catalog/quality",
         },
         "draft_endpoint": f"/api/admin/tenants/{tenant.slug}/catalog/draft",
         "has_pdf": has_pdf,
+        "inventory": {
+            "contract_version": "catalog.inventory_ops.v1",
+            "enabled": True,
+            "catalog_version": cfg.get("catalog_version"),
+            "last_inventory_update_at": cfg.get("catalog_last_inventory_update_at"),
+            "low_stock_threshold": _tenant_inventory_threshold(tenant),
+            "columns": inventory_columns_contract(),
+            "rules": {
+                "demo_mode": False,
+                "chat_confirms_stock_only_after_backend_validation": True,
+                "frontend_must_not_invent_availability": True,
+            },
+        },
+        "frontend_contract": {
+            "render_as": "tenant_catalog_inventory_admin",
+            "primary_view": "catalog_and_inventory",
+            "supports_inline_stock_edit": True,
+            "supports_bulk_import": True,
+            "supports_stock_only_import": True,
+            "supports_quality_board": True,
+        },
     })
+    response.headers["X-Request-Id"] = request_id
+    return response
 
 
 @admin_tenant_bp.route('/api/admin/tenants/<slug>/catalog/draft', methods=['OPTIONS'])
@@ -694,6 +727,32 @@ def admin_save_catalog_draft(current_user, slug):
     )
     response.headers["X-Request-Id"] = request_id
     return response
+
+
+def _request_id() -> str:
+    return (
+        request.headers.get("X-Request-Id")
+        or request.headers.get("X-Correlation-Id")
+        or f"req_{uuid.uuid4().hex}"
+    )
+
+
+def _tenant_inventory_threshold(tenant: TenantProfile) -> float:
+    cfg = tenant.configuracion if isinstance(getattr(tenant, "configuracion", None), dict) else {}
+    try:
+        return float(cfg.get("inventory_low_stock_threshold", 5) or 5)
+    except (TypeError, ValueError):
+        return 5
+
+
+def _item_inventory_payload(item: CatalogoItem, tenant: TenantProfile) -> dict:
+    return inventory_contract(
+        getattr(item, "cantidad", None),
+        available=item.disponible is not False,
+        low_stock_threshold=_tenant_inventory_threshold(tenant),
+        source="catalogo_item",
+        updated_at=getattr(item, "timestamp", None),
+    )
 
 
 @admin_tenant_bp.route('/api/admin/tenants/<slug>/catalog/publish', methods=['OPTIONS'])
@@ -841,6 +900,8 @@ def admin_update_catalog_item(current_user, slug, item_id: int):
         item.unidad = payload.get("unidad")
     if "disponible" in payload:
         item.disponible = bool(payload.get("disponible"))
+    if "available_to_sell" in payload:
+        item.disponible = bool(payload.get("available_to_sell"))
 
     metadata = item.extra_metadata if isinstance(item.extra_metadata, dict) else {}
     metadata = dict(metadata)
@@ -883,11 +944,25 @@ def admin_update_catalog_item(current_user, slug, item_id: int):
         _, precio_float, _ = parse_precio_flexible(precio_raw)
         item.precio_monetario = precio_float or 0.0
 
-    if "cantidad" in payload or "stock" in payload:
+    if "cantidad" in payload or "stock" in payload or "stock_quantity" in payload:
         cantidad_raw = payload.get("cantidad")
         if cantidad_raw is None:
             cantidad_raw = payload.get("stock")
+        if cantidad_raw is None:
+            cantidad_raw = payload.get("stock_quantity")
         item.cantidad = str(cantidad_raw) if cantidad_raw is not None else item.cantidad
+        metadata = item.extra_metadata if isinstance(item.extra_metadata, dict) else {}
+        metadata = dict(metadata)
+        metadata["inventory_source"] = payload.get("inventory_source") or "tenant_admin_inline_edit"
+        metadata["stock_updated_at"] = datetime.now(timezone.utc).isoformat()
+        item.extra_metadata = metadata
+
+    cfg = tenant.configuracion if isinstance(tenant.configuracion, dict) else {}
+    catalog_version = new_catalog_version(tenant.id)
+    cfg["catalog_version"] = catalog_version
+    cfg["catalog_last_inventory_update_at"] = datetime.now(timezone.utc).isoformat()
+    tenant.configuracion = cfg
+    flag_modified(tenant, "configuracion")
 
     db.session.commit()
 
@@ -932,7 +1007,39 @@ def admin_update_catalog_item(current_user, slug, item_id: int):
             embeddings[0],
         )
 
-    return jsonify({"item": _formatear_producto(item)})
+    request_id = _request_id()
+    formatted = _formatear_producto(
+        {
+            "nombre": item.nombre,
+            "categoria": item.categoria,
+            "descripcion": item.descripcion,
+            "sku": item.sku,
+            "unidad": item.unidad,
+            "precio_str": item.precio,
+            "cantidad": item.cantidad,
+            "marca": item.marca,
+            "imagen_url": item.imagen_url,
+            "descripcion_corta": item.descripcion_corta,
+            "promocion_info": item.promocion_info,
+            "precio_por_caja": item.precio_por_caja,
+            "unidad_por_caja": item.unidad_por_caja,
+            "moneda": item.moneda,
+            "precio_float": item.precio_monetario,
+            "extra_metadata": item.extra_metadata,
+        }
+    )
+    formatted["inventory"] = _item_inventory_payload(item, tenant)
+    formatted["stock_quantity"] = formatted["inventory"]["stock_quantity"]
+    formatted["stock_status"] = formatted["inventory"]["stock_status"]
+    formatted["available_to_sell"] = formatted["inventory"]["available_to_sell"]
+    return jsonify(
+        {
+            "contract_version": "tenant.catalog_item_update.v1",
+            "request_id": request_id,
+            "catalog_version": catalog_version,
+            "item": formatted,
+        }
+    )
 
 # --- Tenant Management ---
 
@@ -1101,6 +1208,10 @@ def admin_tenant_catalog(current_user, slug):
         prod["catalogo_item_id"] = item.id
         prod["tenant_id"] = tenant.id
         prod["available"] = bool(item.disponible is not False)
+        prod["inventory"] = _item_inventory_payload(item, tenant)
+        prod["stock_quantity"] = prod["inventory"]["stock_quantity"]
+        prod["stock_status"] = prod["inventory"]["stock_status"]
+        prod["available_to_sell"] = prod["inventory"]["available_to_sell"]
         prod["price_numeric"] = float(item.precio_monetario) if item.precio_monetario is not None else None
         prod["channel_availability"] = {
             "widget": True,

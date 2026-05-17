@@ -5,6 +5,13 @@ from utils.auth_helpers import obtener_token, token_requerido, user_from_token
 from werkzeug.utils import secure_filename
 from services.tenant_resolver import resolve_tenant_and_user
 from services.vision_extractor import extract_table_from_file
+from services.catalog_inventory import (
+    inventory_columns_contract,
+    inventory_contract,
+    new_catalog_version,
+    stock_value_from_row,
+)
+from sqlalchemy.orm.attributes import flag_modified
 import os
 import io
 import json
@@ -13,6 +20,7 @@ import uuid
 import hashlib
 import re
 import pandas as pd
+from datetime import datetime, timezone
 
 UPLOAD_FOLDER = os.path.join(os.getcwd(), "temp_uploads")
 logger = logging.getLogger(__name__)
@@ -230,6 +238,33 @@ def _catalog_quality_summary(rows: list[dict]) -> dict:
     }
 
 
+def _catalog_inventory_summary(rows: list[dict]) -> dict:
+    with_stock = 0
+    out_of_stock = 0
+    low_stock = 0
+    unknown_stock = 0
+    for row in rows:
+        raw_stock = stock_value_from_row(row)
+        status = inventory_contract(raw_stock).get("stock_status")
+        if status == "stock_unknown":
+            unknown_stock += 1
+        else:
+            with_stock += 1
+        if status == "out_of_stock":
+            out_of_stock += 1
+        if status == "low_stock":
+            low_stock += 1
+    return {
+        "contract_version": "catalog.inventory_summary.v1",
+        "total_rows": len(rows),
+        "with_stock": with_stock,
+        "stock_unknown": unknown_stock,
+        "low_stock": low_stock,
+        "out_of_stock": out_of_stock,
+        "columns": inventory_columns_contract(),
+    }
+
+
 def _catalog_rows_sample(rows: list[dict], warnings: list | None = None) -> list[dict]:
     warnings = warnings or []
     sample = []
@@ -309,6 +344,7 @@ def _catalog_import_preview_contract(upload: CatalogUpload, *, request_id: str |
             "rows_sample": _catalog_rows_sample(rows, base.get("warnings") or base.get("errors")),
             "image_summary": image_summary,
             "quality_summary": quality_summary,
+            "inventory_summary": _catalog_inventory_summary(rows),
             "suggested_actions": _catalog_suggested_actions(quality_summary, image_summary),
             "commit_endpoint": f"/api/admin/catalog/import/{upload.id}/commit",
             "publish_policy": "manual_commit_required",
@@ -343,6 +379,7 @@ def _persist_rows(owner_id: int, tenant_id: int, rows: list[dict]) -> int:
             nombre=str(title),
             descripcion=str(row.get("descripcion") or row.get("description") or "") or None,
             precio=str(row.get("precio") or row.get("price") or ""),
+            cantidad=str(stock_value_from_row(row)) if stock_value_from_row(row) is not None else None,
             precio_monetario=0.0,
             categoria=row.get("categoria") or row.get("category"),
             marca=row.get("marca") or row.get("brand"),
@@ -629,7 +666,19 @@ def commit_import_session(current_user, upload_id):
     from services.qdrant_service import index_catalog_item
     from services.embedding_service import embed_textos_llm
 
-    replace = request.json.get('replace', True) if request.json else True
+    body = request.get_json(silent=True) or {}
+    mode = str(body.get("mode") or "").strip().lower()
+    if not mode:
+        mode = "replace" if body.get("replace", True) else "upsert"
+    if mode not in {"replace", "upsert", "stock_only"}:
+        return jsonify({"error": "Invalid import mode", "allowed_modes": ["replace", "upsert", "stock_only"]}), 400
+
+    replace = mode == "replace"
+    stock_only = mode == "stock_only"
+    created_count = 0
+    updated_count = 0
+    stock_updated_count = 0
+    skipped_rows: list[dict] = []
 
     if replace:
         CatalogoItem.query.filter_by(tenant_id=tenant.id).delete()
@@ -639,11 +688,13 @@ def commit_import_session(current_user, upload_id):
         sku = item.get('sku') or item.get('SKU')
         title = item.get('title') or item.get('nombre') or item.get('Producto')
         price = item.get('price') or item.get('precio') or item.get('Precio')
-
-        if not title: continue # minimal requirement
+        raw_stock = stock_value_from_row(item)
 
         if not sku:
              sku = f"GEN-{uuid.uuid4().hex[:8]}"
+
+        if not title and not stock_only:
+            continue # minimal requirement for product upsert/replace
 
         item_obj = None
         existing = CatalogoItem.query.filter_by(tenant_id=tenant.id, sku=sku).first()
@@ -652,7 +703,16 @@ def commit_import_session(current_user, upload_id):
 
         if existing:
             item_obj = existing
+            updated_count += 1
         else:
+            if stock_only:
+                skipped_rows.append(
+                    {
+                        "sku": sku,
+                        "reason_code": "sku_not_found_for_stock_only_import",
+                    }
+                )
+                continue
             new_item = CatalogoItem(
                 user_id=tenant.pyme_id or current_user.id,
                 tenant_id=tenant.id,
@@ -665,32 +725,46 @@ def commit_import_session(current_user, upload_id):
             )
             db.session.add(new_item)
             item_obj = new_item
+            created_count += 1
 
-        item_obj.nombre = str(title)
-        item_obj.precio = str(price)
-        try:
-             import re
-             clean_price = re.sub(r'[^\d\.,]', '', str(price))
-             clean_price = clean_price.replace(',', '.')
-             item_obj.precio_monetario = float(clean_price)
-        except:
-             item_obj.precio_monetario = 0.0
+        if not title:
+            title = item_obj.nombre
 
-        item_obj.categoria = item.get('category') or item.get('categoria')
-        item_obj.moneda = item.get('currency') or item.get('moneda') or 'ARS'
-        item_obj.marca = item.get('brand') or item.get('marca')
-        item_obj.descripcion = item.get('description') or item.get('descripcion') or item_obj.descripcion
-        primary_image, gallery_urls = _product_images_from_row(item)
-        if primary_image is not None:
-            item_obj.imagen_url = primary_image
-        metadata = item_obj.extra_metadata if isinstance(item_obj.extra_metadata, dict) else {}
-        metadata = dict(metadata)
-        if gallery_urls:
-            metadata["gallery_urls"] = gallery_urls
-            metadata["image_status"] = "ready"
-        elif not item_obj.imagen_url:
-            metadata["image_status"] = "missing"
-        item_obj.extra_metadata = metadata
+        if not stock_only:
+            item_obj.nombre = str(title)
+            item_obj.precio = str(price)
+            try:
+                 import re
+                 clean_price = re.sub(r'[^\d\.,]', '', str(price))
+                 clean_price = clean_price.replace(',', '.')
+                 item_obj.precio_monetario = float(clean_price)
+            except:
+                 item_obj.precio_monetario = 0.0
+
+            item_obj.categoria = item.get('category') or item.get('categoria')
+            item_obj.moneda = item.get('currency') or item.get('moneda') or 'ARS'
+            item_obj.marca = item.get('brand') or item.get('marca')
+            item_obj.descripcion = item.get('description') or item.get('descripcion') or item_obj.descripcion
+            primary_image, gallery_urls = _product_images_from_row(item)
+            if primary_image is not None:
+                item_obj.imagen_url = primary_image
+            metadata = item_obj.extra_metadata if isinstance(item_obj.extra_metadata, dict) else {}
+            metadata = dict(metadata)
+            if gallery_urls:
+                metadata["gallery_urls"] = gallery_urls
+                metadata["image_status"] = "ready"
+            elif not item_obj.imagen_url:
+                metadata["image_status"] = "missing"
+            item_obj.extra_metadata = metadata
+
+        if raw_stock is not None:
+            item_obj.cantidad = str(raw_stock)
+            stock_updated_count += 1
+            metadata = item_obj.extra_metadata if isinstance(item_obj.extra_metadata, dict) else {}
+            metadata = dict(metadata)
+            metadata["inventory_source"] = "catalog_import"
+            metadata["stock_updated_at"] = datetime.now(timezone.utc).isoformat()
+            item_obj.extra_metadata = metadata
 
         db.session.flush()
 
@@ -714,7 +788,7 @@ def commit_import_session(current_user, upload_id):
                     "descripcion": item_obj.descripcion or "",
                     "precio": float(item_obj.precio_monetario or 0),
                     "rubro": rubro_nombre,
-                    "stock": 0,
+                    "stock": item_obj.cantidad,
                     "user_id": owner_user_id or tenant.id,
                     "tenant_id": tenant.id,
                     "imagen_url": item_obj.imagen_url,
@@ -727,6 +801,30 @@ def commit_import_session(current_user, upload_id):
         count += 1
 
     upload.status = "committed"
+    cfg = tenant.configuracion if isinstance(tenant.configuracion, dict) else {}
+    catalog_version = new_catalog_version(tenant.id)
+    cfg["catalog_version"] = catalog_version
+    cfg["catalog_last_import_id"] = upload.id
+    cfg["catalog_last_import_mode"] = mode
+    cfg["catalog_last_inventory_update_at"] = catalog_version
+    tenant.configuracion = cfg
+    flag_modified(tenant, "configuracion")
     db.session.commit()
 
-    return jsonify({"success": True, "count": count, "image_summary": image_summary})
+    request_id = request.headers.get("X-Request-Id") or f"req_{uuid.uuid4().hex}"
+    return jsonify(
+        {
+            "success": True,
+            "contract_version": "catalog.import_commit.v1",
+            "request_id": request_id,
+            "mode": mode,
+            "count": count,
+            "created": created_count,
+            "updated": updated_count,
+            "stock_updated": stock_updated_count,
+            "skipped_rows": skipped_rows[:50],
+            "catalog_version": catalog_version,
+            "image_summary": image_summary,
+            "inventory_summary": _catalog_inventory_summary(items),
+        }
+    )

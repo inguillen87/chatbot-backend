@@ -112,8 +112,14 @@ def _classify_demo_intent(
     if text in {"", "__init__", "hola", "buenas", "buen dia", "buenas tardes"} and not action and not media and not has_location:
         return None
 
+    if action in {"crear_reclamo", "iniciar_reclamo", "crear_ticket", "iniciar_reclamo_con_ubicacion"}:
+        return {"kind": "claim", "category": "Reclamo ciudadano", "priority": "Media"}
+
     if "estado" in action or "consultar_estado" in action or "consultar estado" in text:
         return {"kind": "status_lookup", "category": None}
+
+    if action in {"consultar_tramite", "info_tramite", "tramite", "tramites"}:
+        return {"kind": "info", "category": "Tramites publicados"}
 
     if any(token in text for token in ("licencia", "registro", "carnet", "turno")):
         return {"kind": "info", "category": "Licencias de conducir"}
@@ -129,7 +135,7 @@ def _classify_demo_intent(
     if ("tool_" in action or any(token in text for token in tool_terms)) and not any(token in text for token in claim_terms):
         return {"kind": "tool_lookup", "category": "Herramientas publicas"}
 
-    if any(token in text for token in ("videollamada", "video llamada", "llamada", "call", "operador", "persona")):
+    if action in {"derivar_humano", "human_handoff", "hablar_con_una_persona"} or any(token in text for token in ("videollamada", "video llamada", "llamada", "call", "operador", "persona")):
         return {"kind": "human_handoff", "category": "Atencion personalizada"}
 
     if any(token in text for token in ("encuesta", "votacion", "votar", "sondeo")):

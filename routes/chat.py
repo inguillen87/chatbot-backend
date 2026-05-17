@@ -804,16 +804,16 @@ def _normalized_demo_action_buttons(*sources: object, sector: str = "empresas") 
             _demo_button("Hablar con secretaria", "talk_secretary", "Derivar a una persona administrativa."),
         ],
         "gobierno": [
-            _demo_button("Crear reclamo", "iniciar_reclamo", "Registrar un caso ciudadano con seguimiento."),
-            _demo_button("Consultar tramite", "info_tramite", "Ver requisitos y pasos publicados."),
-            _demo_button("Ver estado", "consultar_estado", "Consultar un caso o tramite existente."),
-            _demo_button("Hablar con un agente", "human_handoff", "Derivar a una persona del municipio."),
+            _demo_button("Crear reclamo", "crear_reclamo", "Contame que paso. Podes adjuntar foto, audio o ubicacion."),
+            _demo_button("Consultar estado", "consultar_estado_reclamo", "Busca un reclamo por numero o datos de contacto."),
+            _demo_button("Consultar tramite", "consultar_tramite", "Responde desde tramites publicados por el municipio."),
+            _demo_button("Hablar con una persona", "derivar_humano", "Deriva a mesa de atencion si esta disponible."),
         ],
         "empresas": [
-            _demo_button("Ver catalogo", "ver_catalogo", "Abrir recursos publicados."),
-            _demo_button("Crear pedido", "crear_pedido", "Preparar pedido con datos reales publicados."),
-            _demo_button("Preparar checkout", "preparar_checkout", "Iniciar cierre comercial si aplica."),
-            _demo_button("Hablar con ventas", "derivar_humano", "Derivar a una persona comercial."),
+            _demo_button("Consultar producto", "consultar_producto", "Busca precio, disponibilidad o detalle publicado por el comercio."),
+            _demo_button("Crear pedido", "crear_pedido", "Pide datos y confirma el pedido solo con respuesta del backend."),
+            _demo_button("Cotizar envio", "cotizar_envio", "Usa direccion o ubicacion enviada por el usuario."),
+            _demo_button("Hablar con ventas", "capturar_lead_comercial", "Deriva o registra lead comercial."),
         ],
     }
     for button in defaults.get(sector, defaults["empresas"]):
@@ -948,7 +948,7 @@ def _demo_widget_runtime_response(
         sector=sector,
     )
 
-    is_menu_request = normalized_action in {"", "menu", "menu_principal", "menu_colegio", "main_menu"} or question_text == "__INIT__"
+    is_menu_request = normalized_action in {"menu", "menu_principal", "menu_colegio", "main_menu"} or question_text in {"", "__INIT__"}
     request_id = request.headers.get("X-Request-Id") or getattr(g, "request_id", None) or uuid.uuid4().hex
     g.request_id = request_id
 
@@ -1112,6 +1112,47 @@ def _demo_widget_runtime_response(
             normalize_response_payload(payload)
             return payload
 
+        if normalized_action in {"consultar_producto", "ver_catalogo", "buscar_catalogo", "consultar_precios"}:
+            payload = {
+                "contract_version": "demo.widget_runtime.v1",
+                "ok": True,
+                "success": True,
+                "request_id": request_id,
+                "message_body": "Decime que producto o servicio queres consultar. Si el comercio publico catalogo o lista, te respondo solo con esos datos.",
+                "message_type": "interactive_buttons",
+                "botones": buttons[:4],
+                "options_list": buttons[:4],
+                "fuente": "business_widget_product_lookup",
+                "data": {
+                    "status": "esperando_producto",
+                    "amount_validated": False,
+                    "stock_validated": False,
+                    "tenant_slug": getattr(tenant, "slug", None),
+                },
+            }
+            normalize_response_payload(payload)
+            return payload
+
+        if normalized_action in {"cotizar_envio", "quote_shipping", "calcular_envio"}:
+            payload = {
+                "contract_version": "demo.widget_runtime.v1",
+                "ok": True,
+                "success": True,
+                "request_id": request_id,
+                "message_body": "Pasame direccion o ubicacion para cotizar envio. No voy a confirmar costo hasta que backend lo valide.",
+                "message_type": "interactive_buttons",
+                "botones": buttons[:4],
+                "options_list": buttons[:4],
+                "fuente": "business_widget_shipping_quote",
+                "data": {
+                    "status": "esperando_direccion_envio",
+                    "shipping_validated": False,
+                    "tenant_slug": getattr(tenant, "slug", None),
+                },
+            }
+            normalize_response_payload(payload)
+            return payload
+
         if normalized_action in {"crear_pedido", "preparar_checkout", "checkout", "create_order"}:
             pedido = _persist_demo_pyme_order(tenant=tenant, owner_user=owner_user, question=question_text)
             payload = {
@@ -1134,7 +1175,7 @@ def _demo_widget_runtime_response(
             normalize_response_payload(payload)
             return payload
 
-        if normalized_action in {"derivar_humano", "hablar_asesor", "hablar_ventas", "human_handoff"}:
+        if normalized_action in {"derivar_humano", "hablar_asesor", "hablar_ventas", "human_handoff", "capturar_lead_comercial"}:
             ticket = _persist_demo_pyme_ticket(
                 tenant=tenant,
                 owner_user=owner_user,
@@ -1163,6 +1204,36 @@ def _demo_widget_runtime_response(
             }
             normalize_response_payload(payload)
             return payload
+
+    if normalized_action in {"registrar_solicitud_operativa", "derivar_humano", "human_handoff"}:
+        ticket = _persist_demo_pyme_ticket(
+            tenant=tenant,
+            owner_user=owner_user,
+            anon_id=anon_id,
+            asunto="Solicitud operativa desde widget",
+            categoria="consulta",
+            pregunta=question_text or "Solicitud iniciada desde menu demo.",
+            estado="esperando_agente_en_vivo" if normalized_action in {"derivar_humano", "human_handoff"} else "nuevo",
+        )
+        payload = {
+            "contract_version": "demo.widget_runtime.v1",
+            "ok": True,
+            "success": True,
+            "request_id": request_id,
+            "message_body": "Deje registrada la solicitud para que el equipo pueda tomarla con trazabilidad.",
+            "message_type": "interactive_buttons",
+            "botones": buttons[:4],
+            "options_list": buttons[:4],
+            "fuente": "generic_widget_operational_request",
+            "data": {
+                "ticket_id": getattr(ticket, "id", None),
+                "chat_id": f"P-{getattr(ticket, 'nro_ticket', '')}" if ticket else chat_session_id,
+                "status": getattr(ticket, "estado", None) or "registrada",
+                "request": {"type": "consulta", "tenant_slug": getattr(tenant, "slug", None)},
+            },
+        }
+        normalize_response_payload(payload)
+        return payload
 
     return None
 
@@ -3592,9 +3663,29 @@ def _procesar_chat(
             from utils.plan_limits import limite_para_usuario
             limite = limite_para_usuario(owner_del_bot)
             if limite is not None and owner_del_bot.preguntas_usadas >= limite:
-                return jsonify({
-                    "error": {"code": 403, "message": f"El bot ha alcanzado el límite de preguntas de su plan ({limite})."} # NEW FORMAT
-                }), 403
+                request_id = request.headers.get("X-Request-Id") or getattr(g, "request_id", None) or uuid.uuid4().hex
+                g.request_id = request_id
+                message = f"El bot alcanzo el limite de preguntas de su plan ({limite})."
+                limit_payload = {
+                    "contract_version": "shared.usage_limit.v1",
+                    "ok": False,
+                    "success": False,
+                    "request_id": request_id,
+                    "reason_code": "owner_plan_limit_reached",
+                    "message": message,
+                    "message_body": message,
+                    "respuesta": message,
+                    "trial_usage": {
+                        "channel": "chat",
+                        "limit": limite,
+                        "used": owner_del_bot.preguntas_usadas,
+                        "remaining": 0,
+                    },
+                    "upgrade": _build_trial_upgrade_contract("owner_plan_limit_reached"),
+                    "error": {"code": 403, "message": message},
+                }
+                normalize_response_payload(limit_payload)
+                return jsonify(limit_payload), 403
 
         demo_limit = current_app.config.get("DEMO_MAX_MESSAGES_PER_SESSION", 0)
         incrementar_demo = (

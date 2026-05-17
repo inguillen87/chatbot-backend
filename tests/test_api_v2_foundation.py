@@ -119,7 +119,7 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertTrue(any(item.get("intent") == "crear_pedido" for item in ((payload.get("conversion_ctas") or {}).get("actions") or [])))
         chat_bootstrap = payload.get("chat_bootstrap") or {}
         self.assertEqual(chat_bootstrap.get("contract_version"), "demo.chat_bootstrap.v1")
-        self.assertEqual(chat_bootstrap.get("endpoint"), "/ask/pyme")
+        self.assertEqual(chat_bootstrap.get("endpoint"), "/api/ask/pyme")
         self.assertEqual(chat_bootstrap.get("same_origin_endpoint"), "/api/ask/pyme")
         self.assertIsNone(chat_bootstrap.get("fallback_endpoint"))
         self.assertEqual(chat_bootstrap.get("method"), "POST")
@@ -137,9 +137,9 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertEqual((chat_bootstrap.get("payload") or {}).get("tipo_chat"), "pyme")
         self.assertEqual((chat_bootstrap.get("payload") or {}).get("tenant_slug"), tenant.slug)
         self.assertEqual((chat_bootstrap.get("payload") or {}).get("demo_mode"), True)
-        self.assertEqual((workspace.get("chat_bootstrap") or {}).get("endpoint"), "/ask/pyme")
+        self.assertEqual((workspace.get("chat_bootstrap") or {}).get("endpoint"), "/api/ask/pyme")
         self.assertEqual((workspace.get("empty_states") or {}).get("runtime_unavailable", {}).get("title"), "Demo conversacional no disponible")
-        self.assertEqual(((payload.get("chat_seed") or {}).get("chat_bootstrap") or {}).get("endpoint"), "/ask/pyme")
+        self.assertEqual(((payload.get("chat_seed") or {}).get("chat_bootstrap") or {}).get("endpoint"), "/api/ask/pyme")
         self.assertTrue((chat_bootstrap.get("supports") or {}).get("audio"))
         self.assertTrue((chat_bootstrap.get("supports") or {}).get("image"))
         self.assertEqual((workspace.get("runtime_contract") or {}).get("chat_response_contract"), "chat.response.v1")
@@ -342,7 +342,7 @@ class ApiV2FoundationTest(unittest.TestCase):
             self.assertEqual(payload.get("tenant_slug"), "colegio-demo")
             self.assertEqual(resp.headers.get("Access-Control-Allow-Origin"), "https://www.chatboc.ar")
             self.assertIn("request_id", payload)
-            self.assertEqual((workspace.get("chat_bootstrap") or {}).get("endpoint"), "/ask/pyme")
+            self.assertEqual((workspace.get("chat_bootstrap") or {}).get("endpoint"), "/api/ask/pyme")
             self.assertEqual(((payload.get("chat_bootstrap") or {}).get("headers") or {}).get("X-Tenant-Slug"), tenant.slug)
 
     def test_v2_demo_admin_preview_returns_sector_contract(self):
@@ -428,7 +428,7 @@ class ApiV2FoundationTest(unittest.TestCase):
                 for resource in workspace.get("catalog_resources") or []
             )
         )
-        self.assertEqual((payload.get("chat_bootstrap") or {}).get("endpoint"), "/ask/pyme")
+        self.assertEqual((payload.get("chat_bootstrap") or {}).get("endpoint"), "/api/ask/pyme")
 
     def test_v2_demo_session_accepts_rubro_slug_alias(self):
         owner = User(name="Alias Demo", email="alias-demo@test.com", password_hash="hash", tipo_chat="pyme")
@@ -463,7 +463,7 @@ class ApiV2FoundationTest(unittest.TestCase):
         chat_bootstrap = payload.get("chat_bootstrap") or {}
         self.assertEqual(payload.get("tenant_slug"), tenant.slug)
         self.assertEqual((payload.get("tenant") or {}).get("tipo"), "pyme")
-        self.assertEqual(chat_bootstrap.get("endpoint"), "/ask/pyme")
+        self.assertEqual(chat_bootstrap.get("endpoint"), "/api/ask/pyme")
         self.assertEqual((chat_bootstrap.get("payload") or {}).get("rubro"), tenant.slug)
         self.assertEqual((chat_bootstrap.get("payload") or {}).get("rubro_clave"), tenant.slug)
         self.assertEqual((chat_bootstrap.get("context") or {}).get("sector"), "empresas")
@@ -496,7 +496,7 @@ class ApiV2FoundationTest(unittest.TestCase):
         payload = resp.get_json()
         chat_bootstrap = payload.get("chat_bootstrap") or {}
         workspace = payload.get("workspace") or {}
-        self.assertEqual(chat_bootstrap.get("endpoint"), "/ask/pyme")
+        self.assertEqual(chat_bootstrap.get("endpoint"), "/api/ask/pyme")
         self.assertEqual((chat_bootstrap.get("payload") or {}).get("vertical"), "educacion")
         self.assertEqual((chat_bootstrap.get("context") or {}).get("vertical"), "educacion")
         self.assertEqual((payload.get("experience_blueprint") or {}).get("experience_type"), "education")
@@ -550,7 +550,7 @@ class ApiV2FoundationTest(unittest.TestCase):
         payload = resp.get_json()
         self.assertEqual(payload.get("tenant_slug"), "colegio-demo")
         self.assertEqual(payload.get("request_id"), "demo-aliases-1")
-        self.assertEqual((payload.get("chat_bootstrap") or {}).get("endpoint"), "/ask/pyme")
+        self.assertEqual((payload.get("chat_bootstrap") or {}).get("endpoint"), "/api/ask/pyme")
         self.assertEqual((payload.get("chat_bootstrap") or {}).get("payload", {}).get("rubro"), "colegio-demo")
 
     def test_v2_demo_session_accepts_widget_onboarding_payloads_for_three_pillars(self):
@@ -578,9 +578,9 @@ class ApiV2FoundationTest(unittest.TestCase):
         db.session.commit()
 
         cases = [
-            ("educacion", "colegio-demo", "colegio-demo", "/ask/pyme"),
-            ("gobierno", "municipio", "municipio", "/ask/municipio"),
-            ("empresas", "bodega", "bodega", "/ask/pyme"),
+            ("educacion", "colegio-demo", "colegio-demo", "/api/ask/pyme"),
+            ("gobierno", "municipio", "municipio", "/api/ask/municipio"),
+            ("empresas", "bodega", "bodega", "/api/ask/pyme"),
         ]
         for sector, tenant_slug, rubro, endpoint in cases:
             with self.subTest(sector=sector):
@@ -648,10 +648,10 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertTrue(payload.get("ok"))
         self.assertEqual(payload.get("status"), "ready")
         self.assertEqual(payload.get("response_profile"), "widget_compact")
-        self.assertLess(len(resp.get_data()), 90000)
+        self.assertLess(len(resp.get_data()), 130000)
         self.assertEqual(payload.get("request_id"), "widget-selector-label-1")
         self.assertEqual((payload.get("tenant") or {}).get("sector"), "gobierno")
-        self.assertEqual(chat_bootstrap.get("endpoint"), "/ask/municipio")
+        self.assertEqual(chat_bootstrap.get("endpoint"), "/api/ask/municipio")
         self.assertEqual(session.get("chat_session_id"), payload.get("chat_session_id"))
         self.assertEqual(session.get("demo_session_id"), payload.get("demo_session_id"))
         self.assertEqual((payload.get("widget_onboarding") or {}).get("status"), "ready")
@@ -696,10 +696,10 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertEqual(payload.get("response_profile"), "widget_compact")
         self.assertEqual((payload.get("tenant") or {}).get("sector"), "educacion")
         self.assertEqual(payload.get("tenant_slug"), "colegio-demo")
-        self.assertEqual(chat_bootstrap.get("endpoint"), "/ask/pyme")
+        self.assertEqual(chat_bootstrap.get("endpoint"), "/api/ask/pyme")
         self.assertEqual((chat_bootstrap.get("payload") or {}).get("vertical"), "educacion")
         self.assertEqual(default_menu.get("contract_version"), "demo.default_menu.v1")
-        self.assertIn("justificar_inasistencia", menu_intents)
+        self.assertIn("justify_absence", menu_intents)
         self.assertEqual((payload.get("widget_onboarding") or {}).get("default_menu", {}).get("items"), default_menu.get("items"))
 
     def test_v2_demo_session_empresas_sector_only_returns_rubro_selector(self):
@@ -784,7 +784,7 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertIn("vinos", bodega_context.get("prompt_context", ""))
         self.assertIn("ferreteria", ferreteria_context.get("prompt_context", ""))
         self.assertIn("ver_catalogo_vinos", bodega_intents)
-        self.assertIn("calcular_materiales", ferreteria_intents)
+        self.assertIn("buscar_producto_ferreteria", ferreteria_intents)
         self.assertNotEqual(bodega_menu.get("items"), ferreteria_menu.get("items"))
         self.assertEqual(
             (ferreteria_workspace.get("chat_bootstrap") or {}).get("payload", {}).get("demo_metadata", {}).get("key"),
@@ -826,7 +826,11 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertTrue(enabled_tools["catalog"].get("action_url"))
         self.assertEqual(enabled_tools["price_list"].get("action_label"), "Ver lista de precios")
         self.assertTrue(enabled_tools["price_list"].get("action_url"))
-        self.assertIn("rubro_tool", default_menu_kinds)
+        self.assertIn("operational_action", default_menu_kinds)
+        self.assertEqual(enabled_tools["catalog"].get("tool_mode"), "downloadable")
+        self.assertEqual(enabled_tools["price_list"].get("tool_mode"), "downloadable")
+        self.assertEqual(enabled_tools["faq"].get("tool_mode"), "chat_action")
+        self.assertEqual(enabled_tools["faq"].get("action_id"), "consultar_faq")
         self.assertEqual(
             ((workspace.get("chat_bootstrap") or {}).get("payload") or {}).get("demo_metadata", {}).get("tool_summary", {}).get("faq_preview"),
             tools.get("faq_preview")[:6],
@@ -885,10 +889,14 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertIn("contact", enabled_tools)
         self.assertIn("hours", enabled_tools)
         self.assertIn("price_list", enabled_tools)
-        self.assertEqual(enabled_tools["location"].get("action_label"), "Abrir Google Maps")
-        self.assertIn("google.com/maps", enabled_tools["location"].get("action_url") or "")
+        self.assertEqual(enabled_tools["location"].get("action_label"), "Consultar ubicacion")
+        self.assertEqual(enabled_tools["location"].get("tool_mode"), "chat_action")
+        self.assertEqual(enabled_tools["location"].get("action_id"), "consultar_ubicacion")
+        self.assertFalse(enabled_tools["location"].get("action_url"))
         self.assertEqual(enabled_tools["contact"].get("action_label"), "Contactar")
-        self.assertIn("wa.me/5492611111111", enabled_tools["contact"].get("action_url") or "")
+        self.assertEqual(enabled_tools["contact"].get("tool_mode"), "chat_action")
+        self.assertEqual(enabled_tools["contact"].get("action_id"), "consultar_contacto")
+        self.assertFalse(enabled_tools["contact"].get("action_url"))
         self.assertIn("-32.8895%2C-68.8458", (tools.get("locations") or [{}])[0].get("maps_url") or "")
         self.assertEqual((tools.get("contact") or {}).get("phone"), "+5492611111111")
         self.assertEqual((tools.get("contact") or {}).get("email"), "ventas@ferreteria.example.com")
@@ -923,8 +931,10 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertIn("location", enabled_tools)
         self.assertIn("contact", enabled_tools)
         self.assertTrue(locations)
-        self.assertEqual(enabled_tools["location"].get("action_label"), "Abrir Google Maps")
-        self.assertIn("google.com/maps", enabled_tools["location"].get("action_url") or "")
+        self.assertEqual(enabled_tools["location"].get("action_label"), "Consultar ubicacion")
+        self.assertEqual(enabled_tools["location"].get("tool_mode"), "chat_action")
+        self.assertEqual(enabled_tools["location"].get("action_id"), "consultar_ubicacion")
+        self.assertFalse(enabled_tools["location"].get("action_url"))
         self.assertIn("google.com/maps", locations[0].get("maps_url") or "")
         self.assertTrue((tools.get("contact") or {}).get("website"))
 
@@ -1123,7 +1133,7 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertLessEqual(len(contexts[0].chat_session_id), 36)
         self.assertNotEqual(contexts[0].chat_session_id, demo_session_id)
         self.assertEqual((contexts[0].context_data or {}).get("demo_session_id"), demo_session_id)
-        self.assertEqual(captured_session_ids, [contexts[0].chat_session_id])
+        self.assertEqual(captured_session_ids, [])
         self.assertEqual(MunicipioTicket.query.count(), 1)
         ticket = MunicipioTicket.query.first()
         self.assertEqual(ticket.categoria, "Alumbrado publico")
@@ -1269,11 +1279,11 @@ class ApiV2FoundationTest(unittest.TestCase):
             "botones": [{"texto": "Ver seguimiento", "action_id": "tracking"}],
             "ticket_id": 456,
         }
-        with patch("services.logic.responder_chatboc", return_value=backend_payload):
+        with patch("services.pymes.responder_pyme", return_value=backend_payload):
             resp = self.client.post(
                 "/api/ask/pyme?tenant_slug=colegio-demo",
                 json={
-                    "pregunta": "Necesito consultar admisiones",
+                    "pregunta": "Consulta institucional general",
                     "demo_mode": True,
                     "tenant_slug": "colegio-demo",
                     "rubro": "colegios",

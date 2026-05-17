@@ -179,6 +179,9 @@ def test_import_preview_contract_is_editable_and_manual_commit(app):
     assert payload["frontend_contract"]["editable_rows"] is True
     assert payload["quality_summary"]["ready_to_publish"] == 1
     assert payload["quality_summary"]["without_price"] == 1
+    assert payload["inventory_summary"]["with_stock"] == 1
+    assert payload["inventory_summary"]["stock_unknown"] == 1
+    assert "stock_only" in payload["inventory_summary"]["columns"]["supported_import_modes"]
     assert payload["image_summary"]["with_images"] == 1
     assert payload["rows_sample"][1]["warnings"]
     assert any(action["id"] == "review_prices" for action in payload["suggested_actions"])

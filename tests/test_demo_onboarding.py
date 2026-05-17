@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 from app import create_app, db
 from config import Config
-from models import QA, Rubro, User, ChatSessionContext, Conversacion, TenantProfile, PymePedido, PymeTicket
+from models import QA, Rubro, User, ChatSessionContext, Conversacion, TenantProfile, PymePedido, PymeTicket, MunicipioTicket
 from sqlalchemy.orm.attributes import flag_modified
 
 class DemoConfig(Config):
@@ -990,7 +990,41 @@ class DemoOnboardingTestCase(unittest.TestCase):
         payload = response.get_json()
         self.assertTrue(payload.get("messages"))
         actions = {item.get("action_id") for item in payload.get("options_list") or payload.get("botones") or []}
-        self.assertTrue({"iniciar_reclamo", "info_tramite", "consultar_estado"} & actions)
+        self.assertTrue({"crear_reclamo", "consultar_tramite", "consultar_estado_reclamo", "derivar_humano"} & actions)
+
+    def test_government_canonical_create_claim_action_creates_ticket(self):
+        db.session.add(
+            TenantProfile(
+                slug="municipio-claim-demo",
+                nombre="Municipio Claim Demo",
+                tipo="municipio",
+                municipio_id=self.muni_user.id,
+                is_active=True,
+            )
+        )
+        db.session.commit()
+
+        response = self.client.post(
+            "/api/ask/municipio",
+            json={
+                "pregunta": "",
+                "demo_mode": True,
+                "tenant_slug": "municipio-claim-demo",
+                "tipo_chat": "municipio",
+                "action_id": "crear_reclamo",
+            },
+            headers={
+                "Origin": "https://www.chatboc.ar",
+                "X-Chat-Session-Id": "gov-route-session-2",
+                "X-Anon-Id": "anon-gov-route-2",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload.get("messages"))
+        self.assertTrue(payload.get("ticket_id"))
+        self.assertEqual(MunicipioTicket.query.count(), 1)
 
     def test_business_demo_order_action_returns_draft_without_validated_amount(self):
         db.session.add(

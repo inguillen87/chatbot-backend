@@ -25,6 +25,7 @@ from services.common_utils import (
     parse_precio_flexible,
     parse_cantidad_flexible,
 )
+from services.catalog_inventory import inventory_contract
 
 catalogo_bp = Blueprint('catalogo', __name__, url_prefix='/catalogo')
 
@@ -395,6 +396,13 @@ def _formatear_producto(data: dict) -> dict:
         extra_metadata.get("personalization_options")
         or extra_metadata.get("opciones_personalizacion")
     )
+    stock_raw = data.get("cantidad") or data.get("stock")
+    inventory = inventory_contract(
+        stock_raw,
+        available=bool(data.get("disponible", True)),
+        source=data.get("inventory_source") or "catalog",
+        updated_at=data.get("updated_at"),
+    )
 
     return {
         "nombre": data.get("nombre", ""),
@@ -424,7 +432,11 @@ def _formatear_producto(data: dict) -> dict:
             else (precio_unitario if moneda_estandar == "PTS" else None),
         "moneda": moneda_estandar,
         "modalidad": modalidad,
-        "stock": data.get("cantidad") or data.get("stock"), # Qdrant tiene "stock", CatalogoItem "cantidad"
+        "stock": stock_raw, # Qdrant tiene "stock", CatalogoItem "cantidad"
+        "stock_quantity": inventory.get("stock_quantity"),
+        "stock_status": inventory.get("stock_status"),
+        "available_to_sell": inventory.get("available_to_sell"),
+        "inventory": inventory,
         "imagen_url": imagen_url,
         "external_url": data.get("external_url"),
         "checkout_type": data.get("checkout_type", "chatboc"),
