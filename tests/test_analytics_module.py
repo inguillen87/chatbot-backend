@@ -585,6 +585,9 @@ def test_admin_analytics_heatmap_includes_maplibre_layers_with_category_colors(c
     )
     assert response.status_code == 200
     data = response.get_json()
+    assert data.get('contract_version') == 'analytics.heatmap.v1'
+    assert data.get('request_id')
+    assert (data.get('points') or [])[0]['categoria'] == 'seguridad'
     geo_layers = data.get('geo_layers') or {}
     assert geo_layers.get('provider') == 'maplibre'
     assert geo_layers.get('engine') == 'maplibre-gl-js'
@@ -777,7 +780,13 @@ def test_admin_analytics_realtime_hub_includes_surveys_and_geo(client):
             ts=now,
             lat=-34.61,
             lng=-58.38,
-            metadata_payload={'categoria': 'alumbrado', 'barrio': 'centro', 'distrito': 'norte', 'sentiment': 'positive'},
+            metadata_payload={
+                'categoria': 'alumbrado',
+                'barrio': 'centro',
+                'distrito': 'norte',
+                'sentiment': 'positive',
+                'comment': 'Reporte realtime con ubicacion',
+            },
         )
     )
     encuesta = EncEncuesta(
@@ -813,11 +822,45 @@ def test_admin_analytics_realtime_hub_includes_surveys_and_geo(client):
     )
     assert response.status_code == 200
     data = response.get_json()
+    assert data.get('contract_version') == 'analytics.realtime_hub.v1'
+    assert data.get('request_id')
     assert data.get('totals', {}).get('events', 0) >= 1
     assert data.get('totals', {}).get('survey_responses', 0) >= 1
     assert data.get('totals', {}).get('survey_comments', 0) >= 1
+    assert (data.get('top_channels') or [])[0]['channel'] == 'realtime_voice'
+    assert (data.get('top_events') or [])[0]['event'] == 'realtime_business_action_executed'
+    assert data.get('comments')
+    assert data.get('hotspots') == [{'label': 'centro', 'count': 1}]
+    assert (data.get('geo_points') or [])[0]['channel'] == 'realtime_voice'
+    assert (data.get('geo_layers') or {}).get('provider') == 'maplibre'
+    assert (data.get('geo_layers') or {}).get('source', {}).get('features')
+    assert (data.get('segments') or {}).get('categoria')
+    assert (data.get('ui') or {}).get('labels', {}).get('empty_map')
     assert isinstance((data.get('geo') or {}).get('points'), list)
     assert isinstance((data.get('recommendations') or []), list)
+
+
+def test_api_alias_admin_analytics_realtime_hub_available(client):
+    tenant_id = 334
+    db.session.add(
+        AnalyticsEventV2(
+            tenant_id=tenant_id,
+            event_name='cluster_click',
+            tenant_type='municipio',
+            channel='web',
+            ts=datetime.utcnow(),
+            metadata_payload={'categoria': 'seguridad'},
+        )
+    )
+    db.session.commit()
+
+    response = client.get(
+        '/api/admin/analytics/realtime-hub',
+        query_string={'tenant_id': tenant_id, 'scope': 'municipio'},
+        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
+    )
+    assert response.status_code == 200
+    assert response.get_json().get('contract_version') == 'analytics.realtime_hub.v1'
 
 def test_admin_analytics_overview_accepts_debug_tenant_without_query_tenant(client):
     tenant_id = 31

@@ -393,10 +393,14 @@ def _build_category_heatmap_layers(points: Sequence[Dict[str, Any]]) -> Dict[str
             continue
         categoria = str(point.get("categoria") or "sin_categoria").strip().lower() or "sin_categoria"
         weight = float(point.get("weight") or point.get("w") or point.get("count") or 1.0)
+        ts = point.get("ts") or point.get("submitted_at")
         bucket = grouped.setdefault(categoria, {"count": 0, "weight": 0.0, "points": []})
         bucket["count"] += 1
         bucket["weight"] += max(weight, 0.0)
-        bucket["points"].append({"lat": float(lat), "lng": float(lng), "weight": round(max(weight, 0.0), 4)})
+        mapped_point = {"lat": float(lat), "lng": float(lng), "weight": round(max(weight, 0.0), 4)}
+        if ts:
+            mapped_point["ts"] = ts
+        bucket["points"].append(mapped_point)
 
     ranked = sorted(grouped.items(), key=lambda item: item[1]["weight"], reverse=True)
     feature_collection: Dict[str, Any] = {"type": "FeatureCollection", "features": []}
@@ -409,6 +413,7 @@ def _build_category_heatmap_layers(points: Sequence[Dict[str, Any]]) -> Dict[str
                     "properties": {
                         "categoria": name,
                         "weight": point.get("weight", 1.0),
+                        "ts": point.get("ts"),
                     },
                 }
             )
@@ -425,6 +430,13 @@ def _build_category_heatmap_layers(points: Sequence[Dict[str, Any]]) -> Dict[str
             "categories": [],
             "legend": {"mode": "category_weight", "min_weight": 0, "max_weight": 0},
             "source": feature_collection,
+            "source_options": {"cluster": True, "clusterMaxZoom": 14, "clusterRadius": 45},
+            "layers": {
+                "heatmap": {"id": "encuestas-heat", "type": "heatmap", "source": "encuestas"},
+                "clusters": {"id": "encuestas-clusters", "type": "circle", "source": "encuestas"},
+                "points": {"id": "encuestas-points", "type": "circle", "source": "encuestas"},
+            },
+            "interactions": {"hover": True, "time_slider": {"enabled": False, "field": "ts"}},
             "source_meta": {"total_input_points": len(points)},
             "telemetry": {
                 "event_endpoint": "/api/analytics/event",
@@ -433,6 +445,7 @@ def _build_category_heatmap_layers(points: Sequence[Dict[str, Any]]) -> Dict[str
         }
 
     max_weight = max(float(item[1]["weight"]) for item in ranked) or 1.0
+    has_time_values = any(bool(point.get("ts")) for _, data in ranked for point in (data.get("points") or []))
     categories = []
     for index, (name, data) in enumerate(ranked):
         categories.append(
@@ -459,6 +472,7 @@ def _build_category_heatmap_layers(points: Sequence[Dict[str, Any]]) -> Dict[str
             "clusters": {"id": "encuestas-clusters", "type": "circle", "source": "encuestas", "filter": ["has", "point_count"]},
             "points": {"id": "encuestas-points", "type": "circle", "source": "encuestas", "filter": ["!", ["has", "point_count"]]},
         },
+        "interactions": {"hover": True, "time_slider": {"enabled": bool(has_time_values), "field": "ts"}},
         "categories": categories,
         "legend": {"mode": "category_weight", "min_weight": 0, "max_weight": round(max_weight, 4)},
         "telemetry": {

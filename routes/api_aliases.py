@@ -26,6 +26,7 @@ from routes.admin_analytics import (
     admin_analytics_overview,
     admin_analytics_dashboard,
     admin_analytics_hub,
+    admin_analytics_realtime_hub,
     admin_analytics_whatsapp_funnel,
 )
 from routes.auth import (
@@ -359,6 +360,13 @@ def admin_analytics_whatsapp_funnel_alias():
     if request.method == "OPTIONS":
         return _options_ok()
     return admin_analytics_whatsapp_funnel()
+
+
+@api_aliases_bp.route("/admin/analytics/realtime-hub", methods=["GET", "OPTIONS"], strict_slashes=False)
+def admin_analytics_realtime_hub_alias():
+    if request.method == "OPTIONS":
+        return _options_ok()
+    return admin_analytics_realtime_hub()
 
 
 @api_aliases_bp.route("/admin/analytics/export.csv", methods=["GET"], strict_slashes=False)

@@ -387,13 +387,21 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
     @token_requerido
     @require_role("admin", "empleado", "super_admin")
     def export_pdf_view(current_user, encuesta_id: int):
+        request_id = request.headers.get("X-Request-Id") or f"req_{uuid.uuid4().hex}"
         filtros = _parse_filtros()
         try:
             summary = get_summary(encuesta_id, filtros)
             heatmap = get_heatmap(encuesta_id, filtros)
             brief_data = get_executive_brief(encuesta_id, filtros)
         except EncuestaError as err:
-            return jsonify(err.to_dict()), err.status_code
+            payload = err.to_dict()
+            if isinstance(payload, dict):
+                payload.setdefault("ok", False)
+                payload.setdefault("request_id", request_id)
+            response = jsonify(payload)
+            response.status_code = err.status_code
+            response.headers.setdefault("X-Request-Id", request_id)
+            return response
 
         categorias = (summary.get("preguntas") or [{}])[0].get("opciones") or []
         top_categorias = categorias[:5]
@@ -436,7 +444,10 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
         return Response(
             pdf,
             mimetype="application/pdf",
-            headers={"Content-Disposition": f"attachment; filename=encuesta-{encuesta_id}-analytics.pdf"},
+            headers={
+                "Content-Disposition": f"attachment; filename=encuesta-{encuesta_id}-analytics.pdf",
+                "X-Request-Id": request_id,
+            },
         )
 
     bp.add_url_rule("/export.pdf", view_func=export_pdf_view, methods=["GET"])

@@ -583,6 +583,9 @@ def test_admin_encuestas_legacy_analytics_and_snapshots(client, monkeypatch, adm
     assert metadata["category_layers"].get("engine") == "maplibre-gl-js"
     assert metadata["category_layers"].get("contract_version") == "2026.04-maplibre-v1"
     assert metadata["category_layers"].get("telemetry", {}).get("events")
+    assert metadata["category_layers"].get("source_options", {}).get("cluster") is True
+    assert metadata["category_layers"].get("layers", {}).get("heatmap", {}).get("source") == "encuestas"
+    assert metadata["category_layers"].get("interactions", {}).get("hover") is True
     map_filter = metadata["map_filter"]
     assert isinstance(map_filter, dict)
     assert "options" in map_filter
@@ -614,6 +617,39 @@ def test_admin_encuestas_legacy_analytics_and_snapshots(client, monkeypatch, adm
     assert marker_index > 0
     startxref_value = export_pdf_resp.data[marker_index + len(startxref_marker):].split(b"\n", 1)[0]
     assert int(startxref_value) == xref_index
+
+
+def test_admin_encuestas_export_pdf_error_includes_request_id(client, monkeypatch, admin_user):
+    monkeypatch.setattr(feature_flags, "FEATURE_ENCUESTAS", True)
+    monkeypatch.setattr(encuestas_analytics_routes, "FEATURE_ENCUESTAS", True)
+    headers = _auth_headers(client, admin_user)
+
+    encuesta = EncEncuesta(
+        tenant_id=admin_user.municipio_id,
+        slug="encuesta-export-error",
+        titulo="Encuesta export error",
+        estado="publicada",
+    )
+    db.session.add(encuesta)
+    db.session.commit()
+
+    from services.encuestas_service import EncuestaError
+
+    def _raise_error(*_args, **_kwargs):
+        raise EncuestaError("No se pudo exportar", 503, {"reason_code": "analytics_export_failed"})
+
+    monkeypatch.setattr(encuestas_analytics_routes, "get_summary", _raise_error)
+
+    response = client.get(
+        f"/admin/encuestas/{encuesta.id}/analytics/export.pdf",
+        headers={**headers, "X-Request-Id": "req-export-pdf-1"},
+    )
+    assert response.status_code == 503
+    assert response.headers.get("X-Request-Id") == "req-export-pdf-1"
+    data = response.get_json()
+    assert data["ok"] is False
+    assert data["request_id"] == "req-export-pdf-1"
+    assert data["reason_code"] == "analytics_export_failed"
 
 
 def test_admin_encuestas_permite_actualizar_publicada_sin_respuestas(client, monkeypatch, admin_user):
