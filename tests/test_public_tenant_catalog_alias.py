@@ -157,6 +157,87 @@ def test_public_navigation_contract_disables_unavailable_items(client):
     assert items["news"]["empty_state"]
 
 
+def test_public_domain_slug_alias_resolves_navigation_commerce_and_history(client):
+    tenant = _seed_pyme_tenant_with_catalog()
+    tenant.dominio = f"{tenant.slug}.chatboc.ar"
+    db.session.add(tenant)
+    db.session.commit()
+
+    domain_slug = f"{tenant.slug}.chatboc.ar"
+
+    nav_resp = client.get(f"/api/public/tenants/{domain_slug}/public-navigation")
+    assert nav_resp.status_code == 200
+    assert nav_resp.get_json()["tenant_slug"] == tenant.slug
+
+    commerce_resp = client.get(
+        "/api/public/widget-commerce-session",
+        query_string={"tenant_slug": domain_slug, "tenant": domain_slug},
+        headers={"X-Chat-Session-Id": "chat_domain_slug", "X-Anon-Id": "anon_domain_slug"},
+    )
+    assert commerce_resp.status_code == 200
+    commerce = commerce_resp.get_json()
+    assert commerce["tenant"]["slug"] == tenant.slug
+    assert commerce["catalog"]["endpoint"] == f"/api/public/tenants/{tenant.slug}/catalog"
+
+    history_resp = client.get(
+        "/api/public/widget-user/tenant-history",
+        query_string={"tenant_slug": domain_slug, "tenant": domain_slug},
+        headers={"X-Chat-Session-Id": "chat_domain_slug", "X-Anon-Id": "anon_domain_slug"},
+    )
+    assert history_resp.status_code == 200
+    assert history_resp.get_json()["tenant_slug"] == tenant.slug
+
+
+def test_explicit_domain_slug_wins_over_stale_widget_token(client):
+    tenant = _seed_pyme_tenant_with_catalog()
+    tenant.dominio = f"{tenant.slug}.chatboc.ar"
+
+    stale_owner = User(email="stale-owner@test.com", name="Stale Owner", rol="admin", tipo_chat="municipio")
+    stale_owner.set_password("pass")
+    db.session.add(stale_owner)
+    db.session.flush()
+    stale_tenant = TenantProfile(
+        slug="stale-municipio",
+        nombre="Stale Municipio",
+        tipo="municipio",
+        municipio_id=stale_owner.id,
+        configuracion={"widget_tokens": ["stale-token"]},
+    )
+    db.session.add_all([tenant, stale_tenant])
+    db.session.commit()
+
+    domain_slug = f"{tenant.slug}.chatboc.ar"
+    resp = client.get(
+        "/api/pwa/public/cart/summary",
+        query_string={"tenant_slug": domain_slug, "tenant": domain_slug, "widget_token": "stale-token"},
+        headers={"X-Chat-Session-Id": "chat_stale_token", "X-Anon-Id": "anon_stale_token"},
+    )
+
+    assert resp.status_code == 200
+    db.session.refresh(tenant)
+    assert "stale-token" not in str(tenant.configuracion or "")
+
+
+def test_public_widget_referrer_tenant_wins_over_stale_query_slug(client):
+    tenant = _seed_pyme_tenant_with_catalog()
+    referer = f"https://www.chatboc.ar/t/{tenant.slug}.chatboc.ar"
+
+    commerce_resp = client.get(
+        "/api/public/widget-commerce-session",
+        query_string={"tenant_slug": "municipio", "tenant": "municipio"},
+        headers={"Referer": referer, "X-Chat-Session-Id": "chat_referrer", "X-Anon-Id": "anon_referrer"},
+    )
+    assert commerce_resp.status_code == 200
+    assert commerce_resp.get_json()["tenant"]["slug"] == tenant.slug
+
+    cart_resp = client.get(
+        "/api/pwa/public/cart/summary",
+        query_string={"tenant_slug": "municipio", "tenant": "municipio"},
+        headers={"Referer": referer, "X-Chat-Session-Id": "chat_referrer", "X-Anon-Id": "anon_referrer"},
+    )
+    assert cart_resp.status_code == 200
+
+
 def test_reserved_public_slug_navigation_returns_reserved_json(client):
     resp = client.get("/api/public/tenants/precios/public-navigation", headers={"Origin": "https://www.chatboc.ar"})
 

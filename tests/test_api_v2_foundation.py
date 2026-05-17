@@ -389,6 +389,12 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertIn("application/pdf", resp.headers.get("Content-Type", ""))
 
+    def test_legacy_demo_catalog_media_asset_serves_pdf(self):
+        resp = self.client.get("/media/demo_catalogs/empresas/catalogo-demo-empresas.pdf")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("application/pdf", resp.headers.get("Content-Type", ""))
+
     def test_v2_demo_session_accepts_sector_only_for_guided_pillar_start(self):
         owner = User(name="Colegio Demo", email="colegio-sector@test.com", password_hash="hash", tipo_chat="pyme")
         db.session.add(owner)

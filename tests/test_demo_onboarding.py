@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 from app import create_app, db
 from config import Config
-from models import QA, Rubro, User, ChatSessionContext
+from models import QA, Rubro, User, ChatSessionContext, Conversacion
 from sqlalchemy.orm.attributes import flag_modified
 
 class DemoConfig(Config):
@@ -566,6 +566,38 @@ class DemoOnboardingTestCase(unittest.TestCase):
                 self.assertEqual(kwargs.get("room"), session_id)
 
                 self.assertEqual(mock_responder.call_count, 3)
+
+    def test_public_anonymous_limit_counts_chat_session_history(self):
+        self.app.config["DEMO_ANONYMOUS_MAX_MESSAGES_PER_SESSION"] = 1
+        session_id = "public-limit-session"
+        anon_id = "anon-public-limit"
+        db.session.add(
+            Conversacion(
+                session_id=session_id,
+                pregunta="primer mensaje",
+                respuesta="ok",
+                fuente="test",
+            )
+        )
+        db.session.commit()
+
+        with patch("routes.chat.responder_chatboc") as mock_responder:
+            response = self.client.post(
+                "/ask/pyme",
+                json={"pregunta": "otro mensaje", "demo_mode": True},
+                headers={
+                    "Origin": "https://www.chatboc.ar",
+                    "X-Chat-Session-Id": session_id,
+                    "X-Anon-Id": anon_id,
+                },
+            )
+
+        mock_responder.assert_not_called()
+        self.assertEqual(response.status_code, 403)
+        data = response.get_json()
+        self.assertEqual(data.get("contract_version"), "demo.usage_limit.v1")
+        self.assertEqual(data.get("reason_code"), "anonymous_trial_limit_reached")
+        self.assertEqual((data.get("trial_usage") or {}).get("used"), 1)
 
     def test_demo_selection_returns_curated_material(self):
         session_id = "demo-session-4"

@@ -2210,6 +2210,20 @@ def demo_catalog_asset_v2(filename: str):
     return _demo_catalog_asset_response(filename)
 
 
+@demo_compat_bp.route("/media/demo_catalogs/<path:filename>", methods=["GET", "OPTIONS"])
+@demo_compat_bp.route("/media/demo-catalogs/<path:filename>", methods=["GET", "OPTIONS"])
+def demo_catalog_asset_legacy_media(filename: str):
+    """Serve legacy demo PDF paths used by older frontend bundles.
+
+    Current contracts publish /api/v2/demo/catalog-assets/...; this compatibility
+    route prevents deployed stale links from landing in the SPA 404 screen.
+    """
+
+    if request.method == "OPTIONS":
+        return _options_response()
+    return _demo_catalog_asset_response(filename)
+
+
 @v2_demo_bp.route("/whatsapp-sandbox", methods=["GET", "POST", "OPTIONS"])
 def demo_whatsapp_sandbox_launcher_v2():
     if request.method == "OPTIONS":

@@ -22,7 +22,12 @@ from services.catalog_seed import ensure_seed_catalog
 from services.common_utils import parse_precio_flexible
 from routes.catalogo import _formatear_producto
 from services.rewards_demo import reward_profile_for_tenant
-from services.tenant_resolver import TenantResolutionError, resolve_tenant_only
+from services.tenant_resolver import (
+    TenantResolutionError,
+    resolve_tenant_only,
+    tenant_slug_from_public_referrer,
+    tenant_slug_lookup_candidates,
+)
 # Import common cart logic to support Persistent X-Anon-Id and unified cart behavior
 from routes.carrito import (
     _get_or_create_db_cart,
@@ -63,6 +68,11 @@ def _request_id() -> str:
 
 def _is_reserved_public_slug(value: object) -> bool:
     return str(value or "").strip().lower() in RESERVED_PUBLIC_SLUGS
+
+
+def _canonical_public_slug(value: object) -> str:
+    candidates = tenant_slug_lookup_candidates(str(value or ""))
+    return candidates[-1] if candidates else str(value or "").strip().lower()
 
 
 def _reserved_public_slug_response(slug: object):
@@ -180,6 +190,11 @@ def _require_tenant() -> TenantProfile:
             or request.headers.get("X-Tenant-Slug")
             or request.headers.get("X-Tenant")
         )
+        referrer_slug = tenant_slug_from_public_referrer()
+        if referrer_slug and (
+            not tenant_slug or _canonical_public_slug(referrer_slug) != _canonical_public_slug(tenant_slug)
+        ):
+            tenant_slug = referrer_slug
         host_hint = request.headers.get("X-Forwarded-Host") or request.host
 
         try:

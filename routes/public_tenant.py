@@ -24,6 +24,7 @@ from routes.catalogo import _formatear_producto
 from routes.carrito import _product_query_for_tenant
 from middleware.tenant_context import require_tenant
 from services.catalog_seed import ensure_seed_catalog
+from services.tenant_resolver import tenant_slug_from_public_referrer, tenant_slug_lookup_candidates
 from services.user_merge import merge_anon_into_user
 
 public_tenant_bp = Blueprint('public_tenant_bp', __name__)
@@ -56,6 +57,11 @@ def _normalize_public_slug(value: object) -> str:
 
 def _is_reserved_public_slug(value: object) -> bool:
     return _normalize_public_slug(value) in RESERVED_PUBLIC_SLUGS
+
+
+def _canonical_public_slug(value: object) -> str:
+    candidates = tenant_slug_lookup_candidates(str(value or ""))
+    return candidates[-1] if candidates else _normalize_public_slug(value)
 
 
 def _reserved_public_slug_from_request() -> str:
@@ -154,19 +160,22 @@ def _get_tenant_from_request(slug: str):
     if _is_reserved_public_slug(slug):
         return None
 
-    tenant = TenantProfile.query.filter_by(slug=slug).first()
-    if tenant:
-        return tenant
+    slug_candidates = tenant_slug_lookup_candidates(slug) or (_normalize_public_slug(slug),)
+    for candidate in slug_candidates:
+        tenant = TenantProfile.query.filter(func.lower(TenantProfile.slug) == candidate.lower()).first()
+        if tenant:
+            return tenant
 
     fallback_slug = request.args.get("tenant") or request.args.get("tenant_slug")
     if _is_reserved_public_slug(fallback_slug):
         return None
     if fallback_slug and fallback_slug != slug:
-        tenant = TenantProfile.query.filter_by(slug=fallback_slug).first()
-        if tenant:
-            return tenant
+        for candidate in tenant_slug_lookup_candidates(fallback_slug):
+            tenant = TenantProfile.query.filter(func.lower(TenantProfile.slug) == candidate.lower()).first()
+            if tenant:
+                return tenant
 
-    alias_slug = str(slug or "").strip().lower()
+    alias_slug = str((slug_candidates[-1] if slug_candidates else slug) or "").strip().lower()
     # ``default`` is used by multiple frontend widget builds when they don't
     # have a concrete tenant yet. We degrade gracefully to a configured default
     # tenant or first active tenant with owner to avoid 404 loops.
@@ -236,6 +245,11 @@ def _resolve_public_widget_tenant() -> TenantProfile | None:
         or request.headers.get("X-Tenant-Slug")
         or request.headers.get("X-Tenant")
     )
+    referrer_slug = tenant_slug_from_public_referrer()
+    if referrer_slug and (
+        not tenant_slug or _canonical_public_slug(referrer_slug) != _canonical_public_slug(tenant_slug)
+    ):
+        tenant_slug = referrer_slug
     if tenant_slug:
         tenant = _get_tenant_from_request(str(tenant_slug))
         if tenant:

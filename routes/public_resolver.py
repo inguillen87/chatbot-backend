@@ -1189,7 +1189,7 @@ def create_realtime_session():
         return jsonify({"ok": True})
 
     payload = request.get_json(silent=True) or {}
-    tenant_slug = payload.get("tenant_slug") or request.args.get("tenant")
+    tenant_slug = payload.get("tenant_slug") or request.args.get("tenant_slug") or request.args.get("tenant")
     widget_token = payload.get("widget_token") or _extract_widget_token()
 
     if not tenant_slug:
@@ -1346,7 +1346,7 @@ def realtime_voice_capabilities():
         return response
 
     widget_token = _extract_widget_token()
-    tenant_slug = request.args.get("tenant") or request.args.get("tenant_slug") or request.args.get("slug")
+    tenant_slug = request.args.get("tenant_slug") or request.args.get("tenant") or request.args.get("slug")
     tenant = None
     cfg = {}
     request_id = str(request.headers.get("X-Request-Id") or getattr(g, "request_id", None) or os.urandom(8).hex())
@@ -1424,7 +1424,7 @@ def realtime_action_event():
         return jsonify({"ok": True})
 
     payload = request.get_json(silent=True) or {}
-    tenant_slug = payload.get("tenant_slug") or request.args.get("tenant")
+    tenant_slug = payload.get("tenant_slug") or request.args.get("tenant_slug") or request.args.get("tenant")
     widget_token = payload.get("widget_token") or _extract_widget_token()
     action_name = str(payload.get("action") or "").strip().lower()
     channel = str(payload.get("channel") or "voice").strip().lower()
@@ -1880,7 +1880,7 @@ def resolve_tenant_endpoint():
     payload = request.get_json(force=True, silent=True) or {}
     whatsapp_destination_number = payload.get("whatsapp_destination_number")
     widget_token = payload.get("widget_token")
-    tenant_slug = payload.get("tenant_slug") or request.args.get("tenant")
+    tenant_slug = payload.get("tenant_slug") or request.args.get("tenant_slug") or request.args.get("tenant")
 
     try:
         tenant, user, created_anon = resolve_tenant_and_user(
@@ -2005,7 +2005,7 @@ def tenant_profile():
     resolution_error = None
     explicit_slug_failure = False
 
-    tenant_slug_original = request.args.get("tenant") or request.args.get("slug")
+    tenant_slug_original = request.args.get("tenant_slug") or request.args.get("tenant") or request.args.get("slug")
     tenant_slug = tenant_slug_original.strip() if tenant_slug_original else None
 
     if tenant_slug and tenant_slug.lower() in RESERVED_TENANT_SLUGS:
@@ -2199,7 +2199,7 @@ def landing_experience():
         return jsonify({"ok": True})
 
     widget_token = _extract_widget_token()
-    tenant_slug = request.args.get("tenant") or request.args.get("slug")
+    tenant_slug = request.args.get("tenant_slug") or request.args.get("tenant") or request.args.get("slug")
     whatsapp_destination_number = request.args.get("whatsapp_destination_number")
     tenant = None
 
@@ -2246,7 +2246,7 @@ def widget_config():
         return jsonify({"ok": True})
 
     widget_token = _extract_widget_token()
-    tenant_slug = request.args.get("tenant") or request.args.get("slug")
+    tenant_slug = request.args.get("tenant_slug") or request.args.get("tenant") or request.args.get("slug")
     whatsapp_destination_number = request.args.get("whatsapp_destination_number")
 
     if (

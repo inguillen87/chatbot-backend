@@ -2,6 +2,7 @@
 import logging
 import uuid
 from typing import Optional, Tuple
+from urllib.parse import urlparse
 from flask import current_app, g, request
 from sqlalchemy import func
 from database import db
@@ -25,8 +26,13 @@ def apply_tenant_alias(slug: Optional[str]) -> Optional[str]:
     cleaned = _clean_slug(slug)
     if not cleaned:
         return None
-    alias_target = _alias_map().get(cleaned.lower())
-    return alias_target or cleaned
+    alias_map = _alias_map()
+    for candidate in tenant_slug_lookup_candidates(cleaned):
+        alias_target = alias_map.get(candidate.lower())
+        if alias_target:
+            return alias_target
+    candidates = tenant_slug_lookup_candidates(cleaned)
+    return candidates[0] if candidates else cleaned
 
 def _clean_slug(slug: Optional[str]) -> Optional[str]:
     if not slug:
@@ -38,14 +44,97 @@ def _clean_slug(slug: Optional[str]) -> Optional[str]:
         return None
     return normalized
 
+
+def tenant_slug_lookup_candidates(slug: Optional[str]) -> tuple[str, ...]:
+    """Return canonical lookup candidates for public tenant slug inputs.
+
+    Public frontend routes may pass a bare slug (``bodega``), a tenant domain
+    (``bodega.chatboc.ar``), or occasionally a full URL. We always try the
+    explicit value first, then the bare subdomain alias, so real dotted slugs
+    still win if they exist.
+    """
+
+    cleaned = _clean_slug(slug)
+    if not cleaned:
+        return tuple()
+
+    raw = cleaned.strip()
+    lowered = raw.lower()
+    if "://" in lowered:
+        parsed = urlparse(raw)
+        raw = parsed.netloc or parsed.path or raw
+        lowered = raw.lower()
+
+    lowered = lowered.split("?", 1)[0].split("#", 1)[0].strip().strip("/")
+    if "/" in lowered:
+        lowered = lowered.split("/", 1)[0]
+    if lowered.startswith("www."):
+        lowered_no_www = lowered[4:]
+    else:
+        lowered_no_www = lowered
+
+    candidates = [lowered]
+    if lowered_no_www != lowered:
+        candidates.append(lowered_no_www)
+
+    platform_domains = {"chatboc.ar", "www.chatboc.ar"}
+    configured = None
+    try:
+        configured = current_app.config.get("PUBLIC_PLATFORM_DOMAINS")
+    except RuntimeError:
+        configured = None
+    if isinstance(configured, str):
+        platform_domains.update(item.strip().lower() for item in configured.split(",") if item.strip())
+    elif isinstance(configured, (list, tuple, set)):
+        platform_domains.update(str(item).strip().lower() for item in configured if str(item).strip())
+
+    for domain in list(platform_domains):
+        normalized_domain = domain[4:] if domain.startswith("www.") else domain
+        for suffix in {domain, normalized_domain}:
+            marker = f".{suffix}"
+            for value in (lowered, lowered_no_www):
+                if value.endswith(marker):
+                    candidate = value[: -len(marker)].strip(".")
+                    if candidate:
+                        candidates.append(candidate)
+
+    return tuple(dict.fromkeys(candidate for candidate in candidates if candidate))
+
+
+def tenant_slug_from_public_referrer(value: Optional[str] = None) -> Optional[str]:
+    """Extract tenant slug from public app URLs such as /t/bodega.chatboc.ar."""
+
+    raw = value
+    if raw is None:
+        try:
+            raw = request.headers.get("Referer") or request.headers.get("Origin")
+        except RuntimeError:
+            raw = None
+    if not raw:
+        return None
+
+    text = str(raw or "").strip()
+    try:
+        parsed = urlparse(text)
+    except Exception:
+        return None
+    path = (parsed.path or text).strip("/")
+    parts = [part for part in path.split("/") if part]
+    if len(parts) >= 2 and parts[0].lower() in {"t", "m", "portal"}:
+        candidate = parts[1].strip()
+        if candidate and candidate.lower() not in RESERVED_TENANT_SLUGS:
+            return candidate
+    return None
+
 class TenantResolutionError(Exception):
     """Raised when a tenant cannot be resolved from the request."""
 
 def _tenant_by_slug(slug: Optional[str]) -> Optional[TenantProfile]:
-    slug = _clean_slug(slug)
-    if not slug:
-        return None
-    return TenantProfile.query.filter(func.lower(TenantProfile.slug) == slug.lower()).limit(1).first()
+    for candidate in tenant_slug_lookup_candidates(slug):
+        tenant = TenantProfile.query.filter(func.lower(TenantProfile.slug) == candidate.lower()).limit(1).first()
+        if tenant:
+            return tenant
+    return None
 
 def _tenant_by_number(number: Optional[str]) -> Optional[TenantProfile]:
     if not number:
@@ -63,6 +152,22 @@ def _tenant_by_widget_token(token: Optional[str]) -> Optional[TenantProfile]:
     return TenantProfile.query.filter(
         TenantProfile.configuracion["widget_tokens"].astext.contains(token)
     ).limit(1).first()
+
+
+def _should_register_widget_token(tenant: Optional[TenantProfile], token: Optional[str], preferred_slug: Optional[str]) -> bool:
+    if not tenant or not token:
+        return False
+    if not preferred_slug:
+        return True
+    token_tenant = _tenant_by_widget_token(token)
+    if token_tenant and token_tenant.id != tenant.id:
+        logger.warning(
+            "[tenant_resolver] Ignoring widget_token from tenant '%s' while explicit tenant is '%s'",
+            token_tenant.slug,
+            tenant.slug,
+        )
+        return False
+    return True
 
 def _prune_widget_token_from_other_tenants(token: str, keep_slug: str | None) -> None:
     if not token:
@@ -147,7 +252,8 @@ def _get_or_create_demo_tenant(slug: str) -> Optional[TenantProfile]:
     if not slug:
         return None
 
-    slug_norm = slug.strip().lower()
+    candidates = tenant_slug_lookup_candidates(slug)
+    slug_norm = (candidates[-1] if candidates else str(slug or "")).strip().lower()
 
     # 1. Check if exists
     tenant = _tenant_by_slug(slug_norm)
@@ -323,8 +429,10 @@ def resolve_tenant_and_user(
     if not tenant:
         raise TenantResolutionError("Tenant no encontrado para el contexto dado")
 
-    _register_widget_token(tenant, widget_token)
-    if widget_token and preferred_slug and tenant.slug.lower() == preferred_slug.lower():
+    token_matches_resolution = _should_register_widget_token(tenant, widget_token, preferred_slug)
+    if token_matches_resolution:
+        _register_widget_token(tenant, widget_token)
+    if token_matches_resolution and widget_token and preferred_slug and tenant.slug.lower() == preferred_slug.lower():
         _prune_widget_token_from_other_tenants(widget_token, tenant.slug)
 
     if current_user and getattr(current_user, "is_authenticated", False):
@@ -345,7 +453,7 @@ def resolve_tenant_only(
     host: Optional[str] = None,
     require_explicit_slug: bool = False,
 ) -> TenantProfile:
-    preferred_slug = _clean_slug(tenant_slug)
+    preferred_slug = apply_tenant_alias(tenant_slug)
     tenant = _tenant_by_slug(preferred_slug)
 
     if not tenant and preferred_slug:
@@ -386,8 +494,10 @@ def resolve_tenant_only(
     if not tenant:
         raise TenantResolutionError("Tenant no encontrado para el contexto dado")
 
-    _register_widget_token(tenant, widget_token)
-    if widget_token and preferred_slug and tenant.slug.lower() == preferred_slug.lower():
+    token_matches_resolution = _should_register_widget_token(tenant, widget_token, preferred_slug)
+    if token_matches_resolution:
+        _register_widget_token(tenant, widget_token)
+    if token_matches_resolution and widget_token and preferred_slug and tenant.slug.lower() == preferred_slug.lower():
         _prune_widget_token_from_other_tenants(widget_token, tenant.slug)
 
     return tenant

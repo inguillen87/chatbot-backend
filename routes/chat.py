@@ -399,19 +399,29 @@ def _is_init_payload(payload) -> bool:
 
 
 
-def _anonymous_message_count(session_id: str, window_minutes: int) -> int:
+def _anonymous_session_identities(*values: str | None) -> list[str]:
+    identities: list[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        if text and text not in identities:
+            identities.append(text)
+    return identities
+
+
+def _anonymous_message_count(session_id: str, window_minutes: int, *extra_session_ids: str | None) -> int:
     """Count billable anonymous messages in the active window.
 
     Excludes synthetic init payloads so a frontend handshake (`__INIT__`) does
     not consume quota and immediately block the first real message.
     """
 
-    if not session_id:
+    session_ids = _anonymous_session_identities(session_id, *extra_session_ids)
+    if not session_ids:
         return 0
 
     return (
         Conversacion.query
-        .filter(Conversacion.session_id == session_id)
+        .filter(Conversacion.session_id.in_(session_ids))
         .filter(Conversacion.timestamp >= datetime.utcnow() - timedelta(minutes=window_minutes))
         .filter(~Conversacion.pregunta.in_(["", "__INIT__"]))
         .count()
@@ -2143,7 +2153,14 @@ def _procesar_chat(
             except (TypeError, ValueError):
                 session_timeout_minutes = 24 * 60 if public_trial_active else 15
 
-            last_message_time = db.session.query(func.max(Conversacion.timestamp))                 .filter(Conversacion.session_id == anon_id)                 .scalar()
+            anonymous_session_ids = _anonymous_session_identities(anon_id, chat_session_id_header)
+            last_message_time = None
+            if anonymous_session_ids:
+                last_message_time = (
+                    db.session.query(func.max(Conversacion.timestamp))
+                    .filter(Conversacion.session_id.in_(anonymous_session_ids))
+                    .scalar()
+                )
 
             session_expired = False
             if last_message_time:
@@ -2155,6 +2172,7 @@ def _procesar_chat(
                 message_count_this_session = _anonymous_message_count(
                     anon_id,
                     session_timeout_minutes,
+                    chat_session_id_header,
                 )
 
                 current_app.logger.info(f"Usuario anónimo {anon_id}: {message_count_this_session} mensajes en la sesión actual (límite: {max_messages}).")
