@@ -7,6 +7,7 @@ from datetime import date, datetime
 from typing import Iterable, Optional, Sequence
 
 from flask import abort, current_app, g, request
+from sqlalchemy.exc import SQLAlchemyError
 
 from models import TenantProfile
 
@@ -113,7 +114,11 @@ def parse_filters(args) -> AnalyticsFilters:
     if not tenant_id:
         tenant_slug = (args.get("tenant_slug") or args.get("tenant") or "").strip().lower()
         if tenant_slug:
-            tenant_obj = TenantProfile.query.filter(TenantProfile.slug.ilike(tenant_slug)).first()
+            try:
+                tenant_obj = TenantProfile.query.filter(TenantProfile.slug.ilike(tenant_slug)).first()
+            except SQLAlchemyError:
+                current_app.logger.exception("[analytics] tenant_slug resolution failed slug=%s", tenant_slug)
+                tenant_obj = None
             if tenant_obj:
                 owner_tenant_id = tenant_obj.municipio_id or tenant_obj.pyme_id
                 tenant_id = str(owner_tenant_id or tenant_obj.id)

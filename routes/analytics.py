@@ -9,6 +9,7 @@ import time
 import uuid
 
 from flask import Blueprint, abort, current_app, g, jsonify, render_template, request
+from sqlalchemy.exc import SQLAlchemyError
 from werkzeug.exceptions import HTTPException
 
 from extensions import db
@@ -119,6 +120,51 @@ def _tenant_id_from_filters(filters: AnalyticsFilters) -> int:
         return int(filters.tenant_id)
     except (TypeError, ValueError):
         return 0
+
+
+def _requested_tenant_slug() -> str:
+    return (request.args.get("tenant_slug") or request.args.get("tenant") or "").strip().lower()
+
+
+def _resolve_identity_event_tenant_id(filters: AnalyticsFilters) -> tuple[int | None, dict[str, Any]]:
+    """Resolve the numeric tenant_profile id used by analytics_events_v2.
+
+    Some dashboards still authorize analytics with the owner user id, while
+    AnalyticsEventV2.tenant_id stores the TenantProfile id. When the frontend
+    sends a slug, prefer the profile id for the event-store query.
+    """
+
+    tenant_slug = _requested_tenant_slug()
+    if tenant_slug:
+        try:
+            tenant = TenantProfile.query.filter(TenantProfile.slug.ilike(tenant_slug)).first()
+        except SQLAlchemyError:
+            current_app.logger.exception("[analytics] identity coverage tenant resolution failed slug=%s", tenant_slug)
+            return None, {
+                "error": "No se pudo resolver el tenant de analytics",
+                "status": 503,
+                "tenant_slug": tenant_slug,
+            }
+        if not tenant:
+            return None, {
+                "error": f"tenant_slug '{tenant_slug}' no encontrado",
+                "status": 404,
+                "tenant_slug": tenant_slug,
+            }
+        return int(tenant.id), {
+            "tenant_slug": tenant.slug,
+            "tenant_profile_id": tenant.id,
+            "owner_tenant_id": tenant.municipio_id or tenant.pyme_id,
+        }
+
+    try:
+        return int(filters.tenant_id), {"tenant_profile_id": int(filters.tenant_id)}
+    except (TypeError, ValueError):
+        return None, {
+            "error": "tenant_id debe ser numérico o debe enviarse un tenant_slug válido",
+            "status": 400,
+            "tenant_id": filters.tenant_id,
+        }
 
 def _resolve_tenant_id_from_event_payload(payload: dict) -> int | None:
     """Resolve tenant id from JSON/body/query hints used by frontend trackers."""
@@ -681,6 +727,13 @@ def analytics_identity_coverage():
     filters = parse_filters(request.args)
     require_access(filters.tenant_id, "visor", required_capability="analytics.read")
 
+    event_tenant_id, tenant_resolution = _resolve_identity_event_tenant_id(filters)
+    if event_tenant_id is None:
+        return _error_response(
+            tenant_resolution.get("error", "tenant no resuelto"),
+            status=int(tenant_resolution.get("status") or 400),
+        )
+
     try:
         limit = int(request.args.get("limit", 5000))
     except (TypeError, ValueError):
@@ -690,23 +743,41 @@ def analytics_identity_coverage():
     if limit > 20000:
         limit = 20000
 
-    query = AnalyticsEventV2.query.filter(AnalyticsEventV2.tenant_id == filters.tenant_id)
-    if filters.date_from:
-        query = query.filter(AnalyticsEventV2.ts >= filters.date_from)
-    if filters.date_to:
-        query = query.filter(AnalyticsEventV2.ts <= filters.date_to)
+    data_status = "ok"
+    warnings: list[dict[str, Any]] = []
+    try:
+        query = AnalyticsEventV2.query.filter(AnalyticsEventV2.tenant_id == event_tenant_id)
+        if filters.date_from:
+            query = query.filter(AnalyticsEventV2.ts >= filters.date_from)
+        if filters.date_to:
+            query = query.filter(AnalyticsEventV2.ts <= filters.date_to)
 
-    rows = (
-        query.with_entities(
-            AnalyticsEventV2.channel.label("channel"),
-            AnalyticsEventV2.metadata_payload.label("metadata"),
-            AnalyticsEventV2.session_id.label("session_id"),
-            AnalyticsEventV2.anon_id.label("anon_id"),
+        rows = (
+            query.with_entities(
+                AnalyticsEventV2.channel.label("channel"),
+                AnalyticsEventV2.metadata_payload.label("metadata"),
+                AnalyticsEventV2.session_id.label("session_id"),
+                AnalyticsEventV2.anon_id.label("anon_id"),
+            )
+            .order_by(AnalyticsEventV2.ts.desc())
+            .limit(limit)
+            .all()
         )
-        .order_by(AnalyticsEventV2.ts.desc())
-        .limit(limit)
-        .all()
-    )
+    except SQLAlchemyError as exc:
+        db.session.rollback()
+        current_app.logger.exception(
+            "[analytics] identity coverage query failed tenant_id=%s filters_tenant=%s",
+            event_tenant_id,
+            filters.tenant_id,
+        )
+        rows = []
+        data_status = "degraded"
+        warnings.append(
+            {
+                "code": "identity_coverage_query_failed",
+                "message": "No se pudo leer la cobertura de identidad; se devuelve una muestra vacia para no bloquear el panel.",
+            }
+        )
 
     events = [
         {
@@ -739,25 +810,43 @@ def analytics_identity_coverage():
     if emit_alert_events and alerts:
         require_access(filters.tenant_id, "operador", required_capability="analytics.admin")
         event_payloads = _build_identity_alert_event_payloads(
-            tenant_id=_tenant_id_from_filters(filters),
+            tenant_id=event_tenant_id,
             alerts=alerts,
             target_pct=target_pct,
             overall_coverage_pct=float(coverage.get("coverage_pct", 0.0)),
         )
         for event in event_payloads:
-            analytics_ingestor.track(
-                tenant_id=event["tenant_id"],
-                event_name=event["event_name"],
-                payload=event["payload"],
-                channel=event.get("channel") or "system",
-                session_id="identity_coverage_monitor",
-                tenant_type=filters.scope,
-            )
-        alert_event_count = len(event_payloads)
+            try:
+                analytics_ingestor.track(
+                    tenant_id=event["tenant_id"],
+                    event_name=event["event_name"],
+                    payload=event["payload"],
+                    channel=event.get("channel") or "system",
+                    session_id="identity_coverage_monitor",
+                    tenant_type=filters.scope,
+                )
+                alert_event_count += 1
+            except Exception as exc:  # noqa: BLE001 - alert emission must not break dashboard reads.
+                db.session.rollback()
+                current_app.logger.exception(
+                    "[analytics] identity coverage alert emission failed tenant_id=%s channel=%s",
+                    event.get("tenant_id"),
+                    event.get("channel"),
+                )
+                data_status = "degraded"
+                warnings.append(
+                    {
+                        "code": "identity_coverage_alert_emit_failed",
+                        "message": "La cobertura se calculo, pero no se pudo registrar el evento de alerta.",
+                    }
+                )
+                break
 
     coverage.update(
         {
             "tenant_id": filters.tenant_id,
+            "event_tenant_id": event_tenant_id,
+            "tenant_resolution": tenant_resolution,
             "sample_size": len(events),
             "limit": limit,
             "date_from": filters.date_from.isoformat() if filters.date_from else None,
@@ -769,6 +858,8 @@ def analytics_identity_coverage():
             "alert_count": len(alerts),
             "emit_alert_events": emit_alert_events,
             "alert_events_emitted": alert_event_count,
+            "data_status": data_status,
+            "warnings": warnings,
             "contract_version": ANALYTICS_IDENTITY_COVERAGE_CONTRACT_VERSION,
         }
     )
