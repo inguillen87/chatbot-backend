@@ -832,12 +832,101 @@ def test_admin_analytics_realtime_hub_includes_surveys_and_geo(client):
     assert data.get('comments')
     assert data.get('hotspots') == [{'label': 'centro', 'count': 1}]
     assert (data.get('geo_points') or [])[0]['channel'] == 'realtime_voice'
-    assert (data.get('geo_layers') or {}).get('provider') == 'maplibre'
-    assert (data.get('geo_layers') or {}).get('source', {}).get('features')
+    geo_layers = data.get('geo_layers') or {}
+    assert geo_layers.get('provider') == 'maplibre'
+    assert geo_layers.get('engine') == 'maplibre-gl-js'
+    assert geo_layers.get('contract_version') == '2026.04-maplibre-v1'
+    assert geo_layers.get('source', {}).get('features')
+    assert geo_layers.get('source_options', {}).get('cluster') is True
+    assert geo_layers.get('layers', {}).get('heatmap', {}).get('id') == 'events-heat'
+    assert geo_layers.get('layers', {}).get('clusters', {}).get('id') == 'events-clusters'
+    assert geo_layers.get('layers', {}).get('points', {}).get('id') == 'events-points'
+    assert geo_layers.get('telemetry', {}).get('event_endpoint') == '/api/analytics/event'
     assert (data.get('segments') or {}).get('categoria')
-    assert (data.get('ui') or {}).get('labels', {}).get('empty_map')
+    labels = (data.get('ui') or {}).get('labels', {})
+    assert labels.get('tabs_realtime_hub') == 'Realtime Hub'
+    assert labels.get('sections_map') == 'Mapa en tiempo real'
+    assert labels.get('sections_segments') == 'Segmentos'
+    assert labels.get('empty_map')
     assert isinstance((data.get('geo') or {}).get('points'), list)
     assert isinstance((data.get('recommendations') or []), list)
+
+
+def test_admin_analytics_realtime_hub_applies_segment_filters_to_geo_layers(client):
+    tenant_id = 339
+    now = datetime.utcnow()
+    db.session.add(
+        AnalyticsEventV2(
+            tenant_id=tenant_id,
+            event_name='crear_reclamo',
+            tenant_type='municipio',
+            channel='voice',
+            ts=now,
+            lat=-34.61,
+            lng=-58.38,
+            metadata_payload={
+                'categoria': 'seguridad',
+                'barrio': 'centro',
+                'distrito': 'norte',
+                'sexo': 'f',
+                'edad': 31,
+                'votos': 8,
+            },
+        )
+    )
+    db.session.add(
+        AnalyticsEventV2(
+            tenant_id=tenant_id,
+            event_name='crear_reclamo',
+            tenant_type='municipio',
+            channel='web',
+            ts=now,
+            lat=-34.7,
+            lng=-58.5,
+            metadata_payload={
+                'categoria': 'transito',
+                'barrio': 'sur',
+                'distrito': 'sur',
+                'sexo': 'm',
+                'edad': 42,
+                'votos': 3,
+            },
+        )
+    )
+    db.session.commit()
+
+    response = client.get(
+        '/admin/analytics/realtime-hub',
+        query_string={
+            'tenant_id': tenant_id,
+            'scope': 'municipio',
+            'window_minutes': 60,
+            'categoria': 'seguridad',
+            'canal': 'voice',
+            'sexo': 'f',
+            'rango_edad': '25-34',
+            'geo_limit': 125,
+            'bbox': '-59,-35,-58,-34',
+        },
+        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
+    )
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data.get('segments_filters_applied') == {
+        'canal': ['voice'],
+        'categoria': ['seguridad'],
+        'rango_edad': ['25-34'],
+        'sexo': ['f'],
+    }
+    assert (data.get('segments') or {}).get('categoria') == [{'label': 'seguridad', 'count': 1}]
+    geo_layers = data.get('geo_layers') or {}
+    assert geo_layers.get('source_meta', {}).get('limit') == 125
+    assert geo_layers.get('source_meta', {}).get('bbox') == [-59.0, -35.0, -58.0, -34.0]
+    features = geo_layers.get('source', {}).get('features') or []
+    assert len(features) == 1
+    assert features[0]['properties']['categoria'] == 'seguridad'
+    assert (geo_layers.get('categories') or [])[0]['total_weight'] == 8
 
 
 def test_api_alias_admin_analytics_realtime_hub_available(client):
@@ -1020,6 +1109,10 @@ def test_api_alias_analytics_event_maps_to_ingestor(client):
     )
 
     assert response.status_code == 202
+    payload = response.get_json()
+    assert payload.get('ok') is True
+    assert payload.get('request_id')
+    assert response.headers.get('X-Request-Id') == payload.get('request_id')
     assert AnalyticsEventV2.query.filter_by(tenant_id=tenant_id, event_name='dashboard_open').first() is not None
 
 

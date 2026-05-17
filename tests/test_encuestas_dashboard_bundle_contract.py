@@ -15,9 +15,19 @@ def test_dashboard_bundle_includes_normalized_cards_and_states(monkeypatch):
         "get_heatmap",
         lambda encuesta_id, filtros=None: {
             "points": [{"lat": -33.1, "lng": -68.8, "weight": 1}],
+            "cells": [{"lat": -33.1, "lng": -68.8, "count": 1}],
+            "headline": "Mapa con participacion territorial.",
+            "legend": {"mode": "category_weight"},
+            "empty_state": "Sin puntos geograficos publicados",
+            "recommended_action": {"label": "Ver mapa", "route": "/admin/encuestas/84/analytics/heatmap"},
             "metadata": {
-                "map": {"hotspots": []},
-                "category_layers": {"provider": "maplibre", "categories": [{"categoria": "seguridad", "total_weight": 2}]},
+                "map": {"hotspots": [{"label": "Centro", "count": 1}]},
+                "category_layers": {
+                    "provider": "maplibre",
+                    "source_options": {"cluster": True},
+                    "telemetry": {"event_endpoint": "/api/analytics/event"},
+                    "categories": [{"categoria": "seguridad", "total_weight": 2}],
+                },
             },
         },
     )
@@ -55,7 +65,22 @@ def test_dashboard_bundle_includes_normalized_cards_and_states(monkeypatch):
     assert "categorias" in bundle["sections"]["estadisticas"]
     assert "demografia" in bundle["sections"]["estadisticas"]
     assert "ia" in bundle["sections"]
-    assert bundle["sections"]["mapas"]["heatmap"]["category_layers"]["provider"] == "maplibre"
+    heatmap_section = bundle["sections"]["mapas"]["heatmap"]
+    assert heatmap_section["points"]
+    assert heatmap_section["cells"]
+    assert heatmap_section["hotspots"] == [{"label": "Centro", "count": 1}]
+    assert heatmap_section["headline"] == "Mapa con participacion territorial."
+    assert heatmap_section["legend"]["mode"] == "category_weight"
+    assert heatmap_section["empty_state"] == "Sin puntos geograficos publicados"
+    assert heatmap_section["recommended_action"]["label"] == "Ver mapa"
+    assert heatmap_section["category_layers"]["provider"] == "maplibre"
+    assert heatmap_section["category_layers"]["source_options"]["cluster"] is True
+    assert heatmap_section["category_layers"]["telemetry"]["event_endpoint"] == "/api/analytics/event"
+    assert bundle["sections"]["estadisticas"]["resumen"]["total_respuestas"] == 12
+    assert "genero" in bundle["sections"]["estadisticas"]["demografia"]
+    assert "rango_etario" in bundle["sections"]["estadisticas"]["demografia"]
+    assert "headline" in bundle["sections"]["ia"]
+    assert "insights" in bundle["sections"]["ia"]
 
 
 def test_dashboard_bundle_handles_empty_states(monkeypatch):

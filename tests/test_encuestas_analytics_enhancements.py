@@ -71,3 +71,43 @@ def test_get_heatmap_exposes_render_contract_hierarchy(monkeypatch):
     assert payload["render_contract"]["state"] == "ready"
     assert payload["render_contract"]["chart_hierarchy"][0] == "echarts"
     assert payload["render_contract"]["map_hierarchy"][0] == "maplibre"
+
+
+def test_category_heatmap_layers_publish_maplibre_enterprise_contract(monkeypatch):
+    monkeypatch.setattr(svc, "get_map_config", lambda: {"style_url": "https://maps.example.com/style.json"})
+    points = [
+        {
+            "lat": -34.61,
+            "lng": -58.38,
+            "weight": 8,
+            "categoria": "seguridad",
+            "ts": "2026-05-16T12:00:00Z",
+        },
+        {
+            "lat": -34.62,
+            "lng": -58.39,
+            "weight": 4,
+            "categoria": "transito",
+        },
+    ]
+
+    layers = svc._build_category_heatmap_layers(points)
+
+    assert layers["provider"] == "maplibre"
+    assert layers["engine"] == "maplibre-gl-js"
+    assert layers["style_url"] == "https://maps.example.com/style.json"
+    assert layers["source"]["type"] == "FeatureCollection"
+    assert layers["source_options"]["cluster"] is True
+    assert layers["layers"]["heatmap"]["id"] == "encuestas-heat"
+    assert layers["layers"]["clusters"]["id"] == "encuestas-clusters"
+    assert layers["layers"]["points"]["id"] == "encuestas-points"
+    assert layers["interactions"]["hover"] is True
+    assert layers["interactions"]["time_slider"]["field"] == "ts"
+    assert layers["telemetry"]["event_endpoint"] == "/api/analytics/event"
+    assert "cluster_click" in layers["telemetry"]["events"]
+    assert layers["legend"]["mode"] == "category_weight"
+    assert layers["legend"]["max_weight"] == 8
+    assert layers["categories"][0]["categoria"] == "seguridad"
+    assert layers["categories"][0]["color"]
+    assert layers["categories"][0]["event_count"] == 1
+    assert layers["categories"][0]["total_weight"] == 8
