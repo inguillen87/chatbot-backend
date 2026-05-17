@@ -58,6 +58,12 @@ DEMO_SEGMENT_PREFIX = "demo_segment"
 DEMO_LEAD_ACTION_ID = "open_demo_form"
 
 
+def responder_chatboc(*args, **kwargs):
+    from services.logic import responder_chatboc as _responder_chatboc
+
+    return _responder_chatboc(*args, **kwargs)
+
+
 def _normalize_chat_session_id(value: str | None) -> str:
     """Return a stable DB-safe chat session id for varchar(36) storage."""
 
@@ -928,6 +934,8 @@ def _build_trial_upgrade_contract(reason_code: str) -> Dict[str, object]:
     return {
         "required": True,
         "reason_code": reason_code,
+        "title": "Ya viste la demo real. Sigamos con una prueba guiada.",
+        "cta_label": "Dejar datos",
         "lead_capture_endpoint": "/api/public/lead-capture",
         "lead_capture_fields": ["name", "phone_or_email", "message", "tenant_slug", "sector"],
         "cta": {
@@ -939,6 +947,8 @@ def _build_trial_upgrade_contract(reason_code: str) -> Dict[str, object]:
 
 
 def _build_demo_limit_response(limite: int) -> Dict[str, object]:
+    request_id = request.headers.get("X-Request-Id") or getattr(g, "request_id", None) or uuid.uuid4().hex
+    g.request_id = request_id
     mensaje = (
         "¡Gracias por probar Chatboc! Llegaste al límite de "
         f"{limite} consultas de la demo interactiva. "
@@ -962,8 +972,16 @@ def _build_demo_limit_response(limite: int) -> Dict[str, object]:
     return {
         "contract_version": "demo.usage_limit.v1",
         "ok": False,
+        "request_id": request_id,
         "error": "demo_limit_reached",
         "reason_code": "demo_message_limit_reached",
+        "message": "Llegaste al limite de mensajes gratis de esta demo.",
+        "trial_usage": {
+            "channel": "chat",
+            "limit": limite,
+            "used": limite,
+            "remaining": 0,
+        },
         "trial_policy": {
             "contract_version": "demo.trial_policy.v1",
             "scope": "anonymous_or_sandbox_demo",
@@ -1640,8 +1658,6 @@ def _procesar_chat(
     owner_user=None,
     anon_id: str | None = None,
 ): 
-    from services.logic import responder_chatboc
-
     channel = "web"  # Define channel for this processing function
     original_user_payload = None
     # --- Session and Context Initialization ---
@@ -1946,10 +1962,20 @@ def _procesar_chat(
 
                 if message_count_this_session >= max_messages and not is_init_request:
                     reason_code = "anonymous_trial_limit_reached" if public_trial_active else "anonymous_message_limit_reached"
+                    request_id = request.headers.get("X-Request-Id") or getattr(g, "request_id", None) or uuid.uuid4().hex
+                    g.request_id = request_id
                     return jsonify({
                         "contract_version": "demo.usage_limit.v1" if public_trial_active else "shared.usage_limit.v1",
                         "ok": False,
+                        "request_id": request_id,
                         "reason_code": reason_code,
+                        "message": "Llegaste al limite de mensajes gratis de esta demo." if public_trial_active else "Alcanzaste el limite de mensajes para usuarios invitados.",
+                        "trial_usage": {
+                            "channel": "chat",
+                            "limit": max_messages,
+                            "used": max_messages,
+                            "remaining": 0,
+                        },
                         "trial_policy": {
                             "contract_version": "demo.trial_policy.v1",
                             "scope": "anonymous_or_sandbox_demo" if public_trial_active else "anonymous_public_chat",

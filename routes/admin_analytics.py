@@ -249,7 +249,7 @@ def _etag_for_payload(payload: dict[str, Any]) -> str:
 
 def _request_id() -> str:
     inbound = (request.headers.get("X-Request-Id") or request.headers.get("X-Correlation-Id") or "").strip()
-    return inbound or uuid.uuid4().hex
+    return inbound or f"req_{uuid.uuid4().hex}"
 
 
 def _pdf_escape(value: Any) -> str:
@@ -571,6 +571,7 @@ def _build_maplibre_heatmap_layers(events: list[dict[str, Any]], *, style_url: s
                     "barrio": labels.get("barrio", "sin_dato"),
                     "distrito": labels.get("distrito", "sin_dato"),
                     "canal": labels.get("canal", "sin_dato"),
+                    "channel": labels.get("canal", "sin_dato"),
                     "weight": round(weight, 4),
                     "ts": ts_value,
                 },
@@ -589,9 +590,18 @@ def _build_maplibre_heatmap_layers(events: list[dict[str, Any]], *, style_url: s
             "legend": {"mode": "category_weight", "min_weight": 0, "max_weight": 0},
             "source": feature_collection,
             "source_meta": {"limit": source_limit, "bbox": list(bbox) if bbox else None, "total_input_events": len(events)},
+            "source_options": {
+                "cluster": True,
+                "clusterMaxZoom": 14,
+                "clusterRadius": 45,
+            },
+            "layers": {
+                "heatmap": {"id": "events-heat", "type": "heatmap", "source": "events"},
+                "clusters": {"id": "events-clusters", "type": "circle", "source": "events"},
+                "points": {"id": "events-points", "type": "circle", "source": "events"},
+            },
             "interactions": {
                 "hover": True,
-                "clusters": {"enabled": True, "max_zoom": 14, "radius": 45},
                 "time_slider": {"enabled": False, "field": "ts"},
             },
             "telemetry": {
@@ -657,7 +667,6 @@ def _build_maplibre_heatmap_layers(events: list[dict[str, Any]], *, style_url: s
         },
         "interactions": {
             "hover": True,
-            "clusters": {"enabled": True, "max_zoom": 14, "radius": 45},
             "time_slider": {
                 "enabled": bool(min_ts and max_ts and min_ts != max_ts),
                 "field": "ts",
@@ -670,6 +679,201 @@ def _build_maplibre_heatmap_layers(events: list[dict[str, Any]], *, style_url: s
             "event_endpoint": "/api/analytics/event",
             "events": ["map_loaded", "layer_toggle", "time_slider_changed", "cluster_click"],
         },
+    }
+
+
+def _iso_z(value: Any) -> str | None:
+    if not isinstance(value, datetime):
+        return None
+    parsed = value
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _geo_points_from_layers(geo_layers: dict[str, Any], *, limit: int = 2000) -> list[dict[str, Any]]:
+    source = geo_layers.get("source") if isinstance(geo_layers, dict) else {}
+    features = source.get("features") if isinstance(source, dict) else []
+    points: list[dict[str, Any]] = []
+    for feature in features or []:
+        if not isinstance(feature, dict):
+            continue
+        geometry = feature.get("geometry") if isinstance(feature.get("geometry"), dict) else {}
+        coordinates = geometry.get("coordinates") if isinstance(geometry, dict) else None
+        if not isinstance(coordinates, list) or len(coordinates) < 2:
+            continue
+        try:
+            lng = float(coordinates[0])
+            lat = float(coordinates[1])
+        except (TypeError, ValueError):
+            continue
+        properties = feature.get("properties") if isinstance(feature.get("properties"), dict) else {}
+        raw_weight = properties.get("count") or properties.get("weight") or 1
+        try:
+            count = max(1, int(round(float(raw_weight))))
+        except (TypeError, ValueError):
+            count = 1
+        point = {
+            "lat": lat,
+            "lng": lng,
+            "count": count,
+        }
+        channel = properties.get("channel") or properties.get("canal")
+        if channel:
+            point["channel"] = str(channel)
+        categoria = properties.get("categoria")
+        if categoria:
+            point["categoria"] = str(categoria)
+        points.append(point)
+        if len(points) >= limit:
+            break
+    return points
+
+
+def _compact_hotspots(hotspots: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    compact: list[dict[str, Any]] = []
+    for hotspot in hotspots or []:
+        if not isinstance(hotspot, dict):
+            continue
+        label = (
+            hotspot.get("barrio")
+            or hotspot.get("distrito")
+            or hotspot.get("categoria")
+            or hotspot.get("label")
+        )
+        if not label:
+            continue
+        compact.append({"label": str(label), "count": int(hotspot.get("count") or 0)})
+    return compact
+
+
+def _build_realtime_comments(
+    *,
+    tenant_id: int,
+    cutoff: datetime,
+    events: list[Any],
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    comments: list[dict[str, Any]] = []
+
+    for row in events:
+        metadata = row.metadata if isinstance(row.metadata, dict) else {}
+        text = (
+            metadata.get("comment")
+            or metadata.get("comentario")
+            or metadata.get("text")
+            or metadata.get("message")
+            or metadata.get("transcript")
+        )
+        if not text:
+            continue
+        sentiment = str(metadata.get("sentiment") or metadata.get("sentimiento") or "neutral").strip().lower()
+        if sentiment not in {"positive", "neutral", "negative"}:
+            sentiment = "neutral"
+        comments.append(
+            {
+                "channel": str(row.channel or metadata.get("channel") or "event").strip().lower() or "event",
+                "text": str(text).strip(),
+                "created_at": _iso_z(row.ts),
+                "sentiment": sentiment,
+            }
+        )
+
+    survey_rows = (
+        EncComentario.query.join(EncEncuesta, EncComentario.encuesta_id == EncEncuesta.id)
+        .filter(EncEncuesta.tenant_id == tenant_id)
+        .filter(EncComentario.created_at >= cutoff)
+        .order_by(EncComentario.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    for comment in survey_rows:
+        text = str(getattr(comment, "texto", "") or "").strip()
+        if not text:
+            continue
+        comments.append(
+            {
+                "channel": "survey",
+                "text": text,
+                "created_at": _iso_z(getattr(comment, "created_at", None)),
+                "sentiment": "neutral",
+            }
+        )
+
+    ticket_rows = (
+        TicketComentario.query
+        .outerjoin(MunicipioTicket, TicketComentario.municipio_ticket_id == MunicipioTicket.id)
+        .outerjoin(PymeTicket, TicketComentario.pyme_ticket_id == PymeTicket.id)
+        .filter(TicketComentario.fecha >= cutoff)
+        .filter(
+            or_(
+                MunicipioTicket.tenant_id == tenant_id,
+                MunicipioTicket.municipio_id == tenant_id,
+                PymeTicket.tenant_id == tenant_id,
+            )
+        )
+        .order_by(TicketComentario.fecha.desc())
+        .limit(limit)
+        .all()
+    )
+    for comment in ticket_rows:
+        text = str(getattr(comment, "comentario", "") or "").strip()
+        if not text:
+            continue
+        comments.append(
+            {
+                "channel": "live_chat",
+                "text": text,
+                "created_at": _iso_z(getattr(comment, "fecha", None)),
+                "sentiment": "neutral",
+            }
+        )
+
+    comments.sort(key=lambda item: item.get("created_at") or "", reverse=True)
+    return comments[:limit]
+
+
+def _build_realtime_recommendations(
+    *,
+    top_channels: list[dict[str, Any]],
+    top_events: list[dict[str, Any]],
+    sentiment: dict[str, int],
+    hotspots: list[dict[str, Any]],
+) -> list[str]:
+    recommendations: list[str] = []
+    if top_channels:
+        channel = top_channels[0].get("channel")
+        count = int(top_channels[0].get("count") or 0)
+        if channel and count:
+            recommendations.append(f"Revisar capacidad del canal {channel}: concentra {count} eventos en la ventana.")
+    if top_events:
+        event = top_events[0].get("event")
+        count = int(top_events[0].get("count") or 0)
+        if event and count:
+            recommendations.append(f"Auditar el flujo {event}: registra {count} ocurrencias recientes.")
+    negative = int(sentiment.get("negative") or 0)
+    positive = int(sentiment.get("positive") or 0)
+    if negative and negative >= positive:
+        recommendations.append(f"Atender comentarios negativos: {negative} eventos marcados como negative.")
+    if hotspots:
+        hotspot = hotspots[0]
+        label = hotspot.get("label")
+        count = int(hotspot.get("count") or 0)
+        if label and count:
+            recommendations.append(f"Analizar hotspot {label}: concentra {count} eventos geolocalizados o segmentados.")
+    return recommendations
+
+
+def _realtime_hub_ui_contract() -> dict[str, Any]:
+    return {
+        "labels": {
+            "tabs_realtime_hub": "Realtime Hub",
+            "sections_map": "Mapa en tiempo real",
+            "sections_segments": "Segmentos",
+            "empty": "Sin datos para este periodo",
+            "empty_map": "Sin puntos geograficos publicados",
+            "applied_filters": "Filtros aplicados",
+        }
     }
 
 
@@ -740,6 +944,7 @@ def admin_analytics_overview():
 
 @admin_analytics_bp.get("/heatmap")
 def admin_analytics_heatmap():
+    request_id = _request_id()
     filters = parse_filters(request.args)
     require_access(filters.tenant_id, "operador", required_capability="analytics.admin")
     tz = request.args.get("tz") or "UTC"
@@ -788,10 +993,15 @@ def admin_analytics_heatmap():
     style_url = map_cfg.get("style_url") or "https://demotiles.maplibre.org/style.json"
     source_limit = _coerce_geo_limit(request.args.get("geo_limit"))
     bbox = _parse_bbox(request.args.get("bbox"))
+    geo_layers = _build_maplibre_heatmap_layers(filtered_events, style_url=style_url, source_limit=source_limit, bbox=bbox)
+    geo_points = _geo_points_from_layers(geo_layers, limit=source_limit)
 
-    return _json({
+    response = _json({
+        "contract_version": "analytics.heatmap.v1",
+        "request_id": request_id,
+        "points": geo_points,
         "geo": base,
-        "geo_layers": _build_maplibre_heatmap_layers(filtered_events, style_url=style_url, source_limit=source_limit, bbox=bbox),
+        "geo_layers": geo_layers,
         "temporal": temporal,
         "segments": _aggregate_heatmap_segments(filtered_events),
         "segments_filters_applied": {k: sorted(v) for k, v in segment_filters.items()},
@@ -799,6 +1009,8 @@ def admin_analytics_heatmap():
         "hotspots": _build_hotspots(filtered_events),
         "tz": tz,
     })
+    response.headers.setdefault("X-Request-Id", request_id)
+    return response
 
 
 
@@ -832,7 +1044,6 @@ def _build_realtime_hub_payload(filters, *, window_minutes: int = 30) -> dict[st
     channel_counts: dict[str, int] = {}
     event_counts: dict[str, int] = {}
     sentiment = {"positive": 0, "neutral": 0, "negative": 0}
-    points = []
 
     for row in events:
         ch = (row.channel or "unknown").lower()
@@ -843,8 +1054,6 @@ def _build_realtime_hub_payload(filters, *, window_minutes: int = 30) -> dict[st
         sent = str(md.get("sentiment") or md.get("sentimiento") or "").lower()
         if sent in sentiment:
             sentiment[sent] += 1
-        if row.lat is not None and row.lng is not None:
-            points.append({"lat": float(row.lat), "lng": float(row.lng), "weight": 1})
 
     survey_responses = EncRespuesta.query.filter_by(tenant_id=tenant_id).filter(EncRespuesta.created_at >= cutoff).count()
     survey_comments = (
@@ -878,7 +1087,32 @@ def _build_realtime_hub_payload(filters, *, window_minutes: int = 30) -> dict[st
         for name, count in sorted(channel_counts.items(), key=lambda item: item[1], reverse=True)[:10]
     ]
 
+    segment_events = [
+        {"channel": row.channel, "metadata": row.metadata, "ts": row.ts, "lat": row.lat, "lng": row.lng}
+        for row in events
+    ]
+    segment_filters = _extract_segment_filters()
+    filtered_events = [event for event in segment_events if _event_matches_segment_filters(event, segment_filters)]
+
+    map_cfg = get_map_config() or {}
+    style_url = map_cfg.get("style_url") or "https://demotiles.maplibre.org/style.json"
+    source_limit = _coerce_geo_limit(request.args.get("geo_limit"))
+    bbox = _parse_bbox(request.args.get("bbox"))
+    geo_layers = _build_maplibre_heatmap_layers(filtered_events, style_url=style_url, source_limit=source_limit, bbox=bbox)
+    geo_points = _geo_points_from_layers(geo_layers, limit=source_limit)
+    hotspots = _compact_hotspots(_build_hotspots(filtered_events, limit=20))
+    comments = _build_realtime_comments(tenant_id=tenant_id, cutoff=cutoff, events=list(events), limit=20)
+
+    recommendations = _build_realtime_recommendations(
+        top_channels=top_channels,
+        top_events=top_events,
+        sentiment=sentiment,
+        hotspots=hotspots,
+    )
+
     return {
+        "contract_version": "analytics.realtime_hub.v1",
+        "request_id": _request_id(),
         "tenant_id": tenant_id,
         "scope": filters.scope,
         "window_minutes": window_minutes,
@@ -889,18 +1123,23 @@ def _build_realtime_hub_payload(filters, *, window_minutes: int = 30) -> dict[st
             "survey_comments": survey_comments,
             "live_chat_comments": live_chat_comments,
         },
+        "top_channels": top_channels,
+        "top_events": top_events,
         "channels": top_channels,
         "events": top_events,
         "sentiment": sentiment,
+        "comments": comments,
+        "recommendations": recommendations,
+        "hotspots": hotspots,
+        "geo_points": geo_points,
+        "geo_layers": geo_layers,
+        "segments": _aggregate_heatmap_segments(filtered_events),
+        "segments_filters_applied": {k: sorted(v) for k, v in segment_filters.items()},
+        "ui": _realtime_hub_ui_contract(),
         "geo": {
-            "points": points[:2000],
-            "hotspots": _build_hotspots([{"channel": e.channel, "metadata": e.metadata, "ts": e.ts} for e in events], limit=20),
+            "points": geo_points,
+            "hotspots": hotspots,
         },
-        "recommendations": [
-            "Priorizar canales con mayor volumen para staffing en vivo.",
-            "Cruzar comentarios de encuestas con eventos realtime para detectar quiebres UX.",
-            "Activar alertas cuando suban eventos negativos por barrio/canal.",
-        ],
     }
 
 
@@ -910,7 +1149,9 @@ def admin_analytics_realtime_hub():
     require_access(filters.tenant_id, "operador", required_capability="analytics.admin")
     window_minutes = request.args.get("window_minutes", 30)
     payload = _build_realtime_hub_payload(filters, window_minutes=window_minutes)
-    return _json(payload)
+    response = _json(payload)
+    response.headers.setdefault("X-Request-Id", payload.get("request_id") or _request_id())
+    return response
 
 
 @admin_analytics_bp.get("/whatsapp-funnel")

@@ -104,6 +104,8 @@ def _demo_upgrade_payload(reason_code: str = "demo_message_limit_reached") -> di
     return {
         "required": True,
         "reason_code": reason_code,
+        "title": "Ya viste la demo real. Sigamos con una prueba guiada.",
+        "cta_label": "Dejar datos",
         "lead_capture_endpoint": "/api/public/lead-capture",
         "lead_capture_fields": ["name", "phone_or_email", "message", "tenant_slug", "sector"],
         "cta": {
@@ -1015,12 +1017,30 @@ def _realtime_rate_limit_headers() -> dict[str, str]:
 
 
 def _realtime_error_response(error: str, status: int, **extra):
-    payload = {"error": error}
+    request_id = str(request.headers.get("X-Request-Id") or getattr(g, "request_id", None) or os.urandom(8).hex())
+    g.request_id = request_id
+    default_messages = {
+        "realtime_trial_limit_reached": "La demo de llamada ya fue utilizada.",
+        "rate_limit_exceeded": "Demasiados intentos seguidos. Proba nuevamente en unos segundos.",
+        "widget_token_invalid": "No pudimos validar este widget.",
+        "tenant_slug_required": "Falta identificar el tenant para iniciar la sesion.",
+        "video_realtime_disabled": "La videollamada no esta disponible para esta demo.",
+        "voice_realtime_disabled": "La llamada no esta disponible para esta demo.",
+        "openai_api_key_missing": "La llamada no esta disponible temporalmente.",
+    }
+    payload = {
+        "ok": False,
+        "error": error,
+        "reason_code": extra.get("reason_code") or error,
+        "message": extra.get("message") or default_messages.get(error) or "No pudimos iniciar la sesion realtime.",
+        "request_id": request_id,
+    }
     payload.update(extra)
     response = jsonify(payload)
     response.status_code = status
     for key, value in _realtime_rate_limit_headers().items():
         response.headers[key] = value
+    response.headers["X-Request-Id"] = request_id
     return response
 
 

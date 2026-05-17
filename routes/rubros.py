@@ -7,10 +7,10 @@ from services.demo_pillar_catalog import catalog_resources_for_rubro, curated_de
 rubros_bp = Blueprint("rubros", __name__)
 
 
-def load_demo_rubros():
+def load_demo_rubros(*args, **kwargs):
     from services.demo_registry import load_demo_rubros as _load_demo_rubros
 
-    return _load_demo_rubros()
+    return _load_demo_rubros(*args, **kwargs)
 
 
 def _widget_preview_for_rubro(item: dict) -> dict:

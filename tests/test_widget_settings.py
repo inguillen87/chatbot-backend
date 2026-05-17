@@ -332,8 +332,12 @@ class WidgetSettingsTests(unittest.TestCase):
         payload = second.get_json()
         self.assertEqual(payload["error"], "realtime_trial_limit_reached")
         self.assertEqual(payload["reason_code"], "realtime_trial_limit_reached")
+        self.assertEqual(payload["message"], "La demo de llamada ya fue utilizada.")
+        self.assertTrue(payload.get("request_id"))
         self.assertEqual(payload["trial_usage"]["limit"], 1)
         self.assertEqual(payload["trial_usage"]["remaining"], 0)
+        self.assertEqual(payload["upgrade"]["title"], "Ya viste la demo real. Sigamos con una prueba guiada.")
+        self.assertEqual(payload["upgrade"]["cta_label"], "Dejar datos")
         self.assertEqual(payload["upgrade"]["lead_capture_endpoint"], "/api/public/lead-capture")
         self.assertEqual(mock_urlopen.call_count, 1)
 
@@ -369,6 +373,23 @@ class WidgetSettingsTests(unittest.TestCase):
         self.assertEqual(response.status_code, 503)
         self.assertIn("X-RateLimit-Limit", response.headers)
         self.assertIn("X-RateLimit-Window", response.headers)
+
+    def test_demo_limit_response_exposes_frontend_trial_contract(self):
+        from routes.chat import _build_demo_limit_response
+
+        with self.app.test_request_context(headers={"X-Request-Id": "req-demo-limit"}):
+            payload = _build_demo_limit_response(10)
+
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["reason_code"], "demo_message_limit_reached")
+        self.assertEqual(payload["message"], "Llegaste al limite de mensajes gratis de esta demo.")
+        self.assertEqual(payload["request_id"], "req-demo-limit")
+        self.assertEqual(payload["trial_usage"]["channel"], "chat")
+        self.assertEqual(payload["trial_usage"]["limit"], 10)
+        self.assertEqual(payload["trial_usage"]["remaining"], 0)
+        self.assertEqual(payload["upgrade"]["title"], "Ya viste la demo real. Sigamos con una prueba guiada.")
+        self.assertEqual(payload["upgrade"]["cta_label"], "Dejar datos")
+        self.assertEqual(payload["upgrade"]["lead_capture_endpoint"], "/api/public/lead-capture")
 
     def test_public_widget_config_allows_querystring_tenant_fallback(self):
         resp = self.client.get(
