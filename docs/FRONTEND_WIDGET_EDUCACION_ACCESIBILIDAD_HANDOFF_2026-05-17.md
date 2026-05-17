@@ -172,6 +172,7 @@ No convertir esas URLs en rutas internas de React. Usar `<a href target="_blank"
 ## 5. Accesibilidad
 
 Backend puede publicar hints, pero el minimo esperado para UX es:
+
 Base recomendada: WCAG 2.2 AA. El widget debe tratar chat, voz y avatar como superficies accesibles, no como decoracion.
 
 Requisitos minimos:
@@ -218,9 +219,9 @@ Usar lenguaje escolar solo si backend lo publica:
 ## 7. QA compartida
 
 1. Cambiar de Empresas a Colegios no conserva token/owner anterior.
-2. El primer saludo de Colegios no menciona municipio.
-3. Los tres botones del menu rapido envian `action_id` al backend y reciben respuesta real.
-4. Adjuntar imagen/PDF despues de `justify_absence` crea caso escolar.
+2. El saludo de Colegios no menciona municipio.
+3. `create_school_case`, `justify_absence` y `talk_secretary` llegan como `action_id`.
+4. Adjuntos tras `justify_absence` crean caso escolar.
 5. `talk_secretary` crea ticket visible para admin con estado `esperando_agente_en_vivo`.
 6. PDFs demo abren desde `/api/v2/demo/catalog-assets/...` sin 404 SPA.
 7. Widget se usa completo con teclado y lector de pantalla.
