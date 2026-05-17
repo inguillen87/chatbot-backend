@@ -8,7 +8,7 @@ os.environ.setdefault("TESTING", "1")
 from app import create_app, db
 from config import Config
 from models import ChatSessionContext, PymeTicket, TenantProfile, User
-from models_education import SchoolCaseAlias
+from models_education import Campus, School, SchoolCaseAlias
 from services.pymes import responder_pyme
 from services.ticket_service import servicio_tickets
 
@@ -42,6 +42,21 @@ class EducationWidgetFlowTest(unittest.TestCase):
             is_active=True,
         )
         db.session.add(self.tenant)
+        db.session.flush()
+        self.school = School(
+            tenant_id=self.tenant.id,
+            name="QA Colegio Sandbox",
+            status="active",
+        )
+        db.session.add(self.school)
+        db.session.flush()
+        db.session.add(
+            Campus(
+                school_id=self.school.id,
+                name="Sede principal",
+                is_main=True,
+            )
+        )
         db.session.flush()
         self.session_context = ChatSessionContext(
             chat_session_id="edu-widget-session",

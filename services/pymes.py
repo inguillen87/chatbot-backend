@@ -236,6 +236,7 @@ def _handle_education_widget_turn(
             "cliente_id": getattr(viewer_user, "id", None),
             "anon_id": anon_id,
             "user_id": getattr(owner_user, "id", None),
+            "tenant_id": getattr(tenant_profile, "id", None),
             "chat_db_context_data": context_data,
             "channel": channel,
             "target_entity_type": "pyme",

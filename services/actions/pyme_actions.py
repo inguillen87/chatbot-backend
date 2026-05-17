@@ -408,12 +408,17 @@ class DerivarHumanoActionHandlerPyme(BasePymeHandler):
                 "nombre_cliente": nombre,
                 "telefono_cliente": telefono,
                 "email_cliente": email,
+                "tenant_id": self.context.get("tenant_id"),
                 "pyme_id": getattr(owner_user, "id", None)
             }
 
             ticket_data_cleaned = {k: v for k, v in ticket_data.items() if v is not None}
 
-            sala = servicio_tickets.crear_nuevo_ticket(tipo_ticket="pyme", ticket_data=ticket_data_cleaned)
+            sala = servicio_tickets.crear_nuevo_ticket(
+                tipo_ticket="pyme",
+                ticket_data=ticket_data_cleaned,
+                return_object=True,
+            )
             if not sala:
                 raise Exception("crear_nuevo_ticket devolvió None")
 
