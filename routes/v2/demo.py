@@ -2247,6 +2247,17 @@ def demo_whatsapp_sandbox_launcher_v2():
     chat_session_id = _stable_demo_chat_session_id(demo_session_id)
     join_phrase = str(payload.get("join_phrase") or _twilio_sandbox_join_phrase()).strip()
     demo_whatsapp_number = _demo_whatsapp_number_for_tenant(tenant)
+    education_profile = build_education_profile(tenant)
+    education_whatsapp_playbook = build_education_whatsapp_playbook(tenant) if education_profile.get("is_education") else None
+    education_payload = None
+    if education_profile.get("is_education"):
+        education_payload = {
+            "profile": education_profile,
+            "education_profile": education_profile,
+            "whatsapp_playbook": education_whatsapp_playbook,
+            "quick_menu": (education_whatsapp_playbook or {}).get("quick_menu") or [],
+            "primary_actions": (education_whatsapp_playbook or {}).get("primary_actions") or [],
+        }
     whatsapp_sandbox = build_demo_whatsapp_sandbox_contract(
         tenant_slug=tenant.slug,
         sector=sector,
@@ -2255,6 +2266,8 @@ def demo_whatsapp_sandbox_launcher_v2():
         join_phrase=join_phrase,
         source=str(payload.get("source") or "public_demo_profile"),
         provider="twilio_whatsapp_number" if demo_whatsapp_number else "twilio_sandbox",
+        whatsapp_playbook=education_whatsapp_playbook,
+        education=education_payload,
     )
 
     return _json_response(
@@ -2269,6 +2282,7 @@ def demo_whatsapp_sandbox_launcher_v2():
                 "max_messages": (whatsapp_sandbox.get("trial_policy") or {}).get("max_messages"),
             },
             "whatsapp_sandbox": whatsapp_sandbox,
+            "education": education_payload,
             "trial_policy": whatsapp_sandbox.get("trial_policy"),
             "supported_inputs": whatsapp_sandbox.get("supported_inputs"),
             "scenario_scripts": whatsapp_sandbox.get("scenario_scripts"),
@@ -2528,6 +2542,13 @@ def demo_session_v2():
         subvertical=tenant.subvertical,
         education_profile=education_profile if education_profile.get("is_education") else None,
     )
+    education_public_profile = None
+    if education_profile.get("is_education"):
+        education_public_profile = {
+            **education_profile,
+            "primary_actions": experience.get("education_primary_actions") or [],
+            "quick_menu": experience.get("education_quick_menu") or [],
+        }
     onboarding = experience.get("guided_onboarding") or {}
     quick_replies = _quick_reply_items(onboarding.get("starter_prompts") or [])
     media_capabilities = experience.get("media_capabilities") or {}
@@ -2558,6 +2579,7 @@ def demo_session_v2():
         rubro_context=rubro_context,
     )
     demo_whatsapp_number = _demo_whatsapp_number_for_tenant(tenant)
+    education_whatsapp_playbook = build_education_whatsapp_playbook(tenant) if education_profile.get("is_education") else None
     whatsapp_sandbox = build_demo_whatsapp_sandbox_contract(
         tenant_slug=tenant.slug,
         sector=sector,
@@ -2566,17 +2588,19 @@ def demo_session_v2():
         join_phrase=_twilio_sandbox_join_phrase(),
         source="public_demo_session",
         provider="twilio_whatsapp_number" if demo_whatsapp_number else "twilio_sandbox",
+        whatsapp_playbook=education_whatsapp_playbook,
     )
     education_payload = None
     if education_profile.get("is_education"):
         education_payload = {
-            "profile": education_profile,
-            "education_profile": education_profile,
-            "whatsapp_playbook": build_education_whatsapp_playbook(tenant),
+            "profile": education_public_profile,
+            "education_profile": education_public_profile,
+            "whatsapp_playbook": education_whatsapp_playbook,
             "admin_menu": build_education_admin_menu(tenant),
             "quick_menu": experience.get("education_quick_menu") or [],
             "primary_actions": experience.get("education_primary_actions") or [],
         }
+        whatsapp_sandbox["education"] = education_payload
 
     catalog_resources = catalog_resources_for_rubro(effective_rubro, sector)
     rubro_tools = _demo_rubro_tools_contract(
@@ -2617,7 +2641,7 @@ def demo_session_v2():
             "runtime_unavailable": chat_bootstrap["empty_states"]["runtime_unavailable"],
         },
         "education": education_payload,
-        "education_profile": education_profile if education_profile.get("is_education") else None,
+        "education_profile": education_public_profile,
         "pillar_selector": {
             "contract_version": DEMO_PILLAR_CONTRACT_VERSION,
             "selected_sector": sector,

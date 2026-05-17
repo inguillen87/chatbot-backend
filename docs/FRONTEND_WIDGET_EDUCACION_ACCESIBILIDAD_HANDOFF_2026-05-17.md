@@ -25,6 +25,8 @@ Campos canonicos:
 
 - `workspace.education.quick_menu`
 - `workspace.education.primary_actions`
+- `workspace.education_profile.quick_menu`
+- `workspace.education_profile.primary_actions`
 - `workspace.education.whatsapp_playbook`
 - `experience_blueprint.conversion_ctas.actions`
 - `workspace.chat_bootstrap`
@@ -71,6 +73,19 @@ Headers requeridos:
 
 Si el usuario cambia de rubro o tenant, el frontend debe reiniciar `chat_bootstrap` y no reutilizar un entity token de otro tenant.
 
+Orden de lectura para acciones escolares:
+
+1. `workspace.education.primary_actions`
+2. `workspace.education.quick_menu`
+3. `workspace.education_profile.primary_actions`
+4. `workspace.education_profile.quick_menu`
+5. `workspace.education.whatsapp_playbook.primary_actions`
+6. `workspace.education.whatsapp_playbook.quick_menu`
+7. `workspace.education.whatsapp_playbook.actions`
+8. `experience_blueprint.conversion_ctas.actions`
+
+Deduplicar por `action_id`, `action`, `intent`, `id`, `key`, `label` o `title`.
+
 ## 2. Flujos esperados
 
 ### Crear caso escolar
@@ -98,7 +113,7 @@ Si el usuario cambia de rubro o tenant, el frontend debe reiniciar `chat_bootstr
    - fuera de horario: descripcion de horario publicada por backend.
 5. Admin panel debe escuchar el evento de nuevo ticket y mostrar campanita: `Familia en espera de secretaria`.
 
-Respuesta minima esperada:
+Respuesta minima soportada:
 
 ```json
 {
@@ -115,6 +130,8 @@ Respuesta minima esperada:
 }
 ```
 
+Frontend normaliza `data.ticket_id`, `data.chat_id`, `data.status` y `data.school_case` como resultado operativo escolar. No inventa disponibilidad, horario ni contenido de secretaria si `data.live_chat` no lo publica.
+
 ## 3. WhatsApp parity
 
 WhatsApp y widget deben compartir etiquetas e intentos. Backend publica:
@@ -126,6 +143,20 @@ WhatsApp y widget deben compartir etiquetas e intentos. Backend publica:
 No hardcodear menus distintos por canal. El frontend puede priorizar tres acciones principales, pero debe conservar el menu completo si backend lo manda.
 
 Para WhatsApp sandbox, el launcher debe mostrar las mismas opciones escolares cuando el playbook venga publicado. No mezclar textos municipales ni comerciales.
+
+Orden de lectura del launcher WhatsApp:
+
+1. `whatsapp_sandbox.whatsapp_playbook`
+2. `whatsapp_sandbox.education.whatsapp_playbook`
+3. `education.whatsapp_playbook`
+4. `workspace.education.whatsapp_playbook`
+
+Campos soportados dentro del playbook:
+
+- `primary_actions`
+- `quick_menu`
+- `actions`
+- `starter_messages`
 
 ## 4. Catalogos y PDFs
 

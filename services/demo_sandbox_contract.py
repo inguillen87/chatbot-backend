@@ -180,6 +180,8 @@ def build_demo_whatsapp_sandbox_contract(
     source: str = "demo_profile_panel",
     max_messages: int = DEFAULT_SANDBOX_MESSAGE_LIMIT,
     provider: str = "twilio_sandbox",
+    whatsapp_playbook: Mapping[str, Any] | None = None,
+    education: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     normalized_sector = normalize_demo_sector(sector)
     rubro_slug = str(rubro or tenant_slug or "").strip().lower()
@@ -193,7 +195,7 @@ def build_demo_whatsapp_sandbox_contract(
     wa_deeplink = f"https://wa.me/{wa_number}?text={quote_plus(activation_message)}" if wa_number else None
     resources = catalog_resources_for_rubro(rubro_slug, normalized_sector)
 
-    return {
+    contract = {
         "contract_version": "demo.whatsapp_sandbox.v1",
         "enabled": bool(wa_number and join_phrase),
         "source": source,
@@ -259,6 +261,11 @@ def build_demo_whatsapp_sandbox_contract(
             "show_trial_counter": True,
         },
     }
+    if whatsapp_playbook:
+        contract["whatsapp_playbook"] = dict(whatsapp_playbook)
+    if education:
+        contract["education"] = dict(education)
+    return contract
 
 
 def sandbox_context_from_contract(contract: Mapping[str, Any]) -> dict[str, Any]:

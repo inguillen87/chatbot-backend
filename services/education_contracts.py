@@ -472,6 +472,7 @@ def build_education_whatsapp_playbook(tenant: Any = None) -> dict[str, Any]:
             "message": "Hola, soy el asistente del colegio. Puedo ayudarte con asistencia, comunicados, agenda, tramites y secretaria.",
             "menu_action": "menu_colegio",
         },
+        "primary_actions": education_primary_actions(),
         "quick_menu": education_quick_menu(tenant, surface="whatsapp"),
         "starter_messages": [
             "Quiero justificar una inasistencia",

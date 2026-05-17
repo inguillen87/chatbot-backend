@@ -235,6 +235,38 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertTrue((contract.get("catalog") or {}).get("resources"))
         self.assertFalse((payload.get("frontend_contract") or {}).get("requires_auth"))
 
+    def test_public_whatsapp_sandbox_launcher_exposes_education_playbook_aliases(self):
+        owner = User(name="Colegio Sandbox", email="colegio-sandbox@test.com", password_hash="hash", tipo_chat="pyme")
+        db.session.add(owner)
+        db.session.flush()
+        tenant = TenantProfile(
+            slug="qa-colegio-sandbox",
+            nombre="QA Colegio Sandbox",
+            tipo="pyme",
+            pyme_id=owner.id,
+            vertical="educacion",
+            subvertical="colegio_general",
+            capabilities_json={"education": {"enabled": True}},
+            is_active=True,
+        )
+        db.session.add(tenant)
+        db.session.commit()
+
+        resp = self.client.post(
+            "/api/v2/demo/whatsapp-sandbox",
+            json={"sector": "educacion", "tenant_slug": tenant.slug, "source": "public_demo_profile"},
+            headers={"X-Request-Id": "sandbox-education-1"},
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.get_json()
+        contract = payload.get("whatsapp_sandbox") or {}
+        self.assertEqual(payload.get("request_id"), "sandbox-education-1")
+        self.assertTrue((payload.get("education") or {}).get("whatsapp_playbook"))
+        self.assertTrue((contract.get("whatsapp_playbook") or {}).get("primary_actions"))
+        self.assertTrue((contract.get("whatsapp_playbook") or {}).get("quick_menu"))
+        self.assertTrue(((contract.get("education") or {}).get("whatsapp_playbook") or {}).get("quick_menu"))
+
     def test_demo_session_returns_short_chat_session_id(self):
         owner = User(name="Demo Short Session", email="demo-short-session@test.com", password_hash="hash", tipo_chat="pyme")
         db.session.add(owner)
@@ -462,11 +494,17 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertEqual((chat_bootstrap.get("payload") or {}).get("vertical"), "educacion")
         self.assertEqual((chat_bootstrap.get("context") or {}).get("vertical"), "educacion")
         self.assertEqual((payload.get("experience_blueprint") or {}).get("experience_type"), "education")
-        self.assertTrue((workspace.get("education_profile") or {}).get("is_education"))
+        education_profile = workspace.get("education_profile") or {}
+        self.assertTrue(education_profile.get("is_education"))
+        self.assertTrue(education_profile.get("primary_actions"))
+        self.assertTrue(education_profile.get("quick_menu"))
         self.assertTrue((workspace.get("education") or {}).get("whatsapp_playbook"))
         primary_actions = (workspace.get("education") or {}).get("primary_actions") or []
         action_ids = {item.get("action_id") for item in primary_actions}
         self.assertTrue({"create_school_case", "justify_absence", "talk_secretary"}.issubset(action_ids))
+        whatsapp_sandbox = workspace.get("whatsapp_sandbox") or {}
+        self.assertTrue((whatsapp_sandbox.get("whatsapp_playbook") or {}).get("primary_actions"))
+        self.assertTrue(((whatsapp_sandbox.get("education") or {}).get("whatsapp_playbook") or {}).get("quick_menu"))
         cta_action_ids = {
             item.get("action_id")
             for item in ((payload.get("experience_blueprint") or {}).get("conversion_ctas") or {}).get("actions", [])
