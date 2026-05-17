@@ -491,6 +491,7 @@ def test_admin_tenant_catalog_supports_commercial_filters(client, app):
             precio_monetario=1000,
             moneda="ARS",
             modalidad="venta",
+            cantidad="4",
             promocion_info="2x1",
             disponible=True,
         )
@@ -520,3 +521,19 @@ def test_admin_tenant_catalog_supports_commercial_filters(client, app):
     assert items[0]["nombre"] == "Producto Promo"
     assert items[0]["channel_availability"]["whatsapp"] is True
     assert items[0]["price_numeric"] == 1000.0
+    assert items[0]["stock_quantity"] == 4.0
+    assert items[0]["stock_status"] == "low_stock"
+    assert items[0]["inventory"]["can_confirm_order"] is True
+
+    item_id = items[0]["catalogo_item_id"]
+    patch_resp = client.patch(
+        f"/api/admin/tenants/{tenant.slug}/catalog/items/{item_id}",
+        json={"stock_quantity": 18, "inventory_source": "test_inline_stock"},
+        headers=_headers(app, owner),
+    )
+    assert patch_resp.status_code == 200
+    patched = patch_resp.get_json()
+    assert patched["contract_version"] == "tenant.catalog_item_update.v1"
+    assert patched["item"]["stock_quantity"] == 18.0
+    assert patched["item"]["stock_status"] == "in_stock"
+    assert patched["catalog_version"]
