@@ -948,7 +948,9 @@ def _demo_widget_runtime_response(
         sector=sector,
     )
 
-    is_menu_request = normalized_action in {"menu", "menu_principal", "menu_colegio", "main_menu"} or question_text in {"", "__INIT__"}
+    is_menu_request = normalized_action in {"menu", "menu_principal", "menu_colegio", "main_menu"} or (
+        not normalized_action and question_text in {"", "__INIT__"}
+    )
     request_id = request.headers.get("X-Request-Id") or getattr(g, "request_id", None) or uuid.uuid4().hex
     g.request_id = request_id
 
