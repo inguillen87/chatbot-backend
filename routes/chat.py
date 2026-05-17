@@ -19,7 +19,7 @@ from flask import Blueprint, request, jsonify, current_app, g
 from sqlalchemy import func, desc
 from sqlalchemy.exc import ProgrammingError, SQLAlchemyError
 from sqlalchemy.orm.attributes import flag_modified # Importado para flag_modified
-from models import User, Rubro, Conversacion, MunicipioTicket, TenantProfile, db, ChatSessionContext # Added ChatSessionContext
+from models import User, Rubro, Conversacion, MunicipioTicket, PymeTicket, PymePedido, TenantProfile, TicketComentario, db, ChatSessionContext # Added ChatSessionContext
 from utils.db_utils import commit_with_retry, ensure_chat_session_context_schema
 from socket_service import socketio # Import socketio
 from services.logic import (
@@ -29,6 +29,12 @@ from services.logic import (
 )
 from services.live_chat_schedule import build_live_chat_status
 from services.demo_registry import load_demo_rubros, demo_rubro_for_token
+from services.education_contracts import (
+    build_education_pending_case,
+    education_intent_from_action,
+    education_primary_actions,
+    education_prompt_for_intent,
+)
 from services.common_utils import validar_email, validar_telefono, formatear_telefono_e164
 from services.contact_intake import missing_contact_fields, resolve_contact_snapshot
 from services.demo_municipio_runtime import handle_demo_municipio_message
@@ -36,6 +42,7 @@ from services.notifications import enviar_notificacion_sms, enviar_notificacion_
 from services.email_service import enviar_email
 from services.conversation_resolver import ConversationResolver
 from routes.v2.tenants import decode_demo_session_token
+from routes.auth import _first_active_tenant_for_demo
 from utils.auth_helpers import (
     anon_o_token_requerido,
     obtener_entity_token,

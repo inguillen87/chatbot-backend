@@ -83,6 +83,7 @@ def ensure_buttons_compatibility(payload: Any) -> Any:
         respuesta = container.get("respuesta")
         respuesta_usuario = container.get("respuesta_usuario")
         message_to_user = container.get("message_to_user")
+        message = container.get("message")
 
         def _has_content(value: Any) -> bool:
             if value is None:
@@ -95,7 +96,7 @@ def ensure_buttons_compatibility(payload: Any) -> Any:
             return value if isinstance(value, str) else str(value)
 
         canonical_text: str | None = None
-        for candidate in (message_body, respuesta, respuesta_usuario, message_to_user):
+        for candidate in (message_body, respuesta, respuesta_usuario, message_to_user, message):
             if _has_content(candidate):
                 canonical_text = _coerce(candidate)
                 break
@@ -111,6 +112,8 @@ def ensure_buttons_compatibility(payload: Any) -> Any:
             container["respuesta_usuario"] = canonical_text
         if not _has_content(message_to_user):
             container["message_to_user"] = canonical_text
+        if not _has_content(message):
+            container["message"] = canonical_text
 
     def _normalize(obj: Any) -> None:
         if isinstance(obj, MutableMapping):
@@ -143,8 +146,33 @@ def normalize_response_payload(payload: Any) -> Any:
     if not isinstance(payload, MutableMapping):
         return payload
 
-    if payload.get("message_to_user") and not payload.get("message_body"):
-        payload["message_body"] = payload["message_to_user"]
+    def _text(value: Any) -> str:
+        if value is None:
+            return ""
+        return value if isinstance(value, str) else str(value)
+
+    def _first_text(*values: Any) -> str:
+        for value in values:
+            text = _text(value).strip()
+            if text:
+                return text
+        return ""
+
+    canonical_text = _first_text(
+        payload.get("message_body"),
+        payload.get("respuesta"),
+        payload.get("respuesta_usuario"),
+        payload.get("message_to_user"),
+        payload.get("message"),
+        payload.get("texto"),
+    )
+
+    if canonical_text:
+        payload.setdefault("message_body", canonical_text)
+        payload.setdefault("respuesta", canonical_text)
+        payload.setdefault("respuesta_usuario", canonical_text)
+        payload.setdefault("message_to_user", canonical_text)
+        payload.setdefault("message", canonical_text)
 
     if payload.get("options_list") and not payload.get("botones"):
         payload["botones"] = payload.get("options_list")
@@ -153,6 +181,17 @@ def normalize_response_payload(payload: Any) -> Any:
 
     if "message_body" not in payload or payload.get("message_body") is None:
         payload["message_body"] = ""
+    if "message" not in payload or payload.get("message") is None:
+        payload["message"] = payload.get("message_body") or ""
+
+    final_text = _first_text(payload.get("message_body"), payload.get("message"), payload.get("respuesta"))
+    if final_text:
+        if not payload.get("messages"):
+            payload["messages"] = [{"role": "assistant", "content": final_text}]
+        payload.setdefault("assistant_message", {"role": "assistant", "content": final_text})
+    else:
+        payload.setdefault("messages", [])
+        payload.setdefault("assistant_message", None)
 
     options_list = payload.get("options_list")
     if options_list is None:
