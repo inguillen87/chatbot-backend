@@ -134,7 +134,16 @@ class WidgetSettingsTests(unittest.TestCase):
         self.assertEqual(trial_policy["contract_version"], "demo.realtime_trial_policy.v1")
         self.assertEqual(trial_policy["channels"]["voice"]["max_sessions"], 3)
         self.assertEqual(trial_policy["channels"]["video"]["max_sessions"], 1)
+        self.assertEqual(widget_data["realtime_voice"]["trial_policy"]["contract_version"], "demo.realtime_trial_policy.v1")
+        whatsapp_trial = widget_data["widget"]["support_channels"]["whatsapp"]["trial_policy"]
+        self.assertEqual(whatsapp_trial["contract_version"], "demo.whatsapp_trial_policy.v1")
+        self.assertEqual(whatsapp_trial["max_messages"], 10)
+        self.assertEqual(whatsapp_trial["free_inputs"], ["text", "image", "audio"])
         self.assertEqual(widget_data["builder_config"]["demo_trial"]["limits"]["whatsapp_sandbox_max_messages"], 10)
+        self.assertEqual(
+            widget_data["builder_config"]["demo_trial"]["whatsapp_sandbox"]["trial_policy"]["free_inputs"],
+            ["text", "image", "audio"],
+        )
 
 
 
@@ -334,12 +343,22 @@ class WidgetSettingsTests(unittest.TestCase):
         self.assertEqual(payload["reason_code"], "realtime_trial_limit_reached")
         self.assertEqual(payload["message"], "La demo de llamada ya fue utilizada.")
         self.assertTrue(payload.get("request_id"))
+        self.assertEqual(second.headers.get("X-Request-Id"), payload.get("request_id"))
+        self.assertEqual(payload["trial_usage"]["channel"], "video")
         self.assertEqual(payload["trial_usage"]["limit"], 1)
+        self.assertEqual(payload["trial_usage"]["used"], 1)
         self.assertEqual(payload["trial_usage"]["remaining"], 0)
         self.assertEqual(payload["upgrade"]["title"], "Ya viste la demo real. Sigamos con una prueba guiada.")
         self.assertEqual(payload["upgrade"]["cta_label"], "Dejar datos")
         self.assertEqual(payload["upgrade"]["lead_capture_endpoint"], "/api/public/lead-capture")
         self.assertEqual(mock_urlopen.call_count, 1)
+
+        third = self.client.post(
+            "/api/public/realtime/session",
+            json={**request_body, "anon_id": "anon-demo-video-2"},
+        )
+        self.assertEqual(third.status_code, 200)
+        self.assertEqual(mock_urlopen.call_count, 2)
 
     def test_public_realtime_action_event_rejects_unknown_action(self):
         response = self.client.post(

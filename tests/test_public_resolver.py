@@ -227,6 +227,17 @@ class PublicResolverTest(unittest.TestCase):
         self.assertEqual(demo_trial.get("display_number"), "+1 (415) 523-8886")
         self.assertEqual(demo_trial.get("join_phrase"), "join brief-yesterday")
         self.assertTrue((demo_trial.get("wa_deeplink") or "").startswith("https://wa.me/14155238886?text="))
+        whatsapp_trial = ((demo_trial.get("whatsapp_sandbox") or {}).get("trial_policy") or {})
+        self.assertEqual(whatsapp_trial.get("max_messages"), 10)
+        self.assertEqual(whatsapp_trial.get("free_inputs"), ["text", "image", "audio"])
+        self.assertEqual(
+            ((widget.get("support_channels") or {}).get("whatsapp") or {}).get("trial_policy", {}).get("free_inputs"),
+            ["text", "image", "audio"],
+        )
+        self.assertEqual(
+            ((payload.get("realtime_voice") or {}).get("trial_policy") or {}).get("contract_version"),
+            "demo.realtime_trial_policy.v1",
+        )
 
         rubro_profile = widget.get("rubro_profile") or {}
         self.assertEqual((rubro_profile.get("tenant_type") or "").lower(), "municipio")

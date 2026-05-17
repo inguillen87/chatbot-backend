@@ -165,6 +165,19 @@ def _realtime_trial_policy(cfg: dict | None = None) -> dict:
     }
 
 
+def _whatsapp_trial_policy(cfg: dict | None = None) -> dict:
+    cfg = cfg if isinstance(cfg, dict) else {}
+    return {
+        "contract_version": "demo.whatsapp_trial_policy.v1",
+        "enabled": bool(cfg.get("demo_trial_enabled", True)),
+        "scope": "anonymous_or_sandbox_demo",
+        "max_messages": _bounded_int(cfg.get("demo_max_messages"), 10, minimum=1, maximum=100),
+        "free_inputs": ["text", "image", "audio"],
+        "limit_reached_reason_code": "demo_message_limit_reached",
+        "upgrade": _demo_upgrade_payload("demo_message_limit_reached"),
+    }
+
+
 def _realtime_audio_format(value: str | dict | None, *, default: str = "pcm16") -> dict:
     if isinstance(value, dict):
         return value
@@ -584,6 +597,7 @@ def _platform_widget_config_payload() -> dict:
     visibility_rules = _widget_visibility_rules(realtime=realtime, voice_enabled=True, video_enabled=False)
     voice_capabilities = build_realtime_voice_capabilities(None, {}, current_app.config)
     realtime_trial_policy = _realtime_trial_policy({})
+    voice_capabilities["trial_policy"] = realtime_trial_policy
     live_status = build_live_chat_status()
     live_status["available"] = False
     live_status["realtime"] = False
@@ -596,6 +610,7 @@ def _platform_widget_config_payload() -> dict:
             "enabled": False,
             "number": None,
             "channel": "whatsapp",
+            "trial_policy": _whatsapp_trial_policy({}),
             "media": {"text": True, "image": True, "audio": True, "file": True},
         },
         "voice_call": {
@@ -704,6 +719,7 @@ def _support_channels_payload(tenant: TenantProfile, cfg: dict) -> dict:
     )
     live_chat_available = bool(live_status.get("available")) and bool(socket_realtime.get("socket_enabled"))
     realtime_trial_policy = _realtime_trial_policy(cfg)
+    realtime_voice["trial_policy"] = realtime_trial_policy
 
     return {
         "live_chat": {
@@ -721,14 +737,7 @@ def _support_channels_payload(tenant: TenantProfile, cfg: dict) -> dict:
             "number": whatsapp_number,
             "channel": "whatsapp",
             "realtime_bridge": True,
-            "trial_policy": {
-                "contract_version": "demo.whatsapp_trial_policy.v1",
-                "enabled": bool(cfg.get("demo_trial_enabled", True)),
-                "scope": "anonymous_or_sandbox_demo",
-                "max_messages": _bounded_int(cfg.get("demo_max_messages"), 10, minimum=1, maximum=100),
-                "limit_reached_reason_code": "demo_message_limit_reached",
-                "upgrade": _demo_upgrade_payload("demo_message_limit_reached"),
-            },
+            "trial_policy": _whatsapp_trial_policy(cfg),
             "media": {"text": True, "image": True, "audio": True, "file": True},
         },
         "voice_call": {
@@ -833,6 +842,9 @@ def _demo_trial_payload_for_widget(tenant: TenantProfile, cfg: dict) -> dict:
             "realtime_window_seconds": realtime_trial_policy.get("window_seconds"),
             "upgrade_required_for": cfg.get("demo_upgrade_required_for") or ["qdrant_catalogo_completo", "automatizaciones_enterprise"],
             "upgrade_message": cfg.get("demo_upgrade_message") or "Límite demo alcanzado. Activá plan Full para continuar.",
+        },
+        "whatsapp_sandbox": {
+            "trial_policy": _whatsapp_trial_policy(cfg),
         },
         "realtime_trial_policy": realtime_trial_policy,
         "upgrade": _demo_upgrade_payload("demo_message_limit_reached"),
