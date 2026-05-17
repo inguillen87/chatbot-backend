@@ -877,6 +877,43 @@ def _realtime_hub_ui_contract() -> dict[str, Any]:
     }
 
 
+def _map_reading_contract(
+    *,
+    geo_layers: dict[str, Any],
+    geo_points: list[dict[str, Any]],
+    hotspots: list[dict[str, Any]] | None = None,
+    route: str = "/perfil?tab=estadisticas",
+) -> dict[str, Any]:
+    features = ((geo_layers.get("source") or {}).get("features") or []) if isinstance(geo_layers, dict) else []
+    point_count = len(geo_points or [])
+    feature_count = len(features)
+    total_points = feature_count or point_count
+    legend = (geo_layers.get("legend") or {}) if isinstance(geo_layers, dict) else {}
+
+    if total_points:
+        headline = f"Mapa con {total_points} puntos geograficos reales en el periodo."
+        empty_state = None
+        recommended_action = {"label": "Ver mapa", "route": route}
+        if hotspots:
+            first = hotspots[0] or {}
+            label = first.get("label") or first.get("barrio") or first.get("distrito") or first.get("categoria")
+            count = first.get("count")
+            if label and count:
+                headline = f"{label} concentra {count} eventos en el periodo."
+                recommended_action = {"label": "Analizar segmento", "route": route}
+    else:
+        headline = "Sin puntos geograficos reales para este periodo."
+        empty_state = "Sin puntos geograficos publicados para los filtros actuales."
+        recommended_action = {"label": "Cambiar filtros", "route": route}
+
+    return {
+        "headline": headline,
+        "legend": legend or {"mode": "category_weight", "min_weight": 0, "max_weight": 0},
+        "empty_state": empty_state,
+        "recommended_action": recommended_action,
+    }
+
+
 def _dashboard_response(filters):
     cache_key = _dashboard_cache_key(filters)
     now = time.time()
@@ -995,18 +1032,21 @@ def admin_analytics_heatmap():
     bbox = _parse_bbox(request.args.get("bbox"))
     geo_layers = _build_maplibre_heatmap_layers(filtered_events, style_url=style_url, source_limit=source_limit, bbox=bbox)
     geo_points = _geo_points_from_layers(geo_layers, limit=source_limit)
+    hotspots = _build_hotspots(filtered_events)
+    map_reading = _map_reading_contract(geo_layers=geo_layers, geo_points=geo_points, hotspots=hotspots)
 
     response = _json({
         "contract_version": "analytics.heatmap.v1",
         "request_id": request_id,
         "points": geo_points,
+        **map_reading,
         "geo": base,
         "geo_layers": geo_layers,
         "temporal": temporal,
         "segments": _aggregate_heatmap_segments(filtered_events),
         "segments_filters_applied": {k: sorted(v) for k, v in segment_filters.items()},
         "period_comparison": _build_period_comparison(filtered_events),
-        "hotspots": _build_hotspots(filtered_events),
+        "hotspots": hotspots,
         "tz": tz,
     })
     response.headers.setdefault("X-Request-Id", request_id)
@@ -1102,6 +1142,12 @@ def _build_realtime_hub_payload(filters, *, window_minutes: int = 30) -> dict[st
     geo_points = _geo_points_from_layers(geo_layers, limit=source_limit)
     hotspots = _compact_hotspots(_build_hotspots(filtered_events, limit=20))
     comments = _build_realtime_comments(tenant_id=tenant_id, cutoff=cutoff, events=list(events), limit=20)
+    map_reading = _map_reading_contract(
+        geo_layers=geo_layers,
+        geo_points=geo_points,
+        hotspots=hotspots,
+        route="/analytics?tab=realtime-hub",
+    )
 
     recommendations = _build_realtime_recommendations(
         top_channels=top_channels,
@@ -1133,6 +1179,8 @@ def _build_realtime_hub_payload(filters, *, window_minutes: int = 30) -> dict[st
         "hotspots": hotspots,
         "geo_points": geo_points,
         "geo_layers": geo_layers,
+        **map_reading,
+        "map": map_reading,
         "segments": _aggregate_heatmap_segments(filtered_events),
         "segments_filters_applied": {k: sorted(v) for k, v in segment_filters.items()},
         "ui": _realtime_hub_ui_contract(),

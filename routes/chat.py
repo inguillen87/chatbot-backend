@@ -921,6 +921,31 @@ def _activate_demo_session(
         contexto_chat["demo_keywords"] = keywords
         changed = True
 
+    demo_metadata = {
+        "key": demo_key,
+        "label": demo_payload.get("label"),
+        "display_name": demo_payload.get("label"),
+        "descripcion": demo_payload.get("descripcion"),
+        "description": demo_payload.get("descripcion"),
+        "tipo_chat": demo_payload.get("tipo_chat"),
+        "owner_user_id": owner_id,
+        "rubro_id": rubro_id_value,
+        "rubro_clave": rubro_clave_value,
+        "segment": demo_payload.get("segment"),
+        "subsegment": demo_payload.get("subsegment"),
+        "prompt_context": prompt_context,
+        "welcome_message": demo_payload.get("welcome_message"),
+        "resources": resources,
+        "faq_preview": faq_preview,
+        "quick_actions": quick_actions,
+        "capabilities": capabilities,
+        "keywords": keywords,
+        "padre_id": demo_payload.get("padre_id"),
+    }
+    if contexto_chat.get("demo_metadata") != demo_metadata:
+        contexto_chat["demo_metadata"] = demo_metadata
+        changed = True
+
     should_reset_counter = reset_counter or existing_key != demo_key
     if should_reset_counter or "demo_message_count" not in contexto_chat:
         _set("demo_message_count", 0)
@@ -928,6 +953,131 @@ def _activate_demo_session(
         _set("demo_intro_sent", False)
 
     return changed
+
+
+def _demo_metadata_from_context(contexto_chat: Dict[str, object] | None) -> Dict[str, object]:
+    """Build the compact demo metadata contract passed into bot responders."""
+
+    if not isinstance(contexto_chat, dict):
+        return {}
+
+    stored = contexto_chat.get("demo_metadata")
+    metadata: Dict[str, object] = dict(stored) if isinstance(stored, dict) else {}
+
+    mappings = {
+        "key": "demo_key",
+        "rubro_clave": "demo_rubro_clave",
+        "owner_user_id": "demo_owner_user_id",
+        "rubro_id": "demo_rubro_id",
+        "tipo_chat": "demo_tipo_chat",
+        "display_name": "demo_display_name",
+        "label": "demo_display_name",
+        "descripcion": "demo_description",
+        "description": "demo_description",
+        "prompt_context": "demo_prompt_context",
+        "welcome_message": "demo_welcome_message",
+        "resources": "demo_resources",
+        "faq_preview": "demo_faq_preview",
+        "quick_actions": "demo_quick_actions",
+        "capabilities": "demo_capabilities",
+        "keywords": "demo_keywords",
+    }
+    for output_key, context_key in mappings.items():
+        value = contexto_chat.get(context_key)
+        if value not in (None, "", [], {}):
+            metadata.setdefault(output_key, deepcopy(value))
+
+    tool_summary = contexto_chat.get("rubro_tool_summary")
+    if isinstance(tool_summary, dict) and tool_summary:
+        metadata.setdefault("tool_summary", deepcopy(tool_summary))
+
+    return metadata
+
+
+def _enrich_demo_response_with_metadata(payload: Dict[str, Any], demo_metadata: Dict[str, object] | None) -> None:
+    """Expose curated demo actions/resources when the responder returned a plain text body."""
+
+    if not isinstance(payload, dict) or not isinstance(demo_metadata, dict) or not demo_metadata:
+        return
+
+    quick_actions = deepcopy(demo_metadata.get("quick_actions") or [])
+    resources = deepcopy(demo_metadata.get("resources") or [])
+    faq_preview = deepcopy(demo_metadata.get("faq_preview") or [])
+
+    normalized_actions = []
+    if quick_actions:
+        for idx, action in enumerate(quick_actions):
+            if not isinstance(action, dict):
+                continue
+            label = str(action.get("texto") or action.get("label") or action.get("title") or "").strip()
+            if not label:
+                continue
+            action_id = str(action.get("action_id") or action.get("id") or f"demo_quick_action_{idx}").strip()
+            normalized_actions.append(
+                {
+                    "id": action_id,
+                    "texto": label,
+                    "label": label,
+                    "type": "quick_reply",
+                    "action": action.get("prompt") or action.get("action") or label,
+                    "action_id": action_id,
+                    "emoji": action.get("emoji"),
+                    "prompt": action.get("prompt"),
+                    "description": action.get("description") or action.get("descripcion"),
+                    "category": action.get("category") or action.get("grupo"),
+                }
+            )
+        if normalized_actions and not payload.get("botones") and not payload.get("options_list"):
+            payload["botones"] = normalized_actions
+            payload["options_list"] = normalized_actions
+        if normalized_actions:
+            payload["message_type"] = "interactive_buttons"
+            payload.setdefault("interactive_list_sections", _interactive_sections_from_quick_items(normalized_actions))
+
+    menu_sections = payload.get("menu_sections") if isinstance(payload.get("menu_sections"), list) else []
+    section_types = {section.get("type") for section in menu_sections if isinstance(section, dict)}
+    if quick_actions and "quick_actions" not in section_types:
+        menu_sections.append(
+            {
+                "type": "quick_actions",
+                "title": "Acciones sugeridas",
+                "items": quick_actions,
+            }
+        )
+    if resources and "resources" not in section_types:
+        menu_sections.append(
+            {
+                "type": "resources",
+                "title": "Recursos disponibles",
+                "items": resources,
+            }
+        )
+    if faq_preview and "faq_preview" not in section_types:
+        menu_sections.append(
+            {
+                "type": "faq_preview",
+                "title": "Consultas frecuentes",
+                "items": faq_preview,
+            }
+        )
+    if menu_sections:
+        payload["menu_sections"] = menu_sections
+
+    if resources:
+        _resources_text, resource_buttons, attachments = _format_demo_resources(resources)
+        if attachments and not payload.get("adjuntos"):
+            payload["adjuntos"] = attachments
+        if resource_buttons:
+            existing_buttons = payload.get("botones") if isinstance(payload.get("botones"), list) else []
+            existing_ids = {str(btn.get("id") or btn.get("action_id")) for btn in existing_buttons if isinstance(btn, dict)}
+            for button in resource_buttons:
+                button_id = str(button.get("id") or button.get("action_id"))
+                if button_id and button_id not in existing_ids:
+                    existing_buttons.append(button)
+                    existing_ids.add(button_id)
+            if existing_buttons:
+                payload["botones"] = existing_buttons
+                payload.setdefault("options_list", existing_buttons)
 
 
 def _build_trial_upgrade_contract(reason_code: str) -> Dict[str, object]:
@@ -2584,6 +2734,7 @@ def _procesar_chat(
                     contexto_chat.pop("demo_quick_actions", None)
                     contexto_chat.pop("demo_capabilities", None)
                     contexto_chat.pop("demo_keywords", None)
+                    contexto_chat.pop("demo_metadata", None)
                     contexto_chat.pop("demo_intro_sent", None)
                     flag_modified(chat_context_obj, "context_data")
                     _sync_demo_session_flag()
@@ -2738,7 +2889,7 @@ def _procesar_chat(
             current_app.logger.info(f"Usando Rubro ID {rubro_obj_global.id} ('{nombre_rubro_log}') perteneciente a User ID {owner_id_log} para la lógica del bot.")
         else:
             current_app.logger.info("No se pudo determinar un rubro/owner específico para la lógica del bot. Se usará lógica genérica si aplica (ej. para rubros públicos por defecto).")
-            if tipo_chat == "pyme" and not demo_session_activa:
+            if tipo_chat == "pyme" and not demo_session_activa and not is_anonymous:
                  return jsonify({"error": {"code": 400, "message": "rubro_required"}, "message": "No se especificó un rubro válido para la PyME."}), 400 # NEW FORMAT
 
         if isinstance(contexto_chat, dict) and contexto_chat.get("demo_key") and not contexto_chat.get("demo_session"):
@@ -2802,8 +2953,7 @@ def _procesar_chat(
                         exc_info=True,
                     )
                 _emit_socket_payload(respuesta_limite)
-                # Return 200 OK with limit error payload to prevent frontend crash
-                return jsonify(respuesta_limite), 200
+                return jsonify(respuesta_limite), 403
 
         # The logic for file analysis has been moved to the upload endpoint.
         # The chat endpoint is only responsible for passing the attachmentInfo.
@@ -2864,6 +3014,26 @@ def _procesar_chat(
                  contexto_chat.pop("estado_conversacion", None)
                  flag_modified(chat_context_obj, "context_data")
 
+        cached_response = contexto_chat.get("last_bot_response") if isinstance(contexto_chat, dict) else None
+        cached_question = contexto_chat.get("last_user_message") if isinstance(contexto_chat, dict) else None
+        cached_at_raw = contexto_chat.get("last_user_message_time") if isinstance(contexto_chat, dict) else None
+        if isinstance(cached_response, dict) and cached_question == pregunta and isinstance(cached_at_raw, str):
+            try:
+                cached_at = datetime.fromisoformat(cached_at_raw)
+                if datetime.utcnow() - cached_at.replace(tzinfo=None) <= timedelta(seconds=30):
+                    replay_payload = deepcopy(cached_response)
+                    message_body = replay_payload.get("message_body")
+                    respuesta = replay_payload.get("respuesta")
+                    if message_body and not respuesta:
+                        replay_payload["respuesta"] = message_body
+                    elif respuesta and not message_body:
+                        replay_payload["message_body"] = respuesta
+                    normalize_response_payload(replay_payload)
+                    _emit_socket_payload(replay_payload)
+                    return jsonify(replay_payload), 200
+            except (TypeError, ValueError):
+                pass
+
         uploaded_file_info = None
         archivo_adjunto_id = None
 
@@ -2901,6 +3071,7 @@ def _procesar_chat(
                 )
 
         # --- Core Chat Logic Execution ---
+        demo_metadata_for_responder = _demo_metadata_from_context(contexto_chat)
         if demo_runtime_result is not None:
             resultado = demo_runtime_result
         else:
@@ -2919,7 +3090,8 @@ def _procesar_chat(
                 chat_session_uuid=chat_session_id_header,
                 channel=channel,
                 action_id=action_id,
-                anon_id=anon_id
+                anon_id=anon_id,
+                demo_metadata=demo_metadata_for_responder or None,
             )
 
         # Después de que responder_chatboc y sus sub-funciones hayan modificado chat_context_obj.context_data,
@@ -2991,6 +3163,8 @@ def _procesar_chat(
              }]
 
         if isinstance(resultado, dict):
+            _enrich_demo_response_with_metadata(resultado, demo_metadata_for_responder)
+
             audio_url = resultado.get("audio_url")
             if audio_url and channel == "web" and "audio" not in resultado:
                 resultado["audio"] = {"link": audio_url}

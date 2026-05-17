@@ -158,6 +158,41 @@ def _append_curated_demo_rubros(lista_rubros: list[dict]) -> None:
         existing_claves.add(clave)
 
 
+def _merge_demo_registry_metadata(lista_rubros: list[dict], demo_entries: list) -> None:
+    """Prefer DB-enriched demo metadata over lighter curated cards when available."""
+
+    by_key = {getattr(demo, "key", None): demo for demo in demo_entries if getattr(demo, "key", None)}
+    by_clave = {
+        getattr(demo, "rubro_clave", None): demo
+        for demo in demo_entries
+        if getattr(demo, "rubro_clave", None)
+    }
+    by_id = {
+        getattr(demo, "rubro_id", None): demo
+        for demo in demo_entries
+        if getattr(demo, "rubro_id", None)
+    }
+
+    for item in lista_rubros:
+        if not isinstance(item, dict):
+            continue
+        current_demo = item.get("demo") if isinstance(item.get("demo"), dict) else {}
+        candidate = (
+            by_id.get(item.get("id"))
+            or by_clave.get(item.get("clave"))
+            or by_key.get(current_demo.get("key"))
+            or by_key.get(item.get("clave"))
+        )
+        if not candidate:
+            continue
+        enriched = candidate.to_public_dict()
+        merged = {**enriched, **current_demo}
+        for key in ("resources", "faq_preview", "quick_actions", "capabilities", "keywords"):
+            if not current_demo.get(key) and enriched.get(key):
+                merged[key] = enriched[key]
+        item["demo"] = merged
+
+
 @rubros_bp.route("/", methods=["GET"], strict_slashes=False)
 def get_all_rubros():
     """Return the list of rubros."""
@@ -234,6 +269,7 @@ def get_all_rubros():
         if demo_mode_enabled:
             _ensure_demo_roots(lista_rubros)
             _append_curated_demo_rubros(lista_rubros)
+            _merge_demo_registry_metadata(lista_rubros, demo_entries)
 
         # Check for format=tree
         if request.args.get("format") == "tree":

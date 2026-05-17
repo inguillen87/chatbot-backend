@@ -1325,6 +1325,10 @@ def _build_dashboard_sections(
                 "cells": heatmap.get("cells") or [],
                 "hotspots": map_meta.get("hotspots") or [],
                 "category_layers": ((heatmap.get("metadata") or {}).get("category_layers") or {}),
+                "headline": heatmap.get("headline"),
+                "legend": heatmap.get("legend") or {},
+                "empty_state": heatmap.get("empty_state"),
+                "recommended_action": heatmap.get("recommended_action"),
                 "provider_hint": ((heatmap.get("metadata") or {}).get("map_config") or {}).get("provider") or "maplibre",
                 "state": "ready" if bool((heatmap.get("points") or []) or (heatmap.get("cells") or [])) else "empty",
             },
@@ -2169,6 +2173,17 @@ def get_heatmap(
     metadata["map_layers"] = {"heatmap": heatmap_layer}
     metadata["category_layers"] = _build_category_heatmap_layers(points)
     metadata["map_filter"] = map_filter
+    category_layers = metadata["category_layers"]
+    has_map_data = bool(points or cells or ((category_layers.get("source") or {}).get("features") or []))
+    if has_map_data:
+        headline = f"Mapa de respuestas con {len(points)} puntos y {len(cells)} celdas disponibles."
+        empty_state = None
+        recommended_action = {"label": "Analizar mapa", "route": f"/admin/encuestas/{encuesta_id}/analytics/dashboard"}
+    else:
+        headline = "Sin puntos geograficos reales para esta encuesta."
+        empty_state = "Sin puntos geograficos publicados para los filtros actuales."
+        recommended_action = {"label": "Cambiar filtros", "route": f"/admin/encuestas/{encuesta_id}/analytics/heatmap"}
+    legend = category_layers.get("legend") or {"mode": "category_weight", "min_weight": 0, "max_weight": 0}
     render_contract = {
         "module": "heatmap",
         "state": "ready" if bool(points or cells) else "empty",
@@ -2183,6 +2198,10 @@ def get_heatmap(
     return {
         "points": points,
         "cells": cells,
+        "headline": headline,
+        "legend": legend,
+        "empty_state": empty_state,
+        "recommended_action": recommended_action,
         "metadata": metadata,
         "render_contract": render_contract,
     }
