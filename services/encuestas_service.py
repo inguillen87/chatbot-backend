@@ -1642,6 +1642,82 @@ def update_encuesta(encuesta_id: int, data: Dict[str, Any], user: Any) -> EncEnc
     return encuesta
 
 
+def duplicate_encuesta(encuesta_id: int, data: Optional[Dict[str, Any]], user: Any) -> EncEncuesta:
+    """Create an editable draft copy without touching the published source.
+
+    Published surveys with responses can only receive non-destructive edits.
+    When the admin needs to add/remove questions or options, the professional
+    flow is to create a new draft version and keep historical answers anchored
+    to the original survey.
+    """
+
+    source = db.session.get(EncEncuesta, encuesta_id)
+    if not source:
+        raise EncuestaError("Encuesta no encontrada", status_code=404)
+    _ensure_tenant_access(source, user)
+
+    payload = data or {}
+    requested_title = _clean_str(payload.get("titulo") or payload.get("title"), max_length=255)
+    title = requested_title or f"{source.titulo} (nueva version)"
+    requested_slug = payload.get("slug") or payload.get("codigo") or f"{source.slug}-nueva-version"
+    slug = _generate_unique_slug(_slugify(str(requested_slug)))
+
+    cloned = EncEncuesta(
+        tenant_id=source.tenant_id,
+        slug=slug,
+        titulo=title,
+        descripcion=source.descripcion,
+        tipo=source.tipo,
+        estado="borrador",
+        puntos_recompensa=source.puntos_recompensa,
+        inicio_at=None,
+        fin_at=source.fin_at,
+        requiere_identidad=source.requiere_identidad,
+        politica_unicidad=source.politica_unicidad,
+        anonimo_permitido=source.anonimo_permitido,
+        es_votacion_envivo=source.es_votacion_envivo,
+        mostrar_resultados_envivo=source.mostrar_resultados_envivo,
+        permitir_comentarios=source.permitir_comentarios,
+        created_by=getattr(user, "id", None),
+    )
+
+    for question in source.preguntas:
+        cloned_question = EncPregunta(
+            orden=question.orden,
+            tipo=question.tipo,
+            texto=question.texto,
+            obligatoria=question.obligatoria,
+            min_selecciones=question.min_selecciones,
+            max_selecciones=question.max_selecciones,
+        )
+        for option in question.opciones:
+            cloned_question.opciones.append(
+                EncOpcion(
+                    orden=option.orden,
+                    texto=option.texto,
+                    valor=option.valor,
+                )
+            )
+        cloned.preguntas.append(cloned_question)
+
+    _sync_encuesta_tags(cloned, _collect_encuesta_tags(source))
+    db.session.add(cloned)
+
+    try:
+        db.session.commit()
+    except IntegrityError as exc:
+        db.session.rollback()
+        raise EncuestaError("No se pudo duplicar la encuesta", status_code=409) from exc
+
+    current_app.logger.info(
+        "[encuestas] Encuesta %s duplicada como %s por %s",
+        source.id,
+        cloned.id,
+        getattr(user, "id", None),
+    )
+    return cloned
+
+
 def _ensure_publication_window(encuesta: EncEncuesta) -> None:
     if encuesta.inicio_at and encuesta.fin_at and encuesta.inicio_at > encuesta.fin_at:
         raise EncuestaError("La fecha de inicio no puede ser posterior a la de cierre")

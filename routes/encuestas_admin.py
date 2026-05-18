@@ -8,6 +8,7 @@ from services.encuestas_service import (
     EncuestaError,
     create_encuesta,
     update_encuesta,
+    duplicate_encuesta,
     publicar_encuesta,
     cerrar_encuesta,
     delete_encuesta,
@@ -82,6 +83,17 @@ def _create_admin_blueprint(name: str, url_prefix: str) -> Blueprint:
         except EncuestaError as err:
             return jsonify(err.to_dict()), err.status_code
         return jsonify(serialize_encuesta(encuesta)), 200
+
+    @bp.route("/<int:encuesta_id>/duplicar", methods=["POST"])
+    @bp.route("/<int:encuesta_id>/duplicate", methods=["POST"])
+    @token_requerido
+    @require_role("admin", "super_admin")
+    def duplicar_encuesta_endpoint(current_user, encuesta_id: int):
+        try:
+            encuesta = duplicate_encuesta(encuesta_id, request.get_json(silent=True) or {}, current_user)
+        except EncuestaError as err:
+            return jsonify(err.to_dict()), err.status_code
+        return jsonify({"ok": True, "source_id": encuesta_id, "encuesta": serialize_encuesta(encuesta)}), 201
 
     @bp.route("/<int:encuesta_id>", methods=["DELETE"])
     @token_requerido

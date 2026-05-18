@@ -47,6 +47,7 @@ from models import EncEncuesta, EncLink, EncRespuesta, EncSegmento
 from services.encuestas_service import (
     EncuestaError,
     create_encuesta,
+    duplicate_encuesta,
     publicar_encuesta,
     save_respuesta,
     list_respuestas,
@@ -840,6 +841,27 @@ def test_create_encuesta_generates_unique_slug(client):
         assert primera.slug == "junin-participa"
         assert segunda.slug.startswith("junin-participa-")
         assert segunda.slug != primera.slug
+
+
+def test_duplicate_encuesta_creates_editable_draft_copy(client):
+    with client.application.app_context():
+        encuesta, slug, user = _create_active_encuesta(tenant_id=4, tags=["Obras", "Vecinos"])
+        save_respuesta(slug, _respuesta_payload(encuesta), _request_ctx("anon-duplicate-source"))
+
+        duplicate = duplicate_encuesta(encuesta.id, {}, user)
+
+        assert duplicate.id != encuesta.id
+        assert duplicate.tenant_id == encuesta.tenant_id
+        assert duplicate.estado == "borrador"
+        assert duplicate.slug.startswith(f"{encuesta.slug}-nueva-version")
+        assert duplicate.respuestas.count() == 0
+        assert [pregunta.texto for pregunta in duplicate.preguntas] == [
+            pregunta.texto for pregunta in encuesta.preguntas
+        ]
+        assert [opcion.texto for opcion in duplicate.preguntas[0].opciones] == [
+            opcion.texto for opcion in encuesta.preguntas[0].opciones
+        ]
+        assert sorted(seg.valor for seg in duplicate.segmentos if seg.clave == "tag") == ["Obras", "Vecinos"]
 
 
 
