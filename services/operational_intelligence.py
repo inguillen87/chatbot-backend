@@ -118,6 +118,30 @@ def _first_value(data: dict[str, Any], *keys: str) -> Any:
     return None
 
 
+def _clean_text(value: Any) -> str | None:
+    text = str(value or "").strip()
+    return text or None
+
+
+def _record_has_coordinates(record: dict[str, Any]) -> bool:
+    return record.get("lat") is not None and record.get("lng") is not None
+
+
+def _record_address_from_metadata(metadata: dict[str, Any]) -> str | None:
+    return _clean_text(
+        _first_value(
+            metadata,
+            "direccion",
+            "address",
+            "ubicacion",
+            "location",
+            "formatted_address",
+            "domicilio",
+            "calle",
+        )
+    )
+
+
 def _normalize_gender(value: Any) -> str:
     raw = _norm(value, "unknown")
     mapping = {
@@ -250,6 +274,7 @@ def _tenant_ticket_record(ticket: TenantTicket) -> dict[str, Any]:
     status = _norm(ticket.estado, "nuevo")
     priority = _norm(extra.get("priority") or extra.get("prioridad"), "normal")
     channel = _norm(extra.get("channel") or extra.get("canal") or ticket.origen, "web")
+    address = _record_address_from_metadata(extra)
     return {
         "source": "tenant_ticket",
         "id": ticket.id,
@@ -259,7 +284,8 @@ def _tenant_ticket_record(ticket: TenantTicket) -> dict[str, Any]:
         "channel": channel,
         "category": _norm(ticket.categoria, "sin_categoria"),
         "assignee_id": extra.get("assignee_id"),
-        "zone": _norm(extra.get("zone") or extra.get("zona") or extra.get("address"), "sin_zona"),
+        "zone": _norm(extra.get("zone") or extra.get("zona") or address, "sin_zona"),
+        "address": address,
         "lat": ticket.latitud,
         "lng": ticket.longitud,
         "demographics": _demographics_from_metadata(extra),
@@ -273,6 +299,7 @@ def _municipio_ticket_record(ticket: MunicipioTicket) -> dict[str, Any]:
     status = _norm(ticket.estado, "nuevo")
     channel = _norm(getattr(ticket, "canal_ingreso", None), "web")
     details = _json_object(getattr(ticket, "detalles", None))
+    address = _clean_text(getattr(ticket, "direccion", None)) or _record_address_from_metadata(details)
     return {
         "source": "municipio_ticket",
         "id": ticket.id,
@@ -282,7 +309,8 @@ def _municipio_ticket_record(ticket: MunicipioTicket) -> dict[str, Any]:
         "channel": channel,
         "category": _norm(ticket.categoria, "sin_categoria"),
         "assignee_id": getattr(ticket, "asignado_a_id", None),
-        "zone": _norm(ticket.distrito or ticket.direccion, "sin_zona"),
+        "zone": _norm(ticket.distrito or address, "sin_zona"),
+        "address": address,
         "lat": ticket.latitud,
         "lng": ticket.longitud,
         "demographics": _demographics_from_metadata(details),
@@ -294,6 +322,7 @@ def _municipio_ticket_record(ticket: MunicipioTicket) -> dict[str, Any]:
 
 def _pyme_ticket_record(ticket: PymeTicket) -> dict[str, Any]:
     status = _norm(ticket.estado, "nuevo")
+    address = _clean_text(getattr(ticket, "direccion", None))
     return {
         "source": "pyme_ticket",
         "id": ticket.id,
@@ -303,9 +332,10 @@ def _pyme_ticket_record(ticket: PymeTicket) -> dict[str, Any]:
         "channel": "web",
         "category": _norm(ticket.categoria, "sin_categoria"),
         "assignee_id": getattr(ticket, "asignado_a_id", None),
-        "zone": "sin_zona",
-        "lat": None,
-        "lng": None,
+        "zone": _norm(address, "sin_zona"),
+        "address": address,
+        "lat": getattr(ticket, "latitud", None),
+        "lng": getattr(ticket, "longitud", None),
         "demographics": {"gender": "unknown", "age": None, "age_range": "unknown", "source": "missing"},
         "created_at": ticket.fecha,
         "updated_at": ticket.fecha,
@@ -718,6 +748,65 @@ def build_operational_freshness(tenant: TenantProfile, start_date: datetime, end
     }
 
 
+def _record_to_filter_probe(record: dict[str, Any]) -> dict[str, Any]:
+    demographics = _as_dict(record.get("demographics"))
+    return {
+        "source": "ticket",
+        "record_source": record.get("source"),
+        "category": record.get("category"),
+        "channel": record.get("channel"),
+        "gender": demographics.get("gender") or "unknown",
+        "age_range": demographics.get("age_range") or "unknown",
+    }
+
+
+def _geocoding_candidate(record: dict[str, Any]) -> dict[str, Any]:
+    demographics = _as_dict(record.get("demographics"))
+    return {
+        "id": f"{record.get('source')}:{record.get('id')}",
+        "record_source": record.get("source"),
+        "record_id": record.get("id"),
+        "category": record.get("category"),
+        "channel": record.get("channel"),
+        "status": record.get("status"),
+        "zone": record.get("zone"),
+        "address": record.get("address"),
+        "label": record.get("title"),
+        "timestamp": _iso(record.get("created_at")),
+        "gender": demographics.get("gender") or "unknown",
+        "age_range": demographics.get("age_range") or "unknown",
+        "reason_code": "address_without_coordinates",
+    }
+
+
+def _location_quality(records: list[dict[str, Any]], geocoding_candidates: list[dict[str, Any]]) -> dict[str, Any]:
+    ticket_records = [record for record in records if record.get("source") in {"tenant_ticket", "municipio_ticket", "pyme_ticket"}]
+    with_coordinates = [record for record in ticket_records if _record_has_coordinates(record)]
+    with_address = [record for record in ticket_records if record.get("address")]
+    missing_location = [
+        record
+        for record in ticket_records
+        if not _record_has_coordinates(record) and not record.get("address")
+    ]
+    total = len(ticket_records)
+    coverage_pct = round((len(with_coordinates) / total) * 100, 2) if total else 0.0
+    return {
+        "contract_version": "operations.location_quality.v1",
+        "total_ticket_records": total,
+        "ticket_records_with_coordinates": len(with_coordinates),
+        "ticket_records_with_address": len(with_address),
+        "ticket_records_pending_geocode": len(geocoding_candidates),
+        "ticket_records_without_location": len(missing_location),
+        "coordinate_coverage_pct": coverage_pct,
+        "status": "ready" if with_coordinates else ("pending_geocode" if geocoding_candidates else "empty"),
+        "reason_code": (
+            "coordinates_available"
+            if with_coordinates
+            else ("addresses_need_geocoding" if geocoding_candidates else "no_ticket_locations")
+        ),
+    }
+
+
 def build_operational_heatmap(
     tenant: TenantProfile,
     start_date: datetime,
@@ -730,6 +819,13 @@ def build_operational_heatmap(
     records = ticket_records if ticket_records is not None else _collect_ticket_records(tenant, start_date, end_date)
     points: list[dict[str, Any]] = []
     filters = segment_filters or {}
+    geocoding_candidates = [
+        _geocoding_candidate(record)
+        for record in records
+        if not _record_has_coordinates(record)
+        and record.get("address")
+        and _point_matches_filters(_record_to_filter_probe(record), filters)
+    ]
 
     for record in records:
         if record.get("lat") is None or record.get("lng") is None:
@@ -893,6 +989,7 @@ def build_operational_heatmap(
     }
     points_with_gender = len([point for point in points if point.get("gender") not in (None, "unknown")])
     points_with_age = len([point for point in points if point.get("age_range") not in (None, "unknown")])
+    location_quality = _location_quality(records, geocoding_candidates)
 
     return {
         "contract_version": "operations.heatmap.v1",
@@ -908,6 +1005,9 @@ def build_operational_heatmap(
             "segment_filters": ["categoria", "genero", "rango_edad", "source", "channel"],
             "category_layers": True,
             "demographics_source": "metadata_fields_only",
+            "address_geocoding": True,
+            "geocoding_state": (location_quality.get("reason_code") or "unknown"),
+            "recommended_views": ["heatmap", "category_layers", "demographic_segments", "geocoding_queue"],
         },
         "summary": {
             "points": len(points),
@@ -921,6 +1021,8 @@ def build_operational_heatmap(
             "unknown_gender_points": len(points) - points_with_gender,
             "unknown_age_points": len(points) - points_with_age,
             "filtered": bool(normalized_filters),
+            "pending_geocode": len(geocoding_candidates),
+            "coordinate_coverage_pct": location_quality.get("coordinate_coverage_pct"),
         },
         "applied_filters": normalized_filters,
         "segments": {
@@ -938,6 +1040,21 @@ def build_operational_heatmap(
             "known_age_points": points_with_age,
             "unknown_gender_points": len(points) - points_with_gender,
             "unknown_age_points": len(points) - points_with_age,
+        },
+        "location_quality": location_quality,
+        "geocoding": {
+            "contract_version": "operations.heatmap.geocoding_queue.v1",
+            "status": "pending" if geocoding_candidates else "empty",
+            "reason_code": "address_without_coordinates" if geocoding_candidates else "no_pending_addresses",
+            "candidate_count": len(geocoding_candidates),
+            "candidates": geocoding_candidates[:50],
+            "recommended_action": {
+                "action_id": "geocode_ticket_addresses",
+                "label": "Geocodificar direcciones pendientes",
+                "method": "PATCH",
+                "endpoint_template": "/api/tickets/{record_id}/ubicacion",
+                "requires": ["latitud", "longitud"],
+            },
         },
         "category_layers": category_layers,
         "bounds": bounds,
@@ -1199,6 +1316,11 @@ def build_operational_dashboard(tenant: TenantProfile, start_date: datetime, end
                 "bounds": heatmap["bounds"],
                 "hotspots": heatmap["hotspots"],
                 "render_contract": heatmap["render_contract"],
+                "location_quality": heatmap.get("location_quality"),
+                "geocoding": {
+                    "candidate_count": ((heatmap.get("geocoding") or {}).get("candidate_count") or 0),
+                    "reason_code": ((heatmap.get("geocoding") or {}).get("reason_code") or "no_pending_addresses"),
+                },
             }
         },
         "alerts": alerts,
@@ -1208,6 +1330,12 @@ def build_operational_dashboard(tenant: TenantProfile, start_date: datetime, end
             "primary_refresh_seconds": 30,
             "empty_state_behavior": "show_contract_empty_state",
             "map_layers": ["tickets", "surveys", "analytics_events"],
+            "exports": {
+                "pdf": "/api/v2/analytics/operations/export.pdf",
+                "ai_summary": "/api/v2/analytics/operations/executive-summary",
+                "heatmap": "/api/v2/analytics/operations/heatmap",
+                "freshness": "/api/v2/analytics/operations/freshness",
+            },
         },
     }
 

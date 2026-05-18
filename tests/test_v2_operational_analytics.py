@@ -1,6 +1,7 @@
 import os
 import unittest
 from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
 import jwt
 
@@ -354,6 +355,73 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertEqual(payload.get("hotspots"), [])
         self.assertFalse((payload.get("render_contract") or {}).get("can_render_heatmap"))
         self.assertEqual((payload.get("render_contract") or {}).get("state"), "empty")
+
+    def test_operations_heatmap_surfaces_addresses_pending_geocode(self):
+        db.session.add(
+            TenantTicket(
+                tenant_id=self.tenant.id,
+                user_id=self.admin.id,
+                categoria="limpieza",
+                descripcion="Residuo voluminoso informado con direccion pero sin GPS",
+                estado="cerrado",
+                origen="web",
+                latitud=None,
+                longitud=None,
+                datos_extra={
+                    "title": "Residuo en vereda",
+                    "address": "Av. San Martin 123, Junin",
+                    "channel": "web",
+                    "genero": "femenino",
+                    "edad": 31,
+                },
+            )
+        )
+        db.session.commit()
+
+        response = self.client.get(
+            "/api/v2/analytics/operations/heatmap?categoria=limpieza&source=tickets",
+            headers=self._auth(),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual((payload.get("summary") or {}).get("points"), 0)
+        self.assertEqual((payload.get("summary") or {}).get("pending_geocode"), 1)
+        self.assertEqual((payload.get("geocoding") or {}).get("candidate_count"), 1)
+        candidate = ((payload.get("geocoding") or {}).get("candidates") or [])[0]
+        self.assertEqual(candidate.get("address"), "Av. San Martin 123, Junin")
+        self.assertEqual(candidate.get("reason_code"), "address_without_coordinates")
+        self.assertTrue((payload.get("render_contract") or {}).get("address_geocoding"))
+
+    def test_operations_executive_summary_returns_ai_contract(self):
+        with patch(
+            "routes.v2.analytics.generate_analytics_report",
+            return_value={"summary": "Hay actividad operativa real.", "opportunities": [], "threats": [], "tone": "Civic"},
+        ) as mocked_report:
+            response = self.client.get(
+                "/api/v2/analytics/operations/executive-summary",
+                headers=self._auth(),
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload.get("contract_version"), "operations.executive_summary.v1")
+        self.assertEqual((payload.get("ai") or {}).get("summary"), "Hay actividad operativa real.")
+        self.assertEqual((payload.get("frontend_contract") or {}).get("render_as"), "operations_ai_executive_summary")
+        mocked_report.assert_called_once()
+
+    def test_operations_export_pdf_returns_downloadable_dashboard_report(self):
+        response = self.client.get(
+            "/api/v2/analytics/operations/export.pdf",
+            headers={**self._auth(), "X-Request-Id": "ops-pdf-1"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.mimetype, "application/pdf")
+        self.assertEqual(response.headers.get("X-Request-Id"), "ops-pdf-1")
+        body = response.data.decode("latin-1", errors="ignore")
+        self.assertIn("Reporte operativo Chatboc", body)
+        self.assertIn("startxref", body)
 
     def test_operations_action_center_returns_prioritized_actions(self):
         response = self.client.get(

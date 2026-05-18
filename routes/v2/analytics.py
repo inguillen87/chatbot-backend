@@ -4,12 +4,13 @@ from datetime import datetime, timedelta
 from typing import Any
 import uuid
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, Response, jsonify, request
 
 from models import TenantTicket
 from routes import analytics_routes as legacy_analytics
 from routes.v2.tenants import V2TenantResolutionError, resolve_tenant_v2
 from services.analytics_service import analytics_service
+from services.openai_bridge import generate_analytics_report
 from services.operational_intelligence import (
     build_action_center,
     build_operational_dashboard,
@@ -35,6 +36,115 @@ def _json_response(payload: dict[str, Any], status: int = 200):
     response.status_code = status
     response.headers["X-Request-Id"] = request_id
     return response
+
+
+def _pdf_escape(value: Any) -> str:
+    text = str(value or "")
+    return text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+
+
+def _build_simple_text_pdf(lines: list[str]) -> bytes:
+    y_start = 790
+    line_height = 14
+    chunks = ["BT /F1 10 Tf"]
+    current_y = y_start
+    for index, line in enumerate(lines):
+        safe_line = _pdf_escape(line)
+        if index == 0:
+            chunks.append(f"50 {current_y} Td ({safe_line}) Tj")
+        else:
+            chunks.append(f"0 -{line_height} Td ({safe_line}) Tj")
+        current_y -= line_height
+        if current_y <= 40:
+            break
+    chunks.append("ET")
+    stream = "\n".join(chunks).encode("latin-1", errors="replace")
+
+    objects = [
+        b"<</Type/Catalog/Pages 2 0 R>>",
+        b"<</Type/Pages/Kids[3 0 R]/Count 1>>",
+        b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]/Resources<</Font<</F1 4 0 R>>>>/Contents 5 0 R>>",
+        b"<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>",
+        f"<</Length {len(stream)}>>stream\n".encode("ascii") + stream + b"\nendstream",
+    ]
+
+    body = bytearray(b"%PDF-1.4\n")
+    offsets = [0]
+    for index, obj in enumerate(objects, start=1):
+        offsets.append(len(body))
+        body.extend(f"{index} 0 obj\n".encode("ascii"))
+        body.extend(obj)
+        body.extend(b"\nendobj\n")
+
+    xref_start = len(body)
+    body.extend(f"xref\n0 {len(offsets)}\n".encode("ascii"))
+    body.extend(b"0000000000 65535 f \n")
+    for offset in offsets[1:]:
+        body.extend(f"{offset:010d} 00000 n \n".encode("ascii"))
+    body.extend(f"trailer<</Root 1 0 R/Size {len(offsets)}>>\n".encode("ascii"))
+    body.extend(f"startxref\n{xref_start}\n%%EOF".encode("ascii"))
+    return bytes(body)
+
+
+def _tenant_analytics_segment(tenant) -> str:
+    tipo = str(getattr(tenant, "tipo", "") or "").strip().lower()
+    return "municipio" if tipo in {"municipio", "gobierno", "government"} else "pyme"
+
+
+def _dashboard_report_lines(payload: dict[str, Any]) -> list[str]:
+    tenant = payload.get("tenant") or {}
+    summary = payload.get("summary") or {}
+    tickets = ((payload.get("tickets") or {}).get("summary") or {})
+    surveys = ((payload.get("surveys") or {}).get("summary") or {})
+    chats = ((payload.get("chats") or {}).get("summary") or {})
+    maps = (((payload.get("maps") or {}).get("heatmap") or {}) or {})
+    heatmap_summary = maps.get("summary") or {}
+    location_quality = maps.get("location_quality") or {}
+    alerts = payload.get("alerts") or []
+    actions = payload.get("next_best_actions") or []
+
+    lines = [
+        "Reporte operativo Chatboc",
+        f"Tenant: {tenant.get('slug') or tenant.get('id') or 'sin_tenant'}",
+        f"Emitido: {datetime.utcnow().isoformat()}Z",
+        "",
+        "Resumen:",
+        f"- Tickets abiertos: {summary.get('open_tickets', 0)}",
+        f"- Tickets vencidos: {summary.get('overdue_tickets', 0)}",
+        f"- Respuestas encuestas: {summary.get('survey_responses', 0)}",
+        f"- Mensajes chat: {summary.get('chat_messages', 0)}",
+        "",
+        "Tickets:",
+        f"- Total: {tickets.get('total', 0)}",
+        f"- Sin asignar: {tickets.get('unassigned', 0)}",
+        f"- Con ubicacion: {tickets.get('with_location', 0)}",
+        "",
+        "Mapa operativo:",
+        f"- Puntos: {heatmap_summary.get('points', 0)}",
+        f"- Celdas: {heatmap_summary.get('cells', 0)}",
+        f"- Pendientes geocodificar: {heatmap_summary.get('pending_geocode', 0)}",
+        f"- Cobertura coordenadas: {location_quality.get('coordinate_coverage_pct', 0)}%",
+        "",
+        "Encuestas y chat:",
+        f"- Votaciones live: {surveys.get('votaciones_live', 0)}",
+        f"- WhatsApp: {chats.get('whatsapp_messages', 0)}",
+        f"- Widget: {chats.get('widget_messages', 0)}",
+        "",
+        "Alertas:",
+    ]
+    if alerts:
+        for alert in alerts[:5]:
+            lines.append(f"- {alert.get('severity', 'info')}: {alert.get('reason_code')} - {alert.get('message')}")
+    else:
+        lines.append("- Sin alertas criticas")
+
+    lines.extend(["", "Proximas acciones:"])
+    if actions:
+        for action in actions[:5]:
+            lines.append(f"- {action.get('priority', 'low')}: {action.get('title')}")
+    else:
+        lines.append("- Mantener monitoreo")
+    return lines
 
 
 def _error_response(message: str, status_code: int, reason_code: str = "request_error", action_hint: str = "check_request"):
@@ -285,6 +395,96 @@ def operations_freshness_v2(current_user):
     start_date, end_date = _date_range()
     payload = build_operational_freshness(tenant, start_date, end_date)
     return _json_response(payload)
+
+
+@v2_analytics_bp.route("/operations/executive-summary", methods=["GET", "POST"])
+@token_requerido
+@require_role("admin", "empleado", "super_admin")
+def operations_executive_summary_v2(current_user):
+    tenant, error = _resolve_tenant_or_error(current_user)
+    if error:
+        return error
+
+    start_date, end_date = _date_range()
+    dashboard = build_operational_dashboard(tenant, start_date, end_date)
+    summary = dashboard.get("summary") or {}
+    has_data = any(
+        int(summary.get(key) or 0) > 0
+        for key in ("open_tickets", "overdue_tickets", "survey_responses", "chat_messages", "heatmap_points")
+    )
+
+    if has_data:
+        ai_report = generate_analytics_report(
+            {
+                "tenant": dashboard.get("tenant"),
+                "period": dashboard.get("period"),
+                "summary": summary,
+                "trends": dashboard.get("trends"),
+                "tickets": dashboard.get("tickets"),
+                "surveys": dashboard.get("surveys"),
+                "chats": dashboard.get("chats"),
+                "maps": dashboard.get("maps"),
+                "alerts": dashboard.get("alerts"),
+                "next_best_actions": dashboard.get("next_best_actions"),
+            },
+            tenant_type=_tenant_analytics_segment(tenant),
+        )
+        reason_code = "ai_summary_generated"
+    else:
+        ai_report = {
+            "summary": "No hay datos suficientes para generar un resumen ejecutivo en el periodo seleccionado.",
+            "opportunities": [],
+            "threats": [],
+            "tone": "Data-Insufficient",
+        }
+        reason_code = "no_operational_data_in_period"
+
+    return _json_response(
+        {
+            "contract_version": "operations.executive_summary.v1",
+            "tenant": dashboard.get("tenant"),
+            "period": dashboard.get("period"),
+            "generated_at": dashboard.get("generated_at"),
+            "reason_code": reason_code,
+            "summary": summary,
+            "ai": ai_report,
+            "source_contract": dashboard.get("contract_version"),
+            "model_policy": {
+                "provider": "openai",
+                "model_env": "OPENAI_ANALYTICS_MODEL",
+                "fallback_behavior": "deterministic_json_when_unavailable",
+            },
+            "frontend_contract": {
+                "render_as": "operations_ai_executive_summary",
+                "dashboard_endpoint": "/api/v2/analytics/operations/dashboard",
+                "export_pdf_endpoint": "/api/v2/analytics/operations/export.pdf",
+                "refresh_behavior": "manual_or_after_dashboard_refresh",
+            },
+        }
+    )
+
+
+@v2_analytics_bp.route("/operations/export.pdf", methods=["GET"])
+@token_requerido
+@require_role("admin", "empleado", "super_admin")
+def operations_export_pdf_v2(current_user):
+    tenant, error = _resolve_tenant_or_error(current_user)
+    if error:
+        return error
+
+    request_id = _request_id()
+    start_date, end_date = _date_range()
+    dashboard = build_operational_dashboard(tenant, start_date, end_date)
+    body = _build_simple_text_pdf(_dashboard_report_lines(dashboard))
+    response = Response(
+        body,
+        mimetype="application/pdf",
+        headers={
+            "Content-Disposition": f"attachment; filename=operations_{tenant.slug or tenant.id}.pdf",
+            "X-Request-Id": request_id,
+        },
+    )
+    return response
 
 
 @v2_analytics_bp.route("/summary", methods=["GET"])
