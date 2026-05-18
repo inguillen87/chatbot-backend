@@ -212,6 +212,155 @@ def test_admin_encuestas_list_uses_same_tenant_resolution_as_create(monkeypatch,
     assert created_id in ids
 
 
+def test_admin_encuestas_republish_keeps_canonical_public_slug(monkeypatch, client, admin_user):
+    monkeypatch.setattr(feature_flags, "FEATURE_ENCUESTAS", True)
+    monkeypatch.setattr(encuestas_admin_routes, "FEATURE_ENCUESTAS", True)
+
+    headers = _auth_headers(client, admin_user)
+    create_resp = client.post(
+        "/api/admin/encuestas",
+        json={
+            "titulo": "Votacion prioridades Junin",
+            "slug": "luis-petri-votacion-prioridades-junin-8887",
+            "tipo": "votacion",
+            "preguntas": [
+                {
+                    "orden": 1,
+                    "tipo": "opcion_unica",
+                    "texto": "Prioridad principal",
+                    "obligatoria": True,
+                    "opciones": [
+                        {"orden": 1, "texto": "Seguridad"},
+                        {"orden": 2, "texto": "Obras"},
+                    ],
+                }
+            ],
+        },
+        headers=headers,
+    )
+    assert create_resp.status_code == 201, create_resp.get_json()
+    encuesta_id = create_resp.get_json()["id"]
+
+    first_publish = client.post(f"/api/admin/encuestas/{encuesta_id}/publicar", headers=headers)
+    assert first_publish.status_code == 200, first_publish.get_json()
+    first_slug = first_publish.get_json()["slug_publico"]
+
+    second_publish = client.post(f"/api/admin/encuestas/{encuesta_id}/publicar", headers=headers)
+    assert second_publish.status_code == 200, second_publish.get_json()
+    second_payload = second_publish.get_json()
+    assert second_payload["slug_publico"] == first_slug
+    assert second_payload["canonical_slug"] == first_slug
+    assert second_payload["encuesta"]["slug_publico"] == first_slug
+
+    detail_resp = client.get(f"/api/admin/encuestas/{encuesta_id}", headers=headers)
+    assert detail_resp.status_code == 200, detail_resp.get_json()
+    detail = detail_resp.get_json()
+    assert detail["slug_publico"] == first_slug
+    assert detail["url_publica"].endswith(f"/e/{first_slug}")
+    assert detail["public_api_endpoint"].endswith(first_slug)
+
+
+def test_admin_encuestas_allows_safe_text_edit_after_responses(monkeypatch, client, admin_user):
+    monkeypatch.setattr(feature_flags, "FEATURE_ENCUESTAS", True)
+    monkeypatch.setattr(encuestas_admin_routes, "FEATURE_ENCUESTAS", True)
+
+    headers = _auth_headers(client, admin_user)
+    create_resp = client.post(
+        "/api/admin/encuestas",
+        json={
+            "titulo": "Sondeo territorial Junin",
+            "tipo": "sondeo",
+            "preguntas": [
+                {
+                    "orden": 1,
+                    "tipo": "opcion_unica",
+                    "texto": "Prioridad inicial",
+                    "obligatoria": True,
+                    "opciones": [
+                        {"orden": 1, "texto": "Seguridad", "valor": "seguridad"},
+                        {"orden": 2, "texto": "Salud", "valor": "salud"},
+                    ],
+                },
+                {
+                    "orden": 2,
+                    "tipo": "abierta",
+                    "texto": "Comentario",
+                    "obligatoria": False,
+                },
+            ],
+        },
+        headers=headers,
+    )
+    assert create_resp.status_code == 201, create_resp.get_json()
+    created = create_resp.get_json()
+    encuesta_id = created["id"]
+    pregunta_cerrada = created["preguntas"][0]
+    pregunta_abierta = created["preguntas"][1]
+    opcion_id = pregunta_cerrada["opciones"][0]["id"]
+
+    publish_resp = client.post(f"/api/admin/encuestas/{encuesta_id}/publicar", headers=headers)
+    assert publish_resp.status_code == 200, publish_resp.get_json()
+    public_slug = publish_resp.get_json()["slug_publico"]
+
+    with client.application.app_context():
+        save_respuesta(
+            public_slug,
+            {
+                "anon_id": "anon-safe-edit",
+                "respuestas": [
+                    {"pregunta_id": pregunta_cerrada["id"], "opcion_ids": [opcion_id]},
+                    {"pregunta_id": pregunta_abierta["id"], "texto_libre": "Comentario vecinal"},
+                ],
+            },
+            {"ip": "203.0.113.25", "user_agent": "pytest", "anon_id": "anon-safe-edit"},
+        )
+
+    update_resp = client.put(
+        f"/api/admin/encuestas/{encuesta_id}",
+        json={
+            "titulo": "Sondeo territorial Junin actualizado",
+            "tipo": "sondeo",
+            "preguntas": [
+                {
+                    "id": pregunta_cerrada["id"],
+                    "orden": 1,
+                    "tipo": "opcion_unica",
+                    "texto": "Prioridad actualizada",
+                    "obligatoria": True,
+                    "opciones": [
+                        {
+                            "id": pregunta_cerrada["opciones"][0]["id"],
+                            "orden": 1,
+                            "texto": "Seguridad ciudadana",
+                            "valor": "seguridad",
+                        },
+                        {
+                            "id": pregunta_cerrada["opciones"][1]["id"],
+                            "orden": 2,
+                            "texto": "Salud",
+                            "valor": "salud",
+                        },
+                    ],
+                },
+                {
+                    "id": pregunta_abierta["id"],
+                    "orden": 2,
+                    "tipo": "abierta",
+                    "texto": "Comentario adicional",
+                    "obligatoria": False,
+                },
+            ],
+        },
+        headers=headers,
+    )
+    assert update_resp.status_code == 200, update_resp.get_json()
+    updated = update_resp.get_json()
+    assert updated["titulo"] == "Sondeo territorial Junin actualizado"
+    assert updated["preguntas"][0]["texto"] == "Prioridad actualizada"
+    assert updated["preguntas"][0]["opciones"][0]["texto"] == "Seguridad ciudadana"
+    assert updated["slug_publico"] == public_slug
+
+
 def test_admin_templates_endpoint_returns_catalog(client, monkeypatch, admin_user):
     monkeypatch.setattr(feature_flags, "FEATURE_ENCUESTAS", True)
     monkeypatch.setattr(encuestas_admin_routes, "FEATURE_ENCUESTAS", True)

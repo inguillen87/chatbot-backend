@@ -1159,6 +1159,150 @@ def _build_pregunta_entities(encuesta: EncEncuesta, preguntas_payload: Sequence[
     return preguntas
 
 
+def _payload_int_id(payload: Mapping[str, Any], *keys: str) -> Optional[int]:
+    for key in keys:
+        value = payload.get(key)
+        coerced = _coerce_int_or_none(value)
+        if coerced is not None:
+            return coerced
+    return None
+
+
+def _apply_non_destructive_question_updates(
+    encuesta: EncEncuesta,
+    preguntas_payload: Sequence[Dict[str, Any]],
+) -> None:
+    """Apply text/config edits without invalidating existing answers.
+
+    Public surveys with responses can receive full-form PUT payloads from the
+    admin UI. Rebuilding the questions would break historical answer
+    references, but rejecting every payload with ``preguntas`` makes normal
+    saves fail. This path allows same-shape updates and rejects only structural
+    mutations: new/deleted questions, type changes, or new/deleted options.
+    """
+
+    existing_questions = {pregunta.id: pregunta for pregunta in encuesta.preguntas if pregunta.id is not None}
+    normalized_payloads: List[Dict[str, Any]] = []
+    seen_questions: set[int] = set()
+
+    for idx, raw_payload in enumerate(preguntas_payload or []):
+        payload = _validate_pregunta_payload(dict(raw_payload or {}), idx)
+        question_id = _payload_int_id(payload, "id", "pregunta_id", "question_id")
+        if question_id is None or question_id not in existing_questions:
+            raise EncuestaError(
+                "No se puede modificar la estructura de una encuesta con respuestas registradas",
+                status_code=409,
+                payload={
+                    "reason_code": "survey_structure_locked",
+                    "detail": "La pregunta no existe en la encuesta publicada.",
+                    "encuesta_id": encuesta.id,
+                },
+            )
+        if question_id in seen_questions:
+            raise EncuestaError(
+                "No se puede modificar la estructura de una encuesta con respuestas registradas",
+                status_code=409,
+                payload={
+                    "reason_code": "survey_structure_locked",
+                    "detail": "La misma pregunta aparece mas de una vez en el payload.",
+                    "encuesta_id": encuesta.id,
+                },
+            )
+        seen_questions.add(question_id)
+
+        question = existing_questions[question_id]
+        if _normalize_pregunta_tipo(payload.get("tipo")) != question.tipo:
+            raise EncuestaError(
+                "No se puede modificar el tipo de una pregunta con respuestas registradas",
+                status_code=409,
+                payload={
+                    "reason_code": "survey_structure_locked",
+                    "detail": "El tipo de pregunta no puede cambiar despues de recibir respuestas.",
+                    "encuesta_id": encuesta.id,
+                    "pregunta_id": question_id,
+                },
+            )
+
+        existing_options = {opcion.id: opcion for opcion in question.opciones if opcion.id is not None}
+        incoming_options = list(payload.get("opciones") or [])
+        if existing_options or incoming_options:
+            if len(incoming_options) != len(existing_options):
+                raise EncuestaError(
+                    "No se puede modificar las opciones de una encuesta con respuestas registradas",
+                    status_code=409,
+                    payload={
+                        "reason_code": "survey_structure_locked",
+                        "detail": "No se pueden agregar o quitar opciones despues de recibir respuestas.",
+                        "encuesta_id": encuesta.id,
+                        "pregunta_id": question_id,
+                    },
+                )
+            seen_options: set[int] = set()
+            for option_payload in incoming_options:
+                option_id = _payload_int_id(option_payload, "id", "opcion_id", "option_id")
+                if option_id is None or option_id not in existing_options:
+                    raise EncuestaError(
+                        "No se puede modificar las opciones de una encuesta con respuestas registradas",
+                        status_code=409,
+                        payload={
+                            "reason_code": "survey_structure_locked",
+                            "detail": "La opcion no existe en la encuesta publicada.",
+                            "encuesta_id": encuesta.id,
+                            "pregunta_id": question_id,
+                        },
+                    )
+                if option_id in seen_options:
+                    raise EncuestaError(
+                        "No se puede modificar las opciones de una encuesta con respuestas registradas",
+                        status_code=409,
+                        payload={
+                            "reason_code": "survey_structure_locked",
+                            "detail": "La misma opcion aparece mas de una vez en el payload.",
+                            "encuesta_id": encuesta.id,
+                            "pregunta_id": question_id,
+                        },
+                    )
+                seen_options.add(option_id)
+
+        normalized_payloads.append(payload)
+
+    if set(existing_questions) != seen_questions:
+        raise EncuestaError(
+            "No se puede modificar la estructura de una encuesta con respuestas registradas",
+            status_code=409,
+            payload={
+                "reason_code": "survey_structure_locked",
+                "detail": "El payload debe conservar todas las preguntas existentes.",
+                "encuesta_id": encuesta.id,
+                "missing_question_ids": sorted(set(existing_questions) - seen_questions),
+            },
+        )
+
+    for payload in normalized_payloads:
+        question_id = _payload_int_id(payload, "id", "pregunta_id", "question_id")
+        if question_id is None:
+            continue
+        question = existing_questions[question_id]
+        question.texto = (payload.get("texto") or "").strip()
+        question.obligatoria = bool(payload.get("obligatoria", False))
+        question.min_selecciones = _coerce_int_or_none(payload.get("min_selecciones"))
+        question.max_selecciones = _coerce_int_or_none(payload.get("max_selecciones"))
+
+        existing_options = {opcion.id: opcion for opcion in question.opciones if opcion.id is not None}
+        for option_payload in payload.get("opciones") or []:
+            option_id = _payload_int_id(option_payload, "id", "opcion_id", "option_id")
+            option = existing_options.get(option_id)
+            if option is None:
+                continue
+            option.texto = (
+                option_payload.get("texto")
+                or option_payload.get("label")
+                or option_payload.get("nombre")
+                or ""
+            ).strip()
+            option.valor = option_payload.get("valor") or option_payload.get("value")
+
+
 def _normalize_tags(tags: Optional[Sequence[Any]]) -> List[str]:
     if not tags:
         return []
@@ -1466,27 +1610,18 @@ def update_encuesta(encuesta_id: int, data: Dict[str, Any], user: Any) -> EncEnc
             encuesta.slug = candidate_slug
 
     if encuesta.estado == "publicada" and "preguntas" in data:
-        respuestas_registradas = encuesta.respuestas.count()
-        puede_actualizar_estructura = respuestas_registradas == 0
-        if not puede_actualizar_estructura:
-            raise EncuestaError(
-                "No se puede modificar la estructura de una encuesta con respuestas registradas",
-                status_code=409,
-                payload={"encuesta_id": encuesta.id, "respuestas": respuestas_registradas},
-            )
+        puede_actualizar_estructura = encuesta.respuestas.count() == 0
 
     _apply_common_updates(encuesta, data)
 
     if "preguntas" in data:
         if not puede_actualizar_estructura:
-            raise EncuestaError(
-                "No se puede modificar la estructura de una encuesta con respuestas registradas",
-                status_code=409,
-            )
-        encuesta.preguntas.clear()
-        db.session.flush()
-        nuevas_preguntas = _build_pregunta_entities(encuesta, data.get("preguntas") or [])
-        encuesta.preguntas.extend(nuevas_preguntas)
+            _apply_non_destructive_question_updates(encuesta, data.get("preguntas") or [])
+        else:
+            encuesta.preguntas.clear()
+            db.session.flush()
+            nuevas_preguntas = _build_pregunta_entities(encuesta, data.get("preguntas") or [])
+            encuesta.preguntas.extend(nuevas_preguntas)
 
     if has_auto_seed_update:
         auto_seed_cfg = _normalize_auto_seed_config(
@@ -1528,13 +1663,15 @@ def publicar_encuesta(encuesta_id: int, user: Any) -> Tuple[EncEncuesta, EncLink
     if not encuesta.inicio_at:
         encuesta.inicio_at = _public_schedule_now()
 
-    slug_publico = _slugify(f"{encuesta.slug}-{secrets.token_hex(3)}")
-    link = EncLink(
-        encuesta_id=encuesta.id,
-        slug_publico=slug_publico,
-        canal="web",
-    )
-    db.session.add(link)
+    link = _resolve_current_public_link(encuesta)
+    if link is None:
+        link = EncLink(
+            encuesta_id=encuesta.id,
+            slug_publico=encuesta.slug,
+            canal="web",
+        )
+        db.session.add(link)
+    slug_publico = link.slug_publico
 
     auto_seed_cfg = _get_auto_seed_config(encuesta)
     auto_seed_params: Optional[Dict[str, Any]] = None
@@ -1559,7 +1696,7 @@ def publicar_encuesta(encuesta_id: int, user: Any) -> Tuple[EncEncuesta, EncLink
     current_app.logger.info(
         "[encuestas] Encuesta %s publicada con slug %s por %s",
         encuesta.id,
-        slug_publico,
+        link.slug_publico,
         getattr(user, "id", None),
     )
 
@@ -1906,6 +2043,67 @@ def _resolve_public_slug(encuesta: EncEncuesta) -> Optional[str]:
         slug_publico = encuesta.slug
 
     return slug_publico
+
+
+def _public_slug_matches_current_base(slug_publico: Optional[str], encuesta_slug: Optional[str]) -> bool:
+    if not slug_publico or not encuesta_slug:
+        return False
+    normalized_public = str(slug_publico).strip().lower()
+    normalized_base = str(encuesta_slug).strip().lower()
+    return normalized_public == normalized_base or normalized_public.startswith(f"{normalized_base}-")
+
+
+def _resolve_current_public_link(encuesta: EncEncuesta) -> Optional[EncLink]:
+    """Return the canonical public link for the survey without creating churn.
+
+    Older deployments created a new random public slug on every publish. The
+    admin UI then kept showing an older slug while the publish endpoint returned
+    a different one. Keep the latest link when it still belongs to the current
+    base slug; otherwise prefer another matching link before creating a new one.
+    """
+
+    links = sorted(encuesta.links, key=lambda link: (link.id or 0), reverse=True)
+    if not links:
+        return None
+
+    latest = next((link for link in links if link.slug_publico), None)
+    if latest and _public_slug_matches_current_base(latest.slug_publico, encuesta.slug):
+        return latest
+
+    for link in links:
+        if _public_slug_matches_current_base(link.slug_publico, encuesta.slug):
+            return link
+
+    return latest
+
+
+def _public_url_for_slug(slug_publico: Optional[str]) -> Optional[str]:
+    if not slug_publico:
+        return None
+
+    base_url: Optional[str] = None
+    try:
+        configured = (
+            current_app.config.get("PUBLIC_ENCUESTAS_CANONICAL_BASE_URL")
+            or current_app.config.get("PUBLIC_ENCUESTAS_QR_TARGET_BASE_URL")
+            or current_app.config.get("FRONTEND_URL")
+            or current_app.config.get("PUBLIC_FRONTEND_URL")
+        )
+        if isinstance(configured, str) and configured.strip():
+            base_url = configured.rstrip("/")
+    except RuntimeError:
+        base_url = None
+
+    if not base_url:
+        return f"/e/{slug_publico}"
+
+    return f"{base_url}/e/{slug_publico}"
+
+
+def _public_api_endpoint_for_slug(slug_publico: Optional[str]) -> Optional[str]:
+    if not slug_publico:
+        return None
+    return f"/api/public/encuestas/v1/{slug_publico}"
 
 
 def list_encuestas(tenant_id: int, estado: Optional[str] = None) -> List[EncEncuesta]:
@@ -3633,10 +3831,18 @@ def serialize_encuesta(encuesta: EncEncuesta) -> Dict[str, Any]:
         }
         return question_payload
 
+    slug_publico = _resolve_public_slug(encuesta)
+    url_publica = _public_url_for_slug(slug_publico)
+
     return {
         "id": encuesta.id,
         "tenant_id": encuesta.tenant_id,
         "slug": encuesta.slug,
+        "slug_publico": slug_publico,
+        "canonical_slug": slug_publico or encuesta.slug,
+        "url_publica": url_publica,
+        "share_url": url_publica,
+        "public_api_endpoint": _public_api_endpoint_for_slug(slug_publico),
         "titulo": encuesta.titulo,
         "descripcion": encuesta.descripcion,
         "tipo": encuesta.tipo,
@@ -3657,7 +3863,16 @@ def serialize_encuesta(encuesta: EncEncuesta) -> Dict[str, Any]:
 
 def serialize_public_encuesta(encuesta: EncEncuesta, slug_publico: Optional[str] = None) -> Dict[str, Any]:
     data = serialize_encuesta(encuesta)
-    data["slug"] = slug_publico or encuesta.slug
+    canonical_slug = _resolve_public_slug(encuesta) or encuesta.slug
+    requested_slug = slug_publico or canonical_slug
+    data["slug"] = requested_slug
+    data["slug_publico"] = canonical_slug
+    data["canonical_slug"] = canonical_slug
+    data["requested_slug"] = requested_slug
+    data["slug_alias_used"] = bool(requested_slug and canonical_slug and requested_slug != canonical_slug)
+    data["url_publica"] = _public_url_for_slug(canonical_slug)
+    data["share_url"] = data["url_publica"]
+    data["public_api_endpoint"] = _public_api_endpoint_for_slug(canonical_slug)
     # Public payload hides estado and flags not needed
     data.pop("estado", None)
 

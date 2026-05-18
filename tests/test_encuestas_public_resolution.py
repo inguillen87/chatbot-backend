@@ -363,6 +363,24 @@ def test_share_endpoint_handles_alias_without_link(client):
     assert payload["slug"] == slug
 
 
+def test_public_detail_reports_canonical_slug_when_loaded_from_base_slug(client):
+    slug = "luis-petri-votacion-prioridades-junin-8887"
+    slug_publico = f"{slug}-1c5aa4"
+    client.application.config["PUBLIC_ENCUESTAS_DEFAULT_TENANT_ID"] = 4
+    _create_public_encuesta(slug, slug_publico)
+
+    response = client.get(f"/api/public/encuestas/v1/{slug}")
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["slug"] == slug
+    assert payload["slug_publico"] == slug_publico
+    assert payload["canonical_slug"] == slug_publico
+    assert payload["requested_slug"] == slug
+    assert payload["slug_alias_used"] is True
+    assert payload["url_publica"].endswith(f"/e/{slug_publico}")
+    assert payload["public_api_endpoint"].endswith(slug_publico)
+
+
 def test_public_encuestas_v1_aliases_resolve_public_slug(client):
     slug = "votacion-en-vivo-luis-petri"
     slug_publico = "votacion-en-vivo-luis-petri"

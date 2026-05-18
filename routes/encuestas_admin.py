@@ -107,8 +107,19 @@ def _create_admin_blueprint(name: str, url_prefix: str) -> Blueprint:
             or request.host_url.rstrip("/")
         )
         url_publica = f"{base_url}/e/{link.slug_publico}"
+        encuesta_payload = serialize_encuesta(encuesta)
         return (
-            jsonify({"ok": True, "slug_publico": link.slug_publico, "url_publica": url_publica}),
+            jsonify(
+                {
+                    "ok": True,
+                    "slug_publico": link.slug_publico,
+                    "canonical_slug": link.slug_publico,
+                    "url_publica": url_publica,
+                    "share_url": url_publica,
+                    "public_api_endpoint": f"/api/public/encuestas/v1/{link.slug_publico}",
+                    "encuesta": encuesta_payload,
+                }
+            ),
             200,
         )
 
