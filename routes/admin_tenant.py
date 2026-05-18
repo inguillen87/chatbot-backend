@@ -1458,6 +1458,123 @@ def _scope_has_permission(scope: dict, permission: str) -> bool:
     permisos = [str(p).strip().lower() for p in (scope.get('permisos') or []) if str(p).strip()]
     return permission.lower() in permisos
 
+
+_BLOCKED_TENANT_ASSIGNABLE_ROLES = {"platform_admin", "super_admin"}
+_DEFAULT_EMPLOYEE_PERMISSIONS = ["tickets_read", "tickets_update"]
+_DEFAULT_EMPLOYEE_CHANNELS = ["web", "whatsapp"]
+
+
+def _normalize_employee_roles(raw_roles) -> list[str]:
+    if isinstance(raw_roles, str):
+        raw_roles = [raw_roles]
+    if not isinstance(raw_roles, list):
+        raw_roles = ["empleado"]
+
+    roles: list[str] = []
+    seen: set[str] = set()
+    for item in raw_roles:
+        role = str(item or "").strip().lower()
+        if not role or role in seen or role in _BLOCKED_TENANT_ASSIGNABLE_ROLES:
+            continue
+        seen.add(role)
+        roles.append(role[:50])
+    return roles or ["empleado"]
+
+
+def _employee_role_names(emp: User, tenant: TenantProfile) -> list[str]:
+    rows = UserRole.query.filter_by(user_id=emp.id, tenant_id=tenant.id).all()
+    role_names = [ur.role.name for ur in rows if ur.role and ur.role.name]
+    if not role_names and getattr(emp, "rol", None):
+        role_names = [str(emp.rol)]
+    return _normalize_employee_roles(role_names)
+
+
+def _replace_employee_roles(emp: User, tenant: TenantProfile, raw_roles) -> list[str]:
+    roles = _normalize_employee_roles(raw_roles)
+    UserRole.query.filter_by(user_id=emp.id, tenant_id=tenant.id).delete(synchronize_session=False)
+    for role_name in roles:
+        role = Role.query.filter_by(name=role_name).first()
+        if not role:
+            role = Role(name=role_name, description=f"Rol {role_name}")
+            db.session.add(role)
+            db.session.flush()
+        db.session.add(UserRole(user_id=emp.id, role_id=role.id, tenant_id=tenant.id))
+    emp.rol = roles[0]
+    return roles
+
+
+def _parse_employee_categories_payload(tenant: TenantProfile, data: dict) -> tuple[list[CategoriaTicket], list[str]]:
+    raw_categories = data.get('categories') or data.get('categorias') or []
+    if isinstance(raw_categories, str):
+        raw_categories = [raw_categories]
+    if not isinstance(raw_categories, list):
+        raw_categories = []
+
+    category_ids = data.get("category_ids") or data.get("categoria_ids") or []
+    if isinstance(category_ids, (str, int)):
+        category_ids = [category_ids]
+    if not isinstance(category_ids, list):
+        category_ids = []
+
+    parsed_ids: list[int] = []
+    category_labels: list[str] = []
+
+    for item in category_ids:
+        if str(item or "").isdigit():
+            parsed_ids.append(int(item))
+
+    for item in raw_categories:
+        if isinstance(item, dict):
+            value = item.get("id")
+            label = item.get("nombre") or item.get("label") or item.get("value") or item.get("name")
+        else:
+            value = item
+            label = item
+        if str(value or "").isdigit():
+            parsed_ids.append(int(value))
+        elif str(label or "").strip():
+            category_labels.append(str(label).strip())
+
+    valid_cats: list[CategoriaTicket] = []
+    category_names: list[str] = []
+    if parsed_ids:
+        valid_cats = CategoriaTicket.query.filter(
+            CategoriaTicket.id.in_(list(dict.fromkeys(parsed_ids))),
+            CategoriaTicket.tenant_id == tenant.id,
+        ).all()
+        category_names.extend(cat.nombre for cat in valid_cats if cat.nombre)
+    category_names.extend(category_labels)
+    return valid_cats, normalize_scope_list(category_names)
+
+
+def _serialize_admin_employee(emp: User, tenant: TenantProfile) -> dict:
+    scope = _employee_scope(emp)
+    return {
+        "id": emp.id,
+        "employee_id": emp.id,
+        "name": emp.name,
+        "email": emp.email,
+        "role": emp.rol,
+        "rol": emp.rol,
+        "tenant_id": tenant.id,
+        "tenant_slug": tenant.slug,
+        "roles": _employee_role_names(emp, tenant),
+        "categories": [cat.id for cat in getattr(emp, "categorias_ticket", [])],
+        "categorias": [
+            {"id": cat.id, "nombre": cat.nombre, "tipo": getattr(cat, "tipo", None)}
+            for cat in getattr(emp, "categorias_ticket", [])
+            if cat is not None
+        ],
+        "scope": scope,
+        "employee_scope": scope,
+        "created_at": emp.fecha_creacion.isoformat() if emp.fecha_creacion else None,
+        "frontend_contract": {
+            "render_as": "employee_crm_record",
+            "editable_fields": ["name", "password", "roles", "scope"],
+            "scope_dimensions": ["categorias", "zonas", "channels", "permisos"],
+        },
+    }
+
 # --- Employee Management ---
 
 @admin_tenant_bp.route('/api/admin/employees', methods=['POST'])
@@ -1498,52 +1615,14 @@ def create_employee(current_user):
     )
     user.set_password(password)
     db.session.add(user)
-    db.session.commit()
+    db.session.flush()
 
-    # Asignar roles
-    roles = data.get('roles', ['empleado'])
-    if not isinstance(roles, list):
-        roles = ['empleado']
-    for role_name in roles:
-        role = Role.query.filter_by(name=role_name).first()
-        if not role:
-            # Auto-create basic roles if missing
-            role = Role(name=role_name, description=f'Rol {role_name}')
-            db.session.add(role)
-            db.session.commit()
-
-        if not UserRole.query.filter_by(user_id=user.id, role_id=role.id, tenant_id=tenant.id).first():
-            ur = UserRole(user_id=user.id, role_id=role.id, tenant_id=tenant.id)
-            db.session.add(ur)
+    assigned_roles = _replace_employee_roles(user, tenant, data.get('roles') or data.get('role') or ['empleado'])
 
     # Asignar categorías
-    raw_categories = data.get('categories') or data.get('categorias') or []
-    if isinstance(raw_categories, str):
-        raw_categories = [raw_categories]
-    if not isinstance(raw_categories, list):
-        raw_categories = []
-    category_ids = []
-    category_labels = []
-    for item in raw_categories:
-        if isinstance(item, dict):
-            value = item.get("id")
-            label = item.get("nombre") or item.get("label") or item.get("value")
-        else:
-            value = item
-            label = item
-        if str(value or "").isdigit():
-            category_ids.append(int(value))
-        elif str(label or "").strip():
-            category_labels.append(str(label).strip())
-    category_names: list[str] = []
-    if category_ids:
-        valid_cats = CategoriaTicket.query.filter(
-            CategoriaTicket.id.in_(category_ids),
-            CategoriaTicket.tenant_id == tenant.id
-        ).all()
+    valid_cats, category_names = _parse_employee_categories_payload(tenant, data)
+    if valid_cats:
         user.categorias_ticket = valid_cats
-        category_names.extend(cat.nombre for cat in valid_cats if cat.nombre)
-    category_names.extend(category_labels)
 
     scope_raw = data.get('scope') if isinstance(data.get('scope'), dict) else {}
     scope_categories = normalize_scope_list(scope_raw.get('categorias') or scope_raw.get('categories') or category_names)
@@ -1551,32 +1630,90 @@ def create_employee(current_user):
         user,
         categorias=scope_categories,
         zonas=normalize_scope_list(scope_raw.get('zonas') or scope_raw.get('zones')),
-        permisos=normalize_scope_list(scope_raw.get('permisos') or scope_raw.get('permissions') or ["tickets_read", "tickets_update"]),
-        channels=normalize_scope_list(scope_raw.get('channels') or scope_raw.get('canales') or ["web", "whatsapp"]),
+        permisos=normalize_scope_list(scope_raw.get('permisos') or scope_raw.get('permissions') or _DEFAULT_EMPLOYEE_PERMISSIONS),
+        channels=normalize_scope_list(scope_raw.get('channels') or scope_raw.get('canales') or _DEFAULT_EMPLOYEE_CHANNELS),
     )
 
     db.session.commit()
 
-    assigned_roles = []
-    for role_name in roles:
-        if str(role_name).strip():
-            assigned_roles.append(str(role_name).strip())
-
     return jsonify({
+        'contract_version': 'employee.admin_create.v1',
+        'ok': True,
         'message': 'Employee created',
         'id': user.id,
-        'employee': {
-            'id': user.id,
-            'name': user.name,
-            'email': user.email,
-            'tenant_id': tenant.id,
-            'roles': assigned_roles,
-            'categories': [cat.id for cat in getattr(user, 'categorias_ticket', [])],
-            'scope': _employee_scope(user),
-        },
+        'employee': _serialize_admin_employee(user, tenant) | {'roles': assigned_roles},
         'coverage_endpoint': f'/api/admin/tenants/{tenant.slug}/employees/coverage',
         'routing_endpoint': '/api/v2/employee-routing',
     }), 201
+
+
+@admin_tenant_bp.route('/api/admin/employees/<int:user_id>', methods=['PUT', 'PATCH'])
+@token_requerido
+@require_tenant
+def update_employee_admin(current_user, user_id):
+    tenant = g.tenant_profile
+    if not tenant:
+        return jsonify({'error': 'No tenant context'}), 400
+    if not _is_authorized_for_tenant(current_user, tenant):
+        return jsonify({'error': 'Unauthorized'}), 403
+
+    user = User.query.filter_by(id=user_id, tenant_id=tenant.id, es_empleado=True).first()
+    if not user:
+        return jsonify({'error': 'Employee not found', 'reason_code': 'employee_not_found'}), 404
+
+    data = request.get_json(silent=True) or {}
+
+    if 'email' in data:
+        new_email = str(data.get('email') or '').strip().lower()
+        if new_email and new_email != user.email:
+            return jsonify({
+                'error': 'El email no puede modificarse una vez creado',
+                'reason_code': 'employee_email_immutable',
+            }), 400
+
+    if 'name' in data:
+        name = str(data.get('name') or '').strip()
+        if name:
+            user.name = name
+
+    if data.get('password'):
+        user.set_password(str(data.get('password')))
+
+    assigned_roles = None
+    if 'roles' in data or 'role' in data:
+        assigned_roles = _replace_employee_roles(user, tenant, data.get('roles') or data.get('role'))
+
+    has_categories = any(key in data for key in ('categories', 'categorias', 'category_ids', 'categoria_ids'))
+    category_names = _employee_scope(user).get('categorias') or []
+    if has_categories:
+        valid_cats, category_names = _parse_employee_categories_payload(tenant, data)
+        user.categorias_ticket = valid_cats
+
+    if isinstance(data.get('scope'), dict) or has_categories:
+        scope_raw = data.get('scope') if isinstance(data.get('scope'), dict) else {}
+        current_scope = _employee_scope(user)
+        _set_employee_scope(
+            user,
+            categorias=normalize_scope_list(scope_raw.get('categorias') or scope_raw.get('categories') or category_names),
+            zonas=normalize_scope_list(scope_raw.get('zonas') or scope_raw.get('zones') or current_scope.get('zonas')),
+            permisos=normalize_scope_list(scope_raw.get('permisos') or scope_raw.get('permissions') or current_scope.get('permisos')),
+            channels=normalize_scope_list(scope_raw.get('channels') or scope_raw.get('canales') or current_scope.get('channels')),
+        )
+
+    db.session.add(user)
+    db.session.commit()
+    employee_payload = _serialize_admin_employee(user, tenant)
+    if assigned_roles is not None:
+        employee_payload['roles'] = assigned_roles
+
+    return jsonify({
+        'contract_version': 'employee.admin_update.v1',
+        'ok': True,
+        'message': 'Employee updated',
+        'employee': employee_payload,
+        'coverage_endpoint': f'/api/admin/tenants/{tenant.slug}/employees/coverage',
+        'routing_endpoint': '/api/v2/employee-routing',
+    }), 200
 
 @admin_tenant_bp.route('/api/admin/employees/<int:user_id>/roles', methods=['POST'])
 @token_requerido
@@ -2003,20 +2140,7 @@ def list_current_tenant_employees(current_user):
 
     employees = User.query.filter_by(tenant_id=tenant.id, es_empleado=True).all()
 
-    results = []
-    for emp in employees:
-        # Load roles using the dynamic relationship or query
-        user_roles = UserRole.query.filter_by(user_id=emp.id, tenant_id=tenant.id).all()
-        role_names = [ur.role.name for ur in user_roles if ur.role]
-
-        results.append({
-            "id": emp.id,
-            "name": emp.name,
-            "email": emp.email,
-            "roles": role_names,
-            "created_at": emp.fecha_creacion.isoformat() if emp.fecha_creacion else None,
-            "scope": _employee_scope(emp),
-        })
+    results = [_serialize_admin_employee(emp, tenant) for emp in employees]
 
     return jsonify(results)
 
@@ -2303,19 +2427,7 @@ def list_employees_by_slug(current_user, slug):
 
     employees = User.query.filter_by(tenant_id=tenant.id, es_empleado=True).all()
 
-    results = []
-    for emp in employees:
-        user_roles = UserRole.query.filter_by(user_id=emp.id, tenant_id=tenant.id).all()
-        role_names = [ur.role.name for ur in user_roles if ur.role]
-
-        results.append({
-            "id": emp.id,
-            "name": emp.name,
-            "email": emp.email,
-            "roles": role_names,
-            "created_at": emp.fecha_creacion.isoformat() if emp.fecha_creacion else None,
-            "scope": _employee_scope(emp),
-        })
+    results = [_serialize_admin_employee(emp, tenant) for emp in employees]
 
     return jsonify(results)
 

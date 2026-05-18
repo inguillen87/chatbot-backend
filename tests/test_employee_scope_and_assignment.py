@@ -85,3 +85,47 @@ def test_employee_creation_returns_scope_and_coverage(client, app):
     coverage = coverage_resp.get_json()
     assert "luminaria" in coverage["coverage"]["categorias"]
     assert "centro" in coverage["coverage"]["zonas"]
+
+
+def test_employee_admin_update_profile_roles_and_scope(client, app):
+    owner = User(email="owner-scope-update@test.com", name="Owner Update", rol="admin", tipo_chat="pyme")
+    owner.set_password("pass")
+    db.session.add(owner)
+    db.session.commit()
+
+    tenant = TenantProfile(slug="tenant-scope", nombre="Tenant Scope", tipo="pyme", pyme_id=owner.id)
+    db.session.add(tenant)
+    db.session.commit()
+
+    emp = User(email="emp-update@test.com", name="Emp", rol="empleado", es_empleado=True, tenant_id=tenant.id)
+    emp.set_password("old-pass")
+    db.session.add(emp)
+    db.session.commit()
+
+    update_resp = client.put(
+        f"/api/admin/employees/{emp.id}",
+        json={
+            "name": "Mesa Alumbrado",
+            "password": "new-pass",
+            "roles": ["supervisor", "platform_admin"],
+            "scope": {
+                "categorias": ["luminaria"],
+                "zonas": ["centro"],
+                "channels": ["whatsapp"],
+                "permisos": ["tickets_read", "tickets_assign"],
+            },
+        },
+        headers=_headers(app, owner),
+    )
+
+    assert update_resp.status_code == 200
+    payload = update_resp.get_json()
+    assert payload["contract_version"] == "employee.admin_update.v1"
+    assert payload["employee"]["name"] == "Mesa Alumbrado"
+    assert payload["employee"]["scope"]["categorias"] == ["luminaria"]
+    assert payload["employee"]["scope"]["channels"] == ["whatsapp"]
+    assert payload["employee"]["roles"] == ["supervisor"]
+
+    refreshed = db.session.get(User, emp.id)
+    assert refreshed.check_password("new-pass")
+    assert refreshed.rol == "supervisor"

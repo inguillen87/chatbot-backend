@@ -10,6 +10,8 @@ from models import TenantProfile, User
 from models_memory import Contact, InteractionEvent
 from routes.crm.routes import (
     _campaign_sends_last_days,
+    _campaign_sends_last_hours,
+    _contact_for_legacy_user,
     _parse_scheduled_for,
     _save_tenant_templates,
     _tenant_templates,
@@ -107,6 +109,43 @@ class CRMCampaignEnterpriseHelpersTest(unittest.TestCase):
 
         count = _campaign_sends_last_days(self.tenant.id, self.contact.id, days=7)
         self.assertEqual(count, 1)
+
+    def test_campaign_send_count_last_24_hours(self):
+        recent_evt = InteractionEvent(
+            tenant_id=self.tenant.id,
+            contact_id=self.contact.id,
+            channel="whatsapp",
+            direction="outbound",
+            content="recent",
+            metadata_payload={"event_type": "campaign_send"},
+            created_at=datetime.now(timezone.utc) - timedelta(hours=2),
+        )
+        db.session.add(recent_evt)
+        db.session.commit()
+
+        self.assertEqual(_campaign_sends_last_hours(self.tenant.id, self.contact.id, hours=24), 1)
+        self.assertEqual(_campaign_sends_last_hours(self.tenant.id, self.contact.id, hours=1), 0)
+
+    def test_legacy_user_contact_is_created_for_campaigns(self):
+        cliente = User(
+            name="Vecino",
+            email="vecino@example.com",
+            password_hash="hash",
+            telefono="+549222222222",
+            empresa_id=self.owner.id,
+            acepta_marketing=True,
+            tags="whatsapp,vip",
+        )
+        db.session.add(cliente)
+        db.session.commit()
+
+        contact = _contact_for_legacy_user(self.tenant, cliente)
+        db.session.commit()
+
+        self.assertEqual(contact.tenant_id, self.tenant.id)
+        self.assertEqual(contact.phone, "+549222222222")
+        self.assertEqual(contact.preferences["legacy_user_id"], cliente.id)
+        self.assertEqual(contact.preferences["marketing_opt_in"], True)
 
 
 if __name__ == "__main__":

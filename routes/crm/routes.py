@@ -11,7 +11,7 @@ from utils.auth_helpers import token_requerido
 from utils.auth_helpers import admin_o_empleado_requerido
 from middleware.tenant_context import require_tenant
 from models_memory import Contact, ContactSnapshot, InteractionEvent
-from models import Order, User
+from models import Order, TenantProfile, User
 from extensions import db
 
 crm_bp = Blueprint('crm_bp', __name__)
@@ -33,6 +33,56 @@ def _serialize_cliente(cliente: User) -> dict:
 def _query_clientes_tenant(current_user: User):
     owner_id = current_user.empresa_id or current_user.id
     return User.query.filter_by(empresa_id=owner_id)
+
+
+def _resolve_crm_tenant(current_user: User, slug: str | None = None) -> TenantProfile | None:
+    raw_slug = (slug or request.args.get("tenant_slug") or request.args.get("tenant") or "").strip()
+    slug_candidate = raw_slug.lower()
+    if raw_slug and slug_candidate not in {"crm", "usuarios", "perfil", "admin", "app"}:
+        tenant = TenantProfile.query.filter_by(slug=raw_slug).first()
+        if tenant:
+            return tenant
+
+    if getattr(current_user, "tenant_id", None):
+        tenant = TenantProfile.query.get(current_user.tenant_id)
+        if tenant:
+            return tenant
+
+    owner_id = current_user.empresa_id or current_user.id
+    return TenantProfile.query.filter(
+        or_(
+            TenantProfile.pyme_id == owner_id,
+            TenantProfile.municipio_id == owner_id,
+        )
+    ).first()
+
+
+def _contact_for_legacy_user(tenant: TenantProfile, cliente: User) -> Contact:
+    contact = None
+    if cliente.telefono:
+        contact = Contact.query.filter_by(tenant_id=tenant.id, phone=cliente.telefono).first()
+    if contact is None and cliente.email:
+        contact = Contact.query.filter_by(tenant_id=tenant.id, email=cliente.email).first()
+    if contact is not None:
+        return contact
+
+    contact = Contact(
+        id=str(uuid4()),
+        tenant_id=tenant.id,
+        name=cliente.name,
+        phone=cliente.telefono,
+        email=cliente.email,
+        type="lead",
+        tags=[tag.strip() for tag in (cliente.tags or "").split(",") if tag.strip()],
+        preferences={
+            "marketing_opt_in": bool(cliente.acepta_marketing),
+            "source": "legacy_user",
+            "legacy_user_id": cliente.id,
+        },
+    )
+    db.session.add(contact)
+    db.session.flush()
+    return contact
 
 
 def _parse_scheduled_for(raw_value: str | None, tz_name: str | None) -> datetime | None:
@@ -65,6 +115,17 @@ def _save_tenant_templates(tenant, templates: list[dict]) -> None:
 
 def _campaign_sends_last_days(tenant_id: int, contact_id: str, days: int = 7) -> int:
     since = datetime.now(timezone.utc) - timedelta(days=days)
+    return InteractionEvent.query.filter(
+        InteractionEvent.tenant_id == tenant_id,
+        InteractionEvent.contact_id == contact_id,
+        InteractionEvent.direction == "outbound",
+        InteractionEvent.metadata_payload["event_type"].astext == "campaign_send",
+        InteractionEvent.created_at >= since,
+    ).count()
+
+
+def _campaign_sends_last_hours(tenant_id: int, contact_id: str, hours: int = 24) -> int:
+    since = datetime.now(timezone.utc) - timedelta(hours=hours)
     return InteractionEvent.query.filter(
         InteractionEvent.tenant_id == tenant_id,
         InteractionEvent.contact_id == contact_id,
@@ -268,17 +329,49 @@ def campaign_opt_out(current_user, slug, contact_id):
 @require_tenant
 def campaign_send(current_user, slug):
     tenant = g.tenant_profile
+    return _send_campaign_for_tenant(current_user, tenant)
+
+
+@crm_bp.route('/api/crm/campaigns/send', methods=['POST'])
+@token_requerido
+@admin_o_empleado_requerido
+def legacy_campaign_send(current_user):
+    tenant = _resolve_crm_tenant(current_user)
+    if not tenant:
+        return jsonify({
+            "ok": False,
+            "reason_code": "tenant_not_resolved",
+            "message": "No se pudo resolver el tenant para enviar la campania.",
+        }), 400
+    return _send_campaign_for_tenant(current_user, tenant)
+
+
+def _send_campaign_for_tenant(current_user: User, tenant: TenantProfile):
     payload = request.get_json(silent=True) or {}
 
     template_slug = payload.get("template_slug")
     message = payload.get("message")
     contact_ids = payload.get("contact_ids") or []
+    user_ids = payload.get("user_ids") or payload.get("legacy_user_ids") or []
     dry_run = bool(payload.get("dry_run", False))
-    max_per_week = int(payload.get("max_per_week", 2) or 2)
+    try:
+        max_per_week = int(payload.get("max_per_week", 2) or 2)
+        min_interval_hours = int(payload.get("min_interval_hours", 24) or 24)
+    except (TypeError, ValueError):
+        return jsonify({"error": "max_per_week y min_interval_hours deben ser numericos"}), 400
+    if max_per_week < 1 or min_interval_hours < 1:
+        return jsonify({"error": "max_per_week y min_interval_hours deben ser mayores a cero"}), 400
+    channel = str(payload.get("channel") or "whatsapp").strip().lower()
     tz_name = payload.get("timezone") or "UTC"
 
-    if not isinstance(contact_ids, list) or not contact_ids:
-        return jsonify({"error": "contact_ids es obligatorio"}), 400
+    if not isinstance(contact_ids, list):
+        contact_ids = []
+    if not isinstance(user_ids, list):
+        user_ids = []
+    if not contact_ids and not user_ids:
+        return jsonify({"error": "contact_ids o user_ids es obligatorio"}), 400
+    if channel not in {"whatsapp", "email"}:
+        return jsonify({"error": "channel debe ser whatsapp o email"}), 400
 
     if template_slug and not message:
         template = next((t for t in _tenant_templates(tenant) if t.get("slug") == template_slug), None)
@@ -299,18 +392,41 @@ def campaign_send(current_user, slug):
         Contact.id.in_(contact_ids),
     ).all()
 
+    if user_ids:
+        try:
+            normalized_user_ids = [int(value) for value in user_ids]
+        except (TypeError, ValueError):
+            return jsonify({"error": "user_ids debe contener ids numericos"}), 400
+
+        legacy_clients = _query_clientes_tenant(current_user).filter(User.id.in_(normalized_user_ids)).all()
+        existing_contact_ids = {contact.id for contact in contacts}
+        for cliente in legacy_clients:
+            contact = _contact_for_legacy_user(tenant, cliente)
+            if contact.id not in existing_contact_ids:
+                contacts.append(contact)
+                existing_contact_ids.add(contact.id)
+
     included = []
     excluded_optout = []
     excluded_frequency = []
+    excluded_without_channel = []
 
     for contact in contacts:
         prefs = contact.preferences or {}
-        if prefs.get("marketing_opt_out"):
+        if prefs.get("marketing_opt_out") or prefs.get("marketing_opt_in") is False:
             excluded_optout.append(contact.id)
             continue
 
+        if channel == "whatsapp" and not contact.phone:
+            excluded_without_channel.append(contact.id)
+            continue
+        if channel == "email" and not contact.email:
+            excluded_without_channel.append(contact.id)
+            continue
+
         sends_week = _campaign_sends_last_days(tenant.id, contact.id, days=7)
-        if sends_week >= max_per_week:
+        sends_interval = _campaign_sends_last_hours(tenant.id, contact.id, hours=min_interval_hours)
+        if sends_week >= max_per_week or sends_interval > 0:
             excluded_frequency.append(contact.id)
             continue
 
@@ -324,7 +440,7 @@ def campaign_send(current_user, slug):
                 InteractionEvent(
                     tenant_id=tenant.id,
                     contact_id=contact.id,
-                    channel="whatsapp",
+                    channel=channel,
                     direction="outbound",
                     content=message,
                     metadata_payload={
@@ -332,6 +448,8 @@ def campaign_send(current_user, slug):
                         "campaign_id": campaign_id,
                         "scheduled_for": scheduled_for_utc.isoformat() if scheduled_for_utc else None,
                         "status": "scheduled" if scheduled_for_utc else "queued",
+                        "channel": channel,
+                        "min_interval_hours": min_interval_hours,
                     },
                 )
             )
@@ -341,17 +459,21 @@ def campaign_send(current_user, slug):
         {
             "campaign_id": campaign_id,
             "mode": "dry_run" if dry_run else "scheduled",
+            "channel": channel,
             "scheduled_for_utc": scheduled_for_utc.isoformat() if scheduled_for_utc else None,
             "totals": {
-                "requested": len(contact_ids),
+                "requested": len(contact_ids) + len(user_ids),
                 "resolved": len(contacts),
                 "eligible": len(included),
                 "excluded_optout": len(excluded_optout),
                 "excluded_frequency": len(excluded_frequency),
+                "excluded_without_channel": len(excluded_without_channel),
             },
             "excluded_optout": excluded_optout,
             "excluded_frequency": excluded_frequency,
+            "excluded_without_channel": excluded_without_channel,
             "eligible_contacts": [c.id for c in included],
+            "request_id": campaign_id,
         }
     )
 
