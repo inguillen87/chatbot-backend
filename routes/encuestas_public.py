@@ -42,6 +42,13 @@ from services.encuestas_service import (
     verify_social_comment_token,
 )
 from services.encuestas_analytics_service import calculate_live_results
+from services.demo_surveys import (
+    build_demo_live_results_payload,
+    build_demo_public_survey_payload,
+    build_demo_survey_response_ack,
+    build_demo_surveys_votings_contract,
+    is_demo_survey_slug,
+)
 from utils.auth_helpers import obtener_token, user_from_token
 
 _DEFAULT_RATE_LIMIT = 150
@@ -365,6 +372,25 @@ def _coerce_bool(value: Any, default: bool = False) -> bool:
         if normalized in {"0", "false", "no", "off"}:
             return False
     return default
+
+
+def _demo_survey_list_contract_from_request() -> Optional[dict]:
+    demo_mode = _coerce_bool(request.args.get("demo_mode"), default=False)
+    tenant_slug = (
+        request.args.get("tenant_slug")
+        or request.args.get("tenant")
+        or request.args.get("tenant_ref")
+    )
+    sector = request.args.get("sector") or request.args.get("demo_sector")
+    if not demo_mode or not tenant_slug:
+        return None
+    return build_demo_surveys_votings_contract(
+        sector=sector or "empresas",
+        tenant_slug=tenant_slug,
+        public_base_url=_public_target_base_url(),
+        page=request.args.get("page", default=1, type=int) or 1,
+        page_size=request.args.get("limit", default=5, type=int) or 5,
+    )
 
 
 def _enrich_comment_payload_with_social_token(payload: Dict[str, Any]) -> tuple[Dict[str, Any], bool, bool]:
@@ -772,6 +798,32 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
         if request.method == "OPTIONS":
             return "", 204
 
+        demo_contract = _demo_survey_list_contract_from_request()
+        if demo_contract:
+            payload = demo_contract.get("items") or []
+            if request.path.rstrip("/").endswith("/v1"):
+                request_id = _resolve_request_id()
+                response = jsonify(
+                    {
+                        "contract_version": "encuestas.public_list.v1",
+                        "demo_mode": True,
+                        "items": payload,
+                        "count": len(payload),
+                        "pagination": {
+                            "page": demo_contract.get("page"),
+                            "page_size": demo_contract.get("page_size"),
+                            "has_more": demo_contract.get("has_more"),
+                            "next_action_id": demo_contract.get("next_action_id"),
+                            "previous_action_id": demo_contract.get("previous_action_id"),
+                        },
+                        "seed_policy": demo_contract.get("seed_policy"),
+                        "request_id": request_id,
+                    }
+                )
+                response.headers.setdefault("X-Request-Id", request_id)
+                return response
+            return jsonify(payload)
+
         tenant_id = _resolve_tenant_from_request()
         if tenant_id is None:
             tenant_id = current_app.config.get("PUBLIC_ENCUESTAS_DEFAULT_TENANT_ID") or 4
@@ -820,6 +872,19 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
     @bp.route("/<slug>", methods=["GET"])
     @bp.route("/v1/<slug>", methods=["GET"])
     def obtener_encuesta(slug: str):
+        if is_demo_survey_slug(slug):
+            payload = build_demo_public_survey_payload(
+                slug,
+                public_base_url=_public_target_base_url(),
+            )
+            if payload:
+                payload = _attach_comment_social_config(payload)
+                request_id = _resolve_request_id()
+                payload.setdefault("request_id", request_id)
+                response = jsonify(payload)
+                response.headers.setdefault("X-Request-Id", request_id)
+                return response
+
         preview_user = _resolve_preview_user()
         try:
             encuesta = _load_public_encuesta_for_request(slug, preview_user=preview_user)
@@ -852,6 +917,14 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
             "canal": request.args.get("canal"),
         }
         payload = _extract_request_payload()
+        demo_ack = build_demo_survey_response_ack(slug, payload)
+        if demo_ack:
+            request_id = _resolve_request_id()
+            demo_ack["request_id"] = request_id
+            response = jsonify(demo_ack)
+            response.headers.setdefault("X-Request-Id", request_id)
+            return response, 201
+
         try:
             respuesta = save_respuesta(
                 slug,
@@ -898,6 +971,17 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
         if request.method == "OPTIONS":
             return "", 204
 
+        demo_results = build_demo_live_results_payload(
+            slug,
+            public_base_url=_public_target_base_url(),
+        )
+        if demo_results:
+            request_id = _resolve_request_id()
+            demo_results.setdefault("request_id", request_id)
+            response = jsonify(demo_results)
+            response.headers.setdefault("X-Request-Id", request_id)
+            return response
+
         include_heatmap = request.args.get("include_heatmap", "1").strip().lower() not in {"0", "false", "no", "off"}
         max_points = request.args.get("max_points", default=2000, type=int) or 2000
         max_cells = request.args.get("max_cells", default=200, type=int) or 200
@@ -929,6 +1013,18 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
     def comentarios(slug: str):
         if request.method == "OPTIONS":
             return "", 204
+
+        if is_demo_survey_slug(slug):
+            if request.method == "POST":
+                return jsonify(
+                    {
+                        "ok": True,
+                        "demo_mode": True,
+                        "comment": None,
+                        "message": "Comentario demo recibido sin persistir datos reales.",
+                    }
+                ), 201
+            return jsonify([])
 
         preview_user = _resolve_preview_user()
         try:
@@ -1011,10 +1107,11 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
     def qr(slug: str):
         preview_user = _resolve_preview_user()
 
-        try:
-            encuesta = _load_public_encuesta_for_request(slug, preview_user=preview_user)
-        except EncuestaError as err:
-            return _public_error_response(err)
+        if not is_demo_survey_slug(slug):
+            try:
+                _load_public_encuesta_for_request(slug, preview_user=preview_user)
+            except EncuestaError as err:
+                return _public_error_response(err)
 
         size = request.args.get("size", default=320, type=int)
         base_url = _public_target_base_url()
@@ -1068,6 +1165,35 @@ def share_redirect(slug: str):
 
     accept = request.accept_mimetypes
     wants_json = accept.best == "application/json" and accept[accept.best] >= accept["text/html"]
+
+    if is_demo_survey_slug(slug):
+        data = build_demo_public_survey_payload(
+            slug,
+            public_base_url=_public_target_base_url(),
+        )
+        if data:
+            data = _attach_comment_social_config(data)
+            base_url = _public_target_base_url()
+            share_url = f"{base_url}/e/{slug}"
+            api_base_url = _public_api_base_url()
+            qr_url = f"{api_base_url}/api/public/encuestas/{slug}/qr"
+            widget_url = f"{share_url}?canal=widget_chat"
+            titulo = data.get("titulo") or "Encuesta demo"
+            whatsapp_message = f"Participa en '{titulo}' ingresando a {share_url}"
+            whatsapp_url = f"https://wa.me/?text={quote_plus(whatsapp_message)}"
+            share_image_url = _resolve_share_image(data)
+            if wants_json:
+                return jsonify(data)
+            return render_template(
+                "encuestas/share.html",
+                encuesta=data,
+                share_url=share_url,
+                qr_url=qr_url,
+                widget_url=widget_url,
+                whatsapp_url=whatsapp_url,
+                whatsapp_message=whatsapp_message,
+                share_image_url=share_image_url,
+            )
 
     preview_user = _resolve_preview_user()
     try:

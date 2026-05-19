@@ -30,6 +30,7 @@ from services.demo_pillar_catalog import (
     sector_for_rubro,
 )
 from services.demo_sandbox_contract import build_demo_whatsapp_sandbox_contract
+from services.demo_surveys import build_demo_surveys_votings_contract
 from services.education_contracts import (
     build_education_admin_menu,
     build_education_profile,
@@ -96,7 +97,7 @@ def _with_public_cors(response):
     response.headers["Access-Control-Allow-Headers"] = (
         "Content-Type,Authorization,X-Tenant-Slug,X-Widget-Token,"
         "X-Chat-Session-Id,X-Demo-Session-Id,X-Anon-Id,Anon-Id,"
-        "Idempotency-Key,X-Request-Id"
+        "Idempotency-Key,X-Request-Id,X-Contact-Key,X-Conversation-Id"
     )
     response.headers["Access-Control-Expose-Headers"] = "X-Request-Id"
     if origin != "*":
@@ -1020,6 +1021,83 @@ def _compact_rubro_tools_contract(rubro_tools: dict[str, Any]) -> dict[str, Any]
     }
 
 
+def _compact_survey_item(item: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(item, dict):
+        return {}
+    return {
+        "contract_version": item.get("contract_version") or "demo.survey_item.v1",
+        "id": item.get("id"),
+        "slug": item.get("slug"),
+        "slug_publico": item.get("slug_publico"),
+        "tenant_slug": item.get("tenant_slug"),
+        "sector": item.get("sector"),
+        "tipo": item.get("tipo"),
+        "titulo": item.get("titulo"),
+        "title": item.get("title") or item.get("titulo"),
+        "descripcion": item.get("descripcion"),
+        "description": item.get("description") or item.get("descripcion"),
+        "demo_mode": bool(item.get("demo_mode")),
+        "es_votacion_envivo": bool(item.get("es_votacion_envivo")),
+        "mostrar_resultados_envivo": bool(item.get("mostrar_resultados_envivo")),
+        "seed": item.get("seed") or {},
+        "analytics_summary": item.get("analytics_summary") or {},
+        "url_publica": item.get("url_publica"),
+        "public_url": item.get("public_url"),
+        "share_url": item.get("share_url"),
+        "whatsapp_share_url": item.get("whatsapp_share_url"),
+        "share_whatsapp_url": item.get("share_whatsapp_url"),
+        "public_api_endpoint": item.get("public_api_endpoint"),
+        "respond_endpoint": item.get("respond_endpoint"),
+        "results_endpoint": item.get("results_endpoint"),
+    }
+
+
+def _compact_survey_voting_contract(contract: dict[str, Any], *, include_items: bool = False) -> dict[str, Any]:
+    if not isinstance(contract, dict):
+        return {}
+    compact = {
+        "contract_version": contract.get("contract_version") or "demo.survey_voting.v1",
+        "enabled": bool(contract.get("enabled")),
+        "demo_mode": bool(contract.get("demo_mode")),
+        "tenant_slug": contract.get("tenant_slug"),
+        "sector": contract.get("sector"),
+        "rubro": contract.get("rubro"),
+        "label": contract.get("label"),
+        "description": contract.get("description"),
+        "availability_rule": contract.get("availability_rule"),
+        "primary_action_enabled": bool(contract.get("primary_action_enabled")),
+        "page": contract.get("page"),
+        "page_size": contract.get("page_size"),
+        "total_available": contract.get("total_available"),
+        "has_more": bool(contract.get("has_more")),
+        "next_action_id": contract.get("next_action_id"),
+        "previous_action_id": contract.get("previous_action_id"),
+        "seed_policy": contract.get("seed_policy") or {},
+        "primary_action": contract.get("primary_action") or {},
+        "public_list_endpoint": contract.get("public_list_endpoint"),
+        "respond_endpoint_template": contract.get("respond_endpoint_template") or contract.get("public_response_endpoint_template"),
+        "live_results_endpoint_template": contract.get("live_results_endpoint_template") or contract.get("results_endpoint"),
+        "public_detail_endpoint_template": contract.get("public_detail_endpoint_template"),
+        "frontend_contract": contract.get("frontend_contract") or {},
+    }
+    if include_items:
+        compact["items"] = [
+            compact_item
+            for compact_item in (_compact_survey_item(item) for item in contract.get("items") or [])
+            if compact_item
+        ]
+    return compact
+
+
+def _compact_whatsapp_sandbox_contract(contract: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(contract, dict):
+        return {}
+    compact = dict(contract)
+    if isinstance(compact.get("surveys_votings"), dict):
+        compact["surveys_votings"] = _compact_survey_voting_contract(compact["surveys_votings"], include_items=False)
+    return compact
+
+
 def _demo_chat_metadata(
     *,
     sector: str,
@@ -1368,6 +1446,12 @@ def _short_operational_menu_contract(
     education_payload: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     normalized = normalize_demo_sector(sector)
+    survey_action = _operational_action(
+        label="Encuestas y votaciones",
+        description="Lista encuestas demo con links para participar y compartir por WhatsApp.",
+        action_id="mostrar_menu_encuestas",
+        payload={"demo_mode": True, "sector": normalized, "tenant_slug": tenant.slug},
+    )
     if normalized == "educacion":
         configured = []
         if isinstance(education_payload, dict):
@@ -1392,8 +1476,12 @@ def _short_operational_menu_contract(
                         payload=item.get("payload") if isinstance(item.get("payload"), dict) else {},
                     )
                 )
-                if len(actions) >= 3:
-                    return actions
+                if len(actions) >= 4:
+                    break
+            if survey_action["action_id"] not in seen:
+                actions.append(survey_action)
+            if actions:
+                return actions[:5]
         return [
             _operational_action(
                 label="Crear caso escolar",
@@ -1413,6 +1501,7 @@ def _short_operational_menu_contract(
                 action_id="talk_secretary",
                 payload={"education_context": {"is_education": True, "tenant_slug": tenant.slug}},
             ),
+            survey_action,
         ]
     if normalized == "gobierno":
         return [
@@ -1437,6 +1526,7 @@ def _short_operational_menu_contract(
                 description="Deriva a mesa de atencion si esta disponible.",
                 action_id="derivar_humano",
             ),
+            survey_action,
         ]
     if normalized == "empresas":
         return [
@@ -1460,6 +1550,7 @@ def _short_operational_menu_contract(
                 description="Deriva o registra lead comercial.",
                 action_id="capturar_lead_comercial",
             ),
+            survey_action,
         ]
     return [
         _operational_action(
@@ -1644,11 +1735,16 @@ def _openai_runtime_for_demo(sector: str, allowed_actions: list[dict[str, Any]])
 
 def _survey_voting_for_demo(sector: str, tenant_slug: str) -> dict[str, Any]:
     normalized = normalize_demo_sector(sector)
+    demo_contract = build_demo_surveys_votings_contract(
+        sector=normalized,
+        tenant_slug=tenant_slug,
+    )
     return {
+        **demo_contract,
         "contract_version": "demo.survey_voting.v1",
-        "enabled": normalized in {"educacion", "gobierno"},
-        "primary_action_enabled": False,
-        "availability_rule": "visible_when_tenant_has_active_survey",
+        "enabled": normalized in {"educacion", "gobierno", "empresas"},
+        "primary_action_enabled": True,
+        "availability_rule": "always_visible_in_demo",
         "tenant_slug": tenant_slug,
         "admin_endpoint": "/api/v2/surveys",
         "draft_endpoint": "/api/v2/surveys/draft",
@@ -1664,9 +1760,10 @@ def _survey_voting_for_demo(sector: str, tenant_slug: str) -> dict[str, Any]:
         ],
         "analytics_endpoint_template": "/api/v2/surveys/{survey_id}/analytics",
         "frontend_contract": {
+            **(demo_contract.get("frontend_contract") or {}),
             "render_as": "survey_voting_module",
-            "show_only_when_enabled": True,
-            "empty_state_behavior": "hide_primary_action_until_active_survey",
+            "show_only_when_enabled": False,
+            "empty_state_behavior": "render_demo_seeded_surveys",
         },
     }
 
@@ -1902,7 +1999,17 @@ def _demo_default_menu_contract(
     education_primary = (education_payload or {}).get("primary_actions") if isinstance(education_payload, dict) else []
     rubro_menu = (rubro_context or {}).get("quick_actions") if isinstance(rubro_context, dict) else []
     enabled_tools = (rubro_tools or {}).get("enabled_tools") if isinstance(rubro_tools, dict) else []
+    primary_regular: list[dict[str, Any]] = []
+    primary_surveys: list[dict[str, Any]] = []
     for item in primary_actions or []:
+        if not isinstance(item, dict):
+            continue
+        action_id = str(item.get("action_id") or item.get("intent") or item.get("action") or item.get("id") or "").strip()
+        if action_id == "mostrar_menu_encuestas":
+            primary_surveys.append(item)
+        else:
+            primary_regular.append(item)
+    for item in primary_regular[:3]:
         if isinstance(item, dict):
             add_item(item, kind="operational_action")
     for item in education_primary or []:
@@ -1911,6 +2018,12 @@ def _demo_default_menu_contract(
     for item in rubro_menu or []:
         if isinstance(item, dict):
             add_item(item, kind="rubro_action")
+    for item in primary_surveys:
+        if isinstance(item, dict):
+            add_item(item, kind="operational_action")
+    for item in primary_regular[3:]:
+        if isinstance(item, dict):
+            add_item(item, kind="operational_action")
     for item in enabled_tools or []:
         if isinstance(item, dict):
             add_item(item, kind="rubro_tool")
@@ -1936,7 +2049,7 @@ def _demo_default_menu_contract(
         "selected_rubro": (rubro_context or {}).get("slug") or tenant.slug,
         "tenant_slug": tenant.slug,
         "rubro_context": rubro_context,
-        "max_visible_items": 4,
+        "max_visible_items": 5,
         "collapse_extra_items": True,
         "items": items[:5],
         "starter_prompts": quick_replies,
@@ -2712,6 +2825,10 @@ def demo_session_v2():
             return _error_response("No se pudo resolver tenant demo", 404, "tenant_resolution_failed", "send_tenant_slug")
 
     tenant_type = (tenant.tipo or "pyme").strip().lower()
+    if sector == "gobierno":
+        tenant_type = "municipio"
+    elif sector in {"educacion", "empresas"}:
+        tenant_type = "pyme"
     if rubro and tenant.slug and rubro.replace("_", "-") == tenant.slug:
         rubro = tenant.slug
     effective_rubro = rubro or tenant.slug
@@ -3019,6 +3136,23 @@ def demo_session_v2():
 
     if response_profile == "widget_compact":
         compact_rubro_tools = _compact_rubro_tools_contract(rubro_tools)
+        compact_survey_voting = _compact_survey_voting_contract(commercial["survey_voting"])
+        compact_whatsapp_sandbox = _compact_whatsapp_sandbox_contract(whatsapp_sandbox)
+        compact_vertical_aliases = {
+            vertical_key: {
+                "contract_version": "demo.vertical_menu.v1",
+                "actions_path": "workspace.primary_actions",
+                "quick_menu_path": "workspace.quick_menu",
+            }
+        }
+        if sector == "educacion":
+            compact_vertical_aliases["educacion"] = {"alias_of": vertical_key, "actions_path": "workspace.primary_actions"}
+        elif sector == "gobierno":
+            compact_vertical_aliases["gobierno"] = {"alias_of": vertical_key, "actions_path": "workspace.primary_actions"}
+            compact_vertical_aliases["municipio"] = {"alias_of": vertical_key, "actions_path": "workspace.primary_actions"}
+        elif sector == "empresas":
+            compact_vertical_aliases["pyme"] = {"alias_of": vertical_key, "actions_path": "workspace.primary_actions"}
+            compact_vertical_aliases["commerce"] = {"alias_of": vertical_key, "actions_path": "workspace.primary_actions"}
         compact_workspace = {
             "title": workspace["title"],
             "subtitle": workspace["subtitle"],
@@ -3027,12 +3161,13 @@ def demo_session_v2():
             "quick_menu": default_menu["items"],
             "primary_actions": primary_actions,
             "operational_menu": operational_menu,
-            "verticals": vertical_aliases,
+            "verticals": compact_vertical_aliases,
             "default_menu": default_menu,
             "lead_capture": workspace["lead_capture"],
             "admin_preview_endpoint": admin_preview_endpoint,
             "media_capabilities": media_capabilities,
             "conversion_ctas": conversion_ctas,
+            "survey_voting": compact_survey_voting,
             "chat_bootstrap": chat_bootstrap,
             "empty_states": workspace["empty_states"],
             "pillar_selector": workspace["pillar_selector"],
@@ -3040,7 +3175,7 @@ def demo_session_v2():
             "rubro_context": rubro_context,
             "catalog_resources": workspace["catalog_resources"],
             "rubro_tools": compact_rubro_tools,
-            "whatsapp_sandbox": whatsapp_sandbox,
+            "whatsapp_sandbox": compact_whatsapp_sandbox,
             "education": education_payload,
             "session": session_contract,
             "widget_onboarding": widget_onboarding,
@@ -3051,12 +3186,12 @@ def demo_session_v2():
             compact_workspace["education_profile"] = workspace.get("education_profile")
         elif sector == "gobierno":
             compact_workspace["government"] = workspace.get("government")
-            compact_workspace["gobierno"] = workspace.get("gobierno")
-            compact_workspace["municipio"] = workspace.get("municipio")
+            compact_workspace["gobierno"] = {"alias_of": "government", "actions_path": "workspace.government.primary_actions"}
+            compact_workspace["municipio"] = {"alias_of": "government", "actions_path": "workspace.government.primary_actions"}
         elif sector == "empresas":
             compact_workspace["pyme"] = workspace.get("pyme")
-            compact_workspace["business"] = workspace.get("business")
-            compact_workspace["commerce"] = workspace.get("commerce")
+            compact_workspace["business"] = {"alias_of": "pyme", "actions_path": "workspace.pyme.primary_actions"}
+            compact_workspace["commerce"] = {"alias_of": "pyme", "actions_path": "workspace.pyme.primary_actions"}
         return _json_response(
             {
                 "contract_version": "demo.session.v2",

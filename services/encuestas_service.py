@@ -14,6 +14,7 @@ from copy import deepcopy
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
+from urllib.parse import quote_plus
 
 from flask import current_app, g
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
@@ -2225,12 +2226,23 @@ def _public_encuestas_list_options() -> List[Any]:
 def list_public_encuestas_for_tenant(
     tenant_id: int,
     limit: int = 10,
+    offset: int = 0,
 ) -> List[Tuple[EncEncuesta, str]]:
     """Return active public surveys for a tenant along with their public slugs."""
 
-    safe_limit = limit if limit and limit > 0 else 10
+    try:
+        requested_limit = int(limit or 10)
+    except (TypeError, ValueError):
+        requested_limit = 10
+    safe_limit = requested_limit if requested_limit > 0 else 10
     safe_limit = min(safe_limit, 25)
-    candidate_limit = max(safe_limit * 4, 25)
+    try:
+        requested_offset = int(offset or 0)
+    except (TypeError, ValueError):
+        requested_offset = 0
+    safe_offset = max(0, requested_offset)
+    wanted_count = safe_limit + safe_offset
+    candidate_limit = max(wanted_count * 4, 25)
     query = (
         EncEncuesta.query.options(*_public_encuestas_list_options())
         .filter(EncEncuesta.tenant_id == tenant_id)
@@ -2252,10 +2264,10 @@ def list_public_encuestas_for_tenant(
         if not slug_publico:
             continue
         resultados.append((encuesta, slug_publico))
-        if len(resultados) >= safe_limit:
+        if len(resultados) >= wanted_count:
             break
 
-    return resultados
+    return resultados[safe_offset : safe_offset + safe_limit]
 
 
 def get_encuesta(encuesta_id: int, tenant_id: Optional[int] = None, user: Any = None) -> EncEncuesta:
@@ -3948,6 +3960,16 @@ def serialize_public_encuesta(encuesta: EncEncuesta, slug_publico: Optional[str]
     data["slug_alias_used"] = bool(requested_slug and canonical_slug and requested_slug != canonical_slug)
     data["url_publica"] = _public_url_for_slug(canonical_slug)
     data["share_url"] = data["url_publica"]
+    share_text = (
+        f"Participa en {data.get('titulo') or 'esta encuesta'}: {data['url_publica']}"
+        if data.get("url_publica")
+        else None
+    )
+    data["whatsapp_share_text"] = share_text
+    data["whatsapp_share_url"] = (
+        f"https://wa.me/?text={quote_plus(share_text)}" if share_text else None
+    )
+    data["share_whatsapp_url"] = data["whatsapp_share_url"]
     data["public_api_endpoint"] = _public_api_endpoint_for_slug(canonical_slug)
     # Public payload hides estado and flags not needed
     data.pop("estado", None)

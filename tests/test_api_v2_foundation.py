@@ -157,6 +157,12 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertEqual(lead_capture.get("required_fields"), ["name"])
         self.assertEqual(lead_capture.get("required_any_of"), [["phone", "email"]])
         self.assertEqual((workspace.get("survey_voting") or {}).get("contract_version"), "demo.survey_voting.v1")
+        self.assertTrue((workspace.get("survey_voting") or {}).get("enabled"))
+        self.assertTrue((workspace.get("survey_voting") or {}).get("primary_action_enabled"))
+        self.assertEqual(((workspace.get("survey_voting") or {}).get("seed_policy") or {}).get("responses_per_item"), 100)
+        self.assertEqual(len((workspace.get("survey_voting") or {}).get("items") or []), 5)
+        self.assertTrue(all((item.get("seed") or {}).get("responses") == 100 for item in (workspace.get("survey_voting") or {}).get("items") or []))
+        self.assertTrue(any(action.get("action_id") == "mostrar_menu_encuestas" for action in workspace.get("primary_actions") or []))
         self.assertIn("/api/public/encuestas/v1/", (workspace.get("survey_voting") or {}).get("respond_endpoint") or "")
         self.assertIn("/api/public/encuestas/v1/", (workspace.get("survey_voting") or {}).get("results_endpoint") or "")
         self.assertIn("/api/public/encuestas/v1/", (workspace.get("survey_voting") or {}).get("comments_endpoint") or "")
@@ -233,6 +239,10 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertTrue(contract.get("scenario_scripts"))
         self.assertTrue((contract.get("catalog") or {}).get("enabled"))
         self.assertTrue((contract.get("catalog") or {}).get("resources"))
+        self.assertTrue((contract.get("surveys_votings") or {}).get("enabled"))
+        self.assertEqual(((contract.get("surveys_votings") or {}).get("seed_policy") or {}).get("responses_per_item"), 100)
+        self.assertEqual(len((contract.get("surveys_votings") or {}).get("items") or []), 5)
+        self.assertTrue(any(script.get("expected_result") == "survey_response" for script in contract.get("scenario_scripts") or []))
         self.assertFalse((payload.get("frontend_contract") or {}).get("requires_auth"))
 
     def test_public_whatsapp_sandbox_launcher_exposes_education_playbook_aliases(self):
@@ -1101,6 +1111,37 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertIsNotNone(context)
         self.assertLessEqual(len(context.chat_session_id), 36)
         self.assertEqual((context.context_data or {}).get("demo_session_id"), demo_session_id)
+
+    def test_ask_demo_menu_surveys_returns_seeded_links(self):
+        from routes.v2.tenants import create_demo_session_token
+
+        owner = User(name="Municipio Surveys", email="municipio-surveys@test.com", password_hash="hash", tipo_chat="municipio", rol="admin")
+        db.session.add(owner)
+        db.session.flush()
+        db.session.add(TenantProfile(slug="municipio", nombre="Municipio Surveys", tipo="municipio", municipio_id=owner.id, is_active=True))
+        db.session.commit()
+
+        demo_session_id = create_demo_session_token(tenant_slug="municipio", sector="gobierno", rubro="municipio")
+        resp = self.client.post(
+            f"/api/ask/municipio?tenant_slug=municipio&demo_session_id={demo_session_id}",
+            json={
+                "pregunta": "",
+                "demo_mode": True,
+                "tenant_slug": "municipio",
+                "tipo_chat": "municipio",
+                "action_id": "mostrar_menu_encuestas",
+            },
+            headers={"Origin": "https://www.chatboc.ar", "X-Request-Id": "demo-surveys-1"},
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.get_json()
+        self.assertEqual(payload.get("fuente"), "demo_encuestas_menu_v1")
+        self.assertEqual(len(payload.get("demo_surveys") or []), 5)
+        self.assertIn("Abrir: https://www.chatboc.ar/e/", payload.get("message_body") or "")
+        self.assertIn("Compartir por WhatsApp: https://wa.me/", payload.get("message_body") or "")
+        self.assertTrue(all((item.get("seed") or {}).get("responses") == 100 for item in payload.get("demo_surveys") or []))
+        self.assertEqual((payload.get("pagination") or {}).get("next_action_id"), "mostrar_menu_encuestas::2")
 
     def test_ask_municipio_demo_session_without_header_reuses_stable_chat_context(self):
         from routes.v2.tenants import create_demo_session_token

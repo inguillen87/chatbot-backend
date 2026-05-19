@@ -41,6 +41,7 @@ from services.education_contracts import (
 from services.common_utils import validar_email, validar_telefono, formatear_telefono_e164
 from services.contact_intake import missing_contact_fields, resolve_contact_snapshot
 from services.demo_municipio_runtime import handle_demo_municipio_message
+from services.demo_surveys import build_demo_survey_chat_menu
 from services.notifications import enviar_notificacion_sms, enviar_notificacion_whatsapp_con_plantilla
 from services.email_service import enviar_email
 from services.conversation_resolver import ConversationResolver
@@ -953,6 +954,63 @@ def _demo_widget_runtime_response(
     )
     request_id = request.headers.get("X-Request-Id") or getattr(g, "request_id", None) or uuid.uuid4().hex
     g.request_id = request_id
+
+    raw_action = str(action_id or "").strip()
+    if raw_action == "mostrar_menu_encuestas" or raw_action.startswith("mostrar_menu_encuestas::"):
+        page = 1
+        if "::" in raw_action:
+            try:
+                page = max(1, int(raw_action.rsplit("::", 1)[1]))
+            except (TypeError, ValueError):
+                page = 1
+        menu_payload = build_demo_survey_chat_menu(
+            sector=sector or (demo_metadata.get("sector") if isinstance(demo_metadata, dict) else None) or "general",
+            tenant_slug=(
+                getattr(tenant, "slug", None)
+                or contexto_chat.get("demo_resolved_tenant_slug")
+                or contexto_chat.get("demo_rubro_clave")
+                or "demo"
+            ),
+            rubro=(
+                contexto_chat.get("demo_rubro_clave")
+                or contexto_chat.get("rubro_clave")
+                or getattr(tenant, "slug", None)
+                or "demo"
+            ),
+            channel=str(contexto_chat.get("channel") or "widget"),
+            page=page,
+        )
+        message_body = str(menu_payload.get("message_body") or "Estas son las encuestas y votaciones disponibles.").strip()
+        payload = {
+            "contract_version": "demo.widget_runtime.v1",
+            "ok": True,
+            "success": True,
+            "request_id": request_id,
+            "message": message_body,
+            "message_body": message_body,
+            "message_to_user": message_body,
+            "respuesta": message_body,
+            "respuesta_usuario": message_body,
+            "assistant_message": {"role": "assistant", "content": message_body},
+            "messages": [{"role": "assistant", "content": message_body}],
+            "message_type": menu_payload.get("message_type") or "interactive_buttons",
+            "botones": menu_payload.get("options_list") or [],
+            "buttons": menu_payload.get("options_list") or [],
+            "quick_replies": menu_payload.get("options_list") or [],
+            "options_list": menu_payload.get("options_list") or [],
+            "fuente": menu_payload.get("fuente") or "demo_encuestas_menu_v1",
+            "data": {
+                **(menu_payload.get("data") if isinstance(menu_payload.get("data"), dict) else {}),
+                "sector": sector,
+                "tenant_slug": getattr(tenant, "slug", None),
+                "chat_id": chat_session_id,
+            },
+            "demo_surveys": menu_payload.get("surveys") or [],
+            "pagination": menu_payload.get("pagination") or {},
+            "skip_audio_generation": True,
+        }
+        normalize_response_payload(payload)
+        return payload
 
     if sector == "educacion":
         intent = education_intent_from_action(action_id, tenant)

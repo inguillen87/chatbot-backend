@@ -8,6 +8,7 @@ from werkzeug.datastructures import MultiDict
 from models import EncEncuesta, EncLink, User
 from routes import encuestas_public
 from services.encuestas_service import EncuestaError, get_public_encuesta, list_public_encuestas_for_tenant
+from services.demo_surveys import build_demo_survey_chat_menu, build_demo_surveys_votings_contract
 
 
 class _DummyRespuesta:
@@ -89,6 +90,71 @@ def test_public_urls_honor_custom_target_base(client, monkeypatch):
     assert response.status_code == 200
     data = response.get_json()
     assert data[0]["url_publica"] == "https://participa.junin.ar/e/slug-demo"
+
+
+def test_public_demo_surveys_list_uses_seeded_contract(client):
+    client.application.config["PUBLIC_ENCUESTAS_QR_TARGET_BASE_URL"] = "https://www.chatboc.ar"
+
+    response = client.get(
+        "/api/public/encuestas/v1?tenant_slug=qa-colegio-sandbox&sector=educacion&demo_mode=1"
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["demo_mode"] is True
+    assert payload["count"] == 5
+    assert payload["seed_policy"]["responses_per_item"] == 100
+    assert all(item["demo_mode"] is True for item in payload["items"])
+    assert all(item["whatsapp_share_url"].startswith("https://wa.me/") for item in payload["items"])
+
+
+def test_public_demo_survey_detail_results_and_response(client):
+    client.application.config["PUBLIC_ENCUESTAS_QR_TARGET_BASE_URL"] = "https://www.chatboc.ar"
+    contract = build_demo_surveys_votings_contract(
+        sector="empresas",
+        tenant_slug="bodega",
+        public_base_url="https://www.chatboc.ar",
+    )
+    slug = contract["items"][0]["slug"]
+
+    detail = client.get(f"/api/public/encuestas/v1/{slug}")
+    assert detail.status_code == 200
+    detail_payload = detail.get_json()
+    assert detail_payload["demo_mode"] is True
+    assert detail_payload["resultados_envivo"]["total_respuestas"] == 100
+    assert detail_payload["preguntas"]
+
+    results = client.get(f"/api/public/encuestas/v1/{slug}/live-results")
+    assert results.status_code == 200
+    results_payload = results.get_json()
+    assert results_payload["demo_mode"] is True
+    assert results_payload["total_respuestas"] == 100
+    assert results_payload["heatmap"]["points"]
+
+    submitted = client.post(
+        f"/api/public/encuestas/v1/{slug}/responder",
+        json={"respuestas": [{"pregunta_id": "q1", "opcion": "Promos"}]},
+    )
+    assert submitted.status_code == 201
+    submitted_payload = submitted.get_json()
+    assert submitted_payload["demo_mode"] is True
+    assert submitted_payload["seeded_responses_before"] == 100
+
+
+def test_demo_survey_chat_menu_lists_five_with_whatsapp_share_links():
+    menu = build_demo_survey_chat_menu(
+        sector="gobierno",
+        tenant_slug="junin-1",
+        channel="whatsapp",
+        public_base_url="https://www.chatboc.ar",
+    )
+
+    assert menu["contract_version"] == "demo.encuestas_menu.v1"
+    assert menu["pagination"]["page_size"] == 5
+    assert len(menu["surveys"]) == 5
+    assert "Compartir por WhatsApp: https://wa.me/" in menu["message_body"]
+    assert all((survey.get("seed") or {}).get("responses") == 100 for survey in menu["surveys"])
+    assert menu["pagination"]["next_action_id"] == "mostrar_menu_encuestas::2"
 
 
 def test_respuestas_alias_reuses_handler(client, monkeypatch):

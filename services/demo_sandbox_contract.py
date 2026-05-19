@@ -4,6 +4,7 @@ from typing import Any, Mapping
 from urllib.parse import quote_plus
 
 from services.demo_pillar_catalog import catalog_resources_for_rubro, curated_demo_rubros, normalize_demo_sector
+from services.demo_surveys import build_demo_surveys_votings_contract
 
 
 DEFAULT_SANDBOX_MESSAGE_LIMIT = 10
@@ -93,6 +94,16 @@ def _scenario_scripts(sector: str, rubro: str) -> list[dict[str, Any]]:
                 "expected_result": "catalog_resource",
                 "inputs": ["text", "file"],
             },
+            {
+                "id": "commerce_live_vote",
+                "label": "Encuesta de clientes",
+                "messages": [
+                    "Quiero ver encuestas de clientes.",
+                    "Voto por la promo de envio bonificado.",
+                ],
+                "expected_result": "survey_response",
+                "inputs": ["text"],
+            },
         ]
     return [
         {
@@ -115,6 +126,16 @@ def _scenario_scripts(sector: str, rubro: str) -> list[dict[str, Any]]:
             ],
             "expected_result": "lead_or_order",
             "inputs": ["text", "image"],
+        },
+        {
+            "id": "commerce_live_vote",
+            "label": "Encuesta de clientes",
+            "messages": [
+                "Quiero responder una encuesta del negocio.",
+                "Mi prioridad es mejor precio y entrega rapida.",
+            ],
+            "expected_result": "survey_response",
+            "inputs": ["text"],
         },
     ]
 
@@ -194,6 +215,11 @@ def build_demo_whatsapp_sandbox_contract(
     activation_message = join_phrase if requires_join_phrase else f"Hola, quiero probar la demo de {rubro_slug}."
     wa_deeplink = f"https://wa.me/{wa_number}?text={quote_plus(activation_message)}" if wa_number else None
     resources = catalog_resources_for_rubro(rubro_slug, normalized_sector)
+    survey_contract = build_demo_surveys_votings_contract(
+        sector=normalized_sector,
+        tenant_slug=tenant_slug,
+        rubro=rubro_slug,
+    )
 
     contract = {
         "contract_version": "demo.whatsapp_sandbox.v1",
@@ -241,8 +267,8 @@ def build_demo_whatsapp_sandbox_contract(
             },
         },
         "surveys_votings": {
-            "enabled": normalized_sector in {"gobierno", "educacion"},
-            "public_list_endpoint": f"/api/public/tenants/{tenant_slug}/encuestas",
+            **survey_contract,
+            "enabled": normalized_sector in {"gobierno", "educacion", "empresas"},
             "respond_endpoint_template": "/api/public/encuestas/v1/{survey_slug}/responder",
             "live_results_endpoint_template": "/api/public/encuestas/v1/{survey_slug}/live-results",
         },

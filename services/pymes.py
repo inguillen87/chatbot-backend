@@ -66,8 +66,24 @@ from services.education_contracts import (
     education_prompt_for_intent,
     is_education_tenant,
 )
+from services.demo_surveys import build_demo_survey_chat_menu
 
 logger = logging.getLogger(__name__)
+
+
+def _is_demo_survey_menu_action(value: Optional[str]) -> bool:
+    action = str(value or "").strip()
+    return action == "mostrar_menu_encuestas" or action.startswith("mostrar_menu_encuestas::")
+
+
+def _page_from_survey_action(value: Optional[str]) -> int:
+    action = str(value or "").strip()
+    if "::" not in action:
+        return 1
+    try:
+        return max(1, int(action.rsplit("::", 1)[-1]))
+    except (TypeError, ValueError):
+        return 1
 
 
 def _slugify_rubro(value: Optional[str]) -> str:
@@ -2598,6 +2614,38 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
         or kwargs.get("action_id")
         or kwargs.get("selected_action_id")
     )
+    if _is_demo_survey_menu_action(selected_action_id):
+        demo_sector = "educacion" if is_education_context else "empresas"
+        if isinstance(demo_metadata, dict) and demo_metadata.get("sector"):
+            demo_sector = str(demo_metadata.get("sector") or demo_sector)
+        public_base_url = "https://www.chatboc.ar"
+        if current_app:
+            configured_public_base = (
+                current_app.config.get("PUBLIC_ENCUESTAS_CANONICAL_BASE_URL")
+                or current_app.config.get("FRONTEND_URL")
+                or current_app.config.get("PUBLIC_BASE_URL")
+            )
+            if isinstance(configured_public_base, str) and configured_public_base.strip():
+                public_base_url = configured_public_base.rstrip("/")
+        menu_payload = build_demo_survey_chat_menu(
+            sector=demo_sector,
+            tenant_slug=tenant_slug or getattr(tenant_profile, "slug", None) or rubro_slug,
+            rubro=(demo_metadata or {}).get("key") if isinstance(demo_metadata, dict) else rubro_slug,
+            channel=channel,
+            public_base_url=public_base_url,
+            page=_page_from_survey_action(selected_action_id),
+        )
+        return _finalize_early_response(
+            PymeFlowResult(
+                message_body=menu_payload.get("message_body") or "",
+                source="demo_encuestas_menu_v1",
+                options_list=menu_payload.get("options_list") or [],
+                message_type=menu_payload.get("message_type") or "interactive_buttons",
+                data=menu_payload.get("data") or {"surveys": menu_payload.get("surveys") or []},
+            ),
+            intent="mostrar_menu_encuestas",
+        )
+
     if is_education_context:
         education_result = _handle_education_widget_turn(
             tenant_profile=tenant_profile,

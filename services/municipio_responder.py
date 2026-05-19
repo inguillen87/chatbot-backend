@@ -99,6 +99,7 @@ from services.encuestas_service import (
     serialize_public_encuesta,
     get_public_encuesta,
 )
+from services.demo_surveys import build_demo_survey_chat_menu
 from services.feature_flag_service import get_feature_toggle
 
 ARG_TZ = ZoneInfo("America/Argentina/Buenos_Aires")
@@ -3569,8 +3570,14 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
             flag_modified(chat_db_context, "context_data")
         return submenu
 
-    if action_id == "mostrar_menu_encuestas":
-        submenu = _get_encuestas_menu(context)
+    if action_id == "mostrar_menu_encuestas" or action_id.startswith("mostrar_menu_encuestas::"):
+        page = 1
+        if "::" in action_id:
+            try:
+                page = max(1, int(action_id.rsplit("::", 1)[-1]))
+            except (TypeError, ValueError):
+                page = 1
+        submenu = _get_encuestas_menu(context, page=page)
         contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
         contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_SELECCION_DE_LISTA.name
         opciones_accionables = [
@@ -8306,9 +8313,12 @@ def _build_encuesta_share_whatsapp_pre_messages(
     ]
 
 
-def _get_encuestas_menu(context: dict) -> dict:
+def _get_encuestas_menu(context: dict, page: int = 1) -> dict:
     """Build the participatory surveys submenu for the chatbot."""
 
+    page_size = 5
+    safe_page = max(1, int(page or 1))
+    offset = (safe_page - 1) * page_size
     tenant_slug = _resolve_tenant_slug(context)
     portal_base = _resolve_encuestas_base_url(context) or "https://www.chatboc.ar"
     base_options = [
@@ -8323,6 +8333,23 @@ def _get_encuestas_menu(context: dict) -> dict:
         context.get("chat_session_uuid")
         or (context.get("chat_db_context_data", {}) or {}).get("chat_session_id")
     )
+    chat_context_data = context.get("chat_db_context_data", {}) or {}
+    demo_metadata = context.get("demo_metadata")
+    if not isinstance(demo_metadata, dict):
+        demo_metadata = chat_context_data.get("demo_metadata")
+    if not isinstance(demo_metadata, dict):
+        demo_metadata = {}
+    is_demo_menu = bool(demo_metadata)
+
+    def _demo_menu_payload() -> dict:
+        return build_demo_survey_chat_menu(
+            sector=str(demo_metadata.get("sector") or "gobierno"),
+            tenant_slug=str(tenant_slug or demo_metadata.get("tenant_slug") or "municipio-demo"),
+            rubro=str(demo_metadata.get("key") or demo_metadata.get("rubro_clave") or tenant_slug or "municipio"),
+            channel=channel_value or "widget",
+            public_base_url=portal_base or "https://www.chatboc.ar",
+            page=safe_page,
+        )
 
     tenant_id = _resolve_encuestas_tenant_id(context)
     toggle = _resolve_encuestas_toggle(context)
@@ -8339,6 +8366,8 @@ def _get_encuestas_menu(context: dict) -> dict:
         }
 
     if tenant_id is None:
+        if is_demo_menu:
+            return _demo_menu_payload()
         return {
             "message_body": (
                 "No pudimos identificar el municipio para mostrar encuestas activas. "
@@ -8351,7 +8380,11 @@ def _get_encuestas_menu(context: dict) -> dict:
         }
 
     try:
-        encuestas = list_public_encuestas_for_tenant(tenant_id, limit=10)
+        encuestas = list_public_encuestas_for_tenant(
+            tenant_id,
+            limit=page_size + 1,
+            offset=offset,
+        )
     except Exception:
         logger.exception("No se pudieron cargar las encuestas públicas para el tenant %s", tenant_id)
         encuestas = []
@@ -8375,8 +8408,11 @@ def _get_encuestas_menu(context: dict) -> dict:
     base_url = portal_base or "https://chatboc.ar"
     api_base_url = _resolve_encuestas_api_base_url(context)
 
+    has_more_surveys = len(encuestas) > page_size
+    encuestas_visible = encuestas[:page_size]
+
     encuestas_data: list[dict] = []
-    for encuesta, slug_publico in encuestas:
+    for encuesta, slug_publico in encuestas_visible:
         try:
             data = serialize_public_encuesta(encuesta, slug_publico=slug_publico)
         except Exception:
@@ -8384,7 +8420,10 @@ def _get_encuestas_menu(context: dict) -> dict:
             continue
         encuestas_data.append({"data": data, "slug_publico": slug_publico})
 
-    if not encuestas_data:
+    if not encuestas_data and is_demo_menu:
+        return _demo_menu_payload()
+
+    if not encuestas_data and safe_page == 1:
         encuestas_data = _build_fallback_encuestas_for_junin(
             base_url or "https://chatboc.ar", context
         )
@@ -8516,9 +8555,11 @@ def _get_encuestas_menu(context: dict) -> dict:
             if whatsapp_share_line:
                 whatsapp_parts_without_desc.append(whatsapp_share_line)
 
-            whatsapp_title_and_open = [whatsapp_title_line]
+            whatsapp_title_open_share = [whatsapp_title_line]
             if display_share_url:
-                whatsapp_title_and_open.append(open_line)
+                whatsapp_title_open_share.append(open_line)
+            if whatsapp_share_line:
+                whatsapp_title_open_share.append(whatsapp_share_line)
 
             whatsapp_blocks.append(
                 {
@@ -8528,8 +8569,8 @@ def _get_encuestas_menu(context: dict) -> dict:
                     "without_description": "\n".join(
                         part for part in whatsapp_parts_without_desc if part
                     ),
-                    "title_and_open": "\n".join(
-                        part for part in whatsapp_title_and_open if part
+                    "title_open_share": "\n".join(
+                        part for part in whatsapp_title_open_share if part
                     ),
                     "title_only": whatsapp_title_line,
                 }
@@ -8559,6 +8600,7 @@ def _get_encuestas_menu(context: dict) -> dict:
             {
                 "slug": slug_publico,
                 "titulo": titulo,
+                "public_url": share_url,
                 "share_url": share_url,
                 "share_short_url": share_short_url,
                 "share_message": share_message,
@@ -8566,6 +8608,7 @@ def _get_encuestas_menu(context: dict) -> dict:
                 "qr_url": qr_url,
                 "short_slug": short_slug,
                 "share_whatsapp_url": whatsapp_share_url,
+                "whatsapp_share_url": whatsapp_share_url,
                 "share_widget_url": (
                     f"{share_url}?canal=widget_chat" if share_url else None
                 ),
@@ -8574,7 +8617,8 @@ def _get_encuestas_menu(context: dict) -> dict:
             }
         )
 
-    header = "*Participación Ciudadana*\n"
+    page_hint = f" - pagina {safe_page}" if safe_page > 1 or has_more_surveys else ""
+    header = f"*Participación Ciudadana{page_hint}*\n"
 
     if is_whatsapp_channel:
         selected_lines = [
@@ -8592,7 +8636,9 @@ def _get_encuestas_menu(context: dict) -> dict:
         "\nSi querés ver tus gestiones, tocá *👤 Mi Portal*."
     )
 
-    if is_whatsapp_channel and len(message_body) > _WHATSAPP_MENU_BODY_SOFT_LIMIT:
+    whatsapp_body_limit = 3600 if is_whatsapp_channel else _WHATSAPP_MENU_BODY_SOFT_LIMIT
+
+    if is_whatsapp_channel and len(message_body) > whatsapp_body_limit:
         selected_lines = [
             block.get("without_description", "") for block in whatsapp_blocks
         ]
@@ -8602,9 +8648,9 @@ def _get_encuestas_menu(context: dict) -> dict:
             "\nSi querés ver tus gestiones, tocá *👤 Mi Portal*."
         )
 
-    if is_whatsapp_channel and len(message_body) > _WHATSAPP_MENU_BODY_SOFT_LIMIT:
+    if is_whatsapp_channel and len(message_body) > whatsapp_body_limit:
         selected_lines = [
-            block.get("title_and_open", "") for block in whatsapp_blocks
+            block.get("title_open_share", "") for block in whatsapp_blocks
         ]
         message_body = header + "\n".join(filter(None, selected_lines))
         message_body += (
@@ -8612,7 +8658,7 @@ def _get_encuestas_menu(context: dict) -> dict:
             "\nSi querés ver tus gestiones, tocá *👤 Mi Portal*."
         )
 
-    if is_whatsapp_channel and len(message_body) > _WHATSAPP_MENU_BODY_SOFT_LIMIT:
+    if is_whatsapp_channel and len(message_body) > whatsapp_body_limit:
         selected_lines = [block.get("title_only", "") for block in whatsapp_blocks]
         message_body = header + "\n".join(filter(None, selected_lines))
         message_body += (
@@ -8620,7 +8666,23 @@ def _get_encuestas_menu(context: dict) -> dict:
             "\nSi querés ver tus gestiones, tocá *👤 Mi Portal*."
         )
 
-    options = survey_buttons + base_options
+    paging_options: List[Dict[str, Any]] = []
+    if safe_page > 1:
+        paging_options.append(
+            {
+                "texto": "Ver anteriores",
+                "action_id": f"mostrar_menu_encuestas::{safe_page - 1}",
+            }
+        )
+    if has_more_surveys:
+        paging_options.append(
+            {
+                "texto": "Ver mas encuestas",
+                "action_id": f"mostrar_menu_encuestas::{safe_page + 1}",
+            }
+        )
+
+    options = survey_buttons + paging_options + base_options
     embed_whatsapp_banner = is_whatsapp_channel and bool(banner_image_url)
 
     payload = {
@@ -8629,6 +8691,14 @@ def _get_encuestas_menu(context: dict) -> dict:
         "options_list": options,
         "fuente": "submenu_encuestas_v1",
         "generar_audio": False if is_whatsapp_channel else True,
+        "contract_version": "municipio.encuestas_menu.v1",
+        "pagination": {
+            "page": safe_page,
+            "page_size": page_size,
+            "has_more": has_more_surveys,
+            "next_action_id": f"mostrar_menu_encuestas::{safe_page + 1}" if has_more_surveys else None,
+            "previous_action_id": f"mostrar_menu_encuestas::{safe_page - 1}" if safe_page > 1 else None,
+        },
     }
 
     if embed_whatsapp_banner:
@@ -9379,6 +9449,7 @@ def responder_municipio(
         "datos_interpretados_archivo": kwargs.get("datos_interpretados_archivo"),
         "archivo_id_para_asociar": kwargs.get("archivo_id_para_asociar"),
         "location_link_info": location_link_info,
+        "demo_metadata": demo_metadata if isinstance(demo_metadata, dict) else None,
     }
     # --- FIN REFACTOR ---
 
@@ -9470,7 +9541,7 @@ def responder_municipio(
     # any other processing like intent classification or menu keyword matching.
 
     estado_conversacion = contexto_municipio_actual.get("estado_conversacion")
-    action = received_payload.get("action")
+    action = received_payload.get("action") or received_payload.get("action_id")
     if (
         estado_conversacion == ConversationState.ESPERANDO_INTENCION_UBICACION.name
         and (received_payload.get("es_foto") or context.get("datos_interpretados_archivo"))
@@ -10493,7 +10564,7 @@ def responder_municipio(
     # --- RESTRUCTURED LOGIC ---
     # Obtener el estado actual de la conversación antes de evaluar acciones
     estado_conversacion = contexto_municipio_actual.get("estado_conversacion")
-    action = received_payload.get("action")
+    action = received_payload.get("action") or received_payload.get("action_id")
 
     # If the client sends an explicit action (e.g., button press) and there is
     # no active conversation state, handle it immediately via the main menu
@@ -11112,7 +11183,7 @@ def responder_municipio(
             pregunta_str_menu = pregunta_original
         elif isinstance(pregunta_original, dict):
             pregunta_str_menu = pregunta_original.get("pregunta", "")
-            payload_action = pregunta_original.get("action")
+            payload_action = pregunta_original.get("action") or pregunta_original.get("action_id")
 
         logger_actual.info(
             f"Handling input in ESPERANDO_SELECCION_MENU_PRINCIPAL state. Input: '{pregunta_str_menu}', Payload action: '{payload_action}'"
@@ -11180,10 +11251,10 @@ def responder_municipio(
             pregunta_str_menu = pregunta_original
         elif isinstance(pregunta_original, dict):
             pregunta_str_menu = pregunta_original.get("pregunta", "")
-            action_payload = pregunta_original.get("action")
+            action_payload = pregunta_original.get("action") or pregunta_original.get("action_id")
 
         if not action_payload:
-            action_payload = received_payload.get("action")
+            action_payload = received_payload.get("action") or received_payload.get("action_id")
 
         menu_opciones = contexto_municipio_actual.get("menu_opciones", [])
         selected_action = action_payload or find_menu_action_by_input(pregunta_str_menu, menu_opciones)

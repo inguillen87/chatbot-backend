@@ -56,6 +56,7 @@ from services.encuestas_service import (
     get_public_encuesta,
     delete_encuesta,
     list_encuestas,
+    list_public_encuestas_for_tenant,
     _build_mendoza_bootstrap_payload,
     _build_godoy_cruz_bootstrap_payload,
     build_template_draft_from_slug,
@@ -381,6 +382,83 @@ def _respuesta_payload(
     }
     payload.update(extra)
     return payload
+
+
+def test_list_public_encuestas_for_tenant_supports_five_item_batches(client):
+    with client.application.app_context():
+        tenant_id = 812
+        for index in range(7):
+            encuesta, _slug, _user = _create_active_encuesta(tenant_id=tenant_id)
+            encuesta.titulo = f"Encuesta batch {index + 1}"
+            db.session.add(encuesta)
+        db.session.commit()
+
+        first_batch = list_public_encuestas_for_tenant(tenant_id, limit=5)
+        second_batch = list_public_encuestas_for_tenant(tenant_id, limit=5, offset=5)
+
+    assert len(first_batch) == 5
+    assert len(second_batch) == 2
+    first_ids = {encuesta.id for encuesta, _slug in first_batch}
+    second_ids = {encuesta.id for encuesta, _slug in second_batch}
+    assert first_ids.isdisjoint(second_ids)
+
+
+def test_serialize_public_encuesta_includes_whatsapp_share_link(client):
+    with client.application.app_context():
+        encuesta, slug, _user = _create_active_encuesta(tenant_id=813)
+        data = serialize_public_encuesta(encuesta, slug_publico=slug)
+
+    assert data["url_publica"]
+    assert data["whatsapp_share_text"]
+    assert data["url_publica"] in data["whatsapp_share_text"]
+    assert data["whatsapp_share_url"].startswith("https://wa.me/?text=")
+    assert data["share_whatsapp_url"] == data["whatsapp_share_url"]
+
+
+def test_municipio_encuestas_menu_lists_batches_of_five_with_share_links(client):
+    from services import municipio_responder
+
+    with client.application.app_context():
+        tenant_id = 814
+        for index in range(6):
+            encuesta, _slug, _user = _create_active_encuesta(tenant_id=tenant_id)
+            encuesta.titulo = f"Consulta ciudadana {index + 1}"
+            db.session.add(encuesta)
+        db.session.commit()
+
+        context = {
+            "municipio_id": tenant_id,
+            "tenant_id": tenant_id,
+            "user_obj": DummyUser(tenant_id),
+            "municipio_config_actual": {"encuestas": {"enabled": True}},
+            "chat_db_context_data": {},
+            "channel": "widget_chat",
+        }
+
+        first_page = municipio_responder._get_encuestas_menu(context)
+        second_page = municipio_responder._get_encuestas_menu(context, page=2)
+        whatsapp_page = municipio_responder._get_encuestas_menu(
+            {**context, "channel": "whatsapp"}
+        )
+
+    assert first_page["contract_version"] == "municipio.encuestas_menu.v1"
+    assert first_page["pagination"]["page_size"] == 5
+    assert first_page["pagination"]["has_more"] is True
+    assert len(first_page["surveys"]) == 5
+    assert "https://wa.me/?text=" in first_page["message_body"]
+    assert any(
+        option.get("action_id") == "mostrar_menu_encuestas::2"
+        for option in first_page["options_list"]
+    )
+    assert len(second_page["surveys"]) == 1
+    assert second_page["pagination"]["previous_action_id"] == "mostrar_menu_encuestas::1"
+    assert any(
+        option.get("action_id") == "mostrar_menu_encuestas::1"
+        for option in second_page["options_list"]
+    )
+    assert len(whatsapp_page["surveys"]) == 5
+    assert "https://wa.me/?text=" in whatsapp_page["message_body"]
+    assert whatsapp_page["pagination"]["next_action_id"] == "mostrar_menu_encuestas::2"
 
 
 def _request_ctx(anon: str) -> dict:
