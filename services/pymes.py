@@ -73,7 +73,27 @@ logger = logging.getLogger(__name__)
 
 def _is_demo_survey_menu_action(value: Optional[str]) -> bool:
     action = str(value or "").strip()
-    return action == "mostrar_menu_encuestas" or action.startswith("mostrar_menu_encuestas::")
+    if action == "mostrar_menu_encuestas" or action.startswith("mostrar_menu_encuestas::"):
+        return True
+    normalized = unicodedata.normalize("NFKD", action.lower())
+    normalized = "".join(ch for ch in normalized if not unicodedata.combining(ch))
+    normalized = re.sub(r"[^a-z0-9]+", " ", normalized).strip()
+    return (
+        normalized in {
+            "encuestas",
+            "votaciones",
+            "encuestas y votaciones",
+            "encuestas votaciones",
+            "sondeos",
+            "ver encuestas",
+            "ver votaciones",
+            "mostrar encuestas",
+            "mostrar votaciones",
+        }
+        or "encuesta" in normalized
+        or "votacion" in normalized
+        or "sondeo" in normalized
+    )
 
 
 def _page_from_survey_action(value: Optional[str]) -> int:
@@ -2614,7 +2634,8 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
         or kwargs.get("action_id")
         or kwargs.get("selected_action_id")
     )
-    if _is_demo_survey_menu_action(selected_action_id):
+    survey_menu_source = selected_action_id if _is_demo_survey_menu_action(selected_action_id) else pregunta_str
+    if _is_demo_survey_menu_action(survey_menu_source):
         demo_sector = "educacion" if is_education_context else "empresas"
         if isinstance(demo_metadata, dict) and demo_metadata.get("sector"):
             demo_sector = str(demo_metadata.get("sector") or demo_sector)
@@ -2633,7 +2654,7 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
             rubro=(demo_metadata or {}).get("key") if isinstance(demo_metadata, dict) else rubro_slug,
             channel=channel,
             public_base_url=public_base_url,
-            page=_page_from_survey_action(selected_action_id),
+            page=_page_from_survey_action(survey_menu_source),
         )
         return _finalize_early_response(
             PymeFlowResult(

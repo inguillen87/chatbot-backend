@@ -742,6 +742,36 @@ def _demo_button(label: str, action_id: str, description: str | None = None) -> 
     return button
 
 
+def _is_demo_survey_menu_request(action_id: Optional[str], question_text: str | None = None) -> bool:
+    raw_action = str(action_id or "").strip()
+    if raw_action == "mostrar_menu_encuestas" or raw_action.startswith("mostrar_menu_encuestas::"):
+        return True
+
+    folded_action = fold_text(raw_action).replace(" ", "_")
+    if folded_action in {
+        "encuestas_y_votaciones",
+        "encuestas_votaciones",
+        "ver_encuestas",
+        "ver_votaciones",
+        "mostrar_encuestas",
+        "mostrar_votaciones",
+        "sondeos",
+        "encuestas",
+        "votaciones",
+    }:
+        return True
+
+    folded_question = fold_text(question_text or "")
+    if not folded_question:
+        return False
+    return (
+        "encuesta" in folded_question
+        or "votacion" in folded_question
+        or "sondeo" in folded_question
+        or "participacion ciudadana" in folded_question
+    )
+
+
 def _normalized_demo_action_buttons(*sources: object, sector: str = "empresas") -> list[dict[str, object]]:
     buttons: list[dict[str, object]] = []
     seen: set[str] = set()
@@ -956,7 +986,7 @@ def _demo_widget_runtime_response(
     g.request_id = request_id
 
     raw_action = str(action_id or "").strip()
-    if raw_action == "mostrar_menu_encuestas" or raw_action.startswith("mostrar_menu_encuestas::"):
+    if _is_demo_survey_menu_request(raw_action, question_text):
         page = 1
         if "::" in raw_action:
             try:
@@ -3845,8 +3875,16 @@ def _procesar_chat(
 
         cached_response = contexto_chat.get("last_bot_response") if isinstance(contexto_chat, dict) else None
         cached_question = contexto_chat.get("last_user_message") if isinstance(contexto_chat, dict) else None
+        cached_action_id = contexto_chat.get("last_user_action_id") if isinstance(contexto_chat, dict) else None
         cached_at_raw = contexto_chat.get("last_user_message_time") if isinstance(contexto_chat, dict) else None
-        if isinstance(cached_response, dict) and cached_question == pregunta and isinstance(cached_at_raw, str):
+        current_action_id = str(action_id or "").strip()
+        previous_action_id = str(cached_action_id or "").strip()
+        if (
+            isinstance(cached_response, dict)
+            and cached_question == pregunta
+            and previous_action_id == current_action_id
+            and isinstance(cached_at_raw, str)
+        ):
             try:
                 cached_at = datetime.fromisoformat(cached_at_raw)
                 if datetime.utcnow() - cached_at.replace(tzinfo=None) <= timedelta(seconds=30):
@@ -4105,6 +4143,7 @@ def _procesar_chat(
         # Guardar datos del último mensaje para evitar duplicados
         if chat_context_obj:
             chat_context_obj.context_data["last_user_message"] = pregunta
+            chat_context_obj.context_data["last_user_action_id"] = str(action_id or "").strip() or None
             chat_context_obj.context_data["last_user_message_time"] = datetime.utcnow().isoformat()
             chat_context_obj.context_data["last_bot_response"] = resultado
             flag_modified(chat_context_obj, "context_data")

@@ -9,6 +9,7 @@ from models import EncEncuesta, EncLink, User
 from routes import encuestas_public
 from services.encuestas_service import EncuestaError, get_public_encuesta, list_public_encuestas_for_tenant
 from services.demo_surveys import build_demo_survey_chat_menu, build_demo_surveys_votings_contract
+from services.response_formatter import build_interactive_response
 
 
 class _DummyRespuesta:
@@ -152,9 +153,24 @@ def test_demo_survey_chat_menu_lists_five_with_whatsapp_share_links():
     assert menu["contract_version"] == "demo.encuestas_menu.v1"
     assert menu["pagination"]["page_size"] == 5
     assert len(menu["surveys"]) == 5
-    assert "Compartir por WhatsApp: https://wa.me/" in menu["message_body"]
+    assert "Compartir: https://wa.me/" in menu["message_body"]
+    assert len(menu["message_body"]) < 1400
     assert all((survey.get("seed") or {}).get("responses") == 100 for survey in menu["surveys"])
     assert menu["pagination"]["next_action_id"] == "mostrar_menu_encuestas::2"
+
+    formatted = build_interactive_response(
+        options=menu["options_list"],
+        body_text=menu["message_body"],
+        channel="whatsapp",
+        message_type=menu["message_type"],
+        original_bot_response=menu,
+    )
+    formatted_body = formatted["text"]["body"]
+    context_options = (formatted.get("contexto_actualizado") or {}).get("last_options_sent") or []
+    assert len(formatted_body) < 1600
+    assert formatted_body.count("Abrir: https://www.chatboc.ar/e/") == 5
+    assert formatted_body.count("Compartir: https://wa.me/") == 5
+    assert any(option.get("action_id") == "mostrar_menu_encuestas::2" for option in context_options)
 
 
 def test_respuestas_alias_reuses_handler(client, monkeypatch):

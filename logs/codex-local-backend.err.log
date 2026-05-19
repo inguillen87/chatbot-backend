@@ -1,104 +1,230 @@
-2026-05-18 22:00:45 [INFO] services.gcs_service - Ignoring partial explicit Cloudinary credentials in favour of CLOUDINARY_URL (missing: CLOUDINARY_API_SECRET)
-2026-05-18 22:00:45 [INFO] services.gcs_service - Cloudinary uploads enabled (cloud_name='dkvzi1mrc', api_key='57**********22').
-2026-05-18 22:00:46 [INFO] app - Creating app
-2026-05-18 22:00:46 [INFO] app - Loaded config: <class 'config.Config'>
-2026-05-18 22:00:46 [INFO] app - Database URI: postgresql+psycopg://ch*****************er:***@dpg-d4lusfali9vc73egvnq0-a.oregon-postgres.render.com:5432/chatboc_postgres_lw1n?immutabledict({'sslmode': 'require'})
-2026-05-18 22:00:46 [INFO] app - Session config: secret_key=configured secure=False samesite=None type=sqlalchemy domain=None
-2026-05-18 22:00:49 [INFO] app - Aplicación creada. Nivel de logging: INFO
-2026-05-18 22:00:49 [INFO] app - Usando base de datos: postgresql+psycopg://chatboc_postgres_user:7S2TdYZQ95dXNUCWe3yPEIbiqb22Li3b@dpg-d4lusfali9vc73egvnq0-a.oregon-postgres.render.com:5432/chatboc_postgres_lw1n?sslmode=require
-2026-05-18 22:00:50 [INFO] services.spacy_loader - Cargando modelo spaCy 'es_core_news_md'...
-2026-05-18 22:00:50 [WARNING] services.spacy_loader - spaCy model 'es_core_news_md' not available; falling back to blank Spanish pipeline.
-2026-05-18 22:00:50 [INFO] services.spacy_loader - Fallback spaCy blank('es') cargado para 'es_core_news_md'.
-2026-05-18 22:00:52 [ERROR] services.google_docai - \u274c [DOCAI] Archivo de credenciales Google NO encontrado en rutas buscadas.
-2026-05-18 22:00:52 [INFO] services.intent_classifier - Intents cargados exitosamente desde C:\Users\guill\OneDrive\Documentos\GitHub\chatbot-backend\services\..\data\intents.json
-2026-05-18 22:00:52 [INFO] services.intent_classifier - Intents cargados exitosamente desde C:\Users\guill\OneDrive\Documentos\GitHub\chatbot-backend\services\..\data\intents.json
-2026-05-18 22:00:52 [INFO] services.municipio_responder - \u2705 Catálogo de productos cargado desde C:\Users\guill\OneDrive\Documentos\GitHub\chatbot-backend\services\..\data\product_catalog.json
-2026-05-18 22:00:52 [WARNING] services.municipio_responder - [COMERCIOS] Archivo no encontrado: C:\Users\guill\OneDrive\Documentos\GitHub\chatbot-backend\services\..\data\commerce_locations.json, se usa lista vacía
-2026-05-18 22:00:52 [INFO] app - Startup runtime bootstrap disabled. Apply migrations explicitly (e.g. 'flask db upgrade').
-2026-05-18 22:00:52 [INFO] werkzeug - [31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+An exception was thrown while monkey_patching for eventlet. to fix this error make sure you run eventlet.monkey_patch() before importing any other modules.
+Traceback (most recent call last):
+  File "C:\Users\guill\OneDrive\Documentos\GitHub\chatbot-backend\test_venv\Lib\site-packages\eventlet\patcher.py", line 633, in _upgrade_instances
+    new = upgrade_or_traverse(v)
+          ^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\guill\OneDrive\Documentos\GitHub\chatbot-backend\test_venv\Lib\site-packages\eventlet\patcher.py", line 610, in upgrade_or_traverse
+    _upgrade_instances(obj, klass, upgrade, visited, old_to_new)
+  File "C:\Users\guill\OneDrive\Documentos\GitHub\chatbot-backend\test_venv\Lib\site-packages\eventlet\patcher.py", line 624, in _upgrade_instances
+    container_vars = vars(container)
+                     ^^^^^^^^^^^^^^^
+  File "C:\Users\guill\OneDrive\Documentos\GitHub\chatbot-backend\test_venv\Lib\site-packages\werkzeug\local.py", line 318, in __get__
+    obj = instance._get_current_object()
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\guill\OneDrive\Documentos\GitHub\chatbot-backend\test_venv\Lib\site-packages\werkzeug\local.py", line 519, in _get_current_object
+    raise RuntimeError(unbound_message) from None
+RuntimeError: Working outside of application context.
+
+This typically means that you attempted to use functionality that needed
+the current application. To solve this, set up an application context
+with app.app_context(). See the documentation for more information.
+An exception was thrown while monkey_patching for eventlet. to fix this error make sure you run eventlet.monkey_patch() before importing any other modules.
+Traceback (most recent call last):
+  File "C:\Users\guill\OneDrive\Documentos\GitHub\chatbot-backend\test_venv\Lib\site-packages\eventlet\patcher.py", line 633, in _upgrade_instances
+    new = upgrade_or_traverse(v)
+          ^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\guill\OneDrive\Documentos\GitHub\chatbot-backend\test_venv\Lib\site-packages\eventlet\patcher.py", line 610, in upgrade_or_traverse
+    _upgrade_instances(obj, klass, upgrade, visited, old_to_new)
+  File "C:\Users\guill\OneDrive\Documentos\GitHub\chatbot-backend\test_venv\Lib\site-packages\eventlet\patcher.py", line 624, in _upgrade_instances
+    container_vars = vars(container)
+                     ^^^^^^^^^^^^^^^
+  File "C:\Users\guill\OneDrive\Documentos\GitHub\chatbot-backend\test_venv\Lib\site-packages\werkzeug\local.py", line 318, in __get__
+    obj = instance._get_current_object()
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\guill\OneDrive\Documentos\GitHub\chatbot-backend\test_venv\Lib\site-packages\werkzeug\local.py", line 519, in _get_current_object
+    raise RuntimeError(unbound_message) from None
+RuntimeError: Working outside of application context.
+
+This typically means that you attempted to use functionality that needed
+the current application. To solve this, set up an application context
+with app.app_context(). See the documentation for more information.
+An exception was thrown while monkey_patching for eventlet. to fix this error make sure you run eventlet.monkey_patch() before importing any other modules.
+Traceback (most recent call last):
+  File "C:\Users\guill\OneDrive\Documentos\GitHub\chatbot-backend\test_venv\Lib\site-packages\eventlet\patcher.py", line 633, in _upgrade_instances
+    new = upgrade_or_traverse(v)
+          ^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\guill\OneDrive\Documentos\GitHub\chatbot-backend\test_venv\Lib\site-packages\eventlet\patcher.py", line 610, in upgrade_or_traverse
+    _upgrade_instances(obj, klass, upgrade, visited, old_to_new)
+  File "C:\Users\guill\OneDrive\Documentos\GitHub\chatbot-backend\test_venv\Lib\site-packages\eventlet\patcher.py", line 624, in _upgrade_instances
+    container_vars = vars(container)
+                     ^^^^^^^^^^^^^^^
+  File "C:\Users\guill\OneDrive\Documentos\GitHub\chatbot-backend\test_venv\Lib\site-packages\werkzeug\local.py", line 318, in __get__
+    obj = instance._get_current_object()
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\guill\OneDrive\Documentos\GitHub\chatbot-backend\test_venv\Lib\site-packages\werkzeug\local.py", line 519, in _get_current_object
+    raise RuntimeError(unbound_message) from None
+RuntimeError: Working outside of request context.
+
+This typically means that you attempted to use functionality that needed
+an active HTTP request. Consult the documentation on testing for
+information about how to avoid this problem.
+An exception was thrown while monkey_patching for eventlet. to fix this error make sure you run eventlet.monkey_patch() before importing any other modules.
+Traceback (most recent call last):
+  File "C:\Users\guill\OneDrive\Documentos\GitHub\chatbot-backend\test_venv\Lib\site-packages\eventlet\patcher.py", line 633, in _upgrade_instances
+    new = upgrade_or_traverse(v)
+          ^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\guill\OneDrive\Documentos\GitHub\chatbot-backend\test_venv\Lib\site-packages\eventlet\patcher.py", line 610, in upgrade_or_traverse
+    _upgrade_instances(obj, klass, upgrade, visited, old_to_new)
+  File "C:\Users\guill\OneDrive\Documentos\GitHub\chatbot-backend\test_venv\Lib\site-packages\eventlet\patcher.py", line 624, in _upgrade_instances
+    container_vars = vars(container)
+                     ^^^^^^^^^^^^^^^
+  File "C:\Users\guill\OneDrive\Documentos\GitHub\chatbot-backend\test_venv\Lib\site-packages\werkzeug\local.py", line 318, in __get__
+    obj = instance._get_current_object()
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\guill\OneDrive\Documentos\GitHub\chatbot-backend\test_venv\Lib\site-packages\werkzeug\local.py", line 519, in _get_current_object
+    raise RuntimeError(unbound_message) from None
+RuntimeError: Working outside of application context.
+
+This typically means that you attempted to use functionality that needed
+the current application. To solve this, set up an application context
+with app.app_context(). See the documentation for more information.
+An exception was thrown while monkey_patching for eventlet. to fix this error make sure you run eventlet.monkey_patch() before importing any other modules.
+Traceback (most recent call last):
+  File "C:\Users\guill\OneDrive\Documentos\GitHub\chatbot-backend\test_venv\Lib\site-packages\eventlet\patcher.py", line 633, in _upgrade_instances
+    new = upgrade_or_traverse(v)
+          ^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\guill\OneDrive\Documentos\GitHub\chatbot-backend\test_venv\Lib\site-packages\eventlet\patcher.py", line 610, in upgrade_or_traverse
+    _upgrade_instances(obj, klass, upgrade, visited, old_to_new)
+  File "C:\Users\guill\OneDrive\Documentos\GitHub\chatbot-backend\test_venv\Lib\site-packages\eventlet\patcher.py", line 624, in _upgrade_instances
+    container_vars = vars(container)
+                     ^^^^^^^^^^^^^^^
+  File "C:\Users\guill\OneDrive\Documentos\GitHub\chatbot-backend\test_venv\Lib\site-packages\werkzeug\local.py", line 318, in __get__
+    obj = instance._get_current_object()
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\guill\OneDrive\Documentos\GitHub\chatbot-backend\test_venv\Lib\site-packages\werkzeug\local.py", line 519, in _get_current_object
+    raise RuntimeError(unbound_message) from None
+RuntimeError: Working outside of request context.
+
+This typically means that you attempted to use functionality that needed
+an active HTTP request. Consult the documentation on testing for
+information about how to avoid this problem.
+An exception was thrown while monkey_patching for eventlet. to fix this error make sure you run eventlet.monkey_patch() before importing any other modules.
+Traceback (most recent call last):
+  File "C:\Users\guill\OneDrive\Documentos\GitHub\chatbot-backend\test_venv\Lib\site-packages\eventlet\patcher.py", line 633, in _upgrade_instances
+    new = upgrade_or_traverse(v)
+          ^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\guill\OneDrive\Documentos\GitHub\chatbot-backend\test_venv\Lib\site-packages\eventlet\patcher.py", line 610, in upgrade_or_traverse
+    _upgrade_instances(obj, klass, upgrade, visited, old_to_new)
+  File "C:\Users\guill\OneDrive\Documentos\GitHub\chatbot-backend\test_venv\Lib\site-packages\eventlet\patcher.py", line 624, in _upgrade_instances
+    container_vars = vars(container)
+                     ^^^^^^^^^^^^^^^
+  File "C:\Users\guill\OneDrive\Documentos\GitHub\chatbot-backend\test_venv\Lib\site-packages\werkzeug\local.py", line 318, in __get__
+    obj = instance._get_current_object()
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\guill\OneDrive\Documentos\GitHub\chatbot-backend\test_venv\Lib\site-packages\werkzeug\local.py", line 519, in _get_current_object
+    raise RuntimeError(unbound_message) from None
+RuntimeError: Working outside of request context.
+
+This typically means that you attempted to use functionality that needed
+an active HTTP request. Consult the documentation on testing for
+information about how to avoid this problem.
+2026-05-18 22:53:22 [INFO] services.gcs_service - Ignoring partial explicit Cloudinary credentials in favour of CLOUDINARY_URL (missing: CLOUDINARY_API_SECRET)
+2026-05-18 22:53:22 [INFO] services.gcs_service - Cloudinary uploads enabled (cloud_name='dkvzi1mrc', api_key='57**********22').
+2026-05-18 22:53:23 [INFO] app - Creating app
+2026-05-18 22:53:23 [INFO] app - Loaded config: <class 'config.Config'>
+2026-05-18 22:53:23 [INFO] app - Database URI: postgresql+psycopg://ch*****************er:***@dpg-d4lusfali9vc73egvnq0-a.oregon-postgres.render.com:5432/chatboc_postgres_lw1n?immutabledict({'sslmode': 'require'})
+2026-05-18 22:53:23 [INFO] app - Session config: secret_key=configured secure=False samesite=None type=sqlalchemy domain=None
+2026-05-18 22:53:26 [INFO] app - Aplicación creada. Nivel de logging: INFO
+2026-05-18 22:53:26 [INFO] app - Usando base de datos: postgresql+psycopg://chatboc_postgres_user:7S2TdYZQ95dXNUCWe3yPEIbiqb22Li3b@dpg-d4lusfali9vc73egvnq0-a.oregon-postgres.render.com:5432/chatboc_postgres_lw1n?sslmode=require
+2026-05-18 22:53:27 [INFO] services.spacy_loader - Cargando modelo spaCy 'es_core_news_md'...
+2026-05-18 22:53:27 [WARNING] services.spacy_loader - spaCy model 'es_core_news_md' not available; falling back to blank Spanish pipeline.
+2026-05-18 22:53:27 [INFO] services.spacy_loader - Fallback spaCy blank('es') cargado para 'es_core_news_md'.
+2026-05-18 22:53:28 [ERROR] services.google_docai - \u274c [DOCAI] Archivo de credenciales Google NO encontrado en rutas buscadas.
+2026-05-18 22:53:28 [INFO] services.intent_classifier - Intents cargados exitosamente desde C:\Users\guill\OneDrive\Documentos\GitHub\chatbot-backend\services\..\data\intents.json
+2026-05-18 22:53:28 [INFO] services.intent_classifier - Intents cargados exitosamente desde C:\Users\guill\OneDrive\Documentos\GitHub\chatbot-backend\services\..\data\intents.json
+2026-05-18 22:53:28 [INFO] services.municipio_responder - \u2705 Catálogo de productos cargado desde C:\Users\guill\OneDrive\Documentos\GitHub\chatbot-backend\services\..\data\product_catalog.json
+2026-05-18 22:53:28 [WARNING] services.municipio_responder - [COMERCIOS] Archivo no encontrado: C:\Users\guill\OneDrive\Documentos\GitHub\chatbot-backend\services\..\data\commerce_locations.json, se usa lista vacía
+2026-05-18 22:53:29 [INFO] app - Startup runtime bootstrap disabled. Apply migrations explicitly (e.g. 'flask db upgrade').
+2026-05-18 22:53:29 [INFO] werkzeug - [31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
  * Running on http://127.0.0.1:5000
-2026-05-18 22:00:52 [INFO] werkzeug - [33mPress CTRL+C to quit[0m
-2026-05-18 22:01:10 [INFO] werkzeug - 127.0.0.1 - - [18/May/2026 22:01:10] "GET /api/health HTTP/1.1" 200 -
-2026-05-18 22:01:28 [INFO] werkzeug - 127.0.0.1 - - [18/May/2026 22:01:28] "POST /api/v2/demo/session HTTP/1.1" 200 -
-2026-05-18 22:01:29 [INFO] app - Anonymous request to '/api/ask/municipio', loaded DEFAULT municipality owner user ID: 142
-2026-05-18 22:01:29 [INFO] app - Using chat session id from header:X-Chat-Session-Id: sid_acf189a89af0a8884bfc13e5a0db8222
-2026-05-18 22:01:31 [INFO] app - No ChatSessionContext found for sid_acf189a89af0a8884bfc13e5a0db8222. Creating new one.
-2026-05-18 22:01:31 [INFO] app - ChatSessionContext inicial guardado para sid_acf189a89af0a8884bfc13e5a0db8222 (commit temprano).
-2026-05-18 22:01:31 [ERROR] app - Error inesperado al parsear /ask: 400 Bad Request: The browser (or proxy) sent a request that this server could not understand.
-2026-05-18 22:01:32 [INFO] app - WIDGET_REQ path=/api/ask/municipio user_id=142 tenant=municipio entity_token=d2bb5549-df31-4901-b21f-1683c43499c4 status=400
-2026-05-18 22:01:32 [INFO] werkzeug - 127.0.0.1 - - [18/May/2026 22:01:32] "[31m[1mPOST /api/ask/municipio?tenant_slug=municipio&tenant=municipio HTTP/1.1[0m" 400 -
-2026-05-18 22:01:45 [INFO] werkzeug - 127.0.0.1 - - [18/May/2026 22:01:45] "POST /api/v2/demo/session HTTP/1.1" 200 -
-2026-05-18 22:02:05 [INFO] werkzeug - 127.0.0.1 - - [18/May/2026 22:02:05] "POST /api/v2/demo/session HTTP/1.1" 200 -
-2026-05-18 22:02:05 [INFO] app - Anonymous request to '/api/ask/municipio', loaded DEFAULT municipality owner user ID: 142
-2026-05-18 22:02:05 [INFO] app - Using chat session id from header:X-Chat-Session-Id: sid_4278b1af27a1bfcee36a962042839f1f
-2026-05-18 22:02:07 [INFO] app - No ChatSessionContext found for sid_4278b1af27a1bfcee36a962042839f1f. Creating new one.
-2026-05-18 22:02:07 [INFO] app - ChatSessionContext inicial guardado para sid_4278b1af27a1bfcee36a962042839f1f (commit temprano).
-2026-05-18 22:02:08 [INFO] app - Usuario anónimo 0fed0b30d5584a5cb239f5ddca9e8243: 0 mensajes en la sesión actual (límite: 5).
-2026-05-18 22:02:18 [INFO] app - Usando Rubro ID 10 ('Municipio Inteligente') perteneciente a User ID 142 para la lógica del bot.
-2026-05-18 22:02:18 [INFO] app - Usando Chat Session ID resuelto previamente (header:X-Chat-Session-Id): sid_4278b1af27a1bfcee36a962042839f1f
-2026-05-18 22:02:18 [INFO] app - ChatSessionContext cargado. User_id: None, Anon_id: 0fed0b30d5584a5cb239f5ddca9e8243
-2026-05-18 22:02:19 [INFO] app - Emitted socket event 'message' to room sid_4278b1af27a1bfcee36a962042839f1f
-2026-05-18 22:02:19 [INFO] app - WIDGET_REQ path=/api/ask/municipio user_id=142 tenant=municipio entity_token=d2bb5549-df31-4901-b21f-1683c43499c4 status=200
-2026-05-18 22:02:19 [INFO] werkzeug - 127.0.0.1 - - [18/May/2026 22:02:19] "POST /api/ask/municipio?tenant_slug=municipio&tenant=municipio HTTP/1.1" 200 -
-2026-05-18 22:02:20 [INFO] werkzeug - 127.0.0.1 - - [18/May/2026 22:02:20] "GET /api/public/encuestas/v1?tenant_slug=municipio&sector=gobierno&demo_mode=1 HTTP/1.1" 200 -
-2026-05-18 22:02:34 [INFO] werkzeug - 127.0.0.1 - - [18/May/2026 22:02:34] "GET /api/public/encuestas/v1?tenant_slug=municipio&sector=gobierno&demo_mode=1 HTTP/1.1" 200 -
-2026-05-18 22:04:03 [INFO] werkzeug - 127.0.0.1 - - [18/May/2026 22:04:03] "POST /api/v2/demo/session HTTP/1.1" 200 -
-2026-05-18 22:04:04 [INFO] app - Anonymous request to '/api/ask/municipio', loaded DEFAULT municipality owner user ID: 142
-2026-05-18 22:04:04 [INFO] app - Using chat session id from header:X-Chat-Session-Id: sid_8410ea530fef1a46c3ebaf570deee7f4
-2026-05-18 22:04:05 [INFO] app - No ChatSessionContext found for sid_8410ea530fef1a46c3ebaf570deee7f4. Creating new one.
-2026-05-18 22:04:05 [INFO] app - ChatSessionContext inicial guardado para sid_8410ea530fef1a46c3ebaf570deee7f4 (commit temprano).
-2026-05-18 22:04:06 [INFO] app - Usuario anónimo 5fe5881632cd44a3871472302a76fb6d: 0 mensajes en la sesión actual (límite: 5).
-2026-05-18 22:04:14 [INFO] app - Usando Rubro ID 10 ('Municipio Inteligente') perteneciente a User ID 142 para la lógica del bot.
-2026-05-18 22:04:14 [INFO] app - Usando Chat Session ID resuelto previamente (header:X-Chat-Session-Id): sid_8410ea530fef1a46c3ebaf570deee7f4
-2026-05-18 22:04:14 [INFO] app - ChatSessionContext cargado. User_id: None, Anon_id: 5fe5881632cd44a3871472302a76fb6d
-2026-05-18 22:04:15 [INFO] app - Emitted socket event 'message' to room sid_8410ea530fef1a46c3ebaf570deee7f4
-2026-05-18 22:04:15 [INFO] app - WIDGET_REQ path=/api/ask/municipio user_id=142 tenant=municipio entity_token=d2bb5549-df31-4901-b21f-1683c43499c4 status=200
-2026-05-18 22:04:15 [INFO] werkzeug - 127.0.0.1 - - [18/May/2026 22:04:15] "POST /api/ask/municipio?tenant_slug=municipio&tenant=municipio HTTP/1.1" 200 -
-2026-05-18 22:04:32 [INFO] werkzeug - 127.0.0.1 - - [18/May/2026 22:04:32] "POST /api/v2/demo/session HTTP/1.1" 200 -
-2026-05-18 22:04:33 [INFO] app - Using chat session id from header:X-Chat-Session-Id: sid_39646bc90723b3cbc155546c00606a6f
-2026-05-18 22:04:34 [INFO] app - No ChatSessionContext found for sid_39646bc90723b3cbc155546c00606a6f. Creating new one.
-2026-05-18 22:04:35 [INFO] app - ChatSessionContext inicial guardado para sid_39646bc90723b3cbc155546c00606a6f (commit temprano).
-2026-05-18 22:04:38 [INFO] app - Usuario anónimo 96e1845132d74eedb9fce2f8ad8e2796: 0 mensajes en la sesión actual (límite: 5).
-2026-05-18 22:04:39 [INFO] app - No se pudo determinar un rubro/owner específico para la lógica del bot. Se usará lógica genérica si aplica (ej. para rubros públicos por defecto).
-2026-05-18 22:04:39 [INFO] app - Usando Chat Session ID resuelto previamente (header:X-Chat-Session-Id): sid_39646bc90723b3cbc155546c00606a6f
-2026-05-18 22:04:39 [INFO] app - ChatSessionContext cargado. User_id: None, Anon_id: 96e1845132d74eedb9fce2f8ad8e2796
-2026-05-18 22:04:40 [INFO] app - Emitted socket event 'message' to room sid_39646bc90723b3cbc155546c00606a6f
-2026-05-18 22:04:40 [INFO] app - WIDGET_REQ path=/api/ask/pyme user_id=None tenant=None entity_token=None status=200
-2026-05-18 22:04:40 [INFO] werkzeug - 127.0.0.1 - - [18/May/2026 22:04:40] "POST /api/ask/pyme?tenant_slug=qa-colegio-sandbox&tenant=qa-colegio-sandbox HTTP/1.1" 200 -
-2026-05-18 22:04:41 [INFO] werkzeug - 127.0.0.1 - - [18/May/2026 22:04:41] "POST /api/v2/demo/session HTTP/1.1" 200 -
-2026-05-18 22:04:42 [INFO] app - Using chat session id from header:X-Chat-Session-Id: sid_db8ca675dea535b33e62cc681b0e3801
-2026-05-18 22:04:43 [INFO] app - No ChatSessionContext found for sid_db8ca675dea535b33e62cc681b0e3801. Creating new one.
-2026-05-18 22:04:44 [INFO] app - ChatSessionContext inicial guardado para sid_db8ca675dea535b33e62cc681b0e3801 (commit temprano).
-2026-05-18 22:04:45 [INFO] app - Usuario anónimo adf0972c6c144887893b972b07b959e6: 0 mensajes en la sesión actual (límite: 5).
-2026-05-18 22:04:53 [INFO] app - Usando Rubro ID 2 ('Bodegas y Vinos') perteneciente a User ID 2 para la lógica del bot.
-2026-05-18 22:04:53 [INFO] app - Usando Chat Session ID resuelto previamente (header:X-Chat-Session-Id): sid_db8ca675dea535b33e62cc681b0e3801
-2026-05-18 22:04:53 [INFO] app - ChatSessionContext cargado. User_id: None, Anon_id: adf0972c6c144887893b972b07b959e6
-2026-05-18 22:04:53 [INFO] app - Emitted socket event 'message' to room sid_db8ca675dea535b33e62cc681b0e3801
-2026-05-18 22:04:53 [INFO] app - WIDGET_REQ path=/api/ask/pyme user_id=None tenant=None entity_token=None status=200
-2026-05-18 22:04:53 [INFO] werkzeug - 127.0.0.1 - - [18/May/2026 22:04:53] "POST /api/ask/pyme?tenant_slug=bodega&tenant=bodega HTTP/1.1" 200 -
-2026-05-18 22:06:28 [INFO] werkzeug - 127.0.0.1 - - [18/May/2026 22:06:28] "OPTIONS /api/pwa/anon-id HTTP/1.1" 200 -
-2026-05-18 22:06:29 [INFO] werkzeug - 127.0.0.1 - - [18/May/2026 22:06:29] "GET /api/pwa/anon-id HTTP/1.1" 200 -
-2026-05-18 22:06:36 [INFO] werkzeug - 127.0.0.1 - - [18/May/2026 22:06:36] "POST /api/v2/demo/session HTTP/1.1" 200 -
-2026-05-18 22:06:36 [INFO] werkzeug - 127.0.0.1 - - [18/May/2026 22:06:36] "GET /api/v2/demo/whatsapp-sandbox?sector=gobierno&rubro=municipio&source=public_demo_profile HTTP/1.1" 200 -
-2026-05-18 22:07:04 [INFO] werkzeug - 127.0.0.1 - - [18/May/2026 22:07:04] "OPTIONS /api/pwa/anon-id HTTP/1.1" 200 -
-2026-05-18 22:07:05 [INFO] werkzeug - 127.0.0.1 - - [18/May/2026 22:07:05] "GET /api/pwa/anon-id HTTP/1.1" 200 -
-2026-05-18 22:07:14 [INFO] werkzeug - 127.0.0.1 - - [18/May/2026 22:07:14] "GET /api/v2/demo/whatsapp-sandbox?sector=gobierno&rubro=municipio&source=public_demo_profile HTTP/1.1" 200 -
-2026-05-18 22:07:14 [INFO] werkzeug - 127.0.0.1 - - [18/May/2026 22:07:14] "POST /api/v2/demo/session HTTP/1.1" 200 -
-2026-05-18 22:09:00 [INFO] werkzeug - 127.0.0.1 - - [18/May/2026 22:09:00] "[35m[1mOPTIONS /api/ask/municipio?tenant=municipio&tenant_slug=municipio HTTP/1.1[0m" 204 -
-2026-05-18 22:09:00 [INFO] werkzeug - 127.0.0.1 - - [18/May/2026 22:09:00] "[35m[1mOPTIONS /ask/municipio?tenant=municipio&tenant_slug=municipio HTTP/1.1[0m" 204 -
-2026-05-18 22:09:01 [INFO] app - Anonymous request to '/api/ask/municipio', loaded DEFAULT municipality owner user ID: 142
-2026-05-18 22:09:01 [INFO] app - Using chat session id from header:X-Chat-Session-Id: sid_20b43dda445fb9c4d48fc65ea09d0aa1
-2026-05-18 22:09:03 [INFO] app - No ChatSessionContext found for sid_20b43dda445fb9c4d48fc65ea09d0aa1. Creating new one.
-2026-05-18 22:09:03 [INFO] app - ChatSessionContext inicial guardado para sid_20b43dda445fb9c4d48fc65ea09d0aa1 (commit temprano).
-2026-05-18 22:09:04 [INFO] app - Usuario anónimo a4846cea-6d0c-4226-8e6f-eec89fda4fe7: 0 mensajes en la sesión actual (límite: 5).
-2026-05-18 22:09:12 [INFO] app - Usando Rubro ID 10 ('Municipio Inteligente') perteneciente a User ID 142 para la lógica del bot.
-2026-05-18 22:09:12 [INFO] app - Usando Chat Session ID resuelto previamente (header:X-Chat-Session-Id): sid_20b43dda445fb9c4d48fc65ea09d0aa1
-2026-05-18 22:09:12 [INFO] app - ChatSessionContext cargado. User_id: None, Anon_id: a4846cea-6d0c-4226-8e6f-eec89fda4fe7
-2026-05-18 22:09:14 [INFO] app - Emitted socket event 'message' to room sid_20b43dda445fb9c4d48fc65ea09d0aa1
-2026-05-18 22:09:14 [INFO] app - WIDGET_REQ path=/api/ask/municipio user_id=142 tenant=municipio entity_token=d2bb5549-df31-4901-b21f-1683c43499c4 status=200
-2026-05-18 22:09:14 [INFO] werkzeug - 127.0.0.1 - - [18/May/2026 22:09:14] "POST /api/ask/municipio?tenant=municipio&tenant_slug=municipio HTTP/1.1" 200 -
-2026-05-18 22:13:29 [INFO] werkzeug - 127.0.0.1 - - [18/May/2026 22:13:29] "OPTIONS /api/pwa/anon-id HTTP/1.1" 200 -
-2026-05-18 22:13:30 [INFO] werkzeug - 127.0.0.1 - - [18/May/2026 22:13:30] "GET /api/pwa/anon-id HTTP/1.1" 200 -
-2026-05-18 22:13:37 [INFO] werkzeug - 127.0.0.1 - - [18/May/2026 22:13:37] "POST /api/v2/demo/session HTTP/1.1" 200 -
-2026-05-18 22:13:38 [INFO] werkzeug - 127.0.0.1 - - [18/May/2026 22:13:38] "GET /api/v2/demo/whatsapp-sandbox?sector=gobierno&rubro=municipio&source=public_demo_profile HTTP/1.1" 200 -
-2026-05-18 22:13:42 [INFO] werkzeug - 127.0.0.1 - - [18/May/2026 22:13:42] "GET /api/health HTTP/1.1" 200 -
+2026-05-18 22:53:29 [INFO] werkzeug - [33mPress CTRL+C to quit[0m
+2026-05-18 22:53:32 [INFO] werkzeug - 127.0.0.1 - - [18/May/2026 22:53:32] "GET /api/health HTTP/1.1" 200 -
+2026-05-18 22:53:52 [INFO] werkzeug - 127.0.0.1 - - [18/May/2026 22:53:52] "GET /api/health HTTP/1.1" 200 -
+2026-05-18 22:54:14 [INFO] werkzeug - 127.0.0.1 - - [18/May/2026 22:54:14] "POST /api/v2/demo/session HTTP/1.1" 200 -
+2026-05-18 22:54:15 [INFO] app - Anonymous request to '/api/ask/municipio', loaded DEFAULT municipality owner user ID: 142
+2026-05-18 22:54:15 [INFO] app - Using chat session id from header:X-Chat-Session-Id: sid_6cce124a1a3700e8078778fab0fedb15
+2026-05-18 22:54:17 [INFO] app - No ChatSessionContext found for sid_6cce124a1a3700e8078778fab0fedb15. Creating new one.
+2026-05-18 22:54:18 [INFO] app - ChatSessionContext inicial guardado para sid_6cce124a1a3700e8078778fab0fedb15 (commit temprano).
+2026-05-18 22:54:19 [INFO] app - Usuario anónimo c3126327cd7d4c0e8bdd64b6ca40bb92: 0 mensajes en la sesión actual (límite: 5).
+2026-05-18 22:54:32 [INFO] app - Usando Rubro ID 10 ('Municipio Inteligente') perteneciente a User ID 142 para la lógica del bot.
+2026-05-18 22:54:32 [INFO] app - Usando Chat Session ID resuelto previamente (header:X-Chat-Session-Id): sid_6cce124a1a3700e8078778fab0fedb15
+2026-05-18 22:54:32 [INFO] app - ChatSessionContext cargado. User_id: None, Anon_id: c3126327cd7d4c0e8bdd64b6ca40bb92
+2026-05-18 22:54:33 [INFO] app - Emitted socket event 'message' to room sid_6cce124a1a3700e8078778fab0fedb15
+2026-05-18 22:54:33 [INFO] app - WIDGET_REQ path=/api/ask/municipio user_id=142 tenant=municipio entity_token=d2bb5549-df31-4901-b21f-1683c43499c4 status=200
+2026-05-18 22:54:33 [INFO] werkzeug - 127.0.0.1 - - [18/May/2026 22:54:33] "POST /api/ask/municipio?tenant=municipio&tenant_slug=municipio HTTP/1.1" 200 -
+2026-05-18 22:54:34 [INFO] app - Anonymous request to '/api/ask/municipio', loaded DEFAULT municipality owner user ID: 142
+2026-05-18 22:54:34 [INFO] app - Using chat session id from header:X-Chat-Session-Id: sid_6cce124a1a3700e8078778fab0fedb15
+2026-05-18 22:54:36 [INFO] app - Usuario anónimo a50cc5448fea417fa9e1fd7743f967ac: 0 mensajes en la sesión actual (límite: 5).
+2026-05-18 22:54:43 [INFO] app - Usando Rubro ID 10 ('Municipio Inteligente') perteneciente a User ID 142 para la lógica del bot.
+2026-05-18 22:54:43 [INFO] app - Usando Chat Session ID resuelto previamente (header:X-Chat-Session-Id): sid_6cce124a1a3700e8078778fab0fedb15
+2026-05-18 22:54:43 [INFO] app - ChatSessionContext cargado. User_id: None, Anon_id: c3126327cd7d4c0e8bdd64b6ca40bb92
+2026-05-18 22:54:43 [INFO] app - WIDGET_REQ path=/api/ask/municipio user_id=142 tenant=municipio entity_token=d2bb5549-df31-4901-b21f-1683c43499c4 status=200
+2026-05-18 22:54:44 [INFO] werkzeug - 127.0.0.1 - - [18/May/2026 22:54:44] "POST /api/ask/municipio?tenant=municipio&tenant_slug=municipio HTTP/1.1" 200 -
+2026-05-18 22:55:00 [INFO] werkzeug - 127.0.0.1 - - [18/May/2026 22:55:00] "POST /api/v2/demo/session HTTP/1.1" 200 -
+2026-05-18 22:55:01 [INFO] app - Using chat session id from header:X-Chat-Session-Id: sid_7625f0b0f2b29f3a3a9d499c3fd1c585
+2026-05-18 22:55:02 [INFO] app - No ChatSessionContext found for sid_7625f0b0f2b29f3a3a9d499c3fd1c585. Creating new one.
+2026-05-18 22:55:03 [INFO] app - ChatSessionContext inicial guardado para sid_7625f0b0f2b29f3a3a9d499c3fd1c585 (commit temprano).
+2026-05-18 22:55:05 [INFO] app - Usuario anónimo dc3b48804d6b423d98e73ac5af471d96: 0 mensajes en la sesión actual (límite: 5).
+2026-05-18 22:55:07 [INFO] app - No se pudo determinar un rubro/owner específico para la lógica del bot. Se usará lógica genérica si aplica (ej. para rubros públicos por defecto).
+2026-05-18 22:55:07 [INFO] app - Usando Chat Session ID resuelto previamente (header:X-Chat-Session-Id): sid_7625f0b0f2b29f3a3a9d499c3fd1c585
+2026-05-18 22:55:07 [INFO] app - ChatSessionContext cargado. User_id: None, Anon_id: dc3b48804d6b423d98e73ac5af471d96
+2026-05-18 22:55:08 [INFO] app - Emitted socket event 'message' to room sid_7625f0b0f2b29f3a3a9d499c3fd1c585
+2026-05-18 22:55:08 [INFO] app - WIDGET_REQ path=/api/ask/pyme user_id=None tenant=None entity_token=None status=200
+2026-05-18 22:55:08 [INFO] werkzeug - 127.0.0.1 - - [18/May/2026 22:55:08] "POST /api/ask/pyme?tenant=qa-colegio-sandbox&tenant_slug=qa-colegio-sandbox HTTP/1.1" 200 -
+2026-05-18 22:55:08 [INFO] app - Using chat session id from header:X-Chat-Session-Id: sid_7625f0b0f2b29f3a3a9d499c3fd1c585
+2026-05-18 22:55:11 [INFO] app - Usuario anónimo bfca986ef1c14d019116902c32b883ec: 0 mensajes en la sesión actual (límite: 5).
+2026-05-18 22:55:11 [INFO] app - No se pudo determinar un rubro/owner específico para la lógica del bot. Se usará lógica genérica si aplica (ej. para rubros públicos por defecto).
+2026-05-18 22:55:11 [INFO] app - Usando Chat Session ID resuelto previamente (header:X-Chat-Session-Id): sid_7625f0b0f2b29f3a3a9d499c3fd1c585
+2026-05-18 22:55:11 [INFO] app - ChatSessionContext cargado. User_id: None, Anon_id: dc3b48804d6b423d98e73ac5af471d96
+2026-05-18 22:55:11 [INFO] app - WIDGET_REQ path=/api/ask/pyme user_id=None tenant=None entity_token=None status=200
+2026-05-18 22:55:12 [INFO] werkzeug - 127.0.0.1 - - [18/May/2026 22:55:12] "POST /api/ask/pyme?tenant=qa-colegio-sandbox&tenant_slug=qa-colegio-sandbox HTTP/1.1" 200 -
+2026-05-18 22:55:13 [INFO] werkzeug - 127.0.0.1 - - [18/May/2026 22:55:13] "POST /api/v2/demo/session HTTP/1.1" 200 -
+2026-05-18 22:55:14 [INFO] app - Using chat session id from header:X-Chat-Session-Id: sid_5e9327c0df44eec04ac48947b7560d27
+2026-05-18 22:55:15 [INFO] app - No ChatSessionContext found for sid_5e9327c0df44eec04ac48947b7560d27. Creating new one.
+2026-05-18 22:55:15 [INFO] app - ChatSessionContext inicial guardado para sid_5e9327c0df44eec04ac48947b7560d27 (commit temprano).
+2026-05-18 22:55:16 [INFO] app - Usuario anónimo 0c892f564b614b0a9318a9f8fbda2a11: 0 mensajes en la sesión actual (límite: 5).
+2026-05-18 22:55:24 [INFO] app - Usando Rubro ID 2 ('Bodegas y Vinos') perteneciente a User ID 2 para la lógica del bot.
+2026-05-18 22:55:24 [INFO] app - Usando Chat Session ID resuelto previamente (header:X-Chat-Session-Id): sid_5e9327c0df44eec04ac48947b7560d27
+2026-05-18 22:55:24 [INFO] app - ChatSessionContext cargado. User_id: None, Anon_id: 0c892f564b614b0a9318a9f8fbda2a11
+2026-05-18 22:55:24 [INFO] app - Emitted socket event 'message' to room sid_5e9327c0df44eec04ac48947b7560d27
+2026-05-18 22:55:24 [INFO] app - WIDGET_REQ path=/api/ask/pyme user_id=None tenant=None entity_token=None status=200
+2026-05-18 22:55:24 [INFO] werkzeug - 127.0.0.1 - - [18/May/2026 22:55:24] "POST /api/ask/pyme?tenant=bodega&tenant_slug=bodega HTTP/1.1" 200 -
+2026-05-18 22:55:25 [INFO] app - Using chat session id from header:X-Chat-Session-Id: sid_5e9327c0df44eec04ac48947b7560d27
+2026-05-18 22:55:27 [INFO] app - Usuario anónimo 43df3ba2184441808cf18b4a386211d5: 0 mensajes en la sesión actual (límite: 5).
+2026-05-18 22:55:35 [INFO] app - Usando Rubro ID 2 ('Bodegas y Vinos') perteneciente a User ID 2 para la lógica del bot.
+2026-05-18 22:55:35 [INFO] app - Usando Chat Session ID resuelto previamente (header:X-Chat-Session-Id): sid_5e9327c0df44eec04ac48947b7560d27
+2026-05-18 22:55:35 [INFO] app - ChatSessionContext cargado. User_id: None, Anon_id: 0c892f564b614b0a9318a9f8fbda2a11
+2026-05-18 22:55:35 [INFO] app - WIDGET_REQ path=/api/ask/pyme user_id=None tenant=None entity_token=None status=200
+2026-05-18 22:55:35 [INFO] werkzeug - 127.0.0.1 - - [18/May/2026 22:55:35] "POST /api/ask/pyme?tenant=bodega&tenant_slug=bodega HTTP/1.1" 200 -
+2026-05-18 22:56:48 [INFO] werkzeug - 127.0.0.1 - - [18/May/2026 22:56:48] "POST /api/v2/demo/session HTTP/1.1" 200 -
+2026-05-18 22:56:49 [INFO] app - Anonymous request to '/api/ask/municipio', loaded DEFAULT municipality owner user ID: 142
+2026-05-18 22:56:49 [INFO] app - Using chat session id from header:X-Chat-Session-Id: sid_2844ebc13c4903f246871ddc9ef874a5
+2026-05-18 22:56:51 [INFO] app - No ChatSessionContext found for sid_2844ebc13c4903f246871ddc9ef874a5. Creating new one.
+2026-05-18 22:56:51 [INFO] app - ChatSessionContext inicial guardado para sid_2844ebc13c4903f246871ddc9ef874a5 (commit temprano).
+2026-05-18 22:56:52 [INFO] app - Usuario anónimo 150ee1db9a854ba09576824977371e3a: 0 mensajes en la sesión actual (límite: 5).
+2026-05-18 22:57:02 [INFO] app - Usando Rubro ID 10 ('Municipio Inteligente') perteneciente a User ID 142 para la lógica del bot.
+2026-05-18 22:57:02 [INFO] app - Usando Chat Session ID resuelto previamente (header:X-Chat-Session-Id): sid_2844ebc13c4903f246871ddc9ef874a5
+2026-05-18 22:57:02 [INFO] app - ChatSessionContext cargado. User_id: None, Anon_id: 150ee1db9a854ba09576824977371e3a
+2026-05-18 22:57:02 [INFO] app - Emitted socket event 'message' to room sid_2844ebc13c4903f246871ddc9ef874a5
+2026-05-18 22:57:03 [INFO] app - WIDGET_REQ path=/api/ask/municipio user_id=142 tenant=municipio entity_token=d2bb5549-df31-4901-b21f-1683c43499c4 status=200
+2026-05-18 22:57:03 [INFO] werkzeug - 127.0.0.1 - - [18/May/2026 22:57:03] "POST /api/ask/municipio?tenant=municipio&tenant_slug=municipio HTTP/1.1" 200 -
+2026-05-18 22:57:20 [INFO] werkzeug - 127.0.0.1 - - [18/May/2026 22:57:20] "POST /api/v2/demo/session HTTP/1.1" 200 -
+2026-05-18 22:57:21 [INFO] app - Anonymous request to '/api/ask/municipio', loaded DEFAULT municipality owner user ID: 142
+2026-05-18 22:57:21 [INFO] app - Using chat session id from header:X-Chat-Session-Id: sid_ca5352d6145a89ab13768539dded28b0
+2026-05-18 22:57:22 [INFO] app - No ChatSessionContext found for sid_ca5352d6145a89ab13768539dded28b0. Creating new one.
+2026-05-18 22:57:22 [INFO] app - ChatSessionContext inicial guardado para sid_ca5352d6145a89ab13768539dded28b0 (commit temprano).
+2026-05-18 22:57:23 [INFO] app - Usuario anónimo 2a9bdf8d7392491eb9b181c655b392a6: 0 mensajes en la sesión actual (límite: 5).
+2026-05-18 22:57:31 [INFO] app - Usando Rubro ID 10 ('Municipio Inteligente') perteneciente a User ID 142 para la lógica del bot.
+2026-05-18 22:57:31 [INFO] app - Usando Chat Session ID resuelto previamente (header:X-Chat-Session-Id): sid_ca5352d6145a89ab13768539dded28b0
+2026-05-18 22:57:31 [INFO] app - ChatSessionContext cargado. User_id: None, Anon_id: 2a9bdf8d7392491eb9b181c655b392a6
+2026-05-18 22:57:32 [INFO] app - Emitted socket event 'message' to room sid_ca5352d6145a89ab13768539dded28b0
+2026-05-18 22:57:32 [INFO] app - WIDGET_REQ path=/api/ask/municipio user_id=142 tenant=municipio entity_token=d2bb5549-df31-4901-b21f-1683c43499c4 status=200
+2026-05-18 22:57:33 [INFO] werkzeug - 127.0.0.1 - - [18/May/2026 22:57:33] "POST /api/ask/municipio?tenant=municipio&tenant_slug=municipio HTTP/1.1" 200 -
+2026-05-18 22:57:33 [INFO] app - Anonymous request to '/api/ask/municipio', loaded DEFAULT municipality owner user ID: 142
+2026-05-18 22:57:33 [INFO] app - Using chat session id from header:X-Chat-Session-Id: sid_ca5352d6145a89ab13768539dded28b0
+2026-05-18 22:57:37 [INFO] app - Usuario anónimo aaf93ac704b74ab988b9551c483f169d: 0 mensajes en la sesión actual (límite: 5).
+2026-05-18 22:57:45 [INFO] app - Usando Rubro ID 10 ('Municipio Inteligente') perteneciente a User ID 142 para la lógica del bot.
+2026-05-18 22:57:45 [INFO] app - Usando Chat Session ID resuelto previamente (header:X-Chat-Session-Id): sid_ca5352d6145a89ab13768539dded28b0
+2026-05-18 22:57:45 [INFO] app - ChatSessionContext cargado. User_id: None, Anon_id: 2a9bdf8d7392491eb9b181c655b392a6
+2026-05-18 22:57:45 [INFO] app - WIDGET_REQ path=/api/ask/municipio user_id=142 tenant=municipio entity_token=d2bb5549-df31-4901-b21f-1683c43499c4 status=200
+2026-05-18 22:57:45 [INFO] werkzeug - 127.0.0.1 - - [18/May/2026 22:57:45] "POST /api/ask/municipio?tenant=municipio&tenant_slug=municipio HTTP/1.1" 200 -

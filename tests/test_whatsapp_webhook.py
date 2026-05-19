@@ -6,6 +6,10 @@ import json
 import time
 import copy
 
+os.environ.setdefault("FLASK_SKIP_GLOBAL_APP", "1")
+os.environ.setdefault("TESTING", "1")
+os.environ.setdefault("SKIP_INIT_TENANTS", "1")
+
 from flask import g
 
 # Añadir el directorio raíz del proyecto al sys.path
@@ -15,12 +19,15 @@ if project_root_whatsapp not in sys.path:
 
 from app import create_app, db
 from config import Config
-from models import User, Rubro, WhatsappNumero, ChatSessionContext
+from models import User, Rubro, WhatsappNumero, ChatSessionContext, PymeTicket, TenantProfile
+from models_memory import Contact, InteractionEvent
 from services.municipio_responder import CONTEXTO_MUNICIPIO
 from routes.whatsapp_webhook import (
     _send_delayed_payload,
     _strip_duplicate_welcome_media,
     _reset_municipio_context_for_menu,
+    CHATBOC_DEMO_DEFAULT_WHATSAPP_NUMBER,
+    CHATBOC_DEMO_TENANT_SLUG,
 )
 # Moved model imports after app and config to ensure they are found via sys.path
 # and to avoid potential issues if models.py itself tries to import app-context related things early.
@@ -31,6 +38,11 @@ class TestConfig(Config):
     TESTING = True
     SQLALCHEMY_DATABASE_URI = 'sqlite:///:memory:' # Use in-memory SQLite for tests
     WTF_CSRF_ENABLED = False
+    ENABLE_RUNTIME_SCHEMA_SYNC = False
+    ENABLE_RUNTIME_TENANT_INIT = False
+    SKIP_INIT_TENANTS = True
+    CHATBOC_DEMO_WHATSAPP_NUMBERS = "+19999999999"
+    CHATBOC_DEMO_MAX_MESSAGES = 10
     TWILIO_ACCOUNT_SID = "ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxx_test" # Mock SID
     TWILIO_AUTH_TOKEN = "your_auth_token_test" # Mock Token
     # TWILIO_NUMEROS_JSON is no longer used
@@ -158,9 +170,14 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self.assertNotIn("pending_sensitive_action", session.context_data)
 
     @patch("routes.whatsapp_webhook.responder_chatboc")
-    def test_sensitive_numeric_menu_option_requires_explicit_confirmation(self, mock_bot):
+    def test_claim_numeric_menu_option_starts_without_extra_confirmation(self, mock_bot):
         self._set_owner_tipo_chat("municipio")
         self.mock_validator.validate.return_value = True
+        mock_bot.return_value = {
+            "message_body": "Elegí una categoría para tu reclamo.",
+            "message_type": "text",
+            "options_list": [],
+        }
 
         self._create_confirmed_session()
         session = ChatSessionContext.query.filter_by(
@@ -185,15 +202,85 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data.decode(), "OK")
 
-        mock_bot.assert_not_called()
+        mock_bot.assert_called_once()
         self.assertGreaterEqual(self.mock_twilio_create.call_count, 1)
         sent_body = self.mock_twilio_create.call_args.kwargs.get("body", "")
-        self.assertIn("confirmame por favor", sent_body.lower())
-        self.assertIn("iniciar desde cero", sent_body.lower())
+        self.assertNotIn("confirmame por favor", sent_body.lower())
 
         db.session.refresh(session)
-        pending = session.context_data.get("pending_sensitive_action") or {}
-        self.assertEqual(pending.get("action_id"), "iniciar_reclamo")
+        self.assertNotIn("pending_sensitive_action", session.context_data)
+
+    @patch("routes.whatsapp_webhook.responder_chatboc")
+    def test_chatboc_demo_number_routes_to_platform_hub_and_records_lead(self, mock_bot):
+        self.mock_validator.validate.return_value = True
+
+        payload = {
+            "To": f"whatsapp:{CHATBOC_DEMO_DEFAULT_WHATSAPP_NUMBER}",
+            "From": "whatsapp:+5492613168608",
+            "Body": "hola",
+            "ProfileName": "Marcelo",
+            "MessageSid": "SM_CHATBOC_DEMO_1",
+        }
+        headers = {"X-Twilio-Signature": "dummy_signature_valid"}
+
+        response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data.decode(), "OK")
+        mock_bot.assert_not_called()
+
+        mapping = WhatsappNumero.query.filter_by(
+            numero_whatsapp=CHATBOC_DEMO_DEFAULT_WHATSAPP_NUMBER
+        ).first()
+        self.assertIsNotNone(mapping)
+        self.assertTrue(mapping.is_active)
+        self.assertEqual(mapping.user.rol, "super_admin")
+
+        tenant = TenantProfile.query.filter_by(slug=CHATBOC_DEMO_TENANT_SLUG).first()
+        self.assertIsNotNone(tenant)
+        self.assertTrue((tenant.configuracion or {}).get("whatsapp_demo_hub"))
+
+        contact = User.query.filter_by(
+            telefono="+5492613168608",
+            empresa_id=mapping.user_id,
+        ).first()
+        self.assertIsNotNone(contact)
+        self.assertIn("chatboc_demo", contact.tags)
+
+        ticket = PymeTicket.query.filter_by(categoria="chatboc_demo_lead").first()
+        self.assertIsNotNone(ticket)
+        self.assertEqual(ticket.telefono, "+5492613168608")
+
+        crm_contact = Contact.query.filter_by(
+            tenant_id=tenant.id,
+            phone="+5492613168608",
+        ).first()
+        self.assertIsNotNone(crm_contact)
+        self.assertIn("chatboc_demo", crm_contact.tags)
+        self.assertEqual((crm_contact.preferences or {}).get("marketing_consent_status"), "unknown")
+
+        interaction = InteractionEvent.query.filter_by(
+            tenant_id=tenant.id,
+            contact_id=crm_contact.id,
+            channel="whatsapp",
+            direction="inbound",
+        ).first()
+        self.assertIsNotNone(interaction)
+        self.assertEqual((interaction.metadata_payload or {}).get("event_type"), "chatboc_demo_inbound")
+
+        session = ChatSessionContext.query.filter_by(
+            chat_session_id=f"whatsapp_{mapping.user_id}_+5492613168608"
+        ).first()
+        self.assertIsNotNone(session)
+        self.assertEqual((session.context_data or {}).get("estado_conversacion"), "chatboc_demo_hub")
+        self.assertEqual(((session.context_data or {}).get("chatboc_demo_usage") or {}).get("message_count"), 1)
+
+        sent_bodies = [
+            str(call.kwargs.get("body") or "")
+            for call in self.mock_twilio_create.call_args_list
+        ]
+        self.assertTrue(any("Chatboc.ar" in body for body in sent_bodies))
+        self.assertTrue(any("Demo municipios" in body for body in sent_bodies))
 
     @patch('routes.whatsapp_webhook.threading.Timer')
     @patch('services.response_formatter.build_interactive_response')

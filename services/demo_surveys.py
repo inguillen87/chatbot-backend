@@ -611,18 +611,24 @@ def build_demo_survey_chat_menu(
     labels = _sector_labels(contract["sector"])
     is_whatsapp = "whatsapp" in str(channel or "").lower()
     lines = [f"*{labels['heading']}*"]
-    lines.append("Cada demo trae 100 respuestas sinteticas para ver resultados reales de UX.")
+    if is_whatsapp:
+        lines.append("Incluye 100 respuestas demo y resultados en vivo.")
+    else:
+        lines.append("Cada demo trae 100 respuestas sinteticas para ver resultados reales de UX.")
     for index, item in enumerate(contract.get("items") or [], start=1):
         title = item.get("titulo") or item.get("slug")
         public_url = item.get("public_url")
         share_url = item.get("whatsapp_share_url")
         lines.append(f"{index}. *{title}*")
-        if item.get("descripcion"):
+        if item.get("descripcion") and not is_whatsapp:
             lines.append(f"   {item['descripcion']}")
         if public_url:
             lines.append(f"   Abrir: {public_url}")
+        if is_whatsapp and public_url:
+            share_url = f"https://wa.me/?text={quote_plus(str(public_url))}"
         if share_url:
-            lines.append(f"   Compartir por WhatsApp: {share_url}")
+            share_label = "Compartir" if is_whatsapp else "Compartir por WhatsApp"
+            lines.append(f"   {share_label}: {share_url}")
 
     options: list[dict[str, Any]] = []
     if not is_whatsapp:

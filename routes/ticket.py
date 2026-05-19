@@ -356,8 +356,19 @@ def _get_allowed_municipio_id(current_user: User) -> Optional[int]:
 def _get_allowed_municipio_ids(current_user: User) -> list[int]:
     tenant, tenant_municipio_id, _tenant_pyme_id = _resolve_tenant_scope(current_user)
     allowed_ids: list[int] = []
-    if current_user.municipio_id:
-        allowed_ids.append(current_user.municipio_id)
+    for candidate in (
+        getattr(current_user, "municipio_id", None),
+        getattr(current_user, "empresa_id", None),
+    ):
+        if candidate and candidate not in allowed_ids:
+            allowed_ids.append(candidate)
+    if (
+        getattr(current_user, "tipo_chat", None) == "municipio"
+        and getattr(current_user, "rol", None) == "admin"
+        and getattr(current_user, "id", None)
+        and current_user.id not in allowed_ids
+    ):
+        allowed_ids.append(current_user.id)
     if _authorized_for_tenant_scope(current_user, tenant) and tenant_municipio_id:
         if tenant_municipio_id not in allowed_ids:
             allowed_ids.append(tenant_municipio_id)
@@ -368,7 +379,7 @@ def _is_municipio_agent(current_user: User) -> bool:
     tenant, tenant_municipio_id, _tenant_pyme_id = _resolve_tenant_scope(current_user)
     if _authorized_for_tenant_scope(current_user, tenant) and tenant_municipio_id:
         return True
-    return current_user.tipo_chat == "municipio" and bool(current_user.municipio_id)
+    return current_user.tipo_chat == "municipio" and bool(_get_allowed_municipio_ids(current_user))
 
 
 @ticket_bp.route('/tickets/estados', methods=['GET'])
@@ -454,6 +465,60 @@ def _generate_friendly_ticket_id(ticket, ticket_type_str):
     return f"{prefix}-{ticket_number}"
 
 
+def _clean_display_value(value):
+    if value is None:
+        return None
+    if isinstance(value, str):
+        trimmed = value.strip()
+        if not trimmed or trimmed.lower() in {
+            "no especificado",
+            "no especificada",
+            "n/a",
+            "none",
+            "null",
+            "-",
+        }:
+            return None
+        return trimmed
+    return value
+
+
+def _ticket_location_payload(ticket, fallback_address=None):
+    address = (
+        _clean_display_value(getattr(ticket, "direccion", None))
+        or _clean_display_value(fallback_address)
+    )
+    district = _clean_display_value(getattr(ticket, "distrito", None))
+    lat = getattr(ticket, "latitud", None)
+    lng = getattr(ticket, "longitud", None)
+    has_coordinates = lat is not None and lng is not None
+    map_search_url = (
+        f"https://www.google.com/maps/search/?api=1&query={lat},{lng}"
+        if has_coordinates
+        else None
+    )
+    coordinates = {"lat": lat, "lng": lng} if has_coordinates else None
+
+    return {
+        "direccion": address or "No especificada",
+        "address": address,
+        "distrito": district,
+        "latitud": lat,
+        "longitud": lng,
+        "coordinates": coordinates,
+        "map_search_url": map_search_url,
+        "has_location": bool(address or has_coordinates),
+        "location": {
+            "address": address,
+            "district": district,
+            "lat": lat,
+            "lng": lng,
+            "map_search_url": map_search_url,
+            "has_location": bool(address or has_coordinates),
+        },
+    }
+
+
 def serialize_ticket_to_json(ticket, ticket_type):
     """
     Serializa un objeto de ticket a un diccionario JSON con el formato
@@ -505,6 +570,7 @@ def serialize_ticket_to_json(ticket, ticket_type):
     estado_serializado = "resuelto" if estado_original == "cerrado" else estado_original
     categoria_ticket = getattr(ticket, "categoria", None) or "Sin categoría"
     categoria_normalizada = normalize_category(categoria_ticket) or categoria_ticket
+    location_payload = _ticket_location_payload(ticket, user_data.get("direccion"))
 
     serialized_data = {
         "id": ticket.id,
@@ -514,10 +580,15 @@ def serialize_ticket_to_json(ticket, ticket_type):
         "estado": estado_serializado,
         "fecha": datetime_to_iso_utc(ticket.fecha),
         "categoria": categoria_normalizada,
-        "direccion": user_data.get("direccion", "No especificada"),
-        "distrito": getattr(ticket, 'distrito', None),
-        "latitud": getattr(ticket, 'latitud', None),
-        "longitud": getattr(ticket, 'longitud', None),
+        "direccion": location_payload["direccion"],
+        "distrito": location_payload["distrito"],
+        "latitud": location_payload["latitud"],
+        "longitud": location_payload["longitud"],
+        "coordinates": location_payload["coordinates"],
+        "map_search_url": location_payload["map_search_url"],
+        "has_location": location_payload["has_location"],
+        "location": location_payload["location"],
+        "ubicacion_geografica": location_payload,
         "nombre_usuario": user_data.get("nombre", "No especificado"),
         "email": user_data.get("email", "No especificado"),
         "telefono": user_data.get("telefono", "No especificado"),
@@ -1004,6 +1075,7 @@ def _serialize_ticket_details(ticket, ticket_type):
 
     assigned_user = getattr(ticket, "asignado_a", None)
     operational_hints = _build_ticket_operational_badges(ticket)
+    location_payload = _ticket_location_payload(ticket, user_data["direccion"])
 
     ticket_data = {
         "id": ticket.id,
@@ -1021,14 +1093,16 @@ def _serialize_ticket_details(ticket, ticket_type):
         "telefono_contacto": user_data["telefono"],
         "mail_contacto": user_data["email"],
         "dni": user_data["dni"],
-        "direccion_exacta_aproximada": user_data["direccion"],
+        "direccion_exacta_aproximada": location_payload["direccion"],
+        "direccion": location_payload["direccion"],
+        "latitud": location_payload["latitud"],
+        "longitud": location_payload["longitud"],
+        "coordinates": location_payload["coordinates"],
+        "map_search_url": location_payload["map_search_url"],
+        "has_location": location_payload["has_location"],
+        "location": location_payload["location"],
         "archivos_adjuntos": archivos_adjuntos_data,
-        "ubicacion_geografica": {
-            "latitud": getattr(ticket, 'latitud', None),
-            "longitud": getattr(ticket, 'longitud', None),
-            "distrito": getattr(ticket, 'distrito', None),
-            "direccion": getattr(ticket, 'direccion', None),
-        },
+        "ubicacion_geografica": location_payload,
         "canal_ingreso": canal_ingreso_valor,
         "channel": canal_normalizado,
         "contacto_seguimiento": getattr(ticket, 'contacto_seguimiento', None),
@@ -1119,6 +1193,7 @@ def _public_tracking_payload(ticket: MunicipioTicket) -> dict:
 
     fecha = getattr(ticket, "fecha", None)
     ultima_actividad = getattr(ticket, "ultima_actividad", None) or fecha
+    location_payload = _ticket_location_payload(ticket)
     return {
         "nro_ticket": f"M-{ticket.nro_ticket}",
         "estado": getattr(ticket, "estado", None),
@@ -1127,6 +1202,15 @@ def _public_tracking_payload(ticket: MunicipioTicket) -> dict:
         "canal_ingreso": getattr(ticket, "canal_ingreso", None),
         "fecha_creacion": datetime_to_iso_utc(fecha),
         "ultima_actualizacion": datetime_to_iso_utc(ultima_actividad),
+        "direccion": location_payload["direccion"],
+        "distrito": location_payload["distrito"],
+        "latitud": location_payload["latitud"],
+        "longitud": location_payload["longitud"],
+        "coordinates": location_payload["coordinates"],
+        "map_search_url": location_payload["map_search_url"],
+        "has_location": location_payload["has_location"],
+        "location": location_payload["location"],
+        "ubicacion_geografica": location_payload,
     }
 
 
@@ -1273,8 +1357,8 @@ def asignar_ticket(current_user: User, tipo: str, ticket_id: int):
         return jsonify({"error": "Ticket no encontrado."}), 404
 
     if tipo == "municipio":
-        municipio_owner_id = current_user.municipio_id or current_user.empresa_id
-        if current_user.tipo_chat != "municipio" or municipio_owner_id != ticket_obj.municipio_id:
+        allowed_municipio_ids = _get_allowed_municipio_ids(current_user)
+        if current_user.tipo_chat != "municipio" or ticket_obj.municipio_id not in allowed_municipio_ids:
             return jsonify({"error": "No tienes permiso para asignar este ticket."}), 403
     else:
         pyme_owner_id = current_user.id if current_user.rol == "admin" else current_user.empresa_id
@@ -1293,25 +1377,50 @@ def asignar_ticket(current_user: User, tipo: str, ticket_id: int):
         requested_user_id = current_user.id
         auto = False
 
-    if tipo == "municipio":
-        empleado_asignado = servicio_tickets.asignar_ticket_municipal(
-            ticket_obj,
-            empleado_id=requested_user_id,
-            auto=auto or requested_user_id is None,
-            actor_id=current_user.id,
+    try:
+        if tipo == "municipio":
+            empleado_asignado = servicio_tickets.asignar_ticket_municipal(
+                ticket_obj,
+                empleado_id=requested_user_id,
+                auto=auto or requested_user_id is None,
+                actor_id=current_user.id,
+            )
+        else:
+            empleado_asignado = servicio_tickets.asignar_ticket_pyme(
+                ticket_obj,
+                empleado_id=requested_user_id,
+                auto=auto or requested_user_id is None,
+                actor_id=current_user.id,
+            )
+    except Exception as exc:
+        db.session.rollback()
+        current_app.logger.exception(
+            "Error asignando ticket %s tipo %s a usuario %s",
+            ticket_id,
+            tipo,
+            requested_user_id,
         )
-    else:
-        empleado_asignado = servicio_tickets.asignar_ticket_pyme(
-            ticket_obj,
-            empleado_id=requested_user_id,
-            auto=auto or requested_user_id is None,
-            actor_id=current_user.id,
-        )
+        return jsonify({
+            "error": "No se pudo asignar el ticket.",
+            "detail": str(exc),
+        }), 500
 
     if not empleado_asignado:
         return jsonify({"error": "No se pudo asignar el ticket a un agente disponible."}), 400
 
-    db.session.commit()
+    try:
+        db.session.commit()
+    except Exception as exc:
+        db.session.rollback()
+        current_app.logger.exception(
+            "Error confirmando asignacion de ticket %s tipo %s",
+            ticket_id,
+            tipo,
+        )
+        return jsonify({
+            "error": "No se pudo guardar la asignacion del ticket.",
+            "detail": str(exc),
+        }), 500
     ticket_json = serialize_ticket_to_json(ticket_obj, tipo)
     assignment_payload = {
         **ticket_json,
@@ -1472,6 +1581,7 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
                 "user_id": current_user.id,
                 "es_admin": True,
                 "emit_notifications": False,
+                "emit_socket": False,
             },
         )
         if comentario_obj:
@@ -1491,6 +1601,7 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
                 "es_admin": True,
                 "archivo_adjunto_id": attachment_info.get('id'),
                 "emit_notifications": False,
+                "emit_socket": False,
             },
         )
         if file_comment_obj:
@@ -1513,6 +1624,7 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
                 "es_admin": True,
                 "archivo_adjunto_id": adjunto.id,
                 "emit_notifications": False,
+                "emit_socket": False,
             },
         )
         if file_comment_obj:
@@ -2203,7 +2315,8 @@ def responder_ciudadano_a_chat(current_user: User, ticket_id: int, anon_id: str 
             "comentario": comentario,
             "user_id": user_id_para_comentario,
             "anon_id": anon_id_para_comentario,
-            "es_admin": False
+            "es_admin": False,
+            "emit_socket": False,
         }
     )
     if nuevo_comentario:
@@ -2267,6 +2380,7 @@ def responder_cliente_a_chat(current_user: User, ticket_id: int):
             "comentario": data["comentario"],
             "user_id": current_user.id,
             "es_admin": False,
+            "emit_socket": False,
         },
     )
     if nuevo_comentario:
@@ -2807,10 +2921,11 @@ def send_ticket_history(current_user: User, tipo: str, ticket_id: int, anon_id: 
     pin = request.args.get("pin")
 
     if tipo == 'municipio':
+        allowed_municipio_ids = _get_allowed_municipio_ids(current_user) if current_user else []
         es_agente = (
             current_user
             and current_user.tipo_chat == "municipio"
-            and ticket_obj.municipio_id == getattr(current_user, "municipio_id", None)
+            and ticket_obj.municipio_id in allowed_municipio_ids
         )
         es_dueno = current_user and ticket_obj.user_id == current_user.id
         es_anon = anon_id and ticket_obj.anon_id == anon_id

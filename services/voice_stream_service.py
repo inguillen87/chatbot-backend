@@ -54,6 +54,7 @@ OPENAI_REALTIME_URL = os.environ.get(
 
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
+CHATBOC_DEMO_DEFAULT_WHATSAPP_NUMBER = "+18564858589"
 
 # WhatsApp (para resumen post-llamada)
 
@@ -96,6 +97,7 @@ class VoiceStreamService:
         self.from_number = None
         self.to_number = None
         self.source_chat_session_id = None
+        self.max_call_seconds = None
 
         self.user = None
         self.owner_user = None
@@ -126,6 +128,28 @@ class VoiceStreamService:
         if not n:
             return ""
         return str(n).replace("whatsapp:", "").strip()
+
+    def _configured_chatboc_demo_numbers(self) -> set[str]:
+        raw_numbers = os.environ.get("CHATBOC_DEMO_WHATSAPP_NUMBERS") or ""
+        candidates = [part for part in raw_numbers.replace(";", ",").split(",") if part.strip()]
+        candidates.append(CHATBOC_DEMO_DEFAULT_WHATSAPP_NUMBER)
+        return {self._normalize_phone(candidate) for candidate in candidates if self._normalize_phone(candidate)}
+
+    def _is_chatboc_demo_call(self) -> bool:
+        configured = self._configured_chatboc_demo_numbers()
+        return self._normalize_phone(self.from_number) in configured or self._normalize_phone(self.to_number) in configured
+
+    def _resolve_max_call_seconds(self, custom: dict | None = None) -> int | None:
+        custom = custom if isinstance(custom, dict) else {}
+        raw_value = custom.get("max_call_seconds")
+        if not raw_value and self._is_chatboc_demo_call():
+            raw_value = os.environ.get("CHATBOC_DEMO_VOICE_MAX_SECONDS") or "60"
+        if not raw_value:
+            return None
+        try:
+            return max(15, int(raw_value))
+        except (TypeError, ValueError):
+            return 60
 
     def _safe_end_call_twilio(self):
         """Corta la llamada usando la API de Twilio (más confiable que esperar al LLM)."""
@@ -1050,8 +1074,21 @@ class VoiceStreamService:
             self.from_number = custom.get("from_number") or data["start"].get("from") or data["start"].get("From")
             self.to_number = custom.get("to_number") or data["start"].get("to") or data["start"].get("To")
             self.source_chat_session_id = custom.get("chat_session_id") or custom.get("source_chat_session_id")
+            self.max_call_seconds = self._resolve_max_call_seconds(custom)
 
             logger.info(f"[VOICE] Stream started: {self.stream_sid} Call: {self.call_sid}")
+            if self.max_call_seconds:
+                try:
+                    import eventlet
+
+                    eventlet.spawn_after(self.max_call_seconds, self._safe_end_call_twilio)
+                    logger.info(
+                        "[VOICE] Max call duration armed for call %s: %ss",
+                        self.call_sid,
+                        self.max_call_seconds,
+                    )
+                except Exception as exc:
+                    logger.warning("[VOICE] Could not arm max call duration timer: %s", exc)
 
             app_ctx = self.app.app_context() if self.app else current_app.app_context()
             with app_ctx:

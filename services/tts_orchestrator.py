@@ -105,16 +105,34 @@ def generar_audio(
     text = sanitize_for_tts(text)
     logger.info(f"TTS Service: Attempting to generate audio for text: '{text[:50]}...'")
 
+    effective_speed = speed
+    if effective_speed is None:
+        speed_env = os.getenv("TTS_SPEECH_SPEED", "0.95")
+        try:
+            effective_speed = float(speed_env)
+        except (ValueError, TypeError):
+            effective_speed = 0.95
+
+    effective_voice = (
+        voice
+        or os.getenv("OPENAI_TTS_VOICE")
+        or os.getenv("OPENAI_TTS_DEFAULT_VOICE")
+        or os.getenv("OPENAI_TTS_FALLBACK_VOICE")
+        or "nova"
+    )
+    effective_model = model or os.getenv("OPENAI_TTS_MODEL")
+    effective_style = style or os.getenv("OPENAI_TTS_STYLE")
+
     cache_dir = "static/audio_cache"
     os.makedirs(cache_dir, exist_ok=True)
     cache_fingerprint = "|".join(
         [
             cache_namespace or "default",
             text,
-            str(voice or ""),
-            str(model or ""),
-            str(style or ""),
-            str(speed if speed is not None else ""),
+            str(effective_voice or ""),
+            str(effective_model or ""),
+            str(effective_style or ""),
+            str(effective_speed if effective_speed is not None else ""),
         ]
     )
     text_hash = hashlib.md5(cache_fingerprint.encode("utf-8")).hexdigest()
@@ -154,29 +172,12 @@ def generar_audio(
         from services.openai_tts_bridge import generar_audio_openai
 
         def _openai_provider(clean_text: str) -> str | None:
-            if speed is not None:
-                speech_speed = speed
-            else:
-                speed_env = os.getenv("TTS_SPEECH_SPEED", "0.8")
-                try:
-                    speech_speed = float(speed_env)
-                except (ValueError, TypeError):
-                    speech_speed = 0.8
-
-            selected_voice = (
-                voice
-                or os.getenv("OPENAI_TTS_VOICE")
-                or os.getenv("OPENAI_TTS_DEFAULT_VOICE")
-            )
-            selected_model = model or os.getenv("OPENAI_TTS_MODEL")
-            selected_style = style or os.getenv("OPENAI_TTS_STYLE")
-
             return generar_audio_openai(
                 clean_text,
-                speed=speech_speed,
-                voice=selected_voice,
-                model=selected_model,
-                style=selected_style,
+                speed=effective_speed or 0.95,
+                voice=effective_voice,
+                model=effective_model,
+                style=effective_style,
             )
 
         _register("openai", _openai_provider)

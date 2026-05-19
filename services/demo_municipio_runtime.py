@@ -8,6 +8,7 @@ from typing import Any
 from sqlalchemy.orm.attributes import flag_modified
 
 from models import ChatSessionContext, MunicipioTicket, TenantProfile, TicketComentario, User, db
+from services.demo_surveys import build_demo_survey_chat_menu
 
 
 DEMO_MUNICIPIO_SOURCE = "demo_municipio_runtime"
@@ -120,6 +121,9 @@ def _classify_demo_intent(
 
     if action in {"consultar_tramite", "info_tramite", "tramite", "tramites"}:
         return {"kind": "info", "category": "Tramites publicados"}
+
+    if action == "mostrar_menu_encuestas" or action.startswith("mostrar_menu_encuestas::"):
+        return {"kind": "survey", "category": "Participacion ciudadana"}
 
     if any(token in text for token in ("licencia", "registro", "carnet", "turno")):
         return {"kind": "info", "category": "Licencias de conducir"}
@@ -411,25 +415,57 @@ def _response_for_handoff() -> dict[str, Any]:
     }
 
 
-def _response_for_survey() -> dict[str, Any]:
-    message = (
-        "En una demo de municipio puedo abrir una encuesta o votacion y guardar respuestas trazables. "
-        "Decime el tema y las opciones para publicarla en modo prueba."
+def _response_for_survey(
+    *,
+    owner_user: User | None = None,
+    chat_session_id: str | None = None,
+    demo_session_payload: dict[str, Any] | None = None,
+    action_id: str | None = None,
+) -> dict[str, Any]:
+    tenant = _tenant_for_owner(owner_user)
+    tenant_slug = (
+        (demo_session_payload or {}).get("tenant_slug")
+        or (demo_session_payload or {}).get("tenant")
+        or getattr(tenant, "slug", None)
+        or "municipio"
     )
+    page_match = re.search(r"mostrar_menu_encuestas::(\d+)", str(action_id or ""))
+    page = max(1, int(page_match.group(1))) if page_match else 1
+    menu_payload = build_demo_survey_chat_menu(
+        sector="gobierno",
+        tenant_slug=str(tenant_slug),
+        rubro=str((demo_session_payload or {}).get("rubro") or getattr(tenant, "slug", None) or "municipio"),
+        channel=DEMO_MUNICIPIO_CHANNEL,
+        page=page,
+    )
+    message = str(menu_payload.get("message_body") or "Estas son las encuestas y votaciones disponibles.").strip()
     return {
+        "contract_version": "demo.widget_runtime.v1",
+        "ok": True,
+        "success": True,
+        "message": message,
         "message_body": message,
+        "message_to_user": message,
         "respuesta": message,
-        "fuente": DEMO_MUNICIPIO_SOURCE,
-        "accion_backend": "demo_encuesta_votacion",
-        "actions": [
-            {
-                "label": "Encuesta preparada",
-                "status": "needs_topic",
-                "detail": "Falta tema y opciones para crear una votacion real.",
-                "creates": "survey_draft",
-                "fields": [{"label": "Dato requerido", "value": "tema y opciones"}],
-            }
-        ],
+        "respuesta_usuario": message,
+        "assistant_message": {"role": "assistant", "content": message},
+        "messages": [{"role": "assistant", "content": message}],
+        "fuente": "demo_encuestas_menu_v1",
+        "accion_backend": "demo_encuestas_menu",
+        "message_type": menu_payload.get("message_type") or "interactive_buttons",
+        "options_list": menu_payload.get("options_list") or [],
+        "botones": menu_payload.get("options_list") or [],
+        "buttons": menu_payload.get("options_list") or [],
+        "quick_replies": menu_payload.get("options_list") or [],
+        "demo_surveys": menu_payload.get("surveys") or [],
+        "pagination": menu_payload.get("pagination") or {},
+        "data": {
+            **(menu_payload.get("data") if isinstance(menu_payload.get("data"), dict) else {}),
+            "sector": "gobierno",
+            "tenant_slug": tenant_slug,
+            "chat_id": chat_session_id,
+        },
+        "skip_audio_generation": True,
     }
 
 
@@ -658,7 +694,12 @@ def handle_demo_municipio_message(
     if kind == "human_handoff":
         return _response_for_handoff()
     if kind == "survey":
-        return _response_for_survey()
+        return _response_for_survey(
+            owner_user=owner_user,
+            chat_session_id=chat_session_id,
+            demo_session_payload=demo_session_payload,
+            action_id=action_id,
+        )
     if kind != "claim":
         return None
 

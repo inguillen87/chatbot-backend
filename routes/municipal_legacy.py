@@ -825,36 +825,93 @@ def municipal_usuarios(current_user):
     if request.method == 'OPTIONS':
         return "", 204
 
-    if request.method == 'POST':
-        payload = request.get_json(silent=True) or {}
-        tag = payload.get('tag') or request.args.get('tag')
-        q = payload.get('q') or request.args.get('q')
-        marketing = payload.get('acepta_marketing') or request.args.get('acepta_marketing')
-        sort = payload.get('sort') or request.args.get('sort')
-        order = payload.get('order') or request.args.get('order')
-        limit = payload.get('limit') or request.args.get('limit')
-        offset = payload.get('offset') or request.args.get('offset')
-    else:
-        tag = request.args.get('tag')
-        q = request.args.get('q')
-        marketing = request.args.get('acepta_marketing')
-        sort = request.args.get('sort')
-        order = request.args.get('order')
-        limit = request.args.get('limit')
-        offset = request.args.get('offset')
-    # return jsonify(
-    #     _obtener_clientes(
-    #         current_user,
-    #         tag,
-    #         q=q,
-    #         acepta_marketing=marketing,
-    #         sort=sort,
-    #         order=order,
-    #         limit=limit,
-    #         offset=offset,
-    #     )
-    # )
-    return jsonify({"error": "Endpoint under construction", "status": "pending"})
+    tenant_slug = request.args.get("tenant_slug") or request.args.get("tenant") or getattr(current_user, "tenant_slug", None)
+    tenant = None
+    if tenant_slug:
+        tenant = TenantProfile.query.filter_by(slug=tenant_slug).first()
+
+    municipio_ids: list[int] = []
+    for candidate in (
+        _resolve_current_municipio_id(current_user),
+        getattr(current_user, "municipio_id", None),
+        getattr(current_user, "empresa_id", None),
+        getattr(tenant, "municipio_id", None) if tenant else None,
+        getattr(current_user, "id", None) if getattr(current_user, "tipo_chat", None) == "municipio" else None,
+    ):
+        if candidate and candidate not in municipio_ids:
+            municipio_ids.append(candidate)
+
+    tenant_id = getattr(tenant, "id", None) if tenant else getattr(current_user, "tenant_id", None)
+    query = User.query.filter(
+        User.rol.in_(["admin", "empleado"]),
+        or_(
+            User.tipo_chat == "municipio",
+            User.es_empleado.is_(True),
+        ),
+    )
+
+    scope_filters = []
+    if tenant_id:
+        scope_filters.append(User.tenant_id == tenant_id)
+    if municipio_ids:
+        scope_filters.extend([
+            User.municipio_id.in_(municipio_ids),
+            User.empresa_id.in_(municipio_ids),
+            User.id.in_(municipio_ids),
+        ])
+    if scope_filters:
+        query = query.filter(or_(*scope_filters))
+
+    q = (request.args.get("q") or "").strip().lower()
+    if q:
+        like = f"%{q}%"
+        query = query.filter(or_(func.lower(User.name).like(like), func.lower(User.email).like(like)))
+
+    def serialize_agent(user: User) -> dict[str, Any]:
+        categorias = []
+        categoria_ids = []
+        for cat in (getattr(user, "categorias_ticket", None) or getattr(user, "categorias", None) or []):
+            cat_id = getattr(cat, "id", None)
+            nombre = getattr(cat, "nombre", None)
+            if cat_id is not None:
+                categoria_ids.append(cat_id)
+            if nombre:
+                categorias.append({"id": cat_id, "nombre": nombre})
+
+        for raw_name in getattr(user, "categorias_lista", []) or []:
+            if raw_name and not any(c.get("nombre") == raw_name for c in categorias):
+                categorias.append({"id": None, "nombre": raw_name})
+
+        return {
+            "id": user.id,
+            "user_id": user.id,
+            "nombre": user.name,
+            "nombre_usuario": user.name,
+            "name": user.name,
+            "email": user.email,
+            "telefono": user.telefono,
+            "phone": user.telefono,
+            "rol": user.rol,
+            "role": user.rol,
+            "tipo_chat": user.tipo_chat,
+            "es_empleado": bool(user.es_empleado or user.rol == "empleado"),
+            "avatar_url": user.logo_url,
+            "tenant_id": user.tenant_id,
+            "municipio_id": user.municipio_id,
+            "empresa_id": user.empresa_id,
+            "categoria_ids": categoria_ids,
+            "categorias": categorias,
+        }
+
+    empleados = [serialize_agent(user) for user in query.order_by(User.rol.asc(), User.name.asc()).all()]
+    return jsonify({
+        "usuarios": empleados,
+        "users": empleados,
+        "empleados": empleados,
+        "employees": empleados,
+        "data": empleados,
+        "total": len(empleados),
+    })
 
 @municipal_bp.route('/categorias', methods=['GET', 'OPTIONS'])
 @token_requerido

@@ -555,36 +555,36 @@ class ServicioTickets:
                 except Exception as e:  # pragma: no cover - not essential for tests
                     logger.error(f"Error enviando notificaciones tras crear comentario para ticket {ticket.id if ticket else 'N/A'}: {e}", exc_info=True)
 
-            # Emitir evento de socket para Live Chat (Admin Panel)
-            try:
-                from socket_service import emit_ticket_comment
+            emit_socket = comentario_data.get("emit_socket", True)
+            # Emitir evento de socket para Live Chat (Admin Panel) solo cuando
+            # la ruta llamadora no emite un evento normalizado propio.
+            if emit_socket:
+                try:
+                    # We need to construct a payload that matches what frontend expects for 'new_chat_message'
+                    # Ideally reuse 'new_chat_message' event structure if frontend listens to it.
+                    # Currently socket_service.handle_send_chat_message emits 'new_chat_message'.
+                    # emit_ticket_comment emits 'new_comment'.
+                    # We will emit 'new_chat_message' manually here to match the Live Chat expectation.
 
-                # We need to construct a payload that matches what frontend expects for 'new_chat_message'
-                # Ideally reuse 'new_chat_message' event structure if frontend listens to it.
-                # Currently socket_service.handle_send_chat_message emits 'new_chat_message'.
-                # emit_ticket_comment emits 'new_comment'.
-                # We will emit 'new_chat_message' manually here to match the Live Chat expectation.
+                    from socket_service import _resolve_ticket_room, socketio
 
-                from flask_socketio import emit
-                from socket_service import _resolve_ticket_room, socketio
+                    room_payload = {
+                        "tenant_type": tipo_ticket,
+                        "id": ticket_id,
+                        # Fallbacks
+                        "municipio_id": getattr(ticket, "municipio_id", None),
+                        "pyme_id": getattr(ticket, "rubro_id", None) # Approximation for pyme room resolution
+                    }
 
-                room_payload = {
-                    "tenant_type": tipo_ticket,
-                    "id": ticket_id,
-                    # Fallbacks
-                    "municipio_id": getattr(ticket, "municipio_id", None),
-                    "pyme_id": getattr(ticket, "rubro_id", None) # Approximation for pyme room resolution
-                }
+                    room = _resolve_ticket_room(room_payload)
+                    if room:
+                        socketio.emit('new_chat_message', {
+                            'ticket_id': ticket_id,
+                            'message': nuevo_comentario.to_dict()
+                        }, room=room)
 
-                room = _resolve_ticket_room(room_payload)
-                if room:
-                    socketio.emit('new_chat_message', {
-                        'ticket_id': ticket_id,
-                        'message': nuevo_comentario.to_dict()
-                    }, room=room)
-
-            except Exception as e_sock:
-                logger.error(f"Error emitting socket event for comment on ticket {ticket_id}: {e_sock}", exc_info=True)
+                except Exception as e_sock:
+                    logger.error(f"Error emitting socket event for comment on ticket {ticket_id}: {e_sock}", exc_info=True)
 
             return nuevo_comentario
         except SQLAlchemyError as e:

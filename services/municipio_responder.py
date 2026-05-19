@@ -10366,6 +10366,11 @@ def responder_municipio(
     context["user_input_raw"] = pregunta_str
     normalized_input_menu = normalizar_texto(pregunta_str or "")
     action_id = received_payload.get("action_id") or received_payload.get("action")
+    survey_action_candidate = action_id or pregunta_str
+    if survey_action_candidate and find_global_menu_action(str(survey_action_candidate)) == "mostrar_menu_encuestas":
+        response = handle_main_menu_action("mostrar_menu_encuestas", context, chat_db_context)
+        if response:
+            return _finalize_response(response)
 
     # FIX: Ensure numeric inputs are NOT treated as explicit menu requests unless action_id matches
     is_numeric_menu_req = pregunta_str and pregunta_str.strip().isdigit()
@@ -11261,7 +11266,7 @@ def responder_municipio(
 
         if (
             not action_payload
-            and selected_action == "iniciar_reclamo"
+            and selected_action == "__legacy_iniciar_reclamo_menu__"
             and not pregunta_str_menu.strip().isdigit()
         ):
             # El usuario volvió a escribir "iniciar reclamo" en lugar de pulsar el botón.

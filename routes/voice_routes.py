@@ -20,6 +20,7 @@ from flask import jsonify
 voice_bp = Blueprint('voice', __name__)
 
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
+CHATBOC_DEMO_DEFAULT_WHATSAPP_NUMBER = "+18564858589"
 logger = logging.getLogger(__name__)
 
 
@@ -32,6 +33,30 @@ def _legacy_voice_gather_enabled() -> bool:
         current_app.config.get("VOICE_LEGACY_GATHER_ENABLED")
         or os.environ.get("VOICE_LEGACY_GATHER_ENABLED")
     )
+
+
+def _normalize_phone(value: str | None) -> str:
+    return str(value or "").replace("whatsapp:", "").strip()
+
+
+def _configured_chatboc_demo_numbers() -> set[str]:
+    raw_numbers = os.environ.get("CHATBOC_DEMO_WHATSAPP_NUMBERS") or ""
+    candidates = [part for part in raw_numbers.replace(";", ",").split(",") if part.strip()]
+    candidates.append(CHATBOC_DEMO_DEFAULT_WHATSAPP_NUMBER)
+    return {_normalize_phone(candidate) for candidate in candidates if _normalize_phone(candidate)}
+
+
+def _is_chatboc_demo_voice_number(*numbers: str | None) -> bool:
+    configured = _configured_chatboc_demo_numbers()
+    return any(_normalize_phone(number) in configured for number in numbers if number)
+
+
+def _chatboc_demo_voice_max_seconds() -> int:
+    raw_value = os.environ.get("CHATBOC_DEMO_VOICE_MAX_SECONDS") or "60"
+    try:
+        return max(15, int(raw_value))
+    except (TypeError, ValueError):
+        return 60
 
 
 def _validate_twilio_request() -> bool:
@@ -64,6 +89,9 @@ def _voice_stream_twiml_response() -> Response:
     stream.parameter(name="from_number", value=from_number)
     stream.parameter(name="to_number", value=to_number)
     stream.parameter(name="call_sid", value=call_sid)
+    if _is_chatboc_demo_voice_number(from_number, to_number):
+        stream.parameter(name="max_call_seconds", value=str(_chatboc_demo_voice_max_seconds()))
+        stream.parameter(name="demo_hub", value="chatboc")
     if source_chat_session_id:
         stream.parameter(name="chat_session_id", value=source_chat_session_id)
 

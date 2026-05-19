@@ -1122,6 +1122,11 @@ class ApiV2FoundationTest(unittest.TestCase):
         db.session.commit()
 
         demo_session_id = create_demo_session_token(tenant_slug="municipio", sector="gobierno", rubro="municipio")
+        headers = {
+            "Origin": "https://www.chatboc.ar",
+            "X-Request-Id": "demo-surveys-1",
+            "X-Chat-Session-Id": "sid_demo_surveys_cache_guard",
+        }
         resp = self.client.post(
             f"/api/ask/municipio?tenant_slug=municipio&demo_session_id={demo_session_id}",
             json={
@@ -1131,7 +1136,7 @@ class ApiV2FoundationTest(unittest.TestCase):
                 "tipo_chat": "municipio",
                 "action_id": "mostrar_menu_encuestas",
             },
-            headers={"Origin": "https://www.chatboc.ar", "X-Request-Id": "demo-surveys-1"},
+            headers=headers,
         )
 
         self.assertEqual(resp.status_code, 200)
@@ -1142,6 +1147,25 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertIn("Compartir por WhatsApp: https://wa.me/", payload.get("message_body") or "")
         self.assertTrue(all((item.get("seed") or {}).get("responses") == 100 for item in payload.get("demo_surveys") or []))
         self.assertEqual((payload.get("pagination") or {}).get("next_action_id"), "mostrar_menu_encuestas::2")
+
+        resp_page_2 = self.client.post(
+            f"/api/ask/municipio?tenant_slug=municipio&demo_session_id={demo_session_id}",
+            json={
+                "pregunta": "",
+                "demo_mode": True,
+                "tenant_slug": "municipio",
+                "tipo_chat": "municipio",
+                "action_id": "mostrar_menu_encuestas::2",
+            },
+            headers={**headers, "X-Request-Id": "demo-surveys-2"},
+        )
+
+        self.assertEqual(resp_page_2.status_code, 200)
+        payload_page_2 = resp_page_2.get_json()
+        self.assertEqual((payload_page_2.get("pagination") or {}).get("page"), 2)
+        self.assertEqual(len(payload_page_2.get("demo_surveys") or []), 1)
+        self.assertIn("Encuesta de espacios verdes", payload_page_2.get("message_body") or "")
+        self.assertEqual((payload_page_2.get("pagination") or {}).get("previous_action_id"), "mostrar_menu_encuestas::1")
 
     def test_ask_municipio_demo_session_without_header_reuses_stable_chat_context(self):
         from routes.v2.tenants import create_demo_session_token
