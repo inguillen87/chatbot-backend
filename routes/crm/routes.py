@@ -13,20 +13,124 @@ from middleware.tenant_context import require_tenant
 from models_memory import Contact, ContactSnapshot, InteractionEvent
 from models import Order, TenantProfile, User
 from extensions import db
+from services.contact_intake import is_placeholder_email, normalize_email
 
 crm_bp = Blueprint('crm_bp', __name__)
 
 
-def _serialize_cliente(cliente: User) -> dict:
+def _iso_or_none(value) -> str | None:
+    return value.isoformat() if value else None
+
+
+def _clean_phone(value: str | None) -> str:
+    return str(value or "").strip()
+
+
+def _looks_like_message_name(value: str | None) -> bool:
+    text = str(value or "").strip().lower()
+    if not text:
+        return False
+    message_markers = (
+        " es tu codigo",
+        " es tu código",
+        "no lo compartas",
+        "quisiera saber",
+        "hola ",
+        "hola.",
+        "hola hola",
+        "para que servis",
+        "para qué servís",
+    )
+    return any(marker in text for marker in message_markers) or len(text) > 80
+
+
+def _safe_tag_list(*values) -> list[str]:
+    out: list[str] = []
+    for value in values:
+        if not value:
+            continue
+        if isinstance(value, list):
+            raw_items = value
+        else:
+            raw_items = str(value).split(",")
+        for item in raw_items:
+            tag = str(item or "").strip()
+            if tag and tag not in out:
+                out.append(tag)
+    return out
+
+
+def _contact_channel(cliente: User, contact: Contact | None) -> str | None:
+    prefs = (contact.preferences or {}) if contact else {}
+    for key in ("channel", "canal", "source_channel", "last_channel"):
+        value = str(prefs.get(key) or "").strip()
+        if value:
+            return value
+    if _clean_phone(getattr(cliente, "telefono", None)) or is_placeholder_email(getattr(cliente, "email", None)):
+        return "whatsapp"
+    if normalize_email(getattr(cliente, "email", None)):
+        return "email"
+    return None
+
+
+def _contact_source(cliente: User, contact: Contact | None) -> str:
+    prefs = (contact.preferences or {}) if contact else {}
+    source = str(prefs.get("source") or prefs.get("origen") or "").strip()
+    if source:
+        return source
+    if is_placeholder_email(getattr(cliente, "email", None)):
+        return "whatsapp_auto"
+    return "crm"
+
+
+def _serialize_cliente(cliente: User, contact: Contact | None = None) -> dict:
+    raw_email = cliente.email or ""
+    real_email = normalize_email(raw_email)
+    phone = _clean_phone(cliente.telefono or (contact.phone if contact else None))
+    raw_name = cliente.name or ""
+    name_is_message = _looks_like_message_name(raw_name)
+    display_name = (contact.name if contact and contact.name else raw_name).strip()
+    if name_is_message or not display_name:
+        display_name = "Contacto WhatsApp" if phone else "Contacto sin identificar"
+    channel = _contact_channel(cliente, contact)
+    source = _contact_source(cliente, contact)
+    accepts_marketing = bool(
+        getattr(cliente, "acepta_marketing", False)
+        or ((contact.preferences or {}).get("marketing_opt_in") if contact else False)
+    )
+    last_seen = (contact.last_interaction_at if contact else None) or getattr(cliente, "fecha_creacion", None)
+    tags = _safe_tag_list(cliente.tags, contact.tags if contact else None)
+
     return {
         "id": cliente.id,
-        "name": cliente.name or "",
-        "email": cliente.email or "",
-        "telefono": cliente.telefono or "",
-        "acepta_marketing": bool(cliente.acepta_marketing),
+        "name": display_name,
+        "raw_name": raw_name,
+        "name_quality": "message_excerpt" if name_is_message else "provided",
+        "profile_excerpt": raw_name if name_is_message else "",
+        "email": real_email or "",
+        "email_raw": raw_email,
+        "email_is_placeholder": is_placeholder_email(raw_email),
+        "has_real_email": bool(real_email),
+        "telefono": phone,
+        "phone": phone,
+        "whatsapp": phone if channel == "whatsapp" else "",
+        "canal": channel,
+        "channel": channel,
+        "origen": source,
+        "source": source,
+        "acepta_marketing": accepts_marketing,
+        "marketing": accepts_marketing,
         "latitud": cliente.latitud,
         "longitud": cliente.longitud,
-        "tags": cliente.tags.split(',') if cliente.tags else [],
+        "tags": tags,
+        "etiquetas": tags,
+        "created_at": _iso_or_none(getattr(cliente, "fecha_creacion", None)),
+        "last_seen": _iso_or_none(last_seen),
+        "ultima_interaccion": _iso_or_none(last_seen),
+        "contact_id": contact.id if contact else None,
+        "contact_type": contact.type if contact else None,
+        "ltv": float(contact.ltv_monetary or 0) if contact else 0,
+        "total_orders": int(contact.total_orders or 0) if contact else 0,
     }
 
 
@@ -61,8 +165,9 @@ def _contact_for_legacy_user(tenant: TenantProfile, cliente: User) -> Contact:
     contact = None
     if cliente.telefono:
         contact = Contact.query.filter_by(tenant_id=tenant.id, phone=cliente.telefono).first()
-    if contact is None and cliente.email:
-        contact = Contact.query.filter_by(tenant_id=tenant.id, email=cliente.email).first()
+    real_email = normalize_email(cliente.email)
+    if contact is None and real_email:
+        contact = Contact.query.filter_by(tenant_id=tenant.id, email=real_email).first()
     if contact is not None:
         return contact
 
@@ -71,7 +176,7 @@ def _contact_for_legacy_user(tenant: TenantProfile, cliente: User) -> Contact:
         tenant_id=tenant.id,
         name=cliente.name,
         phone=cliente.telefono,
-        email=cliente.email,
+        email=real_email,
         type="lead",
         tags=[tag.strip() for tag in (cliente.tags or "").split(",") if tag.strip()],
         preferences={
@@ -147,7 +252,7 @@ def list_legacy_clients(current_user):
     if tag:
         query = query.filter(User.tags.ilike(f"%{tag}%"))
 
-    text_query = request.args.get('q')
+    text_query = request.args.get('q') or request.args.get('search')
     if text_query:
         like = f"%{text_query}%"
         query = query.filter(
@@ -178,7 +283,35 @@ def list_legacy_clients(current_user):
     except (TypeError, ValueError):
         pass
 
-    return jsonify([_serialize_cliente(cliente) for cliente in query.all()])
+    clientes = query.all()
+    tenant = _resolve_crm_tenant(current_user)
+    contact_by_phone: dict[str, Contact] = {}
+    contact_by_email: dict[str, Contact] = {}
+    if tenant and clientes:
+        phones = [_clean_phone(cliente.telefono) for cliente in clientes if _clean_phone(cliente.telefono)]
+        emails = [normalize_email(cliente.email) for cliente in clientes if normalize_email(cliente.email)]
+        filters = []
+        if phones:
+            filters.append(Contact.phone.in_(phones))
+        if emails:
+            filters.append(Contact.email.in_(emails))
+        if filters:
+            for contact in Contact.query.filter(Contact.tenant_id == tenant.id, or_(*filters)).all():
+                if contact.phone:
+                    contact_by_phone[str(contact.phone).strip()] = contact
+                if contact.email:
+                    contact_by_email[str(contact.email).strip().lower()] = contact
+
+    data = []
+    for cliente in clientes:
+        real_email = normalize_email(cliente.email)
+        contact = (
+            contact_by_phone.get(_clean_phone(cliente.telefono))
+            or (contact_by_email.get(real_email) if real_email else None)
+        )
+        data.append(_serialize_cliente(cliente, contact))
+
+    return jsonify(data)
 
 
 @crm_bp.route('/api/admin/tenants/<slug>/contacts', methods=['GET'])

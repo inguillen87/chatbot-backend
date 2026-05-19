@@ -14,6 +14,80 @@ EMPLOYEE_ROUTING_CONTRACT_VERSION = "employee.routing.v1"
 
 _CLOSED_STATES = {"resuelto", "cerrado", "closed", "resolved", "entregado", "completed", "completado"}
 _DEFAULT_OPERATIONAL_CHANNELS = ("web", "whatsapp")
+_COMMON_SINGLE_WORD_CATEGORIES = {
+    "alumbrado",
+    "arbolado",
+    "bacheo",
+    "cloacas",
+    "incendio",
+    "limpieza",
+    "luminaria",
+    "luminarias",
+    "otros",
+    "sugerencia",
+    "general",
+}
+_LOW_CONFIDENCE_NAME_SUFFIXES = ("ito", "ita", "cito", "cita")
+_NOISE_CATEGORY_PREFIXES = (
+    "hola",
+    "quiero",
+    "quisiera",
+    "necesito",
+    "codigo",
+    "código",
+    "17049",
+)
+
+
+def category_label_key(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def is_valid_employee_category_label(
+    value: Any,
+    *,
+    known_categories: set[str] | None = None,
+) -> bool:
+    """Return whether a label is safe to expose as an employee routing category."""
+
+    text = category_label_key(value)
+    if not text:
+        return False
+    if known_categories is not None and text in known_categories:
+        return True
+    if len(text) > 80 or "@" in text or "http://" in text or "https://" in text:
+        return False
+    if any(text.startswith(prefix) for prefix in _NOISE_CATEGORY_PREFIXES):
+        return False
+    if any(char.isdigit() for char in text) and len(text.split()) > 3:
+        return False
+    if (
+        len(text.split()) == 1
+        and text not in _COMMON_SINGLE_WORD_CATEGORIES
+        and text.endswith(_LOW_CONFIDENCE_NAME_SUFFIXES)
+    ):
+        return False
+    return True
+
+
+def filter_employee_category_labels(
+    values: Any,
+    *,
+    known_categories: set[str] | None = None,
+    limit: int = 80,
+) -> list[str]:
+    normalized = normalize_scope_list(values, limit=limit * 2)
+    filtered: list[str] = []
+    seen: set[str] = set()
+    for value in normalized:
+        key = category_label_key(value)
+        if key in seen or not is_valid_employee_category_label(key, known_categories=known_categories):
+            continue
+        filtered.append(key)
+        seen.add(key)
+        if len(filtered) >= limit:
+            break
+    return filtered
 
 
 def normalize_scope_list(values: Any, *, limit: int = 30) -> list[str]:
@@ -90,6 +164,7 @@ def tenant_operational_dimensions(tenant: TenantProfile, ticket_snapshots: list[
     cfg = _tenant_config(tenant)
     routing_cfg = cfg.get("employee_routing") if isinstance(cfg.get("employee_routing"), dict) else {}
     categories: set[str] = set()
+    ticket_categories: set[str] = set()
     zones: set[str] = set()
     channels: set[str] = set()
     sources: dict[str, list[str]] = {"categorias": [], "zonas": [], "channels": []}
@@ -99,7 +174,7 @@ def tenant_operational_dimensions(tenant: TenantProfile, ticket_snapshots: list[
         zone = _norm(item.get("zone"), "")
         channel = _norm(item.get("channel"), "")
         if category and category != "sin_categoria":
-            categories.add(category)
+            ticket_categories.add(category)
         if zone and zone != "sin_zona":
             zones.add(zone)
         if channel:
@@ -154,6 +229,11 @@ def tenant_operational_dimensions(tenant: TenantProfile, ticket_snapshots: list[
         categories.update(normalize_scope_list(catalog_categories, limit=80))
         if catalog_categories:
             sources["categorias"].append("catalog_categories")
+
+    known_categories = {category_label_key(item) for item in categories if category_label_key(item)}
+    if ticket_categories:
+        categories.update(filter_employee_category_labels(ticket_categories, known_categories=known_categories or None))
+        sources["categorias"].append("open_tickets")
 
     _append_config_values(zones, routing_cfg, "zonas", "zones", "barrios", "districts", "operational_zones")
     _append_config_values(zones, cfg, "zonas", "zones", "barrios", "districts", "operational_zones")
@@ -218,7 +298,7 @@ def _ticket_snapshot(ticket: Any) -> dict[str, Any]:
             "title": ticket.asunto or ticket.categoria or f"Reclamo {ticket.nro_ticket}",
             "status": ticket.estado,
             "category": _norm(ticket.categoria, "sin_categoria"),
-            "zone": _norm(ticket.distrito or ticket.direccion, "sin_zona"),
+            "zone": _norm(ticket.distrito, "sin_zona"),
             "channel": _norm(ticket.canal_ingreso, "whatsapp"),
             "priority": "medium",
             "assignee_id": ticket.asignado_a_id,
@@ -232,7 +312,7 @@ def _ticket_snapshot(ticket: Any) -> dict[str, Any]:
         "title": ticket.asunto or ticket.categoria or f"Ticket {ticket.nro_ticket}",
         "status": ticket.estado,
         "category": _norm(ticket.categoria, "sin_categoria"),
-        "zone": _norm(ticket.direccion, "sin_zona"),
+        "zone": "sin_zona",
         "channel": "whatsapp",
         "priority": "medium",
         "assignee_id": ticket.asignado_a_id,

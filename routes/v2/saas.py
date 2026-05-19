@@ -222,16 +222,16 @@ def _coverage_items(tenant: TenantProfile) -> dict[str, Any]:
     workloads = workload_by_employee(tenant)
     supported_dimensions = tenant_operational_dimensions(tenant, ticket_snapshots)
 
-    categories = sorted(set(supported_dimensions["categorias"]) | {item["category"] for item in ticket_snapshots if item["category"] != "sin_categoria"})
+    categories = sorted(set(supported_dimensions["categorias"]))
     channels = sorted(set(supported_dimensions["channels"]) | {item["channel"] for item in ticket_snapshots if item["channel"]})
-    zones = sorted(
-        set(supported_dimensions["zonas"])
-        | {item["zone"] for item in ticket_snapshots if item["zone"] != "sin_zona"}
-    )
+    zones = sorted(set(supported_dimensions["zonas"]))
 
     category_map: dict[str, list[dict[str, Any]]] = {category: [] for category in categories}
     zone_map: dict[str, list[dict[str, Any]]] = {zone: [] for zone in zones}
     channel_map: dict[str, list[dict[str, Any]]] = {channel: [] for channel in channels}
+    category_set = set(categories)
+    zone_set = set(zones)
+    channel_set = set(channels)
     employee_items = []
 
     for emp in employees:
@@ -247,10 +247,16 @@ def _coverage_items(tenant: TenantProfile) -> dict[str, Any]:
 
         ref = {"employee_id": emp.id, "name": emp.name, "email": emp.email}
         for category in scope["categorias"]:
+            if category_set and category not in category_set:
+                continue
             category_map.setdefault(category, []).append(ref)
         for zone in scope["zonas"]:
+            if zone_set and zone not in zone_set:
+                continue
             zone_map.setdefault(zone, []).append(ref)
         for channel in scope["channels"]:
+            if channel_set and channel not in channel_set:
+                continue
             channel_map.setdefault(channel, []).append(ref)
 
         employee_items.append(
