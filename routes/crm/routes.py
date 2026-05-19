@@ -16,7 +16,7 @@ from models import Notification, Order, TenantProfile, User
 from extensions import db
 from services.contact_intake import is_placeholder_email, normalize_email
 from services.crm_intelligence import serialize_crm_contact
-from socket_service import emit_crm_contact_update
+from socket_service import emit_crm_contact_update, emit_crm_notification_update
 
 crm_bp = Blueprint('crm_bp', __name__)
 
@@ -29,6 +29,37 @@ CRM_STAGE_OPTIONS = {
     "perdido",
     "pausado",
 }
+
+CRM_MODULE_PERMISSIONS = [
+    {
+        "module": "contacts",
+        "label": "Usuarios y contactos",
+        "description": "Lectura de CRM, segmentos, detalle de contacto e historial de conversaciones.",
+        "permissions": ["crm_contacts_read", "crm_contacts_update", "crm_segments_read"],
+        "recommended_roles": ["operador", "supervisor", "manager"],
+    },
+    {
+        "module": "campaigns",
+        "label": "Campanas y mensajes 24h",
+        "description": "Validacion de audiencia, registro de envios y auditoria de frecuencia por contacto.",
+        "permissions": ["crm_campaigns_read", "crm_campaigns_send", "crm_campaigns_audit"],
+        "recommended_roles": ["supervisor", "manager"],
+    },
+    {
+        "module": "notifications",
+        "label": "Centro realtime",
+        "description": "Eventos de notificaciones, fallos, reintentos y alertas operativas del tenant.",
+        "permissions": ["crm_notifications_read", "crm_notifications_manage"],
+        "recommended_roles": ["supervisor", "manager"],
+    },
+    {
+        "module": "superadmin_pipeline",
+        "label": "Pipeline comercial global",
+        "description": "Bandeja multi-tenant para leads Chatboc y oportunidades comerciales.",
+        "permissions": ["superadmin_crm_read", "superadmin_crm_manage"],
+        "recommended_roles": ["super_admin", "platform_admin"],
+    },
+]
 
 
 def _iso_or_none(value) -> str | None:
@@ -682,6 +713,39 @@ def update_contact_stage(current_user, slug, contact_id):
     return jsonify({"ok": True, "contact": payload_contact})
 
 
+@crm_bp.route('/api/admin/tenants/<slug>/crm/module-permissions', methods=['GET'])
+@token_requerido
+@require_tenant
+def crm_module_permissions(current_user, slug):
+    tenant = g.tenant_profile
+    is_superadmin = _is_superadmin(current_user)
+    return jsonify({
+        "tenant": _tenant_brief(tenant),
+        "modules": CRM_MODULE_PERMISSIONS,
+        "can_manage": is_superadmin or getattr(current_user, "rol", None) in {"admin", "tenant_admin", "manager"},
+        "role_templates": {
+            "operador": ["crm_contacts_read"],
+            "supervisor": [
+                "crm_contacts_read",
+                "crm_contacts_update",
+                "crm_campaigns_read",
+                "crm_notifications_read",
+            ],
+            "manager": [
+                "crm_contacts_read",
+                "crm_contacts_update",
+                "crm_segments_read",
+                "crm_campaigns_read",
+                "crm_campaigns_send",
+                "crm_campaigns_audit",
+                "crm_notifications_read",
+                "crm_notifications_manage",
+            ],
+            "super_admin": ["superadmin_crm_read", "superadmin_crm_manage"],
+        },
+    })
+
+
 @crm_bp.route('/api/admin/tenants/<slug>/campaigns/templates', methods=['GET'])
 @token_requerido
 @require_tenant
@@ -926,6 +990,25 @@ def _send_campaign_for_tenant(current_user: User, tenant: TenantProfile):
                 )
             )
         db.session.commit()
+        emit_crm_notification_update(
+            tenant,
+            {
+                "type": "campaign.ledger.updated",
+                "campaign_id": campaign_id,
+                "channel": channel,
+                "mode": "scheduled",
+                "scheduled_for": scheduled_for_utc.isoformat() if scheduled_for_utc else None,
+                "counts": {
+                    "requested": len(contact_ids) + len(user_ids),
+                    "resolved": len(contacts),
+                    "eligible": len(included),
+                    "blocked": len(blocked_events),
+                    "excluded_optout": len(excluded_optout),
+                    "excluded_frequency": len(excluded_frequency),
+                    "excluded_without_channel": len(excluded_without_channel),
+                },
+            },
+        )
 
     return jsonify(
         {

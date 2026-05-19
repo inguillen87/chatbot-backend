@@ -201,6 +201,31 @@ def emit_crm_contact_update(tenant: TenantProfile, contact_payload: Any) -> None
         socketio.emit(event_name, payload)
 
 
+def emit_crm_notification_update(tenant: TenantProfile, notification_payload: Any) -> None:
+    """Broadcast CRM/campaign notification activity to tenant and CRM rooms."""
+    if not tenant:
+        return
+
+    payload = {
+        "tenant_id": getattr(tenant, "id", None),
+        "tenant_slug": getattr(tenant, "slug", None),
+        "notification": notification_payload,
+    }
+    rooms = _get_rooms_for_tenant_slug(getattr(tenant, "slug", None))
+    if not rooms and getattr(tenant, "id", None):
+        rooms = [f"crm_{tenant.id}", f"tenant_{tenant.id}"]
+
+    event_names = ("crm.notification.updated", "crm_notification_updated")
+    if rooms:
+        for room in rooms:
+            for event_name in event_names:
+                socketio.emit(event_name, payload, room=room)
+        return
+
+    for event_name in event_names:
+        socketio.emit(event_name, payload)
+
+
 def emit_ticket_status_changed(data: Any) -> None:
     """Broadcast a normalized status event while preserving legacy consumers."""
     _emit_standard_ticket_event('ticket.status.changed', data)
@@ -233,6 +258,16 @@ def emit_notification_status_changed(data: Any) -> None:
     if event_name not in {"notification.sent", "notification.failed"}:
         event_name = "notification.updated"
     _emit_standard_ticket_event(event_name, data)
+    if isinstance(data, dict):
+        tenant_slug = data.get("tenant_slug") or data.get("tenant")
+        tenant_id = data.get("tenant_id")
+        tenant = None
+        if tenant_slug:
+            tenant = TenantProfile.query.filter_by(slug=str(tenant_slug).strip()).first()
+        elif tenant_id:
+            tenant = db.session.get(TenantProfile, tenant_id)
+        if tenant:
+            emit_crm_notification_update(tenant, data)
 
 
 def emit_ticket_unread_changed(data: Any) -> None:
