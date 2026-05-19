@@ -24,7 +24,7 @@ from models import (
     TenantProfile,
     Notification,
 )  # Import necessary models
-from models_memory import Contact, InteractionEvent
+from models_memory import Contact
 from extensions import db  # Import db instance for database operations
 import uuid
 from sqlalchemy import or_, func
@@ -48,6 +48,7 @@ from utils.response_utils import normalize_response_payload
 from utils.whatsapp import enviar_mensaje_whatsapp_con_fallback
 from services.contact_service import resolve_contact, sanitize_profile_name
 from services.ticket_service import servicio_tickets
+from services.crm_intelligence import record_contact_interaction, resolve_or_create_contact
 from services.demo_surveys import build_demo_survey_chat_menu
 from services.education_contracts import (
     build_education_case_ack_payload,
@@ -448,23 +449,21 @@ def _upsert_chatboc_demo_crm_contact(
         contact.last_interaction_at = datetime.utcnow()
         db.session.add(contact)
 
-    db.session.add(
-        InteractionEvent(
-            tenant_id=tenant.id,
-            contact_id=contact.id,
-            channel="whatsapp",
-            direction="inbound",
-            content_type="text",
-            content=message_body or "",
-            metadata_payload={
-                "event_type": "chatboc_demo_inbound",
-                "action_id": action_id,
-                "inquiry_type": inquiry_type,
-                "ticket_id": getattr(ticket, "id", None),
-                "ticket_number": getattr(ticket, "nro_ticket", None),
-                "source": "chatboc_demo_whatsapp_hub",
-            },
-        )
+    record_contact_interaction(
+        tenant=tenant,
+        contact=contact,
+        message_body=message_body or "",
+        channel="whatsapp",
+        direction="inbound",
+        source="chatboc_demo_whatsapp_hub",
+        metadata={
+            "event_type": "chatboc_demo_inbound",
+            "action_id": action_id,
+            "inquiry_type": inquiry_type,
+            "ticket_id": getattr(ticket, "id", None),
+            "ticket_number": getattr(ticket, "nro_ticket", None),
+        },
+        emit=True,
     )
     return contact
 
@@ -3277,10 +3276,11 @@ def whatsapp_webhook():
         # User explicitly confirmed. Start from a clean draft.
         _reset_municipio_context_for_menu(session_context_db_entry)
 
+    selected_option_label = None
     if selected_option and str(post_vars.get("Body", "")).strip().isdigit():
-        selected_text = _selected_option_text_for_bot(selected_option)
-        if selected_text:
-            message_body = selected_text
+        selected_option_label = _selected_option_text_for_bot(selected_option)
+        if selected_option_label:
+            message_body = selected_option_label
 
     # --- Live Chat Routing (WhatsApp -> Admin panel) ---
     human_chat_active = bool(
@@ -3669,6 +3669,43 @@ def whatsapp_webhook():
         session_context_db_entry.context_data = merged_context
         safe_flag_modified(session_context_db_entry, "context_data")
         db.session.add(session_context_db_entry)
+        if not is_chatboc_demo_destination and tenant_profile and getattr(tenant_profile, "id", None):
+            try:
+                contact = resolve_or_create_contact(
+                    tenant_profile,
+                    phone=from_number_cleaned,
+                    whatsapp_id=from_number_cleaned,
+                    name=locals().get("profile_name") or post_vars.get("ProfileName"),
+                    legacy_user=end_user,
+                    contact_type="neighbor" if client_user.tipo_chat == "municipio" else "customer",
+                    source="whatsapp_inbound",
+                )
+                record_contact_interaction(
+                    tenant=tenant_profile,
+                    contact=contact,
+                    message_body=message_body or selected_option_label or "",
+                    channel="whatsapp",
+                    direction="inbound",
+                    source="whatsapp_webhook",
+                    metadata={
+                        "event_type": "whatsapp_inbound",
+                        "message_sid": message_sid,
+                        "selected_action_id": selected_action_id,
+                        "selected_option": selected_option_label,
+                        "owner_user_id": getattr(client_user, "id", None),
+                        "end_user_id": getattr(end_user, "id", None),
+                        "bot_fuente": bot_response_dict.get("fuente"),
+                    },
+                    content_type="text" if message_body else "event",
+                    emit=True,
+                )
+            except Exception as crm_err:
+                current_app.logger.warning(
+                    "[CRM] WhatsApp contact enrichment skipped for %s: %s",
+                    from_number_cleaned,
+                    crm_err,
+                    exc_info=True,
+                )
         db.session.commit()
         _log(
             "info",

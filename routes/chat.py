@@ -40,6 +40,7 @@ from services.education_contracts import (
 )
 from services.common_utils import validar_email, validar_telefono, formatear_telefono_e164
 from services.contact_intake import missing_contact_fields, resolve_contact_snapshot
+from services.crm_intelligence import record_contact_interaction, resolve_or_create_contact
 from services.demo_municipio_runtime import handle_demo_municipio_message
 from services.demo_surveys import build_demo_survey_chat_menu
 from services.notifications import enviar_notificacion_sms, enviar_notificacion_whatsapp_con_plantilla
@@ -4163,9 +4164,54 @@ def _procesar_chat(
                 user_message=pregunta,
                 bot_payload=resultado if isinstance(resultado, dict) else {},
             )
+            if tenant_for_conversation:
+                tenant_for_crm = TenantProfile.query.get(tenant_for_conversation)
+                if tenant_for_crm:
+                    context_data = chat_context_obj.context_data if chat_context_obj and isinstance(chat_context_obj.context_data, dict) else {}
+                    contact = resolve_or_create_contact(
+                        tenant_for_crm,
+                        phone=(
+                            context_data.get("telefono_usuario")
+                            or context_data.get("telefono")
+                            or context_data.get("phone")
+                        ),
+                        email=(
+                            context_data.get("email")
+                            or context_data.get("email_usuario")
+                            or context_data.get("correo")
+                        ),
+                        external_id=anon_id or chat_session_id_header,
+                        name=(
+                            context_data.get("profile_name")
+                            or context_data.get("nombre")
+                            or context_data.get("nombre_usuario")
+                        ),
+                        legacy_user=actor_principal,
+                        contact_type="neighbor" if tipo_chat == "municipio" else ("lead" if demo_session_activa else "customer"),
+                        source="web_widget",
+                    )
+                    record_contact_interaction(
+                        tenant=tenant_for_crm,
+                        contact=contact,
+                        message_body=pregunta,
+                        channel="widget",
+                        direction="inbound",
+                        source="web_widget",
+                        metadata={
+                            "event_type": "widget_inbound",
+                            "chat_session_id": chat_session_id_header,
+                            "anon_id": anon_id,
+                            "action_id": action_id,
+                            "owner_user_id": getattr(owner_del_bot, "id", None),
+                            "actor_user_id": getattr(actor_principal, "id", None),
+                            "demo_session": bool(demo_session_activa),
+                            "bot_fuente": resultado.get("fuente") if isinstance(resultado, dict) else None,
+                        },
+                        emit=True,
+                    )
         except Exception as conversation_err:
             current_app.logger.warning(
-                "[BE01] conversation core persistence skipped for session=%s: %s",
+                "[BE01/CRM] conversation persistence skipped for session=%s: %s",
                 chat_session_id_header,
                 conversation_err,
             )

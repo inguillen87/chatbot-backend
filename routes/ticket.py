@@ -519,7 +519,7 @@ def _ticket_location_payload(ticket, fallback_address=None):
     }
 
 
-def serialize_ticket_to_json(ticket, ticket_type):
+def serialize_ticket_to_json(ticket, ticket_type, *, compact: bool = False):
     """
     Serializa un objeto de ticket a un diccionario JSON con el formato
     específico requerido por el frontend del panel de CRM.
@@ -527,10 +527,17 @@ def serialize_ticket_to_json(ticket, ticket_type):
     """
     # Serializar todos los comentarios del ticket
     comentarios_serializados = []
+    comentarios_count = 0
     if ticket.comentarios:
+        try:
+            comentarios_count = ticket.comentarios.count()
+        except Exception:
+            comentarios_count = 0
+    if not compact and ticket.comentarios:
         # Ordenar por fecha ascendente para mostrar el historial cronológicamente
         lista_comentarios = ticket.comentarios.order_by(TicketComentario.fecha.asc()).all()
         comentarios_serializados = [c.to_dict() for c in lista_comentarios]
+        comentarios_count = len(comentarios_serializados)
 
     # Reutilizar la lógica existente para obtener la información de contacto unificada
     # Esta función necesita el modelo User, que ya está importado en este archivo.
@@ -539,7 +546,7 @@ def serialize_ticket_to_json(ticket, ticket_type):
     # El campo 'description' debe ser 'detalles' si existe, sino 'pregunta'.
     description = getattr(ticket, 'detalles', '') or getattr(ticket, 'pregunta', '')
 
-    historial_chat = servicio_tickets.obtener_historial_chat(ticket)
+    historial_chat = [] if compact else servicio_tickets.obtener_historial_chat(ticket)
 
 
     # Construir el diccionario con la estructura deseada
@@ -596,6 +603,7 @@ def serialize_ticket_to_json(ticket, ticket_type):
         "description": description,
         "channel": getattr(ticket, 'canal_ingreso', 'desconocido'),
         "comentarios": comentarios_serializados,
+        "comentarios_count": comentarios_count,
         "historial_chat": historial_chat,
         "informacion_personal_vecino": {
             "nombre": user_data.get("nombre", "No especificado"),
@@ -859,7 +867,18 @@ def get_tickets_del_usuario_logic(current_user: User):
         else:
             tickets_for_list_page = ordered_query.all()
 
-        serialized_tickets = [serialize_ticket_to_json(t, tipo_ticket_str) for t in tickets_for_list_page]
+        include_mode = str(
+            request.args.get("include")
+            or request.args.get("view")
+            or request.args.get("compact")
+            or ""
+        ).strip().lower()
+        compact_view = include_mode in {"1", "true", "yes", "compact", "list", "summary"}
+
+        serialized_tickets = [
+            serialize_ticket_to_json(t, tipo_ticket_str, compact=compact_view)
+            for t in tickets_for_list_page
+        ]
 
         if per_page > 0:
             total_pages = max(1, (total_tickets + per_page - 1) // per_page)
@@ -1356,19 +1375,46 @@ def asignar_ticket(current_user: User, tipo: str, ticket_id: int):
     if not ticket_obj:
         return jsonify({"error": "Ticket no encontrado."}), 404
 
+    tenant, tenant_municipio_id, tenant_pyme_id = _resolve_tenant_scope(current_user)
+
     if tipo == "municipio":
         allowed_municipio_ids = _get_allowed_municipio_ids(current_user)
-        if current_user.tipo_chat != "municipio" or ticket_obj.municipio_id not in allowed_municipio_ids:
+        tenant_scope_allows = (
+            _authorized_for_tenant_scope(current_user, tenant)
+            and tenant_municipio_id
+            and ticket_obj.municipio_id == tenant_municipio_id
+        )
+        if ticket_obj.municipio_id not in allowed_municipio_ids and not tenant_scope_allows:
             return jsonify({"error": "No tienes permiso para asignar este ticket."}), 403
     else:
         pyme_owner_id = current_user.id if current_user.rol == "admin" else current_user.empresa_id
-        if current_user.tipo_chat != "pyme" or ticket_obj.rubro_id != current_user.rubro_id:
+        tenant_scope_allows = (
+            _authorized_for_tenant_scope(current_user, tenant)
+            and tenant_pyme_id
+            and (
+                ticket_obj.rubro_id == tenant_pyme_id
+                or getattr(ticket_obj, "tenant_id", None) == getattr(tenant, "id", None)
+            )
+        )
+        if not tenant_scope_allows and (current_user.tipo_chat != "pyme" or ticket_obj.rubro_id != current_user.rubro_id):
             return jsonify({"error": "No tienes permiso para asignar este ticket."}), 403
         if pyme_owner_id is None:
             return jsonify({"error": "Usuario PYME sin empresa asociada."}), 400
 
     data = request.get_json(silent=True) or {}
-    requested_user_id = data.get("user_id")
+    requested_user_id = (
+        data.get("user_id")
+        or data.get("assigned_user_id")
+        or data.get("assigned_to")
+        or data.get("agent_id")
+        or data.get("responsable_id")
+    )
+    if isinstance(requested_user_id, dict):
+        requested_user_id = requested_user_id.get("id") or requested_user_id.get("user_id")
+    try:
+        requested_user_id = int(requested_user_id) if requested_user_id not in (None, "", "null") else None
+    except (TypeError, ValueError):
+        return jsonify({"error": "El agente seleccionado no es vÃ¡lido."}), 400
     auto = bool(data.get("auto"))
 
     if current_user.rol == 'empleado':
@@ -1392,6 +1438,12 @@ def asignar_ticket(current_user: User, tipo: str, ticket_id: int):
                 auto=auto or requested_user_id is None,
                 actor_id=current_user.id,
             )
+    except ValueError as exc:
+        db.session.rollback()
+        return jsonify({
+            "error": "No se pudo asignar el ticket.",
+            "detail": str(exc),
+        }), 400
     except Exception as exc:
         db.session.rollback()
         current_app.logger.exception(
@@ -2922,10 +2974,19 @@ def send_ticket_history(current_user: User, tipo: str, ticket_id: int, anon_id: 
 
     if tipo == 'municipio':
         allowed_municipio_ids = _get_allowed_municipio_ids(current_user) if current_user else []
+        tenant, tenant_municipio_id, _tenant_pyme_id = _resolve_tenant_scope(current_user) if current_user else (None, None, None)
+        tenant_scope_allows = (
+            current_user
+            and _authorized_for_tenant_scope(current_user, tenant)
+            and tenant_municipio_id
+            and ticket_obj.municipio_id == tenant_municipio_id
+        )
         es_agente = (
             current_user
-            and current_user.tipo_chat == "municipio"
-            and ticket_obj.municipio_id in allowed_municipio_ids
+            and (
+                ticket_obj.municipio_id in allowed_municipio_ids
+                or tenant_scope_allows
+            )
         )
         es_dueno = current_user and ticket_obj.user_id == current_user.id
         es_anon = anon_id and ticket_obj.anon_id == anon_id
@@ -2933,10 +2994,21 @@ def send_ticket_history(current_user: User, tipo: str, ticket_id: int, anon_id: 
         if not (es_agente or es_dueno or es_anon or pin_valido):
             return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
     elif tipo == 'pyme':
+        tenant, _tenant_municipio_id, tenant_pyme_id = _resolve_tenant_scope(current_user) if current_user else (None, None, None)
+        tenant_scope_allows = (
+            current_user
+            and _authorized_for_tenant_scope(current_user, tenant)
+            and (
+                (tenant_pyme_id and ticket_obj.rubro_id == tenant_pyme_id)
+                or getattr(ticket_obj, "tenant_id", None) == getattr(tenant, "id", None)
+            )
+        )
         es_agente = (
             current_user
-            and current_user.rubro_id
-            and ticket_obj.rubro_id == current_user.rubro_id
+            and (
+                (current_user.rubro_id and ticket_obj.rubro_id == current_user.rubro_id)
+                or tenant_scope_allows
+            )
         )
         es_dueno = current_user and ticket_obj.user_id == current_user.id
         es_anon = anon_id and ticket_obj.anon_id == anon_id

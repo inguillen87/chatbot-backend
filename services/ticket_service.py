@@ -16,7 +16,7 @@ from models import (
 )
 from utils.ticket_utils import normalize_category
 from utils.time_utils import datetime_to_iso_utc, get_local_now
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.exc import SQLAlchemyError
 from .integracion_municipal import enviar_ticket_a_sigem # SIGEM Integration
 from utils.heatmap import enrich_heatmap_points
@@ -137,16 +137,44 @@ class ServicioTickets:
             return []
 
         query = User.query.filter(
-            User.empresa_id == ticket.municipio_id,
-            User.rol == "empleado",
             User.tipo_chat == "municipio",
+            User.rol.in_(["empleado", "admin"]),
+            or_(
+                User.empresa_id == ticket.municipio_id,
+                User.municipio_id == ticket.municipio_id,
+                User.id == ticket.municipio_id,
+            ),
         )
 
         categoria_normalizada = (ticket.categoria or "").strip().lower()
-        if categoria_normalizada:
-            query = query.join(User.categorias).filter(func.lower(Categoria.nombre) == categoria_normalizada)
+        candidatos = query.order_by(User.id.asc()).all()
 
-        return query.order_by(User.id.asc()).all()
+        if not categoria_normalizada:
+            return candidatos
+
+        filtrados = []
+        for empleado in candidatos:
+            categorias_emp = [
+                c.strip().lower()
+                for c in (getattr(empleado, "ticket_categorias", None) or "").split(",")
+                if c.strip()
+            ]
+            categorias_emp.extend(
+                str(getattr(categoria, "nombre", "")).strip().lower()
+                for categoria in (getattr(empleado, "categorias_ticket", None) or [])
+                if str(getattr(categoria, "nombre", "")).strip()
+            )
+            categorias_emp.extend(
+                str(getattr(categoria, "nombre", "")).strip().lower()
+                for categoria in (getattr(empleado, "categorias", None) or [])
+                if str(getattr(categoria, "nombre", "")).strip()
+            )
+
+            categorias_emp = list(dict.fromkeys(categorias_emp))
+            if not categorias_emp or categoria_normalizada in categorias_emp:
+                filtrados.append(empleado)
+
+        return filtrados
 
     def _calcular_carga_empleado_municipal(self, empleado: User, municipio_id: int) -> int:
         return (
@@ -176,9 +204,16 @@ class ServicioTickets:
         if empleado_id:
             empleado = User.query.filter(
                 User.id == empleado_id,
-                User.empresa_id == ticket.municipio_id,
+                User.tipo_chat == "municipio",
                 User.rol.in_(["empleado", "admin"]),
+                or_(
+                    User.empresa_id == ticket.municipio_id,
+                    User.municipio_id == ticket.municipio_id,
+                    User.id == ticket.municipio_id,
+                ),
             ).first()
+            if not empleado:
+                raise ValueError("El agente seleccionado no pertenece a este municipio.")
         else:
             candidatos = self._empleados_para_ticket_municipal(ticket)
             if not candidatos or (not auto and not self.auto_assign_enabled):

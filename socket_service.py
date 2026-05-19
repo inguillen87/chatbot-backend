@@ -90,6 +90,10 @@ def _get_rooms_for_tenant_slug(tenant_slug: Optional[str]) -> list[str]:
         rooms.add(f"municipio_{tenant.municipio_id}")
     if tenant.pyme_id:
         rooms.add(f"pyme_{tenant.pyme_id}")
+    rooms.add(f"crm_{tenant.id}")
+    rooms.add(f"tenant_{tenant.id}")
+    if tenant.slug:
+        rooms.add(f"tenant_slug_{tenant.slug}")
     return list(rooms)
 
 
@@ -170,6 +174,31 @@ def _emit_standard_ticket_event(event_name: str, data: Any) -> None:
 def emit_ticket_update(data: Any) -> None:
     """Broadcast generic ticket updates to subscribed admin clients."""
     _emit_to_ticket_room('ticket_update', data)
+
+
+def emit_crm_contact_update(tenant: TenantProfile, contact_payload: Any) -> None:
+    """Broadcast CRM contact enrichment to subscribed admin clients."""
+    if not tenant:
+        return
+
+    payload = {
+        "tenant_id": getattr(tenant, "id", None),
+        "tenant_slug": getattr(tenant, "slug", None),
+        "contact": contact_payload,
+    }
+    rooms = _get_rooms_for_tenant_slug(getattr(tenant, "slug", None))
+    if not rooms and getattr(tenant, "id", None):
+        rooms = [f"crm_{tenant.id}", f"tenant_{tenant.id}"]
+
+    event_names = ("crm.contact.updated", "crm_contact_updated")
+    if rooms:
+        for room in rooms:
+            for event_name in event_names:
+                socketio.emit(event_name, payload, room=room)
+        return
+
+    for event_name in event_names:
+        socketio.emit(event_name, payload)
 
 
 def emit_ticket_status_changed(data: Any) -> None:

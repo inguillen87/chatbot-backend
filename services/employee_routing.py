@@ -90,6 +90,44 @@ def filter_employee_category_labels(
     return filtered
 
 
+def is_valid_employee_zone_label(value: Any) -> bool:
+    text = category_label_key(value)
+    if not text or text == "sin_zona":
+        return False
+    if len(text) <= 2:
+        return False
+    if len(text) > 50 or "@" in text or "http://" in text or "https://" in text:
+        return False
+    if text in {"ar", "arg", "mz", "mza", "cp", "postal"}:
+        return False
+    if any(char.isdigit() for char in text) and len(text.split()) == 1:
+        return False
+    if "," in text:
+        return False
+    if any(char.isdigit() for char in text) and any(word in text for word in ("calle", "av ", "avenida", "ruta", "km")):
+        return False
+    if any(char.isdigit() for char in text) and len(text.split()) > 2:
+        return False
+    if text.isdigit():
+        return False
+    return True
+
+
+def filter_employee_zone_labels(values: Any, *, limit: int = 80) -> list[str]:
+    normalized = normalize_scope_list(values, limit=limit * 2)
+    filtered: list[str] = []
+    seen: set[str] = set()
+    for value in normalized:
+        key = category_label_key(value)
+        if key in seen or not is_valid_employee_zone_label(key):
+            continue
+        filtered.append(key)
+        seen.add(key)
+        if len(filtered) >= limit:
+            break
+    return filtered
+
+
 def normalize_scope_list(values: Any, *, limit: int = 30) -> list[str]:
     if isinstance(values, str):
         values = [item.strip() for item in values.split(",")]
@@ -175,7 +213,7 @@ def tenant_operational_dimensions(tenant: TenantProfile, ticket_snapshots: list[
         channel = _norm(item.get("channel"), "")
         if category and category != "sin_categoria":
             ticket_categories.add(category)
-        if zone and zone != "sin_zona":
+        if is_valid_employee_zone_label(zone):
             zones.add(zone)
         if channel:
             channels.add(channel)
@@ -283,7 +321,7 @@ def _ticket_snapshot(ticket: Any) -> dict[str, Any]:
             "title": extra.get("title") or ticket.categoria or f"Ticket {ticket.id}",
             "status": ticket.estado,
             "category": _norm(ticket.categoria, "sin_categoria"),
-            "zone": _norm(extra.get("zone") or extra.get("zona") or extra.get("address"), "sin_zona"),
+            "zone": _norm(extra.get("zone") or extra.get("zona"), "sin_zona"),
             "channel": _norm(extra.get("channel") or ticket.origen, "web"),
             "priority": _norm(extra.get("priority"), "medium"),
             "assignee_id": extra.get("assignee_id"),
@@ -434,8 +472,14 @@ def build_employee_routing_payload(tenant: TenantProfile) -> dict[str, Any]:
     unassigned = [ticket for ticket in tickets if not ticket.get("assignee_id")]
     supported_dimensions = tenant_operational_dimensions(tenant, tickets)
 
-    categories = sorted(set(supported_dimensions["categorias"]) | {ticket["category"] for ticket in tickets})
-    zones = sorted(set(supported_dimensions["zonas"]) | {ticket["zone"] for ticket in tickets if ticket["zone"] != "sin_zona"})
+    categories = sorted(
+        set(supported_dimensions["categorias"])
+        | set(filter_employee_category_labels([ticket["category"] for ticket in tickets]))
+    )
+    zones = sorted(
+        set(supported_dimensions["zonas"])
+        | set(filter_employee_zone_labels([ticket["zone"] for ticket in tickets]))
+    )
     channels = sorted(set(supported_dimensions["channels"]) | {ticket["channel"] for ticket in tickets})
 
     employee_items = []

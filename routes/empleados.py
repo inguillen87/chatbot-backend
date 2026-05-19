@@ -2,6 +2,7 @@ from flask import Blueprint, request, jsonify
 from models import (
     CatalogoItem,
     Categoria,
+    CategoriaTicket,
     MunicipioTicket,
     PymeTicket,
     TenantProfile,
@@ -17,7 +18,13 @@ from sqlalchemy import func, or_
 from sqlalchemy.orm.attributes import flag_modified
 from routes.ticket import TICKET_ALLOWED_STATES
 from services.categorias_municipio import CATEGORIAS_RECLAMO
-from services.employee_routing import normalize_scope_list, tenant_open_ticket_snapshots, tenant_operational_dimensions
+from services.employee_routing import (
+    category_label_key,
+    filter_employee_category_labels,
+    normalize_scope_list,
+    tenant_open_ticket_snapshots,
+    tenant_operational_dimensions,
+)
 
 def _normalize_categorias_input(categorias_raw):
     """Normaliza una lista de categorías proveniente del frontend.
@@ -96,6 +103,76 @@ def _tenant_for_current_user(current_user: User) -> TenantProfile | None:
     return TenantProfile.query.filter_by(slug=getattr(current_user, "tenant_slug", None)).first()
 
 
+def _config_category_values(config: dict | None) -> list[str]:
+    if not isinstance(config, dict):
+        return []
+    values: list[str] = []
+    for key in (
+        "employee_categories",
+        "ticket_categories",
+        "categorias_ticket",
+        "default_ticket_categories",
+        "categories",
+    ):
+        raw = config.get(key)
+        if isinstance(raw, dict):
+            raw = raw.get("items") or raw.get("values") or raw.get("list")
+        values.extend(normalize_scope_list(raw, limit=80))
+
+    routing = config.get("employee_routing") if isinstance(config.get("employee_routing"), dict) else {}
+    for key in ("categorias", "categories", "ticket_categories", "default_ticket_categories"):
+        raw = routing.get(key)
+        if isinstance(raw, dict):
+            raw = raw.get("items") or raw.get("values") or raw.get("list")
+        values.extend(normalize_scope_list(raw, limit=80))
+    return values
+
+
+def _allowed_employee_category_names(current_user: User) -> set[str]:
+    """Return curated category labels that can be assigned to employees."""
+
+    allowed = {category_label_key(item) for item in CATEGORIAS_RECLAMO if category_label_key(item)}
+    tenant = _tenant_for_current_user(current_user)
+    if tenant:
+        allowed.update(filter_employee_category_labels(_config_category_values(getattr(tenant, "configuracion", None))))
+        persisted = (
+            db.session.query(CategoriaTicket.nombre)
+            .filter(CategoriaTicket.tenant_id == tenant.id)
+            .all()
+        )
+        allowed.update(filter_employee_category_labels([item[0] for item in persisted if item and item[0]]))
+        try:
+            dimensions = tenant_operational_dimensions(tenant, [])
+            allowed.update(filter_employee_category_labels(dimensions.get("categorias") or []))
+        except Exception:
+            pass
+
+    if current_user.municipio_id:
+        rows = (
+            db.session.query(Categoria.nombre)
+            .filter(Categoria.municipio_id == current_user.municipio_id)
+            .all()
+        )
+        allowed.update(filter_employee_category_labels([item[0] for item in rows if item and item[0]]))
+
+    if current_user.tipo_chat == "pyme":
+        tenant_profile = getattr(current_user, "tenant_profile_pyme", None)
+        catalogo_query = CatalogoItem.query.filter(
+            CatalogoItem.user_id == current_user.id,
+            CatalogoItem.categoria.isnot(None),
+            CatalogoItem.categoria != "",
+        )
+        if tenant_profile:
+            catalogo_query = catalogo_query.filter(
+                func.coalesce(CatalogoItem.tenant_id, tenant_profile.id)
+                == tenant_profile.id
+            )
+        catalogo_categorias = catalogo_query.with_entities(CatalogoItem.categoria).distinct()
+        allowed.update(filter_employee_category_labels([item[0] for item in catalogo_categorias if item and item[0]]))
+
+    return {item for item in allowed if item}
+
+
 def _employee_scope_payload(
     categorias: list[str] | None,
     *,
@@ -132,7 +209,11 @@ def _empleados_query(current_user: User):
 
 
 def _resolver_categorias_municipio(
-    municipio_id: int, categoria_ids: list[int] | None, categorias_raw
+    municipio_id: int,
+    categoria_ids: list[int] | None,
+    categorias_raw,
+    *,
+    allowed_names: set[str] | None = None,
 ):
     """Obtiene o crea categorías para un municipio según los datos del payload."""
 
@@ -144,15 +225,32 @@ def _resolver_categorias_municipio(
             ).all()
         )
         if len(categorias_db) != len(set(categoria_ids)):
-            return None, None, jsonify({"error": "Categorías inválidas para el municipio"}), 400
+            return None, None, (jsonify({"error": "Categorias invalidas para el municipio"}), 400)
         nombres_norm = [
             (cat.nombre or "").strip().lower() for cat in categorias_db if cat.nombre
         ]
+        if allowed_names:
+            nombres_norm = [nombre for nombre in nombres_norm if nombre in allowed_names]
+            categorias_db = [
+                cat
+                for cat in categorias_db
+                if (cat.nombre or "").strip().lower() in allowed_names
+            ]
+        if not nombres_norm:
+            return None, None, (jsonify({"error": "Debe asignar al menos una categoria operativa valida"}), 400)
         return categorias_db, nombres_norm, None
 
-    categorias_normalizadas = _normalize_categorias_input(categorias_raw)
+    allowed_names = allowed_names or set()
+    categorias_normalizadas = filter_employee_category_labels(
+        _normalize_categorias_input(categorias_raw),
+        known_categories=allowed_names or None,
+    )
+    if allowed_names:
+        categorias_normalizadas = [
+            categoria for categoria in categorias_normalizadas if categoria in allowed_names
+        ]
     if not categorias_normalizadas:
-        return None, None, jsonify({"error": "Debe asignar al menos una categoría válida"}), 400
+        return None, None, (jsonify({"error": "Debe asignar al menos una categoria operativa valida"}), 400)
 
     existing = (
         Categoria.query.filter(
@@ -165,15 +263,10 @@ def _resolver_categorias_municipio(
     for nombre in categorias_normalizadas:
         llave = nombre.lower()
         cat = existing_map.get(llave)
-        if not cat:
-            cat = Categoria(nombre=nombre, municipio_id=municipio_id)
-            db.session.add(cat)
-        categorias_db.append(cat)
+        if cat:
+            categorias_db.append(cat)
 
-    db.session.flush()
-    nombres_norm = [
-        (cat.nombre or "").strip().lower() for cat in categorias_db if cat.nombre
-    ]
+    nombres_norm = categorias_normalizadas
     return categorias_db, nombres_norm, None
 
 
@@ -263,6 +356,22 @@ def listar_empleados(current_user: User):
 def obtener_categorias_empleado(current_user: User):
     """Devuelve la lista de categorías disponibles para asignar a empleados."""
 
+    try:
+        categorias_set = _allowed_employee_category_names(current_user)
+    except Exception:
+        categorias_set = {category_label_key(c) for c in CATEGORIAS_RECLAMO if category_label_key(c)}
+
+    categorias_set = set(filter_employee_category_labels(categorias_set, known_categories=categorias_set))
+    categorias = [
+        {"value": c, "label": c.title()} for c in sorted(categorias_set, key=str.casefold)
+    ]
+    search_term = (request.args.get("q") or "").strip().lower()
+    if search_term:
+        categorias = [
+            item for item in categorias if search_term in item["label"].lower()
+        ]
+    return jsonify({"categorias": categorias})
+
     categorias_set = {c for c in CATEGORIAS_RECLAMO if c}
 
     # Agregar categorías dinámicas detectadas en los tickets existentes para el
@@ -344,17 +453,28 @@ def crear_empleado(current_user: User):
 
     categorias_normalizadas = None
     categorias_db = []
+    allowed_categories = _allowed_employee_category_names(current_user)
 
     if current_user.municipio_id:
         categorias_db, categorias_normalizadas, error_resp = _resolver_categorias_municipio(
-            current_user.municipio_id, categoria_ids, categorias_raw
+            current_user.municipio_id,
+            categoria_ids,
+            categorias_raw,
+            allowed_names=allowed_categories,
         )
         if error_resp:
             return error_resp
     else:
-        categorias_normalizadas = _normalize_categorias_input(categorias_raw)
+        categorias_normalizadas = filter_employee_category_labels(
+            _normalize_categorias_input(categorias_raw),
+            known_categories=allowed_categories or None,
+        )
+        if allowed_categories:
+            categorias_normalizadas = [
+                categoria for categoria in categorias_normalizadas if categoria in allowed_categories
+            ]
         if categorias_normalizadas is None or not categorias_normalizadas:
-            return jsonify({"error": "Debe asignar al menos una categoría válida"}), 400
+            return jsonify({"error": "Debe asignar al menos una categoria operativa valida"}), 400
     if not all([name, email, password]):
         return jsonify({"error": "Datos inválidos"}), 400
     if User.query.filter_by(email=email.strip().lower()).first():
@@ -376,8 +496,7 @@ def crear_empleado(current_user: User):
         ),
         ticket_categorias=",".join(categorias_normalizadas or []),
     )
-    if categorias_db:
-        nuevo.categorias = categorias_db
+    nuevo.categorias = categorias_db
     _sync_employee_scope(nuevo, categorias_normalizadas or [], scope_raw)
     nuevo.set_password(password)
     db.session.add(nuevo)
@@ -503,22 +622,30 @@ def actualizar_empleado(current_user: User, emp_id: int):
     if 'categorias' in data or 'categoria_ids' in data:
         categorias_db = []
         categorias_norm = None
+        allowed_categories = _allowed_employee_category_names(current_user)
         if current_user.municipio_id:
             categorias_db, categorias_norm, error_resp = _resolver_categorias_municipio(
                 current_user.municipio_id,
                 data.get("categoria_ids") or [],
                 data.get("categorias"),
+                allowed_names=allowed_categories,
             )
             if error_resp:
                 return error_resp
         else:
-            categorias_norm = _normalize_categorias_input(data.get("categorias"))
+            categorias_norm = filter_employee_category_labels(
+                _normalize_categorias_input(data.get("categorias")),
+                known_categories=allowed_categories or None,
+            )
+            if allowed_categories:
+                categorias_norm = [
+                    categoria for categoria in categorias_norm if categoria in allowed_categories
+                ]
             if categorias_norm is None or not categorias_norm:
-                return jsonify({"error": "Debe asignar al menos una categoría válida"}), 400
+                return jsonify({"error": "Debe asignar al menos una categoria operativa valida"}), 400
 
         empleado.ticket_categorias = ",".join(categorias_norm or [])
-        if categorias_db:
-            empleado.categorias = categorias_db
+        empleado.categorias = categorias_db
         scope_raw = data.get("scope") if isinstance(data.get("scope"), dict) else None
         _sync_employee_scope(empleado, categorias_norm or [], scope_raw)
     try:
