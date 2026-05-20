@@ -37,7 +37,7 @@ from services.employee_routing import (
     tenant_operational_dimensions,
     workload_by_employee,
 )
-from services.catalog_quality import build_catalog_quality_payload
+from services.catalog_quality import build_catalog_quality_fallback_payload, build_catalog_quality_payload
 from services.demo_sandbox_contract import build_demo_whatsapp_sandbox_contract, sandbox_context_from_contract
 from services.operational_intelligence import build_operational_dashboard, build_operational_freshness
 from services.twilio_tech_provider import (
@@ -1218,8 +1218,19 @@ def catalog_quality_v2(current_user, tenant_slug: str | None = None):
     tenant, error = _resolve_tenant_or_error(current_user, tenant_slug)
     if error:
         return error
-    limit = max(1, min(int(request.args.get("limit", 20) or 20), 100))
-    return _json_response(build_catalog_quality_payload(tenant, limit=limit))
+    try:
+        limit = max(1, min(int(request.args.get("limit", 20) or 20), 100))
+    except (TypeError, ValueError):
+        limit = 20
+    try:
+        payload = build_catalog_quality_payload(tenant, limit=limit)
+    except Exception:
+        current_app.logger.exception(
+            "catalog_quality_v2 failed for tenant %s; returning degraded payload",
+            getattr(tenant, "slug", None),
+        )
+        payload = build_catalog_quality_fallback_payload(tenant)
+    return _json_response(payload)
 
 
 @v2_saas_bp.route("/tenant-health", methods=["GET"])

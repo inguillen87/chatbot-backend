@@ -53,8 +53,6 @@ def is_valid_employee_category_label(
     text = category_label_key(value)
     if not text:
         return False
-    if known_categories is not None and text in known_categories:
-        return True
     if len(text) > 80 or "@" in text or "http://" in text or "https://" in text:
         return False
     if any(text.startswith(prefix) for prefix in _NOISE_CATEGORY_PREFIXES):
@@ -67,6 +65,8 @@ def is_valid_employee_category_label(
         and text.endswith(_LOW_CONFIDENCE_NAME_SUFFIXES)
     ):
         return False
+    if known_categories is not None and text in known_categories:
+        return True
     return True
 
 
@@ -290,8 +290,10 @@ def tenant_operational_dimensions(tenant: TenantProfile, ticket_snapshots: list[
         channels.add("voice")
         sources["channels"].append("tenant_voice_config")
 
+    clean_categories = filter_employee_category_labels(categories)
+
     return {
-        "categorias": sorted(categories),
+        "categorias": sorted(clean_categories),
         "zonas": sorted(zones),
         "channels": sorted(channels),
         "sources": {key: sorted(set(value)) for key, value in sources.items() if value},

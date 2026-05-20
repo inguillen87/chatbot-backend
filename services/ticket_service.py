@@ -132,18 +132,57 @@ class ServicioTickets:
             in {"1", "true", "yes"}
         )
 
+    def _employee_channel_filter(self, channel: str):
+        """Accept legacy employees without tipo_chat and scoped employees for a channel."""
+
+        return or_(
+            User.tipo_chat == channel,
+            User.tipo_chat.is_(None),
+            User.tipo_chat == "",
+        )
+
+    def _municipal_employee_scope_filter(self, ticket: MunicipioTicket):
+        conditions = []
+        if getattr(ticket, "municipio_id", None):
+            conditions.extend(
+                [
+                    User.empresa_id == ticket.municipio_id,
+                    User.municipio_id == ticket.municipio_id,
+                    User.id == ticket.municipio_id,
+                ]
+            )
+        if getattr(ticket, "tenant_id", None):
+            conditions.append(User.tenant_id == ticket.tenant_id)
+        if not conditions:
+            conditions.append(User.id == None)  # noqa: E711
+        return or_(*conditions)
+
+    def _pyme_employee_scope_filter(self, ticket: PymeTicket, owner_id: Optional[int]):
+        conditions = []
+        if owner_id:
+            conditions.extend(
+                [
+                    User.empresa_id == owner_id,
+                    User.pyme_id == owner_id,
+                    User.id == owner_id,
+                ]
+            )
+        if getattr(ticket, "tenant_id", None):
+            conditions.append(User.tenant_id == ticket.tenant_id)
+        if getattr(ticket, "rubro_id", None):
+            conditions.append(User.rubro_id == ticket.rubro_id)
+        if not conditions:
+            conditions.append(User.id == None)  # noqa: E711
+        return or_(*conditions)
+
     def _empleados_para_ticket_municipal(self, ticket: MunicipioTicket) -> list[User]:
-        if not ticket.municipio_id:
+        if not ticket.municipio_id and not getattr(ticket, "tenant_id", None):
             return []
 
         query = User.query.filter(
-            User.tipo_chat == "municipio",
+            self._employee_channel_filter("municipio"),
             User.rol.in_(["empleado", "admin"]),
-            or_(
-                User.empresa_id == ticket.municipio_id,
-                User.municipio_id == ticket.municipio_id,
-                User.id == ticket.municipio_id,
-            ),
+            self._municipal_employee_scope_filter(ticket),
         )
 
         categoria_normalizada = (ticket.categoria or "").strip().lower()
@@ -204,13 +243,9 @@ class ServicioTickets:
         if empleado_id:
             empleado = User.query.filter(
                 User.id == empleado_id,
-                User.tipo_chat == "municipio",
+                self._employee_channel_filter("municipio"),
                 User.rol.in_(["empleado", "admin"]),
-                or_(
-                    User.empresa_id == ticket.municipio_id,
-                    User.municipio_id == ticket.municipio_id,
-                    User.id == ticket.municipio_id,
-                ),
+                self._municipal_employee_scope_filter(ticket),
             ).first()
             if not empleado:
                 raise ValueError("El agente seleccionado no pertenece a este municipio.")
@@ -264,14 +299,14 @@ class ServicioTickets:
 
     def _empleados_para_ticket_pyme(self, ticket: PymeTicket, actor_id: Optional[int]) -> list[User]:
         owner_id = self._resolve_pyme_owner_id(ticket, actor_id)
-        if not owner_id:
+        if not owner_id and not getattr(ticket, "tenant_id", None):
             return []
 
         candidatos = (
             User.query.filter(
-                User.empresa_id == owner_id,
+                self._pyme_employee_scope_filter(ticket, owner_id),
                 User.rol.in_(["empleado", "admin"]),
-                User.tipo_chat == "pyme",
+                self._employee_channel_filter("pyme"),
             )
             .order_by(User.id.asc())
             .all()
@@ -322,9 +357,9 @@ class ServicioTickets:
             owner_id = self._resolve_pyme_owner_id(ticket, actor_id)
             empleado = User.query.filter(
                 User.id == empleado_id,
-                User.tipo_chat == "pyme",
+                self._employee_channel_filter("pyme"),
                 User.rol.in_(["empleado", "admin"]),
-                User.empresa_id == owner_id,
+                self._pyme_employee_scope_filter(ticket, owner_id),
             ).first()
         else:
             candidatos = self._empleados_para_ticket_pyme(ticket, actor_id)

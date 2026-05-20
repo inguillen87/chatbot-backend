@@ -346,6 +346,23 @@ def _authorized_for_tenant_scope(current_user: User, tenant: Optional[TenantProf
     return False
 
 
+def _ticket_matches_tenant_scope(
+    ticket_obj,
+    tenant: Optional[TenantProfile],
+    tenant_municipio_id: Optional[int],
+    tenant_pyme_id: Optional[int],
+) -> bool:
+    if not tenant:
+        return False
+    if getattr(ticket_obj, "tenant_id", None) == getattr(tenant, "id", None):
+        return True
+    if tenant_municipio_id and getattr(ticket_obj, "municipio_id", None) == tenant_municipio_id:
+        return True
+    if tenant_pyme_id and getattr(ticket_obj, "rubro_id", None) == tenant_pyme_id:
+        return True
+    return False
+
+
 def _get_allowed_municipio_id(current_user: User) -> Optional[int]:
     allowed_ids = _get_allowed_municipio_ids(current_user)
     if not allowed_ids:
@@ -1381,8 +1398,7 @@ def asignar_ticket(current_user: User, tipo: str, ticket_id: int):
         allowed_municipio_ids = _get_allowed_municipio_ids(current_user)
         tenant_scope_allows = (
             _authorized_for_tenant_scope(current_user, tenant)
-            and tenant_municipio_id
-            and ticket_obj.municipio_id == tenant_municipio_id
+            and _ticket_matches_tenant_scope(ticket_obj, tenant, tenant_municipio_id, None)
         )
         if ticket_obj.municipio_id not in allowed_municipio_ids and not tenant_scope_allows:
             return jsonify({"error": "No tienes permiso para asignar este ticket."}), 403
@@ -1390,15 +1406,11 @@ def asignar_ticket(current_user: User, tipo: str, ticket_id: int):
         pyme_owner_id = current_user.id if current_user.rol == "admin" else current_user.empresa_id
         tenant_scope_allows = (
             _authorized_for_tenant_scope(current_user, tenant)
-            and tenant_pyme_id
-            and (
-                ticket_obj.rubro_id == tenant_pyme_id
-                or getattr(ticket_obj, "tenant_id", None) == getattr(tenant, "id", None)
-            )
+            and _ticket_matches_tenant_scope(ticket_obj, tenant, None, tenant_pyme_id)
         )
         if not tenant_scope_allows and (current_user.tipo_chat != "pyme" or ticket_obj.rubro_id != current_user.rubro_id):
             return jsonify({"error": "No tienes permiso para asignar este ticket."}), 403
-        if pyme_owner_id is None:
+        if pyme_owner_id is None and not tenant_scope_allows:
             return jsonify({"error": "Usuario PYME sin empresa asociada."}), 400
 
     data = request.get_json(silent=True) or {}
@@ -2978,8 +2990,7 @@ def send_ticket_history(current_user: User, tipo: str, ticket_id: int, anon_id: 
         tenant_scope_allows = (
             current_user
             and _authorized_for_tenant_scope(current_user, tenant)
-            and tenant_municipio_id
-            and ticket_obj.municipio_id == tenant_municipio_id
+            and _ticket_matches_tenant_scope(ticket_obj, tenant, tenant_municipio_id, None)
         )
         es_agente = (
             current_user
@@ -2998,10 +3009,7 @@ def send_ticket_history(current_user: User, tipo: str, ticket_id: int, anon_id: 
         tenant_scope_allows = (
             current_user
             and _authorized_for_tenant_scope(current_user, tenant)
-            and (
-                (tenant_pyme_id and ticket_obj.rubro_id == tenant_pyme_id)
-                or getattr(ticket_obj, "tenant_id", None) == getattr(tenant, "id", None)
-            )
+            and _ticket_matches_tenant_scope(ticket_obj, tenant, None, tenant_pyme_id)
         )
         es_agente = (
             current_user

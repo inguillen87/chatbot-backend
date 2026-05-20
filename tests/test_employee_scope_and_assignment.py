@@ -2,6 +2,7 @@ import jwt
 
 from app import db
 from models import TenantProfile, User
+from services.employee_routing import filter_employee_category_labels
 
 
 def _headers(app, user):
@@ -11,6 +12,15 @@ def _headers(app, user):
         algorithm="HS256",
     )
     return {"Authorization": f"Bearer {token}", "X-Tenant": "tenant-scope"}
+
+
+def test_employee_category_filter_rejects_contact_noise_even_if_known():
+    known = {"juancito", "luminaria", "arreglo de calle"}
+
+    assert filter_employee_category_labels(["juancito", "luminaria", "arreglo de calle"], known_categories=known) == [
+        "luminaria",
+        "arreglo de calle",
+    ]
 
 
 def test_employee_scope_update_and_suggest_assignee(client, app):

@@ -244,6 +244,132 @@ def _latest_imports(tenant_id: int, limit: int = 5) -> list[dict[str, Any]]:
     return items
 
 
+def build_catalog_quality_fallback_payload(
+    tenant: TenantProfile,
+    *,
+    reason: str = "catalog_quality_unavailable",
+) -> dict[str, Any]:
+    """Return a degraded but stable contract instead of leaking a 500 to UI."""
+
+    total = _safe_count(CatalogoItem.query.filter(CatalogoItem.tenant_id == tenant.id))
+    cfg = tenant.configuracion if isinstance(getattr(tenant, "configuracion", None), dict) else {}
+    return {
+        "contract_version": "catalog.quality.v1",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "tenant_slug": tenant.slug,
+        "catalog_version": cfg.get("catalog_version") or f"cat_{tenant.id}_unversioned",
+        "data_status": "degraded",
+        "warnings": [
+            {
+                "code": reason,
+                "message": "No se pudo calcular la calidad completa del catalogo. Se devuelve un contrato estable para no romper el panel.",
+            }
+        ],
+        "tenant": {
+            "id": tenant.id,
+            "slug": tenant.slug,
+            "nombre": tenant.nombre,
+            "tipo": tenant.tipo,
+            "vertical": tenant.vertical,
+        },
+        "summary": {
+            "products": total,
+            "items_total": total,
+            "ready_to_sell": 0,
+            "items_sellable": 0,
+            "missing_images": 0,
+            "missing_price": 0,
+            "missing_stock": 0,
+            "stock_unknown": 0,
+            "low_stock": 0,
+            "out_of_stock": 0,
+            "missing_description": 0,
+            "unavailable": 0,
+            "orders": 0,
+            "pending_orders": 0,
+            "image_coverage_rate": 0,
+            "price_coverage_rate": 0,
+            "stock_coverage_rate": 0,
+            "ready_rate": 0,
+        },
+        "queues": {
+            "missing_images": [],
+            "missing_price": [],
+            "missing_stock": [],
+            "low_stock": [],
+            "out_of_stock": [],
+            "unavailable": [],
+            "missing_description": [],
+        },
+        "inventory": {
+            "contract_version": "catalog.inventory_ops.v1",
+            "catalog_version": cfg.get("catalog_version"),
+            "last_inventory_update_at": cfg.get("catalog_last_inventory_update_at"),
+            "low_stock_threshold": cfg.get("inventory_low_stock_threshold", 5),
+            "summary": {
+                "stock_unknown": 0,
+                "low_stock": 0,
+                "out_of_stock": 0,
+                "ready_for_checkout": 0,
+            },
+            "columns": inventory_columns_contract(),
+            "policy": {
+                "demo_mode": False,
+                "confirm_orders_only_from_backend_stock": True,
+                "frontend_must_not_calculate_stock": True,
+            },
+        },
+        "imports": {
+            "latest": [],
+            "accepted_file_types": ["csv", "xlsx", "xls", "txt", "pdf", "png", "jpg", "jpeg", "webp"],
+            "image_columns": ["imagen_url", "image_url", "foto", "foto_url", "gallery_urls", "imagenes", "images"],
+            "inventory_columns": inventory_columns_contract()["stock_columns"],
+            "image_extraction_from_import": True,
+            "stock_import": True,
+            "stock_only_import": True,
+        },
+        "media_capabilities": {
+            "manual_image_url_edit": True,
+            "gallery_urls": True,
+            "bulk_import_images": True,
+            "bulk_import_stock": True,
+            "pdf_catalog_generation": True,
+            "qdrant_vector_sync": True,
+        },
+        "endpoints": {
+            "items": f"/api/admin/tenants/{tenant.slug}/catalog/items",
+            "item_patch_template": f"/api/admin/tenants/{tenant.slug}/catalog/items/{{item_id}}",
+            "bulk_import_legacy": "/api/admin/catalogo/importar",
+            "bulk_import_v2": "/api/admin/catalog/import",
+            "stock_only_import_v2": "/api/admin/catalog/import",
+            "inventory_patch_template": f"/api/admin/tenants/{tenant.slug}/catalog/items/{{item_id}}",
+            "vector_sync": "/api/admin/catalog/vector-sync",
+            "orders": f"/api/admin/tenants/{tenant.slug}/orders",
+            "public_market": f"/market/{tenant.slug}",
+        },
+        "alerts": [{"severity": "medium", "reason_code": reason, "count": total}],
+        "recommendations": [
+            {
+                "id": "retry_catalog_quality",
+                "label": "Revisar catalogo",
+                "description": "El backend no pudo calcular la calidad completa. El panel queda disponible en modo degradado.",
+                "severity": "warning",
+            }
+        ],
+        "recommended_actions": [],
+        "frontend_contract": {
+            "render_as": "catalog_quality_command_center",
+            "primary_view": "quality_board",
+            "queue_tabs": ["missing_images", "missing_price", "missing_stock", "unavailable", "missing_description"],
+            "inventory_tabs": ["stock_unknown", "low_stock", "out_of_stock"],
+            "allow_inline_patch": False,
+            "allow_stock_inline_patch": False,
+            "allow_stock_only_import": True,
+            "empty_state_behavior": "show_import_and_first_product_actions",
+        },
+    }
+
+
 def build_catalog_quality_payload(tenant: TenantProfile, *, limit: int = 20) -> dict[str, Any]:
     products = (
         CatalogoItem.query.options(*CatalogoItem.legacy_safe_options())

@@ -170,7 +170,7 @@ def _allowed_employee_category_names(current_user: User) -> set[str]:
         catalogo_categorias = catalogo_query.with_entities(CatalogoItem.categoria).distinct()
         allowed.update(filter_employee_category_labels([item[0] for item in catalogo_categorias if item and item[0]]))
 
-    return {item for item in allowed if item}
+    return set(filter_employee_category_labels(allowed))
 
 
 def _employee_scope_payload(
