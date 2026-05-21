@@ -914,10 +914,22 @@ class VoiceStreamService:
                         break
 
             requested_slug = str(self.requested_tenant_slug or "").strip()
-            if not self.owner_user and not self.tenant_profile and requested_slug:
-                self.tenant_profile = TenantProfile.query.filter_by(slug=requested_slug).first()
-                if self.tenant_profile:
-                    self.owner_user = self.tenant_profile.pyme or self.tenant_profile.municipio
+            if requested_slug:
+                requested_profile = TenantProfile.query.filter_by(slug=requested_slug).first()
+                if requested_profile:
+                    self.tenant_profile = requested_profile
+                    if not self.owner_user:
+                        self.owner_user = self.tenant_profile.pyme or self.tenant_profile.municipio
+
+            owner_slug = str(getattr(self.owner_user, "tenant_slug", "") or "").strip() if self.owner_user else ""
+            if self.owner_user and not self.tenant_profile and owner_slug:
+                self.tenant_profile = TenantProfile.query.filter_by(slug=owner_slug).first()
+
+            if self.owner_user and not self.tenant_profile:
+                self.tenant_profile = (
+                    TenantProfile.query.filter_by(pyme_id=self.owner_user.id).first()
+                    or TenantProfile.query.filter_by(municipio_id=self.owner_user.id).first()
+                )
 
             if not self.owner_user and not self.tenant_profile and self._is_chatboc_demo_call():
                 demo_candidates = [CHATBOC_DEMO_TENANT_SLUG, "chatboc-platform"]

@@ -128,6 +128,7 @@ def _demo_voice_action_url(endpoint: str = "voice.voice_demo_process", **extra) 
     params = {
         "tenant": request.values.get("tenant") or request.values.get("tenant_slug"),
         "vertical": request.values.get("vertical") or request.values.get("sector"),
+        "intent": request.values.get("intent"),
     }
     params.update(extra)
     return url_for(endpoint, _external=True, **{k: v for k, v in params.items() if v})

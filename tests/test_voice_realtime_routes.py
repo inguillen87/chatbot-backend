@@ -86,6 +86,7 @@ class VoiceRealtimeRoutesTestCase(unittest.TestCase):
         self.assertIn("municipio", body)
         self.assertIn("reclamos", body)
         self.assertNotIn("demo_hub", body)
+        self.assertIn("intent=reclamos", body)
 
     @patch("routes.voice_routes.TWILIO_AUTH_TOKEN", None)
     def test_voice_fallback_keeps_phone_demo_menu_alive(self):
