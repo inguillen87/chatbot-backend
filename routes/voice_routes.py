@@ -134,6 +134,36 @@ def _demo_voice_action_url(endpoint: str = "voice.voice_demo_process", **extra) 
     return url_for(endpoint, _external=True, **{k: v for k, v in params.items() if v})
 
 
+def _current_voice_vertical() -> str:
+    return _normalize_voice_text(request.values.get("vertical") or request.values.get("sector"))
+
+
+def _current_voice_tenant() -> str:
+    return _normalize_voice_text(request.values.get("tenant") or request.values.get("tenant_slug"))
+
+
+def _fallback_prompt_for_current_context() -> str:
+    vertical = _current_voice_vertical()
+    tenant = _current_voice_tenant()
+    if vertical in {"municipio", "gobierno", "juni", "junin"} or tenant.startswith("junin"):
+        return (
+            "La conexion realtime no quedo estable, pero sigo por telefono en espanol. "
+            "Soy el asistente telefonico del municipio. Deci o marca 1 para iniciar reclamo, "
+            "2 para consultar estado, 3 para tramites, o 4 para hablar con un operador."
+        )
+    if vertical in {"ventas", "sales"} or tenant in {"chatboc-demo", "chatboc-platform"}:
+        return (
+            "La conexion realtime no quedo estable, pero sigo por telefono en espanol. "
+            "Soy Chatboc.ar. Deci o marca 1 para demos de municipios, 2 para colegios, "
+            "3 para empresas y pedidos, o 4 para hablar con ventas."
+        )
+    return (
+        "Hola, soy Chatboc.ar y te atiendo en espanol. "
+        "Deci o marca 1 para municipios, 2 para colegios, "
+        "3 para empresas y pedidos, o 4 para ventas."
+    )
+
+
 def _append_demo_voice_gather(response: VoiceResponse, prompt: str | None = None) -> None:
     gather = Gather(
         input="speech dtmf",
@@ -146,18 +176,39 @@ def _append_demo_voice_gather(response: VoiceResponse, prompt: str | None = None
     )
     _voice_say(
         gather,
-        prompt
-        or (
-            "Hola, soy Chatboc.ar y te atiendo en español. "
-            "Decí o marcá 1 para municipios, 2 para colegios, "
-            "3 para empresas y pedidos, o 4 para ventas."
-        ),
+        prompt or _fallback_prompt_for_current_context(),
     )
     response.append(gather)
 
 
 def _demo_voice_reply_for(input_text: str | None) -> str:
     normalized = _normalize_voice_text(input_text)
+    vertical = _current_voice_vertical()
+    tenant = _current_voice_tenant()
+    if vertical in {"municipio", "gobierno", "juni", "junin"} or tenant.startswith("junin"):
+        if normalized in {"menu", "principal", "volver"}:
+            return (
+                "Menu del municipio. Deci o marca 1 iniciar reclamo, 2 consultar estado, "
+                "3 tramites, o 4 operador."
+            )
+        if normalized in {"1", "uno"} or any(
+            word in normalized for word in ("reclamo", "bache", "luminaria", "arbol", "calle", "agua")
+        ):
+            return (
+                "Perfecto. Puedo iniciar un reclamo municipal. Decime la categoria, la direccion "
+                "y una descripcion breve del problema."
+            )
+        if normalized in {"2", "dos"} or any(word in normalized for word in ("estado", "ticket", "pin")):
+            return "Para consultar estado, decime el numero de ticket o el PIN de seguimiento."
+        if normalized in {"3", "tres"} or any(word in normalized for word in ("tramite", "turno", "consulta")):
+            return "Para tramites, decime que gestion necesitas y te indico el camino correcto."
+        if normalized in {"4", "cuatro"} or any(word in normalized for word in ("operador", "persona", "agente")):
+            return "Te puedo dejar pedido de contacto con un operador. Decime tu nombre y el motivo."
+        return (
+            "No llegue a ubicar la opcion municipal. Deci iniciar reclamo, consultar estado, "
+            "tramites, u operador."
+        )
+
     if normalized in {"menu", "principal", "volver"}:
         return (
             "Menú principal. Decí o marcá 1 municipios, 2 colegios, "
@@ -268,14 +319,7 @@ def voice_fallback():
     Fallback endpoint for Twilio errors.
     """
     response = VoiceResponse()
-    _append_demo_voice_gather(
-        response,
-        (
-            "La conexión realtime no quedó estable, pero sigo por teléfono en español. "
-            "Decí o marcá 1 para municipios, 2 para colegios, "
-            "3 para empresas y pedidos, o 4 para ventas."
-        ),
-    )
+    _append_demo_voice_gather(response, _fallback_prompt_for_current_context())
     _voice_say(response, "No te escuché. Te mando el menú por WhatsApp y podés volver a llamar cuando quieras.")
     return Response(str(response), mimetype='text/xml')
 

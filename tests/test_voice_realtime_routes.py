@@ -104,6 +104,33 @@ class VoiceRealtimeRoutesTestCase(unittest.TestCase):
         self.assertIn("empresas", body)
 
     @patch("routes.voice_routes.TWILIO_AUTH_TOKEN", None)
+    def test_voice_fallback_uses_municipal_menu_for_junin_number(self):
+        response = self.client.post(
+            "/voice/fallback?tenant=junin-1&vertical=municipio&intent=reclamos",
+            data=self._twilio_payload(),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.get_data(as_text=True)
+        self.assertIn("<Gather", body)
+        self.assertIn("asistente telefonico del municipio", body)
+        self.assertIn("iniciar reclamo", body)
+        self.assertIn("consultar estado", body)
+        self.assertIn("intent=reclamos", body)
+
+    @patch("routes.voice_routes.TWILIO_AUTH_TOKEN", None)
+    def test_voice_demo_process_routes_municipal_reclamo_intent(self):
+        response = self.client.post(
+            "/voice/demo/process?tenant=junin-1&vertical=municipio&intent=reclamos",
+            data={**self._twilio_payload(), "Digits": "1"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.get_data(as_text=True)
+        self.assertIn("reclamo municipal", body)
+        self.assertIn("direccion", body)
+
+    @patch("routes.voice_routes.TWILIO_AUTH_TOKEN", None)
     def test_voice_demo_process_routes_business_order_intent(self):
         response = self.client.post(
             "/voice/demo/process",
