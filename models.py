@@ -2292,6 +2292,153 @@ class WhatsAppContactState(db.Model):
     )
 
 
+class ProviderConnection(db.Model):
+    __tablename__ = "provider_connection"
+
+    id = db.Column(db.Integer, primary_key=True)
+    tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=False, index=True)
+    provider = db.Column(db.String(50), nullable=False, index=True)
+    channel = db.Column(db.String(50), nullable=False, default="whatsapp", index=True)
+    environment = db.Column(db.String(30), nullable=False, default="production", index=True)
+    status = db.Column(db.String(50), nullable=False, default="needs_setup", index=True)
+    display_name = db.Column(db.String(255), nullable=True)
+    external_account_id = db.Column(db.String(120), nullable=True, index=True)
+    external_business_id = db.Column(db.String(120), nullable=True, index=True)
+    external_app_id = db.Column(db.String(120), nullable=True, index=True)
+    configuration_id = db.Column(db.String(120), nullable=True)
+    partner_solution_id = db.Column(db.String(120), nullable=True)
+    credentials_ref = db.Column(db.String(255), nullable=True)
+    capabilities = db.Column(JSONType, nullable=True)
+    config = db.Column(JSONType, nullable=True)
+    health = db.Column(JSONType, nullable=True)
+    created_at = db.Column(db.DateTime(timezone=True), default=get_local_now, nullable=False)
+    updated_at = db.Column(db.DateTime(timezone=True), default=get_local_now, onupdate=get_local_now, nullable=False)
+
+    tenant = db.relationship("TenantProfile", backref=db.backref("provider_connections", lazy="dynamic"))
+
+    __table_args__ = (
+        db.UniqueConstraint(
+            "tenant_id",
+            "provider",
+            "channel",
+            "environment",
+            name="uq_provider_connection_tenant_provider_channel_env",
+        ),
+    )
+
+
+class ProviderSender(db.Model):
+    __tablename__ = "provider_sender"
+
+    id = db.Column(db.Integer, primary_key=True)
+    tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=False, index=True)
+    provider_connection_id = db.Column(db.Integer, db.ForeignKey("provider_connection.id"), nullable=True, index=True)
+    channel = db.Column(db.String(50), nullable=False, default="whatsapp", index=True)
+    sender_type = db.Column(db.String(50), nullable=False, default="whatsapp_business")
+    phone_number = db.Column(db.String(50), nullable=True, index=True)
+    sender_id = db.Column(db.String(255), nullable=True, index=True)
+    sender_sid = db.Column(db.String(120), nullable=True, index=True)
+    messaging_service_sid = db.Column(db.String(120), nullable=True, index=True)
+    waba_id = db.Column(db.String(120), nullable=True, index=True)
+    phone_number_id = db.Column(db.String(120), nullable=True, index=True)
+    display_name = db.Column(db.String(255), nullable=True)
+    status = db.Column(db.String(50), nullable=False, default="draft", index=True)
+    verification_status = db.Column(db.String(50), nullable=True)
+    quality_rating = db.Column(db.String(50), nullable=True)
+    webhook_url = db.Column(db.String(500), nullable=True)
+    status_callback_url = db.Column(db.String(500), nullable=True)
+    metadata_json = db.Column(JSONType, nullable=True)
+    last_status_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    created_at = db.Column(db.DateTime(timezone=True), default=get_local_now, nullable=False)
+    updated_at = db.Column(db.DateTime(timezone=True), default=get_local_now, onupdate=get_local_now, nullable=False)
+
+    tenant = db.relationship("TenantProfile", backref=db.backref("provider_senders", lazy="dynamic"))
+    provider_connection = db.relationship("ProviderConnection", backref=db.backref("senders", lazy="dynamic"))
+
+    __table_args__ = (
+        db.UniqueConstraint("tenant_id", "channel", "phone_number", name="uq_provider_sender_tenant_channel_phone"),
+        db.Index("ix_provider_sender_tenant_status", "tenant_id", "status"),
+    )
+
+
+class MessagingEventLedger(db.Model):
+    __tablename__ = "messaging_event_ledger"
+
+    id = db.Column(db.Integer, primary_key=True)
+    tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=False, index=True)
+    provider_connection_id = db.Column(db.Integer, db.ForeignKey("provider_connection.id"), nullable=True, index=True)
+    provider_sender_id = db.Column(db.Integer, db.ForeignKey("provider_sender.id"), nullable=True, index=True)
+    contact_id = db.Column(db.String(36), nullable=True, index=True)
+    channel = db.Column(db.String(50), nullable=False, default="whatsapp", index=True)
+    direction = db.Column(db.String(20), nullable=False, index=True)
+    event_type = db.Column(db.String(80), nullable=False, index=True)
+    provider = db.Column(db.String(50), nullable=True, index=True)
+    provider_event_id = db.Column(db.String(180), nullable=True, index=True)
+    external_message_sid = db.Column(db.String(180), nullable=True, index=True)
+    external_status = db.Column(db.String(80), nullable=True, index=True)
+    sender = db.Column(db.String(255), nullable=True)
+    recipient = db.Column(db.String(255), nullable=True, index=True)
+    payload = db.Column(JSONType, nullable=True)
+    metadata_json = db.Column(JSONType, nullable=True)
+    request_id = db.Column(db.String(120), nullable=True, index=True)
+    error_code = db.Column(db.String(80), nullable=True)
+    error_message = db.Column(db.Text, nullable=True)
+    occurred_at = db.Column(db.DateTime(timezone=True), default=get_local_now, nullable=False, index=True)
+    created_at = db.Column(db.DateTime(timezone=True), default=get_local_now, nullable=False)
+
+    tenant = db.relationship("TenantProfile", backref=db.backref("messaging_events", lazy="dynamic"))
+    provider_connection = db.relationship("ProviderConnection", backref=db.backref("messaging_events", lazy="dynamic"))
+    provider_sender = db.relationship("ProviderSender", backref=db.backref("messaging_events", lazy="dynamic"))
+
+    __table_args__ = (
+        db.Index("ix_messaging_event_tenant_channel_at", "tenant_id", "channel", "occurred_at"),
+        db.Index("ix_messaging_event_tenant_status", "tenant_id", "external_status"),
+    )
+
+
+class ConsentLedger(db.Model):
+    __tablename__ = "consent_ledger"
+
+    id = db.Column(db.Integer, primary_key=True)
+    tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=False, index=True)
+    contact_key = db.Column(db.String(255), nullable=False, index=True)
+    channel = db.Column(db.String(50), nullable=False, default="whatsapp", index=True)
+    status = db.Column(db.String(50), nullable=False, index=True)
+    source = db.Column(db.String(80), nullable=True)
+    evidence_payload = db.Column(JSONType, nullable=True)
+    effective_at = db.Column(db.DateTime(timezone=True), default=get_local_now, nullable=False, index=True)
+    created_at = db.Column(db.DateTime(timezone=True), default=get_local_now, nullable=False)
+
+    tenant = db.relationship("TenantProfile", backref=db.backref("consent_events", lazy="dynamic"))
+
+
+class MessageTemplateRegistry(db.Model):
+    __tablename__ = "message_template_registry"
+
+    id = db.Column(db.Integer, primary_key=True)
+    tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=False, index=True)
+    provider = db.Column(db.String(50), nullable=False, default="twilio", index=True)
+    channel = db.Column(db.String(50), nullable=False, default="whatsapp", index=True)
+    name = db.Column(db.String(255), nullable=False)
+    language = db.Column(db.String(20), nullable=False, default="es")
+    category = db.Column(db.String(50), nullable=True, index=True)
+    status = db.Column(db.String(50), nullable=False, default="draft", index=True)
+    content_sid = db.Column(db.String(120), nullable=True, index=True)
+    external_template_id = db.Column(db.String(120), nullable=True, index=True)
+    body_preview = db.Column(db.Text, nullable=True)
+    components = db.Column(JSONType, nullable=True)
+    metadata_json = db.Column(JSONType, nullable=True)
+    last_sync_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    created_at = db.Column(db.DateTime(timezone=True), default=get_local_now, nullable=False)
+    updated_at = db.Column(db.DateTime(timezone=True), default=get_local_now, onupdate=get_local_now, nullable=False)
+
+    tenant = db.relationship("TenantProfile", backref=db.backref("message_templates", lazy="dynamic"))
+
+    __table_args__ = (
+        db.UniqueConstraint("tenant_id", "provider", "channel", "name", "language", name="uq_template_registry_identity"),
+    )
+
+
 class TenantConfig(db.Model):
     __tablename__ = "tenant_config"
 

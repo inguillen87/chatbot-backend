@@ -4,6 +4,7 @@ services:
     name: chatboc-backend
     env: python
     buildCommand: "./build.sh"
+    preDeployCommand: "flask db upgrade"
     startCommand: "gunicorn --worker-class eventlet --workers 1 --bind 0.0.0.0:$PORT app:app"
     plan: starter
     envVars:
@@ -11,6 +12,24 @@ services:
         value: 3.12.0
       - key: FLASK_APP
         value: app.py
+      - key: BACKEND_URL
+        value: https://www.chatboc.ar
+      - key: PUBLIC_API_BASE_URL
+        value: https://www.chatboc.ar
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      - key: TWILIO_META_APP_ID
+        sync: false
+      - key: TWILIO_META_EMBEDDED_SIGNUP_CONFIG_ID
+        sync: false
+      - key: TWILIO_PARTNER_SOLUTION_ID
+        sync: false
+      - key: TWILIO_TECH_PROVIDER_LIVE_ENABLED
+        value: "false"
+      - key: TWILIO_SUBACCOUNT_AUTH_TOKEN
+        sync: false
 
   # 2. El Cron Job (Automatización Semanal)
   - type: cron

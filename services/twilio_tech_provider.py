@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Mapping
 import base64
+import os
+import re
 
 import requests
 
@@ -81,6 +83,154 @@ def _twilio_post_form(
     return payload if isinstance(payload, dict) else {"payload": payload}
 
 
+def _twilio_post_json(
+    *,
+    url: str,
+    account_sid: str,
+    auth_token: str,
+    payload: Mapping[str, Any],
+    timeout: int = 20,
+) -> dict[str, Any]:
+    response = requests.post(
+        url,
+        json={key: value for key, value in payload.items() if value is not None},
+        headers={
+            "Authorization": _twilio_basic_auth(account_sid, auth_token),
+            "Content-Type": "application/json; charset=utf-8",
+        },
+        timeout=timeout,
+    )
+    try:
+        body = response.json()
+    except Exception:
+        body = {"raw": response.text}
+    if response.status_code >= 400:
+        raise RuntimeError(f"twilio_api_error status={response.status_code} payload={body}")
+    return body if isinstance(body, dict) else {"payload": body}
+
+
+def _twilio_get_json(
+    *,
+    url: str,
+    account_sid: str,
+    auth_token: str,
+    timeout: int = 20,
+) -> dict[str, Any]:
+    response = requests.get(
+        url,
+        headers={"Authorization": _twilio_basic_auth(account_sid, auth_token)},
+        timeout=timeout,
+    )
+    try:
+        body = response.json()
+    except Exception:
+        body = {"raw": response.text}
+    if response.status_code >= 400:
+        raise RuntimeError(f"twilio_api_error status={response.status_code} payload={body}")
+    return body if isinstance(body, dict) else {"payload": body}
+
+
+def _safe_env_suffix(value: Any) -> str:
+    raw = re.sub(r"[^A-Za-z0-9]+", "_", str(value or "").strip()).strip("_")
+    return raw.upper() or "TENANT"
+
+
+def _subaccount_token_ref_names(account_sid: str | None, tenant_slug: str | None = None) -> list[str]:
+    names: list[str] = []
+    if account_sid:
+        names.append(f"TWILIO_SUBACCOUNT_AUTH_TOKEN_{_safe_env_suffix(account_sid)}")
+    if tenant_slug:
+        names.append(f"TWILIO_SUBACCOUNT_AUTH_TOKEN_{_safe_env_suffix(tenant_slug)}")
+    names.append("TWILIO_SUBACCOUNT_AUTH_TOKEN")
+    return list(dict.fromkeys(names))
+
+
+def _read_config_or_env(config: Mapping[str, Any], key: str) -> str:
+    return _clean(config.get(key)) or _clean(os.environ.get(key))
+
+
+def _resolve_subaccount_auth_token(
+    *,
+    state: Mapping[str, Any],
+    tenant_slug: str | None,
+    app_config: Mapping[str, Any],
+) -> tuple[str | None, list[str]]:
+    subaccount_sid = _clean(state.get("twilio_account_sid"))
+    candidates: list[str] = []
+    explicit_ref = _clean(state.get("twilio_subaccount_token_ref"))
+    if explicit_ref:
+        candidates.append(explicit_ref)
+    for alias in state.get("twilio_subaccount_token_ref_aliases") or []:
+        alias_key = _clean(alias)
+        if alias_key:
+            candidates.append(alias_key)
+    candidates.extend(_subaccount_token_ref_names(subaccount_sid, tenant_slug))
+    candidates = list(dict.fromkeys(candidates))
+    for key in candidates:
+        token = _read_config_or_env(app_config, key)
+        if token:
+            return token, candidates
+    return None, candidates
+
+
+def _twilio_sender_response_sid(payload: Mapping[str, Any]) -> str | None:
+    return _clean(payload.get("sid") or payload.get("Sid")) or None
+
+
+def _twilio_sender_response_status(payload: Mapping[str, Any]) -> str | None:
+    return _clean(payload.get("status") or payload.get("Status")) or None
+
+
+def _twilio_sender_response_id(payload: Mapping[str, Any]) -> str | None:
+    return _clean(payload.get("sender_id") or payload.get("senderId") or payload.get("sender") or payload.get("Sender")) or None
+
+
+def _normalize_whatsapp_sender_id(value: Any) -> str | None:
+    raw = _clean(value)
+    if not raw:
+        return None
+    if raw.startswith("whatsapp:"):
+        phone = raw.replace("whatsapp:", "", 1)
+    else:
+        phone = raw
+    if not phone.startswith("+"):
+        phone = f"+{_digits(phone)}"
+    return f"whatsapp:{phone}" if phone and phone != "+" else None
+
+
+def _profile_from_payload(tenant, payload: Mapping[str, Any], request_payload: Mapping[str, Any]) -> dict[str, Any]:
+    profile = payload.get("profile") if isinstance(payload.get("profile"), dict) else {}
+    public_url = _clean(payload.get("website") or getattr(tenant, "dominio", None) or "https://www.chatboc.ar")
+    if public_url and not public_url.startswith(("http://", "https://")):
+        public_url = f"https://{public_url}"
+    display_name = _clean(
+        profile.get("name")
+        or payload.get("display_name")
+        or request_payload.get("display_name")
+        or getattr(tenant, "nombre", None)
+    )
+    vertical = _clean(profile.get("vertical") or payload.get("vertical"))
+    if not vertical:
+        tenant_vertical = _clean(getattr(tenant, "vertical", None) or getattr(tenant, "tipo", None))
+        vertical = "Education" if tenant_vertical == "educacion" else "Public Service" if tenant_vertical == "municipio" else "Professional Services"
+    result = {
+        "name": display_name,
+        "about": _clean(profile.get("about") or payload.get("about") or f"Canal oficial de {display_name}."),
+        "description": _clean(profile.get("description") or payload.get("description") or f"Atencion automatizada y humana de {display_name}."),
+        "vertical": vertical,
+    }
+    if public_url:
+        result["websites"] = [{"website": public_url, "label": "Sitio web"}]
+        result["privacy_url"] = _clean(profile.get("privacy_url") or payload.get("privacy_url") or f"{public_url.rstrip('/')}/privacidad")
+        result["terms_of_service_url"] = _clean(
+            profile.get("terms_of_service_url") or payload.get("terms_of_service_url") or f"{public_url.rstrip('/')}/terminos"
+        )
+    logo_url = _clean(profile.get("logo_url") or payload.get("logo_url") or getattr(tenant, "logo_url", None))
+    if logo_url:
+        result["logo_url"] = logo_url
+    return {key: value for key, value in result.items() if value}
+
+
 def build_twilio_tech_provider_contract(tenant, app_config: Mapping[str, Any]) -> dict[str, Any]:
     cfg = tenant.configuracion if isinstance(getattr(tenant, "configuracion", None), dict) else {}
     state = cfg.get(STATE_KEY) if isinstance(cfg.get(STATE_KEY), dict) else {}
@@ -111,7 +261,9 @@ def build_twilio_tech_provider_contract(tenant, app_config: Mapping[str, Any]) -
             "messaging_service_sid": state.get("messaging_service_sid"),
             "sender_sid": state.get("sender_sid"),
             "sender_id": state.get("sender_id") or getattr(tenant, "whatsapp_sender_id", None),
+            "sender_status": state.get("sender_status"),
             "waba_id": state.get("waba_id"),
+            "phone_number_id": state.get("phone_number_id"),
             "last_step": state.get("last_step"),
             "updated_at": state.get("updated_at"),
         },
@@ -147,6 +299,13 @@ def build_twilio_tech_provider_contract(tenant, app_config: Mapping[str, Any]) -
                 "method": "POST",
                 "endpoint": "https://messaging.twilio.com/v2/Channels/Senders",
                 "state": "done" if state.get("sender_sid") else "pending_meta_signup",
+            },
+            {
+                "id": "attach_sender_to_messaging_service",
+                "owner": "backend_after_sender_registration",
+                "method": "POST",
+                "endpoint": "https://messaging.twilio.com/v1/Services/{MessagingServiceSid}/ChannelSenders",
+                "state": "done" if state.get("channel_sender_attached") else "pending_sender",
             },
             {
                 "id": "poll_sender_status",
@@ -229,28 +388,292 @@ def provision_twilio_subaccount(tenant, payload: Mapping[str, Any], app_config: 
         result["missing_env"] = env["missing"]
         return result
 
-    subaccount = _twilio_post_form(
-        url="https://api.twilio.com/2010-04-01/Accounts.json",
-        account_sid=account_sid,
-        auth_token=auth_token,
-        data={"FriendlyName": request_payload["friendly_name"]},
-    )
+    try:
+        subaccount = _twilio_post_form(
+            url="https://api.twilio.com/2010-04-01/Accounts.json",
+            account_sid=account_sid,
+            auth_token=auth_token,
+            data={"FriendlyName": request_payload["friendly_name"]},
+        )
+    except Exception as exc:
+        result["ok"] = False
+        result["mode"] = "blocked"
+        result["reason_code"] = "twilio_subaccount_creation_failed"
+        result["error"] = str(exc)
+        result["state_patch"].update({"status": "provisioning_failed", "last_step": "create_subaccount"})
+        return result
+
     subaccount_sid = subaccount.get("sid")
     subaccount_token = subaccount.get("auth_token")
+    token_refs = _subaccount_token_ref_names(subaccount_sid, getattr(tenant, "slug", None))
     result["steps"].append({"id": "create_subaccount", "status": "done", "sid": subaccount_sid})
     result["state_patch"].update(
         {
-            "status": "subaccount_created",
+            "status": "subaccount_created" if not subaccount_token else "creating_messaging_service",
             "last_step": "create_subaccount",
             "twilio_account_sid": subaccount_sid,
             "twilio_subaccount_token_present": bool(subaccount_token),
+            "twilio_subaccount_token_ref": token_refs[0],
+            "twilio_subaccount_token_ref_aliases": token_refs[1:],
         }
     )
-    # We intentionally stop here unless the platform is explicitly extended to
-    # store subaccount credentials securely. Messaging API subdomains require
-    # subaccount credentials or subaccount API keys, so continuing without a
-    # secure secret store would create operational risk.
-    result["steps"].append({"id": "create_messaging_service", "status": "blocked_secure_secret_store_required"})
+
+    if not (subaccount_sid and subaccount_token):
+        result["ok"] = False
+        result["mode"] = "blocked"
+        result["reason_code"] = "twilio_subaccount_token_missing"
+        result["steps"].append({"id": "create_messaging_service", "status": "blocked_subaccount_token_missing"})
+        return result
+
+    try:
+        messaging_service = _twilio_post_form(
+            url="https://messaging.twilio.com/v1/Services",
+            account_sid=subaccount_sid,
+            auth_token=subaccount_token,
+            data={
+                "FriendlyName": request_payload["friendly_name"][:64],
+                "InboundRequestUrl": request_payload["webhook_url"],
+                "InboundMethod": "POST",
+                "StatusCallback": request_payload["status_callback_url"],
+                "UseInboundWebhookOnNumber": "false",
+                "Usecase": "notifications",
+            },
+        )
+    except Exception as exc:
+        result["ok"] = False
+        result["mode"] = "blocked"
+        result["reason_code"] = "twilio_messaging_service_creation_failed"
+        result["error"] = str(exc)
+        result["steps"].append({"id": "create_messaging_service", "status": "failed"})
+        result["state_patch"].update({"status": "messaging_service_failed", "last_step": "create_messaging_service"})
+        return result
+
+    messaging_service_sid = messaging_service.get("sid")
+    result["steps"].append({"id": "create_messaging_service", "status": "done", "sid": messaging_service_sid})
+    result["steps"].append({"id": "embedded_signup", "status": "requires_customer"})
+    result["steps"].append({"id": "register_sender", "status": "planned_after_embedded_signup"})
+    result["secure_secret_required"] = {
+        "reason_code": "store_subaccount_auth_token_for_later_sender_registration",
+        "required_env": token_refs,
+        "render_env_sync": "manual_until_render_api_key_or_secret_store_is_configured",
+        "do_not_store_in_database": True,
+    }
+    result["state_patch"].update(
+        {
+            "status": "ready_for_embedded_signup",
+            "last_step": "create_messaging_service",
+            "messaging_service_sid": messaging_service_sid,
+        }
+    )
+    return result
+
+
+def register_whatsapp_sender(tenant, payload: Mapping[str, Any], app_config: Mapping[str, Any]) -> dict[str, Any]:
+    cfg = tenant.configuracion if isinstance(getattr(tenant, "configuracion", None), dict) else {}
+    state = cfg.get(STATE_KEY) if isinstance(cfg.get(STATE_KEY), dict) else {}
+    request_payload = build_provisioning_request(tenant, payload, app_config)
+    live_enabled = _bool_config(app_config, "TWILIO_TECH_PROVIDER_LIVE_ENABLED")
+    subaccount_sid = _clean(state.get("twilio_account_sid"))
+    messaging_service_sid = _clean(state.get("messaging_service_sid"))
+    tenant_slug = getattr(tenant, "slug", None)
+    token, token_refs = _resolve_subaccount_auth_token(
+        state=state,
+        tenant_slug=tenant_slug,
+        app_config=app_config,
+    )
+    sender_id = _normalize_whatsapp_sender_id(
+        payload.get("sender_id")
+        or payload.get("phone_number")
+        or payload.get("whatsapp_number")
+        or state.get("requested_phone_number")
+        or getattr(tenant, "whatsapp_sender_id", None)
+    )
+    waba_id = _clean(payload.get("waba_id") or payload.get("wabaId") or state.get("waba_id"))
+    verification_method = _clean(payload.get("verification_method") or payload.get("verificationMethod") or "sms")
+    verification_code = _clean(payload.get("verification_code") or payload.get("verificationCode"))
+    now = datetime.now(timezone.utc).isoformat()
+
+    result: dict[str, Any] = {
+        "contract_version": "twilio.tech_provider.sender_registration.v1",
+        "ok": True,
+        "mode": "live" if live_enabled else "dry_run",
+        "steps": [],
+        "state_patch": {
+            "updated_at": now,
+            "requested_phone_number": (sender_id or "").replace("whatsapp:", "", 1) or state.get("requested_phone_number"),
+            "sender_id": sender_id,
+            "waba_id": waba_id,
+            "phone_number_id": payload.get("phone_number_id") or payload.get("phoneNumberId") or state.get("phone_number_id"),
+        },
+    }
+
+    missing = []
+    if not subaccount_sid:
+        missing.append("twilio_account_sid")
+    if not messaging_service_sid:
+        missing.append("messaging_service_sid")
+    if not sender_id:
+        missing.append("sender_id")
+    if not waba_id:
+        missing.append("waba_id")
+    if live_enabled and not token:
+        missing.append("twilio_subaccount_auth_token")
+
+    if missing:
+        result["ok"] = False
+        result["mode"] = "blocked"
+        result["reason_code"] = "sender_registration_prerequisites_missing"
+        result["missing"] = missing
+        if "twilio_subaccount_auth_token" in missing:
+            result["required_env"] = token_refs
+        result["state_patch"].update({"status": "sender_registration_blocked", "last_step": "register_sender"})
+        return result
+
+    if not live_enabled:
+        result["steps"].append({"id": "register_sender", "status": "planned"})
+        result["steps"].append({"id": "attach_sender_to_messaging_service", "status": "planned"})
+        result["state_patch"].update({"status": "sender_registration_plan_ready", "last_step": "register_sender_plan"})
+        return result
+
+    sender_payload: dict[str, Any] = {
+        "sender_id": sender_id,
+        "configuration": {
+            "waba_id": waba_id,
+            "verification_method": verification_method,
+        },
+        "webhook": {
+            "callback_url": request_payload["webhook_url"],
+            "callback_method": "POST",
+            "status_callback_url": request_payload["status_callback_url"],
+            "status_callback_method": "POST",
+        },
+        "profile": _profile_from_payload(tenant, payload, request_payload),
+    }
+    if verification_code:
+        sender_payload["configuration"]["verification_code"] = verification_code
+
+    try:
+        sender = _twilio_post_json(
+            url="https://messaging.twilio.com/v2/Channels/Senders",
+            account_sid=subaccount_sid,
+            auth_token=token or "",
+            payload=sender_payload,
+        )
+    except Exception as exc:
+        result["ok"] = False
+        result["mode"] = "blocked"
+        result["reason_code"] = "twilio_sender_registration_failed"
+        result["error"] = str(exc)
+        result["steps"].append({"id": "register_sender", "status": "failed"})
+        result["state_patch"].update({"status": "sender_registration_failed", "last_step": "register_sender"})
+        return result
+
+    sender_sid = _twilio_sender_response_sid(sender)
+    sender_status = _twilio_sender_response_status(sender)
+    sender_response_id = _twilio_sender_response_id(sender) or sender_id
+    result["steps"].append({"id": "register_sender", "status": "done", "sid": sender_sid, "sender_status": sender_status})
+    result["state_patch"].update(
+        {
+            "status": "sender_registered",
+            "last_step": "register_sender",
+            "sender_sid": sender_sid,
+            "sender_status": sender_status,
+            "sender_id": sender_response_id,
+        }
+    )
+
+    try:
+        channel_sender = _twilio_post_form(
+            url=f"https://messaging.twilio.com/v1/Services/{messaging_service_sid}/ChannelSenders",
+            account_sid=subaccount_sid,
+            auth_token=token or "",
+            data={"Sid": sender_sid},
+        )
+    except Exception as exc:
+        result["ok"] = False
+        result["mode"] = "blocked"
+        result["reason_code"] = "twilio_channel_sender_attach_failed"
+        result["error"] = str(exc)
+        result["steps"].append({"id": "attach_sender_to_messaging_service", "status": "failed"})
+        result["state_patch"].update({"status": "sender_attach_failed", "last_step": "attach_sender_to_messaging_service"})
+        return result
+
+    result["steps"].append(
+        {
+            "id": "attach_sender_to_messaging_service",
+            "status": "done",
+            "sid": _twilio_sender_response_sid(channel_sender) or sender_sid,
+        }
+    )
+    result["state_patch"].update(
+        {
+            "status": "sender_attached",
+            "last_step": "attach_sender_to_messaging_service",
+            "channel_sender_attached": True,
+        }
+    )
+    return result
+
+
+def poll_whatsapp_sender_status(tenant, app_config: Mapping[str, Any]) -> dict[str, Any]:
+    cfg = tenant.configuracion if isinstance(getattr(tenant, "configuracion", None), dict) else {}
+    state = cfg.get(STATE_KEY) if isinstance(cfg.get(STATE_KEY), dict) else {}
+    live_enabled = _bool_config(app_config, "TWILIO_TECH_PROVIDER_LIVE_ENABLED")
+    subaccount_sid = _clean(state.get("twilio_account_sid"))
+    sender_sid = _clean(state.get("sender_sid"))
+    token, token_refs = _resolve_subaccount_auth_token(
+        state=state,
+        tenant_slug=getattr(tenant, "slug", None),
+        app_config=app_config,
+    )
+    result: dict[str, Any] = {
+        "contract_version": "twilio.tech_provider.sender_status.v1",
+        "ok": True,
+        "mode": "live" if live_enabled else "dry_run",
+        "state_patch": {"updated_at": datetime.now(timezone.utc).isoformat()},
+    }
+    missing = []
+    if not subaccount_sid:
+        missing.append("twilio_account_sid")
+    if not sender_sid:
+        missing.append("sender_sid")
+    if live_enabled and not token:
+        missing.append("twilio_subaccount_auth_token")
+    if missing:
+        result["ok"] = False
+        result["mode"] = "blocked"
+        result["reason_code"] = "sender_status_prerequisites_missing"
+        result["missing"] = missing
+        if "twilio_subaccount_auth_token" in missing:
+            result["required_env"] = token_refs
+        return result
+    if not live_enabled:
+        result["state_patch"].update({"last_step": "poll_sender_status_plan"})
+        return result
+    try:
+        sender = _twilio_get_json(
+            url=f"https://messaging.twilio.com/v2/Channels/Senders/{sender_sid}",
+            account_sid=subaccount_sid,
+            auth_token=token or "",
+        )
+    except Exception as exc:
+        result["ok"] = False
+        result["mode"] = "blocked"
+        result["reason_code"] = "twilio_sender_status_failed"
+        result["error"] = str(exc)
+        return result
+
+    status = _twilio_sender_response_status(sender)
+    sender_id = _twilio_sender_response_id(sender)
+    result["sender"] = sender
+    result["state_patch"].update(
+        {
+            "status": "sender_online" if status == "ONLINE" else "sender_pending",
+            "last_step": "poll_sender_status",
+            "sender_status": status,
+            "sender_id": sender_id or state.get("sender_id"),
+        }
+    )
     return result
 
 

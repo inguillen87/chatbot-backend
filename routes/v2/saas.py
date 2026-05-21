@@ -40,10 +40,13 @@ from services.employee_routing import (
 from services.catalog_quality import build_catalog_quality_fallback_payload, build_catalog_quality_payload
 from services.demo_sandbox_contract import build_demo_whatsapp_sandbox_contract, sandbox_context_from_contract
 from services.operational_intelligence import build_operational_dashboard, build_operational_freshness
+from services.provider_platform import build_whatsapp_provider_status, sync_twilio_provider_records
 from services.twilio_tech_provider import (
     build_twilio_tech_provider_contract,
     merge_twilio_state,
+    poll_whatsapp_sender_status,
     provision_twilio_subaccount,
+    register_whatsapp_sender,
 )
 from services.v2.sla_service import is_ticket_overdue
 from services.whatsapp_experience import build_whatsapp_experience
@@ -1328,6 +1331,17 @@ def whatsapp_experience_v2(current_user, tenant_slug: str | None = None):
     return _json_response(build_whatsapp_experience(tenant, app_config=current_app.config))
 
 
+@v2_saas_bp.route("/integrations/whatsapp/status", methods=["GET"])
+@v2_saas_bp.route("/tenants/<string:tenant_slug>/integrations/whatsapp/status", methods=["GET"])
+@token_requerido
+@require_role("admin", "empleado", "super_admin")
+def whatsapp_provider_status_v2(current_user, tenant_slug: str | None = None):
+    tenant, error = _resolve_tenant_or_error(current_user, tenant_slug)
+    if error:
+        return error
+    return _json_response(build_whatsapp_provider_status(tenant, current_app.config))
+
+
 @v2_saas_bp.route("/whatsapp/tech-provider", methods=["GET"])
 @v2_saas_bp.route("/tenants/<string:tenant_slug>/whatsapp/tech-provider", methods=["GET"])
 @token_requerido
@@ -1354,6 +1368,14 @@ def whatsapp_tech_provider_provision_v2(current_user, tenant_slug: str | None = 
 
     result = provision_twilio_subaccount(tenant, payload, current_app.config)
     merged_state = merge_twilio_state(tenant, result.get("state_patch") or {})
+    sync_twilio_provider_records(
+        tenant,
+        merged_state,
+        app_config=current_app.config,
+        actor_user=current_user,
+        request_id=_request_id(),
+        event_type="twilio_provisioning_plan",
+    )
     flag_modified(tenant, "configuracion")
     db.session.commit()
     return _json_response(
@@ -1396,6 +1418,14 @@ def whatsapp_tech_provider_embedded_signup_v2(current_user, tenant_slug: str | N
         "embedded_signup_session_id": payload.get("session_id") or payload.get("sessionId"),
     }
     merged_state = merge_twilio_state(tenant, state_patch)
+    sync_twilio_provider_records(
+        tenant,
+        merged_state,
+        app_config=current_app.config,
+        actor_user=current_user,
+        request_id=_request_id(),
+        event_type="meta_embedded_signup_completed",
+    )
     flag_modified(tenant, "configuracion")
     db.session.commit()
     return _json_response(
@@ -1407,6 +1437,92 @@ def whatsapp_tech_provider_embedded_signup_v2(current_user, tenant_slug: str | N
             "next_action": "register_whatsapp_sender_via_senders_api",
             "contract": build_twilio_tech_provider_contract(tenant, current_app.config),
         }
+    )
+
+
+@v2_saas_bp.route("/whatsapp/tech-provider/register-sender", methods=["POST"])
+@v2_saas_bp.route("/tenants/<string:tenant_slug>/whatsapp/tech-provider/register-sender", methods=["POST"])
+@token_requerido
+@require_role("admin", "super_admin")
+def whatsapp_tech_provider_register_sender_v2(current_user, tenant_slug: str | None = None):
+    tenant, error = _resolve_tenant_or_error(current_user, tenant_slug)
+    if error:
+        return error
+
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict):
+        payload = {}
+
+    result = register_whatsapp_sender(tenant, payload, current_app.config)
+    merged_state = merge_twilio_state(tenant, result.get("state_patch") or {})
+    sync_twilio_provider_records(
+        tenant,
+        merged_state,
+        app_config=current_app.config,
+        actor_user=current_user,
+        request_id=_request_id(),
+        event_type="twilio_sender_registration",
+    )
+    flag_modified(tenant, "configuracion")
+    db.session.commit()
+    return _json_response(
+        {
+            **result,
+            "tenant": _tenant_ref(tenant),
+            "state": {
+                "status": merged_state.get("status"),
+                "last_step": merged_state.get("last_step"),
+                "twilio_account_sid": merged_state.get("twilio_account_sid"),
+                "messaging_service_sid": merged_state.get("messaging_service_sid"),
+                "sender_sid": merged_state.get("sender_sid"),
+                "sender_id": merged_state.get("sender_id"),
+                "sender_status": merged_state.get("sender_status"),
+                "waba_id": merged_state.get("waba_id"),
+                "phone_number_id": merged_state.get("phone_number_id"),
+                "updated_at": merged_state.get("updated_at"),
+            },
+            "contract": build_twilio_tech_provider_contract(tenant, current_app.config),
+        },
+        200 if result.get("ok", True) else 400,
+    )
+
+
+@v2_saas_bp.route("/whatsapp/tech-provider/sender-status", methods=["GET", "POST"])
+@v2_saas_bp.route("/tenants/<string:tenant_slug>/whatsapp/tech-provider/sender-status", methods=["GET", "POST"])
+@token_requerido
+@require_role("admin", "super_admin")
+def whatsapp_tech_provider_sender_status_v2(current_user, tenant_slug: str | None = None):
+    tenant, error = _resolve_tenant_or_error(current_user, tenant_slug)
+    if error:
+        return error
+
+    result = poll_whatsapp_sender_status(tenant, current_app.config)
+    merged_state = merge_twilio_state(tenant, result.get("state_patch") or {})
+    sync_twilio_provider_records(
+        tenant,
+        merged_state,
+        app_config=current_app.config,
+        actor_user=current_user,
+        request_id=_request_id(),
+        event_type="twilio_sender_status_poll",
+    )
+    flag_modified(tenant, "configuracion")
+    db.session.commit()
+    return _json_response(
+        {
+            **result,
+            "tenant": _tenant_ref(tenant),
+            "state": {
+                "status": merged_state.get("status"),
+                "last_step": merged_state.get("last_step"),
+                "sender_sid": merged_state.get("sender_sid"),
+                "sender_id": merged_state.get("sender_id"),
+                "sender_status": merged_state.get("sender_status"),
+                "updated_at": merged_state.get("updated_at"),
+            },
+            "contract": build_twilio_tech_provider_contract(tenant, current_app.config),
+        },
+        200 if result.get("ok", True) else 400,
     )
 
 

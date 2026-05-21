@@ -131,6 +131,8 @@ def filter_employee_zone_labels(values: Any, *, limit: int = 80) -> list[str]:
 def normalize_scope_list(values: Any, *, limit: int = 30) -> list[str]:
     if isinstance(values, str):
         values = [item.strip() for item in values.split(",")]
+    elif isinstance(values, (set, tuple)):
+        values = list(values)
     if not isinstance(values, list):
         return []
     seen: set[str] = set()

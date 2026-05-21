@@ -1,4 +1,5 @@
 import os
+import json
 import unittest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
@@ -19,7 +20,10 @@ from models import (
     Notification,
     NotificationTemplate,
     PedidoConversacional,
+    MessagingEventLedger,
     Promocion,
+    ProviderConnection,
+    ProviderSender,
     TenantConfig,
     TenantProfile,
     TenantTicket,
@@ -36,6 +40,16 @@ class V2SaasTestConfig(Config):
     SQLALCHEMY_ENGINE_OPTIONS = {"connect_args": {"check_same_thread": False}}
     ENABLE_RUNTIME_SCHEMA_SYNC = False
     ENABLE_RUNTIME_TENANT_INIT = False
+
+
+class _FakeTwilioResponse:
+    def __init__(self, payload, status_code=200):
+        self._payload = payload
+        self.status_code = status_code
+        self.text = json.dumps(payload)
+
+    def json(self):
+        return self._payload
 
 
 class V2SaasContractsTest(unittest.TestCase):
@@ -248,7 +262,7 @@ class V2SaasContractsTest(unittest.TestCase):
             headers={**self._auth(self.owner), "X-Request-Id": "coverage-1"},
         )
 
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 200, response.get_json())
         payload = response.get_json()
         self.assertEqual(payload.get("contract_version"), "employee.coverage.v1")
         self.assertEqual(payload.get("request_id"), "coverage-1")
@@ -281,7 +295,7 @@ class V2SaasContractsTest(unittest.TestCase):
             headers=headers,
         )
 
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 200, response.get_json())
         payload = response.get_json()
         self.assertEqual(payload.get("request_id"), "coverage-empty-1")
         self.assertGreater(payload["summary"]["total_dimensions"], 0)
@@ -346,7 +360,7 @@ class V2SaasContractsTest(unittest.TestCase):
             headers={**self._auth(owner), "X-Tenant-Slug": tenant.slug, "X-Request-Id": "routing-legacy-muni-1"},
         )
 
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 200, response.get_json())
         payload = response.get_json()
         legacy_item = next(item for item in payload["queues"]["open"] if item["source_model"] == "MunicipioTicket" and item["id"] == ticket.id)
         self.assertEqual(legacy_item["category"], "alumbrado")
@@ -382,7 +396,7 @@ class V2SaasContractsTest(unittest.TestCase):
             headers={**self._auth(self.owner), "X-Request-Id": "routing-1"},
         )
 
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 200, response.get_json())
         payload = response.get_json()
         self.assertEqual(payload.get("contract_version"), "employee.routing.v1")
         self.assertEqual(payload.get("request_id"), "routing-1")
@@ -428,7 +442,7 @@ class V2SaasContractsTest(unittest.TestCase):
     def test_tenant_health_contract(self):
         response = self.client.get("/api/v2/tenant-health", headers=self._auth(self.owner))
 
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 200, response.get_json())
         payload = response.get_json()
         self.assertEqual(payload.get("contract_version"), "tenant.health.v1")
         self.assertIn(payload["health"]["status"], {"healthy", "warning", "critical"})
@@ -468,7 +482,7 @@ class V2SaasContractsTest(unittest.TestCase):
             headers={**self._auth(self.owner), "X-Request-Id": "catalog-quality-1"},
         )
 
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 200, response.get_json())
         payload = response.get_json()
         self.assertEqual(payload.get("contract_version"), "catalog.quality.v1")
         self.assertEqual(payload.get("request_id"), "catalog-quality-1")
@@ -505,7 +519,7 @@ class V2SaasContractsTest(unittest.TestCase):
             },
         )
 
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 200, response.get_json())
         payload = response.get_json()
         self.assertEqual(payload.get("contract_version"), "whatsapp.sandbox_session.v1")
         self.assertTrue(payload.get("ok"))
@@ -573,7 +587,7 @@ class V2SaasContractsTest(unittest.TestCase):
             headers={**self._auth(self.owner), "X-Request-Id": "tech-provider-1"},
         )
 
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 200, response.get_json())
         payload = response.get_json()
         self.assertEqual(payload["contract_version"], "twilio.tech_provider.v1")
         self.assertEqual(payload["request_id"], "tech-provider-1")
@@ -623,6 +637,173 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(signup["contract_version"], "twilio.tech_provider.embedded_signup.v1")
         self.assertEqual(signup["state"]["waba_id"], "123456789")
         self.assertEqual(signup["next_action"], "register_whatsapp_sender_via_senders_api")
+
+        connection = ProviderConnection.query.filter_by(tenant_id=self.tenant.id, provider="twilio", channel="whatsapp").first()
+        self.assertIsNotNone(connection)
+        self.assertEqual(connection.status, "pending_sender_registration")
+        self.assertEqual(connection.external_business_id, "123456789")
+        sender = ProviderSender.query.filter_by(tenant_id=self.tenant.id, channel="whatsapp").first()
+        self.assertIsNotNone(sender)
+        self.assertEqual(sender.phone_number, "+5491112223333")
+        self.assertEqual(sender.waba_id, "123456789")
+        self.assertEqual(sender.phone_number_id, "987654321")
+        self.assertGreaterEqual(MessagingEventLedger.query.filter_by(tenant_id=self.tenant.id, channel="whatsapp").count(), 2)
+
+        status_response = self.client.get(
+            f"/api/v2/tenants/{self.tenant.slug}/integrations/whatsapp/status",
+            headers={**self._auth(self.owner), "X-Request-Id": "provider-status-1"},
+        )
+
+        self.assertEqual(status_response.status_code, 200)
+        status = status_response.get_json()
+        self.assertEqual(status["contract_version"], "provider.platform_status.v1")
+        self.assertEqual(status["request_id"], "provider-status-1")
+        self.assertEqual(status["tenant"]["slug"], self.tenant.slug)
+        self.assertEqual(status["connection"]["external_business_id"], "123456789")
+        self.assertEqual(status["sender"]["phone_number"], "+5491112223333")
+        self.assertEqual(status["frontend_contract"]["render_as"], "whatsapp_provider_status")
+        self.assertTrue(any(check["id"] == "subaccount" for check in status["readiness_checks"]))
+        self.assertTrue(status["recent_events"])
+
+    def test_twilio_tech_provider_live_provision_creates_subaccount_and_messaging_service_without_persisting_token(self):
+        self.app.config.update(
+            TWILIO_ACCOUNT_SID="ACparent",
+            TWILIO_AUTH_TOKEN="parent-secret",
+            TWILIO_META_APP_ID="meta-app",
+            TWILIO_META_EMBEDDED_SIGNUP_CONFIG_ID="cfg-123",
+            TWILIO_TECH_PROVIDER_LIVE_ENABLED=True,
+            PUBLIC_API_BASE_URL="https://www.chatboc.ar",
+        )
+        calls = []
+
+        def fake_post(url, **kwargs):
+            calls.append((url, kwargs))
+            if url.endswith("/Accounts.json"):
+                self.assertEqual(kwargs["data"]["FriendlyName"], "Chatboc - saas-tenant")
+                return _FakeTwilioResponse({"sid": "ACchild", "auth_token": "child-secret"})
+            if url == "https://messaging.twilio.com/v1/Services":
+                self.assertEqual(kwargs["data"]["InboundRequestUrl"], "https://www.chatboc.ar/webhook/whatsapp")
+                self.assertEqual(kwargs["data"]["StatusCallback"], "https://www.chatboc.ar/twilio/whatsapp/status")
+                return _FakeTwilioResponse({"sid": "MGchild"})
+            raise AssertionError(f"unexpected Twilio URL {url}")
+
+        with patch("services.twilio_tech_provider.requests.post", side_effect=fake_post):
+            response = self.client.post(
+                f"/api/v2/tenants/{self.tenant.slug}/whatsapp/tech-provider/provision",
+                headers={**self._auth(self.owner), "X-Request-Id": "tech-provider-live-1"},
+                json={"phone_number": "+5491112223333", "display_name": "Colegio SaaS"},
+            )
+
+        self.assertEqual(response.status_code, 200, response.get_json())
+        payload = response.get_json()
+        self.assertEqual(payload["mode"], "live")
+        self.assertEqual(payload["state"]["status"], "ready_for_embedded_signup")
+        self.assertEqual(payload["state"]["twilio_account_sid"], "ACchild")
+        self.assertEqual(payload["state"]["messaging_service_sid"], "MGchild")
+        self.assertEqual(payload["secure_secret_required"]["required_env"][0], "TWILIO_SUBACCOUNT_AUTH_TOKEN_ACCHILD")
+        refreshed = db.session.get(TenantProfile, self.tenant.id)
+        state_text = json.dumps(refreshed.configuracion, sort_keys=True)
+        self.assertIn("TWILIO_SUBACCOUNT_AUTH_TOKEN_ACCHILD", state_text)
+        self.assertNotIn("child-secret", state_text)
+        self.assertEqual(len(calls), 2)
+
+    def test_twilio_tech_provider_register_sender_blocks_without_subaccount_secret(self):
+        self.app.config.update(
+            TWILIO_ACCOUNT_SID="ACparent",
+            TWILIO_AUTH_TOKEN="parent-secret",
+            TWILIO_META_APP_ID="meta-app",
+            TWILIO_META_EMBEDDED_SIGNUP_CONFIG_ID="cfg-123",
+            TWILIO_TECH_PROVIDER_LIVE_ENABLED=True,
+        )
+        self.tenant.configuracion = {
+            "twilio_tech_provider": {
+                "status": "pending_sender_registration",
+                "twilio_account_sid": "ACchild",
+                "messaging_service_sid": "MGchild",
+                "requested_phone_number": "+5491112223333",
+                "waba_id": "123456789",
+                "phone_number_id": "987654321",
+            }
+        }
+        db.session.add(self.tenant)
+        db.session.commit()
+
+        response = self.client.post(
+            f"/api/v2/tenants/{self.tenant.slug}/whatsapp/tech-provider/register-sender",
+            headers={**self._auth(self.owner), "X-Request-Id": "tech-provider-sender-blocked-1"},
+            json={},
+        )
+
+        self.assertEqual(response.status_code, 400)
+        payload = response.get_json()
+        self.assertEqual(payload["contract_version"], "twilio.tech_provider.sender_registration.v1")
+        self.assertEqual(payload["reason_code"], "sender_registration_prerequisites_missing")
+        self.assertIn("twilio_subaccount_auth_token", payload["missing"])
+        self.assertIn("TWILIO_SUBACCOUNT_AUTH_TOKEN_ACCHILD", payload["required_env"])
+
+    def test_twilio_tech_provider_register_sender_attaches_to_messaging_service_and_syncs_status(self):
+        self.app.config.update(
+            TWILIO_ACCOUNT_SID="ACparent",
+            TWILIO_AUTH_TOKEN="parent-secret",
+            TWILIO_META_APP_ID="meta-app",
+            TWILIO_META_EMBEDDED_SIGNUP_CONFIG_ID="cfg-123",
+            TWILIO_TECH_PROVIDER_LIVE_ENABLED=True,
+            TWILIO_SUBACCOUNT_AUTH_TOKEN_ACCHILD="child-secret",
+            PUBLIC_API_BASE_URL="https://www.chatboc.ar",
+        )
+        self.tenant.configuracion = {
+            "twilio_tech_provider": {
+                "status": "pending_sender_registration",
+                "twilio_account_sid": "ACchild",
+                "messaging_service_sid": "MGchild",
+                "requested_phone_number": "+5491112223333",
+                "display_name": "Colegio SaaS",
+                "waba_id": "123456789",
+                "phone_number_id": "987654321",
+            }
+        }
+        db.session.add(self.tenant)
+        db.session.commit()
+        calls = []
+
+        def fake_post(url, **kwargs):
+            calls.append((url, kwargs))
+            if url == "https://messaging.twilio.com/v2/Channels/Senders":
+                body = kwargs["json"]
+                self.assertEqual(body["sender_id"], "whatsapp:+5491112223333")
+                self.assertEqual(body["configuration"]["waba_id"], "123456789")
+                self.assertEqual(body["webhook"]["callback_url"], "https://www.chatboc.ar/webhook/whatsapp")
+                return _FakeTwilioResponse(
+                    {
+                        "sid": "XE123",
+                        "status": "PENDING",
+                        "sender_id": "whatsapp:+5491112223333",
+                    },
+                    status_code=201,
+                )
+            if url == "https://messaging.twilio.com/v1/Services/MGchild/ChannelSenders":
+                self.assertEqual(kwargs["data"], {"Sid": "XE123"})
+                return _FakeTwilioResponse({"sid": "XE123"}, status_code=201)
+            raise AssertionError(f"unexpected Twilio URL {url}")
+
+        with patch("services.twilio_tech_provider.requests.post", side_effect=fake_post):
+            response = self.client.post(
+                f"/api/v2/tenants/{self.tenant.slug}/whatsapp/tech-provider/register-sender",
+                headers={**self._auth(self.owner), "X-Request-Id": "tech-provider-sender-live-1"},
+                json={},
+            )
+
+        self.assertEqual(response.status_code, 200, response.get_json())
+        payload = response.get_json()
+        self.assertEqual(payload["state"]["status"], "sender_attached")
+        self.assertEqual(payload["state"]["sender_sid"], "XE123")
+        self.assertEqual(payload["state"]["sender_status"], "PENDING")
+        self.assertEqual(len(calls), 2)
+        sender = ProviderSender.query.filter_by(tenant_id=self.tenant.id, channel="whatsapp").first()
+        self.assertIsNotNone(sender)
+        self.assertEqual(sender.sender_sid, "XE123")
+        self.assertEqual(sender.messaging_service_sid, "MGchild")
+        self.assertEqual(sender.status, "pending")
 
     def test_admin_catalog_exposes_and_saves_draft_endpoint(self):
         get_response = self.client.get(
