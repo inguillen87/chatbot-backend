@@ -13,9 +13,9 @@ services:
       - key: FLASK_APP
         value: app.py
       - key: BACKEND_URL
-        value: https://www.chatboc.ar
+        value: https://api.chatboc.ar
       - key: PUBLIC_API_BASE_URL
-        value: https://www.chatboc.ar
+        value: https://api.chatboc.ar
       - key: TWILIO_ACCOUNT_SID
         sync: false
       - key: TWILIO_AUTH_TOKEN
