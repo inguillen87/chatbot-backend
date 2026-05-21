@@ -1090,6 +1090,7 @@ class VoiceStreamService:
         if self._is_chatboc_demo_call():
             instructions += (
                 " Esta llamada es una demo comercial de Chatboc. "
+                "Habla siempre en español argentino claro aunque el motor detecte otro idioma. "
                 "Al inicio ofrece rutas claras para probar: municipios, colegios, empresas y ventas. "
                 "Si la persona ya eligio una vertical, guia una simulacion completa y accionable de esa vertical."
             )

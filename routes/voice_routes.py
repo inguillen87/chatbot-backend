@@ -22,6 +22,9 @@ voice_bp = Blueprint('voice', __name__)
 
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
 CHATBOC_DEMO_DEFAULT_WHATSAPP_NUMBER = "+18564858589"
+DEFAULT_TWILIO_FALLBACK_VOICE = "Polly.Lupe-Neural"
+DEFAULT_TWILIO_FALLBACK_SAY_LANGUAGE = "es-US"
+DEFAULT_TWILIO_GATHER_LANGUAGE = "es-AR"
 logger = logging.getLogger(__name__)
 
 
@@ -39,6 +42,52 @@ def _legacy_voice_gather_enabled() -> bool:
     return _is_truthy(
         current_app.config.get("VOICE_LEGACY_GATHER_ENABLED")
         or os.environ.get("VOICE_LEGACY_GATHER_ENABLED")
+    )
+
+
+def _voice_config_value(*names: str, default: str | None = None) -> str | None:
+    for name in names:
+        if not name:
+            continue
+
+        value = None
+        try:
+            value = current_app.config.get(name)
+        except RuntimeError:
+            value = None
+
+        if value is None:
+            value = os.environ.get(name)
+
+        if value is None:
+            continue
+
+        text = str(value).strip()
+        if text:
+            return text
+
+    return default
+
+
+def _twilio_fallback_voice() -> str:
+    return _voice_config_value(
+        "TWILIO_FALLBACK_VOICE",
+        default=DEFAULT_TWILIO_FALLBACK_VOICE,
+    )
+
+
+def _twilio_fallback_say_language() -> str:
+    return _voice_config_value(
+        "TWILIO_FALLBACK_SAY_LANGUAGE",
+        "TWILIO_FALLBACK_LANGUAGE",
+        default=DEFAULT_TWILIO_FALLBACK_SAY_LANGUAGE,
+    )
+
+
+def _twilio_gather_language() -> str:
+    return _voice_config_value(
+        "TWILIO_GATHER_LANGUAGE",
+        default=DEFAULT_TWILIO_GATHER_LANGUAGE,
     )
 
 
@@ -68,11 +117,11 @@ def _chatboc_demo_voice_max_seconds() -> int:
 
 def _voice_say(parent, text: str):
     """Centralized fallback speech. Main phone flow uses OpenAI Realtime audio."""
-    kwargs = {"language": "es-AR"}
-    fallback_voice = os.environ.get("TWILIO_FALLBACK_VOICE")
-    if fallback_voice:
-        kwargs["voice"] = fallback_voice
-    parent.say(text, **kwargs)
+    parent.say(
+        text,
+        language=_twilio_fallback_say_language(),
+        voice=_twilio_fallback_voice(),
+    )
 
 
 def _demo_voice_action_url(endpoint: str = "voice.voice_demo_process", **extra) -> str:
@@ -89,7 +138,7 @@ def _append_demo_voice_gather(response: VoiceResponse, prompt: str | None = None
         input="speech dtmf",
         num_digits=1,
         action=_demo_voice_action_url(),
-        language="es-AR",
+        language=_twilio_gather_language(),
         speechTimeout="auto",
         timeout=6,
         bargeIn=True,
@@ -98,9 +147,9 @@ def _append_demo_voice_gather(response: VoiceResponse, prompt: str | None = None
         gather,
         prompt
         or (
-            "Hola, soy Chatboc.ar. La demo telefonica esta activa. "
-            "Deci o marca 1 para municipios, 2 para colegios, 3 para empresas y pedidos, "
-            "o 4 para hablar con ventas."
+            "Hola, soy Chatboc.ar y te atiendo en español. "
+            "Decí o marcá 1 para municipios, 2 para colegios, "
+            "3 para empresas y pedidos, o 4 para ventas."
         ),
     )
     response.append(gather)
@@ -108,6 +157,11 @@ def _append_demo_voice_gather(response: VoiceResponse, prompt: str | None = None
 
 def _demo_voice_reply_for(input_text: str | None) -> str:
     normalized = _normalize_voice_text(input_text)
+    if normalized in {"menu", "principal", "volver"}:
+        return (
+            "Menú principal. Decí o marcá 1 municipios, 2 colegios, "
+            "3 empresas y pedidos, o 4 ventas."
+        )
     if normalized in {"1", "uno"} or any(
         word in normalized for word in ("municipio", "reclamo", "tramite", "bache", "luminaria", "junin")
     ):
@@ -216,12 +270,12 @@ def voice_fallback():
     _append_demo_voice_gather(
         response,
         (
-            "La conexion realtime no quedo estable, pero sigo por telefono. "
-            "Deci o marca 1 para municipios, 2 para colegios, 3 para empresas y pedidos, "
-            "o 4 para ventas."
+            "La conexión realtime no quedó estable, pero sigo por teléfono en español. "
+            "Decí o marcá 1 para municipios, 2 para colegios, "
+            "3 para empresas y pedidos, o 4 para ventas."
         ),
     )
-    _voice_say(response, "No te escuche. Te mando el menu por WhatsApp y podes volver a llamar cuando quieras.")
+    _voice_say(response, "No te escuché. Te mando el menú por WhatsApp y podés volver a llamar cuando quieras.")
     return Response(str(response), mimetype='text/xml')
 
 @voice_bp.route('/voice/demo/process', methods=['POST'])
@@ -310,7 +364,7 @@ def voice_welcome():
         input='speech dtmf',
         num_digits=1,
         action=url_for('voice.voice_process', _external=True),
-        language='es-AR',
+        language=_twilio_gather_language(),
         speechTimeout='auto',
         timeout=5,
         bargeIn=True
@@ -319,11 +373,11 @@ def voice_welcome():
     if audio_url:
         gather.play(audio_url)
     else:
-        gather.say(greeting_text, language="es-AR")
+        _voice_say(gather, greeting_text)
 
     response.append(gather)
 
-    response.say("No te escuché. ¿Podrías repetirlo?", language="es-AR")
+    _voice_say(response, "No te escuché. ¿Podrías repetirlo?")
     response.redirect(url_for('voice.voice_welcome', _external=True))
 
     return Response(str(response), mimetype='text/xml')
@@ -360,10 +414,10 @@ def voice_transfer():
     response = VoiceResponse()
 
     if target:
-        response.say("Transfiriendo a un representante. Aguarde un momento, por favor.", language="es-AR")
+        _voice_say(response, "Transfiriendo a un representante. Aguarde un momento, por favor.")
         response.dial(target)
     else:
-        response.say("Lo siento, no pude conectar con un representante.", language="es-AR")
+        _voice_say(response, "Lo siento, no pude conectar con un representante.")
 
     return Response(str(response), mimetype='text/xml')
 
@@ -394,10 +448,10 @@ def voice_process():
             input='speech dtmf',
             num_digits=1,
             action=url_for('voice.voice_process', _external=True),
-            language='es-AR',
+            language=_twilio_gather_language(),
             bargeIn=True
         )
-        gather.say("Lo siento, no te entendí bien. ¿Podrías repetirlo?", language="es-AR")
+        _voice_say(gather, "Lo siento, no te entendí bien. ¿Podrías repetirlo?")
         response.append(gather)
         return Response(str(response), mimetype='text/xml')
 
@@ -417,7 +471,7 @@ def voice_process():
 
     if isinstance(result, dict):
         if result.get("type") == "handoff":
-            response.say(result.get("text", "Transfiriendo..."), language="es-AR")
+            _voice_say(response, result.get("text", "Transfiriendo..."))
             response.dial(result.get("target"))
             return Response(str(response), mimetype='text/xml')
 
@@ -431,7 +485,7 @@ def voice_process():
         input='speech dtmf',
         num_digits=1,
         action=url_for('voice.voice_process', _external=True),
-        language='es-AR',
+        language=_twilio_gather_language(),
         bargeIn=True,
         speechTimeout='auto',
         timeout=5
@@ -440,7 +494,7 @@ def voice_process():
     if audio_url:
         gather.play(audio_url)
     else:
-        gather.say(bot_response_text, language="es-AR")
+        _voice_say(gather, bot_response_text)
 
     response.append(gather)
     return Response(str(response), mimetype='text/xml')

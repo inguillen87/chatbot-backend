@@ -20,6 +20,12 @@ services:
         sync: false
       - key: TWILIO_AUTH_TOKEN
         sync: false
+      - key: TWILIO_FALLBACK_VOICE
+        value: Polly.Lupe-Neural
+      - key: TWILIO_FALLBACK_SAY_LANGUAGE
+        value: es-US
+      - key: TWILIO_GATHER_LANGUAGE
+        value: es-AR
       - key: TWILIO_META_APP_ID
         sync: false
       - key: TWILIO_META_EMBEDDED_SIGNUP_CONFIG_ID
