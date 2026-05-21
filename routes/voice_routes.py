@@ -11,6 +11,7 @@ import os
 import json
 import base64
 import logging
+import unicodedata
 from services.voice_stream_service import VoiceStreamService
 
 from utils.auth_helpers import token_requerido
@@ -22,6 +23,12 @@ voice_bp = Blueprint('voice', __name__)
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
 CHATBOC_DEMO_DEFAULT_WHATSAPP_NUMBER = "+18564858589"
 logger = logging.getLogger(__name__)
+
+
+def _normalize_voice_text(value) -> str:
+    text = str(value or "").strip().lower()
+    text = unicodedata.normalize("NFKD", text)
+    return "".join(char for char in text if not unicodedata.combining(char))
 
 
 def _is_truthy(value) -> bool:
@@ -59,6 +66,80 @@ def _chatboc_demo_voice_max_seconds() -> int:
         return 60
 
 
+def _voice_say(parent, text: str):
+    """Centralized fallback speech. Main phone flow uses OpenAI Realtime audio."""
+    kwargs = {"language": "es-AR"}
+    fallback_voice = os.environ.get("TWILIO_FALLBACK_VOICE")
+    if fallback_voice:
+        kwargs["voice"] = fallback_voice
+    parent.say(text, **kwargs)
+
+
+def _demo_voice_action_url(endpoint: str = "voice.voice_demo_process", **extra) -> str:
+    params = {
+        "tenant": request.values.get("tenant") or request.values.get("tenant_slug"),
+        "vertical": request.values.get("vertical") or request.values.get("sector"),
+    }
+    params.update(extra)
+    return url_for(endpoint, _external=True, **{k: v for k, v in params.items() if v})
+
+
+def _append_demo_voice_gather(response: VoiceResponse, prompt: str | None = None) -> None:
+    gather = Gather(
+        input="speech dtmf",
+        num_digits=1,
+        action=_demo_voice_action_url(),
+        language="es-AR",
+        speechTimeout="auto",
+        timeout=6,
+        bargeIn=True,
+    )
+    _voice_say(
+        gather,
+        prompt
+        or (
+            "Hola, soy Chatboc.ar. La demo telefonica esta activa. "
+            "Deci o marca 1 para municipios, 2 para colegios, 3 para empresas y pedidos, "
+            "o 4 para hablar con ventas."
+        ),
+    )
+    response.append(gather)
+
+
+def _demo_voice_reply_for(input_text: str | None) -> str:
+    normalized = _normalize_voice_text(input_text)
+    if normalized in {"1", "uno"} or any(
+        word in normalized for word in ("municipio", "reclamo", "tramite", "bache", "luminaria", "junin")
+    ):
+        return (
+            "Demo municipios. Puedo hacer un reclamo completo, consultar estado o simular un tramite. "
+            "Decime por ejemplo: quiero reclamar una luminaria apagada y la direccion."
+        )
+    if normalized in {"2", "dos"} or any(
+        word in normalized for word in ("colegio", "escuela", "familia", "admis", "cuota", "inasistencia")
+    ):
+        return (
+            "Demo colegios. Puedo registrar admisiones, inasistencias, pagos, certificados o consultas de secretaria. "
+            "Decime que necesita la familia o el alumno."
+        )
+    if normalized in {"3", "tres"} or any(
+        word in normalized for word in ("empresa", "pyme", "pedido", "producto", "catalogo", "envio", "stock")
+    ):
+        return (
+            "Demo empresas. Puedo tomar un pedido, consultar productos, cotizar envio o revisar un pedido. "
+            "Decime que queres comprar o probar."
+        )
+    if normalized in {"4", "cuatro"} or any(word in normalized for word in ("venta", "ventas", "asesor", "contratar")):
+        return (
+            "Perfecto. Para ventas decime tu nombre, rubro o empresa, y que queres automatizar. "
+            "Lo dejo registrado para seguimiento comercial."
+        )
+    return (
+        "No llegue a ubicar la opcion. Deci municipios, colegios, empresas o ventas. "
+        "Tambien podes contar directamente que queres probar."
+    )
+
+
 def _validate_twilio_request() -> bool:
     if not TWILIO_AUTH_TOKEN:
         return True
@@ -89,6 +170,10 @@ def _voice_stream_twiml_response() -> Response:
     stream.parameter(name="from_number", value=from_number)
     stream.parameter(name="to_number", value=to_number)
     stream.parameter(name="call_sid", value=call_sid)
+    for param_name in ("tenant", "tenant_slug", "vertical", "sector", "intent"):
+        param_value = request.values.get(param_name)
+        if param_value:
+            stream.parameter(name=param_name, value=param_value)
     if _is_chatboc_demo_voice_number(from_number, to_number):
         stream.parameter(name="max_call_seconds", value=str(_chatboc_demo_voice_max_seconds()))
         stream.parameter(name="demo_hub", value="chatboc")
@@ -96,7 +181,7 @@ def _voice_stream_twiml_response() -> Response:
         stream.parameter(name="chat_session_id", value=source_chat_session_id)
 
     response.append(connect)
-    response.say("Lo siento, hubo un error de conexion. Por favor intenta mas tarde.", language="es-AR")
+    response.redirect(_demo_voice_action_url("voice.voice_fallback"))
 
     return Response(str(response), mimetype='text/xml')
 
@@ -122,14 +207,38 @@ def create_webrtc_session(current_user, owner_user, anon_id):
 
     return jsonify(result), 200
 
-@voice_bp.route('/voice/fallback', methods=['POST'])
+@voice_bp.route('/voice/fallback', methods=['GET', 'POST'])
 def voice_fallback():
     """
     Fallback endpoint for Twilio errors.
     """
     response = VoiceResponse()
-    response.say("Lo siento, ha ocurrido un error técnico. Por favor intenta más tarde.", language="es-AR")
+    _append_demo_voice_gather(
+        response,
+        (
+            "La conexion realtime no quedo estable, pero sigo por telefono. "
+            "Deci o marca 1 para municipios, 2 para colegios, 3 para empresas y pedidos, "
+            "o 4 para ventas."
+        ),
+    )
+    _voice_say(response, "No te escuche. Te mando el menu por WhatsApp y podes volver a llamar cuando quieras.")
     return Response(str(response), mimetype='text/xml')
+
+@voice_bp.route('/voice/demo/process', methods=['POST'])
+def voice_demo_process():
+    """
+    Deterministic phone demo fallback when OpenAI Realtime cannot stay connected.
+    The primary path remains /twilio/voice/stream.
+    """
+    if not _validate_twilio_request():
+        return "Forbidden", 403
+
+    input_text = request.form.get("SpeechResult") or request.form.get("Digits")
+    response = VoiceResponse()
+    _append_demo_voice_gather(response, _demo_voice_reply_for(input_text))
+    _voice_say(response, "Si queres volver al menu principal, deci menu.")
+    return Response(str(response), mimetype='text/xml')
+
 
 @voice_bp.route('/voice/welcome', methods=['POST'])
 def voice_welcome():
@@ -224,6 +333,17 @@ def voice_inbound_stream():
     """
     Primary endpoint for inbound calls using Twilio Media Streams & OpenAI Realtime.
     Returns TwiML with <Connect><Stream>.
+    """
+    if not _validate_twilio_request():
+        return "Forbidden", 403
+
+    return _voice_stream_twiml_response()
+
+
+@voice_bp.route('/twilio/voice', methods=['POST'])
+def voice_inbound_stream_alias():
+    """
+    Compatibility alias for Twilio consoles configured with /twilio/voice.
     """
     if not _validate_twilio_request():
         return "Forbidden", 403

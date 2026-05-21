@@ -55,6 +55,8 @@ OPENAI_REALTIME_URL = os.environ.get(
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
 CHATBOC_DEMO_DEFAULT_WHATSAPP_NUMBER = "+18564858589"
+CHATBOC_DEMO_TENANT_SLUG = os.environ.get("CHATBOC_DEMO_TENANT_SLUG") or "chatboc-demo"
+CHATBOC_DEMO_OWNER_EMAIL = os.environ.get("CHATBOC_DEMO_OWNER_EMAIL") or "marcelo@chatboc.ar"
 
 # WhatsApp (para resumen post-llamada)
 
@@ -72,7 +74,11 @@ GRAN_MENDOZA_POINTS = {
 
 
 def _openai_realtime_headers() -> dict[str, str]:
-    return {"Authorization": f"Bearer {OPENAI_API_KEY}"}
+    headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
+    beta_header = os.environ.get("OPENAI_REALTIME_BETA_HEADER", "realtime=v1")
+    if beta_header:
+        headers["OpenAI-Beta"] = beta_header
+    return headers
 
 
 def _realtime_audio_format(value: str | dict | None, *, default: str = "g711_ulaw") -> dict:
@@ -98,6 +104,9 @@ class VoiceStreamService:
         self.to_number = None
         self.source_chat_session_id = None
         self.max_call_seconds = None
+        self.demo_hub = None
+        self.requested_tenant_slug = None
+        self.requested_vertical = None
 
         self.user = None
         self.owner_user = None
@@ -137,7 +146,30 @@ class VoiceStreamService:
 
     def _is_chatboc_demo_call(self) -> bool:
         configured = self._configured_chatboc_demo_numbers()
-        return self._normalize_phone(self.from_number) in configured or self._normalize_phone(self.to_number) in configured
+        return (
+            str(self.demo_hub or "").strip().lower() == "chatboc"
+            or self._normalize_phone(self.from_number) in configured
+            or self._normalize_phone(self.to_number) in configured
+        )
+
+    @staticmethod
+    def _normalize_requested_vertical(value: str | None) -> str | None:
+        text = str(value or "").strip().lower()
+        if not text:
+            return None
+        text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
+        if any(token in text for token in ("gobierno", "municip", "muni", "juni", "reclamo")):
+            return "municipio"
+        if any(token in text for token in ("educ", "coleg", "escuela", "school")):
+            return "colegio"
+        if any(token in text for token in ("empresa", "pyme", "bodega", "pedido", "shop", "commerce")):
+            return "pyme"
+        if text in {"municipio", "pyme", "colegio", "general"}:
+            return text
+        return None
+
+    def _resolve_requested_vertical(self) -> str | None:
+        return self._normalize_requested_vertical(self.requested_vertical)
 
     def _resolve_max_call_seconds(self, custom: dict | None = None) -> int | None:
         custom = custom if isinstance(custom, dict) else {}
@@ -818,6 +850,35 @@ class VoiceStreamService:
             self.openai_ws.send(json.dumps({"type": "response.create"}))
             self.response_active = True
 
+    def _build_chatboc_demo_greeting(self, tenant_name: str, user_name: str | None) -> str:
+        name_prefix = f"Hola {user_name}. " if user_name else "Hola. "
+        vertical = self._resolve_requested_vertical()
+        if vertical == "municipio":
+            menu = (
+                "Estas en la demo telefonica de municipios. "
+                "Puedo crear un reclamo completo, consultar estado o probar tramites. "
+                "Decime por ejemplo: quiero hacer un reclamo por luminaria."
+            )
+        elif vertical == "colegio":
+            menu = (
+                "Estas en la demo telefonica de colegios. "
+                "Puedo registrar admisiones, inasistencias, cuotas, certificados o consultas de secretaria. "
+                "Decime que queres probar."
+            )
+        elif vertical == "pyme":
+            menu = (
+                "Estas en la demo telefonica de empresas. "
+                "Puedo tomar un pedido, consultar productos, cotizar envio o revisar una compra. "
+                "Decime que queres pedir o vender."
+            )
+        else:
+            menu = (
+                "Soy Chatboc.ar y esta es la demo por telefono. "
+                "Podes probar municipios, colegios, empresas y pedidos, o hablar con ventas. "
+                "Deci una opcion para empezar."
+            )
+        return f"{name_prefix}{menu} Te acompano con voz realtime de {tenant_name}."
+
     def _resolve_context(self, from_number, to_number, call_sid):
         """
         Resuelve Tenant, owner_user y user final.
@@ -851,6 +912,29 @@ class VoiceStreamService:
                         self.tenant_profile = t
                         self.owner_user = t.municipio or t.pyme
                         break
+
+            if not self.owner_user and not self.tenant_profile and self._is_chatboc_demo_call():
+                requested_slug = str(self.requested_tenant_slug or "").strip()
+                demo_candidates = [requested_slug, CHATBOC_DEMO_TENANT_SLUG, "chatboc-platform"]
+                for slug in [candidate for candidate in dict.fromkeys(demo_candidates) if candidate]:
+                    self.tenant_profile = TenantProfile.query.filter_by(slug=slug).first()
+                    if self.tenant_profile:
+                        self.owner_user = self.tenant_profile.pyme or self.tenant_profile.municipio
+                        break
+                if not self.owner_user:
+                    owner_email = (
+                        current_app.config.get("CHATBOC_SUPERADMIN_EMAIL")
+                        or current_app.config.get("SUPERADMIN_LEAD_EMAIL")
+                        or CHATBOC_DEMO_OWNER_EMAIL
+                    )
+                    self.owner_user = User.query.filter_by(email=str(owner_email).strip().lower()).first()
+                if self.owner_user and not self.tenant_profile:
+                    self.tenant_profile = (
+                        TenantProfile.query.filter_by(pyme_id=self.owner_user.id).first()
+                        or TenantProfile.query.filter_by(municipio_id=self.owner_user.id).first()
+                    )
+                if self.owner_user:
+                    self.whatsapp_sender = bot_phone_clean
 
             if not self.owner_user and not self.tenant_profile:
                 logger.error(f"[VOICE] Tenant not found for bot phone: {bot_phone_clean}")
@@ -990,19 +1074,26 @@ class VoiceStreamService:
             or identity_for_voice.get("direccion")
             or ""
         )
-        self.voice_vertical = infer_realtime_voice_vertical(
+        self.voice_vertical = self._resolve_requested_vertical() or infer_realtime_voice_vertical(
             self.tenant_profile,
             tenant_tipo=getattr(self.tenant_profile, "tipo", None) if self.tenant_profile else None,
         )
         self.tools = build_realtime_voice_tools(self.voice_vertical)
         voice_cfg = self._resolve_voice_config()
-        return build_realtime_voice_instructions(
+        instructions = build_realtime_voice_instructions(
             tenant_name=tenant_name_for_voice,
             vertical=self.voice_vertical,
             user_name=user_name_for_voice,
             user_address=user_addr_for_voice,
             translation_policy=build_multilingual_translation_policy(voice_cfg, current_app.config),
         )
+        if self._is_chatboc_demo_call():
+            instructions += (
+                " Esta llamada es una demo comercial de Chatboc. "
+                "Al inicio ofrece rutas claras para probar: municipios, colegios, empresas y ventas. "
+                "Si la persona ya eligio una vertical, guia una simulacion completa y accionable de esa vertical."
+            )
+        return instructions
 
     # ----------------------------
     # Main loop
@@ -1074,6 +1165,9 @@ class VoiceStreamService:
             self.from_number = custom.get("from_number") or data["start"].get("from") or data["start"].get("From")
             self.to_number = custom.get("to_number") or data["start"].get("to") or data["start"].get("To")
             self.source_chat_session_id = custom.get("chat_session_id") or custom.get("source_chat_session_id")
+            self.demo_hub = custom.get("demo_hub")
+            self.requested_tenant_slug = custom.get("tenant_slug") or custom.get("tenant")
+            self.requested_vertical = custom.get("vertical") or custom.get("sector")
             self.max_call_seconds = self._resolve_max_call_seconds(custom)
 
             logger.info(f"[VOICE] Stream started: {self.stream_sid} Call: {self.call_sid}")
@@ -1095,7 +1189,7 @@ class VoiceStreamService:
                 if self._resolve_context(self.from_number, self.to_number, self.call_sid):
                     voice_cfg = self._resolve_voice_config()
                     voice_name = resolve_realtime_voice(voice_cfg, current_app.config)
-                    self.voice_vertical = infer_realtime_voice_vertical(
+                    self.voice_vertical = self._resolve_requested_vertical() or infer_realtime_voice_vertical(
                         self.tenant_profile,
                         tenant_tipo=getattr(self.tenant_profile, "tipo", None) if self.tenant_profile else None,
                     )
@@ -1155,7 +1249,11 @@ class VoiceStreamService:
                                 "type": "response.create",
                                 "response": {
                                     "output_modalities": ["audio"],
-                                    "instructions": greeting_text,
+                                    "instructions": (
+                                        f"Deci exactamente: \"{self._build_chatboc_demo_greeting(tenant_name, user_name)}\""
+                                        if self._is_chatboc_demo_call()
+                                        else greeting_text
+                                    ),
                                 },
                             }
                         )

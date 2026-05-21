@@ -44,6 +44,17 @@ class VoiceStreamServiceMessageTests(unittest.TestCase):
         self.assertFalse(service.response_active)
         self.assertTrue(service.cancel_pending)
 
+    def test_demo_greeting_offers_requested_vertical_menu(self):
+        service = VoiceStreamService(_FakeSocket())
+        service.demo_hub = "chatboc"
+        service.requested_vertical = "juni"
+
+        greeting = service._build_chatboc_demo_greeting("Chatboc.ar Demo Hub", "Marcelo")
+
+        self.assertIn("Hola Marcelo", greeting)
+        self.assertIn("demo telefonica de municipios", greeting)
+        self.assertIn("reclamo", greeting)
+
 
 if __name__ == "__main__":
     unittest.main()

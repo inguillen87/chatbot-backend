@@ -280,7 +280,234 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
             for call in self.mock_twilio_create.call_args_list
         ]
         self.assertTrue(any("Chatboc.ar" in body for body in sent_bodies))
-        self.assertTrue(any("Demo municipios" in body for body in sent_bodies))
+        self.assertTrue(any("Municipio inteligente" in body for body in sent_bodies))
+
+    @patch("routes.whatsapp_webhook.responder_chatboc")
+    def test_chatboc_demo_business_free_text_order_keeps_context(self, mock_bot):
+        self.mock_validator.validate.return_value = True
+
+        def send_demo(body: str, sid: str):
+            return self.client.post(
+                "/webhook/whatsapp",
+                data={
+                    "To": f"whatsapp:{CHATBOC_DEMO_DEFAULT_WHATSAPP_NUMBER}",
+                    "From": "whatsapp:+5492613168608",
+                    "Body": body,
+                    "ProfileName": "Marcelo",
+                    "MessageSid": sid,
+                },
+                headers={"X-Twilio-Signature": "dummy_signature_valid"},
+            )
+
+        self.assertEqual(send_demo("hola", "SM_CHATBOC_DEMO_ORDER_1").status_code, 200)
+        self.assertEqual(send_demo("3", "SM_CHATBOC_DEMO_ORDER_2").status_code, 200)
+        response = send_demo("quieor hacer un pedido", "SM_CHATBOC_DEMO_ORDER_3")
+
+        self.assertEqual(response.status_code, 200)
+        mock_bot.assert_not_called()
+        sent_bodies = [
+            str(call.kwargs.get("body") or "")
+            for call in self.mock_twilio_create.call_args_list
+        ]
+        self.assertTrue(any("Pedido demo empresas" in body for body in sent_bodies))
+        self.assertTrue(any("Confirmar pedido demo" in body for body in sent_bodies))
+
+    @patch("routes.whatsapp_webhook.responder_chatboc")
+    def test_chatboc_demo_school_free_text_keeps_context(self, mock_bot):
+        self.mock_validator.validate.return_value = True
+
+        def send_demo(body: str, sid: str):
+            return self.client.post(
+                "/webhook/whatsapp",
+                data={
+                    "To": f"whatsapp:{CHATBOC_DEMO_DEFAULT_WHATSAPP_NUMBER}",
+                    "From": "whatsapp:+5492613168608",
+                    "Body": body,
+                    "ProfileName": "Marcelo",
+                    "MessageSid": sid,
+                },
+                headers={"X-Twilio-Signature": "dummy_signature_valid"},
+            )
+
+        self.assertEqual(send_demo("hola", "SM_CHATBOC_DEMO_SCHOOL_1").status_code, 200)
+        self.assertEqual(send_demo("2", "SM_CHATBOC_DEMO_SCHOOL_2").status_code, 200)
+        response = send_demo("quiero consultar admisiones", "SM_CHATBOC_DEMO_SCHOOL_3")
+
+        self.assertEqual(response.status_code, 200)
+        mock_bot.assert_not_called()
+        sent_bodies = [
+            str(call.kwargs.get("body") or "")
+            for call in self.mock_twilio_create.call_args_list
+        ]
+        self.assertTrue(any("Consulta colegio demo" in body for body in sent_bodies))
+        self.assertTrue(any("Abrir demo colegios" in body for body in sent_bodies))
+
+    @patch("routes.whatsapp_webhook.responder_chatboc")
+    @patch("services.audio_transcription_service.transcribe_audio_from_url")
+    @patch("routes.whatsapp_webhook.create_attachment_with_thumbnail")
+    @patch("routes.whatsapp_webhook.requests.get")
+    def test_chatboc_demo_voice_note_is_transcribed_routed_and_saved_to_crm(
+        self,
+        mock_requests_get,
+        mock_create_attachment,
+        mock_transcribe,
+        mock_bot,
+    ):
+        self.mock_validator.validate.return_value = True
+        mock_response = MagicMock()
+        mock_response.content = b"fake audio"
+        mock_response.raise_for_status.return_value = None
+        mock_requests_get.return_value = mock_response
+        attachment = MagicMock()
+        attachment.id = 701
+        attachment.url = "https://cdn.chatboc.ar/demo/audio.ogg"
+        attachment.mime = "audio/ogg"
+        attachment.nombre_original = "nota_de_voz.ogg"
+        attachment.analisis = None
+        mock_create_attachment.return_value = attachment
+        mock_transcribe.return_value = "quiero hacer un pedido"
+
+        payload = {
+            "To": f"whatsapp:{CHATBOC_DEMO_DEFAULT_WHATSAPP_NUMBER}",
+            "From": "whatsapp:+5492613168608",
+            "Body": "",
+            "ProfileName": "Marcelo",
+            "MessageSid": "SM_CHATBOC_DEMO_AUDIO",
+            "MediaMessageSid": "MM_CHATBOC_DEMO_AUDIO",
+            "MediaUrl0": "https://api.twilio.com/media/audio.ogg",
+            "MediaContentType0": "audio/ogg",
+        }
+        response = self.client.post(
+            "/webhook/whatsapp",
+            data=payload,
+            headers={"X-Twilio-Signature": "dummy_signature_valid"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        mock_bot.assert_not_called()
+        sent_bodies = [str(call.kwargs.get("body") or "") for call in self.mock_twilio_create.call_args_list]
+        self.assertTrue(any("Pedido demo empresas" in body for body in sent_bodies))
+
+        interaction = InteractionEvent.query.filter_by(content_type="audio").first()
+        self.assertIsNotNone(interaction)
+        self.assertIn("quiero hacer un pedido", interaction.content)
+        metadata = interaction.metadata_payload or {}
+        self.assertEqual(metadata.get("content_type"), "audio")
+        self.assertEqual(((metadata.get("media") or {}).get("attachment_id")), 701)
+
+        crm_contact = Contact.query.filter_by(phone="+5492613168608").first()
+        self.assertEqual((crm_contact.preferences or {}).get("last_demo_input_type"), "audio")
+
+    @patch("routes.whatsapp_webhook.responder_chatboc")
+    @patch("routes.whatsapp_webhook.create_attachment_with_thumbnail")
+    @patch("routes.whatsapp_webhook.requests.get")
+    def test_chatboc_demo_image_is_kept_as_reclamo_evidence(
+        self,
+        mock_requests_get,
+        mock_create_attachment,
+        mock_bot,
+    ):
+        self.mock_validator.validate.return_value = True
+
+        def send_demo(body: str, sid: str):
+            return self.client.post(
+                "/webhook/whatsapp",
+                data={
+                    "To": f"whatsapp:{CHATBOC_DEMO_DEFAULT_WHATSAPP_NUMBER}",
+                    "From": "whatsapp:+5492613168608",
+                    "Body": body,
+                    "ProfileName": "Marcelo",
+                    "MessageSid": sid,
+                },
+                headers={"X-Twilio-Signature": "dummy_signature_valid"},
+            )
+
+        self.assertEqual(send_demo("hola", "SM_CHATBOC_DEMO_IMAGE_1").status_code, 200)
+        self.assertEqual(send_demo("1", "SM_CHATBOC_DEMO_IMAGE_2").status_code, 200)
+
+        mock_response = MagicMock()
+        mock_response.content = b"fake image"
+        mock_response.raise_for_status.return_value = None
+        mock_requests_get.return_value = mock_response
+        attachment = MagicMock()
+        attachment.id = 702
+        attachment.url = "https://cdn.chatboc.ar/demo/foto.jpg"
+        attachment.mime = "image/jpeg"
+        attachment.nombre_original = "foto.jpg"
+        attachment.analisis = None
+        mock_create_attachment.return_value = attachment
+
+        response = self.client.post(
+            "/webhook/whatsapp",
+            data={
+                "To": f"whatsapp:{CHATBOC_DEMO_DEFAULT_WHATSAPP_NUMBER}",
+                "From": "whatsapp:+5492613168608",
+                "Body": "",
+                "ProfileName": "Marcelo",
+                "MessageSid": "SM_CHATBOC_DEMO_IMAGE_3",
+                "MediaMessageSid": "MM_CHATBOC_DEMO_IMAGE",
+                "MediaUrl0": "https://api.twilio.com/media/foto.jpg",
+                "MediaContentType0": "image/jpeg",
+            },
+            headers={"X-Twilio-Signature": "dummy_signature_valid"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        mock_bot.assert_not_called()
+        sent_bodies = [str(call.kwargs.get("body") or "") for call in self.mock_twilio_create.call_args_list]
+        self.assertTrue(any("Evidencia recibida para demo municipio" in body for body in sent_bodies))
+
+        interaction = InteractionEvent.query.filter_by(content_type="image").first()
+        self.assertIsNotNone(interaction)
+        self.assertEqual(interaction.media_url, "https://cdn.chatboc.ar/demo/foto.jpg")
+        self.assertEqual(((interaction.metadata_payload or {}).get("media") or {}).get("attachment_id"), 702)
+
+    @patch("routes.whatsapp_webhook.responder_chatboc")
+    def test_chatboc_demo_location_is_saved_and_contextualized(self, mock_bot):
+        self.mock_validator.validate.return_value = True
+
+        def send_demo(body: str, sid: str):
+            return self.client.post(
+                "/webhook/whatsapp",
+                data={
+                    "To": f"whatsapp:{CHATBOC_DEMO_DEFAULT_WHATSAPP_NUMBER}",
+                    "From": "whatsapp:+5492613168608",
+                    "Body": body,
+                    "ProfileName": "Marcelo",
+                    "MessageSid": sid,
+                },
+                headers={"X-Twilio-Signature": "dummy_signature_valid"},
+            )
+
+        self.assertEqual(send_demo("hola", "SM_CHATBOC_DEMO_LOCATION_1").status_code, 200)
+        self.assertEqual(send_demo("1", "SM_CHATBOC_DEMO_LOCATION_2").status_code, 200)
+
+        response = self.client.post(
+            "/webhook/whatsapp",
+            data={
+                "To": f"whatsapp:{CHATBOC_DEMO_DEFAULT_WHATSAPP_NUMBER}",
+                "From": "whatsapp:+5492613168608",
+                "Body": "",
+                "ProfileName": "Marcelo",
+                "MessageSid": "SM_CHATBOC_DEMO_LOCATION_3",
+                "Latitude": "-33.08392315",
+                "Longitude": "-68.47351916",
+                "Address": "25 de Mayo 19, San Martin, Mendoza",
+            },
+            headers={"X-Twilio-Signature": "dummy_signature_valid"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        mock_bot.assert_not_called()
+        sent_bodies = [str(call.kwargs.get("body") or "") for call in self.mock_twilio_create.call_args_list]
+        self.assertTrue(any("Ubicacion recibida para demo municipio" in body for body in sent_bodies))
+        self.assertTrue(any("25 de Mayo 19" in body for body in sent_bodies))
+
+        interaction = InteractionEvent.query.filter_by(content_type="location").first()
+        self.assertIsNotNone(interaction)
+        metadata = interaction.metadata_payload or {}
+        self.assertEqual(metadata.get("content_type"), "location")
+        self.assertEqual(((metadata.get("location") or {}).get("address")), "25 de Mayo 19, San Martin, Mendoza")
 
     @patch('routes.whatsapp_webhook.threading.Timer')
     @patch('services.response_formatter.build_interactive_response')

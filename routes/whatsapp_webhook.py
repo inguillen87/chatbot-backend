@@ -9,6 +9,7 @@ import json
 import threading
 import re
 import time
+import unicodedata
 from datetime import datetime, timedelta
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 from urllib.parse import urljoin, urlsplit, urlunsplit
@@ -393,6 +394,7 @@ def _upsert_chatboc_demo_crm_contact(
     message_body: str,
     action_id: Optional[str],
     ticket: Optional[PymeTicket],
+    input_context: Optional[Dict[str, Any]] = None,
 ) -> Optional[Contact]:
     if not tenant or not getattr(tenant, "id", None):
         return None
@@ -405,15 +407,29 @@ def _upsert_chatboc_demo_crm_contact(
 
     clean_name = _clean_contact_name(profile_name) or getattr(contact_user, "name", None) or "Prospecto WhatsApp"
     inquiry_type = _classify_chatboc_demo_inquiry(message_body, action_id)
+    input_context = input_context or _build_chatboc_demo_input_context(
+        message_body=message_body,
+        uploaded_file_info=None,
+        location_info=None,
+    )
+    content_type = input_context.get("content_type") or "text"
+    media_context = input_context.get("media") if isinstance(input_context.get("media"), dict) else None
+    location_context = input_context.get("location") if isinstance(input_context.get("location"), dict) else None
     tags = ["chatboc_demo", "whatsapp", "prospecto"]
     if inquiry_type:
         tags.append(inquiry_type)
+    if content_type and content_type not in {"text", "event"}:
+        tags.append(f"entrada_{content_type}")
     preferences = {
         "preferred_channel": "whatsapp",
         "source": "chatboc_demo_whatsapp_hub",
         "legacy_user_id": getattr(contact_user, "id", None),
         "marketing_consent_status": "unknown",
         "service_window_source": "inbound_whatsapp",
+        "last_demo_input_type": content_type,
+        "last_demo_input_summary": input_context.get("summary"),
+        "last_demo_media": media_context,
+        "last_demo_location": location_context,
         "whatsapp_service_window_until": (
             datetime.utcnow() + timedelta(hours=24)
         ).isoformat(),
@@ -460,17 +476,30 @@ def _upsert_chatboc_demo_crm_contact(
             "event_type": "chatboc_demo_inbound",
             "action_id": action_id,
             "inquiry_type": inquiry_type,
+            "content_type": content_type,
+            "input_summary": input_context.get("summary"),
+            "media": media_context,
+            "location": location_context,
             "ticket_id": getattr(ticket, "id", None),
             "ticket_number": getattr(ticket, "nro_ticket", None),
         },
+        content_type=content_type,
+        media_url=(media_context or {}).get("url"),
         emit=True,
     )
     return contact
 
 
 def _classify_chatboc_demo_inquiry(message_body: str, action_id: Optional[str]) -> str:
-    action = str(action_id or "").lower()
-    text = str(message_body or "").lower()
+    action = _normalize_chatboc_demo_text(action_id)
+    text = _normalize_chatboc_demo_text(message_body)
+    if any(word in text for word in ("familia", "inasistencia", "admisiones", "cuota", "comunicado")):
+        return "interes_educacion"
+    if any(
+        word in text
+        for word in ("producto", "envio", "promo", "promocion", "presupuesto", "comprar", "carrito")
+    ):
+        return "interes_empresa"
     if "gobierno" in action or any(word in text for word in ("municipio", "reclamo", "tramite", "trámite")):
         return "interes_municipio"
     if "educacion" in action or any(word in text for word in ("colegio", "escuela", "alumno", "secretaria")):
@@ -482,6 +511,104 @@ def _classify_chatboc_demo_inquiry(message_body: str, action_id: Optional[str]) 
     if "sales" in action or any(word in text for word in ("precio", "contratar", "ventas", "asesor", "llamen")):
         return "interes_comercial"
     return "interes_general"
+
+
+def _chatboc_demo_media_kind(uploaded_file_info: Optional[Dict[str, Any]]) -> Optional[str]:
+    if not uploaded_file_info:
+        return None
+    mime_type = str(uploaded_file_info.get("mime_type") or "").lower()
+    if mime_type.startswith("audio/"):
+        return "audio"
+    if mime_type.startswith("image/"):
+        return "image"
+    if mime_type.startswith("video/"):
+        return "video"
+    if mime_type:
+        return "file"
+    return "file"
+
+
+def _build_chatboc_demo_input_context(
+    *,
+    message_body: str,
+    uploaded_file_info: Optional[Dict[str, Any]],
+    location_info: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Normalize WhatsApp demo input so CRM, tickets and replies share one truth."""
+
+    clean_body = (message_body or "").strip()
+    context: Dict[str, Any] = {
+        "raw_text": clean_body,
+        "content_type": "text" if clean_body else "event",
+        "effective_message": clean_body,
+        "summary": clean_body,
+        "metadata": {},
+    }
+
+    if location_info:
+        lat = location_info.get("latitude")
+        lng = location_info.get("longitude")
+        address = location_info.get("address")
+        label = location_info.get("label")
+        location_label = address or label or (
+            f"{lat},{lng}" if lat is not None and lng is not None else "ubicacion compartida"
+        )
+        summary = f"Ubicacion compartida por WhatsApp: {location_label}"
+        context.update(
+            {
+                "content_type": "location",
+                "effective_message": clean_body or summary,
+                "summary": summary,
+                "location": {
+                    "latitude": lat,
+                    "longitude": lng,
+                    "address": address,
+                    "label": label,
+                },
+            }
+        )
+        context["metadata"]["location"] = context["location"]
+
+    media_kind = _chatboc_demo_media_kind(uploaded_file_info)
+    if uploaded_file_info and media_kind:
+        transcript = (uploaded_file_info.get("transcribed_text") or "").strip()
+        media_summary_by_kind = {
+            "audio": "Nota de voz recibida por WhatsApp",
+            "image": "Imagen recibida por WhatsApp",
+            "video": "Video recibido por WhatsApp",
+            "file": "Archivo recibido por WhatsApp",
+        }
+        media_summary = media_summary_by_kind.get(media_kind, "Archivo recibido por WhatsApp")
+        if transcript:
+            media_summary = f"Nota de voz transcripta: {transcript}"
+        elif clean_body:
+            media_summary = f"{media_summary}: {clean_body}"
+
+        media_context = {
+            "kind": media_kind,
+            "attachment_id": uploaded_file_info.get("id"),
+            "url": uploaded_file_info.get("url"),
+            "thumbnail_url": uploaded_file_info.get("thumbnail_url"),
+            "mime_type": uploaded_file_info.get("mime_type"),
+            "name": uploaded_file_info.get("name"),
+            "transcribed_text": transcript or None,
+        }
+        context.update(
+            {
+                "content_type": media_kind,
+                "effective_message": transcript or clean_body or media_summary,
+                "summary": media_summary,
+                "media": media_context,
+                "media_url": uploaded_file_info.get("url"),
+            }
+        )
+        context["metadata"]["media"] = media_context
+
+    if context["content_type"] == "event" and not context["summary"]:
+        context["summary"] = "Interaccion recibida desde WhatsApp demo Chatboc"
+        context["effective_message"] = context["summary"]
+
+    return context
 
 
 def _build_chatboc_demo_limit_payload(used: int, limit: int, ticket: Optional[PymeTicket]) -> Dict[str, Any]:
@@ -540,6 +667,7 @@ def _record_chatboc_demo_engagement(
     message_body: str,
     action_id: Optional[str],
     message_sid: Optional[str],
+    input_context: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Optional[User], Optional[PymeTicket]]:
     contact_user = _upsert_chatboc_demo_contact(
         owner_user=owner_user,
@@ -549,6 +677,14 @@ def _record_chatboc_demo_engagement(
     )
 
     context_data = session_context.context_data if isinstance(session_context.context_data, dict) else {}
+    input_context = input_context or _build_chatboc_demo_input_context(
+        message_body=message_body,
+        uploaded_file_info=None,
+        location_info=None,
+    )
+    effective_message = input_context.get("effective_message") or message_body
+    input_summary = input_context.get("summary") or effective_message
+    content_type = input_context.get("content_type") or "text"
     ticket_id = context_data.get("chatboc_demo_lead_ticket_id")
     ticket = db.session.get(PymeTicket, ticket_id) if ticket_id else None
     should_create_ticket = ticket is None
@@ -561,16 +697,25 @@ def _record_chatboc_demo_engagement(
             tenant=tenant,
             contact_user=contact_user,
             anon_id=from_number,
-            message_body=message_body,
+            message_body=effective_message,
             action_id=action_id,
         )
         context_data["chatboc_demo_lead_ticket_id"] = ticket.id
         context_data["chatboc_demo_lead_nro"] = ticket.nro_ticket
-    elif ticket and message_body:
+    elif ticket and effective_message:
+        media_suffix = ""
+        media = input_context.get("media") if isinstance(input_context.get("media"), dict) else {}
+        location = input_context.get("location") if isinstance(input_context.get("location"), dict) else {}
+        if media:
+            media_suffix = f" | adjunto={media.get('attachment_id') or '-'} | tipo={media.get('mime_type') or content_type}"
+        elif location:
+            media_suffix = (
+                f" | lat={location.get('latitude') or '-'} | lng={location.get('longitude') or '-'}"
+            )
         db.session.add(
             TicketComentario(
                 pyme_ticket_id=ticket.id,
-                comentario=f"[whatsapp_demo_hub] {(message_body or '').strip()}",
+                comentario=f"[whatsapp_demo_hub] {content_type} | {(input_summary or effective_message or '').strip()}{media_suffix}",
                 anon_id=from_number,
                 origen="whatsapp",
                 estado_ticket=ticket.estado,
@@ -582,13 +727,22 @@ def _record_chatboc_demo_engagement(
         contact_user=contact_user,
         phone=from_number,
         profile_name=profile_name,
-        message_body=message_body,
+        message_body=effective_message,
         action_id=action_id,
         ticket=ticket,
+        input_context=input_context,
     )
 
     context_data["chatboc_demo_hub"] = True
-    context_data["chatboc_demo_last_action"] = action_id
+    context_data["chatboc_demo_last_input"] = {
+        "content_type": content_type,
+        "summary": input_summary,
+        "media": input_context.get("media"),
+        "location": input_context.get("location"),
+        "message_sid": message_sid,
+    }
+    if action_id:
+        context_data["chatboc_demo_last_action"] = action_id
     session_context.context_data = context_data
     safe_flag_modified(session_context, "context_data")
     db.session.add(session_context)
@@ -612,6 +766,10 @@ def _record_chatboc_demo_engagement(
                 "phone": from_number,
                 "profile_name": profile_name,
                 "action_id": action_id,
+                "content_type": content_type,
+                "input_summary": input_summary,
+                "media": input_context.get("media"),
+                "location": input_context.get("location"),
                 "ticket_id": getattr(ticket, "id", None),
                 "ticket_number": getattr(ticket, "nro_ticket", None),
             },
@@ -637,13 +795,69 @@ def _chatboc_demo_option(text: str, action_id: Optional[str] = None, url: Option
     return option
 
 
+def _normalize_chatboc_demo_text(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(char for char in text if not unicodedata.combining(char))
+    return re.sub(r"\s+", " ", text)
+
+
+def _chatboc_demo_has_any(text: str, *keywords: str) -> bool:
+    normalized = _normalize_chatboc_demo_text(text)
+    return any(keyword in normalized for keyword in keywords)
+
+
+def _chatboc_demo_active_sector(session_context: ChatSessionContext) -> str:
+    context_data = session_context.context_data if isinstance(session_context.context_data, dict) else {}
+    candidates: list[str] = [
+        str(context_data.get("chatboc_demo_active_sector") or ""),
+        str(context_data.get("chatboc_demo_survey_sector") or ""),
+        str(context_data.get("chatboc_demo_last_action") or ""),
+    ]
+    for option in context_data.get("last_options_sent") or []:
+        if isinstance(option, dict):
+            candidates.append(str(option.get("action_id") or option.get("id") or ""))
+            candidates.append(str(option.get("texto") or ""))
+    haystack = _normalize_chatboc_demo_text(" ".join(candidates))
+    if "educacion" in haystack or "coleg" in haystack or "escuela" in haystack:
+        return "educacion"
+    if "gobierno" in haystack or "municip" in haystack:
+        return "gobierno"
+    if "empresas" in haystack or "empresa" in haystack or "pyme" in haystack or "pedido" in haystack:
+        return "empresas"
+    return "empresas"
+
+
+def _remember_chatboc_demo_sector(session_context: ChatSessionContext, sector: str) -> None:
+    if not isinstance(session_context.context_data, dict):
+        session_context.context_data = {}
+    session_context.context_data["chatboc_demo_active_sector"] = sector
+    safe_flag_modified(session_context, "context_data")
+    db.session.add(session_context)
+
+
+def _chatboc_demo_survey_url(slug: str, *, source: str = "whatsapp_demo") -> str:
+    clean_slug = str(slug or "").strip().strip("/")
+    if not clean_slug:
+        return "https://www.chatboc.ar/encuestas"
+    return f"https://www.chatboc.ar/e/{clean_slug}?source={source}&demo_participation=1"
+
+
+def _chatboc_demo_survey_share_url(slug: str) -> str:
+    from urllib.parse import quote_plus
+
+    return f"https://wa.me/?text={quote_plus(_chatboc_demo_survey_url(slug))}"
+
+
 def _build_chatboc_demo_root_payload(contact_name: Optional[str], ticket: Optional[PymeTicket]) -> Dict[str, Any]:
     lead_line = f"\nTicket interno CRM: #{ticket.nro_ticket}" if ticket else ""
     greeting = f"Hola {contact_name}, soy Chatboc.ar." if contact_name else "Hola, soy Chatboc.ar."
     body = (
-        f"{greeting}\n"
-        "Este numero es el hub demo oficial: podes probar municipios, colegios, empresas, "
-        "encuestas y dejar tus datos para que te contactemos."
+        f"🤖 {greeting}\n"
+        "Este es el hub demo oficial. Probá experiencias reales por WhatsApp: reclamos, colegios, "
+        "pedidos, encuestas y CRM de leads.\n"
+        "Elegí una demo y respondé como si fueras vecino, familia o cliente. Lo que escribas queda "
+        "registrado como oportunidad comercial en Chatboc."
         f"{lead_line}"
     )
     return {
@@ -651,11 +865,11 @@ def _build_chatboc_demo_root_payload(contact_name: Optional[str], ticket: Option
         "message_body": body,
         "message_type": "text",
         "options_list": [
-            _chatboc_demo_option("Demo municipios", "chatboc_demo:gobierno"),
-            _chatboc_demo_option("Demo colegios", "chatboc_demo:educacion"),
-            _chatboc_demo_option("Demo empresas", "chatboc_demo:empresas"),
-            _chatboc_demo_option("Encuestas demo", "chatboc_surveys"),
-            _chatboc_demo_option("Hablar con ventas", "chatboc_sales_lead"),
+            _chatboc_demo_option("🏛️ Municipio inteligente", "chatboc_demo:gobierno"),
+            _chatboc_demo_option("🎓 Colegio y familias", "chatboc_demo:educacion"),
+            _chatboc_demo_option("🛍️ Empresa y pedidos", "chatboc_demo:empresas"),
+            _chatboc_demo_option("🗳️ Encuestas en vivo", "chatboc_surveys"),
+            _chatboc_demo_option("💬 Hablar con ventas", "chatboc_sales_lead"),
         ],
         "fuente": "chatboc_demo_whatsapp_hub",
         "skip_audio_generation": True,
@@ -664,21 +878,44 @@ def _build_chatboc_demo_root_payload(contact_name: Optional[str], ticket: Option
 
 def _build_chatboc_demo_sector_payload(sector: str) -> Dict[str, Any]:
     labels = {
-        "gobierno": ("Municipios", "reclamos, tramites, mapa de calor y participacion ciudadana", "https://www.chatboc.ar/demo?sector=gobierno"),
-        "educacion": ("Colegios", "casos escolares, inasistencias, secretaria y comunicados", "https://www.chatboc.ar/demo?sector=educacion"),
-        "empresas": ("Empresas", "productos, pedidos, envios, leads y catalogo pro", "https://www.chatboc.ar/demo?sector=empresas"),
+        "gobierno": (
+            "🏛️ Municipio inteligente",
+            "Abrí reclamos con ubicación y evidencia, mirá mapa de calor, votaciones y participación ciudadana.",
+            "https://www.chatboc.ar/demo?sector=gobierno",
+        ),
+        "educacion": (
+            "🎓 Colegio conectado",
+            "Probá consultas de familias, inasistencias, secretaría, comunicados y seguimiento de casos.",
+            "https://www.chatboc.ar/demo?sector=educacion",
+        ),
+        "empresas": (
+            "🛍️ Empresa y pedidos",
+            "Pedí productos, consultá promociones, cargá pedidos, generá leads y mirá catálogo pro.",
+            "https://www.chatboc.ar/demo?sector=empresas",
+        ),
     }
     title, detail, url = labels.get(sector, labels["empresas"])
-    body = f"*Demo {title}*\nProba {detail}. Tambien podes abrir la demo web o ver encuestas con 100 respuestas sinteticas."
+    primary_options = {
+        "gobierno": [_chatboc_demo_option("Crear reclamo demo", "chatboc_demo_claim_start")],
+        "educacion": [_chatboc_demo_option("Consulta colegio demo", "chatboc_demo_school_start")],
+        "empresas": [_chatboc_demo_option("Crear pedido demo", "chatboc_demo_order_start")],
+    }.get(sector, [])
+    body = (
+        f"*{title}*\n"
+        f"{detail}\n\n"
+        "Podés abrir la demo web o probar una encuesta primero. En las encuestas votás antes de ver "
+        "los 100 resultados demo, para que la experiencia sea real."
+    )
     return {
         "success": True,
         "message_body": body,
         "message_type": "text",
         "options_list": [
-            _chatboc_demo_option("Encuestas y votaciones", f"chatboc_surveys:{sector}:1"),
-            _chatboc_demo_option("Abrir demo web", url=url),
-            _chatboc_demo_option("Hablar con ventas", "chatboc_sales_lead"),
-            _chatboc_demo_option("Volver", "menu_principal"),
+            *primary_options,
+            _chatboc_demo_option("🗳️ Encuestas y votaciones", f"chatboc_surveys:{sector}:1"),
+            _chatboc_demo_option("🌐 Abrir demo web", url=url),
+            _chatboc_demo_option("💬 Hablar con ventas", "chatboc_sales_lead"),
+            _chatboc_demo_option("↩️ Volver", "menu_principal"),
         ],
         "fuente": f"chatboc_demo_{sector}_menu",
         "skip_audio_generation": True,
@@ -721,13 +958,17 @@ def _build_chatboc_surveys_payload(action_id: str, session_context: ChatSessionC
     if action == "chatboc_surveys":
         return {
             "success": True,
-            "message_body": "Elegi que encuestas y votaciones queres probar. Cada tanda trae hasta 5 links directos y link para compartir por WhatsApp.",
+            "message_body": (
+                "🗳️ Elegí una experiencia de encuestas.\n"
+                "Primero votás como usuario anónimo. Recién después ves los 100 resultados demo "
+                "sumados a tu participación."
+            ),
             "message_type": "text",
             "options_list": [
-                _chatboc_demo_option("Encuestas municipios", "chatboc_surveys:gobierno:1"),
-                _chatboc_demo_option("Encuestas colegios", "chatboc_surveys:educacion:1"),
-                _chatboc_demo_option("Encuestas empresas", "chatboc_surveys:empresas:1"),
-                _chatboc_demo_option("Volver", "menu_principal"),
+                _chatboc_demo_option("🏛️ Municipios", "chatboc_surveys:gobierno:1"),
+                _chatboc_demo_option("🎓 Colegios", "chatboc_surveys:educacion:1"),
+                _chatboc_demo_option("🛍️ Empresas", "chatboc_surveys:empresas:1"),
+                _chatboc_demo_option("↩️ Volver", "menu_principal"),
             ],
             "fuente": "chatboc_demo_surveys_selector",
             "skip_audio_generation": True,
@@ -743,11 +984,316 @@ def _build_chatboc_surveys_payload(action_id: str, session_context: ChatSessionC
         rubro=sector,
         channel="whatsapp",
         page=page,
+        page_size=3,
     )
     payload = _rewrite_chatboc_survey_options(payload, sector)
     payload["fuente"] = "chatboc_demo_surveys_whatsapp"
     payload["skip_audio_generation"] = True
     return payload
+
+
+def _build_chatboc_survey_link_payload(action_id: str, session_context: ChatSessionContext) -> Dict[str, Any]:
+    action = str(action_id or "").strip()
+    mode, _, slug = action.partition("::")
+    if not slug:
+        return _build_chatboc_surveys_payload("chatboc_surveys", session_context)
+
+    sector = "gobierno"
+    if isinstance(session_context.context_data, dict):
+        sector = session_context.context_data.get("chatboc_demo_survey_sector") or sector
+
+    public_url = _chatboc_demo_survey_url(slug)
+    share_url = _chatboc_demo_survey_share_url(slug)
+    if mode == "chatboc_survey_share":
+        body = (
+            "📤 Compartí esta encuesta por WhatsApp:\n"
+            f"{share_url}\n\n"
+            "El enlace invita a votar primero y después muestra los resultados demo."
+        )
+        options = [
+            _chatboc_demo_option("🗳️ Votar ahora", f"chatboc_survey_open::{slug}"),
+            _chatboc_demo_option("↩️ Volver a encuestas", f"chatboc_surveys:{sector}:1"),
+        ]
+    else:
+        body = (
+            "🗳️ Abrí la encuesta y votá como usuario anónimo:\n"
+            f"{public_url}\n\n"
+            "Después de votar vas a ver los 100 resultados demo más tu participación."
+        )
+        options = [
+            _chatboc_demo_option("📤 Compartir encuesta", f"chatboc_survey_share::{slug}"),
+            _chatboc_demo_option("↩️ Volver a encuestas", f"chatboc_surveys:{sector}:1"),
+        ]
+
+    return {
+        "success": True,
+        "message_body": body,
+        "message_type": "text",
+        "options_list": options,
+        "fuente": "chatboc_demo_survey_link",
+        "skip_audio_generation": True,
+    }
+
+
+def _build_chatboc_demo_business_order_payload(
+    contact_user: Optional[User],
+    ticket: Optional[PymeTicket],
+) -> Dict[str, Any]:
+    name = getattr(contact_user, "name", None) or "prospecto"
+    ticket_ref = f"#{ticket.nro_ticket}" if ticket else "registrado"
+    body = (
+        f"Pedido demo empresas para {name}\n"
+        f"CRM interno: {ticket_ref}\n\n"
+        "Simulamos un pedido completo de una empresa:\n"
+        "- Cliente consulta producto, stock, promo o envio.\n"
+        "- Chatboc arma el carrito y pide los datos que faltan.\n"
+        "- El panel recibe pedido, lead, historial y proxima accion.\n\n"
+        "Pedido sugerido: 2 Malbec Reserva + 1 caja degustacion. "
+        "Podes confirmarlo o abrir la demo web para probar catalogo, carrito y pedidos."
+    )
+    return {
+        "success": True,
+        "message_body": body,
+        "message_type": "text",
+        "options_list": [
+            _chatboc_demo_option("Confirmar pedido demo", "chatboc_demo_order_confirm"),
+            _chatboc_demo_option(
+                "Abrir demo pedidos",
+                url="https://www.chatboc.ar/demo?sector=empresas&tenant_slug=bodega&intent=crear_pedido",
+            ),
+            _chatboc_demo_option("Encuestas empresas", "chatboc_surveys:empresas:1"),
+            _chatboc_demo_option("Hablar con ventas", "chatboc_sales_lead"),
+        ],
+        "fuente": "chatboc_demo_business_order",
+        "skip_audio_generation": True,
+    }
+
+
+def _build_chatboc_demo_order_confirm_payload(
+    contact_user: Optional[User],
+    ticket: Optional[PymeTicket],
+) -> Dict[str, Any]:
+    ticket_ref = getattr(ticket, "nro_ticket", None) or "demo"
+    name = getattr(contact_user, "name", None) or "cliente"
+    return {
+        "success": True,
+        "message_body": (
+            f"Pedido demo generado para {name}.\n"
+            f"Orden demo: D-{ticket_ref}\n"
+            "Estado: pendiente de validacion comercial.\n\n"
+            "En producto real esto queda en CRM, pedidos, historial del contacto y notificaciones del equipo."
+        ),
+        "message_type": "text",
+        "options_list": [
+            _chatboc_demo_option("Abrir demo pedidos", url="https://www.chatboc.ar/demo?sector=empresas&tenant_slug=bodega"),
+            _chatboc_demo_option("Probar municipio", "chatboc_demo:gobierno"),
+            _chatboc_demo_option("Probar colegio", "chatboc_demo:educacion"),
+            _chatboc_demo_option("Hablar con ventas", "chatboc_sales_lead"),
+        ],
+        "fuente": "chatboc_demo_order_confirm",
+        "skip_audio_generation": True,
+    }
+
+
+def _build_chatboc_demo_claim_payload(
+    contact_user: Optional[User],
+    ticket: Optional[PymeTicket],
+) -> Dict[str, Any]:
+    ticket_ref = f"#{ticket.nro_ticket}" if ticket else "registrado"
+    body = (
+        f"Reclamo demo municipio\nCRM interno: {ticket_ref}\n\n"
+        "Simulamos un reclamo completo: categoria, direccion o ubicacion, foto, confirmacion, "
+        "ticket publico y seguimiento para el vecino.\n\n"
+        "Ejemplo: luminaria apagada en una esquina. Si escribis una direccion, el flujo te guia "
+        "sin volver al menu."
+    )
+    return {
+        "success": True,
+        "message_body": body,
+        "message_type": "text",
+        "options_list": [
+            _chatboc_demo_option("Abrir demo reclamos", url="https://www.chatboc.ar/demo?sector=gobierno&intent=reclamo"),
+            _chatboc_demo_option("Encuestas ciudadanas", "chatboc_surveys:gobierno:1"),
+            _chatboc_demo_option("Hablar con ventas", "chatboc_sales_lead"),
+            _chatboc_demo_option("Volver municipio", "chatboc_demo:gobierno"),
+        ],
+        "fuente": "chatboc_demo_claim_start",
+        "skip_audio_generation": True,
+    }
+
+
+def _build_chatboc_demo_school_payload(
+    contact_user: Optional[User],
+    ticket: Optional[PymeTicket],
+) -> Dict[str, Any]:
+    ticket_ref = f"#{ticket.nro_ticket}" if ticket else "registrado"
+    body = (
+        f"Consulta colegio demo\nCRM interno: {ticket_ref}\n\n"
+        "Simulamos atencion para familias: admisiones, cuotas, inasistencias, comunicados "
+        "y derivacion a secretaria o preceptor.\n\n"
+        "Ejemplo: una familia pregunta por admision o avisa una inasistencia. Chatboc guarda "
+        "el motivo, el contacto y la accion pendiente."
+    )
+    return {
+        "success": True,
+        "message_body": body,
+        "message_type": "text",
+        "options_list": [
+            _chatboc_demo_option("Abrir demo colegios", url="https://www.chatboc.ar/demo?sector=educacion&intent=consulta_escolar"),
+            _chatboc_demo_option("Encuestas colegio", "chatboc_surveys:educacion:1"),
+            _chatboc_demo_option("Hablar con ventas", "chatboc_sales_lead"),
+            _chatboc_demo_option("Volver colegios", "chatboc_demo:educacion"),
+        ],
+        "fuente": "chatboc_demo_school_start",
+        "skip_audio_generation": True,
+    }
+
+
+def _build_chatboc_demo_voice_payload(
+    contact_user: Optional[User],
+    ticket: Optional[PymeTicket],
+) -> Dict[str, Any]:
+    ticket_ref = f"#{ticket.nro_ticket}" if ticket else "registrado"
+    return {
+        "success": True,
+        "message_body": (
+            f"Llamada demo Chatboc\nCRM interno: {ticket_ref}\n\n"
+            "La experiencia de voz puede guiar reclamos, pedidos o consultas escolares. "
+            "En esta demo de WhatsApp te muestro el camino equivalente por texto y dejo el lead registrado."
+        ),
+        "message_type": "text",
+        "options_list": [
+            _chatboc_demo_option("Voz municipio", "chatboc_demo_claim_start"),
+            _chatboc_demo_option("Voz colegio", "chatboc_demo_school_start"),
+            _chatboc_demo_option("Voz empresa", "chatboc_demo_order_start"),
+            _chatboc_demo_option("Hablar con ventas", "chatboc_sales_lead"),
+        ],
+        "fuente": "chatboc_demo_voice_start",
+        "skip_audio_generation": True,
+    }
+
+
+def _demo_sector_label(sector: str) -> str:
+    labels = {
+        "gobierno": "municipio",
+        "educacion": "colegio",
+        "empresas": "empresa",
+    }
+    return labels.get(sector, "demo")
+
+
+def _chatboc_demo_contextual_options(sector: str) -> List[Dict[str, Any]]:
+    if sector == "empresas":
+        return [
+            _chatboc_demo_option("Crear pedido demo", "chatboc_demo_order_start"),
+            _chatboc_demo_option("Abrir demo empresas", url="https://www.chatboc.ar/demo?sector=empresas&tenant_slug=bodega"),
+            _chatboc_demo_option("Hablar con ventas", "chatboc_sales_lead"),
+        ]
+    if sector == "educacion":
+        return [
+            _chatboc_demo_option("Consulta colegio demo", "chatboc_demo_school_start"),
+            _chatboc_demo_option("Abrir demo colegios", url="https://www.chatboc.ar/demo?sector=educacion"),
+            _chatboc_demo_option("Hablar con ventas", "chatboc_sales_lead"),
+        ]
+    return [
+        _chatboc_demo_option("Crear reclamo demo", "chatboc_demo_claim_start"),
+        _chatboc_demo_option("Abrir demo reclamos", url="https://www.chatboc.ar/demo?sector=gobierno&intent=reclamo"),
+        _chatboc_demo_option("Hablar con ventas", "chatboc_sales_lead"),
+    ]
+
+
+def _build_chatboc_demo_location_payload(
+    contact_user: Optional[User],
+    ticket: Optional[PymeTicket],
+    input_context: Dict[str, Any],
+    sector: str,
+) -> Dict[str, Any]:
+    ticket_ref = f"#{ticket.nro_ticket}" if ticket else "registrado"
+    location = input_context.get("location") if isinstance(input_context.get("location"), dict) else {}
+    address = location.get("address") or location.get("label")
+    coords = ", ".join(
+        str(value)
+        for value in (location.get("latitude"), location.get("longitude"))
+        if value not in {None, ""}
+    )
+    location_line = address or coords or "ubicacion compartida"
+    sector_label = _demo_sector_label(sector)
+    if sector == "empresas":
+        use_case = (
+            "En una pyme esto dispara cotizacion de envio, zona de cobertura, pedido "
+            "y proxima accion comercial."
+        )
+    elif sector == "educacion":
+        use_case = (
+            "En un colegio esto puede guardar sede, zona de familia, retiro o referencia "
+            "para secretaria/preceptoria."
+        )
+    else:
+        use_case = (
+            "En municipio esto alimenta el reclamo con direccion, mapa, trazabilidad "
+            "y evidencia territorial."
+        )
+
+    return {
+        "success": True,
+        "message_body": (
+            f"Ubicacion recibida para demo {sector_label}.\n"
+            f"CRM interno: {ticket_ref}\n"
+            f"Referencia: {location_line}\n\n"
+            f"{use_case}\n\n"
+            "Quedo guardada en el CRM y en el historial del contacto."
+        ),
+        "message_type": "text",
+        "options_list": _chatboc_demo_contextual_options(sector),
+        "fuente": "chatboc_demo_location_received",
+        "data": {"chatboc_demo_input": input_context},
+        "skip_audio_generation": True,
+    }
+
+
+def _build_chatboc_demo_media_payload(
+    contact_user: Optional[User],
+    ticket: Optional[PymeTicket],
+    input_context: Dict[str, Any],
+    sector: str,
+) -> Dict[str, Any]:
+    ticket_ref = f"#{ticket.nro_ticket}" if ticket else "registrado"
+    media = input_context.get("media") if isinstance(input_context.get("media"), dict) else {}
+    media_kind = media.get("kind") or input_context.get("content_type") or "archivo"
+    sector_label = _demo_sector_label(sector)
+    if media_kind == "audio":
+        transcript = media.get("transcribed_text")
+        detail = (
+            f"Transcripcion detectada: {transcript}"
+            if transcript
+            else "La nota de voz quedo guardada para seguimiento y se puede revisar desde el CRM."
+        )
+        title = "Nota de voz procesada"
+    elif sector == "empresas":
+        title = "Adjunto recibido para demo empresa"
+        detail = "Puede ser foto de producto, etiqueta, comprobante o referencia de pedido."
+    elif sector == "educacion":
+        title = "Adjunto recibido para demo colegio"
+        detail = "Puede ser comprobante, autorizacion, certificado o consulta de una familia."
+    else:
+        title = "Evidencia recibida para demo municipio"
+        detail = "Puede ser foto o archivo asociado a reclamo, inspeccion o seguimiento."
+
+    return {
+        "success": True,
+        "message_body": (
+            f"{title}.\n"
+            f"CRM interno: {ticket_ref}\n"
+            f"Tipo: {media.get('mime_type') or media_kind}\n\n"
+            f"{detail}\n\n"
+            "Quedo guardado en el contacto, el ticket interno y la trazabilidad del demo."
+        ),
+        "message_type": "text",
+        "options_list": _chatboc_demo_contextual_options(sector),
+        "fuente": "chatboc_demo_media_received",
+        "data": {"chatboc_demo_input": input_context},
+        "skip_audio_generation": True,
+    }
 
 
 def _build_chatboc_sales_payload(contact_user: Optional[User], ticket: Optional[PymeTicket]) -> Dict[str, Any]:
@@ -785,9 +1331,27 @@ def _build_chatboc_demo_whatsapp_payload(
     contact_user: Optional[User],
     ticket: Optional[PymeTicket],
     session_context: ChatSessionContext,
+    input_context: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     action = str(action_id or "").strip()
-    normalized_message = str(message_body or "").strip().lower()
+    normalized_message = _normalize_chatboc_demo_text(message_body)
+    input_context = input_context or _build_chatboc_demo_input_context(
+        message_body=message_body,
+        uploaded_file_info=None,
+        location_info=None,
+    )
+    content_type = input_context.get("content_type")
+    active_sector = _chatboc_demo_active_sector(session_context)
+    if content_type == "location":
+        if active_sector not in {"gobierno", "educacion", "empresas"}:
+            active_sector = "gobierno"
+            _remember_chatboc_demo_sector(session_context, active_sector)
+        return _build_chatboc_demo_location_payload(contact_user, ticket, input_context, active_sector)
+    if content_type in {"image", "video", "file"}:
+        if active_sector not in {"gobierno", "educacion", "empresas"}:
+            active_sector = "gobierno"
+            _remember_chatboc_demo_sector(session_context, active_sector)
+        return _build_chatboc_demo_media_payload(contact_user, ticket, input_context, active_sector)
     if action in {"", "menu", "menu_principal", "main_menu", "cancelar"} and normalized_message in {
         "",
         "hola",
@@ -799,7 +1363,25 @@ def _build_chatboc_demo_whatsapp_payload(
     }:
         return _build_chatboc_demo_root_payload(getattr(contact_user, "name", None), ticket)
     if action.startswith("chatboc_demo:"):
-        return _build_chatboc_demo_sector_payload(action.split(":", 1)[1])
+        sector = action.split(":", 1)[1].strip().lower()
+        _remember_chatboc_demo_sector(session_context, sector)
+        return _build_chatboc_demo_sector_payload(sector)
+    if action == "chatboc_demo_order_start":
+        _remember_chatboc_demo_sector(session_context, "empresas")
+        return _build_chatboc_demo_business_order_payload(contact_user, ticket)
+    if action == "chatboc_demo_order_confirm":
+        _remember_chatboc_demo_sector(session_context, "empresas")
+        return _build_chatboc_demo_order_confirm_payload(contact_user, ticket)
+    if action == "chatboc_demo_claim_start":
+        _remember_chatboc_demo_sector(session_context, "gobierno")
+        return _build_chatboc_demo_claim_payload(contact_user, ticket)
+    if action == "chatboc_demo_school_start":
+        _remember_chatboc_demo_sector(session_context, "educacion")
+        return _build_chatboc_demo_school_payload(contact_user, ticket)
+    if action == "chatboc_demo_voice_start":
+        return _build_chatboc_demo_voice_payload(contact_user, ticket)
+    if action.startswith("chatboc_survey_open::") or action.startswith("chatboc_survey_share::"):
+        return _build_chatboc_survey_link_payload(action, session_context)
     if action.startswith("chatboc_surveys"):
         return _build_chatboc_surveys_payload(action, session_context)
     if action in {"chatboc_sales_lead", "capturar_lead_comercial"}:
@@ -807,13 +1389,63 @@ def _build_chatboc_demo_whatsapp_payload(
     if normalized_message in {"encuestas", "votaciones", "sondeos"}:
         return _build_chatboc_surveys_payload("chatboc_surveys", session_context)
     if normalized_message in {"municipio", "municipios", "gobierno"}:
+        _remember_chatboc_demo_sector(session_context, "gobierno")
         return _build_chatboc_demo_sector_payload("gobierno")
     if normalized_message in {"colegio", "colegios", "educacion", "escuela"}:
+        _remember_chatboc_demo_sector(session_context, "educacion")
         return _build_chatboc_demo_sector_payload("educacion")
     if normalized_message in {"empresa", "empresas", "pyme", "pymes", "bodega"}:
+        _remember_chatboc_demo_sector(session_context, "empresas")
         return _build_chatboc_demo_sector_payload("empresas")
     if any(word in normalized_message for word in ("precio", "contratar", "ventas", "asesor", "llamen")):
         return _build_chatboc_sales_payload(contact_user, ticket)
+    if _chatboc_demo_has_any(
+        normalized_message,
+        "pedido",
+        "producto",
+        "catalogo",
+        "stock",
+        "envio",
+        "comprar",
+        "carrito",
+        "presupuesto",
+    ):
+        _remember_chatboc_demo_sector(session_context, "empresas")
+        return _build_chatboc_demo_business_order_payload(contact_user, ticket)
+    if _chatboc_demo_has_any(
+        normalized_message,
+        "reclamo",
+        "tramite",
+        "bache",
+        "luminaria",
+        "alumbrado",
+        "municipal",
+    ):
+        _remember_chatboc_demo_sector(session_context, "gobierno")
+        return _build_chatboc_demo_claim_payload(contact_user, ticket)
+    if _chatboc_demo_has_any(
+        normalized_message,
+        "colegio",
+        "escuela",
+        "alumno",
+        "familia",
+        "inasistencia",
+        "admision",
+        "admisiones",
+        "cuota",
+        "comunicado",
+        "preceptor",
+        "secretaria",
+    ):
+        _remember_chatboc_demo_sector(session_context, "educacion")
+        return _build_chatboc_demo_school_payload(contact_user, ticket)
+    if _chatboc_demo_has_any(normalized_message, "llamada", "llamar", "voz", "telefono"):
+        return _build_chatboc_demo_voice_payload(contact_user, ticket)
+    if content_type == "audio":
+        if active_sector not in {"gobierno", "educacion", "empresas"}:
+            active_sector = "empresas"
+            _remember_chatboc_demo_sector(session_context, active_sector)
+        return _build_chatboc_demo_media_payload(contact_user, ticket, input_context, active_sector)
     return _build_chatboc_demo_root_payload(getattr(contact_user, "name", None), ticket)
 
 
@@ -3391,6 +4023,17 @@ def whatsapp_webhook():
 
     if is_chatboc_demo_destination:
         profile_name_from_request = _clean_contact_name(post_vars.get("ProfileName"))
+        chatboc_demo_input_context = _build_chatboc_demo_input_context(
+            message_body=message_body,
+            uploaded_file_info=uploaded_file_info,
+            location_info=location_info,
+        )
+        message_body_for_demo = (
+            chatboc_demo_input_context.get("effective_message")
+            or message_body
+            or chatboc_demo_input_context.get("summary")
+            or ""
+        )
         used_messages, message_limit = _increment_chatboc_demo_usage(session_context_db_entry)
         contact_user, demo_ticket = _record_chatboc_demo_engagement(
             owner_user=client_user,
@@ -3398,9 +4041,10 @@ def whatsapp_webhook():
             session_context=session_context_db_entry,
             from_number=from_number_cleaned,
             profile_name=profile_name_from_request,
-            message_body=message_body,
+            message_body=message_body_for_demo,
             action_id=selected_action_id,
             message_sid=message_sid,
+            input_context=chatboc_demo_input_context,
         )
         if contact_user and not end_user:
             end_user = contact_user
@@ -3413,10 +4057,11 @@ def whatsapp_webhook():
         else:
             chatboc_demo_direct_payload = _build_chatboc_demo_whatsapp_payload(
                 action_id=selected_action_id,
-                message_body=message_body,
+                message_body=message_body_for_demo,
                 contact_user=contact_user or end_user,
                 ticket=demo_ticket,
                 session_context=session_context_db_entry,
+                input_context=chatboc_demo_input_context,
             )
         bot_response_dict = chatboc_demo_direct_payload
     else:

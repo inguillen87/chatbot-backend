@@ -600,6 +600,7 @@ def build_demo_survey_chat_menu(
     channel: str = "widget",
     public_base_url: str = "https://www.chatboc.ar",
     page: int = 1,
+    page_size: int | None = None,
 ) -> dict[str, Any]:
     contract = build_demo_surveys_votings_contract(
         sector=sector,
@@ -607,12 +608,13 @@ def build_demo_survey_chat_menu(
         rubro=rubro,
         public_base_url=public_base_url,
         page=page,
+        page_size=page_size or DEMO_SURVEY_PAGE_SIZE,
     )
     labels = _sector_labels(contract["sector"])
     is_whatsapp = "whatsapp" in str(channel or "").lower()
     lines = [f"*{labels['heading']}*"]
     if is_whatsapp:
-        lines.append("Incluye 100 respuestas demo y resultados en vivo.")
+        lines.append("Primero votas. Despues ves 100 respuestas demo + tu voto en vivo.")
     else:
         lines.append("Cada demo trae 100 respuestas sinteticas para ver resultados reales de UX.")
     for index, item in enumerate(contract.get("items") or [], start=1):
@@ -622,18 +624,23 @@ def build_demo_survey_chat_menu(
         lines.append(f"{index}. *{title}*")
         if item.get("descripcion") and not is_whatsapp:
             lines.append(f"   {item['descripcion']}")
-        if public_url:
+        if public_url and not is_whatsapp:
             lines.append(f"   Abrir: {public_url}")
         if is_whatsapp and public_url:
             share_url = f"https://wa.me/?text={quote_plus(str(public_url))}"
-        if share_url:
+        if share_url and not is_whatsapp:
             share_label = "Compartir" if is_whatsapp else "Compartir por WhatsApp"
             lines.append(f"   {share_label}: {share_url}")
 
     options: list[dict[str, Any]] = []
-    if not is_whatsapp:
-        for item in contract.get("items") or []:
-            title = str(item.get("titulo") or item.get("slug") or "Encuesta")[:36]
+    for index, item in enumerate(contract.get("items") or [], start=1):
+        title = str(item.get("titulo") or item.get("slug") or "Encuesta")[:36]
+        slug = str(item.get("slug") or "").strip()
+        if is_whatsapp:
+            if slug:
+                options.append({"texto": f"🗳️ Votar {index}", "action_id": f"chatboc_survey_open::{slug}"})
+                options.append({"texto": f"📤 Compartir {index}", "action_id": f"chatboc_survey_share::{slug}"})
+        else:
             if item.get("public_url"):
                 options.append({"texto": f"Abrir {title}", "url": item["public_url"], "type": "url"})
             if item.get("whatsapp_share_url"):
