@@ -913,9 +913,14 @@ class VoiceStreamService:
                         self.owner_user = t.municipio or t.pyme
                         break
 
+            requested_slug = str(self.requested_tenant_slug or "").strip()
+            if not self.owner_user and not self.tenant_profile and requested_slug:
+                self.tenant_profile = TenantProfile.query.filter_by(slug=requested_slug).first()
+                if self.tenant_profile:
+                    self.owner_user = self.tenant_profile.pyme or self.tenant_profile.municipio
+
             if not self.owner_user and not self.tenant_profile and self._is_chatboc_demo_call():
-                requested_slug = str(self.requested_tenant_slug or "").strip()
-                demo_candidates = [requested_slug, CHATBOC_DEMO_TENANT_SLUG, "chatboc-platform"]
+                demo_candidates = [CHATBOC_DEMO_TENANT_SLUG, "chatboc-platform"]
                 for slug in [candidate for candidate in dict.fromkeys(demo_candidates) if candidate]:
                     self.tenant_profile = TenantProfile.query.filter_by(slug=slug).first()
                     if self.tenant_profile:

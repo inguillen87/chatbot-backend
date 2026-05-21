@@ -68,6 +68,26 @@ class VoiceRealtimeRoutesTestCase(unittest.TestCase):
         self.assertIn("max_call_seconds", body)
 
     @patch("routes.voice_routes.TWILIO_AUTH_TOKEN", None)
+    def test_twilio_voice_alias_preserves_requested_tenant_for_non_demo_number(self):
+        response = self.client.post(
+            "/twilio/voice?tenant=junin-1&vertical=municipio&intent=reclamos",
+            data={
+                "CallSid": "CA456",
+                "From": "+5492613168608",
+                "To": "+17432643718",
+                "Direction": "inbound",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.get_data(as_text=True)
+        self.assertIn("<Connect>", body)
+        self.assertIn("junin-1", body)
+        self.assertIn("municipio", body)
+        self.assertIn("reclamos", body)
+        self.assertNotIn("demo_hub", body)
+
+    @patch("routes.voice_routes.TWILIO_AUTH_TOKEN", None)
     def test_voice_fallback_keeps_phone_demo_menu_alive(self):
         response = self.client.post("/voice/fallback", data=self._twilio_payload())
 
