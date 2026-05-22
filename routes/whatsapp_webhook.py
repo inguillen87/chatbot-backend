@@ -1580,6 +1580,10 @@ def _build_chatboc_demo_whatsapp_payload(
         return _build_chatboc_demo_school_payload(contact_user, ticket)
     if action == "chatboc_demo_voice_start":
         return _build_chatboc_demo_voice_payload(contact_user, ticket)
+    if action == "chatboc_demo_limit_contact_yes":
+        return _build_chatboc_demo_limit_contact_yes_payload(contact_user, ticket)
+    if action == "chatboc_demo_limit_contact_no":
+        return _build_chatboc_demo_limit_contact_no_payload(ticket)
     if action.startswith("chatboc_survey_open::") or action.startswith("chatboc_survey_share::"):
         return _build_chatboc_survey_link_payload(action, session_context)
     if action.startswith("chatboc_surveys"):
@@ -4237,9 +4241,15 @@ def whatsapp_webhook():
         current_demo_usage, message_limit = _chatboc_demo_usage_snapshot(session_context_db_entry)
         was_over_or_at_limit = current_demo_usage >= message_limit
         can_reset_demo_usage = _can_reset_chatboc_demo_usage(from_number_cleaned)
+        if was_over_or_at_limit and not selected_action_id:
+            selected_action_id = _resolve_chatboc_demo_limit_decision_action(message_body_for_demo)
         normalized_demo_action = _normalize_chatboc_demo_text(selected_action_id)
         url_demo_turn = bool(selected_option and selected_option.get("url"))
         sales_demo_turn = normalized_demo_action in {"chatboc_sales_lead", "capturar_lead_comercial"}
+        limit_decision_turn = normalized_demo_action in {
+            "chatboc_demo_limit_contact_yes",
+            "chatboc_demo_limit_contact_no",
+        }
         reset_demo_turn = _is_chatboc_demo_reset_turn(
             selected_action_id=selected_action_id,
             selected_option=selected_option,
@@ -4249,6 +4259,7 @@ def whatsapp_webhook():
         limit_bypass_turn = (
             url_demo_turn
             or sales_demo_turn
+            or limit_decision_turn
             or (reset_demo_turn and (not was_over_or_at_limit or can_reset_demo_usage))
         )
         if reset_demo_turn and was_over_or_at_limit and can_reset_demo_usage:

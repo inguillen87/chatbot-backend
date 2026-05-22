@@ -19,7 +19,7 @@ if project_root_whatsapp not in sys.path:
 
 from app import create_app, db
 from config import Config
-from models import User, Rubro, WhatsappNumero, ChatSessionContext, PymeTicket, TenantProfile
+from models import User, Rubro, WhatsappNumero, ChatSessionContext, PymeTicket, TenantProfile, Notification
 from models_memory import Contact, InteractionEvent
 from services.municipio_responder import CONTEXTO_MUNICIPIO
 from routes.whatsapp_webhook import (
@@ -371,8 +371,73 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         mock_bot.assert_not_called()
 
         sent_bodies = [str(call.kwargs.get("body") or "") for call in self.mock_twilio_create.call_args_list]
-        self.assertIn("Llegaste al limite", sent_bodies[-1])
+        self.assertIn("Llegaste al limite de 2 mensajes de prueba", sent_bodies[-1])
+        self.assertIn("Si, quiero que me contacten", sent_bodies[-1])
         self.assertNotIn("Municipio inteligente", sent_bodies[-1])
+
+    @patch("routes.whatsapp_webhook.responder_chatboc")
+    def test_chatboc_demo_limit_yes_marks_hot_lead_without_resetting_public_limit(self, mock_bot):
+        self.mock_validator.validate.return_value = True
+        self.app.config["CHATBOC_DEMO_MAX_MESSAGES"] = 2
+        self.app.config["CHATBOC_DEMO_RESET_WHATSAPP_NUMBERS"] = "+5491111111111"
+
+        def send_demo(body: str, sid: str):
+            return self.client.post(
+                "/webhook/whatsapp",
+                data={
+                    "To": f"whatsapp:{CHATBOC_DEMO_DEFAULT_WHATSAPP_NUMBER}",
+                    "From": "whatsapp:+5492613168608",
+                    "Body": body,
+                    "ProfileName": "Marcelo",
+                    "MessageSid": sid,
+                },
+                headers={"X-Twilio-Signature": "dummy_signature_valid"},
+            )
+
+        self.assertEqual(send_demo("hola", "SM_CHATBOC_DEMO_HOT_1").status_code, 200)
+        self.assertEqual(send_demo("3", "SM_CHATBOC_DEMO_HOT_2").status_code, 200)
+        self.assertEqual(send_demo("hola", "SM_CHATBOC_DEMO_HOT_3").status_code, 200)
+        self.assertEqual(send_demo("1", "SM_CHATBOC_DEMO_HOT_4").status_code, 200)
+        mock_bot.assert_not_called()
+
+        sent_bodies = [str(call.kwargs.get("body") or "") for call in self.mock_twilio_create.call_args_list]
+        self.assertIn("lead prioritario", sent_bodies[-1])
+        self.assertNotIn("Llegaste al limite", sent_bodies[-1])
+
+        mapping = WhatsappNumero.query.filter_by(
+            numero_whatsapp=CHATBOC_DEMO_DEFAULT_WHATSAPP_NUMBER
+        ).first()
+        self.assertIsNotNone(mapping)
+
+        ticket = PymeTicket.query.filter_by(categoria="chatboc_demo_lead").first()
+        self.assertIsNotNone(ticket)
+        self.assertEqual(ticket.estado_cliente, "quiere_contacto")
+
+        contact = User.query.filter_by(
+            telefono="+5492613168608",
+            empresa_id=mapping.user_id,
+        ).first()
+        self.assertIsNotNone(contact)
+        self.assertTrue(contact.acepta_marketing)
+        self.assertIn("lead_caliente", contact.tags or [])
+
+        crm_contact = Contact.query.filter_by(phone="+5492613168608").first()
+        self.assertIsNotNone(crm_contact)
+        self.assertIn("lead_caliente", crm_contact.tags or [])
+        self.assertTrue((crm_contact.preferences or {}).get("commercial_contact_requested"))
+        self.assertEqual((crm_contact.preferences or {}).get("lead_temperature"), "hot")
+
+        notification = Notification.query.filter_by(
+            subject="Lead caliente WhatsApp demo Chatboc"
+        ).first()
+        self.assertIsNotNone(notification)
+        self.assertTrue((notification.metadata_json or {}).get("commercial_contact_requested"))
+
+        session = ChatSessionContext.query.filter_by(anon_id="+5492613168608").first()
+        self.assertIsNotNone(session)
+        usage = (session.context_data or {}).get("chatboc_demo_usage") or {}
+        self.assertEqual(usage.get("message_count"), 3)
+        self.assertNotEqual(usage.get("last_reset_reason"), "limit_navigation")
 
     @patch("routes.whatsapp_webhook.responder_chatboc")
     def test_chatboc_demo_school_free_text_keeps_context(self, mock_bot):
