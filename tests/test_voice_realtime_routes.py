@@ -99,7 +99,7 @@ class VoiceRealtimeRoutesTestCase(unittest.TestCase):
         self.assertIn('language="es-AR"', body)
         self.assertIn("/voice/demo/process", body)
         self.assertIn('voice="Polly.Lupe-Neural"', body)
-        self.assertIn('language="es-US"', body)
+        self.assertNotIn('language="es-US"', body)
         self.assertIn("municipios", body)
         self.assertIn("colegios", body)
         self.assertIn("empresas", body)
@@ -130,9 +130,8 @@ class VoiceRealtimeRoutesTestCase(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         body = response.get_data(as_text=True)
-        self.assertIn("tenant=junin", body)
+        self.assertIn("tenant=junin-1", body)
         self.assertIn("vertical=municipio", body)
-        self.assertNotIn("junin-1", body)
         self.assertNotIn("vertical=juni", body)
         self.assertIn("/voice/process", body)
 
@@ -145,7 +144,7 @@ class VoiceRealtimeRoutesTestCase(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         body = response.get_data(as_text=True)
-        self.assertIn("tenant=junin", body)
+        self.assertIn("tenant=junin-1", body)
         self.assertIn("vertical=municipio", body)
         self.assertNotIn("club-demo-ar", body)
         self.assertIn("/voice/process", body)
@@ -159,9 +158,9 @@ class VoiceRealtimeRoutesTestCase(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         body = response.get_data(as_text=True)
-        self.assertIn("tenant=chatboc-demo", body)
+        self.assertIn("tenant=chatboc-platform", body)
         self.assertIn("vertical=ventas", body)
-        self.assertNotIn("chatboc-platform", body)
+        self.assertNotIn("chatboc-demo", body)
         self.assertIn("/voice/process", body)
 
     @patch("routes.voice_routes.TWILIO_AUTH_TOKEN", None)

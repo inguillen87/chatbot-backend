@@ -23,14 +23,14 @@ voice_bp = Blueprint('voice', __name__)
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
 CHATBOC_DEMO_DEFAULT_WHATSAPP_NUMBER = "+18564858589"
 DEFAULT_TWILIO_FALLBACK_VOICE = "Polly.Lupe-Neural"
-DEFAULT_TWILIO_FALLBACK_SAY_LANGUAGE = "es-US"
+DEFAULT_TWILIO_FALLBACK_SAY_LANGUAGE = "es-AR"
 DEFAULT_TWILIO_GATHER_LANGUAGE = "es-AR"
 VOICE_TENANT_ALIASES = {
-    "junin-1": "junin",
-    "juni-01": "junin",
-    "juni": "junin",
-    "chatboc-platform": "chatboc-demo",
-    "club-demo-ar": "junin",
+    "junin": "junin-1",
+    "juni-01": "junin-1",
+    "juni": "junin-1",
+    "club-demo-ar": "junin-1",
+    "chatboc-demo": "chatboc-platform",
 }
 VOICE_VERTICAL_ALIASES = {
     "juni": "municipio",
