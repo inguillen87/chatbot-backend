@@ -107,7 +107,6 @@ def _twilio_fallback_voice() -> str:
 def _twilio_fallback_say_language() -> str:
     return _voice_config_value(
         "TWILIO_FALLBACK_SAY_LANGUAGE",
-        "TWILIO_FALLBACK_LANGUAGE",
         default=DEFAULT_TWILIO_FALLBACK_SAY_LANGUAGE,
     )
 
