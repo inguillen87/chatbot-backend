@@ -313,6 +313,68 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self.assertTrue(any("Confirmar pedido demo" in body for body in sent_bodies))
 
     @patch("routes.whatsapp_webhook.responder_chatboc")
+    def test_chatboc_demo_authorized_reset_number_can_reopen_menu_after_limit(self, mock_bot):
+        self.mock_validator.validate.return_value = True
+        self.app.config["CHATBOC_DEMO_MAX_MESSAGES"] = 2
+        self.app.config["CHATBOC_DEMO_RESET_WHATSAPP_NUMBERS"] = "+5492613168608"
+
+        def send_demo(body: str, sid: str):
+            return self.client.post(
+                "/webhook/whatsapp",
+                data={
+                    "To": f"whatsapp:{CHATBOC_DEMO_DEFAULT_WHATSAPP_NUMBER}",
+                    "From": "whatsapp:+5492613168608",
+                    "Body": body,
+                    "ProfileName": "Marcelo",
+                    "MessageSid": sid,
+                },
+                headers={"X-Twilio-Signature": "dummy_signature_valid"},
+            )
+
+        self.assertEqual(send_demo("hola", "SM_CHATBOC_DEMO_RESET_1").status_code, 200)
+        self.assertEqual(send_demo("3", "SM_CHATBOC_DEMO_RESET_2").status_code, 200)
+        self.assertEqual(send_demo("hola", "SM_CHATBOC_DEMO_RESET_3").status_code, 200)
+        mock_bot.assert_not_called()
+
+        sent_bodies = [str(call.kwargs.get("body") or "") for call in self.mock_twilio_create.call_args_list]
+        self.assertNotIn("Llegaste al limite", sent_bodies[-1])
+        self.assertIn("Municipio inteligente", sent_bodies[-1])
+
+        session = ChatSessionContext.query.filter_by(anon_id="+5492613168608").first()
+        self.assertIsNotNone(session)
+        usage = (session.context_data or {}).get("chatboc_demo_usage") or {}
+        self.assertEqual(usage.get("message_count"), 0)
+        self.assertEqual(usage.get("last_reset_reason"), "limit_navigation")
+
+    @patch("routes.whatsapp_webhook.responder_chatboc")
+    def test_chatboc_demo_public_number_stays_limited_after_limit(self, mock_bot):
+        self.mock_validator.validate.return_value = True
+        self.app.config["CHATBOC_DEMO_MAX_MESSAGES"] = 2
+        self.app.config["CHATBOC_DEMO_RESET_WHATSAPP_NUMBERS"] = "+5491111111111"
+
+        def send_demo(body: str, sid: str):
+            return self.client.post(
+                "/webhook/whatsapp",
+                data={
+                    "To": f"whatsapp:{CHATBOC_DEMO_DEFAULT_WHATSAPP_NUMBER}",
+                    "From": "whatsapp:+5492613168608",
+                    "Body": body,
+                    "ProfileName": "Marcelo",
+                    "MessageSid": sid,
+                },
+                headers={"X-Twilio-Signature": "dummy_signature_valid"},
+            )
+
+        self.assertEqual(send_demo("hola", "SM_CHATBOC_DEMO_LIMIT_1").status_code, 200)
+        self.assertEqual(send_demo("3", "SM_CHATBOC_DEMO_LIMIT_2").status_code, 200)
+        self.assertEqual(send_demo("hola", "SM_CHATBOC_DEMO_LIMIT_3").status_code, 200)
+        mock_bot.assert_not_called()
+
+        sent_bodies = [str(call.kwargs.get("body") or "") for call in self.mock_twilio_create.call_args_list]
+        self.assertIn("Llegaste al limite", sent_bodies[-1])
+        self.assertNotIn("Municipio inteligente", sent_bodies[-1])
+
+    @patch("routes.whatsapp_webhook.responder_chatboc")
     def test_chatboc_demo_school_free_text_keeps_context(self, mock_bot):
         self.mock_validator.validate.return_value = True
 

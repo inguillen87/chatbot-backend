@@ -118,6 +118,25 @@ def _configured_chatboc_demo_numbers() -> Set[str]:
     return {candidate for candidate in normalized if candidate}
 
 
+def _configured_chatboc_demo_reset_numbers() -> Set[str]:
+    raw_numbers = (
+        current_app.config.get("CHATBOC_DEMO_RESET_WHATSAPP_NUMBERS")
+        or os.getenv("CHATBOC_DEMO_RESET_WHATSAPP_NUMBERS")
+        or ""
+    )
+    if isinstance(raw_numbers, str):
+        candidates = re.split(r"[,;\s]+", raw_numbers)
+    else:
+        candidates = list(raw_numbers or [])
+    normalized = {_normalize_whatsapp_address(candidate) for candidate in candidates}
+    return {candidate for candidate in normalized if candidate}
+
+
+def _can_reset_chatboc_demo_usage(from_number: Optional[str]) -> bool:
+    normalized = _normalize_whatsapp_address(from_number)
+    return bool(normalized and normalized in _configured_chatboc_demo_reset_numbers())
+
+
 def _chatboc_demo_max_messages() -> int:
     raw_value = (
         current_app.config.get("CHATBOC_DEMO_MAX_MESSAGES")
@@ -416,6 +435,9 @@ def _upsert_chatboc_demo_crm_contact(
     media_context = input_context.get("media") if isinstance(input_context.get("media"), dict) else None
     location_context = input_context.get("location") if isinstance(input_context.get("location"), dict) else None
     tags = ["chatboc_demo", "whatsapp", "prospecto"]
+    wants_contact = _is_chatboc_demo_limit_contact_yes(action_id)
+    if wants_contact:
+        tags.extend(["lead_caliente", "quiere_contacto"])
     if inquiry_type:
         tags.append(inquiry_type)
     if content_type and content_type not in {"text", "event"}:
@@ -424,7 +446,9 @@ def _upsert_chatboc_demo_crm_contact(
         "preferred_channel": "whatsapp",
         "source": "chatboc_demo_whatsapp_hub",
         "legacy_user_id": getattr(contact_user, "id", None),
-        "marketing_consent_status": "unknown",
+        "marketing_consent_status": "opted_in" if wants_contact else "unknown",
+        "commercial_contact_requested": wants_contact,
+        "lead_temperature": "hot" if wants_contact else "warm",
         "service_window_source": "inbound_whatsapp",
         "last_demo_input_type": content_type,
         "last_demo_input_summary": input_context.get("summary"),
@@ -493,6 +517,8 @@ def _upsert_chatboc_demo_crm_contact(
 def _classify_chatboc_demo_inquiry(message_body: str, action_id: Optional[str]) -> str:
     action = _normalize_chatboc_demo_text(action_id)
     text = _normalize_chatboc_demo_text(message_body)
+    if _is_chatboc_demo_limit_contact_yes(action):
+        return "interes_comercial"
     if any(word in text for word in ("familia", "inasistencia", "admisiones", "cuota", "comunicado")):
         return "interes_educacion"
     if any(
@@ -616,15 +642,17 @@ def _build_chatboc_demo_limit_payload(used: int, limit: int, ticket: Optional[Py
     return {
         "success": True,
         "message_body": (
-            "Llegaste al limite de mensajes de esta demo de WhatsApp. "
+            f"Llegaste al limite de {limit} mensajes de prueba por WhatsApp para nuestros rubros demo. "
             "Guarde tu consulta para que el equipo de Chatboc la revise."
             f"{ticket_line}\n\n"
-            "Podes seguir desde la demo web o dejar tus datos para una prueba guiada."
+            "Te interesa implementar Chatboc en tu empresa, colegio o municipio? "
+            "Podemos contactarte y dejarte una prueba guiada."
         ),
         "message_type": "text",
         "options_list": [
+            _chatboc_demo_option("Si, quiero que me contacten", "chatboc_demo_limit_contact_yes"),
+            _chatboc_demo_option("No por ahora", "chatboc_demo_limit_contact_no"),
             _chatboc_demo_option("Abrir demo web", url="https://www.chatboc.ar/demo"),
-            _chatboc_demo_option("Hablar con ventas", "chatboc_sales_lead"),
         ],
         "fuente": "chatboc_demo_whatsapp_limit",
         "data": {
@@ -635,6 +663,56 @@ def _build_chatboc_demo_limit_payload(used: int, limit: int, ticket: Optional[Py
                 "remaining": max(limit - used, 0),
             }
         },
+        "skip_audio_generation": True,
+    }
+
+
+def _build_chatboc_demo_limit_contact_yes_payload(
+    contact_user: Optional[User],
+    ticket: Optional[PymeTicket],
+) -> Dict[str, Any]:
+    name = getattr(contact_user, "name", None) or "prospecto"
+    ticket_ref = f"#{ticket.nro_ticket}" if ticket else "registrado"
+    return {
+        "success": True,
+        "message_body": (
+            f"Perfecto, {name}. Te marque como lead prioritario en Chatboc.\n"
+            f"Ticket interno CRM: {ticket_ref}\n\n"
+            "El equipo comercial puede contactarte por WhatsApp para armar una prueba guiada, "
+            "ver rubro, volumen de mensajes y caso de uso."
+        ),
+        "message_type": "text",
+        "options_list": [
+            _chatboc_demo_option("Abrir demo web", url="https://www.chatboc.ar/demo"),
+        ],
+        "fuente": "chatboc_demo_limit_contact_yes",
+        "data": {
+            "lead": {
+                "ticket_id": getattr(ticket, "id", None),
+                "ticket_number": getattr(ticket, "nro_ticket", None),
+                "status": getattr(ticket, "estado", None),
+                "estado_cliente": getattr(ticket, "estado_cliente", None),
+                "commercial_contact_requested": True,
+            }
+        },
+        "skip_audio_generation": True,
+    }
+
+
+def _build_chatboc_demo_limit_contact_no_payload(ticket: Optional[PymeTicket]) -> Dict[str, Any]:
+    ticket_ref = f"\nTicket interno CRM: #{ticket.nro_ticket}" if ticket else ""
+    return {
+        "success": True,
+        "message_body": (
+            "Listo, no te marcamos como contacto comercial prioritario."
+            f"{ticket_ref}\n\n"
+            "Podes seguir probando desde la demo web sin consumir mas mensajes de WhatsApp."
+        ),
+        "message_type": "text",
+        "options_list": [
+            _chatboc_demo_option("Abrir demo web", url="https://www.chatboc.ar/demo"),
+        ],
+        "fuente": "chatboc_demo_limit_contact_no",
         "skip_audio_generation": True,
     }
 
@@ -655,6 +733,69 @@ def _increment_chatboc_demo_usage(session_context: ChatSessionContext) -> Tuple[
     safe_flag_modified(session_context, "context_data")
     db.session.add(session_context)
     return usage["message_count"], limit
+
+
+def _chatboc_demo_usage_snapshot(session_context: ChatSessionContext) -> Tuple[int, int]:
+    limit = _chatboc_demo_max_messages()
+    if not isinstance(session_context.context_data, dict):
+        return 0, limit
+    usage = session_context.context_data.get("chatboc_demo_usage")
+    if not isinstance(usage, dict):
+        return 0, limit
+    try:
+        used = int(usage.get("message_count") or 0)
+    except (TypeError, ValueError):
+        used = 0
+    return max(used, 0), limit
+
+
+def _is_chatboc_demo_reset_turn(
+    *,
+    selected_action_id: Optional[str],
+    selected_option: Optional[Dict[str, Any]],
+    message_body: str,
+    over_limit: bool,
+) -> bool:
+    action = _normalize_chatboc_demo_text(selected_action_id)
+    text = _normalize_chatboc_demo_text(message_body)
+    option_text = _normalize_chatboc_demo_text((selected_option or {}).get("texto"))
+    reset_actions = {"menu", "menu_principal", "main_menu", "cancelar"}
+    reset_texts = {"menu", "volver", "inicio", "cancelar", "salir", "reset", "reiniciar"}
+    greeting_texts = {"hola", "buenas", "buen dia", "buenos dias", "buenas tardes", "buenas noches"}
+    if action in reset_actions:
+        return True
+    if text in reset_texts or option_text in reset_texts:
+        return True
+    return over_limit and text in greeting_texts
+
+
+def _reset_chatboc_demo_usage_for_navigation(
+    session_context: ChatSessionContext,
+    *,
+    reason: str,
+) -> None:
+    limit = _chatboc_demo_max_messages()
+    if not isinstance(session_context.context_data, dict):
+        session_context.context_data = {}
+    usage = session_context.context_data.get("chatboc_demo_usage")
+    if not isinstance(usage, dict):
+        usage = {"channel": "whatsapp"}
+    usage.update(
+        {
+            "channel": "whatsapp",
+            "message_count": 0,
+            "limit": limit,
+            "remaining": limit,
+            "last_reset_at": datetime.utcnow().isoformat(),
+            "last_reset_reason": reason,
+        }
+    )
+    session_context.context_data["chatboc_demo_usage"] = usage
+    session_context.context_data.pop("chatboc_demo_active_sector", None)
+    session_context.context_data.pop("chatboc_demo_last_action", None)
+    session_context.context_data.pop("pending_sensitive_action", None)
+    safe_flag_modified(session_context, "context_data")
+    db.session.add(session_context)
 
 
 def _record_chatboc_demo_engagement(
@@ -722,6 +863,29 @@ def _record_chatboc_demo_engagement(
             )
         )
 
+    wants_contact = _is_chatboc_demo_limit_contact_yes(action_id)
+    if wants_contact:
+        if ticket:
+            ticket.estado_cliente = "quiere_contacto"
+            ticket.estado = ticket.estado or "nuevo"
+            db.session.add(ticket)
+            db.session.add(
+                TicketComentario(
+                    pyme_ticket_id=ticket.id,
+                    comentario=(
+                        "[whatsapp_demo_hub] lead_limit_contact=yes | "
+                        "El prospecto llego al limite de la demo y pidio contacto comercial."
+                    ),
+                    anon_id=from_number,
+                    origen="whatsapp",
+                    estado_ticket=ticket.estado,
+                )
+            )
+        if contact_user:
+            contact_user.acepta_marketing = True
+            contact_user.tags = _append_tag(contact_user.tags, "lead_caliente", "quiere_contacto")
+            db.session.add(contact_user)
+
     _upsert_chatboc_demo_crm_contact(
         tenant=tenant,
         contact_user=contact_user,
@@ -749,16 +913,27 @@ def _record_chatboc_demo_engagement(
 
     if tenant:
         notification_key = message_sid or f"{from_number}:{uuid.uuid4().hex}"
+        notification_subject = (
+            "Lead caliente WhatsApp demo Chatboc"
+            if wants_contact
+            else "Nuevo contacto WhatsApp demo Chatboc"
+        )
+        notification_body = (
+            f"{getattr(contact_user, 'name', None) or 'Prospecto'} pidio contacto comercial "
+            f"desde {from_number}. Ticket interno: {getattr(ticket, 'nro_ticket', None) or '-'}."
+            if wants_contact
+            else (
+                f"{getattr(contact_user, 'name', None) or 'Prospecto'} escribio desde "
+                f"{from_number}. Ticket interno: {getattr(ticket, 'nro_ticket', None) or '-'}."
+            )
+        )
         notification = Notification(
             tenant_id=tenant.id,
             user_id=getattr(owner_user, "id", None),
             channel="in_app",
             recipient=getattr(owner_user, "email", None) or "superadmin",
-            subject="Nuevo contacto WhatsApp demo Chatboc",
-            body=(
-                f"{getattr(contact_user, 'name', None) or 'Prospecto'} escribio desde "
-                f"{from_number}. Ticket interno: {getattr(ticket, 'nro_ticket', None) or '-'}."
-            ),
+            subject=notification_subject,
+            body=notification_body,
             status="queued",
             idempotency_key=f"chatboc_demo_whatsapp:{notification_key}",
             metadata_json={
@@ -768,6 +943,8 @@ def _record_chatboc_demo_engagement(
                 "action_id": action_id,
                 "content_type": content_type,
                 "input_summary": input_summary,
+                "commercial_contact_requested": wants_contact,
+                "lead_temperature": "hot" if wants_contact else "warm",
                 "media": input_context.get("media"),
                 "location": input_context.get("location"),
                 "ticket_id": getattr(ticket, "id", None),
@@ -805,6 +982,25 @@ def _normalize_chatboc_demo_text(value: Any) -> str:
 def _chatboc_demo_has_any(text: str, *keywords: str) -> bool:
     normalized = _normalize_chatboc_demo_text(text)
     return any(keyword in normalized for keyword in keywords)
+
+
+def _is_chatboc_demo_limit_contact_yes(action_id: Optional[str]) -> bool:
+    return _normalize_chatboc_demo_text(action_id) in {
+        "chatboc_demo_limit_contact_yes",
+        "chatboc_sales_lead",
+        "capturar_lead_comercial",
+    }
+
+
+def _resolve_chatboc_demo_limit_decision_action(message_body: str) -> Optional[str]:
+    text = _normalize_chatboc_demo_text(message_body)
+    if text in {"1", "si", "s", "yes", "ok", "dale", "contactame", "contactenme"}:
+        return "chatboc_demo_limit_contact_yes"
+    if text in {"0", "2", "no", "n", "cancelar", "salir"}:
+        return "chatboc_demo_limit_contact_no"
+    if _chatboc_demo_has_any(text, "interesa", "contratar", "ventas", "asesor", "contacto"):
+        return "chatboc_demo_limit_contact_yes"
+    return None
 
 
 def _chatboc_demo_active_sector(session_context: ChatSessionContext) -> str:
@@ -1360,6 +1556,10 @@ def _build_chatboc_demo_whatsapp_payload(
         "menú",
         "volver",
         "inicio",
+        "cancelar",
+        "salir",
+        "reset",
+        "reiniciar",
     }:
         return _build_chatboc_demo_root_payload(getattr(contact_user, "name", None), ticket)
     if action.startswith("chatboc_demo:"):
@@ -4034,7 +4234,33 @@ def whatsapp_webhook():
             or chatboc_demo_input_context.get("summary")
             or ""
         )
-        used_messages, message_limit = _increment_chatboc_demo_usage(session_context_db_entry)
+        current_demo_usage, message_limit = _chatboc_demo_usage_snapshot(session_context_db_entry)
+        was_over_or_at_limit = current_demo_usage >= message_limit
+        can_reset_demo_usage = _can_reset_chatboc_demo_usage(from_number_cleaned)
+        normalized_demo_action = _normalize_chatboc_demo_text(selected_action_id)
+        url_demo_turn = bool(selected_option and selected_option.get("url"))
+        sales_demo_turn = normalized_demo_action in {"chatboc_sales_lead", "capturar_lead_comercial"}
+        reset_demo_turn = _is_chatboc_demo_reset_turn(
+            selected_action_id=selected_action_id,
+            selected_option=selected_option,
+            message_body=message_body_for_demo,
+            over_limit=was_over_or_at_limit,
+        )
+        limit_bypass_turn = (
+            url_demo_turn
+            or sales_demo_turn
+            or (reset_demo_turn and (not was_over_or_at_limit or can_reset_demo_usage))
+        )
+        if reset_demo_turn and was_over_or_at_limit and can_reset_demo_usage:
+            _reset_chatboc_demo_usage_for_navigation(
+                session_context_db_entry,
+                reason="limit_navigation",
+            )
+            used_messages, message_limit = _chatboc_demo_usage_snapshot(session_context_db_entry)
+        elif limit_bypass_turn:
+            used_messages, message_limit = current_demo_usage, message_limit
+        else:
+            used_messages, message_limit = _increment_chatboc_demo_usage(session_context_db_entry)
         contact_user, demo_ticket = _record_chatboc_demo_engagement(
             owner_user=client_user,
             tenant=tenant_profile,
@@ -4048,7 +4274,7 @@ def whatsapp_webhook():
         )
         if contact_user and not end_user:
             end_user = contact_user
-        if used_messages > message_limit:
+        if used_messages > message_limit and not limit_bypass_turn:
             chatboc_demo_direct_payload = _build_chatboc_demo_limit_payload(
                 used_messages,
                 message_limit,
