@@ -27,6 +27,7 @@ from routes.whatsapp_webhook import (
     _strip_duplicate_welcome_media,
     _reset_municipio_context_for_menu,
     CHATBOC_DEMO_DEFAULT_WHATSAPP_NUMBER,
+    CHATBOC_DEMO_DEFAULT_RESET_WHATSAPP_NUMBER,
     CHATBOC_DEMO_TENANT_SLUG,
 )
 # Moved model imports after app and config to ensure they are found via sys.path
@@ -345,6 +346,34 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         usage = (session.context_data or {}).get("chatboc_demo_usage") or {}
         self.assertEqual(usage.get("message_count"), 0)
         self.assertEqual(usage.get("last_reset_reason"), "limit_navigation")
+
+    @patch("routes.whatsapp_webhook.responder_chatboc")
+    def test_chatboc_demo_ceo_reset_number_is_enabled_by_default(self, mock_bot):
+        self.mock_validator.validate.return_value = True
+        self.app.config["CHATBOC_DEMO_MAX_MESSAGES"] = 2
+        self.app.config.pop("CHATBOC_DEMO_RESET_WHATSAPP_NUMBERS", None)
+
+        def send_demo(body: str, sid: str):
+            return self.client.post(
+                "/webhook/whatsapp",
+                data={
+                    "To": f"whatsapp:{CHATBOC_DEMO_DEFAULT_WHATSAPP_NUMBER}",
+                    "From": f"whatsapp:{CHATBOC_DEMO_DEFAULT_RESET_WHATSAPP_NUMBER}",
+                    "Body": body,
+                    "ProfileName": "Marcelo",
+                    "MessageSid": sid,
+                },
+                headers={"X-Twilio-Signature": "dummy_signature_valid"},
+            )
+
+        self.assertEqual(send_demo("hola", "SM_CHATBOC_DEMO_DEFAULT_RESET_1").status_code, 200)
+        self.assertEqual(send_demo("3", "SM_CHATBOC_DEMO_DEFAULT_RESET_2").status_code, 200)
+        self.assertEqual(send_demo("hola", "SM_CHATBOC_DEMO_DEFAULT_RESET_3").status_code, 200)
+        mock_bot.assert_not_called()
+
+        sent_bodies = [str(call.kwargs.get("body") or "") for call in self.mock_twilio_create.call_args_list]
+        self.assertNotIn("Llegaste al limite", sent_bodies[-1])
+        self.assertIn("Municipio inteligente", sent_bodies[-1])
 
     @patch("routes.whatsapp_webhook.responder_chatboc")
     def test_chatboc_demo_public_number_stays_limited_after_limit(self, mock_bot):

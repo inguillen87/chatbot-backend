@@ -51,10 +51,11 @@ class TestVisionFallbackService(unittest.TestCase):
     @patch("services.vision_fallback_service._call_openai", return_value=None)
     def test_cohere_fallback(self, mock_openai, mock_cohere):
         mock_cohere.return_value = {"labels": ["calle"], "objects": ["bache"], "text": ""}
-        result = analyze_image_smart(b"bytes")
+        with patch.dict(os.environ, {"VISION_COHERE_ENABLED": "true"}, clear=False):
+            result = analyze_image_smart(b"bytes")
         self.assertEqual(result["objects"][0]["name"], "bache")
 
-    @patch("services.vision_fallback_service.cohere.Client")
+    @patch("cohere.Client")
     def test_generate_receives_image_url(self, mock_client_cls):
         from services.vision_fallback_service import _call_cohere
 
@@ -65,8 +66,12 @@ class TestVisionFallbackService(unittest.TestCase):
         mock_client.generate.return_value = gen_resp
         mock_client_cls.return_value = mock_client
 
-        os.environ["COHERE_API_KEY"] = "abc"
-        _call_cohere(b"img-bytes")
+        with patch.dict(
+            os.environ,
+            {"COHERE_API_KEY": "abc", "VISION_COHERE_ENABLED": "true"},
+            clear=False,
+        ):
+            _call_cohere(b"img-bytes")
 
         b64 = base64.b64encode(b"img-bytes").decode("utf-8")
         mock_client.generate.assert_called_once_with(

@@ -8,7 +8,6 @@ from services.logging_config import log_text_block
 from cachetools import TTLCache
 
 from services.openai_bridge import llamar_openai
-from services.cohere_bridge import llamar_cohere
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +38,15 @@ def _build_cache_key(
         return str(key_obj)
 
 
+def _truthy_env(*names: str) -> bool:
+    truthy = {"1", "true", "yes", "on"}
+    return any(str(os.getenv(name) or "").strip().lower() in truthy for name in names)
+
+
+def _cohere_llm_enabled() -> bool:
+    return _truthy_env("LLM_COHERE_ENABLED", "COHERE_ENABLED")
+
+
 def llamar_llm(
     app,
     mensaje_usuario: Any = None,
@@ -49,11 +57,11 @@ def llamar_llm(
     timeout_seconds: int = 20,
     model: str = "gpt-4o-mini",
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    """Generic LLM wrapper using OpenAI with Cohere as fallback.
+    """Generic LLM wrapper using OpenAI as the production default.
 
     This function keeps the previous signature for backwards compatibility.
-    It first tries OpenAI and falls back to Cohere. Responses are
-    cached in-memory to minimize repeated calls.
+    Cohere is only used when explicitly enabled by env. Responses are cached
+    in-memory to minimize repeated calls.
     """
     user_msg = mensaje_usuario if mensaje_usuario is not None else mensaje
     cache_key = _build_cache_key(user_msg, chat_session_id, historial)
@@ -68,14 +76,28 @@ def llamar_llm(
         respuesta = llamar_openai(app, user_msg, usuario or {}, historial or [], chat_session_id, model=resolved_model)
         log_text_block(logger, "LLM OpenAI response", respuesta)
     except Exception as e:
-        logger.error(f"OpenAI call failed: {e}; trying Cohere", exc_info=True)
+        if not _cohere_llm_enabled():
+            logger.error("OpenAI call failed and Cohere LLM fallback is disabled: %s", e, exc_info=True)
+            error_response = ({
+                "message_body": "El asistente IA esta tardando mas de lo normal en responder. Por favor, intenta de nuevo en unos momentos.",
+                "accion_backend": "derivar_humano",
+                "datos_estructura": {"error_detalle": "openai_unavailable"},
+                "pedir_info": None,
+                "botones": [],
+            }, {})
+            LLM_CACHE[cache_key] = error_response
+            return error_response
+
+        logger.error("OpenAI call failed: %s; trying explicitly enabled Cohere fallback", e, exc_info=True)
         try:
+            from services.cohere_bridge import llamar_cohere
+
             respuesta = llamar_cohere(app, user_msg, usuario or {}, historial or [], chat_session_id)
             log_text_block(logger, "LLM Cohere response", respuesta)
         except Exception as e2:
             logger.error(f"Cohere call failed: {e2}", exc_info=True)
             error_response = ({
-                "message_body": "El asistente IA está tardando más de lo normal en responder. Por favor, intenta de nuevo en unos momentos.",
+                "message_body": "El asistente IA esta tardando mas de lo normal en responder. Por favor, intenta de nuevo en unos momentos.",
                 "accion_backend": "derivar_humano",
                 "datos_estructura": {"error_detalle": "llm_unavailable"},
                 "pedir_info": None,

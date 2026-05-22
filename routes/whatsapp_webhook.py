@@ -99,6 +99,7 @@ SENSITIVE_ACTION_CONFIRM_ACCEPT = {"1", "si", "sí", "confirmar", "ok", "dale"}
 SENSITIVE_ACTION_CONFIRM_REJECT = {"2", "no", "cancelar", "menu", "menú"}
 GENERIC_CONTACT_NAMES = {"vecino", "vecina", "vecino/a", "usuario", "anonimo", "anonimo/a"}
 CHATBOC_DEMO_DEFAULT_WHATSAPP_NUMBER = "+18564858589"
+CHATBOC_DEMO_DEFAULT_RESET_WHATSAPP_NUMBER = "+5492613168608"
 CHATBOC_DEMO_TENANT_SLUG = "chatboc-demo"
 CHATBOC_DEMO_OWNER_EMAIL = "marcelo@chatboc.ar"
 
@@ -119,10 +120,13 @@ def _configured_chatboc_demo_numbers() -> Set[str]:
 
 
 def _configured_chatboc_demo_reset_numbers() -> Set[str]:
+    configured_numbers = current_app.config.get("CHATBOC_DEMO_RESET_WHATSAPP_NUMBERS")
+    if configured_numbers is None:
+        configured_numbers = os.getenv("CHATBOC_DEMO_RESET_WHATSAPP_NUMBERS")
     raw_numbers = (
-        current_app.config.get("CHATBOC_DEMO_RESET_WHATSAPP_NUMBERS")
-        or os.getenv("CHATBOC_DEMO_RESET_WHATSAPP_NUMBERS")
-        or ""
+        configured_numbers
+        if configured_numbers not in (None, "")
+        else CHATBOC_DEMO_DEFAULT_RESET_WHATSAPP_NUMBER
     )
     if isinstance(raw_numbers, str):
         candidates = re.split(r"[,;\s]+", raw_numbers)

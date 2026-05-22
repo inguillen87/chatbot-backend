@@ -3,6 +3,7 @@ from unittest.mock import MagicMock, patch
 
 from services.audio_transcription_service import (
     audio_translation_capabilities,
+    clear_transcription_cache,
     normalize_spanish_transcription,
     resolve_transcription_language,
     transcribe_audio_from_url,
@@ -10,6 +11,8 @@ from services.audio_transcription_service import (
 
 
 class TestAudioTranscriptionService(unittest.TestCase):
+    def setUp(self):
+        clear_transcription_cache()
 
     @patch("services.audio_transcription_service.requests.get")
     @patch("services.audio_transcription_service.openai_client")
@@ -54,6 +57,8 @@ class TestAudioTranscriptionService(unittest.TestCase):
         self.assertTrue(capabilities["language_detection"])
         self.assertEqual(capabilities["supported_languages"], ["es", "en", "pt"])
         self.assertEqual(capabilities["target_language"], "es")
+        self.assertTrue(capabilities["cache"]["enabled"])
+        self.assertEqual(capabilities["providers"], ["openai"])
 
     @patch("services.audio_transcription_service.requests.get")
     @patch("services.audio_transcription_service.openai_client")
@@ -107,6 +112,27 @@ class TestAudioTranscriptionService(unittest.TestCase):
             result = transcribe_audio_from_url("http://example.com/audio.ogg", "audio/ogg", "fake_sid", "fake_token")
 
         self.assertIsNone(result)
+
+    @patch("services.audio_transcription_service.requests.get")
+    @patch("services.audio_transcription_service.openai_client")
+    def test_transcribe_audio_from_url_uses_cache_for_repeated_audio(self, mock_openai_client, mock_requests_get):
+        mock_response = MagicMock()
+        mock_response.raise_for_status.return_value = None
+        mock_response.content = b"same_audio_content"
+        mock_requests_get.return_value = mock_response
+
+        mock_result = MagicMock()
+        mock_result.text = "hola cache"
+        mock_openai_client.audio.transcriptions.create.return_value = mock_result
+
+        with patch.dict("os.environ", {"OPENAI_STT_LANGUAGE": "auto", "STT_PROVIDER_ORDER": "openai"}, clear=False):
+            first = transcribe_audio_from_url("http://example.com/audio.ogg", "audio/ogg", "fake_sid", "fake_token")
+            second = transcribe_audio_from_url("http://example.com/audio.ogg", "audio/ogg", "fake_sid", "fake_token")
+
+        self.assertEqual(first, "hola cache")
+        self.assertEqual(second, "hola cache")
+        mock_requests_get.assert_called_once()
+        mock_openai_client.audio.transcriptions.create.assert_called_once()
 
 
 if __name__ == "__main__":

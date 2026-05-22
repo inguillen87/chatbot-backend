@@ -18,10 +18,15 @@ class TestReclamoFlowUX(unittest.TestCase):
         context = {"chat_db_context_data": {}}
         handler = ReclamoFlowHandler(context, MagicMock())
 
-        handler.start_flow()
+        response = handler.start_flow()
 
         municipal_ctx = context["chat_db_context_data"].get(CONTEXTO_MUNICIPIO, {})
-        self.assertEqual(municipal_ctx.get("estado_conversacion"), "EN_FLUJO_RECLAMO")
+        self.assertEqual(
+            municipal_ctx.get("estado_conversacion"),
+            ConversationState.ESPERANDO_SELECCION_MENU_RECLAMOS.name,
+        )
+        self.assertEqual(handler.flow_context["state"], ReclamoState.ESPERANDO_CATEGORIA.name)
+        self.assertTrue(response.get("options_list"))
 
     def test_handle_categoria_volver_al_inicio_shows_menu(self):
         context = {
@@ -35,7 +40,8 @@ class TestReclamoFlowUX(unittest.TestCase):
         handler.flow_context['state'] = ReclamoState.ESPERANDO_CATEGORIA.name
         response = handler.handle("1", {"pregunta": "1"})
 
-        self.assertIn("JUNI", response.get("message_body", ""))
+        self.assertIn("Bienvenido", response.get("message_body", ""))
+        self.assertIn("tu municipio", response.get("message_body", ""))
         municipal_ctx = context["chat_db_context_data"].get(CONTEXTO_MUNICIPIO, {})
         self.assertNotIn("reclamo_flow_v2", municipal_ctx)
         self.assertEqual(
@@ -187,17 +193,10 @@ class TestReclamoFlowUX(unittest.TestCase):
             mock_exec.return_value = {"success": True, "data": {"nro_ticket": "R-1"}}
             resp = handler.handle_confirmacion("si", {})
         self.assertIn("R-1", resp["message_body"])
-        delayed_menu = resp.get("delayed_payload", {})
-        self.assertIn("JUNI", delayed_menu.get("message_body", ""))
         municipal_ctx = context["chat_db_context_data"][CONTEXTO_MUNICIPIO]
+        self.assertNotIn("delayed_payload", resp)
         self.assertNotIn("reclamo_flow_v2", municipal_ctx)
-        self.assertIn(
-            municipal_ctx["estado_conversacion"],
-            {
-                ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name,
-                ConversationState.ESPERANDO_NOMBRE_INICIAL.name,
-            },
-        )
+        self.assertNotIn("estado_conversacion", municipal_ctx)
 
     def test_confirmacion_negative_returns_to_contact_details(self):
         flow_context = {
@@ -226,6 +225,41 @@ class TestReclamoFlowUX(unittest.TestCase):
         resp = handler.handle_confirmacion("reclamo_confirmar_no", {})
         self.assertEqual(handler.flow_context["state"], ReclamoState.ESPERANDO_DATOS_CONTACTO.name)
         self.assertIn("por favor", resp["message_body"].lower())
+
+    def test_confirmacion_ambiguous_text_keeps_confirmation_open(self):
+        flow_context = {
+            "state": ReclamoState.ESPERANDO_CONFIRMACION.name,
+            "datos_reclamo": {
+                "categoria": "Bache",
+                "descripcion": "pozo en la calle",
+                "direccion": "Calle 123",
+            },
+        }
+        handler = self._build_handler(flow_context)
+
+        resp = handler.handle_confirmacion("hola quiero hacer un reclamo", {})
+
+        self.assertEqual(handler.flow_context["state"], ReclamoState.ESPERANDO_CONFIRMACION.name)
+        self.assertIn("no cancele", resp["message_body"].lower())
+        self.assertIn("confirmar", resp["message_body"].lower())
+
+    def test_confirmacion_choice_three_cancels(self):
+        flow_context = {
+            "state": ReclamoState.ESPERANDO_CONFIRMACION.name,
+            "datos_reclamo": {
+                "categoria": "Bache",
+                "descripcion": "pozo en la calle",
+                "direccion": "Calle 123",
+            },
+        }
+        context = {"chat_db_context_data": {CONTEXTO_MUNICIPIO: {"reclamo_flow_v2": flow_context}}}
+        handler = ReclamoFlowHandler(context, MagicMock())
+
+        resp = handler.handle_confirmacion("3", {})
+
+        self.assertIn("cancelado", resp["message_body"].lower())
+        municipal_ctx = context["chat_db_context_data"][CONTEXTO_MUNICIPIO]
+        self.assertNotIn("reclamo_flow_v2", municipal_ctx)
 
 
 if __name__ == "__main__":

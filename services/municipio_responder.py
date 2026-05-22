@@ -935,10 +935,10 @@ class ReclamoFlowHandler:
         action = (payload.get("action_id") or payload.get("action") or "").lower()
         if (
             normalized_input in CANCEL_KEYWORDS
-            or action in {"cancelar", "menu_principal"}
+            or action in {"cancelar", "reclamo_cancelar", "menu_principal"}
         ):
             return self.end_flow(
-                "Proceso de reclamo cancelado. ¿En qué más te puedo ayudar?",
+                "Proceso de reclamo cancelado. En que mas te puedo ayudar?",
                 show_menu=True,
             )
         return None
@@ -1688,12 +1688,21 @@ class ReclamoFlowHandler:
             or ("confirmar" in normalized_plain and normalized_plain.endswith("no"))
         )
 
+        cancel_requested = (
+            action == "reclamo_cancelar"
+            or choice in {"3"}
+            or normalized_plain in CANCEL_KEYWORDS
+        )
+
         confirm_requested = (
             action == "reclamo_confirmar_si"
             or choice in {"1"}
             or any(token in affirmative_tokens for token in tokens)
             or ("confirmar" in normalized_plain and normalized_plain.endswith("si"))
         )
+
+        if cancel_requested:
+            return self.end_flow("Proceso de reclamo cancelado. En que mas te puedo ayudar?", show_menu=True)
 
         if edit_requested:
             return self.ask_for_contact_details(force_prompt=True)
@@ -1756,9 +1765,17 @@ class ReclamoFlowHandler:
                 "Hubo un problema al registrar tu reclamo. Por favor, intentá de nuevo más tarde.",
             )
             return self.end_flow(error_message, show_menu=True)
-        else:  # Cancel or any other input
-            cancel_msg = "Proceso de reclamo cancelado. ¿En qué más te puedo ayudar?"
-            return self.end_flow(cancel_msg, show_menu=True)
+        else:
+            confirmation = self.get_confirmation_message()
+            self.flow_context["state"] = ReclamoState.ESPERANDO_CONFIRMACION.name
+            body = str(confirmation.get("message_body") or "").strip()
+            confirmation["message_body"] = (
+                "No cancele el reclamo. Para crearlo, responde 1 o 'confirmar'. "
+                "Para corregir datos, responde 2 o 'editar'. "
+                "Para cancelarlo, responde 3 o 'cancelar'.\n\n"
+                f"{body}"
+            ).strip()
+            return confirmation
 
     def end_flow(self, message, show_menu=False, image_url=None, extra_payload=None):
         self.flow_context.clear()

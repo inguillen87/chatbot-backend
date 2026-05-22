@@ -75,12 +75,21 @@ def sanitize_for_tts(raw: str) -> str:
 
 
 def _provider_order_from_env() -> Iterable[str]:
-    raw_order = os.getenv("TTS_PROVIDER_ORDER", "openai,cohere")
+    raw_order = os.getenv("TTS_PROVIDER_ORDER", "openai")
     normalized = [provider.strip().lower() for provider in raw_order.split(",") if provider.strip()]
     if not normalized:
-        normalized = ["openai", "cohere"]
+        normalized = ["openai"]
 
     return list(OrderedDict.fromkeys(normalized))
+
+
+def _truthy_env(*names: str) -> bool:
+    truthy = {"1", "true", "yes", "on"}
+    return any(str(os.getenv(name) or "").strip().lower() in truthy for name in names)
+
+
+def _cohere_tts_enabled() -> bool:
+    return _truthy_env("TTS_COHERE_ENABLED", "COHERE_ENABLED")
 
 
 def generar_audio(
@@ -182,27 +191,28 @@ def generar_audio(
 
         _register("openai", _openai_provider)
 
-        def _cohere_provider(clean_text: str) -> str | None:
-            from services.cohere_tts_bridge import generar_audio_cohere
+        if _cohere_tts_enabled():
+            def _cohere_provider(clean_text: str) -> str | None:
+                from services.cohere_tts_bridge import generar_audio_cohere
 
-            voice = os.getenv("COHERE_TTS_VOICE", "argentina-female")
-            style = os.getenv("COHERE_TTS_STYLE", "informative")
-            model = os.getenv("COHERE_TTS_MODEL")
-            speed_env = os.getenv("COHERE_TTS_SPEED", "0.85")
-            try:
-                speech_speed = float(speed_env)
-            except (ValueError, TypeError):
-                speech_speed = 0.85
+                voice = os.getenv("COHERE_TTS_VOICE", "argentina-female")
+                style = os.getenv("COHERE_TTS_STYLE", "informative")
+                model = os.getenv("COHERE_TTS_MODEL")
+                speed_env = os.getenv("COHERE_TTS_SPEED", "0.85")
+                try:
+                    speech_speed = float(speed_env)
+                except (ValueError, TypeError):
+                    speech_speed = 0.85
 
-            return generar_audio_cohere(
-                clean_text,
-                voice=voice,
-                style=style,
-                model=model,
-                speed=speech_speed,
-            )
+                return generar_audio_cohere(
+                    clean_text,
+                    voice=voice,
+                    style=style,
+                    model=model,
+                    speed=speech_speed,
+                )
 
-        _register("cohere", _cohere_provider)
+            _register("cohere", _cohere_provider)
 
         return providers
 

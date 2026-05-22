@@ -7,7 +7,6 @@ from ast import literal_eval
 from typing import Any, Dict, Optional
 import httpx
 from openai import OpenAI
-import cohere
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +42,15 @@ VISION_SCHEMA = {
     },
     "required": ["labels", "objects", "text"],
 }
+
+
+def _truthy_env(*names: str) -> bool:
+    truthy = {"1", "true", "yes", "on"}
+    return any(str(os.getenv(name) or "").strip().lower() in truthy for name in names)
+
+
+def _cohere_vision_enabled() -> bool:
+    return _truthy_env("VISION_COHERE_ENABLED", "COHERE_ENABLED")
 
 
 def _openai_model(default_model: str = "gpt-4o") -> str:
@@ -342,10 +350,16 @@ def _call_openai_text(
 
 def _call_cohere(image_bytes: bytes, custom_prompt: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Analyze an image using Cohere's multimodal API."""
+    if not _cohere_vision_enabled():
+        logger.info("Cohere vision fallback is disabled.")
+        return None
+
     api_key = os.getenv("COHERE_API_KEY")
     if not api_key:
         return None
     try:
+        import cohere
+
         b64 = base64.b64encode(image_bytes).decode("utf-8")
         co = cohere.Client(api_key)
         prompt = custom_prompt or (
@@ -387,14 +401,17 @@ def _normalize_result(result: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def analyze_image_smart(image_bytes: bytes, prompt: Optional[str] = None) -> Dict[str, Any]:
-    """Analyze image bytes using OpenAI, then Cohere."""
+    """Analyze image bytes using OpenAI, with optional Cohere fallback."""
     result = _call_openai(image_bytes, custom_prompt=prompt, schema=VISION_SCHEMA)
     if result:
         return _normalize_result(result)
-    logger.warning("Falling back to Cohere vision...")
-    result = _call_cohere(image_bytes, custom_prompt=prompt)
-    if result:
-        return _normalize_result(result)
+    if _cohere_vision_enabled():
+        logger.warning("Falling back to explicitly enabled Cohere vision...")
+        result = _call_cohere(image_bytes, custom_prompt=prompt)
+        if result:
+            return _normalize_result(result)
+    else:
+        logger.warning("OpenAI vision failed and Cohere vision fallback is disabled.")
     logger.error("All vision providers failed")
     return {"labels": [], "objects": []}
 

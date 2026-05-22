@@ -1,7 +1,8 @@
 import json
 import unittest
+from unittest.mock import patch
 
-from services.voice_stream_service import VoiceStreamService
+from services.voice_stream_service import VoiceStreamService, _openai_realtime_headers
 
 
 class _FakeSocket:
@@ -54,6 +55,35 @@ class VoiceStreamServiceMessageTests(unittest.TestCase):
         self.assertIn("Hola Marcelo", greeting)
         self.assertIn("demo telefonica de municipios", greeting)
         self.assertIn("reclamo", greeting)
+
+    def test_openai_realtime_headers_do_not_send_beta_by_default(self):
+        with patch.dict("os.environ", {}, clear=False):
+            headers = _openai_realtime_headers()
+
+        self.assertIn("Authorization", headers)
+        self.assertNotIn("OpenAI-Beta", headers)
+
+    def test_openai_realtime_headers_allow_explicit_beta_override(self):
+        with patch.dict(
+            "os.environ",
+            {"OPENAI_REALTIME_ALLOW_BETA_HEADER": "true", "OPENAI_REALTIME_BETA_HEADER": "realtime=test"},
+            clear=False,
+        ):
+            headers = _openai_realtime_headers()
+
+        self.assertEqual(headers["OpenAI-Beta"], "realtime=test")
+
+    def test_initial_voice_greeting_for_municipio_has_menu(self):
+        service = VoiceStreamService(_FakeSocket())
+        service.requested_vertical = "municipio"
+        service.voice_vertical = "municipio"
+
+        greeting = service._build_initial_voice_greeting("Municipalidad de Junin", "Marcelo")
+
+        self.assertIn("Hola Marcelo", greeting)
+        self.assertIn("Municipalidad de Junin", greeting)
+        self.assertIn("reclamo", greeting.lower())
+        self.assertIn("tramites", greeting.lower())
 
 
 if __name__ == "__main__":

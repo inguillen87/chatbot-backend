@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from flask import Flask, g
+from werkzeug.exceptions import Forbidden
 
 from routes.analytics import ANALYTICS_EVENT_INGEST_CONTRACT_VERSION, analytics_bp
 
@@ -31,6 +32,9 @@ class AnalyticsEventIngestContractTestCase(unittest.TestCase):
         self.assertEqual(response.status_code, 202)
         body = response.get_json()
         self.assertEqual(body["ok"], True)
+        self.assertEqual(body["success"], True)
+        self.assertEqual(body["accepted"], True)
+        self.assertEqual(body["ignored"], False)
         self.assertEqual(body["contract_version"], ANALYTICS_EVENT_INGEST_CONTRACT_VERSION)
         self.assertEqual(body["tenant_id"], 7)
         self.assertEqual(body["event_name"], "portal_opened")
@@ -79,6 +83,43 @@ class AnalyticsEventIngestContractTestCase(unittest.TestCase):
         body = response.get_json()
         self.assertEqual(body["request_id"], "req-analytics-ingest-1")
         self.assertEqual(response.headers.get("X-Request-Id"), "req-analytics-ingest-1")
+
+    def test_event_ingest_ignored_without_tenant_preserves_contract(self):
+        with patch("routes.analytics.get_config", return_value=SimpleNamespace(feature_enabled=True)):
+            response = self.client.post(
+                "/analytics/event",
+                headers={"X-Request-Id": "req-ignored-tenant"},
+                json={"event_name": "survey_vote_attempt", "payload": {}},
+            )
+
+        self.assertEqual(response.status_code, 202)
+        body = response.get_json()
+        self.assertEqual(body["ok"], True)
+        self.assertEqual(body["success"], True)
+        self.assertEqual(body["accepted"], False)
+        self.assertEqual(body["ignored"], True)
+        self.assertEqual(body["reason"], "tenant_unresolved")
+        self.assertEqual(body["contract_version"], ANALYTICS_EVENT_INGEST_CONTRACT_VERSION)
+        self.assertEqual(body["event_name"], "survey_vote_attempt")
+        self.assertEqual(body["request_id"], "req-ignored-tenant")
+
+    def test_event_ingest_ignored_access_denied_preserves_contract(self):
+        with patch("routes.analytics.get_config", return_value=SimpleNamespace(feature_enabled=True)), \
+             patch("routes.analytics.require_access", side_effect=Forbidden()):
+            response = self.client.post(
+                "/analytics/event",
+                json={"tenant_id": 7, "event_name": "survey_vote_attempt", "payload": {}},
+            )
+
+        self.assertEqual(response.status_code, 202)
+        body = response.get_json()
+        self.assertEqual(body["ok"], True)
+        self.assertEqual(body["success"], True)
+        self.assertEqual(body["accepted"], False)
+        self.assertEqual(body["ignored"], True)
+        self.assertEqual(body["reason"], "access_denied")
+        self.assertEqual(body["contract_version"], ANALYTICS_EVENT_INGEST_CONTRACT_VERSION)
+        self.assertEqual(body["tenant_id"], 7)
 
 
 if __name__ == "__main__":

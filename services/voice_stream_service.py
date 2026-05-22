@@ -75,8 +75,14 @@ GRAN_MENDOZA_POINTS = {
 
 def _openai_realtime_headers() -> dict[str, str]:
     headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
-    beta_header = os.environ.get("OPENAI_REALTIME_BETA_HEADER", "realtime=v1")
-    if beta_header:
+    allow_beta_header = str(os.environ.get("OPENAI_REALTIME_ALLOW_BETA_HEADER") or "").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    beta_header = os.environ.get("OPENAI_REALTIME_BETA_HEADER")
+    if allow_beta_header and beta_header:
         headers["OpenAI-Beta"] = beta_header
     return headers
 
@@ -879,6 +885,30 @@ class VoiceStreamService:
             )
         return f"{name_prefix}{menu} Te acompano con voz realtime de {tenant_name}."
 
+    def _build_initial_voice_greeting(self, tenant_name: str, user_name: str | None) -> str:
+        name_prefix = f"Hola {user_name}. " if user_name else "Hola. "
+        if self._is_chatboc_demo_call():
+            return self._build_chatboc_demo_greeting(tenant_name, user_name)
+
+        tenant_label = tenant_name or "tu organizacion"
+        vertical = self._resolve_requested_vertical() or self.voice_vertical
+        if vertical == "municipio":
+            return (
+                f"{name_prefix}Te damos la bienvenida a {tenant_label}. "
+                "Soy JUNI, el asistente telefonico municipal. "
+                "Puedo ayudarte a iniciar un reclamo, consultar el estado de un ticket, "
+                "pedir informacion de tramites o derivarte con un operador. "
+                "Decime que queres hacer."
+            )
+        if vertical in {"pyme", "empresa", "ventas", "chatboc", "platform"}:
+            return (
+                f"{name_prefix}Soy Chatboc.ar. Puedo mostrar demos de municipios, colegios, "
+                "empresas, encuestas o conectarte con ventas. Decime que queres probar."
+            )
+        if not user_name:
+            return f"{name_prefix}Te saluda el asistente de {tenant_label}. Antes de empezar, decime tu nombre."
+        return f"{name_prefix}Te saluda el asistente de {tenant_label}. Decime que queres hacer."
+
     def _resolve_context(self, from_number, to_number, call_sid):
         """
         Resuelve Tenant, owner_user y user final.
@@ -1107,9 +1137,15 @@ class VoiceStreamService:
         if self._is_chatboc_demo_call():
             instructions += (
                 " Esta llamada es una demo comercial de Chatboc. "
-                "Habla siempre en español argentino claro aunque el motor detecte otro idioma. "
+                "Habla siempre en espanol argentino claro aunque el motor detecte otro idioma. "
                 "Al inicio ofrece rutas claras para probar: municipios, colegios, empresas y ventas. "
                 "Si la persona ya eligio una vertical, guia una simulacion completa y accionable de esa vertical."
+            )
+        if self.voice_vertical == "municipio":
+            instructions += (
+                " En llamadas municipales, al inicio presenta opciones concretas: iniciar reclamo, "
+                "consultar estado de ticket, informacion de tramites y derivacion humana. "
+                "No canceles un reclamo por texto ambiguo; pedi confirmacion clara."
             )
         return instructions
 
@@ -1246,20 +1282,8 @@ class VoiceStreamService:
                     self.openai_ws.send(json.dumps(session_update))
 
                     tenant_name = self._resolve_tenant_name()
-
                     user_name = self._resolve_greeting_name()
-
-                    if user_name:
-                        greeting_line = (
-                            f"Hola {user_name}. Te saluda el asistente de {tenant_name}. ¿En qué te ayudo?"
-                        )
-                    else:
-                        greeting_line = (
-                            f"Hola. Te saluda el asistente de {tenant_name}. "
-                            "Quiero agendar tu nombre, ¿cómo te llamás?"
-                        )
-
-                    greeting_text = f"Decí exactamente: \"{greeting_line}\""
+                    initial_greeting = self._build_initial_voice_greeting(tenant_name, user_name)
 
                     self.openai_ws.send(
                         json.dumps(
@@ -1267,11 +1291,7 @@ class VoiceStreamService:
                                 "type": "response.create",
                                 "response": {
                                     "output_modalities": ["audio"],
-                                    "instructions": (
-                                        f"Deci exactamente: \"{self._build_chatboc_demo_greeting(tenant_name, user_name)}\""
-                                        if self._is_chatboc_demo_call()
-                                        else greeting_text
-                                    ),
+                                    "instructions": f"Deci exactamente: \"{initial_greeting}\"",
                                 },
                             }
                         )

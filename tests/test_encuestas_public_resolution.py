@@ -142,7 +142,7 @@ def test_public_demo_survey_detail_results_and_response(client):
     assert submitted_payload["seeded_responses_before"] == 100
 
 
-def test_demo_survey_chat_menu_lists_five_with_whatsapp_share_links():
+def test_demo_survey_chat_menu_lists_five_with_whatsapp_vote_actions():
     menu = build_demo_survey_chat_menu(
         sector="gobierno",
         tenant_slug="junin-1",
@@ -153,7 +153,8 @@ def test_demo_survey_chat_menu_lists_five_with_whatsapp_share_links():
     assert menu["contract_version"] == "demo.encuestas_menu.v1"
     assert menu["pagination"]["page_size"] == 5
     assert len(menu["surveys"]) == 5
-    assert "Compartir: https://wa.me/" in menu["message_body"]
+    assert "Elegi una encuesta" in menu["message_body"]
+    assert "Compartir: https://wa.me/" not in menu["message_body"]
     assert len(menu["message_body"]) < 1400
     assert all((survey.get("seed") or {}).get("responses") == 100 for survey in menu["surveys"])
     assert menu["pagination"]["next_action_id"] == "mostrar_menu_encuestas::2"
@@ -167,10 +168,15 @@ def test_demo_survey_chat_menu_lists_five_with_whatsapp_share_links():
     )
     formatted_body = formatted["text"]["body"]
     context_options = (formatted.get("contexto_actualizado") or {}).get("last_options_sent") or []
+    action_ids = [str(option.get("action_id") or "") for option in context_options]
     assert len(formatted_body) < 1600
-    assert formatted_body.count("Abrir: https://www.chatboc.ar/e/") == 5
-    assert formatted_body.count("Compartir: https://wa.me/") == 5
+    assert "Responde con el numero de la encuesta" in formatted_body
+    assert formatted_body.count("Votar encuesta") == 5
+    assert "Compartir 1" not in formatted_body
+    assert "Compartir: https://wa.me/" not in formatted_body
     assert any(option.get("action_id") == "mostrar_menu_encuestas::2" for option in context_options)
+    assert any(action.startswith("chatboc_survey_open::") for action in action_ids)
+    assert not any(action.startswith("chatboc_survey_share::") for action in action_ids)
 
 
 def test_respuestas_alias_reuses_handler(client, monkeypatch):

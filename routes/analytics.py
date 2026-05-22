@@ -276,6 +276,28 @@ def _json_response(payload, status: int = 200, request_id: str | None = None):
     return response
 
 
+def _analytics_event_ignored_response(
+    reason: str,
+    *,
+    tenant_id: int | None = None,
+    event_name: str | None = None,
+    status: int = 202,
+):
+    return _json_response(
+        {
+            "ok": True,
+            "success": True,
+            "accepted": False,
+            "ignored": True,
+            "reason": reason,
+            "contract_version": ANALYTICS_EVENT_INGEST_CONTRACT_VERSION,
+            "tenant_id": tenant_id,
+            "event_name": event_name,
+        },
+        status=status,
+    )
+
+
 def _error_response(message: str, *, status: int, capability: str | None = None):
     payload: dict[str, Any] = {
         "error": {
@@ -892,12 +914,11 @@ def analytics_health():
 @analytics_bp.route("/event", methods=["POST"])
 def analytics_event_ingest():
     payload = request.get_json(silent=True) or {}
+    event_name = _resolve_event_name(payload)
     tenant_id = _resolve_tenant_id_from_event_payload(payload)
     if tenant_id is None:
         current_app.logger.info("[analytics] ignored event without tenant context")
-        return _json_response({"ok": True, "ignored": True, "reason": "tenant_unresolved"}, status=202)
-
-    event_name = _resolve_event_name(payload)
+        return _analytics_event_ignored_response("tenant_unresolved", event_name=event_name)
 
     try:
         require_access(str(tenant_id), "operador", required_capability="analytics.admin")
@@ -909,7 +930,7 @@ def analytics_event_ingest():
             tenant_id,
             exc.code,
         )
-        return _json_response({"ok": True, "ignored": True, "reason": "access_denied"}, status=202)
+        return _analytics_event_ignored_response("access_denied", tenant_id=tenant_id, event_name=event_name)
 
     identity = _current_contact_identity()
     payload_with_identity = _build_event_payload_with_identity(payload)
@@ -935,6 +956,9 @@ def analytics_event_ingest():
     return _json_response(
         {
             "ok": True,
+            "success": True,
+            "accepted": True,
+            "ignored": False,
             "contract_version": ANALYTICS_EVENT_INGEST_CONTRACT_VERSION,
             "tenant_id": tenant_id,
             "event_name": event_name,

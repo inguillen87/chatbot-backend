@@ -614,14 +614,20 @@ def build_demo_survey_chat_menu(
     is_whatsapp = "whatsapp" in str(channel or "").lower()
     lines = [f"*{labels['heading']}*"]
     if is_whatsapp:
-        lines.append("Primero votas. Despues ves 100 respuestas demo + tu voto en vivo.")
+        lines.append(
+            "Elegi una encuesta para votar. Primero registramos tu voto anonimo "
+            "y despues ves resultados demo."
+        )
     else:
         lines.append("Cada demo trae 100 respuestas sinteticas para ver resultados reales de UX.")
     for index, item in enumerate(contract.get("items") or [], start=1):
         title = item.get("titulo") or item.get("slug")
         public_url = item.get("public_url")
         share_url = item.get("whatsapp_share_url")
-        lines.append(f"{index}. *{title}*")
+        if is_whatsapp:
+            lines.append(f"{index}. {title}")
+        else:
+            lines.append(f"{index}. *{title}*")
         if item.get("descripcion") and not is_whatsapp:
             lines.append(f"   {item['descripcion']}")
         if public_url and not is_whatsapp:
@@ -631,6 +637,10 @@ def build_demo_survey_chat_menu(
         if share_url and not is_whatsapp:
             share_label = "Compartir" if is_whatsapp else "Compartir por WhatsApp"
             lines.append(f"   {share_label}: {share_url}")
+
+    if is_whatsapp and contract.get("items"):
+        lines.append("")
+        lines.append("Responde con el numero de la encuesta o toca una opcion.")
 
     options: list[dict[str, Any]] = []
     for index, item in enumerate(contract.get("items") or [], start=1):
@@ -651,6 +661,19 @@ def build_demo_survey_chat_menu(
     if contract.get("next_action_id"):
         options.append({"texto": "Ver mas", "action_id": contract["next_action_id"]})
     options.append({"texto": "Volver", "action_id": labels["back_action"]})
+
+    if is_whatsapp:
+        cleaned_options: list[dict[str, Any]] = []
+        vote_index = 1
+        for option in options:
+            action_id = str(option.get("action_id") or "")
+            if action_id.startswith("chatboc_survey_share::"):
+                continue
+            if action_id.startswith("chatboc_survey_open::"):
+                option = {**option, "texto": f"Votar encuesta {vote_index}"}
+                vote_index += 1
+            cleaned_options.append(option)
+        options = cleaned_options
 
     return {
         "success": True,
