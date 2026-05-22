@@ -25,6 +25,24 @@ CHATBOC_DEMO_DEFAULT_WHATSAPP_NUMBER = "+18564858589"
 DEFAULT_TWILIO_FALLBACK_VOICE = "Polly.Lupe-Neural"
 DEFAULT_TWILIO_FALLBACK_SAY_LANGUAGE = "es-US"
 DEFAULT_TWILIO_GATHER_LANGUAGE = "es-AR"
+VOICE_TENANT_ALIASES = {
+    "junin-1": "junin",
+    "juni-01": "junin",
+    "juni": "junin",
+    "chatboc-platform": "chatboc-demo",
+    "club-demo-ar": "chatboc-demo",
+}
+VOICE_VERTICAL_ALIASES = {
+    "juni": "municipio",
+    "junin": "municipio",
+    "gobierno": "municipio",
+    "sales": "ventas",
+    "empresa": "pyme",
+    "empresas": "pyme",
+    "school": "educacion",
+    "colegio": "educacion",
+    "colegios": "educacion",
+}
 logger = logging.getLogger(__name__)
 
 
@@ -32,6 +50,16 @@ def _normalize_voice_text(value) -> str:
     text = str(value or "").strip().lower()
     text = unicodedata.normalize("NFKD", text)
     return "".join(char for char in text if not unicodedata.combining(char))
+
+
+def _canonical_voice_tenant(value: str | None) -> str:
+    normalized = _normalize_voice_text(value)
+    return VOICE_TENANT_ALIASES.get(normalized, normalized)
+
+
+def _canonical_voice_vertical(value: str | None) -> str:
+    normalized = _normalize_voice_text(value)
+    return VOICE_VERTICAL_ALIASES.get(normalized, normalized)
 
 
 def _is_truthy(value) -> bool:
@@ -126,32 +154,53 @@ def _voice_say(parent, text: str):
 
 def _demo_voice_action_url(endpoint: str = "voice.voice_demo_process", **extra) -> str:
     params = {
-        "tenant": request.values.get("tenant") or request.values.get("tenant_slug"),
-        "vertical": request.values.get("vertical") or request.values.get("sector"),
-        "intent": request.values.get("intent"),
+        "tenant": _current_voice_tenant(),
+        "vertical": _current_voice_vertical(),
+        "intent": _normalize_voice_text(request.values.get("intent")),
     }
     params.update(extra)
     return url_for(endpoint, _external=True, **{k: v for k, v in params.items() if v})
 
 
 def _current_voice_vertical() -> str:
-    return _normalize_voice_text(request.values.get("vertical") or request.values.get("sector"))
+    return _canonical_voice_vertical(request.values.get("vertical") or request.values.get("sector"))
 
 
 def _current_voice_tenant() -> str:
-    return _normalize_voice_text(request.values.get("tenant") or request.values.get("tenant_slug"))
+    return _canonical_voice_tenant(request.values.get("tenant") or request.values.get("tenant_slug"))
+
+
+def _has_explicit_voice_context() -> bool:
+    return bool(
+        request.values.get("tenant")
+        or request.values.get("tenant_slug")
+        or request.values.get("vertical")
+        or request.values.get("sector")
+    )
+
+
+def _voice_gather_endpoint_for_current_context() -> str:
+    if _has_explicit_voice_context():
+        return "voice.voice_process"
+    return "voice.voice_demo_process"
 
 
 def _fallback_prompt_for_current_context() -> str:
     vertical = _current_voice_vertical()
     tenant = _current_voice_tenant()
-    if vertical in {"municipio", "gobierno", "juni", "junin"} or tenant.startswith("junin"):
+    if vertical == "municipio" or tenant.startswith("junin"):
         return (
             "La conexion realtime no quedo estable, pero sigo por telefono en espanol. "
             "Soy el asistente telefonico del municipio. Deci o marca 1 para iniciar reclamo, "
             "2 para consultar estado, 3 para tramites, o 4 para hablar con un operador."
         )
-    if vertical in {"ventas", "sales"} or tenant in {"chatboc-demo", "chatboc-platform"}:
+    if vertical == "educacion":
+        return (
+            "La conexion realtime no quedo estable, pero sigo por telefono en espanol. "
+            "Soy el asistente del colegio. Deci o marca 1 para admisiones, 2 para certificados, "
+            "3 para pagos o cuotas, o 4 para hablar con secretaria."
+        )
+    if vertical in {"pyme", "ventas"} or tenant == "chatboc-demo":
         return (
             "La conexion realtime no quedo estable, pero sigo por telefono en espanol. "
             "Soy Chatboc.ar. Deci o marca 1 para demos de municipios, 2 para colegios, "
@@ -165,10 +214,11 @@ def _fallback_prompt_for_current_context() -> str:
 
 
 def _append_demo_voice_gather(response: VoiceResponse, prompt: str | None = None) -> None:
+    endpoint = _voice_gather_endpoint_for_current_context()
     gather = Gather(
         input="speech dtmf",
         num_digits=1,
-        action=_demo_voice_action_url(),
+        action=_demo_voice_action_url(endpoint),
         language=_twilio_gather_language(),
         speechTimeout="auto",
         timeout=6,
@@ -185,7 +235,7 @@ def _demo_voice_reply_for(input_text: str | None) -> str:
     normalized = _normalize_voice_text(input_text)
     vertical = _current_voice_vertical()
     tenant = _current_voice_tenant()
-    if vertical in {"municipio", "gobierno", "juni", "junin"} or tenant.startswith("junin"):
+    if vertical == "municipio" or tenant.startswith("junin"):
         if normalized in {"menu", "principal", "volver"}:
             return (
                 "Menu del municipio. Deci o marca 1 iniciar reclamo, 2 consultar estado, "
@@ -276,10 +326,17 @@ def _voice_stream_twiml_response() -> Response:
     stream.parameter(name="from_number", value=from_number)
     stream.parameter(name="to_number", value=to_number)
     stream.parameter(name="call_sid", value=call_sid)
-    for param_name in ("tenant", "tenant_slug", "vertical", "sector", "intent"):
-        param_value = request.values.get(param_name)
-        if param_value:
-            stream.parameter(name=param_name, value=param_value)
+    tenant = _current_voice_tenant()
+    vertical = _current_voice_vertical()
+    intent = _normalize_voice_text(request.values.get("intent"))
+    if tenant:
+        stream.parameter(name="tenant", value=tenant)
+        stream.parameter(name="tenant_slug", value=tenant)
+    if vertical:
+        stream.parameter(name="vertical", value=vertical)
+        stream.parameter(name="sector", value=vertical)
+    if intent:
+        stream.parameter(name="intent", value=intent)
     if _is_chatboc_demo_voice_number(from_number, to_number):
         stream.parameter(name="max_call_seconds", value=str(_chatboc_demo_voice_max_seconds()))
         stream.parameter(name="demo_hub", value="chatboc")
@@ -408,7 +465,7 @@ def voice_welcome():
     gather = Gather(
         input='speech dtmf',
         num_digits=1,
-        action=url_for('voice.voice_process', _external=True),
+        action=_demo_voice_action_url("voice.voice_process"),
         language=_twilio_gather_language(),
         speechTimeout='auto',
         timeout=5,
@@ -423,7 +480,7 @@ def voice_welcome():
     response.append(gather)
 
     _voice_say(response, "No te escuché. ¿Podrías repetirlo?")
-    response.redirect(url_for('voice.voice_welcome', _external=True))
+    response.redirect(_demo_voice_action_url("voice.voice_welcome"))
 
     return Response(str(response), mimetype='text/xml')
 
@@ -480,7 +537,10 @@ def voice_process():
     user_speech = request.form.get('SpeechResult')
     digits = request.form.get('Digits')
     input_text = user_speech or digits
-    confidence = float(request.form.get('Confidence', 0.0))
+    try:
+        confidence = float(request.form.get('Confidence') or 0.0)
+    except (TypeError, ValueError):
+        confidence = 0.0
     to_number = request.form.get("To")
     from_number = request.form.get("From")
     call_sid = request.form.get("CallSid")
@@ -492,7 +552,7 @@ def voice_process():
         gather = Gather(
             input='speech dtmf',
             num_digits=1,
-            action=url_for('voice.voice_process', _external=True),
+            action=_demo_voice_action_url("voice.voice_process"),
             language=_twilio_gather_language(),
             bargeIn=True
         )
@@ -529,7 +589,7 @@ def voice_process():
     gather = Gather(
         input='speech dtmf',
         num_digits=1,
-        action=url_for('voice.voice_process', _external=True),
+        action=_demo_voice_action_url("voice.voice_process"),
         language=_twilio_gather_language(),
         bargeIn=True,
         speechTimeout='auto',

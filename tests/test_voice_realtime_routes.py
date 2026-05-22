@@ -117,7 +117,38 @@ class VoiceRealtimeRoutesTestCase(unittest.TestCase):
         self.assertIn("asistente telefonico del municipio", body)
         self.assertIn("iniciar reclamo", body)
         self.assertIn("consultar estado", body)
+        self.assertIn("/voice/process", body)
+        self.assertNotIn("/voice/demo/process", body)
         self.assertIn("intent=reclamos", body)
+
+    @patch("routes.voice_routes.TWILIO_AUTH_TOKEN", None)
+    def test_voice_fallback_canonicalizes_legacy_junin_alias(self):
+        response = self.client.post(
+            "/voice/fallback?tenant=junin-1&vertical=juni&intent=reclamos",
+            data=self._twilio_payload(),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.get_data(as_text=True)
+        self.assertIn("tenant=junin", body)
+        self.assertIn("vertical=municipio", body)
+        self.assertNotIn("junin-1", body)
+        self.assertNotIn("vertical=juni", body)
+        self.assertIn("/voice/process", body)
+
+    @patch("routes.voice_routes.TWILIO_AUTH_TOKEN", None)
+    def test_voice_fallback_canonicalizes_chatboc_platform_alias(self):
+        response = self.client.post(
+            "/voice/fallback?tenant=chatboc-platform&vertical=sales&intent=sales",
+            data=self._twilio_payload(),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.get_data(as_text=True)
+        self.assertIn("tenant=chatboc-demo", body)
+        self.assertIn("vertical=ventas", body)
+        self.assertNotIn("chatboc-platform", body)
+        self.assertIn("/voice/process", body)
 
     @patch("routes.voice_routes.TWILIO_AUTH_TOKEN", None)
     def test_voice_demo_process_routes_municipal_reclamo_intent(self):

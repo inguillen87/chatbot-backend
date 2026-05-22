@@ -598,6 +598,8 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(payload["frontend_contract"]["render_as"], "twilio_tech_provider_onboarding")
         self.assertFalse(payload["frontend_contract"]["show_twilio_brand"])
         self.assertTrue(any(step["id"] == "create_subaccount" for step in payload["api_workflow"]))
+        self.assertTrue(any(step["id"] == "create_or_update_voice_twiml_app" for step in payload["api_workflow"]))
+        self.assertEqual(payload["voice"]["completion_endpoint"], f"/api/v2/tenants/{self.tenant.slug}/whatsapp/tech-provider/voice-app")
         self.assertIn("/webhook/whatsapp", payload["webhooks"]["inbound_message_url"])
 
     def test_twilio_tech_provider_provision_dry_run_persists_plan_without_live_api(self):
@@ -705,6 +707,86 @@ class V2SaasContractsTest(unittest.TestCase):
         state_text = json.dumps(refreshed.configuracion, sort_keys=True)
         self.assertIn("TWILIO_SUBACCOUNT_AUTH_TOKEN_ACCHILD", state_text)
         self.assertNotIn("child-secret", state_text)
+        self.assertEqual(len(calls), 2)
+
+    def test_twilio_tech_provider_voice_app_dry_run_persists_tenant_urls(self):
+        self.app.config.update(
+            TWILIO_ACCOUNT_SID="ACparent",
+            TWILIO_AUTH_TOKEN="parent-secret",
+            TWILIO_META_APP_ID="meta-app",
+            TWILIO_META_EMBEDDED_SIGNUP_CONFIG_ID="cfg-123",
+            TWILIO_TECH_PROVIDER_LIVE_ENABLED=False,
+            PUBLIC_API_BASE_URL="https://www.chatboc.ar",
+        )
+
+        response = self.client.post(
+            f"/api/v2/tenants/{self.tenant.slug}/whatsapp/tech-provider/voice-app",
+            headers={**self._auth(self.owner), "X-Request-Id": "tech-provider-voice-dry-1"},
+            json={},
+        )
+
+        self.assertEqual(response.status_code, 200, response.get_json())
+        payload = response.get_json()
+        self.assertEqual(payload["contract_version"], "twilio.tech_provider.voice_application.v1")
+        self.assertEqual(payload["mode"], "dry_run")
+        self.assertEqual(payload["state"]["voice_status"], "voice_application_plan_ready")
+        self.assertIn("/twilio/voice?tenant=saas-tenant&vertical=educacion&intent=secretaria", payload["state"]["voice_url"])
+        self.assertIn("/voice/fallback?tenant=saas-tenant&vertical=educacion&intent=secretaria", payload["state"]["voice_fallback_url"])
+        refreshed = db.session.get(TenantProfile, self.tenant.id)
+        state = refreshed.configuracion["twilio_tech_provider"]
+        self.assertEqual(state["voice_vertical"], "educacion")
+        self.assertEqual(state["voice_intent"], "secretaria")
+        self.assertEqual(refreshed.configuracion["voice_vertical"], "educacion")
+
+    def test_twilio_tech_provider_voice_app_live_creates_app_and_attaches_sender(self):
+        self.app.config.update(
+            TWILIO_ACCOUNT_SID="ACparent",
+            TWILIO_AUTH_TOKEN="parent-secret",
+            TWILIO_META_APP_ID="meta-app",
+            TWILIO_META_EMBEDDED_SIGNUP_CONFIG_ID="cfg-123",
+            TWILIO_TECH_PROVIDER_LIVE_ENABLED=True,
+            TWILIO_SUBACCOUNT_AUTH_TOKEN_ACCHILD="child-secret",
+            PUBLIC_API_BASE_URL="https://api.chatboc.ar",
+        )
+        self.tenant.configuracion = {
+            "twilio_tech_provider": {
+                "twilio_account_sid": "ACchild",
+                "sender_sid": "XE123",
+                "sender_id": "whatsapp:+5491112223333",
+            }
+        }
+        db.session.add(self.tenant)
+        db.session.commit()
+        calls = []
+
+        def fake_post(url, **kwargs):
+            calls.append((url, kwargs))
+            if url == "https://api.twilio.com/2010-04-01/Accounts/ACchild/Applications.json":
+                self.assertEqual(kwargs["data"]["FriendlyName"], "Chatboc Voice - saas-tenant")
+                self.assertEqual(kwargs["data"]["VoiceUrl"], "https://api.chatboc.ar/twilio/voice?tenant=saas-tenant&vertical=educacion&intent=secretaria")
+                self.assertEqual(kwargs["data"]["VoiceFallbackUrl"], "https://api.chatboc.ar/voice/fallback?tenant=saas-tenant&vertical=educacion&intent=secretaria")
+                return _FakeTwilioResponse({"sid": "APvoice"})
+            if url == "https://messaging.twilio.com/v2/Channels/Senders/XE123":
+                self.assertEqual(kwargs["json"]["configuration"]["voice_application_sid"], "APvoice")
+                return _FakeTwilioResponse({"sid": "XE123", "status": "ONLINE"})
+            raise AssertionError(f"unexpected Twilio URL {url}")
+
+        with patch("services.twilio_tech_provider.requests.post", side_effect=fake_post):
+            response = self.client.post(
+                f"/api/v2/tenants/{self.tenant.slug}/whatsapp/tech-provider/voice-app",
+                headers={**self._auth(self.owner), "X-Request-Id": "tech-provider-voice-live-1"},
+                json={},
+            )
+
+        self.assertEqual(response.status_code, 200, response.get_json())
+        payload = response.get_json()
+        self.assertEqual(payload["mode"], "live")
+        self.assertEqual(payload["state"]["voice_twiml_app_sid"], "APvoice")
+        self.assertTrue(payload["state"]["voice_sender_attached"])
+        refreshed = db.session.get(TenantProfile, self.tenant.id)
+        state = refreshed.configuracion["twilio_tech_provider"]
+        self.assertEqual(state["voice_twiml_app_sid"], "APvoice")
+        self.assertEqual(refreshed.configuracion["voice_twiml_app_sid"], "APvoice")
         self.assertEqual(len(calls), 2)
 
     def test_twilio_tech_provider_register_sender_blocks_without_subaccount_secret(self):

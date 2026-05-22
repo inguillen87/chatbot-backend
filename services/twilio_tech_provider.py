@@ -185,6 +185,10 @@ def _twilio_sender_response_id(payload: Mapping[str, Any]) -> str | None:
     return _clean(payload.get("sender_id") or payload.get("senderId") or payload.get("sender") or payload.get("Sender")) or None
 
 
+def _twilio_application_response_sid(payload: Mapping[str, Any]) -> str | None:
+    return _clean(payload.get("sid") or payload.get("Sid")) or None
+
+
 def _normalize_whatsapp_sender_id(value: Any) -> str | None:
     raw = _clean(value)
     if not raw:
@@ -271,6 +275,16 @@ def build_twilio_tech_provider_contract(tenant, app_config: Mapping[str, Any]) -
             "inbound_message_url": f"{base_url}/webhook/whatsapp",
             "status_callback_url": f"{base_url}/twilio/whatsapp/status",
         },
+        "voice": {
+            "status": state.get("voice_status") or ("ready" if state.get("voice_twiml_app_sid") else "pending"),
+            "twiml_app_sid": state.get("voice_twiml_app_sid") or cfg.get("voice_twiml_app_sid"),
+            "voice_url": state.get("voice_url") or cfg.get("voice_url") or f"{base_url}/twilio/voice?tenant={tenant_slug}",
+            "fallback_url": state.get("voice_fallback_url") or cfg.get("voice_fallback_url") or f"{base_url}/voice/fallback?tenant={tenant_slug}",
+            "status_callback_url": state.get("voice_status_callback_url") or cfg.get("voice_status_callback_url") or f"{base_url}/voice/status",
+            "vertical": state.get("voice_vertical") or cfg.get("voice_vertical"),
+            "intent": state.get("voice_intent") or cfg.get("voice_intent"),
+            "completion_endpoint": f"/api/v2/tenants/{tenant_slug}/whatsapp/tech-provider/voice-app",
+        },
         "embedded_signup": {
             "enabled": env["ready"],
             "meta_app_id": _clean(app_config.get("TWILIO_META_APP_ID")) or None,
@@ -306,6 +320,20 @@ def build_twilio_tech_provider_contract(tenant, app_config: Mapping[str, Any]) -
                 "method": "POST",
                 "endpoint": "https://messaging.twilio.com/v1/Services/{MessagingServiceSid}/ChannelSenders",
                 "state": "done" if state.get("channel_sender_attached") else "pending_sender",
+            },
+            {
+                "id": "create_or_update_voice_twiml_app",
+                "owner": "backend",
+                "method": "POST",
+                "endpoint": "https://api.twilio.com/2010-04-01/Accounts/{AccountSid}/Applications.json",
+                "state": "done" if state.get("voice_twiml_app_sid") else "pending",
+            },
+            {
+                "id": "attach_voice_app_to_sender",
+                "owner": "backend_after_sender_registration",
+                "method": "POST",
+                "endpoint": "https://messaging.twilio.com/v2/Channels/Senders/{SenderSid}",
+                "state": "done" if state.get("voice_sender_attached") else "pending_sender_or_voice_app",
             },
             {
                 "id": "poll_sender_status",
@@ -350,6 +378,242 @@ def build_provisioning_request(tenant, payload: Mapping[str, Any], app_config: M
         "status_callback_url": f"{base_url}/twilio/whatsapp/status",
         "existing_state": state,
     }
+
+
+def _voice_vertical_for_tenant(tenant, payload: Mapping[str, Any]) -> str:
+    requested = _clean(payload.get("vertical") or payload.get("sector")).lower()
+    if requested:
+        aliases = {
+            "gobierno": "municipio",
+            "juni": "municipio",
+            "junin": "municipio",
+            "school": "educacion",
+            "colegio": "educacion",
+            "colegios": "educacion",
+            "empresa": "pyme",
+            "empresas": "pyme",
+            "sales": "ventas",
+        }
+        return aliases.get(requested, requested)
+    tenant_type = _clean(getattr(tenant, "tipo", None)).lower()
+    tenant_vertical = _clean(getattr(tenant, "vertical", None)).lower()
+    if tenant_type == "municipio" or tenant_vertical in {"municipio", "gobierno"}:
+        return "municipio"
+    if tenant_type == "educacion" or tenant_vertical in {"educacion", "colegio"}:
+        return "educacion"
+    if tenant_vertical in {"ventas", "sales"}:
+        return "ventas"
+    return "pyme"
+
+
+def _voice_intent_for_vertical(vertical: str, payload: Mapping[str, Any]) -> str:
+    requested = _clean(payload.get("intent")).lower()
+    if requested:
+        return requested
+    if vertical == "municipio":
+        return "reclamos"
+    if vertical == "educacion":
+        return "secretaria"
+    if vertical == "ventas":
+        return "sales"
+    return "atencion"
+
+
+def build_voice_application_request(tenant, payload: Mapping[str, Any], app_config: Mapping[str, Any]) -> dict[str, Any]:
+    cfg = tenant.configuracion if isinstance(getattr(tenant, "configuracion", None), dict) else {}
+    state = cfg.get(STATE_KEY) if isinstance(cfg.get(STATE_KEY), dict) else {}
+    base_url = _backend_base_url(app_config)
+    tenant_slug = _clean(payload.get("tenant_slug") or getattr(tenant, "slug", None))
+    vertical = _voice_vertical_for_tenant(tenant, payload)
+    intent = _voice_intent_for_vertical(vertical, payload)
+    app_sid = _clean(payload.get("voice_twiml_app_sid") or state.get("voice_twiml_app_sid") or cfg.get("voice_twiml_app_sid"))
+    friendly_name = _clean(payload.get("friendly_name")) or f"Chatboc Voice - {tenant_slug or getattr(tenant, 'id', 'tenant')}"
+    voice_url = _clean(payload.get("voice_url")) or f"{base_url}/twilio/voice?tenant={tenant_slug}&vertical={vertical}&intent={intent}"
+    fallback_url = _clean(payload.get("voice_fallback_url")) or f"{base_url}/voice/fallback?tenant={tenant_slug}&vertical={vertical}&intent={intent}"
+    status_callback_url = _clean(payload.get("voice_status_callback_url")) or f"{base_url}/voice/status"
+    sender_sid = _clean(payload.get("sender_sid") or state.get("sender_sid"))
+    sender_id = _normalize_whatsapp_sender_id(payload.get("sender_id") or state.get("sender_id") or getattr(tenant, "whatsapp_sender_id", None))
+    return {
+        "friendly_name": friendly_name[:64],
+        "voice_twiml_app_sid": app_sid or None,
+        "voice_url": voice_url,
+        "voice_method": "POST",
+        "voice_fallback_url": fallback_url,
+        "voice_fallback_method": "POST",
+        "voice_status_callback_url": status_callback_url,
+        "voice_status_callback_method": "POST",
+        "tenant_slug": tenant_slug,
+        "vertical": vertical,
+        "intent": intent,
+        "sender_sid": sender_sid or None,
+        "sender_id": sender_id,
+        "existing_state": state,
+    }
+
+
+def _twilio_voice_account_credentials(
+    *,
+    tenant,
+    state: Mapping[str, Any],
+    app_config: Mapping[str, Any],
+) -> tuple[str | None, str | None, list[str]]:
+    subaccount_sid = _clean(state.get("twilio_account_sid"))
+    tenant_slug = getattr(tenant, "slug", None)
+    if subaccount_sid:
+        token, token_refs = _resolve_subaccount_auth_token(
+            state=state,
+            tenant_slug=tenant_slug,
+            app_config=app_config,
+        )
+        if token:
+            return subaccount_sid, token, token_refs
+        return subaccount_sid, None, token_refs
+    parent_sid = _read_config_or_env(app_config, "TWILIO_ACCOUNT_SID")
+    parent_token = _read_config_or_env(app_config, "TWILIO_AUTH_TOKEN")
+    return parent_sid or None, parent_token or None, ["TWILIO_AUTH_TOKEN"]
+
+
+def provision_twilio_voice_application(tenant, payload: Mapping[str, Any], app_config: Mapping[str, Any]) -> dict[str, Any]:
+    cfg = tenant.configuracion if isinstance(getattr(tenant, "configuracion", None), dict) else {}
+    state = cfg.get(STATE_KEY) if isinstance(cfg.get(STATE_KEY), dict) else {}
+    request_payload = build_voice_application_request(tenant, payload, app_config)
+    live_enabled = _bool_config(app_config, "TWILIO_TECH_PROVIDER_LIVE_ENABLED") or _bool_config(
+        app_config,
+        "TWILIO_VOICE_PROVISIONING_LIVE_ENABLED",
+    )
+    now = datetime.now(timezone.utc).isoformat()
+    account_sid, auth_token, token_refs = _twilio_voice_account_credentials(
+        tenant=tenant,
+        state=state,
+        app_config=app_config,
+    )
+
+    result: dict[str, Any] = {
+        "contract_version": "twilio.tech_provider.voice_application.v1",
+        "ok": True,
+        "mode": "live" if live_enabled else "dry_run",
+        "request": request_payload,
+        "steps": [],
+        "state_patch": {
+            "updated_at": now,
+            "voice_status": "voice_application_plan_ready",
+            "voice_last_step": "plan_ready",
+            "voice_url": request_payload["voice_url"],
+            "voice_fallback_url": request_payload["voice_fallback_url"],
+            "voice_status_callback_url": request_payload["voice_status_callback_url"],
+            "voice_vertical": request_payload["vertical"],
+            "voice_intent": request_payload["intent"],
+            "voice_account_sid": account_sid,
+        },
+        "tenant_config_patch": {
+            "voice_twiml_app_sid": request_payload.get("voice_twiml_app_sid"),
+            "voice_url": request_payload["voice_url"],
+            "voice_fallback_url": request_payload["voice_fallback_url"],
+            "voice_status_callback_url": request_payload["voice_status_callback_url"],
+            "voice_vertical": request_payload["vertical"],
+            "voice_intent": request_payload["intent"],
+        },
+    }
+
+    if not live_enabled:
+        result["steps"].append({"id": "create_or_update_voice_twiml_app", "status": "planned"})
+        result["steps"].append({"id": "attach_voice_app_to_sender", "status": "planned" if request_payload.get("sender_sid") else "pending_sender"})
+        return result
+
+    if not (account_sid and auth_token):
+        result["ok"] = False
+        result["mode"] = "blocked"
+        result["reason_code"] = "twilio_voice_credentials_missing"
+        result["required_env"] = token_refs
+        result["state_patch"].update({"voice_status": "voice_application_blocked", "voice_last_step": "resolve_credentials"})
+        return result
+
+    app_sid = request_payload.get("voice_twiml_app_sid")
+    app_data = {
+        "FriendlyName": request_payload["friendly_name"],
+        "VoiceUrl": request_payload["voice_url"],
+        "VoiceMethod": request_payload["voice_method"],
+        "VoiceFallbackUrl": request_payload["voice_fallback_url"],
+        "VoiceFallbackMethod": request_payload["voice_fallback_method"],
+        "StatusCallback": request_payload["voice_status_callback_url"],
+        "StatusCallbackMethod": request_payload["voice_status_callback_method"],
+    }
+    app_url = (
+        f"https://api.twilio.com/2010-04-01/Accounts/{account_sid}/Applications/{app_sid}.json"
+        if app_sid
+        else f"https://api.twilio.com/2010-04-01/Accounts/{account_sid}/Applications.json"
+    )
+    try:
+        app_response = _twilio_post_form(
+            url=app_url,
+            account_sid=account_sid,
+            auth_token=auth_token,
+            data=app_data,
+        )
+    except Exception as exc:
+        result["ok"] = False
+        result["mode"] = "blocked"
+        result["reason_code"] = "twilio_voice_application_upsert_failed"
+        result["error"] = str(exc)
+        result["steps"].append({"id": "create_or_update_voice_twiml_app", "status": "failed"})
+        result["state_patch"].update({"voice_status": "voice_application_failed", "voice_last_step": "upsert_voice_twiml_app"})
+        return result
+
+    created_sid = _twilio_application_response_sid(app_response) or app_sid
+    result["steps"].append(
+        {
+            "id": "create_or_update_voice_twiml_app",
+            "status": "done",
+            "sid": created_sid,
+            "operation": "update" if app_sid else "create",
+        }
+    )
+    result["state_patch"].update(
+        {
+            "voice_status": "voice_application_ready",
+            "voice_last_step": "upsert_voice_twiml_app",
+            "voice_twiml_app_sid": created_sid,
+        }
+    )
+    result["tenant_config_patch"]["voice_twiml_app_sid"] = created_sid
+
+    sender_sid = request_payload.get("sender_sid")
+    if sender_sid and created_sid:
+        try:
+            sender_response = _twilio_post_json(
+                url=f"https://messaging.twilio.com/v2/Channels/Senders/{sender_sid}",
+                account_sid=account_sid,
+                auth_token=auth_token,
+                payload={"configuration": {"voice_application_sid": created_sid}},
+            )
+        except Exception as exc:
+            result["ok"] = False
+            result["mode"] = "blocked"
+            result["reason_code"] = "twilio_voice_sender_attach_failed"
+            result["error"] = str(exc)
+            result["steps"].append({"id": "attach_voice_app_to_sender", "status": "failed"})
+            result["state_patch"].update({"voice_status": "voice_sender_attach_failed", "voice_last_step": "attach_voice_app_to_sender"})
+            return result
+
+        result["steps"].append(
+            {
+                "id": "attach_voice_app_to_sender",
+                "status": "done",
+                "sid": _twilio_sender_response_sid(sender_response) or sender_sid,
+            }
+        )
+        result["state_patch"].update(
+            {
+                "voice_status": "voice_sender_attached",
+                "voice_last_step": "attach_voice_app_to_sender",
+                "voice_sender_attached": True,
+            }
+        )
+    else:
+        result["steps"].append({"id": "attach_voice_app_to_sender", "status": "pending_sender"})
+        result["state_patch"].update({"voice_sender_attached": False})
+
+    return result
 
 
 def provision_twilio_subaccount(tenant, payload: Mapping[str, Any], app_config: Mapping[str, Any]) -> dict[str, Any]:

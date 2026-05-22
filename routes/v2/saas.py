@@ -46,6 +46,7 @@ from services.twilio_tech_provider import (
     merge_twilio_state,
     poll_whatsapp_sender_status,
     provision_twilio_subaccount,
+    provision_twilio_voice_application,
     register_whatsapp_sender,
 )
 from services.v2.sla_service import is_ticket_overdue
@@ -1389,6 +1390,56 @@ def whatsapp_tech_provider_provision_v2(current_user, tenant_slug: str | None = 
                 "messaging_service_sid": merged_state.get("messaging_service_sid"),
                 "sender_sid": merged_state.get("sender_sid"),
                 "sender_id": merged_state.get("sender_id"),
+                "updated_at": merged_state.get("updated_at"),
+            },
+            "contract": build_twilio_tech_provider_contract(tenant, current_app.config),
+        },
+        200 if result.get("ok", True) else 400,
+    )
+
+
+@v2_saas_bp.route("/whatsapp/tech-provider/voice-app", methods=["POST"])
+@v2_saas_bp.route("/tenants/<string:tenant_slug>/whatsapp/tech-provider/voice-app", methods=["POST"])
+@token_requerido
+@require_role("admin", "super_admin")
+def whatsapp_tech_provider_voice_app_v2(current_user, tenant_slug: str | None = None):
+    tenant, error = _resolve_tenant_or_error(current_user, tenant_slug)
+    if error:
+        return error
+
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict):
+        payload = {}
+
+    result = provision_twilio_voice_application(tenant, payload, current_app.config)
+    merged_state = merge_twilio_state(tenant, result.get("state_patch") or {})
+    cfg = tenant.configuracion if isinstance(tenant.configuracion, dict) else {}
+    cfg.update({key: value for key, value in (result.get("tenant_config_patch") or {}).items() if value is not None})
+    tenant.configuracion = cfg
+    sync_twilio_provider_records(
+        tenant,
+        merged_state,
+        app_config=current_app.config,
+        actor_user=current_user,
+        request_id=_request_id(),
+        event_type="twilio_voice_application",
+    )
+    flag_modified(tenant, "configuracion")
+    db.session.commit()
+    return _json_response(
+        {
+            **result,
+            "tenant": _tenant_ref(tenant),
+            "state": {
+                "status": merged_state.get("status"),
+                "last_step": merged_state.get("last_step"),
+                "voice_status": merged_state.get("voice_status"),
+                "voice_last_step": merged_state.get("voice_last_step"),
+                "voice_twiml_app_sid": merged_state.get("voice_twiml_app_sid"),
+                "voice_url": merged_state.get("voice_url"),
+                "voice_fallback_url": merged_state.get("voice_fallback_url"),
+                "voice_status_callback_url": merged_state.get("voice_status_callback_url"),
+                "voice_sender_attached": merged_state.get("voice_sender_attached"),
                 "updated_at": merged_state.get("updated_at"),
             },
             "contract": build_twilio_tech_provider_contract(tenant, current_app.config),
