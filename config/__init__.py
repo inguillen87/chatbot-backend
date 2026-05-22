@@ -622,6 +622,26 @@ class Config:
         "TWILIO_TECH_PROVIDER_SECRET_REF_PREFIX",
         "TWILIO_SUBACCOUNT_AUTH_TOKEN",
     )
+    TWILIO_TENANT_AUTO_BOOTSTRAP_ENABLED = os.getenv(
+        "TWILIO_TENANT_AUTO_BOOTSTRAP_ENABLED",
+        "true",
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    TWILIO_TENANT_AUTO_PROVISION_ENABLED = os.getenv(
+        "TWILIO_TENANT_AUTO_PROVISION_ENABLED",
+        "false",
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    RENDER_ENV_SYNC_ENABLED = os.getenv("RENDER_ENV_SYNC_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+    RENDER_ENV_SYNC_TRIGGER_DEPLOY_ENABLED = os.getenv(
+        "RENDER_ENV_SYNC_TRIGGER_DEPLOY_ENABLED",
+        "false",
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    RENDER_API_KEY = os.getenv("RENDER_API_KEY")
+    RENDER_SERVICE_ID = os.getenv("RENDER_SERVICE_ID") or os.getenv("RENDER_BACKEND_SERVICE_ID")
+    RENDER_BACKEND_SERVICE_ID = os.getenv("RENDER_BACKEND_SERVICE_ID")
+    RENDER_ENV_GROUP_ID = os.getenv("RENDER_ENV_GROUP_ID")
+    RENDER_API_BASE_URL = os.getenv("RENDER_API_BASE_URL", "https://api.render.com/v1")
+    RENDER_API_TIMEOUT_SECONDS = os.getenv("RENDER_API_TIMEOUT_SECONDS", "20")
+    RENDER_ENV_SYNC_CLEAR_CACHE = os.getenv("RENDER_ENV_SYNC_CLEAR_CACHE", "do_not_clear")
 
     APP_BASE_URL = os.getenv("APP_BASE_URL", "https://chatboc.ar")
 

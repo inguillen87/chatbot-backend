@@ -4,6 +4,7 @@ import secrets
 from database import db
 from models import TenantProfile, User, TenantConfig, TwilioNumber
 from flask import current_app
+from services.tenant_whatsapp_onboarding import bootstrap_tenant_whatsapp_onboarding
 
 def load_template(template_key, config_type):
     """
@@ -123,6 +124,25 @@ def create_tenant_from_template(
     # 4. Assign WhatsApp Number
     if auto_assign_whatsapp_number:
         assign_number_to_tenant(tenant)
+
+    # 5. Prepare provider onboarding so every tenant starts with an API-first
+    # WhatsApp/Twilio path. This is fail-soft: missing Meta/Twilio/Render env
+    # should not block tenant creation.
+    try:
+        bootstrap_tenant_whatsapp_onboarding(
+            tenant,
+            app_config=current_app.config,
+            payload={"display_name": nombre},
+            actor_user=owner,
+            source="tenant_factory",
+        )
+    except Exception as exc:  # pragma: no cover - defensive guard for public signup
+        current_app.logger.warning(
+            "Tenant WhatsApp onboarding bootstrap failed for %s: %s",
+            slug,
+            exc,
+            exc_info=True,
+        )
 
     db.session.commit()
 

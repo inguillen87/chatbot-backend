@@ -36,9 +36,41 @@ class TestAdminTenantVerification(unittest.TestCase):
         self.assertEqual(response.status_code, 201)
         data = response.get_json()
         self.assertEqual(data['slug'], "new-city-verify")
+        self.assertIn("whatsapp_onboarding", data)
+        self.assertEqual(data["whatsapp_onboarding"]["provider"], "twilio_tech_provider")
+        self.assertEqual(
+            data["whatsapp_onboarding"]["connect"]["tech_provider_endpoint"],
+            "/api/v2/tenants/new-city-verify/whatsapp/tech-provider",
+        )
 
         tenant = TenantProfile.query.filter_by(slug="new-city-verify").first()
         self.assertIsNotNone(tenant)
+        self.assertIn("whatsapp_onboarding", tenant.configuracion)
+
+    def test_create_tenant_auto_prepares_twilio_provider_plan(self):
+        self.app.config.update(
+            TWILIO_ACCOUNT_SID="ACparent",
+            TWILIO_AUTH_TOKEN="parent-secret",
+            TWILIO_META_APP_ID="meta-app",
+            TWILIO_META_EMBEDDED_SIGNUP_CONFIG_ID="cfg-123",
+            TWILIO_TECH_PROVIDER_LIVE_ENABLED=False,
+            TWILIO_TENANT_AUTO_PROVISION_ENABLED=True,
+            PUBLIC_API_BASE_URL="https://api.chatboc.ar",
+        )
+        response = self.client.post(
+            "/api/admin/tenants",
+            json={"slug": "ferreteria-demo", "nombre": "Ferreteria Demo", "tipo": "pyme"},
+        )
+
+        self.assertEqual(response.status_code, 201, response.get_json())
+        payload = response.get_json()
+        onboarding = payload["whatsapp_onboarding"]
+        self.assertTrue(onboarding["auto_provision_enabled"])
+        self.assertEqual(onboarding["connect"]["embedded_signup_endpoint"], "/api/v2/tenants/ferreteria-demo/whatsapp/tech-provider/embedded-signup")
+        tenant = TenantProfile.query.filter_by(slug="ferreteria-demo").first()
+        self.assertEqual(tenant.configuracion["twilio_tech_provider"]["status"], "provisioning_plan_ready")
+        self.assertEqual(tenant.configuracion["twilio_tech_provider"]["voice_vertical"], "pyme")
+        self.assertEqual(tenant.configuracion["twilio_tech_provider"]["voice_intent"], "atencion")
 
     def test_create_employee_with_tenant_context(self):
         # 1. Create Admin User first

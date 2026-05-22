@@ -34,7 +34,21 @@ services:
         sync: false
       - key: TWILIO_TECH_PROVIDER_LIVE_ENABLED
         value: "false"
+      - key: TWILIO_TENANT_AUTO_BOOTSTRAP_ENABLED
+        value: "true"
+      - key: TWILIO_TENANT_AUTO_PROVISION_ENABLED
+        value: "false"
       - key: TWILIO_SUBACCOUNT_AUTH_TOKEN
+        sync: false
+      - key: RENDER_ENV_SYNC_ENABLED
+        value: "false"
+      - key: RENDER_ENV_SYNC_TRIGGER_DEPLOY_ENABLED
+        value: "false"
+      - key: RENDER_API_KEY
+        sync: false
+      - key: RENDER_SERVICE_ID
+        sync: false
+      - key: RENDER_ENV_GROUP_ID
         sync: false
 
   # 2. El Cron Job (Automatización Semanal)

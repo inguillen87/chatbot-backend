@@ -709,6 +709,60 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertNotIn("child-secret", state_text)
         self.assertEqual(len(calls), 2)
 
+    def test_twilio_live_provision_syncs_subaccount_secret_to_render_when_enabled(self):
+        self.app.config.update(
+            TWILIO_ACCOUNT_SID="ACparent",
+            TWILIO_AUTH_TOKEN="parent-secret",
+            TWILIO_META_APP_ID="meta-app",
+            TWILIO_META_EMBEDDED_SIGNUP_CONFIG_ID="cfg-123",
+            TWILIO_TECH_PROVIDER_LIVE_ENABLED=True,
+            PUBLIC_API_BASE_URL="https://www.chatboc.ar",
+            RENDER_ENV_SYNC_ENABLED=True,
+            RENDER_API_KEY="render-secret",
+            RENDER_SERVICE_ID="srv-backend",
+            RENDER_ENV_SYNC_TRIGGER_DEPLOY_ENABLED=False,
+        )
+        twilio_calls = []
+        render_calls = []
+
+        def fake_twilio_post(url, **kwargs):
+            twilio_calls.append((url, kwargs))
+            if url.endswith("/Accounts.json"):
+                return _FakeTwilioResponse({"sid": "ACchild", "auth_token": "child-secret"})
+            if url == "https://messaging.twilio.com/v1/Services":
+                return _FakeTwilioResponse({"sid": "MGchild"})
+            raise AssertionError(f"unexpected Twilio URL {url}")
+
+        def fake_render_put(url, **kwargs):
+            render_calls.append((url, kwargs))
+            self.assertEqual(url, "https://api.render.com/v1/services/srv-backend/env-vars/TWILIO_SUBACCOUNT_AUTH_TOKEN_ACCHILD")
+            self.assertEqual(kwargs["json"], {"value": "child-secret"})
+            self.assertIn("Bearer render-secret", kwargs["headers"]["Authorization"])
+            return _FakeTwilioResponse({"key": "TWILIO_SUBACCOUNT_AUTH_TOKEN_ACCHILD"}, status_code=200)
+
+        with patch("services.twilio_tech_provider.requests.post", side_effect=fake_twilio_post), patch(
+            "services.render_env_sync.requests.put",
+            side_effect=fake_render_put,
+        ):
+            response = self.client.post(
+                f"/api/v2/tenants/{self.tenant.slug}/whatsapp/tech-provider/provision",
+                headers={**self._auth(self.owner), "X-Request-Id": "tech-provider-render-sync-1"},
+                json={"phone_number": "+5491112223333"},
+            )
+
+        self.assertEqual(response.status_code, 200, response.get_json())
+        payload = response.get_json()
+        render_sync = payload["secure_secret_required"]["render_env_sync"]
+        self.assertTrue(render_sync["secret_value_stored"])
+        self.assertEqual(render_sync["target"], "service")
+        self.assertTrue(payload["state"]["render_subaccount_secret_synced"])
+        refreshed = db.session.get(TenantProfile, self.tenant.id)
+        state_text = json.dumps(refreshed.configuracion, sort_keys=True)
+        self.assertIn("TWILIO_SUBACCOUNT_AUTH_TOKEN_ACCHILD", state_text)
+        self.assertNotIn("child-secret", state_text)
+        self.assertEqual(len(twilio_calls), 2)
+        self.assertEqual(len(render_calls), 1)
+
     def test_twilio_tech_provider_voice_app_dry_run_persists_tenant_urls(self):
         self.app.config.update(
             TWILIO_ACCOUNT_SID="ACparent",

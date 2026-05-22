@@ -1106,7 +1106,8 @@ def create_tenant():
         return jsonify({
             "slug": tenant.slug,
             "widget_token": widget_token,
-            "id": tenant.id
+            "id": tenant.id,
+            "whatsapp_onboarding": (tenant.configuracion or {}).get("whatsapp_onboarding"),
         }), 201
     except ValueError as e:
         return jsonify({"error": str(e)}), 400

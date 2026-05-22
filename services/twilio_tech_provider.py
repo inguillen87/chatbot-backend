@@ -8,6 +8,8 @@ import re
 
 import requests
 
+from services.render_env_sync import sync_render_env_var
+
 
 CONTRACT_VERSION = "twilio.tech_provider.v1"
 STATE_KEY = "twilio_tech_provider"
@@ -256,6 +258,9 @@ def build_twilio_tech_provider_contract(tenant, app_config: Mapping[str, Any]) -
         "automation": {
             "mode": "api_first",
             "live_enabled": _bool_config(app_config, "TWILIO_TECH_PROVIDER_LIVE_ENABLED"),
+            "tenant_auto_bootstrap_enabled": _bool_config(app_config, "TWILIO_TENANT_AUTO_BOOTSTRAP_ENABLED", True),
+            "tenant_auto_provision_enabled": _bool_config(app_config, "TWILIO_TENANT_AUTO_PROVISION_ENABLED"),
+            "render_env_sync_enabled": _bool_config(app_config, "RENDER_ENV_SYNC_ENABLED"),
             "manual_twilio_console_allowed": False,
             "customer_sees_twilio_console": False,
             "env": env,
@@ -271,6 +276,7 @@ def build_twilio_tech_provider_contract(tenant, app_config: Mapping[str, Any]) -
             "last_step": state.get("last_step"),
             "updated_at": state.get("updated_at"),
         },
+        "tenant_onboarding": cfg.get("whatsapp_onboarding") if isinstance(cfg.get("whatsapp_onboarding"), dict) else None,
         "webhooks": {
             "inbound_message_url": f"{base_url}/webhook/whatsapp",
             "status_callback_url": f"{base_url}/twilio/whatsapp/status",
@@ -306,6 +312,19 @@ def build_twilio_tech_provider_contract(tenant, app_config: Mapping[str, Any]) -
                 "method": "POST",
                 "endpoint": "https://messaging.twilio.com/v1/Services",
                 "state": "done" if state.get("messaging_service_sid") else "pending",
+            },
+            {
+                "id": "sync_subaccount_secret_to_render",
+                "owner": "backend_secret_store",
+                "method": "PUT",
+                "endpoint": "https://api.render.com/v1/services/{ServiceId}/env-vars/{EnvVarKey}",
+                "state": (
+                    "done"
+                    if state.get("render_subaccount_secret_synced")
+                    else "enabled"
+                    if _bool_config(app_config, "RENDER_ENV_SYNC_ENABLED")
+                    else "manual_or_disabled"
+                ),
             },
             {
                 "id": "assign_or_register_whatsapp_sender",
@@ -713,13 +732,14 @@ def provision_twilio_subaccount(tenant, payload: Mapping[str, Any], app_config: 
         return result
 
     messaging_service_sid = messaging_service.get("sid")
+    render_env_sync = sync_render_env_var(token_refs[0], subaccount_token, app_config)
     result["steps"].append({"id": "create_messaging_service", "status": "done", "sid": messaging_service_sid})
     result["steps"].append({"id": "embedded_signup", "status": "requires_customer"})
     result["steps"].append({"id": "register_sender", "status": "planned_after_embedded_signup"})
     result["secure_secret_required"] = {
         "reason_code": "store_subaccount_auth_token_for_later_sender_registration",
         "required_env": token_refs,
-        "render_env_sync": "manual_until_render_api_key_or_secret_store_is_configured",
+        "render_env_sync": render_env_sync,
         "do_not_store_in_database": True,
     }
     result["state_patch"].update(
@@ -727,6 +747,8 @@ def provision_twilio_subaccount(tenant, payload: Mapping[str, Any], app_config: 
             "status": "ready_for_embedded_signup",
             "last_step": "create_messaging_service",
             "messaging_service_sid": messaging_service_sid,
+            "render_subaccount_secret_synced": bool(render_env_sync.get("secret_value_stored")),
+            "render_subaccount_secret_sync_status": render_env_sync.get("mode"),
         }
     )
     return result

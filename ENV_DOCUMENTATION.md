@@ -13,6 +13,12 @@ New variables introduced for Multi-tenant Modules:
 *   `TELEGRAM_BOT_TOKEN`: Token for the Telegram bot used to notify owners.
 *   `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_PHONE_NUMBER`: (Existing) Used for SMS.
 *   `TWILIO_WHATSAPP_NUMBER`: (Existing) Used for WhatsApp notifications.
+*   `TWILIO_META_APP_ID`, `TWILIO_META_EMBEDDED_SIGNUP_CONFIG_ID`, `TWILIO_PARTNER_SOLUTION_ID`: Meta/Twilio Tech Provider identifiers used by the backend-driven WhatsApp onboarding contract.
+*   `TWILIO_TECH_PROVIDER_LIVE_ENABLED`: Enables live Twilio API calls for subaccounts, Messaging Services, WhatsApp Senders and Voice TwiML Apps.
+*   `TWILIO_TENANT_AUTO_BOOTSTRAP_ENABLED`: Seeds every new tenant with a WhatsApp onboarding contract. Defaults to true.
+*   `TWILIO_TENANT_AUTO_PROVISION_ENABLED`: When true, new tenants automatically run the Twilio provisioning step instead of only storing a plan.
+*   `RENDER_ENV_SYNC_ENABLED`, `RENDER_API_KEY`, `RENDER_SERVICE_ID` or `RENDER_ENV_GROUP_ID`: Optional secret-store sync so generated `TWILIO_SUBACCOUNT_AUTH_TOKEN_<ACCOUNT_SID>` values are pushed to Render instead of handled manually.
+*   `RENDER_ENV_SYNC_TRIGGER_DEPLOY_ENABLED`: Optional follow-up deploy trigger after Render env sync so the backend reloads the newly generated subaccount token.
 
 ## General
 *   `ADMIN_EMAIL`: (Existing) Fallback email for admin notifications.
