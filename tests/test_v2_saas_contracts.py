@@ -866,6 +866,12 @@ class V2SaasContractsTest(unittest.TestCase):
             if url == "https://messaging.twilio.com/v1/Services/MGchild/ChannelSenders":
                 self.assertEqual(kwargs["data"], {"Sid": "XE123"})
                 return _FakeTwilioResponse({"sid": "XE123"}, status_code=201)
+            if url == "https://api.twilio.com/2010-04-01/Accounts/ACchild/Applications.json":
+                self.assertEqual(kwargs["data"]["VoiceUrl"], "https://www.chatboc.ar/twilio/voice?tenant=saas-tenant&vertical=educacion&intent=secretaria")
+                return _FakeTwilioResponse({"sid": "APvoice"})
+            if url == "https://messaging.twilio.com/v2/Channels/Senders/XE123":
+                self.assertEqual(kwargs["json"]["configuration"]["voice_application_sid"], "APvoice")
+                return _FakeTwilioResponse({"sid": "XE123", "status": "ONLINE"})
             raise AssertionError(f"unexpected Twilio URL {url}")
 
         with patch("services.twilio_tech_provider.requests.post", side_effect=fake_post):
@@ -880,7 +886,10 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(payload["state"]["status"], "sender_attached")
         self.assertEqual(payload["state"]["sender_sid"], "XE123")
         self.assertEqual(payload["state"]["sender_status"], "PENDING")
-        self.assertEqual(len(calls), 2)
+        self.assertEqual(payload["state"]["voice_twiml_app_sid"], "APvoice")
+        self.assertTrue(payload["state"]["voice_sender_attached"])
+        self.assertEqual(payload["voice_app"]["contract_version"], "twilio.tech_provider.voice_application.v1")
+        self.assertEqual(len(calls), 4)
         sender = ProviderSender.query.filter_by(tenant_id=self.tenant.id, channel="whatsapp").first()
         self.assertIsNotNone(sender)
         self.assertEqual(sender.sender_sid, "XE123")

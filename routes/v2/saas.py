@@ -1506,6 +1506,13 @@ def whatsapp_tech_provider_register_sender_v2(current_user, tenant_slug: str | N
 
     result = register_whatsapp_sender(tenant, payload, current_app.config)
     merged_state = merge_twilio_state(tenant, result.get("state_patch") or {})
+    voice_result = None
+    if result.get("ok", True):
+        voice_result = provision_twilio_voice_application(tenant, payload, current_app.config)
+        merged_state = merge_twilio_state(tenant, voice_result.get("state_patch") or {})
+        cfg = tenant.configuracion if isinstance(tenant.configuracion, dict) else {}
+        cfg.update({key: value for key, value in (voice_result.get("tenant_config_patch") or {}).items() if value is not None})
+        tenant.configuracion = cfg
     sync_twilio_provider_records(
         tenant,
         merged_state,
@@ -1519,6 +1526,7 @@ def whatsapp_tech_provider_register_sender_v2(current_user, tenant_slug: str | N
     return _json_response(
         {
             **result,
+            "voice_app": voice_result,
             "tenant": _tenant_ref(tenant),
             "state": {
                 "status": merged_state.get("status"),
@@ -1530,11 +1538,14 @@ def whatsapp_tech_provider_register_sender_v2(current_user, tenant_slug: str | N
                 "sender_status": merged_state.get("sender_status"),
                 "waba_id": merged_state.get("waba_id"),
                 "phone_number_id": merged_state.get("phone_number_id"),
+                "voice_status": merged_state.get("voice_status"),
+                "voice_twiml_app_sid": merged_state.get("voice_twiml_app_sid"),
+                "voice_sender_attached": merged_state.get("voice_sender_attached"),
                 "updated_at": merged_state.get("updated_at"),
             },
             "contract": build_twilio_tech_provider_contract(tenant, current_app.config),
         },
-        200 if result.get("ok", True) else 400,
+        200 if result.get("ok", True) and (not voice_result or voice_result.get("ok", True)) else 400,
     )
 
 
