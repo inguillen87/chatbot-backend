@@ -50,7 +50,7 @@ class VoiceRealtimeRoutesTestCase(unittest.TestCase):
     @patch("routes.voice_routes.TWILIO_AUTH_TOKEN", None)
     def test_twilio_voice_alias_preserves_demo_query_params(self):
         response = self.client.post(
-            "/twilio/voice?tenant=club-demo-ar&vertical=juni",
+            "/twilio/voice?tenant=chatboc-demo&vertical=ventas&intent=sales",
             data={
                 "CallSid": "CA123",
                 "From": "+5492613168608",
@@ -62,15 +62,16 @@ class VoiceRealtimeRoutesTestCase(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         body = response.get_data(as_text=True)
         self.assertIn("<Connect>", body)
-        self.assertIn("club-demo-ar", body)
-        self.assertIn("juni", body)
+        self.assertIn("chatboc-demo", body)
+        self.assertIn("ventas", body)
+        self.assertIn("sales", body)
         self.assertIn("demo_hub", body)
         self.assertIn("max_call_seconds", body)
 
     @patch("routes.voice_routes.TWILIO_AUTH_TOKEN", None)
     def test_twilio_voice_alias_preserves_requested_tenant_for_non_demo_number(self):
         response = self.client.post(
-            "/twilio/voice?tenant=junin-1&vertical=municipio&intent=reclamos",
+            "/twilio/voice?tenant=junin&vertical=municipio&intent=reclamos",
             data={
                 "CallSid": "CA456",
                 "From": "+5492613168608",
@@ -82,7 +83,7 @@ class VoiceRealtimeRoutesTestCase(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         body = response.get_data(as_text=True)
         self.assertIn("<Connect>", body)
-        self.assertIn("junin-1", body)
+        self.assertIn("junin", body)
         self.assertIn("municipio", body)
         self.assertIn("reclamos", body)
         self.assertNotIn("demo_hub", body)
@@ -106,7 +107,7 @@ class VoiceRealtimeRoutesTestCase(unittest.TestCase):
     @patch("routes.voice_routes.TWILIO_AUTH_TOKEN", None)
     def test_voice_fallback_uses_municipal_menu_for_junin_number(self):
         response = self.client.post(
-            "/voice/fallback?tenant=junin-1&vertical=municipio&intent=reclamos",
+            "/voice/fallback?tenant=junin&vertical=municipio&intent=reclamos",
             data=self._twilio_payload(),
         )
 
@@ -121,7 +122,7 @@ class VoiceRealtimeRoutesTestCase(unittest.TestCase):
     @patch("routes.voice_routes.TWILIO_AUTH_TOKEN", None)
     def test_voice_demo_process_routes_municipal_reclamo_intent(self):
         response = self.client.post(
-            "/voice/demo/process?tenant=junin-1&vertical=municipio&intent=reclamos",
+            "/voice/demo/process?tenant=junin&vertical=municipio&intent=reclamos",
             data={**self._twilio_payload(), "Digits": "1"},
         )
 
