@@ -105,10 +105,13 @@ def _twilio_fallback_voice() -> str:
 
 
 def _twilio_fallback_say_language() -> str:
-    return _voice_config_value(
+    configured = _voice_config_value(
         "TWILIO_FALLBACK_SAY_LANGUAGE",
         default=DEFAULT_TWILIO_FALLBACK_SAY_LANGUAGE,
     )
+    if _normalize_voice_text(configured) in {"es-us", "en-us", "en"}:
+        return DEFAULT_TWILIO_FALLBACK_SAY_LANGUAGE
+    return configured
 
 
 def _twilio_gather_language() -> str:

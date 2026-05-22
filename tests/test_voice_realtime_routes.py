@@ -10,6 +10,7 @@ class VoiceRealtimeRoutesTestCase(unittest.TestCase):
     def setUp(self):
         self.app = Flask(__name__)
         self.app.config["BACKEND_URL"] = "https://api.chatboc.test"
+        self.app.config["TWILIO_FALLBACK_SAY_LANGUAGE"] = "es-US"
         self.app.register_blueprint(voice_bp)
         self.client = self.app.test_client()
 
