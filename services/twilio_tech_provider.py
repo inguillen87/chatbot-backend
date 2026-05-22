@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any, Mapping
+from urllib.parse import urlencode
 import base64
 import os
 import re
@@ -34,6 +35,15 @@ def _backend_base_url(config: Mapping[str, Any]) -> str:
     return (
         _clean(config.get("PUBLIC_API_BASE_URL"))
         or _clean(config.get("BACKEND_URL"))
+        or "https://www.chatboc.ar"
+    ).rstrip("/")
+
+
+def _frontend_base_url(config: Mapping[str, Any]) -> str:
+    return (
+        _clean(config.get("PUBLIC_FRONTEND_URL"))
+        or _clean(config.get("FRONTEND_URL"))
+        or _clean(config.get("WEB_APP_URL"))
         or "https://www.chatboc.ar"
     ).rstrip("/")
 
@@ -242,8 +252,19 @@ def build_twilio_tech_provider_contract(tenant, app_config: Mapping[str, Any]) -
     state = cfg.get(STATE_KEY) if isinstance(cfg.get(STATE_KEY), dict) else {}
     env = _env_status(app_config)
     base_url = _backend_base_url(app_config)
+    frontend_url = _frontend_base_url(app_config)
     tenant_slug = getattr(tenant, "slug", None)
+    meta_app_id = _clean(app_config.get("TWILIO_META_APP_ID")) or None
+    embedded_signup_config_id = _clean(app_config.get("TWILIO_META_EMBEDDED_SIGNUP_CONFIG_ID")) or None
     status = state.get("status") or ("ready_for_embedded_signup" if env["ready"] else "needs_platform_config")
+    signup_query = urlencode(
+        {
+            "tenant": tenant_slug or "",
+            "app_id": meta_app_id or "",
+            "config_id": embedded_signup_config_id or "",
+        }
+    )
+    embedded_signup_start_url = f"{frontend_url}/integracion/whatsapp/connect?{signup_query}"
 
     return {
         "contract_version": CONTRACT_VERSION,
@@ -293,8 +314,10 @@ def build_twilio_tech_provider_contract(tenant, app_config: Mapping[str, Any]) -
         },
         "embedded_signup": {
             "enabled": env["ready"],
-            "meta_app_id": _clean(app_config.get("TWILIO_META_APP_ID")) or None,
-            "configuration_id": _clean(app_config.get("TWILIO_META_EMBEDDED_SIGNUP_CONFIG_ID")) or None,
+            "meta_app_id": meta_app_id,
+            "configuration_id": embedded_signup_config_id,
+            "start_url": embedded_signup_start_url if env["ready"] else None,
+            "url": embedded_signup_start_url if env["ready"] else None,
             "required_customer_action": "login_with_facebook_embedded_signup",
             "completion_endpoint": f"/api/v2/tenants/{tenant_slug}/whatsapp/tech-provider/embedded-signup",
         },

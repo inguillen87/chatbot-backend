@@ -600,6 +600,12 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertTrue(any(step["id"] == "create_subaccount" for step in payload["api_workflow"]))
         self.assertTrue(any(step["id"] == "create_or_update_voice_twiml_app" for step in payload["api_workflow"]))
         self.assertEqual(payload["voice"]["completion_endpoint"], f"/api/v2/tenants/{self.tenant.slug}/whatsapp/tech-provider/voice-app")
+        self.assertEqual(payload["embedded_signup"]["meta_app_id"], "meta-app")
+        self.assertEqual(payload["embedded_signup"]["configuration_id"], "cfg-123")
+        self.assertIn("/integracion/whatsapp/connect?", payload["embedded_signup"]["start_url"])
+        self.assertIn(f"tenant={self.tenant.slug}", payload["embedded_signup"]["start_url"])
+        self.assertIn("app_id=meta-app", payload["embedded_signup"]["start_url"])
+        self.assertIn("config_id=cfg-123", payload["embedded_signup"]["start_url"])
         self.assertIn("/webhook/whatsapp", payload["webhooks"]["inbound_message_url"])
 
     def test_twilio_tech_provider_provision_dry_run_persists_plan_without_live_api(self):
@@ -631,13 +637,14 @@ class V2SaasContractsTest(unittest.TestCase):
         signup_response = self.client.post(
             f"/api/v2/tenants/{self.tenant.slug}/whatsapp/tech-provider/embedded-signup",
             headers={**self._auth(self.owner), "X-Request-Id": "tech-provider-signup-1"},
-            json={"waba_id": "123456789", "phone_number_id": "987654321", "session_id": "fb-session"},
+            json={"waba_id": "123456789", "phone_number_id": "987654321", "session_id": "fb-session", "code": "meta-code"},
         )
 
         self.assertEqual(signup_response.status_code, 200)
         signup = signup_response.get_json()
         self.assertEqual(signup["contract_version"], "twilio.tech_provider.embedded_signup.v1")
         self.assertEqual(signup["state"]["waba_id"], "123456789")
+        self.assertEqual(signup["state"]["embedded_signup_code"], "meta-code")
         self.assertEqual(signup["next_action"], "register_whatsapp_sender_via_senders_api")
 
         connection = ProviderConnection.query.filter_by(tenant_id=self.tenant.id, provider="twilio", channel="whatsapp").first()

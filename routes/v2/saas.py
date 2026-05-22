@@ -1462,6 +1462,7 @@ def whatsapp_tech_provider_embedded_signup_v2(current_user, tenant_slug: str | N
     payload = request.get_json(silent=True) or {}
     if not isinstance(payload, dict):
         payload = {}
+    auth_response = payload.get("authResponse") if isinstance(payload.get("authResponse"), dict) else {}
     state_patch = {
         "status": "pending_sender_registration",
         "last_step": "embedded_signup_completed",
@@ -1469,6 +1470,13 @@ def whatsapp_tech_provider_embedded_signup_v2(current_user, tenant_slug: str | N
         "waba_id": payload.get("waba_id") or payload.get("wabaId"),
         "phone_number_id": payload.get("phone_number_id") or payload.get("phoneNumberId"),
         "embedded_signup_session_id": payload.get("session_id") or payload.get("sessionId"),
+        "embedded_signup_code": (
+            payload.get("code")
+            or payload.get("auth_code")
+            or payload.get("authorization_code")
+            or auth_response.get("code")
+        ),
+        "embedded_signup_event": payload.get("event"),
     }
     merged_state = merge_twilio_state(tenant, state_patch)
     sync_twilio_provider_records(
