@@ -124,6 +124,8 @@ def test_public_demo_survey_detail_results_and_response(client):
     assert detail_payload["demo_mode"] is True
     assert detail_payload["resultados_envivo"]["total_respuestas"] == 100
     assert detail_payload["preguntas"]
+    question = detail_payload["preguntas"][0]
+    option = question["opciones"][0]
 
     results = client.get(f"/api/public/encuestas/v1/{slug}/live-results")
     assert results.status_code == 200
@@ -134,12 +136,32 @@ def test_public_demo_survey_detail_results_and_response(client):
 
     submitted = client.post(
         f"/api/public/encuestas/v1/{slug}/responder",
-        json={"respuestas": [{"pregunta_id": "q1", "opcion": "Promos"}]},
+        json={
+            "answers": [{"question_id": question["id"], "option_id": option["id"]}],
+            "metadata": {"source": "pytest"},
+        },
     )
     assert submitted.status_code == 201
     submitted_payload = submitted.get_json()
     assert submitted_payload["demo_mode"] is True
+    assert submitted_payload["contract_version"] == "demo.survey_response_ack.v1"
+    assert submitted_payload["accepted"] is True
+    assert submitted_payload["answer_count"] == 1
+    assert submitted_payload["answers"][0]["question_id"] == question["id"]
+    assert submitted_payload["answers"][0]["option_id"] == option["id"]
     assert submitted_payload["seeded_responses_before"] == 100
+    assert submitted_payload["resultados_envivo"]["total_respuestas"] == 100
+    assert submitted_payload["results_endpoint"].endswith("/live-results")
+    assert f"/e/{slug}" in submitted_payload["next_url"]
+
+    submitted_label = client.post(
+        f"/api/public/encuestas/v1/{slug}/responder",
+        json={"respuestas": [{"pregunta_id": question["id"], "opcion": option["texto"]}]},
+    )
+    assert submitted_label.status_code == 201
+    submitted_label_payload = submitted_label.get_json()
+    assert submitted_label_payload["accepted"] is True
+    assert submitted_label_payload["answers"][0]["option_id"] == option["id"]
 
 
 def test_demo_survey_chat_menu_lists_five_with_whatsapp_vote_actions():

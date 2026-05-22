@@ -12,6 +12,7 @@ from config import BACKEND_URL
 ProviderCallable = Callable[[str], str | None]
 
 logger = logging.getLogger(__name__)
+_FALSEY_VALUES = {"0", "false", "no", "off"}
 
 
 def _summarize_if_long(text: str, max_chars: int = 500) -> str:
@@ -92,6 +93,15 @@ def _cohere_tts_enabled() -> bool:
     return _truthy_env("TTS_COHERE_ENABLED", "COHERE_ENABLED")
 
 
+def _tts_cache_enabled() -> bool:
+    return str(os.getenv("TTS_CACHE_ENABLED", "true")).strip().lower() not in _FALSEY_VALUES
+
+
+def _public_backend_url(relative_path: str) -> str:
+    url_path = relative_path.replace("\\", "/")
+    return f"{BACKEND_URL}/{url_path.lstrip('/')}"
+
+
 def generar_audio(
     text: str,
     *,
@@ -132,11 +142,13 @@ def generar_audio(
     effective_model = model or os.getenv("OPENAI_TTS_MODEL")
     effective_style = style or os.getenv("OPENAI_TTS_STYLE")
 
+    cache_enabled = _tts_cache_enabled()
     cache_dir = "static/audio_cache"
-    os.makedirs(cache_dir, exist_ok=True)
+    if cache_enabled:
+        os.makedirs(cache_dir, exist_ok=True)
     cache_fingerprint = "|".join(
         [
-            cache_namespace or "default",
+            cache_namespace or os.getenv("TTS_CACHE_NAMESPACE") or "default",
             text,
             str(effective_voice or ""),
             str(effective_model or ""),
@@ -144,11 +156,11 @@ def generar_audio(
             str(effective_speed if effective_speed is not None else ""),
         ]
     )
-    text_hash = hashlib.md5(cache_fingerprint.encode("utf-8")).hexdigest()
+    text_hash = hashlib.sha256(cache_fingerprint.encode("utf-8")).hexdigest()
     cached_rel_path = os.path.join(cache_dir, f"{text_hash}.mp3")
-    if os.path.exists(cached_rel_path):
+    if cache_enabled and os.path.exists(cached_rel_path):
         logger.info("TTS Service: Returning cached audio.")
-        return f"{BACKEND_URL}/{cached_rel_path}"
+        return _public_backend_url(cached_rel_path)
 
     def cache_and_return(audio_url: str | None) -> str | None:
         if not audio_url:
@@ -161,16 +173,19 @@ def generar_audio(
             return audio_url
 
         generated_path = audio_url.lstrip("/")
+        if not cache_enabled:
+            return _public_backend_url(generated_path)
+
         try:
             if os.path.exists(generated_path):
                 shutil.copyfile(generated_path, cached_rel_path)
                 logger.info(f"TTS Service: Cached audio at {cached_rel_path}")
-                return f"{BACKEND_URL}/{cached_rel_path}"
+                return _public_backend_url(cached_rel_path)
         except Exception as e:
             logger.warning(f"TTS Service: Failed to cache audio file from {generated_path}: {e}")
 
         # Fallback to returning the original URL if caching fails but URL is valid
-        return f"{BACKEND_URL}/{generated_path}"
+        return _public_backend_url(generated_path)
 
     def _provider_factory() -> dict[str, ProviderCallable]:
         providers: dict[str, ProviderCallable] = {}

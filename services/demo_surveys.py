@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import random
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -573,22 +574,186 @@ def build_demo_live_results_payload(
     }
 
 
-def build_demo_survey_response_ack(slug: str, payload: dict[str, Any] | None = None) -> dict[str, Any] | None:
-    context = infer_demo_survey_context(slug)
-    if not context:
+def _first_present(mapping: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in mapping and mapping[key] not in (None, ""):
+            return mapping[key]
+    return None
+
+
+def _normalize_demo_option(value: Any, options: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if isinstance(value, dict):
+        value = _first_present(
+            value,
+            "option_id",
+            "opcion_id",
+            "selected_option_id",
+            "selectedOptionId",
+            "opcion",
+            "texto",
+            "label",
+            "value",
+        )
+    if value in (None, ""):
         return None
-    request_fingerprint = hashlib.sha256(
-        f"{slug}|{payload or {}}".encode("utf-8")
-    ).hexdigest()[:16]
+
+    raw_value = str(value).strip()
+    normalized_value = raw_value.lower()
+    for option in options:
+        option_id = str(option.get("id") or "").strip()
+        option_label = str(option.get("texto") or option.get("label") or "").strip()
+        if normalized_value in {option_id.lower(), option_label.lower()}:
+            return {
+                "option_id": option_id,
+                "option_label": option_label,
+                "value": raw_value,
+                "matched": True,
+            }
+
+    if raw_value.isdigit():
+        option_index = int(raw_value) - 1
+        if 0 <= option_index < len(options):
+            option = options[option_index]
+            option_id = str(option.get("id") or "").strip()
+            option_label = str(option.get("texto") or option.get("label") or "").strip()
+            return {
+                "option_id": option_id,
+                "option_label": option_label,
+                "value": raw_value,
+                "matched": True,
+            }
+
     return {
+        "option_id": None,
+        "option_label": raw_value,
+        "value": raw_value,
+        "matched": False,
+    }
+
+
+def _normalize_demo_survey_answers(
+    payload: dict[str, Any] | None,
+    question: dict[str, Any],
+) -> list[dict[str, Any]]:
+    if not isinstance(payload, dict):
+        return []
+
+    candidate_entries = _first_present(
+        payload,
+        "answers",
+        "respuestas",
+        "responses",
+        "items",
+        "respuesta",
+    )
+    if candidate_entries is None:
+        candidate_entries = payload
+    if isinstance(candidate_entries, dict):
+        candidate_entries = [candidate_entries]
+    if not isinstance(candidate_entries, list):
+        candidate_entries = [{"value": candidate_entries}]
+
+    question_id = str(question.get("id") or "").strip()
+    question_text = str(question.get("texto") or question.get("titulo") or "").strip()
+    options = list(question.get("opciones") or [])
+    normalized_answers: list[dict[str, Any]] = []
+
+    for entry in candidate_entries:
+        if not isinstance(entry, dict):
+            entry = {"value": entry}
+        submitted_question_id = _first_present(
+            entry,
+            "question_id",
+            "pregunta_id",
+            "questionId",
+            "preguntaId",
+            "id_pregunta",
+        )
+        submitted_option = _first_present(
+            entry,
+            "option_id",
+            "opcion_id",
+            "selected_option_id",
+            "selectedOptionId",
+            "opcion",
+            "respuesta",
+            "value",
+            "choice",
+        )
+        option = _normalize_demo_option(submitted_option, options)
+        if not option:
+            continue
+        normalized_answers.append(
+            {
+                "question_id": question_id,
+                "question_text": question_text,
+                "submitted_question_id": str(submitted_question_id or question_id),
+                "option_id": option["option_id"],
+                "option_label": option["option_label"],
+                "value": option["value"],
+                "matched": option["matched"],
+            }
+        )
+
+    return normalized_answers
+
+
+def build_demo_survey_response_ack(
+    slug: str,
+    payload: dict[str, Any] | None = None,
+    *,
+    public_base_url: str = "https://www.chatboc.ar",
+) -> dict[str, Any] | None:
+    public_payload = build_demo_public_survey_payload(slug, public_base_url=public_base_url)
+    if not public_payload:
+        return None
+
+    question = (public_payload.get("preguntas") or [{}])[0]
+    answers = _normalize_demo_survey_answers(payload, question)
+    normalized_payload = {
+        "slug": public_payload["slug"],
+        "payload": payload or {},
+        "answers": answers,
+    }
+    fingerprint_input = json.dumps(normalized_payload, sort_keys=True, default=str)
+    request_fingerprint = hashlib.sha256(fingerprint_input.encode("utf-8")).hexdigest()[:16]
+    accepted = bool(answers)
+    message = (
+        "Voto demo registrado. Ahora podes ver los resultados en vivo."
+        if accepted
+        else "No se detecto una opcion valida para registrar el voto demo."
+    )
+    return {
+        "contract_version": "demo.survey_response_ack.v1",
         "ok": True,
         "success": True,
+        "accepted": accepted,
+        "ignored": not accepted,
+        "duplicate": False,
         "demo_mode": True,
+        "slug": public_payload["slug"],
+        "canonical_slug": public_payload["canonical_slug"],
+        "sector": public_payload["sector"],
+        "tenant_slug": public_payload["tenant_slug"],
         "respuesta_id": f"demo_resp_{request_fingerprint}",
         "request_id": f"demo_req_{request_fingerprint}",
-        "message": "Participacion demo registrada. Los resultados usan 100 personas sinteticas.",
+        "message": message,
+        "answer_count": len(answers),
+        "answers": answers,
+        "respuestas": answers,
         "seeded_responses_before": DEMO_SURVEY_RESPONSE_COUNT,
         "seeded_responses_after": DEMO_SURVEY_RESPONSE_COUNT + 1,
+        "public_url": public_payload["public_url"],
+        "respond_endpoint": public_payload["respond_endpoint"],
+        "results_endpoint": public_payload["results_endpoint"],
+        "next_url": f"{public_payload['public_url']}?resultados=1",
+        "results_url": f"{public_payload['public_url']}?resultados=1",
+        "resultados_envivo": public_payload.get("resultados_envivo"),
+        "analytics": {
+            "accepted": accepted,
+            "ignored": not accepted,
+            "source": "demo_survey_response_ack",
+        },
     }
 
 
@@ -611,7 +776,8 @@ def build_demo_survey_chat_menu(
         page_size=page_size or DEMO_SURVEY_PAGE_SIZE,
     )
     labels = _sector_labels(contract["sector"])
-    is_whatsapp = "whatsapp" in str(channel or "").lower()
+    normalized_channel = str(channel or "").strip().lower()
+    is_whatsapp = normalized_channel in {"wa", "whatsapp", "twilio", "twilio_whatsapp"} or "whatsapp" in normalized_channel
     lines = [f"*{labels['heading']}*"]
     if is_whatsapp:
         lines.append(
