@@ -62,7 +62,7 @@ class VoiceRealtimeRoutesTestCase(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         body = response.get_data(as_text=True)
         self.assertIn("<Connect>", body)
-        self.assertIn("chatboc-demo", body)
+        self.assertIn("chatboc-platform", body)
         self.assertIn("ventas", body)
         self.assertIn("sales", body)
         self.assertIn("demo_hub", body)
