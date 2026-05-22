@@ -137,6 +137,20 @@ class VoiceRealtimeRoutesTestCase(unittest.TestCase):
         self.assertIn("/voice/process", body)
 
     @patch("routes.voice_routes.TWILIO_AUTH_TOKEN", None)
+    def test_voice_fallback_canonicalizes_old_club_demo_juni_alias_to_junin(self):
+        response = self.client.post(
+            "/voice/fallback?tenant=club-demo-ar&vertical=juni",
+            data=self._twilio_payload(),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.get_data(as_text=True)
+        self.assertIn("tenant=junin", body)
+        self.assertIn("vertical=municipio", body)
+        self.assertNotIn("club-demo-ar", body)
+        self.assertIn("/voice/process", body)
+
+    @patch("routes.voice_routes.TWILIO_AUTH_TOKEN", None)
     def test_voice_fallback_canonicalizes_chatboc_platform_alias(self):
         response = self.client.post(
             "/voice/fallback?tenant=chatboc-platform&vertical=sales&intent=sales",

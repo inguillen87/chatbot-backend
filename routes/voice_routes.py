@@ -30,7 +30,7 @@ VOICE_TENANT_ALIASES = {
     "juni-01": "junin",
     "juni": "junin",
     "chatboc-platform": "chatboc-demo",
-    "club-demo-ar": "chatboc-demo",
+    "club-demo-ar": "junin",
 }
 VOICE_VERTICAL_ALIASES = {
     "juni": "municipio",
