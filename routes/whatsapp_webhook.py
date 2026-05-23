@@ -23,6 +23,7 @@ from models import (
     PymeTicket,
     TicketComentario,
     TenantProfile,
+    ProviderSender,
     Notification,
 )  # Import necessary models
 from models_memory import Contact
@@ -136,9 +137,40 @@ def _configured_chatboc_demo_reset_numbers() -> Set[str]:
     return {candidate for candidate in normalized if candidate}
 
 
+def _configured_chatboc_demo_unlimited_numbers() -> Set[str]:
+    configured_numbers = current_app.config.get("CHATBOC_DEMO_UNLIMITED_WHATSAPP_NUMBERS")
+    if configured_numbers is None:
+        configured_numbers = os.getenv("CHATBOC_DEMO_UNLIMITED_WHATSAPP_NUMBERS")
+
+    reset_config_explicit = (
+        current_app.config.get("CHATBOC_DEMO_RESET_WHATSAPP_NUMBERS") is not None
+        or os.getenv("CHATBOC_DEMO_RESET_WHATSAPP_NUMBERS") is not None
+    )
+    if configured_numbers in (None, "") and reset_config_explicit:
+        raw_numbers: Any = []
+    else:
+        raw_numbers = (
+            configured_numbers
+            if configured_numbers not in (None, "")
+            else CHATBOC_DEMO_DEFAULT_RESET_WHATSAPP_NUMBER
+        )
+
+    if isinstance(raw_numbers, str):
+        candidates = re.split(r"[,;\s]+", raw_numbers)
+    else:
+        candidates = list(raw_numbers or [])
+    normalized = {_normalize_whatsapp_address(candidate) for candidate in candidates}
+    return {candidate for candidate in normalized if candidate}
+
+
 def _can_reset_chatboc_demo_usage(from_number: Optional[str]) -> bool:
     normalized = _normalize_whatsapp_address(from_number)
     return bool(normalized and normalized in _configured_chatboc_demo_reset_numbers())
+
+
+def _can_use_chatboc_demo_unlimited(from_number: Optional[str]) -> bool:
+    normalized = _normalize_whatsapp_address(from_number)
+    return bool(normalized and normalized in _configured_chatboc_demo_unlimited_numbers())
 
 
 def _chatboc_demo_max_messages() -> int:
@@ -2746,6 +2778,107 @@ def _lookup_whatsapp_mapping(to_number_raw: str) -> Tuple[Optional[WhatsappNumer
     return None, cleaned, normalized
 
 
+def _tenant_owner_for_sender(tenant: Optional[TenantProfile]) -> Optional[User]:
+    if not tenant:
+        return None
+    return tenant.municipio or tenant.pyme
+
+
+def _provider_sender_for_inbound(
+    *,
+    to_number_raw: str,
+    normalized_to: Optional[str],
+    messaging_service_sid: Optional[str],
+) -> Optional[ProviderSender]:
+    cleaned = (to_number_raw or "").replace("whatsapp:", "").strip()
+    candidates = {value for value in {cleaned, normalized_to} if value}
+    if normalized_to and normalized_to.startswith("+549") and len(normalized_to) == 13:
+        candidates.add("+54" + normalized_to[4:])
+
+    sender_candidates = set(candidates)
+    sender_candidates.update({f"whatsapp:{value}" for value in candidates if value})
+
+    base_query = ProviderSender.query.options(joinedload(ProviderSender.tenant)).filter(
+        ProviderSender.channel == "whatsapp"
+    )
+
+    for value in candidates:
+        sender = base_query.filter(ProviderSender.phone_number == value).order_by(ProviderSender.id.desc()).first()
+        if sender:
+            return sender
+
+    for value in sender_candidates:
+        sender = base_query.filter(ProviderSender.sender_id == value).order_by(ProviderSender.id.desc()).first()
+        if sender:
+            return sender
+
+    if messaging_service_sid:
+        sender = (
+            base_query.filter(ProviderSender.messaging_service_sid == str(messaging_service_sid).strip())
+            .order_by(ProviderSender.id.desc())
+            .first()
+        )
+        if sender:
+            return sender
+
+    return None
+
+
+def _ensure_whatsapp_mapping_from_provider_sender(
+    *,
+    provider_sender: ProviderSender,
+    to_number_raw: str,
+    normalized_to: Optional[str],
+) -> Optional[WhatsappNumero]:
+    tenant = provider_sender.tenant
+    owner = _tenant_owner_for_sender(tenant)
+    if not tenant or not owner:
+        current_app.logger.error(
+            "[WHATSAPP_WEBHOOK] ProviderSender %s has no tenant owner; cannot route inbound WhatsApp",
+            getattr(provider_sender, "id", None),
+        )
+        return None
+
+    number = (
+        _normalize_whatsapp_address(provider_sender.phone_number)
+        or _normalize_whatsapp_address(provider_sender.sender_id)
+        or normalized_to
+        or _normalize_whatsapp_address(to_number_raw)
+    )
+    if not number:
+        return None
+
+    mapping = WhatsappNumero.query.filter_by(numero_whatsapp=number).first()
+    if not mapping:
+        mapping = WhatsappNumero(
+            numero_whatsapp=number,
+            user_id=owner.id,
+            is_active=True,
+        )
+    else:
+        mapping.user_id = owner.id
+        mapping.is_active = True
+
+    tenant.whatsapp_sender_id = provider_sender.sender_id or provider_sender.phone_number or tenant.whatsapp_sender_id
+    cfg = dict(tenant.configuracion or {})
+    provider_cfg = dict(cfg.get("twilio_tech_provider") or {})
+    if provider_sender.messaging_service_sid:
+        provider_cfg["messaging_service_sid"] = provider_sender.messaging_service_sid
+    if provider_sender.sender_id:
+        provider_cfg["sender_id"] = provider_sender.sender_id
+    if provider_sender.phone_number:
+        provider_cfg["phone_number"] = provider_sender.phone_number
+    provider_cfg["inbound_mapping_status"] = "synced"
+    cfg["twilio_tech_provider"] = provider_cfg
+    tenant.configuracion = cfg
+
+    db.session.add(mapping)
+    db.session.add(tenant)
+    safe_flag_modified(tenant, "configuracion")
+    db.session.flush()
+    return mapping
+
+
 def _ensure_welcome_audio_payload(payload: dict) -> None:
     if not isinstance(payload, dict):
         return
@@ -3049,15 +3182,36 @@ def whatsapp_webhook():
     from_number_raw = post_vars.get("From", "")
 
     whatsapp_mapping, to_number_cleaned, to_number_normalized = _lookup_whatsapp_mapping(to_number_raw)
+    service_sid = post_vars.get("MessagingServiceSid") or post_vars.get("ServiceSid")
+    if not whatsapp_mapping:
+        provider_sender = _provider_sender_for_inbound(
+            to_number_raw=to_number_raw,
+            normalized_to=to_number_normalized,
+            messaging_service_sid=service_sid,
+        )
+        if provider_sender:
+            whatsapp_mapping = _ensure_whatsapp_mapping_from_provider_sender(
+                provider_sender=provider_sender,
+                to_number_raw=to_number_raw,
+                normalized_to=to_number_normalized,
+            )
+            if whatsapp_mapping:
+                current_app.logger.info(
+                    "[WHATSAPP_WEBHOOK] Synced inbound WhatsApp mapping from ProviderSender id=%s tenant_id=%s",
+                    getattr(provider_sender, "id", None),
+                    getattr(provider_sender, "tenant_id", None),
+                )
     is_chatboc_demo_destination = _is_chatboc_demo_destination(to_number_normalized or to_number_cleaned)
-    if is_chatboc_demo_destination:
+    force_chatboc_demo_hub = False
+    if is_chatboc_demo_destination and not whatsapp_mapping:
         whatsapp_mapping = _ensure_chatboc_demo_whatsapp_mapping(to_number_normalized or to_number_cleaned)
+        force_chatboc_demo_hub = bool(whatsapp_mapping)
     from_number_cleaned = from_number_raw.replace("whatsapp:", "")
 
     current_app.logger.info(
         "[WHATSAPP_WEBHOOK] Incoming message AccountSid=%s ServiceSid=%s To=%s (normalized=%s) From=%s",
         post_vars.get("AccountSid"),
-        post_vars.get("MessagingServiceSid"),
+        service_sid,
         to_number_cleaned,
         to_number_normalized,
         from_number_cleaned,
@@ -3093,7 +3247,9 @@ def whatsapp_webhook():
         or getattr(client_user, "tenant_profile_municipio", None)
         or getattr(client_user, "tenant_profile_pyme", None)
     )
-    if is_chatboc_demo_destination:
+    if is_chatboc_demo_destination and not force_chatboc_demo_hub:
+        force_chatboc_demo_hub = getattr(tenant_profile, "slug", None) == CHATBOC_DEMO_TENANT_SLUG
+    if force_chatboc_demo_hub:
         tenant_profile = TenantProfile.query.filter_by(slug=CHATBOC_DEMO_TENANT_SLUG).first() or tenant_profile
         current_app.logger.info(
             "[CHATBOC_DEMO_HUB] Forced demo routing for To=%s owner_user_id=%s tenant_id=%s",
@@ -3172,7 +3328,7 @@ def whatsapp_webhook():
     # Ensure context_data is a dict
     if not isinstance(session_context_db_entry.context_data, dict):
         session_context_db_entry.context_data = {}
-    if is_chatboc_demo_destination and not session_context_db_entry.context_data.get("chatboc_demo_context_ready"):
+    if force_chatboc_demo_hub and not session_context_db_entry.context_data.get("chatboc_demo_context_ready"):
         for legacy_key in (
             CONTEXTO_MUNICIPIO,
             "contexto_municipio",
@@ -3192,7 +3348,7 @@ def whatsapp_webhook():
         safe_flag_modified(session_context_db_entry, "context_data")
         db.session.add(session_context_db_entry)
         db.session.commit()
-    if not is_chatboc_demo_destination:
+    if not force_chatboc_demo_hub:
         _sync_education_whatsapp_context(session_context_db_entry, tenant_profile)
 
     message_sid = post_vars.get("MessageSid") or post_vars.get("SmsMessageSid")
@@ -3248,7 +3404,7 @@ def whatsapp_webhook():
 
     # Universal greeting logic: both Pymes and Municipios now use the Boti-style welcome block.
     # _get_main_menu_payload handles generating the correct menu structure for each type.
-    should_trigger_welcome = is_greeting and not is_waiting_for_info and not is_chatboc_demo_destination
+    should_trigger_welcome = is_greeting and not is_waiting_for_info and not force_chatboc_demo_hub
 
     request_root = request.url_root or ""
     request_root_stripped = request_root.rstrip("/")
@@ -4229,7 +4385,7 @@ def whatsapp_webhook():
     chatboc_demo_direct_payload = None
     education_direct_payload = None
 
-    if is_chatboc_demo_destination:
+    if force_chatboc_demo_hub:
         profile_name_from_request = _clean_contact_name(post_vars.get("ProfileName"))
         chatboc_demo_input_context = _build_chatboc_demo_input_context(
             message_body=message_body,
@@ -4245,6 +4401,7 @@ def whatsapp_webhook():
         current_demo_usage, message_limit = _chatboc_demo_usage_snapshot(session_context_db_entry)
         was_over_or_at_limit = current_demo_usage >= message_limit
         can_reset_demo_usage = _can_reset_chatboc_demo_usage(from_number_cleaned)
+        can_use_demo_unlimited = _can_use_chatboc_demo_unlimited(from_number_cleaned)
         if was_over_or_at_limit and not selected_action_id:
             selected_action_id = _resolve_chatboc_demo_limit_decision_action(message_body_for_demo)
         normalized_demo_action = _normalize_chatboc_demo_text(selected_action_id)
@@ -4261,12 +4418,19 @@ def whatsapp_webhook():
             over_limit=was_over_or_at_limit,
         )
         limit_bypass_turn = (
-            url_demo_turn
+            can_use_demo_unlimited
+            or url_demo_turn
             or sales_demo_turn
             or limit_decision_turn
             or (reset_demo_turn and (not was_over_or_at_limit or can_reset_demo_usage))
         )
-        if reset_demo_turn and was_over_or_at_limit and can_reset_demo_usage:
+        if can_use_demo_unlimited:
+            _reset_chatboc_demo_usage_for_navigation(
+                session_context_db_entry,
+                reason="authorized_unlimited",
+            )
+            used_messages, message_limit = _chatboc_demo_usage_snapshot(session_context_db_entry)
+        elif reset_demo_turn and was_over_or_at_limit and can_reset_demo_usage:
             _reset_chatboc_demo_usage_for_navigation(
                 session_context_db_entry,
                 reason="limit_navigation",
@@ -4555,7 +4719,7 @@ def whatsapp_webhook():
         session_context_db_entry.context_data = merged_context
         safe_flag_modified(session_context_db_entry, "context_data")
         db.session.add(session_context_db_entry)
-        if not is_chatboc_demo_destination and tenant_profile and getattr(tenant_profile, "id", None):
+        if not force_chatboc_demo_hub and tenant_profile and getattr(tenant_profile, "id", None):
             try:
                 contact = resolve_or_create_contact(
                     tenant_profile,

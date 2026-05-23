@@ -1,10 +1,30 @@
 import json
 import os
+import re
 import secrets
 from database import db
 from models import TenantProfile, User, TenantConfig, TwilioNumber
 from flask import current_app
 from services.tenant_whatsapp_onboarding import bootstrap_tenant_whatsapp_onboarding
+from utils.roles import normalize_tenant_type, role_for_tenant_type
+
+
+def _slugify(value: str | None) -> str:
+    raw = str(value or "").strip().lower()
+    raw = re.sub(r"[^a-z0-9]+", "-", raw)
+    return raw.strip("-")
+
+
+def _default_template_key(tipo: str) -> str:
+    if tipo == "municipio":
+        return "municipio_default"
+    if tipo == "colegio":
+        return "colegio_default"
+    return "pyme_default"
+
+
+def _owner_email_for_slug(slug: str) -> str:
+    return f"admin@{slug}.chatboc.local"
 
 def load_template(template_key, config_type):
     """
@@ -57,35 +77,68 @@ def create_tenant_from_template(
     nombre: str,
     slug: str,
     tipo: str,
-    template_key: str = "municipio_default",
+    template_key: str = None,
     plan: str = "full",
     auto_assign_whatsapp_number: bool = False,
     owner_email: str = None,
     owner_password: str = None
 ) -> TenantProfile:
+    nombre = str(nombre or "").strip()
+    slug = _slugify(slug or nombre)
+    tipo = normalize_tenant_type(tipo)
+    template_key = str(template_key or _default_template_key(tipo)).strip()
+
+    if not nombre:
+        raise ValueError("nombre is required")
+    if not slug:
+        raise ValueError("slug is required")
 
     if TenantProfile.query.filter_by(slug=slug).first():
         raise ValueError(f"Tenant with slug '{slug}' already exists")
 
     # 1. Create Owner User
+    owner_email_was_generated = not bool(str(owner_email or "").strip())
     if not owner_email:
-        owner_email = f"admin@{slug}.chatboc.local"
+        owner_email = _owner_email_for_slug(slug)
+    owner_email = str(owner_email).strip().lower()
     if not owner_password:
         owner_password = secrets.token_urlsafe(12)
 
-    owner = User(
-        email=owner_email,
-        name=nombre,
-        rol='admin',
-        tipo_chat=tipo
-    )
-    owner.set_password(owner_password)
-    db.session.add(owner)
+    owner = User.query.filter_by(email=owner_email).first()
+    if owner is None:
+        owner = User(
+            email=owner_email,
+            name=nombre,
+            rol=role_for_tenant_type(tipo),
+            tipo_chat=tipo,
+            token=secrets.token_urlsafe(32),
+            tenant_slug=slug,
+            plan=plan,
+            acepto_terminos=True,
+        )
+        owner.set_password(owner_password)
+        db.session.add(owner)
+    else:
+        owner.name = owner.name or nombre
+        owner.rol = role_for_tenant_type(tipo)
+        owner.tipo_chat = tipo
+        owner.tenant_slug = slug
+        owner.plan = plan
+        if owner_password:
+            owner.set_password(owner_password)
     db.session.flush()
 
     # 2. Create Tenant
     widget_token = secrets.token_urlsafe(32)
-    configuracion = {"widget_tokens": [widget_token]}
+    configuracion = {
+        "widget_tokens": [widget_token],
+        "tenant_type": tipo,
+        "owner_email_generated": owner_email_was_generated,
+        "provisioning": {
+            "status": "created",
+            "channel_strategy": "tenant_scoped_sender",
+        },
+    }
 
     tenant = TenantProfile(
         slug=slug,
@@ -99,14 +152,17 @@ def create_tenant_from_template(
         tenant.municipio_id = owner.id
         # Legacy: User.municipio_id points to the User ID that represents the municipality (self)
         owner.municipio_id = owner.id
+        owner.pyme_id = None
     else:
         tenant.pyme_id = owner.id
         owner.pyme_id = owner.id
+        owner.municipio_id = None
 
     db.session.add(tenant)
     db.session.flush()
 
     owner.tenant_id = tenant.id
+    owner.tenant_slug = tenant.slug
 
     # 3. Create Configs from Template
     configs_to_load = ['menu', 'contacts', 'links', 'widget']

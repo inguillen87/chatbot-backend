@@ -25,6 +25,7 @@ from models import (
     User,
 )
 from utils.auth_helpers import token_requerido
+from utils.roles import canonical_role, first_specific_tenant_slug, is_super_admin_role, normalize_tenant_slug
 
 backoffice_bp = Blueprint("backoffice", __name__, url_prefix="/api/app/backoffice")
 backoffice_v2_bp = Blueprint("backoffice_v2", __name__, url_prefix="/api/v2/backoffice")
@@ -48,14 +49,16 @@ def _json(payload: dict[str, Any], *, status: int = 200, request_id: str | None 
 
 
 def _normalize_slug(value: Any) -> str:
-    return str(value or "").strip().lower()
+    return normalize_tenant_slug(value)
 
 
 def _resolve_tenant(current_user: User) -> TenantProfile | None:
-    slug = _normalize_slug(
-        request.args.get("tenant_slug")
-        or request.args.get("tenant")
-        or getattr(current_user, "tenant_slug", None)
+    slug = first_specific_tenant_slug(
+        request.args.get("tenant_slug"),
+        request.args.get("tenant"),
+        request.headers.get("X-Tenant-Slug"),
+        request.headers.get("X-Tenant"),
+        getattr(current_user, "tenant_slug", None),
     )
     if slug:
         tenant = TenantProfile.query.filter(func.lower(TenantProfile.slug) == slug).first()
@@ -81,8 +84,8 @@ def _resolve_tenant(current_user: User) -> TenantProfile | None:
 
 
 def _is_authorized(current_user: User, tenant: TenantProfile) -> bool:
-    role = str(getattr(current_user, "rol", "") or "").strip().lower()
-    if role == "super_admin":
+    role = canonical_role(getattr(current_user, "rol", None))
+    if is_super_admin_role(role):
         return True
     if getattr(current_user, "tenant_id", None) == tenant.id:
         return True
@@ -135,8 +138,8 @@ def _capability_enabled(capabilities: dict[str, Any], key: str, *, default: bool
 def _analytics_modes(tenant: TenantProfile, current_user: User) -> dict[str, Any]:
     capabilities = _capabilities(tenant)
     plan = str(tenant.plan or "").strip().lower()
-    role = str(getattr(current_user, "rol", "") or "").strip().lower()
-    advanced_default = plan not in {"", "free", "gratis"} or role == "super_admin"
+    role = canonical_role(getattr(current_user, "rol", None))
+    advanced_default = plan not in {"", "free", "gratis"} or is_super_admin_role(role)
     advanced_enabled = _capability_enabled(
         capabilities,
         "advanced_analytics",
@@ -295,11 +298,11 @@ def _top_pending_category(tenant: TenantProfile, *, since: datetime) -> tuple[st
 
 
 def _modules_for(tenant: TenantProfile, current_user: User, *, analytics_modes: dict[str, Any], surveys: dict[str, Any], counts: dict[str, int] | None = None) -> list[dict[str, Any]]:
-    role = str(getattr(current_user, "rol", "") or "usuario").strip().lower() or "usuario"
+    role = canonical_role(getattr(current_user, "rol", None)) or "usuario"
     scope = _tenant_scope(tenant)
     capabilities = _capabilities(tenant)
     counts = counts or {"geo_points": 0}
-    people_enabled = role in {"admin", "super_admin", "operador"} and _capability_enabled(capabilities, "people", default=True)
+    people_enabled = role in {"admin", "super_admin", "empleado"} and _capability_enabled(capabilities, "people", default=True)
     surveys_enabled = _capability_enabled(capabilities, "surveys", default=True)
     maps_default = scope in {"municipio", "colegio"} or bool(counts.get("geo_points"))
     maps_enabled = _capability_enabled(capabilities, "maps", default=maps_default)
@@ -403,7 +406,7 @@ def _navigation_payload(current_user: User, tenant: TenantProfile, request_id: s
             "scope": _tenant_scope(tenant),
             "plan": tenant.plan,
         },
-        "role": str(getattr(current_user, "rol", "") or "usuario").strip().lower() or "usuario",
+        "role": canonical_role(getattr(current_user, "rol", None)) or "usuario",
         "modules": _modules_for(tenant, current_user, analytics_modes=analytics_modes, surveys=surveys, counts=counts),
         "analytics_modes": analytics_modes,
         "surveys_overview": surveys,

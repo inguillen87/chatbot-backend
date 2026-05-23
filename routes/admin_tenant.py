@@ -1089,13 +1089,13 @@ def create_tenant():
     data = request.json or {}
     try:
         tenant = create_tenant_from_template(
-            nombre=data.get('nombre'),
+            nombre=data.get('nombre') or data.get('name'),
             slug=data.get('slug'),
-            tipo=data.get('tipo'),
-            template_key=data.get('template_key', 'municipio_default'),
+            tipo=data.get('tipo') or data.get('type') or data.get('vertical'),
+            template_key=data.get('template_key'),
             plan=data.get('plan', 'full'),
             auto_assign_whatsapp_number=data.get('auto_assign_whatsapp_number', False),
-            owner_email=data.get('owner_email'),
+            owner_email=data.get('owner_email') or data.get('email_admin'),
             owner_password=data.get('owner_password')
         )
 
@@ -1103,16 +1103,27 @@ def create_tenant():
         if tenant.configuracion and 'widget_tokens' in tenant.configuracion:
              widget_token = tenant.configuracion['widget_tokens'][0]
 
+        owner = tenant.municipio or tenant.pyme
+
         return jsonify({
             "slug": tenant.slug,
             "widget_token": widget_token,
             "id": tenant.id,
+            "tenant": {
+                "id": tenant.id,
+                "slug": tenant.slug,
+                "nombre": tenant.nombre,
+                "tipo": tenant.tipo,
+                "plan": tenant.plan,
+                "owner_email": getattr(owner, "email", None),
+                "owner_email_generated": bool((tenant.configuracion or {}).get("owner_email_generated")),
+            },
             "whatsapp_onboarding": (tenant.configuracion or {}).get("whatsapp_onboarding"),
         }), 201
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     except Exception as e:
-        # Log error
+        current_app.logger.exception("Tenant creation failed")
         return jsonify({"error": str(e)}), 500
 
 @admin_tenant_bp.route('/api/admin/tenants/<slug>/config', methods=['GET'])
@@ -1735,8 +1746,11 @@ def assign_role(current_user, user_id):
          return jsonify({'error': 'Missing role name'}), 400
 
     user = User.query.get(user_id)
-    if not user or user.tenant_id != tenant.id or not user.es_empleado:
+    if not user or user.tenant_id != tenant.id:
         return jsonify({'error': 'User not found'}), 404
+    if not user.es_empleado:
+        user.es_empleado = True
+        db.session.add(user)
 
     role = Role.query.filter_by(name=role_name).first()
     if not role:
@@ -1747,7 +1761,7 @@ def assign_role(current_user, user_id):
     if not UserRole.query.filter_by(user_id=user.id, role_id=role.id, tenant_id=tenant.id).first():
         user_role = UserRole(user_id=user.id, role_id=role.id, tenant_id=tenant.id)
         db.session.add(user_role)
-        db.session.commit()
+    db.session.commit()
 
     return jsonify({'message': f'Role {role_name} assigned'}), 200
 

@@ -8,6 +8,7 @@ from flask import Blueprint, current_app, g, jsonify, request
 from sqlalchemy import func
 
 from models import TenantProfile
+from utils.roles import normalize_tenant_slug, is_generic_tenant_slug
 
 v2_tenants_bp = Blueprint("v2_tenants", __name__, url_prefix="/api/v2/tenants")
 
@@ -20,8 +21,8 @@ class V2TenantResolutionError(Exception):
 
 
 def _find_tenant_by_slug(slug: Optional[str]) -> Optional[TenantProfile]:
-    cleaned = (slug or "").strip().lower()
-    if not cleaned:
+    cleaned = normalize_tenant_slug(slug)
+    if not cleaned or is_generic_tenant_slug(cleaned):
         return None
     return TenantProfile.query.filter(func.lower(TenantProfile.slug) == cleaned).first()
 

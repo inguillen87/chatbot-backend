@@ -2,6 +2,9 @@ import json
 import unittest
 from unittest.mock import patch
 
+from app import create_app, db
+from config import TestConfig
+from models import ProviderSender, TenantProfile, User
 from services.voice_stream_service import VoiceStreamService, _openai_realtime_headers
 
 
@@ -63,7 +66,7 @@ class VoiceStreamServiceMessageTests(unittest.TestCase):
         self.assertIn("Authorization", headers)
         self.assertNotIn("OpenAI-Beta", headers)
 
-    def test_openai_realtime_headers_allow_explicit_beta_override(self):
+    def test_openai_realtime_headers_ignore_legacy_beta_override(self):
         with patch.dict(
             "os.environ",
             {"OPENAI_REALTIME_ALLOW_BETA_HEADER": "true", "OPENAI_REALTIME_BETA_HEADER": "realtime=test"},
@@ -71,7 +74,8 @@ class VoiceStreamServiceMessageTests(unittest.TestCase):
         ):
             headers = _openai_realtime_headers()
 
-        self.assertEqual(headers["OpenAI-Beta"], "realtime=test")
+        self.assertIn("Authorization", headers)
+        self.assertNotIn("OpenAI-Beta", headers)
 
     def test_initial_voice_greeting_for_municipio_has_menu(self):
         service = VoiceStreamService(_FakeSocket())
@@ -84,6 +88,58 @@ class VoiceStreamServiceMessageTests(unittest.TestCase):
         self.assertIn("Municipalidad de Junin", greeting)
         self.assertIn("reclamo", greeting.lower())
         self.assertIn("tramites", greeting.lower())
+
+
+class VoiceStreamServiceTenantResolutionTests(unittest.TestCase):
+    def setUp(self):
+        self.app = create_app(TestConfig)
+        self.app_context = self.app.app_context()
+        self.app_context.push()
+        db.create_all()
+
+    def tearDown(self):
+        db.session.remove()
+        db.drop_all()
+        self.app_context.pop()
+
+    def test_provider_sender_routes_voice_to_dedicated_tenant(self):
+        owner = User(
+            email="owner-voice@example.com",
+            name="Owner Voice",
+            password_hash="test",
+            rol="admin_pyme",
+            tipo_chat="pyme",
+        )
+        db.session.add(owner)
+        db.session.flush()
+        tenant = TenantProfile(
+            slug="voice-dedicated-tenant",
+            nombre="Voice Dedicated Tenant",
+            tipo="pyme",
+            pyme_id=owner.id,
+            configuracion={},
+        )
+        db.session.add(tenant)
+        db.session.flush()
+        db.session.add(
+            ProviderSender(
+                tenant_id=tenant.id,
+                channel="whatsapp",
+                phone_number="+15551234567",
+                sender_id="whatsapp:+15551234567",
+                status="active",
+            )
+        )
+        db.session.commit()
+
+        service = VoiceStreamService(_FakeSocket(), app=self.app)
+
+        resolved = service._resolve_context("+5492613168608", "+15551234567", "CAvoice1")
+
+        self.assertTrue(resolved)
+        self.assertEqual(service.tenant_profile.slug, "voice-dedicated-tenant")
+        self.assertEqual(service.owner_user.email, "owner-voice@example.com")
+        self.assertEqual(service.whatsapp_sender, "whatsapp:+15551234567")
 
 
 if __name__ == "__main__":

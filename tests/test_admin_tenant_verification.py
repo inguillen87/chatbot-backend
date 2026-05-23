@@ -47,6 +47,33 @@ class TestAdminTenantVerification(unittest.TestCase):
         self.assertIsNotNone(tenant)
         self.assertIn("whatsapp_onboarding", tenant.configuracion)
 
+    def test_create_colegio_without_owner_email_creates_synthetic_admin(self):
+        response = self.client.post(
+            '/api/admin/tenants',
+            json={
+                "slug": "colegio-meta-review",
+                "nombre": "Colegio Meta Review",
+                "tipo": "colegio",
+            },
+        )
+
+        self.assertEqual(response.status_code, 201, response.get_json())
+        data = response.get_json()
+        self.assertEqual(data["tenant"]["tipo"], "colegio")
+        self.assertTrue(data["tenant"]["owner_email_generated"])
+        self.assertEqual(data["tenant"]["owner_email"], "admin@colegio-meta-review.chatboc.local")
+
+        tenant = TenantProfile.query.filter_by(slug="colegio-meta-review").first()
+        self.assertIsNotNone(tenant)
+        self.assertIsNone(tenant.municipio_id)
+        self.assertIsNotNone(tenant.pyme_id)
+
+        owner = db.session.get(User, tenant.pyme_id)
+        self.assertEqual(owner.rol, "admin_colegio")
+        self.assertEqual(owner.tipo_chat, "colegio")
+        self.assertEqual(owner.tenant_slug, "colegio-meta-review")
+        self.assertEqual(owner.tenant_id, tenant.id)
+
     def test_create_tenant_auto_prepares_twilio_provider_plan(self):
         self.app.config.update(
             TWILIO_ACCOUNT_SID="ACparent",

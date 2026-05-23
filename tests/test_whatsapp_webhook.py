@@ -19,7 +19,16 @@ if project_root_whatsapp not in sys.path:
 
 from app import create_app, db
 from config import Config
-from models import User, Rubro, WhatsappNumero, ChatSessionContext, PymeTicket, TenantProfile, Notification
+from models import (
+    User,
+    Rubro,
+    WhatsappNumero,
+    ChatSessionContext,
+    PymeTicket,
+    TenantProfile,
+    Notification,
+    ProviderSender,
+)
 from models_memory import Contact, InteractionEvent
 from services.municipio_responder import CONTEXTO_MUNICIPIO
 from routes.whatsapp_webhook import (
@@ -212,6 +221,62 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self.assertNotIn("pending_sensitive_action", session.context_data)
 
     @patch("routes.whatsapp_webhook.responder_chatboc")
+    def test_provider_sender_routes_inbound_to_its_tenant_without_demo_override(self, mock_bot):
+        self.mock_validator.validate.return_value = True
+        mock_bot.return_value = {
+            "message_body": "Respuesta del tenant real.",
+            "message_type": "text",
+            "options_list": [],
+        }
+        tenant = TenantProfile(
+            slug="provider-pyme",
+            nombre="Provider Pyme",
+            tipo="pyme",
+            pyme_id=self.mock_client_user.id,
+            configuracion={},
+        )
+        db.session.add(tenant)
+        db.session.flush()
+        provider_sender = ProviderSender(
+            tenant_id=tenant.id,
+            channel="whatsapp",
+            phone_number="+15559876543",
+            sender_id="whatsapp:+15559876543",
+            messaging_service_sid="MG_PROVIDER_TENANT",
+            status="active",
+        )
+        db.session.add(provider_sender)
+        db.session.commit()
+
+        response = self.client.post(
+            "/webhook/whatsapp",
+            data={
+                "To": "whatsapp:+15559876543",
+                "From": "whatsapp:+15557654322",
+                "Body": "hola, quiero comprar",
+                "MessagingServiceSid": "MG_PROVIDER_TENANT",
+                "MessageSid": "SM_PROVIDER_TENANT_1",
+            },
+            headers={"X-Twilio-Signature": "dummy_signature_valid"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        mock_bot.assert_called_once()
+
+        mapping = WhatsappNumero.query.filter_by(numero_whatsapp="+15559876543").first()
+        self.assertIsNotNone(mapping)
+        self.assertEqual(mapping.user_id, self.mock_client_user.id)
+        db.session.refresh(tenant)
+        provider_cfg = (tenant.configuracion or {}).get("twilio_tech_provider") or {}
+        self.assertEqual(provider_cfg.get("inbound_mapping_status"), "synced")
+
+        session = ChatSessionContext.query.filter_by(
+            chat_session_id=f"whatsapp_{self.mock_client_user.id}_+15557654322"
+        ).first()
+        self.assertIsNotNone(session)
+        self.assertNotEqual((session.context_data or {}).get("estado_conversacion"), "chatboc_demo_hub")
+
+    @patch("routes.whatsapp_webhook.responder_chatboc")
     def test_chatboc_demo_number_routes_to_platform_hub_and_records_lead(self, mock_bot):
         self.mock_validator.validate.return_value = True
 
@@ -274,7 +339,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         ).first()
         self.assertIsNotNone(session)
         self.assertEqual((session.context_data or {}).get("estado_conversacion"), "chatboc_demo_hub")
-        self.assertEqual(((session.context_data or {}).get("chatboc_demo_usage") or {}).get("message_count"), 1)
+        self.assertEqual(((session.context_data or {}).get("chatboc_demo_usage") or {}).get("message_count"), 0)
 
         sent_bodies = [
             str(call.kwargs.get("body") or "")

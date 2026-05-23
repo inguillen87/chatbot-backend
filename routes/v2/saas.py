@@ -53,6 +53,7 @@ from services.v2.sla_service import is_ticket_overdue
 from services.whatsapp_experience import build_whatsapp_experience
 from utils.auth_helpers import token_requerido
 from utils.permissions import require_role
+from utils.roles import first_specific_tenant_slug, is_super_admin_role
 
 v2_saas_bp = Blueprint("v2_saas", __name__, url_prefix="/api/v2")
 
@@ -94,15 +95,14 @@ def _error_response(message: str, status_code: int, reason_code: str, action_hin
 def _tenant_slug_from_request(path_slug: str | None = None) -> str:
     body = request.get_json(silent=True) if request.method in {"POST", "PUT", "PATCH"} else None
     body_slug = body.get("tenant_slug") if isinstance(body, dict) else None
-    return (
-        path_slug
-        or request.headers.get("X-Tenant-Slug")
-        or request.headers.get("X-Tenant")
-        or request.args.get("tenant_slug")
-        or request.args.get("tenant")
-        or body_slug
-        or ""
-    ).strip()
+    return first_specific_tenant_slug(
+        path_slug,
+        request.headers.get("X-Tenant-Slug"),
+        request.headers.get("X-Tenant"),
+        request.args.get("tenant_slug"),
+        request.args.get("tenant"),
+        body_slug,
+    )
 
 
 def _resolve_tenant_or_error(current_user: User, path_slug: str | None = None):
@@ -119,7 +119,7 @@ def _resolve_tenant_or_error(current_user: User, path_slug: str | None = None):
 
 def _user_can_access_tenant(user: User, tenant: TenantProfile) -> bool:
     role = str(getattr(user, "rol", "") or "").lower()
-    if role == "super_admin":
+    if is_super_admin_role(role):
         return True
     if str(getattr(user, "tenant_id", "") or "") == str(tenant.id):
         return True
@@ -1018,7 +1018,7 @@ def _build_superadmin_command_center_payload(*, start_date: datetime, end_date: 
             "method": "POST",
             "required_fields": ["nombre", "tipo"],
             "optional_fields": ["slug", "plan", "owner_email", "vertical", "subvertical"],
-            "supported_types": ["pyme", "municipio"],
+            "supported_types": ["pyme", "municipio", "colegio"],
             "supported_verticals": ["empresas", "gobierno", "educacion"],
         },
         "lead_capture": {
@@ -1960,7 +1960,7 @@ def _routes_available(paths: list[str]) -> dict[str, bool]:
 
 
 def _resolve_smoke_tenant(current_user: User, tenant_slug: str | None = None) -> tuple[TenantProfile | None, Any]:
-    if current_user.rol == "super_admin":
+    if is_super_admin_role(getattr(current_user, "rol", None)):
         resolved_slug = tenant_slug or _tenant_slug_from_request()
         if resolved_slug:
             tenant = TenantProfile.query.filter_by(slug=resolved_slug).first()

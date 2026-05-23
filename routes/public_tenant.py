@@ -157,23 +157,23 @@ def _get_tenant_from_request(slug: str):
             .first()
         )
 
-    if _is_reserved_public_slug(slug):
-        return None
-
     slug_candidates = tenant_slug_lookup_candidates(slug) or (_normalize_public_slug(slug),)
     for candidate in slug_candidates:
         tenant = TenantProfile.query.filter(func.lower(TenantProfile.slug) == candidate.lower()).first()
         if tenant:
             return tenant
 
-    fallback_slug = request.args.get("tenant") or request.args.get("tenant_slug")
-    if _is_reserved_public_slug(fallback_slug):
+    if _is_reserved_public_slug(slug):
         return None
+
+    fallback_slug = request.args.get("tenant") or request.args.get("tenant_slug")
     if fallback_slug and fallback_slug != slug:
         for candidate in tenant_slug_lookup_candidates(fallback_slug):
             tenant = TenantProfile.query.filter(func.lower(TenantProfile.slug) == candidate.lower()).first()
             if tenant:
                 return tenant
+    if _is_reserved_public_slug(fallback_slug):
+        return None
 
     alias_slug = str((slug_candidates[-1] if slug_candidates else slug) or "").strip().lower()
     # ``default`` is used by multiple frontend widget builds when they don't
@@ -541,10 +541,13 @@ def get_widget_config(slug):
     if request.method == 'OPTIONS':
         return _add_cors_headers(jsonify({"ok": True}))
 
-    if _is_reserved_public_slug(slug) or _is_reserved_public_slug(request.args.get("tenant_slug")) or _is_reserved_public_slug(request.args.get("tenant")):
-        return _public_json(_reserved_slug_payload(slug), 404)
-
     tenant = _get_tenant_from_request(slug)
+    if not tenant and (
+        _is_reserved_public_slug(slug)
+        or _is_reserved_public_slug(request.args.get("tenant_slug"))
+        or _is_reserved_public_slug(request.args.get("tenant"))
+    ):
+        return _public_json(_reserved_slug_payload(slug), 404)
     if not tenant:
         return _public_json(
             {

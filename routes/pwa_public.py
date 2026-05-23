@@ -711,16 +711,15 @@ def public_tenant_widget_config(tenant_slug: str):
     from services.tenant_resolver import resolve_tenant_only, TenantResolutionError
     from routes.public_resolver import _build_widget_embed_payload
 
-    if (
-        _is_reserved_public_slug(tenant_slug)
-        or _is_reserved_public_slug(request.args.get("tenant_slug"))
-        or _is_reserved_public_slug(request.args.get("tenant"))
-    ):
-        return _reserved_public_slug_response(tenant_slug)
-
     try:
         tenant = resolve_tenant_only(tenant_slug=tenant_slug, require_explicit_slug=False)
     except TenantResolutionError:
+        if (
+            _is_reserved_public_slug(tenant_slug)
+            or _is_reserved_public_slug(request.args.get("tenant_slug"))
+            or _is_reserved_public_slug(request.args.get("tenant"))
+        ):
+            return _reserved_public_slug_response(tenant_slug)
         return _tenant_resolution_error_response()
 
     owner = _tenant_owner(tenant)

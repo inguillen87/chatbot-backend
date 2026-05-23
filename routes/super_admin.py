@@ -25,6 +25,12 @@ from datetime import datetime, timezone, timedelta
 from services.tenant_management.folder_manager import ensure_tenant_folder_structure
 from services.plan_config import apply_plan_to_user, get_plan_metadata
 from services.user_service import assign_whatsapp_numbers
+from utils.roles import (
+    canonical_role,
+    normalize_tenant_type,
+    role_for_tenant_type,
+    tenant_owner_field_for_tipo,
+)
 import jwt
 import re
 import unicodedata
@@ -289,7 +295,7 @@ def _build_strategic_overview_payload(*, since_days: int) -> dict:
     now = datetime.now(timezone.utc)
     for _ticket_type, ticket in all_rows:
         details = _ensure_ticket_details_dict(ticket)
-        stage = str(details.get('lead_stage') or ticket.estado or 'nuevo').lower()
+        stage = _normalize_lead_stage(ticket)
         by_stage[stage] = by_stage.get(stage, 0) + 1
 
         tenant_key = str(getattr(ticket, 'tenant_id', None) or 'sin_tenant')
@@ -361,6 +367,107 @@ def _build_strategic_overview_payload(*, since_days: int) -> dict:
             'active_tenants': len([item for item in by_tenant_rows if item.get('total')]),
         },
         'alerts': alerts,
+    }
+
+
+def _normalize_lead_stage(ticket) -> str:
+    details = _ensure_ticket_details_dict(ticket)
+    raw_stage = str(details.get("lead_stage") or "").strip().lower()
+    if raw_stage in LEAD_STAGE_ALLOWED:
+        return raw_stage
+
+    status = str(getattr(ticket, "estado", None) or "nuevo").strip().lower()
+    if status in {"cerrado", "resuelto", "completado", "completed", "closed", "resolved"}:
+        return "ganado"
+    if status in {"cancelado", "perdido", "rechazado", "lost", "cancelled"}:
+        return "perdido"
+    if status in {"en_proceso", "contactado"}:
+        return "contactado"
+    if status in {"pendiente", "demo_agendada"}:
+        return "demo_agendada"
+    return "nuevo"
+
+
+def _tenant_for_ticket(ticket_type: str, ticket) -> TenantProfile | None:
+    tenant_id = getattr(ticket, "tenant_id", None)
+    if tenant_id:
+        tenant = TenantProfile.query.get(tenant_id)
+        if tenant:
+            return tenant
+
+    if ticket_type == "municipio":
+        owner_id = getattr(ticket, "municipio_id", None)
+        if owner_id:
+            return TenantProfile.query.filter_by(municipio_id=owner_id).first()
+
+    if ticket_type == "pyme":
+        owner_id = getattr(ticket, "pyme_id", None) or getattr(ticket, "user_id", None)
+        if owner_id:
+            return TenantProfile.query.filter_by(pyme_id=owner_id).first()
+
+    return None
+
+
+def _ticket_contact_fields(ticket_type: str, ticket, details: dict) -> dict:
+    if ticket_type == "municipio":
+        return {
+            "nombre": getattr(ticket, "nombre_vecino", None) or details.get("nombre") or details.get("profile_name"),
+            "email": getattr(ticket, "email_vecino", None) or details.get("email"),
+            "telefono": getattr(ticket, "telefono_vecino", None) or details.get("telefono"),
+        }
+
+    return {
+        "nombre": details.get("nombre_cliente") or details.get("nombre") or details.get("profile_name"),
+        "email": getattr(ticket, "email", None) or details.get("email_cliente") or details.get("email"),
+        "telefono": getattr(ticket, "telefono", None) or details.get("telefono_cliente") or details.get("telefono"),
+    }
+
+
+def _serialize_pipeline_ticket(ticket_type: str, ticket) -> dict:
+    details = _ensure_ticket_details_dict(ticket)
+    tenant = _tenant_for_ticket(ticket_type, ticket)
+    stage = _normalize_lead_stage(ticket)
+    created_at = getattr(ticket, "fecha", None)
+    last_seen = getattr(ticket, "ultima_actividad", None) or created_at
+    latest_message = (
+        getattr(ticket, "pregunta", None)
+        or getattr(ticket, "asunto", None)
+        or details.get("summary")
+        or details.get("mensaje")
+        or ""
+    )
+    contact = _ticket_contact_fields(ticket_type, ticket, details)
+    has_contact = bool(contact.get("email") or contact.get("telefono"))
+    is_open = stage not in {"ganado", "perdido"}
+    relevance = _lead_relevance_score(
+        open_tickets=1 if is_open else 0,
+        latest_message=latest_message,
+        last_seen=last_seen,
+        has_contact=has_contact,
+    )
+
+    return {
+        "id": f"{ticket_type}:{ticket.id}",
+        "ticket_type": ticket_type,
+        "ticket_id": ticket.id,
+        "nro_ticket": str(getattr(ticket, "nro_ticket", None) or ticket.id),
+        "tenant_id": tenant.id if tenant else getattr(ticket, "tenant_id", None),
+        "tenant_slug": tenant.slug if tenant else None,
+        "tenant_nombre": tenant.nombre if tenant else None,
+        "nombre": contact.get("nombre") or "Lead",
+        "name": contact.get("nombre") or "Lead",
+        "email": contact.get("email"),
+        "telefono": contact.get("telefono"),
+        "phone": contact.get("telefono"),
+        "stage": stage,
+        "estado": getattr(ticket, "estado", None),
+        "summary": str(latest_message or "")[:300],
+        "created_at": _iso_datetime(created_at),
+        "updated_at": _iso_datetime(last_seen),
+        "last_seen": _iso_datetime(last_seen),
+        "relevance_score": relevance,
+        "confidence_score": float(details.get("confidence_score") or 0.8),
+        "is_open": is_open,
     }
 
 
@@ -806,29 +913,29 @@ def _maybe_create_tenant_for_admin(user: User) -> TenantProfile | None:
                     user.email,
                 )
             existing.nombre = seed["nombre"]
-            existing.tipo = seed["tipo"]
+            existing.tipo = normalize_tenant_type(seed["tipo"])
             existing.plan = _normalize_plan_key(seed["plan"])
         if existing.tipo == "municipio":
             existing.municipio_id = user.id
             existing.pyme_id = None
             if not user.municipio_id:
                 user.municipio_id = user.id
-        if existing.tipo == "pyme":
+        if existing.tipo in {"pyme", "colegio"}:
             existing.pyme_id = user.id
             existing.municipio_id = None
             if not user.pyme_id:
                 user.pyme_id = user.id
+        user.tipo_chat = normalize_tenant_type(existing.tipo)
+        user.rol = role_for_tenant_type(existing.tipo)
         return existing
 
-    if user.rol not in {"admin", "admin_pyme"}:
+    if canonical_role(user.rol) != "admin":
         return None
 
     tipo = (seed.get("tipo") if seed else None) or (
         user.tipo_chat or ("municipio" if user.municipio_id else "pyme")
     )
-    tipo = tipo.lower()
-    if tipo not in {"municipio", "pyme"}:
-        return None
+    tipo = normalize_tenant_type(tipo)
 
     seed_slug = seed.get("slug") if seed else None
     slug = _ensure_unique_slug(_candidate_slug_for_user(user) or seed_slug or f"tenant-{user.id}")
@@ -842,21 +949,33 @@ def _maybe_create_tenant_for_admin(user: User) -> TenantProfile | None:
         plan=_normalize_plan_key(plan),
         is_active=True,
         municipio_id=user.id if tipo == "municipio" else None,
-        pyme_id=user.id if tipo == "pyme" else None,
+        pyme_id=user.id if tipo in {"pyme", "colegio"} else None,
     )
     db.session.add(tenant)
     db.session.flush()
     user.tenant_id = tenant.id
     user.tenant_slug = slug
+    user.tipo_chat = tipo
+    user.rol = role_for_tenant_type(tipo)
     if tipo == "municipio" and not user.municipio_id:
         user.municipio_id = user.id
-    if tipo == "pyme" and not user.pyme_id:
+    if tipo in {"pyme", "colegio"} and not user.pyme_id:
         user.pyme_id = user.id
     return tenant
 
 
 def _bootstrap_missing_tenants() -> int:
-    candidates = User.query.filter(User.rol.in_(["admin", "admin_pyme"])).all()
+    candidates = User.query.filter(
+        User.rol.in_(
+            [
+                "admin",
+                "admin_pyme",
+                "admin_municipio",
+                "admin_colegio",
+                "tenant_admin",
+            ]
+        )
+    ).all()
     created_count = 0
     for user in candidates:
         tenant = _maybe_create_tenant_for_admin(user)
@@ -1077,7 +1196,7 @@ def compare_tenants_franchise_readiness(current_user):
     status_filter = str(request.args.get("status") or "").strip().lower()
 
     query = TenantProfile.query.filter(TenantProfile.is_active.is_(True))
-    if tenant_type in {"pyme", "municipio"}:
+    if tenant_type in {"pyme", "municipio", "colegio"}:
         query = query.filter(TenantProfile.tipo == tenant_type)
 
     ranking = []
@@ -1176,16 +1295,21 @@ def get_tenant_metrics(current_user, slug):
 @super_admin_required
 def create_tenant(current_user):
     data = request.get_json() or {}
-    slug = _slugify(data.get('slug'))
-    nombre = data.get('nombre')
-    tipo = data.get('tipo', 'pyme')
-    email_admin = data.get('email_admin')
+    nombre = str(data.get('nombre') or data.get('name') or "").strip()
+    slug = _slugify(data.get('slug') or nombre)
+    tipo = normalize_tenant_type(data.get('tipo') or data.get('type') or data.get('vertical') or 'pyme')
+    email_admin = str(data.get('email_admin') or data.get('owner_email') or "").strip().lower()
+    owner_email_generated = False
 
-    if not slug or not nombre or not email_admin:
-        return jsonify({"error": "Faltan datos (slug, nombre, email_admin)"}), 400
+    if not slug or not nombre:
+        return jsonify({"error": "Faltan datos (nombre o slug)"}), 400
 
     if _slug_conflicts(slug):
         return jsonify({"error": "Slug ya existe"}), 409
+
+    if not email_admin:
+        email_admin = f"admin@{slug}.chatboc.local"
+        owner_email_generated = True
 
     # Create Owner User if not exists
     owner = User.query.filter_by(email=email_admin).first()
@@ -1193,25 +1317,56 @@ def create_tenant(current_user):
         owner = User(
             email=email_admin,
             name=f"Admin {nombre}",
-            rol="admin",
+            rol=role_for_tenant_type(tipo),
             tipo_chat=tipo,
-            token=generate_token()
+            token=generate_token(),
+            tenant_slug=slug,
+            plan=_normalize_plan_key(data.get('plan')),
+            acepto_terminos=True,
         )
-        owner.set_password("changeme") # Default password, should be changed
+        owner.set_password(data.get("owner_password") or generate_token())
         db.session.add(owner)
         db.session.flush() # Get ID
+    elif owner:
+        owner.rol = role_for_tenant_type(tipo)
+        owner.tipo_chat = tipo
+        owner.tenant_slug = slug
+        owner.plan = _normalize_plan_key(data.get('plan'))
+        if data.get("owner_password"):
+            owner.set_password(data.get("owner_password"))
 
     # Create Tenant
+    widget_token = generate_token()
     tenant = TenantProfile(
         slug=slug,
         nombre=nombre,
         tipo=tipo,
         plan=_normalize_plan_key(data.get('plan')),
         is_active=True,
-        municipio_id=owner.id if tipo == 'municipio' else None,
-        pyme_id=owner.id if tipo == 'pyme' else None
+        configuracion={
+            "widget_tokens": [widget_token],
+            "tenant_type": tipo,
+            "owner_email_generated": owner_email_generated,
+            "provisioning": {
+                "status": "created",
+                "channel_strategy": "tenant_scoped_sender",
+            },
+        },
+        municipio_id=owner.id if owner and tipo == 'municipio' else None,
+        pyme_id=owner.id if owner and tipo in {'pyme', 'colegio'} else None
     )
     db.session.add(tenant)
+    db.session.flush()
+
+    if owner:
+        owner.tenant_id = tenant.id
+        owner.tenant_slug = tenant.slug
+        if tipo == "municipio":
+            owner.municipio_id = owner.id
+            owner.pyme_id = None
+        else:
+            owner.pyme_id = owner.id
+            owner.municipio_id = None
 
     _log_admin_action(current_user.id, "create_tenant", slug, {"nombre": nombre, "tipo": tipo, "owner_email": email_admin})
 
@@ -1225,7 +1380,24 @@ def create_tenant(current_user):
         current_app.logger.error(f"Failed to create folder structure for {slug}: {e}")
         # Proceed, don't fail the request, but log it.
 
-    return jsonify({"message": "Tenant creado", "id": tenant.id, "slug": tenant.slug}), 201
+    return jsonify(
+        {
+            "message": "Tenant creado",
+            "tenant": {
+                "id": tenant.id,
+                "slug": tenant.slug,
+                "nombre": tenant.nombre,
+                "tipo": tenant.tipo,
+                "plan": tenant.plan,
+                "owner_email": owner.email if owner else None,
+                "owner_email_generated": owner_email_generated,
+                "widget_token": widget_token,
+            },
+            "id": tenant.id,
+            "slug": tenant.slug,
+            "widget_token": widget_token,
+        }
+    ), 201
 
 @super_admin_bp.route('/tenants/<string:slug>', methods=['GET'])
 @token_requerido
@@ -1484,9 +1656,10 @@ def create_tenant_admin(current_user, slug):
     new_user = User(
         email=email,
         name=name or f"Admin {tenant.nombre}",
-        rol=f"admin_{tenant.tipo}", # admin_pyme or admin_municipio
+        rol=role_for_tenant_type(tenant.tipo),
         tipo_chat=tenant.tipo,
         tenant_id=tenant.id,
+        tenant_slug=tenant.slug,
         rubro_id=rubro.id if rubro else None,
         email_verified=True,
         acepto_terminos=True,
@@ -1501,6 +1674,13 @@ def create_tenant_admin(current_user, slug):
         tenant.pyme_id = new_user.id
     elif tenant.tipo == 'municipio' and not tenant.municipio_id:
         tenant.municipio_id = new_user.id
+    elif tenant.tipo == 'colegio' and not tenant.pyme_id:
+        tenant.pyme_id = new_user.id
+
+    if tenant.tipo == "municipio":
+        new_user.municipio_id = new_user.id
+    elif tenant.tipo in {"pyme", "colegio"}:
+        new_user.pyme_id = new_user.id
 
     _log_admin_action(current_user.id, "create_admin_user", slug, {"new_user_email": email})
     db.session.commit()
@@ -2332,6 +2512,67 @@ def run_lead_playbooks(current_user):
 def leads_strategic_overview(current_user):
     since_days = max(1, min(int(request.args.get('since_days', 30) or 30), 365))
     return jsonify(_build_strategic_overview_payload(since_days=since_days))
+
+
+@super_admin_bp.route('/leads/pipeline', methods=['GET', 'OPTIONS'])
+@token_requerido
+@super_admin_required
+def leads_pipeline(current_user):
+    since_days = max(1, min(int(request.args.get('since_days', 30) or 30), 365))
+    limit = max(1, min(int(request.args.get('limit', 200) or 200), 500))
+    tenant_slug_filter = str(request.args.get('tenant_slug') or request.args.get('tenant') or '').strip().lower()
+    cutoff = datetime.now(timezone.utc) - timedelta(days=since_days)
+
+    rows = []
+    municipio_rows = (
+        MunicipioTicket.query
+        .filter(MunicipioTicket.fecha >= cutoff)
+        .order_by(desc(MunicipioTicket.fecha))
+        .limit(limit)
+        .all()
+    )
+    pyme_rows = (
+        PymeTicket.query
+        .filter(PymeTicket.fecha >= cutoff)
+        .order_by(desc(PymeTicket.fecha))
+        .limit(limit)
+        .all()
+    )
+
+    for ticket_type, ticket in [*(("municipio", item) for item in municipio_rows), *(("pyme", item) for item in pyme_rows)]:
+        item = _serialize_pipeline_ticket(ticket_type, ticket)
+        tenant_slug = str(item.get("tenant_slug") or "").strip().lower()
+        if tenant_slug_filter and tenant_slug_filter != tenant_slug:
+            continue
+        rows.append(item)
+
+    rows.sort(key=lambda item: (item.get("updated_at") or item.get("created_at") or "", item.get("relevance_score") or 0), reverse=True)
+    rows = rows[:limit]
+
+    by_stage: dict[str, int] = {}
+    by_tenant: dict[str, int] = {}
+    for item in rows:
+        stage = str(item.get("stage") or "nuevo").strip().lower()
+        by_stage[stage] = by_stage.get(stage, 0) + 1
+        tenant_key = str(item.get("tenant_slug") or "sin_tenant").strip().lower() or "sin_tenant"
+        by_tenant[tenant_key] = by_tenant.get(tenant_key, 0) + 1
+
+    total = len(rows)
+    won = by_stage.get("ganado", 0)
+    conversion_rate = round(won / total, 4) if total else 0.0
+
+    return jsonify(
+        {
+            "contract_version": "superadmin.leads_pipeline.v1",
+            "since_days": since_days,
+            "total": total,
+            "by_stage": by_stage,
+            "by_tenant": by_tenant,
+            "conversion_rate": conversion_rate,
+            "avg_first_response_seconds": None,
+            "items": rows,
+        }
+    )
 
 
 

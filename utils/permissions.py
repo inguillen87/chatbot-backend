@@ -3,14 +3,7 @@ import uuid
 
 from flask import g, jsonify, request
 
-# Roles adicionales que se mapearan a su forma canonica para simplificar
-# las verificaciones de acceso.
-ROLE_ALIASES = {
-    "admin_municipio": "admin",
-    "admin_pyme": "admin",
-    "empleado_municipio": "empleado",
-    "empleado_pyme": "empleado",
-}
+from utils.roles import canonical_role
 
 
 def _permission_error(reason_code: str):
@@ -37,12 +30,14 @@ def _permission_error(reason_code: str):
 
 def require_role(*roles):
     """Abort 403 unless the current user's role matches one of the allowed roles."""
+    allowed_roles = {canonical_role(role) for role in roles}
+
     def decorator(f):
         @wraps(f)
         def wrapper(current_user, *args, **kwargs):
             user_role = getattr(current_user, "rol", None)
-            canonical = ROLE_ALIASES.get(user_role, user_role)
-            if canonical not in roles:
+            canonical = canonical_role(user_role)
+            if canonical not in allowed_roles:
                 return _permission_error("insufficient_permissions")
             return f(current_user, *args, **kwargs)
         return wrapper

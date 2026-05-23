@@ -1491,19 +1491,41 @@ def list_municipal_posts():
         except Exception:
             pass
 
-    if municipio_id is None:
-        # Allow accessing if specific tenant header/slug context is missing but this is a legacy call often made by public frontend
-        # We need a default or return empty
-        return jsonify({"error": "No se pudo determinar el municipio."}), 400
-
-    db_municipio_id = get_numeric_municipio_id(municipio_id)
-    if db_municipio_id is None:
-        return jsonify({"error": "El identificador del municipio es inválido."}), 400
-
     limit = request.args.get("limit", type=int) or 20
     limit = max(1, min(limit, 100))
     offset = request.args.get("offset", type=int) or 0
     offset = max(0, offset)
+
+    if municipio_id is None:
+        # Allow accessing if specific tenant header/slug context is missing but this is a legacy call often made by public frontend
+        # We need a default or return empty
+        return jsonify(
+            {
+                "posts": [],
+                "items": [],
+                "total": 0,
+                "limit": limit,
+                "offset": offset,
+                "filters": {},
+                "reason_code": "municipio_not_available_for_tenant",
+                "message": "No hay publicaciones municipales para el tenant solicitado.",
+            }
+        ), 200
+
+    db_municipio_id = get_numeric_municipio_id(municipio_id)
+    if db_municipio_id is None:
+        return jsonify(
+            {
+                "posts": [],
+                "items": [],
+                "total": 0,
+                "limit": limit,
+                "offset": offset,
+                "filters": {},
+                "reason_code": "invalid_municipio_id",
+                "message": "El identificador del municipio es invalido.",
+            }
+        ), 200
     month_param = request.args.get("month")
     date_param = request.args.get("date")
     from_param = request.args.get("from_date") or request.args.get("fecha_desde")

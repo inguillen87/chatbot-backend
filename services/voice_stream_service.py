@@ -21,6 +21,7 @@ from models import (
     MunicipioTicket,
     PymeTicket,
     PymePedido,
+    ProviderSender,
 )
 from extensions import db
 from sqlalchemy import func
@@ -74,17 +75,7 @@ GRAN_MENDOZA_POINTS = {
 
 
 def _openai_realtime_headers() -> dict[str, str]:
-    headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
-    allow_beta_header = str(os.environ.get("OPENAI_REALTIME_ALLOW_BETA_HEADER") or "").lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-    beta_header = os.environ.get("OPENAI_REALTIME_BETA_HEADER")
-    if allow_beta_header and beta_header:
-        headers["OpenAI-Beta"] = beta_header
-    return headers
+    return {"Authorization": f"Bearer {OPENAI_API_KEY}"}
 
 
 def _realtime_audio_format(value: str | dict | None, *, default: str = "g711_ulaw") -> dict:
@@ -259,6 +250,46 @@ class VoiceStreamService:
             return str(self.whatsapp_sender)
 
         return None
+
+    def _provider_sender_for_voice_number(self, bot_phone_clean: str | None) -> ProviderSender | None:
+        if not bot_phone_clean:
+            return None
+        clean_phone = self._normalize_phone(bot_phone_clean)
+        compact_phone = clean_phone.replace("+", "").replace(" ", "")
+        candidates = {
+            candidate
+            for candidate in (
+                clean_phone,
+                compact_phone,
+                f"whatsapp:{clean_phone}" if clean_phone else None,
+                f"whatsapp:{compact_phone}" if compact_phone else None,
+            )
+            if candidate
+        }
+        base_query = ProviderSender.query.options(joinedload(ProviderSender.tenant)).filter(
+            ProviderSender.channel.in_(("whatsapp", "voice"))
+        )
+        for value in candidates:
+            sender = (
+                base_query.filter(ProviderSender.phone_number == value)
+                .order_by(ProviderSender.id.desc())
+                .first()
+            )
+            if sender:
+                return sender
+            sender = (
+                base_query.filter(ProviderSender.sender_id == value)
+                .order_by(ProviderSender.id.desc())
+                .first()
+            )
+            if sender:
+                return sender
+        return None
+
+    def _owner_for_tenant(self, tenant: TenantProfile | None) -> User | None:
+        if not tenant:
+            return None
+        return tenant.pyme or tenant.municipio
 
     def _extract_contacto_usuario(self, context_data: dict) -> dict:
         if not isinstance(context_data, dict):
@@ -921,12 +952,24 @@ class VoiceStreamService:
             self.owner_user = None
             self.user = None
 
+            provider_sender = self._provider_sender_for_voice_number(bot_phone_clean)
+            if provider_sender and provider_sender.tenant:
+                self.tenant_profile = provider_sender.tenant
+                self.owner_user = self._owner_for_tenant(self.tenant_profile)
+                self.whatsapp_sender = (
+                    provider_sender.sender_id
+                    or provider_sender.phone_number
+                    or self.whatsapp_sender
+                )
+
             # 1) Legacy: WhatsappNumero mapping (si existe)
-            whatsapp_mapping = (
-                WhatsappNumero.query.options(joinedload(WhatsappNumero.user).joinedload(User.rubro))
-                .filter(WhatsappNumero.numero_whatsapp.ilike(f"%{bot_phone_clean.replace('+','').replace(' ','')}%"))
-                .first()
-            )
+            whatsapp_mapping = None
+            if not self.tenant_profile:
+                whatsapp_mapping = (
+                    WhatsappNumero.query.options(joinedload(WhatsappNumero.user).joinedload(User.rubro))
+                    .filter(WhatsappNumero.numero_whatsapp.ilike(f"%{bot_phone_clean.replace('+','').replace(' ','')}%"))
+                    .first()
+                )
 
             if whatsapp_mapping:
                 self.owner_user = whatsapp_mapping.user
@@ -949,7 +992,7 @@ class VoiceStreamService:
                 if requested_profile:
                     self.tenant_profile = requested_profile
                     if not self.owner_user:
-                        self.owner_user = self.tenant_profile.pyme or self.tenant_profile.municipio
+                        self.owner_user = self._owner_for_tenant(self.tenant_profile)
 
             owner_slug = str(getattr(self.owner_user, "tenant_slug", "") or "").strip() if self.owner_user else ""
             if self.owner_user and not self.tenant_profile and owner_slug:
@@ -966,7 +1009,7 @@ class VoiceStreamService:
                 for slug in [candidate for candidate in dict.fromkeys(demo_candidates) if candidate]:
                     self.tenant_profile = TenantProfile.query.filter_by(slug=slug).first()
                     if self.tenant_profile:
-                        self.owner_user = self.tenant_profile.pyme or self.tenant_profile.municipio
+                        self.owner_user = self._owner_for_tenant(self.tenant_profile)
                         break
                 if not self.owner_user:
                     owner_email = (
@@ -988,7 +1031,7 @@ class VoiceStreamService:
                 return False
 
             if not self.owner_user and self.tenant_profile:
-                self.owner_user = self.tenant_profile.municipio or self.tenant_profile.pyme
+                self.owner_user = self._owner_for_tenant(self.tenant_profile)
 
             # 3) User final
             from services.pymes import get_or_create_user_by_phone
