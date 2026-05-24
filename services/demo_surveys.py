@@ -675,25 +675,42 @@ def _normalize_demo_survey_answers(
             "opcion_id",
             "selected_option_id",
             "selectedOptionId",
+            "opcion_ids",
+            "opcionIds",
+            "option_ids",
+            "optionIds",
+            "opciones",
+            "options",
             "opcion",
             "respuesta",
             "value",
             "choice",
         )
-        option = _normalize_demo_option(submitted_option, options)
-        if not option:
-            continue
-        normalized_answers.append(
-            {
-                "question_id": question_id,
-                "question_text": question_text,
-                "submitted_question_id": str(submitted_question_id or question_id),
-                "option_id": option["option_id"],
-                "option_label": option["option_label"],
-                "value": option["value"],
-                "matched": option["matched"],
-            }
+        submitted_options = (
+            list(submitted_option)
+            if isinstance(submitted_option, (list, tuple, set))
+            else [submitted_option]
         )
+        seen_option_keys: set[str] = set()
+        for submitted_option_value in submitted_options:
+            option = _normalize_demo_option(submitted_option_value, options)
+            if not option:
+                continue
+            option_key = str(option["option_id"] or option["option_label"] or option["value"])
+            if option_key in seen_option_keys:
+                continue
+            seen_option_keys.add(option_key)
+            normalized_answers.append(
+                {
+                    "question_id": question_id,
+                    "question_text": question_text,
+                    "submitted_question_id": str(submitted_question_id or question_id),
+                    "option_id": option["option_id"],
+                    "option_label": option["option_label"],
+                    "value": option["value"],
+                    "matched": option["matched"],
+                }
+            )
 
     return normalized_answers
 

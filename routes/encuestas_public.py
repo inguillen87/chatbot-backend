@@ -51,6 +51,8 @@ from services.demo_surveys import (
 )
 from utils.auth_helpers import obtener_token, user_from_token
 
+ENCUESTAS_PUBLIC_RESPONSE_CONTRACT_VERSION = "encuestas.public_response.v1"
+
 _DEFAULT_RATE_LIMIT = 150
 _DEFAULT_RATE_PERIOD = 60
 _rate_buckets: defaultdict[str, deque] = defaultdict(deque)
@@ -947,7 +949,15 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
                 )
             return _public_error_response(err)
         request_id = _resolve_request_id()
-        response = jsonify({"ok": True, "respuesta_id": respuesta.id, "request_id": request_id})
+        response = jsonify(
+            {
+                "contract_version": ENCUESTAS_PUBLIC_RESPONSE_CONTRACT_VERSION,
+                "ok": True,
+                "success": True,
+                "respuesta_id": respuesta.id,
+                "request_id": request_id,
+            }
+        )
         response.headers.setdefault("X-Request-Id", request_id)
         return response, 201
 

@@ -163,6 +163,15 @@ def test_public_demo_survey_detail_results_and_response(client):
     assert submitted_label_payload["accepted"] is True
     assert submitted_label_payload["answers"][0]["option_id"] == option["id"]
 
+    submitted_option_ids = client.post(
+        f"/api/public/encuestas/v1/{slug}/responder",
+        json={"respuestas": [{"pregunta_id": question["id"], "opcion_ids": [option["id"]]}]},
+    )
+    assert submitted_option_ids.status_code == 201
+    submitted_option_ids_payload = submitted_option_ids.get_json()
+    assert submitted_option_ids_payload["accepted"] is True
+    assert submitted_option_ids_payload["answers"][0]["option_id"] == option["id"]
+
 
 def test_demo_survey_chat_menu_lists_five_with_whatsapp_vote_actions():
     menu = build_demo_survey_chat_menu(
@@ -220,7 +229,9 @@ def test_respuestas_alias_reuses_handler(client, monkeypatch):
     )
     assert response.status_code == 201
     body = response.get_json()
+    assert body["contract_version"] == "encuestas.public_response.v1"
     assert body["ok"] is True
+    assert body["success"] is True
     assert body["respuesta_id"] == 123
     assert body["request_id"]
     assert saved_calls["slug"] == "demo-encuesta"
@@ -250,7 +261,9 @@ def test_responder_accepts_form_payload(client, monkeypatch):
 
     assert response.status_code == 201
     body = response.get_json()
+    assert body["contract_version"] == "encuestas.public_response.v1"
     assert body["ok"] is True
+    assert body["success"] is True
     assert body["respuesta_id"] == 456
     assert body["request_id"]
     assert captured["slug"] == "demo-encuesta"
@@ -276,7 +289,9 @@ def test_responder_parses_respuestas_field_from_form(client, monkeypatch):
     )
 
     assert response.status_code == 201
-    assert response.get_json()["respuesta_id"] == 789
+    body = response.get_json()
+    assert body["contract_version"] == "encuestas.public_response.v1"
+    assert body["respuesta_id"] == 789
     assert captured["payload"]["respuestas"] == respuestas
     assert captured["payload"]["metadata"] == {"canal": "web"}
 
