@@ -243,6 +243,8 @@ def _build_whatsapp_funnel_payload(filters, *, window_minutes: int = 60) -> dict
             ),
         },
         "notes": [
+            "Funnel orientado a flujos WhatsApp/widget: catalogo, carrito, checkout seguro, pago confirmado por webhook y seguimiento.",
+            "El estado pagado se debe tomar del webhook del proveedor, no del retorno visual del checkout.",
             "Funnel orientado a flujos WhatsApp → portal/realtime.",
             "Usar junto con /admin/analytics/realtime-hub para contexto operativo.",
         ],

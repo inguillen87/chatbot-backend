@@ -44,6 +44,7 @@ class V2CommerceContractsTest(unittest.TestCase):
             slug="commerce-tenant",
             nombre="Commerce Tenant",
             tipo="pyme",
+            plan="full",
             pyme_id=self.owner.id,
             configuracion={
                 "mercadopago_access_token": "mp-token",
@@ -149,6 +150,27 @@ class V2CommerceContractsTest(unittest.TestCase):
         self.assertEqual(captured["auth"], "Bearer mp-token")
         self.assertEqual(captured["payload"]["external_reference"], "order-123")
         self.assertEqual(captured["payload"]["metadata"]["tenant_slug"], self.tenant.slug)
+
+    def test_payment_checkout_session_requires_full_plan(self):
+        self.tenant.plan = "free"
+        db.session.add(self.tenant)
+        db.session.commit()
+
+        response = self.client.post(
+            "/api/v2/payments/checkout-session",
+            json={
+                "items": [{"title": "Plan mensual", "quantity": 1, "unit_price": 1500, "currency_id": "ARS"}],
+                "contact": {"email": "buyer@test.com"},
+                "external_reference": "order-locked",
+            },
+            headers=self._auth(self.owner),
+        )
+
+        self.assertEqual(response.status_code, 403)
+        payload = response.get_json()
+        self.assertEqual(payload.get("reason_code"), "plan_full_required")
+        self.assertFalse(payload["integration_access"]["enabled"])
+        self.assertEqual(payload["frontend_contract"]["render_as"], "integration_locked")
 
     def test_payment_status_contract_by_preference_id(self):
         pedido = PedidoConversacional(

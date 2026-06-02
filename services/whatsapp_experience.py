@@ -22,6 +22,7 @@ from models import (
     WhatsAppContactState,
     WhatsAppEnterpriseRule,
 )
+from services.commerce_contracts import build_checkout_experience_payload, payment_capabilities
 from services.education_contracts import build_education_whatsapp_playbook, is_education_tenant
 from services.realtime_voice_profiles import build_realtime_voice_capabilities
 from services.audio_transcription_service import audio_translation_capabilities
@@ -303,6 +304,9 @@ def _conversation_intelligence_payload(tenant: TenantProfile, cfg: Mapping[str, 
             "consultar_estado_pedido",
             "crear_pedido",
             "consultar_catalogo",
+            "crear_checkout_seguro",
+            "consultar_estado_pago",
+            "confirmar_pago_por_webhook",
             "registrar_encuesta",
             "derivar_humano",
         ],
@@ -337,6 +341,13 @@ def build_whatsapp_experience(
     channel_ready = bool(number)
     content = _content_modules_payload(tenant)
     tracking = _tracking_modules_payload(tenant)
+    payment = payment_capabilities(tenant)
+    checkout_experience = build_checkout_experience_payload(
+        tenant,
+        channel="whatsapp",
+        gateway=payment.get("gateway"),
+        mercadopago_ready=payment.get("mercadopago_ready"),
+    )
     channel = {
         "provider": "twilio_whatsapp",
         "enabled": channel_ready,
@@ -372,6 +383,16 @@ def build_whatsapp_experience(
             "links": {**content["links"], "tenant_config_links": tenant_config_links},
         },
         "tracking": tracking,
+        "commerce": {
+            "payments": payment,
+            "checkout_experience": checkout_experience,
+            "customer_policy": {
+                "payment_capture": "external_secure_webview",
+                "paid_state_source": "server_to_server_webhook",
+                "card_data_in_chat": False,
+                "client_return_trusted": False,
+            },
+        },
         "admin_panel": _admin_panel_payload(tenant),
         "education": {
             "enabled": is_education_tenant(tenant),
@@ -385,6 +406,7 @@ def build_whatsapp_experience(
                 "conversation_capabilities",
                 "content_modules",
                 "claim_order_tracking",
+                "commerce_checkout",
                 "voice_realtime",
                 "enterprise_rules",
             ],

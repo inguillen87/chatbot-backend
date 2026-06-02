@@ -275,13 +275,20 @@ def test_widget_commerce_session_returns_embedded_operating_contract(client):
     assert body["cart"]["summary_endpoint"] == "/api/pwa/public/cart/summary"
     assert body["cart"]["items_endpoint"] == "/api/pwa/public/cart/items"
     assert body["cart"]["legacy_endpoint"] == "/api/pwa/public/cart"
+    assert body["cart"]["checkout_preview_endpoint"] == "/api/pwa/public/cart/summary"
+    assert body["cart"]["checkout_session_endpoint"] == "/api/checkout/crear-preferencia"
     assert body["cart"]["allow_guest_cart"] is True
+    assert body["payment"]["contract_version"] == "commerce.conversational_checkout_experience.v1"
+    assert body["payment"]["ready"] is False
+    assert body["payment"]["reason_code"] == "payment_gateway_not_configured"
+    assert body["payment"]["policy"]["confirmation_source"] == "server_to_server_webhook"
     assert body["portal"]["enabled"] is True
     assert body["portal"]["label"] == "Mi actividad"
     assert body["portal"]["view_url"] == f"/portal/{tenant.slug}"
     assert body["portal"]["history_endpoint"] == "/api/public/widget-user/tenant-history"
     assert body["portal"]["scope"] == "end_user_tenant_history"
     assert "portal" in body["frontend_contract"]["primary_actions"]
+    assert "checkout" in body["frontend_contract"]["primary_actions"]
     assert body["accessibility"]["enabled"] is True
     assert body["accessibility"]["allow_dyslexia_mode"] is True
     assert body["accessibility"]["allow_high_contrast"] is True

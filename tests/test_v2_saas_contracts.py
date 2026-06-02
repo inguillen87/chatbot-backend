@@ -1229,9 +1229,29 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(payload["tracking"]["orders"]["experience_endpoint"], "/api/public/tracking/experience?kind=order&code={code}")
         self.assertEqual(payload["tracking"]["courier_style_map"]["render_contract"]["fallback_when_no_coordinates"], "timeline_only")
         self.assertIn("route_progress", payload["tracking"]["courier_style_map"]["render_contract"]["animations"])
+        self.assertTrue(payload["commerce"]["payments"]["payment_ready"])
+        self.assertTrue(payload["commerce"]["payments"]["capabilities"]["whatsapp_checkout"])
+        self.assertTrue(payload["commerce"]["payments"]["capabilities"]["widget_checkout"])
+        self.assertEqual(
+            payload["commerce"]["checkout_experience"]["contract_version"],
+            "commerce.conversational_checkout_experience.v1",
+        )
+        self.assertEqual(payload["commerce"]["checkout_experience"]["active_entrypoint"], "whatsapp")
+        self.assertTrue(payload["commerce"]["checkout_experience"]["ready"])
+        self.assertFalse(payload["commerce"]["checkout_experience"]["policy"]["card_data_in_chat"])
+        self.assertEqual(
+            payload["commerce"]["checkout_experience"]["policy"]["confirmation_source"],
+            "server_to_server_webhook",
+        )
+        self.assertEqual(
+            payload["commerce"]["checkout_experience"]["endpoints"]["public_checkout_session"],
+            "/api/checkout/crear-preferencia",
+        )
+        self.assertEqual(payload["commerce"]["customer_policy"]["payment_capture"], "external_secure_webview")
         self.assertEqual(payload["admin_panel"]["inbox"], "/api/v2/inbox/omnichannel")
         self.assertTrue(payload["education"]["enabled"])
         self.assertEqual(payload["frontend_contract"]["render_as"], "whatsapp_operations_hub")
+        self.assertIn("commerce_checkout", payload["frontend_contract"]["recommended_views"])
 
         alias_response = self.client.get(
             f"/api/v2/tenants/{self.tenant.slug}/whatsapp/experience",

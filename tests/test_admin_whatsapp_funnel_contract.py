@@ -62,6 +62,10 @@ class AdminWhatsappFunnelContractTestCase(unittest.TestCase):
 
         self.assertEqual(payload["contract_version"], WHATSAPP_FUNNEL_CONTRACT_VERSION)
         self.assertIn("stages", payload)
+        stage_names = {stage["event_name"] for stage in payload["stages"]}
+        self.assertIn("whatsapp_catalog_viewed", stage_names)
+        self.assertIn("whatsapp_checkout_session_created", stage_names)
+        self.assertIn("whatsapp_payment_webhook_confirmed", stage_names)
 
 
 if __name__ == "__main__":

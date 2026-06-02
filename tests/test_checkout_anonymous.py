@@ -11,7 +11,7 @@ def tenant_with_catalog(init_database):
     from models import User
 
     owner = User.query.get(1)
-    tenant = TenantProfile(slug="demo", municipio_id=owner.id, nombre="Demo Tenant", tipo="municipio")
+    tenant = TenantProfile(slug="demo", municipio_id=owner.id, nombre="Demo Tenant", tipo="municipio", plan="full")
     db.session.add(tenant)
     db.session.commit()
 
@@ -140,6 +140,41 @@ def test_checkout_rejects_when_mercadopago_missing(client, tenant_with_catalog, 
     market_order = MarketOrder.query.get(data["market_order_id"])
     assert market_order is not None
     assert market_order.status == "pending_payment"
+
+
+@pytest.mark.usefixtures("client")
+def test_money_checkout_requires_full_plan_before_order_or_payment(client, tenant_with_catalog, monkeypatch):
+    tenant, product, _, _ = tenant_with_catalog
+
+    tenant.plan = "free"
+    tenant.configuracion = {"mercadopago_access_token": "tenant-token"}
+    db.session.commit()
+
+    called = {"mp": 0}
+
+    def fake_post(*args, **kwargs):
+        called["mp"] += 1
+        raise AssertionError("MercadoPago should not be called for a locked tenant")
+
+    monkeypatch.setattr("routes.checkout.requests.post", fake_post)
+
+    with client.session_transaction() as sess:
+        _build_cart(sess, tenant.id, product.id)
+
+    resp = client.post(
+        "/api/checkout/crear-preferencia",
+        data=json.dumps({"nombre": "Anon", "email": "anon@example.com"}),
+        content_type="application/json",
+        headers={"X-Tenant": tenant.slug},
+    )
+
+    assert resp.status_code == 403
+    data = resp.get_json()
+    assert data["reason_code"] == "plan_full_required"
+    assert data["integration_access"]["enabled"] is False
+    assert data["frontend_contract"]["render_as"] == "integration_locked"
+    assert called["mp"] == 0
+    assert MarketOrder.query.filter_by(tenant_id=tenant.id).count() == 0
 
 
 
