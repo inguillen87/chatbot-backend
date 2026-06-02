@@ -10,7 +10,12 @@ from config import ALLOWED_ORIGINS
 from database import db
 from models import CatalogoItem, CatalogoModalidad, MarketOrder, MarketOrderItem, OrderEvent, PedidoConversacional, TenantProfile, User
 from routes.catalogo import _formatear_producto
-from services.commerce_contracts import build_customer_profile, resolve_order_contact_payload
+from services.commerce_contracts import (
+    build_checkout_experience_payload,
+    build_customer_profile,
+    resolve_order_contact_payload,
+)
+from services.plan_access import plan_allows_full_integrations
 from services.rewards import recompensas_service
 from services.tenant_resolver import TenantResolutionError, resolve_tenant_and_user
 
@@ -310,6 +315,31 @@ def _crear_pedido(payload: dict):
 
     total_money, total_points, has_donation = _totales(cart_entries)
     is_anonymous = bool(getattr(user, "anon_id", None))
+    checkout_channel = (
+        payload.get("channel")
+        or request.headers.get("X-Sales-Channel")
+        or request.headers.get("X-Channel")
+        or "web"
+    )
+    checkout_experience = build_checkout_experience_payload(tenant, channel=checkout_channel)
+    integration_access = checkout_experience.get("integration_access") or {}
+
+    if total_money > 0 and not plan_allows_full_integrations(tenant):
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "error": "plan_required",
+                    "codigo": "PLAN_FULL_REQUERIDO",
+                    "reason_code": "plan_full_required",
+                    "message": "Plan Full requerido para cobrar desde WhatsApp, widget o checkout publico.",
+                    "integration_access": integration_access,
+                    "checkout_experience": checkout_experience,
+                    "frontend_contract": {"render_as": "integration_locked"},
+                }
+            ),
+            403,
+        )
 
     if total_points and is_anonymous:
         return (
@@ -345,13 +375,13 @@ def _crear_pedido(payload: dict):
         user=user,
         payload=payload,
         session_id=session_identifier,
-        channel=payload.get("channel") or request.headers.get("X-Sales-Channel") or request.headers.get("X-Channel"),
+        channel=checkout_channel,
     )
     customer_profile = build_customer_profile(
         user=user,
         payload=payload,
         session_id=session_identifier,
-        channel=payload.get("channel") or request.headers.get("X-Sales-Channel") or request.headers.get("X-Channel"),
+        channel=checkout_channel,
     )
 
     if is_anonymous:
@@ -440,6 +470,12 @@ def _crear_pedido(payload: dict):
     preference_id = None
     demo_mode = bool((getattr(g, "token_payload", {}) or {}).get("demo_mode"))
     support_channels = _support_channels(tenant, owner, contact.get("channel") or "web")
+    checkout_experience = build_checkout_experience_payload(
+        tenant,
+        channel=contact.get("channel") or checkout_channel,
+        mercadopago_ready=bool(access_token),
+    )
+    integration_access = checkout_experience.get("integration_access") or {}
 
     if total_money > 0 and demo_mode:
         _sync_checkout_order_state(pedido, market_order, "confirmado", mp_status="demo_skipped")
@@ -455,6 +491,8 @@ def _crear_pedido(payload: dict):
                 "estado": pedido.estado,
                 "tipo": pedido.tipo,
                 "demo_mode": True,
+                "integration_access": integration_access,
+                "checkout_experience": checkout_experience,
                 "tracking": {
                     "market_order_id": market_order.id,
                     "portal_path": f"/{tenant.slug}/portal/pedidos/{market_order.id}",
@@ -486,6 +524,8 @@ def _crear_pedido(payload: dict):
                     "tipo": pedido.tipo,
                     "mercadopago_ready": False,
                     "error": "MercadoPago no configurado para este tenant",
+                    "integration_access": integration_access,
+                    "checkout_experience": checkout_experience,
                     "tracking": {
                         "market_order_id": market_order.id,
                         "portal_path": f"/{tenant.slug}/portal/pedidos/{market_order.id}",
@@ -561,6 +601,8 @@ def _crear_pedido(payload: dict):
             "total_puntos": total_points,
             "estado": pedido.estado,
             "tipo": pedido.tipo,
+            "integration_access": integration_access,
+            "checkout_experience": checkout_experience,
             "tracking": {
                 "market_order_id": market_order.id,
                 "portal_path": f"/{tenant.slug}/portal/pedidos/{market_order.id}",

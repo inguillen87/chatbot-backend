@@ -39,6 +39,13 @@ _HEATMAP_CATEGORY_COLORS = [
 
 _WHATSAPP_FUNNEL_STAGES: list[tuple[str, str]] = [
     ("whatsapp_portal_menu_opened", "Portal abierto"),
+    ("whatsapp_catalog_viewed", "Catalogo visto"),
+    ("whatsapp_cart_started", "Carrito iniciado"),
+    ("whatsapp_checkout_previewed", "Checkout revisado"),
+    ("whatsapp_checkout_session_created", "Sesion de pago creada"),
+    ("whatsapp_payment_webview_opened", "Checkout seguro abierto"),
+    ("whatsapp_payment_webhook_confirmed", "Pago confirmado por webhook"),
+    ("whatsapp_order_confirmed", "Pedido confirmado"),
     ("whatsapp_video_handoff_shared", "Videollamada compartida"),
     ("realtime_session_created", "Sesión realtime creada"),
     ("realtime_business_action_executed", "Acción de negocio realtime"),

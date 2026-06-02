@@ -122,6 +122,8 @@ def payment_checkout_preview_v2(current_user, tenant_slug: str | None = None):
     payload = request.get_json(silent=True) or {}
     totals = normalize_checkout_preview_totals(payload)
     payment = payment_capabilities(tenant)
+    integration_access = payment.get("integration_access") or {}
+    checkout_experience = payment.get("checkout_experience") or {}
     payment_required = totals["total_monetary"] > 0
     contact_ready = contact_ready_for_checkout(payload, current_user)
     checkout_status = (
@@ -129,6 +131,8 @@ def payment_checkout_preview_v2(current_user, tenant_slug: str | None = None):
         if ((not payment_required or payment["payment_ready"]) and contact_ready)
         else "needs_contact"
         if not contact_ready
+        else "locked"
+        if payment_required and not integration_access.get("enabled")
         else "needs_gateway"
     )
     next_steps = [
@@ -136,7 +140,15 @@ def payment_checkout_preview_v2(current_user, tenant_slug: str | None = None):
         {
             "id": "complete_payment",
             "label": "Completar pago",
-            "status": "ready" if payment_required and payment["payment_ready"] else "not_required" if not payment_required else "pending_configuration",
+            "status": (
+                "ready"
+                if payment_required and payment["payment_ready"]
+                else "not_required"
+                if not payment_required
+                else "locked"
+                if not integration_access.get("enabled")
+                else "pending_configuration"
+            ),
         },
         {"id": "track_order", "label": "Seguir pedido", "status": "ready"},
     ]
@@ -149,6 +161,9 @@ def payment_checkout_preview_v2(current_user, tenant_slug: str | None = None):
             "payment_required": payment_required,
             "payment_ready": (not payment_required) or payment["payment_ready"],
             "contact_ready": contact_ready,
+            "integration_access": integration_access,
+            "checkout_experience": checkout_experience,
+            "security_policy": checkout_experience.get("policy") or {},
             "checkout_options": {
                 "payment_required": payment_required,
                 "payment_ready": (not payment_required) or payment["payment_ready"],
@@ -180,6 +195,21 @@ def payment_checkout_session_v2(current_user, tenant_slug: str | None = None):
         return _error_response("El checkout no requiere pago monetario", 400, "payment_not_required", "confirm_without_gateway")
 
     payment = payment_capabilities(tenant)
+    integration_access = payment.get("integration_access") or {}
+    checkout_experience = payment.get("checkout_experience") or {}
+    if not integration_access.get("enabled"):
+        return _error_response(
+            "Plan Full requerido para crear sesiones de pago productivas",
+            403,
+            "plan_full_required",
+            "upgrade_full_plan",
+            extra={
+                "integration_access": integration_access,
+                "checkout_experience": checkout_experience,
+                "frontend_contract": {"render_as": "integration_locked"},
+            },
+        )
+
     access_token = tenant_config(tenant).get("mercadopago_access_token")
     if not access_token:
         return _error_response(
@@ -188,6 +218,10 @@ def payment_checkout_session_v2(current_user, tenant_slug: str | None = None):
             "payment_gateway_not_configured",
             "configure_mercadopago_access_token",
             retryable=True,
+            extra={
+                "integration_access": integration_access,
+                "checkout_experience": checkout_experience,
+            },
         )
 
     key = _idempotency_key(payload)
@@ -214,6 +248,8 @@ def payment_checkout_session_v2(current_user, tenant_slug: str | None = None):
             "tenant": tenant_ref(tenant),
             "gateway": payment["gateway"],
             "status": "pending_payment",
+            "integration_access": integration_access,
+            "checkout_experience": checkout_experience,
             "external_reference": external_reference,
             "preference_id": preference_id,
             "init_point": init_point,

@@ -24,6 +24,7 @@ from routes.catalogo import _formatear_producto
 from routes.carrito import _product_query_for_tenant
 from middleware.tenant_context import require_tenant
 from services.catalog_seed import ensure_seed_catalog
+from services.commerce_contracts import build_checkout_experience_payload
 from services.plan_access import integration_access_payload, plan_allows_full_integrations
 from services.tenant_resolver import tenant_slug_from_public_referrer, tenant_slug_lookup_candidates
 from services.user_merge import merge_anon_into_user
@@ -735,7 +736,7 @@ def public_widget_commerce_session():
         and ((tenant.tipo or "").lower() == "pyme" or tenant.pyme_id or has_catalog_items)
     )
     cart_enabled = catalog_enabled
-    checkout_base = f"/api/v2/tenants/{tenant.slug}/payments"
+    checkout_experience = build_checkout_experience_payload(tenant, channel="widget")
 
     payload = {
         "contract_version": "public.widget_commerce_session.v1",
@@ -755,12 +756,15 @@ def public_widget_commerce_session():
             "add_endpoint": "/api/pwa/public/cart/add",
             "update_endpoint": "/api/pwa/public/cart/update",
             "remove_endpoint": "/api/pwa/public/cart/remove",
-            "checkout_preview_endpoint": f"{checkout_base}/checkout-preview",
-            "checkout_session_endpoint": f"{checkout_base}/checkout-session",
+            "checkout_preview_endpoint": "/api/pwa/public/cart/summary",
+            "checkout_session_endpoint": "/api/checkout/crear-preferencia",
+            "admin_checkout_preview_endpoint": f"/api/v2/tenants/{tenant.slug}/payments/checkout-preview",
+            "admin_checkout_session_endpoint": f"/api/v2/tenants/{tenant.slug}/payments/checkout-session",
             "allow_guest_cart": True,
             "requires_contact_before_checkout": True,
             **_cart_counts_for_tenant(tenant, session_payload),
         },
+        "payment": checkout_experience,
         "portal": {
             "enabled": True,
             "label": "Mi actividad",
@@ -795,7 +799,7 @@ def public_widget_commerce_session():
         },
         "frontend_contract": {
             "render_as": "embedded_tenant_operating_widget",
-            "primary_actions": ["chat", "catalog", "cart", "portal"],
+            "primary_actions": ["chat", "catalog", "cart", "checkout", "portal"],
             "empty_state_behavior": "chat_first_catalog_when_enabled",
         },
     }
