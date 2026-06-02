@@ -6,6 +6,7 @@ from typing import Any
 import requests
 
 from services.contact_intake import infer_phone_from_anon_id, normalize_email, normalize_name
+from services.plan_access import integration_access_payload
 
 
 class PaymentGatewayError(Exception):
@@ -157,33 +158,114 @@ def tenant_config(tenant: Any) -> dict[str, Any]:
     return tenant.configuracion if isinstance(getattr(tenant, "configuracion", None), dict) else {}
 
 
+def build_checkout_experience_payload(
+    tenant: Any,
+    *,
+    channel: Any = None,
+    gateway: str | None = None,
+    mercadopago_ready: bool | None = None,
+) -> dict[str, Any]:
+    cfg = tenant_config(tenant)
+    active_channel = normalize_sales_channel(channel or "widget")
+    access = integration_access_payload(tenant)
+    gateway_name = (gateway or str(cfg.get("payment_gateway") or "mercadopago")).strip().lower()
+    gateway_configured = bool(cfg.get("mercadopago_access_token")) if mercadopago_ready is None else bool(mercadopago_ready)
+    can_checkout = bool(access.get("enabled")) and gateway_configured
+    slug = getattr(tenant, "slug", None)
+
+    return {
+        "contract_version": "commerce.conversational_checkout_experience.v1",
+        "active_entrypoint": active_channel,
+        "supported_entrypoints": ["whatsapp", "widget", "web"],
+        "mode": "conversation_guided_secure_webview",
+        "ready": can_checkout,
+        "reason_code": None if can_checkout else ("plan_full_required" if not access.get("enabled") else "payment_gateway_not_configured"),
+        "integration_access": access,
+        "copy": {
+            "title": "Compra y pago por chat",
+            "short": "El usuario arma el pedido en WhatsApp o widget y paga en checkout seguro.",
+            "customer_ready": "Te dejo el resumen y el link de pago seguro. Cuando se acredite, te aviso por este mismo chat.",
+            "customer_pending_gateway": "Ya tengo el pedido. Falta activar el medio de pago del comercio para cobrar online.",
+            "customer_locked": "Esta cuenta todavia no tiene habilitado el plan productivo para cobrar desde el chat.",
+        },
+        "policy": {
+            "payment_capture": "external_secure_webview",
+            "card_data_in_chat": False,
+            "client_return_trusted": False,
+            "confirmation_source": "server_to_server_webhook",
+            "webhook_required_for_paid_state": True,
+            "whatsapp_window_policy": "freeform_inside_24h_template_outside_window",
+        },
+        "steps": [
+            {"id": "collect_contact", "label": "Pedir contacto minimo", "owner": "agent", "required": True},
+            {"id": "confirm_cart", "label": "Confirmar carrito y total", "owner": "agent", "required": True},
+            {"id": "create_order", "label": "Crear pedido interno", "owner": "backend", "required": True},
+            {"id": "open_checkout", "label": "Abrir checkout seguro", "owner": "customer", "required": gateway_configured},
+            {"id": "webhook_confirm", "label": "Confirmar pago por webhook", "owner": "backend", "required": True},
+            {"id": "notify_and_track", "label": "Enviar comprobante y tracking", "owner": "backend", "required": True},
+        ],
+        "endpoints": {
+            "public_widget_session": "/api/public/widget-commerce-session",
+            "public_checkout_session": "/api/checkout/crear-preferencia",
+            "admin_checkout_status": f"/api/v2/tenants/{slug}/payments/checkout-status" if slug else "/api/v2/payments/checkout-status",
+            "admin_checkout_preview": f"/api/v2/tenants/{slug}/payments/checkout-preview" if slug else "/api/v2/payments/checkout-preview",
+            "admin_payment_status": f"/api/v2/tenants/{slug}/payments/status" if slug else "/api/v2/payments/status",
+            "public_tracking": "/api/public/tracking/experience?kind=order&code={code}",
+        },
+        "gateway": {
+            "name": gateway_name,
+            "configured": gateway_configured,
+            "provider_label": "Mercado Pago" if gateway_name == "mercadopago" else gateway_name,
+        },
+    }
+
+
 def payment_capabilities(tenant: Any) -> dict[str, Any]:
     cfg = tenant_config(tenant)
     gateway = str(cfg.get("payment_gateway") or "mercadopago").strip().lower()
     mercadopago_ready = bool(cfg.get("mercadopago_access_token"))
+    access = integration_access_payload(tenant)
+    production_ready = bool(access.get("enabled")) and mercadopago_ready
     rewards_rules = cfg.get("rewards_rules") if isinstance(cfg.get("rewards_rules"), dict) else {}
     missing = []
+    if not access.get("enabled"):
+        missing.append("plan_full")
     if not mercadopago_ready:
         missing.append("mercadopago_access_token")
 
     gateway_hint = (
-        "Mercado Pago configurado para este tenant"
-        if mercadopago_ready
+        "Mercado Pago configurado y checkout productivo habilitado"
+        if production_ready
+        else "Plan Full requerido para cobrar desde WhatsApp o widget"
+        if not access.get("enabled")
+        else "Mercado Pago pendiente de configurar para este tenant"
+        if not mercadopago_ready
         else "Mercado Pago pendiente de configurar para este tenant"
     )
     return {
-        "payment_ready": mercadopago_ready,
+        "payment_ready": production_ready,
+        "gateway_configured": mercadopago_ready,
         "mercadopago_ready": mercadopago_ready,
         "gateway": gateway,
         "gateway_hint": gateway_hint,
         "missing": missing,
+        "integration_access": access,
         "capabilities": {
-            "monetary_checkout": mercadopago_ready,
+            "monetary_checkout": production_ready,
             "manual_confirmation": True,
             "points_redemption": True,
             "donations": True,
             "post_payment_status": True,
+            "whatsapp_checkout": production_ready,
+            "widget_checkout": production_ready,
+            "conversation_guided_webview": production_ready,
         },
+        "checkout_experience": build_checkout_experience_payload(
+            tenant,
+            channel="widget",
+            gateway=gateway,
+            mercadopago_ready=mercadopago_ready,
+        ),
         "checkout_urls": {
             "public_cart_url": f"/{tenant.slug}/carrito" if getattr(tenant, "slug", None) else None,
             "public_catalog_url": f"/{tenant.slug}/catalogo" if getattr(tenant, "slug", None) else None,
@@ -444,6 +526,17 @@ def build_payment_status_payload(tenant: Any, pedido: Any = None, market_order: 
                 }
             )
 
+    customer_messages = {
+        "paid": "Pago acreditado. El pedido queda confirmado y listo para seguimiento.",
+        "pending_payment": "El pago sigue pendiente. Si ya pagaste, esperamos la confirmacion del proveedor.",
+        "failed": "El pago no se pudo confirmar. Podes intentar nuevamente o pedir ayuda.",
+        "cancelled": "El pago fue cancelado.",
+        "unknown": "Todavia no tenemos una confirmacion final del pago.",
+    }
+    tracking_href = None
+    if getattr(tenant, "slug", None) and market_order is not None:
+        tracking_href = f"/{tenant.slug}/portal/pedidos/{market_order.id}"
+
     return {
         "contract_version": "payments.status.v1",
         "tenant": tenant_ref(tenant),
@@ -465,4 +558,28 @@ def build_payment_status_payload(tenant: Any, pedido: Any = None, market_order: 
             "currency": getattr(market_order, "currency", None) or "ARS",
         },
         "timeline": timeline,
+        "customer_experience": {
+            "message": customer_messages.get(normalized_status, customer_messages["unknown"]),
+            "channels": ["whatsapp", "widget", "web"],
+            "next_actions": [
+                {
+                    "id": "track_order",
+                    "label": "Seguir pedido",
+                    "status": "ready" if tracking_href else "unavailable",
+                    "href": tracking_href,
+                },
+                {
+                    "id": "retry_payment",
+                    "label": "Reintentar pago",
+                    "status": "ready" if normalized_status in {"failed", "pending_payment"} else "not_required",
+                    "href": None,
+                },
+                {
+                    "id": "contact_support",
+                    "label": "Pedir ayuda",
+                    "status": "ready",
+                    "href": None,
+                },
+            ],
+        },
     }
