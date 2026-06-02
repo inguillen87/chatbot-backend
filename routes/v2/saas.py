@@ -41,6 +41,7 @@ from services.catalog_quality import build_catalog_quality_fallback_payload, bui
 from services.demo_sandbox_contract import build_demo_whatsapp_sandbox_contract, sandbox_context_from_contract
 from services.operational_intelligence import build_operational_dashboard, build_operational_freshness
 from services.provider_platform import build_whatsapp_provider_status, sync_twilio_provider_records
+from services.plan_access import integration_access_payload, plan_allows_full_integrations
 from services.twilio_tech_provider import (
     build_twilio_tech_provider_contract,
     merge_twilio_state,
@@ -90,6 +91,28 @@ def _error_response(message: str, status_code: int, reason_code: str, action_hin
         },
         status_code,
     )
+
+
+def _integration_plan_error(tenant: TenantProfile):
+    access = integration_access_payload(tenant)
+    return _json_response(
+        {
+            **access,
+            "contract_version": "tenant.integration_access.v1",
+            "status_code": 403,
+            "tenant": _tenant_ref(tenant),
+            "retryable": False,
+            "action_hint": "upgrade_to_full",
+            "error": {"code": 403, "message": access["message"]},
+        },
+        403,
+    )
+
+
+def _require_full_integration_plan(tenant: TenantProfile):
+    if plan_allows_full_integrations(tenant):
+        return None
+    return _integration_plan_error(tenant)
 
 
 def _tenant_slug_from_request(path_slug: str | None = None) -> str:
@@ -1351,6 +1374,9 @@ def whatsapp_tech_provider_v2(current_user, tenant_slug: str | None = None):
     tenant, error = _resolve_tenant_or_error(current_user, tenant_slug)
     if error:
         return error
+    plan_error = _require_full_integration_plan(tenant)
+    if plan_error:
+        return plan_error
     return _json_response(build_twilio_tech_provider_contract(tenant, current_app.config))
 
 
@@ -1362,6 +1388,9 @@ def whatsapp_tech_provider_provision_v2(current_user, tenant_slug: str | None = 
     tenant, error = _resolve_tenant_or_error(current_user, tenant_slug)
     if error:
         return error
+    plan_error = _require_full_integration_plan(tenant)
+    if plan_error:
+        return plan_error
 
     payload = request.get_json(silent=True) or {}
     if not isinstance(payload, dict):
@@ -1408,6 +1437,9 @@ def whatsapp_tech_provider_voice_app_v2(current_user, tenant_slug: str | None = 
     tenant, error = _resolve_tenant_or_error(current_user, tenant_slug)
     if error:
         return error
+    plan_error = _require_full_integration_plan(tenant)
+    if plan_error:
+        return plan_error
 
     payload = request.get_json(silent=True) or {}
     if not isinstance(payload, dict):
@@ -1458,6 +1490,9 @@ def whatsapp_tech_provider_embedded_signup_v2(current_user, tenant_slug: str | N
     tenant, error = _resolve_tenant_or_error(current_user, tenant_slug)
     if error:
         return error
+    plan_error = _require_full_integration_plan(tenant)
+    if plan_error:
+        return plan_error
 
     payload = request.get_json(silent=True) or {}
     if not isinstance(payload, dict):
@@ -1509,6 +1544,9 @@ def whatsapp_tech_provider_register_sender_v2(current_user, tenant_slug: str | N
     tenant, error = _resolve_tenant_or_error(current_user, tenant_slug)
     if error:
         return error
+    plan_error = _require_full_integration_plan(tenant)
+    if plan_error:
+        return plan_error
 
     payload = request.get_json(silent=True) or {}
     if not isinstance(payload, dict):
@@ -1569,6 +1607,9 @@ def whatsapp_tech_provider_sender_status_v2(current_user, tenant_slug: str | Non
     tenant, error = _resolve_tenant_or_error(current_user, tenant_slug)
     if error:
         return error
+    plan_error = _require_full_integration_plan(tenant)
+    if plan_error:
+        return plan_error
 
     result = poll_whatsapp_sender_status(tenant, current_app.config)
     merged_state = merge_twilio_state(tenant, result.get("state_patch") or {})

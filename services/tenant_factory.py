@@ -5,6 +5,7 @@ import secrets
 from database import db
 from models import TenantProfile, User, TenantConfig, TwilioNumber
 from flask import current_app
+from services.plan_access import plan_allows_full_integrations
 from services.tenant_whatsapp_onboarding import bootstrap_tenant_whatsapp_onboarding
 from utils.roles import normalize_tenant_type, role_for_tenant_type
 
@@ -129,9 +130,7 @@ def create_tenant_from_template(
     db.session.flush()
 
     # 2. Create Tenant
-    widget_token = secrets.token_urlsafe(32)
     configuracion = {
-        "widget_tokens": [widget_token],
         "tenant_type": tipo,
         "owner_email_generated": owner_email_was_generated,
         "provisioning": {
@@ -147,6 +146,12 @@ def create_tenant_from_template(
         plan=plan,
         configuracion=configuracion
     )
+
+    if plan_allows_full_integrations(tenant):
+        tenant.configuracion = {
+            **(tenant.configuracion or {}),
+            "widget_tokens": [secrets.token_urlsafe(32)],
+        }
 
     if tipo == 'municipio':
         tenant.municipio_id = owner.id
@@ -184,21 +189,34 @@ def create_tenant_from_template(
     # 5. Prepare provider onboarding so every tenant starts with an API-first
     # WhatsApp/Twilio path. This is fail-soft: missing Meta/Twilio/Render env
     # should not block tenant creation.
-    try:
-        bootstrap_tenant_whatsapp_onboarding(
-            tenant,
-            app_config=current_app.config,
-            payload={"display_name": nombre},
-            actor_user=owner,
-            source="tenant_factory",
+    if plan_allows_full_integrations(tenant):
+        try:
+            bootstrap_tenant_whatsapp_onboarding(
+                tenant,
+                app_config=current_app.config,
+                payload={"display_name": nombre},
+                actor_user=owner,
+                source="tenant_factory",
+            )
+        except Exception as exc:  # pragma: no cover - defensive guard for public signup
+            current_app.logger.warning(
+                "Tenant WhatsApp onboarding bootstrap failed for %s: %s",
+                slug,
+                exc,
+                exc_info=True,
+            )
+    else:
+        cfg = tenant.configuracion or {}
+        provisioning = cfg.get("provisioning") if isinstance(cfg.get("provisioning"), dict) else {}
+        provisioning.update(
+            {
+                "status": "plan_required",
+                "blocked_reason": "plan_full_required",
+                "channel_strategy": "upgrade_before_provisioning",
+            }
         )
-    except Exception as exc:  # pragma: no cover - defensive guard for public signup
-        current_app.logger.warning(
-            "Tenant WhatsApp onboarding bootstrap failed for %s: %s",
-            slug,
-            exc,
-            exc_info=True,
-        )
+        cfg["provisioning"] = provisioning
+        tenant.configuracion = cfg
 
     db.session.commit()
 

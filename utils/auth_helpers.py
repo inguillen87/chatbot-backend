@@ -437,7 +437,7 @@ def get_or_create_owner_entity_token(user: Optional[User]) -> Optional[str]:
 def _generate_widget_session_token(owner_user: User) -> Tuple[str, Dict[str, Any]]:
     """Issue a short-lived widget session token for the given owner."""
 
-    now = int(datetime.utcnow().timestamp())
+    now = int(datetime.now(timezone.utc).timestamp())
     minutes = int(current_app.config.get("WIDGET_ACCESS_MINUTES", 45))
     renew_days = int(current_app.config.get("WIDGET_RENEW_DAYS", 7))
 
@@ -470,7 +470,7 @@ def _decode_token_payload(token: Optional[str]) -> dict:
             token,
             current_app.config["SECRET_KEY"],
             algorithms=["HS256"],
-            options={"verify_exp": False},
+            options={"verify_exp": False, "verify_iat": False},
         )
     except Exception:
         return {}

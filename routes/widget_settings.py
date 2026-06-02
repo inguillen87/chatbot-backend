@@ -5,6 +5,7 @@ from flask_cors import cross_origin
 
 from models import TenantProfile, WidgetSettings, db
 from routes.public_resolver import _build_widget_embed_payload
+from services.plan_access import integration_access_payload, plan_allows_full_integrations
 from services.tenant_resolver import TenantResolutionError, resolve_tenant_only
 from routes.auth import solo_admin_requerido, token_requerido
 from utils.tenant import get_current_tenant_profile, get_current_tenant_slug
@@ -41,6 +42,7 @@ def _serialize_settings(settings: WidgetSettings, tenant: TenantProfile) -> dict
     cfg = settings.to_config_dict()
     tenant.widget_settings = settings
     widget_payload = _build_widget_embed_payload(tenant, None)
+    access = integration_access_payload(tenant)
     embed_snippet = widget_payload.get("embed_snippet")
     attrs = widget_payload.get("attributes") or {}
 
@@ -58,13 +60,16 @@ def _serialize_settings(settings: WidgetSettings, tenant: TenantProfile) -> dict
   }
 </style>"""
 
-    embed_code = f"{default_styles}\n{embed_snippet}" if embed_snippet else default_styles
+    embed_code = f"{default_styles}\n{embed_snippet}" if embed_snippet else ""
 
     return {
         **cfg,
         "embed_snippet": embed_snippet,
         "embed_attributes": attrs,
         "embed_code": embed_code,
+        "access": access,
+        "embed_locked": not bool(access.get("enabled")),
+        "upgrade_required": not bool(access.get("enabled")),
     }
 
 
@@ -117,6 +122,22 @@ def manage_settings(current_user):
     settings = tenant.widget_settings or WidgetSettings(tenant=tenant)
 
     if request.method == "PUT":
+        if not plan_allows_full_integrations(tenant):
+            access = integration_access_payload(tenant)
+            return (
+                jsonify(
+                    {
+                        "error": "plan_required",
+                        "reason_code": access.get("reason_code") or "plan_full_required",
+                        "action_hint": "upgrade_to_full",
+                        "message": access["message"],
+                        "access": access,
+                        "upgrade": access.get("upgrade"),
+                    }
+                ),
+                403,
+            )
+
         payload = request.get_json(silent=True) or {}
         settings.primary_color = payload.get("primary_color", settings.primary_color)
         settings.secondary_color = payload.get(

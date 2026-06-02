@@ -3,13 +3,27 @@ from services.integrations.mercadolibre_service import MercadoLibreService
 from services.integrations.tiendanube_service import TiendaNubeService
 from utils.auth_helpers import token_requerido
 from models import IntegrationAccount, db, TenantProfile
+from services.plan_access import integration_access_payload, plan_allows_full_integrations
 
 integrations_bp = Blueprint('integrations', __name__)
 
 
 def _plan_allows_integrations(tenant: TenantProfile) -> bool:
-    plan_key = (tenant.plan or "").strip().lower()
-    return plan_key in ("pro", "full")
+    return plan_allows_full_integrations(tenant)
+
+
+def _integration_plan_required_response(tenant: TenantProfile):
+    access = integration_access_payload(tenant)
+    return (
+        jsonify(
+            {
+                "error": "plan_required",
+                "message": access["message"],
+                "access": access,
+            }
+        ),
+        403,
+    )
 
 
 @integrations_bp.route('/<provider>/connect', methods=['POST'])
@@ -20,15 +34,7 @@ def connect(user, provider):
     if not tenant:
         return jsonify({"error": "Tenant required"}), 400
     if not _plan_allows_integrations(tenant):
-        return (
-            jsonify(
-                {
-                    "error": "plan_required",
-                    "message": "Integraciones disponibles para planes Pro/Full.",
-                }
-            ),
-            403,
-        )
+        return _integration_plan_required_response(tenant)
 
     redirect_uri = f"{request.host_url}api/integrations/{provider}/callback"
 
@@ -53,6 +59,12 @@ def callback(provider):
     redirect_uri = f"{request.host_url}api/integrations/{provider}/callback"
 
     try:
+        tenant = TenantProfile.query.get(state)
+        if not tenant:
+            return jsonify({"error": "Tenant not found"}), 404
+        if not _plan_allows_integrations(tenant):
+            return jsonify(integration_access_payload(tenant)), 403
+
         if provider == "mercadolibre":
             MercadoLibreService.handle_callback(state, code, redirect_uri)
         elif provider == "tiendanube":
@@ -94,6 +106,8 @@ def preview_integration(current_user, provider):
     tenant = g.tenant_profile
     if not tenant:
         return jsonify({"error": "Tenant required"}), 400
+    if not _plan_allows_integrations(tenant):
+        return _integration_plan_required_response(tenant)
 
     # Validate provider
     if provider not in ['mercadolibre', 'tiendanube']:

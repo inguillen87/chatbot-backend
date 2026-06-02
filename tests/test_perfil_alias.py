@@ -39,7 +39,9 @@ def test_perfil_alias_works(client):
     assert json_data["session_token"] == normalized_token
     assert json_data["session_kind"] == "panel"
     assert json_data["widget_session_active"] is False
-    assert json_data["widget_embed_token"] == "perfil-alias-token"
+    assert json_data["widget_embed_token"] is None
+    assert json_data["widget_embed_token_kind"] == "plan_required"
+    assert json_data["integration_access"]["enabled"] is False
     assert json_data["owner_token"] == "perfil-alias-token"
     assert json_data["widget_token_cookie_name"] == client.application.config.get("WIDGET_TOKEN_COOKIE_NAME", "widget_token")
     assert json_data["session_expires_at"]
@@ -105,6 +107,20 @@ def test_perfil_returns_owner_token_for_employee(client):
         rol="admin", rubro_id=rubro.id, tipo_chat="pyme",
     )
     owner.set_password("pw")
+    db.session.add(owner)
+    db.session.flush()
+
+    tenant = TenantProfile(
+        slug="owner-employee-full",
+        nombre="Owner Employee Full",
+        tipo="pyme",
+        plan="full",
+        pyme_id=owner.id,
+    )
+    db.session.add(tenant)
+    db.session.flush()
+    owner.tenant_id = tenant.id
+    owner.tenant_slug = tenant.slug
     db.session.add(owner)
     db.session.commit()
 
@@ -202,6 +218,20 @@ def test_perfil_accepts_static_entity_token_and_sets_widget_session(client):
     )
     owner.set_password("pw")
     db.session.add(owner)
+    db.session.flush()
+
+    tenant = TenantProfile(
+        slug="static-token-full",
+        nombre="Static Token Full",
+        tipo="pyme",
+        plan="full",
+        pyme_id=owner.id,
+    )
+    db.session.add(tenant)
+    db.session.flush()
+    owner.tenant_id = tenant.id
+    owner.tenant_slug = tenant.slug
+    db.session.add(owner)
     db.session.commit()
 
     # Primer llamado con el token estático: debe emitir un JWT de sesión de widget.
@@ -212,7 +242,8 @@ def test_perfil_accepts_static_entity_token_and_sets_widget_session(client):
     auth_token = data["auth_token"]
     assert auth_token and auth_token != owner.token
     assert auth_token.count('.') == 2
-    assert data["widget_embed_token"] == owner.token
+    assert data["widget_embed_token"] is None
+    assert data["widget_embed_token_kind"] == "plan_required"
     assert data["owner_token"] == owner.token
     assert data["session_token"] == auth_token
     assert data["session_kind"] == "widget"
@@ -363,7 +394,8 @@ def test_perfil_accepts_demo_anon_token(client):
     assert response.status_code == 200
     data = response.get_json()
     assert data["entity_token"] == owner.token
-    assert data["widget_embed_token"] == owner.token
+    assert data["widget_embed_token"] is None
+    assert data["widget_embed_token_kind"] == "plan_required"
     assert data["owner_token"] == owner.token
     assert data["session_kind"] == "widget"
     assert data["widget_session_active"] is True
@@ -470,9 +502,9 @@ def test_legacy_perfil_accepts_demo_token(client, monkeypatch):
     data = response.get_json()
 
     assert data["entity_token"] == owner.token
-    assert data["widget_embed_token"] == owner.token
+    assert data["widget_embed_token"] is None
     assert data["owner_token"] == owner.token
-    assert data["widget_embed_token_kind"] == "entity"
+    assert data["widget_embed_token_kind"] == "plan_required"
     assert data["widget_session_active"] is True
     assert data["session_kind"] == "widget"
     assert data["session_token"] and data["session_token"].count('.') == 2

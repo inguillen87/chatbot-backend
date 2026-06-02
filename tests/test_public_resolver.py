@@ -36,6 +36,7 @@ class PublicResolverTest(unittest.TestCase):
             slug="municipalidad-de-junin",
             nombre="Municipalidad de Junín",
             tipo="municipio",
+            plan="full",
             municipio_id=self.owner.id,
             logo_url="https://example.com/logo.png",
             configuracion={"widget_tokens": "demo-token"},
@@ -81,6 +82,7 @@ class PublicResolverTest(unittest.TestCase):
             slug="catalogo-demo",
             nombre="Catálogo Demo",
             tipo="pyme",
+            plan="full",
             pyme_id=other_owner.id,
             dominio="otra-empresa.com",
             configuracion={"widget_tokens": ["otro-token"]},
@@ -198,6 +200,26 @@ class PublicResolverTest(unittest.TestCase):
                 for header in cookie_headers
             )
         )
+
+    def test_tenant_profile_does_not_expose_widget_token_for_locked_plan(self):
+        self.tenant.plan = "free"
+        self.tenant.configuracion = {"widget_tokens": ["demo-token"]}
+        db.session.add(self.tenant)
+        db.session.commit()
+
+        response = self.client.get(
+            f"/api/public/tenant-profile?tenant={self.tenant.slug}",
+            headers={"X-Widget-Token": "demo-token"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload["tenant"]["embed_locked"])
+        self.assertEqual(payload["tenant"]["integration_access"]["reason_code"], "plan_full_required")
+        self.assertIsNone(payload.get("widget_token"))
+        widget_cookie_name = self.app.config.get("WIDGET_TOKEN_COOKIE_NAME", "widget_token")
+        cookie_headers = response.headers.getlist("Set-Cookie")
+        self.assertFalse(any(header.startswith(f"{widget_cookie_name}=") for header in cookie_headers))
 
     def test_tenant_profile_replaces_outdated_widget_token(self):
         # Simular una rotación: el widget envía un token viejo que ya no está en la config

@@ -33,6 +33,8 @@ def _create_tenant_with_owner():
         nombre="Demo Municipio",
         tipo="municipio",
         municipio=owner,
+        plan="full",
+        configuracion={"widget_tokens": [owner.token]},
     )
     db.session.add(tenant)
     db.session.commit()
@@ -71,6 +73,32 @@ class WidgetSettingsTests(unittest.TestCase):
         self.assertIn("embed_code", data)
         self.assertIn("data-singleton", data["embed_code"])
         self.assertIn(self.tenant.slug, data["embed_code"])
+
+    def test_widget_settings_blocks_embed_and_update_without_full_plan(self):
+        self.tenant.plan = "free"
+        self.tenant.configuracion = {}
+        db.session.add(self.tenant)
+        db.session.commit()
+
+        resp = self.client.get(
+            "/widget-settings",
+            headers={"Authorization": self.owner.token},
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertTrue(data["embed_locked"])
+        self.assertEqual(data["embed_code"], "")
+        self.assertEqual(data["access"]["reason_code"], "plan_full_required")
+
+        put = self.client.put(
+            "/widget-settings",
+            json={"primary_color": "#ff0000"},
+            headers={"Authorization": self.owner.token},
+        )
+        self.assertEqual(put.status_code, 403)
+        payload = put.get_json()
+        self.assertEqual(payload["error"], "plan_required")
+        self.assertEqual(payload["reason_code"], "plan_full_required")
 
     def test_widget_settings_update_and_widget_config_merge(self):
         payload = {

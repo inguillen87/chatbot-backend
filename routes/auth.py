@@ -106,6 +106,7 @@ from services.plan_config import (
     serialize_plan_catalog,
     serialize_plan_for_response,
 )
+from services.plan_access import integration_access_payload, plan_allows_full_integrations
 from services.rewards import recompensas_service
 from services.user_service import (
     change_user_email,
@@ -325,10 +326,25 @@ def _include_entity_token_fields(
         payload.setdefault("entity_token", token_value)
         payload.setdefault("entityToken", token_value)
         payload.setdefault("owner_token", token_value)
-        payload.setdefault("widget_embed_token", token_value)
-        payload.setdefault("widget_embed_token_kind", "entity")
 
     return token_value
+
+
+def _integration_plan_required_payload(
+    tenant: Optional[TenantProfile],
+    *,
+    contract_version: str | None = None,
+) -> Dict[str, Any]:
+    access = integration_access_payload(tenant)
+    return {
+        "contract_version": contract_version or access.get("contract_version"),
+        "error": "plan_required",
+        "reason_code": access.get("reason_code") or "plan_full_required",
+        "action_hint": "upgrade_to_full",
+        "message": access.get("message"),
+        "access": access,
+        "upgrade": access.get("upgrade"),
+    }
 
 
 def _generate_email_verification_token() -> str:
@@ -522,6 +538,9 @@ def build_profile_payload(user: User) -> Dict[str, Any]:
     plan_metadata = get_plan_metadata(profile_data.get("plan"))
     profile_data["plan_detalle"] = serialize_plan_for_response(plan_metadata)
     profile_data["planes_disponibles"] = serialize_plan_catalog()
+    integration_access = integration_access_payload(tenant_profile)
+    profile_data["integration_access"] = integration_access
+    profile_data["integrations_locked"] = not bool(integration_access.get("enabled"))
     tenant_slug_value = (
         getattr(user, "tenant_slug", None)
         or getattr(tenant_profile, "slug", None)
@@ -564,13 +583,21 @@ def build_profile_payload(user: User) -> Dict[str, Any]:
         profile_data["entity_token"] = owner_token
         profile_data["entityToken"] = owner_token
         profile_data["owner_token"] = owner_token
-        profile_data["widget_embed_token"] = owner_token
-        profile_data["widget_embed_token_kind"] = "entity"
+        if integration_access.get("enabled"):
+            profile_data["widget_embed_token"] = owner_token
+            profile_data["widget_embed_token_kind"] = "entity"
+        else:
+            profile_data["widget_embed_token"] = None
+            profile_data["widget_embed_token_kind"] = "plan_required"
     elif getattr(user, "token", None) and not _looks_like_jwt(user.token):
         profile_data["entity_token"] = user.token
         profile_data.setdefault("entityToken", user.token)
-        profile_data.setdefault("widget_embed_token", user.token)
-        profile_data.setdefault("widget_embed_token_kind", "legacy")
+        if integration_access.get("enabled"):
+            profile_data.setdefault("widget_embed_token", user.token)
+            profile_data.setdefault("widget_embed_token_kind", "legacy")
+        else:
+            profile_data["widget_embed_token"] = None
+            profile_data["widget_embed_token_kind"] = "plan_required"
 
     widget_cookie_name = current_app.config.get("WIDGET_TOKEN_COOKIE_NAME", "widget_token")
     profile_data["widget_token_cookie_name"] = widget_cookie_name
@@ -581,7 +608,7 @@ def build_profile_payload(user: User) -> Dict[str, Any]:
 
 
 def _now():
-    return int(datetime.utcnow().timestamp())
+    return int(datetime.now(timezone.utc).timestamp())
 
 
 def _conf(k, d):
@@ -602,9 +629,10 @@ def _sign(payload, minutes, renew_days=None):
 
     payload = dict(payload)
     payload.setdefault("session_kind", "widget")
-    payload.update({"iat": _now(), "exp": _now() + minutes * 60})
+    now_ts = _now()
+    payload.update({"iat": now_ts - 1, "exp": now_ts + minutes * 60})
     if renew_days:
-        payload["renew_until"] = _now() + renew_days * 86400
+        payload["renew_until"] = now_ts + renew_days * 86400
     tok = jwt.encode(payload, widget_private_key, algorithm=widget_alg, headers={"kid": widget_kid})
     return tok, payload["exp"]
 
@@ -621,7 +649,7 @@ def _refresh(tok, minutes):
             tok,
             widget_public_key,
             algorithms=[widget_alg],
-            options={"verify_exp": False},
+            options={"verify_exp": False, "verify_iat": False},
         )
     except Exception:
         return None
@@ -813,7 +841,16 @@ def widget_bootstrap():
 def widget_token():
     if request.method == "OPTIONS":
         return _add_cors(make_response("", 200))
-    token = obtener_token()
+    raw_authorization = (request.headers.get("Authorization") or "").strip()
+    if raw_authorization.lower().startswith("bearer "):
+        raw_authorization = raw_authorization[7:].strip()
+    token = (
+        (request.headers.get("X-Owner-Token") or "").strip()
+        or (request.headers.get("X-Entity-Token") or "").strip()
+        or raw_authorization
+        or (request.args.get("owner_token") or "").strip()
+        or obtener_token()
+    )
     owner_user = None
     if token:
         jwt_user = user_from_token(token)
@@ -828,6 +865,18 @@ def widget_token():
     if not owner_user:
         resp = _add_cors(jsonify({"error": "invalid_owner"}))
         return resp, 401
+
+    tenant = _resolve_tenant_for_user(owner_user) or _tenant_for_owner(owner_user)
+    if not plan_allows_full_integrations(tenant):
+        resp = _add_cors(
+            jsonify(
+                _integration_plan_required_payload(
+                    tenant,
+                    contract_version=WIDGET_TOKEN_CONTRACT_VERSION,
+                )
+            )
+        )
+        return resp, 403
 
     # Reutilizar un token de widget ya emitido para este owner si sigue siendo válido.
     widget_cookie_name = current_app.config.get("WIDGET_TOKEN_COOKIE_NAME", "widget_token")
@@ -844,6 +893,7 @@ def widget_token():
                 existing_widget_token,
                 widget_public_key,
                 algorithms=[widget_alg],
+                options={"verify_iat": False},
             )
         except Exception:
             payload = None
@@ -852,7 +902,7 @@ def widget_token():
             exp_ts = payload.get("exp")
             user_id = payload.get("user_id")
             if exp_ts and user_id == owner_user.id:
-                remaining = int(exp_ts - datetime.utcnow().timestamp())
+                remaining = int(exp_ts - _now())
                 if remaining > 0:
                     return _add_cors(
                         jsonify(
@@ -893,6 +943,40 @@ def widget_refresh():
     if not tok:
         resp = _add_cors(jsonify({"error": "missing_token"}))
         return resp, 401
+
+    widget_alg = str(current_app.config.get("WIDGET_JWT_ALG", "HS256")).upper()
+    widget_public_key = (
+        current_app.config.get("WIDGET_JWT_PUBLIC_KEY")
+        or current_app.config.get("WIDGET_JWT_SECRET")
+        or current_app.config.get("SECRET_KEY")
+    )
+    try:
+        decoded_payload = jwt.decode(
+            tok,
+            widget_public_key,
+            algorithms=[widget_alg],
+            options={"verify_exp": False, "verify_iat": False},
+        )
+    except Exception:
+        decoded_payload = None
+
+    if not decoded_payload or decoded_payload.get("session_kind") != "widget":
+        resp = _add_cors(jsonify({"error": "invalid_widget_token"}))
+        return resp, 401
+
+    owner_user = _user_query().get(decoded_payload.get("user_id"))
+    tenant = _resolve_tenant_for_user(owner_user) or _tenant_for_owner(owner_user)
+    if not plan_allows_full_integrations(tenant):
+        resp = _add_cors(
+            jsonify(
+                _integration_plan_required_payload(
+                    tenant,
+                    contract_version=WIDGET_TOKEN_CONTRACT_VERSION,
+                )
+            )
+        )
+        return resp, 403
+
     minutes = _conf("WIDGET_ACCESS_MINUTES", 45)
     ntok = _refresh(tok, minutes)
     if not ntok:
@@ -1819,6 +1903,18 @@ def regenerar_token_integracion(user):
         parent = _user_query().get(empresa_id)
         if parent:
             owner_user = parent
+
+    tenant = _resolve_tenant_for_user(owner_user) or _tenant_for_owner(owner_user)
+    if not plan_allows_full_integrations(tenant):
+        return (
+            jsonify(
+                _integration_plan_required_payload(
+                    tenant,
+                    contract_version="auth.integration_token.v1",
+                )
+            ),
+            403,
+        )
 
     try:
         owner_user.entity_token = None

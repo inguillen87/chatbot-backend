@@ -1,6 +1,7 @@
 from flask import Blueprint, request, jsonify, g
 from utils.auth_helpers import token_requerido
 from models import TenantProfile, User
+from services.plan_access import integration_access_payload, plan_allows_full_integrations
 from services.widget_config_service import WidgetConfigService
 
 widget_config_bp = Blueprint('widget_config_bp', __name__)
@@ -28,12 +29,39 @@ def _check_auth(current_user, tenant):
 
     return False
 
+
+def _plan_required_response(tenant):
+    access = integration_access_payload(tenant)
+    return jsonify(
+        {
+            "ok": False,
+            "contract_version": "tenant.integration_access.v1",
+            "tenant_slug": tenant.slug,
+            "reason_code": "plan_full_required",
+            "action_hint": "upgrade_to_full",
+            "message": access.get("message"),
+            "access": access,
+            "upgrade": access.get("upgrade"),
+            "frontend_contract": {
+                "render_as": "integration_locked_state",
+                "primary_action": "upgrade_to_full",
+            },
+        }
+    ), 403
+
 # --- Public Endpoints ---
 
 @widget_config_bp.route('/api/public/tenants/<slug>/saas-config', methods=['GET', 'OPTIONS'])
 def public_get_config(slug):
     if request.method == 'OPTIONS':
         return jsonify({"status": "ok"}), 200
+
+    tenant = _resolve_tenant_by_slug(slug)
+    if not tenant:
+        return jsonify({"error": "Tenant config not found"}), 404
+
+    if not plan_allows_full_integrations(tenant):
+        return _plan_required_response(tenant)
 
     config = WidgetConfigService.get_public_config(slug)
     if not config:
@@ -54,6 +82,10 @@ def admin_get_config(current_user, slug):
         return jsonify({"error": "Unauthorized"}), 403
 
     config_bundle = WidgetConfigService.get_admin_config(slug)
+    if isinstance(config_bundle, dict):
+        access = integration_access_payload(tenant)
+        config_bundle["access"] = access
+        config_bundle["embed_locked"] = not access.get("enabled")
     return jsonify(config_bundle)
 
 @widget_config_bp.route('/api/admin/tenants/<slug>/widget-config', methods=['PUT'])
@@ -65,6 +97,8 @@ def admin_update_draft(current_user, slug):
 
     if not _check_auth(current_user, tenant):
         return jsonify({"error": "Unauthorized"}), 403
+    if not plan_allows_full_integrations(tenant):
+        return _plan_required_response(tenant)
 
     payload = request.get_json() or {}
     try:
@@ -82,6 +116,8 @@ def admin_publish_config(current_user, slug):
 
     if not _check_auth(current_user, tenant):
         return jsonify({"error": "Unauthorized"}), 403
+    if not plan_allows_full_integrations(tenant):
+        return _plan_required_response(tenant)
 
     try:
         live_config = WidgetConfigService.publish_draft(slug, current_user.id)
@@ -98,6 +134,8 @@ def admin_preview_config(current_user, slug):
 
     if not _check_auth(current_user, tenant):
         return jsonify({"error": "Unauthorized"}), 403
+    if not plan_allows_full_integrations(tenant):
+        return _plan_required_response(tenant)
 
     payload = request.get_json() or {}
     # Just sanitize and return, don't save

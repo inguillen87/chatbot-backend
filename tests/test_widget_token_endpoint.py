@@ -34,6 +34,7 @@ class WidgetTokenEndpointTests(unittest.TestCase):
             slug="demo-tenant",
             nombre="Demo Tenant",
             tipo="municipio",
+            plan="full",
             municipio_id=cls.user.id,
             configuracion={"widget_tokens": ["tenant-widget-token"]},
         )
@@ -188,6 +189,50 @@ class WidgetTokenEndpointTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         payload = resp.get_json()
         self.assertEqual(payload.get("id"), self.user.id)
+
+    def test_widget_token_blocks_free_plan(self):
+        self.tenant.plan = "free"
+        db.session.add(self.tenant)
+        db.session.commit()
+
+        try:
+            resp = self.client.post(
+                "/auth/widget-token",
+                headers={"Authorization": self.user.token, "Origin": "https://example.com"},
+            )
+            self.assertEqual(resp.status_code, 403)
+            payload = resp.get_json()
+            self.assertEqual(payload["error"], "plan_required")
+            self.assertEqual(payload["reason_code"], "plan_full_required")
+        finally:
+            self.tenant.plan = "full"
+            db.session.add(self.tenant)
+            db.session.commit()
+
+    def test_widget_refresh_blocks_after_plan_downgrade(self):
+        token = self.client.post(
+            "/auth/widget-token",
+            headers={"Authorization": self.user.token, "Origin": "https://example.com"},
+        ).get_json()["token"]
+
+        self.tenant.plan = "free"
+        db.session.add(self.tenant)
+        db.session.commit()
+
+        try:
+            resp = self.client.post(
+                "/auth/widget-refresh",
+                json={"token": token},
+                headers={"Origin": "https://example.com"},
+            )
+            self.assertEqual(resp.status_code, 403)
+            payload = resp.get_json()
+            self.assertEqual(payload["error"], "plan_required")
+            self.assertEqual(payload["reason_code"], "plan_full_required")
+        finally:
+            self.tenant.plan = "full"
+            db.session.add(self.tenant)
+            db.session.commit()
 
 
 if __name__ == "__main__":

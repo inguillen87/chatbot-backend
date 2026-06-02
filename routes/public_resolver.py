@@ -47,6 +47,7 @@ from services.realtime_voice_profiles import (
     resolve_realtime_model,
     resolve_realtime_voice,
 )
+from services.plan_access import integration_access_payload
 
 public_resolver_bp = Blueprint("public_resolver_bp", __name__, url_prefix="/api/public")
 public_municipios_bp = Blueprint("public_municipios_bp", __name__)
@@ -893,6 +894,8 @@ def _quick_menu_for_widget(tenant: TenantProfile) -> list[dict]:
 def _widget_token_allowed_for_tenant(tenant: TenantProfile, token: str | None) -> bool:
     if not token:
         return False
+    if not integration_access_payload(tenant).get("enabled"):
+        return False
 
     cfg = _normalize_widget_config(tenant.configuracion, tenant.widget_settings)
     tokens_cfg = cfg.get("widget_tokens")
@@ -1461,7 +1464,9 @@ def realtime_action_event():
 def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | None) -> dict:
     """Expose a rich embed configuration so `integracion.tsx` can render a SaaS builder."""
 
-    canonical_token = _canonical_widget_token(tenant, provided_token)
+    integration_access = integration_access_payload(tenant)
+    widget_embed_enabled = bool(integration_access.get("enabled"))
+    canonical_token = _canonical_widget_token(tenant, provided_token) if widget_embed_enabled else None
     if canonical_token:
         cfg = tenant.configuracion or {}
         tokens_cfg = cfg.get("widget_tokens")
@@ -1613,10 +1618,20 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
 
     # Remove None values so the frontend only renders concrete attributes
     attrs = {k: v for k, v in attrs.items() if v is not None}
+    if not widget_embed_enabled:
+        attrs = {
+            "data-tenant": tenant.slug,
+            "data-tenant-slug": tenant.slug,
+            "data-widget-locked": "true",
+        }
 
     # Prebuild a copy-paste snippet for convenience
     attr_snippet = " ".join(f"{k}='{v}'" for k, v in attrs.items())
-    embed_snippet = f"<script src='{script_url}' async {attr_snippet}></script>"
+    embed_snippet = (
+        f"<script src='{script_url}' async {attr_snippet}></script>"
+        if widget_embed_enabled
+        else None
+    )
 
     support_channels = _support_channels_payload(tenant, cfg)
     realtime_contract = _socket_realtime_contract(cfg)
@@ -1676,6 +1691,8 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
             "ambient_particles": ambient_particles,
         },
         "embed_snippet": embed_snippet,
+        "embed_enabled": widget_embed_enabled,
+        "access": integration_access,
         "api_base_url": api_base_url,
         "iframe_url": iframe_url,
         "attributes": attrs,
@@ -1751,6 +1768,8 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
         "script_url": script_url,
         "attributes": attrs,
         "embed_snippet": embed_snippet,
+        "embed_enabled": widget_embed_enabled,
+        "access": integration_access,
         "api_base_url": api_base_url,
         "iframe_url": iframe_url,
         "theme": theme,
@@ -2143,7 +2162,12 @@ def tenant_profile():
 
     tenant_info["config"] = config
 
-    canonical_widget_token = _canonical_widget_token(tenant, widget_token)
+    integration_access = integration_access_payload(tenant)
+    canonical_widget_token = (
+        _canonical_widget_token(tenant, widget_token)
+        if integration_access.get("enabled")
+        else None
+    )
 
     if explicit_slug_failure:
         return jsonify(
@@ -2156,6 +2180,8 @@ def tenant_profile():
     payload = {
         "contract_version": TENANT_PROFILE_CONTRACT_VERSION,
         "tenant": tenant_info,
+        "integration_access": integration_access,
+        "embed_locked": not bool(integration_access.get("enabled")),
     }
     if canonical_widget_token:
         payload["widget_token"] = canonical_widget_token

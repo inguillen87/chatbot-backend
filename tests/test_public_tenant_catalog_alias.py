@@ -8,7 +8,7 @@ def _seed_pyme_tenant_with_catalog():
     db.session.add(owner)
     db.session.commit()
 
-    tenant = TenantProfile(slug="tienda-demo", nombre="Tienda Demo", tipo="pyme", pyme_id=owner.id)
+    tenant = TenantProfile(slug="tienda-demo", nombre="Tienda Demo", tipo="pyme", plan="full", pyme_id=owner.id)
     db.session.add(tenant)
     db.session.commit()
 
@@ -37,6 +37,7 @@ def _seed_municipio_tenant_with_catalog():
         slug="municipio",
         nombre="Municipio de Junin",
         tipo="municipio",
+        plan="full",
         municipio_id=owner.id,
         vertical="gobierno",
     )
@@ -200,6 +201,7 @@ def test_explicit_domain_slug_wins_over_stale_widget_token(client):
         slug="stale-municipio",
         nombre="Stale Municipio",
         tipo="municipio",
+        plan="full",
         municipio_id=stale_owner.id,
         configuracion={"widget_tokens": ["stale-token"]},
     )
@@ -290,6 +292,31 @@ def test_widget_commerce_session_returns_embedded_operating_contract(client):
     assert body["frontend_contract"]["render_as"] == "embedded_tenant_operating_widget"
     assert resp.headers.get("Access-Control-Allow-Origin") == "https://www.chatboc.ar"
     assert resp.headers.get("X-Request-Id")
+
+
+def test_widget_commerce_session_requires_full_plan(client):
+    tenant = _seed_pyme_tenant_with_catalog()
+    tenant.plan = "free"
+    db.session.add(tenant)
+    db.session.commit()
+
+    resp = client.get(
+        "/api/public/widget-commerce-session",
+        query_string={"tenant_slug": tenant.slug},
+        headers={
+            "Origin": "https://www.chatboc.ar",
+            "X-Chat-Session-Id": "chat_public_locked",
+            "X-Anon-Id": "anon_public_locked",
+        },
+    )
+
+    assert resp.status_code == 403
+    body = resp.get_json()
+    assert body["error"] == "plan_required"
+    assert body["reason_code"] == "plan_full_required"
+    assert body["access"]["enabled"] is False
+    assert body["frontend_contract"]["render_as"] == "integration_locked"
+    assert resp.headers.get("Access-Control-Allow-Origin") == "https://www.chatboc.ar"
 
 
 def test_municipio_widget_external_contract_enables_portal_and_real_catalog_cart(client):

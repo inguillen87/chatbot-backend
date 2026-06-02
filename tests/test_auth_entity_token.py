@@ -1,7 +1,7 @@
 import json
 
 from app import db
-from models import Rubro, User
+from models import Rubro, TenantProfile, User
 
 
 def test_login_returns_persistent_entity_token(client):
@@ -19,6 +19,20 @@ def test_login_returns_persistent_entity_token(client):
         token="static-entity-token",
     )
     user.set_password("123456")
+    db.session.add(user)
+    db.session.flush()
+
+    tenant = TenantProfile(
+        slug="mauricio-full-login",
+        nombre="Mauricio Full Login",
+        tipo="municipio",
+        plan="full",
+        municipio_id=user.id,
+    )
+    db.session.add(tenant)
+    db.session.flush()
+    user.tenant_id = tenant.id
+    user.tenant_slug = tenant.slug
     db.session.add(user)
     db.session.commit()
 

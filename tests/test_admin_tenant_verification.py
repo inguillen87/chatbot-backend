@@ -36,16 +36,15 @@ class TestAdminTenantVerification(unittest.TestCase):
         self.assertEqual(response.status_code, 201)
         data = response.get_json()
         self.assertEqual(data['slug'], "new-city-verify")
-        self.assertIn("whatsapp_onboarding", data)
-        self.assertEqual(data["whatsapp_onboarding"]["provider"], "twilio_tech_provider")
-        self.assertEqual(
-            data["whatsapp_onboarding"]["connect"]["tech_provider_endpoint"],
-            "/api/v2/tenants/new-city-verify/whatsapp/tech-provider",
-        )
+        self.assertEqual(data["plan"], "free")
+        self.assertFalse(data["integration_access"]["enabled"])
+        self.assertEqual(data["integration_access"]["reason_code"], "plan_full_required")
 
         tenant = TenantProfile.query.filter_by(slug="new-city-verify").first()
         self.assertIsNotNone(tenant)
-        self.assertIn("whatsapp_onboarding", tenant.configuracion)
+        self.assertEqual(tenant.plan, "free")
+        self.assertNotIn("whatsapp_onboarding", tenant.configuracion or {})
+        self.assertEqual((tenant.configuracion or {})["provisioning"]["status"], "plan_required")
 
     def test_create_colegio_without_owner_email_creates_synthetic_admin(self):
         response = self.client.post(
@@ -91,13 +90,13 @@ class TestAdminTenantVerification(unittest.TestCase):
 
         self.assertEqual(response.status_code, 201, response.get_json())
         payload = response.get_json()
-        onboarding = payload["whatsapp_onboarding"]
-        self.assertTrue(onboarding["auto_provision_enabled"])
-        self.assertEqual(onboarding["connect"]["embedded_signup_endpoint"], "/api/v2/tenants/ferreteria-demo/whatsapp/tech-provider/embedded-signup")
+        self.assertFalse(payload["integration_access"]["enabled"])
+        self.assertEqual(payload["integration_access"]["reason_code"], "plan_full_required")
         tenant = TenantProfile.query.filter_by(slug="ferreteria-demo").first()
-        self.assertEqual(tenant.configuracion["twilio_tech_provider"]["status"], "provisioning_plan_ready")
-        self.assertEqual(tenant.configuracion["twilio_tech_provider"]["voice_vertical"], "pyme")
-        self.assertEqual(tenant.configuracion["twilio_tech_provider"]["voice_intent"], "atencion")
+        self.assertNotIn("twilio_tech_provider", tenant.configuracion or {})
+        self.assertNotIn("whatsapp_onboarding", tenant.configuracion or {})
+        self.assertEqual(tenant.configuracion["provisioning"]["status"], "plan_required")
+        self.assertEqual(tenant.configuracion["provisioning"]["blocked_reason"], "plan_full_required")
 
     def test_create_employee_with_tenant_context(self):
         # 1. Create Admin User first

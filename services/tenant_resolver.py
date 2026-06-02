@@ -157,6 +157,21 @@ def _tenant_by_widget_token(token: Optional[str]) -> Optional[TenantProfile]:
 def _should_register_widget_token(tenant: Optional[TenantProfile], token: Optional[str], preferred_slug: Optional[str]) -> bool:
     if not tenant or not token:
         return False
+    try:
+        from services.plan_access import plan_allows_full_integrations
+
+        if not plan_allows_full_integrations(tenant):
+            logger.warning(
+                "[tenant_resolver] Blocking widget_token registration for tenant '%s' without full integration access",
+                getattr(tenant, "slug", None),
+            )
+            return False
+    except Exception as exc:
+        logger.warning(
+            "[tenant_resolver] Blocking widget_token registration because plan access could not be verified: %s",
+            exc,
+        )
+        return False
     if not preferred_slug:
         return True
     token_tenant = _tenant_by_widget_token(token)

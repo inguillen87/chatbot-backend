@@ -709,6 +709,7 @@ def list_news():
 @cross_origin(**_cors_kwargs(["GET"]))
 def public_tenant_widget_config(tenant_slug: str):
     from services.tenant_resolver import resolve_tenant_only, TenantResolutionError
+    from services.plan_access import integration_access_payload
     from routes.public_resolver import _build_widget_embed_payload
 
     try:
@@ -845,17 +846,24 @@ def public_tenant_widget_config(tenant_slug: str):
     if not entity_token:
         entity_token = tenant.slug
 
+    access = integration_access_payload(tenant)
     widget_payload = _build_widget_embed_payload(tenant, entity_token)
 
-    public_token = widget_payload.get("widget_token") or entity_token
+    integration_enabled = bool(access.get("enabled") and widget_payload.get("embed_enabled", True))
+    public_token = (widget_payload.get("widget_token") or entity_token) if integration_enabled else None
     builder_config = widget_payload.get("builder_config") if isinstance(widget_payload.get("builder_config"), dict) else {}
     quick_menu = widget_payload.get("quick_menu") or builder_config.get("quick_menu") or []
     if "quick_menu" not in builder_config:
         builder_config = {**builder_config, "quick_menu": quick_menu}
+    builder_config = {**builder_config, "access": access, "embed_enabled": integration_enabled}
     widget = {**widget_payload, "default_open": default_open, "quick_menu": quick_menu, "builder_config": builder_config}
+    widget["access"] = access
+    widget["embed_locked"] = not integration_enabled
 
     return jsonify({
         "contract_version": "public.widget_config.v1",
+        "access": access,
+        "embed_locked": not integration_enabled,
         "tenant": {
             "id": tenant.id,
             "slug": tenant.slug,
@@ -873,7 +881,7 @@ def public_tenant_widget_config(tenant_slug: str):
         "logo_url": tenant.logo_url or (widget_cfg.logo_url if widget_cfg else "") or "",
         "theme": theme,
         "theme_config": theme_config,
-        "features": features,
+        "features": {**features, "integrations": integration_enabled, "widget_embed": integration_enabled},
         "contact": contact,
         "interaction": interaction,
         "cta_messages": cta_messages,
@@ -881,7 +889,7 @@ def public_tenant_widget_config(tenant_slug: str):
         "quick_menu": quick_menu,
         "suppress_global_widget": False,
         "integration_preview": False,
-        "embed_snippet": widget_payload.get("embed_snippet"),
+        "embed_snippet": widget_payload.get("embed_snippet") if integration_enabled else None,
         "builder_config": builder_config,
         "embed_attributes": widget_payload.get("attributes", {}),
         "owner_token": public_token,

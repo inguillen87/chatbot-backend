@@ -24,6 +24,7 @@ from routes.catalogo import _formatear_producto
 from routes.carrito import _product_query_for_tenant
 from middleware.tenant_context import require_tenant
 from services.catalog_seed import ensure_seed_catalog
+from services.plan_access import integration_access_payload, plan_allows_full_integrations
 from services.tenant_resolver import tenant_slug_from_public_referrer, tenant_slug_lookup_candidates
 from services.user_merge import merge_anon_into_user
 
@@ -126,6 +127,32 @@ def _public_json(payload: dict, status: int = 200):
     response.status_code = status
     response.headers["X-Request-Id"] = request_id
     return _add_cors_headers(response)
+
+
+def _public_widget_plan_required_payload(tenant: TenantProfile, contract_version: str) -> tuple[dict, int]:
+    access = integration_access_payload(tenant)
+    return {
+        "ok": False,
+        "contract_version": contract_version,
+        "tenant_slug": tenant.slug,
+        "status_code": 403,
+        "reason_code": "plan_full_required",
+        "action_hint": "upgrade_to_full",
+        "message": access.get("message"),
+        "access": access,
+        "upgrade": access.get("upgrade"),
+        "frontend_contract": {
+            "render_as": "integration_locked_state",
+            "primary_action": "upgrade_to_full",
+        },
+    }, 403
+
+
+def _public_widget_integration_allowed(tenant: TenantProfile, contract_version: str) -> tuple[bool, dict | None, int | None]:
+    if plan_allows_full_integrations(tenant):
+        return True, None, None
+    payload, status = _public_widget_plan_required_payload(tenant, contract_version)
+    return False, payload, status
 
 
 def _iso_datetime(value):
@@ -687,6 +714,12 @@ def public_widget_commerce_session():
             },
             404,
         )
+    allowed, locked_payload, locked_status = _public_widget_integration_allowed(
+        tenant,
+        "public.widget_commerce_session.v1",
+    )
+    if not allowed:
+        return _public_json(locked_payload, locked_status)
 
     session_payload = _session_context_payload()
     owner = _resolve_catalog_owner(tenant)
@@ -865,6 +898,12 @@ def public_widget_user_tenant_history():
             },
             404,
         )
+    allowed, locked_payload, locked_status = _public_widget_integration_allowed(
+        tenant,
+        "public.widget_user_tenant_history.v1",
+    )
+    if not allowed:
+        return _public_json(locked_payload, locked_status)
 
     session_payload = _session_context_payload()
     payload = {
@@ -893,6 +932,12 @@ def public_widget_user_register():
     if not tenant:
         payload, status = _tenant_resolution_error_payload("public.widget_user_register.v1")
         return _public_json(payload, status)
+    allowed, locked_payload, locked_status = _public_widget_integration_allowed(
+        tenant,
+        "public.widget_user_register.v1",
+    )
+    if not allowed:
+        return _public_json(locked_payload, locked_status)
 
     payload = request.get_json(silent=True) or {}
     session_payload = _session_context_payload()
@@ -1002,6 +1047,12 @@ def public_widget_user_link_session():
     if not tenant:
         payload, status = _tenant_resolution_error_payload("public.widget_user_link_session.v1")
         return _public_json(payload, status)
+    allowed, locked_payload, locked_status = _public_widget_integration_allowed(
+        tenant,
+        "public.widget_user_link_session.v1",
+    )
+    if not allowed:
+        return _public_json(locked_payload, locked_status)
 
     session_payload = _session_context_payload()
     user = User.query.filter_by(anon_id=session_payload.get("anon_id")).first()

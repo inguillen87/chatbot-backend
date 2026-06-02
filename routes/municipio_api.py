@@ -31,6 +31,7 @@ from services.tenant_resolver import (
     resolve_tenant_only,
 )
 from socket_service import emit_tenant_update
+from services.plan_access import integration_access_payload, plan_allows_full_integrations
 
 municipio_api_bp = Blueprint(
     "municipio_api",
@@ -80,6 +81,25 @@ def _public_cors_kwargs(methods: list[str]) -> dict:
         "allow_headers": _PUBLIC_CORS_ALLOWED_HEADERS,
         "expose_headers": _PUBLIC_CORS_EXPOSE_HEADERS,
         "methods": methods,
+    }
+
+
+def _integration_plan_required_payload(tenant: TenantProfile, contract_version: str) -> dict:
+    access = integration_access_payload(tenant)
+    return {
+        "ok": False,
+        "contract_version": contract_version,
+        "tenant_slug": tenant.slug,
+        "status_code": 403,
+        "reason_code": "plan_full_required",
+        "action_hint": "upgrade_to_full",
+        "message": access.get("message"),
+        "access": access,
+        "upgrade": access.get("upgrade"),
+        "frontend_contract": {
+            "render_as": "integration_locked_state",
+            "primary_action": "upgrade_to_full",
+        },
     }
 
 widget_public_bp = Blueprint(
@@ -341,6 +361,8 @@ def obtener_widget_config(current_user: User, tenant_slug: str):
 
     data = config.to_dict()
     data["theme_config"] = tenant.get_theme_config()
+    data["access"] = integration_access_payload(tenant)
+    data["embed_locked"] = not data["access"].get("enabled")
     return jsonify(data)
 
 
@@ -349,6 +371,8 @@ def obtener_widget_config(current_user: User, tenant_slug: str):
 def actualizar_widget_config(current_user: User, tenant_slug: str):
     tenant = _resolve_tenant_or_404(tenant_slug)
     _require_tenant_admin(current_user, tenant)
+    if not plan_allows_full_integrations(tenant):
+        return jsonify(_integration_plan_required_payload(tenant, "municipio.widget_config.v1")), 403
 
     data = request.get_json(silent=True) or {}
     config = WidgetConfig.query.filter_by(tenant_id=tenant.id).first()
@@ -375,6 +399,8 @@ def actualizar_widget_config(current_user: User, tenant_slug: str):
 @widget_public_bp.route("/<tenant_slug>", methods=["GET"])
 def obtener_config_publica(tenant_slug: str):
     tenant = _resolve_tenant_or_404(tenant_slug)
+    if not plan_allows_full_integrations(tenant):
+        return jsonify(_integration_plan_required_payload(tenant, "public.municipio_widget_config.v1")), 403
     config = WidgetConfig.query.filter_by(tenant_id=tenant.id).first()
     if not config:
         config = WidgetConfig(tenant_id=tenant.id)

@@ -71,6 +71,7 @@ class V2SaasContractsTest(unittest.TestCase):
             tipo="pyme",
             vertical="educacion",
             subvertical="colegio",
+            plan="full",
             pyme_id=self.owner.id,
             configuracion={"widget_tokens": ["widget-saas"], "mercadopago_access_token": "mp-token"},
             whatsapp_sender_id="whatsapp:+100",
@@ -607,6 +608,23 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertIn("app_id=meta-app", payload["embedded_signup"]["start_url"])
         self.assertIn("config_id=cfg-123", payload["embedded_signup"]["start_url"])
         self.assertIn("/webhook/whatsapp", payload["webhooks"]["inbound_message_url"])
+
+    def test_twilio_tech_provider_requires_full_plan(self):
+        self.tenant.plan = "free"
+        db.session.add(self.tenant)
+        db.session.commit()
+
+        response = self.client.get(
+            f"/api/v2/tenants/{self.tenant.slug}/whatsapp/tech-provider",
+            headers={**self._auth(self.owner), "X-Request-Id": "tech-provider-locked-1"},
+        )
+
+        self.assertEqual(response.status_code, 403)
+        payload = response.get_json()
+        self.assertEqual(payload["error"], "plan_required")
+        self.assertEqual(payload["reason_code"], "plan_full_required")
+        self.assertFalse(payload["access"]["enabled"])
+        self.assertEqual(payload["frontend"]["render_as"], "integration_locked")
 
     def test_twilio_tech_provider_provision_dry_run_persists_plan_without_live_api(self):
         self.app.config.update(

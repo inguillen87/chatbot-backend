@@ -39,6 +39,7 @@ from services.pymes import tiene_archivo_catalogo
 from services.qdrant_service import index_catalog_item
 from services.tenant_factory import create_tenant_from_template, assign_number_to_tenant
 from services.tenant_resolver import apply_tenant_alias
+from services.plan_access import integration_access_payload, plan_allows_full_integrations
 from services.live_chat_schedule import build_live_chat_status, build_schedule_from_config
 from services.operational_scoring import build_ticket_priority_score
 from services.ticket_realtime_state import build_ticket_collaboration_state
@@ -535,8 +536,21 @@ def _build_employee_coverage_payload(tenant: TenantProfile) -> dict:
 
 
 def _plan_allows_integrations(tenant: TenantProfile) -> bool:
-    plan_key = (tenant.plan or "").strip().lower()
-    return plan_key in ("pro", "full")
+    return plan_allows_full_integrations(tenant)
+
+
+def _integration_plan_required_response(tenant: TenantProfile):
+    access = integration_access_payload(tenant)
+    return (
+        jsonify(
+            {
+                "error": "plan_required",
+                "message": access["message"],
+                "access": access,
+            }
+        ),
+        403,
+    )
 
 
 def _resolve_admin_tenant(current_user: User, slug: str) -> TenantProfile | None:
@@ -1093,8 +1107,8 @@ def create_tenant():
             slug=data.get('slug'),
             tipo=data.get('tipo') or data.get('type') or data.get('vertical'),
             template_key=data.get('template_key'),
-            plan=data.get('plan', 'full'),
-            auto_assign_whatsapp_number=data.get('auto_assign_whatsapp_number', False),
+            plan='free',
+            auto_assign_whatsapp_number=False,
             owner_email=data.get('owner_email') or data.get('email_admin'),
             owner_password=data.get('owner_password')
         )
@@ -1119,6 +1133,7 @@ def create_tenant():
                 "owner_email_generated": bool((tenant.configuracion or {}).get("owner_email_generated")),
             },
             "whatsapp_onboarding": (tenant.configuracion or {}).get("whatsapp_onboarding"),
+            "integration_access": integration_access_payload(tenant),
         }), 201
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
@@ -1148,6 +1163,7 @@ def get_tenant_config_bundle(current_user, slug):
             config_dict[k] = {}
         config_dict[k][c] = cfg.json_value
 
+    integration_access = integration_access_payload(tenant)
     response = {
         "tenant": {
             "slug": tenant.slug,
@@ -1165,9 +1181,10 @@ def get_tenant_config_bundle(current_user, slug):
         },
         "configs": config_dict,
         "features": {
-            "integrations": _plan_allows_integrations(tenant),
-            "widget_customization": _plan_allows_integrations(tenant)
-        }
+            "integrations": integration_access["enabled"],
+            "widget_customization": integration_access["enabled"]
+        },
+        "integration_access": integration_access,
     }
     return jsonify(response)
 
@@ -2173,15 +2190,7 @@ def list_integrations(current_user, slug):
     if not _is_authorized_for_tenant(current_user, tenant):
          return jsonify({'error': 'Unauthorized'}), 403
     if not _plan_allows_integrations(tenant):
-        return (
-            jsonify(
-                {
-                    "error": "plan_required",
-                    "message": "Integraciones disponibles para planes Pro/Full.",
-                }
-            ),
-            403,
-        )
+        return _integration_plan_required_response(tenant)
 
     integrations = IntegrationAccount.query.filter_by(tenant_id=tenant.id).all()
 
@@ -2230,15 +2239,7 @@ def connect_integration(current_user, slug, integration_type):
     if not _is_authorized_for_tenant(current_user, tenant):
          return jsonify({'error': 'Unauthorized'}), 403
     if not _plan_allows_integrations(tenant):
-        return (
-            jsonify(
-                {
-                    "error": "plan_required",
-                    "message": "Integraciones disponibles para planes Pro/Full.",
-                }
-            ),
-            403,
-        )
+        return _integration_plan_required_response(tenant)
 
     base_url = current_app.config.get("PUBLIC_BASE_URL", "https://chatboc.ar").rstrip("/")
 
@@ -2492,15 +2493,7 @@ def sync_integration(current_user, slug, integration_type):
     if not _is_authorized_for_tenant(current_user, tenant):
          return jsonify({'error': 'Unauthorized'}), 403
     if not _plan_allows_integrations(tenant):
-        return (
-            jsonify(
-                {
-                    "error": "plan_required",
-                    "message": "Integraciones disponibles para planes Pro/Full.",
-                }
-            ),
-            403,
-        )
+        return _integration_plan_required_response(tenant)
 
     if integration_type.lower() == 'mercadolibre':
         from services.integrations.mercadolibre import MercadoLibreService
@@ -2527,15 +2520,7 @@ def preview_integration_sync(current_user, slug, integration_type):
     if not _is_authorized_for_tenant(current_user, tenant):
          return jsonify({'error': 'Unauthorized'}), 403
     if not _plan_allows_integrations(tenant):
-        return (
-            jsonify(
-                {
-                    "error": "plan_required",
-                    "message": "Integraciones disponibles para planes Pro/Full.",
-                }
-            ),
-            403,
-        )
+        return _integration_plan_required_response(tenant)
 
     if integration_type.lower() == 'mercadolibre':
         from services.integrations.mercadolibre import MercadoLibreService
