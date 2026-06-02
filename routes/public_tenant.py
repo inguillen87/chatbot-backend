@@ -133,6 +133,7 @@ def _public_widget_plan_required_payload(tenant: TenantProfile, contract_version
     access = integration_access_payload(tenant)
     return {
         "ok": False,
+        "error": "plan_required",
         "contract_version": contract_version,
         "tenant_slug": tenant.slug,
         "status_code": 403,
@@ -142,7 +143,7 @@ def _public_widget_plan_required_payload(tenant: TenantProfile, contract_version
         "access": access,
         "upgrade": access.get("upgrade"),
         "frontend_contract": {
-            "render_as": "integration_locked_state",
+            "render_as": "integration_locked",
             "primary_action": "upgrade_to_full",
         },
     }, 403

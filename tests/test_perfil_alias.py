@@ -2,6 +2,7 @@ from models import User, Rubro, TenantProfile, db
 import jwt
 from datetime import datetime, timedelta
 from flask import current_app
+from utils.auth_helpers import anon_o_token_requerido
 
 def test_perfil_alias_works(client):
     """Verifica que el alias /perfil funciona correctamente."""

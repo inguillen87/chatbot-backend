@@ -173,14 +173,14 @@ def _resolve_owner_token(user: User) -> Optional[str]:
     if token_value and _looks_like_jwt(token_value):
         token_value = None
     if token_value:
-        if not getattr(owner_user, "entity_token", None):
+        if not getattr(owner_user, "token", None) or _looks_like_jwt(getattr(owner_user, "token", None)):
             try:
-                owner_user.entity_token = token_value
+                owner_user.token = token_value
                 db.session.add(owner_user)
                 db.session.commit()
             except Exception:
                 current_app.logger.exception(
-                    "[auth] Failed to persist legacy owner token for user %s",
+                    "[auth] Failed to mirror owner entity token for user %s",
                     getattr(owner_user, "id", None),
                 )
                 db.session.rollback()
@@ -195,6 +195,23 @@ def _resolve_owner_token(user: User) -> Optional[str]:
             )
         else:
             if resolved and not _looks_like_jwt(resolved):
+                changed = False
+                if not getattr(owner_user, "entity_token", None) or _looks_like_jwt(getattr(owner_user, "entity_token", None)):
+                    owner_user.entity_token = resolved
+                    changed = True
+                if not getattr(owner_user, "token", None) or _looks_like_jwt(getattr(owner_user, "token", None)):
+                    owner_user.token = resolved
+                    changed = True
+                if changed:
+                    try:
+                        db.session.add(owner_user)
+                        db.session.commit()
+                    except Exception:
+                        current_app.logger.exception(
+                            "[auth] Failed to persist resolved owner token for user %s",
+                            getattr(owner_user, "id", None),
+                        )
+                        db.session.rollback()
                 return resolved
 
     if not owner_user:
@@ -375,7 +392,7 @@ def _resolve_tipo_chat(
     tenant_obj: Optional[TenantProfile] = None,
     rubro_nombre: Optional[str] = None,
 ) -> str:
-    if tenant_obj and tenant_obj.tipo:
+    if tenant_obj is not None and hasattr(tenant_obj, "tipo") and tenant_obj.tipo:
         return str(tenant_obj.tipo).lower()
 
     if getattr(user, "tipo_chat", None):
@@ -393,8 +410,15 @@ def _resolve_tenant_for_user(
     user: User,
     tenant_hint: Optional[TenantProfile] = None,
 ) -> Optional[TenantProfile]:
-    if tenant_hint:
+    if tenant_hint is not None and isinstance(tenant_hint, TenantProfile):
         return tenant_hint
+    if tenant_hint:
+        try:
+            tenant_obj = resolve_tenant_only(tenant_slug=str(tenant_hint))
+        except Exception:
+            tenant_obj = None
+        if tenant_obj:
+            return tenant_obj
 
     tenant_obj = _tenant_for_user(user)
     if tenant_obj:
@@ -541,6 +565,8 @@ def build_profile_payload(user: User) -> Dict[str, Any]:
     integration_access = integration_access_payload(tenant_profile)
     profile_data["integration_access"] = integration_access
     profile_data["integrations_locked"] = not bool(integration_access.get("enabled"))
+    profile_data["widget_embed_token"] = None
+    profile_data["widget_embed_token_kind"] = "plan_required"
     tenant_slug_value = (
         getattr(user, "tenant_slug", None)
         or getattr(tenant_profile, "slug", None)
@@ -583,21 +609,15 @@ def build_profile_payload(user: User) -> Dict[str, Any]:
         profile_data["entity_token"] = owner_token
         profile_data["entityToken"] = owner_token
         profile_data["owner_token"] = owner_token
-        if integration_access.get("enabled"):
+        if integration_access.get("enabled") and not widget_session_active:
             profile_data["widget_embed_token"] = owner_token
             profile_data["widget_embed_token_kind"] = "entity"
-        else:
-            profile_data["widget_embed_token"] = None
-            profile_data["widget_embed_token_kind"] = "plan_required"
     elif getattr(user, "token", None) and not _looks_like_jwt(user.token):
         profile_data["entity_token"] = user.token
         profile_data.setdefault("entityToken", user.token)
-        if integration_access.get("enabled"):
+        if integration_access.get("enabled") and not widget_session_active:
             profile_data.setdefault("widget_embed_token", user.token)
             profile_data.setdefault("widget_embed_token_kind", "legacy")
-        else:
-            profile_data["widget_embed_token"] = None
-            profile_data["widget_embed_token_kind"] = "plan_required"
 
     widget_cookie_name = current_app.config.get("WIDGET_TOKEN_COOKIE_NAME", "widget_token")
     profile_data["widget_token_cookie_name"] = widget_cookie_name
@@ -1856,7 +1876,17 @@ def login():
     }
 
     response_payload["timing"]["total_ms"] = round((time.perf_counter() - request_started) * 1000.0, 2)
+    integration_access = integration_access_payload(tenant_obj)
+    response_payload["integration_access"] = integration_access
+    response_payload["integrations_locked"] = not bool(integration_access.get("enabled"))
     entity_token_value = _include_entity_token_fields(response_payload, owner_token)
+    if entity_token_value:
+        if integration_access.get("enabled"):
+            response_payload.setdefault("widget_embed_token", entity_token_value)
+            response_payload.setdefault("widget_embed_token_kind", "entity")
+        else:
+            response_payload["widget_embed_token"] = None
+            response_payload["widget_embed_token_kind"] = "plan_required"
 
     response = jsonify(response_payload)
 
@@ -3017,7 +3047,14 @@ def me_perfil(user):
                 )
 
         profile_data = build_profile_payload(user)
-        return jsonify({k: v for k, v in profile_data.items() if v is not None})
+        nullable_contract_fields = {"widget_embed_token"}
+        return jsonify(
+            {
+                k: v
+                for k, v in profile_data.items()
+                if v is not None or k in nullable_contract_fields
+            }
+        )
 
     elif request.method == 'PUT':
         data = request.get_json(silent=True) or {}

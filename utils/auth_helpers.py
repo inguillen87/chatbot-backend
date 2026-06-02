@@ -286,6 +286,18 @@ def _lookup_owner_for_static_token(token: Optional[str]) -> Optional[User]:
     if owner:
         return owner
 
+    try:
+        owner = user_query.filter_by(entity_token=token).first()
+    except SQLAlchemyError as exc:
+        current_app.logger.error(
+            "[auth] Failed to resolve user by entity_token due to database schema mismatch.",
+            exc_info=exc,
+        )
+        return None
+
+    if owner:
+        return owner
+
     tenant = (
         TenantProfile.query.filter(
             TenantProfile.configuracion["widget_tokens"].astext.contains(token)  # type: ignore[index]
@@ -495,7 +507,27 @@ def _finalize_token_candidate(
         if widget_cookie_name:
             cookie_value = request.cookies.get(widget_cookie_name)
             if _is_jwt_token(cookie_value):
-                return cookie_value.strip()
+                try:
+                    cookie_payload = jwt.decode(
+                        cookie_value,
+                        current_app.config["SECRET_KEY"],
+                        algorithms=["HS256"],
+                    )
+                except jwt.InvalidTokenError:
+                    cookie_payload = {}
+                cookie_owner_id = cookie_payload.get("user_id")
+                cookie_expires_at = int(cookie_payload.get("exp") or 0)
+                now = int(datetime.now(timezone.utc).timestamp())
+                same_owner = bool(
+                    static_owner
+                    and cookie_owner_id
+                    and int(cookie_owner_id) == int(getattr(static_owner, "id", 0))
+                )
+                is_widget_session = cookie_payload.get("session_kind") == "widget" or bool(
+                    cookie_payload.get("renew_until")
+                )
+                if same_owner and is_widget_session and cookie_expires_at > now:
+                    return cookie_value.strip()
 
     return token_candidate or None
 
@@ -520,17 +552,17 @@ def obtener_entity_token() -> Optional[str]:
             return []
         return [request.form.get(key) for key in keys if request.form.get(key)]
 
-    candidate_sources: list[Optional[str]] = []
+    candidate_sources: list[tuple[Optional[str], bool]] = []
 
     # Headers take priority because the widget can set token context explicitly.
-    candidate_sources.append(request.headers.get("X-Entity-Token"))
-    candidate_sources.append(request.headers.get("X-Owner-Token"))
-    candidate_sources.append(request.headers.get("X-Widget-Token"))
+    candidate_sources.append((request.headers.get("X-Entity-Token"), False))
+    candidate_sources.append((request.headers.get("X-Owner-Token"), False))
+    candidate_sources.append((request.headers.get("X-Widget-Token"), False))
 
     # Cookies (ej. WIDGET_TOKEN_COOKIE_NAME) are next, useful after an iframe load.
     widget_cookie_name = current_app.config.get("WIDGET_TOKEN_COOKIE_NAME")
     if widget_cookie_name:
-        candidate_sources.append(request.cookies.get(widget_cookie_name))
+        candidate_sources.append((request.cookies.get(widget_cookie_name), True))
 
     # Query params and body fallbacks used by legacy + new widget contracts.
     entity_keys = (
@@ -544,12 +576,17 @@ def obtener_entity_token() -> Optional[str]:
         "token",
     )
     for key in entity_keys:
-        candidate_sources.append(request.args.get(key))
-    candidate_sources.extend(_extract_from_json(entity_keys))
-    candidate_sources.extend(_extract_from_form(entity_keys))
+        candidate_sources.append((request.args.get(key), False))
+    candidate_sources.extend((value, False) for value in _extract_from_json(entity_keys))
+    candidate_sources.extend((value, False) for value in _extract_from_form(entity_keys))
 
-    for raw_candidate in candidate_sources:
-        finalized = _finalize_token_candidate(raw_candidate)
+    for raw_candidate, allow_cookie_reuse in candidate_sources:
+        if not raw_candidate:
+            continue
+        if allow_cookie_reuse:
+            finalized = _finalize_token_candidate(raw_candidate)
+        else:
+            finalized = str(raw_candidate).strip()
         if finalized:
             return finalized
 
@@ -660,6 +697,17 @@ def obtener_token():
 
     candidates: List[Tuple[str, Optional[User], str]] = []
 
+    def _finalize_request_token(raw_token: Optional[str]) -> Optional[str]:
+        if not raw_token:
+            return None
+        token_value = raw_token.strip()
+        if not token_value:
+            return None
+        owner: Optional[User] = None
+        if not _is_jwt_token(token_value):
+            owner = _resolve_static_owner(token_value)
+        return _finalize_token_candidate(token_value, owner)
+
     def _register_candidate(raw_token: Optional[str], source: str):
         if not raw_token:
             return
@@ -681,27 +729,90 @@ def obtener_token():
             f"[obtener_token] Candidate from {source}: '{candidate[:10]}...'"
         )
 
+    path_lower = _normalize_path(request.path).lower()
+    prefer_explicit_entity = (
+        path_lower
+        in {
+            "/auth/perfil",
+            "/perfil",
+            "/auth/profile",
+            "/profile",
+            "/api/perfil",
+            "/api/profile",
+        }
+        or (
+            bool(has_entity_token)
+            and (
+                path_lower.startswith("/api/public")
+                or path_lower.startswith("/api/widget")
+                or path_lower.startswith("/api/pwa")
+                or path_lower.startswith("/api/ask")
+            )
+        )
+    )
+
+    if prefer_explicit_entity:
+        for header_name in ("X-Entity-Token", "X-Owner-Token", "X-Widget-Token"):
+            explicit_token = request.headers.get(header_name)
+            if explicit_token:
+                explicit_token = explicit_token.strip()
+                current_app.logger.debug(
+                    f"[obtener_token] Prefer explicit {header_name} for widget/profile path: '{explicit_token[:10]}...'"
+                )
+                return _finalize_request_token(explicit_token)
+
+        explicit_request_tokens = (
+            request.args.get("token"),
+            request.args.get("entityToken"),
+            request.args.get("entity_token"),
+            request.args.get("empresa_token"),
+        )
+        if request.is_json:
+            json_data = request.get_json(silent=True) or {}
+            explicit_request_tokens = (
+                *explicit_request_tokens,
+                json_data.get("token"),
+                json_data.get("entityToken"),
+                json_data.get("entity_token"),
+                json_data.get("empresa_token"),
+            )
+        explicit_request_tokens = (
+            *explicit_request_tokens,
+            request.form.get("token"),
+            request.form.get("entityToken"),
+            request.form.get("entity_token"),
+            request.form.get("empresa_token"),
+        )
+        for explicit_token in explicit_request_tokens:
+            if explicit_token:
+                explicit_token = str(explicit_token).strip()
+                if explicit_token:
+                    current_app.logger.debug(
+                        f"[obtener_token] Prefer explicit profile token over cookies: '{explicit_token[:10]}...'"
+                    )
+                    return _finalize_request_token(explicit_token)
+
     auth_header = request.headers.get("Authorization", "").strip()
     if auth_header:
         current_app.logger.debug(f"[obtener_token] Found Authorization header: '{auth_header[:30]}...'")
         if auth_header.lower().startswith("bearer "):
             token = auth_header.split(" ", 1)[1]
             current_app.logger.debug(f"[obtener_token] Extracted Bearer token: '{token[:10]}...'")
-            return _finalize_token_candidate(token)
+            return _finalize_request_token(token)
         current_app.logger.debug(f"[obtener_token] Returning raw Authorization header as token: '{auth_header[:10]}...'")
-        return _finalize_token_candidate(auth_header)
+        return _finalize_request_token(auth_header)
 
     token_x_token = request.headers.get("X-Token")
     if token_x_token:
         token_x_token = token_x_token.strip()
         current_app.logger.debug(f"[obtener_token] Found X-Token header: '{token_x_token[:10]}...'")
-        return _finalize_token_candidate(token_x_token)
+        return _finalize_request_token(token_x_token)
 
     token_x_entity_token = request.headers.get("X-Entity-Token")
     if token_x_entity_token:
         token_x_entity_token = token_x_entity_token.strip()
         current_app.logger.debug(f"[obtener_token] Found X-Entity-Token header: '{token_x_entity_token[:10]}...'")
-        return _finalize_token_candidate(token_x_entity_token)
+        return _finalize_request_token(token_x_entity_token)
 
     if allow_cookie_auth:
         # Fallback: intentar recuperar el token desde una cookie específica
@@ -712,7 +823,7 @@ def obtener_token():
             current_app.logger.debug(
                 f"[obtener_token] Found token in cookie '{cookie_name}': '{token_cookie[:10]}...'"
             )
-            return _finalize_token_candidate(token_cookie)
+            return _finalize_request_token(token_cookie)
 
     widget_cookie_name = current_app.config.get("WIDGET_TOKEN_COOKIE_NAME")
     if widget_cookie_name:
@@ -722,27 +833,27 @@ def obtener_token():
             current_app.logger.debug(
                 f"[obtener_token] Found token in widget cookie '{widget_cookie_name}': '{widget_cookie[:10]}...'"
             )
-            return _finalize_token_candidate(widget_cookie)
+            return _finalize_request_token(widget_cookie)
 
     token_args = request.args.get("token")
     if token_args:
         token_args = token_args.strip()
         current_app.logger.debug(f"[obtener_token] Found token in query args: '{token_args[:10]}...'")
-        return _finalize_token_candidate(token_args)
+        return _finalize_request_token(token_args)
 
     # Algunas integraciones envían el token como entityToken en la query
     entity_token_arg = request.args.get("entityToken") or request.args.get("entity_token")
     if entity_token_arg:
         entity_token_arg = entity_token_arg.strip()
         current_app.logger.debug(f"[obtener_token] Found entityToken in query args: '{entity_token_arg[:10]}...'")
-        return _finalize_token_candidate(entity_token_arg)
+        return _finalize_request_token(entity_token_arg)
 
     # Fallback to 'empresa_token' in query args
     empresa_token_arg = request.args.get("empresa_token")
     if empresa_token_arg:
         empresa_token_arg = empresa_token_arg.strip()
         current_app.logger.debug(f"[obtener_token] Found 'empresa_token' in query args: '{empresa_token_arg[:10]}...'")
-        return _finalize_token_candidate(empresa_token_arg)
+        return _finalize_request_token(empresa_token_arg)
 
     if request.is_json:
         json_data = request.get_json(silent=True) or {}
@@ -750,13 +861,13 @@ def obtener_token():
         if token_json:
             token_json = token_json.strip()
             current_app.logger.debug(f"[obtener_token] Found token in JSON payload: '{token_json[:10]}...'")
-            return _finalize_token_candidate(token_json)
+            return _finalize_request_token(token_json)
 
         entity_token_json = json_data.get("entityToken") or json_data.get("entity_token")
         if entity_token_json:
             entity_token_json = entity_token_json.strip()
             current_app.logger.debug(f"[obtener_token] Found entityToken in JSON payload: '{entity_token_json[:10]}...'")
-            return _finalize_token_candidate(entity_token_json)
+            return _finalize_request_token(entity_token_json)
 
         # Fallback to 'empresa_token' in JSON payload (no longer path-restricted)
         empresa_token_json = json_data.get("empresa_token")
@@ -1023,7 +1134,8 @@ def token_requerido(f):
         if token_payload.get("session_kind") == "widget" or token_payload.get("renew_until"):
             target_cookie = widget_cookie_name
 
-        if token and not request.cookies.get(target_cookie):
+        existing_cookie_value = request.cookies.get(target_cookie)
+        if token and (not existing_cookie_value or existing_cookie_value != token):
             resp = make_response(response)
             cookie_args = {
                 "key": target_cookie,
@@ -1143,17 +1255,15 @@ def anon_o_token_requerido(f):
         if token:
             # Primero, intentar decodificar como JWT. Esto es para usuarios logueados.
             jwt_user = user_from_token(token)
+            token_payload = _decode_token_payload(token) if _is_jwt_token(token) else {}
             if jwt_user:
                 current_app.logger.info(f"Request authenticated via JWT. User ID: {jwt_user.id}")
-                current_user = jwt_user
-                # Si un usuario logueado tiene un empresa_id, el owner es esa empresa.
-                if jwt_user.empresa_id:
-                    owner_user = User.query.get(jwt_user.empresa_id)
-                    owner_resolution_source = "jwt_parent_owner"
-                else:
-                    # Si no, el owner es el propio usuario (ej, el admin del municipio)
-                    owner_user = jwt_user
-                    owner_resolution_source = "jwt_self_owner"
+                current_user = None
+                owner_user = _resolve_owner_user(jwt_user)
+                owner_resolution_source = "jwt_widget_owner"
+                g.widget_session = True
+                g.widget_owner_user = owner_user
+                is_widget_token = True
             else:
                 # Si falla el JWT, tratar el token como un token de entidad estático (API Key/UUID).
                 # Esto es para el widget anónimo.

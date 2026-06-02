@@ -1121,6 +1121,7 @@ def create_tenant():
 
         return jsonify({
             "slug": tenant.slug,
+            "plan": tenant.plan,
             "widget_token": widget_token,
             "id": tenant.id,
             "tenant": {

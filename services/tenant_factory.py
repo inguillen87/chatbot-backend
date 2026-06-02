@@ -5,6 +5,7 @@ import secrets
 from database import db
 from models import TenantProfile, User, TenantConfig, TwilioNumber
 from flask import current_app
+from sqlalchemy.orm.attributes import flag_modified
 from services.plan_access import plan_allows_full_integrations
 from services.tenant_whatsapp_onboarding import bootstrap_tenant_whatsapp_onboarding
 from utils.roles import normalize_tenant_type, role_for_tenant_type
@@ -217,6 +218,7 @@ def create_tenant_from_template(
         )
         cfg["provisioning"] = provisioning
         tenant.configuracion = cfg
+        flag_modified(tenant, "configuracion")
 
     db.session.commit()
 

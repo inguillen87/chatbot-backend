@@ -227,7 +227,7 @@ class PublicResolverTest(unittest.TestCase):
         db.session.commit()
 
         response = self.client.get(
-            "/api/public/tenant-profile",
+            f"/api/public/tenant-profile?tenant={self.tenant.slug}",
             headers={"X-Widget-Token": "demo-token"},
         )
 

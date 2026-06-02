@@ -98,12 +98,15 @@ def _integration_plan_error(tenant: TenantProfile):
     return _json_response(
         {
             **access,
+            "access": access,
+            "frontend": access.get("frontend") or {"render_as": "integration_locked"},
             "contract_version": "tenant.integration_access.v1",
             "status_code": 403,
             "tenant": _tenant_ref(tenant),
             "retryable": False,
             "action_hint": "upgrade_to_full",
-            "error": {"code": 403, "message": access["message"]},
+            "error": "plan_required",
+            "error_detail": {"code": 403, "message": access["message"]},
         },
         403,
     )

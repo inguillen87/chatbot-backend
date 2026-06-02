@@ -2005,6 +2005,28 @@ def _try_get_demo_tenant(slug):
         return tenant
     return None
 
+
+def _public_tenant_type_alias(slug):
+    normalized = str(slug or "").strip().lower()
+    if normalized in {"municipio", "municipal", "gobierno", "gobiernos"}:
+        return "municipio"
+    if normalized in {"pyme", "pymes", "empresa", "empresas"}:
+        return "pyme"
+    return None
+
+
+def _first_public_tenant_for_type(tipo):
+    query = (
+        TenantProfile.query
+        .filter(TenantProfile.is_active.is_(True))
+        .filter(TenantProfile.tipo == tipo)
+    )
+    if tipo == "municipio":
+        query = query.filter(TenantProfile.municipio_id.isnot(None))
+    elif tipo == "pyme":
+        query = query.filter(TenantProfile.pyme_id.isnot(None))
+    return query.order_by(TenantProfile.created_at.asc(), TenantProfile.id.asc()).first()
+
 @public_resolver_bp.route(
     "/tenant-profile", methods=["GET", "OPTIONS"], provide_automatic_options=False
 )
@@ -2026,15 +2048,27 @@ def tenant_profile():
 
     tenant_slug_original = request.args.get("tenant_slug") or request.args.get("tenant") or request.args.get("slug")
     tenant_slug = tenant_slug_original.strip() if tenant_slug_original else None
+    normalized_slug = tenant_slug_original.strip().lower() if tenant_slug_original else None
+    widget_token = _extract_widget_token()
+    whatsapp_destination_number = request.args.get("whatsapp_destination_number")
+    reserved_slug_requested = bool(normalized_slug and normalized_slug in RESERVED_TENANT_SLUGS)
+    requested_type_alias = _public_tenant_type_alias(normalized_slug)
+    generic_type_slug_requested = bool(
+        requested_type_alias and not widget_token and not whatsapp_destination_number
+    )
 
-    if tenant_slug and tenant_slug.lower() in RESERVED_TENANT_SLUGS:
+    if reserved_slug_requested:
         resolved_from_fallback = True
         resolution_error = (
             f"Tenant slug '{tenant_slug_original}' is reserved; using default tenant"
         )
         tenant_slug = None
-    widget_token = _extract_widget_token()
-    whatsapp_destination_number = request.args.get("whatsapp_destination_number")
+    elif generic_type_slug_requested:
+        resolved_from_fallback = True
+        resolution_error = (
+            f"Tenant slug '{tenant_slug_original}' is generic; using first {requested_type_alias} tenant"
+        )
+        tenant_slug = None
 
     try:
         tenant = resolve_tenant_only(
@@ -2043,26 +2077,51 @@ def tenant_profile():
             tenant_slug=tenant_slug,
             require_explicit_slug=bool(tenant_slug),
         )
+        if generic_type_slug_requested:
+            fallback_tenant = _first_public_tenant_for_type(requested_type_alias)
+            if fallback_tenant:
+                tenant = fallback_tenant
+        elif reserved_slug_requested:
+            fallback_tenant = (
+                _first_public_tenant_for_type("municipio")
+                or _first_public_tenant_for_type("pyme")
+            )
+            if fallback_tenant:
+                tenant = fallback_tenant
     except TenantResolutionError as exc:
         resolution_error = resolution_error or str(exc)
-        explicit_slug_failure = bool(tenant_slug_original) and not widget_token and not whatsapp_destination_number
+        explicit_slug_failure = (
+            bool(tenant_slug_original)
+            and not widget_token
+            and not whatsapp_destination_number
+            and not reserved_slug_requested
+            and not generic_type_slug_requested
+        )
 
-        normalized_slug = tenant_slug_original.strip().lower() if tenant_slug_original else None
-
-        # Try Mock Demos first if explicit slug failed and demo mode is enabled
-        tenant = _try_get_demo_tenant(normalized_slug)
-
+        tenant = None
         fallback_tenant = None
-        if not tenant:
-            if normalized_slug in {"municipio", "pyme"}:
-                fallback_tenant = (
-                    TenantProfile.query.filter_by(tipo=normalized_slug)
-                    .order_by(TenantProfile.id.asc())
-                    .first()
-                )
+        if generic_type_slug_requested:
+            fallback_tenant = _first_public_tenant_for_type(requested_type_alias)
+        elif reserved_slug_requested:
+            fallback_tenant = (
+                _first_public_tenant_for_type("municipio")
+                or _first_public_tenant_for_type("pyme")
+            )
 
-            if not fallback_tenant and normalized_slug in {"municipio", "pyme"}:
-                fallback_tenant = TenantProfile.query.order_by(TenantProfile.id.asc()).first()
+        if fallback_tenant:
+            tenant = fallback_tenant
+
+        if explicit_slug_failure and not tenant:
+            return jsonify(
+                {
+                    "contract_version": TENANT_PROFILE_CONTRACT_VERSION,
+                    "error": {"code": 404, "message": resolution_error or "Tenant no encontrado"},
+                }
+            ), 404
+
+        # Try Mock Demos only when there is no explicit unknown tenant to protect.
+        if not tenant:
+            tenant = _try_get_demo_tenant(normalized_slug)
 
         if not tenant and bool(current_app.config.get("ENABLE_DEMO_MODE", False)):
             # Fetch public rubros for the demo selector
@@ -2113,9 +2172,9 @@ def tenant_profile():
 
         resolved_from_fallback = True
 
-        if not _try_get_demo_tenant(normalized_slug) and fallback_tenant and normalized_slug in {"municipio", "pyme"}:
-             resolution_error = resolution_error or (
-                f"Tenant slug '{tenant_slug_original}' not found; using first {normalized_slug} tenant"
+        if fallback_tenant and requested_type_alias:
+            resolution_error = resolution_error or (
+                f"Tenant slug '{tenant_slug_original}' not found; using first {requested_type_alias} tenant"
             )
 
         # Si encontramos un tenant de respaldo, no devolvemos 404 aun cuando el
@@ -2163,6 +2222,8 @@ def tenant_profile():
     tenant_info["config"] = config
 
     integration_access = integration_access_payload(tenant)
+    tenant_info["integration_access"] = integration_access
+    tenant_info["embed_locked"] = not bool(integration_access.get("enabled"))
     canonical_widget_token = (
         _canonical_widget_token(tenant, widget_token)
         if integration_access.get("enabled")
