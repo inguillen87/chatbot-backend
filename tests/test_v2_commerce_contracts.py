@@ -170,6 +170,8 @@ class V2CommerceContractsTest(unittest.TestCase):
         payload = response.get_json()
         self.assertEqual(payload.get("reason_code"), "plan_full_required")
         self.assertFalse(payload["integration_access"]["enabled"])
+        self.assertEqual(payload["checkout_experience"]["blocking_reasons"][0]["id"], "plan_full_required")
+        self.assertEqual(payload["checkout_experience"]["operator_next_actions"][0]["status"], "required")
         self.assertEqual(payload["frontend_contract"]["render_as"], "integration_locked")
 
     def test_payment_status_contract_by_preference_id(self):

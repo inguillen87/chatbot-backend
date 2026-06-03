@@ -172,6 +172,42 @@ def build_checkout_experience_payload(
     gateway_configured = bool(cfg.get("mercadopago_access_token")) if mercadopago_ready is None else bool(mercadopago_ready)
     can_checkout = bool(access.get("enabled")) and gateway_configured
     slug = getattr(tenant, "slug", None)
+    blocking_reasons = []
+    if not access.get("enabled"):
+        blocking_reasons.append(
+            {
+                "id": "plan_full_required",
+                "label": "Plan productivo requerido",
+                "detail": "El tenant necesita un plan con integraciones productivas para cobrar desde WhatsApp o widget.",
+                "owner": "tenant_admin",
+            }
+        )
+    if not gateway_configured:
+        blocking_reasons.append(
+            {
+                "id": "payment_gateway_not_configured",
+                "label": "Proveedor de pago pendiente",
+                "detail": "Configura Mercado Pago para crear links de pago y confirmar acreditaciones por webhook.",
+                "owner": "tenant_admin",
+            }
+        )
+    operator_next_actions = [
+        {
+            "id": "upgrade_plan",
+            "label": "Habilitar Plan Full",
+            "status": "done" if access.get("enabled") else "required",
+        },
+        {
+            "id": "connect_gateway",
+            "label": "Conectar Mercado Pago",
+            "status": "done" if gateway_configured else "required",
+        },
+        {
+            "id": "verify_webhook",
+            "label": "Verificar webhook de pago",
+            "status": "ready" if gateway_configured else "blocked",
+        },
+    ]
 
     return {
         "contract_version": "commerce.conversational_checkout_experience.v1",
@@ -180,6 +216,8 @@ def build_checkout_experience_payload(
         "mode": "conversation_guided_secure_webview",
         "ready": can_checkout,
         "reason_code": None if can_checkout else ("plan_full_required" if not access.get("enabled") else "payment_gateway_not_configured"),
+        "blocking_reasons": blocking_reasons,
+        "operator_next_actions": operator_next_actions,
         "integration_access": access,
         "copy": {
             "title": "Compra y pago por chat",

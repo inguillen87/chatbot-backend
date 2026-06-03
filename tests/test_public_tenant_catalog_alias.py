@@ -281,6 +281,9 @@ def test_widget_commerce_session_returns_embedded_operating_contract(client):
     assert body["payment"]["contract_version"] == "commerce.conversational_checkout_experience.v1"
     assert body["payment"]["ready"] is False
     assert body["payment"]["reason_code"] == "payment_gateway_not_configured"
+    assert body["payment"]["blocking_reasons"][0]["id"] == "payment_gateway_not_configured"
+    assert body["payment"]["operator_next_actions"][1]["id"] == "connect_gateway"
+    assert body["payment"]["operator_next_actions"][1]["status"] == "required"
     assert body["payment"]["policy"]["confirmation_source"] == "server_to_server_webhook"
     assert body["portal"]["enabled"] is True
     assert body["portal"]["label"] == "Mi actividad"
