@@ -21,7 +21,11 @@ def app(monkeypatch):
     monkeypatch.setattr(
         catalog_import,
         "resolve_tenant_and_user",
-        lambda tenant_slug=None, current_user=None: (Obj(id=1), Obj(id=2), None),
+        lambda tenant_slug=None, current_user=None: (
+            Obj(id=1, plan="full", is_active=True, configuracion={}),
+            Obj(id=2),
+            None,
+        ),
     )
     monkeypatch.setattr(catalog_import, "_persist_rows", lambda *args, **kwargs: 0)
     app.register_blueprint(catalog_import_bp)
@@ -40,6 +44,40 @@ def test_missing_file_returns_json(client):
     assert response.is_json
     assert response.get_json()["codigo"] == "archivo_requerido"
     assert response.headers["Content-Type"].startswith("application/json")
+
+
+def test_free_plan_cannot_import_catalog_before_processing(client, monkeypatch):
+    processed = {"called": False}
+
+    monkeypatch.setattr(
+        catalog_import,
+        "resolve_tenant_and_user",
+        lambda tenant_slug=None, current_user=None: (
+            Obj(id=1, plan="free", is_active=True, configuracion={}),
+            Obj(id=2),
+            None,
+        ),
+    )
+
+    def _should_not_parse(*args, **kwargs):
+        processed["called"] = True
+        return [{"titulo": "Producto"}]
+
+    monkeypatch.setattr(catalog_import, "extract_table_from_file", _should_not_parse)
+
+    response = client.post(
+        "/api/admin/catalogo/importar",
+        data={"archivo": (io.BytesIO(b"data"), "catalogo.pdf")},
+        content_type="multipart/form-data",
+    )
+
+    body = response.get_json()
+    assert response.status_code == 403
+    assert response.is_json
+    assert body["error"] == "plan_required"
+    assert body["feature"]["id"] == "catalog_management"
+    assert body["access"]["features"]["catalog_management"]["enabled"] is False
+    assert processed["called"] is False
 
 
 def test_unsupported_format_returns_json(client, monkeypatch):

@@ -158,6 +158,21 @@ def tenant_config(tenant: Any) -> dict[str, Any]:
     return tenant.configuracion if isinstance(getattr(tenant, "configuracion", None), dict) else {}
 
 
+def payment_integration_frontend_contract(access: dict[str, Any] | None = None) -> dict[str, Any]:
+    access = access if isinstance(access, dict) else {}
+    base_contract = access.get("frontend_contract") if isinstance(access.get("frontend_contract"), dict) else {}
+    return {
+        **base_contract,
+        "render_as": "integration_locked",
+        "feature_id": "mercadopago_checkout",
+        "primary_action": "upgrade_to_full",
+        "hide_payment_credentials_form": True,
+        "show_upgrade_cta": True,
+        "show_readiness_checklist": True,
+        "primary_locked_reason": base_contract.get("primary_locked_reason") or "plan_full_required",
+    }
+
+
 def build_checkout_experience_payload(
     tenant: Any,
     *,

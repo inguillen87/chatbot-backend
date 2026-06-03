@@ -107,6 +107,27 @@ class AdminMercadoPagoIntegrationTest(unittest.TestCase):
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["status"], "ok")
 
+    def test_locked_plan_cannot_configure_or_read_mercadopago_credentials(self):
+        self.tenant.plan = "free"
+        db.session.commit()
+
+        save_resp = self.client.post(
+            f"/api/admin/tenants/{self.tenant.slug}/integrations/mercadopago",
+            data=json.dumps({"access_token": "APP_USR-tenant-secret-token"}),
+            content_type="application/json",
+            headers=self.headers,
+        )
+        self.assertEqual(save_resp.status_code, 403)
+        save_payload = save_resp.get_json()
+        self.assertEqual(save_payload["error"], "plan_required")
+        self.assertFalse(save_payload["access"]["features"]["mercadopago_checkout"]["enabled"])
+
+        get_resp = self.client.get(
+            f"/api/admin/tenants/{self.tenant.slug}/integrations/mercadopago",
+            headers=self.headers,
+        )
+        self.assertEqual(get_resp.status_code, 403)
+
 
 if __name__ == "__main__":
     unittest.main()

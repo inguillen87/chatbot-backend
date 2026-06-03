@@ -17,6 +17,7 @@ from services.operational_intelligence import (
     build_operational_freshness,
     build_operational_heatmap,
 )
+from services.plan_access import integration_access_payload
 from utils.auth_helpers import token_requerido
 from utils.permissions import require_role
 
@@ -162,6 +163,58 @@ def _error_response(message: str, status_code: int, reason_code: str = "request_
     )
 
 
+def _integration_access(tenant) -> dict[str, Any]:
+    return integration_access_payload(tenant)
+
+
+def _feature_access(access: dict[str, Any], feature_id: str) -> dict[str, Any]:
+    features = access.get("features") if isinstance(access.get("features"), dict) else {}
+    feature = features.get(feature_id)
+    if isinstance(feature, dict):
+        return feature
+    return {
+        "id": feature_id,
+        "enabled": bool(access.get("enabled")),
+        "status": access.get("status") or ("enabled" if access.get("enabled") else "locked"),
+        "reason_code": access.get("reason_code"),
+        "lock_reason_code": access.get("lock_reason_code"),
+        "required_plan": access.get("required_plan") or "full",
+    }
+
+
+def _feature_enabled(access: dict[str, Any], feature_id: str) -> bool:
+    return bool(_feature_access(access, feature_id).get("enabled"))
+
+
+def _with_access(payload: dict[str, Any], tenant) -> dict[str, Any]:
+    body = dict(payload or {})
+    body.setdefault("access", _integration_access(tenant))
+    return body
+
+
+def _integration_plan_required_response(tenant, feature_id: str):
+    access = _integration_access(tenant)
+    feature = _feature_access(access, feature_id)
+    return _json_response(
+        {
+            "ok": False,
+            "contract_version": access.get("contract_version") or "tenant.integration_access.v1",
+            "reason_code": feature.get("reason_code") or access.get("reason_code") or "plan_full_required",
+            "lock_reason_code": feature.get("lock_reason_code") or access.get("lock_reason_code"),
+            "message": access.get("message"),
+            "feature_id": feature_id,
+            "feature": feature,
+            "access": access,
+            "frontend_contract": {
+                **(access.get("frontend_contract") or {}),
+                "render_as": "integration_locked_state",
+                "feature_id": feature_id,
+            },
+        },
+        403,
+    )
+
+
 def _resolve_tenant_or_error(current_user):
     explicit_slug = (
         request.headers.get("X-Tenant-Slug")
@@ -299,6 +352,7 @@ def overview_v2(current_user):
             "survey_completion_rate": survey_completion_rate,
             "csat_score": 0,
             "nps_score": 0,
+            "access": _integration_access(tenant),
         }
     )
 
@@ -318,7 +372,7 @@ def tickets_v2(current_user):
         context="municipio",
         filters={},
     )
-    return jsonify(data)
+    return _json_response(_with_access(data, tenant))
 
 
 @v2_analytics_bp.route("/surveys", methods=["GET"])
@@ -329,7 +383,7 @@ def surveys_v2(current_user):
     if error:
         return error
     data = analytics_service.get_survey_summary(tenant.id)
-    return jsonify(data)
+    return _json_response(_with_access(data or {}, tenant))
 
 
 @v2_analytics_bp.route("/funnel", methods=["GET"])
@@ -339,9 +393,11 @@ def funnel_v2(current_user):
     tenant, error = _resolve_tenant_or_error(current_user)
     if error:
         return error
+    if not _feature_enabled(_integration_access(tenant), "analytics_dashboard"):
+        return _integration_plan_required_response(tenant, "analytics_dashboard")
     start_date, end_date = _date_range()
     data = analytics_service.get_funnel_analytics(tenant.id, start_date, end_date)
-    return jsonify(data)
+    return _json_response(_with_access(data or {}, tenant))
 
 
 @v2_analytics_bp.route("/operations", methods=["GET"])
@@ -355,7 +411,7 @@ def operations_dashboard_v2(current_user):
 
     start_date, end_date = _date_range()
     payload = build_operational_dashboard(tenant, start_date, end_date)
-    return _json_response(payload)
+    return _json_response(_with_access(payload, tenant))
 
 
 @v2_analytics_bp.route("/operations/heatmap", methods=["GET"])
@@ -365,10 +421,12 @@ def operations_heatmap_v2(current_user):
     tenant, error = _resolve_tenant_or_error(current_user)
     if error:
         return error
+    if not _feature_enabled(_integration_access(tenant), "heatmaps"):
+        return _integration_plan_required_response(tenant, "heatmaps")
 
     start_date, end_date = _date_range(default_days=365)
     payload = build_operational_heatmap(tenant, start_date, end_date, segment_filters=_heatmap_segment_filters())
-    return _json_response(payload)
+    return _json_response(_with_access(payload, tenant))
 
 
 @v2_analytics_bp.route("/operations/action-center", methods=["GET"])
@@ -378,10 +436,12 @@ def operations_action_center_v2(current_user):
     tenant, error = _resolve_tenant_or_error(current_user)
     if error:
         return error
+    if not _feature_enabled(_integration_access(tenant), "analytics_dashboard"):
+        return _integration_plan_required_response(tenant, "analytics_dashboard")
 
     start_date, end_date = _date_range()
     payload = build_action_center(tenant, start_date, end_date)
-    return _json_response(payload)
+    return _json_response(_with_access(payload, tenant))
 
 
 @v2_analytics_bp.route("/operations/freshness", methods=["GET"])
@@ -394,7 +454,7 @@ def operations_freshness_v2(current_user):
 
     start_date, end_date = _date_range()
     payload = build_operational_freshness(tenant, start_date, end_date)
-    return _json_response(payload)
+    return _json_response(_with_access(payload, tenant))
 
 
 @v2_analytics_bp.route("/operations/executive-summary", methods=["GET", "POST"])
@@ -404,6 +464,8 @@ def operations_executive_summary_v2(current_user):
     tenant, error = _resolve_tenant_or_error(current_user)
     if error:
         return error
+    if not _feature_enabled(_integration_access(tenant), "analytics_dashboard"):
+        return _integration_plan_required_response(tenant, "analytics_dashboard")
 
     start_date, end_date = _date_range()
     dashboard = build_operational_dashboard(tenant, start_date, end_date)
@@ -460,6 +522,7 @@ def operations_executive_summary_v2(current_user):
                 "export_pdf_endpoint": "/api/v2/analytics/operations/export.pdf",
                 "refresh_behavior": "manual_or_after_dashboard_refresh",
             },
+            "access": _integration_access(tenant),
         }
     )
 
@@ -471,6 +534,8 @@ def operations_export_pdf_v2(current_user):
     tenant, error = _resolve_tenant_or_error(current_user)
     if error:
         return error
+    if not _feature_enabled(_integration_access(tenant), "analytics_dashboard"):
+        return _integration_plan_required_response(tenant, "analytics_dashboard")
 
     request_id = _request_id()
     start_date, end_date = _date_range()

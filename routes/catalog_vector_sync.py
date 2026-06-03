@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from flask import Blueprint, jsonify
 
+from models import TenantProfile
 from routes.auth import token_requerido
 from services.catalog_vector_sync_service import catalog_vector_sync_service
+from services.plan_access import integration_access_payload, plan_allows_full_integrations
 
 
 catalog_vector_sync_bp = Blueprint(
@@ -38,6 +40,31 @@ def _user_can_access_pyme(current_user, pyme_id: int) -> bool:
     return False
 
 
+def _tenant_for_pyme(pyme_id: int):
+    return TenantProfile.query.filter_by(pyme_id=pyme_id).first()
+
+
+def _catalog_plan_required_response(pyme_id: int):
+    tenant = _tenant_for_pyme(pyme_id)
+    access = integration_access_payload(tenant)
+    feature = (access.get("features") or {}).get("catalog_management") or {}
+    response = jsonify(
+        {
+            "error": "plan_required",
+            "message": access.get("message") or "Tu plan actual no habilita sincronizacion productiva de catalogo.",
+            "feature": feature,
+            "access": access,
+            "frontend_contract": {
+                "render_as": "integration_locked",
+                "primary_action": "upgrade_to_full",
+                "feature_id": "catalog_management",
+            },
+        }
+    )
+    response.status_code = 403
+    return response
+
+
 @catalog_vector_sync_bp.route("/status", methods=["GET", "OPTIONS"])
 @token_requerido
 def get_catalog_vector_status(current_user, pyme_id: int):
@@ -47,7 +74,9 @@ def get_catalog_vector_status(current_user, pyme_id: int):
         return jsonify({"error": "No tiene permiso para consultar esta PYME."}), 403
 
     status = catalog_vector_sync_service.get_status(pyme_id)
-    return jsonify(status.to_dict()), 200
+    payload = status.to_dict()
+    payload["access"] = integration_access_payload(_tenant_for_pyme(pyme_id))
+    return jsonify(payload), 200
 
 
 @catalog_vector_sync_bp.route("", methods=["POST", "OPTIONS"])
@@ -57,5 +86,8 @@ def trigger_catalog_vector_sync(current_user, pyme_id: int):
 
     if not _user_can_access_pyme(current_user, pyme_id):
         return jsonify({"error": "No tiene permiso para consultar esta PYME."}), 403
+
+    if not plan_allows_full_integrations(_tenant_for_pyme(pyme_id)):
+        return _catalog_plan_required_response(pyme_id)
 
     return jsonify({"status": "accepted"}), 202

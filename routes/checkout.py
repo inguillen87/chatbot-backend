@@ -13,6 +13,7 @@ from routes.catalogo import _formatear_producto
 from services.commerce_contracts import (
     build_checkout_experience_payload,
     build_customer_profile,
+    payment_integration_frontend_contract,
     resolve_order_contact_payload,
 )
 from services.plan_access import plan_allows_full_integrations
@@ -335,7 +336,9 @@ def _crear_pedido(payload: dict):
                     "message": "Plan Full requerido para cobrar desde WhatsApp, widget o checkout publico.",
                     "integration_access": integration_access,
                     "checkout_experience": checkout_experience,
-                    "frontend_contract": {"render_as": "integration_locked"},
+                    "feature": (integration_access.get("features") or {}).get("mercadopago_checkout") or {},
+                    "upgrade": integration_access.get("upgrade") or {},
+                    "frontend_contract": payment_integration_frontend_contract(integration_access),
                 }
             ),
             403,

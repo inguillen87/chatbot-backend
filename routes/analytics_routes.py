@@ -5,6 +5,8 @@ from flask_login import current_user, login_user
 from datetime import datetime, timedelta
 from services.analytics_service import analytics_service
 from services.openai_bridge import generate_analytics_report, analyze_sentiment
+from services.plan_access import integration_access_payload
+from extensions import db
 from models import TenantProfile
 from extensions import limiter
 from utils.auth_helpers import obtener_token, user_from_token
@@ -84,6 +86,67 @@ def api_login_required(fn):
 
     return _wrapped
 
+
+def _tenant_from_id(tenant_id) -> TenantProfile | None:
+    try:
+        return db.session.get(TenantProfile, int(tenant_id))
+    except (TypeError, ValueError):
+        return None
+
+
+def _integration_access_for_tenant_id(tenant_id) -> dict:
+    return integration_access_payload(_tenant_from_id(tenant_id))
+
+
+def _feature_access(access: dict, feature_id: str) -> dict:
+    features = access.get("features") if isinstance(access.get("features"), dict) else {}
+    feature = features.get(feature_id)
+    if isinstance(feature, dict):
+        return feature
+    return {
+        "id": feature_id,
+        "enabled": bool(access.get("enabled")),
+        "status": access.get("status") or ("enabled" if access.get("enabled") else "locked"),
+        "reason_code": access.get("reason_code"),
+        "lock_reason_code": access.get("lock_reason_code"),
+        "required_plan": access.get("required_plan") or "full",
+    }
+
+
+def _feature_enabled_for_tenant_id(tenant_id, feature_id: str) -> bool:
+    access = _integration_access_for_tenant_id(tenant_id)
+    return bool(_feature_access(access, feature_id).get("enabled"))
+
+
+def _integration_plan_required_response(tenant_id, feature_id: str):
+    access = _integration_access_for_tenant_id(tenant_id)
+    feature = _feature_access(access, feature_id)
+    return jsonify(
+        {
+            "ok": False,
+            "contract_version": access.get("contract_version") or "tenant.integration_access.v1",
+            "reason_code": feature.get("reason_code") or access.get("reason_code") or "plan_full_required",
+            "lock_reason_code": feature.get("lock_reason_code") or access.get("lock_reason_code"),
+            "message": access.get("message"),
+            "feature_id": feature_id,
+            "feature": feature,
+            "access": access,
+            "frontend_contract": {
+                **(access.get("frontend_contract") or {}),
+                "render_as": "integration_locked_state",
+                "feature_id": feature_id,
+            },
+            "request_id": _request_id(),
+        }
+    ), 403
+
+
+def _attach_access(payload, tenant_id):
+    if isinstance(payload, dict):
+        payload.setdefault("access", _integration_access_for_tenant_id(tenant_id))
+    return payload
+
+
 def _get_date_range():
     # Helper to parse dates
     # defaults to last 7 days
@@ -142,7 +205,7 @@ def get_summary():
             context=context,
             filters=filters
         )
-        return jsonify(data)
+        return jsonify(_attach_access(data, tenant_id))
     except Exception as e:
         current_app.logger.error(f"Analytics Error: {e}", exc_info=True)
         return _api_error(str(e), status=500, code="analytics_internal_error")
@@ -162,6 +225,8 @@ def get_heatmap():
 
     if current_user.tenant_id and str(current_user.tenant_id) != str(tenant_id) and current_user.rol != 'admin':
         return _api_error("Unauthorized", status=403, code="forbidden")
+    if not _feature_enabled_for_tenant_id(tenant_id, "heatmaps"):
+        return _integration_plan_required_response(tenant_id, "heatmaps")
 
     start_date, end_date = _get_date_range()
 
@@ -191,7 +256,7 @@ def get_survey_summary():
 
     try:
         data = analytics_service.get_survey_summary(tenant_id=int(tenant_id))
-        return jsonify(data)
+        return jsonify(_attach_access(data, tenant_id))
     except Exception as e:
         current_app.logger.error(f"Analytics Error: {e}", exc_info=True)
         return _api_error(str(e), status=500, code="analytics_internal_error")
@@ -208,6 +273,8 @@ def get_survey_sentiment():
 
     if current_user.tenant_id and str(current_user.tenant_id) != str(tenant_id) and current_user.rol != "admin":
         return _api_error("Unauthorized", status=403, code="forbidden")
+    if not _feature_enabled_for_tenant_id(tenant_id, "analytics_dashboard"):
+        return _integration_plan_required_response(tenant_id, "analytics_dashboard")
 
     tid = int(tenant_id)
 
@@ -243,6 +310,8 @@ def get_survey_geo():
 
     if current_user.tenant_id and str(current_user.tenant_id) != str(tenant_id) and current_user.rol != "admin":
         return _api_error("Unauthorized", status=403, code="forbidden")
+    if not _feature_enabled_for_tenant_id(tenant_id, "heatmaps"):
+        return _integration_plan_required_response(tenant_id, "heatmaps")
 
     try:
         points = analytics_service.get_survey_geo(tenant_id=int(tenant_id))
@@ -263,6 +332,8 @@ def get_insights():
 
     if current_user.tenant_id and str(current_user.tenant_id) != str(tenant_id) and current_user.rol != "admin":
         return _api_error("Unauthorized", status=403, code="forbidden")
+    if not _feature_enabled_for_tenant_id(tenant_id, "analytics_dashboard"):
+        return _integration_plan_required_response(tenant_id, "analytics_dashboard")
 
     try:
         insights = analytics_service.get_insights(tenant_id=int(tenant_id))
@@ -283,6 +354,8 @@ def get_sales_analytics():
 
     if current_user.tenant_id and str(current_user.tenant_id) != str(tenant_id) and current_user.rol != 'admin':
         return _api_error("Unauthorized", status=403, code="forbidden")
+    if not _feature_enabled_for_tenant_id(tenant_id, "analytics_dashboard"):
+        return _integration_plan_required_response(tenant_id, "analytics_dashboard")
 
     start_date, end_date = _get_date_range()
 
@@ -309,6 +382,8 @@ def get_benchmarks():
 
     if current_user.tenant_id and str(current_user.tenant_id) != str(tenant_id) and current_user.rol != "admin":
         return _api_error("Unauthorized", status=403, code="forbidden")
+    if not _feature_enabled_for_tenant_id(tenant_id, "analytics_dashboard"):
+        return _integration_plan_required_response(tenant_id, "analytics_dashboard")
 
     start_date, end_date = _get_date_range()
 
@@ -335,6 +410,8 @@ def get_funnel():
 
     if current_user.tenant_id and str(current_user.tenant_id) != str(tenant_id) and current_user.rol != "admin":
         return _api_error("Unauthorized", status=403, code="forbidden")
+    if not _feature_enabled_for_tenant_id(tenant_id, "analytics_dashboard"):
+        return _integration_plan_required_response(tenant_id, "analytics_dashboard")
 
     start_date, end_date = _get_date_range()
 
@@ -364,6 +441,8 @@ def get_latest_report():
 
     if current_user.tenant_id and str(current_user.tenant_id) != str(tenant_id) and current_user.rol != 'admin':
         return _api_error("Unauthorized", status=403, code="forbidden")
+    if not _feature_enabled_for_tenant_id(tenant_id, "analytics_dashboard"):
+        return _integration_plan_required_response(tenant_id, "analytics_dashboard")
 
     segment = request.args.get('segment', 'pyme') # pyme or municipio
 
@@ -373,6 +452,7 @@ def get_latest_report():
         cached['_cached'] = True
         cached.setdefault("contract_version", "analytics.report.latest.v1")
         cached.setdefault("request_id", _request_id())
+        cached.setdefault("access", _integration_access_for_tenant_id(tenant_id))
         return jsonify(cached)
 
     return jsonify(
@@ -386,6 +466,7 @@ def get_latest_report():
             "reason_code": "report_not_generated",
             "message": "Todavia no hay un informe generado para este periodo.",
             "generate_endpoint": "/api/analytics/report/generate",
+            "access": _integration_access_for_tenant_id(tenant_id),
             "request_id": _request_id(),
         }
     )
@@ -406,7 +487,7 @@ def trigger_generate_report():
 @api_login_required
 @limiter.limit("1 per hour", key_func=lambda: str(current_user.id))
 def generate_report():
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
     tenant_id = data.get('tenant_id')
     segment = data.get('segment', 'pyme') # pyme or municipio
 
@@ -418,6 +499,8 @@ def generate_report():
 
     if current_user.tenant_id and str(current_user.tenant_id) != str(tenant_id) and current_user.rol != 'admin':
         return _api_error("Unauthorized", status=403, code="forbidden")
+    if not _feature_enabled_for_tenant_id(tenant_id, "analytics_dashboard"):
+        return _integration_plan_required_response(tenant_id, "analytics_dashboard")
 
     tid = int(tenant_id)
 
@@ -430,6 +513,7 @@ def generate_report():
     if cached and not force_refresh:
         # Add metadata to indicate it's cached
         cached['_cached'] = True
+        cached.setdefault("access", _integration_access_for_tenant_id(tenant_id))
         return jsonify(cached)
 
     from_str = data.get('from')

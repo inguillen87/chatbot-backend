@@ -18,7 +18,7 @@ def app(monkeypatch):
     app = Flask(__name__)
     app.config.update(TESTING=True, SECRET_KEY="test")
 
-    tenant = Obj(id=1, configuracion={})
+    tenant = Obj(id=1, plan="full", is_active=True, configuracion={})
     owner = Obj(id=2)
 
     monkeypatch.setattr(

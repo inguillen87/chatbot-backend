@@ -12,14 +12,38 @@ def _plan_allows_integrations(tenant: TenantProfile) -> bool:
     return plan_allows_full_integrations(tenant)
 
 
-def _integration_plan_required_response(tenant: TenantProfile):
+def _provider_feature_id(provider: str) -> str:
+    if provider in {"mercadolibre", "tiendanube"}:
+        return "marketplace_sync"
+    if provider == "whatsapp":
+        return "whatsapp_business_platform"
+    return "marketplace_sync"
+
+
+def _integration_plan_required_response(
+    tenant: TenantProfile,
+    feature_id: str = "marketplace_sync",
+):
     access = integration_access_payload(tenant)
+    feature = (access.get("features") or {}).get(feature_id) or {}
+    frontend_contract = {
+        **(access.get("frontend_contract") or {}),
+        "render_as": "integration_locked_state",
+        "feature_id": feature_id,
+        "primary_action": "upgrade_to_full",
+    }
     return (
         jsonify(
             {
+                "ok": False,
+                "contract_version": access.get("contract_version") or "tenant.integration_access.v1",
                 "error": "plan_required",
+                "reason_code": access.get("reason_code") or "plan_full_required",
                 "message": access["message"],
                 "access": access,
+                "feature": feature,
+                "upgrade": access.get("upgrade"),
+                "frontend_contract": frontend_contract,
             }
         ),
         403,
@@ -34,7 +58,7 @@ def connect(user, provider):
     if not tenant:
         return jsonify({"error": "Tenant required"}), 400
     if not _plan_allows_integrations(tenant):
-        return _integration_plan_required_response(tenant)
+        return _integration_plan_required_response(tenant, _provider_feature_id(provider))
 
     redirect_uri = f"{request.host_url}api/integrations/{provider}/callback"
 
@@ -63,7 +87,11 @@ def callback(provider):
         if not tenant:
             return jsonify({"error": "Tenant not found"}), 404
         if not _plan_allows_integrations(tenant):
-            return jsonify(integration_access_payload(tenant)), 403
+            response, status = _integration_plan_required_response(
+                tenant,
+                _provider_feature_id(provider),
+            )
+            return response, status
 
         if provider == "mercadolibre":
             MercadoLibreService.handle_callback(state, code, redirect_uri)
@@ -107,7 +135,7 @@ def preview_integration(current_user, provider):
     if not tenant:
         return jsonify({"error": "Tenant required"}), 400
     if not _plan_allows_integrations(tenant):
-        return _integration_plan_required_response(tenant)
+        return _integration_plan_required_response(tenant, _provider_feature_id(provider))
 
     # Validate provider
     if provider not in ['mercadolibre', 'tiendanube']:
@@ -121,12 +149,19 @@ def preview_integration(current_user, provider):
     ).first()
 
     if not account:
+        access = integration_access_payload(tenant)
         return jsonify({
             "status": "disconnected",
             "message": f"Conectá tu cuenta de {provider} para sincronizar productos.",
             "preview_data": [],
             "mapped_count": 0,
-            "error_count": 0
+            "error_count": 0,
+            "access": access,
+            "frontend_contract": {
+                "render_as": "marketplace_integration_preview",
+                "feature_id": _provider_feature_id(provider),
+                "connect_enabled": bool(access.get("enabled")),
+            },
         })
 
     # TODO: Implement real-time fetch of remote items for comparison
@@ -148,11 +183,18 @@ def preview_integration(current_user, provider):
             "message": "Listo para publicar"
         })
 
+    access = integration_access_payload(tenant)
     return jsonify({
         "status": "connected",
         "message": f"Cuenta vinculada. {total_items} productos listos para sincronizar.",
         "preview_data": preview_sample,
         "mapped_count": 0, # To be implemented with real sync logic
         "pending_count": total_items,
-        "error_count": 0
+        "error_count": 0,
+        "access": access,
+        "frontend_contract": {
+            "render_as": "marketplace_integration_preview",
+            "feature_id": _provider_feature_id(provider),
+            "connect_enabled": bool(access.get("enabled")),
+        },
     })

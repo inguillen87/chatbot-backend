@@ -21,6 +21,7 @@ from services.encuestas_service import (
     serialize_public_encuesta,
     update_encuesta,
 )
+from services.plan_access import integration_access_payload, plan_allows_full_integrations
 from utils.auth_helpers import token_requerido
 from utils.permissions import require_role
 
@@ -67,6 +68,32 @@ def _error_response(message: str, status_code: int, reason_code: str = "request_
         },
         status_code,
     )
+
+
+def _survey_plan_required_response(tenant):
+    access = integration_access_payload(tenant)
+    feature = (access.get("features") or {}).get("surveys_votings") or {}
+    return _json_response(
+        {
+            "contract_version": "tenant.integration_access.v1",
+            "error": "plan_required",
+            "message": access.get("message"),
+            "reason_code": feature.get("reason_code") or access.get("reason_code") or "plan_full_required",
+            "action_hint": "upgrade_to_full",
+            "feature": feature,
+            "access": access,
+            "frontend_contract": {
+                "render_as": "integration_locked",
+                "primary_action": "upgrade_to_full",
+                "feature_id": "surveys_votings",
+            },
+        },
+        403,
+    )
+
+
+def _survey_writes_allowed(tenant) -> bool:
+    return plan_allows_full_integrations(tenant)
 
 
 def _stable_id_suffix(value: Any) -> str:
@@ -173,7 +200,13 @@ def list_surveys_v2(current_user):
 
     estado = (request.args.get("estado") or request.args.get("status") or "").strip() or None
     encuestas = list_encuestas(tenant_id=tenant.id, estado=estado)
-    return jsonify({"items": [serialize_encuesta(encuesta) for encuesta in encuestas], "total": len(encuestas)})
+    return jsonify(
+        {
+            "items": [serialize_encuesta(encuesta) for encuesta in encuestas],
+            "total": len(encuestas),
+            "access": integration_access_payload(tenant),
+        }
+    )
 
 
 @v2_surveys_bp.route("/surveys", methods=["POST"])
@@ -186,6 +219,8 @@ def create_survey_v2(current_user):
     allowed, denied = _enforce_tenant_access(current_user, tenant)
     if not allowed:
         return denied
+    if not _survey_writes_allowed(tenant):
+        return _survey_plan_required_response(tenant)
 
     payload = _normalize_admin_payload(request.get_json(silent=True) or {})
     g.tenant_profile = tenant
@@ -208,6 +243,8 @@ def save_survey_draft_v2(current_user):
     allowed, denied = _enforce_tenant_access(current_user, tenant)
     if not allowed:
         return denied
+    if not _survey_writes_allowed(tenant):
+        return _survey_plan_required_response(tenant)
 
     payload = request.get_json(silent=True) or {}
     questions = payload.get("questions") if isinstance(payload.get("questions"), list) else []
@@ -277,6 +314,8 @@ def update_survey_v2(current_user, survey_id: int):
     allowed, denied = _enforce_tenant_access(current_user, tenant)
     if not allowed:
         return denied
+    if not _survey_writes_allowed(tenant):
+        return _survey_plan_required_response(tenant)
 
     payload = _normalize_admin_payload(request.get_json(silent=True) or {})
     g.tenant_profile = tenant
@@ -299,6 +338,8 @@ def publish_survey_v2(current_user, survey_id: int):
     allowed, denied = _enforce_tenant_access(current_user, tenant)
     if not allowed:
         return denied
+    if not _survey_writes_allowed(tenant):
+        return _survey_plan_required_response(tenant)
 
     g.tenant_profile = tenant
     try:

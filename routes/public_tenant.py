@@ -132,6 +132,15 @@ def _public_json(payload: dict, status: int = 200):
 
 def _public_widget_plan_required_payload(tenant: TenantProfile, contract_version: str) -> tuple[dict, int]:
     access = integration_access_payload(tenant)
+    feature = (access.get("features") or {}).get("widget_embed") or {}
+    frontend_contract = {
+        **(access.get("frontend_contract") or {}),
+        "render_as": "integration_locked",
+        "feature_id": "widget_embed",
+        "primary_action": "upgrade_to_full",
+        "hide_embed_copy": True,
+        "hide_widget_session": True,
+    }
     return {
         "ok": False,
         "error": "plan_required",
@@ -142,11 +151,9 @@ def _public_widget_plan_required_payload(tenant: TenantProfile, contract_version
         "action_hint": "upgrade_to_full",
         "message": access.get("message"),
         "access": access,
+        "feature": feature,
         "upgrade": access.get("upgrade"),
-        "frontend_contract": {
-            "render_as": "integration_locked",
-            "primary_action": "upgrade_to_full",
-        },
+        "frontend_contract": frontend_contract,
     }, 403
 
 

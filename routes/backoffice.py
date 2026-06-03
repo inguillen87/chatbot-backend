@@ -24,6 +24,7 @@ from models import (
     TicketRealtimeState,
     User,
 )
+from services.plan_access import integration_access_payload
 from utils.auth_helpers import token_requerido
 from utils.roles import canonical_role, first_specific_tenant_slug, is_super_admin_role, normalize_tenant_slug
 
@@ -135,16 +136,62 @@ def _capability_enabled(capabilities: dict[str, Any], key: str, *, default: bool
     return bool(value)
 
 
+def _integration_access(tenant: TenantProfile) -> dict[str, Any]:
+    return integration_access_payload(tenant)
+
+
+def _feature_access(access: dict[str, Any], feature_id: str) -> dict[str, Any]:
+    features = access.get("features") if isinstance(access.get("features"), dict) else {}
+    feature = features.get(feature_id)
+    if isinstance(feature, dict):
+        return feature
+    return {
+        "id": feature_id,
+        "enabled": bool(access.get("enabled")),
+        "status": access.get("status") or ("enabled" if access.get("enabled") else "locked"),
+        "reason_code": access.get("reason_code"),
+        "lock_reason_code": access.get("lock_reason_code"),
+        "required_plan": access.get("required_plan") or "full",
+    }
+
+
+def _feature_enabled(access: dict[str, Any], feature_id: str) -> bool:
+    return bool(_feature_access(access, feature_id).get("enabled"))
+
+
+def _integration_plan_required_response(tenant: TenantProfile, request_id: str, feature_id: str):
+    access = _integration_access(tenant)
+    feature = _feature_access(access, feature_id)
+    return _json(
+        {
+            "ok": False,
+            "contract_version": access.get("contract_version") or "tenant.integration_access.v1",
+            "reason_code": feature.get("reason_code") or access.get("reason_code") or "plan_full_required",
+            "lock_reason_code": feature.get("lock_reason_code") or access.get("lock_reason_code"),
+            "message": access.get("message"),
+            "feature_id": feature_id,
+            "feature": feature,
+            "access": access,
+            "frontend_contract": {
+                **(access.get("frontend_contract") or {}),
+                "render_as": "integration_locked_state",
+                "feature_id": feature_id,
+            },
+        },
+        status=403,
+        request_id=request_id,
+    )
+
+
 def _analytics_modes(tenant: TenantProfile, current_user: User) -> dict[str, Any]:
     capabilities = _capabilities(tenant)
-    plan = str(tenant.plan or "").strip().lower()
-    role = canonical_role(getattr(current_user, "rol", None))
-    advanced_default = plan not in {"", "free", "gratis"} or is_super_admin_role(role)
+    access = _integration_access(tenant)
+    advanced_allowed = _feature_enabled(access, "analytics_dashboard")
     advanced_enabled = _capability_enabled(
         capabilities,
         "advanced_analytics",
-        default=advanced_default,
-    )
+        default=advanced_allowed,
+    ) and advanced_allowed
     return {
         "statistics": {
             "label": "Estadisticas",
@@ -155,6 +202,7 @@ def _analytics_modes(tenant: TenantProfile, current_user: User) -> dict[str, Any
             "label": "Analitica IA",
             "description": "Investigacion, segmentos, resumen ejecutivo y exportaciones.",
             "enabled": advanced_enabled,
+            "access": _feature_access(access, "analytics_dashboard"),
         },
     }
 
@@ -302,10 +350,15 @@ def _modules_for(tenant: TenantProfile, current_user: User, *, analytics_modes: 
     scope = _tenant_scope(tenant)
     capabilities = _capabilities(tenant)
     counts = counts or {"geo_points": 0}
+    access = _integration_access(tenant)
     people_enabled = role in {"admin", "super_admin", "empleado"} and _capability_enabled(capabilities, "people", default=True)
-    surveys_enabled = _capability_enabled(capabilities, "surveys", default=True)
+    surveys_access = _feature_access(access, "surveys_votings")
+    surveys_enabled = bool(surveys_access.get("enabled")) and _capability_enabled(capabilities, "surveys", default=True)
     maps_default = scope in {"municipio", "colegio"} or bool(counts.get("geo_points"))
-    maps_enabled = _capability_enabled(capabilities, "maps", default=maps_default)
+    maps_access = _feature_access(access, "heatmaps")
+    maps_enabled = bool(maps_access.get("enabled")) and _capability_enabled(capabilities, "maps", default=maps_default)
+    analytics_access = _feature_access(access, "analytics_dashboard")
+    comments_access = _feature_access(access, "comments_inbox")
 
     modules = [
         {
@@ -314,6 +367,7 @@ def _modules_for(tenant: TenantProfile, current_user: User, *, analytics_modes: 
             "description": "Reclamos, estados, ubicaciones y seguimiento diario." if scope == "municipio" else "Casos, pedidos, estados y seguimiento diario.",
             "route": "/perfil?tab=tickets",
             "enabled": _capability_enabled(capabilities, "operations", default=True),
+            "access": comments_access,
             "priority": 1,
         },
         {
@@ -322,6 +376,7 @@ def _modules_for(tenant: TenantProfile, current_user: User, *, analytics_modes: 
             "description": "Resumen operativo, mapas de calor y prioridades.",
             "route": "/perfil?tab=estadisticas",
             "enabled": bool((analytics_modes.get("statistics") or {}).get("enabled")),
+            "access": analytics_access,
             "priority": 2,
         },
         {
@@ -330,6 +385,7 @@ def _modules_for(tenant: TenantProfile, current_user: User, *, analytics_modes: 
             "description": "Participacion, votaciones, comentarios y resultados en vivo.",
             "route": "/admin/encuestas",
             "enabled": surveys_enabled,
+            "access": surveys_access,
             "priority": 3,
         },
         {
@@ -346,6 +402,7 @@ def _modules_for(tenant: TenantProfile, current_user: User, *, analytics_modes: 
             "description": "Zonas, categorias y demanda georreferenciada.",
             "route": "/perfil?tab=estadisticas&view=mapas",
             "enabled": maps_enabled,
+            "access": maps_access,
             "priority": 5,
         },
         {
@@ -354,6 +411,7 @@ def _modules_for(tenant: TenantProfile, current_user: User, *, analytics_modes: 
             "description": "Segmentos, resumen ejecutivo, investigacion y exportaciones.",
             "route": "/analytics?mode=advanced",
             "enabled": bool((analytics_modes.get("advanced_analytics") or {}).get("enabled")),
+            "access": analytics_access,
             "priority": 6,
         },
     ]
@@ -362,33 +420,35 @@ def _modules_for(tenant: TenantProfile, current_user: User, *, analytics_modes: 
 
 def _backoffice_actions(tenant: TenantProfile, *, analytics_modes: dict[str, Any]) -> list[dict[str, Any]]:
     capabilities = _capabilities(tenant)
+    access = _integration_access(tenant)
+    analytics_access = _feature_access(access, "analytics_dashboard")
     statistics_enabled = bool((analytics_modes.get("statistics") or {}).get("enabled"))
     advanced_enabled = bool((analytics_modes.get("advanced_analytics") or {}).get("enabled"))
-    exports_enabled = _capability_enabled(capabilities, "exports", default=statistics_enabled)
+    exports_enabled = bool(analytics_access.get("enabled")) and _capability_enabled(capabilities, "exports", default=statistics_enabled)
     actions: list[dict[str, Any]] = []
-    if exports_enabled:
-        actions.append(
-            {
-                "id": "export_backoffice",
-                "label": "Exportar datos",
-                "description": "Generar PDF, CSV o XLSX desde filtros reales.",
-                "method": "POST",
-                "endpoint": "/api/v2/backoffice/export",
-                "formats": ["pdf", "csv", "xlsx"],
-                "enabled": True,
-            }
-        )
-    if advanced_enabled:
-        actions.append(
-            {
-                "id": "executive_summary",
-                "label": "Pedir resumen IA",
-                "description": "Resumen ejecutivo con riesgos, oportunidades y calidad de datos.",
-                "method": "POST",
-                "endpoint": "/api/v2/backoffice/executive-summary",
-                "enabled": True,
-            }
-        )
+    actions.append(
+        {
+            "id": "export_backoffice",
+            "label": "Exportar datos",
+            "description": "Generar PDF, CSV o XLSX desde filtros reales.",
+            "method": "POST",
+            "endpoint": "/api/v2/backoffice/export",
+            "formats": ["pdf", "csv", "xlsx"],
+            "enabled": exports_enabled,
+            "access": analytics_access,
+        }
+    )
+    actions.append(
+        {
+            "id": "executive_summary",
+            "label": "Pedir resumen IA",
+            "description": "Resumen ejecutivo con riesgos, oportunidades y calidad de datos.",
+            "method": "POST",
+            "endpoint": "/api/v2/backoffice/executive-summary",
+            "enabled": advanced_enabled,
+            "access": analytics_access,
+        }
+    )
     return actions
 
 
@@ -396,6 +456,7 @@ def _navigation_payload(current_user: User, tenant: TenantProfile, request_id: s
     analytics_modes = _analytics_modes(tenant, current_user)
     surveys = _surveys_overview(tenant)
     counts = _operations_counts(tenant, since=datetime.now(timezone.utc) - timedelta(days=7))
+    access = _integration_access(tenant)
     return {
         "contract_version": "backoffice.navigation.v1",
         "tenant_slug": tenant.slug,
@@ -411,6 +472,7 @@ def _navigation_payload(current_user: User, tenant: TenantProfile, request_id: s
         "analytics_modes": analytics_modes,
         "surveys_overview": surveys,
         "actions": _backoffice_actions(tenant, analytics_modes=analytics_modes),
+        "access": access,
         "request_id": request_id,
     }
 
@@ -420,6 +482,7 @@ def _summary_payload(current_user: User, tenant: TenantProfile, request_id: str)
     counts = _operations_counts(tenant, since=since)
     surveys = _surveys_overview(tenant, since=since)
     analytics_modes = _analytics_modes(tenant, current_user)
+    access = _integration_access(tenant)
     top_category, top_category_count = _top_pending_category(tenant, since=since)
 
     cards = [
@@ -470,6 +533,7 @@ def _summary_payload(current_user: User, tenant: TenantProfile, request_id: str)
         "surveys_overview": surveys,
         "modules": _modules_for(tenant, current_user, analytics_modes=analytics_modes, surveys=surveys, counts=counts),
         "actions": _backoffice_actions(tenant, analytics_modes=analytics_modes),
+        "access": access,
         "request_id": request_id,
     }
 
@@ -1450,6 +1514,8 @@ def backoffice_v2_export(current_user: User):
     tenant, error = _authorized_tenant_or_response(current_user, request_id, explicit_slug=body.get("tenant_slug"))
     if error:
         return error
+    if not _feature_enabled(_integration_access(tenant), "analytics_dashboard"):
+        return _integration_plan_required_response(tenant, request_id, "analytics_dashboard")
     resource = _normalize_slug(body.get("resource"))
     export_format = _normalize_slug(body.get("format") or "csv")
     if resource not in {"tickets", "orders", "contacts", "team"}:
@@ -1507,4 +1573,6 @@ def backoffice_v2_executive_summary(current_user: User):
     tenant, error = _authorized_tenant_or_response(current_user, request_id, explicit_slug=body.get("tenant_slug"))
     if error:
         return error
+    if not _feature_enabled(_integration_access(tenant), "analytics_dashboard"):
+        return _integration_plan_required_response(tenant, request_id, "analytics_dashboard")
     return _json(_executive_summary_payload(tenant, current_user, request_id), request_id=request_id)

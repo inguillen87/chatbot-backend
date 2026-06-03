@@ -2332,6 +2332,9 @@ def get_mercadopago_credentials(current_user, slug):
     if not _is_authorized_for_tenant(current_user, tenant):
         return jsonify({'error': 'Unauthorized'}), 403
 
+    if not _plan_allows_integrations(tenant):
+        return _integration_plan_required_response(tenant)
+
     cfg = tenant.configuracion or {}
     token = cfg.get('mercadopago_access_token')
     status = cfg.get('mercadopago_status')
@@ -2356,6 +2359,9 @@ def set_mercadopago_credentials(current_user, slug):
 
     if not _is_authorized_for_tenant(current_user, tenant):
         return jsonify({'error': 'Unauthorized'}), 403
+
+    if not _plan_allows_integrations(tenant):
+        return _integration_plan_required_response(tenant)
 
     payload = request.get_json(silent=True) or {}
     access_token = (payload.get('access_token') or payload.get('token') or '').strip()
@@ -2387,6 +2393,9 @@ def test_mercadopago_credentials(current_user, slug):
 
     if not _is_authorized_for_tenant(current_user, tenant):
         return jsonify({'error': 'Unauthorized'}), 403
+
+    if not _plan_allows_integrations(tenant):
+        return _integration_plan_required_response(tenant)
 
     cfg = tenant.configuracion or {}
     token = cfg.get('mercadopago_access_token')

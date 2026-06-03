@@ -11,6 +11,7 @@ from services.catalog_inventory import (
     new_catalog_version,
     stock_value_from_row,
 )
+from services.plan_access import integration_access_payload, plan_allows_full_integrations
 from sqlalchemy.orm.attributes import flag_modified
 import os
 import io
@@ -32,6 +33,30 @@ def _catalog_import_error(codigo: str, mensaje: str, status: int):
     response = jsonify({"codigo": codigo, "mensaje": mensaje})
     response.status_code = status
     return response
+
+
+def _catalog_plan_required_response(tenant):
+    access = integration_access_payload(tenant)
+    feature = (access.get("features") or {}).get("catalog_management") or {}
+    response = jsonify(
+        {
+            "error": "plan_required",
+            "message": access.get("message") or "Tu plan actual no habilita gestion productiva de catalogo.",
+            "feature": feature,
+            "access": access,
+            "frontend_contract": {
+                "render_as": "integration_locked",
+                "primary_action": "upgrade_to_full",
+                "feature_id": "catalog_management",
+            },
+        }
+    )
+    response.status_code = 403
+    return response
+
+
+def _catalog_writes_allowed(tenant) -> bool:
+    return bool(tenant and plan_allows_full_integrations(tenant))
 
 
 def _coerce_dataframe_rows(frame) -> list[dict]:
@@ -424,6 +449,20 @@ def legacy_catalog_import():
     if not upload:
         return _catalog_import_error("archivo_requerido", "Tenes que adjuntar un archivo.", 400)
 
+    try:
+        tenant_slug = request.form.get("tenant") or request.form.get("tenant_slug")
+        tenant, owner, _ = resolve_tenant_and_user(tenant_slug=tenant_slug, current_user=current_user)
+    except Exception as exc:
+        logger.warning("Legacy catalog import tenant resolution failed: %s", exc)
+        return _catalog_import_error(
+            "tenant_no_resuelto",
+            "No se pudo resolver el tenant para importar el catalogo.",
+            400,
+        )
+
+    if not _catalog_writes_allowed(tenant):
+        return _catalog_plan_required_response(tenant)
+
     filename = secure_filename(upload.filename or "")
     ext = os.path.splitext(filename.lower())[1]
     content = upload.read()
@@ -466,17 +505,6 @@ def legacy_catalog_import():
             400,
         )
 
-    try:
-        tenant_slug = request.form.get("tenant") or request.form.get("tenant_slug")
-        tenant, owner, _ = resolve_tenant_and_user(tenant_slug=tenant_slug, current_user=current_user)
-    except Exception as exc:
-        logger.warning("Legacy catalog import tenant resolution failed: %s", exc)
-        return _catalog_import_error(
-            "tenant_no_resuelto",
-            "No se pudo resolver el tenant para importar el catalogo.",
-            400,
-        )
-
     plantilla = (request.form.get("plantilla") or "").strip() or None
     column_map = _parse_column_map(request.form.get("column_map"))
     if not column_map and plantilla:
@@ -514,6 +542,9 @@ def legacy_catalog_import():
 @require_tenant
 def create_import_session(current_user):
     tenant = g.tenant_profile
+    if not _catalog_writes_allowed(tenant):
+        return _catalog_plan_required_response(tenant)
+
     file = request.files.get('file')
 
     if not file:
@@ -611,13 +642,18 @@ def get_import_session(current_user, upload_id):
     if not upload:
         return jsonify({"error": "Not found"}), 404
 
-    return jsonify(_catalog_import_preview_contract(upload))
+    payload = _catalog_import_preview_contract(upload)
+    payload["access"] = integration_access_payload(tenant)
+    return jsonify(payload)
 
 @catalog_import_bp.route('/api/admin/catalog/import/<int:upload_id>', methods=['PUT'])
 @token_requerido
 @require_tenant
 def update_import_preview(current_user, upload_id):
     tenant = g.tenant_profile
+    if not _catalog_writes_allowed(tenant):
+        return _catalog_plan_required_response(tenant)
+
     upload = CatalogUpload.query.filter_by(id=upload_id, tenant_id=tenant.id).first()
     if not upload:
         return jsonify({"error": "Not found"}), 404
@@ -645,6 +681,9 @@ def update_import_preview(current_user, upload_id):
 @require_tenant
 def commit_import_session(current_user, upload_id):
     tenant = g.tenant_profile
+    if not _catalog_writes_allowed(tenant):
+        return _catalog_plan_required_response(tenant)
+
     upload = CatalogUpload.query.filter_by(id=upload_id, tenant_id=tenant.id).first()
     if not upload:
         return jsonify({"error": "Not found"}), 404

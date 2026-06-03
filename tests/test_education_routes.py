@@ -39,6 +39,7 @@ class TestEducationRoutes(unittest.TestCase):
             nombre="Escuela Demo",
             tipo="pyme",
             pyme_id=self.owner.id,
+            plan="full",
             vertical="educacion",
             subvertical="colegio_privado",
             capabilities_json={"education": {"enabled": True}},
@@ -335,7 +336,38 @@ class TestEducationRoutes(unittest.TestCase):
             json={"tenant_id": 999999, "phone_number": self.guardian.phone_number},
         )
         self.assertEqual(response.status_code, 404)
-        self.assertEqual(response.get_json()["error"]["message"], "Tenant not found")
+        self.assertEqual(response.get_json()["error"]["message"], "Tenant profile not found")
+
+    def test_free_plan_blocks_education_writes_and_heatmap(self):
+        self.tenant.plan = "free"
+        db.session.add(self.tenant)
+        db.session.commit()
+
+        create_school_resp = self.client.post(
+            "/api/v1/education/schools",
+            headers=self.auth_header,
+            json={"name": "Colegio Free", "school_type": "private"},
+        )
+        self.assertEqual(create_school_resp.status_code, 403)
+        create_payload = create_school_resp.get_json()
+        self.assertEqual(create_payload["reason_code"], "plan_full_required")
+        self.assertFalse(create_payload["access"]["enabled"])
+        self.assertEqual(create_payload["feature"]["id"], "education_management")
+
+        heatmap_resp = self.client.get(
+            "/api/v1/education/operations/heatmap",
+            headers=self.auth_header,
+        )
+        self.assertEqual(heatmap_resp.status_code, 403)
+        heatmap_payload = heatmap_resp.get_json()
+        self.assertEqual(heatmap_payload["feature"]["id"], "heatmaps")
+
+        verify_resp = self.client.post(
+            "/api/v1/education/guardians/verify",
+            json={"tenant_id": self.tenant.id, "phone_number": self.guardian.phone_number},
+        )
+        self.assertEqual(verify_resp.status_code, 403)
+        self.assertEqual(verify_resp.get_json()["reason_code"], "plan_full_required")
 
     def test_create_and_list_school_cases_aliases_to_tickets(self):
         create_resp = self.client.post(

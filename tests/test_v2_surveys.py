@@ -29,14 +29,26 @@ class V2SurveysApiTest(unittest.TestCase):
         self.client = self.app.test_client()
 
         self.admin_1 = self._create_user("admin-survey-a@test.com", "admin", "tenant-surv-a")
-        self.tenant_1 = TenantProfile(slug="tenant-surv-a", nombre="Tenant Survey A", tipo="municipio", pyme_id=self.admin_1.id)
+        self.tenant_1 = TenantProfile(
+            slug="tenant-surv-a",
+            nombre="Tenant Survey A",
+            tipo="municipio",
+            pyme_id=self.admin_1.id,
+            plan="full",
+        )
         db.session.add(self.tenant_1)
         db.session.commit()
         self.admin_1.tenant_id = self.tenant_1.id
         db.session.add(self.admin_1)
 
         self.admin_2 = self._create_user("admin-survey-b@test.com", "admin", "tenant-surv-b")
-        self.tenant_2 = TenantProfile(slug="tenant-surv-b", nombre="Tenant Survey B", tipo="pyme", pyme_id=self.admin_2.id)
+        self.tenant_2 = TenantProfile(
+            slug="tenant-surv-b",
+            nombre="Tenant Survey B",
+            tipo="pyme",
+            pyme_id=self.admin_2.id,
+            plan="full",
+        )
         db.session.add(self.tenant_2)
         db.session.commit()
         self.admin_2.tenant_id = self.tenant_2.id
@@ -140,6 +152,27 @@ class V2SurveysApiTest(unittest.TestCase):
         self.assertEqual(payload.get("draft_id"), "draft_draft-offline-1")
         self.assertEqual(payload.get("idempotency_key"), "draft-offline-1")
 
+    def test_free_plan_cannot_create_or_save_survey_draft(self):
+        self.tenant_1.plan = "free"
+        db.session.add(self.tenant_1)
+        db.session.commit()
+        headers = {**self._auth(self.admin_1), "X-Tenant-Slug": self.tenant_1.slug}
+
+        create_resp = self.client.post("/api/v2/surveys", json=self._create_payload(), headers=headers)
+        self.assertEqual(create_resp.status_code, 403)
+        create_payload = create_resp.get_json()
+        self.assertEqual(create_payload["error"], "plan_required")
+        self.assertEqual(create_payload["feature"]["id"], "surveys_votings")
+        self.assertFalse(create_payload["access"]["features"]["surveys_votings"]["enabled"])
+
+        draft_resp = self.client.post(
+            "/api/v2/surveys/draft",
+            json={"title": "Borrador bloqueado", "questions": []},
+            headers=headers,
+        )
+        self.assertEqual(draft_resp.status_code, 403)
+        self.assertEqual(draft_resp.get_json()["error"], "plan_required")
+
     def test_closed_survey_rejects_public_responses(self):
         headers = {**self._auth(self.admin_1), "X-Tenant-Slug": self.tenant_1.slug}
         created = self.client.post("/api/v2/surveys", json=self._create_payload(), headers=headers).get_json()
@@ -182,7 +215,9 @@ class V2SurveysApiTest(unittest.TestCase):
 
         listed = self.client.get("/api/v2/surveys", headers=headers_1)
         self.assertEqual(listed.status_code, 200)
-        items = listed.get_json().get("items") or []
+        payload = listed.get_json()
+        self.assertTrue(payload["access"]["features"]["surveys_votings"]["enabled"])
+        items = payload.get("items") or []
         self.assertTrue(items)
         self.assertTrue(all(item.get("tenant_id") == self.tenant_1.id for item in items))
 

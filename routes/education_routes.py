@@ -33,6 +33,7 @@ from services.education_case_service import (
     build_education_operations_heatmap,
     build_education_operations_summary,
 )
+from services.plan_access import integration_access_payload, plan_allows_full_integrations
 
 education_bp = Blueprint("education", __name__)
 
@@ -66,6 +67,65 @@ def _tenant_supports_education(tenant: TenantProfile | None) -> bool:
         if isinstance(edu, dict):
             return bool(edu.get("enabled"))
     return False
+
+
+def _education_plan_required_response(
+    tenant: TenantProfile,
+    *,
+    feature_id: str = "education_management",
+    contract_version: str = "education.integration_access.v1",
+):
+    access = integration_access_payload(tenant)
+    return (
+        jsonify(
+            {
+                "ok": False,
+                "contract_version": contract_version,
+                "tenant_id": tenant.id,
+                "tenant_slug": tenant.slug,
+                "status_code": 403,
+                "reason_code": "plan_full_required",
+                "action_hint": "upgrade_to_full",
+                "message": access.get("message"),
+                "feature": (access.get("features") or {}).get(feature_id),
+                "access": access,
+                "upgrade": access.get("upgrade"),
+                "frontend_contract": {
+                    "render_as": "integration_locked_state",
+                    "primary_action": "upgrade_to_full",
+                },
+            }
+        ),
+        403,
+    )
+
+
+def _education_with_access(payload: dict, tenant: TenantProfile) -> dict:
+    payload["access"] = integration_access_payload(tenant)
+    return payload
+
+
+def _tenant_write_access_response(
+    tenant_id: int | None,
+    *,
+    feature_id: str = "education_management",
+    contract_version: str = "education.integration_access.v1",
+):
+    if not tenant_id:
+        return None, (jsonify({"error": {"code": 400, "message": "Tenant context required"}}), 400)
+
+    tenant = TenantProfile.query.filter_by(id=tenant_id).first()
+    if not tenant:
+        return None, (jsonify({"error": {"code": 404, "message": "Tenant profile not found"}}), 404)
+
+    if not plan_allows_full_integrations(tenant):
+        return None, _education_plan_required_response(
+            tenant,
+            feature_id=feature_id,
+            contract_version=contract_version,
+        )
+
+    return tenant, None
 
 
 def _resolve_actor_tenant_id(current_user=None, actor_principal=None):
@@ -267,19 +327,18 @@ def get_education_capabilities(current_user, actor_principal=None):
     if not tenant:
         return jsonify({"error": {"code": 404, "message": "Tenant profile not found"}}), 404
 
-    return jsonify(
-        {
-            "tenant_id": tenant.id,
-            "tenant_slug": tenant.slug,
-            "vertical": tenant.vertical,
-            "subvertical": tenant.subvertical,
-            "education_enabled": _tenant_supports_education(tenant),
-            "capabilities_json": tenant.capabilities_json or {},
-            "education_profile": build_education_profile(tenant),
-            "admin_menu": build_education_admin_menu(tenant),
-            "whatsapp_playbook": build_education_whatsapp_playbook(tenant),
-        }
-    )
+    payload = {
+        "tenant_id": tenant.id,
+        "tenant_slug": tenant.slug,
+        "vertical": tenant.vertical,
+        "subvertical": tenant.subvertical,
+        "education_enabled": _tenant_supports_education(tenant),
+        "capabilities_json": tenant.capabilities_json or {},
+        "education_profile": build_education_profile(tenant),
+        "admin_menu": build_education_admin_menu(tenant),
+        "whatsapp_playbook": build_education_whatsapp_playbook(tenant),
+    }
+    return jsonify(_education_with_access(payload, tenant))
 
 
 @education_bp.route("/api/v1/education/tenant/capabilities", methods=["PUT"])
@@ -291,6 +350,8 @@ def update_education_capabilities(current_user, actor_principal=None):
     tenant = TenantProfile.query.filter_by(id=tenant_id).first()
     if not tenant:
         return jsonify({"error": {"code": 404, "message": "Tenant profile not found"}}), 404
+    if not plan_allows_full_integrations(tenant):
+        return _education_plan_required_response(tenant)
 
     payload = request.json or {}
     education_enabled = payload.get("education_enabled")
@@ -320,18 +381,17 @@ def update_education_capabilities(current_user, actor_principal=None):
     db.session.add(tenant)
     db.session.commit()
 
-    return jsonify(
-        {
-            "tenant_id": tenant.id,
-            "vertical": tenant.vertical,
-            "subvertical": tenant.subvertical,
-            "education_enabled": _tenant_supports_education(tenant),
-            "capabilities_json": tenant.capabilities_json or {},
-            "education_profile": build_education_profile(tenant),
-            "admin_menu": build_education_admin_menu(tenant),
-            "whatsapp_playbook": build_education_whatsapp_playbook(tenant),
-        }
-    )
+    response_payload = {
+        "tenant_id": tenant.id,
+        "vertical": tenant.vertical,
+        "subvertical": tenant.subvertical,
+        "education_enabled": _tenant_supports_education(tenant),
+        "capabilities_json": tenant.capabilities_json or {},
+        "education_profile": build_education_profile(tenant),
+        "admin_menu": build_education_admin_menu(tenant),
+        "whatsapp_playbook": build_education_whatsapp_playbook(tenant),
+    }
+    return jsonify(_education_with_access(response_payload, tenant))
 
 
 @education_bp.route("/api/v1/education/cases/taxonomy", methods=["GET"])
@@ -344,17 +404,16 @@ def get_school_case_taxonomy(current_user, actor_principal=None):
     if not tenant:
         return jsonify({"error": {"code": 404, "message": "Tenant profile not found"}}), 404
 
-    return jsonify(
-        {
-            "tenant_id": tenant.id,
-            "education_enabled": _tenant_supports_education(tenant),
-            "taxonomy": [
-                {"key": key, "label": label}
-                for key, label in SCHOOL_CASE_TAXONOMY.items()
-            ],
-            "items": education_case_taxonomy(),
-        }
-    )
+    payload = {
+        "tenant_id": tenant.id,
+        "education_enabled": _tenant_supports_education(tenant),
+        "taxonomy": [
+            {"key": key, "label": label}
+            for key, label in SCHOOL_CASE_TAXONOMY.items()
+        ],
+        "items": education_case_taxonomy(),
+    }
+    return jsonify(_education_with_access(payload, tenant))
 
 
 @education_bp.route("/api/v1/education/admin/menu", methods=["GET"])
@@ -366,7 +425,8 @@ def get_education_admin_menu(current_user, actor_principal=None):
     tenant = TenantProfile.query.filter_by(id=tenant_id).first()
     if not tenant:
         return jsonify({"error": {"code": 404, "message": "Tenant profile not found"}}), 404
-    return jsonify(build_education_admin_menu(tenant))
+    payload = build_education_admin_menu(tenant)
+    return jsonify(_education_with_access(payload, tenant))
 
 
 @education_bp.route("/api/v1/education/whatsapp/playbook", methods=["GET"])
@@ -378,7 +438,8 @@ def get_education_whatsapp_playbook(current_user, actor_principal=None):
     tenant = TenantProfile.query.filter_by(id=tenant_id).first()
     if not tenant:
         return jsonify({"error": {"code": 404, "message": "Tenant profile not found"}}), 404
-    return jsonify(build_education_whatsapp_playbook(tenant))
+    payload = build_education_whatsapp_playbook(tenant)
+    return jsonify(_education_with_access(payload, tenant))
 
 
 @education_bp.route("/api/v1/education/operations/summary", methods=["GET"])
@@ -392,7 +453,7 @@ def get_education_operations_summary(current_user, actor_principal=None):
         return jsonify({"error": {"code": 404, "message": "Tenant profile not found"}}), 404
     payload = build_education_operations_summary(tenant)
     payload["education_enabled"] = _tenant_supports_education(tenant)
-    return jsonify(payload)
+    return jsonify(_education_with_access(payload, tenant))
 
 
 @education_bp.route("/api/v1/education/operations/heatmap", methods=["GET"])
@@ -404,6 +465,12 @@ def get_education_operations_heatmap(current_user, actor_principal=None):
     tenant = TenantProfile.query.filter_by(id=tenant_id).first()
     if not tenant:
         return jsonify({"error": {"code": 404, "message": "Tenant profile not found"}}), 404
+    if not plan_allows_full_integrations(tenant):
+        return _education_plan_required_response(
+            tenant,
+            feature_id="heatmaps",
+            contract_version="education.operations_heatmap.v1",
+        )
     payload = build_education_operations_heatmap(
         tenant,
         school_id=request.args.get("school_id", type=int),
@@ -413,7 +480,7 @@ def get_education_operations_heatmap(current_user, actor_principal=None):
         max_points=min(request.args.get("limit", default=500, type=int) or 500, 1000),
     )
     payload["education_enabled"] = _tenant_supports_education(tenant)
-    return jsonify(payload)
+    return jsonify(_education_with_access(payload, tenant))
 
 
 @education_bp.route("/api/v1/education/schools", methods=["GET"])
@@ -449,6 +516,8 @@ def create_school(current_user, actor_principal=None):
     tenant = TenantProfile.query.filter_by(id=tenant_id).first()
     if not tenant:
         return jsonify({"error": {"code": 404, "message": "Tenant profile not found"}}), 404
+    if not plan_allows_full_integrations(tenant):
+        return _education_plan_required_response(tenant)
     if not _tenant_supports_education(tenant):
         return jsonify({"error": {"code": 403, "message": "Education capability disabled for tenant"}}), 403
 
@@ -514,8 +583,9 @@ def get_school_campuses(current_user, school_id: int, actor_principal=None):
 @token_requerido
 def create_campus(current_user, actor_principal=None):
     tenant_id = _resolve_actor_tenant_id(current_user, actor_principal)
-    if not tenant_id:
-        return jsonify({"error": {"code": 400, "message": "Tenant context required"}}), 400
+    tenant, access_response = _tenant_write_access_response(tenant_id)
+    if access_response:
+        return access_response
     data = request.json or {}
     school_id = data.get("school_id")
     name = str(data.get("name") or "").strip()
@@ -604,6 +674,9 @@ def get_academic_levels(current_user, actor_principal=None):
 @token_requerido
 def create_academic_level(current_user, actor_principal=None):
     tenant_id = _resolve_actor_tenant_id(current_user, actor_principal)
+    tenant, access_response = _tenant_write_access_response(tenant_id)
+    if access_response:
+        return access_response
     data = request.json or {}
     school_id = data.get("school_id")
     code = str(data.get("code") or "").strip().lower()
@@ -646,6 +719,9 @@ def get_shifts(current_user, actor_principal=None):
 @token_requerido
 def create_shift(current_user, actor_principal=None):
     tenant_id = _resolve_actor_tenant_id(current_user, actor_principal)
+    tenant, access_response = _tenant_write_access_response(tenant_id)
+    if access_response:
+        return access_response
     data = request.json or {}
     school_id = data.get("school_id")
     code = str(data.get("code") or "").strip().lower()
@@ -672,8 +748,9 @@ def create_shift(current_user, actor_principal=None):
 @token_requerido
 def create_section(current_user, actor_principal=None):
     tenant_id = _resolve_actor_tenant_id(current_user, actor_principal)
-    if not tenant_id:
-        return jsonify({"error": {"code": 400, "message": "Tenant context required"}}), 400
+    tenant, access_response = _tenant_write_access_response(tenant_id)
+    if access_response:
+        return access_response
     data = request.json or {}
 
     campus_id = data.get("campus_id")
@@ -735,6 +812,12 @@ def lookup_guardian():
 
     if not tenant_id:
         return jsonify({"error": {"code": 400, "message": "tenant_id required"}}), 400
+    tenant, access_response = _tenant_write_access_response(
+        tenant_id,
+        contract_version="education.guardian_lookup_access.v1",
+    )
+    if access_response:
+        return access_response
     if not any([phone, email, document]):
         return jsonify({"error": {"code": 400, "message": "phone_number, email or document_number required"}}), 400
 
@@ -762,9 +845,12 @@ def verify_guardian():
 
     if not tenant_id or not phone:
         return jsonify({"error": {"code": 400, "message": "tenant_id and phone_number required"}}), 400
-    tenant = TenantProfile.query.filter_by(id=tenant_id).first()
-    if not tenant:
-        return jsonify({"error": {"code": 404, "message": "Tenant not found"}}), 404
+    tenant, access_response = _tenant_write_access_response(
+        tenant_id,
+        contract_version="education.guardian_verify_access.v1",
+    )
+    if access_response:
+        return access_response
 
     guardian = Guardian.query.filter_by(tenant_id=tenant_id, phone_number=phone).first()
     status = "verified" if guardian else "failed"
@@ -801,6 +887,12 @@ def link_guardian_student():
     student_id = _resolve_school_tenant_id(data.get("student_id"))
     if not tenant_id or not guardian_id or not student_id:
         return jsonify({"error": {"code": 400, "message": "tenant_id, guardian_id and student_id required"}}), 400
+    tenant, access_response = _tenant_write_access_response(
+        tenant_id,
+        contract_version="education.guardian_link_access.v1",
+    )
+    if access_response:
+        return access_response
 
     guardian = Guardian.query.filter_by(id=guardian_id, tenant_id=tenant_id).first()
     if not guardian:
@@ -938,8 +1030,12 @@ def get_family_context(current_user, actor_principal=None):
 def create_school_case(current_user, actor_principal=None):
     data = request.json or {}
     tenant_id = _resolve_actor_tenant_id(current_user, actor_principal)
-    if not tenant_id:
-        return jsonify({"error": {"code": 400, "message": "Tenant context required"}}), 400
+    tenant_profile, access_response = _tenant_write_access_response(
+        tenant_id,
+        contract_version="education.case_write_access.v1",
+    )
+    if access_response:
+        return access_response
 
     school_id = data.get("school_id")
     case_type = (data.get("case_type") or "").strip().lower()
@@ -998,10 +1094,6 @@ def create_school_case(current_user, actor_principal=None):
             return jsonify({"error": {"code": 404, "message": "Guardian not found for tenant"}}), 404
         if guardian.school_id and guardian.school_id != school.id:
             return jsonify({"error": {"code": 400, "message": "Guardian does not belong to school"}}), 400
-
-    tenant_profile = TenantProfile.query.get(tenant_id)
-    if not tenant_profile:
-        return jsonify({"error": {"code": 404, "message": "Tenant profile not found"}}), 404
 
     ticket_type = "pyme" if tenant_profile.pyme_id else "municipio"
 
@@ -1146,8 +1238,12 @@ def get_school_case_detail(current_user, case_id: int, actor_principal=None):
 @token_requerido
 def reply_school_case(current_user, case_id: int, actor_principal=None):
     tenant_id = _resolve_actor_tenant_id(current_user, actor_principal)
-    if not tenant_id:
-        return jsonify({"error": {"code": 400, "message": "Tenant context required"}}), 400
+    tenant, access_response = _tenant_write_access_response(
+        tenant_id,
+        contract_version="education.case_reply_access.v1",
+    )
+    if access_response:
+        return access_response
     alias = _get_case_alias_for_tenant(case_id, tenant_id)
     if not alias:
         return jsonify({"error": {"code": 404, "message": "School case not found"}}), 404
@@ -1189,8 +1285,12 @@ def reply_school_case(current_user, case_id: int, actor_principal=None):
 @token_requerido
 def assign_school_case(current_user, case_id: int, actor_principal=None):
     tenant_id = _resolve_actor_tenant_id(current_user, actor_principal)
-    if not tenant_id:
-        return jsonify({"error": {"code": 400, "message": "Tenant context required"}}), 400
+    tenant, access_response = _tenant_write_access_response(
+        tenant_id,
+        contract_version="education.case_assign_access.v1",
+    )
+    if access_response:
+        return access_response
     alias = _get_case_alias_for_tenant(case_id, tenant_id)
     if not alias:
         return jsonify({"error": {"code": 404, "message": "School case not found"}}), 404
@@ -1237,8 +1337,12 @@ def assign_school_case(current_user, case_id: int, actor_principal=None):
 @token_requerido
 def escalate_school_case(current_user, case_id: int, actor_principal=None):
     tenant_id = _resolve_actor_tenant_id(current_user, actor_principal)
-    if not tenant_id:
-        return jsonify({"error": {"code": 400, "message": "Tenant context required"}}), 400
+    tenant, access_response = _tenant_write_access_response(
+        tenant_id,
+        contract_version="education.case_escalate_access.v1",
+    )
+    if access_response:
+        return access_response
     alias = _get_case_alias_for_tenant(case_id, tenant_id)
     if not alias:
         return jsonify({"error": {"code": 404, "message": "School case not found"}}), 404

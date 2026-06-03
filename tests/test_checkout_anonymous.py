@@ -173,6 +173,9 @@ def test_money_checkout_requires_full_plan_before_order_or_payment(client, tenan
     assert data["reason_code"] == "plan_full_required"
     assert data["integration_access"]["enabled"] is False
     assert data["frontend_contract"]["render_as"] == "integration_locked"
+    assert data["frontend_contract"]["feature_id"] == "mercadopago_checkout"
+    assert data["frontend_contract"]["hide_payment_credentials_form"] is True
+    assert data["feature"]["enabled"] is False
     assert called["mp"] == 0
     assert MarketOrder.query.filter_by(tenant_id=tenant.id).count() == 0
 

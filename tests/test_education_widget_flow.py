@@ -36,6 +36,7 @@ class EducationWidgetFlowTest(unittest.TestCase):
             nombre="QA Colegio Sandbox",
             tipo="pyme",
             pyme_id=self.owner.id,
+            plan="full",
             vertical="educacion",
             subvertical="colegio_general",
             capabilities_json={"education": {"enabled": True}},

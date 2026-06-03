@@ -61,6 +61,12 @@ INTEGRATION_FEATURES: dict[str, dict[str, str]] = {
         "admin_route": "/catalogo",
         "action": "publish_catalog",
     },
+    "education_management": {
+        "label": "Colegios, familias y tramites escolares",
+        "capability": "education.management",
+        "admin_route": "/perfil",
+        "action": "manage_education_operations",
+    },
     "analytics_dashboard": {
         "label": "Metricas y analitica operativa",
         "capability": "analytics.operations.read",
@@ -231,6 +237,7 @@ def integration_access_payload(tenant: TenantProfile | None) -> dict[str, Any]:
             "channels": ["widget_embed", "whatsapp_business_platform", "whatsapp_sender_management", "realtime_voice"],
             "commerce": ["catalog_management", "mercadopago_checkout", "marketplace_sync"],
             "operations": ["analytics_dashboard", "heatmaps", "surveys_votings", "comments_inbox"],
+            "verticals": ["education_management"],
         },
         "allowed_actions": actions if enabled else [],
         "blocked_actions": [] if enabled else actions,

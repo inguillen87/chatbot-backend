@@ -84,9 +84,13 @@ def _public_cors_kwargs(methods: list[str]) -> dict:
     }
 
 
-def _integration_plan_required_payload(tenant: TenantProfile, contract_version: str) -> dict:
+def _integration_plan_required_payload(
+    tenant: TenantProfile,
+    contract_version: str,
+    feature_id: str | None = None,
+) -> dict:
     access = integration_access_payload(tenant)
-    return {
+    payload = {
         "ok": False,
         "contract_version": contract_version,
         "tenant_slug": tenant.slug,
@@ -101,6 +105,9 @@ def _integration_plan_required_payload(tenant: TenantProfile, contract_version: 
             "primary_action": "upgrade_to_full",
         },
     }
+    if feature_id:
+        payload["feature"] = (access.get("features") or {}).get(feature_id)
+    return payload
 
 widget_public_bp = Blueprint(
     "widget_public_config",
@@ -416,6 +423,15 @@ def obtener_config_publica(tenant_slug: str):
 @token_requerido
 def heatmap_tickets(current_user: User, tenant_slug: str):
     tenant = _resolve_tenant_or_404(tenant_slug)
+    _require_tenant_admin(current_user, tenant)
+    if not plan_allows_full_integrations(tenant):
+        return jsonify(
+            _integration_plan_required_payload(
+                tenant,
+                "municipio.heatmap.v1",
+                "heatmaps",
+            )
+        ), 403
     start = request.args.get("from")
     end = request.args.get("to")
     categorias = request.args.getlist("categorias") or request.args.getlist("categorias[]")
@@ -499,6 +515,7 @@ def heatmap_tickets(current_user: User, tenant_slug: str):
                 "por_categoria": summary_categoria,
                 "por_estado": summary_estado,
             },
+            "access": integration_access_payload(tenant),
         }
     )
 
@@ -518,7 +535,12 @@ def productos_admin(current_user: User, tenant_slug: str):
     tenant = _resolve_tenant_or_404(tenant_slug)
     _require_tenant_admin(current_user, tenant)
     productos = CatalogoItem.query.filter(CatalogoItem.tenant_id == tenant.id).all()
-    return jsonify({"productos": [serialize_catalogo_item(p) for p in productos]})
+    return jsonify(
+        {
+            "productos": [serialize_catalogo_item(p) for p in productos],
+            "access": integration_access_payload(tenant),
+        }
+    )
 
 
 @municipio_api_bp.route("/productos", methods=["POST"])
@@ -526,6 +548,14 @@ def productos_admin(current_user: User, tenant_slug: str):
 def crear_producto_admin(current_user: User, tenant_slug: str):
     tenant = _resolve_tenant_or_404(tenant_slug)
     _require_tenant_admin(current_user, tenant)
+    if not plan_allows_full_integrations(tenant):
+        return jsonify(
+            _integration_plan_required_payload(
+                tenant,
+                "municipio.catalog_management.v1",
+                "catalog_management",
+            )
+        ), 403
     data = request.get_json(silent=True) or {}
 
     item = CatalogoItem(
@@ -551,6 +581,14 @@ def crear_producto_admin(current_user: User, tenant_slug: str):
 def actualizar_producto_admin(current_user: User, tenant_slug: str, producto_id: int):
     tenant = _resolve_tenant_or_404(tenant_slug)
     _require_tenant_admin(current_user, tenant)
+    if not plan_allows_full_integrations(tenant):
+        return jsonify(
+            _integration_plan_required_payload(
+                tenant,
+                "municipio.catalog_management.v1",
+                "catalog_management",
+            )
+        ), 403
     item = (
         CatalogoItem.query.filter_by(id=producto_id, tenant_id=tenant.id)
         .order_by(CatalogoItem.id.asc())
@@ -589,6 +627,14 @@ def actualizar_producto_admin(current_user: User, tenant_slug: str, producto_id:
 def borrar_producto_admin(current_user: User, tenant_slug: str, producto_id: int):
     tenant = _resolve_tenant_or_404(tenant_slug)
     _require_tenant_admin(current_user, tenant)
+    if not plan_allows_full_integrations(tenant):
+        return jsonify(
+            _integration_plan_required_payload(
+                tenant,
+                "municipio.catalog_management.v1",
+                "catalog_management",
+            )
+        ), 403
     item = CatalogoItem.query.filter_by(id=producto_id, tenant_id=tenant.id).first()
     if not item:
         return jsonify({"error": "Producto no encontrado"}), 404

@@ -1,9 +1,40 @@
 from flask import Blueprint, jsonify, request
+from models import TenantProfile
 from services.catalog_mapping_service import catalog_mapping_service
 from routes.auth import token_requerido
+from services.plan_access import integration_access_payload, plan_allows_full_integrations
 
 def _options_ok():
     return "", 204
+
+
+def _tenant_for_pyme(pyme_id: int):
+    return TenantProfile.query.filter_by(pyme_id=pyme_id).first()
+
+
+def _catalog_plan_required_response(pyme_id: int):
+    tenant = _tenant_for_pyme(pyme_id)
+    access = integration_access_payload(tenant)
+    feature = (access.get("features") or {}).get("catalog_management") or {}
+    response = jsonify(
+        {
+            "error": "plan_required",
+            "message": access.get("message") or "Tu plan actual no habilita gestion productiva de catalogo.",
+            "feature": feature,
+            "access": access,
+            "frontend_contract": {
+                "render_as": "integration_locked",
+                "primary_action": "upgrade_to_full",
+                "feature_id": "catalog_management",
+            },
+        }
+    )
+    response.status_code = 403
+    return response
+
+
+def _catalog_writes_allowed(pyme_id: int) -> bool:
+    return plan_allows_full_integrations(_tenant_for_pyme(pyme_id))
 
 
 # Note: The user requested the URL prefix /api/pymes/:pymeId/catalog-mappings
@@ -34,6 +65,9 @@ def _create_mapping(pyme_id):
     if request.method == 'OPTIONS':
         return '', 204
 
+    if not _catalog_writes_allowed(pyme_id):
+        return _catalog_plan_required_response(pyme_id)
+
     data = request.get_json()
     if not data:
         return jsonify({"error": "Invalid data"}), 400
@@ -58,6 +92,9 @@ def _update_mapping(pyme_id, mapping_id):
     if request.method == 'OPTIONS':
         return '', 204
 
+    if not _catalog_writes_allowed(pyme_id):
+        return _catalog_plan_required_response(pyme_id)
+
     data = request.get_json()
     if not data:
         return jsonify({"error": "Invalid data"}), 400
@@ -75,6 +112,9 @@ def _delete_mapping(pyme_id, mapping_id):
     """Deletes a mapping configuration."""
     if request.method == 'OPTIONS':
         return '', 204
+
+    if not _catalog_writes_allowed(pyme_id):
+        return _catalog_plan_required_response(pyme_id)
 
     # First, check if the mapping exists and belongs to the pyme
     existing_mapping = catalog_mapping_service.get_by_id(mapping_id)

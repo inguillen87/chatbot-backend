@@ -17,6 +17,7 @@ from services.commerce_contracts import (
     find_payment_resources,
     normalize_checkout_preview_totals,
     payment_capabilities,
+    payment_integration_frontend_contract,
     tenant_config,
     tenant_ref,
 )
@@ -206,7 +207,9 @@ def payment_checkout_session_v2(current_user, tenant_slug: str | None = None):
             extra={
                 "integration_access": integration_access,
                 "checkout_experience": checkout_experience,
-                "frontend_contract": {"render_as": "integration_locked"},
+                "feature": (integration_access.get("features") or {}).get("mercadopago_checkout") or {},
+                "upgrade": integration_access.get("upgrade") or {},
+                "frontend_contract": payment_integration_frontend_contract(integration_access),
             },
         )
 
