@@ -24,6 +24,7 @@ from models import (
 )
 from services.commerce_contracts import build_checkout_experience_payload, payment_capabilities
 from services.education_contracts import build_education_whatsapp_playbook, is_education_tenant
+from services.plan_access import integration_access_payload
 from services.realtime_voice_profiles import build_realtime_voice_capabilities
 from services.audio_transcription_service import audio_translation_capabilities
 
@@ -337,8 +338,10 @@ def build_whatsapp_experience(
 ) -> dict[str, Any]:
     cfg = _tenant_cfg(tenant)
     number = _whatsapp_number(tenant, cfg)
+    integration_access = integration_access_payload(tenant)
     tenant_config_links = _safe_count(TenantConfig.query.filter_by(tenant_id=tenant.id, key="links"))
-    channel_ready = bool(number)
+    channel_configured = bool(number)
+    channel_ready = channel_configured and bool(integration_access.get("enabled"))
     content = _content_modules_payload(tenant)
     tracking = _tracking_modules_payload(tenant)
     payment = payment_capabilities(tenant)
@@ -348,13 +351,53 @@ def build_whatsapp_experience(
         gateway=payment.get("gateway"),
         mercadopago_ready=payment.get("mercadopago_ready"),
     )
+    channel_reason = None
+    if not channel_ready:
+        channel_reason = (
+            "plan_full_required"
+            if not integration_access.get("enabled")
+            else "whatsapp_number_not_configured"
+        )
     channel = {
         "provider": "twilio_whatsapp",
         "enabled": channel_ready,
+        "configured": channel_configured,
+        "production_enabled": channel_ready,
         "number": number,
         "webhook": "/webhook/whatsapp",
         "status_webhook": "/twilio/whatsapp/status",
-        "reason_code": None if channel_ready else "whatsapp_number_not_configured",
+        "reason_code": channel_reason,
+        "access": integration_access,
+        "provider_readiness": [
+            {
+                "id": "plan_full",
+                "label": "Plan Full activo",
+                "status": "done" if integration_access.get("enabled") else "required",
+            },
+            {
+                "id": "sender_number",
+                "label": "Numero WhatsApp configurado",
+                "status": "done" if channel_configured else "required",
+            },
+            {
+                "id": "inbound_webhook",
+                "label": "Webhook inbound",
+                "status": "ready" if channel_ready else "blocked",
+                "endpoint": "/webhook/whatsapp",
+            },
+            {
+                "id": "status_webhook",
+                "label": "Webhook de estados",
+                "status": "ready" if channel_ready else "blocked",
+                "endpoint": "/twilio/whatsapp/status",
+            },
+            {
+                "id": "test_message",
+                "label": "Mensaje de prueba",
+                "status": "ready" if channel_ready else "blocked",
+                "endpoint": "/api/notifications/whatsapp/test",
+            },
+        ],
     }
     if channel_ready:
         channel.update(
@@ -401,6 +444,8 @@ def build_whatsapp_experience(
         "frontend_contract": {
             "render_as": "whatsapp_operations_hub",
             "primary_refresh_seconds": 30,
+            "respect_access_lock": True,
+            "show_provider_readiness": True,
             "recommended_views": [
                 "channel_health",
                 "conversation_capabilities",

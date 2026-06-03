@@ -24,6 +24,75 @@ FULL_INTEGRATION_CAPABILITIES = {
     "widget.embed",
 }
 
+INTEGRATION_FEATURES: dict[str, dict[str, str]] = {
+    "widget_embed": {
+        "label": "Widget web embebido",
+        "capability": "widget.embed",
+        "admin_route": "/integracion",
+        "action": "copy_widget_embed",
+    },
+    "whatsapp_business_platform": {
+        "label": "WhatsApp Business Platform",
+        "capability": "whatsapp.production",
+        "admin_route": "/integracion",
+        "action": "connect_whatsapp_sender",
+    },
+    "whatsapp_sender_management": {
+        "label": "Gestion de sender y plantillas",
+        "capability": "whatsapp_business_platform",
+        "admin_route": "/integracion",
+        "action": "manage_whatsapp_sender",
+    },
+    "marketplace_sync": {
+        "label": "Marketplaces y catalogos externos",
+        "capability": "integrations.production",
+        "admin_route": "/integracion",
+        "action": "connect_marketplace",
+    },
+    "mercadopago_checkout": {
+        "label": "Cobros y checkout seguro",
+        "capability": "integrations.production",
+        "admin_route": "/integracion",
+        "action": "configure_payment_gateway",
+    },
+    "catalog_management": {
+        "label": "Catalogo y pedidos conversacionales",
+        "capability": "market.catalog.write",
+        "admin_route": "/catalogo",
+        "action": "publish_catalog",
+    },
+    "analytics_dashboard": {
+        "label": "Metricas y analitica operativa",
+        "capability": "analytics.operations.read",
+        "admin_route": "/analytics",
+        "action": "run_analytics_dashboard",
+    },
+    "heatmaps": {
+        "label": "Mapas de calor y actividad territorial",
+        "capability": "analytics.heatmap.read",
+        "admin_route": "/perfil",
+        "action": "open_heatmap",
+    },
+    "surveys_votings": {
+        "label": "Encuestas y votaciones",
+        "capability": "surveys.write",
+        "admin_route": "/encuestas",
+        "action": "create_surveys",
+    },
+    "comments_inbox": {
+        "label": "Comentarios, inbox y derivacion humana",
+        "capability": "inbox.comments.read",
+        "admin_route": "/chat-en-vivo",
+        "action": "manage_comments",
+    },
+    "realtime_voice": {
+        "label": "Voz, notas de audio y accesibilidad",
+        "capability": "voice.realtime",
+        "admin_route": "/integracion",
+        "action": "configure_realtime_voice",
+    },
+}
+
 
 def normalize_plan(plan: Any) -> str:
     return str(plan or "").strip().lower()
@@ -104,14 +173,47 @@ def plan_allows_full_integrations(tenant: TenantProfile | None) -> bool:
     return tenant_has_any_capability(tenant)
 
 
+def _integration_lock_reason(tenant: TenantProfile | None) -> str:
+    if tenant is None:
+        return "tenant_missing"
+    if not bool(getattr(tenant, "is_active", True)):
+        return "tenant_inactive"
+    if tenant_is_demo_context(tenant):
+        return "demo_tenant_locked"
+    return "plan_full_required"
+
+
+def _feature_payload(feature_id: str, enabled: bool, lock_reason: str | None) -> dict[str, Any]:
+    feature = INTEGRATION_FEATURES[feature_id]
+    return {
+        "id": feature_id,
+        "label": feature["label"],
+        "capability": feature["capability"],
+        "admin_route": feature["admin_route"],
+        "action": feature["action"],
+        "enabled": enabled,
+        "status": "enabled" if enabled else "locked",
+        "reason_code": None if enabled else "plan_full_required",
+        "lock_reason_code": None if enabled else lock_reason,
+        "required_plan": "full",
+    }
+
+
 def integration_access_payload(tenant: TenantProfile | None) -> dict[str, Any]:
     enabled = plan_allows_full_integrations(tenant)
     current_plan = normalize_plan(getattr(tenant, "plan", None) if tenant is not None else None) or "free"
+    lock_reason = None if enabled else _integration_lock_reason(tenant)
+    features = {
+        feature_id: _feature_payload(feature_id, enabled, lock_reason)
+        for feature_id in INTEGRATION_FEATURES
+    }
+    actions = [feature["action"] for feature in INTEGRATION_FEATURES.values()]
     payload = {
         "contract_version": "tenant.integration_access.v1",
         "enabled": enabled,
         "status": "enabled" if enabled else "locked",
         "reason_code": None if enabled else "plan_full_required",
+        "lock_reason_code": lock_reason,
         "required_plan": "full",
         "current_plan": current_plan,
         "message": (
@@ -123,6 +225,32 @@ def integration_access_payload(tenant: TenantProfile | None) -> dict[str, Any]:
             "label": "Solicitar upgrade a Full",
             "channel": "sales",
             "url": "https://www.chatboc.ar/#precios",
+        },
+        "features": features,
+        "feature_groups": {
+            "channels": ["widget_embed", "whatsapp_business_platform", "whatsapp_sender_management", "realtime_voice"],
+            "commerce": ["catalog_management", "mercadopago_checkout", "marketplace_sync"],
+            "operations": ["analytics_dashboard", "heatmaps", "surveys_votings", "comments_inbox"],
+        },
+        "allowed_actions": actions if enabled else [],
+        "blocked_actions": [] if enabled else actions,
+        "security": {
+            "demo_tenants_blocked": True,
+            "inactive_tenants_blocked": True,
+            "requires_authenticated_admin": True,
+            "requires_tenant_authorization": True,
+            "requires_widget_token_for_embed": True,
+            "card_data_in_chat_allowed": False,
+            "public_widget_resolves_readonly_contract": True,
+        },
+        "frontend_contract": {
+            "render_locked_state": not enabled,
+            "hide_embed_copy": not enabled,
+            "hide_provider_connect": not enabled,
+            "hide_payment_credentials_form": not enabled,
+            "show_upgrade_cta": not enabled,
+            "show_readiness_checklist": True,
+            "primary_locked_reason": lock_reason,
         },
     }
     return payload
