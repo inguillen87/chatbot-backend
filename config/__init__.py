@@ -785,7 +785,11 @@ class Config:
     WELCOME_MESSAGE_DELAY_SECONDS = int(os.getenv("WELCOME_MESSAGE_DELAY_SECONDS", "5"))
     WELCOME_MEDIA_URL = os.getenv(
         "WELCOME_MEDIA_URL",
-        "https://chatboc-demo-widget-oigs.vercel.app/stickerJuni2.webp",
+        "/static/welcome/juni-saludo-sticker.webp",
+    )
+    CHATBOC_DEMO_WELCOME_MEDIA_URL = os.getenv(
+        "CHATBOC_DEMO_WELCOME_MEDIA_URL",
+        "/static/welcome/chatboc-saludo-sticker.webp",
     )
     WELCOME_AUDIO_URL = os.getenv(
         "WELCOME_AUDIO_URL",

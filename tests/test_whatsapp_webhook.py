@@ -52,10 +52,13 @@ class TestConfig(Config):
     ENABLE_RUNTIME_SCHEMA_SYNC = False
     ENABLE_RUNTIME_TENANT_INIT = False
     SKIP_INIT_TENANTS = True
+    WELCOME_MEDIA_URL = "https://api.chatboc.ar/static/welcome/juni-saludo-sticker.webp"
+    CHATBOC_DEMO_WELCOME_MEDIA_URL = "https://api.chatboc.ar/static/welcome/chatboc-saludo-sticker.webp"
     CHATBOC_DEMO_WHATSAPP_NUMBERS = "+19999999999"
     CHATBOC_DEMO_MAX_MESSAGES = 10
     TWILIO_ACCOUNT_SID = "ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxx_test" # Mock SID
     TWILIO_AUTH_TOKEN = "your_auth_token_test" # Mock Token
+    BACKEND_URL = "https://api.chatboc.ar"
     # TWILIO_NUMEROS_JSON is no longer used
 
 class WhatsAppWebhookTestCase(unittest.TestCase):
@@ -399,6 +402,15 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         ]
         self.assertTrue(any("Chatboc.ar" in body for body in sent_bodies))
         self.assertTrue(any("Municipio inteligente" in body for body in sent_bodies))
+        sent_media = [
+            call.kwargs.get("media_url")
+            for call in self.mock_twilio_create.call_args_list
+            if call.kwargs.get("media_url")
+        ]
+        self.assertIn(
+            [self.app.config["CHATBOC_DEMO_WELCOME_MEDIA_URL"]],
+            sent_media,
+        )
 
     @patch("routes.whatsapp_webhook.responder_chatboc")
     def test_chatboc_demo_business_free_text_order_keeps_context(self, mock_bot):
@@ -1282,7 +1294,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         sticker_kwargs = self.mock_twilio_create.call_args_list[1].kwargs
         self.assertEqual(
             sticker_kwargs.get("media_url"),
-            ["https://chatboc.ar/static/welcome/saludo_media_cuatrofincas.webp"],
+            ["https://api.chatboc.ar/static/welcome/saludo_media_cuatrofincas.webp"],
         )
 
         greeting_kwargs = self.mock_twilio_create.call_args_list[2].kwargs
@@ -1526,7 +1538,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self.assertIn("content_sid", template_kwargs)
 
         sticker_kwargs = self.mock_twilio_create.call_args_list[1].kwargs
-        expected_media = ["https://chatboc.ar/static/welcome/sticker.png"]
+        expected_media = ["https://api.chatboc.ar/static/welcome/sticker.png"]
         self.assertEqual(sticker_kwargs.get("media_url"), expected_media)
         self.assertNotIn("persistent_action", sticker_kwargs)
 
@@ -1580,7 +1592,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self.assertIn("audio_url", delayed_payload)
         self.assertEqual(
             delayed_payload["audio_url"],
-            "https://chatboc.ar/static/welcome/bienvenida.mp3",
+            "https://api.chatboc.ar/static/welcome/bienvenida.mp3",
         )
         # Ensure the widget/web payload can reuse the resolved base URL.
         self.assertEqual(delayed_payload.get("_base_url"), "https://chatboc.ar")

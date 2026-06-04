@@ -2398,10 +2398,30 @@ def _looks_like_ticket_reference(text: str) -> bool:
     return bool(re.search(r"\d{4,}", normalized))
 
 
-def _normalize_media_base(url: str) -> str:
-    base_url = None
+def _is_local_base_url(value: str) -> bool:
+    return value.startswith(("http://localhost", "http://127.0.0.1", "http://0.0.0.0"))
+
+
+def _public_media_base_url(default_base_url: Optional[str] = None) -> str:
+    """Return the public backend base URL used by Twilio to download media."""
+
+    fallback = (default_base_url or "").strip().rstrip("/")
     if has_app_context():
-        base_url = current_app.config.get("BASE_URL") or current_app.config.get("PUBLIC_BASE_URL")
+        for key in ("PUBLIC_API_BASE_URL", "BACKEND_URL", "BASE_URL", "PUBLIC_BASE_URL"):
+            value = current_app.config.get(key)
+            if not value:
+                continue
+            candidate = str(value).strip().rstrip("/")
+            if not candidate:
+                continue
+            if _is_local_base_url(candidate) and fallback.startswith("https://"):
+                continue
+            return candidate
+    return fallback
+
+
+def _normalize_media_base(url: str) -> str:
+    base_url = _public_media_base_url()
     if not base_url:
         return url
     base = str(base_url).rstrip("/")
@@ -2520,6 +2540,12 @@ def _resolve_public_url(url: Optional[str], base_url: str) -> Optional[str]:
         return f"{base}{url}"
 
     return f"{base}/{url}"
+
+
+def _resolve_public_media_url(url: Optional[str], default_base_url: Optional[str] = None) -> Optional[str]:
+    """Return an absolute backend URL for media downloaded by Twilio."""
+
+    return _resolve_public_url(url, _public_media_base_url(default_base_url))
 
 
 def _normalize_media_url(url: Optional[str], base_url: Optional[str] = None) -> Optional[str]:
@@ -3714,22 +3740,23 @@ def whatsapp_webhook():
     request_root_stripped = request_root.rstrip("/")
     configured_base_url = (current_app.config.get("APP_BASE_URL") or "").rstrip("/")
     effective_base_url = configured_base_url or request_root_stripped
+    effective_media_base_url = _public_media_base_url(request_root_stripped)
     configured_sticker_url = current_app.config.get("WELCOME_MEDIA_URL")
     configured_audio_url = current_app.config.get("WELCOME_AUDIO_URL")
-    resolved_sticker_url = _resolve_public_url(configured_sticker_url, effective_base_url)
-    resolved_audio_url = _resolve_public_url(configured_audio_url, effective_base_url)
+    resolved_sticker_url = _resolve_public_media_url(configured_sticker_url, request_root_stripped)
+    resolved_audio_url = _resolve_public_media_url(configured_audio_url, request_root_stripped)
 
     pyme_welcome_overrides: Dict[str, Any] = {}
     pyme_welcome_context: Dict[str, Any] = {}
     if client_user and getattr(client_user, "tipo_chat", "") == "pyme":
         pyme_welcome_overrides, pyme_welcome_context = _load_pyme_welcome_settings(client_user)
         if "sticker_url" in pyme_welcome_overrides:
-            resolved_sticker_url = _resolve_public_url(
-                pyme_welcome_overrides.get("sticker_url"), effective_base_url
+            resolved_sticker_url = _resolve_public_media_url(
+                pyme_welcome_overrides.get("sticker_url"), request_root_stripped
             )
         if "audio_url" in pyme_welcome_overrides:
-            resolved_audio_url = _resolve_public_url(
-                pyme_welcome_overrides.get("audio_url"), effective_base_url
+            resolved_audio_url = _resolve_public_media_url(
+                pyme_welcome_overrides.get("audio_url"), request_root_stripped
             )
 
     tenant_config: Dict[str, Any] = {}
@@ -4007,14 +4034,19 @@ def whatsapp_webhook():
                     _strip_duplicate_welcome_media(
                         welcome_response_payload,
                         sticker_urls=[resolved_sticker_url, configured_sticker_url],
-                        base_url=effective_base_url,
+                        base_url=effective_media_base_url,
                     )
 
-                    sticker_payload = [
-                        url
-                        for url in [resolved_sticker_url, configured_sticker_url]
-                        if url
-                    ]
+                    sticker_payload = list(
+                        dict.fromkeys(
+                            url
+                            for url in [
+                                resolved_sticker_url,
+                                _resolve_public_media_url(configured_sticker_url, request_root_stripped),
+                            ]
+                            if url
+                        )
+                    )
                     if sticker_payload and sticker_metadata_allowed:
                         welcome_response_payload["_welcome_sticker_urls"] = sticker_payload
                         welcome_response_payload["_preserve_welcome_header"] = True
@@ -4024,8 +4056,8 @@ def whatsapp_webhook():
                             welcome_response_payload.pop("_preserve_welcome_header", None)
 
                     remaining_image_url = welcome_response_payload.get("image_url")
-                    resolved_existing_image = _resolve_public_url(
-                        remaining_image_url, effective_base_url
+                    resolved_existing_image = _resolve_public_media_url(
+                        remaining_image_url, request_root_stripped
                     )
                     if resolved_existing_image:
                         welcome_response_payload["image_url"] = resolved_existing_image
@@ -4033,7 +4065,7 @@ def whatsapp_webhook():
                         welcome_response_payload.pop("image_url", None)
 
                     existing_audio_url = welcome_response_payload.get("audio_url")
-                    resolved_existing_audio = _resolve_public_url(existing_audio_url, effective_base_url)
+                    resolved_existing_audio = _resolve_public_media_url(existing_audio_url, request_root_stripped)
                     if resolved_existing_audio:
                         welcome_response_payload["audio_url"] = resolved_existing_audio
                     elif resolved_audio_url:
@@ -4133,14 +4165,19 @@ def whatsapp_webhook():
                     _strip_duplicate_welcome_media(
                         welcome_response_payload,
                         sticker_urls=[resolved_sticker_url, configured_sticker_url],
-                        base_url=effective_base_url,
+                        base_url=effective_media_base_url,
                     )
 
-                    sticker_payload = [
-                        url
-                        for url in [resolved_sticker_url, configured_sticker_url]
-                        if url
-                    ]
+                    sticker_payload = list(
+                        dict.fromkeys(
+                            url
+                            for url in [
+                                resolved_sticker_url,
+                                _resolve_public_media_url(configured_sticker_url, request_root_stripped),
+                            ]
+                            if url
+                        )
+                    )
                     if (
                         sticker_payload
                         and not personalized_sticker_sent
@@ -4153,8 +4190,8 @@ def whatsapp_webhook():
                         welcome_response_payload.pop("_preserve_welcome_header", None)
 
                     remaining_image_url = welcome_response_payload.get("image_url")
-                    resolved_existing_image = _resolve_public_url(
-                        remaining_image_url, effective_base_url
+                    resolved_existing_image = _resolve_public_media_url(
+                        remaining_image_url, request_root_stripped
                     )
                     if resolved_existing_image:
                         welcome_response_payload["image_url"] = resolved_existing_image
@@ -4162,7 +4199,7 @@ def whatsapp_webhook():
                         welcome_response_payload.pop("image_url", None)
 
                     existing_audio_url = welcome_response_payload.get("audio_url")
-                    resolved_existing_audio = _resolve_public_url(existing_audio_url, effective_base_url)
+                    resolved_existing_audio = _resolve_public_media_url(existing_audio_url, request_root_stripped)
                     if resolved_existing_audio:
                         welcome_response_payload["audio_url"] = resolved_existing_audio
                     elif resolved_audio_url:
@@ -4717,6 +4754,24 @@ def whatsapp_webhook():
         if was_over_or_at_limit and not selected_action_id:
             selected_action_id = _resolve_chatboc_demo_limit_decision_action(message_body_for_demo)
         normalized_demo_action = _normalize_chatboc_demo_text(selected_action_id)
+        normalized_demo_text = _normalize_chatboc_demo_text(message_body_for_demo)
+        should_send_chatboc_demo_sticker = (
+            is_greeting
+            or normalized_demo_action in {"menu_principal", "cancelar"}
+            or normalized_demo_text in {"hola", "buenas", "menu", "menú", "inicio"}
+        )
+        if should_send_chatboc_demo_sticker:
+            chatboc_demo_sticker_url = _resolve_public_media_url(
+                current_app.config.get("CHATBOC_DEMO_WELCOME_MEDIA_URL"),
+                request_root_stripped,
+            )
+            _send_welcome_sticker(
+                to_number_raw=to_number_raw,
+                from_number_raw=from_number_raw,
+                resolved_sticker_url=chatboc_demo_sticker_url,
+                session_context=session_context_db_entry,
+                state_key="chatboc_demo_hub",
+            )
         url_demo_turn = bool(selected_option and selected_option.get("url"))
         sales_demo_turn = normalized_demo_action in {"chatboc_sales_lead", "capturar_lead_comercial"}
         limit_decision_turn = normalized_demo_action in {
