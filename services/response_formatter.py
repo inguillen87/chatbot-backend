@@ -10,6 +10,34 @@ logger = logging.getLogger(__name__)
 # MODIFIED: Default to TRUE to satisfy user request for text-based menus.
 WHATSAPP_FORCE_TEXT = os.getenv("WHATSAPP_FORCE_TEXT", "true").lower() != "false"
 
+
+def _as_option_dicts(options: list | None) -> list[dict]:
+    if not options:
+        return []
+    return [item for item in options if isinstance(item, dict)]
+
+
+def _clean_text(value, fallback: str = "") -> str:
+    text = str(value or "").strip()
+    return text or fallback
+
+
+def _truncate_label(value, limit: int, fallback: str) -> str:
+    text = _clean_text(value, fallback)
+    text = text[:limit].strip()
+    return text or fallback[:limit]
+
+
+def _option_id(option: dict, fallback: str | int) -> str:
+    value = option.get("id") or option.get("action_id") or fallback
+    return _clean_text(value, str(fallback))[:200]
+
+
+def _url_description(option: dict) -> str:
+    text = f"{_clean_text(option.get('url'))}\n{_clean_text(option.get('description'))}".strip()
+    return text[:72]
+
+
 def render_audio_text(
     message: str,
     options: list | None = None,
@@ -149,6 +177,7 @@ def build_interactive_response(options: list,
     if options and isinstance(options[0], list):
         # Flatten the list if it's nested (e.g., [[...]])
         options = [item for sublist in options for item in sublist]
+    options = _as_option_dicts(options)
 
     # Propagate any image url provided by the bot so the caller can attach it
     image_url = original_bot_response.get("image_url")
@@ -251,7 +280,8 @@ def build_interactive_response(options: list,
 
             if url_options:
                 url_lines = [
-                    f"{o.get('texto', '')}: {o.get('url', '')}" for o in url_options
+                    f"{_clean_text(o.get('texto'), 'Abrir enlace')}: {_clean_text(o.get('url'))}"
+                    for o in url_options
                 ]
                 final_body += "\n\n" + "\n".join(url_lines)
 
@@ -265,12 +295,17 @@ def build_interactive_response(options: list,
                         if titulo:
                             lines.append(f"*{titulo}*")
                         for boton in categoria.get("botones", []):
-                            lines.append(f"*{counter}*. {boton.get('texto', '')}")
+                            if not isinstance(boton, dict):
+                                continue
+                            lines.append(f"*{counter}*. {_clean_text(boton.get('texto'), f'Opcion {counter}')}")
                             counter += 1
                     options_text = "\n\n" + "\n".join(lines)
                 else:
                     options_text = "\n\n" + "\n".join(
-                        [f"*{i+1}*. {o.get('texto', '')}" for i, o in enumerate(actionable_options)]
+                        [
+                            f"*{i+1}*. {_clean_text(o.get('texto'), f'Opcion {i + 1}')}"
+                            for i, o in enumerate(actionable_options)
+                        ]
                     )
                 final_body += options_text
 
@@ -326,7 +361,13 @@ def build_interactive_response(options: list,
                 else:
                     # For other options, create a standard reply button
                     reply_buttons.append(
-                        {"type": "reply", "reply": {"id": o.get("id", o.get("action_id", str(i))), "title": o.get("texto", "")[:20]}}
+                        {
+                            "type": "reply",
+                            "reply": {
+                                "id": _option_id(o, i),
+                                "title": _truncate_label(o.get("texto"), 20, f"Opcion {i + 1}"),
+                            },
+                        }
                     )
 
             if url_texts:
@@ -352,7 +393,11 @@ def build_interactive_response(options: list,
                 interactive_data["action"]["buttons"] = reply_buttons
         elif message_type == 'interactive_list':
             interactive_data["type"] = "list"
-            interactive_data["action"]["button"] = original_bot_response.get("interactive_list_button_text", "Ver opciones")
+            interactive_data["action"]["button"] = _truncate_label(
+                original_bot_response.get("interactive_list_button_text"),
+                20,
+                "Ver opciones",
+            )
 
             sections_override = original_bot_response.get("interactive_list_sections")
             sections_payload = []
@@ -366,30 +411,34 @@ def build_interactive_response(options: list,
                     for idx, row in enumerate(rows_value):
                         if not isinstance(row, dict):
                             continue
-                        row_id = str(row.get("id") or row.get("action_id") or idx)
-                        row_title = str(row.get("title") or row.get("texto") or "").strip()
+                        row_id = _option_id(row, idx)
+                        row_title = _clean_text(row.get("title") or row.get("texto"))
                         if not row_title:
                             continue
-                        row_desc = str(row.get("description") or "").strip()
+                        row_desc = _clean_text(row.get("description"))
                         rows_payload.append({
-                            "id": row_id[:200],
-                            "title": row_title[:24],
+                            "id": row_id,
+                            "title": _truncate_label(row_title, 24, f"Opcion {idx + 1}"),
                             "description": row_desc[:72],
                         })
                     if rows_payload:
                         sections_payload.append({
-                            "title": str(title_value or "Opciones")[:24],
+                            "title": _truncate_label(title_value, 24, "Opciones"),
                             "rows": rows_payload,
                         })
 
             if not sections_payload:
                 sections_payload = [{
-                    "title": original_bot_response.get("interactive_list_section_title", "Opciones"),
+                    "title": _truncate_label(
+                        original_bot_response.get("interactive_list_section_title"),
+                        24,
+                        "Opciones",
+                    ),
                     "rows": [
                         {
-                            "id": o.get("id", o.get("action_id", str(i))),
-                            "title": o.get("texto", "")[:24],
-                            "description": f"{o.get('url', '')}\n{o.get('description', '')}".strip()[:72]
+                            "id": _option_id(o, i),
+                            "title": _truncate_label(o.get("texto"), 24, f"Opcion {i + 1}"),
+                            "description": _url_description(o),
                         }
                         for i, o in enumerate(options)
                     ]
