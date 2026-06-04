@@ -1077,6 +1077,70 @@ def _chatboc_demo_survey_share_url(slug: str) -> str:
     return f"https://wa.me/?text={quote_plus(_chatboc_demo_survey_url(slug))}"
 
 
+def _chatboc_demo_tracking_ref(prefix: str, ticket: Optional[PymeTicket]) -> str:
+    number = getattr(ticket, "nro_ticket", None) or getattr(ticket, "id", None) or "demo"
+    return f"{prefix}-{number}"
+
+
+def _chatboc_demo_template_pre_message(template_name: str, variables: Dict[str, Any]) -> Dict[str, Any]:
+    normalized = {
+        str(key): "" if value is None else str(value)
+        for key, value in (variables or {}).items()
+    }
+    return {
+        "template_name": template_name,
+        "content_variables": normalized,
+        "channels": ["whatsapp"],
+    }
+
+
+def _attach_chatboc_demo_template(
+    payload: Dict[str, Any],
+    template_name: str,
+    variables: Dict[str, Any],
+) -> Dict[str, Any]:
+    if not isinstance(payload, dict):
+        return payload
+
+    current_entries = payload.get("_twilio_pre_messages")
+    entries = list(current_entries) if isinstance(current_entries, list) else []
+    entries.append(_chatboc_demo_template_pre_message(template_name, variables))
+    payload["_twilio_pre_messages"] = entries
+    return payload
+
+
+def _chatboc_demo_template_action_alias(action: str, active_sector: str) -> str:
+    normalized = str(action or "").strip()
+    sector = active_sector if active_sector in {"gobierno", "educacion", "empresas"} else ""
+
+    if normalized == "open_case":
+        return {
+            "gobierno": "chatboc_demo_claim_start",
+            "educacion": "chatboc_demo_school_start",
+            "empresas": "chatboc_demo_order_start",
+        }.get(sector, "chatboc_demo_claim_start")
+    if normalized == "commerce":
+        return "chatboc_demo_order_start"
+    if normalized == "human_handoff":
+        return "chatboc_sales_lead"
+    if normalized == "view_case":
+        return {
+            "gobierno": "chatboc_demo_claim_start",
+            "educacion": "chatboc_demo_school_start",
+            "empresas": "chatboc_demo_order_confirm",
+        }.get(sector, "chatboc_demo_claim_start")
+    if normalized == "attach_info":
+        return {
+            "gobierno": "chatboc_demo_claim_start",
+            "educacion": "chatboc_demo_school_start",
+            "empresas": "chatboc_demo_order_start",
+        }.get(sector, "chatboc_demo_claim_start")
+    if normalized == "cancel":
+        return "cancelar"
+
+    return normalized
+
+
 def _build_chatboc_demo_root_payload(contact_name: Optional[str], ticket: Optional[PymeTicket]) -> Dict[str, Any]:
     lead_line = f"\nTicket interno CRM: #{ticket.nro_ticket}" if ticket else ""
     greeting = f"Hola {contact_name}, soy Chatboc.ar." if contact_name else "Hola, soy Chatboc.ar."
@@ -1088,7 +1152,7 @@ def _build_chatboc_demo_root_payload(contact_name: Optional[str], ticket: Option
         "registrado como oportunidad comercial en Chatboc."
         f"{lead_line}"
     )
-    return {
+    payload = {
         "success": True,
         "message_body": body,
         "message_type": "text",
@@ -1102,6 +1166,11 @@ def _build_chatboc_demo_root_payload(contact_name: Optional[str], ticket: Option
         "fuente": "chatboc_demo_whatsapp_hub",
         "skip_audio_generation": True,
     }
+    return _attach_chatboc_demo_template(
+        payload,
+        "chatboc_welcome_menu_v2",
+        {"1": contact_name or "ahi", "2": "Chatboc.ar"},
+    )
 
 
 def _build_chatboc_demo_sector_payload(sector: str) -> Dict[str, Any]:
@@ -1134,7 +1203,7 @@ def _build_chatboc_demo_sector_payload(sector: str) -> Dict[str, Any]:
         "Podés abrir la demo web o probar una encuesta primero. En las encuestas votás antes de ver "
         "los 100 resultados demo, para que la experiencia sea real."
     )
-    return {
+    payload = {
         "success": True,
         "message_body": body,
         "message_type": "text",
@@ -1148,6 +1217,13 @@ def _build_chatboc_demo_sector_payload(sector: str) -> Dict[str, Any]:
         "fuente": f"chatboc_demo_{sector}_menu",
         "skip_audio_generation": True,
     }
+    if sector == "empresas":
+        return _attach_chatboc_demo_template(
+            payload,
+            "chatboc_pyme_catalog_invite_v1",
+            {"1": "Chatboc Empresas", "2": "bodega"},
+        )
+    return payload
 
 
 def _rewrite_chatboc_survey_options(menu_payload: Dict[str, Any], sector: str) -> Dict[str, Any]:
@@ -1253,7 +1329,7 @@ def _build_chatboc_survey_link_payload(action_id: str, session_context: ChatSess
             _chatboc_demo_option("↩️ Volver a encuestas", f"chatboc_surveys:{sector}:1"),
         ]
 
-    return {
+    payload = {
         "success": True,
         "message_body": body,
         "message_type": "text",
@@ -1261,6 +1337,13 @@ def _build_chatboc_survey_link_payload(action_id: str, session_context: ChatSess
         "fuente": "chatboc_demo_survey_link",
         "skip_audio_generation": True,
     }
+    if mode != "chatboc_survey_share":
+        return _attach_chatboc_demo_template(
+            payload,
+            "chatboc_survey_invite_v2",
+            {"1": _demo_sector_label(sector), "2": slug},
+        )
+    return payload
 
 
 def _build_chatboc_demo_business_order_payload(
@@ -1279,7 +1362,7 @@ def _build_chatboc_demo_business_order_payload(
         "Pedido sugerido: 2 Malbec Reserva + 1 caja degustacion. "
         "Podes confirmarlo o abrir la demo web para probar catalogo, carrito y pedidos."
     )
-    return {
+    payload = {
         "success": True,
         "message_body": body,
         "message_type": "text",
@@ -1295,6 +1378,11 @@ def _build_chatboc_demo_business_order_payload(
         "fuente": "chatboc_demo_business_order",
         "skip_audio_generation": True,
     }
+    return _attach_chatboc_demo_template(
+        payload,
+        "chatboc_pyme_catalog_invite_v1",
+        {"1": "Chatboc Empresas", "2": "bodega"},
+    )
 
 
 def _build_chatboc_demo_order_confirm_payload(
@@ -1303,7 +1391,7 @@ def _build_chatboc_demo_order_confirm_payload(
 ) -> Dict[str, Any]:
     ticket_ref = getattr(ticket, "nro_ticket", None) or "demo"
     name = getattr(contact_user, "name", None) or "cliente"
-    return {
+    payload = {
         "success": True,
         "message_body": (
             f"Pedido demo generado para {name}.\n"
@@ -1321,6 +1409,11 @@ def _build_chatboc_demo_order_confirm_payload(
         "fuente": "chatboc_demo_order_confirm",
         "skip_audio_generation": True,
     }
+    return _attach_chatboc_demo_template(
+        payload,
+        "chatboc_order_checkout_v1",
+        {"1": f"D-{ticket_ref}", "2": "$25.000", "3": "demo"},
+    )
 
 
 def _build_chatboc_demo_claim_payload(
@@ -1335,7 +1428,7 @@ def _build_chatboc_demo_claim_payload(
         "Ejemplo: luminaria apagada en una esquina. Si escribis una direccion, el flujo te guia "
         "sin volver al menu."
     )
-    return {
+    payload = {
         "success": True,
         "message_body": body,
         "message_type": "text",
@@ -1348,6 +1441,12 @@ def _build_chatboc_demo_claim_payload(
         "fuente": "chatboc_demo_claim_start",
         "skip_audio_generation": True,
     }
+    claim_ref = _chatboc_demo_tracking_ref("REC", ticket)
+    return _attach_chatboc_demo_template(
+        payload,
+        "chatboc_gov_claim_created_v2",
+        {"1": claim_ref, "2": claim_ref},
+    )
 
 
 def _build_chatboc_demo_school_payload(
@@ -1362,7 +1461,7 @@ def _build_chatboc_demo_school_payload(
         "Ejemplo: una familia pregunta por admision o avisa una inasistencia. Chatboc guarda "
         "el motivo, el contacto y la accion pendiente."
     )
-    return {
+    payload = {
         "success": True,
         "message_body": body,
         "message_type": "text",
@@ -1375,6 +1474,15 @@ def _build_chatboc_demo_school_payload(
         "fuente": "chatboc_demo_school_start",
         "skip_audio_generation": True,
     }
+    return _attach_chatboc_demo_template(
+        payload,
+        "chatboc_school_family_case_created_v1",
+        {
+            "1": _chatboc_demo_tracking_ref("ESC", ticket),
+            "2": getattr(contact_user, "name", None) or "familia demo",
+            "3": "recibido",
+        },
+    )
 
 
 def _build_chatboc_demo_voice_payload(
@@ -1527,7 +1635,7 @@ def _build_chatboc_demo_media_payload(
 def _build_chatboc_sales_payload(contact_user: Optional[User], ticket: Optional[PymeTicket]) -> Dict[str, Any]:
     name = getattr(contact_user, "name", None) or "prospecto"
     ticket_ref = f"#{ticket.nro_ticket}" if ticket else "registrado"
-    return {
+    payload = {
         "success": True,
         "message_body": (
             f"Listo, {name}. Te deje registrado en el CRM de Chatboc como {ticket_ref}.\n"
@@ -1550,6 +1658,11 @@ def _build_chatboc_sales_payload(contact_user: Optional[User], ticket: Optional[
         },
         "skip_audio_generation": True,
     }
+    return _attach_chatboc_demo_template(
+        payload,
+        "chatboc_handoff_v1",
+        {"1": ticket_ref},
+    )
 
 
 def _build_chatboc_demo_whatsapp_payload(
@@ -1570,6 +1683,7 @@ def _build_chatboc_demo_whatsapp_payload(
     )
     content_type = input_context.get("content_type")
     active_sector = _chatboc_demo_active_sector(session_context)
+    action = _chatboc_demo_template_action_alias(action, active_sector)
     if content_type == "location":
         if active_sector not in {"gobierno", "educacion", "empresas"}:
             active_sector = "gobierno"
@@ -3666,14 +3780,16 @@ def whatsapp_webhook():
                 should_send_template = bool(template_sid) and not template_state.get("disabled", False)
                 should_send_sticker = bool(resolved_sticker_url) and not sticker_state.get("disabled", False)
                 sticker_metadata_allowed = True
-                template_variables_payload: Dict[str, str] = {"1": user_name or ""}
+                template_variables_payload: Dict[str, str] = {
+                    "1": user_name or "",
+                    "2": municipio_name or "Chatboc",
+                }
 
                 if tenant_profile and isinstance(getattr(tenant_profile, "configuracion", None), dict):
                     tenant_config = tenant_profile.configuracion or {}
                     assistant_name = tenant_config.get("assistant_name") or tenant_config.get("bot_name")
-
-                if assistant_name and getattr(client_user, "tipo_chat", "") == "municipio":
-                    should_send_template = False
+                    if assistant_name:
+                        template_variables_payload["2"] = assistant_name
 
                 if should_send_template:
                     # Permitir template + sticker cuando el canal lo soporte.

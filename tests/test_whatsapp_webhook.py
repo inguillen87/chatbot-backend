@@ -1316,10 +1316,9 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
 
         template_kwargs = self.mock_twilio_create.call_args_list[0].kwargs
         self.assertEqual(template_kwargs.get("content_sid"), "HXwelcomeapproved")
-        self.assertEqual(
-            json.loads(template_kwargs.get("content_variables", "{}")),
-            {"1": ""},
-        )
+        content_vars = json.loads(template_kwargs.get("content_variables", "{}"))
+        self.assertEqual(content_vars.get("1"), "")
+        self.assertTrue(content_vars.get("2"))
 
         greeting_kwargs = self.mock_twilio_create.call_args_list[1].kwargs
         self.assertIn("body", greeting_kwargs)

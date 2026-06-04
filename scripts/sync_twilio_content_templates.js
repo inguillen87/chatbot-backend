@@ -230,9 +230,9 @@ const templates = [
     types: (body) => withCta(body, "Ver documento", `${DEFAULT_BASE_URL}/t/{{2}}`),
   },
   {
-    name: "chatboc_gov_survey_invite_v1",
+    name: "chatboc_gov_survey_invite_v2",
     category: "UTILITY",
-    body: "{{1}} te invita a participar: {{2}}. Responde desde el boton y mira resultados agregados.",
+    body: "Te invitamos a participar en {{1}}: {{2}}. Responde desde el boton y mira resultados agregados de la comunidad.",
     variables: { "1": "Municipio demo", "2": "encuesta ciudadana", "3": "encuesta-demo" },
     types: (body) => withCta(body, "Responder", `${DEFAULT_BASE_URL}/e/{{3}}`),
   },
@@ -326,7 +326,12 @@ async function main() {
       }
 
       if (content && options.approve && needsApprovalSubmission(result.approval)) {
-        const approval = await client.content.v1.contents(content.sid).approvalCreate.create({
+        const contentContext = client.content.v1.contents(content.sid);
+        const approvalResource = contentContext.approvalRequests || contentContext.approvalCreate;
+        if (!approvalResource || typeof approvalResource.create !== "function") {
+          throw new Error("Twilio Content SDK does not expose an approval request create method");
+        }
+        const approval = await approvalResource.create({
           name: definition.friendlyName,
           category: definition.category,
         });
