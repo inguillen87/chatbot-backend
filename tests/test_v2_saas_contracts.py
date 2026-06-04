@@ -20,6 +20,7 @@ from models import (
     Notification,
     NotificationTemplate,
     PedidoConversacional,
+    MessageTemplateRegistry,
     MessagingEventLedger,
     Promocion,
     ProviderConnection,
@@ -212,6 +213,34 @@ class V2SaasContractsTest(unittest.TestCase):
                 quiet_hours_start=22,
                 quiet_hours_end=7,
                 blocked_keywords=["spam"],
+            )
+        )
+        db.session.add(
+            MessageTemplateRegistry(
+                tenant_id=self.tenant.id,
+                provider="twilio",
+                channel="whatsapp",
+                name="chatboc_welcome_menu_v2",
+                language="es",
+                category="UTILITY",
+                status="approved",
+                content_sid="HXwelcomev2",
+                body_preview="Hola {{1}}, soy {{2}}. Te ayudo por WhatsApp con reclamos, pedidos y pagos.",
+                components=[{"type": "quick_reply", "actions": ["Crear caso", "Pagar o pedir", "Hablar equipo"]}],
+            )
+        )
+        db.session.add(
+            MessageTemplateRegistry(
+                tenant_id=self.tenant.id,
+                provider="twilio",
+                channel="whatsapp",
+                name="chatboc_school_payment_due_v2",
+                language="es",
+                category="UTILITY",
+                status="approved",
+                content_sid="HXschoolpayv2",
+                body_preview="Hola {{1}}, tenes una cuota pendiente de {{2}}.",
+                components=[{"type": "call_to_action", "title": "Pagar cuota"}],
             )
         )
         db.session.add(
@@ -1252,12 +1281,27 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertTrue(payload["template_blueprint"]["policy"]["requires_meta_approval_outside_24h"])
         required_template_ids = {item["id"] for item in payload["template_blueprint"]["required_templates"]}
         self.assertIn("order_checkout", required_template_ids)
+        welcome_template = next(
+            item for item in payload["template_blueprint"]["required_templates"] if item["id"] == "welcome_menu"
+        )
+        self.assertEqual(welcome_template["friendly_name"], "chatboc_welcome_menu_v2")
+        self.assertEqual(welcome_template["status"]["resolved_name"], "chatboc_welcome_menu_v2")
+        self.assertEqual(welcome_template["status"]["content_sid"], "HXwelcomev2")
+        self.assertTrue(welcome_template["status"]["approved"])
         self.assertEqual(payload["template_blueprint"]["endpoints"]["templates_admin"], "/api/admin/templates")
         self.assertIn("colegio", payload["template_blueprint"]["vertical_templates"])
         colegio_template_ids = {
             item["id"] for item in payload["template_blueprint"]["vertical_templates"]["colegio"]
         }
         self.assertIn("school_payment_due", colegio_template_ids)
+        school_payment_template = next(
+            item
+            for item in payload["template_blueprint"]["vertical_templates"]["colegio"]
+            if item["id"] == "school_payment_due"
+        )
+        self.assertEqual(school_payment_template["friendly_name"], "chatboc_school_payment_due_v2")
+        self.assertEqual(school_payment_template["status"]["resolved_name"], "chatboc_school_payment_due_v2")
+        self.assertTrue(school_payment_template["status"]["approved"])
         self.assertEqual(payload["webview_blueprint"]["checkout"]["confirmation_source"], "server_to_server_webhook")
         self.assertFalse(payload["webview_blueprint"]["checkout"]["card_data_in_chat"])
         self.assertTrue(payload["webview_blueprint"]["security"]["requires_full_plan"])

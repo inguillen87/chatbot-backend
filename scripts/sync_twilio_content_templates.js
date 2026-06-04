@@ -43,21 +43,15 @@ const onlyNames = options.only
 
 const templates = [
   {
-    name: "chatboc_welcome_menu_v1",
+    name: "chatboc_welcome_menu_v2",
     category: "UTILITY",
-    body: "Hola {{1}}, soy {{2}}. Te ayudo con reclamos, pedidos, pagos, encuestas y soporte. Elegi una opcion para continuar.",
+    body: "Hola {{1}}, soy {{2}}. Te ayudo por WhatsApp con reclamos, pedidos, pagos, certificados, encuestas y derivacion a equipo. Elegi una opcion.",
     variables: { "1": "Marcelo", "2": "Chatboc" },
-    types: (body) => ({
-      "twilio/text": { body },
-      "twilio/quick-reply": {
-        body,
-        actions: [
-          { type: "QUICK_REPLY", title: "Crear caso", id: "open_case" },
-          { type: "QUICK_REPLY", title: "Ver pedido", id: "track_order" },
-          { type: "QUICK_REPLY", title: "Hablar equipo", id: "human_handoff" },
-        ],
-      },
-    }),
+    types: (body) => withQuickReplies(body, [
+      { title: "Crear caso", id: "open_case" },
+      { title: "Pagar o pedir", id: "commerce" },
+      { title: "Hablar equipo", id: "human_handoff" },
+    ]),
   },
   {
     name: "chatboc_order_checkout_v1",
@@ -115,16 +109,98 @@ const templates = [
     category: "UTILITY",
     body: "Derivamos tu consulta {{1}} al equipo. Un operador va a responderte por este canal.",
     variables: { "1": "CASO-1001" },
-    types: (body) => ({
-      "twilio/text": { body },
-      "twilio/quick-reply": {
-        body,
-        actions: [
-          { type: "QUICK_REPLY", title: "Ver caso", id: "view_case" },
-          { type: "QUICK_REPLY", title: "Cancelar", id: "cancel" },
-        ],
-      },
-    }),
+    types: (body) => withQuickReplies(body, [
+      { title: "Ver caso", id: "view_case" },
+      { title: "Cancelar", id: "cancel" },
+    ]),
+  },
+  {
+    name: "chatboc_pyme_order_ready_v1",
+    category: "UTILITY",
+    body: "Tu pedido {{1}} esta listo. Total {{2}}. Revisalo y pagalo desde el boton seguro.",
+    variables: { "1": "PED-1001", "2": "$25.000", "3": "PED-1001" },
+    types: (body) => withCta(body, "Pagar pedido", `${DEFAULT_BASE_URL}/checkout/{{3}}`),
+  },
+  {
+    name: "chatboc_pyme_payment_link_v1",
+    category: "UTILITY",
+    body: "Hola {{1}}, tu link de pago por {{2}} esta disponible. No compartas datos de tarjeta por chat.",
+    variables: { "1": "Marcelo", "2": "$25.000", "3": "PAY-1001" },
+    types: (body) => withCta(body, "Pagar seguro", `${DEFAULT_BASE_URL}/checkout/{{3}}`),
+  },
+  {
+    name: "chatboc_pyme_delivery_update_v1",
+    category: "UTILITY",
+    body: "Actualizacion del pedido {{1}}: {{2}}. Podes ver el seguimiento desde el boton.",
+    variables: { "1": "PED-1001", "2": "en preparacion", "3": "PED-1001" },
+    types: (body) => withCta(body, "Ver seguimiento", `${DEFAULT_BASE_URL}/t/{{3}}`),
+  },
+  {
+    name: "chatboc_pyme_quote_followup_v1",
+    category: "UTILITY",
+    body: "Tu cotizacion {{1}} ya esta preparada. Revisala y confirma si queres avanzar.",
+    variables: { "1": "COT-1001", "2": "COT-1001" },
+    types: (body) => withCta(body, "Ver cotizacion", `${DEFAULT_BASE_URL}/t/{{2}}`),
+  },
+  {
+    name: "chatboc_pyme_catalog_invite_v1",
+    category: "UTILITY",
+    body: "Mira el catalogo actualizado de {{1}}. Podes consultar productos y armar pedido desde el boton.",
+    variables: { "1": "Ferreteria demo", "2": "catalogo-demo" },
+    types: (body) => withCta(body, "Ver catalogo", `${DEFAULT_BASE_URL}/catalogo/{{2}}`),
+  },
+  {
+    name: "chatboc_school_receipt_ready_v1",
+    category: "UTILITY",
+    body: "Comprobante {{1}} disponible para {{2}}. Podes descargarlo desde el boton.",
+    variables: { "1": "REC-1001", "2": "Juan Perez", "3": "REC-1001" },
+    types: (body) => withCta(body, "Ver comprobante", `${DEFAULT_BASE_URL}/t/{{3}}`),
+  },
+  {
+    name: "chatboc_school_family_case_created_v1",
+    category: "UTILITY",
+    body: "Creamos el caso {{1}} para {{2}}. Estado: {{3}}. El equipo puede continuar por este canal.",
+    variables: { "1": "ESC-1001", "2": "Juan Perez", "3": "recibido" },
+    types: (body) => withQuickReplies(body, [
+      { title: "Ver caso", id: "view_case" },
+      { title: "Adjuntar info", id: "attach_info" },
+      { title: "Hablar equipo", id: "human_handoff" },
+    ]),
+  },
+  {
+    name: "chatboc_school_event_reminder_v1",
+    category: "UTILITY",
+    body: "Recordatorio de {{1}}: {{2}}. Revisa la informacion completa desde el boton.",
+    variables: { "1": "reunion escolar", "2": "viernes 10 hs", "3": "EVT-1001" },
+    types: (body) => withCta(body, "Ver evento", `${DEFAULT_BASE_URL}/t/{{3}}`),
+  },
+  {
+    name: "chatboc_gov_claim_status_update_v1",
+    category: "UTILITY",
+    body: "Actualizacion del reclamo {{1}}: {{2}}. Podes ver el detalle desde el boton.",
+    variables: { "1": "REC-1001", "2": "en revision", "3": "REC-1001" },
+    types: (body) => withCta(body, "Ver reclamo", `${DEFAULT_BASE_URL}/t/{{3}}`),
+  },
+  {
+    name: "chatboc_gov_turn_reminder_v1",
+    category: "UTILITY",
+    body: "Recordatorio: turno {{1}} para {{2}} el {{3}}. Revisa el detalle desde el boton.",
+    variables: { "1": "TUR-1001", "2": "Mesa de entradas", "3": "viernes 10 hs", "4": "TUR-1001" },
+    types: (body) => withCta(body, "Ver turno", `${DEFAULT_BASE_URL}/t/{{4}}`),
+  },
+  {
+    name: "chatboc_gov_document_ready_v1",
+    category: "UTILITY",
+    body: "Tu documento {{1}} esta listo. Podes consultarlo o descargarlo desde el boton.",
+    variables: { "1": "DOC-1001", "2": "DOC-1001" },
+    types: (body) => withCta(body, "Ver documento", `${DEFAULT_BASE_URL}/t/{{2}}`),
+  },
+  {
+    name: "chatboc_gov_survey_invite_v1",
+    category: "UTILITY",
+    body: "{{1}} te invita a participar: {{2}}. Responde desde el boton y mira resultados agregados.",
+    variables: { "1": "Municipio demo", "2": "encuesta ciudadana", "3": "encuesta-demo" },
+    types: (body) => withCta(body, "Responder", `${DEFAULT_BASE_URL}/e/{{3}}`),
   },
 ].filter((template) => !onlyNames || onlyNames.has(template.name));
 
@@ -247,6 +323,20 @@ function withCta(body, title, url) {
     "twilio/call-to-action": {
       body,
       actions: [{ type: "URL", title, url }],
+    },
+  };
+}
+
+function withQuickReplies(body, actions) {
+  return {
+    "twilio/text": { body },
+    "twilio/quick-reply": {
+      body,
+      actions: actions.map((action) => ({
+        type: "QUICK_REPLY",
+        title: action.title,
+        id: action.id,
+      })),
     },
   };
 }

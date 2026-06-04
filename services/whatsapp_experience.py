@@ -35,6 +35,29 @@ WHATSAPP_EXPERIENCE_CONTRACT_VERSION = "whatsapp.experience.v1"
 
 APPROVED_TEMPLATE_STATUSES = {"approved", "active", "ready", "published", "online"}
 PENDING_TEMPLATE_STATUSES = {"draft", "pending", "submitted", "in_review", "review", "twilio_review"}
+CHATBOC_TEMPLATE_FRIENDLY_NAMES = {
+    "welcome_menu": "chatboc_welcome_menu_v2",
+    "case_created": "chatboc_gov_claim_created_v2",
+    "order_checkout": "chatboc_order_checkout_v1",
+    "payment_confirmed": "chatboc_payment_confirmed_v1",
+    "survey_invite": "chatboc_survey_invite_v2",
+    "human_handoff": "chatboc_handoff_v1",
+    "pyme_order_ready": "chatboc_pyme_order_ready_v1",
+    "pyme_payment_link": "chatboc_pyme_payment_link_v1",
+    "pyme_delivery_update": "chatboc_pyme_delivery_update_v1",
+    "pyme_quote_followup": "chatboc_pyme_quote_followup_v1",
+    "pyme_catalog_invite": "chatboc_pyme_catalog_invite_v1",
+    "school_payment_due": "chatboc_school_payment_due_v2",
+    "school_receipt_ready": "chatboc_school_receipt_ready_v1",
+    "school_certificate_ready": "chatboc_school_certificate_ready_v1",
+    "school_family_case_created": "chatboc_school_family_case_created_v1",
+    "school_event_reminder": "chatboc_school_event_reminder_v1",
+    "gov_claim_created": "chatboc_gov_claim_created_v2",
+    "gov_claim_status_update": "chatboc_gov_claim_status_update_v1",
+    "gov_turn_reminder": "chatboc_gov_turn_reminder_v1",
+    "gov_document_ready": "chatboc_gov_document_ready_v1",
+    "gov_survey_invite": "chatboc_gov_survey_invite_v1",
+}
 
 
 def _lower(value: Any) -> str:
@@ -392,14 +415,55 @@ def _registered_template_map(tenant: TenantProfile) -> dict[str, dict[str, Any]]
     return templates
 
 
+def _template_lookup_candidates(template_id: str) -> list[str]:
+    base = _lower(template_id)
+    candidates = [base]
+    friendly_name = CHATBOC_TEMPLATE_FRIENDLY_NAMES.get(base)
+    if friendly_name:
+        candidates.append(_lower(friendly_name))
+    candidates.extend([f"chatboc_{base}_v{version}" for version in range(1, 5)])
+    unique: list[str] = []
+    for candidate in candidates:
+        if candidate and candidate not in unique:
+            unique.append(candidate)
+    return unique
+
+
+def _pick_registered_template(
+    templates: Mapping[str, dict[str, Any]],
+    template_id: str,
+) -> tuple[str | None, dict[str, Any] | None]:
+    for candidate in _template_lookup_candidates(template_id):
+        template = templates.get(candidate)
+        if template:
+            return candidate, template
+
+    prefix = f"chatboc_{_lower(template_id)}_v"
+    matches = [
+        (name, template)
+        for name, template in templates.items()
+        if name.startswith(prefix)
+    ]
+    if not matches:
+        return None, None
+    approved = [
+        (name, template)
+        for name, template in matches
+        if _lower(template.get("status")) in APPROVED_TEMPLATE_STATUSES
+    ]
+    return sorted(approved or matches, key=lambda item: item[0], reverse=True)[0]
+
+
 def _template_status(templates: Mapping[str, dict[str, Any]], template_id: str) -> dict[str, Any]:
-    template = templates.get(_lower(template_id))
+    resolved_name, template = _pick_registered_template(templates, template_id)
     if not template:
         return {
             "configured": False,
             "approved": False,
             "status": "missing",
             "source": None,
+            "resolved_name": None,
+            "expected_friendly_name": CHATBOC_TEMPLATE_FRIENDLY_NAMES.get(_lower(template_id)),
             "content_sid": None,
             "external_template_id": None,
         }
@@ -411,6 +475,8 @@ def _template_status(templates: Mapping[str, dict[str, Any]], template_id: str) 
         "pending": status in PENDING_TEMPLATE_STATUSES,
         "status": status or "unknown",
         "source": template.get("source"),
+        "resolved_name": resolved_name or template.get("name"),
+        "expected_friendly_name": CHATBOC_TEMPLATE_FRIENDLY_NAMES.get(_lower(template_id)),
         "content_sid": template.get("content_sid"),
         "external_template_id": template.get("external_template_id"),
         "last_sync_at": template.get("last_sync_at"),
@@ -651,6 +717,7 @@ def _template_blueprint_payload(
     configured = 0
     approved = 0
     for item in required_templates:
+        item["friendly_name"] = CHATBOC_TEMPLATE_FRIENDLY_NAMES.get(_lower(item["id"]))
         status_payload = _template_status(templates, item["id"])
         item["status"] = status_payload
         configured += 1 if status_payload.get("configured") else 0
@@ -660,6 +727,7 @@ def _template_blueprint_payload(
     vertical_approved = 0
     for items in vertical_templates.values():
         for item in items:
+            item["friendly_name"] = CHATBOC_TEMPLATE_FRIENDLY_NAMES.get(_lower(item["id"]))
             status_payload = _template_status(templates, item["id"])
             item["status"] = status_payload
             vertical_configured += 1 if status_payload.get("configured") else 0
