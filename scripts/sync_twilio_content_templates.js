@@ -11,6 +11,7 @@
  *   node scripts/sync_twilio_content_templates.js --dry-run
  *   node scripts/sync_twilio_content_templates.js --status
  *   node scripts/sync_twilio_content_templates.js --create
+ *   node scripts/sync_twilio_content_templates.js --update
  *   node scripts/sync_twilio_content_templates.js --approve
  *   node scripts/sync_twilio_content_templates.js --create --approve
  */
@@ -26,8 +27,10 @@ const MANIFEST_PATH = path.join(__dirname, "twilio_content_templates.local.json"
 
 const args = new Set(process.argv.slice(2));
 const options = {
-  dryRun: args.has("--dry-run") || (!args.has("--create") && !args.has("--approve") && !args.has("--status")),
+  dryRun: args.has("--dry-run") ||
+    (!args.has("--create") && !args.has("--update") && !args.has("--approve") && !args.has("--status")),
   create: args.has("--create"),
+  update: args.has("--update"),
   approve: args.has("--approve"),
   status: args.has("--status"),
   json: args.has("--json") || true,
@@ -59,57 +62,53 @@ const templates = [
   {
     name: "chatboc_order_checkout_v1",
     category: "UTILITY",
-    body: "Tu pedido {{1}} esta listo. Total {{2}}. Paga de forma segura desde este enlace: {{3}}",
-    variables: { "1": "PED-1001", "2": "$25.000", "3": `${DEFAULT_BASE_URL}/checkout/demo` },
-    types: (body) => withCta(body, "Pagar seguro", "{{3}}"),
+    body: "Tu pedido {{1}} esta listo. Total {{2}}. Paga de forma segura desde el boton de pago.",
+    variables: { "1": "PED-1001", "2": "$25.000", "3": "demo" },
+    types: (body) => withCta(body, "Pagar seguro", `${DEFAULT_BASE_URL}/checkout/{{3}}`),
   },
   {
     name: "chatboc_payment_confirmed_v1",
     category: "UTILITY",
-    body: "Pago acreditado para {{1}}. El pedido queda confirmado. Seguimiento: {{2}}",
-    variables: { "1": "PED-1001", "2": `${DEFAULT_BASE_URL}/t/PED-1001` },
-    types: (body) => withCta(body, "Ver seguimiento", "{{2}}"),
+    body: "Pago acreditado para {{1}}. El pedido queda confirmado. Usa el boton para ver seguimiento.",
+    variables: { "1": "PED-1001", "2": "PED-1001" },
+    types: (body) => withCta(body, "Ver seguimiento", `${DEFAULT_BASE_URL}/t/{{2}}`),
   },
   {
-    name: "chatboc_school_payment_due_v1",
+    name: "chatboc_school_payment_due_v2",
     category: "UTILITY",
-    body: "{{1}}, tenes {{2}} pendiente por {{3}}. Podes pagarlo aca: {{4}}",
+    body: "Hola {{1}}, hay una cuota escolar pendiente registrada en Chatboc. Para ver el detalle y pagar de forma segura, usa el boton de pago. Si ya pagaste, responde con el comprobante.",
     variables: {
       "1": "Familia Perez",
-      "2": "Cuota Mayo",
-      "3": "$25.000",
-      "4": `${DEFAULT_BASE_URL}/checkout/colegio-demo`,
+      "2": "colegio-demo",
     },
-    types: (body) => withCta(body, "Pagar cuota", "{{4}}"),
+    types: (body) => withCta(body, "Pagar cuota", `${DEFAULT_BASE_URL}/checkout/{{2}}`),
   },
   {
     name: "chatboc_school_certificate_ready_v1",
     category: "UTILITY",
-    body: "El certificado de {{1}} esta listo. Descargalo o seguilo aca: {{2}}",
-    variables: { "1": "Juan Perez", "2": `${DEFAULT_BASE_URL}/t/CERT-1001` },
-    types: (body) => withCta(body, "Ver certificado", "{{2}}"),
+    body: "El certificado de {{1}} esta listo. Usa el boton para descargarlo o seguirlo.",
+    variables: { "1": "Juan Perez", "2": "CERT-1001" },
+    types: (body) => withCta(body, "Ver certificado", `${DEFAULT_BASE_URL}/t/{{2}}`),
   },
   {
-    name: "chatboc_gov_claim_created_v1",
+    name: "chatboc_gov_claim_created_v2",
     category: "UTILITY",
-    body: "Tu reclamo {{1}} fue registrado. Categoria: {{2}}. Seguimiento: {{3}}",
+    body: "Registramos tu reclamo municipal {{1}}. Ya quedo derivado al area correspondiente. Podes consultar el estado y agregar informacion desde el boton de seguimiento.",
     variables: {
       "1": "REC-1001",
-      "2": "Luminarias",
-      "3": `${DEFAULT_BASE_URL}/t/REC-1001`,
+      "2": "REC-1001",
     },
-    types: (body) => withCta(body, "Ver reclamo", "{{3}}"),
+    types: (body) => withCta(body, "Ver reclamo", `${DEFAULT_BASE_URL}/t/{{2}}`),
   },
   {
-    name: "chatboc_survey_invite_v1",
+    name: "chatboc_survey_invite_v2",
     category: "UTILITY",
-    body: "{{1}} te invita a responder: {{2}}. Participa aca: {{3}}",
+    body: "Te invitamos a responder una encuesta de {{1}}. Tu participacion ayuda a mejorar la atencion y ver resultados agregados despues de votar.",
     variables: {
       "1": "Chatboc",
-      "2": "Encuesta de satisfaccion",
-      "3": `${DEFAULT_BASE_URL}/e/demo`,
+      "2": "demo",
     },
-    types: (body) => withCta(body, "Responder", "{{3}}"),
+    types: (body) => withCta(body, "Responder", `${DEFAULT_BASE_URL}/e/{{2}}`),
   },
   {
     name: "chatboc_handoff_v1",
@@ -200,11 +199,23 @@ async function main() {
         result.action = "exists";
       }
 
-      if (content && (options.approve || options.status)) {
+      if (content && (options.approve || options.status || options.update)) {
         result.approval = await getApprovalStatus(client, content.sid);
       }
 
-      if (content && options.approve && !isApproved(result.approval)) {
+      if (content && options.update && canUpdateContent(result.approval)) {
+        content = await client.content.v1.contents(content.sid).update({
+          friendlyName: definition.friendlyName,
+          language: definition.language,
+          variables: definition.variables,
+          types: definition.types,
+        });
+        result.action = result.action === "created" ? "created_and_updated" : "updated";
+        result.sid = content.sid;
+        result.approval = await getApprovalStatus(client, content.sid);
+      }
+
+      if (content && options.approve && needsApprovalSubmission(result.approval)) {
         const approval = await client.content.v1.contents(content.sid).approvalCreate.create({
           name: definition.friendlyName,
           category: definition.category,
@@ -467,8 +478,23 @@ function modeLabel() {
   const modes = [];
   if (options.status) modes.push("status");
   if (options.create) modes.push("create");
+  if (options.update) modes.push("update");
   if (options.approve) modes.push("approve");
   return modes.join("+") || "noop";
+}
+
+function canUpdateContent(approval) {
+  const status = approvalStatus(approval);
+  return status === "UNSUBMITTED" || status === "NOT_SUBMITTED" || status === "UNKNOWN";
+}
+
+function needsApprovalSubmission(approval) {
+  const status = approvalStatus(approval);
+  return status === "UNSUBMITTED" || status === "NOT_SUBMITTED" || status === "UNKNOWN";
+}
+
+function approvalStatus(approval) {
+  return String((approval && approval.status) || "").toUpperCase();
 }
 
 function maskSid(value) {
