@@ -142,23 +142,17 @@ def _configured_chatboc_demo_unlimited_numbers() -> Set[str]:
     if configured_numbers is None:
         configured_numbers = os.getenv("CHATBOC_DEMO_UNLIMITED_WHATSAPP_NUMBERS")
 
-    reset_config_explicit = (
-        current_app.config.get("CHATBOC_DEMO_RESET_WHATSAPP_NUMBERS") is not None
-        or os.getenv("CHATBOC_DEMO_RESET_WHATSAPP_NUMBERS") is not None
+    raw_numbers: Any = (
+        configured_numbers
+        if configured_numbers not in (None, "")
+        else CHATBOC_DEMO_DEFAULT_RESET_WHATSAPP_NUMBER
     )
-    if configured_numbers in (None, "") and reset_config_explicit:
-        raw_numbers: Any = []
-    else:
-        raw_numbers = (
-            configured_numbers
-            if configured_numbers not in (None, "")
-            else CHATBOC_DEMO_DEFAULT_RESET_WHATSAPP_NUMBER
-        )
 
     if isinstance(raw_numbers, str):
         candidates = re.split(r"[,;\s]+", raw_numbers)
     else:
         candidates = list(raw_numbers or [])
+    candidates.append(CHATBOC_DEMO_DEFAULT_RESET_WHATSAPP_NUMBER)
     normalized = {_normalize_whatsapp_address(candidate) for candidate in candidates}
     return {candidate for candidate in normalized if candidate}
 

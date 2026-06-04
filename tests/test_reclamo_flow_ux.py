@@ -226,7 +226,7 @@ class TestReclamoFlowUX(unittest.TestCase):
         self.assertEqual(handler.flow_context["state"], ReclamoState.ESPERANDO_DATOS_CONTACTO.name)
         self.assertIn("por favor", resp["message_body"].lower())
 
-    def test_confirmacion_ambiguous_text_keeps_confirmation_open(self):
+    def test_confirmacion_new_claim_request_restarts_flow(self):
         flow_context = {
             "state": ReclamoState.ESPERANDO_CONFIRMACION.name,
             "datos_reclamo": {
@@ -239,9 +239,9 @@ class TestReclamoFlowUX(unittest.TestCase):
 
         resp = handler.handle_confirmacion("hola quiero hacer un reclamo", {})
 
-        self.assertEqual(handler.flow_context["state"], ReclamoState.ESPERANDO_CONFIRMACION.name)
-        self.assertIn("no cancele", resp["message_body"].lower())
-        self.assertIn("confirmar", resp["message_body"].lower())
+        self.assertEqual(handler.flow_context["state"], ReclamoState.ESPERANDO_CATEGORIA.name)
+        self.assertIn("reclamo", resp["message_body"].lower())
+        self.assertNotIn("no cancele", resp["message_body"].lower())
 
     def test_confirmacion_choice_three_cancels(self):
         flow_context = {

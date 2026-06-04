@@ -1694,6 +1694,15 @@ class ReclamoFlowHandler:
             or normalized_plain in CANCEL_KEYWORDS
         )
 
+        new_claim_requested = (
+            action in {"mostrar_menu_reclamos", "iniciar_reclamo", "crear_reclamo"}
+            or "nuevo reclamo" in normalized_plain
+            or "otro reclamo" in normalized_plain
+            or "hacer un reclamo" in normalized_plain
+            or "crear un reclamo" in normalized_plain
+            or "iniciar un reclamo" in normalized_plain
+        )
+
         confirm_requested = (
             action == "reclamo_confirmar_si"
             or choice in {"1"}
@@ -1703,6 +1712,9 @@ class ReclamoFlowHandler:
 
         if cancel_requested:
             return self.end_flow("Proceso de reclamo cancelado. En que mas te puedo ayudar?", show_menu=True)
+
+        if new_claim_requested:
+            return self.start_flow()
 
         if edit_requested:
             return self.ask_for_contact_details(force_prompt=True)

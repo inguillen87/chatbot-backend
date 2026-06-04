@@ -357,7 +357,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
                 "/webhook/whatsapp",
                 data={
                     "To": f"whatsapp:{CHATBOC_DEMO_DEFAULT_WHATSAPP_NUMBER}",
-                    "From": "whatsapp:+5492613168608",
+                    "From": "whatsapp:+5492600000001",
                     "Body": body,
                     "ProfileName": "Marcelo",
                     "MessageSid": sid,
@@ -410,7 +410,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self.assertIsNotNone(session)
         usage = (session.context_data or {}).get("chatboc_demo_usage") or {}
         self.assertEqual(usage.get("message_count"), 0)
-        self.assertEqual(usage.get("last_reset_reason"), "limit_navigation")
+        self.assertEqual(usage.get("last_reset_reason"), "authorized_unlimited")
 
     @patch("routes.whatsapp_webhook.responder_chatboc")
     def test_chatboc_demo_ceo_reset_number_is_enabled_by_default(self, mock_bot):
@@ -451,7 +451,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
                 "/webhook/whatsapp",
                 data={
                     "To": f"whatsapp:{CHATBOC_DEMO_DEFAULT_WHATSAPP_NUMBER}",
-                    "From": "whatsapp:+5492613168608",
+                    "From": "whatsapp:+5492600000000",
                     "Body": body,
                     "ProfileName": "Marcelo",
                     "MessageSid": sid,
@@ -480,7 +480,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
                 "/webhook/whatsapp",
                 data={
                     "To": f"whatsapp:{CHATBOC_DEMO_DEFAULT_WHATSAPP_NUMBER}",
-                    "From": "whatsapp:+5492613168608",
+                    "From": "whatsapp:+5492600000001",
                     "Body": body,
                     "ProfileName": "Marcelo",
                     "MessageSid": sid,
@@ -508,14 +508,14 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self.assertEqual(ticket.estado_cliente, "quiere_contacto")
 
         contact = User.query.filter_by(
-            telefono="+5492613168608",
+            telefono="+5492600000001",
             empresa_id=mapping.user_id,
         ).first()
         self.assertIsNotNone(contact)
         self.assertTrue(contact.acepta_marketing)
         self.assertIn("lead_caliente", contact.tags or [])
 
-        crm_contact = Contact.query.filter_by(phone="+5492613168608").first()
+        crm_contact = Contact.query.filter_by(phone="+5492600000001").first()
         self.assertIsNotNone(crm_contact)
         self.assertIn("lead_caliente", crm_contact.tags or [])
         self.assertTrue((crm_contact.preferences or {}).get("commercial_contact_requested"))
@@ -527,7 +527,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self.assertIsNotNone(notification)
         self.assertTrue((notification.metadata_json or {}).get("commercial_contact_requested"))
 
-        session = ChatSessionContext.query.filter_by(anon_id="+5492613168608").first()
+        session = ChatSessionContext.query.filter_by(anon_id="+5492600000001").first()
         self.assertIsNotNone(session)
         usage = (session.context_data or {}).get("chatboc_demo_usage") or {}
         self.assertEqual(usage.get("message_count"), 3)
