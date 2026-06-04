@@ -333,6 +333,25 @@ async function main() {
         result.action = result.action === "created" ? "created_and_submitted" : "submitted";
         result.approval = normalizeApproval(approval);
       }
+
+      if (content) {
+        const existingManifestEntry = manifest.templates[definition.friendlyName] || {};
+        const normalizedApprovalStatus = approvalStatus(result.approval);
+        manifest.templates[definition.friendlyName] = {
+          ...existingManifestEntry,
+          sid: content.sid,
+          category: definition.category,
+          language: definition.language,
+          approvalStatus: normalizedApprovalStatus || existingManifestEntry.approvalStatus || null,
+          approved: normalizedApprovalStatus
+            ? isApproved(result.approval)
+            : Boolean(existingManifestEntry.approved),
+          lastStatusAt: (options.status || options.approve || options.update)
+            ? new Date().toISOString()
+            : existingManifestEntry.lastStatusAt,
+          updatedAt: new Date().toISOString(),
+        };
+      }
     } catch (error) {
       result.error = sanitizeError(error);
     }

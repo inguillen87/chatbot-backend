@@ -2932,6 +2932,186 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self.assertEqual(fallback_kwargs.get("body"), "Tu reclamo queda registrado y trazable.")
         self.assertNotIn("content_sid", fallback_kwargs)
 
+    def test_whatsapp_pre_message_template_uses_approved_manifest_fallback(self):
+        self._set_owner_tipo_chat("municipio")
+        self._attach_tenant_to_owner(tipo="municipio")
+        self.mock_validator.validate.return_value = True
+        self._create_confirmed_session()
+
+        self.app.config["WELCOME_TEMPLATE_SID"] = None
+        self.app.config["WELCOME_MEDIA_URL"] = None
+        self.app.config["WELCOME_AUDIO_URL"] = None
+
+        response_payload = {
+            "message_body": "Menu principal",
+            "options_list": [],
+            "message_type": "text",
+            "_twilio_pre_messages": [
+                {
+                    "channels": ["whatsapp"],
+                    "template_name": "chatboc_gov_claim_created_v2",
+                    "variables": ["Junin", "641277", "Luminaria"],
+                },
+            ],
+        }
+
+        manifest = {
+            "chatboc_gov_claim_created_v2": {
+                "sid": "HXmanifestgovapproved",
+                "language": "es",
+                "approved": True,
+                "approvalStatus": "APPROVED",
+            }
+        }
+        with patch("routes.whatsapp_webhook.responder_chatboc", return_value=response_payload), \
+             patch("routes.whatsapp_webhook._load_twilio_template_manifest", return_value=manifest):
+            response = self.client.post(
+                "/webhook/whatsapp",
+                data={
+                    "To": f"whatsapp:{self.test_whatsapp_number_str}",
+                    "From": f"whatsapp:{self.test_user_number_str}",
+                    "Body": "estado",
+                },
+                headers={"X-Twilio-Signature": "dummy_signature_valid"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        template_kwargs = self.mock_twilio_create.call_args_list[0].kwargs
+        self.assertEqual(template_kwargs.get("content_sid"), "HXmanifestgovapproved")
+        self.assertEqual(
+            json.loads(template_kwargs.get("content_variables", "{}")),
+            {"1": "Junin", "2": "641277", "3": "Luminaria"},
+        )
+
+    def test_whatsapp_pre_message_manifest_rejects_unsubmitted_template(self):
+        self._set_owner_tipo_chat("municipio")
+        self._attach_tenant_to_owner(tipo="municipio")
+        self.mock_validator.validate.return_value = True
+        self._create_confirmed_session()
+
+        self.app.config["WELCOME_TEMPLATE_SID"] = None
+        self.app.config["WELCOME_MEDIA_URL"] = None
+        self.app.config["WELCOME_AUDIO_URL"] = None
+
+        response_payload = {
+            "message_body": "Menu principal",
+            "options_list": [],
+            "message_type": "text",
+            "_twilio_pre_messages": [
+                {
+                    "channels": ["whatsapp"],
+                    "template_name": "chatboc_welcome_menu_v2",
+                    "body": "Bienvenido al hub demo de Chatboc.",
+                },
+            ],
+        }
+
+        manifest = {
+            "chatboc_welcome_menu_v2": {
+                "sid": "HXmanifestwelcomeunsubmitted",
+                "language": "es",
+                "approved": False,
+                "approvalStatus": "UNSUBMITTED",
+            }
+        }
+        with patch("routes.whatsapp_webhook.responder_chatboc", return_value=response_payload), \
+             patch("routes.whatsapp_webhook._load_twilio_template_manifest", return_value=manifest):
+            response = self.client.post(
+                "/webhook/whatsapp",
+                data={
+                    "To": f"whatsapp:{self.test_whatsapp_number_str}",
+                    "From": f"whatsapp:{self.test_user_number_str}",
+                    "Body": "estado",
+                },
+                headers={"X-Twilio-Signature": "dummy_signature_valid"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        fallback_kwargs = self.mock_twilio_create.call_args_list[0].kwargs
+        self.assertEqual(fallback_kwargs.get("body"), "Bienvenido al hub demo de Chatboc.")
+        self.assertNotIn("content_sid", fallback_kwargs)
+
+    def test_whatsapp_approved_template_pre_messages_cover_government_school_and_pyme(self):
+        self._set_owner_tipo_chat("pyme")
+        tenant = self._attach_tenant_to_owner(tipo="pyme")
+        self._register_whatsapp_template(
+            tenant,
+            "chatboc_gov_claim_created_v2",
+            content_sid="HXgovcreatedapproved",
+            status="approved",
+        )
+        self._register_whatsapp_template(
+            tenant,
+            "chatboc_school_certificate_ready_v1",
+            content_sid="HXschoolcertapproved",
+            status="approved",
+        )
+        self._register_whatsapp_template(
+            tenant,
+            "chatboc_order_checkout_v1",
+            content_sid="HXpymecheckoutapproved",
+            status="approved",
+        )
+        self.mock_validator.validate.return_value = True
+        self._create_confirmed_session()
+
+        self.app.config["WELCOME_TEMPLATE_SID"] = None
+        self.app.config["WELCOME_MEDIA_URL"] = None
+        self.app.config["WELCOME_AUDIO_URL"] = None
+
+        response_payload = {
+            "message_body": "Menu principal",
+            "options_list": [],
+            "message_type": "text",
+            "_twilio_pre_messages": [
+                {
+                    "channels": ["whatsapp"],
+                    "template_name": "chatboc_gov_claim_created_v2",
+                    "variables": ["Junin", "641277", "Luminaria"],
+                },
+                {
+                    "channels": ["whatsapp"],
+                    "template_name": "chatboc_school_certificate_ready_v1",
+                    "variables": {"1": "Colegio Demo", "2": "Certificado alumno regular"},
+                },
+                {
+                    "channels": ["whatsapp"],
+                    "template_name": "chatboc_order_checkout_v1",
+                    "variables": "Pedido #1024",
+                },
+            ],
+        }
+
+        with patch("routes.whatsapp_webhook.responder_chatboc", return_value=response_payload):
+            response = self.client.post(
+                "/webhook/whatsapp",
+                data={
+                    "To": f"whatsapp:{self.test_whatsapp_number_str}",
+                    "From": f"whatsapp:{self.test_user_number_str}",
+                    "Body": "quiero hacer un pedido",
+                },
+                headers={"X-Twilio-Signature": "dummy_signature_valid"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.mock_twilio_create.call_count, 4)
+        self.assertEqual(
+            self.mock_twilio_create.call_args_list[0].kwargs.get("content_sid"),
+            "HXgovcreatedapproved",
+        )
+        self.assertEqual(
+            self.mock_twilio_create.call_args_list[1].kwargs.get("content_sid"),
+            "HXschoolcertapproved",
+        )
+        self.assertEqual(
+            self.mock_twilio_create.call_args_list[2].kwargs.get("content_sid"),
+            "HXpymecheckoutapproved",
+        )
+        self.assertEqual(
+            json.loads(self.mock_twilio_create.call_args_list[2].kwargs.get("content_variables", "{}")),
+            {"1": "Pedido #1024"},
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

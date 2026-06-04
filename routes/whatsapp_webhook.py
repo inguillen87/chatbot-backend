@@ -11,6 +11,7 @@ import re
 import time
 import unicodedata
 from datetime import datetime, timedelta
+from functools import lru_cache
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 from urllib.parse import urljoin, urlsplit, urlunsplit
 from werkzeug.datastructures import FileStorage
@@ -2637,42 +2638,107 @@ def _resolve_approved_whatsapp_template_sid(
     if resolved_tenant_id is None and tenant_profile is not None:
         resolved_tenant_id = getattr(tenant_profile, "id", None)
 
-    if not resolved_tenant_id:
-        return None
-
-    try:
-        query = MessageTemplateRegistry.query.filter_by(
-            tenant_id=resolved_tenant_id,
-            provider="twilio",
-            channel="whatsapp",
-            name=normalized_name,
-        )
-        if language:
-            query = query.filter(MessageTemplateRegistry.language == language)
-
-        row = query.first()
-        if not row and language:
-            row = MessageTemplateRegistry.query.filter_by(
+    if resolved_tenant_id:
+        try:
+            query = MessageTemplateRegistry.query.filter_by(
                 tenant_id=resolved_tenant_id,
                 provider="twilio",
                 channel="whatsapp",
                 name=normalized_name,
-            ).first()
-    except Exception as exc:
-        current_app.logger.warning(
-            "[whatsapp] Failed to resolve template registry name=%s tenant_id=%s: %s",
-            normalized_name,
-            resolved_tenant_id,
-            exc,
-        )
+            )
+            if language:
+                query = query.filter(MessageTemplateRegistry.language == language)
+
+            row = query.first()
+            if not row and language:
+                row = MessageTemplateRegistry.query.filter_by(
+                    tenant_id=resolved_tenant_id,
+                    provider="twilio",
+                    channel="whatsapp",
+                    name=normalized_name,
+                ).first()
+        except Exception as exc:
+            current_app.logger.warning(
+                "[whatsapp] Failed to resolve template registry name=%s tenant_id=%s: %s",
+                normalized_name,
+                resolved_tenant_id,
+                exc,
+            )
+            row = None
+
+        if row:
+            status = (row.status or "").strip().lower()
+            content_sid = (row.content_sid or "").strip()
+            if status == "approved" and content_sid.startswith("HX"):
+                return content_sid
+
+    return _resolve_approved_whatsapp_template_sid_from_manifest(
+        normalized_name,
+        language=language,
+    )
+
+
+@lru_cache(maxsize=1)
+def _load_twilio_template_manifest() -> Dict[str, Dict[str, Any]]:
+    """Load local Twilio Content manifest entries keyed by friendly name."""
+
+    manifest_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "scripts",
+        "twilio_content_templates.local.json",
+    )
+    try:
+        with open(manifest_path, "r", encoding="utf-8") as manifest_file:
+            raw_payload = json.load(manifest_file)
+    except Exception:
+        return {}
+
+    templates = raw_payload.get("templates") if isinstance(raw_payload, dict) else None
+    if not isinstance(templates, dict):
+        return {}
+
+    normalized: Dict[str, Dict[str, Any]] = {}
+    for friendly_name, entry in templates.items():
+        if not isinstance(entry, dict):
+            continue
+        key = str(friendly_name or "").strip().lower()
+        if key:
+            normalized[key] = entry
+    return normalized
+
+
+def _resolve_approved_whatsapp_template_sid_from_manifest(
+    template_name: str,
+    *,
+    language: str = "es",
+) -> Optional[str]:
+    """Resolve an approved ContentSid from the local Twilio manifest fallback."""
+
+    if current_app.config.get("DISABLE_TWILIO_TEMPLATE_MANIFEST_FALLBACK"):
         return None
 
-    if not row:
+    manifest_entry = _load_twilio_template_manifest().get(
+        str(template_name or "").strip().lower()
+    )
+    if not manifest_entry:
         return None
 
-    status = (row.status or "").strip().lower()
-    content_sid = (row.content_sid or "").strip()
-    if status != "approved" or not content_sid.startswith("HX"):
+    manifest_language = str(manifest_entry.get("language") or "").strip().lower()
+    requested_language = str(language or "").strip().lower()
+    if requested_language and manifest_language and manifest_language != requested_language:
+        return None
+
+    approval_status = str(
+        manifest_entry.get("approvalStatus")
+        or manifest_entry.get("approval_status")
+        or manifest_entry.get("status")
+        or ""
+    ).strip().upper()
+    if not (manifest_entry.get("approved") is True or approval_status == "APPROVED"):
+        return None
+
+    content_sid = str(manifest_entry.get("sid") or manifest_entry.get("content_sid") or "").strip()
+    if not content_sid.startswith("HX"):
         return None
 
     return content_sid
@@ -2702,10 +2768,15 @@ def _normalize_twilio_content_variables(
     if raw_variables is None:
         return None
 
-    if isinstance(raw_variables, str):
-        return raw_variables
-
     variables = raw_variables
+    if isinstance(raw_variables, str):
+        stripped_variables = raw_variables.strip()
+        if stripped_variables.startswith("{") or stripped_variables.startswith("["):
+            try:
+                variables = json.loads(stripped_variables)
+            except (TypeError, ValueError):
+                variables = raw_variables
+
     if isinstance(variables, dict) and "variables" in variables and not any(
         str(key).isdigit() for key in variables.keys()
     ):
