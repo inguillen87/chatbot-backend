@@ -371,6 +371,16 @@ def build_interactive_response(options: list,
                     )
 
             if url_texts:
+                normalized_url_texts = []
+                for o in options:
+                    if o.get("type") == "url" and o.get("url"):
+                        normalized_url_texts.append(
+                            f"{_clean_text(o.get('texto'), 'Ver mas')}: {_clean_text(o.get('url'))}"
+                        )
+                if normalized_url_texts:
+                    url_texts = normalized_url_texts
+
+            if url_texts:
                 body_text_to_update += "\n\n" + "\n".join(url_texts)
 
             if not reply_buttons:

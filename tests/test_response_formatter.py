@@ -279,6 +279,62 @@ class TestResponseFormatter(unittest.TestCase):
         os.environ["WHATSAPP_FORCE_TEXT"] = "false"
         importlib.reload(rf)
 
+    def test_whatsapp_interactive_button_labels_are_twilio_safe(self):
+        response = build_interactive_response(
+            options=[{"id": "long", "texto": "A" * 40}],
+            body_text="Menu:",
+            channel="whatsapp",
+            message_type='interactive_buttons',
+        )
+
+        button = response["interactive"]["action"]["buttons"][0]["reply"]
+        self.assertEqual(button["id"], "long")
+        self.assertEqual(button["title"], "A" * 20)
+
+    def test_whatsapp_interactive_list_labels_are_twilio_safe(self):
+        response = build_interactive_response(
+            options=[
+                {"id": "x" * 250, "texto": "B" * 40, "description": "C" * 100},
+                {"id": "2", "texto": "Two"},
+                {"id": "3", "texto": "Three"},
+                {"id": "4", "texto": "Four"},
+            ],
+            body_text="Menu:",
+            channel="whatsapp",
+            message_type='interactive_list',
+            original_bot_response={
+                "interactive_list_button_text": "D" * 30,
+                "interactive_list_section_title": "E" * 40,
+            },
+        )
+
+        action = response["interactive"]["action"]
+        row = action["sections"][0]["rows"][0]
+        self.assertEqual(action["button"], "D" * 20)
+        self.assertEqual(action["sections"][0]["title"], "E" * 24)
+        self.assertEqual(row["title"], "B" * 24)
+        self.assertEqual(len(row["id"]), 200)
+        self.assertEqual(len(row["description"]), 72)
+
+    def test_whatsapp_interactive_url_text_is_cleaned(self):
+        response = build_interactive_response(
+            options=[
+                {
+                    "type": "url",
+                    "texto": "Abrir checkout",
+                    "url": "https://example.com",
+                }
+            ],
+            body_text="Paga seguro:",
+            channel="whatsapp",
+            message_type='interactive_buttons',
+            original_bot_response={"_force_whatsapp_interactive": True},
+        )
+
+        self.assertEqual(response["type"], "text")
+        self.assertIn("Abrir checkout: https://example.com", response["text"]["body"])
+        self.assertNotIn("â", response["text"]["body"])
+
 
     def test_web_response_structure_buttons(self):
         options = [{"id": "web_opt1", "texto": "Web Opción 1"}]

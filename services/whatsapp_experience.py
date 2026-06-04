@@ -8,8 +8,10 @@ from models import (
     EncEncuesta,
     EncRespuesta,
     MarketOrder,
+    MessageTemplateRegistry,
     MunicipioPost,
     MunicipioTicket,
+    NotificationTemplate,
     PedidoConversacional,
     Promocion,
     PublicSurvey,
@@ -30,6 +32,13 @@ from services.audio_transcription_service import audio_translation_capabilities
 
 
 WHATSAPP_EXPERIENCE_CONTRACT_VERSION = "whatsapp.experience.v1"
+
+APPROVED_TEMPLATE_STATUSES = {"approved", "active", "ready", "published", "online"}
+PENDING_TEMPLATE_STATUSES = {"draft", "pending", "submitted", "in_review", "review", "twilio_review"}
+
+
+def _lower(value: Any) -> str:
+    return str(value or "").strip().lower()
 
 
 def _iso(value: Any) -> str | None:
@@ -331,6 +340,499 @@ def _admin_panel_payload(tenant: TenantProfile) -> dict[str, Any]:
     }
 
 
+def _registered_template_map(tenant: TenantProfile) -> dict[str, dict[str, Any]]:
+    templates: dict[str, dict[str, Any]] = {}
+
+    registry_rows = MessageTemplateRegistry.query.filter_by(
+        tenant_id=tenant.id,
+        channel="whatsapp",
+    ).all()
+    for row in registry_rows:
+        metadata = row.metadata_json if isinstance(row.metadata_json, dict) else {}
+        templates[_lower(row.name)] = {
+            "source": "message_template_registry",
+            "id": row.id,
+            "name": row.name,
+            "language": row.language,
+            "category": row.category,
+            "status": _lower(row.status or "draft"),
+            "content_sid": row.content_sid,
+            "external_template_id": row.external_template_id,
+            "body_preview": row.body_preview,
+            "components": row.components if isinstance(row.components, list) else [],
+            "metadata": metadata,
+            "last_sync_at": _iso(row.last_sync_at),
+        }
+
+    notification_rows = NotificationTemplate.query.filter_by(
+        tenant_id=tenant.id,
+        channel="whatsapp",
+    ).all()
+    for row in notification_rows:
+        metadata = row.metadata_json if isinstance(row.metadata_json, dict) else {}
+        key = _lower(row.key)
+        templates.setdefault(
+            key,
+            {
+                "source": "notification_template",
+                "id": row.id,
+                "name": row.key,
+                "language": str(metadata.get("language") or "es"),
+                "category": metadata.get("category"),
+                "status": _lower(metadata.get("status") or ("active" if row.is_active else "inactive")),
+                "content_sid": metadata.get("content_sid"),
+                "external_template_id": metadata.get("external_template_id"),
+                "body_preview": row.body_template,
+                "components": metadata.get("components") if isinstance(metadata.get("components"), list) else [],
+                "metadata": metadata,
+                "last_sync_at": None,
+            },
+        )
+
+    return templates
+
+
+def _template_status(templates: Mapping[str, dict[str, Any]], template_id: str) -> dict[str, Any]:
+    template = templates.get(_lower(template_id))
+    if not template:
+        return {
+            "configured": False,
+            "approved": False,
+            "status": "missing",
+            "source": None,
+            "content_sid": None,
+            "external_template_id": None,
+        }
+
+    status = _lower(template.get("status"))
+    return {
+        "configured": True,
+        "approved": status in APPROVED_TEMPLATE_STATUSES,
+        "pending": status in PENDING_TEMPLATE_STATUSES,
+        "status": status or "unknown",
+        "source": template.get("source"),
+        "content_sid": template.get("content_sid"),
+        "external_template_id": template.get("external_template_id"),
+        "last_sync_at": template.get("last_sync_at"),
+    }
+
+
+def _template_blueprint_payload(
+    tenant: TenantProfile,
+    *,
+    channel_ready: bool,
+    integration_access: Mapping[str, Any],
+) -> dict[str, Any]:
+    templates = _registered_template_map(tenant)
+    required_templates = [
+        {
+            "id": "welcome_menu",
+            "name": "welcome_menu",
+            "category": "UTILITY",
+            "language": "es",
+            "purpose": "Abrir una conversacion clara con menu inicial por vertical.",
+            "body": "Hola {{1}}, soy {{2}}. Te puedo ayudar con {{3}}. Elegi una opcion para continuar.",
+            "variables": ["contact_name", "tenant_name", "main_capabilities"],
+            "components": ["body", "quick_reply_or_list"],
+            "suggested_actions": ["open_claim", "open_order", "open_survey", "human_handoff"],
+        },
+        {
+            "id": "case_created",
+            "name": "case_created",
+            "category": "UTILITY",
+            "language": "es",
+            "purpose": "Confirmar reclamos, tickets o tramites con seguimiento publico.",
+            "body": "Tu caso {{1}} fue creado. Estado: {{2}}. Podes seguirlo aca: {{3}}",
+            "variables": ["case_code", "status", "tracking_url"],
+            "components": ["body", "cta_url"],
+        },
+        {
+            "id": "order_checkout",
+            "name": "order_checkout",
+            "category": "UTILITY",
+            "language": "es",
+            "purpose": "Enviar resumen de pedido y checkout seguro sin pedir datos de tarjeta por chat.",
+            "body": "Tu pedido {{1}} esta listo. Total: {{2}}. Paga de forma segura desde este enlace: {{3}}",
+            "variables": ["order_code", "total", "checkout_url"],
+            "components": ["body", "cta_webview"],
+        },
+        {
+            "id": "payment_confirmed",
+            "name": "payment_confirmed",
+            "category": "UTILITY",
+            "language": "es",
+            "purpose": "Avisar pago acreditado usando el estado confirmado por webhook.",
+            "body": "Pago acreditado para {{1}}. El pedido queda confirmado y listo para seguimiento: {{2}}",
+            "variables": ["order_code", "tracking_url"],
+            "components": ["body", "cta_url"],
+        },
+        {
+            "id": "survey_invite",
+            "name": "survey_invite",
+            "category": "UTILITY",
+            "language": "es",
+            "purpose": "Invitar a votar o responder encuestas operativas vinculadas al servicio.",
+            "body": "{{1}} te invita a responder: {{2}}. Participa aca: {{3}}",
+            "variables": ["tenant_name", "survey_title", "survey_url"],
+            "components": ["body", "cta_url"],
+            "policy_note": "Usar MARKETING si la encuesta no esta vinculada a una relacion de servicio.",
+        },
+        {
+            "id": "human_handoff",
+            "name": "human_handoff",
+            "category": "UTILITY",
+            "language": "es",
+            "purpose": "Derivar a un operador con contexto y evitar respuestas repetitivas.",
+            "body": "Derivamos tu consulta {{1}} al equipo. Un operador va a responderte por este canal.",
+            "variables": ["case_or_order_code"],
+            "components": ["body"],
+        },
+    ]
+
+    vertical_templates = {
+        "pyme": [
+            {
+                "id": "pyme_order_ready",
+                "name": "pyme_order_ready",
+                "category": "UTILITY",
+                "language": "es",
+                "purpose": "Confirmar pedido armado con resumen, total y acceso a pago seguro.",
+                "body": "Tu pedido {{1}} esta listo. Total {{2}}. Revisalo y pagalo aca: {{3}}",
+                "variables": ["order_code", "total", "checkout_url"],
+                "components": ["body", "cta_webview"],
+            },
+            {
+                "id": "pyme_payment_link",
+                "name": "pyme_payment_link",
+                "category": "UTILITY",
+                "language": "es",
+                "purpose": "Enviar link de pago desde una conversacion comercial ya iniciada.",
+                "body": "Hola {{1}}, tu link de pago de {{2}} esta disponible: {{3}}",
+                "variables": ["contact_name", "amount", "payment_url"],
+                "components": ["body", "cta_webview"],
+            },
+            {
+                "id": "pyme_delivery_update",
+                "name": "pyme_delivery_update",
+                "category": "UTILITY",
+                "language": "es",
+                "purpose": "Actualizar estado de envio o retiro con tracking.",
+                "body": "Actualizacion del pedido {{1}}: {{2}}. Seguimiento: {{3}}",
+                "variables": ["order_code", "status", "tracking_url"],
+                "components": ["body", "cta_url"],
+            },
+            {
+                "id": "pyme_quote_followup",
+                "name": "pyme_quote_followup",
+                "category": "UTILITY",
+                "language": "es",
+                "purpose": "Continuar una cotizacion solicitada por el cliente.",
+                "body": "Tu cotizacion {{1}} ya esta preparada. Podes revisarla aca: {{2}}",
+                "variables": ["quote_code", "quote_url"],
+                "components": ["body", "cta_url"],
+            },
+            {
+                "id": "pyme_catalog_invite",
+                "name": "pyme_catalog_invite",
+                "category": "UTILITY",
+                "language": "es",
+                "purpose": "Abrir catalogo desde WhatsApp sin pedir datos sensibles.",
+                "body": "Mira el catalogo actualizado de {{1}} aca: {{2}}",
+                "variables": ["tenant_name", "catalog_url"],
+                "components": ["body", "cta_url"],
+            },
+        ],
+        "colegio": [
+            {
+                "id": "school_payment_due",
+                "name": "school_payment_due",
+                "category": "UTILITY",
+                "language": "es",
+                "purpose": "Informar cuota o concepto pendiente con pago seguro.",
+                "body": "{{1}}, tenes {{2}} pendiente por {{3}}. Podes pagarlo aca: {{4}}",
+                "variables": ["family_name", "concept", "amount", "payment_url"],
+                "components": ["body", "cta_webview"],
+            },
+            {
+                "id": "school_receipt_ready",
+                "name": "school_receipt_ready",
+                "category": "UTILITY",
+                "language": "es",
+                "purpose": "Enviar comprobante listo despues de confirmacion del gateway.",
+                "body": "Comprobante {{1}} disponible para {{2}}. Descargalo aca: {{3}}",
+                "variables": ["receipt_code", "student_name", "receipt_url"],
+                "components": ["body", "cta_url"],
+            },
+            {
+                "id": "school_certificate_ready",
+                "name": "school_certificate_ready",
+                "category": "UTILITY",
+                "language": "es",
+                "purpose": "Avisar certificado escolar listo para descargar o retirar.",
+                "body": "El certificado de {{1}} esta listo. Seguimiento: {{2}}",
+                "variables": ["student_name", "tracking_url"],
+                "components": ["body", "cta_url"],
+            },
+            {
+                "id": "school_family_case_created",
+                "name": "school_family_case_created",
+                "category": "UTILITY",
+                "language": "es",
+                "purpose": "Confirmar tramite o consulta familiar con numero de caso.",
+                "body": "Creamos el caso {{1}} para {{2}}. Estado: {{3}}",
+                "variables": ["case_code", "student_name", "status"],
+                "components": ["body"],
+            },
+            {
+                "id": "school_event_reminder",
+                "name": "school_event_reminder",
+                "category": "UTILITY",
+                "language": "es",
+                "purpose": "Recordar evento escolar vinculado a la comunidad educativa.",
+                "body": "Recordatorio de {{1}}: {{2}}. Mas informacion: {{3}}",
+                "variables": ["event_title", "event_date", "event_url"],
+                "components": ["body", "cta_url"],
+            },
+        ],
+        "gobierno": [
+            {
+                "id": "gov_claim_created",
+                "name": "gov_claim_created",
+                "category": "UTILITY",
+                "language": "es",
+                "purpose": "Confirmar reclamo municipal con codigo publico y seguimiento.",
+                "body": "Tu reclamo {{1}} fue registrado. Categoria: {{2}}. Seguimiento: {{3}}",
+                "variables": ["claim_code", "category", "tracking_url"],
+                "components": ["body", "cta_url"],
+            },
+            {
+                "id": "gov_claim_status_update",
+                "name": "gov_claim_status_update",
+                "category": "UTILITY",
+                "language": "es",
+                "purpose": "Actualizar estado del reclamo sin abrir nuevos casos duplicados.",
+                "body": "Actualizacion del reclamo {{1}}: {{2}}. Detalle: {{3}}",
+                "variables": ["claim_code", "status", "tracking_url"],
+                "components": ["body", "cta_url"],
+            },
+            {
+                "id": "gov_turn_reminder",
+                "name": "gov_turn_reminder",
+                "category": "UTILITY",
+                "language": "es",
+                "purpose": "Recordar turno municipal solicitado por el ciudadano.",
+                "body": "Recordatorio: turno {{1}} para {{2}} el {{3}}. Ver detalle: {{4}}",
+                "variables": ["turn_code", "office", "date_time", "turn_url"],
+                "components": ["body", "cta_url"],
+            },
+            {
+                "id": "gov_document_ready",
+                "name": "gov_document_ready",
+                "category": "UTILITY",
+                "language": "es",
+                "purpose": "Avisar que un certificado o documento esta listo.",
+                "body": "Tu documento {{1}} esta listo. Podes consultarlo aca: {{2}}",
+                "variables": ["document_code", "document_url"],
+                "components": ["body", "cta_url"],
+            },
+            {
+                "id": "gov_survey_invite",
+                "name": "gov_survey_invite",
+                "category": "UTILITY",
+                "language": "es",
+                "purpose": "Invitar a participacion ciudadana vinculada a servicio publico.",
+                "body": "{{1}} te invita a participar: {{2}}. Responde aca: {{3}}",
+                "variables": ["tenant_name", "survey_title", "survey_url"],
+                "components": ["body", "cta_url"],
+            },
+        ],
+    }
+
+    configured = 0
+    approved = 0
+    for item in required_templates:
+        status_payload = _template_status(templates, item["id"])
+        item["status"] = status_payload
+        configured += 1 if status_payload.get("configured") else 0
+        approved += 1 if status_payload.get("approved") else 0
+
+    vertical_configured = 0
+    vertical_approved = 0
+    for items in vertical_templates.values():
+        for item in items:
+            status_payload = _template_status(templates, item["id"])
+            item["status"] = status_payload
+            vertical_configured += 1 if status_payload.get("configured") else 0
+            vertical_approved += 1 if status_payload.get("approved") else 0
+
+    tenant_vertical_tokens = {
+        _lower(getattr(tenant, "tipo", "")),
+        _lower(getattr(tenant, "vertical", "")),
+        _lower(getattr(tenant, "subvertical", "")),
+    }
+    recommended_verticals: list[str] = []
+    if {"pyme", "empresa", "empresas", "comercio"} & tenant_vertical_tokens:
+        recommended_verticals.append("pyme")
+    if {"colegio", "educacion", "education", "school"} & tenant_vertical_tokens or is_education_tenant(tenant):
+        recommended_verticals.append("colegio")
+    if {"municipio", "gobierno", "gov"} & tenant_vertical_tokens:
+        recommended_verticals.append("gobierno")
+    if not recommended_verticals:
+        recommended_verticals = ["pyme", "colegio", "gobierno"]
+
+    return {
+        "provider": "twilio_content_api",
+        "channel": "whatsapp",
+        "enabled": bool(channel_ready),
+        "required_templates": required_templates,
+        "vertical_templates": vertical_templates,
+        "recommended_verticals": recommended_verticals,
+        "registry_summary": {
+            "total_registered": len(templates),
+            "required": len(required_templates),
+            "configured": configured,
+            "approved": approved,
+            "missing": len(required_templates) - configured,
+            "vertical_required": sum(len(items) for items in vertical_templates.values()),
+            "vertical_configured": vertical_configured,
+            "vertical_approved": vertical_approved,
+        },
+        "twilio_content_types": {
+            "transactional": ["twilio/text", "twilio/call-to-action", "twilio/quick-reply"],
+            "menus": ["twilio/list-picker", "twilio/quick-reply"],
+            "checkout": ["twilio/call-to-action"],
+        },
+        "template_creation_payload_hint": {
+            "language": "es",
+            "approval_categories": ["UTILITY", "MARKETING", "AUTHENTICATION"],
+            "variables_format": "{{1}}, {{2}}, {{3}}",
+            "sample_values_required": True,
+            "submit_to_meta_after_create": True,
+        },
+        "policy": {
+            "requires_meta_approval_outside_24h": True,
+            "variables_must_be_sequential": True,
+            "authentication_templates_disallow_custom_variables": True,
+            "use_utility_for_transactional": True,
+            "use_marketing_for_promotions": True,
+            "buttons_use_cta_webview_or_quick_reply": True,
+            "freeform_allowed_inside_24h": True,
+            "outside_24h_allowed": bool(channel_ready and approved > 0),
+            "production_send_allowed": bool(channel_ready),
+            "respect_integration_access_lock": True,
+            "access_enabled": bool(integration_access.get("enabled")),
+        },
+        "endpoints": {
+            "templates_admin": "/api/admin/templates",
+            "rules_admin": "/api/admin/whatsapp/rules",
+            "test_message": "/api/notifications/whatsapp/test",
+            "provider_status": "/api/v2/provider-platform/status",
+        },
+        "frontend_contract": {
+            "render_as": "whatsapp_template_readiness",
+            "show_missing_templates": True,
+            "show_approval_badges": True,
+            "show_24h_window_warning": True,
+            "allow_template_creation": bool(integration_access.get("enabled")),
+            "primary_locked_reason": integration_access.get("lock_reason_code"),
+        },
+    }
+
+
+def _webview_blueprint_payload(
+    tenant: TenantProfile,
+    *,
+    checkout_experience: Mapping[str, Any],
+    integration_access: Mapping[str, Any],
+) -> dict[str, Any]:
+    slug = tenant.slug
+    endpoints = checkout_experience.get("endpoints") if isinstance(checkout_experience.get("endpoints"), Mapping) else {}
+    return {
+        "enabled": bool(integration_access.get("enabled")),
+        "respect_access_lock": True,
+        "entrypoints": ["whatsapp", "widget", "web"],
+        "checkout": {
+            "mode": "conversation_guided_secure_webview",
+            "active_entrypoint": checkout_experience.get("active_entrypoint"),
+            "ready": bool(checkout_experience.get("ready")),
+            "public_checkout_session": endpoints.get("public_checkout_session") or "/api/checkout/crear-preferencia",
+            "public_widget_session": endpoints.get("public_widget_session") or "/api/public/widget-commerce-session",
+            "payment_status": endpoints.get("admin_payment_status") or f"/api/v2/tenants/{slug}/payments/status",
+            "confirmation_source": "server_to_server_webhook",
+            "card_data_in_chat": False,
+            "client_return_trusted": False,
+        },
+        "tracking": {
+            "claim": "/api/public/tracking/experience?kind=claim&code={code}&pin={pin}",
+            "order": "/api/public/tracking/experience?kind=order&code={code}",
+            "timeline_fallback": "timeline_only",
+        },
+        "catalog": {
+            "public_catalog": f"/api/public/tenants/{slug}/catalog",
+            "admin_catalog": f"/api/admin/tenants/{slug}/catalog/items",
+        },
+        "surveys": {
+            "admin": "/api/v2/surveys",
+            "public_template": "/e/{survey_slug}",
+        },
+        "security": {
+            "requires_full_plan": True,
+            "signed_session_required": True,
+            "requires_tenant_authorization": True,
+            "card_data_in_chat_allowed": False,
+            "server_to_server_confirmation": True,
+            "client_return_trusted": False,
+        },
+        "frontend_contract": {
+            "render_as": "webview_checkout_and_tracking_hub",
+            "show_security_copy": True,
+            "show_ready_state": True,
+            "show_upgrade_cta": not bool(integration_access.get("enabled")),
+            "primary_locked_reason": integration_access.get("lock_reason_code"),
+        },
+    }
+
+
+def _message_ux_policy_payload(
+    *,
+    channel_ready: bool,
+    integration_access: Mapping[str, Any],
+) -> dict[str, Any]:
+    return {
+        "enabled": bool(channel_ready),
+        "rendering": {
+            "plain_text_default": True,
+            "interactive_when_approved": True,
+            "never_hide_menu_numbers": True,
+            "include_menu_and_cancel": True,
+            "avoid_repeating_limit_message_on_navigation": True,
+        },
+        "interactive_limits": {
+            "reply_buttons_max": 3,
+            "list_rows_max": 10,
+            "button_label_max_chars": 20,
+            "list_button_max_chars": 20,
+            "list_section_title_max_chars": 24,
+            "row_title_max_chars": 24,
+            "row_id_max_chars": 200,
+            "description_max_chars": 72,
+        },
+        "languages": ["es", "en", "pt"],
+        "accessibility": {
+            "audio_notes": "transcribe_then_reason",
+            "audio_reply_cache": "reuse_tts_cache_when_available",
+            "screen_reader_text": "render_audio_text",
+            "translation": "audio_translation_capabilities",
+        },
+        "gating": {
+            "access_enabled": bool(integration_access.get("enabled")),
+            "locked_reason": integration_access.get("lock_reason_code"),
+            "requires_authenticated_admin": True,
+            "demo_tenants_blocked": True,
+        },
+    }
+
+
 def build_whatsapp_experience(
     tenant: TenantProfile,
     *,
@@ -350,6 +852,20 @@ def build_whatsapp_experience(
         channel="whatsapp",
         gateway=payment.get("gateway"),
         mercadopago_ready=payment.get("mercadopago_ready"),
+    )
+    template_blueprint = _template_blueprint_payload(
+        tenant,
+        channel_ready=channel_ready,
+        integration_access=integration_access,
+    )
+    webview_blueprint = _webview_blueprint_payload(
+        tenant,
+        checkout_experience=checkout_experience,
+        integration_access=integration_access,
+    )
+    message_ux_policy = _message_ux_policy_payload(
+        channel_ready=channel_ready,
+        integration_access=integration_access,
     )
     channel_reason = None
     if not channel_ready:
@@ -436,6 +952,9 @@ def build_whatsapp_experience(
                 "client_return_trusted": False,
             },
         },
+        "template_blueprint": template_blueprint,
+        "webview_blueprint": webview_blueprint,
+        "message_ux_policy": message_ux_policy,
         "admin_panel": _admin_panel_payload(tenant),
         "education": {
             "enabled": is_education_tenant(tenant),
@@ -452,6 +971,9 @@ def build_whatsapp_experience(
                 "content_modules",
                 "claim_order_tracking",
                 "commerce_checkout",
+                "template_blueprint",
+                "webview_checkout",
+                "message_ux_policy",
                 "voice_realtime",
                 "enterprise_rules",
             ],

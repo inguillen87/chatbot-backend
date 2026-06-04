@@ -1248,10 +1248,26 @@ class V2SaasContractsTest(unittest.TestCase):
             "/api/checkout/crear-preferencia",
         )
         self.assertEqual(payload["commerce"]["customer_policy"]["payment_capture"], "external_secure_webview")
+        self.assertEqual(payload["template_blueprint"]["provider"], "twilio_content_api")
+        self.assertTrue(payload["template_blueprint"]["policy"]["requires_meta_approval_outside_24h"])
+        required_template_ids = {item["id"] for item in payload["template_blueprint"]["required_templates"]}
+        self.assertIn("order_checkout", required_template_ids)
+        self.assertEqual(payload["template_blueprint"]["endpoints"]["templates_admin"], "/api/admin/templates")
+        self.assertIn("colegio", payload["template_blueprint"]["vertical_templates"])
+        colegio_template_ids = {
+            item["id"] for item in payload["template_blueprint"]["vertical_templates"]["colegio"]
+        }
+        self.assertIn("school_payment_due", colegio_template_ids)
+        self.assertEqual(payload["webview_blueprint"]["checkout"]["confirmation_source"], "server_to_server_webhook")
+        self.assertFalse(payload["webview_blueprint"]["checkout"]["card_data_in_chat"])
+        self.assertTrue(payload["webview_blueprint"]["security"]["requires_full_plan"])
+        self.assertEqual(payload["message_ux_policy"]["interactive_limits"]["reply_buttons_max"], 3)
         self.assertEqual(payload["admin_panel"]["inbox"], "/api/v2/inbox/omnichannel")
         self.assertTrue(payload["education"]["enabled"])
         self.assertEqual(payload["frontend_contract"]["render_as"], "whatsapp_operations_hub")
         self.assertIn("commerce_checkout", payload["frontend_contract"]["recommended_views"])
+        self.assertIn("template_blueprint", payload["frontend_contract"]["recommended_views"])
+        self.assertIn("webview_checkout", payload["frontend_contract"]["recommended_views"])
 
         alias_response = self.client.get(
             f"/api/v2/tenants/{self.tenant.slug}/whatsapp/experience",
