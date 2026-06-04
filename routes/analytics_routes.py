@@ -5,7 +5,11 @@ from flask_login import current_user, login_user
 from datetime import datetime, timedelta
 from services.analytics_service import analytics_service
 from services.openai_bridge import generate_analytics_report, analyze_sentiment
-from services.plan_access import integration_access_payload
+from services.plan_access import (
+    integration_access_payload,
+    integration_feature_payload,
+    integration_plan_required_payload,
+)
 from extensions import db
 from models import TenantProfile
 from extensions import limiter
@@ -99,18 +103,7 @@ def _integration_access_for_tenant_id(tenant_id) -> dict:
 
 
 def _feature_access(access: dict, feature_id: str) -> dict:
-    features = access.get("features") if isinstance(access.get("features"), dict) else {}
-    feature = features.get(feature_id)
-    if isinstance(feature, dict):
-        return feature
-    return {
-        "id": feature_id,
-        "enabled": bool(access.get("enabled")),
-        "status": access.get("status") or ("enabled" if access.get("enabled") else "locked"),
-        "reason_code": access.get("reason_code"),
-        "lock_reason_code": access.get("lock_reason_code"),
-        "required_plan": access.get("required_plan") or "full",
-    }
+    return integration_feature_payload(access, feature_id)
 
 
 def _feature_enabled_for_tenant_id(tenant_id, feature_id: str) -> bool:
@@ -119,26 +112,13 @@ def _feature_enabled_for_tenant_id(tenant_id, feature_id: str) -> bool:
 
 
 def _integration_plan_required_response(tenant_id, feature_id: str):
-    access = _integration_access_for_tenant_id(tenant_id)
-    feature = _feature_access(access, feature_id)
-    return jsonify(
-        {
-            "ok": False,
-            "contract_version": access.get("contract_version") or "tenant.integration_access.v1",
-            "reason_code": feature.get("reason_code") or access.get("reason_code") or "plan_full_required",
-            "lock_reason_code": feature.get("lock_reason_code") or access.get("lock_reason_code"),
-            "message": access.get("message"),
-            "feature_id": feature_id,
-            "feature": feature,
-            "access": access,
-            "frontend_contract": {
-                **(access.get("frontend_contract") or {}),
-                "render_as": "integration_locked_state",
-                "feature_id": feature_id,
-            },
-            "request_id": _request_id(),
-        }
-    ), 403
+    payload = integration_plan_required_payload(
+        _tenant_from_id(tenant_id),
+        feature_id,
+        render_as="integration_locked_state",
+        extra={"request_id": _request_id()},
+    )
+    return jsonify(payload), 403
 
 
 def _attach_access(payload, tenant_id):

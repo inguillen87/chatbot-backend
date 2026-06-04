@@ -39,7 +39,11 @@ from services.pymes import tiene_archivo_catalogo
 from services.qdrant_service import index_catalog_item
 from services.tenant_factory import create_tenant_from_template, assign_number_to_tenant
 from services.tenant_resolver import apply_tenant_alias
-from services.plan_access import integration_access_payload, plan_allows_full_integrations
+from services.plan_access import (
+    integration_access_payload,
+    integration_plan_required_payload,
+    plan_allows_full_integrations,
+)
 from services.live_chat_schedule import build_live_chat_status, build_schedule_from_config
 from services.operational_scoring import build_ticket_priority_score
 from services.ticket_realtime_state import build_ticket_collaboration_state
@@ -540,15 +544,8 @@ def _plan_allows_integrations(tenant: TenantProfile) -> bool:
 
 
 def _integration_plan_required_response(tenant: TenantProfile):
-    access = integration_access_payload(tenant)
     return (
-        jsonify(
-            {
-                "error": "plan_required",
-                "message": access["message"],
-                "access": access,
-            }
-        ),
+        jsonify(integration_plan_required_payload(tenant, "catalog_management")),
         403,
     )
 

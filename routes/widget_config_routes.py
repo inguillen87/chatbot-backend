@@ -1,7 +1,11 @@
 from flask import Blueprint, request, jsonify, g
 from utils.auth_helpers import token_requerido
 from models import TenantProfile, User
-from services.plan_access import integration_access_payload, plan_allows_full_integrations
+from services.plan_access import (
+    integration_access_payload,
+    integration_plan_required_payload,
+    plan_allows_full_integrations,
+)
 from services.widget_config_service import WidgetConfigService
 
 widget_config_bp = Blueprint('widget_config_bp', __name__)
@@ -31,22 +35,14 @@ def _check_auth(current_user, tenant):
 
 
 def _plan_required_response(tenant):
-    access = integration_access_payload(tenant)
     return jsonify(
-        {
-            "ok": False,
-            "contract_version": "tenant.integration_access.v1",
-            "tenant_slug": tenant.slug,
-            "reason_code": "plan_full_required",
-            "action_hint": "upgrade_to_full",
-            "message": access.get("message"),
-            "access": access,
-            "upgrade": access.get("upgrade"),
-            "frontend_contract": {
-                "render_as": "integration_locked_state",
-                "primary_action": "upgrade_to_full",
-            },
-        }
+        integration_plan_required_payload(
+            tenant,
+            "widget_embed",
+            render_as="integration_locked",
+            hide_embed_copy=True,
+            hide_widget_session=True,
+        )
     ), 403
 
 # --- Public Endpoints ---

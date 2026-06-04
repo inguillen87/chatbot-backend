@@ -21,7 +21,11 @@ from services.encuestas_service import (
     serialize_public_encuesta,
     update_encuesta,
 )
-from services.plan_access import integration_access_payload, plan_allows_full_integrations
+from services.plan_access import (
+    integration_access_payload,
+    integration_plan_required_payload,
+    plan_allows_full_integrations,
+)
 from utils.auth_helpers import token_requerido
 from utils.permissions import require_role
 
@@ -71,23 +75,12 @@ def _error_response(message: str, status_code: int, reason_code: str = "request_
 
 
 def _survey_plan_required_response(tenant):
-    access = integration_access_payload(tenant)
-    feature = (access.get("features") or {}).get("surveys_votings") or {}
     return _json_response(
-        {
-            "contract_version": "tenant.integration_access.v1",
-            "error": "plan_required",
-            "message": access.get("message"),
-            "reason_code": feature.get("reason_code") or access.get("reason_code") or "plan_full_required",
-            "action_hint": "upgrade_to_full",
-            "feature": feature,
-            "access": access,
-            "frontend_contract": {
-                "render_as": "integration_locked",
-                "primary_action": "upgrade_to_full",
-                "feature_id": "surveys_votings",
-            },
-        },
+        integration_plan_required_payload(
+            tenant,
+            "surveys_votings",
+            render_as="integration_locked",
+        ),
         403,
     )
 

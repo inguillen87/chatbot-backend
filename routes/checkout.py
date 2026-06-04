@@ -13,10 +13,9 @@ from routes.catalogo import _formatear_producto
 from services.commerce_contracts import (
     build_checkout_experience_payload,
     build_customer_profile,
-    payment_integration_frontend_contract,
     resolve_order_contact_payload,
 )
-from services.plan_access import plan_allows_full_integrations
+from services.plan_access import integration_plan_required_payload, plan_allows_full_integrations
 from services.rewards import recompensas_service
 from services.tenant_resolver import TenantResolutionError, resolve_tenant_and_user
 
@@ -328,18 +327,18 @@ def _crear_pedido(payload: dict):
     if total_money > 0 and not plan_allows_full_integrations(tenant):
         return (
             jsonify(
-                {
-                    "ok": False,
-                    "error": "plan_required",
-                    "codigo": "PLAN_FULL_REQUERIDO",
-                    "reason_code": "plan_full_required",
-                    "message": "Plan Full requerido para cobrar desde WhatsApp, widget o checkout publico.",
-                    "integration_access": integration_access,
-                    "checkout_experience": checkout_experience,
-                    "feature": (integration_access.get("features") or {}).get("mercadopago_checkout") or {},
-                    "upgrade": integration_access.get("upgrade") or {},
-                    "frontend_contract": payment_integration_frontend_contract(integration_access),
-                }
+                integration_plan_required_payload(
+                    tenant,
+                    "mercadopago_checkout",
+                    contract_version="checkout.payment_access.v1",
+                    render_as="payment_integration_locked",
+                    extra={
+                        "codigo": "PLAN_FULL_REQUERIDO",
+                        "message": "Plan Full requerido para cobrar desde WhatsApp, widget o checkout publico.",
+                        "integration_access": integration_access,
+                        "checkout_experience": checkout_experience,
+                    },
+                )
             ),
             403,
         )

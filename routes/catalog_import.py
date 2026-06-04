@@ -11,7 +11,11 @@ from services.catalog_inventory import (
     new_catalog_version,
     stock_value_from_row,
 )
-from services.plan_access import integration_access_payload, plan_allows_full_integrations
+from services.plan_access import (
+    integration_access_payload,
+    integration_plan_required_payload,
+    plan_allows_full_integrations,
+)
 from sqlalchemy.orm.attributes import flag_modified
 import os
 import io
@@ -36,20 +40,12 @@ def _catalog_import_error(codigo: str, mensaje: str, status: int):
 
 
 def _catalog_plan_required_response(tenant):
-    access = integration_access_payload(tenant)
-    feature = (access.get("features") or {}).get("catalog_management") or {}
     response = jsonify(
-        {
-            "error": "plan_required",
-            "message": access.get("message") or "Tu plan actual no habilita gestion productiva de catalogo.",
-            "feature": feature,
-            "access": access,
-            "frontend_contract": {
-                "render_as": "integration_locked",
-                "primary_action": "upgrade_to_full",
-                "feature_id": "catalog_management",
-            },
-        }
+        integration_plan_required_payload(
+            tenant,
+            "catalog_management",
+            render_as="integration_locked",
+        )
     )
     response.status_code = 403
     return response

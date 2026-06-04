@@ -1,11 +1,26 @@
 import unittest
 from types import SimpleNamespace
 
-from services.plan_access import integration_access_payload, plan_allows_full_integrations
+from services.plan_access import (
+    integration_access_payload,
+    integration_feature_payload,
+    integration_plan_required_payload,
+    plan_allows_full_integrations,
+)
 
 
-def tenant_stub(*, plan="free", is_active=True, configuracion=None, capabilities=None):
+def tenant_stub(
+    *,
+    plan="free",
+    is_active=True,
+    configuracion=None,
+    capabilities=None,
+    id=30,
+    slug="chatboc-demo",
+):
     return SimpleNamespace(
+        id=id,
+        slug=slug,
         plan=plan,
         is_active=is_active,
         configuracion=configuracion or {},
@@ -72,6 +87,45 @@ class PlanAccessContractTest(unittest.TestCase):
         self.assertEqual(payload["lock_reason_code"], "demo_tenant_locked")
         self.assertFalse(payload["features"]["widget_embed"]["enabled"])
         self.assertTrue(payload["security"]["demo_tenants_blocked"])
+
+    def test_plan_required_payload_exposes_widget_frontend_contract(self):
+        tenant = tenant_stub(plan="free")
+        payload = integration_plan_required_payload(
+            tenant,
+            "widget_embed",
+            contract_version="public.widget_user.v1",
+            hide_embed_copy=True,
+            hide_widget_session=True,
+        )
+
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["error"], "plan_required")
+        self.assertEqual(payload["status_code"], 403)
+        self.assertEqual(payload["contract_version"], "public.widget_user.v1")
+        self.assertEqual(payload["tenant_slug"], "chatboc-demo")
+        self.assertEqual(payload["feature_id"], "widget_embed")
+        self.assertEqual(payload["feature"]["action"], "copy_widget_embed")
+        self.assertEqual(payload["frontend_contract"]["feature_id"], "widget_embed")
+        self.assertEqual(payload["frontend_contract"]["render_as"], "integration_locked")
+        self.assertTrue(payload["frontend_contract"]["hide_embed_copy"])
+        self.assertTrue(payload["frontend_contract"]["hide_widget_session"])
+        self.assertEqual(payload["frontend_contract"]["primary_action"], "upgrade_to_full")
+        self.assertTrue(payload["access"]["security"]["demo_tenants_blocked"])
+
+    def test_plan_required_payload_uses_specific_feature_metadata(self):
+        payload = integration_plan_required_payload(tenant_stub(plan="free"), "surveys_votings")
+
+        self.assertEqual(payload["feature"]["action"], "create_surveys")
+        self.assertEqual(payload["frontend_contract"]["feature_label"], "Encuestas y votaciones")
+
+    def test_unknown_feature_payload_is_stable(self):
+        access = integration_access_payload(tenant_stub(plan="free"))
+        feature = integration_feature_payload(access, "future_feature")
+
+        self.assertEqual(feature["id"], "future_feature")
+        self.assertFalse(feature["enabled"])
+        self.assertEqual(feature["capability"], "integrations.production")
+        self.assertEqual(feature["reason_code"], "plan_full_required")
 
 
 if __name__ == "__main__":

@@ -17,7 +17,11 @@ from services.operational_intelligence import (
     build_operational_freshness,
     build_operational_heatmap,
 )
-from services.plan_access import integration_access_payload
+from services.plan_access import (
+    integration_access_payload,
+    integration_feature_payload,
+    integration_plan_required_payload,
+)
 from utils.auth_helpers import token_requerido
 from utils.permissions import require_role
 
@@ -168,18 +172,7 @@ def _integration_access(tenant) -> dict[str, Any]:
 
 
 def _feature_access(access: dict[str, Any], feature_id: str) -> dict[str, Any]:
-    features = access.get("features") if isinstance(access.get("features"), dict) else {}
-    feature = features.get(feature_id)
-    if isinstance(feature, dict):
-        return feature
-    return {
-        "id": feature_id,
-        "enabled": bool(access.get("enabled")),
-        "status": access.get("status") or ("enabled" if access.get("enabled") else "locked"),
-        "reason_code": access.get("reason_code"),
-        "lock_reason_code": access.get("lock_reason_code"),
-        "required_plan": access.get("required_plan") or "full",
-    }
+    return integration_feature_payload(access, feature_id)
 
 
 def _feature_enabled(access: dict[str, Any], feature_id: str) -> bool:
@@ -193,24 +186,12 @@ def _with_access(payload: dict[str, Any], tenant) -> dict[str, Any]:
 
 
 def _integration_plan_required_response(tenant, feature_id: str):
-    access = _integration_access(tenant)
-    feature = _feature_access(access, feature_id)
     return _json_response(
-        {
-            "ok": False,
-            "contract_version": access.get("contract_version") or "tenant.integration_access.v1",
-            "reason_code": feature.get("reason_code") or access.get("reason_code") or "plan_full_required",
-            "lock_reason_code": feature.get("lock_reason_code") or access.get("lock_reason_code"),
-            "message": access.get("message"),
-            "feature_id": feature_id,
-            "feature": feature,
-            "access": access,
-            "frontend_contract": {
-                **(access.get("frontend_contract") or {}),
-                "render_as": "integration_locked_state",
-                "feature_id": feature_id,
-            },
-        },
+        integration_plan_required_payload(
+            tenant,
+            feature_id,
+            render_as="integration_locked_state",
+        ),
         403,
     )
 

@@ -25,7 +25,11 @@ from routes.carrito import _product_query_for_tenant
 from middleware.tenant_context import require_tenant
 from services.catalog_seed import ensure_seed_catalog
 from services.commerce_contracts import build_checkout_experience_payload
-from services.plan_access import integration_access_payload, plan_allows_full_integrations
+from services.plan_access import (
+    integration_access_payload,
+    integration_plan_required_payload,
+    plan_allows_full_integrations,
+)
 from services.tenant_resolver import tenant_slug_from_public_referrer, tenant_slug_lookup_candidates
 from services.user_merge import merge_anon_into_user
 
@@ -131,30 +135,14 @@ def _public_json(payload: dict, status: int = 200):
 
 
 def _public_widget_plan_required_payload(tenant: TenantProfile, contract_version: str) -> tuple[dict, int]:
-    access = integration_access_payload(tenant)
-    feature = (access.get("features") or {}).get("widget_embed") or {}
-    frontend_contract = {
-        **(access.get("frontend_contract") or {}),
-        "render_as": "integration_locked",
-        "feature_id": "widget_embed",
-        "primary_action": "upgrade_to_full",
-        "hide_embed_copy": True,
-        "hide_widget_session": True,
-    }
-    return {
-        "ok": False,
-        "error": "plan_required",
-        "contract_version": contract_version,
-        "tenant_slug": tenant.slug,
-        "status_code": 403,
-        "reason_code": "plan_full_required",
-        "action_hint": "upgrade_to_full",
-        "message": access.get("message"),
-        "access": access,
-        "feature": feature,
-        "upgrade": access.get("upgrade"),
-        "frontend_contract": frontend_contract,
-    }, 403
+    return integration_plan_required_payload(
+        tenant,
+        "widget_embed",
+        contract_version=contract_version,
+        render_as="integration_locked",
+        hide_embed_copy=True,
+        hide_widget_session=True,
+    ), 403
 
 
 def _public_widget_integration_allowed(tenant: TenantProfile, contract_version: str) -> tuple[bool, dict | None, int | None]:

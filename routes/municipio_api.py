@@ -31,7 +31,11 @@ from services.tenant_resolver import (
     resolve_tenant_only,
 )
 from socket_service import emit_tenant_update
-from services.plan_access import integration_access_payload, plan_allows_full_integrations
+from services.plan_access import (
+    integration_access_payload,
+    integration_plan_required_payload as build_integration_plan_required_payload,
+    plan_allows_full_integrations,
+)
 
 municipio_api_bp = Blueprint(
     "municipio_api",
@@ -89,25 +93,22 @@ def _integration_plan_required_payload(
     contract_version: str,
     feature_id: str | None = None,
 ) -> dict:
-    access = integration_access_payload(tenant)
-    payload = {
-        "ok": False,
-        "contract_version": contract_version,
-        "tenant_slug": tenant.slug,
-        "status_code": 403,
-        "reason_code": "plan_full_required",
-        "action_hint": "upgrade_to_full",
-        "message": access.get("message"),
-        "access": access,
-        "upgrade": access.get("upgrade"),
-        "frontend_contract": {
-            "render_as": "integration_locked_state",
-            "primary_action": "upgrade_to_full",
-        },
-    }
-    if feature_id:
-        payload["feature"] = (access.get("features") or {}).get(feature_id)
-    return payload
+    resolved_feature_id = feature_id or "widget_embed"
+    frontend_overrides = {}
+    if resolved_feature_id == "widget_embed":
+        frontend_overrides.update(
+            {
+                "hide_embed_copy": True,
+                "hide_widget_session": True,
+            }
+        )
+    return build_integration_plan_required_payload(
+        tenant,
+        resolved_feature_id,
+        contract_version=contract_version,
+        render_as="integration_locked_state",
+        **frontend_overrides,
+    )
 
 widget_public_bp = Blueprint(
     "widget_public_config",

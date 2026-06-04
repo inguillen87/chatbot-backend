@@ -106,7 +106,11 @@ from services.plan_config import (
     serialize_plan_catalog,
     serialize_plan_for_response,
 )
-from services.plan_access import integration_access_payload, plan_allows_full_integrations
+from services.plan_access import (
+    integration_access_payload,
+    integration_plan_required_payload as build_integration_plan_required_payload,
+    plan_allows_full_integrations,
+)
 from services.rewards import recompensas_service
 from services.user_service import (
     change_user_email,
@@ -352,16 +356,14 @@ def _integration_plan_required_payload(
     *,
     contract_version: str | None = None,
 ) -> Dict[str, Any]:
-    access = integration_access_payload(tenant)
-    return {
-        "contract_version": contract_version or access.get("contract_version"),
-        "error": "plan_required",
-        "reason_code": access.get("reason_code") or "plan_full_required",
-        "action_hint": "upgrade_to_full",
-        "message": access.get("message"),
-        "access": access,
-        "upgrade": access.get("upgrade"),
-    }
+    return build_integration_plan_required_payload(
+        tenant,
+        "widget_embed",
+        contract_version=contract_version,
+        render_as="integration_locked",
+        hide_embed_copy=True,
+        hide_widget_session=True,
+    )
 
 
 def _generate_email_verification_token() -> str:

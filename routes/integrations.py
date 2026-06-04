@@ -3,7 +3,11 @@ from services.integrations.mercadolibre_service import MercadoLibreService
 from services.integrations.tiendanube_service import TiendaNubeService
 from utils.auth_helpers import token_requerido
 from models import IntegrationAccount, db, TenantProfile
-from services.plan_access import integration_access_payload, plan_allows_full_integrations
+from services.plan_access import (
+    integration_access_payload,
+    integration_plan_required_payload,
+    plan_allows_full_integrations,
+)
 
 integrations_bp = Blueprint('integrations', __name__)
 
@@ -24,27 +28,13 @@ def _integration_plan_required_response(
     tenant: TenantProfile,
     feature_id: str = "marketplace_sync",
 ):
-    access = integration_access_payload(tenant)
-    feature = (access.get("features") or {}).get(feature_id) or {}
-    frontend_contract = {
-        **(access.get("frontend_contract") or {}),
-        "render_as": "integration_locked_state",
-        "feature_id": feature_id,
-        "primary_action": "upgrade_to_full",
-    }
     return (
         jsonify(
-            {
-                "ok": False,
-                "contract_version": access.get("contract_version") or "tenant.integration_access.v1",
-                "error": "plan_required",
-                "reason_code": access.get("reason_code") or "plan_full_required",
-                "message": access["message"],
-                "access": access,
-                "feature": feature,
-                "upgrade": access.get("upgrade"),
-                "frontend_contract": frontend_contract,
-            }
+            integration_plan_required_payload(
+                tenant,
+                feature_id,
+                render_as="integration_locked_state",
+            )
         ),
         403,
     )

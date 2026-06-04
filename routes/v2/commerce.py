@@ -17,10 +17,10 @@ from services.commerce_contracts import (
     find_payment_resources,
     normalize_checkout_preview_totals,
     payment_capabilities,
-    payment_integration_frontend_contract,
     tenant_config,
     tenant_ref,
 )
+from services.plan_access import integration_plan_required_payload
 from services.rewards import recompensas_service
 from utils.auth_helpers import token_requerido
 from utils.permissions import require_role
@@ -199,18 +199,32 @@ def payment_checkout_session_v2(current_user, tenant_slug: str | None = None):
     integration_access = payment.get("integration_access") or {}
     checkout_experience = payment.get("checkout_experience") or {}
     if not integration_access.get("enabled"):
-        return _error_response(
-            "Plan Full requerido para crear sesiones de pago productivas",
+        return _json_response(
+            integration_plan_required_payload(
+                tenant,
+                "mercadopago_checkout",
+                contract_version="payments.checkout_session.v1",
+                action_hint="upgrade_full_plan",
+                render_as="payment_integration_locked",
+                extra={
+                    "message": "Plan Full requerido para crear sesiones de pago productivas",
+                    "error": {"code": 403, "message": "Plan Full requerido para crear sesiones de pago productivas"},
+                    "retryable": False,
+                    "checkout_options": {
+                        "payment_required": True,
+                        "payment_ready": False,
+                        "requires_contact_or_auth": False,
+                        "gateway": payment["gateway"],
+                        "gateway_hint": payment["gateway_hint"],
+                        "mercadopago_ready": payment["mercadopago_ready"],
+                        "preference_id": None,
+                        "init_point": None,
+                    },
+                    "integration_access": integration_access,
+                    "checkout_experience": checkout_experience,
+                },
+            ),
             403,
-            "plan_full_required",
-            "upgrade_full_plan",
-            extra={
-                "integration_access": integration_access,
-                "checkout_experience": checkout_experience,
-                "feature": (integration_access.get("features") or {}).get("mercadopago_checkout") or {},
-                "upgrade": integration_access.get("upgrade") or {},
-                "frontend_contract": payment_integration_frontend_contract(integration_access),
-            },
         )
 
     access_token = tenant_config(tenant).get("mercadopago_access_token")

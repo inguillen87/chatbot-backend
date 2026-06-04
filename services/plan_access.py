@@ -261,3 +261,110 @@ def integration_access_payload(tenant: TenantProfile | None) -> dict[str, Any]:
         },
     }
     return payload
+
+
+def integration_feature_payload(access: Mapping[str, Any] | None, feature_id: str) -> dict[str, Any]:
+    access_map = access if isinstance(access, Mapping) else {}
+    features = access_map.get("features") if isinstance(access_map.get("features"), Mapping) else {}
+    feature = features.get(feature_id)
+    if isinstance(feature, Mapping):
+        return dict(feature)
+
+    meta = INTEGRATION_FEATURES.get(
+        feature_id,
+        {
+            "label": feature_id.replace("_", " ").strip().title() or "Integracion",
+            "capability": "integrations.production",
+            "admin_route": "/integracion",
+            "action": "manage_integration",
+        },
+    )
+    enabled = bool(access_map.get("enabled"))
+    reason_code = access_map.get("reason_code") or (None if enabled else "plan_full_required")
+    lock_reason_code = access_map.get("lock_reason_code")
+    return {
+        "id": feature_id,
+        "label": meta["label"],
+        "capability": meta["capability"],
+        "admin_route": meta["admin_route"],
+        "action": meta["action"],
+        "enabled": enabled,
+        "status": "enabled" if enabled else "locked",
+        "reason_code": reason_code,
+        "lock_reason_code": None if enabled else lock_reason_code,
+        "required_plan": access_map.get("required_plan") or "full",
+    }
+
+
+def integration_frontend_contract(
+    access: Mapping[str, Any] | None,
+    feature_id: str,
+    *,
+    render_as: str = "integration_locked",
+    primary_action: str = "upgrade_to_full",
+    **overrides: Any,
+) -> dict[str, Any]:
+    access_map = access if isinstance(access, Mapping) else {}
+    feature = integration_feature_payload(access_map, feature_id)
+    enabled = bool(feature.get("enabled"))
+    contract = dict(access_map.get("frontend_contract") or {})
+    contract.update(
+        {
+            "render_as": render_as,
+            "feature_id": feature_id,
+            "feature_label": feature.get("label"),
+            "feature_action": feature.get("action"),
+            "primary_action": primary_action,
+            "required_plan": access_map.get("required_plan") or feature.get("required_plan") or "full",
+            "current_plan": access_map.get("current_plan") or "free",
+            "render_locked_state": not enabled,
+            "show_upgrade_cta": not enabled,
+            "lock_reason_code": feature.get("lock_reason_code") or access_map.get("lock_reason_code"),
+            "reason_code": feature.get("reason_code") or access_map.get("reason_code"),
+            "primary_locked_reason": feature.get("lock_reason_code") or access_map.get("lock_reason_code"),
+        }
+    )
+    contract.update(overrides)
+    return contract
+
+
+def integration_plan_required_payload(
+    tenant: TenantProfile | None,
+    feature_id: str,
+    *,
+    contract_version: str | None = None,
+    action_hint: str = "upgrade_to_full",
+    render_as: str = "integration_locked",
+    status_code: int = 403,
+    extra: Mapping[str, Any] | None = None,
+    **frontend_overrides: Any,
+) -> dict[str, Any]:
+    access = integration_access_payload(tenant)
+    feature = integration_feature_payload(access, feature_id)
+    payload: dict[str, Any] = {
+        "ok": False,
+        "error": "plan_required",
+        "contract_version": contract_version or access.get("contract_version") or "tenant.integration_access.v1",
+        "status_code": status_code,
+        "reason_code": feature.get("reason_code") or access.get("reason_code") or "plan_full_required",
+        "lock_reason_code": feature.get("lock_reason_code") or access.get("lock_reason_code"),
+        "action_hint": action_hint,
+        "message": access.get("message"),
+        "feature_id": feature_id,
+        "feature": feature,
+        "access": access,
+        "upgrade": access.get("upgrade"),
+        "frontend_contract": integration_frontend_contract(
+            access,
+            feature_id,
+            render_as=render_as,
+            primary_action=action_hint,
+            **frontend_overrides,
+        ),
+    }
+    if tenant is not None:
+        payload["tenant_id"] = getattr(tenant, "id", None)
+        payload["tenant_slug"] = getattr(tenant, "slug", None)
+    if extra:
+        payload.update(dict(extra))
+    return payload

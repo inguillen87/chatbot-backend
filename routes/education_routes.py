@@ -33,7 +33,11 @@ from services.education_case_service import (
     build_education_operations_heatmap,
     build_education_operations_summary,
 )
-from services.plan_access import integration_access_payload, plan_allows_full_integrations
+from services.plan_access import (
+    integration_access_payload,
+    integration_plan_required_payload,
+    plan_allows_full_integrations,
+)
 
 education_bp = Blueprint("education", __name__)
 
@@ -75,26 +79,14 @@ def _education_plan_required_response(
     feature_id: str = "education_management",
     contract_version: str = "education.integration_access.v1",
 ):
-    access = integration_access_payload(tenant)
     return (
         jsonify(
-            {
-                "ok": False,
-                "contract_version": contract_version,
-                "tenant_id": tenant.id,
-                "tenant_slug": tenant.slug,
-                "status_code": 403,
-                "reason_code": "plan_full_required",
-                "action_hint": "upgrade_to_full",
-                "message": access.get("message"),
-                "feature": (access.get("features") or {}).get(feature_id),
-                "access": access,
-                "upgrade": access.get("upgrade"),
-                "frontend_contract": {
-                    "render_as": "integration_locked_state",
-                    "primary_action": "upgrade_to_full",
-                },
-            }
+            integration_plan_required_payload(
+                tenant,
+                feature_id,
+                contract_version=contract_version,
+                render_as="integration_locked_state",
+            )
         ),
         403,
     )

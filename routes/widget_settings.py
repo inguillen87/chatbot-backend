@@ -5,7 +5,11 @@ from flask_cors import cross_origin
 
 from models import TenantProfile, WidgetSettings, db
 from routes.public_resolver import _build_widget_embed_payload
-from services.plan_access import integration_access_payload, plan_allows_full_integrations
+from services.plan_access import (
+    integration_access_payload,
+    integration_plan_required_payload,
+    plan_allows_full_integrations,
+)
 from services.tenant_resolver import TenantResolutionError, resolve_tenant_only
 from routes.auth import solo_admin_requerido, token_requerido
 from utils.tenant import get_current_tenant_profile, get_current_tenant_slug
@@ -43,7 +47,8 @@ def _serialize_settings(settings: WidgetSettings, tenant: TenantProfile) -> dict
     tenant.widget_settings = settings
     widget_payload = _build_widget_embed_payload(tenant, None)
     access = integration_access_payload(tenant)
-    embed_snippet = widget_payload.get("embed_snippet")
+    access_enabled = bool(access.get("enabled"))
+    embed_snippet = widget_payload.get("embed_snippet") if access_enabled else ""
     attrs = widget_payload.get("attributes") or {}
 
     # Inject default styles to ensure readability and size
@@ -62,14 +67,24 @@ def _serialize_settings(settings: WidgetSettings, tenant: TenantProfile) -> dict
 
     embed_code = f"{default_styles}\n{embed_snippet}" if embed_snippet else ""
 
+    frontend_contract = {
+        **(access.get("frontend_contract") or {}),
+        "render_as": "integration_locked" if not access_enabled else "widget_embed_ready",
+        "feature_id": "widget_embed",
+        "primary_action": "upgrade_to_full" if not access_enabled else "copy_widget_embed",
+        "hide_embed_copy": not access_enabled,
+    }
+
     return {
         **cfg,
         "embed_snippet": embed_snippet,
         "embed_attributes": attrs,
         "embed_code": embed_code,
         "access": access,
-        "embed_locked": not bool(access.get("enabled")),
-        "upgrade_required": not bool(access.get("enabled")),
+        "feature": (access.get("features") or {}).get("widget_embed") or {},
+        "frontend_contract": frontend_contract,
+        "embed_locked": not access_enabled,
+        "upgrade_required": not access_enabled,
     }
 
 
@@ -123,17 +138,14 @@ def manage_settings(current_user):
 
     if request.method == "PUT":
         if not plan_allows_full_integrations(tenant):
-            access = integration_access_payload(tenant)
             return (
                 jsonify(
-                    {
-                        "error": "plan_required",
-                        "reason_code": access.get("reason_code") or "plan_full_required",
-                        "action_hint": "upgrade_to_full",
-                        "message": access["message"],
-                        "access": access,
-                        "upgrade": access.get("upgrade"),
-                    }
+                    integration_plan_required_payload(
+                        tenant,
+                        "widget_embed",
+                        render_as="integration_locked",
+                        hide_embed_copy=True,
+                    )
                 ),
                 403,
             )
