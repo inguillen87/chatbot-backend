@@ -22,6 +22,7 @@ const path = require("path");
 const DEFAULT_BASE_URL = process.env.CHATBOC_PUBLIC_BASE_URL || "https://www.chatboc.ar";
 const DEFAULT_LANGUAGE = process.env.CHATBOC_TEMPLATE_LANGUAGE || "es";
 const TEMPLATE_PREFIX = "chatboc";
+const MANIFEST_PATH = path.join(__dirname, "twilio_content_templates.local.json");
 
 const args = new Set(process.argv.slice(2));
 const options = {
@@ -161,6 +162,8 @@ async function main() {
   const client = buildTwilioClient(twilio, auth);
 
   const existing = await listContentByFriendlyName(client);
+  const manifest = loadManifest();
+  mergeManifest(existing, manifest);
   const results = [];
 
   for (const definition of definitions) {
@@ -183,6 +186,12 @@ async function main() {
           types: definition.types,
         });
         existing.set(definition.friendlyName, content);
+        manifest.templates[definition.friendlyName] = {
+          sid: content.sid,
+          category: definition.category,
+          language: definition.language,
+          updatedAt: new Date().toISOString(),
+        };
         result.action = "created";
         result.sid = content.sid;
       } else if (!content) {
@@ -209,6 +218,8 @@ async function main() {
 
     results.push(result);
   }
+
+  saveManifest(manifest);
 
   writeJson({
     ok: results.every((result) => !result.error),
@@ -293,8 +304,8 @@ function validateTemplates(items) {
 
 async function listContentByFriendlyName(client) {
   const map = new Map();
-  const contents = await client.content.v1.contents.list({ limit: 1000 });
-  for (const content of contents) {
+  const page = await client.content.v1.contents.page({ pageSize: 1000 });
+  for (const content of page.instances || []) {
     if (content.friendlyName && !map.has(content.friendlyName)) {
       map.set(content.friendlyName, content);
     }
@@ -358,6 +369,40 @@ function loadTwilioSdk() {
     }
   }
   throw new Error(`Twilio SDK not found. Tried: ${attempted.join(", ")}`);
+}
+
+function loadManifest() {
+  if (!fs.existsSync(MANIFEST_PATH)) {
+    return { version: 1, templates: {} };
+  }
+  try {
+    const parsed = JSON.parse(fs.readFileSync(MANIFEST_PATH, "utf8"));
+    return {
+      version: parsed.version || 1,
+      templates: parsed.templates || {},
+    };
+  } catch (_error) {
+    return { version: 1, templates: {} };
+  }
+}
+
+function mergeManifest(existing, manifest) {
+  for (const [friendlyName, entry] of Object.entries(manifest.templates || {})) {
+    if (!entry || !entry.sid || existing.has(friendlyName)) continue;
+    existing.set(friendlyName, {
+      sid: entry.sid,
+      friendlyName,
+      language: entry.language || DEFAULT_LANGUAGE,
+    });
+  }
+}
+
+function saveManifest(manifest) {
+  const payload = {
+    version: manifest.version || 1,
+    templates: manifest.templates || {},
+  };
+  fs.writeFileSync(MANIFEST_PATH, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
 }
 
 function loadTwilioAuth() {
