@@ -25,6 +25,7 @@ from models import (
     TenantProfile,
     ProviderSender,
     Notification,
+    MessageTemplateRegistry,
 )  # Import necessary models
 from models_memory import Contact
 from extensions import db  # Import db instance for database operations
@@ -2619,6 +2620,64 @@ def _render_template_variables(
     return resolved
 
 
+def _resolve_approved_whatsapp_template_sid(
+    template_name: Optional[str],
+    *,
+    tenant_profile: Optional[TenantProfile] = None,
+    tenant_id: Optional[int] = None,
+    language: str = "es",
+) -> Optional[str]:
+    """Resolve an approved Twilio ContentSid from the tenant template registry."""
+
+    normalized_name = (template_name or "").strip()
+    if not normalized_name:
+        return None
+
+    resolved_tenant_id = tenant_id
+    if resolved_tenant_id is None and tenant_profile is not None:
+        resolved_tenant_id = getattr(tenant_profile, "id", None)
+
+    if not resolved_tenant_id:
+        return None
+
+    try:
+        query = MessageTemplateRegistry.query.filter_by(
+            tenant_id=resolved_tenant_id,
+            provider="twilio",
+            channel="whatsapp",
+            name=normalized_name,
+        )
+        if language:
+            query = query.filter(MessageTemplateRegistry.language == language)
+
+        row = query.first()
+        if not row and language:
+            row = MessageTemplateRegistry.query.filter_by(
+                tenant_id=resolved_tenant_id,
+                provider="twilio",
+                channel="whatsapp",
+                name=normalized_name,
+            ).first()
+    except Exception as exc:
+        current_app.logger.warning(
+            "[whatsapp] Failed to resolve template registry name=%s tenant_id=%s: %s",
+            normalized_name,
+            resolved_tenant_id,
+            exc,
+        )
+        return None
+
+    if not row:
+        return None
+
+    status = (row.status or "").strip().lower()
+    content_sid = (row.content_sid or "").strip()
+    if status != "approved" or not content_sid.startswith("HX"):
+        return None
+
+    return content_sid
+
+
 def _dispatch_twilio_pre_messages(
     client,
     to_number: str,
@@ -2627,6 +2686,7 @@ def _dispatch_twilio_pre_messages(
     resolve_media_link,
     *,
     channel: str = "whatsapp",
+    tenant_profile: Optional[TenantProfile] = None,
 ) -> None:
     """Send auxiliary Twilio messages declared in the payload metadata."""
 
@@ -2655,6 +2715,13 @@ def _dispatch_twilio_pre_messages(
 
         params: Dict[str, Any] = {"from_": to_number, "to": from_number}
         content_sid = entry.get("content_sid")
+        if not content_sid:
+            content_sid = _resolve_approved_whatsapp_template_sid(
+                entry.get("template_name") or entry.get("friendly_name"),
+                tenant_profile=tenant_profile,
+                tenant_id=entry.get("tenant_id"),
+                language=str(entry.get("language") or "es"),
+            )
 
         if content_sid:
             params["content_sid"] = content_sid
@@ -3434,7 +3501,13 @@ def whatsapp_webhook():
 
         if twilio_client:
             try:
-                template_sid = current_app.config.get("WELCOME_TEMPLATE_SID")
+                template_sid = (
+                    _resolve_approved_whatsapp_template_sid(
+                        "chatboc_welcome_menu_v2",
+                        tenant_profile=tenant_profile,
+                    )
+                    or current_app.config.get("WELCOME_TEMPLATE_SID")
+                )
                 sticker_cooldown = current_app.config.get("WELCOME_STICKER_COOLDOWN_SECONDS", 300)
                 profile_name_from_request = _clean_contact_name(post_vars.get("ProfileName"))
                 resolved_contact_for_welcome = resolve_contact(
@@ -4800,6 +4873,7 @@ def whatsapp_webhook():
                 from_number_raw,
                 bot_response_dict,
                 _resolve_pre_media_link,
+                tenant_profile=tenant_profile,
             )
 
             interactive_payload = None

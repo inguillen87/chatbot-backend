@@ -28,6 +28,7 @@ from models import (
     TenantProfile,
     Notification,
     ProviderSender,
+    MessageTemplateRegistry,
 )
 from models_memory import Contact, InteractionEvent
 from services.municipio_responder import CONTEXTO_MUNICIPIO
@@ -122,6 +123,57 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self.mock_client_user.tipo_chat = tipo
         db.session.add(self.mock_client_user)
         db.session.commit()
+
+    def _attach_tenant_to_owner(
+        self,
+        *,
+        slug: str = "test-tenant",
+        tipo: str = "municipio",
+        plan: str = "pro",
+    ) -> TenantProfile:
+        self.mock_client_user.tipo_chat = tipo
+        tenant_kwargs = {
+            "slug": slug,
+            "nombre": "Tenant de prueba",
+            "tipo": tipo,
+            "plan": plan,
+            "is_active": True,
+        }
+        if tipo == "municipio":
+            tenant_kwargs["municipio_id"] = self.mock_client_user.id
+        else:
+            tenant_kwargs["pyme_id"] = self.mock_client_user.id
+
+        tenant = TenantProfile(**tenant_kwargs)
+        db.session.add(tenant)
+        db.session.flush()
+        self.mock_client_user.tenant_id = tenant.id
+        db.session.add(self.mock_client_user)
+        db.session.commit()
+        return tenant
+
+    def _register_whatsapp_template(
+        self,
+        tenant: TenantProfile,
+        name: str,
+        *,
+        content_sid: str = "HXapprovedtemplate",
+        status: str = "approved",
+    ) -> MessageTemplateRegistry:
+        row = MessageTemplateRegistry(
+            tenant_id=tenant.id,
+            provider="twilio",
+            channel="whatsapp",
+            name=name,
+            language="es",
+            category="UTILITY",
+            status=status,
+            content_sid=content_sid,
+            body_preview="Template de prueba",
+        )
+        db.session.add(row)
+        db.session.commit()
+        return row
 
     def _create_confirmed_session(self):
         session_context = ChatSessionContext(
@@ -1235,6 +1287,71 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
 
         greeting_kwargs = self.mock_twilio_create.call_args_list[2].kwargs
         self.assertIn("body", greeting_kwargs)
+
+    def test_welcome_template_uses_approved_registry_when_global_sid_is_missing(self):
+        tenant = self._attach_tenant_to_owner(tipo="municipio")
+        self._register_whatsapp_template(
+            tenant,
+            "chatboc_welcome_menu_v2",
+            content_sid="HXwelcomeapproved",
+            status="approved",
+        )
+
+        self.mock_validator.validate.return_value = True
+        self.app.config["WELCOME_TEMPLATE_SID"] = None
+        self.app.config["WELCOME_MEDIA_URL"] = None
+        self.app.config["WELCOME_AUDIO_URL"] = None
+
+        payload = {
+            "To": f"whatsapp:{self.test_whatsapp_number_str}",
+            "From": f"whatsapp:{self.test_user_number_str}",
+            "Body": "hola",
+        }
+        headers = {"X-Twilio-Signature": "dummy_signature_valid"}
+
+        response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertGreaterEqual(self.mock_twilio_create.call_count, 2)
+
+        template_kwargs = self.mock_twilio_create.call_args_list[0].kwargs
+        self.assertEqual(template_kwargs.get("content_sid"), "HXwelcomeapproved")
+        self.assertEqual(
+            json.loads(template_kwargs.get("content_variables", "{}")),
+            {"1": ""},
+        )
+
+        greeting_kwargs = self.mock_twilio_create.call_args_list[1].kwargs
+        self.assertIn("body", greeting_kwargs)
+
+    def test_welcome_template_ignores_unapproved_registry_sid(self):
+        tenant = self._attach_tenant_to_owner(tipo="municipio")
+        self._register_whatsapp_template(
+            tenant,
+            "chatboc_welcome_menu_v2",
+            content_sid="HXpendingtemplate",
+            status="unsubmitted",
+        )
+
+        self.mock_validator.validate.return_value = True
+        self.app.config["WELCOME_TEMPLATE_SID"] = None
+        self.app.config["WELCOME_MEDIA_URL"] = None
+        self.app.config["WELCOME_AUDIO_URL"] = None
+
+        payload = {
+            "To": f"whatsapp:{self.test_whatsapp_number_str}",
+            "From": f"whatsapp:{self.test_user_number_str}",
+            "Body": "hola",
+        }
+        headers = {"X-Twilio-Signature": "dummy_signature_valid"}
+
+        response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertGreaterEqual(self.mock_twilio_create.call_count, 1)
+        first_kwargs = self.mock_twilio_create.call_args_list[0].kwargs
+        self.assertNotIn("content_sid", first_kwargs)
+        self.assertIn("body", first_kwargs)
 
     def test_sticker_respects_cooldown(self):
         self._set_owner_tipo_chat("municipio")
@@ -2655,6 +2772,13 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
 
     def test_whatsapp_payload_sends_pre_messages_before_main_message(self):
         self._set_owner_tipo_chat("municipio")
+        tenant = self._attach_tenant_to_owner(tipo="municipio")
+        self._register_whatsapp_template(
+            tenant,
+            "gobiernos_reclamo_sla",
+            content_sid="HXgovslaapproved",
+            status="approved",
+        )
         self.mock_validator.validate.return_value = True
         self._create_confirmed_session()
 
@@ -2676,7 +2800,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
             "_twilio_pre_messages": [
                 {
                     "channels": ["whatsapp"],
-                    "content_sid": "HXbanner",
+                    "template_name": "gobiernos_reclamo_sla",
                     "content_variables": {"1": "Junín"},
                 },
                 {
@@ -2698,7 +2822,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self.assertEqual(self.mock_twilio_create.call_count, 3)
 
         template_kwargs = self.mock_twilio_create.call_args_list[0].kwargs
-        self.assertEqual(template_kwargs.get("content_sid"), "HXbanner")
+        self.assertEqual(template_kwargs.get("content_sid"), "HXgovslaapproved")
         self.assertEqual(
             json.loads(template_kwargs.get("content_variables", "{}")), {"1": "Junín"}
         )

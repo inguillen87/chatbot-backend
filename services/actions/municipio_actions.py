@@ -318,6 +318,12 @@ def _apply_whatsapp_closing_promo(
     pre_messages.append(
         {
             "channels": ["whatsapp"],
+            "template_name": (
+                municipio_config.get("closing_promo_template_name")
+                or municipio_config.get("promo_template_name")
+                or "promocionar"
+            ),
+            "content_variables": {},
             "body": caption,
             "media_urls": [image_url],
         }

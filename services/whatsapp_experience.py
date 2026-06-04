@@ -57,6 +57,136 @@ CHATBOC_TEMPLATE_FRIENDLY_NAMES = {
     "gov_turn_reminder": "chatboc_gov_turn_reminder_v1",
     "gov_document_ready": "chatboc_gov_document_ready_v1",
     "gov_survey_invite": "chatboc_gov_survey_invite_v1",
+    "gov_claim_sla": "gobiernos_reclamo_sla",
+    "gov_tax_due": "gobiernos_tasa_vencimiento",
+    "gov_turn_confirmation": "gobiernos_turno_confirmacion",
+    "gov_public_announcement": "gobiernos_comunicado_segmentado",
+    "gov_procedure_status": "gobiernos_tramite_estado",
+    "school_tuition_due": "colegios_cuota_vencimiento",
+    "school_admin_turn": "colegios_turno_administracion",
+    "clinic_turn_reminder": "clinicas_turno_recordatorio",
+    "club_fee_due": "clubes_cuota_social",
+    "club_reservation": "clubes_reserva_disciplina",
+    "condo_expense_due": "consorcios_expensas_vencimiento",
+    "condo_claim_sla": "consorcios_reclamo_sla",
+    "condo_receipt_received": "consorcios_comprobante_recibido",
+    "condo_amenity_booking": "consorcios_reserva_amenity",
+    "entrepreneur_order_confirmed": "emprendedores_pedido_confirmado",
+    "entrepreneur_receipt_review": "emprendedores_comprobante_revision",
+    "standard_handoff": "standard_handoff_humano",
+    "opt_in": "message_opt_in",
+    "navigation": "copy_navegacion",
+    "customer_care_greeting": "customer_care_greeting_template",
+    "customer_care_help_center": "customer_care_help_center_template",
+    "customer_support_routing": "customer_support_routing_template",
+    "order_tracking_list": "notification_order_tracking",
+    "promo_media": "promocionar",
+    "survey_banner": "bannerencu",
+    "juni_welcome_media": "saludo_inicial_juni",
+    "turnero_payment_webview": "turnero_pago_seguro_webview",
+    "turnero_pyme_order_webview": "turnero_pyme_pedido_webview",
+    "turnero_school_admission_webview": "turnero_colegio_admision_webview",
+    "turnero_government_procedure_webview": "turnero_gobierno_tramite_webview",
+    "turnero_support_case_webview": "turnero_soporte_caso_webview",
+}
+
+OPERATIONAL_TEMPLATE_GROUPS = {
+    "entry_and_navigation": {
+        "label": "Entrada, opt-in y menus",
+        "purpose": "Dar bienvenida, capturar consentimiento y ordenar la conversacion sin salir de WhatsApp.",
+        "items": [
+            ("welcome_menu", "menu", "widget_and_whatsapp", ["show_main_menu", "route_vertical"]),
+            ("opt_in", "consent", "whatsapp", ["capture_opt_in"]),
+            ("navigation", "menu", "whatsapp", ["back", "menu", "cancel"]),
+            ("customer_care_greeting", "support", "whatsapp", ["open_support"]),
+            ("customer_care_help_center", "support", "webview", ["open_help_center"]),
+            ("customer_support_routing", "support", "whatsapp", ["route_support_queue"]),
+        ],
+    },
+    "commerce_and_payments": {
+        "label": "Pedidos, pagos y seguimiento comercial",
+        "purpose": "Cotizar, crear pedidos, cobrar y seguir entregas usando botones y webviews seguros.",
+        "items": [
+            ("pyme_order_ready", "order", "webview", ["review_order", "pay_order"]),
+            ("pyme_payment_link", "payment", "webview", ["pay_securely"]),
+            ("order_checkout", "checkout", "webview", ["checkout"]),
+            ("payment_confirmed", "payment", "whatsapp", ["show_receipt", "track_order"]),
+            ("pyme_delivery_update", "delivery", "whatsapp", ["track_order"]),
+            ("pyme_quote_followup", "quote", "webview", ["review_quote"]),
+            ("pyme_catalog_invite", "catalog", "webview", ["open_catalog", "add_to_cart"]),
+            ("entrepreneur_order_confirmed", "order", "whatsapp", ["confirm_order"]),
+            ("entrepreneur_receipt_review", "payment", "whatsapp", ["review_receipt"]),
+            ("order_tracking_list", "tracking", "whatsapp", ["track_order"]),
+            ("promo_media", "marketing", "whatsapp", ["open_promotion"]),
+        ],
+    },
+    "education": {
+        "label": "Colegios y familias",
+        "purpose": "Resolver cuotas, certificados, tramites familiares, turnos y avisos escolares.",
+        "items": [
+            ("school_payment_due", "payment", "webview", ["pay_fee"]),
+            ("school_tuition_due", "payment", "webview", ["pay_fee"]),
+            ("school_receipt_ready", "receipt", "webview", ["download_receipt"]),
+            ("school_certificate_ready", "certificate", "webview", ["download_certificate"]),
+            ("school_family_case_created", "case", "whatsapp", ["track_case", "attach_info"]),
+            ("school_event_reminder", "event", "webview", ["open_event"]),
+            ("school_admin_turn", "appointment", "whatsapp", ["confirm_turn", "reschedule"]),
+            ("turnero_school_admission_webview", "admission", "webview", ["start_admission"]),
+        ],
+    },
+    "government": {
+        "label": "Gobiernos y municipios",
+        "purpose": "Registrar reclamos, turnos, tasas, documentos, comunicados y participacion ciudadana.",
+        "items": [
+            ("gov_claim_created", "claim", "webview", ["track_claim"]),
+            ("gov_claim_sla", "claim", "whatsapp", ["confirm_claim", "edit_claim", "cancel_claim"]),
+            ("gov_claim_status_update", "claim", "whatsapp", ["track_claim"]),
+            ("gov_procedure_status", "procedure", "whatsapp", ["track_procedure"]),
+            ("gov_tax_due", "payment", "webview", ["pay_tax"]),
+            ("gov_turn_confirmation", "appointment", "whatsapp", ["confirm_turn", "reschedule"]),
+            ("gov_turn_reminder", "appointment", "webview", ["open_turn"]),
+            ("gov_document_ready", "document", "webview", ["download_document"]),
+            ("gov_public_announcement", "announcement", "webview", ["open_announcement"]),
+            ("gov_survey_invite", "survey", "webview", ["vote"]),
+            ("survey_invite", "survey", "webview", ["vote"]),
+            ("survey_banner", "survey", "whatsapp", ["open_survey"]),
+            ("juni_welcome_media", "media", "whatsapp", ["show_municipal_intro"]),
+            ("turnero_government_procedure_webview", "procedure", "webview", ["start_procedure"]),
+        ],
+    },
+    "appointments_and_services": {
+        "label": "Turnos, clinicas y servicios",
+        "purpose": "Confirmar turnos, derivar soporte y mantener la experiencia dentro del canal.",
+        "items": [
+            ("clinic_turn_reminder", "appointment", "whatsapp", ["confirm_turn", "reschedule"]),
+            ("turnero_support_case_webview", "support", "webview", ["open_support_case"]),
+            ("standard_handoff", "handoff", "whatsapp", ["human_handoff"]),
+            ("human_handoff", "handoff", "whatsapp", ["human_handoff"]),
+        ],
+    },
+    "clubs_and_consorcios": {
+        "label": "Clubes, consorcios y comunidades",
+        "purpose": "Cobrar cuotas/expensas, gestionar reservas, reclamos y comprobantes.",
+        "items": [
+            ("club_fee_due", "payment", "webview", ["pay_fee"]),
+            ("club_reservation", "reservation", "whatsapp", ["book_activity"]),
+            ("condo_expense_due", "payment", "webview", ["pay_expense"]),
+            ("condo_claim_sla", "claim", "whatsapp", ["track_claim"]),
+            ("condo_receipt_received", "receipt", "whatsapp", ["review_receipt"]),
+            ("condo_amenity_booking", "reservation", "whatsapp", ["book_amenity"]),
+        ],
+    },
+    "webviews": {
+        "label": "Webviews seguros",
+        "purpose": "Resolver pagos, pedidos, tramites y soporte con pantallas firmadas y confirmacion server-to-server.",
+        "items": [
+            ("turnero_payment_webview", "payment", "webview", ["pay_securely"]),
+            ("turnero_pyme_order_webview", "order", "webview", ["create_order"]),
+            ("turnero_school_admission_webview", "education", "webview", ["start_admission"]),
+            ("turnero_government_procedure_webview", "procedure", "webview", ["start_procedure"]),
+            ("turnero_support_case_webview", "support", "webview", ["open_support_case"]),
+        ],
+    },
 }
 
 
@@ -483,6 +613,78 @@ def _template_status(templates: Mapping[str, dict[str, Any]], template_id: str) 
     }
 
 
+def _template_catalog_item(
+    templates: Mapping[str, dict[str, Any]],
+    template_id: str,
+    *,
+    stage: str,
+    entrypoint: str,
+    actions: list[str],
+) -> dict[str, Any]:
+    friendly_name = CHATBOC_TEMPLATE_FRIENDLY_NAMES.get(_lower(template_id))
+    status_payload = _template_status(templates, template_id)
+    return {
+        "id": template_id,
+        "friendly_name": friendly_name,
+        "stage": stage,
+        "entrypoint": entrypoint,
+        "requires_webview": entrypoint == "webview",
+        "in_chat_action": entrypoint in {"whatsapp", "widget_and_whatsapp"},
+        "widget_action": entrypoint in {"widget", "widget_and_whatsapp", "webview"},
+        "actions": actions,
+        "status": status_payload,
+    }
+
+
+def _operational_template_groups_payload(
+    templates: Mapping[str, dict[str, Any]],
+) -> dict[str, Any]:
+    groups: dict[str, Any] = {}
+    total = 0
+    configured = 0
+    approved = 0
+    webviews = 0
+
+    for group_id, group in OPERATIONAL_TEMPLATE_GROUPS.items():
+        items = []
+        for template_id, stage, entrypoint, actions in group["items"]:
+            item = _template_catalog_item(
+                templates,
+                template_id,
+                stage=stage,
+                entrypoint=entrypoint,
+                actions=actions,
+            )
+            items.append(item)
+            total += 1
+            configured += 1 if item["status"].get("configured") else 0
+            approved += 1 if item["status"].get("approved") else 0
+            webviews += 1 if item.get("requires_webview") else 0
+
+        groups[group_id] = {
+            "label": group["label"],
+            "purpose": group["purpose"],
+            "items": items,
+            "summary": {
+                "total": len(items),
+                "configured": sum(1 for item in items if item["status"].get("configured")),
+                "approved": sum(1 for item in items if item["status"].get("approved")),
+                "webviews": sum(1 for item in items if item.get("requires_webview")),
+            },
+        }
+
+    return {
+        "groups": groups,
+        "summary": {
+            "total_catalog_items": total,
+            "configured": configured,
+            "approved": approved,
+            "missing": total - configured,
+            "webviews": webviews,
+        },
+    }
+
+
 def _template_blueprint_payload(
     tenant: TenantProfile,
     *,
@@ -748,12 +950,15 @@ def _template_blueprint_payload(
     if not recommended_verticals:
         recommended_verticals = ["pyme", "colegio", "gobierno"]
 
+    operational_catalog = _operational_template_groups_payload(templates)
+
     return {
         "provider": "twilio_content_api",
         "channel": "whatsapp",
         "enabled": bool(channel_ready),
         "required_templates": required_templates,
         "vertical_templates": vertical_templates,
+        "operational_template_groups": operational_catalog["groups"],
         "recommended_verticals": recommended_verticals,
         "registry_summary": {
             "total_registered": len(templates),
@@ -764,6 +969,11 @@ def _template_blueprint_payload(
             "vertical_required": sum(len(items) for items in vertical_templates.values()),
             "vertical_configured": vertical_configured,
             "vertical_approved": vertical_approved,
+            "operational_catalog_total": operational_catalog["summary"]["total_catalog_items"],
+            "operational_configured": operational_catalog["summary"]["configured"],
+            "operational_approved": operational_catalog["summary"]["approved"],
+            "operational_missing": operational_catalog["summary"]["missing"],
+            "operational_webviews": operational_catalog["summary"]["webviews"],
         },
         "twilio_content_types": {
             "transactional": ["twilio/text", "twilio/call-to-action", "twilio/quick-reply"],

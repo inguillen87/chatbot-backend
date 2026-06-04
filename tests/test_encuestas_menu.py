@@ -67,6 +67,7 @@ from utils.municipio_utils import (
 from services.actions.municipio_actions import (
     CrearReclamoActionHandler,
     _normalize_url_for_comparison,
+    _apply_whatsapp_closing_promo,
 )
 from services.herramientas_municipio import (
     consultar_recoleccion_por_direccion,
@@ -5236,6 +5237,35 @@ def _resolve_encuestas_whatsapp_banner_template_sid(context: dict) -> Optional[s
     return template_sid or None
 
 
+def _resolve_encuestas_whatsapp_banner_template_name(context: dict) -> str:
+    """Resolve the approved-template registry name used for encuestas banners."""
+
+    municipio_config = context.get("municipio_config_actual") or {}
+    encuestas_cfg = {}
+    if isinstance(municipio_config.get("encuestas"), dict):
+        encuestas_cfg = municipio_config["encuestas"]
+
+    template_name = (
+        encuestas_cfg.get("whatsapp_banner_template_name")
+        or municipio_config.get("encuestas_whatsapp_banner_template_name")
+    )
+
+    if not template_name and has_app_context():
+        template_name = current_app.config.get(
+            "PUBLIC_ENCUESTAS_WHATSAPP_BANNER_TEMPLATE_NAME"
+        )
+
+    if not template_name:
+        template_name = getattr(
+            AppConfig, "PUBLIC_ENCUESTAS_WHATSAPP_BANNER_TEMPLATE_NAME", None
+        )
+
+    if not isinstance(template_name, str) or not template_name.strip():
+        return "bannerencu"
+
+    return template_name.strip()
+
+
 def _resolve_encuestas_whatsapp_banner_body(context: dict) -> str:
     """Return the caption used when sending the encuestas banner via media."""
 
@@ -5300,6 +5330,8 @@ def _build_encuestas_whatsapp_banner_pre_messages(
     return [
         {
             "channels": channels,
+            "template_name": _resolve_encuestas_whatsapp_banner_template_name(context),
+            "content_variables": {},
             "body": caption,
             "media_urls": [candidate_url],
         }
@@ -5354,6 +5386,8 @@ def _build_encuesta_share_whatsapp_pre_messages(
     return [
         {
             "channels": ["whatsapp"],
+            "template_name": _resolve_encuestas_whatsapp_banner_template_name(context),
+            "content_variables": {},
             "body": share_message,
             "media_urls": [candidate_url],
         }
@@ -7908,5 +7942,64 @@ def test_encuesta_share_payload_adds_whatsapp_media_pre_message(client):
 
     pre_messages = payload.get("_twilio_pre_messages")
     assert isinstance(pre_messages, list) and len(pre_messages) == 1
+    assert pre_messages[0]["template_name"] == "bannerencu"
+    assert pre_messages[0]["content_variables"] == {}
     assert pre_messages[0]["body"] == share_message
     assert pre_messages[0]["media_urls"] == [share_media_url]
+
+
+def test_encuestas_banner_pre_message_declares_template_name_with_media_fallback(client):
+    with client.application.app_context():
+        context = _base_context(tenant_id=43)
+        context["channel"] = "whatsapp"
+        context["municipio_config_actual"] = {
+            "encuestas": {
+                "whatsapp_banner_template_name": "bannerencu_personalizada",
+                "whatsapp_banner_body": "Participa en la encuesta desde WhatsApp",
+            }
+        }
+
+        pre_messages = municipio_responder._build_encuestas_whatsapp_banner_pre_messages(
+            context,
+            "https://cdn.chatboc.test/banner.png",
+            [],
+        )
+
+    assert isinstance(pre_messages, list) and len(pre_messages) == 1
+    assert pre_messages[0]["template_name"] == "bannerencu_personalizada"
+    assert pre_messages[0]["content_variables"] == {}
+    assert pre_messages[0]["body"] == "Participa en la encuesta desde WhatsApp"
+    assert pre_messages[0]["media_urls"] == ["https://cdn.chatboc.test/banner.png"]
+
+
+def test_whatsapp_closing_promo_declares_template_name_with_media_fallback(client):
+    context = {
+        "channel": "whatsapp",
+        "municipio_config_actual": {
+            "closing_promo_enabled": True,
+            "closing_promo_image_url": "https://cdn.chatboc.test/reclamo.png",
+            "closing_promo_template_name": "gobiernos_reclamo_sla",
+            "closing_promo_caption_template": "Reclamo {{ticket_nro}} listo para confirmar.",
+            "closing_promo_followup_text": "Elegi una accion para continuar.",
+        },
+    }
+    payload = {
+        "message_body": "Reclamo creado",
+        "options_list": [{"texto": "Confirmar", "action_id": "confirmar"}],
+        "image_url": "https://cdn.chatboc.test/fallback.png",
+    }
+
+    updated = _apply_whatsapp_closing_promo(
+        payload,
+        context=context,
+        caption_values={"message_body": "Reclamo creado", "ticket_nro": "M-123"},
+    )
+
+    pre_messages = updated.get("_twilio_pre_messages")
+    assert isinstance(pre_messages, list) and len(pre_messages) == 1
+    assert pre_messages[0]["template_name"] == "gobiernos_reclamo_sla"
+    assert pre_messages[0]["content_variables"] == {}
+    assert pre_messages[0]["body"] == "Reclamo M-123 listo para confirmar."
+    assert pre_messages[0]["media_urls"] == ["https://cdn.chatboc.test/reclamo.png"]
+    assert updated["message_body"] == "Elegi una accion para continuar."
+    assert "image_url" not in updated

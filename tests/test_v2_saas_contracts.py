@@ -244,6 +244,20 @@ class V2SaasContractsTest(unittest.TestCase):
             )
         )
         db.session.add(
+            MessageTemplateRegistry(
+                tenant_id=self.tenant.id,
+                provider="twilio",
+                channel="whatsapp",
+                name="gobiernos_reclamo_sla",
+                language="es",
+                category="UTILITY",
+                status="approved",
+                content_sid="HXgovsla",
+                body_preview="Confirmamos tu reclamo municipal y te mostramos las acciones disponibles.",
+                components=[{"type": "quick_reply", "actions": ["Confirmar", "Editar", "Cancelar"]}],
+            )
+        )
+        db.session.add(
             WhatsAppContactState(
                 tenant_id=self.tenant.id,
                 recipient="whatsapp:+5491111111111",
@@ -1302,6 +1316,15 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(school_payment_template["friendly_name"], "chatboc_school_payment_due_v2")
         self.assertEqual(school_payment_template["status"]["resolved_name"], "chatboc_school_payment_due_v2")
         self.assertTrue(school_payment_template["status"]["approved"])
+        self.assertIn("government", payload["template_blueprint"]["operational_template_groups"])
+        government_group = payload["template_blueprint"]["operational_template_groups"]["government"]
+        gov_claim_sla = next(item for item in government_group["items"] if item["id"] == "gov_claim_sla")
+        self.assertEqual(gov_claim_sla["friendly_name"], "gobiernos_reclamo_sla")
+        self.assertEqual(gov_claim_sla["status"]["resolved_name"], "gobiernos_reclamo_sla")
+        self.assertEqual(gov_claim_sla["status"]["content_sid"], "HXgovsla")
+        self.assertTrue(gov_claim_sla["status"]["approved"])
+        self.assertGreaterEqual(payload["template_blueprint"]["registry_summary"]["operational_catalog_total"], 40)
+        self.assertGreater(payload["template_blueprint"]["registry_summary"]["operational_webviews"], 0)
         self.assertEqual(payload["webview_blueprint"]["checkout"]["confirmation_source"], "server_to_server_webhook")
         self.assertFalse(payload["webview_blueprint"]["checkout"]["card_data_in_chat"])
         self.assertTrue(payload["webview_blueprint"]["security"]["requires_full_plan"])

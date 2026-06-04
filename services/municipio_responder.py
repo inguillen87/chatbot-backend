@@ -8218,6 +8218,35 @@ def _resolve_encuestas_whatsapp_banner_template_sid(context: dict) -> Optional[s
     return template_sid or None
 
 
+def _resolve_encuestas_whatsapp_banner_template_name(context: dict) -> str:
+    """Resolve the approved-template registry name used for encuestas banners."""
+
+    municipio_config = context.get("municipio_config_actual") or {}
+    encuestas_cfg = {}
+    if isinstance(municipio_config.get("encuestas"), dict):
+        encuestas_cfg = municipio_config["encuestas"]
+
+    template_name = (
+        encuestas_cfg.get("whatsapp_banner_template_name")
+        or municipio_config.get("encuestas_whatsapp_banner_template_name")
+    )
+
+    if not template_name and has_app_context():
+        template_name = current_app.config.get(
+            "PUBLIC_ENCUESTAS_WHATSAPP_BANNER_TEMPLATE_NAME"
+        )
+
+    if not template_name:
+        template_name = getattr(
+            AppConfig, "PUBLIC_ENCUESTAS_WHATSAPP_BANNER_TEMPLATE_NAME", None
+        )
+
+    if not isinstance(template_name, str) or not template_name.strip():
+        return "bannerencu"
+
+    return template_name.strip()
+
+
 def _resolve_encuestas_whatsapp_banner_body(context: dict) -> str:
     """Return the caption used when sending the encuestas banner via media."""
 
@@ -8282,6 +8311,8 @@ def _build_encuestas_whatsapp_banner_pre_messages(
     return [
         {
             "channels": channels,
+            "template_name": _resolve_encuestas_whatsapp_banner_template_name(context),
+            "content_variables": {},
             "body": caption,
             "media_urls": [candidate_url],
         }
@@ -8336,6 +8367,8 @@ def _build_encuesta_share_whatsapp_pre_messages(
     return [
         {
             "channels": ["whatsapp"],
+            "template_name": _resolve_encuestas_whatsapp_banner_template_name(context),
+            "content_variables": {},
             "body": share_message,
             "media_urls": [candidate_url],
         }

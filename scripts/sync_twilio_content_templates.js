@@ -25,6 +25,40 @@ const DEFAULT_LANGUAGE = process.env.CHATBOC_TEMPLATE_LANGUAGE || "es";
 const TEMPLATE_PREFIX = "chatboc";
 const MANIFEST_PATH = path.join(__dirname, "twilio_content_templates.local.json");
 
+const existingOperationalTemplates = [
+  { name: "gobiernos_reclamo_sla", vertical: "gobierno", stage: "claim", entrypoint: "whatsapp" },
+  { name: "gobiernos_tasa_vencimiento", vertical: "gobierno", stage: "payment", entrypoint: "webview" },
+  { name: "gobiernos_turno_confirmacion", vertical: "gobierno", stage: "appointment", entrypoint: "whatsapp" },
+  { name: "gobiernos_comunicado_segmentado", vertical: "gobierno", stage: "announcement", entrypoint: "webview" },
+  { name: "gobiernos_tramite_estado", vertical: "gobierno", stage: "procedure", entrypoint: "whatsapp" },
+  { name: "colegios_cuota_vencimiento", vertical: "colegio", stage: "payment", entrypoint: "webview" },
+  { name: "colegios_turno_administracion", vertical: "colegio", stage: "appointment", entrypoint: "whatsapp" },
+  { name: "clinicas_turno_recordatorio", vertical: "clinica", stage: "appointment", entrypoint: "whatsapp" },
+  { name: "clubes_cuota_social", vertical: "club", stage: "payment", entrypoint: "webview" },
+  { name: "clubes_reserva_disciplina", vertical: "club", stage: "reservation", entrypoint: "whatsapp" },
+  { name: "consorcios_expensas_vencimiento", vertical: "consorcio", stage: "payment", entrypoint: "webview" },
+  { name: "consorcios_reclamo_sla", vertical: "consorcio", stage: "claim", entrypoint: "whatsapp" },
+  { name: "consorcios_comprobante_recibido", vertical: "consorcio", stage: "receipt", entrypoint: "whatsapp" },
+  { name: "consorcios_reserva_amenity", vertical: "consorcio", stage: "reservation", entrypoint: "whatsapp" },
+  { name: "emprendedores_pedido_confirmado", vertical: "pyme", stage: "order", entrypoint: "whatsapp" },
+  { name: "emprendedores_comprobante_revision", vertical: "pyme", stage: "receipt", entrypoint: "whatsapp" },
+  { name: "standard_handoff_humano", vertical: "all", stage: "handoff", entrypoint: "whatsapp" },
+  { name: "message_opt_in", vertical: "all", stage: "consent", entrypoint: "whatsapp" },
+  { name: "copy_navegacion", vertical: "all", stage: "menu", entrypoint: "whatsapp" },
+  { name: "customer_care_greeting_template", vertical: "all", stage: "support", entrypoint: "whatsapp" },
+  { name: "customer_care_help_center_template", vertical: "all", stage: "support", entrypoint: "webview" },
+  { name: "customer_support_routing_template", vertical: "all", stage: "support", entrypoint: "whatsapp" },
+  { name: "notification_order_tracking", vertical: "pyme", stage: "tracking", entrypoint: "whatsapp" },
+  { name: "promocionar", vertical: "all", stage: "marketing", entrypoint: "whatsapp" },
+  { name: "bannerencu", vertical: "all", stage: "survey", entrypoint: "whatsapp" },
+  { name: "saludo_inicial_juni", vertical: "gobierno", stage: "media_welcome", entrypoint: "whatsapp" },
+  { name: "turnero_pago_seguro_webview", vertical: "all", stage: "payment", entrypoint: "webview" },
+  { name: "turnero_pyme_pedido_webview", vertical: "pyme", stage: "order", entrypoint: "webview" },
+  { name: "turnero_colegio_admision_webview", vertical: "colegio", stage: "admission", entrypoint: "webview" },
+  { name: "turnero_gobierno_tramite_webview", vertical: "gobierno", stage: "procedure", entrypoint: "webview" },
+  { name: "turnero_soporte_caso_webview", vertical: "all", stage: "support", entrypoint: "webview" },
+];
+
 const args = new Set(process.argv.slice(2));
 const options = {
   dryRun: args.has("--dry-run") ||
@@ -313,6 +347,7 @@ async function main() {
     mode: modeLabel(),
     accountSid: maskSid(auth.accountSid),
     count: results.length,
+    catalog: buildCatalogSummary(existing),
     results,
   });
 }
@@ -407,11 +442,43 @@ async function listContentByFriendlyName(client) {
   const map = new Map();
   const page = await client.content.v1.contents.page({ pageSize: 1000 });
   for (const content of page.instances || []) {
-    if (content.friendlyName && !map.has(content.friendlyName)) {
-      map.set(content.friendlyName, content);
+    const friendlyName = contentFriendlyName(content);
+    if (friendlyName && !map.has(friendlyName)) {
+      map.set(friendlyName, content);
     }
   }
   return map;
+}
+
+function contentFriendlyName(content) {
+  if (!content) return null;
+  if (content.friendlyName) return content.friendlyName;
+  if (content.friendly_name) return content.friendly_name;
+  const json = typeof content.toJSON === "function" ? content.toJSON() : content;
+  return json.friendly_name || json.friendlyName || null;
+}
+
+function buildCatalogSummary(existing) {
+  const managed = templates.map((definition) => ({
+    name: definition.name,
+    sid: existing.get(definition.name) ? existing.get(definition.name).sid : null,
+    status: existing.has(definition.name) ? "present" : "missing",
+    managed: true,
+  }));
+  const operational = existingOperationalTemplates.map((definition) => ({
+    ...definition,
+    sid: existing.get(definition.name) ? existing.get(definition.name).sid : null,
+    status: existing.has(definition.name) ? "present" : "missing",
+    managed: false,
+  }));
+  return {
+    totalNamedInAccount: existing.size,
+    managedTemplates: managed.length,
+    managedPresent: managed.filter((item) => item.sid).length,
+    operationalTemplates: operational.length,
+    operationalPresent: operational.filter((item) => item.sid).length,
+    templates: [...managed, ...operational],
+  };
 }
 
 async function getApprovalStatus(client, sid) {
