@@ -2678,6 +2678,63 @@ def _resolve_approved_whatsapp_template_sid(
     return content_sid
 
 
+def _serialize_template_value(value: Any) -> str:
+    """Convert a Twilio template variable value to a string safely."""
+
+    if value is None:
+        return ""
+    if isinstance(value, (dict, list, tuple, set)):
+        try:
+            return json.dumps(value, ensure_ascii=False)
+        except TypeError:
+            return str(value)
+    return str(value)
+
+
+def _normalize_twilio_content_variables(
+    raw_variables: Any,
+    *,
+    user_name: str = "",
+    context: Optional[Dict[str, Any]] = None,
+) -> Optional[str]:
+    """Return the JSON string Twilio expects for Content API variables."""
+
+    if raw_variables is None:
+        return None
+
+    if isinstance(raw_variables, str):
+        return raw_variables
+
+    variables = raw_variables
+    if isinstance(variables, dict) and "variables" in variables and not any(
+        str(key).isdigit() for key in variables.keys()
+    ):
+        variables = variables.get("variables")
+
+    if isinstance(variables, (list, tuple)):
+        normalized = {
+            str(index): _serialize_template_value(value)
+            for index, value in enumerate(variables, start=1)
+        }
+    elif isinstance(variables, dict):
+        rendered = _render_template_variables(
+            variables,
+            user_name=user_name,
+            context=context or {},
+        )
+        normalized = {
+            str(key): _serialize_template_value(value)
+            for key, value in rendered.items()
+        }
+    else:
+        normalized = {"1": _serialize_template_value(variables)}
+
+    try:
+        return json.dumps(normalized, ensure_ascii=False)
+    except TypeError:
+        return json.dumps({}, ensure_ascii=False)
+
+
 def _dispatch_twilio_pre_messages(
     client,
     to_number: str,
@@ -2726,14 +2783,15 @@ def _dispatch_twilio_pre_messages(
         if content_sid:
             params["content_sid"] = content_sid
             content_variables = entry.get("content_variables")
-            if content_variables is not None:
-                if isinstance(content_variables, str):
-                    params["content_variables"] = content_variables
-                else:
-                    try:
-                        params["content_variables"] = json.dumps(content_variables or {})
-                    except TypeError:
-                        params["content_variables"] = json.dumps({})
+            if content_variables is None:
+                content_variables = entry.get("variables")
+            normalized_variables = _normalize_twilio_content_variables(
+                content_variables,
+                user_name=str(entry.get("user_name") or ""),
+                context=entry.get("context") if isinstance(entry.get("context"), dict) else {},
+            )
+            if normalized_variables is not None:
+                params["content_variables"] = normalized_variables
         else:
             body = entry.get("body")
             if body is not None:
