@@ -3209,6 +3209,57 @@ def _ensure_whatsapp_mapping_from_provider_sender(
     return mapping
 
 
+def _is_truthy_config_value(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "si", "sí", "on", "enabled"}
+
+
+def _plain_ascii_key(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    normalized = unicodedata.normalize("NFKD", text)
+    return "".join(ch for ch in normalized if not unicodedata.combining(ch))
+
+
+def _looks_like_junin_context(*values: Any) -> bool:
+    return any("junin" in _plain_ascii_key(value) for value in values if value)
+
+
+def _is_placeholder_municipio_name(value: Any) -> bool:
+    return _plain_ascii_key(value) in {"", "tu municipio", "municipio", "municipio inteligente", "demo municipio"}
+
+
+def _resolve_public_municipio_identity(
+    tenant_name: str,
+    assistant_name: Optional[str],
+    tenant_profile=None,
+    client_user=None,
+    tenant_config: Optional[dict] = None,
+) -> tuple[str, Optional[str]]:
+    tenant_config = tenant_config or {}
+    profile_name = getattr(tenant_profile, "nombre", None) if tenant_profile else None
+    client_name = None
+    if client_user:
+        client_name = getattr(client_user, "nombre_empresa", None) or getattr(client_user, "name", None)
+
+    if _looks_like_junin_context(
+        tenant_name,
+        assistant_name,
+        profile_name,
+        client_name,
+        tenant_config.get("tenant_slug"),
+        tenant_config.get("slug"),
+        tenant_config.get("nombre_municipio"),
+        tenant_config.get("nombre"),
+    ):
+        if _is_placeholder_municipio_name(tenant_name) or "junin" in _plain_ascii_key(tenant_name):
+            tenant_name = "Municipalidad de Junín"
+        if not assistant_name or _is_placeholder_municipio_name(assistant_name) or "municipio" in _plain_ascii_key(assistant_name):
+            assistant_name = "JUNI"
+
+    return tenant_name, assistant_name
+
+
 def _ensure_welcome_audio_payload(payload: dict) -> None:
     if not isinstance(payload, dict):
         return
@@ -3217,11 +3268,25 @@ def _ensure_welcome_audio_payload(payload: dict) -> None:
         return
 
     has_menu_content = bool(payload.get("options_list") or payload.get("categorias") or payload.get("botones"))
-    if not payload.get("generar_audio") and not payload.get("audio_text") and not has_menu_content:
-        return
-
-    if has_menu_content and not payload.get("generar_audio"):
+    if has_menu_content and not payload.get("audio_text"):
+        menu_audio_enabled = any(
+            _is_truthy_config_value(value)
+            for value in (
+                payload.get("force_audio"),
+                payload.get("force_audio_whatsapp"),
+                payload.get("menu_audio_enabled"),
+                current_app.config.get("WHATSAPP_MENU_AUDIO_ENABLED") if has_app_context() else None,
+                os.getenv("WHATSAPP_MENU_AUDIO_ENABLED"),
+            )
+        )
+        if not menu_audio_enabled:
+            payload["generar_audio"] = False
+            payload["skip_audio_generation"] = True
+            return
         payload["generar_audio"] = True
+
+    if not payload.get("generar_audio") and not payload.get("audio_text"):
+        return
 
     text_to_speak = payload.get("audio_text")
     if not text_to_speak:
@@ -3944,14 +4009,22 @@ def whatsapp_webhook():
                         or tenant_profile.nombre
                         or tenant_name
                     )
-                elif client_user:
-                    tenant_name = (
-                        getattr(client_user, "nombre_empresa", None)
-                        or getattr(client_user, "name", None)
-                        or tenant_name
-                    )
+    elif client_user:
+        tenant_name = (
+            getattr(client_user, "nombre_empresa", None)
+            or getattr(client_user, "name", None)
+            or tenant_name
+        )
 
-                greeting_name = f"{assistant_name} de {tenant_name}" if assistant_name else tenant_name
+    tenant_name, assistant_name = _resolve_public_municipio_identity(
+        tenant_name=tenant_name,
+        assistant_name=assistant_name,
+        tenant_profile=tenant_profile,
+        client_user=client_user,
+        tenant_config=tenant_config,
+    )
+
+    greeting_name = f"{assistant_name} de {tenant_name}" if assistant_name else tenant_name
 
                 if user_name is not None:
                     greeting = (
