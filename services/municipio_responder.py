@@ -909,6 +909,49 @@ CANCEL_KEYWORDS = {
     ]
 }
 
+CANCEL_COMMAND_TOKENS = {
+    normalizar_texto(k)
+    for k in [
+        "cancelar",
+        "salir",
+        "volver",
+        "menu",
+        "terminar",
+        "basta",
+        "reiniciar",
+        "resetear",
+    ]
+}
+
+
+def _contains_cancel_command(normalized_input: str) -> bool:
+    if not normalized_input:
+        return False
+    if normalized_input in CANCEL_KEYWORDS:
+        return True
+    tokens = {token for token in re.split(r"\W+", normalized_input) if token}
+    return bool(tokens & CANCEL_COMMAND_TOKENS)
+
+
+def _remove_cancel_command_tokens(normalized_input: str) -> str:
+    tokens = [token for token in re.split(r"\W+", normalized_input or "") if token]
+    return " ".join(token for token in tokens if token not in CANCEL_COMMAND_TOKENS)
+
+
+def _match_reclamo_menu_option(user_input: str, action: str | None = None) -> dict | None:
+    normalized_input = normalizar_texto(user_input or "")
+    normalized_action = (action or "").lower()
+    for option in _get_reclamos_menu().get("options_list", []):
+        if normalized_action and option.get("action_id") == normalized_action:
+            return option
+        if user_input and user_input.strip() and option.get("id_accion") == user_input.strip():
+            return option
+        if normalized_input and normalizar_texto(option.get("texto") or "") == normalized_input:
+            return option
+        if normalized_input and normalizar_texto(option.get("category_name") or "") == normalized_input:
+            return option
+    return None
+
 # Simple cache to avoid recomputing responses for repeated municipal queries
 MUNICIPIO_RESPONSE_CACHE = TTLCache(maxsize=256, ttl=3600)
 
@@ -934,9 +977,29 @@ class ReclamoFlowHandler:
         normalized_input = normalizar_texto(user_input)
         action = (payload.get("action_id") or payload.get("action") or "").lower()
         if (
-            normalized_input in CANCEL_KEYWORDS
+            _contains_cancel_command(normalized_input)
             or action in {"cancelar", "reclamo_cancelar", "menu_principal"}
         ):
+            followup_input = _remove_cancel_command_tokens(normalized_input)
+            followup_action = find_global_menu_action(followup_input) if followup_input else None
+            if not followup_action:
+                followup_action = find_global_menu_action(normalized_input)
+            if followup_action and followup_action not in {
+                "limpiar_contexto",
+                "mostrar_menu_reclamos",
+                "iniciar_reclamo",
+            }:
+                self.flow_context.clear()
+                self.municipal_ctx.pop("reclamo_flow_v2", None)
+                self.municipal_ctx.pop("estado_conversacion", None)
+                self.municipal_ctx.pop("menu_opciones", None)
+                response = handle_main_menu_action(
+                    followup_action,
+                    self.context,
+                    self.chat_db_context,
+                )
+                if response:
+                    return response
             return self.end_flow(
                 "Proceso de reclamo cancelado. En que mas te puedo ayudar?",
                 show_menu=True,
@@ -1223,6 +1286,17 @@ class ReclamoFlowHandler:
 
     def handle_categoria(self, user_input):
         normalized_user_input = normalizar_texto(user_input or "")
+        selected_menu_option = _match_reclamo_menu_option(user_input)
+        if selected_menu_option:
+            selected_action = selected_menu_option.get("action_id")
+            if selected_action == "menu_principal":
+                return self._return_to_main_menu()
+            if selected_action == "cancelar":
+                return self.end_flow(
+                    "Proceso de reclamo cancelado. En que mas te puedo ayudar?",
+                    show_menu=True,
+                )
+
         if (user_input and user_input.strip() == "0") or (
             normalized_user_input in RETURN_TO_MAIN_MENU_NORMALIZED
         ):
@@ -9055,21 +9129,37 @@ def _get_ayuda_menu():
 
 def _get_reclamos_menu():
     opciones = [
-        {"texto": "*Volver al inicio*", "id_accion": "0", "action_id": "menu_principal", "category_name": "Volver al inicio"},
         {"texto": "Luminaria", "id_accion": "1", "category_name": "Luminaria"},
         {"texto": "Arbolado", "id_accion": "2", "category_name": "Arbolado"},
         {"texto": "Limpieza y riego", "id_accion": "3", "category_name": "Limpieza y riego"},
         {"texto": "Arreglo de calle", "id_accion": "4", "category_name": "Arreglo de calle"},
         {"texto": "Perdida de agua", "id_accion": "5", "category_name": "Pérdida de agua"},
         {"texto": "Otros", "id_accion": "6", "category_name": "Otros"},
-        {"texto": "Cancelar", "action_id": "cancelar"},
+        {"texto": "Volver al inicio", "id_accion": "7", "action_id": "menu_principal"},
+        {"texto": "Cancelar", "id_accion": "8", "action_id": "cancelar"},
     ]
     return {
         "message_body": "Elegí una opción para tu reclamo:",
         "message_type": "interactive_buttons",
         "options_list": opciones,
         "fuente": "submenu_reclamos_estandar_v5",
+        "audio_text": (
+            "Elegí una opción para tu reclamo. "
+            "Opción 1: Luminaria. "
+            "Opción 2: Arbolado. "
+            "Opción 3: Limpieza y riego. "
+            "Opción 4: Arreglo de calle. "
+            "Opción 5: Pérdida de agua. "
+            "Opción 6: Otros. "
+            "Opción 7: Volver al inicio. "
+            "Opción 8: Cancelar."
+        ),
         "generar_audio": True,
+        "menu_audio_enabled": True,
+        "tts_voice": "shimmer",
+        "tts_model": os.getenv("OPENAI_TTS_MENU_MODEL", "tts-1-hd"),
+        "tts_speed": 0.92,
+        "tts_cache_namespace": "menu_reclamos_estandar_v5",
     }
     """Devuelve la estructura del menú de reclamos estandarizado, con íconos y negritas."""
     iconos = {
@@ -9752,6 +9842,15 @@ def responder_municipio(
                 selected_category_name = reclamo_categories[action]
             else:
                 normalized_input = normalizar_texto(pregunta_str_reclamo or "")
+                selected_option = _match_reclamo_menu_option(pregunta_str_reclamo, action)
+                if selected_option and selected_option.get("action_id") in {"cancelar", "menu_principal"}:
+                    response = handle_main_menu_action(
+                        selected_option.get("action_id"),
+                        context,
+                        chat_db_context,
+                    )
+                    return _finalize_response(response)
+
                 if pregunta_str_reclamo == "0" or normalized_input in RETURN_TO_MAIN_MENU:
                     return _finalize_response(GreetingHandler(context).handle({}))
 
@@ -11487,6 +11586,15 @@ def responder_municipio(
         logger_actual.info(f"Handling input in ESPERANDO_SELECCION_MENU_RECLAMOS state. Input: '{pregunta_str_reclamo}'")
 
         normalized_input = normalizar_texto(pregunta_str_reclamo or "")
+        selected_option = _match_reclamo_menu_option(pregunta_str_reclamo, action)
+        if selected_option and selected_option.get("action_id") in {"cancelar", "menu_principal"}:
+            logger_actual.info("User selected reclamos control option: %s", selected_option.get("action_id"))
+            response = handle_main_menu_action(
+                selected_option.get("action_id"),
+                context,
+                chat_db_context,
+            )
+            return _finalize_response(response)
 
         if pregunta_str_reclamo in {"0"} or normalized_input in RETURN_TO_MAIN_MENU:
             logger_actual.info("User requested to return to main menu from reclamos menu.")

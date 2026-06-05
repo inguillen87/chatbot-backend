@@ -42,8 +42,8 @@ class TestReclamoNumericFlow(unittest.TestCase):
         estado = self.chat_ctx.context_data[CONTEXTO_MUNICIPIO]["estado_conversacion"]
         self.assertEqual(estado, ConversationState.ESPERANDO_SELECCION_MENU_RECLAMOS.name)
 
-        # User selects option 2 -> Luminaria
-        response3 = responder_municipio("2", self.owner, self.owner.rubro, viewer_user=self.owner, chat_db_context=self.chat_ctx, channel="whatsapp")
+        # User selects option 1 -> Luminaria
+        response3 = responder_municipio("1", self.owner, self.owner.rubro, viewer_user=self.owner, chat_db_context=self.chat_ctx, channel="whatsapp")
         self.assertIn("describí brevemente", response3["message_body"])
 
 if __name__ == '__main__':

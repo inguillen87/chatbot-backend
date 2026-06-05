@@ -27,6 +27,20 @@ class TestReclamoFlowUX(unittest.TestCase):
         )
         self.assertEqual(handler.flow_context["state"], ReclamoState.ESPERANDO_CATEGORIA.name)
         self.assertTrue(response.get("options_list"))
+        self.assertTrue(response.get("generar_audio"))
+        self.assertTrue(response.get("menu_audio_enabled"))
+        self.assertEqual(response.get("tts_cache_namespace"), "menu_reclamos_estandar_v5")
+        self.assertIn("Opción 1: Luminaria", response.get("audio_text", ""))
+
+    def test_handle_categoria_first_number_selects_luminaria(self):
+        flow_context = {"state": ReclamoState.ESPERANDO_CATEGORIA.name, "datos_reclamo": {}}
+        handler = self._build_handler(flow_context)
+
+        response = handler.handle("1", {"pregunta": "1"})
+
+        self.assertEqual(handler.flow_context["datos_reclamo"].get("categoria"), "Luminaria")
+        self.assertEqual(handler.flow_context["state"], ReclamoState.ESPERANDO_DESCRIPCION.name)
+        self.assertIn("Luminaria", response.get("message_body", ""))
 
     def test_handle_categoria_volver_al_inicio_shows_menu(self):
         context = {
@@ -36,9 +50,9 @@ class TestReclamoFlowUX(unittest.TestCase):
         handler = ReclamoFlowHandler(context, MagicMock())
         handler.start_flow()
 
-        # Simulate that we are waiting for a category choice and the user selects the first option.
+        # Simulate that we are waiting for a category choice and the user selects Volver.
         handler.flow_context['state'] = ReclamoState.ESPERANDO_CATEGORIA.name
-        response = handler.handle("1", {"pregunta": "1"})
+        response = handler.handle("7", {"pregunta": "7"})
 
         self.assertIn("Bienvenido", response.get("message_body", ""))
         self.assertIn("tu municipio", response.get("message_body", ""))
@@ -48,6 +62,41 @@ class TestReclamoFlowUX(unittest.TestCase):
             municipal_ctx.get("estado_conversacion"),
             ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name,
         )
+
+    def test_handle_categoria_choice_eight_cancels(self):
+        context = {"chat_db_context_data": {}}
+        handler = ReclamoFlowHandler(context, MagicMock())
+        handler.start_flow()
+        handler.flow_context["state"] = ReclamoState.ESPERANDO_CATEGORIA.name
+
+        response = handler.handle("8", {"pregunta": "8"})
+
+        self.assertIn("cancelado", response.get("message_body", "").lower())
+        municipal_ctx = context["chat_db_context_data"].get(CONTEXTO_MUNICIPIO, {})
+        self.assertNotIn("reclamo_flow_v2", municipal_ctx)
+
+    def test_cancelar_with_encuestas_exits_claim_and_routes_to_surveys(self):
+        context = {"chat_db_context_data": {}}
+        handler = ReclamoFlowHandler(context, MagicMock())
+        handler.start_flow()
+        handler.flow_context["state"] = ReclamoState.ESPERANDO_CATEGORIA.name
+
+        with patch("services.municipio_responder.handle_main_menu_action") as mock_action:
+            mock_action.return_value = {
+                "message_body": "Encuestas disponibles",
+                "options_list": [],
+                "message_type": "text",
+            }
+            response = handler.handle(
+                "cancelar. quiero ver encuestas",
+                {"pregunta": "cancelar. quiero ver encuestas"},
+            )
+
+        mock_action.assert_called_once()
+        self.assertEqual(mock_action.call_args.args[0], "mostrar_menu_encuestas")
+        self.assertIn("Encuestas disponibles", response.get("message_body", ""))
+        municipal_ctx = context["chat_db_context_data"].get(CONTEXTO_MUNICIPIO, {})
+        self.assertNotIn("reclamo_flow_v2", municipal_ctx)
 
     def test_skip_photo_prompt_if_already_has_photo(self):
         flow_context = {

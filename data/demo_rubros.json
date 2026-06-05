@@ -3,11 +3,11 @@
     "key": "municipio",
     "segment": "Gobiernos",
     "subsegment": "Municipios y ciudades",
-    "nombre": "Municipio Inteligente",
+    "nombre": "Gobiernos y municipios",
     "tipo_chat": "municipio",
     "rubro_clave": "municipio",
     "prompt_context": "Municipio demo que gestiona reclamos ciudadanos (luminaria, bacheo, poda), trámites digitales (licencias, tasas, turnos) y agenda cultural. Utiliza un tono cercano, eficiente y orientado al servicio público. Prioriza la resolución rápida y la derivación al área correcta.",
-    "welcome_message": "🏛️ Bienvenido al asistente del Municipio Inteligente.\n\nElegí una opción para iniciar reclamos, consultar trámites o ver la agenda cultural.",
+    "welcome_message": "🏛️ Bienvenido al asistente demo para gestión ciudadana.\n\nElegí una opción para iniciar reclamos, consultar trámites o ver la agenda cultural.",
     "resources": [
       {
         "title": "Guía de trámites digitales",

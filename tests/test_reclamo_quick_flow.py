@@ -130,7 +130,7 @@ def test_tap_emoji_triggers_water(owner_user):
 
 def test_numeric_selection_maps_to_category(owner_user):
     result = run_turn(
-        "5",
+        "4",
         state="EN_FLUJO_RECLAMO",
         flow_state="ESPERANDO_CATEGORIA",
         owner_user=owner_user,

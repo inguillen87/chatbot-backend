@@ -401,7 +401,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
             for call in self.mock_twilio_create.call_args_list
         ]
         self.assertTrue(any("Chatboc.ar" in body for body in sent_bodies))
-        self.assertTrue(any("Municipio inteligente" in body for body in sent_bodies))
+        self.assertTrue(any("Gobiernos y municipios" in body for body in sent_bodies))
         sent_media = [
             call.kwargs.get("media_url")
             for call in self.mock_twilio_create.call_args_list
@@ -468,7 +468,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
 
         sent_bodies = [str(call.kwargs.get("body") or "") for call in self.mock_twilio_create.call_args_list]
         self.assertNotIn("Llegaste al limite", sent_bodies[-1])
-        self.assertIn("Municipio inteligente", sent_bodies[-1])
+        self.assertIn("Gobiernos y municipios", sent_bodies[-1])
 
         session = ChatSessionContext.query.filter_by(anon_id="+5492613168608").first()
         self.assertIsNotNone(session)
@@ -502,7 +502,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
 
         sent_bodies = [str(call.kwargs.get("body") or "") for call in self.mock_twilio_create.call_args_list]
         self.assertNotIn("Llegaste al limite", sent_bodies[-1])
-        self.assertIn("Municipio inteligente", sent_bodies[-1])
+        self.assertIn("Gobiernos y municipios", sent_bodies[-1])
 
     @patch("routes.whatsapp_webhook.responder_chatboc")
     def test_chatboc_demo_public_number_stays_limited_after_limit(self, mock_bot):
@@ -531,7 +531,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         sent_bodies = [str(call.kwargs.get("body") or "") for call in self.mock_twilio_create.call_args_list]
         self.assertIn("Llegaste al limite de 2 mensajes de prueba", sent_bodies[-1])
         self.assertIn("Si, quiero que me contacten", sent_bodies[-1])
-        self.assertNotIn("Municipio inteligente", sent_bodies[-1])
+        self.assertNotIn("Gobiernos y municipios", sent_bodies[-1])
 
     @patch("routes.whatsapp_webhook.responder_chatboc")
     def test_chatboc_demo_limit_yes_marks_hot_lead_without_resetting_public_limit(self, mock_bot):

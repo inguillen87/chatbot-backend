@@ -2362,7 +2362,7 @@ def _admin_preview_for_sector(sector: str, tenant_slug: str = "", chat_session_i
         },
         "gobierno": {
             "title": "Panel demo para gestion ciudadana",
-            "subtitle": "Municipio inteligente",
+            "subtitle": "Gobiernos y municipios",
             "modules": [
                 {"id": "summary", "label": "Resumen", "enabled": True},
                 {"id": "claims", "label": "Reclamos", "enabled": True},

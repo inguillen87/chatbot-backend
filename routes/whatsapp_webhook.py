@@ -1157,7 +1157,7 @@ def _build_chatboc_demo_root_payload(contact_name: Optional[str], ticket: Option
         "message_body": body,
         "message_type": "text",
         "options_list": [
-            _chatboc_demo_option("🏛️ Municipio inteligente", "chatboc_demo:gobierno"),
+            _chatboc_demo_option("🏛️ Gobiernos y municipios", "chatboc_demo:gobierno"),
             _chatboc_demo_option("🎓 Colegio y familias", "chatboc_demo:educacion"),
             _chatboc_demo_option("🛍️ Empresa y pedidos", "chatboc_demo:empresas"),
             _chatboc_demo_option("🗳️ Encuestas en vivo", "chatboc_surveys"),
@@ -1176,7 +1176,7 @@ def _build_chatboc_demo_root_payload(contact_name: Optional[str], ticket: Option
 def _build_chatboc_demo_sector_payload(sector: str) -> Dict[str, Any]:
     labels = {
         "gobierno": (
-            "🏛️ Municipio inteligente",
+            "🏛️ Gobiernos y municipios",
             "Abrí reclamos con ubicación y evidencia, mirá mapa de calor, votaciones y participación ciudadana.",
             "https://www.chatboc.ar/demo?sector=gobierno",
         ),
@@ -3862,25 +3862,55 @@ def whatsapp_webhook():
 
                 municipio_config = {}
                 municipio_name = None
-                if client_user and getattr(client_user, "tipo_chat", None) == "municipio":
-                    municipio_id = getattr(client_user, "municipio_id", None)
+                is_municipio_client = bool(
+                    client_user and getattr(client_user, "tipo_chat", None) == "municipio"
+                )
+                if is_municipio_client:
+                    municipio_id = getattr(client_user, "municipio_id", None) or getattr(client_user, "id", None)
                     if municipio_id is not None:
                         municipio_config = cargar_configuracion_municipio(str(municipio_id), "config.json") or {}
                     if isinstance(municipio_config, dict):
                         municipio_name = municipio_config.get("nombre") or None
 
-                should_send_template = bool(template_sid) and not template_state.get("disabled", False)
-                should_send_sticker = bool(resolved_sticker_url) and not sticker_state.get("disabled", False)
-                sticker_metadata_allowed = True
-                template_variables_payload: Dict[str, str] = {
-                    "1": user_name or "",
-                    "2": municipio_name or "Chatboc",
-                }
-
                 if tenant_profile and isinstance(getattr(tenant_profile, "configuracion", None), dict):
                     tenant_config = tenant_profile.configuracion or {}
                     assistant_name = tenant_config.get("assistant_name") or tenant_config.get("bot_name")
-                    if assistant_name:
+
+                if is_municipio_client:
+                    tenant_name_for_welcome = (
+                        municipio_name
+                        or tenant_config.get("nombre_municipio")
+                        or tenant_config.get("nombre")
+                        or (tenant_profile.nombre if tenant_profile else None)
+                        or getattr(client_user, "nombre_empresa", None)
+                        or getattr(client_user, "name", None)
+                        or "Tu Municipio"
+                    )
+                    municipio_name, assistant_name = _resolve_public_municipio_identity(
+                        tenant_name=tenant_name_for_welcome,
+                        assistant_name=assistant_name,
+                        tenant_profile=tenant_profile,
+                        client_user=client_user,
+                        tenant_config=tenant_config,
+                    )
+
+                should_send_template = bool(template_sid) and not template_state.get("disabled", False)
+                should_send_sticker = bool(resolved_sticker_url) and not sticker_state.get("disabled", False)
+                sticker_metadata_allowed = True
+                public_welcome_identity = (
+                    f"{assistant_name} de {municipio_name}"
+                    if is_municipio_client and assistant_name
+                    else municipio_name
+                    or assistant_name
+                    or "Chatboc"
+                )
+                template_variables_payload: Dict[str, str] = {
+                    "1": user_name or "",
+                    "2": public_welcome_identity,
+                }
+
+                if tenant_profile and isinstance(getattr(tenant_profile, "configuracion", None), dict):
+                    if assistant_name and not is_municipio_client:
                         template_variables_payload["2"] = assistant_name
 
                 if should_send_template:
@@ -3997,21 +4027,23 @@ def whatsapp_webhook():
 
                 greeting_sent = False
 
-                tenant_name = "Tu Municipio"
+                tenant_name = municipio_name or "Tu Municipio"
                 assistant_name = assistant_name or None
                 tenant_config = tenant_config or {}
                 if tenant_profile and isinstance(getattr(tenant_profile, "configuracion", None), dict):
                     tenant_config = tenant_profile.configuracion or tenant_config
                     assistant_name = assistant_name or tenant_config.get("assistant_name") or tenant_config.get("bot_name")
                     tenant_name = (
-                        tenant_config.get("nombre_municipio")
+                        municipio_name
+                        or tenant_config.get("nombre_municipio")
                         or tenant_config.get("nombre")
                         or tenant_profile.nombre
                         or tenant_name
                     )
                 elif client_user:
                     tenant_name = (
-                        getattr(client_user, "nombre_empresa", None)
+                        municipio_name
+                        or getattr(client_user, "nombre_empresa", None)
                         or getattr(client_user, "name", None)
                         or tenant_name
                     )
