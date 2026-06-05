@@ -1202,6 +1202,45 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         # Legacy welcome helper is no longer used.
         self.mock_welcome.assert_not_called()
 
+    def test_junin_welcome_template_uses_public_municipality_identity(self):
+        self._set_owner_tipo_chat("municipio")
+        self.mock_client_user.name = "Juni"
+        self.mock_client_user.nombre_empresa = "Juni"
+        self.mock_client_user.municipio_id = self.mock_client_user.id
+        db.session.add(self.mock_client_user)
+        db.session.commit()
+
+        self.mock_validator.validate.return_value = True
+        self.app.config["WELCOME_TEMPLATE_SID"] = "fake_template_sid"
+        self.app.config["WELCOME_MEDIA_URL"] = None
+        self.app.config["WELCOME_AUDIO_URL"] = None
+
+        with patch("routes.whatsapp_webhook.generar_audio", return_value=None):
+            response = self.client.post(
+                "/webhook/whatsapp",
+                data={
+                    "To": f"whatsapp:{self.test_whatsapp_number_str}",
+                    "From": f"whatsapp:{self.test_user_number_str}",
+                    "Body": "hola",
+                    "ProfileName": "Marcelo",
+                },
+                headers={"X-Twilio-Signature": "dummy_signature_valid"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        template_kwargs = self.mock_twilio_create.call_args_list[0].kwargs
+        content_vars = json.loads(template_kwargs.get("content_variables", "{}"))
+        self.assertEqual(content_vars.get("1"), "Marcelo")
+        self.assertEqual(content_vars.get("2"), "JUNI de Municipalidad de Junín")
+
+        sent_bodies = [
+            str(call.kwargs.get("body") or "")
+            for call in self.mock_twilio_create.call_args_list
+        ]
+        self.assertTrue(any("JUNI de Municipalidad de Junín" in body for body in sent_bodies))
+        self.assertFalse(any("Municipio Inteligente" in body for body in sent_bodies))
+        self.assertFalse(any("Chatboc" in body for body in sent_bodies))
+
     def test_pyme_welcome_skips_template_and_sticker(self):
         self._set_owner_tipo_chat("pyme")
         self.mock_validator.validate.return_value = True

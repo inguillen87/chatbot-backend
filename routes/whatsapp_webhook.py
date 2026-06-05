@@ -3222,7 +3222,13 @@ def _plain_ascii_key(value: Any) -> str:
 
 
 def _looks_like_junin_context(*values: Any) -> bool:
-    return any("junin" in _plain_ascii_key(value) for value in values if value)
+    for value in values:
+        if not value:
+            continue
+        key = _plain_ascii_key(value)
+        if "junin" in key or key in {"juni", "juni bot", "asistente juni"}:
+            return True
+    return False
 
 
 def _is_placeholder_municipio_name(value: Any) -> bool:
@@ -3252,7 +3258,8 @@ def _resolve_public_municipio_identity(
         tenant_config.get("nombre_municipio"),
         tenant_config.get("nombre"),
     ):
-        if _is_placeholder_municipio_name(tenant_name) or "junin" in _plain_ascii_key(tenant_name):
+        tenant_key = _plain_ascii_key(tenant_name)
+        if _is_placeholder_municipio_name(tenant_name) or "junin" in tenant_key or tenant_key == "juni":
             tenant_name = "Municipalidad de Junín"
         if not assistant_name or _is_placeholder_municipio_name(assistant_name) or "municipio" in _plain_ascii_key(assistant_name):
             assistant_name = "JUNI"
