@@ -4009,22 +4009,22 @@ def whatsapp_webhook():
                         or tenant_profile.nombre
                         or tenant_name
                     )
-    elif client_user:
-        tenant_name = (
-            getattr(client_user, "nombre_empresa", None)
-            or getattr(client_user, "name", None)
-            or tenant_name
-        )
+                elif client_user:
+                    tenant_name = (
+                        getattr(client_user, "nombre_empresa", None)
+                        or getattr(client_user, "name", None)
+                        or tenant_name
+                    )
 
-    tenant_name, assistant_name = _resolve_public_municipio_identity(
-        tenant_name=tenant_name,
-        assistant_name=assistant_name,
-        tenant_profile=tenant_profile,
-        client_user=client_user,
-        tenant_config=tenant_config,
-    )
+                tenant_name, assistant_name = _resolve_public_municipio_identity(
+                    tenant_name=tenant_name,
+                    assistant_name=assistant_name,
+                    tenant_profile=tenant_profile,
+                    client_user=client_user,
+                    tenant_config=tenant_config,
+                )
 
-    greeting_name = f"{assistant_name} de {tenant_name}" if assistant_name else tenant_name
+                greeting_name = f"{assistant_name} de {tenant_name}" if assistant_name else tenant_name
 
                 if user_name is not None:
                     greeting = (
