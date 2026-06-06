@@ -68,6 +68,7 @@ from .common_utils import (
     construir_respuesta_sugerir_registro,
     extract_multiple_contact_details_regex,
     _get_main_menu_payload,
+    build_menu_tts_cache_namespace,
 )
 from utils.validators import extract_email, extract_phone, extract_dni, extract_name
 from utils.address_parse import split_ubicacion_y_distrito
@@ -1246,7 +1247,7 @@ class ReclamoFlowHandler:
         if not self.flow_context['datos_reclamo'].get('categoria'):
             self.municipal_ctx['estado_conversacion'] = ConversationState.ESPERANDO_SELECCION_MENU_RECLAMOS.name
             self.flow_context['state'] = ReclamoState.ESPERANDO_CATEGORIA.name
-            return _get_reclamos_menu()
+            return _get_reclamos_menu(self.context)
         # Once we have a category, mark the flow as active.
         self.municipal_ctx['estado_conversacion'] = "EN_FLUJO_RECLAMO"
 
@@ -4617,7 +4618,7 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                         contexto_municipio_actual["expected_fields_llm_reclamo"] = expected_fields_active
                         contexto_municipio_actual["esperando_info_llm_reclamo"] = "categoria"
                         contexto_municipio_actual["esperando_info_llm"] = "categoria"
-                        menu_payload = _get_reclamos_menu()
+                        menu_payload = _get_reclamos_menu(context)
                         menu_payload["message_body"] = (
                             "Entendido. Para continuar, elegí la categoría del reclamo:"
                         )
@@ -9127,7 +9128,9 @@ def _get_ayuda_menu():
         "generar_audio": True,
     }
 
-def _get_reclamos_menu():
+def _get_reclamos_menu(context: Optional[dict] = None):
+    context = context if isinstance(context, dict) else {}
+    channel = str(context.get("channel") or "whatsapp")
     opciones = [
         {"texto": "Luminaria", "id_accion": "1", "category_name": "Luminaria"},
         {"texto": "Arbolado", "id_accion": "2", "category_name": "Arbolado"},
@@ -9159,7 +9162,24 @@ def _get_reclamos_menu():
         "tts_voice": "shimmer",
         "tts_model": os.getenv("OPENAI_TTS_MENU_MODEL", "tts-1-hd"),
         "tts_speed": 0.92,
-        "tts_cache_namespace": "menu_reclamos_estandar_v5",
+        "tts_cache_namespace": build_menu_tts_cache_namespace(
+            context=context,
+            tenant_name=(
+                context.get("municipio_config_actual", {}).get("nombre")
+                if isinstance(context.get("municipio_config_actual"), dict)
+                else None
+            ),
+            menu_key="reclamos",
+            channel=channel,
+            reduced=False,
+            version="v5",
+        ),
+        "audio_cache_policy": {
+            "kind": "fixed_menu",
+            "scope": "tenant",
+            "cache": "tts_audio_cache",
+            "inclusive": True,
+        },
     }
     """Devuelve la estructura del menú de reclamos estandarizado, con íconos y negritas."""
     iconos = {
@@ -9884,7 +9904,7 @@ def responder_municipio(
                     flag_modified(chat_db_context, "context_data")
                 return _finalize_response(response_dict)
             else:
-                return _finalize_response(_get_reclamos_menu())
+                return _finalize_response(_get_reclamos_menu(context))
 
         elif estado_conversacion == ConversationState.ESPERANDO_INTENCION_UBICACION.name:
             ubicacion_contextual = contexto_municipio_actual.get('ubicacion_contextual')
@@ -10642,7 +10662,7 @@ def responder_municipio(
 
     if intent_name == "iniciar_reclamo":
         logger_actual.info("Claim initiation intent detected. Bypassing LLM and showing reclamo categories.")
-        response = _get_reclamos_menu()
+        response = _get_reclamos_menu(context)
         contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_SELECCION_DE_LISTA.name
         contexto_municipio_actual["menu_opciones"] = response.get("options_list", [])
         if chat_db_context:
@@ -10866,7 +10886,7 @@ def responder_municipio(
                     flag_modified(chat_db_context, "context_data")
                 return _finalize_response(response_dict)
             else:
-                return _finalize_response(_get_reclamos_menu())
+                return _finalize_response(_get_reclamos_menu(context))
 
         elif estado_conversacion == ConversationState.ESPERANDO_INTENCION_UBICACION.name:
             ubicacion_contextual = contexto_municipio_actual.pop('ubicacion_contextual', None)
@@ -11614,7 +11634,7 @@ def responder_municipio(
         }
         if not pregunta_str_reclamo or normalized_input in repeat_commands:
             logger_actual.info("Input requests reclamos menu again. Returning submenu.")
-            return _finalize_response(_get_reclamos_menu())
+            return _finalize_response(_get_reclamos_menu(context))
 
         reclamo_options = _get_reclamos_menu().get("options_list", [])
         selected_category_name = None
@@ -11670,7 +11690,7 @@ def responder_municipio(
             # --- FIN: Integración del nuevo ReclamoFlowHandler ---
         else:
             logger_actual.warning(f"Input '{pregunta_str_reclamo}' no coincide con ninguna categoría. Mostrando menú de nuevo.")
-            return _finalize_response(_get_reclamos_menu())
+            return _finalize_response(_get_reclamos_menu(context))
     # --- FIN: Manejo de selección de menú de reclamos ---
 
     elif estado_conversacion == ConversationState.ESPERANDO_NOMBRE_INICIAL.name:

@@ -5,7 +5,11 @@ import uuid
 
 # --- Modo "solo migraciones" o "testing" para evitar carga pesada de eventlet ---
 MIGRATIONS_ONLY = os.getenv("FLASK_MIGRATIONS_ONLY") == "1"
-TESTING_MODE = os.getenv("TESTING") == "1" or "pytest" in sys.modules
+TESTING_MODE = (
+    os.getenv("TESTING") == "1"
+    or "pytest" in sys.modules
+    or "unittest" in sys.modules
+)
 os.environ.setdefault("EVENTLET_NO_GREENDNS", "YES")
 
 # Monkey patch must happen before importing any other modules that might use threads/sockets
@@ -364,7 +368,10 @@ def create_app(config_class=Config):
         app.config['SESSION_SQLALCHEMY'] = db
         session_ext = Session()
         if app.config.get("TESTING"):
-            app.config['SESSION_TYPE'] = 'filesystem'
+            from cachelib.simple import SimpleCache
+
+            app.config['SESSION_TYPE'] = 'cachelib'
+            app.config['SESSION_CACHELIB'] = SimpleCache(default_timeout=300)
         session_ext.init_app(app)
 
     # Logging de app
@@ -887,7 +894,12 @@ def create_app(config_class=Config):
 # Objeto global de app para Gunicorn (se puede omitir en tests configurando
 # FLASK_SKIP_GLOBAL_APP=1)
 if os.getenv("FLASK_SKIP_GLOBAL_APP") != "1":
-    app = create_app(Config)
+    if TESTING_MODE:
+        from config import TestingConfig
+
+        app = create_app(TestingConfig)
+    else:
+        app = create_app(Config)
 else:
     app = None
 

@@ -3271,10 +3271,25 @@ def _ensure_welcome_audio_payload(payload: dict) -> None:
     if not isinstance(payload, dict):
         return
 
+    has_menu_content = bool(payload.get("options_list") or payload.get("categorias") or payload.get("botones"))
+    audio_policy = payload.get("audio_cache_policy") if isinstance(payload.get("audio_cache_policy"), dict) else {}
+    prefers_cached_menu_audio = bool(
+        payload.get("audio_url")
+        and has_menu_content
+        and payload.get("audio_text")
+        and (
+            payload.get("menu_audio_enabled")
+            or audio_policy.get("kind") == "fixed_menu"
+            or payload.get("tts_cache_namespace")
+        )
+    )
+    fallback_audio_url = payload.get("audio_url") if prefers_cached_menu_audio else None
+    if prefers_cached_menu_audio:
+        payload.pop("audio_url", None)
+
     if payload.get("audio_url") or payload.get("skip_audio_generation"):
         return
 
-    has_menu_content = bool(payload.get("options_list") or payload.get("categorias") or payload.get("botones"))
     if has_menu_content and not payload.get("audio_text"):
         menu_audio_enabled = any(
             _is_truthy_config_value(value)
@@ -3324,6 +3339,8 @@ def _ensure_welcome_audio_payload(payload: dict) -> None:
         )
         if audio_url:
             payload["audio_url"] = audio_url
+        elif fallback_audio_url:
+            payload["audio_url"] = fallback_audio_url
 
 
 def _prepare_cached_welcome_audio(payload: dict, *, tenant_profile=None, client_user=None) -> None:

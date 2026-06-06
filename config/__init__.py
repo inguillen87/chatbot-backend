@@ -834,6 +834,9 @@ class TestConfig(Config):
     SQLALCHEMY_DATABASE_URI = 'sqlite:///:memory:'
     SQLALCHEMY_ENGINE_OPTIONS = {'connect_args': {'timeout': 5}}
     CELERY_TASK_ALWAYS_EAGER = True
+    ENABLE_RUNTIME_SCHEMA_SYNC = False
+    ENABLE_RUNTIME_TENANT_INIT = False
+    SKIP_INIT_TENANTS = True
     SESSION_COOKIE_SECURE = False
     SERVER_NAME = 'localhost'
     SESSION_COOKIE_DOMAIN = None

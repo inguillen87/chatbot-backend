@@ -1,4 +1,5 @@
 import unittest
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from services.municipio_responder import (
@@ -10,6 +11,26 @@ from services.municipio_responder import (
 
 
 class TestReclamoFlowUX(unittest.TestCase):
+    def setUp(self):
+        self._contact_llm_patch = patch(
+            "services.municipio_responder.extract_multiple_contact_details_llm",
+            return_value={},
+        )
+        self._complaint_llm_patch = patch(
+            "services.municipio_responder.extract_complaint_details_llm",
+            return_value={},
+        )
+        self._bridge_llm_patch = patch(
+            "services.llm_bridge.llamar_llm_para_generacion_texto",
+            return_value="{}",
+        )
+        self._contact_llm_patch.start()
+        self._complaint_llm_patch.start()
+        self._bridge_llm_patch.start()
+        self.addCleanup(self._contact_llm_patch.stop)
+        self.addCleanup(self._complaint_llm_patch.stop)
+        self.addCleanup(self._bridge_llm_patch.stop)
+
     def _build_handler(self, flow_context):
         context = {"chat_db_context_data": {CONTEXTO_MUNICIPIO: {"reclamo_flow_v2": flow_context}}}
         return ReclamoFlowHandler(context, MagicMock())
@@ -29,8 +50,44 @@ class TestReclamoFlowUX(unittest.TestCase):
         self.assertTrue(response.get("options_list"))
         self.assertTrue(response.get("generar_audio"))
         self.assertTrue(response.get("menu_audio_enabled"))
-        self.assertEqual(response.get("tts_cache_namespace"), "menu_reclamos_estandar_v5")
+        self.assertEqual(
+            response.get("tts_cache_namespace"),
+            "whatsapp:menu:municipio:reclamos:whatsapp:full:v5",
+        )
+        self.assertEqual(
+            response.get("audio_cache_policy"),
+            {
+                "kind": "fixed_menu",
+                "scope": "tenant",
+                "cache": "tts_audio_cache",
+                "inclusive": True,
+            },
+        )
         self.assertIn("Opción 1: Luminaria", response.get("audio_text", ""))
+
+    def test_start_flow_uses_tenant_scoped_reclamos_audio_cache(self):
+        context = {
+            "channel": "whatsapp",
+            "user_obj": SimpleNamespace(
+                id=17,
+                tipo_chat="municipio",
+                tenant_slug="junin",
+                nombre_empresa="Municipalidad de Junin",
+            ),
+            "municipio_config_actual": {
+                "tenant_slug": "junin",
+                "nombre": "Municipalidad de Junin",
+            },
+            "chat_db_context_data": {},
+        }
+        handler = ReclamoFlowHandler(context, MagicMock())
+
+        response = handler.start_flow()
+
+        self.assertEqual(
+            response.get("tts_cache_namespace"),
+            "whatsapp:menu:junin:reclamos:whatsapp:full:v5",
+        )
 
     def test_handle_categoria_first_number_selects_luminaria(self):
         flow_context = {"state": ReclamoState.ESPERANDO_CATEGORIA.name, "datos_reclamo": {}}

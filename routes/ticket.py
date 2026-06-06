@@ -319,6 +319,88 @@ def _build_ticket_unread_event_payload(ticket_obj, ticket_type: str) -> dict:
         "collaboration_state": build_ticket_collaboration_state(ticket_type=ticket_type, ticket_id=ticket_obj.id),
     }
 
+
+def _resolve_ticket_tenant_profile(ticket_obj, ticket_type: str) -> Optional[TenantProfile]:
+    tenant_id = getattr(ticket_obj, "tenant_id", None)
+    if tenant_id:
+        tenant = db.session.get(TenantProfile, tenant_id)
+        if tenant:
+            return tenant
+
+    if ticket_type == "municipio":
+        municipio_id = getattr(ticket_obj, "municipio_id", None)
+        if municipio_id:
+            return TenantProfile.query.filter_by(municipio_id=municipio_id).first()
+    if ticket_type == "pyme":
+        pyme_id = (
+            getattr(ticket_obj, "pyme_id", None)
+            or getattr(ticket_obj, "user_id", None)
+        )
+        if pyme_id:
+            return TenantProfile.query.filter_by(pyme_id=pyme_id).first()
+    return None
+
+
+def _build_public_ticket_live_chat_status(ticket_obj, ticket_type: str) -> dict:
+    try:
+        from services.live_chat_schedule import build_live_chat_status
+
+        tenant = _resolve_ticket_tenant_profile(ticket_obj, ticket_type)
+        tenant_config = getattr(tenant, "configuracion", None) if tenant else None
+        schedule_config = (
+            tenant_config.get("live_chat_schedule")
+            if isinstance(tenant_config, dict)
+            else None
+        )
+        status = build_live_chat_status(
+            schedule_override=schedule_config if isinstance(schedule_config, dict) else None
+        )
+        status["contract_version"] = "live_chat.schedule.v1"
+        status["source"] = "tenant_config" if isinstance(schedule_config, dict) else "global_config"
+        status["mode"] = "live" if status.get("enabled") and status.get("available") else "offline"
+        if tenant:
+            status["tenant_id"] = tenant.id
+            status["tenant_slug"] = tenant.slug
+        return status
+    except Exception as exc:  # pragma: no cover - fallback defensivo
+        current_app.logger.warning(
+            "No se pudo resolver horario publico para ticket %s: %s",
+            getattr(ticket_obj, "id", None),
+            exc,
+        )
+        return {
+            "contract_version": "live_chat.schedule.v1",
+            "enabled": False,
+            "available": False,
+            "mode": "offline",
+            "fallback_reason": "schedule_error",
+        }
+
+
+def _build_public_ticket_reply_payload(ticket_obj, ticket_type: str, comment_obj) -> dict:
+    ticket_snapshot = serialize_ticket_to_json(ticket_obj, ticket_type, compact=True)
+    comment_payload = comment_obj.to_dict() if hasattr(comment_obj, "to_dict") else comment_obj
+    live_chat_status = _build_public_ticket_live_chat_status(ticket_obj, ticket_type)
+    return {
+        "contract_version": "tickets.public_chat_reply.v1",
+        "success": True,
+        "message": "Mensaje guardado en el reclamo.",
+        "ticket_id": ticket_obj.id,
+        "ticket_number": ticket_snapshot.get("nro_ticket"),
+        "tipo": ticket_type,
+        "estado_chat": getattr(ticket_obj, "estado", None),
+        "mode": live_chat_status.get("mode", "offline"),
+        "comment": comment_payload,
+        "comentario": comment_payload,
+        "mensaje_id": getattr(comment_obj, "id", None),
+        "ticket": ticket_snapshot,
+        "live_chat": live_chat_status,
+        "realtime_state": build_ticket_realtime_summary(
+            ticket_type=ticket_type,
+            ticket_id=ticket_obj.id,
+        ),
+    }
+
 def _categorias_permitidas_para_empleado(user: User) -> tuple[list[str], list[int]]:
     """Obtiene las categorías habilitadas para un empleado normalizadas en minúsculas.
 
@@ -2451,7 +2533,13 @@ def responder_ciudadano_a_chat(current_user: User, ticket_id: int, anon_id: str 
                 ticket_id,
                 socket_exc,
             )
-        return jsonify({"success": True, "mensaje_id": nuevo_comentario.id}), 201
+        return jsonify(
+            _build_public_ticket_reply_payload(
+                sala_de_chat,
+                "municipio",
+                nuevo_comentario,
+            )
+        ), 201
 
     return jsonify({"error": "No se pudo guardar la respuesta."}), 500
 

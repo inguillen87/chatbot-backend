@@ -38,6 +38,7 @@ from routes.whatsapp_webhook import (
     _strip_duplicate_welcome_media,
     _reset_municipio_context_for_menu,
     _prepare_cached_welcome_audio,
+    _ensure_welcome_audio_payload,
     CHATBOC_DEMO_DEFAULT_WHATSAPP_NUMBER,
     CHATBOC_DEMO_DEFAULT_RESET_WHATSAPP_NUMBER,
     CHATBOC_DEMO_TENANT_SLUG,
@@ -150,6 +151,49 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
                 "cache": "tts_audio_cache",
                 "inclusive": True,
             },
+        )
+
+    def test_fixed_menu_audio_prefers_tenant_cache_over_generic_audio_url(self):
+        payload = {
+            "audio_url": "https://api.chatboc.ar/static/welcome/generic.mp3",
+            "audio_text": "Elegí una opción para tu reclamo. Opción 1: Luminaria.",
+            "options_list": [{"texto": "Luminaria", "id_accion": "1"}],
+            "menu_audio_enabled": True,
+            "tts_cache_namespace": "whatsapp:menu:junin:reclamos:whatsapp:full:v5",
+            "audio_cache_policy": {"kind": "fixed_menu", "inclusive": True},
+        }
+
+        with patch(
+            "routes.whatsapp_webhook.generar_audio",
+            return_value="https://api.chatboc.ar/static/audio_cache/junin-reclamos.mp3",
+        ) as mock_generar_audio:
+            _ensure_welcome_audio_payload(payload)
+
+        self.assertEqual(
+            payload.get("audio_url"),
+            "https://api.chatboc.ar/static/audio_cache/junin-reclamos.mp3",
+        )
+        self.assertEqual(
+            mock_generar_audio.call_args.kwargs.get("cache_namespace"),
+            "whatsapp:menu:junin:reclamos:whatsapp:full:v5",
+        )
+
+    def test_fixed_menu_audio_keeps_generic_fallback_when_tts_fails(self):
+        payload = {
+            "audio_url": "https://api.chatboc.ar/static/welcome/generic.mp3",
+            "audio_text": "Elegí una opción para tu reclamo. Opción 1: Luminaria.",
+            "options_list": [{"texto": "Luminaria", "id_accion": "1"}],
+            "menu_audio_enabled": True,
+            "tts_cache_namespace": "whatsapp:menu:junin:reclamos:whatsapp:full:v5",
+            "audio_cache_policy": {"kind": "fixed_menu", "inclusive": True},
+        }
+
+        with patch("routes.whatsapp_webhook.generar_audio", return_value=None):
+            _ensure_welcome_audio_payload(payload)
+
+        self.assertEqual(
+            payload.get("audio_url"),
+            "https://api.chatboc.ar/static/welcome/generic.mp3",
         )
 
     def _set_owner_tipo_chat(self, tipo: str) -> None:
