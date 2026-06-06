@@ -83,4 +83,37 @@ def test_build_unified_conversation_stream_normalizes_render_contract():
     assert stream[1]["badge"] == "status_change"
     assert stream[2]["id"] == "chat_history:44"
     assert stream[2]["actor_type"] == "citizen"
-    assert stream[2]["is_unread"] is True
+    assert stream[2]["is_unread"] is False
+
+
+def test_build_unified_conversation_stream_dedupes_timeline_and_chat_messages():
+    stream = build_unified_conversation_stream(
+        timeline=[
+            {"tipo": "ticket_creado", "fecha": "2026-03-21T10:00:00+00:00"},
+            {
+                "tipo": "comentario",
+                "id": 44,
+                "texto": "Necesito ayuda",
+                "fecha": "2026-03-21T10:02:00+00:00",
+                "autor": "vecino",
+                "autor_nombre": "Ana",
+                "es_admin": False,
+            },
+        ],
+        historial_chat=[
+            {
+                "id": 44,
+                "texto": "Necesito ayuda",
+                "fecha": "2026-03-21T10:02:00+00:00",
+                "autor": "vecino",
+                "autor_nombre": "Ana",
+                "es_admin": False,
+            }
+        ],
+        latest_comment_id=44,
+    )
+
+    message_items = [item for item in stream if item["stream_type"] in {"message", "comentario"}]
+    assert len(message_items) == 1
+    assert message_items[0]["source"] == "chat_history"
+    assert message_items[0]["id"] == "chat_history:44"

@@ -176,3 +176,59 @@ def test_realtime_summary_dedupes_viewers_and_prunes_stale_rows():
         summary = build_ticket_realtime_summary(ticket_type="municipio", ticket_id=ticket.id)
         assert summary["presence"]["active_count"] == 1
         assert summary["meta"]["viewer_rows_considered"] == 1
+
+
+def test_realtime_summary_unread_count_counts_comments_not_id_gap():
+    app = create_app(TestConfig)
+    with app.app_context():
+        db.create_all()
+        owner = User(email="owner-rt-count@test.com", name="Owner RT", rol="admin", tipo_chat="municipio", municipio_id=91)
+        owner.set_password("pass")
+        db.session.add(owner)
+        db.session.commit()
+
+        ticket = MunicipioTicket(
+            municipio_id=91,
+            user_id=owner.id,
+            pregunta="Necesito ayuda",
+            asunto="Realtime unread",
+            estado="nuevo",
+            nombre_vecino="Vecino RT",
+        )
+        other_ticket = MunicipioTicket(
+            municipio_id=91,
+            user_id=owner.id,
+            pregunta="Otro ticket",
+            asunto="Otro",
+            estado="nuevo",
+            nombre_vecino="Vecino RT",
+        )
+        db.session.add_all([ticket, other_ticket])
+        db.session.commit()
+
+        db.session.add(TicketComentario(municipio_ticket_id=other_ticket.id, comentario="Otro 1", user_id=owner.id, es_admin=True))
+        db.session.add(TicketComentario(municipio_ticket_id=other_ticket.id, comentario="Otro 2", user_id=owner.id, es_admin=True))
+        first = TicketComentario(municipio_ticket_id=ticket.id, comentario="Primer mensaje", user_id=owner.id, es_admin=True)
+        second = TicketComentario(municipio_ticket_id=ticket.id, comentario="Segundo mensaje", user_id=owner.id, es_admin=True)
+        db.session.add_all([first, second])
+        db.session.commit()
+
+        db.session.add(
+            TicketRealtimeState(
+                ticket_type="municipio",
+                ticket_id=ticket.id,
+                viewer_key=f"user:{owner.id}",
+                viewer_user_id=owner.id,
+                viewer_role="admin",
+                presence_status="active",
+                last_presence_at=get_local_now(),
+                last_read_comment_id=first.id,
+            )
+        )
+        db.session.commit()
+
+        summary = build_ticket_realtime_summary(ticket_type="municipio", ticket_id=ticket.id)
+        viewer = summary["read_state"]["viewers"][0]
+        assert viewer["latest_comment_id"] == second.id
+        assert viewer["last_read_comment_id"] == first.id
+        assert viewer["unread_count"] == 1

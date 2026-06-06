@@ -136,11 +136,20 @@ def build_ticket_realtime_summary(*, ticket_type: str, ticket_id: int) -> dict[s
     prune_stale_ticket_realtime_states(now=now)
     rows = TicketRealtimeState.query.filter_by(ticket_type=ticket_type, ticket_id=ticket_id).all()
     rows = _dedupe_rows(rows)
+    comment_filter = (
+        TicketComentario.municipio_ticket_id == ticket_id
+        if ticket_type == "municipio"
+        else TicketComentario.pyme_ticket_id == ticket_id
+    )
     latest_comment_id = (
         db.session.query(db.func.max(TicketComentario.id))
-        .filter(
-            TicketComentario.municipio_ticket_id == ticket_id if ticket_type == "municipio" else TicketComentario.pyme_ticket_id == ticket_id
-        )
+        .filter(comment_filter)
+        .scalar()
+        or 0
+    )
+    total_comments = int(
+        db.session.query(db.func.count(TicketComentario.id))
+        .filter(comment_filter)
         .scalar()
         or 0
     )
@@ -161,7 +170,18 @@ def build_ticket_realtime_summary(*, ticket_type: str, ticket_id: int) -> dict[s
         row_dict["effective_presence_status"] = effective_presence_status
         last_read_comment_id = row.last_read_comment_id or 0
         row_dict["latest_comment_id"] = latest_comment_id
-        row_dict["unread_count"] = max(int(latest_comment_id) - int(last_read_comment_id), 0)
+        if latest_comment_id and last_read_comment_id:
+            unread_count = (
+                db.session.query(db.func.count(TicketComentario.id))
+                .filter(comment_filter, TicketComentario.id > int(last_read_comment_id))
+                .scalar()
+                or 0
+            )
+        elif latest_comment_id:
+            unread_count = total_comments
+        else:
+            unread_count = 0
+        row_dict["unread_count"] = int(unread_count)
         row_dict["has_unread"] = row_dict["unread_count"] > 0
         read_states.append(row_dict)
         if is_active:

@@ -117,8 +117,34 @@ def build_unified_conversation_stream(
     timeline: list[dict[str, Any]] | None,
     historial_chat: list[dict[str, Any]] | None,
     latest_comment_id: int | None = None,
+    last_read_comment_id: int | None = None,
 ) -> list[dict[str, Any]]:
     unified_items: list[dict[str, Any]] = []
+    dedupe_index: dict[tuple[Any, ...], int] = {}
+
+    def _message_dedupe_keys(
+        *,
+        source: str,
+        payload: dict[str, Any],
+        comment_id: int | None,
+        actor_type: str,
+        preview_text: str | None,
+        timestamp: Any,
+    ) -> list[tuple[Any, ...]]:
+        if source not in {"timeline", "chat_history"}:
+            return []
+        is_message = source == "chat_history" or payload.get("tipo") == "comentario"
+        if not is_message:
+            return []
+
+        keys: list[tuple[Any, ...]] = []
+        if comment_id is not None:
+            keys.append(("comment_id", comment_id))
+
+        normalized_text = (preview_text or "").strip().lower()
+        if normalized_text and timestamp:
+            keys.append(("fingerprint", str(timestamp), actor_type, normalized_text))
+        return keys
 
     def _append_items(source: str, items: list[dict[str, Any]] | None) -> None:
         for idx, item in enumerate(items or []):
@@ -137,12 +163,11 @@ def build_unified_conversation_stream(
             comment_id = item.get("comment_id") or item.get("comentario_id") or item.get("id")
             if source == "timeline" and item.get("tipo") != "comentario":
                 comment_id = None
-            if source == "timeline" and item.get("tipo") == "comentario" and comment_id is None:
-                comment_id = idx + 1
-            latest_id = int(latest_comment_id or 0)
+            read_id = int(last_read_comment_id or 0)
             normalized_comment_id = int(comment_id) if str(comment_id).isdigit() else None
-            is_unread = bool(normalized_comment_id and latest_id and normalized_comment_id >= latest_id)
-            unified_items.append({
+            is_unread = bool(normalized_comment_id and read_id and normalized_comment_id > read_id)
+
+            normalized_item = {
                 "id": normalized_id,
                 "source": source,
                 "stream_type": "message" if source == "chat_history" else (item.get("tipo") or "timeline_event"),
@@ -156,7 +181,31 @@ def build_unified_conversation_stream(
                 "is_read": False if is_unread else None,
                 "is_unread": is_unread,
                 "payload": item,
-            })
+            }
+            dedupe_keys = _message_dedupe_keys(
+                source=source,
+                payload=item,
+                comment_id=normalized_comment_id,
+                actor_type=actor_type,
+                preview_text=preview_text,
+                timestamp=timestamp,
+            )
+            existing_index = next(
+                (dedupe_index[key] for key in dedupe_keys if key in dedupe_index),
+                None,
+            )
+            if existing_index is not None:
+                existing = unified_items[existing_index]
+                if existing.get("source") == "timeline" and source == "chat_history":
+                    unified_items[existing_index] = normalized_item
+                    for key in dedupe_keys:
+                        dedupe_index[key] = existing_index
+                continue
+
+            unified_items.append(normalized_item)
+            item_index = len(unified_items) - 1
+            for key in dedupe_keys:
+                dedupe_index[key] = item_index
 
     _append_items("timeline", timeline)
     _append_items("chat_history", historial_chat)
