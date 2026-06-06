@@ -159,6 +159,19 @@ class TestResponseFormatter(unittest.TestCase):
         self.assertIn("Nombre de contacto: Ana García", text)
         self.assertIn("Teléfono: 123456789", text)
 
+    def test_render_audio_text_repairs_common_mojibake(self):
+        text = render_audio_text(
+            "Resumen de gesti\u00c3\u00b3n",
+            options=[{"texto": "Volver al men\u00c3\u00ba"}],
+            datos={"descripcion": "poste ca\u00c3\u00addo"},
+            accion="crear_reclamo",
+        )
+
+        self.assertIn("Resumen de gestión", text)
+        self.assertIn("Descripción: poste caído", text)
+        self.assertIn("Opción 1: Volver al menú", text)
+        self.assertNotIn("\u00c3", text)
+
     def test_whatsapp_text_message(self):
         response = build_interactive_response(
             options=[], body_text="Hola mundo", channel="whatsapp", message_type='text'
@@ -166,6 +179,19 @@ class TestResponseFormatter(unittest.TestCase):
         self.assertEqual(response["type"], "text")
         expected_body = "Hola mundo\n\n*1*. Menú\n*2*. Cancelar"
         self.assertEqual(response["text"]["body"], expected_body)
+
+    def test_whatsapp_text_repairs_common_mojibake(self):
+        response = build_interactive_response(
+            options=[{"id": "btn", "texto": "Bot\u00c3\u00b3n principal"}],
+            body_text="Men\u00c3\u00ba de Opci\u00c3\u00b3n",
+            channel="whatsapp",
+            message_type='text',
+        )
+
+        body = response["text"]["body"]
+        self.assertIn("Menú de Opción", body)
+        self.assertIn("Botón principal", body)
+        self.assertNotIn("\u00c3", body)
 
     def test_whatsapp_text_message_with_image(self):
         response = build_interactive_response(
@@ -347,6 +373,18 @@ class TestResponseFormatter(unittest.TestCase):
         self.assertEqual(len(response["botones"]), 1)
         self.assertEqual(response["botones"][0]["action_id"], "web_opt1")
         self.assertEqual(response["fuente"], "test_web_sugg")
+
+    def test_web_response_repairs_common_mojibake(self):
+        response = build_interactive_response(
+            options=[{"id": "web_opt1", "texto": "Opci\u00c3\u00b3n web"}],
+            body_text="Respuesta con gesti\u00c3\u00b3n",
+            channel="web",
+            message_type='interactive_buttons',
+        )
+
+        self.assertEqual(response["respuesta"], "Respuesta con gestión")
+        self.assertEqual(response["botones"][0]["texto"], "Opción web")
+        self.assertNotIn("\u00c3", json.dumps(response, ensure_ascii=False))
 
     def test_web_response_structure_text(self):
         original_context = {"fuente": "test_web_plain"}

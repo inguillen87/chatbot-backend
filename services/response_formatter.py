@@ -10,6 +10,51 @@ logger = logging.getLogger(__name__)
 # MODIFIED: Default to TRUE to satisfy user request for text-based menus.
 WHATSAPP_FORCE_TEXT = os.getenv("WHATSAPP_FORCE_TEXT", "true").lower() != "false"
 
+MOJIBAKE_REPLACEMENTS = {
+    "Ã¡": "á",
+    "Ã©": "é",
+    "Ã­": "í",
+    "Ã³": "ó",
+    "Ãº": "ú",
+    "Ã±": "ñ",
+    "Ã": "Á",
+    "Ã‰": "É",
+    "Ã": "Í",
+    "Ã“": "Ó",
+    "Ãš": "Ú",
+    "Ã‘": "Ñ",
+    "Â¿": "¿",
+    "Â¡": "¡",
+    "â€“": "-",
+    "â€”": "-",
+    "â€¦": "...",
+    "â€œ": '"',
+    "â€": '"',
+    "â€˜": "'",
+    "â€™": "'",
+    "â€¢": "•",
+    "âœ…": "✅",
+    "âŒ": "❌",
+    "ðŸ—‘ï¸": "🗑️",
+    "ðŸ’¡": "💡",
+    "ðŸ“°": "📰",
+    "ðŸ—ºï¸": "🗺️",
+    "âž¡ï¸": "➡️",
+}
+
+
+def repair_common_mojibake(value) -> str:
+    text = str(value or "")
+    if not text:
+        return ""
+    for broken, fixed in MOJIBAKE_REPLACEMENTS.items():
+        text = text.replace(broken, fixed)
+    return text
+
+
+def _repair_text(value) -> str:
+    return repair_common_mojibake(value)
+
 
 def _as_option_dicts(options: list | None) -> list[dict]:
     if not options:
@@ -18,7 +63,7 @@ def _as_option_dicts(options: list | None) -> list[dict]:
 
 
 def _clean_text(value, fallback: str = "") -> str:
-    text = str(value or "").strip()
+    text = _repair_text(value).strip()
     return text or fallback
 
 
@@ -57,7 +102,7 @@ def render_audio_text(
     def _clean(value: str | None) -> str:
         if value is None:
             return ""
-        return str(value).strip()
+        return _repair_text(value).strip()
 
     def _append_if_valid(container: list[str], text: str | None) -> None:
         cleaned = _clean(text)
@@ -251,7 +296,7 @@ def build_interactive_response(options: list,
 
         # Si el tipo de mensaje es 'text', siempre formatear como texto.
         if message_type == 'text':
-            final_body = body_text
+            final_body = _repair_text(body_text).strip()
 
             nav_buttons = [
                 {"texto": "Menú", "action_id": "menu_principal"},
@@ -332,10 +377,10 @@ def build_interactive_response(options: list,
         is_interactive = message_type in ['interactive_buttons', 'interactive_list']
         if not is_interactive:
              # Should not happen due to logic above, but as a safeguard
-            return {"type": "text", "text": {"body": body_text}}
+            return {"type": "text", "text": {"body": _repair_text(body_text).strip()}}
 
         interactive_data = {
-            "body": {"text": body_text},
+            "body": {"text": _repair_text(body_text).strip()},
             "action": {}
         }
 
@@ -388,7 +433,7 @@ def build_interactive_response(options: list,
                 # we must fall back to a text message.
                 payload = {
                     "type": "text",
-                    "text": {"body": body_text_to_update},
+                    "text": {"body": _repair_text(body_text_to_update).strip()},
                     "contexto_actualizado": context_update if context_update else None,
                 }
                 if image_url:
@@ -399,7 +444,7 @@ def build_interactive_response(options: list,
                 return payload
             else:
                 # Otherwise, send the interactive message with the reply buttons
-                interactive_data["body"]["text"] = body_text_to_update
+                interactive_data["body"]["text"] = _repair_text(body_text_to_update).strip()
                 interactive_data["action"]["buttons"] = reply_buttons
         elif message_type == 'interactive_list':
             interactive_data["type"] = "list"
@@ -477,7 +522,7 @@ def build_interactive_response(options: list,
 
     elif channel == "web":
         web_response = {
-            "respuesta": body_text, # "respuesta" is the key often used for web body
+            "respuesta": _repair_text(body_text).strip(), # "respuesta" is the key often used for web body
             "botones": [],
             "fuente": original_bot_response.get("fuente"),
             "contexto_actualizado": original_bot_response.get("contexto_actualizado"),
@@ -500,23 +545,24 @@ def build_interactive_response(options: list,
                 btn = None
                 if isinstance(o, str):
                     # Handle the case where an option is a simple string.
-                    btn = {"texto": o, "action_id": o}
+                    btn_text = _clean_text(o)
+                    btn = {"texto": btn_text, "action_id": btn_text}
                 elif isinstance(o, dict):
                     # It's a dictionary, process it.
-                    btn_text = o.get("texto")
+                    btn_text = _clean_text(o.get("texto"))
                     if not btn_text:
                         logger.warning(f"Button object is missing 'texto' key: {o}")
                         continue
 
                     # Use action_id for web. If type is 'url', default action_id to 'open_url_action' unless specified otherwise.
-                    action_id = o.get("id", o.get("action", btn_text))
+                    action_id = _clean_text(o.get("id", o.get("action", btn_text)), btn_text)
                     if o.get("type") == "url":
-                        action_id = o.get("action_id", "open_url_action")
+                        action_id = _clean_text(o.get("action_id"), "open_url_action")
 
                     btn = {"texto": btn_text, "action_id": action_id}
 
                     if o.get("type") == "url" and o.get("url"):
-                        btn["url"] = o["url"]
+                        btn["url"] = _clean_text(o["url"])
                 else:
                     logger.warning(f"Unsupported type in options list: {type(o)}. Skipping.")
                     continue

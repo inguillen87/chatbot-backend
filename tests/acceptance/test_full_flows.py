@@ -77,3 +77,27 @@ def test_whatsapp_renderer_reclamo_flow():
     assert "• Ver estado: https://muni.ar/mi-reclamo/M-566308" in rendered_message
     assert "*Acciones rápidas:*\n• Ver estado: https://muni.ar/mi-reclamo/M-566308" in rendered_message
     assert "_Decí *menu* para volver._" in rendered_message
+
+@pytest.mark.legacy
+@pytest.mark.contract
+def test_whatsapp_renderer_repairs_common_mojibake():
+    payload = {
+        "type": "reclamo",
+        "title": "Reclamo creado",
+        "summary": "Tu reclamo fue generado correctamente.",
+        "ticket": {
+            "id": "M-900123",
+            "status_url": "https://muni.ar/mi-reclamo/M-900123",
+            "category": "P\u00c3\u00a9rdida de agua",
+            "address": "Hip\u00c3\u00b3lito Yrigoyen 123, Jun\u00c3\u00adn",
+        },
+        "cta": [
+            {"type": "url", "label": "Ver estado", "url": "https://muni.ar/mi-reclamo/M-900123"}
+        ],
+    }
+
+    rendered_message = render_whatsapp(payload)
+
+    assert "• Categoría: Pérdida de agua" in rendered_message
+    assert "• Dirección: Hipólito Yrigoyen 123, Junín" in rendered_message
+    assert "\u00c3" not in rendered_message
