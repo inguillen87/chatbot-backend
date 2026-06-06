@@ -3326,6 +3326,20 @@ def _ensure_welcome_audio_payload(payload: dict) -> None:
             payload["audio_url"] = audio_url
 
 
+def _prepare_cached_welcome_audio(payload: dict, *, tenant_profile=None, client_user=None) -> None:
+    if not isinstance(payload, dict):
+        return
+
+    tenant_slug = (
+        getattr(tenant_profile, "slug", None)
+        or getattr(client_user, "tenant_slug", None)
+        or str(getattr(client_user, "id", "") or "default")
+    )
+    tenant_slug = str(tenant_slug or "default").strip().lower() or "default"
+    payload.setdefault("menu_audio_enabled", True)
+    payload.setdefault("tts_cache_namespace", f"whatsapp:welcome:{tenant_slug}:main_menu:v1")
+
+
 def _reset_municipio_context_for_menu(session_context: ChatSessionContext) -> None:
     if not session_context or not isinstance(session_context.context_data, dict):
         return
@@ -3905,7 +3919,7 @@ def whatsapp_webhook():
                 should_send_sticker = bool(resolved_sticker_url) and not sticker_state.get("disabled", False)
                 sticker_metadata_allowed = True
                 public_welcome_identity = (
-                    f"{assistant_name} de {municipio_name}"
+                    f"{assistant_name} - {municipio_name}"
                     if is_municipio_client and assistant_name
                     else municipio_name
                     or assistant_name
@@ -4141,6 +4155,11 @@ def whatsapp_webhook():
                     if request_root:
                         welcome_response_payload.setdefault("_request_url_root", request_root)
 
+                    _prepare_cached_welcome_audio(
+                        welcome_response_payload,
+                        tenant_profile=tenant_profile,
+                        client_user=client_user,
+                    )
                     welcome_response_payload["_preserve_welcome_header"] = True
 
                     _strip_duplicate_welcome_media(
@@ -4272,6 +4291,11 @@ def whatsapp_webhook():
                     if request_root:
                         welcome_response_payload.setdefault("_request_url_root", request_root)
 
+                    _prepare_cached_welcome_audio(
+                        welcome_response_payload,
+                        tenant_profile=tenant_profile,
+                        client_user=client_user,
+                    )
                     welcome_response_payload["_preserve_welcome_header"] = True
 
                     _strip_duplicate_welcome_media(

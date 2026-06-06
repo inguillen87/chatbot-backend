@@ -2,6 +2,9 @@ import json
 from typing import Any, Dict, Optional
 
 
+CLAIM_CREATED_TEMPLATE_NAME = "chatboc_gov_claim_created_v2"
+
+
 def _format_business_hours(value: Any) -> str:
     if value is None:
         return ""
@@ -154,6 +157,56 @@ def render_ticket_whatsapp(
     return {
         "body_text": body_text,
         "media_url": promo_image_url,
+    }
+
+
+def build_claim_created_template_pre_message(
+    *,
+    ticket_nro: str,
+    categoria: Optional[str],
+    consulta_pin: Optional[str],
+    base_chat_url: str = "https://www.chatboc.ar/chat",
+    nombre: Optional[str] = None,
+    direccion: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Build a Twilio Content pre-message for a municipal claim receipt.
+
+    The approved v2 template has a CTA at /t/{{2}}. We send {{2}} as
+    chat/<ticket>?pin=<pin> and the frontend redirects that route to the
+    public ticket view, keeping the approved template useful without sending a
+    broken tracking button.
+    """
+
+    ticket_code = str(ticket_nro or "").strip()
+    ticket_numeric = ticket_code.replace("M-", "").replace("S-", "")
+    pin_value = str(consulta_pin or "").strip()
+    tracking_path = f"chat/{ticket_numeric}" if ticket_numeric else "chat"
+    if pin_value:
+        tracking_path = f"{tracking_path}?pin={pin_value}"
+
+    base_url = str(base_chat_url or "https://www.chatboc.ar/chat").rstrip("/")
+    tracking_url = f"{base_url}/{ticket_numeric}" if ticket_numeric else base_url
+    if pin_value:
+        tracking_url = f"{tracking_url}?pin={pin_value}"
+
+    body_lines = [
+        f"Reclamo registrado: {ticket_code or 'pendiente'}",
+        f"Categoria: {categoria or 'General'}",
+        f"Seguimiento: {tracking_url}",
+    ]
+    if direccion:
+        body_lines.append(f"Ubicacion: {direccion}")
+    if nombre:
+        body_lines.append("Tu mensaje queda asociado al expediente para seguimiento.")
+
+    return {
+        "channels": ["whatsapp"],
+        "template_name": CLAIM_CREATED_TEMPLATE_NAME,
+        "variables": {
+            "1": ticket_code,
+            "2": tracking_path,
+        },
+        "body": "\n".join(body_lines),
     }
 
 def render_order_whatsapp(

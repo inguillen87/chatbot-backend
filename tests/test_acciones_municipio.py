@@ -535,6 +535,81 @@ class TestAccionesMunicipio(unittest.TestCase):
         urls = [opt.get('url') for opt in opciones if isinstance(opt, dict)]
         self.assertIn(expected_url, urls)
 
+    @patch('services.actions.municipio_actions.promo_service.build_ticket_promo_section', return_value=None)
+    @patch('services.actions.municipio_actions.cargar_configuracion_municipio')
+    @patch('services.herramientas_municipio.parse_direccion_completa', return_value={'localidad': 'Centro'})
+    @patch('services.actions.municipio_actions.formatear_telefono_e164', return_value='+549111111111')
+    @patch('services.actions.municipio_actions.validar_email', return_value=True)
+    @patch('services.actions.municipio_actions.validar_telefono', return_value=True)
+    @patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket')
+    def test_crear_reclamo_whatsapp_usa_template_pre_message(
+        self,
+        mock_crear_ticket,
+        mock_validar_tel,
+        mock_validar_email,
+        mock_formatear_tel,
+        mock_parse_direccion,
+        mock_cargar_config,
+        _mock_promo,
+    ):
+        mock_crear_ticket.return_value = {
+            'id': 1,
+            'nro_ticket': '12345',
+            'consulta_pin': '654321',
+        }
+        mock_cargar_config.side_effect = [
+            {'default': {}},
+            {},
+            {'web_url': 'https://municipio.example'},
+        ]
+
+        viewer_user = MagicMock(spec=User)
+        viewer_user.id = 999
+        viewer_user.nombre = "Ana"
+        viewer_user.telefono = "2615550000"
+        viewer_user.email = "vecina@example.com"
+        viewer_user.dni = "30111222"
+        viewer_user.direccion = "Calle 1"
+
+        owner_user = MagicMock(spec=User)
+        owner_user.municipio_id = "muni-test"
+
+        context = {
+            CONTEXTO_MUNICIPIO: {'datos_parciales_llm_reclamo': {}, 'contacto_usuario': {}},
+            'viewer_user_obj': viewer_user,
+            'user_obj': owner_user,
+            'anon_id': 'anon-1',
+            'municipio_config_actual': {'base_chat_url': 'https://example.com/chat'},
+            'chat_db_context_data': {'processed_idempotency_keys': {}},
+            'channel': 'whatsapp',
+        }
+
+        handler = CrearReclamoActionHandler(context)
+        respuesta = handler.execute({
+            'categoria': 'Luminaria',
+            'descripcion': 'poste caido',
+            'ubicacion': 'Calle 123',
+            'usuario': 'Ana',
+            'telefono': '2615550000',
+            'email': 'vecina@example.com',
+            'pin': '654321',
+        })
+
+        self.assertTrue(respuesta.get('success'))
+        self.assertNotIn('whatsapp_receipt', respuesta)
+        pre_messages = respuesta.get('_twilio_pre_messages') or []
+        self.assertEqual(len(pre_messages), 1)
+        template = pre_messages[0]
+        self.assertEqual(template.get('template_name'), 'chatboc_gov_claim_created_v2')
+        self.assertEqual(template.get('variables'), {
+            '1': 'M-12345',
+            '2': 'chat/12345?pin=654321',
+        })
+        self.assertIn('https://example.com/chat/12345?pin=654321', template.get('body', ''))
+        self.assertIn('Ver seguimiento: https://example.com/chat/12345?pin=654321', respuesta.get('message_body', ''))
+        self.assertEqual(respuesta.get('message_type'), 'text')
+        self.assertEqual(respuesta.get('options_list'), [])
+
     @patch('services.herramientas_municipio.geocode_address')
     def test_direccion_es_valida(self, mock_geocode):
         # Setea el valor de retorno simulado

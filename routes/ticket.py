@@ -166,7 +166,17 @@ def _resolver_acceso_chat_ticket(ticket_obj, current_user: User, anon_id: str = 
     público, el historial y la mensajería reutilicen la misma regla.
     """
 
-    es_agente_municipal = bool(current_user and current_user.tipo_chat == "municipio")
+    tenant_scope_allows = _ticket_scope_access_allows("municipio", ticket_obj, current_user)
+    es_agente_municipal = bool(
+        current_user
+        and (
+            tenant_scope_allows
+            or (
+                current_user.tipo_chat == "municipio"
+                and getattr(ticket_obj, "municipio_id", None) in _get_allowed_municipio_ids(current_user)
+            )
+        )
+    )
     es_agente_pyme = bool(
         current_user
         and getattr(current_user, "rubro_id", None)
@@ -179,6 +189,7 @@ def _resolver_acceso_chat_ticket(ticket_obj, current_user: User, anon_id: str = 
 
     return {
         "es_agente": es_agente,
+        "es_tenant_scope": tenant_scope_allows,
         "es_dueno": es_dueno,
         "es_anon_valido": es_anon_valido,
         "es_pin_valido": es_pin_valido,
@@ -198,12 +209,20 @@ def _resolve_ticket_with_access(ticket_type: str, ticket_id: int, current_user: 
     if ticket_type == "municipio":
         access = _resolver_acceso_chat_ticket(ticket_obj, current_user, anon_id, pin)
     else:
-        es_agente = bool(current_user and current_user.rubro_id and ticket_obj.rubro_id == current_user.rubro_id)
+        tenant_scope_allows = _ticket_scope_access_allows("pyme", ticket_obj, current_user)
+        es_agente = bool(
+            current_user
+            and (
+                tenant_scope_allows
+                or (current_user.rubro_id and ticket_obj.rubro_id == current_user.rubro_id)
+            )
+        )
         es_dueno = bool(current_user and ticket_obj.user_id == current_user.id)
         es_anon_valido = bool(anon_id and getattr(ticket_obj, "anon_id", None) == anon_id)
         es_pin_valido = bool(pin and str(getattr(ticket_obj, "consulta_pin", "")) == str(pin))
         access = {
             "es_agente": es_agente,
+            "es_tenant_scope": tenant_scope_allows,
             "es_dueno": es_dueno,
             "es_anon_valido": es_anon_valido,
             "es_pin_valido": es_pin_valido,
@@ -255,6 +274,16 @@ def _request_active_session_id() -> Optional[str]:
 
     anon_id = _request_anon_id()
     return anon_id
+
+
+def _effective_ticket_actor(current_user: Optional[User], owner_user: Optional[User] = None) -> Optional[User]:
+    """Return the authenticated user that should be evaluated for ticket access."""
+
+    if current_user:
+        return current_user
+    if owner_user and getattr(g, "widget_session", False):
+        return owner_user
+    return None
 
 
 def _build_realtime_actor_context(*, current_user: User, anon_id: str = None, access: Optional[dict] = None) -> tuple[str | None, str | None, str | None]:
@@ -361,6 +390,22 @@ def _ticket_matches_tenant_scope(
     if tenant_pyme_id and getattr(ticket_obj, "rubro_id", None) == tenant_pyme_id:
         return True
     return False
+
+
+def _ticket_scope_access_allows(ticket_type: str, ticket_obj, current_user: Optional[User]) -> bool:
+    """Return whether the authenticated tenant context owns this ticket."""
+
+    if not current_user:
+        return False
+    tenant, tenant_municipio_id, tenant_pyme_id = _resolve_tenant_scope(current_user)
+    if not _authorized_for_tenant_scope(current_user, tenant):
+        return False
+    return _ticket_matches_tenant_scope(
+        ticket_obj,
+        tenant,
+        tenant_municipio_id if ticket_type == "municipio" else None,
+        tenant_pyme_id if ticket_type == "pyme" else None,
+    )
 
 
 def _get_allowed_municipio_id(current_user: User) -> Optional[int]:
@@ -1967,16 +2012,17 @@ def get_chat_mensajes(current_user: User, ticket_id: int, anon_id: str = None, o
     Requiere que el usuario esté autenticado o que proporcione un anon_id válido.
     """
     try:
+        actor_user = _effective_ticket_actor(current_user, owner_user)
         sala_de_chat = db.session.get(MunicipioTicket, ticket_id)
         if not sala_de_chat:
             return jsonify({"error": "Sala de chat no encontrada."}), 404
 
         pin_query = request.args.get("pin")
-        access = _resolver_acceso_chat_ticket(sala_de_chat, current_user, anon_id, pin_query)
+        access = _resolver_acceso_chat_ticket(sala_de_chat, actor_user, anon_id, pin_query)
         es_agente_municipal = access["es_agente"]
 
         if es_agente_municipal:
-            error_response = _validar_asignacion_empleado(sala_de_chat, current_user)
+            error_response = _validar_asignacion_empleado(sala_de_chat, actor_user)
             if error_response:
                 return error_response
 
@@ -2092,14 +2138,17 @@ def get_ticket_route(current_user: User, tipo: str, ticket_id: int, anon_id: str
     if not ticket_obj:
         return jsonify({"error": "Ticket no encontrado."}), 404
 
-    es_agente = current_user and current_user.tipo_chat == "municipio"
-    es_dueno = current_user and ticket_obj.user_id == current_user.id
-    es_anon = anon_id and ticket_obj.anon_id == anon_id
+    actor_user = _effective_ticket_actor(current_user, owner_user)
+    access = _resolver_acceso_chat_ticket(ticket_obj, actor_user, anon_id, request.args.get("pin"))
+    if access.get("es_agente"):
+        error_response = _validar_asignacion_empleado(ticket_obj, actor_user)
+        if error_response:
+            return error_response
     # Evitar que el frontend público genere errores al cargar esta sección.
     # Como las sugerencias son un placeholder y no exponen datos sensibles,
     # respondemos con una lista vacía para usuarios sin permisos en lugar de
     # devolver 403.
-    if not (es_agente or es_dueno or es_anon):
+    if not access["permitido"]:
         return jsonify({"sugerencias": [], "habilitado": False})
 
     if ticket_obj.latitud is None or ticket_obj.longitud is None:
@@ -2131,32 +2180,21 @@ def get_ticket_timeline(current_user: User, tipo: str, ticket_id: int, anon_id: 
     interacción del reclamo o pedido, combinando mensajes del chat y estados.
     """
     anon_id = anon_id or _request_anon_id()
-    TicketModel = MunicipioTicket if tipo == "municipio" else PymeTicket if tipo == "pyme" else None
-    if not TicketModel:
-        return jsonify({"error": f"Tipo de ticket no válido: {tipo}"}), 400
+    actor_user = _effective_ticket_actor(current_user, owner_user)
+    ticket_obj, error_response, status_code, access = _resolve_ticket_with_access(
+        tipo,
+        ticket_id,
+        actor_user,
+        anon_id,
+        request.args.get("pin"),
+    )
+    if error_response:
+        return error_response, status_code
 
-    ticket_obj = db.session.get(TicketModel, ticket_id)
-    if not ticket_obj:
-        return jsonify({"error": "Ticket no encontrado."}), 404
-
-    pin = request.args.get("pin")
-
-    if tipo == "municipio":
-        es_agente = current_user and current_user.tipo_chat == "municipio"
-        es_dueno = current_user and ticket_obj.user_id == current_user.id
-        es_anon = anon_id and ticket_obj.anon_id == anon_id
-        pin_valido = pin and str(ticket_obj.consulta_pin) == str(pin)
-
-        if not (es_agente or es_dueno or es_anon or pin_valido):
-            return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
-    else:  # pyme
-        es_agente = current_user and current_user.rubro_id and ticket_obj.rubro_id == current_user.rubro_id
-        es_dueno = current_user and ticket_obj.user_id == current_user.id
-        es_anon = anon_id and ticket_obj.anon_id == anon_id
-        pin_valido = pin and str(ticket_obj.consulta_pin) == str(pin)
-
-        if not (es_agente or es_dueno or es_anon or pin_valido):
-            return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
+    if access and access.get("es_agente"):
+        error_response = _validar_asignacion_empleado(ticket_obj, actor_user)
+        if error_response:
+            return error_response
 
     timeline = servicio_tickets.obtener_timeline_ticket(ticket_obj)
     historial_chat = servicio_tickets.obtener_historial_chat(ticket_obj)
@@ -2187,7 +2225,8 @@ def get_ticket_timeline(current_user: User, tipo: str, ticket_id: int, anon_id: 
 def update_ticket_presence(current_user: User, tipo: str, ticket_id: int, anon_id: str = None, owner_user: User = None):
     anon_id = anon_id or _request_anon_id()
     pin = request.args.get("pin")
-    ticket_obj, error_response, status_code, access = _resolve_ticket_with_access(tipo, ticket_id, current_user, anon_id, pin)
+    actor_user = _effective_ticket_actor(current_user, owner_user)
+    ticket_obj, error_response, status_code, access = _resolve_ticket_with_access(tipo, ticket_id, actor_user, anon_id, pin)
     if error_response:
         return error_response, status_code
 
@@ -2196,7 +2235,7 @@ def update_ticket_presence(current_user: User, tipo: str, ticket_id: int, anon_i
     if presence_status not in {"active", "idle", "inactive"}:
         return jsonify({"error": "presence_status inválido."}), 400
 
-    viewer_key, viewer_role, viewer_anon_id = _build_realtime_actor_context(current_user=current_user, anon_id=anon_id, access=access)
+    viewer_key, viewer_role, viewer_anon_id = _build_realtime_actor_context(current_user=actor_user, anon_id=anon_id, access=access)
     if not viewer_key:
         return jsonify({"error": "No se pudo identificar el viewer."}), 400
 
@@ -2204,7 +2243,7 @@ def update_ticket_presence(current_user: User, tipo: str, ticket_id: int, anon_i
         ticket_type=tipo,
         ticket_id=ticket_id,
         viewer_key=viewer_key,
-        viewer_user_id=getattr(current_user, "id", None),
+        viewer_user_id=getattr(actor_user, "id", None),
         viewer_anon_id=viewer_anon_id,
         viewer_role=viewer_role,
         active_session_id=_request_active_session_id(),
@@ -2234,7 +2273,8 @@ def update_ticket_presence(current_user: User, tipo: str, ticket_id: int, anon_i
 def update_ticket_read_state(current_user: User, tipo: str, ticket_id: int, anon_id: str = None, owner_user: User = None):
     anon_id = anon_id or _request_anon_id()
     pin = request.args.get("pin")
-    ticket_obj, error_response, status_code, access = _resolve_ticket_with_access(tipo, ticket_id, current_user, anon_id, pin)
+    actor_user = _effective_ticket_actor(current_user, owner_user)
+    ticket_obj, error_response, status_code, access = _resolve_ticket_with_access(tipo, ticket_id, actor_user, anon_id, pin)
     if error_response:
         return error_response, status_code
 
@@ -2246,7 +2286,7 @@ def update_ticket_read_state(current_user: User, tipo: str, ticket_id: int, anon
         except (TypeError, ValueError):
             return jsonify({"error": "last_read_comment_id inválido."}), 400
 
-    viewer_key, viewer_role, viewer_anon_id = _build_realtime_actor_context(current_user=current_user, anon_id=anon_id, access=access)
+    viewer_key, viewer_role, viewer_anon_id = _build_realtime_actor_context(current_user=actor_user, anon_id=anon_id, access=access)
     if not viewer_key:
         return jsonify({"error": "No se pudo identificar el viewer."}), 400
 
@@ -2255,7 +2295,7 @@ def update_ticket_read_state(current_user: User, tipo: str, ticket_id: int, anon
         ticket_id=ticket_id,
         viewer_key=viewer_key,
         last_read_comment_id=last_read_comment_id,
-        viewer_user_id=getattr(current_user, "id", None),
+        viewer_user_id=getattr(actor_user, "id", None),
         viewer_anon_id=viewer_anon_id,
         viewer_role=viewer_role,
         active_session_id=_request_active_session_id(),
@@ -2359,7 +2399,8 @@ def responder_ciudadano_a_chat(current_user: User, ticket_id: int, anon_id: str 
         return jsonify({"error": "Sala de chat no encontrada."}), 404
 
     pin_query = request.args.get("pin")
-    access = _resolver_acceso_chat_ticket(sala_de_chat, current_user, anon_id, pin_query)
+    actor_user = _effective_ticket_actor(current_user, owner_user)
+    access = _resolver_acceso_chat_ticket(sala_de_chat, actor_user, anon_id, pin_query)
 
     log_ticket_debug("responder_ciudadano", ticket_id, None, sala_de_chat)
 
@@ -2369,7 +2410,7 @@ def responder_ciudadano_a_chat(current_user: User, ticket_id: int, anon_id: str 
     if sala_de_chat.estado == "cerrado":
         return jsonify({"error": MENSAJE_CHAT_CERRADO}), 403
 
-    user_id_para_comentario = current_user.id if access["es_dueno"] else None
+    user_id_para_comentario = actor_user.id if access["es_dueno"] else None
     anon_id_para_comentario = anon_id if access["es_anon_valido"] else getattr(sala_de_chat, "anon_id", None)
 
     nuevo_comentario = servicio_tickets.crear_comentario(
@@ -2982,43 +3023,44 @@ def send_ticket_history(current_user: User, tipo: str, ticket_id: int, anon_id: 
         return jsonify({"error": "Ticket no encontrado."}), 404
 
     # --- Verificación de Permisos ---
+    actor_user = _effective_ticket_actor(current_user, owner_user)
     pin = request.args.get("pin")
 
     if tipo == 'municipio':
-        allowed_municipio_ids = _get_allowed_municipio_ids(current_user) if current_user else []
-        tenant, tenant_municipio_id, _tenant_pyme_id = _resolve_tenant_scope(current_user) if current_user else (None, None, None)
+        allowed_municipio_ids = _get_allowed_municipio_ids(actor_user) if actor_user else []
+        tenant, tenant_municipio_id, _tenant_pyme_id = _resolve_tenant_scope(actor_user) if actor_user else (None, None, None)
         tenant_scope_allows = (
-            current_user
-            and _authorized_for_tenant_scope(current_user, tenant)
+            actor_user
+            and _authorized_for_tenant_scope(actor_user, tenant)
             and _ticket_matches_tenant_scope(ticket_obj, tenant, tenant_municipio_id, None)
         )
         es_agente = (
-            current_user
+            actor_user
             and (
                 ticket_obj.municipio_id in allowed_municipio_ids
                 or tenant_scope_allows
             )
         )
-        es_dueno = current_user and ticket_obj.user_id == current_user.id
+        es_dueno = actor_user and ticket_obj.user_id == actor_user.id
         es_anon = anon_id and ticket_obj.anon_id == anon_id
         pin_valido = pin and str(ticket_obj.consulta_pin) == str(pin)
         if not (es_agente or es_dueno or es_anon or pin_valido):
             return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
     elif tipo == 'pyme':
-        tenant, _tenant_municipio_id, tenant_pyme_id = _resolve_tenant_scope(current_user) if current_user else (None, None, None)
+        tenant, _tenant_municipio_id, tenant_pyme_id = _resolve_tenant_scope(actor_user) if actor_user else (None, None, None)
         tenant_scope_allows = (
-            current_user
-            and _authorized_for_tenant_scope(current_user, tenant)
+            actor_user
+            and _authorized_for_tenant_scope(actor_user, tenant)
             and _ticket_matches_tenant_scope(ticket_obj, tenant, None, tenant_pyme_id)
         )
         es_agente = (
-            current_user
+            actor_user
             and (
-                (current_user.rubro_id and ticket_obj.rubro_id == current_user.rubro_id)
+                (actor_user.rubro_id and ticket_obj.rubro_id == actor_user.rubro_id)
                 or tenant_scope_allows
             )
         )
-        es_dueno = current_user and ticket_obj.user_id == current_user.id
+        es_dueno = actor_user and ticket_obj.user_id == actor_user.id
         es_anon = anon_id and ticket_obj.anon_id == anon_id
         pin_valido = pin and str(ticket_obj.consulta_pin) == str(pin)
         if not (es_agente or es_dueno or es_anon or pin_valido):
@@ -3049,9 +3091,9 @@ def send_ticket_history(current_user: User, tipo: str, ticket_id: int, anon_id: 
         elif tipo == 'pyme' and ticket_obj.rubro_id:
             # Asumiendo que el rubro tiene un usuario asociado o una forma de encontrar el email
             # Por ahora, usamos el email del usuario que realiza la acción como fallback.
-            email_agente = current_user.email
+            email_agente = getattr(actor_user, "email", None)
 
-        email_solicitante = getattr(current_user, "email", None) if current_user else None
+        email_solicitante = getattr(actor_user, "email", None) if actor_user else None
         destinos = list(dict.fromkeys(d for d in [email_cliente, email_agente, email_solicitante] if d))
         if not destinos:
             return jsonify({"error": "No se encontraron correos de destino válidos para el cliente o el agente."}), 400

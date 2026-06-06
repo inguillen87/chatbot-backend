@@ -24,7 +24,10 @@ from services.categorias_municipio import (
     normalizar_texto as normalizar_texto_municipio,
 )
 from services.ticket_utils import formatear_ticket_respuesta, remove_buttons_with_urls_in_message
-from services.whatsapp_receipts import render_ticket_whatsapp
+from services.whatsapp_receipts import (
+    build_claim_created_template_pre_message,
+    render_ticket_whatsapp,
+)
 from services.live_chat_schedule import build_live_chat_status
 from utils.ticket_utils import normalize_category
 from services.common_utils import validar_telefono, formatear_telefono_e164, validar_email
@@ -1143,10 +1146,34 @@ class CrearReclamoActionHandler(BaseActionHandler):
             )
             if channel_value == "whatsapp":
                 receipt = response_payload["whatsapp_receipt"]
-                response_payload["message_body"] = receipt.get("body_text") or mensaje_respuesta
+                pre_messages = list(response_payload.get("_twilio_pre_messages") or [])
+                pre_messages.append(
+                    build_claim_created_template_pre_message(
+                        ticket_nro=nro_ticket_str,
+                        categoria=categoria_display,
+                        consulta_pin=pin_final,
+                        base_chat_url=base_chat_url,
+                        nombre=ticket_data_cleaned.get("nombre_vecino"),
+                        direccion=ubicacion_llm,
+                    )
+                )
+                response_payload["_twilio_pre_messages"] = pre_messages
+                response_payload["message_body"] = "\n".join(
+                    line
+                    for line in [
+                        "Recibido. Deje abierto el seguimiento de tu reclamo.",
+                        f"Ver seguimiento: {tracking_url}" if tracking_url else "",
+                        "Si queres sumar una foto, audio o comentario, respondeme por aca y queda asociado al ticket.",
+                        "",
+                        "1. Menu",
+                        "2. Cancelar",
+                    ]
+                    if line or line == ""
+                ).strip()
                 response_payload["options_list"] = []
                 response_payload["message_type"] = "text"
                 response_payload["image_url"] = receipt.get("media_url") or promo_image_url
+                response_payload.pop("whatsapp_receipt", None)
 
             tracking_url = (
                 response_payload.get("contexto_actualizado", {}) or {}

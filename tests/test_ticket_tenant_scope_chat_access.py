@@ -1,0 +1,99 @@
+import jwt
+
+from app import db
+from models import MunicipioTicket, TenantProfile, TicketComentario, User
+
+
+def _auth_headers(app, user: User, tenant_slug: str) -> dict[str, str]:
+    token = jwt.encode(
+        {
+            "user_id": user.id,
+            "rol": user.rol,
+            "tipo_chat": user.tipo_chat,
+        },
+        app.config["SECRET_KEY"],
+        algorithm="HS256",
+    )
+    return {
+        "Authorization": f"Bearer {token}",
+        "X-Tenant": tenant_slug,
+        "X-Tenant-Slug": tenant_slug,
+    }
+
+
+def test_tenant_admin_can_read_public_ticket_conversation(client, app):
+    owner = User(
+        email="junin-owner-chat@test.com",
+        name="Junin Owner",
+        rol="admin",
+        tipo_chat="municipio",
+    )
+    owner.set_password("pass")
+    db.session.add(owner)
+    db.session.flush()
+
+    tenant = TenantProfile(
+        slug="junin-chat-scope",
+        nombre="Municipalidad de Junin",
+        tipo="municipio",
+        municipio_id=owner.id,
+    )
+    db.session.add(tenant)
+    db.session.flush()
+    owner.tenant_id = tenant.id
+    owner.tenant_slug = tenant.slug
+
+    ticket = MunicipioTicket(
+        municipio_id=owner.id,
+        tenant_id=tenant.id,
+        nro_ticket="378430",
+        pregunta="Arreglo de calle",
+        categoria="Arreglo de calle",
+        estado="nuevo",
+        consulta_pin="900144",
+    )
+    db.session.add(ticket)
+    db.session.flush()
+
+    comment = TicketComentario(
+        municipio_ticket_id=ticket.id,
+        comentario="hola que tal como va mi reclamo? puedo hablar con alguien en vivo?",
+        es_admin=False,
+    )
+    db.session.add(comment)
+    db.session.commit()
+
+    headers = _auth_headers(app, owner, tenant.slug)
+    query_string = {"tenant_slug": tenant.slug, "tenant": tenant.slug}
+
+    messages_response = client.get(
+        f"/tickets/chat/{ticket.id}/mensajes",
+        headers=headers,
+        query_string=query_string,
+    )
+    assert messages_response.status_code == 200
+    messages = messages_response.get_json()["mensajes"]
+    assert [item["texto"] for item in messages] == [comment.comentario]
+
+    timeline_response = client.get(
+        f"/tickets/municipio/{ticket.id}/timeline",
+        headers=headers,
+        query_string=query_string,
+    )
+    assert timeline_response.status_code == 200
+    timeline_payload = timeline_response.get_json()
+    assert any(
+        item.get("preview_text") == comment.comentario
+        for item in timeline_payload["unified_conversation_stream"]
+    )
+
+    read_state_response = client.post(
+        f"/tickets/municipio/{ticket.id}/read-state",
+        headers={**headers, "X-Chat-Session-Id": "admin-ticket-panel"},
+        query_string=query_string,
+        json={"last_read_comment_id": comment.id},
+    )
+    assert read_state_response.status_code == 200
+    read_state_payload = read_state_response.get_json()
+    assert read_state_payload["read_state"]["viewer_user_id"] == owner.id
+    assert read_state_payload["read_state"]["last_read_comment_id"] == comment.id

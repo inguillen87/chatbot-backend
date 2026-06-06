@@ -791,10 +791,10 @@ class Config:
         "CHATBOC_DEMO_WELCOME_MEDIA_URL",
         "/static/welcome/chatboc-saludo-sticker.webp",
     )
-    WELCOME_AUDIO_URL = os.getenv(
-        "WELCOME_AUDIO_URL",
-        "https://chatboc-demo-widget-oigs.vercel.app/saludo_inicial_juni.mp3",
-    )
+    # Static menu audios should be generated once and reused from
+    # /static/audio_cache for accessibility and Twilio media reliability.
+    WELCOME_AUDIO_URL = os.getenv("WELCOME_AUDIO_URL")
+    WHATSAPP_MENU_AUDIO_ENABLED = os.getenv("WHATSAPP_MENU_AUDIO_ENABLED", "true")
     WELCOME_STICKER_COOLDOWN_SECONDS = int(
         os.getenv("WELCOME_STICKER_COOLDOWN_SECONDS", "300")
     )
