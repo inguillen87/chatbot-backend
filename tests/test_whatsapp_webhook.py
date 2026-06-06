@@ -5,6 +5,7 @@ import sys
 import json
 import time
 import copy
+from types import SimpleNamespace
 
 os.environ.setdefault("FLASK_SKIP_GLOBAL_APP", "1")
 os.environ.setdefault("TESTING", "1")
@@ -36,6 +37,7 @@ from routes.whatsapp_webhook import (
     _send_delayed_payload,
     _strip_duplicate_welcome_media,
     _reset_municipio_context_for_menu,
+    _prepare_cached_welcome_audio,
     CHATBOC_DEMO_DEFAULT_WHATSAPP_NUMBER,
     CHATBOC_DEMO_DEFAULT_RESET_WHATSAPP_NUMBER,
     CHATBOC_DEMO_TENANT_SLUG,
@@ -121,6 +123,34 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
             create=True,
         )
         self.mock_welcome = self.welcome_patch.start()
+
+    def test_prepare_cached_welcome_audio_overrides_generic_menu_namespace(self):
+        payload = {
+            "tts_cache_namespace": "menu_principal",
+            "options_list": [{"texto": "Reclamos", "action_id": "mostrar_menu_reclamos"}],
+        }
+        tenant_profile = SimpleNamespace(slug="junin", nombre="Municipalidad de Junín")
+        client_user = SimpleNamespace(id=17, tenant_slug="junin", nombre_empresa="Municipalidad de Junín")
+
+        _prepare_cached_welcome_audio(
+            payload,
+            tenant_profile=tenant_profile,
+            client_user=client_user,
+        )
+
+        self.assertEqual(
+            payload.get("tts_cache_namespace"),
+            "whatsapp:menu:junin:main-menu:whatsapp:full:v2",
+        )
+        self.assertEqual(
+            payload.get("audio_cache_policy"),
+            {
+                "kind": "fixed_menu",
+                "scope": "tenant",
+                "cache": "tts_audio_cache",
+                "inclusive": True,
+            },
+        )
 
     def _set_owner_tipo_chat(self, tipo: str) -> None:
         self.mock_client_user.tipo_chat = tipo

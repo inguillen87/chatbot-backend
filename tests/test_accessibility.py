@@ -1,4 +1,5 @@
 import pytest
+from types import SimpleNamespace
 from services.common_utils import _get_main_menu_payload
 from services.constants import CONTEXTO_MUNICIPIO, ConversationState
 
@@ -61,18 +62,20 @@ def test_main_menu_has_help_option(base_context):
 
     assert help_option_found, "The main menu should contain a 'Help' (Ayuda) option."
 
-def test_main_menu_asks_for_name_if_unknown(base_context):
+def test_main_menu_category_first_when_name_unknown(base_context):
     """
-    Tests that the bot asks for the user's name if it's not in the context.
+    Tests that an unknown contact still gets a usable menu before optional identity capture.
     """
     # Remove name from context
     base_context["profile_name"] = None
 
     payload = _get_main_menu_payload(base_context)
 
-    assert payload["fuente"] == "pedir_nombre_inicial"
-    assert "¿podrías decirme tu nombre?" in payload["message_body"]
+    assert payload["fuente"] == "onboarding_categorias_primero"
+    assert "elegí una categoría" in payload["message_body"].lower()
+    assert "decirme tu nombre" in payload["message_body"].lower()
     assert payload["message_type"] == "text"
+    assert payload["botones"]
 
 
 def test_main_menu_reduced_does_not_repeat_intro(base_context):
@@ -109,3 +112,53 @@ def test_main_menu_audio_text_lists_categories(base_context):
     assert "opción 1" in audio_text
     assert "reclamos y consultas" in audio_text
     assert "emojis" in audio_text
+
+
+def test_main_menu_uses_tenant_scoped_audio_cache_namespace(base_context):
+    base_context["channel"] = "whatsapp"
+    base_context["user_obj"] = SimpleNamespace(
+        id=17,
+        tipo_chat="municipio",
+        tenant_slug="junin",
+        nombre_empresa="Municipalidad de Junín",
+    )
+    base_context["municipio_config_actual"] = {
+        "tenant_slug": "junin",
+        "nombre": "Municipalidad de Junín",
+        "assistant_name": "JUNI",
+    }
+
+    payload = _get_main_menu_payload(
+        base_context,
+        welcome_message_override="¡Hola!",
+        reduced=False,
+    )
+
+    namespace = payload.get("tts_cache_namespace")
+    assert namespace == "whatsapp:menu:junin:main-menu:whatsapp:full:v2"
+    assert payload.get("audio_cache_policy") == {
+        "kind": "fixed_menu",
+        "scope": "tenant",
+        "cache": "tts_audio_cache",
+        "inclusive": True,
+    }
+
+
+def test_main_menu_audio_cache_namespace_changes_for_reduced_menu(base_context):
+    base_context["channel"] = "whatsapp"
+    base_context["tenant_slug"] = "junin"
+
+    full_payload = _get_main_menu_payload(
+        base_context,
+        welcome_message_override="¡Hola!",
+        reduced=False,
+    )
+    reduced_payload = _get_main_menu_payload(
+        base_context,
+        welcome_message_override="¡Hola!",
+        reduced=True,
+    )
+
+    assert full_payload.get("tts_cache_namespace").endswith(":full:v2")
+    assert reduced_payload.get("tts_cache_namespace").endswith(":reduced:v2")
+    assert full_payload.get("tts_cache_namespace") != reduced_payload.get("tts_cache_namespace")

@@ -57,6 +57,70 @@ def get_logger():
         logger = logging.getLogger(__name__)
     return logger
 
+
+def _slug_for_audio_cache(value: Optional[object], fallback: str = "default") -> str:
+    if value is None:
+        return fallback
+    normalized = unicodedata.normalize("NFKD", str(value).strip())
+    ascii_text = "".join(ch for ch in normalized if not unicodedata.combining(ch))
+    slug = re.sub(r"[^a-z0-9]+", "-", ascii_text.lower()).strip("-")
+    return slug or fallback
+
+
+def _first_audio_cache_token(*values: Optional[object], fallback: str = "default") -> str:
+    ignored = {
+        "",
+        "default",
+        "demo",
+        "demo-municipio",
+        "municipio",
+        "municipio-inteligente",
+        "tu-municipio",
+    }
+    for value in values:
+        slug = _slug_for_audio_cache(value, "")
+        if slug and slug not in ignored and "municipio-inteligente" not in slug:
+            return slug
+    return fallback
+
+
+def build_menu_tts_cache_namespace(
+    *,
+    context: Optional[dict] = None,
+    tenant_name: Optional[object] = None,
+    menu_key: str = "main_menu",
+    channel: str = "web",
+    reduced: bool = False,
+    version: str = "v2",
+) -> str:
+    """Stable namespace for fixed inclusive menu audio.
+
+    The spoken menu can be cached per tenant/menu/channel without relying on
+    per-request text-only hashes or generic namespaces such as "menu_principal".
+    """
+
+    context = context if isinstance(context, dict) else {}
+    cfg = context.get("municipio_config_actual") if isinstance(context.get("municipio_config_actual"), dict) else {}
+    owner_user = context.get("user_obj")
+    tenant_token = _first_audio_cache_token(
+        context.get("tenant_slug"),
+        context.get("tenant"),
+        context.get("tenantSlug"),
+        cfg.get("tenant_slug"),
+        cfg.get("slug"),
+        cfg.get("municipio_slug"),
+        cfg.get("municipio_id"),
+        getattr(owner_user, "tenant_slug", None) if owner_user else None,
+        getattr(owner_user, "id", None) if owner_user else None,
+        tenant_name,
+        fallback="municipio",
+    )
+    channel_token = _slug_for_audio_cache(channel or "web", "web")
+    menu_token = _slug_for_audio_cache(menu_key or "main_menu", "main-menu")
+    mode_token = "reduced" if reduced else "full"
+    version_token = _slug_for_audio_cache(version or "v1", "v1")
+    return f"whatsapp:menu:{tenant_token}:{menu_token}:{channel_token}:{mode_token}:{version_token}"
+
 def limpiar_texto_base(texto: str) -> str:
     """
     PLACEHOLDER: Basic text cleaning.
@@ -1009,7 +1073,20 @@ def _get_main_menu_payload(
         "tts_voice": "shimmer",
         "tts_model": os.getenv("OPENAI_TTS_MENU_MODEL", "tts-1-hd"),
         "tts_speed": menu_tts_speed,
-        "tts_cache_namespace": "menu_principal",
+        "tts_cache_namespace": build_menu_tts_cache_namespace(
+            context=context,
+            tenant_name=tenant_name_text,
+            menu_key="main_menu",
+            channel=channel,
+            reduced=reduced,
+            version="v2",
+        ),
+        "audio_cache_policy": {
+            "kind": "fixed_menu",
+            "scope": "tenant",
+            "cache": "tts_audio_cache",
+            "inclusive": True,
+        },
     }
     # Hard guard: never leak the generic placeholder identity in final greeting.
     for key in ("message_body", "audio_text"):

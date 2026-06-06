@@ -3330,6 +3330,8 @@ def _prepare_cached_welcome_audio(payload: dict, *, tenant_profile=None, client_
     if not isinstance(payload, dict):
         return
 
+    from services.common_utils import build_menu_tts_cache_namespace
+
     tenant_slug = (
         getattr(tenant_profile, "slug", None)
         or getattr(client_user, "tenant_slug", None)
@@ -3337,7 +3339,43 @@ def _prepare_cached_welcome_audio(payload: dict, *, tenant_profile=None, client_
     )
     tenant_slug = str(tenant_slug or "default").strip().lower() or "default"
     payload.setdefault("menu_audio_enabled", True)
-    payload.setdefault("tts_cache_namespace", f"whatsapp:welcome:{tenant_slug}:main_menu:v1")
+    current_namespace = str(payload.get("tts_cache_namespace") or "").strip()
+    generic_namespaces = {
+        "",
+        "menu",
+        "main_menu",
+        "menu_principal",
+        "welcome",
+        "welcome_menu",
+    }
+    next_namespace = build_menu_tts_cache_namespace(
+        context={
+            "tenant_slug": tenant_slug,
+            "tenant": tenant_slug,
+            "channel": "whatsapp",
+            "user_obj": client_user,
+        },
+        tenant_name=getattr(tenant_profile, "nombre", None)
+        or getattr(client_user, "nombre_empresa", None)
+        or getattr(client_user, "name", None),
+        menu_key=str(payload.get("menu_key") or "main_menu"),
+        channel=str(payload.get("channel") or "whatsapp"),
+        reduced=bool(payload.get("reduced") or payload.get("_reduced_menu")),
+        version=str(payload.get("menu_version") or "v2"),
+    )
+    if current_namespace in generic_namespaces or current_namespace.startswith("whatsapp:welcome:"):
+        payload["tts_cache_namespace"] = next_namespace
+    else:
+        payload.setdefault("tts_cache_namespace", next_namespace)
+    payload.setdefault(
+        "audio_cache_policy",
+        {
+            "kind": "fixed_menu",
+            "scope": "tenant",
+            "cache": "tts_audio_cache",
+            "inclusive": True,
+        },
+    )
 
 
 def _reset_municipio_context_for_menu(session_context: ChatSessionContext) -> None:

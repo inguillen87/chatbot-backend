@@ -10,8 +10,10 @@ class ReclamoMenuRepeatTestCase(unittest.TestCase):
         self.app_context = self.app.app_context()
         self.app_context.push()
         db.create_all()
-        rubro = Rubro(nombre="municipio", clave="municipio")
-        db.session.add(rubro)
+        rubro = Rubro.query.filter_by(clave="municipio").first()
+        if rubro is None:
+            rubro = Rubro(nombre="municipio", clave="municipio")
+            db.session.add(rubro)
         self.owner_user = User(
             name="Test Municipio",
             email="test@municipio.com",
