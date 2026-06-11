@@ -1,0 +1,4 @@
+# Optional open-source AI extras.
+# Install in Render/local only when INSTALL_OPEN_SOURCE_AI_EXTRAS=true.
+docling>=2.31.0
+sentence-transformers>=3.4.1

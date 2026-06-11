@@ -1,5 +1,6 @@
 from typing import Dict, Any
 from .extractors.xlsx_extractor import XLSXExtractor
+from .extractors.docling_extractor import DoclingExtractor
 from .extractors.pdf_text_extractor import PDFTextExtractor
 from .extractors.llm_vision_extractor import LLMVisionExtractor
 
@@ -24,9 +25,20 @@ class CatalogOrchestrator:
                  engine = "llm_vision"
                  result = LLMVisionExtractor().extract(file_content, filename)
             else:
+                engine = "docling"
+                result = DoclingExtractor().extract(file_content, filename)
+
+                if len(result.get("rows", [])) > 0:
+                    result["warnings"] = result.get("warnings", []) + ["Docling extraction enabled"]
+                else:
+                    docling_warnings = result.get("warnings", [])
+                    result = {}
+
                 # Auto or deterministic
-                engine = "pdf_text"
-                result = PDFTextExtractor().extract(file_content, filename)
+                if not result:
+                    engine = "pdf_text"
+                    result = PDFTextExtractor().extract(file_content, filename)
+                    result["warnings"] = docling_warnings + result.get("warnings", [])
 
                 # If Auto and failed (empty or few rows), fallback to Vision
                 if mode == "auto":
@@ -40,6 +52,9 @@ class CatalogOrchestrator:
         elif filename_lower.endswith(('.png', '.jpg', '.jpeg')):
             engine = "llm_vision"
             result = LLMVisionExtractor().extract(file_content, filename)
+        elif filename_lower.endswith(('.docx', '.pptx', '.html', '.htm', '.md', '.txt')):
+            engine = "docling"
+            result = DoclingExtractor().extract(file_content, filename)
         else:
              result = {
                  "columns": [],

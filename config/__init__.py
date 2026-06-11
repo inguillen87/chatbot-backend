@@ -403,6 +403,30 @@ class Config:
     MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "")
     MAPS_DEFAULT_PROVIDER = os.getenv("MAPS_DEFAULT_PROVIDER", "google")
 
+    # LLM provider configuration. Gemini is server-side only; do not expose this
+    # key through VITE_/NEXT_PUBLIC_ variables.
+    GEMINI_API_KEY = _env_first("GEMINI_API_KEY", "GOOGLE_GENAI_API_KEY", default="")
+    GEMINI_CHAT_MODEL = _env_first(
+        "GEMINI_CHAT_MODEL",
+        "GEMINI_MODEL",
+        default="gemini-2.5-flash",
+    )
+    HUGGINGFACE_API_TOKEN = _env_first("HUGGINGFACE_API_TOKEN", "HF_TOKEN", default="")
+    HUGGINGFACE_ENABLED = _env_flag(False, "HUGGINGFACE_ENABLED", "HF_ENABLED")
+    HUGGINGFACE_PROVIDER = os.getenv("HUGGINGFACE_PROVIDER", "auto")
+    HUGGINGFACE_EMBEDDINGS_ENABLED = _env_flag(False, "HUGGINGFACE_EMBEDDINGS_ENABLED", "HF_EMBEDDINGS_ENABLED")
+    HUGGINGFACE_EMBEDDING_MODEL = os.getenv("HUGGINGFACE_EMBEDDING_MODEL", "intfloat/multilingual-e5-large")
+    HUGGINGFACE_ZERO_SHOT_ENABLED = _env_flag(False, "HUGGINGFACE_ZERO_SHOT_ENABLED", "HF_ZERO_SHOT_ENABLED")
+    HUGGINGFACE_ZERO_SHOT_MODEL = os.getenv("HUGGINGFACE_ZERO_SHOT_MODEL", "joeddav/xlm-roberta-large-xnli")
+    HUGGINGFACE_RECLAMO_CATEGORY_MIN_SCORE = float(os.getenv("HUGGINGFACE_RECLAMO_CATEGORY_MIN_SCORE", "0.72"))
+    HUGGINGFACE_RECLAMO_PRIORITY_MIN_SCORE = float(os.getenv("HUGGINGFACE_RECLAMO_PRIORITY_MIN_SCORE", "0.66"))
+    VISION_HUGGINGFACE_ENABLED = _env_flag(False, "VISION_HUGGINGFACE_ENABLED", "HUGGINGFACE_VISION_ENABLED")
+    HUGGINGFACE_IMAGE_CLASSIFICATION_MODEL = os.getenv("HUGGINGFACE_IMAGE_CLASSIFICATION_MODEL", "google/vit-base-patch16-224")
+    HUGGINGFACE_OBJECT_DETECTION_MODEL = os.getenv("HUGGINGFACE_OBJECT_DETECTION_MODEL", "facebook/detr-resnet-50")
+    INSTALL_OPEN_SOURCE_AI_EXTRAS = _env_flag(False, "INSTALL_OPEN_SOURCE_AI_EXTRAS")
+    DOCLING_ENABLED = _env_flag(False, "DOCLING_ENABLED", "OPEN_SOURCE_DOCUMENT_AI_ENABLED")
+    DOCLING_MAX_FILE_MB = float(os.getenv("DOCLING_MAX_FILE_MB", "15"))
+
     # 1. LLAVE SECRETA
     SECRET_KEY = os.getenv("SECRET_KEY", "una-llave-secreta-muy-segura-para-desarrollo-local")
 

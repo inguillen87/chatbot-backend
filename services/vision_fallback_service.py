@@ -53,6 +53,10 @@ def _cohere_vision_enabled() -> bool:
     return _truthy_env("VISION_COHERE_ENABLED", "COHERE_ENABLED")
 
 
+def _huggingface_vision_enabled() -> bool:
+    return _truthy_env("VISION_HUGGINGFACE_ENABLED", "HUGGINGFACE_VISION_ENABLED")
+
+
 def _openai_model(default_model: str = "gpt-4o") -> str:
     return os.getenv("OPENAI_MODEL", default_model)
 
@@ -386,6 +390,19 @@ def _call_cohere(image_bytes: bytes, custom_prompt: Optional[str] = None) -> Opt
         logger.error(f"Cohere vision failed: {e}", exc_info=True)
         return None
 
+
+def _call_huggingface(image_bytes: bytes) -> Optional[Dict[str, Any]]:
+    if not _huggingface_vision_enabled():
+        return None
+    try:
+        from services.huggingface_inference_service import analyze_image_for_chatboc
+
+        return analyze_image_for_chatboc(image_bytes)
+    except Exception as exc:
+        logger.error("Hugging Face vision failed: %s", exc, exc_info=True)
+        return None
+
+
 def _normalize_result(result: Dict[str, Any]) -> Dict[str, Any]:
     """Convert provider-agnostic result into the format used in the app."""
     labels = ["" if l is None else l for l in result.get("labels", [])]
@@ -412,6 +429,11 @@ def analyze_image_smart(image_bytes: bytes, prompt: Optional[str] = None) -> Dic
             return _normalize_result(result)
     else:
         logger.warning("OpenAI vision failed and Cohere vision fallback is disabled.")
+    if _huggingface_vision_enabled():
+        logger.warning("Falling back to explicitly enabled Hugging Face vision...")
+        result = _call_huggingface(image_bytes)
+        if result:
+            return _normalize_result(result)
     logger.error("All vision providers failed")
     return {"labels": [], "objects": []}
 

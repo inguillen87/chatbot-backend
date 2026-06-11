@@ -30,8 +30,8 @@ def test_extract_reclamo_details_includes_contact(monkeypatch):
 
     assert details["categoria_sugerida"] == "Arbolado"
     assert details["categoria"] == "Arbolado"
-    assert details["descripcion_sugerida"] == "hay un arbol caido"
-    assert details["descripcion"] == "hay un arbol caido"
+    assert details["descripcion_sugerida"] == "arbol caido"
+    assert details["descripcion"] == "arbol caido"
     assert details["nombre_sugerido"] == "Juan Perez"
     assert details["nombre"] == "Juan Perez"
     assert details["telefono_sugerido"] == "+541112223344"
@@ -70,6 +70,53 @@ def test_llm_called_when_keywords_missing(monkeypatch):
     assert details["descripcion"] == "luz quemada"
     assert details["direccion_sugerida"] == "Sarmiento 100"
     assert details["direccion"] == "Sarmiento 100"
+
+
+def test_huggingface_category_signal_used_before_llm(monkeypatch):
+    called = {"complaint": False}
+
+    def fake_complaint(text, **kwargs):
+        called["complaint"] = True
+        return {}
+
+    monkeypatch.setattr(
+        "services.municipio_responder.extract_complaint_details_llm",
+        fake_complaint,
+    )
+    monkeypatch.setattr(
+        "services.municipio_responder.extract_multiple_contact_details_llm",
+        lambda text, fields: {},
+    )
+    monkeypatch.setattr(
+        "services.municipio_ai_classifier.infer_reclamo_category",
+        lambda text, categories: {
+            "categoria": "Arbolado",
+            "score": 0.88,
+            "provider": "huggingface_zero_shot",
+            "candidates": [{"label": "Arbolado", "score": 0.88}],
+        },
+    )
+    monkeypatch.setattr(
+        "services.municipio_ai_classifier.infer_reclamo_priority",
+        lambda text: {
+            "prioridad": "alta",
+            "score": 0.74,
+            "provider": "huggingface_zero_shot",
+            "candidates": [{"label": "alta", "score": 0.74}],
+        },
+    )
+
+    details = extract_reclamo_details_from_text(
+        "necesito que revisen esto porque representa un riesgo para los vecinos",
+        ["Arbolado", "Luminaria"],
+    )
+
+    assert details["categoria"] == "Arbolado"
+    assert details["categoria_confianza"] == 0.88
+    assert details["categoria_provider"] == "huggingface_zero_shot"
+    assert details["prioridad_sugerida"] == "alta"
+    assert details["prioridad_confianza"] == 0.74
+    assert not called["complaint"]
 
 
 def test_intersection_and_district_parsing():

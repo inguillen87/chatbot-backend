@@ -1,5 +1,6 @@
 
 import logging
+import os
 from typing import List, Optional
 from services.openai_bridge import client as openai_client
 
@@ -23,9 +24,13 @@ def embed_textos_llm(textos: List[str], input_type: str = "search_document") -> 
         logger.error("Entrada inválida: se esperaba una lista de strings.")
         return None
 
+    expected_dimension = int(os.getenv("EMBEDDING_DIMENSION", "1024"))
+
     if not openai_client:
         logger.error("Cliente OpenAI no inicializado.")
-        return None
+        from services.huggingface_inference_service import embed_texts
+
+        return embed_texts(textos, expected_dimension=expected_dimension)
 
     try:
         # Reemplazar saltos de línea para mejor rendimiento (recomendación común)
@@ -34,7 +39,7 @@ def embed_textos_llm(textos: List[str], input_type: str = "search_document") -> 
         response = openai_client.embeddings.create(
             input=textos_limpios,
             model="text-embedding-3-large",
-            dimensions=1024
+            dimensions=expected_dimension
         )
 
         # Extraer los embeddings en orden
@@ -43,4 +48,6 @@ def embed_textos_llm(textos: List[str], input_type: str = "search_document") -> 
 
     except Exception as e:
         logger.error(f"Error generando embeddings con OpenAI: {e}", exc_info=True)
-        return None
+        from services.huggingface_inference_service import embed_texts
+
+        return embed_texts(textos, expected_dimension=expected_dimension)

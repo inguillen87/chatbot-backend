@@ -1,6 +1,7 @@
 import logging
 import os
 from services.openai_bridge import llamar_openai
+from services.gemini_bridge import is_gemini_llm_configured
 
 logger = logging.getLogger(__name__)
 
@@ -12,6 +13,10 @@ def _truthy_env(*names: str) -> bool:
 
 def _cohere_llm_enabled() -> bool:
     return _truthy_env("LLM_COHERE_ENABLED", "COHERE_ENABLED")
+
+
+def _gemini_llm_enabled() -> bool:
+    return is_gemini_llm_configured()
 
 
 def _provider_order_from_env() -> list[str]:
@@ -26,6 +31,9 @@ def _provider_order_from_env() -> list[str]:
         if provider == "cohere" and not _cohere_llm_enabled():
             logger.info("Skipping Cohere LLM provider because it is not explicitly enabled.")
             continue
+        if provider == "gemini" and not _gemini_llm_enabled():
+            logger.info("Skipping Gemini LLM provider because GEMINI_API_KEY is not configured.")
+            continue
         if provider not in seen:
             seen.add(provider)
             ordered.append(provider)
@@ -35,6 +43,10 @@ def _provider_order_from_env() -> list[str]:
 def _resolve_provider(name: str):
     if name == "openai":
         return "OpenAI", llamar_openai
+    if name == "gemini" and _gemini_llm_enabled():
+        from services.gemini_bridge import llamar_gemini
+
+        return "Gemini", llamar_gemini
     if name == "cohere" and _cohere_llm_enabled():
         from services.cohere_bridge import llamar_cohere
 
@@ -63,7 +75,7 @@ def llamar_llm_con_fallback(app, mensaje_usuario: str, usuario: dict, historial:
     for name, func in providers:
         try:
             logger.info(f"Attempting LLM call with provider: {name}")
-            if name == "OpenAI":
+            if name in {"OpenAI", "Gemini"}:
                 return func(app, mensaje_usuario, usuario, historial, chat_session_id, model=model)
             return func(app, mensaje_usuario, usuario, historial, chat_session_id)
         except Exception as exc:  # pragma: no cover - defensive logging

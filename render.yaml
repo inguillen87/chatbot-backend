@@ -16,6 +16,42 @@ services:
         value: https://api.chatboc.ar
       - key: PUBLIC_API_BASE_URL
         value: https://api.chatboc.ar
+      - key: LLM_PROVIDER_ORDER
+        value: openai,gemini
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_CHAT_MODEL
+        value: gemini-2.5-flash
+      - key: HUGGINGFACE_API_TOKEN
+        sync: false
+      - key: HUGGINGFACE_ENABLED
+        value: "false"
+      - key: HUGGINGFACE_PROVIDER
+        value: auto
+      - key: HUGGINGFACE_EMBEDDINGS_ENABLED
+        value: "false"
+      - key: HUGGINGFACE_EMBEDDING_MODEL
+        value: intfloat/multilingual-e5-large
+      - key: HUGGINGFACE_ZERO_SHOT_ENABLED
+        value: "false"
+      - key: HUGGINGFACE_ZERO_SHOT_MODEL
+        value: joeddav/xlm-roberta-large-xnli
+      - key: HUGGINGFACE_RECLAMO_CATEGORY_MIN_SCORE
+        value: "0.72"
+      - key: HUGGINGFACE_RECLAMO_PRIORITY_MIN_SCORE
+        value: "0.66"
+      - key: VISION_HUGGINGFACE_ENABLED
+        value: "false"
+      - key: HUGGINGFACE_IMAGE_CLASSIFICATION_MODEL
+        value: google/vit-base-patch16-224
+      - key: HUGGINGFACE_OBJECT_DETECTION_MODEL
+        value: facebook/detr-resnet-50
+      - key: INSTALL_OPEN_SOURCE_AI_EXTRAS
+        value: "false"
+      - key: DOCLING_ENABLED
+        value: "false"
+      - key: DOCLING_MAX_FILE_MB
+        value: "15"
       - key: TWILIO_ACCOUNT_SID
         sync: false
       - key: TWILIO_AUTH_TOKEN
@@ -64,3 +100,33 @@ services:
         value: 3.12.0
       - key: FLASK_APP
         value: app.py
+      - key: LLM_PROVIDER_ORDER
+        value: openai,gemini
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_CHAT_MODEL
+        value: gemini-2.5-flash
+      - key: HUGGINGFACE_API_TOKEN
+        sync: false
+      - key: HUGGINGFACE_ENABLED
+        value: "false"
+      - key: HUGGINGFACE_PROVIDER
+        value: auto
+      - key: HUGGINGFACE_EMBEDDINGS_ENABLED
+        value: "false"
+      - key: HUGGINGFACE_EMBEDDING_MODEL
+        value: intfloat/multilingual-e5-large
+      - key: HUGGINGFACE_ZERO_SHOT_ENABLED
+        value: "false"
+      - key: HUGGINGFACE_ZERO_SHOT_MODEL
+        value: joeddav/xlm-roberta-large-xnli
+      - key: HUGGINGFACE_RECLAMO_CATEGORY_MIN_SCORE
+        value: "0.72"
+      - key: HUGGINGFACE_RECLAMO_PRIORITY_MIN_SCORE
+        value: "0.66"
+      - key: INSTALL_OPEN_SOURCE_AI_EXTRAS
+        value: "false"
+      - key: DOCLING_ENABLED
+        value: "false"
+      - key: DOCLING_MAX_FILE_MB
+        value: "15"
