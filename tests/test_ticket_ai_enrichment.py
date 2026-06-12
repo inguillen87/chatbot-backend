@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from models import MunicipioTicket, TenantProfile, TicketComentario, db
+from models import MunicipioTicket, TenantProfile, User, db
 from services.ticket_ai_enrichment import build_ticket_ai_enrichment
 
 
@@ -76,13 +76,22 @@ def test_build_ticket_ai_enrichment_for_pyme_intent(monkeypatch):
 
 
 def test_admin_ticket_ai_enrichment_endpoint(client, monkeypatch):
-    tenant = TenantProfile(slug="junin", nombre="Junin", tipo="municipio")
+    owner = User(
+        name="Municipio Junin",
+        email="municipio-junin@example.com",
+        rol="admin",
+        tipo_chat="municipio",
+    )
+    owner.set_password("admin")
+    db.session.add(owner)
+    db.session.flush()
+    tenant = TenantProfile(slug="junin", nombre="Junin", tipo="municipio", municipio_id=owner.id)
     db.session.add(tenant)
     db.session.flush()
     ticket = MunicipioTicket(
         nro_ticket="123456",
         tenant_id=tenant.id,
-        municipio_id=tenant.id,
+        municipio_id=owner.id,
         pregunta="Hay una luminaria rota",
         asunto="Luminaria",
         categoria="Luminaria",
