@@ -3270,7 +3270,12 @@ def admin_login():
         current_app.logger.warning(f"[admin_login] User not found for email: {email.strip().lower()}")
         return jsonify({"error": "Credenciales inválidas"}), 401
 
-    current_app.logger.info(f"[admin_login] Found user: {user.id}, email: {user.email}, role: {user.rol}, password_hash: {user.password_hash}")
+    current_app.logger.info(
+        "[admin_login] Found user: %s, email: %s, role: %s",
+        user.id,
+        user.email,
+        user.rol,
+    )
 
     if not user.check_password(password):
         current_app.logger.warning(f"[admin_login] Invalid password for user: {user.email}")
