@@ -96,3 +96,31 @@ alternativos o modelos propios.
 
 Ver también `docs/open-source-ai-roadmap.md` para el plan completo con Docling,
 Sentence Transformers, Meta SAM 2, Llama y moderación.
+
+## Operacion segura de secretos
+
+Los tokens de proveedores IA no se guardan en git ni se envian al frontend. Para
+sincronizarlos con Render, el proceso local debe tener:
+
+```bash
+HUGGINGFACE_API_TOKEN=...
+GEMINI_API_KEY=...
+RENDER_ENV_SYNC_ENABLED=true
+RENDER_API_KEY=...
+RENDER_SERVICE_ID=... # o RENDER_ENV_GROUP_ID
+```
+
+Despues se puede ejecutar:
+
+```bash
+python scripts/sync_ai_provider_env.py --include-recommended-defaults --trigger-deploy
+```
+
+Para validar Hugging Face sin exponer el token:
+
+```bash
+python scripts/smoke_huggingface_provider.py
+```
+
+Ambos scripts imprimen nombres de variables y resultados operativos, nunca
+valores secretos.

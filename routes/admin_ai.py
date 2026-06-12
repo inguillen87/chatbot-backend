@@ -14,6 +14,7 @@ from models import CatalogoItem, MunicipioTicket, PymePedido, PymeTicket, Tenant
 from services.analytics import get_summary
 from services.analytics.filters import parse_filters
 from services.analytics.rbac import require_access
+from services.ai_provider_status import build_ai_provider_status
 from services.openai_bridge import generate_analytics_report, generate_ticket_summary
 from services.vision_fallback_service import analyze_image_text, analyze_text_structured
 
@@ -158,6 +159,14 @@ def update_bot_settings():
     db.session.commit()
 
     return jsonify({"tenant_id": tenant.id, "settings": _ensure_tenant_bot_settings(tenant)})
+
+
+@admin_ai_bp.get("/ai/provider-status")
+def ai_provider_status():
+    require_access("*", "admin")
+    include_smoke = str(request.args.get("smoke") or "").strip().lower() in {"1", "true", "yes", "on"}
+    include_live = str(request.args.get("live") or "").strip().lower() in {"1", "true", "yes", "on"}
+    return jsonify(build_ai_provider_status(include_smoke=include_smoke, include_live=include_live))
 
 
 @admin_ai_bp.post("/ai/executive-summary")
