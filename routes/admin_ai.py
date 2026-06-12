@@ -260,6 +260,50 @@ def ticket_ai_summary(ticket_id: int):
     return jsonify({"ticket_id": ticket.id, "scope": scope, "ai": summary})
 
 
+@admin_ai_bp.post("/tickets/<int:ticket_id>/ai-enrichment")
+def ticket_ai_enrichment(ticket_id: int):
+    payload = request.get_json(silent=True) or {}
+    scope = (payload.get("scope") or "municipio").lower()
+    if scope not in {"municipio", "pyme"}:
+        abort(400, description="scope must be municipio|pyme")
+
+    model = MunicipioTicket if scope == "municipio" else PymeTicket
+    ticket = model.query.get(ticket_id)
+    if not ticket:
+        abort(404, description="ticket not found")
+
+    tenant_hint = getattr(ticket, "tenant_id", None)
+    if not tenant_hint:
+        tenant_hint = getattr(ticket, "municipio_id", None) or getattr(ticket, "user_id", None)
+    if not tenant_hint:
+        abort(404, description="ticket tenant not resolved")
+
+    require_access(str(tenant_hint), "operador")
+
+    comments = (
+        TicketComentario.query.filter(
+            TicketComentario.municipio_ticket_id == ticket_id
+            if scope == "municipio"
+            else TicketComentario.pyme_ticket_id == ticket_id
+        )
+        .order_by(TicketComentario.fecha.asc())
+        .limit(40)
+        .all()
+    )
+    tenant = TenantProfile.query.get(getattr(ticket, "tenant_id", None)) if getattr(ticket, "tenant_id", None) else None
+
+    from services.ticket_ai_enrichment import build_ticket_ai_enrichment
+
+    return jsonify(
+        build_ticket_ai_enrichment(
+            ticket,
+            scope=scope,
+            comments=comments,
+            tenant=tenant,
+        )
+    )
+
+
 @admin_ai_bp.post("/ai/product-recommendations")
 def product_recommendations():
     payload = request.get_json(silent=True) or {}

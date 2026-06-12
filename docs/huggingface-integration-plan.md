@@ -21,6 +21,12 @@ alternativos o modelos propios.
 - Clasificación municipal auxiliar: cuando no hay match por menú/keyword, el
   flujo de reclamos puede usar zero-shot para sugerir categoría y prioridad con
   umbral configurable, guardando proveedor, confianza y candidatos.
+- Enriquecimiento operativo de reclamos: el extractor municipal agrega señales
+  de riesgo, necesidad de foto, ubicación exacta, atención humana y sentimiento
+  del vecino como hints auxiliares.
+- CRM AI enrichment: `POST /admin/tickets/:ticket_id/ai-enrichment` devuelve un
+  contrato bajo demanda para paneles admin con hints de Hugging Face para
+  municipios y pymes sin recalcularlo en cada listado.
 - Variables declaradas en `.env.example`, `ENV_DOCUMENTATION.md` y `render.yaml`
   sin exponer secretos.
 - `requirements-ai-oss.txt`: paquete opcional para extras open-source pesados,

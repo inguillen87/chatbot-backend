@@ -17,6 +17,8 @@ def test_provider_status_never_exposes_secret_values(monkeypatch):
     assert payload["secret_values_exposed"] is False
     assert payload["providers"]["gemini"]["configured"] is True
     assert payload["providers"]["huggingface"]["configured"] is True
+    assert payload["providers"]["huggingface"]["reclamo_signal_min_score"] == "0.62"
+    assert payload["providers"]["huggingface"]["pyme_intent_min_score"] == "0.62"
     assert "sk-test-secret" not in serialized
     assert "gemini-secret" not in serialized
     assert "hf_test_secret" not in serialized

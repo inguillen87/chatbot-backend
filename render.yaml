@@ -40,6 +40,12 @@ services:
         value: "0.72"
       - key: HUGGINGFACE_RECLAMO_PRIORITY_MIN_SCORE
         value: "0.66"
+      - key: HUGGINGFACE_RECLAMO_SIGNAL_MIN_SCORE
+        value: "0.62"
+      - key: HUGGINGFACE_SENTIMENT_MIN_SCORE
+        value: "0.56"
+      - key: HUGGINGFACE_PYME_INTENT_MIN_SCORE
+        value: "0.62"
       - key: VISION_HUGGINGFACE_ENABLED
         value: "false"
       - key: HUGGINGFACE_IMAGE_CLASSIFICATION_MODEL
@@ -124,6 +130,12 @@ services:
         value: "0.72"
       - key: HUGGINGFACE_RECLAMO_PRIORITY_MIN_SCORE
         value: "0.66"
+      - key: HUGGINGFACE_RECLAMO_SIGNAL_MIN_SCORE
+        value: "0.62"
+      - key: HUGGINGFACE_SENTIMENT_MIN_SCORE
+        value: "0.56"
+      - key: HUGGINGFACE_PYME_INTENT_MIN_SCORE
+        value: "0.62"
       - key: INSTALL_OPEN_SOURCE_AI_EXTRAS
         value: "false"
       - key: DOCLING_ENABLED

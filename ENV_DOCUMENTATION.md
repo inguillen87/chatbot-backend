@@ -42,6 +42,9 @@ New variables introduced for Multi-tenant Modules:
 *   `HUGGINGFACE_ZERO_SHOT_MODEL`: Multilingual zero-shot model. Default is `joeddav/xlm-roberta-large-xnli`.
 *   `HUGGINGFACE_RECLAMO_CATEGORY_MIN_SCORE`: Minimum zero-shot score required before using a Hugging Face complaint category suggestion. Default is `0.72`.
 *   `HUGGINGFACE_RECLAMO_PRIORITY_MIN_SCORE`: Minimum zero-shot score required before storing a Hugging Face complaint priority suggestion. Default is `0.66`.
+*   `HUGGINGFACE_RECLAMO_SIGNAL_MIN_SCORE`: Minimum zero-shot score for municipal operational signals such as risk, evidence needed, or exact-location needed. Default is `0.62`.
+*   `HUGGINGFACE_SENTIMENT_MIN_SCORE`: Minimum zero-shot score for citizen/customer sentiment hints. Default is `0.56`.
+*   `HUGGINGFACE_PYME_INTENT_MIN_SCORE`: Minimum zero-shot score for business ticket intent hints such as order, payment, delivery, support, or human handoff. Default is `0.62`.
 *   `VISION_HUGGINGFACE_ENABLED`: Enables Hugging Face image classification/object detection as a final vision fallback.
 *   `HUGGINGFACE_IMAGE_CLASSIFICATION_MODEL`: Image classification model. Default is `google/vit-base-patch16-224`.
 *   `HUGGINGFACE_OBJECT_DETECTION_MODEL`: Object detection model. Default is `facebook/detr-resnet-50`.

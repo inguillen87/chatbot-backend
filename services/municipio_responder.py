@@ -6305,18 +6305,20 @@ def extract_reclamo_details_from_text(
     category = find_reclamo_category_by_input(user_input, reclamo_options)
     if category:
         details["categoria_sugerida"] = category
-    else:
-        try:
-            from services.municipio_ai_classifier import (
-                infer_reclamo_category,
-                infer_reclamo_priority,
-            )
+    try:
+        from services.municipio_ai_classifier import (
+            infer_reclamo_category,
+            infer_reclamo_operational_signals,
+            infer_reclamo_priority,
+            infer_reclamo_sentiment,
+        )
 
-            allowed_categories = [
-                opt.get("texto")
-                for opt in reclamo_options
-                if isinstance(opt, dict) and opt.get("texto")
-            ]
+        allowed_categories = [
+            opt.get("texto")
+            for opt in reclamo_options
+            if isinstance(opt, dict) and opt.get("texto")
+        ]
+        if not category:
             inferred_category = infer_reclamo_category(user_input, allowed_categories)
             if inferred_category:
                 details["categoria_sugerida"] = inferred_category["categoria"]
@@ -6324,14 +6326,29 @@ def extract_reclamo_details_from_text(
                 details["categoria_provider"] = inferred_category["provider"]
                 details["categoria_candidatos"] = inferred_category.get("candidates", [])
 
-            inferred_priority = infer_reclamo_priority(user_input)
-            if inferred_priority:
-                details["prioridad_sugerida"] = inferred_priority["prioridad"]
-                details["prioridad_confianza"] = inferred_priority["score"]
-                details["prioridad_provider"] = inferred_priority["provider"]
-                details["prioridad_candidatos"] = inferred_priority.get("candidates", [])
-        except Exception:
-            logger.exception("No se pudo aplicar clasificacion Hugging Face al reclamo")
+        inferred_priority = infer_reclamo_priority(user_input)
+        if inferred_priority:
+            details["prioridad_sugerida"] = inferred_priority["prioridad"]
+            details["prioridad_confianza"] = inferred_priority["score"]
+            details["prioridad_provider"] = inferred_priority["provider"]
+            details["prioridad_candidatos"] = inferred_priority.get("candidates", [])
+
+        operational_signals = infer_reclamo_operational_signals(user_input)
+        if operational_signals:
+            details["riesgo_operativo"] = operational_signals.get("risk_level")
+            details["requiere_foto_sugerida"] = operational_signals.get("requires_photo")
+            details["requiere_ubicacion_exacta_sugerida"] = operational_signals.get("requires_exact_location")
+            details["requiere_atencion_humana_sugerida"] = operational_signals.get("requires_human_attention")
+            details["senales_operativas"] = operational_signals.get("signals", [])
+            details["senales_operativas_provider"] = operational_signals.get("provider")
+
+        sentiment = infer_reclamo_sentiment(user_input)
+        if sentiment:
+            details["sentimiento_sugerido"] = sentiment.get("sentiment")
+            details["sentimiento_confianza"] = sentiment.get("score")
+            details["sentimiento_provider"] = sentiment.get("provider")
+    except Exception:
+        logger.exception("No se pudo aplicar clasificacion Hugging Face al reclamo")
 
     # --- Address heuristics (incluye intersecciones) ---
     direccion_interseccion, intersection_hints = _parse_intersection_and_district(

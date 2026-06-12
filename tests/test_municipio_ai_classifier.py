@@ -43,3 +43,50 @@ def test_infer_reclamo_priority_is_advisory(monkeypatch):
 
     assert result["prioridad"] == "urgente"
     assert result["score"] == 0.82
+
+
+def test_infer_reclamo_operational_signals_marks_risk_and_evidence(monkeypatch):
+    monkeypatch.setenv("HUGGINGFACE_RECLAMO_SIGNAL_MIN_SCORE", "0.60")
+    monkeypatch.setattr(
+        "services.huggingface_inference_service.classify_zero_shot",
+        lambda text, labels, multi_label=False: [
+            {"label": "riesgo para personas", "score": 0.86},
+            {"label": "requiere foto o evidencia", "score": 0.79},
+            {"label": "consulta administrativa", "score": 0.08},
+        ],
+    )
+
+    result = classifier.infer_reclamo_operational_signals("hay un poste por caer sobre la calle")
+
+    assert result["risk_level"] == "critico"
+    assert result["requires_photo"] is True
+    assert result["requires_human_attention"] is True
+    assert result["signals"][0]["code"] == "riesgo_personas"
+
+
+def test_build_reclamo_ai_enrichment_combines_hf_hints(monkeypatch):
+    def fake_zero_shot(text, labels, multi_label=False):
+        if "riesgo para personas" in labels:
+            return [
+                {"label": "riesgo vial o transito", "score": 0.77},
+                {"label": "requiere ubicacion exacta", "score": 0.72},
+            ]
+        if "frustrado o enojado" in labels:
+            return [{"label": "preocupado", "score": 0.71}]
+        if "urgente" in labels:
+            return [{"label": "alta", "score": 0.7}]
+        return [{"label": "Luminaria", "score": 0.92}]
+
+    monkeypatch.setenv("HUGGINGFACE_RECLAMO_CATEGORY_MIN_SCORE", "0.60")
+    monkeypatch.setenv("HUGGINGFACE_RECLAMO_PRIORITY_MIN_SCORE", "0.60")
+    monkeypatch.setenv("HUGGINGFACE_RECLAMO_SIGNAL_MIN_SCORE", "0.60")
+    monkeypatch.setenv("HUGGINGFACE_SENTIMENT_MIN_SCORE", "0.60")
+    monkeypatch.setattr("services.huggingface_inference_service.classify_zero_shot", fake_zero_shot)
+
+    result = classifier.build_reclamo_ai_enrichment("semaforo apagado en una esquina peligrosa", ["Luminaria"])
+
+    assert result["contract_version"] == "municipio.reclamo_ai_enrichment.v1"
+    assert result["category"]["categoria"] == "Luminaria"
+    assert result["priority"]["prioridad"] == "alta"
+    assert result["crm_hints"]["requires_exact_location"] is True
+    assert "sentiment:preocupacion" in result["crm_hints"]["tags"]

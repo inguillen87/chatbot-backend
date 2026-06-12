@@ -13,6 +13,9 @@ def test_collect_ai_env_values_reads_secrets_and_defaults(monkeypatch):
     assert values["HUGGINGFACE_API_TOKEN"] == "hf_test_secret"
     assert values["HUGGINGFACE_ZERO_SHOT_ENABLED"] == "true"
     assert values["GEMINI_CHAT_MODEL"] == "gemini-2.5-flash"
+    assert values["HUGGINGFACE_RECLAMO_SIGNAL_MIN_SCORE"] == "0.62"
+    assert values["HUGGINGFACE_SENTIMENT_MIN_SCORE"] == "0.56"
+    assert values["HUGGINGFACE_PYME_INTENT_MIN_SCORE"] == "0.62"
 
 
 def test_dry_run_does_not_print_secret_values(monkeypatch):

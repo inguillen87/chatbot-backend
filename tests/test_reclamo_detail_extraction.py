@@ -119,6 +119,49 @@ def test_huggingface_category_signal_used_before_llm(monkeypatch):
     assert not called["complaint"]
 
 
+def test_huggingface_operational_signals_are_exposed_in_reclamo_details(monkeypatch):
+    monkeypatch.setattr(
+        "services.municipio_responder.extract_complaint_details_llm",
+        lambda text, **kwargs: {},
+    )
+    monkeypatch.setattr(
+        "services.municipio_responder.extract_multiple_contact_details_llm",
+        lambda text, fields: {},
+    )
+    monkeypatch.setattr("services.municipio_ai_classifier.infer_reclamo_priority", lambda text: None)
+    monkeypatch.setattr("services.municipio_ai_classifier.infer_reclamo_category", lambda text, categories: None)
+    monkeypatch.setattr(
+        "services.municipio_ai_classifier.infer_reclamo_operational_signals",
+        lambda text: {
+            "risk_level": "alto",
+            "requires_photo": True,
+            "requires_exact_location": True,
+            "requires_human_attention": True,
+            "signals": [{"code": "riesgo_vial", "score": 0.81}],
+            "provider": "huggingface_zero_shot",
+        },
+    )
+    monkeypatch.setattr(
+        "services.municipio_ai_classifier.infer_reclamo_sentiment",
+        lambda text: {
+            "sentiment": "preocupacion",
+            "score": 0.7,
+            "provider": "huggingface_zero_shot",
+        },
+    )
+
+    details = extract_reclamo_details_from_text(
+        "hay un semaforo roto y los autos pasan rapido en San Martin 100",
+        ["Rotura de semaforo"],
+    )
+
+    assert details["riesgo_operativo"] == "alto"
+    assert details["requiere_foto_sugerida"] is True
+    assert details["requiere_ubicacion_exacta_sugerida"] is True
+    assert details["requiere_atencion_humana_sugerida"] is True
+    assert details["sentimiento_sugerido"] == "preocupacion"
+
+
 def test_intersection_and_district_parsing():
     details = extract_reclamo_details_from_text(
         "Sarmiento 100 esquina San Martin Junin Mendoza",
