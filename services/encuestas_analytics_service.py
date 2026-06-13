@@ -22,6 +22,7 @@ from services.encuestas_service import (
     _parse_datetime,
     _resolve_geo_metadata_for_tenant,
 )
+from services.huggingface_ai_insights import build_collection_ai_insights, build_map_ai_layers
 from utils.heatmap import (
     build_feature_collection,
     compute_heatmap_cell_id,
@@ -480,6 +481,62 @@ def _build_category_heatmap_layers(points: Sequence[Dict[str, Any]]) -> Dict[str
             "events": ["map_loaded", "layer_toggle", "time_slider_changed", "cluster_click"],
         },
     }
+
+
+def _build_survey_ai_items(
+    encuesta: EncEncuesta,
+    points: Sequence[Dict[str, Any]],
+    cells: Sequence[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    items: List[Dict[str, Any]] = []
+    title = getattr(encuesta, "titulo", None) or getattr(encuesta, "nombre", None) or "encuesta"
+    for point in points:
+        if not isinstance(point, Mapping):
+            continue
+        items.append(
+            {
+                "source": "survey",
+                "text": " ".join(
+                    str(value)
+                    for value in (
+                        title,
+                        point.get("categoria"),
+                        point.get("barrio"),
+                        point.get("ciudad"),
+                        point.get("provincia"),
+                        point.get("canal"),
+                    )
+                    if value
+                ),
+                "category": point.get("categoria"),
+                "channel": point.get("canal"),
+                "lat": point.get("lat"),
+                "lng": point.get("lng"),
+            }
+        )
+    for cell in cells:
+        if not isinstance(cell, Mapping):
+            continue
+        barrios = cell.get("barrios") if isinstance(cell.get("barrios"), Mapping) else {}
+        canales = cell.get("canales") if isinstance(cell.get("canales"), Mapping) else {}
+        items.append(
+            {
+                "source": "survey_cell",
+                "text": " ".join(
+                    str(value)
+                    for value in (
+                        title,
+                        " ".join(list(barrios.keys())[:3]),
+                        " ".join(list(canales.keys())[:3]),
+                        cell.get("count"),
+                    )
+                    if value
+                ),
+                "category": "encuesta",
+                "channel": next(iter(canales.keys()), None) if canales else None,
+            }
+        )
+    return items
 
 
 def _build_heatmap_metadata(
@@ -1239,6 +1296,8 @@ def _build_visual_blueprint(
                 "points": heatmap.get("points") or [],
                 "cells": heatmap.get("cells") or [],
                 "hotspots": hotspot_data if isinstance(hotspot_data, list) else [],
+                "ai_layers": heatmap.get("ai_layers") or ((heatmap.get("metadata") or {}).get("ai_layers") or {}),
+                "ai_insights": heatmap.get("ai_insights") or ((heatmap.get("metadata") or {}).get("ai_insights") or {}),
             },
             "top_questions": top_questions,
         },
@@ -1252,7 +1311,9 @@ def _build_visual_blueprint(
             "map": {
                 "preferred_provider": ((heatmap.get("metadata") or {}).get("map_config") or {}).get("provider") or "maplibre",
                 "required_fields": ["lat", "lng", "weight"],
-                "optional_layers": ["heatmap", "cells", "pulses", "hotspots"],
+                "optional_layers": ["heatmap", "cells", "pulses", "hotspots", "ai_risk_layers", "survey_participation", "interactive_globe"],
+                "advanced_engines": ["deckgl", "maplibre"],
+                "fallback": "2d_heatmap_with_same_datasets",
             },
         },
     }
@@ -1325,6 +1386,9 @@ def _build_dashboard_sections(
                 "cells": heatmap.get("cells") or [],
                 "hotspots": map_meta.get("hotspots") or [],
                 "category_layers": ((heatmap.get("metadata") or {}).get("category_layers") or {}),
+                "ai_insights": heatmap.get("ai_insights") or ((heatmap.get("metadata") or {}).get("ai_insights") or {}),
+                "ai_layers": heatmap.get("ai_layers") or ((heatmap.get("metadata") or {}).get("ai_layers") or {}),
+                "map_experience": heatmap.get("map_experience") or ((heatmap.get("metadata") or {}).get("map_experience") or {}),
                 "headline": heatmap.get("headline"),
                 "legend": heatmap.get("legend") or {},
                 "empty_state": heatmap.get("empty_state"),
@@ -1355,6 +1419,7 @@ def _build_dashboard_sections(
             "insights": brief.get("insights") or [],
             "risk_level": brief.get("risk_level") or "medium",
             "ai_enhanced": bool(brief.get("ai_enhanced")),
+            "survey_ai_insights": heatmap.get("ai_insights") or ((heatmap.get("metadata") or {}).get("ai_insights") or {}),
             "alerts": alerts.get("alerts") or [],
         },
     }
@@ -1386,7 +1451,7 @@ def _build_frontend_render_contract(
         "version": "2026.04",
         "hierarchy": {
             "chart_engines": ["echarts", "recharts", "plotly"],
-            "map_engines": [preferred_provider, "maplibre", "google"],
+            "map_engines": [preferred_provider, "deckgl", "maplibre", "google"],
         },
         "modules": {
             "timeseries": {
@@ -1399,6 +1464,8 @@ def _build_frontend_render_contract(
                 "fallback_dataset_key": "modules.heatmap.cells",
                 "preferred_provider": preferred_provider,
                 "fallback_provider": "maplibre",
+                "ai_layers_dataset_key": "modules.heatmap.ai_layers.layers",
+                "advanced_view": "interactive_globe_heatmap",
             },
             "latest_responses": {
                 "state": latest_responses_state,
@@ -2174,6 +2241,35 @@ def get_heatmap(
     metadata["category_layers"] = _build_category_heatmap_layers(points)
     metadata["map_filter"] = map_filter
     category_layers = metadata["category_layers"]
+    ai_insights = build_collection_ai_insights(
+        _build_survey_ai_items(encuesta, points, cells),
+        domain="surveys",
+    )
+    ai_layers = build_map_ai_layers(
+        [{**point, "source": "survey"} for point in points if isinstance(point, Mapping)],
+        category_layers=category_layers,
+        insights=ai_insights,
+    )
+    map_experience = {
+        "contract_version": "encuestas.map_experience.v1",
+        "preferred_visualization": "interactive_globe_heatmap",
+        "map_engines": ["maplibre", "deckgl", "google"],
+        "layer_groups": ["heatmap", "category_layers", "ai_risk_layers", "survey_participation"],
+        "supports_reduced_motion": True,
+    }
+    metadata["ai_insights"] = ai_insights
+    metadata["ai_layers"] = ai_layers
+    metadata["map_experience"] = map_experience
+    metadata["map_layers"]["ai_risk"] = {
+        "kind": "ai_risk",
+        "source_keys": {"points": "metadata.ai_layers.layers.risk_pulses.points"},
+        "provider_hint": provider_hint,
+    }
+    metadata["map_layers"]["survey_participation"] = {
+        "kind": "survey_participation",
+        "source_keys": {"points": "metadata.ai_layers.layers.survey_participation.points"},
+        "provider_hint": provider_hint,
+    }
     has_map_data = bool(points or cells or ((category_layers.get("source") or {}).get("features") or []))
     if has_map_data:
         headline = f"Mapa de respuestas con {len(points)} puntos y {len(cells)} celdas disponibles."
@@ -2194,6 +2290,14 @@ def get_heatmap(
         "map_hierarchy": [provider_hint, "maplibre", "google"],
         "can_render_heatmap": bool(points or cells),
         "empty_reason": None if points or cells else "no_real_geo_points",
+        "ai_layers": True,
+        "recommended_views": [
+            "interactive_heatmap",
+            "category_layers",
+            "ai_risk_layers",
+            "survey_participation",
+            "interactive_globe",
+        ],
     }
     return {
         "points": points,
@@ -2202,6 +2306,9 @@ def get_heatmap(
         "legend": legend,
         "empty_state": empty_state,
         "recommended_action": recommended_action,
+        "ai_insights": ai_insights,
+        "ai_layers": ai_layers,
+        "map_experience": map_experience,
         "metadata": metadata,
         "render_contract": render_contract,
     }

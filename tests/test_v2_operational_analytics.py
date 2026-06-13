@@ -34,7 +34,7 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         db.session.add(self.admin)
         db.session.flush()
 
-        self.tenant = TenantProfile(slug="junin", nombre="Municipalidad de Junin", tipo="municipio", municipio_id=self.admin.id)
+        self.tenant = TenantProfile(slug="junin", nombre="Municipalidad de Junin", tipo="municipio", municipio_id=self.admin.id, plan="full")
         db.session.add(self.tenant)
         db.session.flush()
         self.admin.tenant_id = self.tenant.id
@@ -221,7 +221,13 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertIn("tickets", (payload.get("render_contract") or {}).get("layers") or [])
         self.assertIn("surveys", (payload.get("render_contract") or {}).get("layers") or [])
         self.assertIn("analytics_events", (payload.get("render_contract") or {}).get("layers") or [])
+        self.assertIn("ai_risk", (payload.get("render_contract") or {}).get("layers") or [])
+        self.assertIn("interactive_globe", (payload.get("render_contract") or {}).get("recommended_views") or [])
         self.assertTrue(payload.get("category_layers"))
+        self.assertEqual((payload.get("ai_insights") or {}).get("contract_version"), "huggingface.ai_insights.v1")
+        self.assertEqual((payload.get("ai_layers") or {}).get("contract_version"), "huggingface.map_ai_layers.v1")
+        self.assertEqual((payload.get("map_experience") or {}).get("preferred_visualization"), "interactive_globe_heatmap")
+        self.assertIn("deckgl", ((payload.get("ai_layers") or {}).get("frontend_contract") or {}).get("map_engines") or [])
         self.assertEqual((payload.get("demographics") or {}).get("source"), "real_metadata_only")
         self.assertGreaterEqual((payload.get("summary") or {}).get("points_with_gender"), 3)
         self.assertGreaterEqual((payload.get("summary") or {}).get("points_with_age"), 3)
@@ -314,7 +320,7 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         empty_admin.set_password("secret123")
         db.session.add(empty_admin)
         db.session.flush()
-        empty_tenant = TenantProfile(slug="empty-tenant", nombre="Empty Tenant", tipo="municipio", municipio_id=empty_admin.id)
+        empty_tenant = TenantProfile(slug="empty-tenant", nombre="Empty Tenant", tipo="municipio", municipio_id=empty_admin.id, plan="full")
         db.session.add(empty_tenant)
         db.session.flush()
         empty_admin.tenant_id = empty_tenant.id

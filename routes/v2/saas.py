@@ -41,7 +41,7 @@ from services.catalog_quality import build_catalog_quality_fallback_payload, bui
 from services.demo_sandbox_contract import build_demo_whatsapp_sandbox_contract, sandbox_context_from_contract
 from services.operational_intelligence import build_operational_dashboard, build_operational_freshness
 from services.provider_platform import build_whatsapp_provider_status, sync_twilio_provider_records
-from services.plan_access import integration_access_payload, plan_allows_full_integrations
+from services.plan_access import integration_access_payload, integration_frontend_contract, plan_allows_full_integrations
 from services.twilio_tech_provider import (
     build_twilio_tech_provider_contract,
     merge_twilio_state,
@@ -93,9 +93,9 @@ def _error_response(message: str, status_code: int, reason_code: str, action_hin
     )
 
 
-def _integration_plan_error(tenant: TenantProfile):
+def _integration_plan_error(tenant: TenantProfile, feature_id: str = "whatsapp_business_platform"):
     access = integration_access_payload(tenant)
-    frontend_contract = access.get("frontend_contract") or {"render_as": "integration_locked"}
+    frontend_contract = integration_frontend_contract(access, feature_id)
     return _json_response(
         {
             **access,
@@ -114,10 +114,10 @@ def _integration_plan_error(tenant: TenantProfile):
     )
 
 
-def _require_full_integration_plan(tenant: TenantProfile):
+def _require_full_integration_plan(tenant: TenantProfile, feature_id: str = "whatsapp_business_platform"):
     if plan_allows_full_integrations(tenant):
         return None
-    return _integration_plan_error(tenant)
+    return _integration_plan_error(tenant, feature_id)
 
 
 def _tenant_slug_from_request(path_slug: str | None = None) -> str:
@@ -1379,7 +1379,7 @@ def whatsapp_tech_provider_v2(current_user, tenant_slug: str | None = None):
     tenant, error = _resolve_tenant_or_error(current_user, tenant_slug)
     if error:
         return error
-    plan_error = _require_full_integration_plan(tenant)
+    plan_error = _require_full_integration_plan(tenant, "whatsapp_sender_management")
     if plan_error:
         return plan_error
     return _json_response(build_twilio_tech_provider_contract(tenant, current_app.config))
@@ -1393,7 +1393,7 @@ def whatsapp_tech_provider_provision_v2(current_user, tenant_slug: str | None = 
     tenant, error = _resolve_tenant_or_error(current_user, tenant_slug)
     if error:
         return error
-    plan_error = _require_full_integration_plan(tenant)
+    plan_error = _require_full_integration_plan(tenant, "whatsapp_sender_management")
     if plan_error:
         return plan_error
 
@@ -1442,7 +1442,7 @@ def whatsapp_tech_provider_voice_app_v2(current_user, tenant_slug: str | None = 
     tenant, error = _resolve_tenant_or_error(current_user, tenant_slug)
     if error:
         return error
-    plan_error = _require_full_integration_plan(tenant)
+    plan_error = _require_full_integration_plan(tenant, "whatsapp_sender_management")
     if plan_error:
         return plan_error
 
@@ -1495,7 +1495,7 @@ def whatsapp_tech_provider_embedded_signup_v2(current_user, tenant_slug: str | N
     tenant, error = _resolve_tenant_or_error(current_user, tenant_slug)
     if error:
         return error
-    plan_error = _require_full_integration_plan(tenant)
+    plan_error = _require_full_integration_plan(tenant, "whatsapp_sender_management")
     if plan_error:
         return plan_error
 
@@ -1549,7 +1549,7 @@ def whatsapp_tech_provider_register_sender_v2(current_user, tenant_slug: str | N
     tenant, error = _resolve_tenant_or_error(current_user, tenant_slug)
     if error:
         return error
-    plan_error = _require_full_integration_plan(tenant)
+    plan_error = _require_full_integration_plan(tenant, "whatsapp_sender_management")
     if plan_error:
         return plan_error
 
@@ -1612,7 +1612,7 @@ def whatsapp_tech_provider_sender_status_v2(current_user, tenant_slug: str | Non
     tenant, error = _resolve_tenant_or_error(current_user, tenant_slug)
     if error:
         return error
-    plan_error = _require_full_integration_plan(tenant)
+    plan_error = _require_full_integration_plan(tenant, "whatsapp_sender_management")
     if plan_error:
         return plan_error
 

@@ -26,6 +26,7 @@ from models import (
 )
 from services.commerce_contracts import build_checkout_experience_payload, payment_capabilities
 from services.education_contracts import build_education_whatsapp_playbook, is_education_tenant
+from services.huggingface_ai_insights import build_whatsapp_ai_runtime_contract
 from services.plan_access import integration_access_payload
 from services.realtime_voice_profiles import build_realtime_voice_capabilities
 from services.audio_transcription_service import audio_translation_capabilities
@@ -473,6 +474,7 @@ def _conversation_intelligence_payload(tenant: TenantProfile, cfg: Mapping[str, 
             "registrar_encuesta",
             "derivar_humano",
         ],
+        "huggingface_ai": build_whatsapp_ai_runtime_contract(),
     }
 
 
@@ -1253,6 +1255,7 @@ def build_whatsapp_experience(
                 "webview_checkout",
                 "message_ux_policy",
                 "voice_realtime",
+                "huggingface_ai",
                 "enterprise_rules",
             ],
             "empty_state_behavior": "show_setup_checklist_and_safe_degradation",

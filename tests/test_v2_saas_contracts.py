@@ -1260,6 +1260,14 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertFalse(payload["conversation_intelligence"]["inputs"]["video"]["analysis_ready"])
         self.assertTrue(payload["conversation_intelligence"]["voice_calls"]["enabled"])
         self.assertTrue(payload["conversation_intelligence"]["voice_calls"]["capabilities"]["native_speech_to_speech"])
+        self.assertEqual(
+            payload["conversation_intelligence"]["huggingface_ai"]["contract_version"],
+            "huggingface.whatsapp_ai_runtime.v1",
+        )
+        self.assertIn(
+            "reclamo de servicio publico",
+            payload["conversation_intelligence"]["huggingface_ai"]["classification_groups"]["intent"],
+        )
         self.assertEqual(payload["content_modules"]["catalog"]["items"], 1)
         self.assertEqual(payload["content_modules"]["catalog"]["items_with_images"], 1)
         self.assertGreaterEqual(payload["content_modules"]["surveys_votings"]["responses"], 1)
@@ -1335,6 +1343,7 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertIn("commerce_checkout", payload["frontend_contract"]["recommended_views"])
         self.assertIn("template_blueprint", payload["frontend_contract"]["recommended_views"])
         self.assertIn("webview_checkout", payload["frontend_contract"]["recommended_views"])
+        self.assertIn("huggingface_ai", payload["frontend_contract"]["recommended_views"])
 
         alias_response = self.client.get(
             f"/api/v2/tenants/{self.tenant.slug}/whatsapp/experience",

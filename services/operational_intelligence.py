@@ -21,6 +21,7 @@ from models import (
     TicketRealtimeState,
     User,
 )
+from services.huggingface_ai_insights import build_collection_ai_insights, build_map_ai_layers
 
 
 _CLOSED_STATES = {"cerrado", "closed", "resuelto", "resolved", "finalizado", "done"}
@@ -807,6 +808,86 @@ def _location_quality(records: list[dict[str, Any]], geocoding_candidates: list[
     }
 
 
+def _ai_items_from_heatmap(
+    records: list[dict[str, Any]],
+    points: list[dict[str, Any]],
+    geocoding_candidates: list[dict[str, Any]],
+    filters: dict[str, Any],
+) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for record in records:
+        if not _point_matches_filters(_record_to_filter_probe(record), filters):
+            continue
+        items.append(
+            {
+                "source": "ticket",
+                "record_source": record.get("source"),
+                "id": record.get("id"),
+                "text": " ".join(
+                    str(value)
+                    for value in (
+                        record.get("title"),
+                        record.get("category"),
+                        record.get("status"),
+                        record.get("priority"),
+                        record.get("channel"),
+                        record.get("address"),
+                    )
+                    if value
+                ),
+                "category": record.get("category"),
+                "channel": record.get("channel"),
+                "status": record.get("status"),
+                "address": record.get("address"),
+            }
+        )
+    for point in points:
+        items.append(
+            {
+                "source": point.get("source"),
+                "id": point.get("id"),
+                "text": " ".join(
+                    str(value)
+                    for value in (
+                        point.get("label"),
+                        point.get("category"),
+                        point.get("status"),
+                        point.get("channel"),
+                    )
+                    if value
+                ),
+                "category": point.get("category"),
+                "channel": point.get("channel"),
+                "status": point.get("status"),
+                "lat": point.get("lat"),
+                "lng": point.get("lng"),
+            }
+        )
+    for candidate in geocoding_candidates:
+        items.append(
+            {
+                "source": "pending_geocode",
+                "id": candidate.get("id"),
+                "text": " ".join(
+                    str(value)
+                    for value in (
+                        candidate.get("label"),
+                        candidate.get("category"),
+                        candidate.get("status"),
+                        candidate.get("channel"),
+                        candidate.get("address"),
+                    )
+                    if value
+                ),
+                "category": candidate.get("category"),
+                "channel": candidate.get("channel"),
+                "status": candidate.get("status"),
+                "address": candidate.get("address"),
+            }
+        )
+    return items
+
+
 def build_operational_heatmap(
     tenant: TenantProfile,
     start_date: datetime,
@@ -990,6 +1071,12 @@ def build_operational_heatmap(
     points_with_gender = len([point for point in points if point.get("gender") not in (None, "unknown")])
     points_with_age = len([point for point in points if point.get("age_range") not in (None, "unknown")])
     location_quality = _location_quality(records, geocoding_candidates)
+    ai_insights = build_collection_ai_insights(
+        _ai_items_from_heatmap(records, points, geocoding_candidates, filters),
+        domain="operations",
+    )
+    ai_layers = build_map_ai_layers(points, category_layers=category_layers, insights=ai_insights)
+    ai_summary = ai_insights.get("summary") or {}
 
     return {
         "contract_version": "operations.heatmap.v1",
@@ -1000,14 +1087,23 @@ def build_operational_heatmap(
             "can_render_heatmap": bool(points),
             "empty_reason": None if points else "no_real_geo_points",
             "map_engine": "maplibre",
-            "layers": ["tickets", "surveys", "analytics_events"],
+            "layers": ["tickets", "surveys", "analytics_events", "ai_risk", "whatsapp_activity"],
             "point_format": {"lat": "number", "lng": "number", "weight": "number"},
             "segment_filters": ["categoria", "genero", "rango_edad", "source", "channel"],
             "category_layers": True,
             "demographics_source": "metadata_fields_only",
             "address_geocoding": True,
             "geocoding_state": (location_quality.get("reason_code") or "unknown"),
-            "recommended_views": ["heatmap", "category_layers", "demographic_segments", "geocoding_queue"],
+            "recommended_views": [
+                "heatmap",
+                "category_layers",
+                "demographic_segments",
+                "geocoding_queue",
+                "interactive_globe",
+                "ai_risk_layers",
+                "whatsapp_activity_layer",
+                "survey_participation_layer",
+            ],
         },
         "summary": {
             "points": len(points),
@@ -1023,6 +1119,19 @@ def build_operational_heatmap(
             "filtered": bool(normalized_filters),
             "pending_geocode": len(geocoding_candidates),
             "coordinate_coverage_pct": location_quality.get("coordinate_coverage_pct"),
+            "ai_risk_level": ai_summary.get("risk_level") or "normal",
+            "dominant_intent": ai_summary.get("dominant_intent") or "general_query",
+            "requires_human_attention": bool(ai_summary.get("requires_human_attention")),
+        },
+        "ai_insights": ai_insights,
+        "ai_layers": ai_layers,
+        "map_experience": {
+            "contract_version": "operations.map_experience.v1",
+            "preferred_visualization": "interactive_globe_heatmap",
+            "map_engines": ["maplibre", "deckgl", "google"],
+            "layer_groups": ["base_heatmap", "category_layers", "ai_risk_layers", "whatsapp_activity", "survey_participation"],
+            "empty_state_behavior": "show_geocoding_queue_and_ai_summary",
+            "supports_reduced_motion": True,
         },
         "applied_filters": normalized_filters,
         "segments": {
@@ -1316,6 +1425,9 @@ def build_operational_dashboard(tenant: TenantProfile, start_date: datetime, end
                 "bounds": heatmap["bounds"],
                 "hotspots": heatmap["hotspots"],
                 "render_contract": heatmap["render_contract"],
+                "ai_insights": heatmap.get("ai_insights"),
+                "ai_layers": heatmap.get("ai_layers"),
+                "map_experience": heatmap.get("map_experience"),
                 "location_quality": heatmap.get("location_quality"),
                 "geocoding": {
                     "candidate_count": ((heatmap.get("geocoding") or {}).get("candidate_count") or 0),
@@ -1326,10 +1438,20 @@ def build_operational_dashboard(tenant: TenantProfile, start_date: datetime, end
         "alerts": alerts,
         "next_best_actions": next_best_actions,
         "frontend_contract": {
-            "recommended_views": ["executive_summary", "ticket_board", "live_chat_inbox", "survey_vote_monitor", "heatmap", "employee_coverage", "action_center"],
+            "recommended_views": [
+                "executive_summary",
+                "ticket_board",
+                "live_chat_inbox",
+                "survey_vote_monitor",
+                "heatmap",
+                "interactive_globe",
+                "ai_risk_layers",
+                "employee_coverage",
+                "action_center",
+            ],
             "primary_refresh_seconds": 30,
             "empty_state_behavior": "show_contract_empty_state",
-            "map_layers": ["tickets", "surveys", "analytics_events"],
+            "map_layers": ["tickets", "surveys", "analytics_events", "ai_risk", "whatsapp_activity", "survey_participation"],
             "exports": {
                 "pdf": "/api/v2/analytics/operations/export.pdf",
                 "ai_summary": "/api/v2/analytics/operations/executive-summary",
