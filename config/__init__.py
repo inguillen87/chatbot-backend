@@ -411,6 +411,10 @@ class Config:
         "GEMINI_MODEL",
         default="gemini-2.5-flash",
     )
+    OLLAMA_ENABLED = _env_flag(False, "OLLAMA_ENABLED", "LLM_OLLAMA_ENABLED")
+    OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", os.getenv("OLLAMA_OPENAI_BASE_URL", "http://localhost:11434/v1"))
+    OLLAMA_CHAT_MODEL = os.getenv("OLLAMA_CHAT_MODEL", os.getenv("OLLAMA_MODEL", "glm-5.2:cloud"))
+    OLLAMA_TIMEOUT_SECONDS = float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "45"))
     HUGGINGFACE_API_TOKEN = _env_first("HUGGINGFACE_API_TOKEN", "HF_TOKEN", default="")
     HUGGINGFACE_ENABLED = _env_flag(False, "HUGGINGFACE_ENABLED", "HF_ENABLED")
     HUGGINGFACE_PROVIDER = os.getenv("HUGGINGFACE_PROVIDER", "auto")

@@ -36,3 +36,40 @@ def test_llamar_llm_con_fallback_uses_gemini(monkeypatch):
     assert response["message_body"] == "hola gemini"
     assert context["provider"] == "gemini"
     mock_gemini.assert_called_once()
+
+
+def test_provider_order_includes_enabled_ollama(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER_ORDER", "ollama,gemini,openai")
+    monkeypatch.setenv("OLLAMA_ENABLED", "true")
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_GENAI_API_KEY", raising=False)
+
+    assert llm_orchestrator._provider_order_from_env() == ["ollama", "openai"]
+
+
+def test_provider_order_skips_disabled_ollama(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER_ORDER", "ollama,openai")
+    monkeypatch.delenv("OLLAMA_ENABLED", raising=False)
+    monkeypatch.delenv("LLM_OLLAMA_ENABLED", raising=False)
+
+    assert llm_orchestrator._provider_order_from_env() == ["openai"]
+
+
+def test_llamar_llm_con_fallback_uses_ollama(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER_ORDER", "ollama")
+    monkeypatch.setenv("OLLAMA_ENABLED", "true")
+
+    mock_ollama = Mock(return_value=({"message_body": "hola ollama"}, {"provider": "ollama"}))
+    with patch("services.ollama_bridge.llamar_ollama", mock_ollama):
+        response, context = llm_orchestrator.llamar_llm_con_fallback(
+            None,
+            "hola",
+            {"tipo_entidad": "municipio"},
+            [],
+            "session-ollama",
+            model="glm-5.2:cloud",
+        )
+
+    assert response["message_body"] == "hola ollama"
+    assert context["provider"] == "ollama"
+    mock_ollama.assert_called_once()

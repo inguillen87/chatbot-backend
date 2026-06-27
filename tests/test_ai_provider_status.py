@@ -10,18 +10,24 @@ def test_provider_status_never_exposes_secret_values(monkeypatch):
     monkeypatch.setenv("LLM_PROVIDER_ORDER", "openai,gemini")
     monkeypatch.setenv("HUGGINGFACE_ENABLED", "true")
     monkeypatch.setenv("HUGGINGFACE_ZERO_SHOT_ENABLED", "true")
+    monkeypatch.setenv("OLLAMA_ENABLED", "true")
+    monkeypatch.setenv("OLLAMA_API_KEY", "ollama-test-secret")
+    monkeypatch.setenv("OLLAMA_CHAT_MODEL", "glm-5.2:cloud")
 
     payload = build_ai_provider_status(include_smoke=True)
     serialized = json.dumps(payload)
 
     assert payload["secret_values_exposed"] is False
     assert payload["providers"]["gemini"]["configured"] is True
+    assert payload["providers"]["ollama"]["configured"] is True
+    assert payload["providers"]["ollama"]["chat_model"] == "glm-5.2:cloud"
     assert payload["providers"]["huggingface"]["configured"] is True
     assert payload["providers"]["huggingface"]["reclamo_signal_min_score"] == "0.62"
     assert payload["providers"]["huggingface"]["pyme_intent_min_score"] == "0.62"
     assert "sk-test-secret" not in serialized
     assert "gemini-secret" not in serialized
     assert "hf_test_secret" not in serialized
+    assert "ollama-test-secret" not in serialized
 
 
 def test_provider_status_warns_when_enabled_without_token(monkeypatch):
@@ -32,6 +38,17 @@ def test_provider_status_warns_when_enabled_without_token(monkeypatch):
     payload = build_ai_provider_status()
 
     assert "huggingface_enabled_but_missing_token" in payload["readiness"]["warnings"]
+
+
+def test_provider_status_warns_when_ollama_ordered_but_disabled(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER_ORDER", "ollama,openai")
+    monkeypatch.delenv("OLLAMA_ENABLED", raising=False)
+    monkeypatch.delenv("LLM_OLLAMA_ENABLED", raising=False)
+
+    payload = build_ai_provider_status()
+
+    assert "ollama_in_provider_order_but_disabled" in payload["readiness"]["warnings"]
+    assert payload["providers"]["ollama"]["enabled"] is False
 
 
 def test_admin_provider_status_endpoint_requires_admin(client, monkeypatch):

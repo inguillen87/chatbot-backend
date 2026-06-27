@@ -2,6 +2,7 @@ import logging
 import os
 from services.openai_bridge import llamar_openai
 from services.gemini_bridge import is_gemini_llm_configured
+from services.ollama_bridge import is_ollama_llm_configured
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +20,10 @@ def _gemini_llm_enabled() -> bool:
     return is_gemini_llm_configured()
 
 
+def _ollama_llm_enabled() -> bool:
+    return is_ollama_llm_configured()
+
+
 def _provider_order_from_env() -> list[str]:
     raw_order = os.getenv("LLM_PROVIDER_ORDER", "openai")
     normalized = [provider.strip().lower() for provider in raw_order.split(",") if provider.strip()]
@@ -33,6 +38,9 @@ def _provider_order_from_env() -> list[str]:
             continue
         if provider == "gemini" and not _gemini_llm_enabled():
             logger.info("Skipping Gemini LLM provider because GEMINI_API_KEY is not configured.")
+            continue
+        if provider == "ollama" and not _ollama_llm_enabled():
+            logger.info("Skipping Ollama LLM provider because OLLAMA_ENABLED is not enabled.")
             continue
         if provider not in seen:
             seen.add(provider)
@@ -51,6 +59,10 @@ def _resolve_provider(name: str):
         from services.cohere_bridge import llamar_cohere
 
         return "Cohere", llamar_cohere
+    if name == "ollama" and _ollama_llm_enabled():
+        from services.ollama_bridge import llamar_ollama
+
+        return "Ollama", llamar_ollama
     return None
 
 
@@ -75,7 +87,7 @@ def llamar_llm_con_fallback(app, mensaje_usuario: str, usuario: dict, historial:
     for name, func in providers:
         try:
             logger.info(f"Attempting LLM call with provider: {name}")
-            if name in {"OpenAI", "Gemini"}:
+            if name in {"OpenAI", "Gemini", "Ollama"}:
                 return func(app, mensaje_usuario, usuario, historial, chat_session_id, model=model)
             return func(app, mensaje_usuario, usuario, historial, chat_session_id)
         except Exception as exc:  # pragma: no cover - defensive logging

@@ -83,7 +83,8 @@ def create_tenant_from_template(
     plan: str = "full",
     auto_assign_whatsapp_number: bool = False,
     owner_email: str = None,
-    owner_password: str = None
+    owner_password: str = None,
+    reset_existing_owner_password: bool = True,
 ) -> TenantProfile:
     nombre = str(nombre or "").strip()
     slug = _slugify(slug or nombre)
@@ -103,6 +104,7 @@ def create_tenant_from_template(
     if not owner_email:
         owner_email = _owner_email_for_slug(slug)
     owner_email = str(owner_email).strip().lower()
+    owner_password_was_generated = not bool(str(owner_password or "").strip())
     if not owner_password:
         owner_password = secrets.token_urlsafe(12)
 
@@ -126,7 +128,7 @@ def create_tenant_from_template(
         owner.tipo_chat = tipo
         owner.tenant_slug = slug
         owner.plan = plan
-        if owner_password:
+        if owner_password and (reset_existing_owner_password or not owner_password_was_generated):
             owner.set_password(owner_password)
     db.session.flush()
 

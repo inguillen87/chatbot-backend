@@ -83,6 +83,7 @@ def build_ai_provider_status(*, include_smoke: bool = False, include_live: bool 
     gemini_configured = _configured("GEMINI_API_KEY", "GOOGLE_GENAI_API_KEY")
     cohere_configured = _configured("COHERE_API_KEY")
     huggingface_configured = _configured("HUGGINGFACE_API_TOKEN", "HF_TOKEN")
+    ollama_enabled = _env_truthy("OLLAMA_ENABLED") or _env_truthy("LLM_OLLAMA_ENABLED")
 
     providers = {
         "openai": {
@@ -100,6 +101,22 @@ def build_ai_provider_status(*, include_smoke: bool = False, include_live: bool 
             "configured": cohere_configured,
             "enabled": _env_truthy("LLM_COHERE_ENABLED") or _env_truthy("COHERE_ENABLED"),
             "required_env": ["COHERE_API_KEY", "LLM_COHERE_ENABLED"],
+        },
+        "ollama": {
+            "configured": ollama_enabled,
+            "enabled": ollama_enabled,
+            "provider_order_enabled": "ollama" in _provider_order(),
+            "chat_model": _env("OLLAMA_CHAT_MODEL", _env("OLLAMA_MODEL", "glm-5.2:cloud")),
+            "base_url": _env("OLLAMA_BASE_URL", _env("OLLAMA_OPENAI_BASE_URL", "http://localhost:11434/v1")),
+            "mode": "experimental",
+            "recommended_uses": [
+                "admin_analytics",
+                "long_context_summaries",
+                "internal_agent_workflows",
+                "template_quality_review",
+            ],
+            "required_env": ["OLLAMA_ENABLED", "OLLAMA_CHAT_MODEL"],
+            "optional_env": ["OLLAMA_API_KEY", "OLLAMA_BASE_URL", "OLLAMA_TIMEOUT_SECONDS"],
         },
         "huggingface": {
             "configured": huggingface_configured,
@@ -128,6 +145,8 @@ def build_ai_provider_status(*, include_smoke: bool = False, include_live: bool 
     warnings: list[str] = []
     if "gemini" in _provider_order() and not gemini_configured:
         warnings.append("gemini_in_provider_order_but_missing_key")
+    if "ollama" in _provider_order() and not ollama_enabled:
+        warnings.append("ollama_in_provider_order_but_disabled")
     if providers["huggingface"]["enabled"] and not huggingface_configured:
         warnings.append("huggingface_enabled_but_missing_token")
     if providers["huggingface"]["embeddings_enabled"] and not huggingface_configured:
@@ -147,6 +166,7 @@ def build_ai_provider_status(*, include_smoke: bool = False, include_live: bool 
             [
                 _safe_smoke_result("openai", openai_configured, mode="config"),
                 _safe_smoke_result("gemini", gemini_configured and _module_available("google.genai"), mode="sdk"),
+                _safe_smoke_result("ollama", ollama_enabled and _module_available("openai"), mode="openai_compatible_config"),
                 _safe_smoke_result("huggingface", huggingface_configured and _module_available("huggingface_hub"), mode="sdk"),
             ]
         )
@@ -158,6 +178,7 @@ def build_ai_provider_status(*, include_smoke: bool = False, include_live: bool 
             openai_configured and "openai" in _provider_order(),
             gemini_configured and "gemini" in _provider_order(),
             cohere_configured and providers["cohere"]["enabled"] and "cohere" in _provider_order(),
+            ollama_enabled and "ollama" in _provider_order(),
         ]
     )
 

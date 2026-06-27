@@ -34,6 +34,18 @@ from services.pymes import get_or_create_pyme_user_by_token
 from services.tenant_resolver import resolve_tenant_only
 from services.demo_registry import load_demo_rubros
 from services.demo_experience_contract import build_demo_experience_contract
+from services.auth_notification_service import send_verification_email
+from services.clerk_auth_service import (
+    ClerkAuthError,
+    ClerkNotConfigured,
+    build_chatboc_session_payload,
+    build_clerk_frontend_contract,
+    complete_clerk_onboarding,
+    sync_clerk_webhook_event,
+    upsert_user_from_clerk,
+    verify_clerk_session_token,
+    verify_clerk_webhook_signature,
+)
 from typing import Any, Callable, Dict, Optional
 import secrets
 from urllib.parse import quote_plus
@@ -371,15 +383,117 @@ def _generate_email_verification_token() -> str:
 
 
 def _send_verification_email(user: User):
-    """Placeholder sender that logs verification dispatches."""
+    """Send verification mail through the configured transactional provider."""
 
     if not user.email_verification_token:
         return
-    current_app.logger.info(
-        "[verify_email] Enviando email de verificación a %s con token %s",
-        user.email,
-        user.email_verification_token,
-    )
+    send_verification_email(user, reason="legacy_signup")
+
+
+def _extract_bearer_token() -> Optional[str]:
+    header = request.headers.get("Authorization") or ""
+    if header.lower().startswith("bearer "):
+        return header.split(" ", 1)[1].strip()
+    return None
+
+
+def _clerk_profile_from_payload(data: dict) -> dict:
+    profile = data.get("user") or data.get("clerk_user") or data.get("profile") or {}
+    return profile if isinstance(profile, dict) else {}
+
+
+@auth_bp.route("/clerk/config", methods=["GET"])
+@cross_origin()
+def clerk_config():
+    """Frontend contract for Clerk-based auth and tenant onboarding."""
+
+    return jsonify(build_clerk_frontend_contract())
+
+
+@auth_bp.route("/clerk/session", methods=["POST"])
+@cross_origin()
+def clerk_session_sync():
+    """Verify a Clerk session JWT and exchange it for a Chatboc JWT."""
+
+    data = request.get_json(silent=True) or {}
+    clerk_token = _extract_bearer_token() or data.get("clerk_token") or data.get("session_token")
+    try:
+        claims = verify_clerk_session_token(clerk_token)
+        user = upsert_user_from_clerk(claims, _clerk_profile_from_payload(data))
+        if not user.email_verified and not user.email_verification_token:
+            user.email_verification_token = _generate_email_verification_token()
+            user.email_verification_sent_at = datetime.now(timezone.utc)
+        db.session.add(user)
+        db.session.commit()
+
+        if not user.email_verified and user.email_verification_token:
+            _send_verification_email(user)
+
+        payload = build_chatboc_session_payload(user)
+        status_code = 200 if not payload.get("onboarding", {}).get("required") else 202
+        return jsonify(payload), status_code
+    except ClerkNotConfigured as exc:
+        current_app.logger.warning("[clerk_auth] Not configured: %s", exc)
+        return jsonify({"error": "Clerk auth is not configured", "reason_code": "clerk_not_configured"}), 503
+    except ClerkAuthError as exc:
+        db.session.rollback()
+        return jsonify({"error": str(exc), "reason_code": "invalid_clerk_session"}), 401
+    except Exception as exc:  # pragma: no cover - defensive guard
+        db.session.rollback()
+        current_app.logger.error("[clerk_auth] Session sync failed: %s", exc, exc_info=True)
+        return jsonify({"error": "Error interno", "reason_code": "clerk_session_failed"}), 500
+
+
+@auth_bp.route("/clerk/onboarding", methods=["POST"])
+@cross_origin()
+def clerk_onboarding():
+    """Complete tenant creation for a Clerk-authenticated owner."""
+
+    data = request.get_json(silent=True) or {}
+    clerk_token = _extract_bearer_token() or data.get("clerk_token") or data.get("session_token")
+    try:
+        claims = verify_clerk_session_token(clerk_token)
+        user = upsert_user_from_clerk(claims, _clerk_profile_from_payload(data))
+        db.session.commit()
+        tenant = complete_clerk_onboarding(user, data)
+        payload = build_chatboc_session_payload(user, tenant)
+        payload["message"] = "Tenant creado y onboarding completado"
+        return jsonify(payload), 201
+    except ClerkNotConfigured as exc:
+        current_app.logger.warning("[clerk_auth] Onboarding not configured: %s", exc)
+        return jsonify({"error": "Clerk auth is not configured", "reason_code": "clerk_not_configured"}), 503
+    except ClerkAuthError as exc:
+        db.session.rollback()
+        return jsonify({"error": str(exc), "reason_code": "invalid_clerk_onboarding"}), 400
+    except ValueError as exc:
+        db.session.rollback()
+        return jsonify({"error": str(exc), "reason_code": "tenant_onboarding_invalid"}), 400
+    except Exception as exc:  # pragma: no cover - defensive guard
+        db.session.rollback()
+        current_app.logger.error("[clerk_auth] Onboarding failed: %s", exc, exc_info=True)
+        return jsonify({"error": "Error interno", "reason_code": "clerk_onboarding_failed"}), 500
+
+
+@auth_bp.route("/clerk/webhook", methods=["POST"])
+def clerk_webhook():
+    """Receive Clerk user lifecycle events and keep local users synced."""
+
+    raw_body = request.get_data() or b""
+    try:
+        verify_clerk_webhook_signature(raw_body, request.headers)
+        event = json.loads(raw_body.decode("utf-8") or "{}")
+        result = sync_clerk_webhook_event(event)
+        return jsonify(result), 200
+    except ClerkNotConfigured as exc:
+        current_app.logger.warning("[clerk_auth] Webhook not configured: %s", exc)
+        return jsonify({"error": "Clerk webhook is not configured", "reason_code": "clerk_webhook_not_configured"}), 503
+    except (ClerkAuthError, json.JSONDecodeError) as exc:
+        db.session.rollback()
+        return jsonify({"error": str(exc), "reason_code": "invalid_clerk_webhook"}), 400
+    except Exception as exc:  # pragma: no cover - defensive guard
+        db.session.rollback()
+        current_app.logger.error("[clerk_auth] Webhook failed: %s", exc, exc_info=True)
+        return jsonify({"error": "Error interno", "reason_code": "clerk_webhook_failed"}), 500
 
 
 def _tenant_for_user(user: User):

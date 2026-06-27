@@ -22,10 +22,46 @@ services:
         sync: false
       - key: GEMINI_CHAT_MODEL
         value: gemini-2.5-flash
+      - key: OLLAMA_ENABLED
+        value: "false"
+      - key: OLLAMA_BASE_URL
+        value: https://ollama.com/v1
+      - key: OLLAMA_API_KEY
+        sync: false
+      - key: OLLAMA_CHAT_MODEL
+        value: glm-5.2:cloud
+      - key: OLLAMA_TIMEOUT_SECONDS
+        value: "45"
+      - key: CLERK_ENABLED
+        value: "true"
+      - key: NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
+        sync: false
+      - key: CLERK_SECRET_KEY
+        sync: false
+      - key: CLERK_ISSUER
+        sync: false
+      - key: CLERK_JWKS_URL
+        sync: false
+      - key: CLERK_WEBHOOK_SECRET
+        sync: false
+      - key: CLERK_SOCIAL_PROVIDERS
+        value: google,facebook,linkedin
+      - key: AUTH_EMAIL_VERIFY_BASE_URL
+        value: https://www.chatboc.ar
+      - key: AUTH_EMAIL_FROM
+        value: info@chatboc.ar
+      - key: ZOHO_SMTP_HOST
+        value: smtp.zoho.com
+      - key: ZOHO_SMTP_PORT
+        value: "587"
+      - key: ZOHO_SMTP_USER
+        sync: false
+      - key: ZOHO_SMTP_PASSWORD
+        sync: false
       - key: HUGGINGFACE_API_TOKEN
         sync: false
       - key: HUGGINGFACE_ENABLED
-        value: "false"
+        value: "true"
       - key: HUGGINGFACE_PROVIDER
         value: auto
       - key: HUGGINGFACE_EMBEDDINGS_ENABLED
@@ -33,7 +69,7 @@ services:
       - key: HUGGINGFACE_EMBEDDING_MODEL
         value: intfloat/multilingual-e5-large
       - key: HUGGINGFACE_ZERO_SHOT_ENABLED
-        value: "false"
+        value: "true"
       - key: HUGGINGFACE_ZERO_SHOT_MODEL
         value: joeddav/xlm-roberta-large-xnli
       - key: HUGGINGFACE_RECLAMO_CATEGORY_MIN_SCORE
@@ -112,10 +148,20 @@ services:
         sync: false
       - key: GEMINI_CHAT_MODEL
         value: gemini-2.5-flash
+      - key: OLLAMA_ENABLED
+        value: "false"
+      - key: OLLAMA_BASE_URL
+        value: https://ollama.com/v1
+      - key: OLLAMA_API_KEY
+        sync: false
+      - key: OLLAMA_CHAT_MODEL
+        value: glm-5.2:cloud
+      - key: OLLAMA_TIMEOUT_SECONDS
+        value: "45"
       - key: HUGGINGFACE_API_TOKEN
         sync: false
       - key: HUGGINGFACE_ENABLED
-        value: "false"
+        value: "true"
       - key: HUGGINGFACE_PROVIDER
         value: auto
       - key: HUGGINGFACE_EMBEDDINGS_ENABLED
@@ -123,7 +169,7 @@ services:
       - key: HUGGINGFACE_EMBEDDING_MODEL
         value: intfloat/multilingual-e5-large
       - key: HUGGINGFACE_ZERO_SHOT_ENABLED
-        value: "false"
+        value: "true"
       - key: HUGGINGFACE_ZERO_SHOT_MODEL
         value: joeddav/xlm-roberta-large-xnli
       - key: HUGGINGFACE_RECLAMO_CATEGORY_MIN_SCORE
