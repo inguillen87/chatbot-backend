@@ -39,6 +39,7 @@ from routes.whatsapp_webhook import (
     _reset_municipio_context_for_menu,
     _prepare_cached_welcome_audio,
     _ensure_welcome_audio_payload,
+    _sanitize_twilio_message_params,
     CHATBOC_DEMO_DEFAULT_WHATSAPP_NUMBER,
     CHATBOC_DEMO_DEFAULT_RESET_WHATSAPP_NUMBER,
     CHATBOC_DEMO_TENANT_SLUG,
@@ -47,6 +48,45 @@ from routes.whatsapp_webhook import (
 # and to avoid potential issues if models.py itself tries to import app-context related things early.
 # However, for direct use in tests, they are typically at the top. Let's try keeping them here.
 import models
+
+
+class WhatsAppTwilioSanitizationTestCase(unittest.TestCase):
+    def test_sanitize_twilio_message_params_repairs_body_templates_and_actions(self):
+        params = _sanitize_twilio_message_params(
+            {
+                "from_": "whatsapp:+100",
+                "to": "whatsapp:+200",
+                "body": "Categor\u00c3\u00ada: P\u00c3\u00a9rdida de agua",
+                "content_variables": json.dumps(
+                    {"1": "Tr\u00c3\u00a1nsito", "2": "Hip\u00c3\u00b3lito Yrigoyen"},
+                    ensure_ascii=False,
+                ),
+                "persistent_action": [
+                    "whatsapp:"
+                    + json.dumps(
+                        {
+                            "body": {"text": "\u00c2\u00bfMostrar m\u00c3\u00a1s resultados?"},
+                            "action": {
+                                "buttons": [
+                                    {"type": "reply", "reply": {"id": "menu", "title": "Men\u00c3\u00ba"}},
+                                ]
+                            },
+                        },
+                        ensure_ascii=False,
+                    )
+                ],
+            }
+        )
+
+        self.assertEqual(params["body"], "Categoría: Pérdida de agua")
+        self.assertEqual(
+            json.loads(params["content_variables"]),
+            {"1": "Tránsito", "2": "Hipólito Yrigoyen"},
+        )
+        action = json.loads(params["persistent_action"][0].removeprefix("whatsapp:"))
+        self.assertEqual(action["body"]["text"], "¿Mostrar más resultados?")
+        self.assertEqual(action["action"]["buttons"][0]["reply"]["title"], "Menú")
+
 
 class TestConfig(Config):
     TESTING = True

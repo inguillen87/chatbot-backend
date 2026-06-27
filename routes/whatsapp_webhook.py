@@ -46,7 +46,7 @@ from utils.maps_utils import extraer_coordenadas_de_url_google_maps
 from services.openai_maps_service import geocodificar_inversa_llm
 from services.municipio_responder import CONTEXTO_MUNICIPIO
 from services.config_loader import cargar_configuracion_pyme
-from services.response_formatter import render_audio_text
+from services.response_formatter import repair_common_mojibake, render_audio_text
 from services.tts_orchestrator import generar_audio
 from utils.response_utils import normalize_response_payload
 from utils.whatsapp import enviar_mensaje_whatsapp_con_fallback
@@ -1975,7 +1975,8 @@ def _send_welcome_sticker(
     if sticker_state.get("disabled") or sticker_state.get(state_key):
         return False
     try:
-        twilio_client.messages.create(
+        _send_twilio_message(
+            twilio_client,
             from_=to_number_raw,
             to=from_number_raw,
             media_url=[resolved_sticker_url],
@@ -2946,6 +2947,55 @@ def _normalize_twilio_content_variables(
         return json.dumps({}, ensure_ascii=False)
 
 
+def _repair_twilio_value(value: Any) -> Any:
+    if isinstance(value, str):
+        return repair_common_mojibake(value)
+    if isinstance(value, list):
+        return [_repair_twilio_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_repair_twilio_value(item) for item in value)
+    if isinstance(value, dict):
+        return {key: _repair_twilio_value(item) for key, item in value.items()}
+    return value
+
+
+def _repair_twilio_json_string(value: str) -> str:
+    raw = repair_common_mojibake(value)
+    prefix = ""
+    candidate = raw
+    if raw.startswith("whatsapp:"):
+        prefix = "whatsapp:"
+        candidate = raw[len(prefix):]
+    try:
+        parsed = json.loads(candidate)
+    except Exception:
+        return raw
+    repaired = _repair_twilio_value(parsed)
+    return f"{prefix}{json.dumps(repaired, ensure_ascii=False)}"
+
+
+def _sanitize_twilio_message_params(params: Dict[str, Any]) -> Dict[str, Any]:
+    sanitized = dict(params or {})
+    if "body" in sanitized:
+        sanitized["body"] = repair_common_mojibake(sanitized.get("body") or "")
+    if "content_variables" in sanitized and sanitized.get("content_variables") is not None:
+        sanitized["content_variables"] = _repair_twilio_json_string(str(sanitized["content_variables"]))
+    if "persistent_action" in sanitized:
+        actions = sanitized.get("persistent_action") or []
+        if isinstance(actions, str):
+            actions = [actions]
+        sanitized["persistent_action"] = [
+            _repair_twilio_json_string(str(action))
+            for action in actions
+            if str(action or "").strip()
+        ]
+    return sanitized
+
+
+def _send_twilio_message(client, **params):
+    return client.messages.create(**_sanitize_twilio_message_params(params))
+
+
 def _dispatch_twilio_pre_messages(
     client,
     to_number: str,
@@ -3031,7 +3081,7 @@ def _dispatch_twilio_pre_messages(
                 params["body"] = ""
 
         try:
-            client.messages.create(**params)
+            _send_twilio_message(client, **params)
         except Exception as exc:
             current_app.logger.warning(
                 "[whatsapp] Failed to send pre-message via Twilio: %s", exc,
@@ -3566,7 +3616,7 @@ def _send_delayed_payload(client, to_number: str, from_number: str, payload: dic
                         params["media_url"] = [resolved_image_url]
 
             try:
-                message = client.messages.create(**params)
+                message = _send_twilio_message(client, **params)
 
                 if audio_url:
                     absolute_audio_url = audio_url
@@ -3594,7 +3644,7 @@ def _send_delayed_payload(client, to_number: str, from_number: str, payload: dic
                         app.logger.debug(
                             "[DELAYED_AUDIO] Enviando audio adicional para mensaje diferido SID %s", getattr(message, 'sid', 'N/A')
                         )
-                        client.messages.create(**audio_params)
+                        _send_twilio_message(client, **audio_params)
             except Exception as e:
                 app.logger.error(f"Error sending delayed message: {e}")
 
@@ -4062,7 +4112,7 @@ def whatsapp_webhook():
                         "content_variables": json.dumps(template_variables_payload or {}),
                     }
                     try:
-                        twilio_client.messages.create(**params)
+                        _send_twilio_message(twilio_client, **params)
                         template_state["last_sent_ts"] = now
                         safe_flag_modified(session_context_db_entry, "context_data")
                         template_sent = True
@@ -4081,7 +4131,8 @@ def whatsapp_webhook():
 
                 if should_send_sticker and not is_override:
                     try:
-                        twilio_client.messages.create(
+                        _send_twilio_message(
+                            twilio_client,
                             from_=to_number_raw,
                             to=from_number_raw,
                             media_url=[resolved_sticker_url],
@@ -4141,7 +4192,8 @@ def whatsapp_webhook():
                         else f"*¡Hola!* Soy *{greeting_name}* \U0001F44B ¿Cómo te llamás?"
                     )
                     try:
-                        twilio_client.messages.create(
+                        _send_twilio_message(
+                            twilio_client,
                             from_=to_number_raw, to=from_number_raw, body=greeting
                         )
                         greeting_sent = True
@@ -4300,7 +4352,8 @@ def whatsapp_webhook():
             new_name = _extract_requested_contact_name(name_candidate, extracted)
             if not new_name:
                 if twilio_client:
-                    twilio_client.messages.create(
+                    _send_twilio_message(
+                        twilio_client,
                         from_=to_number_raw,
                         to=from_number_raw,
                         body="No pude tomar tu nombre. Decime por favor como te llamas.",
@@ -4322,7 +4375,8 @@ def whatsapp_webhook():
             db.session.add(session_context_db_entry)
             db.session.commit()
             if twilio_client:
-                twilio_client.messages.create(
+                _send_twilio_message(
+                    twilio_client,
                     from_=to_number_raw,
                     to=from_number_raw,
                     body=f"¡Encantado, {new_name}! ¿En qué puedo ayudarte?",
@@ -4441,7 +4495,8 @@ def whatsapp_webhook():
         db.session.add(session_context_db_entry)
         db.session.commit()
         if twilio_client:
-            twilio_client.messages.create(
+            _send_twilio_message(
+                twilio_client,
                 from_=to_number_raw,
                 to=from_number_raw,
                 body=next_chunk,
@@ -4457,7 +4512,8 @@ def whatsapp_webhook():
                         ]
                     },
                 }
-                twilio_client.messages.create(
+                _send_twilio_message(
+                    twilio_client,
                     from_=to_number_raw,
                     to=from_number_raw,
                     body="Seleccioná una opción",
@@ -4598,7 +4654,8 @@ def whatsapp_webhook():
                                 comentario_text="[SISTEMA] Vecino adjuntó archivo solicitado por llamada o WhatsApp.",
                             )
                             if twilio_client:
-                                twilio_client.messages.create(
+                                _send_twilio_message(
+                                    twilio_client,
                                     from_=to_number_raw,
                                     to=from_number_raw,
                                     body=(
@@ -4622,7 +4679,8 @@ def whatsapp_webhook():
                         safe_flag_modified(session_context_db_entry, "context_data")
                         db.session.commit()
                         if twilio_client:
-                            twilio_client.messages.create(
+                            _send_twilio_message(
+                                twilio_client,
                                 from_=to_number_raw,
                                 to=from_number_raw,
                                 body=(
@@ -4723,7 +4781,8 @@ def whatsapp_webhook():
                 safe_flag_modified(session_context_db_entry, "context_data")
                 db.session.commit()
                 if twilio_client:
-                    twilio_client.messages.create(
+                    _send_twilio_message(
+                        twilio_client,
                         from_=to_number_raw,
                         to=from_number_raw,
                         body=f"✅ Listo. Adjunté la foto al ticket *{ticket.nro_ticket}*.",
@@ -4802,7 +4861,8 @@ def whatsapp_webhook():
 
             confirmation_text = _build_sensitive_action_confirmation_text(selected_option)
             if twilio_client:
-                twilio_client.messages.create(
+                _send_twilio_message(
+                    twilio_client,
                     from_=to_number_raw,
                     to=from_number_raw,
                     body=confirmation_text,
@@ -5431,7 +5491,7 @@ def whatsapp_webhook():
                         db.session.add(session_context_db_entry)
                         db.session.commit()
 
-                        main_message = twilio_client.messages.create(**message_params)
+                        main_message = _send_twilio_message(twilio_client, **message_params)
                         _log(
                             "info",
                             "Mensaje principal (interactivo) enviado a %s, SID: %s",
@@ -5445,7 +5505,7 @@ def whatsapp_webhook():
                                 'to': from_number_raw,
                                 'body': chunk,
                             }
-                            followup_message = twilio_client.messages.create(**followup_params)
+                            followup_message = _send_twilio_message(twilio_client, **followup_params)
                             _log(
                                 "info",
                                 "Mensaje adicional %s/%s enviado a %s, SID: %s",
@@ -5469,7 +5529,7 @@ def whatsapp_webhook():
                         'to': from_number_raw,
                         'body': first_chunk,
                     }
-                    main_message = twilio_client.messages.create(**first_chunk_params)
+                    main_message = _send_twilio_message(twilio_client, **first_chunk_params)
                     _log(
                         "info",
                         "Mensaje parte 1/%s enviado a %s, SID: %s",
@@ -5489,7 +5549,8 @@ def whatsapp_webhook():
                                 ]
                             },
                         }
-                        twilio_client.messages.create(
+                        _send_twilio_message(
+                            twilio_client,
                             from_=to_number_raw,
                             to=from_number_raw,
                             body="Seleccioná una opción",
@@ -5504,7 +5565,7 @@ def whatsapp_webhook():
                 safe_flag_modified(session_context_db_entry, 'context_data')
                 db.session.add(session_context_db_entry)
                 db.session.commit()
-                main_message = twilio_client.messages.create(**message_params)
+                main_message = _send_twilio_message(twilio_client, **message_params)
                 _log(
                     "info",
                     "Mensaje principal enviado a %s, SID: %s",
@@ -5541,7 +5602,7 @@ def whatsapp_webhook():
                         'media_url': [absolute_audio_url]
                     }
                     current_app.logger.debug(f"Sending WhatsApp audio params: {audio_message_params}")
-                    audio_message = twilio_client.messages.create(**audio_message_params)
+                    audio_message = _send_twilio_message(twilio_client, **audio_message_params)
                     _log(
                         "info",
                         "Mensaje de audio enviado a %s, SID: %s",

@@ -19,6 +19,10 @@ os.environ.setdefault("ENABLE_RUNTIME_TENANT_INIT", "0")
 os.environ.setdefault("STARTUP_RUNTIME_BOOTSTRAP", "0")
 os.environ.setdefault("WHATSAPP_AUDIO_ENABLED", "0")
 os.environ.setdefault("WELCOME_MESSAGE_DELAY_SECONDS", "0")
+os.environ.setdefault("TWILIO_ACCOUNT_SID", "AC_LOCAL_TEST")
+os.environ.setdefault("TWILIO_AUTH_TOKEN", "local-whatsapp-qa-token")
+os.environ.setdefault("CHATBOC_DEMO_WHATSAPP_NUMBERS", "+18564858589")
+os.environ.setdefault("CHATBOC_DEMO_MAX_MESSAGES", "25")
 
 from twilio.request_validator import RequestValidator
 from werkzeug.security import generate_password_hash
@@ -37,6 +41,49 @@ class WhatsappCase:
     from_number: str
     body: str
     extra: dict
+
+
+QA_SCENARIOS = {
+    "gov_claim_text_to_tracking": [
+        "junin_texto_reclamo",
+        "junin_imagen",
+        "junin_dni_reclamo",
+        "junin_confirmacion_reclamo",
+    ],
+    "gov_claim_location_to_tracking": [
+        "junin_ubicacion_inicio",
+        "junin_ubicacion_compartida",
+        "junin_ubicacion_sin_foto",
+        "junin_ubicacion_datos",
+        "junin_ubicacion_confirmar",
+    ],
+    "gov_claim_audio_accessible": [
+        "junin_audio",
+        "junin_audio_sin_foto",
+        "junin_audio_datos",
+        "junin_audio_confirmar",
+    ],
+    "pyme_catalog_order_checkout": [
+        "cuatro_fincas_pedido",
+        "cuatro_fincas_confirmar",
+    ],
+    "chatboc_demo_hub": [
+        "chatboc_demo_menu",
+        "chatboc_demo_empresas",
+        "chatboc_demo_order_start",
+        "chatboc_demo_order_confirm",
+    ],
+    "survey_vote_realtime": [
+        "chatboc_demo_surveys",
+        "chatboc_demo_surveys_empresas",
+        "chatboc_demo_survey_open",
+    ],
+    "school_family_case": [
+        "colegio_menu_sandbox",
+        "colegio_seleccion_inasistencia",
+        "colegio_detalle_audio_ubicacion",
+    ],
+}
 
 
 class FakeTwilioMessages:
@@ -89,7 +136,10 @@ def _normalize(number: str) -> str:
 def _signed_headers(url: str, data: dict) -> dict:
     token = os.environ.get("TWILIO_AUTH_TOKEN")
     if not token:
-        raise RuntimeError("TWILIO_AUTH_TOKEN no esta configurado")
+        if _truthy_env("TESTING", "1") and not _truthy_env("QA_WHATSAPP_USE_CONFIGURED_DB"):
+            token = "local-whatsapp-qa-token"
+        else:
+            raise RuntimeError("TWILIO_AUTH_TOKEN no esta configurado")
     signature = RequestValidator(token).compute_signature(url, data)
     return {"X-Twilio-Signature": signature}
 
@@ -145,6 +195,74 @@ def _assert_whatsapp_copy_quality(sent_messages: list[dict]) -> None:
             failures.append(f"mensaje {index}: cancelar de flujo duplicado con cancelar generico")
     if failures:
         raise RuntimeError("Calidad UX WhatsApp invalida: " + "; ".join(failures))
+
+
+def _assert_case_matrix(case_results: list[dict]) -> list[dict]:
+    by_label = {item["label"]: item for item in case_results}
+    reports: list[dict] = []
+    blocking: list[str] = []
+    for scenario_id, labels in QA_SCENARIOS.items():
+        present = [label for label in labels if label in by_label]
+        passed = [
+            label
+            for label in present
+            if int(by_label[label].get("status") or 0) == 200
+        ]
+        missing = [label for label in labels if label not in by_label]
+        failed = [
+            label
+            for label in present
+            if int(by_label[label].get("status") or 0) != 200
+        ]
+        ready = len(passed) == len(labels)
+        reports.append(
+            {
+                "scenario": scenario_id,
+                "ready": ready,
+                "passed": len(passed),
+                "total": len(labels),
+                "missing": missing,
+                "failed": failed,
+            }
+        )
+        if failed or (scenario_id != "school_family_case" and missing):
+            blocking.append(f"{scenario_id}: missing={missing}, failed={failed}")
+    if blocking:
+        raise RuntimeError("Matriz QA WhatsApp incompleta: " + "; ".join(blocking))
+    return reports
+
+
+def _assert_artifact_health(*, before: dict, after: dict, sent_messages: list[dict]) -> dict:
+    delta = {key: after[key] - before[key] for key in before}
+    bodies = "\n".join(str(message.get("body") or "") for message in sent_messages)
+    link_markers = [
+        "chatboc.ar/chat/",
+        "/api/public/tracking/experience",
+        "chatboc.ar/e/",
+        "/demo?sector=empresas",
+    ]
+    found_links = [marker for marker in link_markers if marker in bodies]
+    report = {
+        "delta": delta,
+        "messages_sent": len(sent_messages),
+        "link_markers_found": found_links,
+        "has_claim_ticket": delta.get("municipio_tickets", 0) >= 1 or after.get("municipio_tickets", 0) >= 1,
+        "has_commerce_record": delta.get("pyme_pedidos", 0) >= 1
+        or delta.get("pyme_tickets", 0) >= 1
+        or after.get("pyme_tickets", 0) >= 1,
+        "has_media_or_audio_artifact": delta.get("adjuntos", 0) >= 1 or after.get("adjuntos", 0) >= 1,
+        "has_webview_or_demo_link": bool(found_links),
+    }
+    failures: list[str] = []
+    if not report["has_claim_ticket"]:
+        failures.append("no se genero ningun ticket municipal")
+    if not report["has_commerce_record"]:
+        failures.append("no se genero registro comercial pyme/demo")
+    if not report["has_webview_or_demo_link"]:
+        failures.append("no se emitio ningun link de tracking/demo/encuesta")
+    if failures:
+        raise RuntimeError("Evidencia QA WhatsApp insuficiente: " + "; ".join(failures))
+    return report
 
 
 def _truthy_env(name: str, default: str = "0") -> bool:
@@ -535,9 +653,11 @@ def main():
     junin_location_from = f"+54926158{run_seed}"
     colegio_from = f"+54926159{run_seed}"
     junin_to = os.environ.get("QA_JUNIN_TO", "+17432643718")
-    bodega_to = os.environ.get("QA_BODEGA_TO", "+18564858589")
+    bodega_to = os.environ.get("QA_BODEGA_TO", "+18564858588")
+    demo_to = os.environ.get("QA_CHATBOC_DEMO_TO", "+18564858589")
     sandbox_to = os.environ.get("QA_TWILIO_SANDBOX_TO", "+14155238886")
     os.environ["QA_AUDIO_PHONE"] = junin_audio_from
+    demo_from = f"+54926160{run_seed}"
 
     cases = [
         WhatsappCase(
@@ -663,6 +783,75 @@ def main():
             body="Confirmar pedido.",
             extra={"_ProfileName": "QA Bodega"},
         ),
+        WhatsappCase(
+            label="chatboc_demo_menu",
+            to_number=demo_to,
+            from_number=demo_from,
+            body="Hola",
+            extra={"_ProfileName": "QA Chatboc Demo"},
+        ),
+        WhatsappCase(
+            label="chatboc_demo_empresas",
+            to_number=demo_to,
+            from_number=demo_from,
+            body="",
+            extra={
+                "_ProfileName": "QA Chatboc Demo",
+                "ButtonPayload": "chatboc_demo:empresas",
+                "ButtonText": "Empresa y pedidos",
+            },
+        ),
+        WhatsappCase(
+            label="chatboc_demo_order_start",
+            to_number=demo_to,
+            from_number=demo_from,
+            body="",
+            extra={
+                "_ProfileName": "QA Chatboc Demo",
+                "ButtonPayload": "chatboc_demo_order_start",
+                "ButtonText": "Crear pedido demo",
+            },
+        ),
+        WhatsappCase(
+            label="chatboc_demo_order_confirm",
+            to_number=demo_to,
+            from_number=demo_from,
+            body="",
+            extra={
+                "_ProfileName": "QA Chatboc Demo",
+                "ButtonPayload": "chatboc_demo_order_confirm",
+                "ButtonText": "Confirmar pedido demo",
+            },
+        ),
+        WhatsappCase(
+            label="chatboc_demo_surveys",
+            to_number=demo_to,
+            from_number=demo_from,
+            body="encuestas",
+            extra={"_ProfileName": "QA Chatboc Demo"},
+        ),
+        WhatsappCase(
+            label="chatboc_demo_surveys_empresas",
+            to_number=demo_to,
+            from_number=demo_from,
+            body="",
+            extra={
+                "_ProfileName": "QA Chatboc Demo",
+                "ButtonPayload": "chatboc_surveys:empresas:1",
+                "ButtonText": "Encuestas empresas",
+            },
+        ),
+        WhatsappCase(
+            label="chatboc_demo_survey_open",
+            to_number=demo_to,
+            from_number=demo_from,
+            body="",
+            extra={
+                "_ProfileName": "QA Chatboc Demo",
+                "ButtonPayload": "chatboc_survey_open::empresas-experiencia-cliente",
+                "ButtonText": "Votar ahora",
+            },
+        ),
     ]
 
     with app.app_context():
@@ -721,7 +910,11 @@ def main():
                 ]
             )
 
+        demo_numbers = {_normalize(demo_to)}
         for number in sorted({_normalize(case.to_number) for case in cases}):
+            if number in demo_numbers:
+                _safe_print("mapping", {"numero": number, "tipo": "chatboc_demo_autocreated_on_first_webhook"})
+                continue
             mapping = WhatsappNumero.query.filter_by(numero_whatsapp=number, is_active=True).first()
             if not mapping:
                 raise RuntimeError(f"No hay mapping activo para {number}")
@@ -748,6 +941,7 @@ def main():
             side_effect=_fake_transcribe_audio_from_url,
         ):
             failures = []
+            case_results = []
             for case in cases:
                 data = _twilio_form(case)
                 response = client.post(
@@ -764,6 +958,13 @@ def main():
                         "body": response.get_data(as_text=True)[:200],
                     },
                 )
+                case_results.append(
+                    {
+                        "label": case.label,
+                        "status": response.status_code,
+                        "body": response.get_data(as_text=True)[:200],
+                    }
+                )
                 if response.status_code != 200:
                     failures.append((case.label, response.status_code, response.get_data(as_text=True)[:500]))
 
@@ -771,6 +972,11 @@ def main():
         _safe_print("delta", {key: after[key] - before[key] for key in before})
         _safe_print("twilio_messages", json.dumps(fake_twilio.messages.sent, ensure_ascii=False, default=str)[:4000])
         _assert_whatsapp_copy_quality(fake_twilio.messages.sent)
+        _safe_print("qa_matrix", _assert_case_matrix(case_results))
+        _safe_print(
+            "artifact_health",
+            _assert_artifact_health(before=before, after=after, sent_messages=fake_twilio.messages.sent),
+        )
         if failures:
             raise RuntimeError(f"Fallaron casos WhatsApp QA: {failures}")
 

@@ -1383,12 +1383,16 @@ class V2SaasContractsTest(unittest.TestCase):
         qa_scenarios = {item["id"]: item for item in payload["qa_playbook"]["scenarios"]}
         self.assertIn("gov_claim_text_to_tracking", qa_scenarios)
         self.assertIn("pyme_catalog_order_checkout", qa_scenarios)
+        self.assertIn("chatboc_demo_hub", qa_scenarios)
         self.assertIn("survey_vote_realtime", qa_scenarios)
         claim_qa = qa_scenarios["gov_claim_text_to_tracking"]
         self.assertEqual(claim_qa["webview_state"]["id"], "claim_tracking_helpdesk")
         self.assertIn("junin_texto_reclamo", claim_qa["script_cases"])
         self.assertIn("gov_claim_created", claim_qa["templates"])
         self.assertIn(claim_qa["status"], {"ready", "blocked_templates", "blocked_webview", "needs_template_review"})
+        self.assertIn("chatboc_demo_order_start", qa_scenarios["chatboc_demo_hub"]["script_cases"])
+        self.assertIn("chatboc_demo_survey_open", qa_scenarios["survey_vote_realtime"]["script_cases"])
+        self.assertIn("requiere TWILIO_AUTH_TOKEN real", payload["qa_playbook"]["live_mode_guardrails"])
         self.assertEqual(payload["message_ux_policy"]["interactive_limits"]["reply_buttons_max"], 3)
         self.assertEqual(payload["admin_panel"]["inbox"], "/api/v2/inbox/omnichannel")
         self.assertTrue(payload["education"]["enabled"])
