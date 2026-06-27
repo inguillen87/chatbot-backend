@@ -1,9 +1,13 @@
 from __future__ import annotations
 
-from flask import Blueprint, abort, g, jsonify, request
+from datetime import datetime, timezone
 
-from models import AuditEvent, NotificationTemplate, User, db
+from flask import Blueprint, abort, current_app, g, jsonify, request
+from twilio.rest import Client
+
+from models import AuditEvent, MessageTemplateRegistry, NotificationTemplate, User, db
 from services.whatsapp_enterprise_rules import WhatsAppEnterpriseRulesService
+from services.whatsapp_experience import build_whatsapp_experience
 from utils.auth_decorators import _is_authorized_for_tenant
 from utils.auth_helpers import token_requerido
 from utils.tenant import require_tenant
@@ -16,6 +20,59 @@ def _guard(user: User, tenant):
         abort(403, description="Permisos insuficientes")
     if not _is_authorized_for_tenant(user, tenant_id=tenant.id, tenant_slug=tenant.slug):
         abort(403, description="Acceso denegado")
+
+
+def _template_registry_payload(row: MessageTemplateRegistry | None) -> dict:
+    if not row:
+        return {"configured": False}
+    return {
+        "configured": True,
+        "id": row.id,
+        "name": row.name,
+        "language": row.language,
+        "category": row.category,
+        "status": row.status,
+        "content_sid": row.content_sid,
+        "external_template_id": row.external_template_id,
+        "last_sync_at": row.last_sync_at.isoformat() if row.last_sync_at else None,
+    }
+
+
+def _find_twilio_manifest_item(tenant, template_id: str) -> dict | None:
+    payload = build_whatsapp_experience(tenant, app_config=current_app.config)
+    manifest = ((payload.get("template_blueprint") or {}).get("creation_manifest") or {})
+    for item in manifest.get("items") or []:
+        if str(item.get("id") or "").lower() == template_id.lower():
+            return item
+    return None
+
+
+def _sync_status_from_approval(status: str | None, *, submitted: bool) -> str:
+    value = str(status or "").strip().lower()
+    if value == "approved":
+        return "approved"
+    if value in {"pending", "received", "in_review"} or submitted:
+        return "pending_approval"
+    if value == "rejected":
+        return "rejected"
+    return "created"
+
+
+def _approval_status_from_content(content) -> str | None:
+    approval_requests = getattr(content, "approval_requests", None)
+    if approval_requests is None:
+        approval_requests = getattr(content, "approvalRequests", None)
+    if isinstance(approval_requests, dict):
+        value = approval_requests.get("status") or approval_requests.get("approval_status")
+    else:
+        value = getattr(approval_requests, "status", None)
+    return str(value or "").strip() or None
+
+
+def _twilio_credentials() -> tuple[str | None, str | None]:
+    account_sid = current_app.config.get("TWILIO_ACCOUNT_SID")
+    auth_token = current_app.config.get("TWILIO_AUTH_TOKEN")
+    return account_sid, auth_token
 
 
 @whatsapp_rules_bp.route("/api/admin/whatsapp/rules", methods=["GET"])
@@ -183,6 +240,224 @@ def patch_whatsapp_template(user: User, template_id: str):
     )
     db.session.commit()
     return jsonify({"updated": True, "id": template.id})
+
+
+@whatsapp_rules_bp.route("/api/admin/templates/twilio-content/sync", methods=["POST"])
+@token_requerido
+@require_tenant
+def sync_twilio_content_template(user: User):
+    tenant = g.tenant_profile
+    _guard(user, tenant)
+    payload = request.get_json(silent=True) or {}
+
+    template_id = str(payload.get("template_id") or "").strip()
+    if not template_id:
+        abort(400, description="template_id es requerido")
+
+    dry_run = payload.get("dry_run", True) is not False
+    submit_for_approval = payload.get("submit_for_approval", True) is not False
+    force = bool(payload.get("force", False))
+
+    manifest_item = _find_twilio_manifest_item(tenant, template_id)
+    if not manifest_item:
+        abort(404, description="template_id no existe en el manifiesto Twilio del tenant")
+
+    create_request = manifest_item.get("create_request") if isinstance(manifest_item.get("create_request"), dict) else {}
+    approval_request = manifest_item.get("approval_request") if isinstance(manifest_item.get("approval_request"), dict) else {}
+    friendly_name = str(create_request.get("friendly_name") or manifest_item.get("friendly_name") or template_id).strip()
+    language = str(create_request.get("language") or manifest_item.get("language") or "es").strip()
+    category = str(approval_request.get("category") or manifest_item.get("category") or "UTILITY").strip().upper()
+    types = create_request.get("types") if isinstance(create_request.get("types"), dict) else {}
+    text_type = types.get("twilio/text") if isinstance(types.get("twilio/text"), dict) else {}
+    body_preview = str(text_type.get("body") or manifest_item.get("body") or "")[:1000]
+
+    if not friendly_name or not types:
+        abort(400, description="El manifiesto de la plantilla no tiene friendly_name o types validos")
+
+    existing = MessageTemplateRegistry.query.filter_by(
+        tenant_id=tenant.id,
+        provider="twilio",
+        channel="whatsapp",
+        name=friendly_name,
+        language=language,
+    ).first()
+    existing_has_sid = bool(existing and str(existing.content_sid or "").startswith("HX"))
+
+    if dry_run:
+        return jsonify(
+            {
+                "dry_run": True,
+                "template_id": template_id,
+                "ready_to_create": True,
+                "would_submit_for_approval": submit_for_approval,
+                "existing_registry": _template_registry_payload(existing),
+                "create_request": create_request,
+                "approval_request": approval_request,
+                "quality_gate": manifest_item.get("quality_gate") or {},
+            }
+        )
+
+    if existing_has_sid and not force:
+        return jsonify(
+            {
+                "created": False,
+                "reason": "already_registered",
+                "template_id": template_id,
+                "registry": _template_registry_payload(existing),
+            }
+        )
+
+    account_sid, auth_token = _twilio_credentials()
+    if not account_sid or not auth_token:
+        abort(503, description="Faltan TWILIO_ACCOUNT_SID o TWILIO_AUTH_TOKEN en el backend")
+
+    client = Client(account_sid, auth_token)
+    created = client.content.v1.contents.create(**create_request)
+    content_sid = str(getattr(created, "sid", "") or "").strip()
+    if not content_sid.startswith("HX"):
+        abort(502, description="Twilio no devolvio un ContentSid valido")
+
+    approval_status = None
+    if submit_for_approval:
+        approval = client.content.v1.contents(content_sid).approval_requests.create(**approval_request)
+        approval_status = str(getattr(approval, "status", "") or "").strip() or None
+
+    row = existing or MessageTemplateRegistry(
+        tenant_id=tenant.id,
+        provider="twilio",
+        channel="whatsapp",
+        name=friendly_name,
+        language=language,
+    )
+    row.category = category
+    row.status = _sync_status_from_approval(approval_status, submitted=submit_for_approval)
+    row.content_sid = content_sid
+    row.external_template_id = friendly_name
+    row.body_preview = body_preview
+    row.components = types
+    row.metadata_json = {
+        "template_id": template_id,
+        "twilio_type": manifest_item.get("twilio_type"),
+        "approval_status": approval_status,
+        "approval_requested": submit_for_approval,
+        "sample_values": manifest_item.get("sample_values") or {},
+        "send_example": manifest_item.get("send_example") or {},
+        "source": "whatsapp_experience_creation_manifest",
+    }
+    row.last_sync_at = datetime.now(timezone.utc)
+    db.session.add(row)
+    db.session.flush()
+    db.session.add(
+        AuditEvent(
+            tenant_id=tenant.id,
+            actor_user_id=user.id,
+            event_type="whatsapp_template.twilio_content_synced",
+            resource_type="message_template_registry",
+            resource_id=str(row.id),
+            details={
+                "template_id": template_id,
+                "friendly_name": friendly_name,
+                "content_sid": content_sid,
+                "approval_requested": submit_for_approval,
+                "approval_status": approval_status,
+            },
+            ip_address=request.remote_addr,
+        )
+    )
+    db.session.commit()
+
+    return jsonify(
+        {
+            "created": True,
+            "template_id": template_id,
+            "content_sid": content_sid,
+            "approval_status": approval_status,
+            "registry": _template_registry_payload(row),
+        }
+    ), 201
+
+
+@whatsapp_rules_bp.route("/api/admin/templates/twilio-content/refresh", methods=["POST"])
+@token_requerido
+@require_tenant
+def refresh_twilio_content_template(user: User):
+    tenant = g.tenant_profile
+    _guard(user, tenant)
+    payload = request.get_json(silent=True) or {}
+
+    template_id = str(payload.get("template_id") or "").strip()
+    content_sid = str(payload.get("content_sid") or "").strip()
+    row = None
+
+    if template_id:
+        manifest_item = _find_twilio_manifest_item(tenant, template_id)
+        if not manifest_item:
+            abort(404, description="template_id no existe en el manifiesto Twilio del tenant")
+        create_request = manifest_item.get("create_request") if isinstance(manifest_item.get("create_request"), dict) else {}
+        friendly_name = str(create_request.get("friendly_name") or manifest_item.get("friendly_name") or template_id).strip()
+        language = str(create_request.get("language") or manifest_item.get("language") or "es").strip()
+        row = MessageTemplateRegistry.query.filter_by(
+            tenant_id=tenant.id,
+            provider="twilio",
+            channel="whatsapp",
+            name=friendly_name,
+            language=language,
+        ).first()
+        if row and not content_sid:
+            content_sid = str(row.content_sid or "").strip()
+    elif content_sid:
+        row = MessageTemplateRegistry.query.filter_by(
+            tenant_id=tenant.id,
+            provider="twilio",
+            channel="whatsapp",
+            content_sid=content_sid,
+        ).first()
+
+    if not content_sid.startswith("HX"):
+        abort(400, description="No hay ContentSid valido para refrescar")
+    if not row:
+        abort(404, description="ContentSid no registrado para este tenant")
+
+    account_sid, auth_token = _twilio_credentials()
+    if not account_sid or not auth_token:
+        abort(503, description="Faltan TWILIO_ACCOUNT_SID o TWILIO_AUTH_TOKEN en el backend")
+
+    client = Client(account_sid, auth_token)
+    content = client.content.v1.contents(content_sid).fetch()
+    approval_status = _approval_status_from_content(content)
+    row.status = _sync_status_from_approval(approval_status, submitted=True)
+    metadata = dict(row.metadata_json) if isinstance(row.metadata_json, dict) else {}
+    metadata["approval_status"] = approval_status
+    metadata["last_refresh_source"] = "twilio_content_fetch"
+    row.metadata_json = metadata
+    row.last_sync_at = datetime.now(timezone.utc)
+    db.session.add(
+        AuditEvent(
+            tenant_id=tenant.id,
+            actor_user_id=user.id,
+            event_type="whatsapp_template.twilio_content_refreshed",
+            resource_type="message_template_registry",
+            resource_id=str(row.id),
+            details={
+                "template_id": template_id or metadata.get("template_id"),
+                "content_sid": content_sid,
+                "approval_status": approval_status,
+                "registry_status": row.status,
+            },
+            ip_address=request.remote_addr,
+        )
+    )
+    db.session.commit()
+
+    return jsonify(
+        {
+            "refreshed": True,
+            "template_id": template_id or metadata.get("template_id"),
+            "content_sid": content_sid,
+            "approval_status": approval_status,
+            "registry": _template_registry_payload(row),
+        }
+    )
 
 
 @whatsapp_rules_bp.route("/api/notifications/whatsapp/test", methods=["POST"])

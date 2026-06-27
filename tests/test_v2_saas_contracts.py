@@ -1361,6 +1361,20 @@ class V2SaasContractsTest(unittest.TestCase):
             payload["template_blueprint"]["next_actions"][0]["severity"],
             {"blocking", "warning", "ready_with_dependency"},
         )
+        creation_manifest = payload["template_blueprint"]["creation_manifest"]
+        self.assertEqual(creation_manifest["contract_version"], "twilio.content.creation_manifest.v1")
+        self.assertGreaterEqual(creation_manifest["templates_total"], 20)
+        self.assertIn("twilio/call-to-action", creation_manifest["by_twilio_type"])
+        self.assertTrue(creation_manifest["policy"]["store_content_sid_in_message_template_registry"])
+        manifest_items = {item["id"]: item for item in creation_manifest["items"]}
+        self.assertIn("order_checkout", manifest_items)
+        self.assertEqual(manifest_items["order_checkout"]["create_request"]["friendly_name"], "chatboc_order_checkout_v1")
+        self.assertIn("twilio/text", manifest_items["order_checkout"]["create_request"]["types"])
+        self.assertEqual(manifest_items["order_checkout"]["approval_request"]["category"], "UTILITY")
+        self.assertEqual(
+            manifest_items["order_checkout"]["send_example"]["content_variables"]["1"],
+            "P-123456",
+        )
         self.assertIn("whatsapp_flows", payload["template_blueprint"]["meta_business_strategy"])
         self.assertIn("signed_webviews", payload["template_blueprint"]["meta_business_strategy"])
         self.assertEqual(payload["webview_blueprint"]["checkout"]["confirmation_source"], "server_to_server_webhook")

@@ -1,9 +1,11 @@
 from datetime import datetime, timedelta
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import jwt
 
 from app import db
-from models import TenantProfile, User
+from models import MessageTemplateRegistry, TenantProfile, User
 from services.whatsapp_enterprise_rules import WhatsAppEnterpriseRulesService
 
 
@@ -137,3 +139,163 @@ def test_whatsapp_template_catalog_and_policy_test_endpoint(client, app):
     policy_data = policy.get_json()
     assert policy_data["allowed"] is False
     assert policy_data["reason"] == "template_required"
+
+
+def test_twilio_content_sync_dry_run_returns_creation_payload(client, app):
+    admin, tenant = _seed()
+    headers = _auth_headers(app, admin, tenant.slug)
+
+    response = client.post(
+        "/api/admin/templates/twilio-content/sync",
+        headers=headers,
+        json={"template_id": "order_checkout", "dry_run": True},
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["dry_run"] is True
+    assert payload["ready_to_create"] is True
+    assert payload["create_request"]["friendly_name"]
+    assert payload["create_request"]["types"]["twilio/text"]["body"]
+    assert payload["approval_request"]["category"] == "UTILITY"
+    assert payload["existing_registry"]["configured"] is False
+
+
+def test_twilio_content_sync_creates_content_and_registry_row(client, app):
+    admin, tenant = _seed()
+    headers = _auth_headers(app, admin, tenant.slug)
+    app.config["TWILIO_ACCOUNT_SID"] = "ACtest"
+    app.config["TWILIO_AUTH_TOKEN"] = "secret"
+
+    class _FakeApprovalRequests:
+        def create(self, **kwargs):
+            assert kwargs["category"] == "UTILITY"
+            return SimpleNamespace(status="PENDING")
+
+    class _FakeContents:
+        def __call__(self, content_sid):
+            assert content_sid == "HXcreatedtemplate"
+            return SimpleNamespace(approval_requests=_FakeApprovalRequests())
+
+        def create(self, **kwargs):
+            assert kwargs["friendly_name"]
+            assert "twilio/text" in kwargs["types"]
+            return SimpleNamespace(sid="HXcreatedtemplate")
+
+    fake_client = SimpleNamespace(content=SimpleNamespace(v1=SimpleNamespace(contents=_FakeContents())))
+
+    with patch("routes.whatsapp_rules.Client", return_value=fake_client) as client_factory:
+        response = client.post(
+            "/api/admin/templates/twilio-content/sync",
+            headers=headers,
+            json={"template_id": "order_checkout", "dry_run": False},
+        )
+
+    assert response.status_code == 201
+    payload = response.get_json()
+    assert payload["content_sid"] == "HXcreatedtemplate"
+    assert payload["registry"]["status"] == "pending_approval"
+    client_factory.assert_called_once_with("ACtest", "secret")
+
+    row = MessageTemplateRegistry.query.filter_by(
+        tenant_id=tenant.id,
+        provider="twilio",
+        channel="whatsapp",
+        content_sid="HXcreatedtemplate",
+    ).one()
+    assert row.status == "pending_approval"
+    assert row.metadata_json["template_id"] == "order_checkout"
+
+
+def test_twilio_content_sync_does_not_duplicate_existing_content_sid(client, app):
+    admin, tenant = _seed()
+    headers = _auth_headers(app, admin, tenant.slug)
+
+    dry_run = client.post(
+        "/api/admin/templates/twilio-content/sync",
+        headers=headers,
+        json={"template_id": "order_checkout", "dry_run": True},
+    ).get_json()
+    friendly_name = dry_run["create_request"]["friendly_name"]
+    language = dry_run["create_request"]["language"]
+    row = MessageTemplateRegistry(
+        tenant_id=tenant.id,
+        provider="twilio",
+        channel="whatsapp",
+        name=friendly_name,
+        language=language,
+        category="UTILITY",
+        status="approved",
+        content_sid="HXexistingtemplate",
+    )
+    db.session.add(row)
+    db.session.commit()
+
+    with patch("routes.whatsapp_rules.Client") as client_factory:
+        response = client.post(
+            "/api/admin/templates/twilio-content/sync",
+            headers=headers,
+            json={"template_id": "order_checkout", "dry_run": False},
+        )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["created"] is False
+    assert payload["reason"] == "already_registered"
+    assert payload["registry"]["content_sid"] == "HXexistingtemplate"
+    client_factory.assert_not_called()
+
+
+def test_twilio_content_refresh_updates_approval_status(client, app):
+    admin, tenant = _seed()
+    headers = _auth_headers(app, admin, tenant.slug)
+    app.config["TWILIO_ACCOUNT_SID"] = "ACtest"
+    app.config["TWILIO_AUTH_TOKEN"] = "secret"
+
+    dry_run = client.post(
+        "/api/admin/templates/twilio-content/sync",
+        headers=headers,
+        json={"template_id": "order_checkout", "dry_run": True},
+    ).get_json()
+    row = MessageTemplateRegistry(
+        tenant_id=tenant.id,
+        provider="twilio",
+        channel="whatsapp",
+        name=dry_run["create_request"]["friendly_name"],
+        language=dry_run["create_request"]["language"],
+        category="UTILITY",
+        status="pending_approval",
+        content_sid="HXpendingtemplate",
+        metadata_json={"template_id": "order_checkout"},
+    )
+    db.session.add(row)
+    db.session.commit()
+
+    class _FakeContentHandle:
+        def fetch(self):
+            return SimpleNamespace(approval_requests=SimpleNamespace(status="APPROVED"))
+
+    class _FakeContents:
+        def __call__(self, content_sid):
+            assert content_sid == "HXpendingtemplate"
+            return _FakeContentHandle()
+
+    fake_client = SimpleNamespace(content=SimpleNamespace(v1=SimpleNamespace(contents=_FakeContents())))
+
+    with patch("routes.whatsapp_rules.Client", return_value=fake_client) as client_factory:
+        response = client.post(
+            "/api/admin/templates/twilio-content/refresh",
+            headers=headers,
+            json={"template_id": "order_checkout"},
+        )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["refreshed"] is True
+    assert payload["approval_status"] == "APPROVED"
+    assert payload["registry"]["status"] == "approved"
+    client_factory.assert_called_once_with("ACtest", "secret")
+
+    refreshed = MessageTemplateRegistry.query.filter_by(content_sid="HXpendingtemplate").one()
+    assert refreshed.status == "approved"
+    assert refreshed.metadata_json["last_refresh_source"] == "twilio_content_fetch"

@@ -841,6 +841,201 @@ def _template_readiness_payload(
     }
 
 
+def _sample_value_for_variable(variable: str, *, tenant: TenantProfile | None = None) -> str:
+    key = _lower(variable)
+    tenant_name = getattr(tenant, "nombre", None) or getattr(tenant, "name", None) or "Chatboc"
+    samples = {
+        "contact_name": "Marcelo",
+        "tenant_name": str(tenant_name),
+        "main_capabilities": "reclamos, pedidos y atencion",
+        "case_code": "M-123456",
+        "case_or_order_code": "M-123456",
+        "status": "Recibido",
+        "tracking_url": "https://www.chatboc.ar/chat/123456?pin=900144",
+        "order_code": "P-123456",
+        "total": "$ 12.500",
+        "checkout_url": "https://www.chatboc.ar/checkout/123456",
+        "survey_title": "Encuesta de satisfaccion",
+        "survey_url": "https://www.chatboc.ar/e/encuesta-demo",
+        "payment_url": "https://www.chatboc.ar/checkout/123456",
+        "amount": "$ 12.500",
+        "quote_code": "COT-1234",
+        "quote_url": "https://www.chatboc.ar/cotizacion/1234",
+        "catalog_url": "https://www.chatboc.ar/catalogo/demo",
+        "family_name": "Familia Perez",
+        "concept": "cuota mensual",
+        "receipt_code": "REC-1234",
+        "student_name": "Juan Perez",
+        "receipt_url": "https://www.chatboc.ar/comprobantes/1234",
+        "event_title": "Reunion de familias",
+        "event_date": "15/07 18:00",
+        "event_url": "https://www.chatboc.ar/eventos/1234",
+        "claim_code": "M-123456",
+        "category": "Arreglo de calle",
+        "turn_code": "T-1234",
+        "office": "Mesa de entradas",
+        "date_time": "15/07 09:30",
+        "turn_url": "https://www.chatboc.ar/turnos/1234",
+        "document_code": "DOC-1234",
+        "document_url": "https://www.chatboc.ar/documentos/1234",
+    }
+    return samples.get(key, f"valor_{key or 'demo'}")
+
+
+def _numbered_content_variables(variables: list[str], *, tenant: TenantProfile | None = None) -> dict[str, str]:
+    return {
+        str(index): _sample_value_for_variable(variable, tenant=tenant)
+        for index, variable in enumerate(variables, start=1)
+    }
+
+
+def _template_button_title(item: Mapping[str, Any]) -> str:
+    stage = _stage_for_blueprint_item(item)
+    if stage in {"payment", "checkout"}:
+        return "Pagar seguro"
+    if stage in {"order", "catalog"}:
+        return "Abrir catalogo"
+    if stage in {"survey"}:
+        return "Participar"
+    if stage in {"claim", "case", "procedure", "support"}:
+        return "Ver seguimiento"
+    if stage in {"document"}:
+        return "Ver documento"
+    return "Abrir"
+
+
+def _template_creation_manifest_item(
+    item: Mapping[str, Any],
+    *,
+    tenant: TenantProfile | None = None,
+) -> dict[str, Any]:
+    execution = item.get("execution") if isinstance(item.get("execution"), Mapping) else {}
+    status = item.get("status") if isinstance(item.get("status"), Mapping) else {}
+    readiness = item.get("readiness") if isinstance(item.get("readiness"), Mapping) else {}
+    body = str(item.get("body") or "").strip()
+    variables = [str(value) for value in item.get("variables", [])] if isinstance(item.get("variables"), list) else []
+    friendly_name = str(item.get("friendly_name") or item.get("name") or item.get("id") or "").strip()
+    language = str(item.get("language") or "es").strip() or "es"
+    category = str(item.get("category") or "UTILITY").strip().upper() or "UTILITY"
+    twilio_type = str(execution.get("twilio_type") or readiness.get("twilio_type") or "twilio/text")
+    sample_values = _numbered_content_variables(variables, tenant=tenant)
+    types: dict[str, Any] = {"twilio/text": {"body": body or f"Actualizacion de {friendly_name}: {{{{1}}}}"}}
+
+    if twilio_type == "twilio/quick-reply":
+        action_labels = [str(action).replace("_", " ").title()[:20] for action in item.get("suggested_actions", []) if action]
+        if not action_labels:
+            action_labels = ["Menu", "Ayuda", "Cancelar"]
+        types["twilio/quick-reply"] = {
+            "body": body or types["twilio/text"]["body"],
+            "actions": [
+                {"title": label, "id": f"{_lower(item.get('id'))}:{index}"}
+                for index, label in enumerate(action_labels[:3], start=1)
+            ],
+        }
+    elif twilio_type == "twilio/list-picker":
+        action_labels = [str(action).replace("_", " ").title()[:24] for action in item.get("suggested_actions", []) if action]
+        if not action_labels:
+            action_labels = ["Menu", "Estado", "Ayuda", "Cancelar"]
+        types["twilio/list-picker"] = {
+            "body": body or types["twilio/text"]["body"],
+            "button": "Opciones",
+            "items": [
+                {"item": label, "id": f"{_lower(item.get('id'))}:{index}"}
+                for index, label in enumerate(action_labels[:10], start=1)
+            ],
+        }
+    elif twilio_type == "twilio/call-to-action":
+        types["twilio/call-to-action"] = {
+            "body": body or types["twilio/text"]["body"],
+            "actions": [
+                {
+                    "type": "URL",
+                    "title": _template_button_title(item),
+                    "url": "{{" + str(max(1, len(variables))) + "}}",
+                }
+            ],
+        }
+
+    return {
+        "id": item.get("id") or item.get("name"),
+        "friendly_name": friendly_name,
+        "language": language,
+        "category": category,
+        "twilio_type": twilio_type,
+        "variables": variables,
+        "sample_values": sample_values,
+        "create_request": {
+            "friendly_name": friendly_name,
+            "language": language,
+            "types": types,
+        },
+        "approval_request": {
+            "name": friendly_name,
+            "category": category,
+        },
+        "send_example": {
+            "content_sid": status.get("content_sid") or "HXxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+            "content_variables": sample_values,
+        },
+        "readiness": {
+            "state": readiness.get("state"),
+            "severity": readiness.get("severity"),
+            "next_action": readiness.get("next_action"),
+            "configured": bool(status.get("configured")),
+            "approved": bool(status.get("approved")),
+        },
+        "quality_gate": {
+            "variables_sequential": True,
+            "sample_values_required": True,
+            "meta_approval_required_outside_24h": True,
+            "contains_card_or_payment_data": False,
+            "needs_copy_review": not bool(body),
+        },
+    }
+
+
+def _template_creation_manifest_payload(
+    *,
+    tenant: TenantProfile,
+    required_templates: list[dict[str, Any]],
+    vertical_templates: Mapping[str, list[dict[str, Any]]],
+) -> dict[str, Any]:
+    template_items: list[dict[str, Any]] = []
+    template_items.extend(required_templates)
+    for vertical in ("gobierno", "colegio", "pyme"):
+        template_items.extend(vertical_templates.get(vertical, []))
+
+    manifests = [
+        _template_creation_manifest_item(item, tenant=tenant)
+        for item in template_items
+    ]
+    actionable = [
+        item
+        for item in manifests
+        if item["readiness"].get("severity") in {"blocking", "warning", "ready_with_dependency"}
+    ]
+    by_type: dict[str, int] = {}
+    for item in manifests:
+        by_type[str(item.get("twilio_type") or "twilio/text")] = by_type.get(str(item.get("twilio_type") or "twilio/text"), 0) + 1
+
+    return {
+        "contract_version": "twilio.content.creation_manifest.v1",
+        "sdk": "client.content.v1.contents.create",
+        "approval_sdk": "client.content.v1.contents(content_sid).approval_requests.create",
+        "templates_total": len(manifests),
+        "actionable_total": len(actionable),
+        "by_twilio_type": by_type,
+        "items": actionable[:20],
+        "all_template_ids": [str(item.get("id") or "") for item in manifests if item.get("id")],
+        "policy": {
+            "create_first": True,
+            "submit_for_meta_approval": True,
+            "store_content_sid_in_message_template_registry": True,
+            "do_not_send_unapproved_outside_24h_window": True,
+        },
+    }
+
+
 def _attach_template_status_and_readiness(
     item: dict[str, Any],
     templates: Mapping[str, dict[str, Any]],
@@ -1269,6 +1464,11 @@ def _template_blueprint_payload(
             _readiness_action_item(item, group=f"operational:{group_id}")
             for item in group["items"]
         )
+    creation_manifest = _template_creation_manifest_payload(
+        tenant=tenant,
+        required_templates=required_templates,
+        vertical_templates=vertical_templates,
+    )
 
     return {
         "provider": "twilio_content_api",
@@ -1299,6 +1499,7 @@ def _template_blueprint_payload(
             "operational_catalog_candidates": operational_catalog["summary"]["catalog_candidates"],
         },
         "next_actions": _sorted_readiness_actions(readiness_action_items),
+        "creation_manifest": creation_manifest,
         "twilio_content_types": {
             "transactional": ["twilio/text", "twilio/call-to-action", "twilio/quick-reply"],
             "menus": ["twilio/list-picker", "twilio/quick-reply"],
