@@ -41,7 +41,8 @@ def handle(msg: str, meta: dict) -> dict:
             mensaje_usuario=msg,
             usuario=usuario_dict,
             historial=historial,
-            chat_session_id=meta.get("chat_session_uuid")
+            chat_session_id=meta.get("chat_session_uuid"),
+            task_type="whatsapp_realtime",
         )
 
         llm_response_payload["fuente"] = "llm_fallback"

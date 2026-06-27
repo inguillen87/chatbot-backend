@@ -40,6 +40,7 @@ from services.promocion_service import promocion_service
 from services import promo_service
 from services.config_loader import cargar_configuracion_pyme
 from services.pyme_menu import get_pyme_menu_payload, PYME_MENU_DISPLAY_ORDER
+from services.live_chat_schedule import detect_urgency_reason, is_live_chat_available
 from services.pyme_multimodal import (
     PymeSessionState,
     PymeFlowResult,
@@ -2340,6 +2341,49 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
         nombre_pyme_display = config_data["nombre_pyme"]
     pyme_ctx_actual["nombre_pyme_cache"] = nombre_pyme_display
 
+    urgency_reason = detect_urgency_reason(pregunta_str or "")
+    if (
+        urgency_reason
+        and is_live_chat_available()
+        and not pyme_ctx_actual.get("live_chat_ticket_id")
+        and (pregunta_str or "").strip() != "__INIT__"
+    ):
+        from services.actions.pyme_actions import DerivarHumanoActionHandlerPyme
+
+        handler_context = {
+            CONTEXTO_PYME: pyme_ctx_actual,
+            "user_obj": owner_user,
+            "viewer_user_obj": viewer_user,
+            "cliente_id": getattr(viewer_user, "id", None),
+            "anon_id": anon_id,
+            "user_id": getattr(owner_user, "id", None),
+            "tenant_id": getattr(tenant_profile, "id", None) if tenant_profile else None,
+            "chat_db_context_data": chat_db_context.context_data,
+            "channel": channel,
+            "target_entity_type": "pyme",
+            "pregunta_actual_usuario": pregunta_str,
+        }
+        handler = DerivarHumanoActionHandlerPyme(handler_context)
+        handler_result = handler.execute({"motivo_derivacion": urgency_reason})
+        data = handler_result.get("data", {}) if isinstance(handler_result, dict) else {}
+        ticket_id = data.get("ticket_id") if isinstance(data, dict) else None
+        if ticket_id:
+            pyme_ctx_actual["live_chat_autoderivado"] = True
+            pyme_ctx_actual["live_chat_ticket_id"] = ticket_id
+            pyme_ctx_actual["live_chat_estado"] = data.get("status")
+            pyme_ctx_actual["live_chat_urgency_reason"] = urgency_reason
+        return _finalize_early_response(
+            PymeFlowResult(
+                message_body=handler_result.get("message_to_user")
+                or "Conectando con un asesor disponible.",
+                source="auto_live_chat_urgente",
+                options_list=handler_result.get("options_list", []),
+                message_type=handler_result.get("message_type", "text"),
+                data=data,
+            ),
+            intent="auto_live_chat_urgente",
+        )
+
     profile_name = kwargs.get("profile_name")
     context_data = chat_db_context.context_data if isinstance(chat_db_context.context_data, dict) else {}
     contact_cache = context_data.get("contact_cache")
@@ -2794,7 +2838,8 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
         mensaje_usuario=mensaje_para_llm,
         usuario=usuario_info_for_llm,
         historial=historial_chat_llm,
-        chat_session_id=kwargs.get("chat_session_uuid")
+        chat_session_id=kwargs.get("chat_session_uuid"),
+        task_type="voice" if channel == "voice" or pyme_ctx_actual.get("_voice_mode") else "whatsapp_realtime",
     )
     contextual_notes: list[str] = []
     if isinstance(ubicacion_payload, dict) and ubicacion_payload:
@@ -2955,7 +3000,8 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
             mensaje_usuario=mensaje_para_llm_json,
             usuario=usuario_info_for_llm,
             historial=historial_chat_llm,
-            chat_session_id=kwargs.get("chat_session_uuid")
+            chat_session_id=kwargs.get("chat_session_uuid"),
+            task_type="voice" if is_voice else "whatsapp_realtime",
         )
 
     # --- Gating / Hard Rules: Prevent premature handoff (Pyme) ---
@@ -3159,11 +3205,21 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
         respuesta_final_texto = f"Hola, soy el asistente de {nombre_pyme_display}. {respuesta_final_texto}"
         pyme_ctx_actual["saludo_audio_pendiente"] = False
 
+    action_data = action_handler_result.get("data", {}) if isinstance(action_handler_result.get("data"), dict) else {}
+    response_ticket_id = action_data.get("ticket_id") or action_data.get("pedido_id")
+    if action_data.get("ticket_id"):
+        pyme_ctx_actual["live_chat_ticket_id"] = action_data.get("ticket_id")
+        pyme_ctx_actual["ultimo_ticket_creado"] = action_data.get("ticket_id")
+        pyme_ctx_actual["live_chat_estado"] = action_data.get("status")
+        contexto_pyme_serializado_para_db = serializar_enum(pyme_ctx_actual)
+        chat_db_context.context_data[CONTEXTO_PYME] = contexto_pyme_serializado_para_db
+        flag_modified(chat_db_context, "context_data")
+
     final_response_dict = {
         "message_body": respuesta_final_texto, "options_list": opciones_finales,
         "message_type": message_type_pyme,
         "contexto_actualizado": {CONTEXTO_PYME: contexto_pyme_serializado_para_db},
-        "ticket_id": action_handler_result.get("data", {}).get("pedido_id"), # o ticket_id si es un reclamo pyme
+        "ticket_id": response_ticket_id,
         "fuente": action_handler_result.get("fuente") or llm_response_structured.get("accion_backend", "pyme_general_v4"),
         "adjuntos": [] # Manejar adjuntos si es necesario
     }
@@ -3413,6 +3469,7 @@ Salida JSON:
             usuario={"nombre": "system", "tipo_entidad": "pyme"},
             historial=[],
             chat_session_id=None,
+            task_type="whatsapp_realtime",
         )
         suggestion = None
         if isinstance(llm_out, dict):

@@ -124,7 +124,21 @@ class V2SurveysApiTest(unittest.TestCase):
         }
         respond_resp = self.client.post(f"/api/v2/public/surveys/{token}/respond", json=respond_payload)
         self.assertEqual(respond_resp.status_code, 201)
-        self.assertTrue(respond_resp.get_json().get("ok"))
+        ack = respond_resp.get_json()
+        self.assertTrue(ack.get("ok"))
+        self.assertEqual(ack.get("contract_version"), "surveys.public_response.v2")
+        self.assertEqual(ack.get("live_results_url"), f"/api/v2/public/surveys/{token}/live-results")
+
+        live_resp = self.client.get(f"/api/v2/public/surveys/{token}/live-results?include_heatmap=0")
+        self.assertEqual(live_resp.status_code, 200)
+        live_payload = live_resp.get_json()
+        self.assertEqual(live_payload.get("contract_version"), "surveys.live_results.v2")
+        self.assertEqual(live_payload.get("total_respuestas"), 1)
+        self.assertEqual(live_payload.get("render_contract", {}).get("preferred_visualization"), "live_vote_dashboard")
+        self.assertFalse(live_payload.get("heatmap", {}).get("enabled"))
+        first_question = live_payload.get("preguntas", [])[0]
+        self.assertEqual(first_question.get("total_votos"), 1)
+        self.assertEqual(first_question.get("opciones", [])[0].get("votos"), 1)
 
     def test_survey_draft_accepts_incomplete_payload(self):
         headers = {

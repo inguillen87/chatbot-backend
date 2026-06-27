@@ -358,6 +358,9 @@ def _build_public_ticket_live_chat_status(ticket_obj, ticket_type: str) -> dict:
         status["contract_version"] = "live_chat.schedule.v1"
         status["source"] = "tenant_config" if isinstance(schedule_config, dict) else "global_config"
         status["mode"] = "live" if status.get("enabled") and status.get("available") else "offline"
+        socket_room = _build_ticket_socket_room(ticket_obj, ticket_type)
+        if socket_room:
+            status["socket_room"] = socket_room
         if tenant:
             status["tenant_id"] = tenant.id
             status["tenant_slug"] = tenant.slug
@@ -377,19 +380,75 @@ def _build_public_ticket_live_chat_status(ticket_obj, ticket_type: str) -> dict:
         }
 
 
+def _build_ticket_socket_room(ticket_obj, ticket_type: str) -> Optional[str]:
+    if ticket_type == "municipio":
+        municipio_id = getattr(ticket_obj, "municipio_id", None)
+        if municipio_id:
+            return f"municipio_{municipio_id}"
+    if ticket_type == "pyme":
+        rubro_id = getattr(ticket_obj, "rubro_id", None)
+        if rubro_id:
+            return f"pyme_{rubro_id}"
+        pyme_id = (
+            getattr(ticket_obj, "pyme_id", None)
+            or getattr(ticket_obj, "user_id", None)
+        )
+        if pyme_id:
+            return f"pyme_{pyme_id}"
+    return None
+
+
 def _build_public_ticket_reply_payload(ticket_obj, ticket_type: str, comment_obj) -> dict:
     ticket_snapshot = serialize_ticket_to_json(ticket_obj, ticket_type, compact=True)
     comment_payload = comment_obj.to_dict() if hasattr(comment_obj, "to_dict") else comment_obj
     live_chat_status = _build_public_ticket_live_chat_status(ticket_obj, ticket_type)
+    socket_room = live_chat_status.get("socket_room") or _build_ticket_socket_room(ticket_obj, ticket_type)
+    reply_mode = live_chat_status.get("mode", "offline")
+    realtime_available = reply_mode == "live" and bool(live_chat_status.get("socket_enabled"))
+    user_message = (
+        "Mensaje enviado al canal de atencion en vivo."
+        if realtime_available
+        else "Mensaje recibido. Queda asociado al reclamo para que el equipo lo responda."
+    )
     return {
-        "contract_version": "tickets.public_chat_reply.v1",
+        "contract_version": "tickets.public_chat_reply.v2",
+        "legacy_contract_version": "tickets.public_chat_reply.v1",
         "success": True,
-        "message": "Mensaje guardado en el reclamo.",
+        "message": user_message,
+        "user_message": user_message,
         "ticket_id": ticket_obj.id,
         "ticket_number": ticket_snapshot.get("nro_ticket"),
         "tipo": ticket_type,
         "estado_chat": getattr(ticket_obj, "estado", None),
-        "mode": live_chat_status.get("mode", "offline"),
+        "mode": reply_mode,
+        "reply_status": "sent_to_live_chat" if realtime_available else "queued_for_agent",
+        "socket_room": socket_room,
+        "delivery": {
+            "channel": "ticket_conversation",
+            "realtime_available": realtime_available,
+            "offline_queue": not realtime_available,
+            "next_step_label": (
+                "Esperar respuesta del agente"
+                if realtime_available
+                else "El equipo respondera desde el panel del reclamo"
+            ),
+        },
+        "polling": {
+            "enabled": True,
+            "interval_ms": 10000,
+        },
+        "ui_actions": [
+            {
+                "id": "wait_for_agent" if realtime_available else "add_offline_message",
+                "label": "Esperar respuesta del agente" if realtime_available else "Enviar otro mensaje",
+                "variant": "primary" if realtime_available else "secondary",
+            },
+            {
+                "id": "view_ticket_status",
+                "label": "Ver estado del reclamo",
+                "variant": "secondary",
+            },
+        ],
         "comment": comment_payload,
         "comentario": comment_payload,
         "mensaje_id": getattr(comment_obj, "id", None),

@@ -413,6 +413,9 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         payload = response.get_json()
         self.assertEqual(payload.get("contract_version"), "operations.executive_summary.v1")
         self.assertEqual((payload.get("ai") or {}).get("summary"), "Hay actividad operativa real.")
+        self.assertEqual((payload.get("model_policy") or {}).get("contract_version"), "llm.task_policy.v1")
+        self.assertEqual((payload.get("model_policy") or {}).get("task_type"), "analytics")
+        self.assertTrue((payload.get("model_policy") or {}).get("backoffice_optimized"))
         self.assertEqual((payload.get("frontend_contract") or {}).get("render_as"), "operations_ai_executive_summary")
         mocked_report.assert_called_once()
 

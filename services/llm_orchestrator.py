@@ -48,6 +48,104 @@ def _provider_order_from_env() -> list[str]:
     return ordered or ["openai"]
 
 
+def _normalize_task_type(task_type: object) -> str:
+    return str(task_type or "").strip().lower().replace("-", "_").replace(" ", "_")
+
+
+def _task_provider_order(task_type: object | None = None) -> list[str]:
+    """
+    Return a provider order tuned by workload.
+
+    Open-source/cheaper models such as GLM through Ollama are useful for
+    backoffice and analytics workloads, but they stay opt-in for realtime
+    WhatsApp and transactional flows until latency and JSON fidelity are proven.
+    """
+
+    base_order = _provider_order_from_env()
+    normalized_task = _normalize_task_type(task_type)
+    if not normalized_task:
+        return base_order
+
+    ollama_first_tasks = {
+        "analytics",
+        "batch_classification",
+        "backoffice",
+        "crm_summary",
+        "insights",
+        "report",
+        "survey_insights",
+        "ticket_summary",
+    }
+    conservative_tasks = {
+        "checkout",
+        "critical_ticket_creation",
+        "live_chat",
+        "order_creation",
+        "pedido",
+        "reclamo",
+        "transactional",
+        "voice",
+        "whatsapp_realtime",
+    }
+
+    if normalized_task in ollama_first_tasks and _ollama_llm_enabled():
+        return ["ollama", *[provider for provider in base_order if provider != "ollama"]]
+
+    if normalized_task in conservative_tasks:
+        stable_order = [provider for provider in base_order if provider != "ollama"]
+        if "openai" not in stable_order:
+            stable_order.append("openai")
+        return stable_order
+
+    return base_order
+
+
+def build_llm_task_policy(task_type: object | None = None) -> dict:
+    """Expose a secret-safe provider policy for frontend/admin diagnostics."""
+
+    normalized_task = _normalize_task_type(task_type)
+    ordered_providers = _task_provider_order(normalized_task)
+    primary_provider = ordered_providers[0] if ordered_providers else "openai"
+    conservative_tasks = {
+        "checkout",
+        "critical_ticket_creation",
+        "live_chat",
+        "order_creation",
+        "pedido",
+        "reclamo",
+        "transactional",
+        "voice",
+        "whatsapp_realtime",
+    }
+    backoffice_tasks = {
+        "analytics",
+        "batch_classification",
+        "backoffice",
+        "crm_summary",
+        "insights",
+        "report",
+        "survey_insights",
+        "ticket_summary",
+    }
+
+    return {
+        "contract_version": "llm.task_policy.v1",
+        "task_type": normalized_task or "default",
+        "primary_provider": primary_provider,
+        "provider_order": ordered_providers,
+        "open_source_ready": "ollama" in ordered_providers,
+        "realtime_safe": normalized_task in conservative_tasks,
+        "backoffice_optimized": normalized_task in backoffice_tasks,
+        "model_env": {
+            "openai": "OPENAI_CHAT_MODEL_DEFAULT",
+            "gemini": "GEMINI_CHAT_MODEL",
+            "ollama": "OLLAMA_CHAT_MODEL",
+            "cohere": "COHERE_CHAT_MODEL",
+        },
+        "fallback_behavior": "try_ordered_providers_then_deterministic_json",
+    }
+
+
 def _resolve_provider(name: str):
     if name == "openai":
         return "OpenAI", llamar_openai
@@ -66,7 +164,15 @@ def _resolve_provider(name: str):
     return None
 
 
-def llamar_llm_con_fallback(app, mensaje_usuario: str, usuario: dict, historial: list, chat_session_id: str, model: str = "gpt-4o-mini"):
+def llamar_llm_con_fallback(
+    app,
+    mensaje_usuario: str,
+    usuario: dict,
+    historial: list,
+    chat_session_id: str,
+    model: str = "gpt-4o-mini",
+    task_type: str | None = None,
+):
     """
     Try configured LLM providers in priority order.
 
@@ -80,7 +186,8 @@ def llamar_llm_con_fallback(app, mensaje_usuario: str, usuario: dict, historial:
         `(response_dict, context_dict)` where `context_dict` is currently unused.
     """
 
-    providers = [_resolve_provider(name) for name in _provider_order_from_env()]
+    resolved_task_type = task_type or (usuario or {}).get("ai_task_type") or (usuario or {}).get("task_type")
+    providers = [_resolve_provider(name) for name in _task_provider_order(resolved_task_type)]
     providers = [provider for provider in providers if provider]
 
     last_error = None

@@ -57,7 +57,7 @@ ACTION_HANDLER_MAP = {
     "pyme_promociones": "services.actions.pyme_actions.OfertasHandler",
     "pyme_estado_pedido": "services.actions.pyme_actions.ConsultarEstadoPedidoActionHandler",
     "pyme_hacer_pedido": "services.actions.pyme_order_actions.CrearPedidoAction",
-    "pyme_hablar_agente": "services.actions.pyme_actions.HumanHandler",
+    "pyme_hablar_agente": "services.actions.pyme_actions.DerivarHumanoActionHandlerPyme",
     "pyme_otras_consultas": "services.actions.pyme_actions.OtrasConsultasHandler",
     "pyme_factura": "services.actions.pyme_actions.FacturaHandler",
     "descargar_catalogo": "services.actions.pyme_actions.DescargarCatalogoHandler",

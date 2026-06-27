@@ -40,6 +40,7 @@ from services.utils_placeholders import (
     obtener_respuesta_municipio,
 )
 from services.config_loader import cargar_configuracion_municipio
+from services.live_chat_schedule import detect_urgency_reason, is_live_chat_available
 from utils.municipio_utils import (
     get_numeric_municipio_id,
     resolve_municipio_identifier,
@@ -4880,6 +4881,12 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                     if resumen_analisis:
                         mensaje_completo_para_llm["analisis_previo_imagen"] = resumen_analisis
 
+        llm_task_type = "whatsapp_realtime"
+        if context.get("channel") == "voice" or contexto_municipio_actual.get("_voice_mode"):
+            llm_task_type = "voice"
+        elif estado_conversacion_para_llm == ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name:
+            llm_task_type = "reclamo"
+
         try:
             mensaje_para_llm = json.dumps(mensaje_completo_para_llm)
             respuesta_llm_dict, context_dict = llamar_gemini(
@@ -4887,7 +4894,8 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                 mensaje_usuario=mensaje_para_llm,
                 usuario=usuario_info_llm,
                 historial=historial_formateado,
-                chat_session_id=context.get("chat_session_uuid")
+                chat_session_id=context.get("chat_session_uuid"),
+                task_type=llm_task_type,
             )
             logger.info(f"[HANDLE_LLM] Respuesta LLM: {respuesta_llm_dict}")
             if isinstance(context_dict, dict) and chat_db_context:
@@ -9671,6 +9679,42 @@ def responder_municipio(
 
     contexto_municipio_actual = chat_db_context_live_data.setdefault(CONTEXTO_MUNICIPIO, {})
 
+    urgency_reason = detect_urgency_reason(pregunta_str or "")
+    if (
+        urgency_reason
+        and is_live_chat_available()
+        and not contexto_municipio_actual.get("live_chat_ticket_id")
+        and not is_initial_handshake
+    ):
+        from services.actions.municipio_actions import DerivarHumanoActionHandler
+
+        handler = DerivarHumanoActionHandler(context)
+        handler_result = handler.execute({"motivo_derivacion": urgency_reason})
+        data = handler_result.get("data", {}) if isinstance(handler_result, dict) else {}
+        ticket_id = data.get("ticket_id") if isinstance(data, dict) else None
+        if ticket_id:
+            contexto_municipio_actual["live_chat_autoderivado"] = True
+            contexto_municipio_actual["live_chat_ticket_id"] = ticket_id
+            contexto_municipio_actual["live_chat_estado"] = data.get("status")
+            contexto_municipio_actual["live_chat_urgency_reason"] = urgency_reason
+            if chat_db_context:
+                chat_db_context.context_data[CONTEXTO_MUNICIPIO] = serializar_enum(contexto_municipio_actual)
+                flag_modified(chat_db_context, "context_data")
+        return _finalize_response(
+            {
+                "success": bool(handler_result.get("success")),
+                "message_body": handler_result.get("message_to_user")
+                or "Conectando con un agente disponible.",
+                "options_list": handler_result.get("options_list", []),
+                "message_type": handler_result.get("message_type", "text"),
+                "fuente": "auto_live_chat_urgente",
+                "data": data,
+                "contexto_actualizado": {
+                    CONTEXTO_MUNICIPIO: serializar_enum(contexto_municipio_actual)
+                },
+            }
+        )
+
     if received_payload.get("es_audio") and isinstance(pregunta_str, str) and pregunta_str.strip():
         lowered_question = pregunta_str.lower()
         estado_actual = contexto_municipio_actual.get("estado_conversacion")
@@ -12196,7 +12240,6 @@ def responder_municipio(
         f"ViewerCiudadano: {context['cliente_id'] or context['anon_id']}"
     )
     logger_actual.info(f"[CONTEXTO_MUNICIPIO_LOAD_RAW] Contexto DB para {CONTEXTO_MUNICIPIO}: {contexto_municipio_data_from_db}")
-
 
     # --- Handle post-login resumption (modifies context[CONTEXTO_MUNICIPIO] and context["intencion"]) ---
     # Ensure to check within context["chat_db_context_data"] which is the live dict from the ORM object

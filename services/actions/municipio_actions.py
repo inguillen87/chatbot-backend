@@ -32,7 +32,7 @@ from services.live_chat_schedule import build_live_chat_status
 from utils.ticket_utils import normalize_category
 from services.common_utils import validar_telefono, formatear_telefono_e164, validar_email
 from services.config_loader import cargar_configuracion_municipio
-from models import MunicipioTicket, TenantProfile, CategoriaTicket
+from models import MunicipioTicket, TenantProfile, CategoriaTicket, db
 from services.common_utils import _get_main_menu_payload
 from services import promo_service
 from services.voice_handler import initiate_outbound_call

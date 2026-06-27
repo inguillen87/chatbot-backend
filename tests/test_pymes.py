@@ -46,6 +46,7 @@ class PymesTestCase(unittest.TestCase):
             response = responder_pyme(pregunta_original="unhandled query", owner_user=owner_user, rubro_obj=owner_user.rubro, viewer_user=None, chat_db_context=chat_db_context)
 
             mock_google_search.assert_called_once_with("unhandled query")
+            self.assertEqual(mock_llamar_fallback.call_args.kwargs.get("task_type"), "whatsapp_realtime")
             self.assertIn("message_body", response)
             self.assertIn("encontré esto en la web", response["message_body"])
             self.assertIn("Test Search Result", response["message_body"])

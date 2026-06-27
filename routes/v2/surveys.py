@@ -8,6 +8,7 @@ from flask import Blueprint, g, jsonify, request
 from extensions import db
 from routes.v2.tenants import V2TenantResolutionError, resolve_tenant_v2
 from services.encuestas_analytics_service import get_dashboard_bundle
+from services.encuestas_analytics_service import calculate_live_results
 from services.encuestas_service import (
     EncuestaError,
     cerrar_encuesta,
@@ -431,4 +432,52 @@ def respond_public_survey_v2(token: str):
         db.session.rollback()
         raise
 
-    return jsonify({"ok": True, "respuesta_id": respuesta.id}), 201
+    return _json_response(
+        {
+            "ok": True,
+            "contract_version": "surveys.public_response.v2",
+            "respuesta_id": respuesta.id,
+            "response_id": respuesta.id,
+            "live_results_url": f"/api/v2/public/surveys/{token}/live-results",
+            "ui_actions": [
+                {
+                    "id": "open_live_results",
+                    "label": "Ver resultados en vivo",
+                    "href": f"/api/v2/public/surveys/{token}/live-results",
+                }
+            ],
+        },
+        201,
+    )
+
+
+@v2_public_surveys_bp.route("/<string:token>/live-results", methods=["GET"])
+def survey_live_results_v2(token: str):
+    include_heatmap = str(request.args.get("include_heatmap", "1")).strip().lower() not in {"0", "false", "no", "off"}
+    max_points = request.args.get("max_points", default=2000, type=int) or 2000
+    max_cells = request.args.get("max_cells", default=200, type=int) or 200
+    window_minutes = request.args.get("window_minutes", default=10, type=int) or 10
+
+    try:
+        results = calculate_live_results(
+            token,
+            include_heatmap=include_heatmap,
+            max_points=max(100, min(max_points, 5000)),
+            max_cells=max(50, min(max_cells, 1000)),
+            momentum_window_minutes=max(5, min(window_minutes, 30)),
+        )
+    except EncuestaError as exc:
+        return jsonify(exc.to_dict()), exc.status_code
+
+    results.setdefault("contract_version", "surveys.live_results.v2")
+    results.setdefault("slug_publico", token)
+    results.setdefault(
+        "render_contract",
+        {
+            "preferred_visualization": "live_vote_dashboard",
+            "supports": ["cards", "bars", "timeline", "heatmap", "map_pulses"],
+            "polling_interval_ms": 8000,
+            "empty_state": "Todavia no hay respuestas para mostrar.",
+        },
+    )
+    return _json_response(results)

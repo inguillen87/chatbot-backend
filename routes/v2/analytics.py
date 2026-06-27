@@ -10,6 +10,7 @@ from models import TenantTicket
 from routes import analytics_routes as legacy_analytics
 from routes.v2.tenants import V2TenantResolutionError, resolve_tenant_v2
 from services.analytics_service import analytics_service
+from services.llm_orchestrator import build_llm_task_policy
 from services.openai_bridge import generate_analytics_report
 from services.operational_intelligence import (
     build_action_center,
@@ -492,11 +493,7 @@ def operations_executive_summary_v2(current_user):
             "summary": summary,
             "ai": ai_report,
             "source_contract": dashboard.get("contract_version"),
-            "model_policy": {
-                "provider": "openai",
-                "model_env": "OPENAI_ANALYTICS_MODEL",
-                "fallback_behavior": "deterministic_json_when_unavailable",
-            },
+            "model_policy": build_llm_task_policy("analytics"),
             "frontend_contract": {
                 "render_as": "operations_ai_executive_summary",
                 "dashboard_endpoint": "/api/v2/analytics/operations/dashboard",

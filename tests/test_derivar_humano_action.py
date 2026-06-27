@@ -8,6 +8,7 @@ from models import User, Rubro, MunicipioTicket, PymeTicket
 from config import TestConfig
 from services.actions.municipio_actions import DerivarHumanoActionHandler as MunicipioDerivarHandler
 from services.actions.pyme_actions import DerivarHumanoActionHandlerPyme as PymeDerivarHandler
+from services.actions import ACTION_HANDLER_MAP
 from services.chat_orchestrator import ChatOrchestrator
 
 @pytest.fixture
@@ -94,6 +95,8 @@ class TestDerivarHumanoAction:
         # Assert
         assert result['success']
         assert 'P-' in result['data']['chat_id']
+        assert result['data']['socket_room'] == 'pyme_20'
+        assert result['data']['live_chat']['socket_room'] == 'pyme_20'
 
         # Check database
         ticket_id = result['data']['ticket_id']
@@ -131,7 +134,14 @@ class TestDerivarHumanoAction:
         assert result['executed_action_handler'] == 'DerivarHumanoActionHandlerPyme'
         assert result['success']
         assert 'P-' in result['data']['chat_id']
+        assert result['data']['socket_room'] == 'pyme_20'
         mock_emit_update.assert_called_once()
+
+    def test_pyme_hablar_agente_alias_uses_modern_live_chat_handler(self):
+        assert (
+            ACTION_HANDLER_MAP["pyme_hablar_agente"]
+            == "services.actions.pyme_actions.DerivarHumanoActionHandlerPyme"
+        )
 
 
     @patch('services.actions.municipio_actions.socketio.emit')

@@ -47,6 +47,7 @@ New variables introduced for Multi-tenant Modules:
 *   `OPENAI_API_KEY`: OpenAI API key used by chat, vision, audio and realtime flows.
 *   `OPENAI_CHAT_MODEL_DEFAULT`: Default OpenAI chat model. Current backend default is `gpt-4o-mini`.
 *   `LLM_PROVIDER_ORDER`: Ordered comma-separated LLM providers for chat orchestration. Default is `openai`. Example: `openai,gemini,ollama,cohere`.
+    *   The orchestrator now also applies task-aware routing. If `task_type` or `usuario.ai_task_type` is `survey_insights`, `crm_summary`, `ticket_summary`, `analytics`, `insights`, `report`, `backoffice` or `batch_classification`, Ollama is promoted to first place when enabled. If the task is transactional or realtime (`whatsapp_realtime`, `reclamo`, `pedido`, `checkout`, `live_chat`, `voice`, etc.), Ollama is removed from that call unless the code explicitly opts into a different task.
 *   `GEMINI_API_KEY`: Server-side Gemini API key. Keep it out of frontend `VITE_` variables and git-tracked files.
 *   `GEMINI_CHAT_MODEL`: Gemini chat fallback model used when `gemini` is included in `LLM_PROVIDER_ORDER`. Default is `gemini-2.5-flash`.
 *   `OLLAMA_ENABLED`: Enables the Ollama/OpenAI-compatible provider for experimental open-source/cloud models. Default is false.

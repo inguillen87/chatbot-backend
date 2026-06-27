@@ -17,11 +17,12 @@ class LLMHistoryFormattingTest(unittest.TestCase):
         viewer = SimpleNamespace(nombre="Vecino", direccion=None, telefono=None, email=None)
         owner = SimpleNamespace(municipio_id=1)
 
-        with patch('services.municipio_responder.llamar_llm_con_fallback') as mock_llm:
+        with patch('services.municipio_responder.llamar_gemini') as mock_llm:
             mock_llm.return_value = ({"message_body": "ok", "accion_backend": "responder_directamente", "datos_estructura": {}, "pedir_info": None, "botones": []}, {})
             handle_llm_interaction(None, "ubicacion", context, viewer, owner, None, contexto)
 
             historial_enviado = mock_llm.call_args.kwargs.get('historial')
+            self.assertEqual(mock_llm.call_args.kwargs.get('task_type'), "reclamo")
             self.assertEqual(
                 historial_enviado,
                 [
@@ -40,7 +41,7 @@ class LLMHistoryFormattingTest(unittest.TestCase):
         viewer = SimpleNamespace(nombre="Vecino", direccion=None, telefono=None, email=None)
         owner = SimpleNamespace(municipio_id=1)
 
-        with patch('services.municipio_responder.llamar_llm_con_fallback') as mock_llm:
+        with patch('services.municipio_responder.llamar_gemini') as mock_llm:
             mock_llm.return_value = ({
                 "message_body": "ok",
                 "accion_backend": "responder_directamente",
@@ -62,6 +63,7 @@ class LLMHistoryFormattingTest(unittest.TestCase):
         self.assertIsNotNone(response)
         self.assertIs(updated_context, contexto)
         mock_llm.assert_called_once()
+        self.assertEqual(mock_llm.call_args.kwargs.get('task_type'), "whatsapp_realtime")
 
     def test_demo_metadata_is_forwarded_to_llm_user_payload(self):
         contexto = {
@@ -79,7 +81,7 @@ class LLMHistoryFormattingTest(unittest.TestCase):
             "description": "Flujo guiado"
         }
 
-        with patch('services.municipio_responder.llamar_llm_con_fallback') as mock_llm:
+        with patch('services.municipio_responder.llamar_gemini') as mock_llm:
             mock_llm.return_value = ({
                 "message_body": "ok",
                 "accion_backend": "responder_directamente",

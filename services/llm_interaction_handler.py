@@ -199,13 +199,18 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
         if is_voice:
             model_to_use = "gpt-4o"
 
+        llm_task_type = "voice" if is_voice else "whatsapp_realtime"
+        if not is_voice and estado_conversacion_para_llm == ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name:
+            llm_task_type = "reclamo"
+
         respuesta_llm_dict, context_dict = llamar_llm_con_fallback(
             app=app,
             mensaje_usuario=mensaje_para_llm,
             usuario=usuario_info_llm,
             historial=historial_formateado,
             chat_session_id=context.get("chat_session_uuid"),
-            model=model_to_use
+            model=model_to_use,
+            task_type=llm_task_type,
         )
 
         if isinstance(respuesta_llm_dict, dict):

@@ -396,6 +396,8 @@ class DerivarHumanoActionHandlerPyme(BasePymeHandler):
             nombre = (getattr(viewer_user, "name", None) or action_data.get("nombre"))
             telefono = (getattr(viewer_user, "telefono", None) or action_data.get("telefono"))
             email = (getattr(viewer_user, "email", None) or action_data.get("email"))
+            owner_pyme_id = getattr(owner_user, "pyme_id", None) or getattr(owner_user, "id", None)
+            owner_rubro_id = getattr(owner_user, "rubro_id", None)
 
             ticket_data = {
                 "asunto": f"Solicitud de Chat en Vivo por: {nombre or 'Usuario'}",
@@ -409,7 +411,8 @@ class DerivarHumanoActionHandlerPyme(BasePymeHandler):
                 "telefono_cliente": telefono,
                 "email_cliente": email,
                 "tenant_id": self.context.get("tenant_id"),
-                "pyme_id": getattr(owner_user, "id", None)
+                "pyme_id": owner_pyme_id,
+                "rubro_id": owner_rubro_id,
             }
 
             ticket_data_cleaned = {k: v for k, v in ticket_data.items() if v is not None}
@@ -440,12 +443,19 @@ class DerivarHumanoActionHandlerPyme(BasePymeHandler):
             )
 
             chat_id = f"P-{sala.nro_ticket}"
+            socket_room = None
+            if owner_rubro_id:
+                socket_room = f"pyme_{owner_rubro_id}"
+            elif owner_pyme_id:
+                socket_room = f"pyme_{owner_pyme_id}"
 
             user_message = (
                 "En breve un representante se pondrá en contacto contigo. "
                 f"Tu número de chat es {chat_id}."
             )
             live_chat_status = build_live_chat_status()
+            if socket_room:
+                live_chat_status["socket_room"] = socket_room
             if not live_chat_status.get("available"):
                 schedule_text = live_chat_status.get("description")
                 if schedule_text:
@@ -463,6 +473,7 @@ class DerivarHumanoActionHandlerPyme(BasePymeHandler):
                     "chat_id": chat_id,
                     "status": "esperando_agente_en_vivo",
                     "live_chat": live_chat_status,
+                    "socket_room": socket_room,
                 },
             }
         except Exception as e:
