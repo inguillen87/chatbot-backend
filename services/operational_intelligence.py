@@ -1377,6 +1377,119 @@ def _build_next_best_actions(
     return actions[:10]
 
 
+def _build_ai_operational_brief(
+    *,
+    summary: dict[str, Any],
+    alerts: list[dict[str, Any]],
+    next_best_actions: list[dict[str, Any]],
+    heatmap: dict[str, Any],
+) -> dict[str, Any]:
+    ai_summary = ((heatmap.get("ai_insights") or {}).get("summary") or {}) if isinstance(heatmap, dict) else {}
+    high_alerts = [item for item in alerts if item.get("severity") == "high"]
+    medium_alerts = [item for item in alerts if item.get("severity") == "medium"]
+    top_action = (next_best_actions or [{}])[0] or {}
+    risk_level = ai_summary.get("risk_level") or ("high" if high_alerts else "medium" if medium_alerts else "normal")
+    if high_alerts or risk_level in {"critical", "high"}:
+        severity = "high"
+        headline = "Atencion operativa prioritaria"
+    elif medium_alerts or risk_level == "medium":
+        severity = "medium"
+        headline = "Actividad para monitoreo cercano"
+    else:
+        severity = "low"
+        headline = "Operacion estable"
+
+    focus_items: list[dict[str, Any]] = []
+    if summary.get("overdue_tickets", 0):
+        focus_items.append(
+            {
+                "id": "overdue_tickets",
+                "label": "Reclamos vencidos",
+                "value": int(summary.get("overdue_tickets") or 0),
+                "priority": "high",
+                "ui_hint": "open_overdue_queue",
+            }
+        )
+    if summary.get("heatmap_points", 0):
+        focus_items.append(
+            {
+                "id": "heatmap_points",
+                "label": "Puntos en mapa operativo",
+                "value": int(summary.get("heatmap_points") or 0),
+                "priority": "medium",
+                "ui_hint": "open_heatmap",
+            }
+        )
+    if summary.get("survey_responses", 0):
+        focus_items.append(
+            {
+                "id": "survey_responses",
+                "label": "Participacion en encuestas",
+                "value": int(summary.get("survey_responses") or 0),
+                "priority": "medium",
+                "ui_hint": "open_survey_monitor",
+            }
+        )
+    if summary.get("whatsapp_messages", 0):
+        focus_items.append(
+            {
+                "id": "whatsapp_messages",
+                "label": "Actividad WhatsApp",
+                "value": int(summary.get("whatsapp_messages") or 0),
+                "priority": "medium",
+                "ui_hint": "open_whatsapp_inbox",
+            }
+        )
+
+    if not focus_items:
+        focus_items.append(
+            {
+                "id": "monitoring",
+                "label": "Monitoreo operativo",
+                "value": 0,
+                "priority": "low",
+                "ui_hint": "open_dashboard",
+            }
+        )
+
+    dominant_intent_label = ai_summary.get("dominant_intent_label") or "consulta general"
+    sentiment = ai_summary.get("sentiment") or "neutral"
+    recommendation = top_action.get("title") or "Mantener monitoreo operativo"
+    narrative = (
+        f"{headline}: {recommendation}. "
+        f"Senal dominante: {dominant_intent_label}; sentimiento: {sentiment}."
+    )
+
+    return {
+        "contract_version": "operations.ai_brief.v1",
+        "severity": severity,
+        "headline": headline,
+        "narrative": narrative,
+        "risk_level": risk_level,
+        "dominant_intent": ai_summary.get("dominant_intent") or "general_query",
+        "dominant_intent_label": dominant_intent_label,
+        "sentiment": sentiment,
+        "requires_human_attention": bool(ai_summary.get("requires_human_attention") or high_alerts),
+        "requires_location_focus": bool(ai_summary.get("requires_location_focus")),
+        "top_action": top_action,
+        "focus_items": focus_items[:4],
+        "signals": {
+            "alerts": len(alerts),
+            "high_alerts": len(high_alerts),
+            "medium_alerts": len(medium_alerts),
+            "actions": len(next_best_actions or []),
+            "hf_mode": (heatmap.get("ai_insights") or {}).get("mode"),
+            "hf_configured": (((heatmap.get("ai_insights") or {}).get("hf_status") or {}).get("configured")),
+        },
+        "frontend_contract": {
+            "render_as": "operations_ai_brief",
+            "recommended_widgets": ["priority_banner", "focus_cards", "ai_signal_badges", "next_best_action"],
+            "refresh_seconds": 30,
+            "safe_empty_state": "show_monitoring_ok",
+        },
+    }
+
+
 def build_operational_dashboard(tenant: TenantProfile, start_date: datetime, end_date: datetime) -> dict[str, Any]:
     ticket_records = _collect_ticket_records(tenant, start_date, end_date)
     ticket_metrics = _ticket_metrics(ticket_records)
@@ -1405,6 +1518,12 @@ def build_operational_dashboard(tenant: TenantProfile, start_date: datetime, end
         [],
     )
     next_best_actions = _build_next_best_actions(ticket_metrics, survey_metrics, chat_metrics, employee_metrics, heatmap, alerts)
+    ai_brief = _build_ai_operational_brief(
+        summary=summary,
+        alerts=alerts,
+        next_best_actions=next_best_actions,
+        heatmap=heatmap,
+    )
 
     return {
         "contract_version": "operations.dashboard.v1",
@@ -1437,6 +1556,7 @@ def build_operational_dashboard(tenant: TenantProfile, start_date: datetime, end
         },
         "alerts": alerts,
         "next_best_actions": next_best_actions,
+        "ai_brief": ai_brief,
         "frontend_contract": {
             "recommended_views": [
                 "executive_summary",
@@ -1457,6 +1577,7 @@ def build_operational_dashboard(tenant: TenantProfile, start_date: datetime, end
                 "ai_summary": "/api/v2/analytics/operations/executive-summary",
                 "heatmap": "/api/v2/analytics/operations/heatmap",
                 "freshness": "/api/v2/analytics/operations/freshness",
+                "ai_brief": "/api/v2/analytics/operations/ai-brief",
             },
         },
     }
@@ -1483,6 +1604,7 @@ def build_action_center(tenant: TenantProfile, start_date: datetime, end_date: d
         },
         "items": actions,
         "alerts": dashboard.get("alerts") or [],
+        "ai_brief": dashboard.get("ai_brief") or {},
         "trends": dashboard.get("trends") or {},
         "frontend_contract": {
             "render_as": "action_center",

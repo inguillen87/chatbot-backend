@@ -426,6 +426,35 @@ def operations_action_center_v2(current_user):
     return _json_response(_with_access(payload, tenant))
 
 
+@v2_analytics_bp.route("/operations/ai-brief", methods=["GET"])
+@token_requerido
+@require_role("admin", "empleado", "super_admin")
+def operations_ai_brief_v2(current_user):
+    tenant, error = _resolve_tenant_or_error(current_user)
+    if error:
+        return error
+    if not _feature_enabled(_integration_access(tenant), "analytics_dashboard"):
+        return _integration_plan_required_response(tenant, "analytics_dashboard")
+
+    start_date, end_date = _date_range()
+    dashboard = build_operational_dashboard(tenant, start_date, end_date)
+    brief = dict(dashboard.get("ai_brief") or {})
+    brief.setdefault("contract_version", "operations.ai_brief.v1")
+    brief.update(
+        {
+            "tenant": dashboard.get("tenant"),
+            "period": dashboard.get("period"),
+            "generated_at": dashboard.get("generated_at"),
+            "source_contract": dashboard.get("contract_version"),
+            "summary": dashboard.get("summary") or {},
+            "alerts": dashboard.get("alerts") or [],
+            "model_policy": build_llm_task_policy("analytics"),
+            "access": _integration_access(tenant),
+        }
+    )
+    return _json_response(brief)
+
+
 @v2_analytics_bp.route("/operations/freshness", methods=["GET"])
 @token_requerido
 @require_role("admin", "empleado", "super_admin")

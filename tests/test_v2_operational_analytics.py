@@ -207,6 +207,13 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertTrue((payload.get("maps") or {}).get("heatmap", {}).get("hotspots"))
         self.assertEqual((payload.get("trends") or {}).get("contract_version"), "operations.trends.v1")
         self.assertTrue(payload.get("next_best_actions"))
+        self.assertEqual((payload.get("ai_brief") or {}).get("contract_version"), "operations.ai_brief.v1")
+        self.assertEqual((payload.get("ai_brief") or {}).get("severity"), "high")
+        self.assertTrue((payload.get("ai_brief") or {}).get("focus_items"))
+        self.assertIn(
+            "ai_brief",
+            ((payload.get("frontend_contract") or {}).get("exports") or {}),
+        )
         self.assertTrue(any(alert.get("reason_code") == "tickets_overdue" for alert in payload.get("alerts") or []))
 
     def test_operations_heatmap_returns_points_cells_and_layers(self):
@@ -445,6 +452,29 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertTrue(payload.get("items"))
         self.assertTrue(any(item.get("reason_code") == "tickets_overdue" for item in payload.get("items") or []))
         self.assertEqual((payload.get("frontend_contract") or {}).get("render_as"), "action_center")
+
+    def test_operations_ai_brief_returns_priority_contract_and_model_policy(self):
+        response = self.client.get(
+            "/api/v2/analytics/operations/ai-brief",
+            headers={**self._auth(), "X-Request-Id": "ops-ai-brief-1"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload.get("contract_version"), "operations.ai_brief.v1")
+        self.assertEqual(payload.get("request_id"), "ops-ai-brief-1")
+        self.assertEqual(response.headers.get("X-Request-Id"), "ops-ai-brief-1")
+        self.assertEqual(payload.get("severity"), "high")
+        self.assertEqual(payload.get("source_contract"), "operations.dashboard.v1")
+        self.assertEqual((payload.get("tenant") or {}).get("slug"), "junin")
+        self.assertTrue(payload.get("focus_items"))
+        self.assertTrue(payload.get("top_action"))
+        self.assertEqual((payload.get("model_policy") or {}).get("contract_version"), "llm.task_policy.v1")
+        self.assertEqual((payload.get("model_policy") or {}).get("task_type"), "analytics")
+        self.assertEqual((payload.get("frontend_contract") or {}).get("render_as"), "operations_ai_brief")
+        signal_keys = (payload.get("signals") or {}).keys()
+        self.assertIn("hf_configured", signal_keys)
+        self.assertIn("hf_mode", signal_keys)
 
     def test_operations_freshness_returns_source_diagnostics(self):
         response = self.client.get(

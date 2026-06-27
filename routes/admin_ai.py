@@ -14,8 +14,8 @@ from models import CatalogoItem, MunicipioTicket, PymePedido, PymeTicket, Tenant
 from services.analytics import get_summary
 from services.analytics.filters import parse_filters
 from services.analytics.rbac import require_access
+from services.ai_backoffice_summaries import generate_backoffice_analytics_summary, generate_backoffice_ticket_summary
 from services.ai_provider_status import build_ai_provider_status
-from services.openai_bridge import generate_analytics_report, generate_ticket_summary
 from services.vision_fallback_service import analyze_image_text, analyze_text_structured
 
 admin_ai_bp = Blueprint("admin_ai_bp", __name__, url_prefix="/admin")
@@ -195,7 +195,7 @@ def executive_summary():
             "tone": "Data-Insufficient",
         }
     else:
-        report = generate_analytics_report(metrics, tenant_type=filters.scope)
+        report = generate_backoffice_analytics_summary(metrics, tenant_type=filters.scope)
 
     return jsonify({
         "tenant_id": tenant_id,
@@ -256,7 +256,7 @@ def ticket_ai_summary(ticket_id: int):
         ],
     }
 
-    summary = generate_ticket_summary(ticket_payload)
+    summary = generate_backoffice_ticket_summary(ticket_payload)
     return jsonify({"ticket_id": ticket.id, "scope": scope, "ai": summary})
 
 

@@ -26,8 +26,13 @@ def _ensure_user(tenant_id: int, scope: str) -> User:
 
 def test_executive_summary_tenant_scoped(client, monkeypatch):
     monkeypatch.setattr(
-        "routes.admin_ai.generate_analytics_report",
-        lambda stats, tenant_type="pyme": {"summary": f"ok-{tenant_type}", "opportunities": [], "threats": []},
+        "routes.admin_ai.generate_backoffice_analytics_summary",
+        lambda stats, tenant_type="pyme": {
+            "summary": f"ok-{tenant_type}",
+            "opportunities": [],
+            "threats": [],
+            "meta": {"task_type": "analytics", "secret_values_exposed": False},
+        },
     )
 
     tenant_id = 41
@@ -51,6 +56,8 @@ def test_executive_summary_tenant_scoped(client, monkeypatch):
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["ai"]["summary"] == "ok-municipio"
+    assert payload["ai"]["meta"]["task_type"] == "analytics"
+    assert payload["ai"]["meta"]["secret_values_exposed"] is False
 
     forbidden = client.post(
         "/admin/ai/executive-summary",
@@ -62,8 +69,13 @@ def test_executive_summary_tenant_scoped(client, monkeypatch):
 
 def test_ticket_ai_summary_tenant_scoped(client, monkeypatch):
     monkeypatch.setattr(
-        "routes.admin_ai.generate_ticket_summary",
-        lambda ticket: {"summary": f"ticket-{ticket['id']}", "next_steps": [], "confidence": "high"},
+        "routes.admin_ai.generate_backoffice_ticket_summary",
+        lambda ticket: {
+            "summary": f"ticket-{ticket['id']}",
+            "next_steps": [],
+            "confidence": "high",
+            "meta": {"task_type": "ticket_summary", "secret_values_exposed": False},
+        },
     )
 
     tenant_id = 42
@@ -99,6 +111,8 @@ def test_ticket_ai_summary_tenant_scoped(client, monkeypatch):
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["ai"]["summary"] == f"ticket-{ticket.id}"
+    assert payload["ai"]["meta"]["task_type"] == "ticket_summary"
+    assert payload["ai"]["meta"]["secret_values_exposed"] is False
 
     forbidden = client.post(
         f"/admin/tickets/{ticket.id}/ai-summary",
@@ -233,7 +247,7 @@ def test_executive_summary_reports_insufficient_data_without_ai_call(client, mon
     def _boom(*args, **kwargs):
         raise AssertionError("AI should not be called for empty periods")
 
-    monkeypatch.setattr("routes.admin_ai.generate_analytics_report", _boom)
+    monkeypatch.setattr("routes.admin_ai.generate_backoffice_analytics_summary", _boom)
 
     tenant_id = 46
     _ensure_user(tenant_id, "municipio")
@@ -247,6 +261,39 @@ def test_executive_summary_reports_insufficient_data_without_ai_call(client, mon
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["ai"]["tone"] == "Data-Insufficient"
+
+
+def test_ticket_ai_summary_falls_back_without_provider(client, monkeypatch):
+    def _boom(ticket):
+        raise RuntimeError("provider down")
+
+    monkeypatch.setattr("services.ai_backoffice_summaries.llamar_llm_con_fallback", _boom)
+
+    tenant_id = 49
+    _ensure_user(tenant_id, "municipio")
+    ticket = MunicipioTicket(
+        municipio_id=tenant_id,
+        tenant_id=tenant_id,
+        pregunta="Luminaria rota en plaza",
+        categoria="alumbrado",
+        estado="nuevo",
+        nro_ticket=123,
+        fecha=datetime.utcnow() - timedelta(hours=1),
+    )
+    db.session.add(ticket)
+    db.session.commit()
+
+    response = client.post(
+        f"/admin/tickets/{ticket.id}/ai-summary",
+        json={"scope": "municipio"},
+        headers={"X-Debug-Role": "operador", "X-Debug-Tenant": str(tenant_id)},
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["ai"]["meta"]["fallback"] is True
+    assert payload["ai"]["meta"]["provider"] == "deterministic_local_fallback"
+    assert payload["ai"]["meta"]["policy"]["task_type"] == "ticket_summary"
 
 
 def test_bot_settings_get_and_put_tenant_scoped(client):
