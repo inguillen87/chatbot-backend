@@ -293,6 +293,8 @@ def sync_twilio_content_template(user: User):
                 "existing_registry": _template_registry_payload(existing),
                 "create_request": create_request,
                 "approval_request": approval_request,
+                "content_family": manifest_item.get("content_family"),
+                "action_capabilities": manifest_item.get("action_capabilities") or {},
                 "quality_gate": manifest_item.get("quality_gate") or {},
             }
         )
@@ -338,6 +340,8 @@ def sync_twilio_content_template(user: User):
     row.metadata_json = {
         "template_id": template_id,
         "twilio_type": manifest_item.get("twilio_type"),
+        "content_family": manifest_item.get("content_family"),
+        "action_capabilities": manifest_item.get("action_capabilities") or {},
         "approval_status": approval_status,
         "approval_requested": submit_for_approval,
         "sample_values": manifest_item.get("sample_values") or {},

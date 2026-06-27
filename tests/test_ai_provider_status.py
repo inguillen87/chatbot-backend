@@ -1,9 +1,11 @@
 import json
 
+from services import huggingface_inference_service as hf
 from services.ai_provider_status import build_ai_provider_status
 
 
 def test_provider_status_never_exposes_secret_values(monkeypatch):
+    hf.clear_last_huggingface_failure()
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test-secret")
     monkeypatch.setenv("GEMINI_API_KEY", "gemini-secret")
     monkeypatch.setenv("HUGGINGFACE_API_TOKEN", "hf_test_secret")
@@ -31,6 +33,7 @@ def test_provider_status_never_exposes_secret_values(monkeypatch):
 
 
 def test_provider_status_warns_when_enabled_without_token(monkeypatch):
+    hf.clear_last_huggingface_failure()
     monkeypatch.delenv("HUGGINGFACE_API_TOKEN", raising=False)
     monkeypatch.delenv("HF_TOKEN", raising=False)
     monkeypatch.setenv("HUGGINGFACE_ENABLED", "true")
@@ -38,6 +41,32 @@ def test_provider_status_warns_when_enabled_without_token(monkeypatch):
     payload = build_ai_provider_status()
 
     assert "huggingface_enabled_but_missing_token" in payload["readiness"]["warnings"]
+
+
+def test_provider_status_reports_huggingface_quota_degradation(monkeypatch):
+    hf.clear_last_huggingface_failure()
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-secret")
+    monkeypatch.setenv("LLM_PROVIDER_ORDER", "openai")
+    monkeypatch.setenv("HUGGINGFACE_API_TOKEN", "hf_status_secret")
+    monkeypatch.setenv("HUGGINGFACE_ENABLED", "true")
+    monkeypatch.setenv("HUGGINGFACE_ZERO_SHOT_ENABLED", "true")
+
+    try:
+        raise RuntimeError("402 Payment Required: depleted your monthly included credits for hf_status_secret")
+    except RuntimeError as exc:
+        hf._record_failure("zero_shot", exc)
+
+    payload = build_ai_provider_status()
+    serialized = json.dumps(payload)
+
+    assert payload["providers"]["huggingface"]["runtime_status"] == "degraded"
+    assert payload["providers"]["huggingface"]["quota_depleted"] is True
+    assert payload["providers"]["huggingface"]["fallback_behavior"] == "deterministic_local_fallback"
+    assert "huggingface_quota_or_payment_required" in payload["readiness"]["warnings"]
+    assert payload["readiness"]["specialized_ai_ready"] is False
+    assert "hf_status_secret" not in serialized
+
+    hf.clear_last_huggingface_failure()
 
 
 def test_provider_status_warns_when_ollama_ordered_but_disabled(monkeypatch):

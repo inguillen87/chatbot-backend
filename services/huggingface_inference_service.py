@@ -1,8 +1,13 @@
 import logging
 import os
+from datetime import datetime, timezone
+import time
 from typing import Any, Iterable, Optional
 
 logger = logging.getLogger(__name__)
+
+_LAST_FAILURE: dict[str, Any] = {}
+_LAST_WARNING_LOGGED_AT: dict[str, float] = {}
 
 
 def _env_first(*names: str, default: str | None = None) -> str | None:
@@ -19,6 +24,102 @@ def _truthy_env(*names: str) -> bool:
 
 def _api_token() -> str | None:
     return _env_first("HUGGINGFACE_API_TOKEN", "HF_TOKEN")
+
+
+def _redact_sensitive(value: str) -> str:
+    redacted = value
+    for secret in (_api_token(), os.getenv("HUGGINGFACE_API_TOKEN"), os.getenv("HF_TOKEN")):
+        if secret and secret in redacted:
+            redacted = redacted.replace(secret, "[redacted]")
+    return redacted
+
+
+def _classify_provider_error(exc: Exception) -> dict[str, str]:
+    message = _redact_sensitive(str(exc))
+    lower_message = message.lower()
+    error_type = type(exc).__name__
+
+    if "402" in message or "payment required" in lower_message or "credits" in lower_message:
+        return {
+            "reason_code": "huggingface_quota_or_payment_required",
+            "error_type": error_type,
+            "severity": "warning",
+        }
+    if "429" in message or "rate limit" in lower_message or "too many requests" in lower_message:
+        return {
+            "reason_code": "huggingface_rate_limited",
+            "error_type": error_type,
+            "severity": "warning",
+        }
+    if "401" in message or "403" in message or "unauthorized" in lower_message or "forbidden" in lower_message:
+        return {
+            "reason_code": "huggingface_auth_failed",
+            "error_type": error_type,
+            "severity": "warning",
+        }
+    if "timeout" in lower_message or "timed out" in lower_message:
+        return {
+            "reason_code": "huggingface_timeout",
+            "error_type": error_type,
+            "severity": "warning",
+        }
+    if "500" in message or "502" in message or "503" in message or "504" in message:
+        return {
+            "reason_code": "huggingface_provider_unavailable",
+            "error_type": error_type,
+            "severity": "warning",
+        }
+    return {
+        "reason_code": "huggingface_provider_call_failed",
+        "error_type": error_type,
+        "severity": "error",
+    }
+
+
+def _record_failure(task: str, exc: Exception) -> dict[str, Any]:
+    diagnostic = _classify_provider_error(exc)
+    message = _redact_sensitive(str(exc))
+    _LAST_FAILURE.clear()
+    _LAST_FAILURE.update(
+        {
+            "task": task,
+            "reason_code": diagnostic["reason_code"],
+            "error_type": diagnostic["error_type"],
+            "severity": diagnostic["severity"],
+            "message": message[:240],
+            "recorded_at": datetime.now(timezone.utc).isoformat(),
+        }
+    )
+    return dict(_LAST_FAILURE)
+
+
+def clear_last_huggingface_failure() -> None:
+    _LAST_FAILURE.clear()
+    _LAST_WARNING_LOGGED_AT.clear()
+
+
+def get_last_huggingface_failure() -> dict[str, Any] | None:
+    return dict(_LAST_FAILURE) if _LAST_FAILURE else None
+
+
+def _log_provider_failure(operation: str, exc: Exception) -> None:
+    failure = _record_failure(operation, exc)
+    if failure.get("severity") == "warning":
+        signature = f"{operation}:{failure.get('reason_code')}:{failure.get('error_type')}"
+        now = time.monotonic()
+        cooldown_seconds = 300.0
+        last_logged_at = _LAST_WARNING_LOGGED_AT.get(signature)
+        if last_logged_at is not None and now - last_logged_at < cooldown_seconds:
+            return
+        _LAST_WARNING_LOGGED_AT[signature] = now
+        logger.warning(
+            "Hugging Face %s degraded: %s (%s)",
+            operation,
+            failure.get("reason_code"),
+            failure.get("error_type"),
+        )
+        return
+    logger.error("Hugging Face %s failed: %s", operation, exc, exc_info=True)
 
 
 def huggingface_configured() -> bool:
@@ -124,7 +225,7 @@ def embed_texts(
             vectors.append(vector)
         return vectors
     except Exception as exc:
-        logger.error("Hugging Face embeddings failed: %s", exc, exc_info=True)
+        _log_provider_failure("embeddings", exc)
         return None
 
 
@@ -154,7 +255,7 @@ def classify_zero_shot(
             reverse=True,
         )
     except Exception as exc:
-        logger.error("Hugging Face zero-shot classification failed: %s", exc, exc_info=True)
+        _log_provider_failure("zero_shot", exc)
         return None
 
 
@@ -169,7 +270,7 @@ def classify_image(image_bytes: bytes, *, model: str | None = None, top_k: int =
         result = client.image_classification(image_bytes, model=resolved_model, top_k=top_k)
         return [_as_dict(item) for item in result]
     except Exception as exc:
-        logger.error("Hugging Face image classification failed: %s", exc, exc_info=True)
+        _log_provider_failure("image_classification", exc)
         return None
 
 
@@ -190,7 +291,7 @@ def detect_objects(image_bytes: bytes, *, model: str | None = None, threshold: f
         result = client.object_detection(image_bytes, model=resolved_model, threshold=resolved_threshold)
         return [_as_dict(item) for item in result]
     except Exception as exc:
-        logger.error("Hugging Face object detection failed: %s", exc, exc_info=True)
+        _log_provider_failure("object_detection", exc)
         return None
 
 

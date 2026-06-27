@@ -54,7 +54,7 @@ def _safe_smoke_result(provider: str, ok: bool, **extra: Any) -> dict[str, Any]:
 
 def _huggingface_live_smoke() -> dict[str, Any]:
     try:
-        from services.huggingface_inference_service import classify_zero_shot
+        from services.huggingface_inference_service import classify_zero_shot, get_last_huggingface_failure
 
         os.environ.setdefault("HUGGINGFACE_ZERO_SHOT_ENABLED", "true")
         result = classify_zero_shot(
@@ -63,6 +63,15 @@ def _huggingface_live_smoke() -> dict[str, Any]:
             multi_label=False,
         )
         if not result:
+            failure = get_last_huggingface_failure()
+            if failure:
+                return _safe_smoke_result(
+                    "huggingface",
+                    False,
+                    task=failure.get("task") or "zero_shot",
+                    reason_code=failure.get("reason_code") or "provider_call_failed",
+                    error_type=failure.get("error_type"),
+                )
             return _safe_smoke_result("huggingface", False, reason_code="empty_result")
         top = result[0]
         return _safe_smoke_result(
@@ -84,6 +93,22 @@ def build_ai_provider_status(*, include_smoke: bool = False, include_live: bool 
     cohere_configured = _configured("COHERE_API_KEY")
     huggingface_configured = _configured("HUGGINGFACE_API_TOKEN", "HF_TOKEN")
     ollama_enabled = _env_truthy("OLLAMA_ENABLED") or _env_truthy("LLM_OLLAMA_ENABLED")
+    huggingface_last_failure = None
+    try:
+        from services.huggingface_inference_service import get_last_huggingface_failure
+
+        huggingface_last_failure = get_last_huggingface_failure()
+    except Exception:  # pragma: no cover - status page must not fail on optional provider import
+        huggingface_last_failure = None
+    huggingface_failure_reason = str((huggingface_last_failure or {}).get("reason_code") or "")
+    huggingface_quota_depleted = huggingface_failure_reason == "huggingface_quota_or_payment_required"
+    huggingface_runtime_status = (
+        "not_configured"
+        if not huggingface_configured
+        else "degraded"
+        if huggingface_last_failure
+        else "ready"
+    )
 
     providers = {
         "openai": {
@@ -121,6 +146,10 @@ def build_ai_provider_status(*, include_smoke: bool = False, include_live: bool 
         "huggingface": {
             "configured": huggingface_configured,
             "enabled": _env_truthy("HUGGINGFACE_ENABLED"),
+            "runtime_status": huggingface_runtime_status,
+            "quota_depleted": huggingface_quota_depleted,
+            "last_failure": huggingface_last_failure,
+            "fallback_behavior": "deterministic_local_fallback",
             "provider": _env("HUGGINGFACE_PROVIDER", "auto"),
             "zero_shot_enabled": _env_truthy("HUGGINGFACE_ZERO_SHOT_ENABLED") or _env_truthy("HF_ZERO_SHOT_ENABLED"),
             "zero_shot_model": _env("HUGGINGFACE_ZERO_SHOT_MODEL", "joeddav/xlm-roberta-large-xnli"),
@@ -151,6 +180,8 @@ def build_ai_provider_status(*, include_smoke: bool = False, include_live: bool 
         warnings.append("huggingface_enabled_but_missing_token")
     if providers["huggingface"]["embeddings_enabled"] and not huggingface_configured:
         warnings.append("huggingface_embeddings_enabled_but_missing_token")
+    if huggingface_failure_reason:
+        warnings.append(huggingface_failure_reason)
     if providers["docling"]["enabled"] and not providers["docling"]["installed"]:
         warnings.append("docling_enabled_but_package_not_installed")
 
@@ -189,7 +220,7 @@ def build_ai_provider_status(*, include_smoke: bool = False, include_live: bool 
         "llm_provider_order": _provider_order(),
         "readiness": {
             "chat_ready": chat_ready,
-            "specialized_ai_ready": huggingface_configured or bool(providers["docling"]["installed"]),
+            "specialized_ai_ready": (huggingface_configured and not huggingface_quota_depleted) or bool(providers["docling"]["installed"]),
             "status": "ready" if chat_ready and not warnings else "warning" if chat_ready else "blocked",
             "warnings": warnings,
         },

@@ -51,7 +51,7 @@ from services.twilio_tech_provider import (
     register_whatsapp_sender,
 )
 from services.v2.sla_service import is_ticket_overdue
-from services.whatsapp_experience import build_whatsapp_experience
+from services.whatsapp_experience import _template_creation_manifest_payload, build_whatsapp_experience
 from utils.auth_helpers import token_requerido
 from utils.permissions import require_role
 from utils.roles import first_specific_tenant_slug, is_super_admin_role
@@ -1383,6 +1383,227 @@ def whatsapp_tech_provider_v2(current_user, tenant_slug: str | None = None):
     if plan_error:
         return plan_error
     return _json_response(build_twilio_tech_provider_contract(tenant, current_app.config))
+
+
+def _whatsapp_smoke_execution_result(
+    *,
+    test_id: str,
+    ok: bool,
+    label: str,
+    execution_mode: str,
+    danger_level: str,
+    details: Mapping[str, Any] | None = None,
+    next_action: str | None = None,
+    status: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "contract_version": "twilio.tech_provider.smoke_execution.v1",
+        "test_id": test_id,
+        "ok": bool(ok),
+        "status": status or ("pass" if ok else "warning"),
+        "label": label,
+        "execution_mode": execution_mode,
+        "danger_level": danger_level,
+        "sends_real_message": danger_level == "real_message",
+        "details": dict(details or {}),
+        "next_action": next_action or ("continue_playbook" if ok else "review_result"),
+    }
+
+
+@v2_saas_bp.route("/whatsapp/tech-provider/smoke-test/<string:test_id>", methods=["POST"])
+@v2_saas_bp.route("/tenants/<string:tenant_slug>/whatsapp/tech-provider/smoke-test/<string:test_id>", methods=["POST"])
+@token_requerido
+@require_role("admin", "super_admin")
+def whatsapp_tech_provider_smoke_test_v2(current_user, test_id: str, tenant_slug: str | None = None):
+    tenant, error = _resolve_tenant_or_error(current_user, tenant_slug)
+    if error:
+        return error
+    plan_error = _require_full_integration_plan(tenant, "whatsapp_sender_management")
+    if plan_error:
+        return plan_error
+
+    normalized_test = str(test_id or "").strip().lower().replace("-", "_")
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict):
+        payload = {}
+    contract = build_twilio_tech_provider_contract(tenant, current_app.config)
+    playbook_tests = {
+        str(item.get("id")): item
+        for item in (contract.get("smoke_playbook") or {}).get("tests", [])
+        if isinstance(item, Mapping) and item.get("id")
+    }
+    if normalized_test not in playbook_tests:
+        return _error_response("Smoke test no soportado", 404, "smoke_test_not_found", "refresh_playbook")
+
+    playbook_item = playbook_tests[normalized_test]
+    danger_level = str(playbook_item.get("danger_level") or "safe")
+    if danger_level == "real_message" and not payload.get("confirm_real_message"):
+        return _json_response(
+            _whatsapp_smoke_execution_result(
+                test_id=normalized_test,
+                ok=False,
+                label=str(playbook_item.get("label") or normalized_test),
+                execution_mode=str(playbook_item.get("execution_mode") or "manual_confirmation_required"),
+                danger_level=danger_level,
+                status="blocked",
+                next_action="confirm_real_message_required",
+                details={
+                    "reason_code": "confirmation_required",
+                    "message": "Esta prueba enviaria un mensaje real y requiere confirmacion explicita.",
+                },
+            ),
+            409,
+        )
+
+    if normalized_test == "provider_status":
+        provider_status = build_whatsapp_provider_status(tenant, current_app.config)
+        checks = provider_status.get("checks") if isinstance(provider_status.get("checks"), list) else []
+        failed = [item for item in checks if isinstance(item, Mapping) and not item.get("ok")]
+        return _json_response(
+            _whatsapp_smoke_execution_result(
+                test_id=normalized_test,
+                ok=not failed,
+                label="Estado del proveedor",
+                execution_mode="read_only",
+                danger_level="safe",
+                details={
+                    "checks_total": len(checks),
+                    "failed": failed,
+                    "next_action": provider_status.get("next_action"),
+                    "provider_contract": provider_status.get("contract_version"),
+                },
+                next_action=provider_status.get("next_action") or "continue_playbook",
+                status="pass" if not failed else "warning",
+            )
+        )
+
+    if normalized_test == "whatsapp_experience":
+        experience = build_whatsapp_experience(tenant, app_config=current_app.config)
+        ok = (
+            experience.get("contract_version") == "whatsapp.experience.v1"
+            and "conversation_intelligence" in experience
+            and "tracking" in experience
+        )
+        return _json_response(
+            _whatsapp_smoke_execution_result(
+                test_id=normalized_test,
+                ok=ok,
+                label="Experiencia WhatsApp completa",
+                execution_mode="read_only",
+                danger_level="safe",
+                details={
+                    "contract_version": experience.get("contract_version"),
+                    "channel": experience.get("channel"),
+                    "has_tracking": "tracking" in experience,
+                    "has_conversation_intelligence": "conversation_intelligence" in experience,
+                },
+                next_action="review_operations_hub" if ok else "fix_whatsapp_experience_contract",
+            )
+        )
+
+    if normalized_test == "template_registry":
+        experience = build_whatsapp_experience(tenant, app_config=current_app.config)
+        required_templates = (experience.get("templates") or {}).get("required") or []
+        vertical_templates = (experience.get("templates") or {}).get("vertical") or {}
+        manifest = _template_creation_manifest_payload(
+            tenant=tenant,
+            required_templates=required_templates if isinstance(required_templates, list) else [],
+            vertical_templates=vertical_templates if isinstance(vertical_templates, Mapping) else {},
+        )
+        blocking = [
+            item
+            for item in manifest.get("items", [])
+            if isinstance(item, Mapping) and (item.get("readiness") or {}).get("severity") == "blocking"
+        ]
+        return _json_response(
+            _whatsapp_smoke_execution_result(
+                test_id=normalized_test,
+                ok=not blocking,
+                label="Plantillas y webviews",
+                execution_mode="dry_run_first",
+                danger_level="safe_when_dry_run",
+                details={
+                    "manifest_contract": manifest.get("contract_version"),
+                    "templates_total": manifest.get("templates_total"),
+                    "actionable_total": manifest.get("actionable_total"),
+                    "webview_ready_total": manifest.get("webview_ready_total"),
+                    "by_content_family": manifest.get("by_content_family"),
+                    "blocking": blocking[:5],
+                },
+                next_action="submit_or_sync_templates" if not blocking else "complete_template_copy_and_samples",
+                status="pass" if not blocking else "warning",
+            )
+        )
+
+    if normalized_test == "sandbox_message":
+        sandbox_number = _twilio_sandbox_number()
+        join_phrase = _twilio_sandbox_join_phrase(payload)
+        wa_number = "".join(ch for ch in sandbox_number if ch.isdigit())
+        message = str(payload.get("message") or "Hola, quiero probar el asistente").strip()
+        return _json_response(
+            _whatsapp_smoke_execution_result(
+                test_id=normalized_test,
+                ok=bool(sandbox_number and join_phrase),
+                label="Mensaje sandbox",
+                execution_mode="copy_or_deeplink",
+                danger_level="safe",
+                details={
+                    "sends_real_message": False,
+                    "sandbox_number": f"whatsapp:{sandbox_number}",
+                    "join_phrase": join_phrase,
+                    "wa_deeplink": f"https://wa.me/{wa_number}?text={quote_plus(join_phrase)}",
+                    "copy_text": f"{join_phrase}\n\n{message}",
+                },
+                next_action="open_whatsapp_or_copy_instructions",
+            )
+        )
+
+    if normalized_test == "production_channel":
+        result = poll_whatsapp_sender_status(tenant, current_app.config)
+        merged_state = merge_twilio_state(tenant, result.get("state_patch") or {})
+        sync_twilio_provider_records(
+            tenant,
+            merged_state,
+            app_config=current_app.config,
+            actor_user=current_user,
+            request_id=_request_id(),
+            event_type="twilio_sender_status_smoke",
+        )
+        flag_modified(tenant, "configuracion")
+        db.session.commit()
+        sender_status = str(merged_state.get("sender_status") or "").upper()
+        ok = sender_status in {"ONLINE", "APPROVED", "CONNECTED", "ACTIVE"}
+        return _json_response(
+            _whatsapp_smoke_execution_result(
+                test_id=normalized_test,
+                ok=ok,
+                label="Canal productivo",
+                execution_mode="status_poll",
+                danger_level="safe",
+                details={
+                    "provider_ok": result.get("ok"),
+                    "sender_status": merged_state.get("sender_status"),
+                    "sender_sid": merged_state.get("sender_sid"),
+                    "sender_id": merged_state.get("sender_id"),
+                },
+                next_action="send_whatsapp_smoke_test" if ok else "wait_for_meta_approval_or_poll_again",
+                status="pass" if ok else "warning",
+            )
+        )
+
+    return _json_response(
+        _whatsapp_smoke_execution_result(
+            test_id=normalized_test,
+            ok=False,
+            label=str(playbook_item.get("label") or normalized_test),
+            execution_mode=str(playbook_item.get("execution_mode") or "manual"),
+            danger_level=danger_level,
+            status="blocked",
+            next_action="not_implemented_yet",
+            details={"reason_code": "execution_not_implemented"},
+        ),
+        501,
+    )
 
 
 @v2_saas_bp.route("/whatsapp/tech-provider/provision", methods=["POST"])

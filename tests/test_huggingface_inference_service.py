@@ -42,6 +42,13 @@ class FakeClient:
         return [FakeObject("traffic light", 0.77)]
 
 
+class FailingZeroShotClient:
+    def zero_shot_classification(self, text, *, candidate_labels, multi_label=False, model=None):
+        raise RuntimeError(
+            "402 Client Error: Payment Required - You have depleted your monthly included credits. hf_test_secret"
+        )
+
+
 def test_embed_texts_requires_feature_flag(monkeypatch):
     monkeypatch.delenv("HUGGINGFACE_EMBEDDINGS_ENABLED", raising=False)
 
@@ -63,6 +70,7 @@ def test_embed_texts_rejects_dimension_mismatch(monkeypatch):
 
 
 def test_zero_shot_returns_sorted_dicts(monkeypatch):
+    hf.clear_last_huggingface_failure()
     monkeypatch.setenv("HUGGINGFACE_ZERO_SHOT_ENABLED", "true")
     monkeypatch.setattr(hf, "_get_client", lambda model=None: FakeClient())
 
@@ -70,6 +78,22 @@ def test_zero_shot_returns_sorted_dicts(monkeypatch):
 
     assert result[0]["label"] == "Luminaria"
     assert result[0]["score"] == 0.9
+
+
+def test_zero_shot_records_quota_failure_without_secret(monkeypatch):
+    hf.clear_last_huggingface_failure()
+    monkeypatch.setenv("HUGGINGFACE_API_TOKEN", "hf_test_secret")
+    monkeypatch.setenv("HUGGINGFACE_ZERO_SHOT_ENABLED", "true")
+    monkeypatch.setattr(hf, "_get_client", lambda model=None: FailingZeroShotClient())
+
+    result = hf.classify_zero_shot("hay una luminaria rota", ["Arbolado", "Luminaria"])
+    failure = hf.get_last_huggingface_failure()
+
+    assert result is None
+    assert failure["reason_code"] == "huggingface_quota_or_payment_required"
+    assert failure["severity"] == "warning"
+    assert failure["task"] == "zero_shot"
+    assert "hf_test_secret" not in failure["message"]
 
 
 def test_analyze_image_for_chatboc(monkeypatch):

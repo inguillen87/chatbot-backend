@@ -158,6 +158,11 @@ def test_twilio_content_sync_dry_run_returns_creation_payload(client, app):
     assert payload["create_request"]["friendly_name"]
     assert payload["create_request"]["types"]["twilio/text"]["body"]
     assert payload["approval_request"]["category"] == "UTILITY"
+    assert payload["content_family"] == "cta_webview"
+    assert payload["action_capabilities"]["webview_ready"] is True
+    assert payload["create_request"]["types"]["twilio/call-to-action"]["actions"][0]["type"] == "URL"
+    assert payload["quality_gate"]["webview_ready"] is True
+    assert payload["quality_gate"]["requires_signed_url_for_cta"] is True
     assert payload["existing_registry"]["configured"] is False
 
 

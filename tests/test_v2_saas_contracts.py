@@ -641,6 +641,20 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertTrue(payload["automation"]["env"]["ready"])
         self.assertEqual(payload["frontend_contract"]["render_as"], "twilio_tech_provider_onboarding")
         self.assertFalse(payload["frontend_contract"]["show_twilio_brand"])
+        self.assertEqual(payload["frontend_contract"]["primary_action"], "prepare_activation")
+        self.assertIn("operator_checklist", payload["frontend_contract"]["sections"])
+        self.assertEqual(payload["setup_health"]["contract_version"], "twilio.tech_provider.setup_health.v1")
+        self.assertEqual(payload["setup_health"]["status"], "action_required")
+        self.assertEqual(payload["setup_health"]["recommended_next_action"], "prepare_activation")
+        self.assertGreater(payload["setup_health"]["activation_score"], 0)
+        self.assertTrue(any(item["id"] == "platform_env" and item["done"] for item in payload["operator_checklist"]))
+        self.assertTrue(any(item["id"] == "embedded_signup" for item in payload["operator_checklist"]))
+        self.assertIn("provider_status", payload["smoke_tests"])
+        self.assertIn("whatsapp_experience", payload["smoke_tests"])
+        self.assertEqual(payload["smoke_playbook"]["contract_version"], "twilio.tech_provider.smoke_playbook.v1")
+        self.assertTrue(payload["smoke_playbook"]["safe_by_default"])
+        self.assertTrue(any(item["id"] == "template_registry" and item["execution_mode"] == "dry_run_first" for item in payload["smoke_playbook"]["tests"]))
+        self.assertTrue(any(item["id"] == "live_whatsapp_message" and item["confirmation_required"] for item in payload["smoke_playbook"]["tests"]))
         self.assertTrue(any(step["id"] == "create_subaccount" for step in payload["api_workflow"]))
         self.assertTrue(any(step["id"] == "create_or_update_voice_twiml_app" for step in payload["api_workflow"]))
         self.assertEqual(payload["voice"]["completion_endpoint"], f"/api/v2/tenants/{self.tenant.slug}/whatsapp/tech-provider/voice-app")
@@ -668,6 +682,54 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(payload["reason_code"], "plan_full_required")
         self.assertFalse(payload["access"]["enabled"])
         self.assertEqual(payload["frontend"]["render_as"], "integration_locked")
+
+    def test_twilio_tech_provider_smoke_test_executes_safe_checks_and_blocks_real_message(self):
+        self.app.config.update(
+            TWILIO_ACCOUNT_SID="ACparent",
+            TWILIO_AUTH_TOKEN="secret",
+            TWILIO_META_APP_ID="meta-app",
+            TWILIO_META_EMBEDDED_SIGNUP_CONFIG_ID="cfg-123",
+            TWILIO_TECH_PROVIDER_LIVE_ENABLED=False,
+        )
+
+        provider_response = self.client.post(
+            f"/api/v2/tenants/{self.tenant.slug}/whatsapp/tech-provider/smoke-test/provider_status",
+            headers={**self._auth(self.owner), "X-Request-Id": "tech-provider-smoke-provider-1"},
+            json={},
+        )
+
+        self.assertEqual(provider_response.status_code, 200, provider_response.get_json())
+        provider_payload = provider_response.get_json()
+        self.assertEqual(provider_payload["contract_version"], "twilio.tech_provider.smoke_execution.v1")
+        self.assertEqual(provider_payload["test_id"], "provider_status")
+        self.assertEqual(provider_payload["execution_mode"], "read_only")
+        self.assertFalse(provider_payload["sends_real_message"])
+        self.assertIn("checks_total", provider_payload["details"])
+
+        template_response = self.client.post(
+            f"/api/v2/tenants/{self.tenant.slug}/whatsapp/tech-provider/smoke-test/template_registry",
+            headers={**self._auth(self.owner), "X-Request-Id": "tech-provider-smoke-template-1"},
+            json={"dry_run": True},
+        )
+
+        self.assertEqual(template_response.status_code, 200, template_response.get_json())
+        template_payload = template_response.get_json()
+        self.assertEqual(template_payload["test_id"], "template_registry")
+        self.assertEqual(template_payload["execution_mode"], "dry_run_first")
+        self.assertEqual(template_payload["details"]["manifest_contract"], "twilio.content.creation_manifest.v1")
+        self.assertIn("by_content_family", template_payload["details"])
+
+        real_response = self.client.post(
+            f"/api/v2/tenants/{self.tenant.slug}/whatsapp/tech-provider/smoke-test/live_whatsapp_message",
+            headers={**self._auth(self.owner), "X-Request-Id": "tech-provider-smoke-real-1"},
+            json={},
+        )
+
+        self.assertEqual(real_response.status_code, 409, real_response.get_json())
+        real_payload = real_response.get_json()
+        self.assertEqual(real_payload["status"], "blocked")
+        self.assertEqual(real_payload["next_action"], "confirm_real_message_required")
+        self.assertTrue(real_payload["sends_real_message"])
 
     def test_twilio_tech_provider_provision_dry_run_persists_plan_without_live_api(self):
         self.app.config.update(

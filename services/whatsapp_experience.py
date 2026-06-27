@@ -904,6 +904,47 @@ def _template_button_title(item: Mapping[str, Any]) -> str:
     return "Abrir"
 
 
+def _template_content_capabilities(
+    *,
+    twilio_type: str,
+    types: Mapping[str, Any],
+    variables: list[str],
+    item: Mapping[str, Any],
+) -> dict[str, Any]:
+    cta_type = types.get("twilio/call-to-action") if isinstance(types.get("twilio/call-to-action"), Mapping) else {}
+    quick_reply_type = types.get("twilio/quick-reply") if isinstance(types.get("twilio/quick-reply"), Mapping) else {}
+    list_type = types.get("twilio/list-picker") if isinstance(types.get("twilio/list-picker"), Mapping) else {}
+    cta_actions = cta_type.get("actions") if isinstance(cta_type.get("actions"), list) else []
+    quick_reply_actions = quick_reply_type.get("actions") if isinstance(quick_reply_type.get("actions"), list) else []
+    list_items = list_type.get("items") if isinstance(list_type.get("items"), list) else []
+    stage = _stage_for_blueprint_item(item)
+    variable_names = {str(value).lower() for value in variables}
+    has_url_variable = any(
+        token in variable_names
+        for token in {"url", "link", "tracking_url", "checkout_url", "payment_url", "survey_url", "catalog_url"}
+    )
+    has_url_cta = any(str(action.get("type") or "").upper() == "URL" for action in cta_actions if isinstance(action, Mapping))
+    content_family = "text"
+    if twilio_type == "twilio/call-to-action":
+        content_family = "cta_webview"
+    elif twilio_type == "twilio/quick-reply":
+        content_family = "quick_decision"
+    elif twilio_type == "twilio/list-picker":
+        content_family = "menu_picker"
+
+    return {
+        "content_family": content_family,
+        "stage": stage,
+        "meta_supported_type": twilio_type,
+        "cta_url_count": sum(1 for action in cta_actions if isinstance(action, Mapping) and str(action.get("type") or "").upper() == "URL"),
+        "quick_reply_count": len(quick_reply_actions),
+        "list_item_count": len(list_items),
+        "webview_ready": bool(has_url_cta and (has_url_variable or stage in {"payment", "checkout", "order", "catalog", "survey", "claim", "case"})),
+        "requires_signed_url": bool(has_url_cta),
+        "keeps_user_in_conversation": twilio_type in {"twilio/quick-reply", "twilio/list-picker"},
+    }
+
+
 def _template_creation_manifest_item(
     item: Mapping[str, Any],
     *,
@@ -955,13 +996,22 @@ def _template_creation_manifest_item(
                 }
             ],
         }
+    capabilities = _template_content_capabilities(
+        twilio_type=twilio_type,
+        types=types,
+        variables=variables,
+        item=item,
+    )
 
     return {
         "id": item.get("id") or item.get("name"),
         "friendly_name": friendly_name,
         "language": language,
         "category": category,
+        "meta_category": category,
         "twilio_type": twilio_type,
+        "content_family": capabilities["content_family"],
+        "action_capabilities": capabilities,
         "variables": variables,
         "sample_values": sample_values,
         "create_request": {
@@ -989,6 +1039,8 @@ def _template_creation_manifest_item(
             "sample_values_required": True,
             "meta_approval_required_outside_24h": True,
             "contains_card_or_payment_data": False,
+            "requires_signed_url_for_cta": bool(capabilities["requires_signed_url"]),
+            "webview_ready": bool(capabilities["webview_ready"]),
             "needs_copy_review": not bool(body),
         },
     }
@@ -1015,8 +1067,11 @@ def _template_creation_manifest_payload(
         if item["readiness"].get("severity") in {"blocking", "warning", "ready_with_dependency"}
     ]
     by_type: dict[str, int] = {}
+    by_content_family: dict[str, int] = {}
     for item in manifests:
         by_type[str(item.get("twilio_type") or "twilio/text")] = by_type.get(str(item.get("twilio_type") or "twilio/text"), 0) + 1
+        family = str(item.get("content_family") or "text")
+        by_content_family[family] = by_content_family.get(family, 0) + 1
 
     return {
         "contract_version": "twilio.content.creation_manifest.v1",
@@ -1025,6 +1080,12 @@ def _template_creation_manifest_payload(
         "templates_total": len(manifests),
         "actionable_total": len(actionable),
         "by_twilio_type": by_type,
+        "by_content_family": by_content_family,
+        "webview_ready_total": sum(
+            1
+            for item in manifests
+            if bool((item.get("action_capabilities") or {}).get("webview_ready"))
+        ),
         "items": actionable[:20],
         "all_template_ids": [str(item.get("id") or "") for item in manifests if item.get("id")],
         "policy": {

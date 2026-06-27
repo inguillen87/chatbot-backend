@@ -67,6 +67,311 @@ def _env_status(config: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _step_done(value: Any) -> bool:
+    normalized = _clean(value).lower()
+    return normalized in {"done", "ready", "ok", "online", "connected", "approved", "active", "completed"}
+
+
+def _checklist_item(
+    *,
+    item_id: str,
+    label: str,
+    description: str,
+    done: bool,
+    action: str,
+    status: str | None = None,
+    owner: str = "chatboc",
+    critical: bool = True,
+) -> dict[str, Any]:
+    return {
+        "id": item_id,
+        "label": label,
+        "description": description,
+        "status": status or ("done" if done else "pending"),
+        "done": bool(done),
+        "owner": owner,
+        "critical": critical,
+        "action": action,
+    }
+
+
+def _build_setup_health(
+    *,
+    tenant_slug: str | None,
+    state: Mapping[str, Any],
+    env: Mapping[str, Any],
+    base_url: str,
+) -> dict[str, Any]:
+    sender_status = _clean(state.get("sender_status")).upper()
+    sender_online = sender_status in {"ONLINE", "APPROVED", "CONNECTED", "ACTIVE"} or _step_done(sender_status)
+    has_subaccount = bool(state.get("twilio_account_sid"))
+    has_messaging_service = bool(state.get("messaging_service_sid"))
+    has_meta_account = bool(state.get("waba_id") and state.get("phone_number_id"))
+    has_sender = bool(state.get("sender_sid") or state.get("sender_id"))
+    has_voice = bool(state.get("voice_twiml_app_sid")) or _step_done(state.get("voice_status"))
+    webhooks_ready = bool(env.get("ready") and base_url)
+    templates_ready = bool(
+        state.get("template_registry_ready")
+        or state.get("templates_ready")
+        or state.get("content_templates_ready")
+    )
+
+    checklist = [
+        _checklist_item(
+            item_id="platform_env",
+            label="Credenciales de plataforma",
+            description="Variables parent de Twilio y Meta listas para operar tenants sin exponer consola.",
+            done=bool(env.get("ready")),
+            status="ready" if env.get("ready") else "missing_env",
+            action="complete_platform_config",
+        ),
+        _checklist_item(
+            item_id="subaccount",
+            label="Subcuenta Twilio del tenant",
+            description="Aisla billing, sender, webhooks y auditoria por cliente.",
+            done=has_subaccount,
+            action="prepare_activation",
+        ),
+        _checklist_item(
+            item_id="messaging_service",
+            label="Messaging Service",
+            description="Rutea WhatsApp, callbacks y metricas de entrega del tenant.",
+            done=has_messaging_service,
+            action="prepare_activation",
+        ),
+        _checklist_item(
+            item_id="embedded_signup",
+            label="Meta Embedded Signup",
+            description="El cliente autoriza WABA y numero desde Chatboc.",
+            done=has_meta_account,
+            owner="tenant_admin",
+            action="start_embedded_signup",
+        ),
+        _checklist_item(
+            item_id="sender_registration",
+            label="Sender productivo",
+            description="Numero de WhatsApp registrado y asociado a la infraestructura del tenant.",
+            done=has_sender,
+            action="register_sender",
+        ),
+        _checklist_item(
+            item_id="sender_online",
+            label="Canal online",
+            description="El sender ya puede enviar y recibir mensajes reales.",
+            done=sender_online,
+            status=sender_status.lower() if sender_status else "pending",
+            action="poll_sender_status",
+        ),
+        _checklist_item(
+            item_id="voice_accessibility",
+            label="Voz inclusiva",
+            description="Rutas de llamadas y notas de voz preparadas para asistencia accesible.",
+            done=has_voice,
+            action="prepare_voice",
+            critical=False,
+        ),
+        _checklist_item(
+            item_id="webhooks",
+            label="Webhooks y telemetria",
+            description="Inbound, status callbacks y eventos conectados al CRM.",
+            done=webhooks_ready,
+            action="verify_webhooks",
+        ),
+        _checklist_item(
+            item_id="templates_webviews",
+            label="Plantillas y webviews",
+            description="Menus, CTAs, pagos, pedidos, reclamos y seguimientos listos para WhatsApp.",
+            done=templates_ready,
+            status="ready" if templates_ready else "review_required",
+            action="review_templates_and_webviews",
+            critical=False,
+        ),
+    ]
+    completed = sum(1 for item in checklist if item["done"])
+    blockers: list[dict[str, Any]] = []
+    if not env.get("ready"):
+        blockers.append(
+            {
+                "code": "missing_platform_env",
+                "label": "Faltan variables de Twilio/Meta",
+                "detail": ", ".join(env.get("missing") or []) or "Configurar credenciales requeridas.",
+                "action": "complete_platform_config",
+            }
+        )
+    elif not has_subaccount or not has_messaging_service:
+        blockers.append(
+            {
+                "code": "tenant_infra_pending",
+                "label": "Falta preparar infraestructura del tenant",
+                "detail": "Crear subcuenta y Messaging Service desde Chatboc.",
+                "action": "prepare_activation",
+            }
+        )
+    elif not has_meta_account:
+        blockers.append(
+            {
+                "code": "meta_signup_pending",
+                "label": "Falta autorizacion Meta del cliente",
+                "detail": "Completar Embedded Signup para obtener WABA y Phone Number ID.",
+                "action": "start_embedded_signup",
+            }
+        )
+    elif not has_sender:
+        blockers.append(
+            {
+                "code": "sender_registration_pending",
+                "label": "Falta registrar sender",
+                "detail": "Registrar o asociar el numero de WhatsApp productivo.",
+                "action": "register_sender",
+            }
+        )
+    elif not sender_online:
+        blockers.append(
+            {
+                "code": "sender_not_online",
+                "label": "Sender todavia no esta online",
+                "detail": f"Estado actual: {sender_status or 'pendiente'}.",
+                "action": "poll_sender_status",
+            }
+        )
+
+    if blockers:
+        next_action = blockers[0]["action"]
+    elif not has_voice:
+        next_action = "prepare_voice"
+    elif not templates_ready:
+        next_action = "review_templates_and_webviews"
+    else:
+        next_action = "send_whatsapp_smoke_test"
+
+    if not env.get("ready"):
+        health_status = "blocked"
+    elif blockers:
+        health_status = "action_required"
+    elif completed < len(checklist):
+        health_status = "in_progress"
+    else:
+        health_status = "ready"
+
+    return {
+        "contract_version": "twilio.tech_provider.setup_health.v1",
+        "status": health_status,
+        "activation_score": round((completed / len(checklist)) * 100),
+        "completed": completed,
+        "total": len(checklist),
+        "recommended_next_action": next_action,
+        "blockers": blockers,
+        "operator_checklist": checklist,
+        "smoke_tests": {
+            "provider_status": f"/api/v2/tenants/{tenant_slug}/integrations/whatsapp/status",
+            "whatsapp_experience": f"/api/v2/tenants/{tenant_slug}/whatsapp/experience",
+            "template_registry": "/api/admin/templates/twilio-content/sync",
+            "sandbox_message": f"/api/v2/tenants/{tenant_slug}/whatsapp/sandbox-test",
+            "production_channel": f"/api/v2/tenants/{tenant_slug}/whatsapp/tech-provider/sender-status",
+        },
+    }
+
+
+def _build_smoke_playbook(
+    *,
+    tenant_slug: str | None,
+    setup_health: Mapping[str, Any],
+    env: Mapping[str, Any],
+) -> dict[str, Any]:
+    tests = [
+        {
+            "id": "provider_status",
+            "label": "Estado del proveedor",
+            "description": "Confirma credenciales, sender configurado, callbacks y readiness del canal.",
+            "method": "GET",
+            "endpoint": f"/api/v2/tenants/{tenant_slug}/integrations/whatsapp/status",
+            "execution_mode": "read_only",
+            "danger_level": "safe",
+            "can_execute": True,
+            "requires": ["platform_env"],
+            "validates": ["credenciales", "sender", "webhooks"],
+        },
+        {
+            "id": "whatsapp_experience",
+            "label": "Experiencia WhatsApp completa",
+            "description": "Verifica menus, tracking, voz, inteligencia conversacional y operaciones visibles para el tenant.",
+            "method": "GET",
+            "endpoint": f"/api/v2/tenants/{tenant_slug}/whatsapp/experience",
+            "execution_mode": "read_only",
+            "danger_level": "safe",
+            "can_execute": True,
+            "requires": ["platform_env"],
+            "validates": ["menus", "tracking", "voz", "crm"],
+        },
+        {
+            "id": "template_registry",
+            "label": "Plantillas y webviews",
+            "description": "Revisa CTAs, quick replies, menus y webviews firmados antes de usarlos fuera de la ventana de 24 horas.",
+            "method": "POST",
+            "endpoint": "/api/admin/templates/twilio-content/sync",
+            "execution_mode": "dry_run_first",
+            "danger_level": "safe_when_dry_run",
+            "can_execute": bool(env.get("ready")),
+            "requires": ["platform_env", "templates_webviews"],
+            "validates": ["meta_category", "cta_webview", "quick_reply", "approval_ready"],
+            "payload_hint": {"dry_run": True, "tenant_slug": tenant_slug},
+        },
+        {
+            "id": "sandbox_message",
+            "label": "Mensaje sandbox",
+            "description": "Genera deeplink y texto copiable para probar el menu sin enviar un mensaje real desde el servidor.",
+            "method": "POST",
+            "endpoint": f"/api/v2/tenants/{tenant_slug}/whatsapp/sandbox-test",
+            "execution_mode": "copy_or_deeplink",
+            "danger_level": "safe",
+            "can_execute": True,
+            "requires": ["platform_env"],
+            "validates": ["menu_inicial", "copy", "deeplink"],
+            "payload_hint": {"message": "Hola, quiero probar el asistente"},
+        },
+        {
+            "id": "production_channel",
+            "label": "Canal productivo",
+            "description": "Actualiza estado del sender productivo y confirma si esta online antes de pruebas con usuarios reales.",
+            "method": "POST",
+            "endpoint": f"/api/v2/tenants/{tenant_slug}/whatsapp/tech-provider/sender-status",
+            "execution_mode": "status_poll",
+            "danger_level": "safe",
+            "can_execute": any(
+                item.get("id") == "sender_registration" and item.get("done")
+                for item in setup_health.get("operator_checklist") or []
+            ),
+            "requires": ["sender_registration"],
+            "validates": ["sender_online", "meta_approval"],
+        },
+        {
+            "id": "live_whatsapp_message",
+            "label": "Prueba real WhatsApp",
+            "description": "Reservada para cuando el sender este online; debe pedir confirmacion explicita antes de enviar.",
+            "method": "POST",
+            "endpoint": f"/api/v2/tenants/{tenant_slug}/whatsapp/live-message-test",
+            "execution_mode": "manual_confirmation_required",
+            "danger_level": "real_message",
+            "can_execute": setup_health.get("status") == "ready",
+            "requires": ["sender_online", "templates_webviews"],
+            "validates": ["envio_real", "delivery_status", "inbound_reply"],
+            "confirmation_required": True,
+        },
+    ]
+    executable = [item for item in tests if item.get("can_execute")]
+    return {
+        "contract_version": "twilio.tech_provider.smoke_playbook.v1",
+        "safe_by_default": True,
+        "recommended_order": [item["id"] for item in tests],
+        "summary": {
+            "total": len(tests),
+            "executable_now": len(executable),
+            "real_message_tests": len([item for item in tests if item.get("danger_level") == "real_message"]),
+        },
+        "tests": tests,
+    }
+
+
 def _twilio_basic_auth(account_sid: str, auth_token: str) -> str:
     raw = f"{account_sid}:{auth_token}".encode("utf-8")
     return "Basic " + base64.b64encode(raw).decode("ascii")
@@ -257,6 +562,8 @@ def build_twilio_tech_provider_contract(tenant, app_config: Mapping[str, Any]) -
     meta_app_id = _clean(app_config.get("TWILIO_META_APP_ID")) or None
     embedded_signup_config_id = _clean(app_config.get("TWILIO_META_EMBEDDED_SIGNUP_CONFIG_ID")) or None
     status = state.get("status") or ("ready_for_embedded_signup" if env["ready"] else "needs_platform_config")
+    setup_health = _build_setup_health(tenant_slug=tenant_slug, state=state, env=env, base_url=base_url)
+    smoke_playbook = _build_smoke_playbook(tenant_slug=tenant_slug, setup_health=setup_health, env=env)
     signup_query = urlencode(
         {
             "tenant": tenant_slug or "",
@@ -297,6 +604,14 @@ def build_twilio_tech_provider_contract(tenant, app_config: Mapping[str, Any]) -
             "last_step": state.get("last_step"),
             "updated_at": state.get("updated_at"),
         },
+        "setup_health": {
+            key: value
+            for key, value in setup_health.items()
+            if key not in {"operator_checklist", "smoke_tests"}
+        },
+        "operator_checklist": setup_health["operator_checklist"],
+        "smoke_tests": setup_health["smoke_tests"],
+        "smoke_playbook": smoke_playbook,
         "tenant_onboarding": cfg.get("whatsapp_onboarding") if isinstance(cfg.get("whatsapp_onboarding"), dict) else None,
         "webhooks": {
             "inbound_message_url": f"{base_url}/webhook/whatsapp",
@@ -389,9 +704,18 @@ def build_twilio_tech_provider_contract(tenant, app_config: Mapping[str, Any]) -
             "render_as": "twilio_tech_provider_onboarding",
             "show_twilio_brand": False,
             "show_manual_console_steps": False,
-            "primary_action": "start_embedded_signup" if env["ready"] else "complete_platform_config",
+            "primary_action": setup_health["recommended_next_action"],
             "show_phone_choice": True,
             "show_progress_steps": True,
+            "sections": [
+                "activation_route",
+                "operator_checklist",
+                "smoke_tests",
+                "smoke_playbook",
+                "templates_webviews",
+                "voice_accessibility",
+                "webhook_telemetry",
+            ],
         },
         "limitations": [
             "Meta Embedded Signup sigue siendo accion del cliente dentro del panel Chatboc.",
