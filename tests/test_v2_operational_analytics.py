@@ -235,6 +235,12 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertEqual((payload.get("ai_layers") or {}).get("contract_version"), "huggingface.map_ai_layers.v1")
         self.assertEqual((payload.get("map_experience") or {}).get("preferred_visualization"), "interactive_globe_heatmap")
         self.assertIn("deckgl", ((payload.get("ai_layers") or {}).get("frontend_contract") or {}).get("map_engines") or [])
+        self.assertEqual((payload.get("quality") or {}).get("contract_version"), "operations.heatmap_quality.v1")
+        self.assertTrue((payload.get("quality") or {}).get("can_render_heatmap"))
+        self.assertIn((payload.get("quality") or {}).get("state"), {"ready", "partial"})
+        self.assertEqual((payload.get("realtime") or {}).get("contract_version"), "operations.heatmap_realtime.v1")
+        self.assertIn("whatsapp.message.created", (payload.get("realtime") or {}).get("socket_events") or [])
+        self.assertEqual((payload.get("legend") or {}).get("mode"), "category_source_quality")
         self.assertEqual((payload.get("demographics") or {}).get("source"), "real_metadata_only")
         self.assertGreaterEqual((payload.get("summary") or {}).get("points_with_gender"), 3)
         self.assertGreaterEqual((payload.get("summary") or {}).get("points_with_age"), 3)
@@ -368,6 +374,9 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertEqual(payload.get("hotspots"), [])
         self.assertFalse((payload.get("render_contract") or {}).get("can_render_heatmap"))
         self.assertEqual((payload.get("render_contract") or {}).get("state"), "empty")
+        self.assertEqual((payload.get("quality") or {}).get("state"), "blocked")
+        self.assertEqual((payload.get("quality") or {}).get("reason_code"), "missing_coordinates")
+        self.assertEqual((payload.get("quality") or {}).get("visible_points"), 0)
 
     def test_operations_heatmap_surfaces_addresses_pending_geocode(self):
         db.session.add(
@@ -405,6 +414,8 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertEqual(candidate.get("address"), "Av. San Martin 123, Junin")
         self.assertEqual(candidate.get("reason_code"), "address_without_coordinates")
         self.assertTrue((payload.get("render_contract") or {}).get("address_geocoding"))
+        self.assertEqual((payload.get("quality") or {}).get("state"), "pending_geocode")
+        self.assertEqual((payload.get("quality") or {}).get("pending_geocode"), 1)
 
     def test_operations_executive_summary_returns_ai_contract(self):
         with patch(

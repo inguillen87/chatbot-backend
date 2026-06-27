@@ -6,6 +6,7 @@ from decimal import Decimal
 from typing import Any
 
 from models import MarketOrder, MunicipioTicket, OrderEvent, PedidoConversacional, PymePedido, TenantProfile, TicketComentario
+from services.live_chat_schedule import build_live_chat_status
 
 
 TRACKING_EXPERIENCE_CONTRACT_VERSION = "tracking.experience.v1"
@@ -169,6 +170,77 @@ def _comment_timeline(comments_rel: Any) -> list[dict[str, Any]]:
     return items
 
 
+def _tenant_live_chat_status(tenant: TenantProfile | None) -> dict[str, Any]:
+    cfg = tenant.configuracion if tenant and isinstance(tenant.configuracion, dict) else {}
+    schedule_cfg = cfg.get("live_chat_schedule") if isinstance(cfg.get("live_chat_schedule"), dict) else None
+    status = build_live_chat_status(schedule_override=schedule_cfg)
+    status["contract_version"] = "live_chat.schedule.v1"
+    status["source"] = "tenant_config" if schedule_cfg else "global_config"
+    status.setdefault("fallback_mode", "http_chat")
+    return status
+
+
+def _claim_support_contract(
+    ticket: MunicipioTicket,
+    tenant: TenantProfile | None,
+    *,
+    code: str,
+    conversation: list[dict[str, Any]],
+) -> dict[str, Any]:
+    live_chat = _tenant_live_chat_status(tenant)
+    available = bool(live_chat.get("enabled") and live_chat.get("available"))
+    mode = "live" if available else "offline"
+    ticket_id = getattr(ticket, "id", None)
+    public_endpoint = f"/tickets/chat/{ticket_id}/responder_ciudadano" if ticket_id else None
+    timeline_endpoint = f"/tickets/municipio/{ticket_id}/timeline" if ticket_id else None
+    municipio_id = getattr(ticket, "municipio_id", None)
+    return {
+        "contract_version": "tracking.support.v1",
+        "enabled": True,
+        "mode": mode,
+        "live_chat": live_chat,
+        "availability": {
+            "state": "online" if available else "offline_accepting_messages",
+            "label": "Atencion en vivo disponible" if available else "Mesa de ayuda offline",
+            "description": (
+                "Un agente puede ver este mensaje en tiempo real."
+                if available
+                else "Tu mensaje queda asociado al reclamo para que el equipo lo responda en horario administrativo."
+            ),
+        },
+        "ticket": {
+            "id": ticket_id,
+            "type": "municipio",
+            "code": code,
+            "requires_pin": True,
+            "pin_transport": "query_param",
+        },
+        "conversation": {
+            "id": f"municipio-ticket-{ticket_id}" if ticket_id else None,
+            "messages": conversation,
+            "message_count": len(conversation),
+            "public_messages_visible": True,
+            "admin_surface": "tenant_claims_inbox",
+        },
+        "endpoints": {
+            "send_message": public_endpoint,
+            "timeline": timeline_endpoint,
+        },
+        "socket": {
+            "event": "ticket.comment.created",
+            "room": f"municipio_{municipio_id}" if municipio_id else None,
+            "requires_auth": True,
+        },
+        "ui": {
+            "render_as": "ticket_bound_helpdesk",
+            "primary_cta": "Enviar mensaje al reclamo",
+            "live_label": "Chat en vivo",
+            "offline_label": "Dejar mensaje",
+            "empty_state": "Todavia no hay mensajes publicos en este reclamo.",
+        },
+    }
+
+
 def _legacy_order_items(details: Any) -> list[dict[str, Any]]:
     try:
         parsed = json.loads(details or "[]")
@@ -319,7 +391,8 @@ def build_claim_tracking_experience(ticket: MunicipioTicket, tenant: TenantProfi
             "created_at": _iso(getattr(ticket, "ultima_actividad", None) or getattr(ticket, "fecha", None)),
         },
     ]
-    timeline.extend(_comment_timeline(getattr(ticket, "comentarios", None)))
+    conversation = _comment_timeline(getattr(ticket, "comentarios", None))
+    timeline.extend(conversation)
 
     code = str(getattr(ticket, "nro_ticket", "") or "")
     display_code = code if code.upper().startswith(("M-", "S-")) else f"M-{code}"
@@ -340,14 +413,16 @@ def build_claim_tracking_experience(ticket: MunicipioTicket, tenant: TenantProfi
         "location": location,
         "map": _tracking_map(location),
         "timeline": [item for item in timeline if item.get("created_at") or item.get("message") or item.get("status")],
+        "support": _claim_support_contract(ticket, tenant, code=display_code, conversation=conversation),
         "actions": [
-            {"id": "send_message", "label": "Enviar mensaje", "endpoint": "/tracking/api/send-claim-message"},
+            {"id": "send_message", "label": "Enviar mensaje", "endpoint": f"/tickets/chat/{ticket.id}/responder_ciudadano", "requires": ["pin", "comentario"]},
             {"id": "open_tracking_page", "label": "Abrir seguimiento", "url": f"/tracking/claim/{code}"},
         ],
         "frontend_contract": {
-            "render_as": "tracking_map_timeline",
+            "render_as": "tracking_map_timeline_helpdesk",
             "primary_refresh_seconds": 30,
             "empty_state_behavior": "timeline_only_when_no_coordinates",
+            "support_component": "ticket_bound_helpdesk",
         },
     }
 

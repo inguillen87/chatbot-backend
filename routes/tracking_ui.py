@@ -317,6 +317,7 @@ def send_claim_message():
     data = request.json or {}
     nro_ticket = data.get('nro_ticket')
     mensaje = data.get('mensaje')
+    pin = (data.get('pin') or request.args.get('pin') or '').strip()
 
     if not nro_ticket or not mensaje:
         return jsonify({'error': 'Faltan datos'}), 400
@@ -324,6 +325,8 @@ def send_claim_message():
     ticket = MunicipioTicket.query.filter_by(nro_ticket=nro_ticket).first()
     if not ticket:
         return jsonify({'error': 'Ticket no encontrado'}), 404
+    if getattr(ticket, 'consulta_pin', None) and str(ticket.consulta_pin) != str(pin):
+        return jsonify({'error': 'PIN invalido'}), 403
 
     # Add comment
     comment = TicketComentario(

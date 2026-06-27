@@ -606,7 +606,13 @@ class TestAccionesMunicipio(unittest.TestCase):
             '2': 'chat/12345?pin=654321',
         })
         self.assertIn('https://example.com/chat/12345?pin=654321', template.get('body', ''))
-        self.assertIn('Ver seguimiento: https://example.com/chat/12345?pin=654321', respuesta.get('message_body', ''))
+        message_body = respuesta.get('message_body', '')
+        self.assertIn('Ver seguimiento: https://example.com/chat/12345?pin=654321', message_body)
+        self.assertIn('Reclamo recibido. El seguimiento quedo abierto', message_body)
+        self.assertIn('Podes sumar una foto, audio o comentario', message_body)
+        self.assertNotIn('Deje abierto', message_body)
+        self.assertNotIn('1. Menu', message_body)
+        self.assertNotIn('2. Cancelar', message_body)
         self.assertEqual(respuesta.get('message_type'), 'text')
         self.assertEqual(respuesta.get('options_list'), [])
 

@@ -1303,6 +1303,14 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertTrue(payload["template_blueprint"]["policy"]["requires_meta_approval_outside_24h"])
         required_template_ids = {item["id"] for item in payload["template_blueprint"]["required_templates"]}
         self.assertIn("order_checkout", required_template_ids)
+        order_checkout_template = next(
+            item for item in payload["template_blueprint"]["required_templates"] if item["id"] == "order_checkout"
+        )
+        self.assertEqual(order_checkout_template["status"]["source"], "local_twilio_manifest")
+        self.assertEqual(order_checkout_template["status"]["resolved_name"], "chatboc_order_checkout_v1")
+        self.assertTrue(order_checkout_template["status"]["approved"])
+        self.assertEqual(order_checkout_template["readiness"]["state"], "approved_requires_webview")
+        self.assertEqual(order_checkout_template["readiness"]["next_action"], "verify_signed_webview_and_server_webhook")
         welcome_template = next(
             item for item in payload["template_blueprint"]["required_templates"] if item["id"] == "welcome_menu"
         )
@@ -1310,6 +1318,8 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(welcome_template["status"]["resolved_name"], "chatboc_welcome_menu_v2")
         self.assertEqual(welcome_template["status"]["content_sid"], "HXwelcomev2")
         self.assertTrue(welcome_template["status"]["approved"])
+        self.assertEqual(welcome_template["execution"]["twilio_type"], "twilio/quick-reply")
+        self.assertTrue(welcome_template["execution"]["automation"]["submit_for_meta_approval"])
         self.assertEqual(payload["template_blueprint"]["endpoints"]["templates_admin"], "/api/admin/templates")
         self.assertIn("colegio", payload["template_blueprint"]["vertical_templates"])
         colegio_template_ids = {
@@ -1324,6 +1334,9 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(school_payment_template["friendly_name"], "chatboc_school_payment_due_v2")
         self.assertEqual(school_payment_template["status"]["resolved_name"], "chatboc_school_payment_due_v2")
         self.assertTrue(school_payment_template["status"]["approved"])
+        self.assertEqual(school_payment_template["execution"]["twilio_type"], "twilio/call-to-action")
+        self.assertEqual(school_payment_template["execution"]["webview"]["role"], "secure_checkout")
+        self.assertTrue(school_payment_template["execution"]["webview"]["must_confirm_by_webhook"])
         self.assertIn("government", payload["template_blueprint"]["operational_template_groups"])
         government_group = payload["template_blueprint"]["operational_template_groups"]["government"]
         gov_claim_sla = next(item for item in government_group["items"] if item["id"] == "gov_claim_sla")
@@ -1331,11 +1344,51 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(gov_claim_sla["status"]["resolved_name"], "gobiernos_reclamo_sla")
         self.assertEqual(gov_claim_sla["status"]["content_sid"], "HXgovsla")
         self.assertTrue(gov_claim_sla["status"]["approved"])
+        self.assertEqual(gov_claim_sla["execution"]["twilio_type"], "twilio/quick-reply")
+        self.assertTrue(gov_claim_sla["execution"]["meta_surface"]["whatsapp_flows_candidate"])
+        gov_survey_template = next(
+            item
+            for item in payload["template_blueprint"]["vertical_templates"]["gobierno"]
+            if item["id"] == "gov_survey_invite"
+        )
+        self.assertEqual(gov_survey_template["status"]["resolved_name"], "chatboc_gov_survey_invite_v2")
+        self.assertTrue(gov_survey_template["status"]["approved"])
+        self.assertEqual(gov_survey_template["readiness"]["state"], "approved_requires_webview")
         self.assertGreaterEqual(payload["template_blueprint"]["registry_summary"]["operational_catalog_total"], 40)
         self.assertGreater(payload["template_blueprint"]["registry_summary"]["operational_webviews"], 0)
+        self.assertGreaterEqual(len(payload["template_blueprint"]["next_actions"]), 1)
+        self.assertIn(
+            payload["template_blueprint"]["next_actions"][0]["severity"],
+            {"blocking", "warning", "ready_with_dependency"},
+        )
+        self.assertIn("whatsapp_flows", payload["template_blueprint"]["meta_business_strategy"])
+        self.assertIn("signed_webviews", payload["template_blueprint"]["meta_business_strategy"])
         self.assertEqual(payload["webview_blueprint"]["checkout"]["confirmation_source"], "server_to_server_webhook")
         self.assertFalse(payload["webview_blueprint"]["checkout"]["card_data_in_chat"])
+        webview_flows = {item["id"]: item for item in payload["webview_blueprint"]["flows"]}
+        self.assertIn("claim_tracking_helpdesk", webview_flows)
+        self.assertIn("order_checkout", webview_flows)
+        self.assertIn("survey_vote", webview_flows)
+        self.assertEqual(
+            webview_flows["claim_tracking_helpdesk"]["url_template"],
+            "/api/public/tracking/experience?kind=claim&code={code}&pin={pin}",
+        )
+        self.assertIn("public_comment_created", webview_flows["claim_tracking_helpdesk"]["server_confirmation"])
+        self.assertIn("order_checkout", webview_flows["order_checkout"]["template_ids"])
+        self.assertEqual(payload["webview_blueprint"]["summary"]["flows_total"], 4)
         self.assertTrue(payload["webview_blueprint"]["security"]["requires_full_plan"])
+        self.assertEqual(payload["qa_playbook"]["contract_version"], "whatsapp.qa_playbook.v1")
+        self.assertEqual(payload["qa_playbook"]["local_command"], "python scripts/qa_whatsapp_flows.py")
+        self.assertGreaterEqual(payload["qa_playbook"]["scenario_count"], 5)
+        qa_scenarios = {item["id"]: item for item in payload["qa_playbook"]["scenarios"]}
+        self.assertIn("gov_claim_text_to_tracking", qa_scenarios)
+        self.assertIn("pyme_catalog_order_checkout", qa_scenarios)
+        self.assertIn("survey_vote_realtime", qa_scenarios)
+        claim_qa = qa_scenarios["gov_claim_text_to_tracking"]
+        self.assertEqual(claim_qa["webview_state"]["id"], "claim_tracking_helpdesk")
+        self.assertIn("junin_texto_reclamo", claim_qa["script_cases"])
+        self.assertIn("gov_claim_created", claim_qa["templates"])
+        self.assertIn(claim_qa["status"], {"ready", "blocked_templates", "blocked_webview", "needs_template_review"})
         self.assertEqual(payload["message_ux_policy"]["interactive_limits"]["reply_buttons_max"], 3)
         self.assertEqual(payload["admin_panel"]["inbox"], "/api/v2/inbox/omnichannel")
         self.assertTrue(payload["education"]["enabled"])
@@ -1343,6 +1396,7 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertIn("commerce_checkout", payload["frontend_contract"]["recommended_views"])
         self.assertIn("template_blueprint", payload["frontend_contract"]["recommended_views"])
         self.assertIn("webview_checkout", payload["frontend_contract"]["recommended_views"])
+        self.assertIn("qa_playbook", payload["frontend_contract"]["recommended_views"])
         self.assertIn("huggingface_ai", payload["frontend_contract"]["recommended_views"])
 
         alias_response = self.client.get(

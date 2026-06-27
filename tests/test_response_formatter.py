@@ -483,6 +483,33 @@ class TestResponseFormatter(unittest.TestCase):
         }
         self.assertEqual(formatted_response, expected_payload)
 
+    def test_whatsapp_text_navigation_does_not_duplicate_cancel(self):
+        formatted_response = build_interactive_response(
+            options=[
+                {"texto": "✅ Confirmar", "action_id": "reclamo_confirmar_si"},
+                {"texto": "✏️ Editar datos", "action_id": "reclamo_confirmar_no"},
+                {"texto": "❌ Cancelar", "action_id": "reclamo_cancelar"},
+            ],
+            body_text="Confirmá los datos",
+            channel="whatsapp",
+            message_type="interactive_buttons",
+            original_bot_response={"_force_whatsapp_text": True},
+        )
+
+        body = formatted_response["text"]["body"]
+        self.assertIn("*3*. ❌ Cancelar", body)
+        self.assertIn("*4*. Menú", body)
+        self.assertNotIn("*5*. Cancelar", body)
+        self.assertEqual(
+            formatted_response["contexto_actualizado"]["last_options_sent"],
+            [
+                {"texto": "✅ Confirmar", "action_id": "reclamo_confirmar_si"},
+                {"texto": "✏️ Editar datos", "action_id": "reclamo_confirmar_no"},
+                {"texto": "❌ Cancelar", "action_id": "reclamo_cancelar"},
+                {"texto": "Menú", "action_id": "menu_principal"},
+            ],
+        )
+
 
 if __name__ == '__main__':
     unittest.main()

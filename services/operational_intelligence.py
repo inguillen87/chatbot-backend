@@ -808,6 +808,89 @@ def _location_quality(records: list[dict[str, Any]], geocoding_candidates: list[
     }
 
 
+def _heatmap_quality_contract(
+    *,
+    points: list[dict[str, Any]],
+    records: list[dict[str, Any]],
+    geocoding_candidates: list[dict[str, Any]],
+    location_quality: dict[str, Any],
+    max_points: int,
+) -> dict[str, Any]:
+    total_ticket_records = int(location_quality.get("total_ticket_records") or 0)
+    ticket_records_with_coordinates = int(location_quality.get("ticket_records_with_coordinates") or 0)
+    pending_geocode = len(geocoding_candidates or [])
+    visible_points = len(points or [])
+    ticket_coverage_rate = round(ticket_records_with_coordinates / total_ticket_records, 4) if total_ticket_records else 0.0
+    has_survey_or_event_points = any(point.get("source") in {"survey", "analytics_event"} for point in points or [])
+
+    if visible_points:
+        if total_ticket_records and ticket_coverage_rate < 0.35 and not has_survey_or_event_points:
+            state = "partial"
+            reason_code = "low_ticket_coordinate_coverage"
+            label = "Cobertura territorial parcial"
+        else:
+            state = "ready"
+            reason_code = "ready"
+            label = "Mapa operativo confiable"
+    elif pending_geocode:
+        state = "pending_geocode"
+        reason_code = "addresses_need_geocoding"
+        label = "Direcciones pendientes de geocodificar"
+    elif records:
+        state = "blocked"
+        reason_code = "missing_coordinates"
+        label = "Sin coordenadas reales"
+    else:
+        state = "empty"
+        reason_code = "no_operational_events"
+        label = "Sin eventos para el periodo"
+
+    return {
+        "contract_version": "operations.heatmap_quality.v1",
+        "state": state,
+        "label": label,
+        "reason_code": reason_code,
+        "coverage_rate": ticket_coverage_rate,
+        "coverage_percent": round(ticket_coverage_rate * 100, 1),
+        "visible_points": visible_points,
+        "total_ticket_records": total_ticket_records,
+        "ticket_records_with_coordinates": ticket_records_with_coordinates,
+        "ticket_records_without_coordinates": max(0, total_ticket_records - ticket_records_with_coordinates),
+        "pending_geocode": pending_geocode,
+        "max_points": max_points,
+        "can_render_heatmap": bool(visible_points),
+        "empty_state_action": {
+            "label": "Capturar ubicacion en WhatsApp",
+            "description": "Pedir ubicacion o geocodificar direcciones mejora el mapa, los hotspots y la asignacion por zona.",
+            "endpoint": "/api/v2/analytics/operations/heatmap",
+            "ui_hint": "open_geocoding_queue",
+        },
+    }
+
+
+def _heatmap_realtime_contract(points: list[dict[str, Any]]) -> dict[str, Any]:
+    timestamps: list[datetime] = []
+    for point in points or []:
+        raw_ts = point.get("timestamp")
+        if not raw_ts:
+            continue
+        try:
+            parsed = datetime.fromisoformat(str(raw_ts).replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        timestamps.append(parsed)
+
+    latest = max(timestamps) if timestamps else None
+    return {
+        "contract_version": "operations.heatmap_realtime.v1",
+        "poll_seconds": 20,
+        "socket_namespace": "analytics",
+        "socket_events": ["ticket.updated", "survey.vote.created", "whatsapp.message.created", "analytics.event.created"],
+        "latest_event_at": _iso(latest) if latest else None,
+        "sources": ["tickets", "surveys", "analytics_events", "whatsapp"],
+    }
+
+
 def _ai_items_from_heatmap(
     records: list[dict[str, Any]],
     points: list[dict[str, Any]],
@@ -1071,6 +1154,14 @@ def build_operational_heatmap(
     points_with_gender = len([point for point in points if point.get("gender") not in (None, "unknown")])
     points_with_age = len([point for point in points if point.get("age_range") not in (None, "unknown")])
     location_quality = _location_quality(records, geocoding_candidates)
+    quality = _heatmap_quality_contract(
+        points=points,
+        records=records,
+        geocoding_candidates=geocoding_candidates,
+        location_quality=location_quality,
+        max_points=max_points,
+    )
+    realtime = _heatmap_realtime_contract(points)
     ai_insights = build_collection_ai_insights(
         _ai_items_from_heatmap(records, points, geocoding_candidates, filters),
         domain="operations",
@@ -1094,6 +1185,8 @@ def build_operational_heatmap(
             "demographics_source": "metadata_fields_only",
             "address_geocoding": True,
             "geocoding_state": (location_quality.get("reason_code") or "unknown"),
+            "quality_state": quality.get("state"),
+            "quality_reason_code": quality.get("reason_code"),
             "recommended_views": [
                 "heatmap",
                 "category_layers",
@@ -1119,6 +1212,10 @@ def build_operational_heatmap(
             "filtered": bool(normalized_filters),
             "pending_geocode": len(geocoding_candidates),
             "coordinate_coverage_pct": location_quality.get("coordinate_coverage_pct"),
+            "coverage_rate": quality.get("coverage_rate"),
+            "coverage_percent": quality.get("coverage_percent"),
+            "quality_state": quality.get("state"),
+            "quality_reason_code": quality.get("reason_code"),
             "ai_risk_level": ai_summary.get("risk_level") or "normal",
             "dominant_intent": ai_summary.get("dominant_intent") or "general_query",
             "requires_human_attention": bool(ai_summary.get("requires_human_attention")),
@@ -1132,6 +1229,20 @@ def build_operational_heatmap(
             "layer_groups": ["base_heatmap", "category_layers", "ai_risk_layers", "whatsapp_activity", "survey_participation"],
             "empty_state_behavior": "show_geocoding_queue_and_ai_summary",
             "supports_reduced_motion": True,
+        },
+        "quality": quality,
+        "realtime": realtime,
+        "legend": {
+            "mode": "category_source_quality",
+            "categories": [
+                {"key": item["key"], "label": item["label"], "count": item["count"]}
+                for item in category_layers[:12]
+            ],
+            "sources": _segment_items(source_counter),
+            "quality": {
+                "state": quality.get("state"),
+                "coverage_percent": quality.get("coverage_percent"),
+            },
         },
         "applied_filters": normalized_filters,
         "segments": {
@@ -1170,6 +1281,20 @@ def build_operational_heatmap(
         "points": points,
         "cells": cell_items,
         "hotspots": cell_items[:10],
+        "ui": {
+            "labels": {
+                "map_quality": "Calidad del mapa",
+                "coverage": "Cobertura GPS",
+                "visible_points": "Puntos visibles",
+                "pending_geocode": "Pendientes de geocodificar",
+                "realtime": "Actualizacion en vivo",
+                "quality_ready": "Mapa operativo confiable",
+                "quality_partial": "Cobertura territorial parcial",
+                "quality_pending_geocode": "Direcciones pendientes de geocodificar",
+                "quality_blocked": "Sin coordenadas reales",
+                "quality_empty": "Sin eventos para el periodo",
+            }
+        },
     }
 
 

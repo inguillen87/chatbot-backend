@@ -430,6 +430,84 @@ def _event_matches_segment_filters(event: dict[str, Any], filters_map: dict[str,
     return True
 
 
+def _extract_event_coordinates(event: dict[str, Any]) -> tuple[float, float] | None:
+    md = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
+    lat = event.get("lat")
+    lng = event.get("lng")
+    if lat is None:
+        lat = md.get("lat") if md.get("lat") is not None else md.get("latitude")
+    if lng is None:
+        lng = md.get("lng") if md.get("lng") is not None else md.get("lon")
+    if lng is None:
+        lng = md.get("longitude")
+    try:
+        return float(lat), float(lng)
+    except (TypeError, ValueError):
+        return None
+
+
+def _build_heatmap_quality_contract(
+    events: list[dict[str, Any]],
+    *,
+    visible_points: int,
+    source_limit: int,
+    bbox: tuple[float, float, float, float] | None = None,
+) -> dict[str, Any]:
+    total_events = len(events or [])
+    geocoded_events = sum(1 for event in events if _extract_event_coordinates(event) is not None)
+    missing_location_count = max(0, total_events - geocoded_events)
+    coverage_rate = round(geocoded_events / total_events, 4) if total_events else 0.0
+
+    if total_events == 0:
+        state = "empty"
+        reason_code = "no_events_for_filters"
+        label = "Sin eventos para los filtros"
+    elif geocoded_events == 0:
+        state = "blocked"
+        reason_code = "missing_coordinates"
+        label = "Sin coordenadas reales"
+    elif coverage_rate < 0.35:
+        state = "partial"
+        reason_code = "low_location_coverage"
+        label = "Cobertura baja"
+    else:
+        state = "ready"
+        reason_code = "ready"
+        label = "Mapa confiable"
+
+    return {
+        "state": state,
+        "label": label,
+        "reason_code": reason_code,
+        "coverage_rate": coverage_rate,
+        "coverage_percent": round(coverage_rate * 100, 1),
+        "total_events": total_events,
+        "geocoded_events": geocoded_events,
+        "visible_points": visible_points,
+        "missing_location_count": missing_location_count,
+        "source_limit": source_limit,
+        "bbox_applied": list(bbox) if bbox else None,
+        "can_render_heatmap": visible_points > 0,
+        "empty_state_action": {
+            "label": "Pedir ubicacion al vecino",
+            "reason": "Los mapas premium dependen de coordenadas reales capturadas por WhatsApp, widget o geocodificacion.",
+            "route": "/perfil?tab=tickets",
+        },
+    }
+
+
+def _build_heatmap_realtime_contract(events: list[dict[str, Any]]) -> dict[str, Any]:
+    timestamps = [event.get("ts") for event in events if isinstance(event.get("ts"), datetime)]
+    latest = max(timestamps) if timestamps else None
+    return {
+        "poll_seconds": 20,
+        "socket_namespace": "analytics",
+        "socket_events": ["analytics.event.created", "ticket.updated", "survey.vote.created"],
+        "latest_event_at": _iso_z(latest),
+        "live_sources": ["whatsapp", "widget", "admin", "survey", "voice"],
+    }
+
+
 def _build_period_comparison(events: list[dict[str, Any]]) -> dict[str, Any]:
     if not events:
         return {"enabled": False, "reason": "no_events"}
@@ -1043,11 +1121,36 @@ def admin_analytics_heatmap():
     geo_points = _geo_points_from_layers(geo_layers, limit=source_limit)
     hotspots = _build_hotspots(filtered_events)
     map_reading = _map_reading_contract(geo_layers=geo_layers, geo_points=geo_points, hotspots=hotspots)
+    quality = _build_heatmap_quality_contract(
+        filtered_events,
+        visible_points=len(geo_points),
+        source_limit=source_limit,
+        bbox=bbox,
+    )
+    realtime = _build_heatmap_realtime_contract(filtered_events)
 
     response = _json({
         "contract_version": "analytics.heatmap.v1",
         "request_id": request_id,
         "points": geo_points,
+        "summary": {
+            "points": len(geo_points),
+            "events": len(filtered_events),
+            "coverage_rate": quality["coverage_rate"],
+            "coverage_percent": quality["coverage_percent"],
+            "missing_location_count": quality["missing_location_count"],
+            "quality_state": quality["state"],
+        },
+        "render_contract": {
+            "state": "ready" if quality["can_render_heatmap"] else "empty",
+            "map_engine": "maplibre-gl-js",
+            "layers": ["heatmap", "clusters", "points"],
+            "point_format": {"lat": "number", "lng": "number", "weight": "number"},
+            "quality_state": quality["state"],
+            "reason_code": quality["reason_code"],
+        },
+        "quality": quality,
+        "realtime": realtime,
         **map_reading,
         "geo": base,
         "geo_layers": geo_layers,

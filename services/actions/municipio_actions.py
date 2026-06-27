@@ -1161,14 +1161,11 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 response_payload["message_body"] = "\n".join(
                     line
                     for line in [
-                        "Recibido. Deje abierto el seguimiento de tu reclamo.",
+                        "Reclamo recibido. El seguimiento quedo abierto y cada nueva respuesta se asociara al ticket.",
                         f"Ver seguimiento: {tracking_url}" if tracking_url else "",
-                        "Si queres sumar una foto, audio o comentario, respondeme por aca y queda asociado al ticket.",
-                        "",
-                        "1. Menu",
-                        "2. Cancelar",
+                        "Podes sumar una foto, audio o comentario respondiendo por aca.",
                     ]
-                    if line or line == ""
+                    if line
                 ).strip()
                 response_payload["options_list"] = []
                 response_payload["message_type"] = "text"

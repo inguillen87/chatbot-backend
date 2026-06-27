@@ -121,6 +121,32 @@ def _row_counts(session_id_prefix: str):
     }
 
 
+def _assert_whatsapp_copy_quality(sent_messages: list[dict]) -> None:
+    failures: list[str] = []
+    banned_fragments = [
+        "Deje abierto",
+        "MenÃ",
+        "CategorÃ",
+        "DirecciÃ",
+        "DescripciÃ",
+        "TelÃ",
+        "Â¡",
+        "â",
+        "ð",
+    ]
+    for index, message in enumerate(sent_messages, start=1):
+        body = str(message.get("body") or "")
+        for fragment in banned_fragments:
+            if fragment in body:
+                failures.append(f"mensaje {index}: contiene texto/encoding invalido {fragment!r}")
+        if "1. Menu\n2. Cancelar" in body and "*1*. Men" in body:
+            failures.append(f"mensaje {index}: menu manual duplicado con opciones formateadas")
+        if "❌ Cancelar" in body and "\n*5*. Cancelar" in body:
+            failures.append(f"mensaje {index}: cancelar de flujo duplicado con cancelar generico")
+    if failures:
+        raise RuntimeError("Calidad UX WhatsApp invalida: " + "; ".join(failures))
+
+
 def _truthy_env(name: str, default: str = "0") -> bool:
     return str(os.environ.get(name, default)).strip().lower() in {"1", "true", "yes", "si", "on"}
 
@@ -744,6 +770,7 @@ def main():
         after = _row_counts("whatsapp_")
         _safe_print("delta", {key: after[key] - before[key] for key in before})
         _safe_print("twilio_messages", json.dumps(fake_twilio.messages.sent, ensure_ascii=False, default=str)[:4000])
+        _assert_whatsapp_copy_quality(fake_twilio.messages.sent)
         if failures:
             raise RuntimeError(f"Fallaron casos WhatsApp QA: {failures}")
 

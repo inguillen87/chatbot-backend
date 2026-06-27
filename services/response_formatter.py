@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +77,22 @@ def _truncate_label(value, limit: int, fallback: str) -> str:
 def _option_id(option: dict, fallback: str | int) -> str:
     value = option.get("id") or option.get("action_id") or fallback
     return _clean_text(value, str(fallback))[:200]
+
+
+def _navigation_key(option: dict) -> str:
+    action_value = _clean_text(
+        option.get("action_id") or option.get("id") or option.get("action")
+    ).casefold()
+    text_value = _clean_text(
+        option.get("texto") or option.get("label") or option.get("title")
+    ).casefold()
+    combined = f"{action_value} {text_value}"
+
+    if "cancel" in combined or "cancelar" in combined:
+        return "cancelar"
+    if re.search(r"\bmenu\b|\bmenú\b", combined):
+        return "menu_principal"
+    return action_value or text_value
 
 
 def _url_description(option: dict) -> str:
@@ -302,14 +319,12 @@ def build_interactive_response(options: list,
                 {"texto": "Menú", "action_id": "menu_principal"},
                 {"texto": "Cancelar", "action_id": "cancelar"},
             ]
-            existing_ids = {
-                str(o.get("action_id") or o.get("id") or o.get("texto"))
-                for o in options
-            }
+            existing_ids = {_navigation_key(o) for o in options}
             for btn in nav_buttons:
-                if str(btn["action_id"]) not in existing_ids and btn["texto"] not in existing_ids:
+                nav_key = _navigation_key(btn)
+                if nav_key not in existing_ids:
                     options.append(btn)
-                    existing_ids.add(str(btn["action_id"]))
+                    existing_ids.add(nav_key)
 
             # Separate options that are simple URLs from those that require a
             # numeric reply. URL-only options should be displayed inline and

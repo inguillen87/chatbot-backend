@@ -48,14 +48,6 @@ def _build_menu_text(kind: str) -> str:
                 "3. Cancelar",
             ]
         )
-    if kind == "reclamo":
-        return "\n".join(
-            [
-                "",
-                "1. Menú",
-                "2. Cancelar",
-            ]
-        )
     return "\n".join(
         [
             "",
@@ -76,15 +68,15 @@ def _render_contact_section(contacto: Optional[Dict[str, Any]]) -> str:
         return ""
     lines = ["", "📞 *Contacto para seguimiento:*"]
     if nombre:
-        lines.append(f"* *Nombre:* {nombre}")
+        lines.append(f"• *Nombre:* {nombre}")
     if cargo:
-        lines.append(f"* *Cargo:* {cargo}")
+        lines.append(f"• *Cargo:* {cargo}")
     if telefono:
-        lines.append(f"* *Teléfono:* {telefono}")
+        lines.append(f"• *Teléfono:* {telefono}")
     if horario:
         horario_legible = _format_business_hours(horario)
         if horario_legible:
-            lines.append(f"* *Horario:* {horario_legible}")
+            lines.append(f"• *Horario:* {horario_legible}")
     return "\n".join(lines)
 
 
@@ -140,7 +132,7 @@ def render_ticket_whatsapp(
                 "",
                 "🔗 *Seguimiento:*",
                 f"• *PIN:* {consulta_pin}" if consulta_pin else "",
-                f"• *Ver mi Ticket:* {link}",
+                f"• *Ver mi ticket:* {link}",
             ]
         )
 
@@ -209,6 +201,7 @@ def build_claim_created_template_pre_message(
         "body": "\n".join(body_lines),
     }
 
+
 def render_order_whatsapp(
     *,
     nombre: str,
@@ -246,8 +239,9 @@ def render_order_whatsapp(
 
     return {
         "body_text": body_text,
-        "media_url": promo_image_url
+        "media_url": promo_image_url,
     }
+
 
 def build_ticket_receipt(
     *,

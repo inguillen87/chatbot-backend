@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
+from functools import lru_cache
+from pathlib import Path
 from typing import Any, Mapping
 
 from models import (
@@ -36,6 +39,8 @@ WHATSAPP_EXPERIENCE_CONTRACT_VERSION = "whatsapp.experience.v1"
 
 APPROVED_TEMPLATE_STATUSES = {"approved", "active", "ready", "published", "online"}
 PENDING_TEMPLATE_STATUSES = {"draft", "pending", "submitted", "in_review", "review", "twilio_review"}
+REJECTED_TEMPLATE_STATUSES = {"rejected", "failed", "disabled", "paused"}
+LOCAL_TWILIO_MANIFEST_PATH = Path(__file__).resolve().parents[1] / "scripts" / "twilio_content_templates.local.json"
 CHATBOC_TEMPLATE_FRIENDLY_NAMES = {
     "welcome_menu": "chatboc_welcome_menu_v2",
     "case_created": "chatboc_gov_claim_created_v2",
@@ -191,6 +196,124 @@ OPERATIONAL_TEMPLATE_GROUPS = {
 }
 
 
+def _template_execution_hint(
+    *,
+    template_id: str,
+    stage: str,
+    entrypoint: str,
+    actions: list[str],
+    components: list[str] | None = None,
+) -> dict[str, Any]:
+    components = components or []
+    requires_webview = entrypoint == "webview" or "cta_webview" in components
+    if requires_webview or "cta_url" in components:
+        twilio_type = "twilio/call-to-action"
+    elif len(actions) >= 4:
+        twilio_type = "twilio/list-picker"
+    elif actions:
+        twilio_type = "twilio/quick-reply"
+    else:
+        twilio_type = "twilio/text"
+
+    flow_candidate = stage in {
+        "admission",
+        "case",
+        "claim",
+        "checkout",
+        "education",
+        "payment",
+        "procedure",
+        "support",
+        "survey",
+    }
+    webview_role = None
+    if requires_webview:
+        if stage in {"payment", "checkout"}:
+            webview_role = "secure_checkout"
+        elif stage in {"catalog", "order", "quote"}:
+            webview_role = "catalog_cart_order"
+        elif stage in {"claim", "case", "procedure", "support"}:
+            webview_role = "case_tracking_or_form"
+        elif stage in {"survey", "announcement", "event"}:
+            webview_role = "survey_or_content_detail"
+        else:
+            webview_role = "signed_context_screen"
+
+    return {
+        "twilio_type": twilio_type,
+        "button_strategy": (
+            "cta_webview"
+            if requires_webview
+            else "list_picker"
+            if twilio_type == "twilio/list-picker"
+            else "quick_reply"
+            if twilio_type == "twilio/quick-reply"
+            else "text_only"
+        ),
+        "meta_surface": {
+            "whatsapp_template": True,
+            "whatsapp_flows_candidate": flow_candidate,
+            "commerce_catalog_candidate": stage in {"catalog", "order", "checkout"},
+            "payments_native_candidate": stage in {"payment", "checkout"},
+        },
+        "webview": {
+            "required": bool(requires_webview),
+            "role": webview_role,
+            "must_use_signed_context": bool(requires_webview),
+            "must_confirm_by_webhook": stage in {"payment", "checkout"},
+            "keep_sensitive_data_out_of_chat": stage in {"payment", "checkout", "admission"},
+        },
+        "automation": {
+            "create_with_twilio_content_api": True,
+            "submit_for_meta_approval": True,
+            "register_content_sid_in_template_registry": True,
+            "fallback_to_text_until_approved": True,
+            "template_key": CHATBOC_TEMPLATE_FRIENDLY_NAMES.get(_lower(template_id)) or template_id,
+        },
+    }
+
+
+def _stage_for_blueprint_item(item: Mapping[str, Any]) -> str:
+    raw = f"{item.get('stage') or ''} {item.get('id') or ''} {item.get('name') or ''} {item.get('purpose') or ''}".lower()
+    if any(token in raw for token in ("payment", "pago", "cuota", "tasa", "checkout")):
+        return "payment"
+    if any(token in raw for token in ("order", "pedido", "quote", "cotizacion", "catalog")):
+        return "order"
+    if any(token in raw for token in ("claim", "reclamo", "case", "caso", "support", "soporte")):
+        return "claim"
+    if any(token in raw for token in ("survey", "encuesta", "votar", "votacion")):
+        return "survey"
+    if any(token in raw for token in ("turn", "turno", "appointment")):
+        return "appointment"
+    if any(token in raw for token in ("admission", "admision", "procedure", "tramite")):
+        return "procedure"
+    if any(token in raw for token in ("certificate", "certificado", "document")):
+        return "document"
+    return str(item.get("stage") or item.get("id") or "").split("_")[0]
+
+
+def _entrypoint_for_blueprint_item(item: Mapping[str, Any]) -> str:
+    components = item.get("components") if isinstance(item.get("components"), list) else []
+    if "cta_webview" in components or "cta_url" in components:
+        return "webview"
+    return "whatsapp"
+
+
+def _enrich_blueprint_item(item: dict[str, Any], *, entrypoint: str | None = None) -> dict[str, Any]:
+    components = item.get("components") if isinstance(item.get("components"), list) else []
+    actions = item.get("suggested_actions") if isinstance(item.get("suggested_actions"), list) else []
+    stage = _stage_for_blueprint_item(item)
+    resolved_entrypoint = entrypoint or _entrypoint_for_blueprint_item(item)
+    item["execution"] = _template_execution_hint(
+        template_id=str(item.get("id") or item.get("name") or ""),
+        stage=stage,
+        entrypoint=resolved_entrypoint,
+        actions=[str(action) for action in actions],
+        components=[str(component) for component in components],
+    )
+    return item
+
+
 def _lower(value: Any) -> str:
     return str(value or "").strip().lower()
 
@@ -201,6 +324,42 @@ def _iso(value: Any) -> str | None:
             value = value.replace(tzinfo=timezone.utc)
         return value.isoformat()
     return None
+
+
+@lru_cache(maxsize=1)
+def _local_twilio_manifest_template_map() -> dict[str, dict[str, Any]]:
+    """Best-effort local fallback that mirrors the sender resolver manifest."""
+    try:
+        raw = json.loads(LOCAL_TWILIO_MANIFEST_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return {}
+
+    templates = raw.get("templates") if isinstance(raw, dict) else None
+    if not isinstance(templates, dict):
+        return {}
+
+    payload: dict[str, dict[str, Any]] = {}
+    for name, entry in templates.items():
+        if not isinstance(entry, dict):
+            continue
+        status = _lower(entry.get("approvalStatus") or entry.get("approval_status"))
+        if not status:
+            status = "approved" if entry.get("approved") is True else "draft"
+        payload[_lower(name)] = {
+            "source": "local_twilio_manifest",
+            "id": None,
+            "name": name,
+            "language": str(entry.get("language") or "es"),
+            "category": entry.get("category"),
+            "status": status,
+            "content_sid": entry.get("sid") or entry.get("content_sid"),
+            "external_template_id": entry.get("external_template_id"),
+            "body_preview": None,
+            "components": [],
+            "metadata": {"manifest_version": raw.get("version")},
+            "last_sync_at": entry.get("lastStatusAt") or entry.get("updatedAt"),
+        }
+    return payload
 
 
 def _normalized_datetime(value: Any) -> datetime | None:
@@ -498,6 +657,9 @@ def _admin_panel_payload(tenant: TenantProfile) -> dict[str, Any]:
 def _registered_template_map(tenant: TenantProfile) -> dict[str, dict[str, Any]]:
     templates: dict[str, dict[str, Any]] = {}
 
+    for name, template in _local_twilio_manifest_template_map().items():
+        templates[name] = template
+
     registry_rows = MessageTemplateRegistry.query.filter_by(
         tenant_id=tenant.id,
         channel="whatsapp",
@@ -565,16 +727,22 @@ def _pick_registered_template(
     templates: Mapping[str, dict[str, Any]],
     template_id: str,
 ) -> tuple[str | None, dict[str, Any] | None]:
+    exact_matches: list[tuple[str, dict[str, Any]]] = []
     for candidate in _template_lookup_candidates(template_id):
         template = templates.get(candidate)
         if template:
-            return candidate, template
+            exact_matches.append((candidate, template))
 
     prefix = f"chatboc_{_lower(template_id)}_v"
     matches = [
         (name, template)
         for name, template in templates.items()
         if name.startswith(prefix)
+    ]
+    matches = exact_matches + [
+        (name, template)
+        for name, template in matches
+        if all(existing_name != name for existing_name, _ in exact_matches)
     ]
     if not matches:
         return None, None
@@ -583,7 +751,12 @@ def _pick_registered_template(
         for name, template in matches
         if _lower(template.get("status")) in APPROVED_TEMPLATE_STATUSES
     ]
-    return sorted(approved or matches, key=lambda item: item[0], reverse=True)[0]
+    pending = [
+        (name, template)
+        for name, template in matches
+        if _lower(template.get("status")) in PENDING_TEMPLATE_STATUSES
+    ]
+    return sorted(approved or pending or matches, key=lambda item: item[0], reverse=True)[0]
 
 
 def _template_status(templates: Mapping[str, dict[str, Any]], template_id: str) -> dict[str, Any]:
@@ -592,6 +765,8 @@ def _template_status(templates: Mapping[str, dict[str, Any]], template_id: str) 
         return {
             "configured": False,
             "approved": False,
+            "pending": False,
+            "rejected": False,
             "status": "missing",
             "source": None,
             "resolved_name": None,
@@ -605,6 +780,7 @@ def _template_status(templates: Mapping[str, dict[str, Any]], template_id: str) 
         "configured": True,
         "approved": status in APPROVED_TEMPLATE_STATUSES,
         "pending": status in PENDING_TEMPLATE_STATUSES,
+        "rejected": status in REJECTED_TEMPLATE_STATUSES,
         "status": status or "unknown",
         "source": template.get("source"),
         "resolved_name": resolved_name or template.get("name"),
@@ -613,6 +789,101 @@ def _template_status(templates: Mapping[str, dict[str, Any]], template_id: str) 
         "external_template_id": template.get("external_template_id"),
         "last_sync_at": template.get("last_sync_at"),
     }
+
+
+def _template_readiness_payload(
+    status_payload: Mapping[str, Any],
+    execution: Mapping[str, Any],
+) -> dict[str, Any]:
+    webview = execution.get("webview") if isinstance(execution.get("webview"), Mapping) else {}
+    meta_surface = execution.get("meta_surface") if isinstance(execution.get("meta_surface"), Mapping) else {}
+    automation = execution.get("automation") if isinstance(execution.get("automation"), Mapping) else {}
+    twilio_type = str(execution.get("twilio_type") or "twilio/text")
+
+    if not status_payload.get("configured"):
+        state = "missing"
+        severity = "blocking"
+        next_action = "create_template_with_twilio_content_api"
+    elif status_payload.get("rejected"):
+        state = "rejected"
+        severity = "blocking"
+        next_action = "revise_copy_category_or_variables_and_resubmit"
+    elif status_payload.get("pending"):
+        state = "pending_approval"
+        severity = "warning"
+        next_action = "refresh_twilio_status_or_wait_for_meta_approval"
+    elif not status_payload.get("approved"):
+        state = "not_approved"
+        severity = "warning"
+        next_action = "submit_template_for_meta_approval"
+    elif webview.get("required"):
+        state = "approved_requires_webview"
+        severity = "ready_with_dependency"
+        next_action = "verify_signed_webview_and_server_webhook"
+    else:
+        state = "ready"
+        severity = "ready"
+        next_action = "ready_to_send"
+
+    return {
+        "state": state,
+        "severity": severity,
+        "next_action": next_action,
+        "production_send_allowed": bool(status_payload.get("approved")),
+        "fallback_to_text": not bool(status_payload.get("approved")),
+        "twilio_type": twilio_type,
+        "content_sid": status_payload.get("content_sid"),
+        "source": status_payload.get("source"),
+        "requires_webview": bool(webview.get("required")),
+        "requires_whatsapp_flow_design": bool(meta_surface.get("whatsapp_flows_candidate") and not webview.get("required")),
+        "requires_catalog_sync": bool(meta_surface.get("commerce_catalog_candidate")),
+        "automation_command": automation.get("template_key"),
+    }
+
+
+def _attach_template_status_and_readiness(
+    item: dict[str, Any],
+    templates: Mapping[str, dict[str, Any]],
+) -> dict[str, Any]:
+    status_payload = _template_status(templates, str(item.get("id") or item.get("name") or ""))
+    execution = item.get("execution") if isinstance(item.get("execution"), Mapping) else {}
+    item["status"] = status_payload
+    item["readiness"] = _template_readiness_payload(status_payload, execution)
+    return item
+
+
+def _readiness_action_item(item: Mapping[str, Any], *, group: str) -> dict[str, Any]:
+    readiness = item.get("readiness") if isinstance(item.get("readiness"), Mapping) else {}
+    status = item.get("status") if isinstance(item.get("status"), Mapping) else {}
+    return {
+        "id": item.get("id"),
+        "friendly_name": item.get("friendly_name"),
+        "group": group,
+        "state": readiness.get("state"),
+        "severity": readiness.get("severity"),
+        "next_action": readiness.get("next_action"),
+        "twilio_type": readiness.get("twilio_type"),
+        "status": status.get("status"),
+        "content_sid": status.get("content_sid"),
+        "source": status.get("source"),
+    }
+
+
+def _sorted_readiness_actions(items: list[dict[str, Any]], *, limit: int = 12) -> list[dict[str, Any]]:
+    severity_order = {"blocking": 0, "warning": 1, "ready_with_dependency": 2, "ready": 3}
+    actionable = [
+        item
+        for item in items
+        if item.get("severity") in {"blocking", "warning", "ready_with_dependency"}
+    ]
+    return sorted(
+        actionable,
+        key=lambda item: (
+            severity_order.get(str(item.get("severity")), 9),
+            str(item.get("group") or ""),
+            str(item.get("id") or ""),
+        ),
+    )[:limit]
 
 
 def _template_catalog_item(
@@ -625,16 +896,24 @@ def _template_catalog_item(
 ) -> dict[str, Any]:
     friendly_name = CHATBOC_TEMPLATE_FRIENDLY_NAMES.get(_lower(template_id))
     status_payload = _template_status(templates, template_id)
+    execution = _template_execution_hint(
+        template_id=template_id,
+        stage=stage,
+        entrypoint=entrypoint,
+        actions=actions,
+    )
     return {
         "id": template_id,
         "friendly_name": friendly_name,
         "stage": stage,
         "entrypoint": entrypoint,
+        "execution": execution,
         "requires_webview": entrypoint == "webview",
         "in_chat_action": entrypoint in {"whatsapp", "widget_and_whatsapp"},
         "widget_action": entrypoint in {"widget", "widget_and_whatsapp", "webview"},
         "actions": actions,
         "status": status_payload,
+        "readiness": _template_readiness_payload(status_payload, execution),
     }
 
 
@@ -645,7 +924,12 @@ def _operational_template_groups_payload(
     total = 0
     configured = 0
     approved = 0
+    blocking = 0
+    pending = 0
+    rejected = 0
     webviews = 0
+    flow_candidates = 0
+    catalog_candidates = 0
 
     for group_id, group in OPERATIONAL_TEMPLATE_GROUPS.items():
         items = []
@@ -661,7 +945,12 @@ def _operational_template_groups_payload(
             total += 1
             configured += 1 if item["status"].get("configured") else 0
             approved += 1 if item["status"].get("approved") else 0
+            blocking += 1 if item["readiness"].get("severity") == "blocking" else 0
+            pending += 1 if item["status"].get("pending") else 0
+            rejected += 1 if item["status"].get("rejected") else 0
             webviews += 1 if item.get("requires_webview") else 0
+            flow_candidates += 1 if item["readiness"].get("requires_whatsapp_flow_design") else 0
+            catalog_candidates += 1 if item["readiness"].get("requires_catalog_sync") else 0
 
         groups[group_id] = {
             "label": group["label"],
@@ -671,7 +960,12 @@ def _operational_template_groups_payload(
                 "total": len(items),
                 "configured": sum(1 for item in items if item["status"].get("configured")),
                 "approved": sum(1 for item in items if item["status"].get("approved")),
+                "blocking": sum(1 for item in items if item["readiness"].get("severity") == "blocking"),
+                "pending": sum(1 for item in items if item["status"].get("pending")),
+                "rejected": sum(1 for item in items if item["status"].get("rejected")),
                 "webviews": sum(1 for item in items if item.get("requires_webview")),
+                "whatsapp_flow_candidates": sum(1 for item in items if item["readiness"].get("requires_whatsapp_flow_design")),
+                "catalog_candidates": sum(1 for item in items if item["readiness"].get("requires_catalog_sync")),
             },
         }
 
@@ -682,7 +976,12 @@ def _operational_template_groups_payload(
             "configured": configured,
             "approved": approved,
             "missing": total - configured,
+            "blocking": blocking,
+            "pending": pending,
+            "rejected": rejected,
             "webviews": webviews,
+            "whatsapp_flow_candidates": flow_candidates,
+            "catalog_candidates": catalog_candidates,
         },
     }
 
@@ -704,7 +1003,7 @@ def _template_blueprint_payload(
             "body": "Hola {{1}}, soy {{2}}. Te puedo ayudar con {{3}}. Elegi una opcion para continuar.",
             "variables": ["contact_name", "tenant_name", "main_capabilities"],
             "components": ["body", "quick_reply_or_list"],
-            "suggested_actions": ["open_claim", "open_order", "open_survey", "human_handoff"],
+            "suggested_actions": ["open_case", "commerce", "human_handoff"],
         },
         {
             "id": "case_created",
@@ -922,8 +1221,9 @@ def _template_blueprint_payload(
     approved = 0
     for item in required_templates:
         item["friendly_name"] = CHATBOC_TEMPLATE_FRIENDLY_NAMES.get(_lower(item["id"]))
-        status_payload = _template_status(templates, item["id"])
-        item["status"] = status_payload
+        _enrich_blueprint_item(item)
+        _attach_template_status_and_readiness(item, templates)
+        status_payload = item["status"]
         configured += 1 if status_payload.get("configured") else 0
         approved += 1 if status_payload.get("approved") else 0
 
@@ -932,8 +1232,9 @@ def _template_blueprint_payload(
     for items in vertical_templates.values():
         for item in items:
             item["friendly_name"] = CHATBOC_TEMPLATE_FRIENDLY_NAMES.get(_lower(item["id"]))
-            status_payload = _template_status(templates, item["id"])
-            item["status"] = status_payload
+            _enrich_blueprint_item(item)
+            _attach_template_status_and_readiness(item, templates)
+            status_payload = item["status"]
             vertical_configured += 1 if status_payload.get("configured") else 0
             vertical_approved += 1 if status_payload.get("approved") else 0
 
@@ -953,6 +1254,21 @@ def _template_blueprint_payload(
         recommended_verticals = ["pyme", "colegio", "gobierno"]
 
     operational_catalog = _operational_template_groups_payload(templates)
+    readiness_action_items: list[dict[str, Any]] = []
+    readiness_action_items.extend(
+        _readiness_action_item(item, group="required")
+        for item in required_templates
+    )
+    for vertical, items in vertical_templates.items():
+        readiness_action_items.extend(
+            _readiness_action_item(item, group=f"vertical:{vertical}")
+            for item in items
+        )
+    for group_id, group in operational_catalog["groups"].items():
+        readiness_action_items.extend(
+            _readiness_action_item(item, group=f"operational:{group_id}")
+            for item in group["items"]
+        )
 
     return {
         "provider": "twilio_content_api",
@@ -975,12 +1291,38 @@ def _template_blueprint_payload(
             "operational_configured": operational_catalog["summary"]["configured"],
             "operational_approved": operational_catalog["summary"]["approved"],
             "operational_missing": operational_catalog["summary"]["missing"],
+            "operational_blocking": operational_catalog["summary"]["blocking"],
+            "operational_pending": operational_catalog["summary"]["pending"],
+            "operational_rejected": operational_catalog["summary"]["rejected"],
             "operational_webviews": operational_catalog["summary"]["webviews"],
+            "operational_whatsapp_flow_candidates": operational_catalog["summary"]["whatsapp_flow_candidates"],
+            "operational_catalog_candidates": operational_catalog["summary"]["catalog_candidates"],
         },
+        "next_actions": _sorted_readiness_actions(readiness_action_items),
         "twilio_content_types": {
             "transactional": ["twilio/text", "twilio/call-to-action", "twilio/quick-reply"],
             "menus": ["twilio/list-picker", "twilio/quick-reply"],
             "checkout": ["twilio/call-to-action"],
+            "catalog": ["twilio/call-to-action", "twilio/list-picker"],
+            "fallback": ["twilio/text"],
+        },
+        "meta_business_strategy": {
+            "whatsapp_flows": {
+                "recommended_for": ["reclamos_guiados", "tramites", "admisiones", "soporte", "encuestas"],
+                "use_when": "el usuario debe completar datos estructurados sin salir de WhatsApp",
+                "backend_contract": "persistir borrador, validar campos y confirmar por webhook/API antes de crear expediente final",
+            },
+            "commerce_catalog": {
+                "recommended_for": ["catalogos_pyme", "pedidos_recurrentes", "combos", "promociones"],
+                "use_when": "hay catalogo con stock, imagenes y precios suficientes",
+                "backend_contract": "sincronizar CatalogoItem, carrito y analytics de funnel",
+            },
+            "signed_webviews": {
+                "recommended_for": ["pagos", "checkout", "seguimiento_reclamo", "documentos", "formularios_largos"],
+                "use_when": "se requiere UX rica, pago seguro o datos sensibles",
+                "backend_contract": "URL firmada con tenant, ticket/pedido, expiracion y confirmacion server-to-server",
+            },
+            "argentina_payments_note": "Mantener checkout/webview propio hasta confirmar disponibilidad de pagos nativos de WhatsApp para el pais y cuenta.",
         },
         "template_creation_payload_hint": {
             "language": "es",
@@ -988,6 +1330,7 @@ def _template_blueprint_payload(
             "variables_format": "{{1}}, {{2}}, {{3}}",
             "sample_values_required": True,
             "submit_to_meta_after_create": True,
+            "prefer": ["twilio/call-to-action para webviews", "twilio/quick-reply para decisiones cortas", "twilio/list-picker para menus largos"],
         },
         "policy": {
             "requires_meta_approval_outside_24h": True,
@@ -1027,6 +1370,64 @@ def _webview_blueprint_payload(
 ) -> dict[str, Any]:
     slug = tenant.slug
     endpoints = checkout_experience.get("endpoints") if isinstance(checkout_experience.get("endpoints"), Mapping) else {}
+    claim_tracking_url = "/api/public/tracking/experience?kind=claim&code={code}&pin={pin}"
+    order_tracking_url = "/api/public/tracking/experience?kind=order&code={code}"
+    checkout_session_url = endpoints.get("public_checkout_session") or "/api/checkout/crear-preferencia"
+    survey_public_url = "/e/{survey_slug}"
+    flows = [
+        {
+            "id": "claim_tracking_helpdesk",
+            "label": "Seguimiento de reclamo con mesa de ayuda",
+            "verticals": ["gobierno", "consorcio"],
+            "surface": "whatsapp_cta_webview",
+            "template_ids": ["gov_claim_created", "gov_claim_status_update", "case_created"],
+            "url_template": claim_tracking_url,
+            "requires": ["code", "pin"],
+            "signed_params": ["tenant_slug", "ticket_id", "pin", "expires_at"],
+            "server_confirmation": ["public_comment_created", "ticket_timeline_refreshed"],
+            "fallback": "plain_tracking_url_with_pin",
+            "status": "ready" if integration_access.get("enabled") else "blocked_by_access",
+        },
+        {
+            "id": "order_checkout",
+            "label": "Checkout seguro de pedido",
+            "verticals": ["pyme", "colegio"],
+            "surface": "whatsapp_cta_webview",
+            "template_ids": ["order_checkout", "pyme_order_ready", "pyme_payment_link", "school_payment_due"],
+            "url_template": checkout_session_url,
+            "requires": ["order_code", "session_token"],
+            "signed_params": ["tenant_slug", "order_id", "amount", "expires_at"],
+            "server_confirmation": ["payment_webhook", "order_status_updated"],
+            "fallback": "payment_link_text_inside_24h",
+            "status": "ready" if checkout_experience.get("ready") and integration_access.get("enabled") else "needs_checkout_setup",
+        },
+        {
+            "id": "survey_vote",
+            "label": "Encuesta o votacion publica",
+            "verticals": ["gobierno", "pyme", "colegio"],
+            "surface": "whatsapp_cta_webview",
+            "template_ids": ["survey_invite", "gov_survey_invite"],
+            "url_template": survey_public_url,
+            "requires": ["survey_slug"],
+            "signed_params": ["tenant_slug", "survey_slug", "contact_key", "expires_at"],
+            "server_confirmation": ["survey_response_saved", "analytics_updated"],
+            "fallback": "survey_url_text",
+            "status": "ready" if integration_access.get("enabled") else "blocked_by_access",
+        },
+        {
+            "id": "catalog_order_builder",
+            "label": "Catalogo y armado de pedido",
+            "verticals": ["pyme"],
+            "surface": "whatsapp_cta_webview",
+            "template_ids": ["pyme_catalog_invite", "order_checkout"],
+            "url_template": f"/catalogo/{slug}",
+            "requires": ["tenant_slug"],
+            "signed_params": ["tenant_slug", "contact_key", "cart_id", "expires_at"],
+            "server_confirmation": ["cart_updated", "order_created"],
+            "fallback": "catalog_url_text",
+            "status": "ready" if integration_access.get("enabled") else "blocked_by_access",
+        },
+    ]
     return {
         "enabled": bool(integration_access.get("enabled")),
         "respect_access_lock": True,
@@ -1035,7 +1436,7 @@ def _webview_blueprint_payload(
             "mode": "conversation_guided_secure_webview",
             "active_entrypoint": checkout_experience.get("active_entrypoint"),
             "ready": bool(checkout_experience.get("ready")),
-            "public_checkout_session": endpoints.get("public_checkout_session") or "/api/checkout/crear-preferencia",
+            "public_checkout_session": checkout_session_url,
             "public_widget_session": endpoints.get("public_widget_session") or "/api/public/widget-commerce-session",
             "payment_status": endpoints.get("admin_payment_status") or f"/api/v2/tenants/{slug}/payments/status",
             "confirmation_source": "server_to_server_webhook",
@@ -1043,9 +1444,10 @@ def _webview_blueprint_payload(
             "client_return_trusted": False,
         },
         "tracking": {
-            "claim": "/api/public/tracking/experience?kind=claim&code={code}&pin={pin}",
-            "order": "/api/public/tracking/experience?kind=order&code={code}",
+            "claim": claim_tracking_url,
+            "order": order_tracking_url,
             "timeline_fallback": "timeline_only",
+            "claim_support_component": "ticket_bound_helpdesk",
         },
         "catalog": {
             "public_catalog": f"/api/public/tenants/{slug}/catalog",
@@ -1053,7 +1455,15 @@ def _webview_blueprint_payload(
         },
         "surveys": {
             "admin": "/api/v2/surveys",
-            "public_template": "/e/{survey_slug}",
+            "public_template": survey_public_url,
+        },
+        "flows": flows,
+        "summary": {
+            "flows_total": len(flows),
+            "ready_flows": len([item for item in flows if str(item.get("status")) == "ready"]),
+            "transactional_flows": ["claim_tracking_helpdesk", "order_checkout", "survey_vote", "catalog_order_builder"],
+            "requires_signed_session": True,
+            "requires_server_confirmation": True,
         },
         "security": {
             "requires_full_plan": True,
@@ -1113,6 +1523,195 @@ def _message_ux_policy_payload(
     }
 
 
+def _template_state_for_ids(
+    template_blueprint: Mapping[str, Any],
+    template_ids: list[str],
+) -> dict[str, Any]:
+    groups = template_blueprint.get("operational_template_groups")
+    group_items: list[Mapping[str, Any]] = []
+    if isinstance(groups, Mapping):
+        for group in groups.values():
+            if isinstance(group, Mapping) and isinstance(group.get("items"), list):
+                group_items.extend(item for item in group["items"] if isinstance(item, Mapping))
+
+    required = template_blueprint.get("required_templates")
+    if isinstance(required, list):
+        group_items.extend(item for item in required if isinstance(item, Mapping))
+
+    vertical_templates = template_blueprint.get("vertical_templates")
+    if isinstance(vertical_templates, Mapping):
+        for items in vertical_templates.values():
+            if isinstance(items, list):
+                group_items.extend(item for item in items if isinstance(item, Mapping))
+
+    found: list[dict[str, Any]] = []
+    missing: list[str] = []
+    for template_id in template_ids:
+        match = next((item for item in group_items if _lower(item.get("id")) == _lower(template_id)), None)
+        if not match:
+            missing.append(template_id)
+            continue
+        readiness = match.get("readiness") if isinstance(match.get("readiness"), Mapping) else {}
+        status = match.get("status") if isinstance(match.get("status"), Mapping) else {}
+        found.append(
+            {
+                "id": template_id,
+                "state": readiness.get("state"),
+                "severity": readiness.get("severity"),
+                "approved": bool(status.get("approved")),
+                "content_sid": status.get("content_sid"),
+            }
+        )
+
+    blocking = [item for item in found if item.get("severity") == "blocking"]
+    pending = [item for item in found if item.get("severity") in {"warning", "ready_with_dependency"}]
+    return {
+        "templates": found,
+        "missing": missing,
+        "approved": len([item for item in found if item.get("approved")]),
+        "blocking": len(blocking) + len(missing),
+        "pending": len(pending),
+        "ready": bool(found) and not blocking and not missing,
+    }
+
+
+def _flow_state_for_id(webview_blueprint: Mapping[str, Any], flow_id: str) -> dict[str, Any]:
+    flows = webview_blueprint.get("flows") if isinstance(webview_blueprint.get("flows"), list) else []
+    flow = next((item for item in flows if isinstance(item, Mapping) and _lower(item.get("id")) == _lower(flow_id)), None)
+    if not flow:
+        return {"id": flow_id, "status": "missing", "ready": False}
+    status = str(flow.get("status") or "review")
+    return {
+        "id": flow_id,
+        "status": status,
+        "ready": status == "ready",
+        "url_template": flow.get("url_template"),
+        "surface": flow.get("surface"),
+    }
+
+
+def _qa_playbook_payload(
+    tenant: TenantProfile,
+    *,
+    channel_ready: bool,
+    template_blueprint: Mapping[str, Any],
+    webview_blueprint: Mapping[str, Any],
+    integration_access: Mapping[str, Any],
+) -> dict[str, Any]:
+    scenarios = [
+        {
+            "id": "gov_claim_text_to_tracking",
+            "label": "Reclamo municipal completo",
+            "verticals": ["gobierno", "municipio"],
+            "persona": "vecino",
+            "entrypoint": "whatsapp",
+            "templates": ["welcome_menu", "gov_claim_sla", "gov_claim_created", "gov_claim_status_update"],
+            "webview_flow": "claim_tracking_helpdesk",
+            "covers": ["texto", "ubicacion", "foto", "dni", "pin", "estado_reclamo", "mesa_ayuda"],
+            "script_cases": ["junin_texto_reclamo", "junin_imagen", "junin_dni_reclamo", "junin_confirmacion_reclamo"],
+        },
+        {
+            "id": "gov_claim_audio_accessible",
+            "label": "Reclamo accesible por audio",
+            "verticals": ["gobierno", "municipio"],
+            "persona": "vecino_accesibilidad",
+            "entrypoint": "whatsapp_audio",
+            "templates": ["welcome_menu", "gov_claim_sla", "gov_claim_created"],
+            "webview_flow": "claim_tracking_helpdesk",
+            "covers": ["audio_cache", "transcripcion", "sin_foto", "confirmacion", "seguimiento"],
+            "script_cases": ["junin_audio", "junin_audio_sin_foto", "junin_audio_datos", "junin_audio_confirmar"],
+        },
+        {
+            "id": "pyme_catalog_order_checkout",
+            "label": "Catalogo, pedido y checkout pyme",
+            "verticals": ["pyme", "empresa"],
+            "persona": "cliente",
+            "entrypoint": "whatsapp",
+            "templates": ["pyme_catalog_invite", "order_checkout", "pyme_order_ready", "pyme_payment_link"],
+            "webview_flow": "catalog_order_builder",
+            "covers": ["catalogo", "carrito", "pedido", "checkout", "tracking_pedido"],
+            "script_cases": ["cuatro_fincas_pedido", "cuatro_fincas_confirmar"],
+        },
+        {
+            "id": "survey_vote_realtime",
+            "label": "Encuesta o votacion en vivo",
+            "verticals": ["gobierno", "colegio", "pyme"],
+            "persona": "participante",
+            "entrypoint": "whatsapp_cta_webview",
+            "templates": ["survey_invite", "gov_survey_invite"],
+            "webview_flow": "survey_vote",
+            "covers": ["invitacion", "voto", "resultados_en_vivo", "analytics_heatmap"],
+            "script_cases": [],
+        },
+        {
+            "id": "school_family_case",
+            "label": "Caso familiar colegio",
+            "verticals": ["colegio", "educacion"],
+            "persona": "familia",
+            "entrypoint": "whatsapp",
+            "templates": ["school_family_case_created", "school_payment_due", "school_receipt_ready"],
+            "webview_flow": "order_checkout",
+            "covers": ["menu_familia", "inasistencia", "certificado_audio", "cuotas", "comprobante"],
+            "script_cases": ["colegio_menu_sandbox", "colegio_seleccion_inasistencia", "colegio_detalle_audio_ubicacion"],
+        },
+    ]
+
+    enriched: list[dict[str, Any]] = []
+    for scenario in scenarios:
+        template_state = _template_state_for_ids(template_blueprint, list(scenario["templates"]))
+        flow_state = _flow_state_for_id(webview_blueprint, str(scenario.get("webview_flow")))
+        ready = bool(channel_ready and integration_access.get("enabled") and template_state["ready"] and flow_state["ready"])
+        if not channel_ready:
+            status = "blocked_channel"
+            next_action = "configure_whatsapp_sender_and_plan"
+        elif template_state["blocking"]:
+            status = "blocked_templates"
+            next_action = "create_or_approve_required_templates"
+        elif not flow_state["ready"]:
+            status = "blocked_webview"
+            next_action = "complete_signed_webview_flow"
+        elif template_state["pending"]:
+            status = "needs_template_review"
+            next_action = "refresh_twilio_status_or_wait_for_meta_approval"
+        else:
+            status = "ready"
+            next_action = "run_qa_scenario"
+        enriched.append(
+            {
+                **scenario,
+                "status": status,
+                "ready": ready,
+                "next_action": next_action,
+                "template_state": template_state,
+                "webview_state": flow_state,
+            }
+        )
+
+    ready_count = len([item for item in enriched if item["ready"]])
+    return {
+        "contract_version": "whatsapp.qa_playbook.v1",
+        "enabled": bool(channel_ready),
+        "scenario_count": len(enriched),
+        "ready_count": ready_count,
+        "blocked_count": len(enriched) - ready_count,
+        "local_command": "python scripts/qa_whatsapp_flows.py",
+        "live_mode_env": "QA_WHATSAPP_USE_CONFIGURED_DB=1",
+        "safe_default": "isolated_in_memory_db",
+        "numbers": {
+            "junin": "+17432643718",
+            "chatboc_demos": "+18564858589",
+            "twilio_sandbox": "+14155238886",
+        },
+        "scenarios": enriched,
+        "frontend_contract": {
+            "render_as": "whatsapp_qa_playbook",
+            "show_ready_matrix": True,
+            "show_script_cases": True,
+            "show_live_mode_warning": True,
+        },
+    }
+
+
 def build_whatsapp_experience(
     tenant: TenantProfile,
     *,
@@ -1141,6 +1740,13 @@ def build_whatsapp_experience(
     webview_blueprint = _webview_blueprint_payload(
         tenant,
         checkout_experience=checkout_experience,
+        integration_access=integration_access,
+    )
+    qa_playbook = _qa_playbook_payload(
+        tenant,
+        channel_ready=channel_ready,
+        template_blueprint=template_blueprint,
+        webview_blueprint=webview_blueprint,
         integration_access=integration_access,
     )
     message_ux_policy = _message_ux_policy_payload(
@@ -1234,6 +1840,7 @@ def build_whatsapp_experience(
         },
         "template_blueprint": template_blueprint,
         "webview_blueprint": webview_blueprint,
+        "qa_playbook": qa_playbook,
         "message_ux_policy": message_ux_policy,
         "admin_panel": _admin_panel_payload(tenant),
         "education": {
@@ -1253,6 +1860,7 @@ def build_whatsapp_experience(
                 "commerce_checkout",
                 "template_blueprint",
                 "webview_checkout",
+                "qa_playbook",
                 "message_ux_policy",
                 "voice_realtime",
                 "huggingface_ai",

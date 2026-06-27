@@ -37,7 +37,16 @@ class TrackingExperienceContractTest(unittest.TestCase):
             tipo="municipio",
             vertical="gobierno",
             municipio_id=self.owner.id,
-            configuracion={"widget_tokens": ["track-token"]},
+            configuracion={
+                "widget_tokens": ["track-token"],
+                "live_chat_schedule": {
+                    "enabled": True,
+                    "days": [0, 1, 2, 3, 4],
+                    "start_time": "09:00",
+                    "end_time": "13:00",
+                    "timezone": "America/Argentina/Buenos_Aires",
+                },
+            },
         )
         db.session.add(self.tenant)
         db.session.flush()
@@ -109,6 +118,14 @@ class TrackingExperienceContractTest(unittest.TestCase):
         self.assertIn("route_progress", payload["map"]["animations"])
         self.assertEqual(payload["map"]["fallback_when_no_coordinates"], "timeline_only")
         self.assertTrue(any(item["type"] == "comment" for item in payload["timeline"]))
+        self.assertEqual(payload["frontend_contract"]["render_as"], "tracking_map_timeline_helpdesk")
+        self.assertEqual(payload["support"]["contract_version"], "tracking.support.v1")
+        self.assertEqual(payload["support"]["ticket"]["id"], self.claim.id)
+        self.assertEqual(payload["support"]["ticket"]["requires_pin"], True)
+        self.assertEqual(payload["support"]["endpoints"]["send_message"], f"/tickets/chat/{self.claim.id}/responder_ciudadano")
+        self.assertEqual(payload["support"]["live_chat"]["contract_version"], "live_chat.schedule.v1")
+        self.assertEqual(payload["support"]["live_chat"]["source"], "tenant_config")
+        self.assertEqual(payload["support"]["conversation"]["message_count"], 1)
 
     def test_public_order_tracking_experience_returns_items_and_progress(self):
         response = self.client.get(
@@ -136,6 +153,25 @@ class TrackingExperienceContractTest(unittest.TestCase):
         self.assertEqual(payload["reason_code"], "tracking_pin_required")
         self.assertEqual(payload["contract_version"], "tracking.experience.v1")
         self.assertIn("request_id", payload)
+
+    def test_legacy_claim_message_endpoint_requires_pin_when_ticket_has_pin(self):
+        rejected = self.client.post(
+            "/tracking/api/send-claim-message",
+            json={"nro_ticket": "123456", "mensaje": "hola"},
+        )
+        self.assertEqual(rejected.status_code, 403)
+
+        accepted = self.client.post(
+            "/tracking/api/send-claim-message?pin=654321",
+            json={"nro_ticket": "123456", "mensaje": "sumo informacion"},
+        )
+        self.assertEqual(accepted.status_code, 200)
+        self.assertIsNotNone(
+            TicketComentario.query.filter_by(
+                municipio_ticket_id=self.claim.id,
+                comentario="sumo informacion",
+            ).first()
+        )
 
 
 if __name__ == "__main__":

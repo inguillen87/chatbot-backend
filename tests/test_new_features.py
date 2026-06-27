@@ -153,7 +153,14 @@ class TestNewFeatures(unittest.TestCase):
         body = payload["body_text"]
         self.assertIn("Martes: 10:00-18:00", body)
         self.assertIn("Domingo: cerrado", body)
+        self.assertIn("✅ *¡Reclamo recibido, Marcelo!*", body)
+        self.assertIn("📄 *Resumen:*", body)
+        self.assertIn("🔗 *Seguimiento:*", body)
+        self.assertIn("*Contacto para seguimiento:*", body)
         self.assertNotIn("[{\"dia\"", body)
+        self.assertNotIn("Ã", body)
+        self.assertNotIn("â", body)
+        self.assertNotIn("ð", body)
 
     def test_construir_descripcion_breve_incluye_detalle(self):
         texto = (
