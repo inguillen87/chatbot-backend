@@ -966,6 +966,236 @@ def _build_tenant_admin_experience_payload(
     }
 
 
+def _ops_qa_check_result(
+    *,
+    check_id: str,
+    label: str,
+    ok: bool,
+    status: str | None = None,
+    severity: str = "warning",
+    details: Mapping[str, Any] | None = None,
+    next_action: str | None = None,
+    endpoint: str | None = None,
+) -> dict[str, Any]:
+    resolved_status = status or ("pass" if ok else severity)
+    return {
+        "id": check_id,
+        "label": label,
+        "ok": bool(ok),
+        "status": resolved_status,
+        "severity": "info" if ok else severity,
+        "endpoint": endpoint,
+        "details": dict(details or {}),
+        "next_action": next_action or ("continue" if ok else "review_configuration"),
+    }
+
+
+def _build_tenant_ops_qa_playbook(
+    tenant: TenantProfile,
+    *,
+    start_date: datetime,
+    end_date: datetime,
+    app_config: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    admin = _build_tenant_admin_experience_payload(
+        tenant,
+        start_date=start_date,
+        end_date=end_date,
+        app_config=app_config,
+    )
+    modules = {str(item.get("id")): item for item in admin.get("modules", []) if isinstance(item, Mapping)}
+    operations = admin.get("operations") if isinstance(admin.get("operations"), Mapping) else {}
+    freshness = operations.get("freshness") if isinstance(operations.get("freshness"), Mapping) else {}
+    freshness_summary = freshness.get("summary") if isinstance(freshness.get("summary"), Mapping) else {}
+    lead_capture = admin.get("lead_capture") if isinstance(admin.get("lead_capture"), Mapping) else {}
+    lead_summary = lead_capture.get("summary") if isinstance(lead_capture.get("summary"), Mapping) else {}
+    marketplace = admin.get("marketplace") if isinstance(admin.get("marketplace"), Mapping) else {}
+    market_summary = marketplace.get("summary") if isinstance(marketplace.get("summary"), Mapping) else {}
+    surveys = admin.get("surveys_votings") if isinstance(admin.get("surveys_votings"), Mapping) else {}
+    survey_summary = surveys.get("summary") if isinstance(surveys.get("summary"), Mapping) else {}
+    employee_routing = build_employee_routing_payload(tenant)
+    employee_summary = admin.get("employee_routing", {}).get("summary", {}) if isinstance(admin.get("employee_routing"), Mapping) else {}
+    whatsapp = build_whatsapp_experience(tenant, app_config=app_config)
+    whatsapp_templates = (whatsapp.get("template_blueprint") or {}).get("registry_summary") if isinstance(whatsapp.get("template_blueprint"), Mapping) else {}
+    whatsapp_webviews = (whatsapp.get("webview_blueprint") or {}).get("summary") if isinstance(whatsapp.get("webview_blueprint"), Mapping) else {}
+    hf_runtime = (((whatsapp.get("conversation_intelligence") or {}).get("huggingface_ai") or {}) if isinstance(whatsapp.get("conversation_intelligence"), Mapping) else {})
+
+    checks = [
+        _ops_qa_check_result(
+            check_id="admin_os_contract",
+            label="CRM operativo del tenant",
+            ok=admin.get("contract_version") == "tenant.admin_experience.v1"
+            and {"inbox", "analytics", "widget_whatsapp"}.issubset(set(modules.keys())),
+            severity="critical",
+            endpoint="/api/v2/tenant/admin-experience",
+            next_action="fix_admin_experience_contract",
+            details={
+                "contract_version": admin.get("contract_version"),
+                "modules": sorted(modules.keys()),
+                "render_as": (admin.get("frontend_contract") or {}).get("render_as"),
+            },
+        ),
+        _ops_qa_check_result(
+            check_id="claims_inbox",
+            label="Reclamos, tickets e inbox omnicanal",
+            ok=int(lead_summary.get("open") or 0) >= 0 and "inbox" in modules,
+            severity="critical",
+            endpoint="/api/v2/inbox/omnichannel",
+            next_action="review_inbox_contract_and_ticket_sources",
+            details={
+                "open": lead_summary.get("open"),
+                "recent": lead_summary.get("total_recent"),
+                "channels": lead_summary.get("channels"),
+                "sample_count": len(lead_capture.get("items") or []),
+            },
+        ),
+        _ops_qa_check_result(
+            check_id="catalog_orders",
+            label="Catalogo, pedidos y checkout conversacional",
+            ok=int(market_summary.get("products") or 0) > 0
+            and (whatsapp.get("commerce") or {}).get("checkout_experience", {}).get("ready") is True,
+            severity="critical",
+            endpoint="/api/v2/catalog/quality",
+            next_action="complete_catalog_images_prices_stock_and_checkout",
+            details={
+                "products": market_summary.get("products"),
+                "ready_to_sell": market_summary.get("ready_to_sell"),
+                "missing_images": market_summary.get("missing_images"),
+                "orders": market_summary.get("orders"),
+                "checkout_ready": (whatsapp.get("commerce") or {}).get("checkout_experience", {}).get("ready"),
+            },
+        ),
+        _ops_qa_check_result(
+            check_id="survey_live_vote",
+            label="Encuestas, votaciones y resultados en vivo",
+            ok=int(survey_summary.get("live_votes") or 0) > 0 or int(survey_summary.get("active") or 0) > 0,
+            severity="warning",
+            endpoint="/api/v2/surveys",
+            next_action="publish_survey_or_live_vote",
+            details={
+                "surveys": survey_summary.get("surveys"),
+                "active": survey_summary.get("active"),
+                "live_votes": survey_summary.get("live_votes"),
+                "responses": survey_summary.get("responses"),
+            },
+        ),
+        _ops_qa_check_result(
+            check_id="heatmap_analytics",
+            label="Metricas, mapas y heatmap territorial",
+            ok=bool(freshness_summary.get("can_render_heatmap")),
+            severity="warning",
+            endpoint="/api/v2/analytics/operations/heatmap",
+            next_action="collect_locations_or_geocode_ticket_addresses",
+            details={
+                "freshness_status": freshness.get("status"),
+                "can_render_heatmap": freshness_summary.get("can_render_heatmap"),
+                "dashboard_contract": (operations.get("dashboard") or {}).get("contract_version") if isinstance(operations.get("dashboard"), Mapping) else None,
+            },
+        ),
+        _ops_qa_check_result(
+            check_id="employee_routing",
+            label="Ruteo, asignacion y cobertura del equipo",
+            ok=int(employee_summary.get("employees") or 0) > 0
+            and employee_routing.get("contract_version") == "employee.routing.v1",
+            severity="warning",
+            endpoint="/api/v2/employee-routing",
+            next_action="load_employees_and_category_scope",
+            details={
+                "contract_version": employee_routing.get("contract_version"),
+                "employees": employee_summary.get("employees"),
+                "unassigned": employee_summary.get("unassigned"),
+                "recommendations": employee_summary.get("recommendations"),
+            },
+        ),
+        _ops_qa_check_result(
+            check_id="whatsapp_templates_webviews",
+            label="Plantillas WhatsApp, botones y webviews",
+            ok=whatsapp.get("contract_version") == "whatsapp.experience.v1"
+            and int((whatsapp_templates or {}).get("operational_webviews") or 0) > 0
+            and int((whatsapp_webviews or {}).get("flows_total") or 0) > 0,
+            severity="critical",
+            endpoint="/api/v2/whatsapp/experience",
+            next_action="sync_twilio_templates_and_validate_signed_webviews",
+            details={
+                "contract_version": whatsapp.get("contract_version"),
+                "operational_catalog_total": (whatsapp_templates or {}).get("operational_catalog_total"),
+                "operational_webviews": (whatsapp_templates or {}).get("operational_webviews"),
+                "webview_flows_total": (whatsapp_webviews or {}).get("flows_total"),
+                "qa_scenarios": (whatsapp.get("qa_playbook") or {}).get("scenario_count") if isinstance(whatsapp.get("qa_playbook"), Mapping) else None,
+            },
+        ),
+        _ops_qa_check_result(
+            check_id="ai_runtime_multimodal",
+            label="IA multimodal y fallback controlado",
+            ok=bool((hf_runtime or {}).get("enabled")) and not bool((hf_runtime or {}).get("quota_depleted")),
+            severity="warning",
+            endpoint="/api/v2/whatsapp/experience",
+            next_action="review_huggingface_runtime_or_fallback_provider",
+            details={
+                "enabled": (hf_runtime or {}).get("enabled"),
+                "runtime_status": (hf_runtime or {}).get("runtime_status"),
+                "quota_depleted": (hf_runtime or {}).get("quota_depleted"),
+                "fallback_behavior": (hf_runtime or {}).get("fallback_behavior"),
+            },
+        ),
+    ]
+    passed = sum(1 for item in checks if item.get("ok"))
+    critical_failed = [item for item in checks if item.get("severity") == "critical" and not item.get("ok")]
+    status = "pass" if passed == len(checks) else ("fail" if critical_failed else "warning")
+    return {
+        "contract_version": "tenant.ops_qa.playbook.v1",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "tenant": _tenant_ref(tenant),
+        "period": {"from": _iso(start_date), "to": _iso(end_date)},
+        "safe_by_default": True,
+        "status": status,
+        "score": round((passed / len(checks)) * 100, 2) if checks else 0,
+        "summary": {
+            "checks_total": len(checks),
+            "passed": passed,
+            "warnings": sum(1 for item in checks if item.get("status") == "warning"),
+            "critical_failed": len(critical_failed),
+            "real_messages_sent": 0,
+        },
+        "checks": checks,
+        "recommended_next_actions": [item for item in checks if not item.get("ok")][:5],
+        "execution": {
+            "endpoint": f"/api/v2/tenants/{tenant.slug}/ops-qa/check/{{check_id}}",
+            "method": "POST",
+            "policy": "read_only_safe_checks_only",
+            "real_message_policy": "blocked_in_this_playbook",
+        },
+        "frontend_contract": {
+            "render_as": "tenant_ops_qa_command_center",
+            "recommended_views": ["readiness_score", "critical_blockers", "safe_check_runner", "module_drilldown"],
+            "refresh_seconds": 30,
+        },
+    }
+
+
+def _tenant_ops_qa_execution_result(
+    *,
+    tenant: TenantProfile,
+    check: Mapping[str, Any],
+    playbook: Mapping[str, Any],
+) -> dict[str, Any]:
+    return {
+        "contract_version": "tenant.ops_qa.execution.v1",
+        "tenant": _tenant_ref(tenant),
+        "check_id": check.get("id"),
+        "label": check.get("label"),
+        "ok": bool(check.get("ok")),
+        "status": check.get("status"),
+        "severity": check.get("severity"),
+        "execution_mode": "read_only",
+        "sends_real_message": False,
+        "details": check.get("details") or {},
+        "next_action": check.get("next_action"),
+        "playbook_status": playbook.get("status"),
+        "playbook_score": playbook.get("score"),
+    }
+
+
 def _build_superadmin_command_center_payload(*, start_date: datetime, end_date: datetime, limit: int = 50) -> dict[str, Any]:
     tenants = TenantProfile.query.order_by(TenantProfile.created_at.desc()).limit(limit).all()
     tenant_items = []
@@ -1347,6 +1577,80 @@ def tenant_admin_experience_v2(current_user, tenant_slug: str | None = None):
             },
         }
     return _json_response(payload)
+
+
+@v2_saas_bp.route("/tenant/ops-qa/playbook", methods=["GET"])
+@v2_saas_bp.route("/tenants/<string:tenant_slug>/ops-qa/playbook", methods=["GET"])
+@token_requerido
+@require_role("admin", "empleado", "super_admin")
+def tenant_ops_qa_playbook_v2(current_user, tenant_slug: str | None = None):
+    tenant, error = _resolve_tenant_or_error(current_user, tenant_slug)
+    if error:
+        return error
+    start_date, end_date = _date_range_from_request(default_days=30)
+    try:
+        payload = _build_tenant_ops_qa_playbook(
+            tenant,
+            start_date=start_date,
+            end_date=end_date,
+            app_config=current_app.config,
+        )
+    except Exception as exc:  # pragma: no cover - defensive degradation for ops UI
+        current_app.logger.exception("[tenant_ops_qa] degraded payload for tenant=%s", getattr(tenant, "slug", None))
+        payload = {
+            "contract_version": "tenant.ops_qa.playbook.v1",
+            "tenant": _tenant_ref(tenant),
+            "period": {"from": _iso(start_date), "to": _iso(end_date)},
+            "safe_by_default": True,
+            "status": "fail",
+            "score": 0,
+            "summary": {"checks_total": 0, "passed": 0, "warnings": 0, "critical_failed": 1, "real_messages_sent": 0},
+            "checks": [],
+            "recommended_next_actions": [
+                {
+                    "id": "ops_qa_source_failed",
+                    "label": "No se pudo construir el QA operativo",
+                    "status": "fail",
+                    "severity": "critical",
+                    "next_action": "review_backend_logs",
+                    "details": {"detail": str(exc)},
+                }
+            ],
+            "frontend_contract": {"render_as": "tenant_ops_qa_command_center"},
+        }
+    return _json_response(payload)
+
+
+@v2_saas_bp.route("/tenant/ops-qa/check/<string:check_id>", methods=["POST"])
+@v2_saas_bp.route("/tenants/<string:tenant_slug>/ops-qa/check/<string:check_id>", methods=["POST"])
+@token_requerido
+@require_role("admin", "empleado", "super_admin")
+def tenant_ops_qa_check_v2(current_user, check_id: str, tenant_slug: str | None = None):
+    tenant, error = _resolve_tenant_or_error(current_user, tenant_slug)
+    if error:
+        return error
+    normalized_check = str(check_id or "").strip().lower().replace("-", "_")
+    start_date, end_date = _date_range_from_request(default_days=30)
+    playbook = _build_tenant_ops_qa_playbook(
+        tenant,
+        start_date=start_date,
+        end_date=end_date,
+        app_config=current_app.config,
+    )
+    checks = {
+        str(item.get("id")): item
+        for item in playbook.get("checks", [])
+        if isinstance(item, Mapping) and item.get("id")
+    }
+    if normalized_check not in checks:
+        return _error_response("Check operativo no soportado", 404, "ops_qa_check_not_found", "refresh_playbook")
+    return _json_response(
+        _tenant_ops_qa_execution_result(
+            tenant=tenant,
+            check=checks[normalized_check],
+            playbook=playbook,
+        )
+    )
 
 
 @v2_saas_bp.route("/whatsapp/experience", methods=["GET"])

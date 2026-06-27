@@ -1297,6 +1297,60 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertIn("analytics", module_ids)
         self.assertNotIn("portal", module_ids)
 
+    def test_tenant_ops_qa_playbook_and_safe_check_execution(self):
+        response = self.client.get(
+            f"/api/v2/tenants/{self.tenant.slug}/ops-qa/playbook",
+            headers={**self._auth(self.owner), "X-Request-Id": "ops-qa-1"},
+        )
+
+        self.assertEqual(response.status_code, 200, response.get_json())
+        payload = response.get_json()
+        self.assertEqual(payload.get("contract_version"), "tenant.ops_qa.playbook.v1")
+        self.assertEqual(payload.get("request_id"), "ops-qa-1")
+        self.assertEqual(payload["tenant"]["slug"], self.tenant.slug)
+        self.assertTrue(payload["safe_by_default"])
+        self.assertIn(payload["status"], {"pass", "warning", "fail"})
+        self.assertGreaterEqual(payload["summary"]["checks_total"], 7)
+        self.assertEqual(payload["summary"]["real_messages_sent"], 0)
+        self.assertEqual(payload["frontend_contract"]["render_as"], "tenant_ops_qa_command_center")
+        check_ids = {item["id"] for item in payload["checks"]}
+        self.assertIn("admin_os_contract", check_ids)
+        self.assertIn("claims_inbox", check_ids)
+        self.assertIn("catalog_orders", check_ids)
+        self.assertIn("survey_live_vote", check_ids)
+        self.assertIn("heatmap_analytics", check_ids)
+        self.assertIn("employee_routing", check_ids)
+        self.assertIn("whatsapp_templates_webviews", check_ids)
+        self.assertIn("ai_runtime_multimodal", check_ids)
+        self.assertLessEqual(payload["summary"]["critical_failed"], payload["summary"]["checks_total"])
+        self.assertTrue(any(item["id"] == "whatsapp_templates_webviews" for item in payload["checks"]))
+        self.assertEqual(
+            payload["execution"]["endpoint"],
+            f"/api/v2/tenants/{self.tenant.slug}/ops-qa/check/{{check_id}}",
+        )
+
+        run_response = self.client.post(
+            f"/api/v2/tenants/{self.tenant.slug}/ops-qa/check/whatsapp_templates_webviews",
+            headers={**self._auth(self.owner), "X-Request-Id": "ops-qa-run-1"},
+            json={},
+        )
+
+        self.assertEqual(run_response.status_code, 200, run_response.get_json())
+        run_payload = run_response.get_json()
+        self.assertEqual(run_payload["contract_version"], "tenant.ops_qa.execution.v1")
+        self.assertEqual(run_payload["check_id"], "whatsapp_templates_webviews")
+        self.assertEqual(run_payload["execution_mode"], "read_only")
+        self.assertFalse(run_payload["sends_real_message"])
+        self.assertIn("webview_flows_total", run_payload["details"])
+
+        missing_response = self.client.post(
+            f"/api/v2/tenants/{self.tenant.slug}/ops-qa/check/no-existe",
+            headers={**self._auth(self.owner), "X-Request-Id": "ops-qa-missing-1"},
+            json={},
+        )
+        self.assertEqual(missing_response.status_code, 404)
+        self.assertEqual(missing_response.get_json()["reason_code"], "ops_qa_check_not_found")
+
     def test_whatsapp_experience_contract_connects_channel_content_tracking_and_admin_panel(self):
         response = self.client.get(
             "/api/v2/whatsapp/experience",
@@ -1445,13 +1499,26 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertIn("claim_tracking_helpdesk", webview_flows)
         self.assertIn("order_checkout", webview_flows)
         self.assertIn("survey_vote", webview_flows)
+        self.assertIn("claim_live_or_offline_helpdesk", webview_flows)
+        self.assertIn("government_procedure_intake", webview_flows)
+        self.assertIn("school_payment_receipt", webview_flows)
+        self.assertIn("appointment_reschedule", webview_flows)
+        self.assertIn("document_delivery", webview_flows)
         self.assertEqual(
             webview_flows["claim_tracking_helpdesk"]["url_template"],
             "/api/public/tracking/experience?kind=claim&code={code}&pin={pin}",
         )
+        self.assertEqual(
+            webview_flows["claim_live_or_offline_helpdesk"]["availability"]["outside_hours_mode"],
+            "offline_message",
+        )
         self.assertIn("public_comment_created", webview_flows["claim_tracking_helpdesk"]["server_confirmation"])
         self.assertIn("order_checkout", webview_flows["order_checkout"]["template_ids"])
-        self.assertEqual(payload["webview_blueprint"]["summary"]["flows_total"], 4)
+        self.assertGreaterEqual(payload["webview_blueprint"]["summary"]["flows_total"], 9)
+        self.assertIn(
+            "claim_live_or_offline_helpdesk",
+            payload["webview_blueprint"]["summary"]["transactional_flows"],
+        )
         self.assertTrue(payload["webview_blueprint"]["security"]["requires_full_plan"])
         self.assertEqual(payload["qa_playbook"]["contract_version"], "whatsapp.qa_playbook.v1")
         self.assertEqual(payload["qa_playbook"]["local_command"], "python scripts/qa_whatsapp_flows.py")
@@ -1470,6 +1537,11 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertIn("chatboc_demo_survey_open", qa_scenarios["survey_vote_realtime"]["script_cases"])
         self.assertIn("requiere TWILIO_AUTH_TOKEN real", payload["qa_playbook"]["live_mode_guardrails"])
         self.assertEqual(payload["message_ux_policy"]["interactive_limits"]["reply_buttons_max"], 3)
+        self.assertTrue(payload["message_ux_policy"]["accessibility"]["fixed_menu_audio_cache"]["enabled"])
+        self.assertIn(
+            "claim_categories",
+            payload["message_ux_policy"]["accessibility"]["fixed_menu_audio_cache"]["scope"],
+        )
         self.assertEqual(payload["admin_panel"]["inbox"], "/api/v2/inbox/omnichannel")
         self.assertTrue(payload["education"]["enabled"])
         self.assertEqual(payload["frontend_contract"]["render_as"], "whatsapp_operations_hub")
