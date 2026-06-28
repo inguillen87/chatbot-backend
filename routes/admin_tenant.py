@@ -48,6 +48,7 @@ from services.plan_access import (
 from services.live_chat_schedule import build_live_chat_status, build_schedule_from_config
 from services.operational_scoring import build_ticket_priority_score
 from services.ticket_realtime_state import build_ticket_collaboration_state
+from services.twilio_tech_provider import build_twilio_tech_provider_contract
 from services.employee_routing import (
     normalize_scope_list,
     tenant_operational_dimensions,
@@ -2391,29 +2392,45 @@ def connect_integration(current_user, slug, integration_type):
         return jsonify({"redirect_url": auth_url})
 
     elif integration_type.lower() == 'whatsapp':
-        # WhatsApp Cloud API / Embedded Signup flow
-        # This usually requires a Facebook App ID and a specific config ID
-        fb_app_id = current_app.config.get("FACEBOOK_APP_ID")
-        if not fb_app_id:
-             current_app.logger.warning("FACEBOOK_APP_ID not set. WhatsApp integration unavailable.")
-             return jsonify({
-                "error": "platform_not_configured",
-                "message": "Falta FACEBOOK_APP_ID en el servidor. Contacte al administrador.",
-                "demo_mode": True
-            }), 200
+        contract = build_twilio_tech_provider_contract(tenant, current_app.config)
+        embedded_signup = contract.get("embedded_signup") or {}
+        setup_health = contract.get("setup_health") or {}
+        env = ((contract.get("automation") or {}).get("env") or {})
+        start_url = embedded_signup.get("start_url") or embedded_signup.get("url")
 
-        # Simplified flow: Redirect to a frontend page that handles the Embedded Signup
-        # or return the config needed for the SDK.
-        # For now, let's assume we return a setup URL or instruction.
-        # Since the frontend calls 'connect', it expects a redirect_url.
-        # If we are doing Embedded Signup, the frontend should trigger the popup.
-        # If we are doing OAuth (less common for WA Business), we generate a URL.
-        # Let's assume standard OAuth for now or a placeholder to stop the 400.
+        payload = {
+            "contract_version": "tenant.integration.connect.v2_adapter",
+            "provider": "twilio_tech_provider",
+            "legacy_integration_type": "whatsapp",
+            "tenant": contract.get("tenant"),
+            "status": contract.get("status"),
+            "redirect_url": start_url,
+            "url": start_url,
+            "embedded_signup": embedded_signup,
+            "status_endpoint": f"/api/v2/tenants/{tenant.slug}/integrations/whatsapp/status",
+            "tech_provider_endpoint": f"/api/v2/tenants/{tenant.slug}/whatsapp/tech-provider",
+            "completion_endpoint": embedded_signup.get("completion_endpoint"),
+            "contract": contract,
+            "frontend_contract": {
+                "render_as": "twilio_tech_provider_onboarding",
+                "legacy_adapter": True,
+                "primary_action": (contract.get("frontend_contract") or {}).get("primary_action"),
+                "show_twilio_console": False,
+            },
+        }
+        if not env.get("ready") or not start_url:
+            payload.update(
+                {
+                    "error": "platform_not_configured",
+                    "reason_code": "missing_twilio_meta_platform_env",
+                    "message": "Faltan variables de Twilio/Meta para iniciar WhatsApp productivo.",
+                    "missing": env.get("missing") or [],
+                    "setup_health": setup_health,
+                }
+            )
+            return jsonify(payload), 409
 
-        redirect_uri = f"{base_url}/api/integrations/whatsapp/callback"
-        auth_url = f"https://www.facebook.com/v17.0/dialog/oauth?client_id={fb_app_id}&redirect_uri={redirect_uri}&state={tenant.id}&scope=whatsapp_business_management,whatsapp_business_messaging"
-
-        return jsonify({"redirect_url": auth_url})
+        return jsonify(payload)
 
     return jsonify({"error": "Integration type not supported"}), 400
 

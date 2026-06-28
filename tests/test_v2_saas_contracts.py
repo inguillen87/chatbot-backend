@@ -666,6 +666,46 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertIn("config_id=cfg-123", payload["embedded_signup"]["start_url"])
         self.assertIn("/webhook/whatsapp", payload["webhooks"]["inbound_message_url"])
 
+    def test_admin_whatsapp_legacy_connect_returns_twilio_tech_provider_adapter(self):
+        self.app.config.update(
+            TWILIO_ACCOUNT_SID="ACparent",
+            TWILIO_AUTH_TOKEN="secret",
+            TWILIO_META_APP_ID="meta-app",
+            TWILIO_META_EMBEDDED_SIGNUP_CONFIG_ID="cfg-123",
+            PUBLIC_FRONTEND_URL="https://app.chatboc.ar",
+        )
+
+        response = self.client.get(
+            f"/api/admin/tenants/{self.tenant.slug}/integrations/whatsapp/connect",
+            headers=self._auth(self.owner),
+        )
+
+        self.assertEqual(response.status_code, 200, response.get_json())
+        payload = response.get_json()
+        self.assertEqual(payload["contract_version"], "tenant.integration.connect.v2_adapter")
+        self.assertEqual(payload["provider"], "twilio_tech_provider")
+        self.assertEqual(payload["contract"]["contract_version"], "twilio.tech_provider.v1")
+        self.assertEqual(payload["frontend_contract"]["render_as"], "twilio_tech_provider_onboarding")
+        self.assertFalse(payload["frontend_contract"]["show_twilio_console"])
+        self.assertEqual(
+            payload["completion_endpoint"],
+            f"/api/v2/tenants/{self.tenant.slug}/whatsapp/tech-provider/embedded-signup",
+        )
+        self.assertIn("/integracion/whatsapp/connect?", payload["redirect_url"])
+        self.assertIn(f"tenant={self.tenant.slug}", payload["redirect_url"])
+        self.assertIn("app_id=meta-app", payload["redirect_url"])
+        self.assertIn("config_id=cfg-123", payload["redirect_url"])
+
+    def test_legacy_whatsapp_oauth_callback_fails_closed(self):
+        response = self.client.get("/api/integrations/whatsapp/callback?code=meta-code&state=1")
+
+        self.assertEqual(response.status_code, 410, response.get_data(as_text=True))
+        payload = response.get_json()
+        self.assertEqual(payload["contract_version"], "tenant.integration.callback.deprecated.v1")
+        self.assertEqual(payload["reason_code"], "use_twilio_tech_provider_flow")
+        self.assertFalse(payload["retryable"])
+        self.assertIn("embedded_signup_completion", payload["replacement_endpoints"])
+
     def test_twilio_tech_provider_requires_full_plan(self):
         self.tenant.plan = "free"
         db.session.add(self.tenant)

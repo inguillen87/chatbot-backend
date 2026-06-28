@@ -64,6 +64,26 @@ def connect(user, provider):
 @integrations_bp.route('/<provider>/callback', methods=['GET'])
 def callback(provider):
     """Handles OAuth callback."""
+    if provider == "whatsapp":
+        return (
+            jsonify(
+                {
+                    "contract_version": "tenant.integration.callback.deprecated.v1",
+                    "error": "deprecated_whatsapp_callback",
+                    "reason_code": "use_twilio_tech_provider_flow",
+                    "message": "WhatsApp productivo se conecta desde el flujo Twilio Tech Provider / Meta Embedded Signup.",
+                    "retryable": False,
+                    "next_action": "open_twilio_tech_provider_onboarding",
+                    "replacement_endpoints": {
+                        "contract": "/api/v2/tenants/{tenant_slug}/whatsapp/tech-provider",
+                        "embedded_signup_completion": "/api/v2/tenants/{tenant_slug}/whatsapp/tech-provider/embedded-signup",
+                        "provider_status": "/api/v2/tenants/{tenant_slug}/integrations/whatsapp/status",
+                    },
+                }
+            ),
+            410,
+        )
+
     code = request.args.get('code')
     state = request.args.get('state') # Used as tenant_id
 
