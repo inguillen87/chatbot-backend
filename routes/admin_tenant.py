@@ -27,6 +27,7 @@ from models import (
     EncRespuesta,
     TicketComentario,
     TicketRealtimeState,
+    Promocion,
 )
 from routes.catalogo import _formatear_producto
 from routes.carrito import _product_query_for_tenant
@@ -656,6 +657,7 @@ def admin_get_catalog(current_user, slug):
             "items_endpoint": f"/api/admin/tenants/{tenant.slug}/catalog/items",
             "item_patch_template": f"/api/admin/tenants/{tenant.slug}/catalog/items/{{item_id}}",
             "publish_endpoint": f"/api/admin/tenants/{tenant.slug}/catalog/publish",
+            "promotions_endpoint": f"/api/pymes/{owner.id}/promociones" if owner else None,
             "bulk_import_v2": "/api/admin/catalog/import",
             "stock_only_import_v2": "/api/admin/catalog/import",
             "quality_endpoint": f"/api/v2/tenants/{tenant.slug}/catalog/quality",
@@ -675,6 +677,7 @@ def admin_get_catalog(current_user, slug):
                 "frontend_must_not_invent_availability": True,
             },
         },
+        "promotions": _catalog_promotions_ops_contract(owner, tenant),
         "frontend_contract": {
             "render_as": "tenant_catalog_inventory_admin",
             "primary_view": "catalog_and_inventory",
@@ -682,10 +685,117 @@ def admin_get_catalog(current_user, slug):
             "supports_bulk_import": True,
             "supports_stock_only_import": True,
             "supports_quality_board": True,
+            "supports_promotions_command_center": True,
         },
     })
     response.headers["X-Request-Id"] = request_id
     return response
+
+
+def _promotion_scopes_for_contract(promotion: Promocion) -> list[dict]:
+    raw_scopes = promotion.alcances
+    try:
+        scopes = raw_scopes.all() if hasattr(raw_scopes, "all") else list(raw_scopes)
+    except Exception:
+        scopes = []
+
+    out = []
+    for scope in scopes:
+        out.append(
+            {
+                "id": scope.id,
+                "tipo_alcance": scope.tipo_alcance,
+                "catalogo_item_id": scope.catalogo_item_id,
+                "nombre_categoria": scope.nombre_categoria,
+                "nombre_marca": scope.nombre_marca,
+            }
+        )
+    return out
+
+
+def _catalog_promotions_ops_contract(owner: User | None, tenant: TenantProfile) -> dict:
+    if not owner:
+        return {
+            "contract_version": "tenant.catalog_promotions_ops.v1",
+            "enabled": False,
+            "reason_code": "missing_owner",
+            "total": 0,
+            "active": 0,
+            "items": [],
+        }
+
+    query = Promocion.query.filter_by(pyme_user_id=owner.id)
+    total = query.count()
+    active = query.filter(Promocion.is_active.is_(True)).count()
+    catalog_badges = CatalogoItem.query.filter(
+        CatalogoItem.tenant_id == tenant.id,
+        CatalogoItem.promocion_info.isnot(None),
+    ).count()
+    recent_promotions = query.order_by(Promocion.is_active.desc(), Promocion.created_at.desc()).limit(8).all()
+
+    return {
+        "contract_version": "tenant.catalog_promotions_ops.v1",
+        "enabled": True,
+        "total": total,
+        "active": active,
+        "inactive": max(total - active, 0),
+        "catalog_items_with_promo_badge": catalog_badges,
+        "endpoint": f"/api/pymes/{owner.id}/promociones",
+        "create_endpoint": f"/api/pymes/{owner.id}/promociones",
+        "activation_endpoint_template": f"/api/pymes/{owner.id}/promociones/{{promotion_id}}/activar",
+        "deactivation_endpoint_template": f"/api/pymes/{owner.id}/promociones/{{promotion_id}}/desactivar",
+        "supported_discount_types": [
+            "PORCENTAJE_PRODUCTO",
+            "PORCENTAJE_CATEGORIA",
+            "PORCENTAJE_MARCA",
+            "COMPRA_X_LLEVA_Y_PRODUCTOS",
+            "CANTIDAD_MINIMA_DESCUENTO_FIJO_PRODUCTO",
+            "CANTIDAD_MINIMA_DESCUENTO_PORCENTAJE_PRODUCTO",
+            "TOTAL_CARRITO_DESCUENTO_PORCENTAJE",
+            "TOTAL_CARRITO_DESCUENTO_FIJO",
+        ],
+        "recommended_quick_actions": [
+            {
+                "id": "cart_percent",
+                "label": "Descuento por compra minima",
+                "tipo_promocion": "TOTAL_CARRITO_DESCUENTO_PORCENTAJE",
+            },
+            {
+                "id": "category_percent",
+                "label": "Descuento por categoria",
+                "tipo_promocion": "PORCENTAJE_CATEGORIA",
+            },
+            {
+                "id": "product_percent",
+                "label": "Descuento por producto",
+                "tipo_promocion": "PORCENTAJE_PRODUCTO",
+            },
+        ],
+        "items": [
+            {
+                "id": promotion.id,
+                "nombre_promocion": promotion.nombre_promocion,
+                "descripcion_publica": promotion.descripcion_publica,
+                "tipo_promocion": promotion.tipo_promocion,
+                "valor_descuento": promotion.valor_descuento,
+                "monto_minimo_carrito": promotion.monto_minimo_carrito,
+                "cantidad_minima_aplicable": promotion.cantidad_minima_aplicable,
+                "is_active": promotion.is_active,
+                "codigo_promocion": promotion.codigo_promocion,
+                "fecha_inicio": promotion.fecha_inicio.isoformat() if promotion.fecha_inicio else None,
+                "fecha_fin": promotion.fecha_fin.isoformat() if promotion.fecha_fin else None,
+                "alcances": _promotion_scopes_for_contract(promotion),
+            }
+            for promotion in recent_promotions
+        ],
+        "frontend_contract": {
+            "render_as": "catalog_promotions_command_center",
+            "supports_cart_discount": True,
+            "supports_category_discount": True,
+            "supports_product_discount": True,
+            "shows_in_marketplace_checkout": True,
+        },
+    }
 
 
 @admin_tenant_bp.route('/api/admin/tenants/<slug>/catalog/draft', methods=['OPTIONS'])

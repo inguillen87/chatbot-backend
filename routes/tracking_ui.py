@@ -84,6 +84,144 @@ def tracking_experience():
     tenant = resolve_tenant_for_order(order)
     return _tracking_json(build_order_tracking_experience(order, tenant))
 
+
+@tracking_ui_bp.route('/api/public/tracking/claims/<int:ticket_id>/messages', methods=['POST'])
+def send_public_claim_tracking_message(ticket_id):
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        data = {}
+
+    mensaje = (
+        data.get("mensaje")
+        or data.get("comentario")
+        or data.get("texto")
+        or ""
+    )
+    mensaje = str(mensaje).strip()
+    pin = (data.get("pin") or request.args.get("pin") or "").strip()
+
+    if not mensaje:
+        return _tracking_error(
+            "mensaje requerido.",
+            400,
+            "tracking_message_required",
+            "send_non_empty_message",
+        )
+    if len(mensaje) > 2000:
+        return _tracking_error(
+            "mensaje demasiado largo.",
+            400,
+            "tracking_message_too_long",
+            "send_shorter_message",
+        )
+
+    ticket = db.session.get(MunicipioTicket, ticket_id)
+    if not ticket:
+        return _tracking_error(
+            "Reclamo no encontrado.",
+            404,
+            "claim_not_found",
+            "check_code_and_pin",
+        )
+    if not pin:
+        return _tracking_error(
+            "pin requerido.",
+            400,
+            "tracking_pin_required",
+            "send_pin",
+        )
+    if not getattr(ticket, "consulta_pin", None) or str(ticket.consulta_pin) != str(pin):
+        return _tracking_error(
+            "PIN invalido.",
+            403,
+            "tracking_pin_invalid",
+            "send_valid_pin",
+        )
+
+    comment = TicketComentario(
+        municipio_ticket_id=ticket.id,
+        comentario=mensaje,
+        fecha=datetime.now(),
+        es_admin=False,
+        origen="public_tracking",
+        user_id=getattr(ticket, "user_id", None),
+    )
+    db.session.add(comment)
+
+    if ticket.estado in ["resuelto", "cerrado"]:
+        ticket.estado = "abierto"
+
+    db.session.commit()
+
+    tenant = db.session.get(TenantProfile, ticket.tenant_id) if ticket.tenant_id else None
+    if not tenant and ticket.municipio_id:
+        tenant = TenantProfile.query.filter_by(municipio_id=ticket.municipio_id).first()
+
+    tracking_payload = build_claim_tracking_experience(ticket, tenant)
+    support = tracking_payload.get("support") or {}
+    try:
+        if tenant:
+            emit_new_chat_message(
+                {
+                    "tenant_type": "municipio",
+                    "tenant_id": tenant.id,
+                    "ticket_id": ticket.id,
+                    "message": {
+                        "comentario": mensaje,
+                        "user_id": ticket.user_id,
+                        "es_admin": False,
+                        "fecha": datetime.now().isoformat(),
+                        "nombre_autor": ticket.nombre_vecino or "Vecino",
+                        "origen": "public_tracking",
+                    },
+                }
+            )
+    except Exception as e:
+        current_app.logger.error(f"Error emitting public tracking claim message: {e}")
+
+    live_mode = support.get("mode") or "offline"
+    comment_payload = {
+        "id": comment.id,
+        "message": comment.comentario,
+        "comentario": comment.comentario,
+        "author": "customer",
+        "source": comment.origen,
+        "created_at": comment.fecha.isoformat() if comment.fecha else None,
+    }
+
+    return _tracking_json(
+        {
+            "contract_version": "tracking.support_message.v1",
+            "success": True,
+            "message": (
+                "Mensaje enviado al canal de atencion en vivo."
+                if live_mode == "live"
+                else "Mensaje recibido. Queda asociado al reclamo para que el equipo lo responda."
+            ),
+            "ticket_id": ticket.id,
+            "ticket_number": ticket.nro_ticket,
+            "comment": comment_payload,
+            "chat_entry": {
+                "comentario": comment.comentario,
+                "fecha": comment_payload["created_at"],
+                "es_admin": False,
+                "autor": "vecino",
+                "autor_nombre": ticket.nombre_vecino or "Yo",
+                "origen": comment.origen,
+            },
+            "delivery": {
+                "mode": live_mode,
+                "channel": "ticket_bound_helpdesk",
+                "realtime_available": live_mode == "live",
+                "offline_queue": live_mode != "live",
+                "admin_surface": "tenant_claims_inbox",
+            },
+            "timeline_endpoint": support.get("endpoints", {}).get("timeline"),
+            "tracking": tracking_payload,
+        },
+        201,
+    )
+
 @tracking_ui_bp.route('/tracking/order/<nro_pedido>')
 def tracking_page(nro_pedido):
     # 1. Fetch Order

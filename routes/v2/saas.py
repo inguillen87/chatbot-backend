@@ -2530,6 +2530,191 @@ def _routes_available(paths: list[str]) -> dict[str, bool]:
     return {path: path in registered for path in paths}
 
 
+def _smoke_e2e_flow(
+    flow_id: str,
+    *,
+    label: str,
+    ready: bool,
+    surface: str,
+    endpoint: str,
+    evidence: Mapping[str, Any] | None = None,
+    next_action: str | None = None,
+    qa_scenario_id: str | None = None,
+    meta_flow_ready: bool | None = None,
+) -> dict[str, Any]:
+    status = "ready" if ready else "needs_attention"
+    return {
+        "id": flow_id,
+        "label": label,
+        "surface": surface,
+        "ready": bool(ready),
+        "status": status,
+        "endpoint": endpoint,
+        "qa_scenario_id": qa_scenario_id,
+        "meta_flow_ready": bool(meta_flow_ready) if meta_flow_ready is not None else None,
+        "evidence": dict(evidence or {}),
+        "next_action": next_action or ("run_live_smoke" if ready else "complete_flow_contract"),
+    }
+
+
+def _build_production_e2e_readiness(
+    *,
+    tenant: TenantProfile | None,
+    admin_payload: Mapping[str, Any] | None = None,
+    marketplace: Mapping[str, Any] | None = None,
+    whatsapp: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    admin_payload = admin_payload or {}
+    marketplace = marketplace or {}
+    whatsapp = whatsapp or {}
+    qa_playbook = whatsapp.get("qa_playbook") if isinstance(whatsapp.get("qa_playbook"), Mapping) else {}
+    scenarios = {
+        str(item.get("id")): item
+        for item in qa_playbook.get("scenarios", [])
+        if isinstance(item, Mapping) and item.get("id")
+    }
+    webviews = whatsapp.get("webview_blueprint") if isinstance(whatsapp.get("webview_blueprint"), Mapping) else {}
+    webview_summary = webviews.get("summary") if isinstance(webviews.get("summary"), Mapping) else {}
+    flow_states = {
+        str(item.get("id")): item
+        for item in webviews.get("flows", [])
+        if isinstance(item, Mapping) and item.get("id")
+    }
+    lead_summary = ((admin_payload.get("lead_capture") or {}).get("summary") or {}) if isinstance(admin_payload.get("lead_capture"), Mapping) else {}
+    survey_summary = ((admin_payload.get("surveys_votings") or {}).get("summary") or {}) if isinstance(admin_payload.get("surveys_votings"), Mapping) else {}
+    freshness = (admin_payload.get("operations") or {}).get("freshness") if isinstance(admin_payload.get("operations"), Mapping) else {}
+    freshness_summary = freshness.get("summary") if isinstance(freshness, Mapping) and isinstance(freshness.get("summary"), Mapping) else {}
+    market_summary = marketplace.get("summary") if isinstance(marketplace.get("summary"), Mapping) else {}
+    commerce = whatsapp.get("commerce") if isinstance(whatsapp.get("commerce"), Mapping) else {}
+    checkout = commerce.get("checkout_experience") if isinstance(commerce.get("checkout_experience"), Mapping) else {}
+
+    def scenario_ready(scenario_id: str) -> bool:
+        scenario = scenarios.get(scenario_id) or {}
+        meta_flow = scenario.get("meta_flow_coverage") if isinstance(scenario.get("meta_flow_coverage"), Mapping) else {}
+        return bool(scenario and (meta_flow.get("ready") is True or scenario.get("ready") is True))
+
+    def flow_meta_ready(flow_id: str) -> bool:
+        flow = flow_states.get(flow_id) or {}
+        if "meta_flow_blueprint_ready" in flow:
+            return bool(flow.get("meta_flow_blueprint_ready"))
+        meta = flow.get("meta_flow_blueprint") if isinstance(flow.get("meta_flow_blueprint"), Mapping) else {}
+        return bool(meta.get("screens") and meta.get("data_contract"))
+
+    flows = [
+        _smoke_e2e_flow(
+            "gov_claim_text_to_tracking",
+            label="Municipio: reclamo por WhatsApp hasta seguimiento publico",
+            surface="municipios_gobiernos",
+            ready=scenario_ready("gov_claim_text_to_tracking") and bool(lead_summary.get("total_recent") is not None),
+            endpoint="/api/public/tracking/experience?kind=claim&code={code}&pin={pin}",
+            qa_scenario_id="gov_claim_text_to_tracking",
+            meta_flow_ready=flow_meta_ready("claim_tracking_helpdesk"),
+            evidence={
+                "tickets_recent": lead_summary.get("total_recent"),
+                "open_tickets": lead_summary.get("open"),
+                "webview_flow": "claim_tracking_helpdesk",
+                "tracking_contract": (whatsapp.get("tracking") or {}).get("contract_version") if isinstance(whatsapp.get("tracking"), Mapping) else None,
+            },
+            next_action="run_whatsapp_claim_text_to_tracking_and_open_public_status",
+        ),
+        _smoke_e2e_flow(
+            "claim_live_or_offline_helpdesk",
+            label="Mesa de ayuda: chat en vivo u offline del reclamo",
+            surface="municipios_gobiernos",
+            ready=flow_meta_ready("claim_tracking_helpdesk") and bool(_routes_available(["/api/public/tracking/claims/<int:ticket_id>/messages"]).get("/api/public/tracking/claims/<int:ticket_id>/messages")),
+            endpoint="/api/public/tracking/claims/{ticket_id}/messages",
+            qa_scenario_id="gov_claim_text_to_tracking",
+            meta_flow_ready=flow_meta_ready("claim_tracking_helpdesk"),
+            evidence={
+                "pin_required": True,
+                "public_message_endpoint": "/api/public/tracking/claims/{ticket_id}/messages",
+                "working_hours_configurable": True,
+            },
+            next_action="validate_public_claim_message_reaches_admin_inbox",
+        ),
+        _smoke_e2e_flow(
+            "pyme_catalog_order_checkout",
+            label="Pyme: catalogo, carrito, pedido y checkout",
+            surface="pymes_empresas",
+            ready=scenario_ready("pyme_catalog_order_checkout")
+            and (bool(checkout.get("ready")) or int(market_summary.get("products") or 0) > 0),
+            endpoint="/api/v2/catalog/quality",
+            qa_scenario_id="pyme_catalog_order_checkout",
+            meta_flow_ready=flow_meta_ready("catalog_order_builder"),
+            evidence={
+                "products": market_summary.get("products"),
+                "ready_to_sell": market_summary.get("ready_to_sell"),
+                "checkout_ready": checkout.get("ready"),
+                "webview_flow": "catalog_order_builder",
+            },
+            next_action="run_catalog_order_checkout_smoke_with_demo_tenant",
+        ),
+        _smoke_e2e_flow(
+            "survey_vote_realtime",
+            label="Encuestas y votaciones con resultado en vivo",
+            surface="gobiernos_empresas_colegios",
+            ready=scenario_ready("survey_vote_realtime")
+            and (int(survey_summary.get("active") or 0) > 0 or int(survey_summary.get("responses") or 0) >= 0),
+            endpoint="/api/v2/surveys",
+            qa_scenario_id="survey_vote_realtime",
+            meta_flow_ready=flow_meta_ready("survey_vote"),
+            evidence={
+                "surveys": survey_summary.get("surveys"),
+                "active": survey_summary.get("active"),
+                "responses": survey_summary.get("responses"),
+                "webview_flow": "survey_vote",
+            },
+            next_action="publish_demo_survey_and_verify_live_results_heatmap",
+        ),
+        _smoke_e2e_flow(
+            "school_family_case",
+            label="Colegios: familia, cuota, comprobante y caso administrativo",
+            surface="colegios_educacion",
+            ready=scenario_ready("school_family_case") and bool((admin_payload.get("education") or {}).get("profile") is not None),
+            endpoint="/api/v2/tenant/admin-experience",
+            qa_scenario_id="school_family_case",
+            meta_flow_ready=flow_meta_ready("school_payment_receipt") or flow_meta_ready("order_checkout"),
+            evidence={
+                "education_profile": (admin_payload.get("education") or {}).get("profile") if isinstance(admin_payload.get("education"), Mapping) else None,
+                "webview_flow": "school_payment_receipt",
+            },
+            next_action="run_school_payment_receipt_and_family_case_demo",
+        ),
+        _smoke_e2e_flow(
+            "analytics_heatmap",
+            label="Analitica: mapa de calor, territorios y frescura operacional",
+            surface="analytics_maps",
+            ready=bool(freshness_summary.get("can_render_heatmap")),
+            endpoint="/api/v2/analytics/operations/heatmap",
+            evidence={
+                "can_render_heatmap": freshness_summary.get("can_render_heatmap"),
+                "freshness_status": freshness.get("status") if isinstance(freshness, Mapping) else None,
+                "realtime_sources": (whatsapp.get("tracking") or {}).get("realtime_sources") if isinstance(whatsapp.get("tracking"), Mapping) else None,
+            },
+            next_action="collect_geocoded_claims_orders_and_render_heatmap_layers",
+        ),
+    ]
+    ready_count = sum(1 for item in flows if item.get("ready"))
+    return {
+        "contract_version": "platform.e2e_flow_readiness.v1",
+        "tenant": _tenant_ref(tenant) if tenant else None,
+        "status": "ready" if ready_count == len(flows) and flows else "needs_attention",
+        "summary": {
+            "total": len(flows),
+            "ready": ready_count,
+            "needs_attention": len(flows) - ready_count,
+            "meta_flow_ready": sum(1 for item in flows if item.get("meta_flow_ready")),
+            "qa_scenarios": len(scenarios),
+            "webview_flows": webview_summary.get("flows_total"),
+        },
+        "flows": flows,
+        "frontend_contract": {
+            "render_as": "e2e_flow_readiness_grid",
+            "recommended_views": ["flow_cards", "evidence", "next_actions", "qa_scenario_links"],
+        },
+    }
+
+
 def _resolve_smoke_tenant(current_user: User, tenant_slug: str | None = None) -> tuple[TenantProfile | None, Any]:
     if is_super_admin_role(getattr(current_user, "rol", None)):
         resolved_slug = tenant_slug or _tenant_slug_from_request()
@@ -2571,6 +2756,7 @@ def production_smoke_v2(current_user, tenant_slug: str | None = None):
         "/api/public/tracking/experience",
     ]
     route_status = _routes_available(required_routes)
+    e2e_readiness = _build_production_e2e_readiness(tenant=None)
     checks = [
         _smoke_check(
             "routes_registered",
@@ -2630,6 +2816,12 @@ def production_smoke_v2(current_user, tenant_slug: str | None = None):
         marketplace = _marketplace_ops_summary(tenant)
         admin_payload = _build_tenant_admin_experience_payload(tenant, start_date=start_date, end_date=end_date, app_config=current_app.config)
         whatsapp = build_whatsapp_experience(tenant, app_config=current_app.config)
+        e2e_readiness = _build_production_e2e_readiness(
+            tenant=tenant,
+            admin_payload=admin_payload,
+            marketplace=marketplace,
+            whatsapp=whatsapp,
+        )
         freshness = (admin_payload.get("operations") or {}).get("freshness") or {}
         first_ticket = TenantTicket.query.filter_by(tenant_id=tenant.id).order_by(TenantTicket.updated_at.desc()).first()
         inbox_item = _inbox_ticket_payload(first_ticket) if first_ticket else None
@@ -2698,12 +2890,17 @@ def production_smoke_v2(current_user, tenant_slug: str | None = None):
             "passed": len([item for item in checks if item.get("ok")]),
             "failed": len(failed),
             "critical_failed": len(critical),
+            "e2e_flows_total": (e2e_readiness.get("summary") or {}).get("total"),
+            "e2e_flows_ready": (e2e_readiness.get("summary") or {}).get("ready"),
         },
         "checks": checks,
+        "e2e_flow_readiness": e2e_readiness,
         "frontend_contract": {
             "render_as": "production_smoke_report",
             "recommended_refresh_seconds": 120,
             "fail_http_query_param": "fail_http=1",
+            "show_e2e_flow_readiness": True,
+            "show_flow_evidence": True,
         },
     }
     http_status = 500 if status == "fail" and request.args.get("fail_http") == "1" else 200

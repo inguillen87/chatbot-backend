@@ -1093,6 +1093,16 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(get_payload["contract_version"], "tenant.catalog_admin.v1")
         self.assertEqual(get_payload["frontend_contract"]["render_as"], "tenant_catalog_inventory_admin")
         self.assertTrue(get_payload["inventory"]["columns"]["stock_columns"])
+        self.assertTrue(get_payload["frontend_contract"]["supports_promotions_command_center"])
+        self.assertEqual(get_payload["promotions"]["contract_version"], "tenant.catalog_promotions_ops.v1")
+        self.assertEqual(get_payload["promotions"]["endpoint"], f"/api/pymes/{self.owner.id}/promociones")
+        self.assertEqual(get_payload["promotions"]["active"], 1)
+        self.assertEqual(get_payload["promotions"]["catalog_items_with_promo_badge"], 1)
+        self.assertEqual(get_payload["promotions"]["items"][0]["nombre_promocion"], "Promo vuelta a clases")
+        self.assertEqual(
+            get_payload["promotions"]["frontend_contract"]["render_as"],
+            "catalog_promotions_command_center",
+        )
 
         draft_response = self.client.put(
             f"/api/admin/tenants/{self.tenant.slug}/catalog/draft",
@@ -1195,6 +1205,21 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertIn("tenant_admin_experience", check_ids)
         self.assertIn("inbox_360", check_ids)
         self.assertEqual(payload["frontend_contract"]["render_as"], "production_smoke_report")
+        self.assertTrue(payload["frontend_contract"]["show_e2e_flow_readiness"])
+        e2e = payload["e2e_flow_readiness"]
+        self.assertEqual(e2e["contract_version"], "platform.e2e_flow_readiness.v1")
+        self.assertGreaterEqual(e2e["summary"]["total"], 6)
+        flow_ids = {item["id"] for item in e2e["flows"]}
+        self.assertIn("gov_claim_text_to_tracking", flow_ids)
+        self.assertIn("claim_live_or_offline_helpdesk", flow_ids)
+        self.assertIn("pyme_catalog_order_checkout", flow_ids)
+        self.assertIn("survey_vote_realtime", flow_ids)
+        self.assertIn("school_family_case", flow_ids)
+        self.assertIn("analytics_heatmap", flow_ids)
+        claim_flow = next(item for item in e2e["flows"] if item["id"] == "gov_claim_text_to_tracking")
+        self.assertEqual(claim_flow["qa_scenario_id"], "gov_claim_text_to_tracking")
+        self.assertEqual(claim_flow["endpoint"], "/api/public/tracking/experience?kind=claim&code={code}&pin={pin}")
+        self.assertIn("next_action", claim_flow)
 
     def test_omnichannel_inbox_action_updates_ticket(self):
         response = self.client.post(
@@ -1515,6 +1540,13 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertIn("public_comment_created", webview_flows["claim_tracking_helpdesk"]["server_confirmation"])
         self.assertIn("order_checkout", webview_flows["order_checkout"]["template_ids"])
         self.assertGreaterEqual(payload["webview_blueprint"]["summary"]["flows_total"], 9)
+        self.assertGreaterEqual(payload["webview_blueprint"]["summary"]["meta_flow_blueprints"], 6)
+        claim_flow_blueprint = webview_flows["claim_tracking_helpdesk"]["meta_flow_blueprint"]
+        self.assertEqual(claim_flow_blueprint["endpoint_mode"], "data_exchange")
+        self.assertIn("ticket_summary", [screen["id"] for screen in claim_flow_blueprint["screens"]])
+        survey_flow_blueprint = webview_flows["survey_vote"]["meta_flow_blueprint"]
+        self.assertEqual(survey_flow_blueprint["completion_event"], "survey_response_saved")
+        self.assertIn("geo_permission", survey_flow_blueprint["data_contract"])
         self.assertIn(
             "claim_live_or_offline_helpdesk",
             payload["webview_blueprint"]["summary"]["transactional_flows"],
@@ -1523,6 +1555,7 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(payload["qa_playbook"]["contract_version"], "whatsapp.qa_playbook.v1")
         self.assertEqual(payload["qa_playbook"]["local_command"], "python scripts/qa_whatsapp_flows.py")
         self.assertGreaterEqual(payload["qa_playbook"]["scenario_count"], 5)
+        self.assertGreaterEqual(payload["qa_playbook"]["meta_flow_ready_count"], 5)
         qa_scenarios = {item["id"]: item for item in payload["qa_playbook"]["scenarios"]}
         self.assertIn("gov_claim_text_to_tracking", qa_scenarios)
         self.assertIn("pyme_catalog_order_checkout", qa_scenarios)
@@ -1530,11 +1563,15 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertIn("survey_vote_realtime", qa_scenarios)
         claim_qa = qa_scenarios["gov_claim_text_to_tracking"]
         self.assertEqual(claim_qa["webview_state"]["id"], "claim_tracking_helpdesk")
+        self.assertTrue(claim_qa["meta_flow_coverage"]["ready"])
+        self.assertIn("ticket_summary", claim_qa["meta_flow_coverage"]["screens"])
+        self.assertIn("ticket_id", claim_qa["meta_flow_coverage"]["data_contract"])
         self.assertIn("junin_texto_reclamo", claim_qa["script_cases"])
         self.assertIn("gov_claim_created", claim_qa["templates"])
         self.assertIn(claim_qa["status"], {"ready", "blocked_templates", "blocked_webview", "needs_template_review"})
         self.assertIn("chatboc_demo_order_start", qa_scenarios["chatboc_demo_hub"]["script_cases"])
         self.assertIn("chatboc_demo_survey_open", qa_scenarios["survey_vote_realtime"]["script_cases"])
+        self.assertEqual(qa_scenarios["survey_vote_realtime"]["meta_flow_coverage"]["completion_event"], "survey_response_saved")
         self.assertIn("requiere TWILIO_AUTH_TOKEN real", payload["qa_playbook"]["live_mode_guardrails"])
         self.assertEqual(payload["message_ux_policy"]["interactive_limits"]["reply_buttons_max"], 3)
         self.assertTrue(payload["message_ux_policy"]["accessibility"]["fixed_menu_audio_cache"]["enabled"])

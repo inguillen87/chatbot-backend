@@ -1,5 +1,5 @@
 from app import db
-from models import CatalogoItem, MarketCart, MarketCartItem, MunicipioTicket, PymePedido, TenantFollower, TenantProfile, User
+from models import CatalogoItem, MarketCart, MarketCartItem, MunicipioTicket, Promocion, PromocionAlcance, PymePedido, TenantFollower, TenantProfile, User
 
 
 def _seed_pyme_tenant_with_catalog():
@@ -86,6 +86,44 @@ def test_public_catalog_alias_prefers_query_tenant_slug_over_type_alias(client):
     assert all(item["tenant_id"] == tenant.id for item in payload)
     assert all(item["tenant_slug"] == tenant.slug for item in payload)
     assert all(item["catalogo_item_id"] == item["catalog_item_id"] for item in payload)
+
+
+def test_public_market_catalog_contract_includes_promotions(client):
+    tenant = _seed_pyme_tenant_with_catalog()
+    owner = tenant.pyme
+    promo = Promocion(
+        pyme_user_id=owner.id,
+        nombre_promocion="15% lanzamiento",
+        descripcion_publica="Descuento para primeros pedidos.",
+        tipo_promocion="PORCENTAJE_CATEGORIA",
+        valor_descuento=15,
+        monto_minimo_carrito=5000,
+        is_active=True,
+    )
+    db.session.add(promo)
+    db.session.flush()
+    db.session.add(
+        PromocionAlcance(
+            promocion_id=promo.id,
+            tipo_alcance="CATEGORIA",
+            nombre_categoria="general",
+        )
+    )
+    db.session.commit()
+
+    resp = client.get(f"/api/public/tenants/{tenant.slug}/catalog?contract=marketplace")
+
+    assert resp.status_code == 200
+    payload = resp.get_json()
+    assert payload["contract_version"] == "public.market_catalog.v1"
+    assert payload["tenant_slug"] == tenant.slug
+    assert len(payload["products"]) >= 1
+    assert payload["promotions"]["contract_version"] == "public.catalog_promotions.v1"
+    assert payload["promotions"]["enabled"] is True
+    assert payload["promotions"]["items"][0]["title"] == "15% lanzamiento"
+    assert payload["promotions"]["items"][0]["alcances"][0]["tipo_alcance"] == "CATEGORIA"
+    assert payload["promotions"]["items"][0]["alcances"][0]["nombre_categoria"] == "general"
+    assert payload["frontend_contract"]["show_promotions_strip"] is True
 
 
 def test_public_catalog_legacy_alias_without_api_prefix(client):

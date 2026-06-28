@@ -1805,6 +1805,90 @@ def _webview_blueprint_payload(
             "status": "ready" if integration_access.get("enabled") else "blocked_by_access",
         },
     ]
+    meta_flow_designs = {
+        "claim_tracking_helpdesk": {
+            "flow_name": "chatboc_claim_tracking_helpdesk",
+            "category": "CUSTOMER_SUPPORT",
+            "endpoint_mode": "data_exchange",
+            "screens": [
+                {"id": "ticket_summary", "title": "Resumen del reclamo", "components": ["status_badge", "timeline", "copy_ticket"]},
+                {"id": "support_options", "title": "Mesa de ayuda", "components": ["live_or_offline_state", "comment_box", "map_link"]},
+                {"id": "confirmation", "title": "Comentario enviado", "components": ["receipt", "next_update_hint"]},
+            ],
+            "completion_event": "public_comment_created",
+            "data_contract": ["ticket_id", "pin", "tenant_slug", "service_window"],
+        },
+        "order_checkout": {
+            "flow_name": "chatboc_order_checkout",
+            "category": "TRANSACTIONAL",
+            "endpoint_mode": "data_exchange",
+            "screens": [
+                {"id": "cart_review", "title": "Revisar pedido", "components": ["items", "stock", "subtotal"]},
+                {"id": "customer_data", "title": "Datos de entrega", "components": ["name", "phone", "address", "notes"]},
+                {"id": "payment_or_confirm", "title": "Confirmar", "components": ["payment_status", "submit_order"]},
+            ],
+            "completion_event": "order_created",
+            "data_contract": ["order_id", "cart_id", "customer_profile", "payment_state"],
+        },
+        "survey_vote": {
+            "flow_name": "chatboc_survey_vote_live",
+            "category": "SURVEY",
+            "endpoint_mode": "data_exchange",
+            "screens": [
+                {"id": "survey_intro", "title": "Participar", "components": ["title", "privacy_note", "start"]},
+                {"id": "questions", "title": "Responder", "components": ["single_choice", "multiple_choice", "free_text", "geo_optional"]},
+                {"id": "live_results", "title": "Resultados", "components": ["bars", "total_votes", "heatmap_link"]},
+            ],
+            "completion_event": "survey_response_saved",
+            "data_contract": ["survey_slug", "contact_key", "response_payload", "geo_permission"],
+        },
+        "catalog_order_builder": {
+            "flow_name": "chatboc_catalog_order_builder",
+            "category": "COMMERCE",
+            "endpoint_mode": "data_exchange",
+            "screens": [
+                {"id": "catalog", "title": "Catalogo", "components": ["search", "categories", "product_cards"]},
+                {"id": "cart", "title": "Carrito", "components": ["quantity_stepper", "promo", "remove_item"]},
+                {"id": "checkout_handoff", "title": "Finalizar", "components": ["customer_data", "confirm_order"]},
+            ],
+            "completion_event": "cart_updated",
+            "data_contract": ["tenant_slug", "catalog_items", "cart_id", "contact_key"],
+        },
+        "government_procedure_intake": {
+            "flow_name": "chatboc_government_procedure_intake",
+            "category": "UTILITY",
+            "endpoint_mode": "data_exchange",
+            "screens": [
+                {"id": "procedure_select", "title": "Tramite", "components": ["procedure_picker", "requirements"]},
+                {"id": "citizen_data", "title": "Datos", "components": ["identity_fields", "attachments", "address"]},
+                {"id": "case_created", "title": "Gestion creada", "components": ["case_number", "office_hours", "tracking_link"]},
+            ],
+            "completion_event": "case_created_after_validation",
+            "data_contract": ["procedure_slug", "citizen_profile", "attachments", "tenant_slug"],
+        },
+        "school_payment_receipt": {
+            "flow_name": "chatboc_school_payment_receipt",
+            "category": "TRANSACTIONAL",
+            "endpoint_mode": "data_exchange",
+            "screens": [
+                {"id": "family_debt", "title": "Cuotas", "components": ["student_selector", "due_items", "amount"]},
+                {"id": "receipt_upload", "title": "Comprobante", "components": ["payment_method", "upload", "notes"]},
+                {"id": "receipt_status", "title": "Estado", "components": ["review_status", "receipt_download"]},
+            ],
+            "completion_event": "receipt_uploaded_or_generated",
+            "data_contract": ["family_id", "student_id", "amount", "receipt_file"],
+        },
+    }
+    for flow in flows:
+        design = meta_flow_designs.get(str(flow.get("id") or ""))
+        if design:
+            flow["meta_flow_blueprint"] = {
+                **design,
+                "safe_for_whatsapp_flow": True,
+                "fallback_surface": flow.get("surface"),
+                "server_confirmation": flow.get("server_confirmation", []),
+            }
+
     return {
         "enabled": bool(integration_access.get("enabled")),
         "respect_access_lock": True,
@@ -1851,6 +1935,7 @@ def _webview_blueprint_payload(
             ],
             "requires_signed_session": True,
             "requires_server_confirmation": True,
+            "meta_flow_blueprints": len(meta_flow_designs),
         },
         "security": {
             "requires_full_plan": True,
@@ -1973,14 +2058,33 @@ def _flow_state_for_id(webview_blueprint: Mapping[str, Any], flow_id: str) -> di
     flows = webview_blueprint.get("flows") if isinstance(webview_blueprint.get("flows"), list) else []
     flow = next((item for item in flows if isinstance(item, Mapping) and _lower(item.get("id")) == _lower(flow_id)), None)
     if not flow:
-        return {"id": flow_id, "status": "missing", "ready": False}
+        return {
+            "id": flow_id,
+            "status": "missing",
+            "ready": False,
+            "meta_flow_blueprint_ready": False,
+            "screens_count": 0,
+            "data_contract_count": 0,
+        }
     status = str(flow.get("status") or "review")
+    meta_flow = flow.get("meta_flow_blueprint") if isinstance(flow.get("meta_flow_blueprint"), Mapping) else {}
+    screens = meta_flow.get("screens") if isinstance(meta_flow.get("screens"), list) else []
+    data_contract = meta_flow.get("data_contract") if isinstance(meta_flow.get("data_contract"), list) else []
     return {
         "id": flow_id,
         "status": status,
         "ready": status == "ready",
         "url_template": flow.get("url_template"),
         "surface": flow.get("surface"),
+        "meta_flow_blueprint_ready": bool(meta_flow and screens and data_contract),
+        "meta_flow_name": meta_flow.get("flow_name"),
+        "meta_flow_category": meta_flow.get("category"),
+        "endpoint_mode": meta_flow.get("endpoint_mode"),
+        "screens_count": len(screens),
+        "screen_ids": [str(screen.get("id") or "") for screen in screens if isinstance(screen, Mapping) and screen.get("id")],
+        "data_contract_count": len(data_contract),
+        "data_contract": [str(item) for item in data_contract],
+        "completion_event": meta_flow.get("completion_event"),
     }
 
 
@@ -2109,16 +2213,27 @@ def _qa_playbook_payload(
                 "next_action": next_action,
                 "template_state": template_state,
                 "webview_state": flow_state,
+                "meta_flow_coverage": {
+                    "ready": bool(flow_state.get("meta_flow_blueprint_ready")),
+                    "flow_name": flow_state.get("meta_flow_name"),
+                    "category": flow_state.get("meta_flow_category"),
+                    "endpoint_mode": flow_state.get("endpoint_mode"),
+                    "screens": flow_state.get("screen_ids") or [],
+                    "data_contract": flow_state.get("data_contract") or [],
+                    "completion_event": flow_state.get("completion_event"),
+                },
             }
         )
 
     ready_count = len([item for item in enriched if item["ready"]])
+    meta_flow_ready_count = len([item for item in enriched if item["meta_flow_coverage"]["ready"]])
     return {
         "contract_version": "whatsapp.qa_playbook.v1",
         "enabled": bool(channel_ready),
         "scenario_count": len(enriched),
         "ready_count": ready_count,
         "blocked_count": len(enriched) - ready_count,
+        "meta_flow_ready_count": meta_flow_ready_count,
         "local_command": "python scripts/qa_whatsapp_flows.py",
         "live_mode_env": "QA_WHATSAPP_USE_CONFIGURED_DB=1",
         "safe_default": "isolated_in_memory_db",
@@ -2137,6 +2252,7 @@ def _qa_playbook_payload(
             "render_as": "whatsapp_qa_playbook",
             "show_ready_matrix": True,
             "show_script_cases": True,
+            "show_meta_flow_coverage": True,
             "show_live_mode_warning": True,
         },
     }

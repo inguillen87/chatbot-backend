@@ -7,6 +7,7 @@ os.environ.setdefault("FLASK_SKIP_GLOBAL_APP", "1")
 from app import create_app, db
 from config import Config
 from models import MunicipioTicket, PymePedido, TenantProfile, TicketComentario, User
+from services.tracking_experience import TRACKING_EXPERIENCE_CONTRACT_VERSION
 
 
 class TrackingExperienceTestConfig(Config):
@@ -122,7 +123,7 @@ class TrackingExperienceContractTest(unittest.TestCase):
         self.assertEqual(payload["support"]["contract_version"], "tracking.support.v1")
         self.assertEqual(payload["support"]["ticket"]["id"], self.claim.id)
         self.assertEqual(payload["support"]["ticket"]["requires_pin"], True)
-        self.assertEqual(payload["support"]["endpoints"]["send_message"], f"/tickets/chat/{self.claim.id}/responder_ciudadano")
+        self.assertEqual(payload["support"]["endpoints"]["send_message"], f"/api/public/tracking/claims/{self.claim.id}/messages")
         self.assertEqual(payload["support"]["live_chat"]["contract_version"], "live_chat.schedule.v1")
         self.assertEqual(payload["support"]["live_chat"]["source"], "tenant_config")
         self.assertEqual(payload["support"]["conversation"]["message_count"], 1)
@@ -135,6 +136,52 @@ class TrackingExperienceContractTest(unittest.TestCase):
         self.assertFalse(payload["support"]["webview_policy"]["external_redirect_required"])
         self.assertEqual(payload["support"]["admin_response_surface"]["id"], "tenant_claims_inbox")
         self.assertEqual(payload["support"]["admin_response_surface"]["thread_binding"], "municipio_ticket_id")
+        action_by_id = {item["id"]: item for item in payload["actions"]}
+        self.assertEqual(
+            action_by_id["send_message"]["endpoint"],
+            f"/api/public/tracking/claims/{self.claim.id}/messages",
+        )
+
+    def test_public_claim_support_message_endpoint_requires_pin_and_updates_tracking(self):
+        rejected = self.client.post(
+            f"/api/public/tracking/claims/{self.claim.id}/messages",
+            json={"mensaje": "hola seguimiento"},
+        )
+        self.assertEqual(rejected.status_code, 400)
+        rejected_payload = rejected.get_json()
+        self.assertEqual(rejected_payload["reason_code"], "tracking_pin_required")
+        self.assertEqual(rejected_payload["contract_version"], TRACKING_EXPERIENCE_CONTRACT_VERSION)
+
+        accepted = self.client.post(
+            f"/api/public/tracking/claims/{self.claim.id}/messages?pin=654321",
+            json={"mensaje": "hola seguimiento"},
+            headers={"X-Request-Id": "track-message-1"},
+        )
+        self.assertEqual(accepted.status_code, 201)
+        payload = accepted.get_json()
+        self.assertEqual(payload["contract_version"], "tracking.support_message.v1")
+        self.assertEqual(payload["request_id"], "track-message-1")
+        self.assertEqual(accepted.headers.get("X-Request-Id"), "track-message-1")
+        self.assertEqual(payload["ticket_id"], self.claim.id)
+        self.assertEqual(payload["comment"]["message"], "hola seguimiento")
+        self.assertEqual(payload["comment"]["author"], "customer")
+        self.assertEqual(payload["comment"]["source"], "public_tracking")
+        self.assertEqual(payload["delivery"]["channel"], "ticket_bound_helpdesk")
+        self.assertEqual(payload["delivery"]["admin_surface"], "tenant_claims_inbox")
+        self.assertEqual(payload["timeline_endpoint"], f"/tickets/municipio/{self.claim.id}/timeline")
+        self.assertEqual(payload["tracking"]["support"]["conversation"]["message_count"], 2)
+        self.assertEqual(
+            payload["tracking"]["support"]["endpoints"]["send_message"],
+            f"/api/public/tracking/claims/{self.claim.id}/messages",
+        )
+
+        persisted = TicketComentario.query.filter_by(
+            municipio_ticket_id=self.claim.id,
+            comentario="hola seguimiento",
+            origen="public_tracking",
+            es_admin=False,
+        ).first()
+        self.assertIsNotNone(persisted)
 
     def test_public_order_tracking_experience_returns_items_and_progress(self):
         response = self.client.get(

@@ -191,7 +191,7 @@ def _claim_support_contract(
     available = bool(live_chat.get("enabled") and live_chat.get("available"))
     mode = "live" if available else "offline"
     ticket_id = getattr(ticket, "id", None)
-    public_endpoint = f"/tickets/chat/{ticket_id}/responder_ciudadano" if ticket_id else None
+    public_endpoint = f"/api/public/tracking/claims/{ticket_id}/messages" if ticket_id else None
     timeline_endpoint = f"/tickets/municipio/{ticket_id}/timeline" if ticket_id else None
     municipio_id = getattr(ticket, "municipio_id", None)
     socket_room = f"municipio_{municipio_id}" if municipio_id else None
@@ -453,7 +453,7 @@ def build_claim_tracking_experience(ticket: MunicipioTicket, tenant: TenantProfi
         "timeline": [item for item in timeline if item.get("created_at") or item.get("message") or item.get("status")],
         "support": _claim_support_contract(ticket, tenant, code=display_code, conversation=conversation),
         "actions": [
-            {"id": "send_message", "label": "Enviar mensaje", "endpoint": f"/tickets/chat/{ticket.id}/responder_ciudadano", "requires": ["pin", "comentario"]},
+            {"id": "send_message", "label": "Enviar mensaje", "endpoint": f"/api/public/tracking/claims/{ticket.id}/messages", "requires": ["pin", "comentario"]},
             {"id": "open_tracking_page", "label": "Abrir seguimiento", "url": f"/tracking/claim/{code}"},
         ],
         "frontend_contract": {
