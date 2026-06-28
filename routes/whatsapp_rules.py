@@ -295,6 +295,7 @@ def sync_twilio_content_template(user: User):
                 "approval_request": approval_request,
                 "content_family": manifest_item.get("content_family"),
                 "action_capabilities": manifest_item.get("action_capabilities") or {},
+                "meta_business": manifest_item.get("meta_business") or {},
                 "quality_gate": manifest_item.get("quality_gate") or {},
             }
         )
@@ -306,6 +307,7 @@ def sync_twilio_content_template(user: User):
                 "reason": "already_registered",
                 "template_id": template_id,
                 "registry": _template_registry_payload(existing),
+                "meta_business": manifest_item.get("meta_business") or {},
             }
         )
 
@@ -342,6 +344,7 @@ def sync_twilio_content_template(user: User):
         "twilio_type": manifest_item.get("twilio_type"),
         "content_family": manifest_item.get("content_family"),
         "action_capabilities": manifest_item.get("action_capabilities") or {},
+        "meta_business": manifest_item.get("meta_business") or {},
         "approval_status": approval_status,
         "approval_requested": submit_for_approval,
         "sample_values": manifest_item.get("sample_values") or {},
@@ -377,6 +380,7 @@ def sync_twilio_content_template(user: User):
             "content_sid": content_sid,
             "approval_status": approval_status,
             "registry": _template_registry_payload(row),
+            "meta_business": manifest_item.get("meta_business") or {},
         }
     ), 201
 

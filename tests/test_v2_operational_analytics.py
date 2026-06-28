@@ -9,7 +9,7 @@ os.environ.setdefault("FLASK_SKIP_GLOBAL_APP", "1")
 
 from app import create_app, db
 from config import Config
-from models import AnalyticsEventV2, ChatSessionContext, EncEncuesta, EncRespuesta, MunicipioTicket, TenantProfile, TenantTicket, TicketRealtimeState, User
+from models import AnalyticsEventV2, ChatSessionContext, EncEncuesta, EncLink, EncRespuesta, MunicipioTicket, TenantProfile, TenantTicket, TicketRealtimeState, User
 
 
 class V2OperationalAnalyticsTestConfig(Config):
@@ -119,6 +119,7 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         )
         db.session.add(encuesta)
         db.session.flush()
+        db.session.add(EncLink(encuesta_id=encuesta.id, slug_publico="voto-plaza-publica", canal="whatsapp"))
         db.session.add(
             EncRespuesta(
                 encuesta_id=encuesta.id,
@@ -202,6 +203,22 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertEqual((payload.get("summary") or {}).get("open_tickets"), 2)
         self.assertEqual((payload.get("summary") or {}).get("overdue_tickets"), 1)
         self.assertEqual((payload.get("surveys") or {}).get("summary", {}).get("votaciones_live"), 1)
+        live_control = (payload.get("surveys") or {}).get("live_control_room") or {}
+        self.assertEqual(live_control.get("contract_version"), "operations.survey_live_control_room.v1")
+        self.assertEqual((live_control.get("summary") or {}).get("live_surveys"), 1)
+        self.assertEqual((live_control.get("summary") or {}).get("responses_with_geo"), 1)
+        self.assertEqual((live_control.get("realtime") or {}).get("refresh_seconds"), 10)
+        self.assertIn("survey.vote.created", (live_control.get("realtime") or {}).get("socket_events") or [])
+        monitor = (live_control.get("monitors") or [])[0]
+        self.assertEqual(monitor.get("slug"), "voto-plaza")
+        self.assertEqual(monitor.get("public_token"), "voto-plaza-publica")
+        self.assertEqual(monitor.get("public_url"), "/e/voto-plaza-publica")
+        self.assertEqual(monitor.get("live_results_endpoint"), "/api/v2/public/surveys/voto-plaza-publica/live-results")
+        self.assertEqual(monitor.get("whatsapp_template_id"), "gov_survey_invite")
+        live_response = self.client.get(f"{monitor.get('live_results_endpoint')}?include_heatmap=0")
+        self.assertEqual(live_response.status_code, 200)
+        self.assertEqual(live_response.get_json().get("contract_version"), "surveys.live_results.v2")
+        self.assertTrue(any(action.get("id") == "sync_whatsapp_survey_template" for action in live_control.get("actions") or []))
         self.assertEqual((payload.get("chats") or {}).get("summary", {}).get("whatsapp_messages"), 1)
         self.assertEqual((payload.get("employees") or {}).get("summary", {}).get("employees"), 1)
         self.assertTrue((payload.get("maps") or {}).get("heatmap", {}).get("hotspots"))

@@ -160,6 +160,9 @@ def test_twilio_content_sync_dry_run_returns_creation_payload(client, app):
     assert payload["approval_request"]["category"] == "UTILITY"
     assert payload["content_family"] == "cta_webview"
     assert payload["action_capabilities"]["webview_ready"] is True
+    assert payload["meta_business"]["recommended_surface"] in {"whatsapp_flow", "commerce_catalog"}
+    assert payload["meta_business"]["cta_webview_candidate"] is True
+    assert payload["meta_business"]["outside_24h_requires_approval"] is True
     assert payload["create_request"]["types"]["twilio/call-to-action"]["actions"][0]["type"] == "URL"
     assert payload["quality_gate"]["webview_ready"] is True
     assert payload["quality_gate"]["requires_signed_url_for_cta"] is True

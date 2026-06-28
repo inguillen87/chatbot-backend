@@ -194,6 +194,12 @@ def _claim_support_contract(
     public_endpoint = f"/tickets/chat/{ticket_id}/responder_ciudadano" if ticket_id else None
     timeline_endpoint = f"/tickets/municipio/{ticket_id}/timeline" if ticket_id else None
     municipio_id = getattr(ticket, "municipio_id", None)
+    socket_room = f"municipio_{municipio_id}" if municipio_id else None
+    schedule_label = live_chat.get("description") or (
+        f"{live_chat.get('start_time')} a {live_chat.get('end_time')}"
+        if live_chat.get("start_time") and live_chat.get("end_time")
+        else None
+    )
     return {
         "contract_version": "tracking.support.v1",
         "enabled": True,
@@ -207,6 +213,18 @@ def _claim_support_contract(
                 if available
                 else "Tu mensaje queda asociado al reclamo para que el equipo lo responda en horario administrativo."
             ),
+        },
+        "service_window": {
+            "mode": mode,
+            "live_available": available,
+            "accepts_messages": True,
+            "offline_queue_enabled": not available,
+            "admin_configurable": True,
+            "tenant_schedule_source": live_chat.get("source"),
+            "schedule_label": schedule_label,
+            "timezone": live_chat.get("timezone"),
+            "outside_hours_mode": "offline_message",
+            "next_action": "socket_live_message" if available else "queue_ticket_comment",
         },
         "ticket": {
             "id": ticket_id,
@@ -227,9 +245,29 @@ def _claim_support_contract(
             "timeline": timeline_endpoint,
         },
         "socket": {
+            "enabled": available,
             "event": "ticket.comment.created",
-            "room": f"municipio_{municipio_id}" if municipio_id else None,
+            "room": socket_room,
             "requires_auth": True,
+            "fallback_transport": "http_polling",
+        },
+        "polling": {
+            "enabled": True,
+            "interval_ms": 10000 if available else 30000,
+            "endpoint": timeline_endpoint,
+        },
+        "webview_policy": {
+            "stay_inside_tracking": True,
+            "external_redirect_required": False,
+            "pin_required_for_public_reply": True,
+            "safe_for_whatsapp_cta": True,
+        },
+        "admin_response_surface": {
+            "id": "tenant_claims_inbox",
+            "label": "Inbox de reclamos",
+            "endpoint": "/api/v2/inbox/omnichannel",
+            "thread_binding": "municipio_ticket_id",
+            "socket_room": socket_room,
         },
         "ui": {
             "render_as": "ticket_bound_helpdesk",

@@ -416,6 +416,13 @@ def _survey_metrics(tenant: TenantProfile, start_date: datetime, end_date: datet
     active_encuestas = [encuesta for encuesta in encuestas if _norm(encuesta.estado, "") in _LIVE_SURVEY_STATES]
     responses_by_channel = Counter(_norm(respuesta.canal, "unknown") for respuesta in enc_respuestas)
     responses_with_geo = [respuesta for respuesta in enc_respuestas if respuesta.lat is not None and respuesta.lng is not None]
+    live_control_room = _survey_live_control_room(
+        tenant=tenant,
+        live_votaciones=live_votaciones,
+        responses=enc_respuestas,
+        responses_by_channel=responses_by_channel,
+        responses_with_geo=responses_with_geo,
+    )
 
     return {
         "summary": {
@@ -435,9 +442,122 @@ def _survey_metrics(tenant: TenantProfile, start_date: datetime, end_date: datet
                 "title": encuesta.titulo,
                 "status": encuesta.estado,
                 "show_live_results": bool(encuesta.mostrar_resultados_envivo),
+                "public_token": _public_survey_token(encuesta),
+                "live_results_endpoint": f"/api/v2/public/surveys/{_public_survey_token(encuesta)}/live-results",
+                "public_url": f"/e/{_public_survey_token(encuesta)}",
             }
             for encuesta in live_votaciones[:10]
         ],
+        "live_control_room": live_control_room,
+    }
+
+
+def _public_survey_token(encuesta: EncEncuesta) -> str:
+    for link in getattr(encuesta, "links", []) or []:
+        slug_publico = str(getattr(link, "slug_publico", "") or "").strip()
+        if slug_publico:
+            return slug_publico
+    return str(getattr(encuesta, "slug", "") or "").strip()
+
+
+def _survey_live_control_room(
+    *,
+    tenant: TenantProfile,
+    live_votaciones: list[EncEncuesta],
+    responses: list[EncRespuesta],
+    responses_by_channel: Counter,
+    responses_with_geo: list[EncRespuesta],
+) -> dict[str, Any]:
+    response_by_survey = Counter(int(response.encuesta_id or 0) for response in responses)
+    geo_by_survey = Counter(int(response.encuesta_id or 0) for response in responses_with_geo)
+    channel_by_survey: dict[int, Counter] = {}
+    for response in responses:
+        survey_id = int(response.encuesta_id or 0)
+        channel_by_survey.setdefault(survey_id, Counter())[_norm(response.canal, "unknown")] += 1
+
+    monitors: list[dict[str, Any]] = []
+    for encuesta in live_votaciones[:10]:
+        survey_id = int(encuesta.id)
+        public_token = _public_survey_token(encuesta)
+        total = int(response_by_survey.get(survey_id, 0))
+        geo = int(geo_by_survey.get(survey_id, 0))
+        show_live_results = bool(encuesta.mostrar_resultados_envivo)
+        published = _norm(encuesta.estado, "") in _LIVE_SURVEY_STATES
+        monitors.append(
+            {
+                "id": survey_id,
+                "slug": encuesta.slug,
+                "public_token": public_token,
+                "title": encuesta.titulo,
+                "status": encuesta.estado,
+                "type": encuesta.tipo,
+                "live": bool(encuesta.es_votacion_envivo),
+                "published": published,
+                "show_live_results": show_live_results,
+                "responses": total,
+                "responses_with_geo": geo,
+                "geo_coverage_rate": round((geo / total) * 100, 2) if total else 0.0,
+                "channels": _counter(channel_by_survey.get(survey_id, Counter())),
+                "public_url": f"/e/{public_token}",
+                "admin_url": f"/admin/encuestas/{survey_id}/analytics",
+                "live_results_endpoint": f"/api/v2/public/surveys/{public_token}/live-results",
+                "heatmap_endpoint": f"/api/v2/public/surveys/{public_token}/live-results?include_heatmap=1",
+                "whatsapp_template_id": "gov_survey_invite" if getattr(tenant, "tipo", "") == "municipio" else "survey_invite",
+                "state": (
+                    "live_collecting"
+                    if published and show_live_results
+                    else "published_hidden_results"
+                    if published
+                    else "setup_required"
+                ),
+            }
+        )
+
+    total_responses = sum(int(item["responses"]) for item in monitors)
+    total_geo = sum(int(item["responses_with_geo"]) for item in monitors)
+    return {
+        "contract_version": "operations.survey_live_control_room.v1",
+        "enabled": bool(monitors),
+        "state": "live" if any(item["state"] == "live_collecting" for item in monitors) else "setup_required" if monitors else "empty",
+        "summary": {
+            "live_surveys": len(monitors),
+            "responses": total_responses,
+            "responses_with_geo": total_geo,
+            "geo_coverage_rate": round((total_geo / total_responses) * 100, 2) if total_responses else 0.0,
+            "channels": _counter(responses_by_channel),
+        },
+        "monitors": monitors,
+        "realtime": {
+            "enabled": True,
+            "refresh_seconds": 10 if monitors else 30,
+            "socket_events": ["survey.vote.created", "survey.response.created", "analytics.event.created"],
+            "fallback_polling": True,
+        },
+        "actions": [
+            {
+                "id": "open_surveys_admin",
+                "label": "Abrir encuestas",
+                "endpoint": "/api/v2/surveys",
+                "route": "/admin/encuestas",
+            },
+            {
+                "id": "open_operations_heatmap",
+                "label": "Ver mapa operativo",
+                "endpoint": "/api/v2/analytics/operations/heatmap",
+                "route": "/analytics?tab=operations",
+            },
+            {
+                "id": "sync_whatsapp_survey_template",
+                "label": "Preparar plantilla WhatsApp",
+                "endpoint": "/api/admin/templates/twilio-content/sync",
+                "template_id": "gov_survey_invite" if getattr(tenant, "tipo", "") == "municipio" else "survey_invite",
+            },
+        ],
+        "frontend_contract": {
+            "render_as": "survey_live_control_room",
+            "recommended_widgets": ["live_vote_cards", "channel_mix", "heatmap_coverage", "whatsapp_template_action"],
+            "empty_state": "show_create_or_publish_survey_cta",
+        },
     }
 
 

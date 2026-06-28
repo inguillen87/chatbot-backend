@@ -1002,6 +1002,22 @@ def _template_creation_manifest_item(
         variables=variables,
         item=item,
     )
+    meta_surface = execution.get("meta_surface") if isinstance(execution.get("meta_surface"), Mapping) else {}
+    meta_business = {
+        "recommended_surface": (
+            "whatsapp_flow"
+            if bool(meta_surface.get("whatsapp_flows_candidate"))
+            else "commerce_catalog"
+            if bool(meta_surface.get("commerce_catalog_candidate"))
+            else "approved_template"
+        ),
+        "whatsapp_flows_candidate": bool(meta_surface.get("whatsapp_flows_candidate")),
+        "commerce_catalog_candidate": bool(meta_surface.get("commerce_catalog_candidate")),
+        "payments_native_candidate": bool(meta_surface.get("payments_native_candidate")),
+        "cta_webview_candidate": bool(capabilities["webview_ready"]),
+        "approval_category": category,
+        "outside_24h_requires_approval": True,
+    }
 
     return {
         "id": item.get("id") or item.get("name"),
@@ -1012,6 +1028,7 @@ def _template_creation_manifest_item(
         "twilio_type": twilio_type,
         "content_family": capabilities["content_family"],
         "action_capabilities": capabilities,
+        "meta_business": meta_business,
         "variables": variables,
         "sample_values": sample_values,
         "create_request": {
@@ -1068,10 +1085,14 @@ def _template_creation_manifest_payload(
     ]
     by_type: dict[str, int] = {}
     by_content_family: dict[str, int] = {}
+    by_meta_surface: dict[str, int] = {}
     for item in manifests:
         by_type[str(item.get("twilio_type") or "twilio/text")] = by_type.get(str(item.get("twilio_type") or "twilio/text"), 0) + 1
         family = str(item.get("content_family") or "text")
         by_content_family[family] = by_content_family.get(family, 0) + 1
+        meta_business = item.get("meta_business") if isinstance(item.get("meta_business"), Mapping) else {}
+        surface = str(meta_business.get("recommended_surface") or "approved_template")
+        by_meta_surface[surface] = by_meta_surface.get(surface, 0) + 1
 
     return {
         "contract_version": "twilio.content.creation_manifest.v1",
@@ -1081,11 +1102,35 @@ def _template_creation_manifest_payload(
         "actionable_total": len(actionable),
         "by_twilio_type": by_type,
         "by_content_family": by_content_family,
+        "by_meta_surface": by_meta_surface,
         "webview_ready_total": sum(
             1
             for item in manifests
             if bool((item.get("action_capabilities") or {}).get("webview_ready"))
         ),
+        "meta_business_readiness": {
+            "whatsapp_flows_candidates": sum(
+                1
+                for item in manifests
+                if bool(((item.get("meta_business") or {}).get("whatsapp_flows_candidate")))
+            ),
+            "commerce_catalog_candidates": sum(
+                1
+                for item in manifests
+                if bool(((item.get("meta_business") or {}).get("commerce_catalog_candidate")))
+            ),
+            "payments_native_candidates": sum(
+                1
+                for item in manifests
+                if bool(((item.get("meta_business") or {}).get("payments_native_candidate")))
+            ),
+            "cta_webview_candidates": sum(
+                1
+                for item in manifests
+                if bool(((item.get("meta_business") or {}).get("cta_webview_candidate")))
+            ),
+            "recommendation": "Usar templates aprobadas para recontacto, WhatsApp Flows donde Meta lo habilite y webviews firmados para pagos/datos sensibles.",
+        },
         "items": actionable[:20],
         "all_template_ids": [str(item.get("id") or "") for item in manifests if item.get("id")],
         "policy": {

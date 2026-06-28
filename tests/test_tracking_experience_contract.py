@@ -126,6 +126,15 @@ class TrackingExperienceContractTest(unittest.TestCase):
         self.assertEqual(payload["support"]["live_chat"]["contract_version"], "live_chat.schedule.v1")
         self.assertEqual(payload["support"]["live_chat"]["source"], "tenant_config")
         self.assertEqual(payload["support"]["conversation"]["message_count"], 1)
+        self.assertEqual(payload["support"]["service_window"]["tenant_schedule_source"], "tenant_config")
+        self.assertTrue(payload["support"]["service_window"]["accepts_messages"])
+        self.assertEqual(payload["support"]["service_window"]["outside_hours_mode"], "offline_message")
+        self.assertEqual(payload["support"]["socket"]["fallback_transport"], "http_polling")
+        self.assertEqual(payload["support"]["polling"]["endpoint"], f"/tickets/municipio/{self.claim.id}/timeline")
+        self.assertTrue(payload["support"]["webview_policy"]["stay_inside_tracking"])
+        self.assertFalse(payload["support"]["webview_policy"]["external_redirect_required"])
+        self.assertEqual(payload["support"]["admin_response_surface"]["id"], "tenant_claims_inbox")
+        self.assertEqual(payload["support"]["admin_response_surface"]["thread_binding"], "municipio_ticket_id")
 
     def test_public_order_tracking_experience_returns_items_and_progress(self):
         response = self.client.get(
