@@ -23,7 +23,7 @@ from services.encuestas_analytics_service import (
     get_summary,
     get_timeseries,
 )
-from services.encuestas_service import EncuestaError
+from services.encuestas_service import EncuestaError, get_encuesta
 from utils.auth_helpers import token_requerido
 from utils.permissions import require_role
 
@@ -51,6 +51,9 @@ def _parse_filtros() -> dict:
         filtros[key] = parts if len(parts) > 1 else parts[0]
     return filtros
 
+
+def _authorize_encuesta(current_user, encuesta_id: int) -> None:
+    get_encuesta(encuesta_id, user=current_user)
 
 
 
@@ -134,6 +137,7 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
     def summary(current_user, encuesta_id: int):
         filtros = _parse_filtros()
         try:
+            _authorize_encuesta(current_user, encuesta_id)
             data = get_summary(encuesta_id, filtros)
         except EncuestaError as err:
             return jsonify(err.to_dict()), err.status_code
@@ -149,6 +153,7 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
         filtros = _parse_filtros()
         granularity = request.args.get("granularity", "day")
         try:
+            _authorize_encuesta(current_user, encuesta_id)
             data = get_timeseries(encuesta_id, granularity, filtros)
         except EncuestaError as err:
             return jsonify(err.to_dict()), err.status_code
@@ -166,6 +171,7 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
         filtros = _parse_filtros()
         resolution = request.args.get("resolution", type=int)
         try:
+            _authorize_encuesta(current_user, encuesta_id)
             data = get_heatmap(encuesta_id, filtros, resolution=resolution)
         except EncuestaError as err:
             return jsonify(err.to_dict()), err.status_code
@@ -194,6 +200,7 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
         window_minutes = request.args.get("window_minutes", default=10, type=int) or 10
         horizon_minutes = request.args.get("horizon_minutes", default=60, type=int) or 60
         try:
+            _authorize_encuesta(current_user, encuesta_id)
             data = get_forecast(
                 encuesta_id,
                 filtros=filtros,
@@ -213,6 +220,7 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
         window_minutes = request.args.get("window_minutes", default=10, type=int) or 10
         min_activity = request.args.get("min_activity", default=5, type=int) or 5
         try:
+            _authorize_encuesta(current_user, encuesta_id)
             data = get_alerts(
                 encuesta_id,
                 filtros=filtros,
@@ -230,6 +238,7 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
     def brief(current_user, encuesta_id: int):
         filtros = _parse_filtros()
         try:
+            _authorize_encuesta(current_user, encuesta_id)
             data = get_executive_brief(encuesta_id, filtros)
         except EncuestaError as err:
             return jsonify(err.to_dict()), err.status_code
@@ -249,6 +258,7 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
         use_envelope = str(request.args.get("envelope") or "").strip().lower() in {"1", "true", "yes", "on"}
         fast_mode = str(request.args.get("fast") or request.args.get("lite") or "").strip().lower() in {"1", "true", "yes", "on"}
         try:
+            _authorize_encuesta(current_user, encuesta_id)
             data = get_dashboard_bundle(encuesta_id, filtros, granularity=granularity, fast_mode=fast_mode)
         except EncuestaError as err:
             return jsonify(err.to_dict()), err.status_code
@@ -323,6 +333,7 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
             if request.args.get(f"b_{key}")
         }
         try:
+            _authorize_encuesta(current_user, encuesta_id)
             data = get_segment_compare(
                 encuesta_id,
                 filtros=filtros,
@@ -341,6 +352,7 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
         filtros = _parse_filtros()
         limit = request.args.get("limit", default=5, type=int) or 5
         try:
+            _authorize_encuesta(current_user, encuesta_id)
             data = get_segment_suggestions(encuesta_id, filtros=filtros, limit=limit)
         except EncuestaError as err:
             return jsonify(err.to_dict()), err.status_code
@@ -355,6 +367,7 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
         burst_window = request.args.get("burst_window_minutes", default=5, type=int) or 5
         burst_threshold = request.args.get("burst_threshold", default=10, type=int) or 10
         try:
+            _authorize_encuesta(current_user, encuesta_id)
             data = get_anomaly_report(
                 encuesta_id,
                 filtros=filtros,
@@ -371,6 +384,10 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
     @require_role("admin", "empleado", "super_admin")
     def export_view(current_user, encuesta_id: int):
         filtros = _parse_filtros()
+        try:
+            _authorize_encuesta(current_user, encuesta_id)
+        except EncuestaError as err:
+            return jsonify(err.to_dict()), err.status_code
 
         def generate():
             try:
@@ -390,6 +407,7 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
         request_id = request.headers.get("X-Request-Id") or f"req_{uuid.uuid4().hex}"
         filtros = _parse_filtros()
         try:
+            _authorize_encuesta(current_user, encuesta_id)
             summary = get_summary(encuesta_id, filtros)
             heatmap = get_heatmap(encuesta_id, filtros)
             brief_data = get_executive_brief(encuesta_id, filtros)

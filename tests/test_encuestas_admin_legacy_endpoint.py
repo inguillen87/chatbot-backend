@@ -801,6 +801,82 @@ def test_admin_encuestas_export_pdf_error_includes_request_id(client, monkeypatc
     assert data["reason_code"] == "analytics_export_failed"
 
 
+def test_admin_encuestas_analytics_rechaza_cross_tenant_access(client, monkeypatch, admin_user):
+    monkeypatch.setattr(feature_flags, "FEATURE_ENCUESTAS", True)
+    monkeypatch.setattr(encuestas_analytics_routes, "FEATURE_ENCUESTAS", True)
+
+    foreign_admin = User(
+        email="analytics-foreign-admin@example.com",
+        name="Foreign Admin",
+        rol="admin",
+        municipio_id=999,
+        tipo_chat="municipio",
+    )
+    foreign_admin.set_password("demo1234")
+    db.session.add(foreign_admin)
+
+    encuesta = EncEncuesta(
+        tenant_id=admin_user.municipio_id,
+        slug="encuesta-cross-tenant-analytics",
+        titulo="Encuesta cross tenant analytics",
+        estado="publicada",
+    )
+    db.session.add(encuesta)
+    db.session.commit()
+
+    calls = {"summary": 0, "dashboard": 0, "heatmap": 0, "csv": 0}
+
+    def _fake_summary(encuesta_id, filtros=None):
+        calls["summary"] += 1
+        return {
+            "encuesta_id": encuesta_id,
+            "total_respuestas": 0,
+            "participantes_unicos": 0,
+            "tasa_completitud": 0,
+            "preguntas": [],
+        }
+
+    def _fake_dashboard(encuesta_id, filtros=None, **_kwargs):
+        calls["dashboard"] += 1
+        return {"encuesta_id": encuesta_id, "meta": {"module_state": {}}}
+
+    def _fake_heatmap(encuesta_id, filtros=None, **_kwargs):
+        calls["heatmap"] += 1
+        return {"encuesta_id": encuesta_id, "points": [], "cells": [], "metadata": {}}
+
+    def _fake_export_csv(encuesta_id, filtros=None):
+        calls["csv"] += 1
+        yield "encuesta_id,total\n"
+        yield f"{encuesta_id},0\n"
+
+    monkeypatch.setattr(encuestas_analytics_routes, "get_summary", _fake_summary)
+    monkeypatch.setattr(encuestas_analytics_routes, "get_dashboard_bundle", _fake_dashboard)
+    monkeypatch.setattr(encuestas_analytics_routes, "get_heatmap", _fake_heatmap)
+    monkeypatch.setattr(encuestas_analytics_routes, "export_csv_stream", _fake_export_csv)
+
+    owner_headers = _auth_headers(client, admin_user)
+    owner_resp = client.get(f"/admin/encuestas/{encuesta.id}/analytics/resumen", headers=owner_headers)
+    assert owner_resp.status_code == 200, owner_resp.get_json()
+    assert owner_resp.get_json()["encuesta_id"] == encuesta.id
+
+    foreign_headers = _auth_headers(client, foreign_admin)
+    protected_paths = [
+        f"/admin/encuestas/{encuesta.id}/analytics/resumen",
+        f"/admin/encuestas/{encuesta.id}/analytics/dashboard",
+        f"/admin/encuestas/{encuesta.id}/analytics/heatmap",
+        f"/admin/encuestas/{encuesta.id}/analytics/export.csv",
+        f"/admin/encuestas/{encuesta.id}/analytics/export.pdf",
+    ]
+    for path in protected_paths:
+        response = client.get(path, headers=foreign_headers)
+        assert response.status_code == 403
+        assert response.is_json
+        payload = response.get_json()
+        assert "permiso" in (payload.get("error") or "").lower()
+
+    assert calls == {"summary": 1, "dashboard": 0, "heatmap": 0, "csv": 0}
+
+
 def test_admin_encuestas_permite_actualizar_publicada_sin_respuestas(client, monkeypatch, admin_user):
     monkeypatch.setattr(feature_flags, "FEATURE_ENCUESTAS", True)
     monkeypatch.setattr(encuestas_admin_routes, "FEATURE_ENCUESTAS", True)

@@ -1,7 +1,7 @@
 from app import create_app, db
 from config import TestConfig
 from models import CatalogoItem, MarketCart, MarketCartItem, TenantProfile, User
-from routes.market import _cart_summary
+from routes.market import _cart_summary, _checkout_money_totals, _mercadopago_preference_items_for_checkout
 from services.commerce_contracts import build_contact_key, normalize_sales_channel, resolve_order_contact_payload
 
 
@@ -90,3 +90,82 @@ def test_market_cart_summary_includes_promotions_and_contact_contract():
         assert isinstance(summary["suggested_actions"], list)
         if "promotions" in summary:
             assert summary["promotions"]["total_con_descuento"] <= summary["total_estimado"]
+
+
+def test_checkout_money_totals_use_valid_discounted_total_only():
+    summary = {
+        "total_estimado": 2000,
+        "promotions": {
+            "total_con_descuento": 1500,
+            "total_ahorrado": 500,
+        },
+    }
+
+    totals = _checkout_money_totals(summary)
+
+    assert totals["total_monetary"] == 1500
+    assert totals["total_original"] == 2000
+    assert totals["total_discounted"] == 1500
+    assert totals["discount_total"] == 500
+    assert totals["discount_applied"] is True
+
+
+def test_checkout_money_totals_ignore_invalid_or_higher_discounted_total():
+    summary = {
+        "total_estimado": 2000,
+        "promotions": {
+            "total_con_descuento": 2500,
+        },
+    }
+
+    totals = _checkout_money_totals(summary)
+
+    assert totals["total_monetary"] == 2000
+    assert totals["total_original"] == 2000
+    assert totals["total_discounted"] == 2000
+    assert totals["discount_total"] == 0
+    assert totals["discount_applied"] is False
+
+
+def test_mercadopago_items_collapse_to_discounted_order_total_when_promotions_apply():
+    tenant = type("TenantStub", (), {"nombre": "Bodega Demo", "slug": "bodega"})()
+    entries = [
+        type("CartItemStub", (), {"price_monetary": 1000, "quantity": 2, "currency": "ARS", "name_snapshot": "Malbec"})(),
+        type("CartItemStub", (), {"price_monetary": 500, "quantity": 1, "currency": "ARS", "name_snapshot": "Caja"})(),
+    ]
+
+    items = _mercadopago_preference_items_for_checkout(
+        entries,
+        tenant=tenant,
+        total_monetary=1800,
+        discount_applied=True,
+    )
+
+    assert items == [
+        {
+            "title": "Pedido Bodega Demo",
+            "quantity": 1,
+            "unit_price": 1800.0,
+            "currency_id": "ARS",
+        }
+    ]
+
+
+def test_mercadopago_items_keep_line_items_without_promotions():
+    tenant = type("TenantStub", (), {"nombre": "Bodega Demo", "slug": "bodega"})()
+    entries = [
+        type("CartItemStub", (), {"price_monetary": 1000, "quantity": 2, "currency": "ARS", "name_snapshot": "Malbec"})(),
+        type("CartItemStub", (), {"price_monetary": 500, "quantity": 1, "currency": "ARS", "name_snapshot": "Caja"})(),
+    ]
+
+    items = _mercadopago_preference_items_for_checkout(
+        entries,
+        tenant=tenant,
+        total_monetary=2500,
+        discount_applied=False,
+    )
+
+    assert items == [
+        {"title": "Malbec", "quantity": 2, "unit_price": 1000.0, "currency_id": "ARS"},
+        {"title": "Caja", "quantity": 1, "unit_price": 500.0, "currency_id": "ARS"},
+    ]

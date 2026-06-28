@@ -696,6 +696,84 @@ def _empty_cart_summary(tenant: TenantProfile) -> Dict[str, object]:
     }
 
 
+def _decimal_or_none(value) -> Optional[Decimal]:
+    if value is None:
+        return None
+    try:
+        parsed = Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError):
+        return None
+    if not parsed.is_finite():
+        return None
+    return parsed
+
+
+def _checkout_money_totals(summary: Dict[str, object]) -> Dict[str, object]:
+    original = _decimal_or_none(summary.get("total_estimado"))
+    if original is None:
+        return {
+            "total_monetary": None,
+            "total_original": None,
+            "total_discounted": None,
+            "discount_total": 0.0,
+            "discount_applied": False,
+        }
+
+    promotions = summary.get("promotions") if isinstance(summary.get("promotions"), dict) else {}
+    discounted = _decimal_or_none((promotions or {}).get("total_con_descuento"))
+    if discounted is not None and Decimal("0") <= discounted <= original:
+        discount_total = original - discounted
+        return {
+            "total_monetary": float(discounted),
+            "total_original": float(original),
+            "total_discounted": float(discounted),
+            "discount_total": float(discount_total),
+            "discount_applied": discount_total > 0,
+        }
+
+    return {
+        "total_monetary": float(original),
+        "total_original": float(original),
+        "total_discounted": float(original),
+        "discount_total": 0.0,
+        "discount_applied": False,
+    }
+
+
+def _mercadopago_preference_items_for_checkout(
+    cart_items: list[MarketCartItem],
+    *,
+    tenant: TenantProfile,
+    total_monetary,
+    discount_applied: bool,
+) -> list[dict]:
+    if discount_applied:
+        total = _decimal_or_none(total_monetary)
+        if total is None or total <= 0:
+            return []
+        return [
+            {
+                "title": f"Pedido {tenant.nombre or tenant.slug or 'Chatboc'}",
+                "quantity": 1,
+                "unit_price": float(total),
+                "currency_id": "ARS",
+            }
+        ]
+
+    preference_items = []
+    for entry in cart_items:
+        if entry.price_monetary:
+            preference_items.append(
+                {
+                    "title": entry.name_snapshot or "Producto",
+                    "quantity": entry.quantity,
+                    "unit_price": float(entry.price_monetary),
+                    "currency_id": entry.currency or "ARS",
+                }
+            )
+    return preference_items
+
+
 @market_bp.get("/<slug>/catalog")
 def public_catalog(slug: str):
     tenant = _resolve_tenant(slug)
@@ -1051,7 +1129,8 @@ def start_checkout(current_user, slug: str):
             400,
         )
 
-    total_monetary = summary.get("total_estimado")
+    checkout_totals = _checkout_money_totals(summary)
+    total_monetary = checkout_totals["total_monetary"]
     total_points = summary.get("total_puntos_estimado")
     order = MarketOrder(
         tenant_id=tenant.id,
@@ -1070,6 +1149,12 @@ def start_checkout(current_user, slug: str):
         metadata_payload={
             "totales_monedas": summary.get("totales_monedas", {}),
             "promotions": summary.get("promotions"),
+            "pricing": {
+                "total_original": checkout_totals["total_original"],
+                "total_discounted": checkout_totals["total_discounted"],
+                "discount_total": checkout_totals["discount_total"],
+                "discount_applied": checkout_totals["discount_applied"],
+            },
         },
     )
     db.session.add(order)
@@ -1099,17 +1184,6 @@ def start_checkout(current_user, slug: str):
 
     if mp_token and total_monetary and total_monetary > 0:
         try:
-            # Create Preference
-            preference_items = []
-            for entry in cart_items:
-                if entry.price_monetary:
-                    preference_items.append({
-                        "title": entry.name_snapshot or "Producto",
-                        "quantity": entry.quantity,
-                        "unit_price": float(entry.price_monetary),
-                        "currency_id": entry.currency or "ARS"
-                    })
-
             # Check stock
             for entry in cart_items:
                 product = CatalogoItem.query.get(entry.product_id)
@@ -1121,6 +1195,13 @@ def start_checkout(current_user, slug: str):
                             return jsonify({"error": f"Stock insuficiente para {product.nombre}", "stock_disponible": stock_val}), 400
                     except (ValueError, TypeError):
                         pass  # Ignore if stock is text like "Consultar"
+
+            preference_items = _mercadopago_preference_items_for_checkout(
+                cart_items,
+                tenant=tenant,
+                total_monetary=total_monetary,
+                discount_applied=bool(checkout_totals["discount_applied"]),
+            )
 
             if preference_items:
                 pref_payload = {
@@ -1150,6 +1231,7 @@ def start_checkout(current_user, slug: str):
                     meta = order.metadata_payload or {}
                     meta["mp_preference_id"] = mp_preference_id
                     meta["mp_init_point"] = mp_init_point
+                    meta["mp_items"] = preference_items
                     order.metadata_payload = meta
                 else:
                     print(f"MP Error: {resp.text}")
@@ -1168,6 +1250,11 @@ def start_checkout(current_user, slug: str):
             "cart_id": cart.id,
             "contacto": {"nombre": nombre, "telefono": telefono},
             "total_monetary": float(total_monetary or 0.0) if total_monetary is not None else None,
+            "total_original": checkout_totals["total_original"],
+            "total_discounted": checkout_totals["total_discounted"],
+            "discount_total": checkout_totals["discount_total"],
+            "discount_applied": checkout_totals["discount_applied"],
+            "promotions": summary.get("promotions"),
             "total_points": total_points,
             "checkout_options": {
                 "mercadopago_ready": bool(mp_init_point),
