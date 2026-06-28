@@ -4,7 +4,7 @@ from services.municipio_responder import (
     CONTEXTO_MUNICIPIO,
     clear_municipio_cache,
 )
-from models import ChatSessionContext, MunicipioTicket
+from models import ChatSessionContext, MunicipioTicket, TenantProfile
 from app import db
 
 
@@ -433,3 +433,53 @@ def test_ticket_confirmation_uses_stored_context(monkeypatch, owner_user):
 
     assert captured["categoria"] == "Arbolado"
     assert captured["direccion"] == "Calle Falsa 123"
+
+
+def test_llm_context_preserves_tenant_config_after_legacy_refresh(monkeypatch, owner_user):
+    tenant = TenantProfile.query.filter_by(municipio_id=owner_user.id).first()
+    if tenant is None:
+        tenant = TenantProfile(
+            slug="junin-context-regression",
+            nombre="Municipalidad de Junin",
+            tipo="municipio",
+            municipio_id=owner_user.id,
+            configuracion={},
+        )
+        db.session.add(tenant)
+        db.session.flush()
+
+    tenant.slug = "junin-context-regression"
+    tenant.nombre = "Municipalidad de Junin"
+    tenant.configuracion = {
+        "assistant_name": "JUNI",
+        "nombre": "Municipalidad de Junin",
+        "nombre_municipio": "Municipalidad de Junin",
+        "base_chat_url": "https://chatboc.test/chat",
+        "slug": "junin-context-regression",
+        "tenant_slug": "junin-context-regression",
+    }
+    db.session.add(tenant)
+    db.session.commit()
+
+    captured = {}
+
+    def fake_handle_llm(app, pregunta, context, viewer, owner, chat_ctx, municipio_ctx, demo_metadata=None):
+        captured.update(context)
+        return ({"message_body": "ok", "fuente": "test_llm_context"}, municipio_ctx)
+
+    monkeypatch.setattr(
+        "services.municipio_responder.handle_llm_interaction",
+        fake_handle_llm,
+    )
+
+    result = run_turn(
+        "sigo con el reclamo",
+        state="ESPERANDO_INFO_RECLAMO_LLM",
+        owner_user=owner_user,
+    )
+
+    assert result.response["fuente"] == "test_llm_context"
+    assert captured["municipio_config_actual"]["assistant_name"] == "JUNI"
+    assert captured["municipio_config_actual"]["base_chat_url"] == "https://chatboc.test/chat"
+    assert captured["municipio_config_actual"]["tenant_slug"] == "junin-context-regression"
+    assert captured["municipio_id"] == str(owner_user.id)

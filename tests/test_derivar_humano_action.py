@@ -4,7 +4,7 @@ from unittest.mock import patch, MagicMock, ANY, call
 from types import SimpleNamespace
 
 from app import create_app, db
-from models import User, Rubro, MunicipioTicket, PymeTicket
+from models import User, Rubro, MunicipioTicket, PymeTicket, TenantProfile
 from config import TestConfig
 from services.actions.municipio_actions import DerivarHumanoActionHandler as MunicipioDerivarHandler
 from services.actions.pyme_actions import DerivarHumanoActionHandlerPyme as PymeDerivarHandler
@@ -35,11 +35,29 @@ class TestDerivarHumanoAction:
         viewer_user = User(id=5, name="Juan", telefono="123456789", email="juan@test.com")
         viewer_user.set_password("test")
         db.session.add_all([owner_user, viewer_user])
+        db.session.flush()
+        tenant = TenantProfile(
+            slug="muni-live-chat",
+            nombre="Municipio Live Chat",
+            tipo="municipio",
+            municipio_id=owner_user.id,
+            configuracion={
+                "live_chat_schedule": {
+                    "enabled": False,
+                    "days": [0, 1, 2, 3, 4],
+                    "start_time": "09:00",
+                    "end_time": "13:00",
+                    "timezone": "America/Argentina/Buenos_Aires",
+                }
+            },
+        )
+        db.session.add(tenant)
         db.session.commit()
 
         context = {
             'viewer_user_obj': viewer_user,
             'user_obj': owner_user,
+            'tenant_profile': tenant,
             'cliente_id': 5,
             'anon_id': None,
             'target_entity_type': 'municipio',
@@ -53,6 +71,14 @@ class TestDerivarHumanoAction:
         # Assert
         assert result['success']
         assert 'M-' in result['data']['chat_id']
+        assert result['data']['socket_room'] == 'municipio_10'
+        assert result['data']['channel_mode'] == 'offline'
+        assert result['data']['live_chat']['source'] == 'tenant_config'
+        assert result['data']['live_chat']['socket_room'] == 'municipio_10'
+        assert result['data']['live_chat']['offline_message_enabled'] is True
+        assert result['data']['live_chat']['availability_state'] == 'offline_accepting_messages'
+        assert result['data']['live_chat']['cta']['primary']['action'] == 'queue_offline_message'
+        assert result['data']['live_chat']['ui']['primary_cta_label'] == 'Dejar mensaje'
 
         # Check database
         ticket_id = result['data']['ticket_id']
@@ -77,11 +103,29 @@ class TestDerivarHumanoAction:
         viewer_user = User(id=9, name="Ana", telefono="987654321", email="ana@test.com")
         viewer_user.set_password("test")
         db.session.add_all([owner_user, viewer_user])
+        db.session.flush()
+        tenant = TenantProfile(
+            slug="pyme-live-chat",
+            nombre="Pyme Live Chat",
+            tipo="pyme",
+            pyme_id=owner_user.id,
+            configuracion={
+                "live_chat_schedule": {
+                    "enabled": False,
+                    "days": [0, 1, 2, 3, 4],
+                    "start_time": "10:00",
+                    "end_time": "16:00",
+                    "timezone": "America/Argentina/Buenos_Aires",
+                }
+            },
+        )
+        db.session.add(tenant)
         db.session.commit()
 
         context = {
             'viewer_user_obj': viewer_user,
             'user_obj': owner_user,
+            'tenant_profile': tenant,
             'cliente_id': 9,
             'anon_id': None,
             'target_entity_type': 'pyme',
@@ -97,6 +141,9 @@ class TestDerivarHumanoAction:
         assert 'P-' in result['data']['chat_id']
         assert result['data']['socket_room'] == 'pyme_20'
         assert result['data']['live_chat']['socket_room'] == 'pyme_20'
+        assert result['data']['channel_mode'] == 'offline'
+        assert result['data']['live_chat']['source'] == 'tenant_config'
+        assert result['data']['live_chat']['offline_message_enabled'] is True
 
         # Check database
         ticket_id = result['data']['ticket_id']

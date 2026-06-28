@@ -679,6 +679,7 @@ def admin_get_catalog(current_user, slug):
             },
         },
         "promotions": _catalog_promotions_ops_contract(owner, tenant),
+        "marketplace_readiness": _catalog_marketplace_readiness(owner, tenant, has_pdf=has_pdf, cfg=cfg),
         "frontend_contract": {
             "render_as": "tenant_catalog_inventory_admin",
             "primary_view": "catalog_and_inventory",
@@ -687,6 +688,7 @@ def admin_get_catalog(current_user, slug):
             "supports_stock_only_import": True,
             "supports_quality_board": True,
             "supports_promotions_command_center": True,
+            "supports_marketplace_readiness": True,
         },
     })
     response.headers["X-Request-Id"] = request_id
@@ -795,6 +797,169 @@ def _catalog_promotions_ops_contract(owner: User | None, tenant: TenantProfile) 
             "supports_category_discount": True,
             "supports_product_discount": True,
             "shows_in_marketplace_checkout": True,
+        },
+    }
+
+
+def _catalog_marketplace_readiness(
+    owner: User | None,
+    tenant: TenantProfile,
+    *,
+    has_pdf: bool,
+    cfg: dict,
+) -> dict:
+    if not owner:
+        return {
+            "contract_version": "tenant.marketplace_readiness.v1",
+            "ready": False,
+            "score": 0,
+            "blockers": [
+                {
+                    "id": "missing_owner",
+                    "label": "Tenant sin propietario operativo",
+                    "severity": "blocker",
+                    "next_action": "Vincular un usuario administrador al tenant.",
+                }
+            ],
+            "warnings": [],
+            "metrics": {"products_total": 0},
+            "frontend_contract": {"render_as": "marketplace_readiness_panel"},
+        }
+
+    products = (
+        CatalogoItem.query.options(*CatalogoItem.legacy_safe_options())
+        .filter(CatalogoItem.tenant_id == tenant.id, CatalogoItem.user_id == owner.id)
+        .all()
+    )
+    total = len(products)
+    with_image = sum(1 for item in products if bool(item.imagen_url))
+    with_promo = sum(1 for item in products if bool(item.promocion_info))
+    with_price = 0
+    available = 0
+    low_stock = 0
+    threshold = _tenant_inventory_threshold(tenant)
+    for item in products:
+        _, price_value, _ = parse_precio_flexible(item.precio or "")
+        if price_value is not None:
+            with_price += 1
+        if getattr(item, "disponible", True) is not False:
+            available += 1
+        try:
+            quantity = float(str(item.cantidad or "0").replace(",", "."))
+        except (TypeError, ValueError):
+            quantity = None
+        if quantity is not None and quantity <= threshold:
+            low_stock += 1
+
+    checkout_configured = bool(cfg.get("mercadopago_access_token"))
+    blockers = []
+    warnings = []
+
+    if total == 0:
+        blockers.append(
+            {
+                "id": "empty_catalog",
+                "label": "Catalogo sin productos",
+                "severity": "blocker",
+                "next_action": "Cargar productos o importar un Excel antes de publicar el marketplace.",
+            }
+        )
+    if total > 0 and available == 0:
+        blockers.append(
+            {
+                "id": "no_available_products",
+                "label": "No hay productos disponibles",
+                "severity": "blocker",
+                "next_action": "Activar disponibilidad o corregir stock de al menos un producto.",
+            }
+        )
+    if not checkout_configured and tenant.tipo == "pyme":
+        blockers.append(
+            {
+                "id": "checkout_not_configured",
+                "label": "Checkout sin Mercado Pago configurado",
+                "severity": "blocker",
+                "next_action": f"Configurar /api/admin/tenants/{tenant.slug}/integrations/mercadopago.",
+            }
+        )
+
+    if total and with_image < total:
+        warnings.append(
+            {
+                "id": "missing_images",
+                "label": f"{total - with_image} productos sin imagen",
+                "severity": "warning",
+                "next_action": "Agregar fotos para mejorar conversion en marketplace y WhatsApp.",
+            }
+        )
+    if total and with_price < total:
+        warnings.append(
+            {
+                "id": "missing_prices",
+                "label": f"{total - with_price} productos sin precio interpretable",
+                "severity": "warning",
+                "next_action": "Completar precio para habilitar carrito, filtros y checkout claro.",
+            }
+        )
+    if total and low_stock:
+        warnings.append(
+            {
+                "id": "low_stock",
+                "label": f"{low_stock} productos con stock bajo",
+                "severity": "warning",
+                "next_action": "Actualizar stock o marcar disponibilidad real antes de promocionar.",
+            }
+        )
+    if total and with_promo == 0:
+        warnings.append(
+            {
+                "id": "no_promotions",
+                "label": "Sin promociones visibles",
+                "severity": "info",
+                "next_action": "Crear una promo para destacar productos en WhatsApp y widget.",
+            }
+        )
+    if not has_pdf:
+        warnings.append(
+            {
+                "id": "missing_pdf_catalog",
+                "label": "Catalogo PDF no publicado",
+                "severity": "info",
+                "next_action": "Publicar PDF solo si el tenant necesita descarga tradicional.",
+            }
+        )
+
+    score = 100
+    score -= len(blockers) * 35
+    score -= min(len(warnings) * 8, 32)
+    if total:
+        score -= int(((total - with_image) / total) * 12)
+        score -= int(((total - with_price) / total) * 18)
+    score = max(min(score, 100), 0)
+
+    return {
+        "contract_version": "tenant.marketplace_readiness.v1",
+        "ready": not blockers and score >= 70,
+        "score": score,
+        "state": "ready" if not blockers and score >= 70 else ("blocked" if blockers else "needs_attention"),
+        "blockers": blockers,
+        "warnings": warnings,
+        "metrics": {
+            "products_total": total,
+            "products_available": available,
+            "products_with_images": with_image,
+            "products_with_prices": with_price,
+            "products_with_promotions": with_promo,
+            "low_stock": low_stock,
+            "checkout_configured": checkout_configured,
+            "pdf_catalog_published": has_pdf,
+        },
+        "recommended_actions": [*(blockers[:3]), *(warnings[:3])],
+        "frontend_contract": {
+            "render_as": "marketplace_readiness_panel",
+            "show_score_ring": True,
+            "show_blockers_first": True,
+            "show_quick_actions": True,
         },
     }
 
@@ -2714,6 +2879,83 @@ def list_tenant_orders(current_user, slug):
         "count": len(results[:limit]),
         "sources": sorted({item.get('source_model') for item in results[:limit] if item.get('source_model')}),
     })
+
+
+def _resolve_tenant_order_record(tenant: TenantProfile, order_id: str):
+    raw_id = str(order_id or "").strip()
+    if not raw_id:
+        return None
+
+    source_prefix = None
+    source_id = raw_id
+    if ":" in raw_id:
+        source_prefix, source_id = raw_id.split(":", 1)
+        source_prefix = source_prefix.strip().lower()
+        source_id = source_id.strip()
+
+    try:
+        numeric_id = int(source_id)
+    except (TypeError, ValueError):
+        return None
+
+    legacy_pyme_filter = tenant.pyme_id if tenant.pyme_id else -1
+
+    if source_prefix == "market":
+        return MarketOrder.legacy_safe_query().filter(MarketOrder.id == numeric_id, MarketOrder.tenant_id == tenant.id).first()
+    if source_prefix == "conversational":
+        return PedidoConversacional.query.filter_by(id=numeric_id, tenant_id=tenant.id).first()
+    if source_prefix == "legacy":
+        return PymePedido.query.filter(
+            PymePedido.id == numeric_id,
+            (PymePedido.tenant_id == tenant.id) | (PymePedido.pyme_id == legacy_pyme_filter),
+        ).first()
+    if source_prefix == "order":
+        return Order.query.filter_by(id=numeric_id, tenant_id=tenant.id).first()
+
+    return (
+        Order.query.filter_by(id=numeric_id, tenant_id=tenant.id).first()
+        or MarketOrder.legacy_safe_query().filter(MarketOrder.id == numeric_id, MarketOrder.tenant_id == tenant.id).first()
+        or PedidoConversacional.query.filter_by(id=numeric_id, tenant_id=tenant.id).first()
+        or PymePedido.query.filter(
+            PymePedido.id == numeric_id,
+            (PymePedido.tenant_id == tenant.id) | (PymePedido.pyme_id == legacy_pyme_filter),
+        ).first()
+    )
+
+
+def _apply_tenant_order_status(record, status: str) -> None:
+    normalized = str(status or "").strip()
+    if not normalized:
+        return
+    if isinstance(record, (MarketOrder, Order)):
+        record.status = normalized
+    elif isinstance(record, (PedidoConversacional, PymePedido)):
+        record.estado = normalized
+
+
+@admin_tenant_bp.route('/api/admin/tenants/<slug>/orders/<path:order_id>', methods=['GET', 'PATCH'])
+@token_requerido
+@require_tenant
+def tenant_order_detail(current_user, slug, order_id):
+    tenant = _resolve_admin_tenant(current_user, slug)
+    if not tenant:
+        return jsonify({"error": "Tenant not found"}), 404
+
+    if not _is_authorized_for_tenant(current_user, tenant):
+        return jsonify({'error': 'Unauthorized'}), 403
+
+    record = _resolve_tenant_order_record(tenant, order_id)
+    if not record:
+        return jsonify({"error": "Order not found"}), 404
+
+    if request.method == 'PATCH':
+        payload = request.get_json(silent=True) or {}
+        status = payload.get("status")
+        if status is not None:
+            _apply_tenant_order_status(record, status)
+        db.session.commit()
+
+    return jsonify(serialize_unified_order(record))
 
 
 

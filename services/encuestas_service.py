@@ -3117,7 +3117,12 @@ def save_respuesta(
     if encuesta.mostrar_resultados_envivo and emit_survey_update:
         try:
             live_stats = _compute_live_results(encuesta)
-            emit_survey_update(slug_publico, live_stats)
+            emit_slugs = [
+                _resolve_public_slug(encuesta) or encuesta.slug,
+                slug_publico,
+            ]
+            for emit_slug in dict.fromkeys(str(item).strip() for item in emit_slugs if item):
+                emit_survey_update(emit_slug, live_stats)
         except Exception:
             current_app.logger.exception("[encuestas] Error al emitir update socket")
 

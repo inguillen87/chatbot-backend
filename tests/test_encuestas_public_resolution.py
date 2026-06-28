@@ -5,7 +5,16 @@ import json
 import pytest
 from werkzeug.datastructures import MultiDict
 
-from models import EncEncuesta, EncLink, User
+from models import (
+    EncEncuesta,
+    EncLink,
+    EncOpcion,
+    EncPregunta,
+    EncRespuesta,
+    EncRespuestaDetalle,
+    TenantProfile,
+    User,
+)
 from routes import encuestas_public
 from services.encuestas_service import EncuestaError, get_public_encuesta, list_public_encuestas_for_tenant
 from services.demo_surveys import build_demo_survey_chat_menu, build_demo_surveys_votings_contract
@@ -793,6 +802,84 @@ def test_get_public_encuesta_prefers_requested_tenant_when_slug_is_shared(client
 
         assert resolved.id == expected.id
         assert resolved.tenant_id == 4
+
+
+def test_live_results_uses_tenant_slug_when_public_slug_is_shared(client):
+    with client.application.app_context():
+        shared_public_slug = "consulta-live-compartida"
+        owner_a = User(
+            email="owner-live-a@example.com",
+            name="Owner Live A",
+            password_hash="x",
+            rol="admin",
+            tipo_chat="municipio",
+        )
+        owner_b = User(
+            email="owner-live-b@example.com",
+            name="Owner Live B",
+            password_hash="x",
+            rol="admin",
+            tipo_chat="municipio",
+        )
+        db.session.add_all([owner_a, owner_b])
+        db.session.flush()
+        tenant_a = TenantProfile(
+            slug="tenant-live-a",
+            nombre="Tenant Live A",
+            tipo="municipio",
+            municipio_id=owner_a.id,
+        )
+        tenant_b = TenantProfile(
+            slug="tenant-live-b",
+            nombre="Tenant Live B",
+            tipo="municipio",
+            municipio_id=owner_b.id,
+        )
+        db.session.add_all([tenant_a, tenant_b])
+        db.session.flush()
+
+        def create_live_survey(tenant_id: int, slug: str, label: str, votes: int) -> EncEncuesta:
+            encuesta = EncEncuesta(
+                tenant_id=tenant_id,
+                slug=slug,
+                titulo=f"Encuesta {label}",
+                descripcion="Live",
+                tipo="votacion",
+                estado="publicada",
+                es_votacion_envivo=True,
+                mostrar_resultados_envivo=True,
+            )
+            pregunta = EncPregunta(encuesta=encuesta, orden=1, tipo="opcion_unica", texto="Prioridad")
+            opcion = EncOpcion(pregunta=pregunta, orden=1, texto=label, valor=label.lower())
+            link = EncLink(encuesta=encuesta, slug_publico=shared_public_slug, canal="web")
+            db.session.add_all([encuesta, pregunta, opcion, link])
+            db.session.flush()
+            for index in range(votes):
+                respuesta = EncRespuesta(
+                    encuesta=encuesta,
+                    tenant_id=tenant_id,
+                    huella_unica=f"{slug}-{index}",
+                    canal="web",
+                )
+                detalle = EncRespuestaDetalle(respuesta=respuesta, pregunta=pregunta, opcion=opcion)
+                db.session.add_all([respuesta, detalle])
+            return encuesta
+
+        create_live_survey(tenant_a.id, "consulta-live-tenant-a", "A", 1)
+        create_live_survey(tenant_b.id, "consulta-live-tenant-b", "B", 3)
+        db.session.commit()
+
+    response = client.get(
+        f"/api/public/encuestas/v1/{shared_public_slug}/live-results?tenant_slug=tenant-live-b&include_heatmap=0"
+    )
+
+    assert response.status_code == 200, response.get_json()
+    data = response.get_json()
+    assert data["slug_publico"] == shared_public_slug
+    assert data["total_respuestas"] == 3
+    first_question = data["preguntas"][0]
+    assert first_question["total_votos"] == 3
+    assert first_question["opciones"][0]["texto"] == "B"
 
 
 def test_qr_endpoint_returns_png_for_public_encuesta(client):

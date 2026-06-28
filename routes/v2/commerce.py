@@ -205,7 +205,7 @@ def payment_checkout_session_v2(current_user, tenant_slug: str | None = None):
                 "mercadopago_checkout",
                 contract_version="payments.checkout_session.v1",
                 action_hint="upgrade_full_plan",
-                render_as="payment_integration_locked",
+                render_as="integration_locked",
                 extra={
                     "message": "Plan Full requerido para crear sesiones de pago productivas",
                     "error": {"code": 403, "message": "Plan Full requerido para crear sesiones de pago productivas"},

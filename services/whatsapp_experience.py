@@ -196,6 +196,205 @@ OPERATIONAL_TEMPLATE_GROUPS = {
 }
 
 
+OPERATIONAL_TEMPLATE_CONTRACTS = {
+    "welcome_menu": {
+        "variables": ["contact_name", "tenant_name", "main_capabilities"],
+        "fallback_body": "Hola, soy Chatboc. Elegi una opcion del menu o escribi tu consulta.",
+        "qa_cases": ["chatboc_demo_menu", "colegio_menu_sandbox", "junin_texto_reclamo"],
+        "audio_cache_menu_id": "main-menu",
+    },
+    "gov_claim_created": {
+        "variables": ["claim_code", "category", "tracking_url"],
+        "fallback_body": "Tu reclamo fue registrado. Te compartimos el codigo, categoria y link de seguimiento.",
+        "qa_cases": ["junin_texto_reclamo", "junin_confirmacion_reclamo"],
+        "receipt_contract": {
+            "kind": "municipal_claim_receipt",
+            "builder": "services.whatsapp_receipts.build_claim_created_template_pre_message",
+            "pre_message_key": "_twilio_pre_messages",
+            "tracking_required": True,
+        },
+    },
+    "gov_claim_sla": {
+        "variables": ["claim_code", "category", "tracking_url"],
+        "fallback_body": "Reclamo listo para confirmar. Responde confirmar, editar o cancelar.",
+        "qa_cases": ["junin_confirmacion_reclamo", "junin_ubicacion_confirmar"],
+        "audio_cache_menu_id": "claim-categories",
+    },
+    "gov_claim_status_update": {
+        "variables": ["claim_code", "status", "tracking_url"],
+        "fallback_body": "Actualizamos el estado de tu reclamo y dejamos el seguimiento disponible.",
+        "qa_cases": ["junin_dni_reclamo", "junin_confirmacion_reclamo"],
+    },
+    "order_checkout": {
+        "variables": ["order_code", "total", "checkout_url"],
+        "fallback_body": "Tu pedido esta listo. Usa el link seguro de checkout para revisar y pagar.",
+        "qa_cases": ["cuatro_fincas_confirmar", "chatboc_demo_order_confirm"],
+        "receipt_contract": {
+            "kind": "pyme_order_checkout",
+            "builder": "services.whatsapp_receipts.render_order_whatsapp",
+            "pre_message_key": "_twilio_pre_messages",
+            "tracking_required": False,
+        },
+    },
+    "pyme_order_ready": {
+        "variables": ["order_code", "total", "checkout_url"],
+        "fallback_body": "Tu pedido esta preparado. Te enviamos total y link seguro para continuarlo.",
+        "qa_cases": ["cuatro_fincas_pedido", "chatboc_demo_order_start"],
+        "receipt_contract": {
+            "kind": "pyme_order_receipt",
+            "builder": "services.whatsapp_receipts.render_order_whatsapp",
+            "pre_message_key": "_twilio_pre_messages",
+            "tracking_required": False,
+        },
+    },
+    "pyme_payment_link": {
+        "variables": ["contact_name", "amount", "payment_url"],
+        "fallback_body": "Tu link de pago esta disponible. Usalo solo desde el checkout seguro.",
+        "qa_cases": ["chatboc_demo_order_confirm"],
+    },
+    "pyme_catalog_invite": {
+        "variables": ["tenant_name", "catalog_url"],
+        "fallback_body": "Te compartimos el catalogo actualizado para elegir productos desde una pantalla segura.",
+        "qa_cases": ["cuatro_fincas_pedido", "chatboc_demo_empresas"],
+        "audio_cache_menu_id": "catalog-menu",
+    },
+    "school_payment_due": {
+        "variables": ["family_name", "concept", "amount", "payment_url"],
+        "fallback_body": "Hay un concepto pendiente para revisar y pagar desde el portal seguro.",
+        "qa_cases": ["colegio_menu_sandbox"],
+    },
+    "school_receipt_ready": {
+        "variables": ["receipt_code", "student_name", "receipt_url"],
+        "fallback_body": "El comprobante escolar esta disponible para descargar desde el portal.",
+        "qa_cases": ["colegio_menu_sandbox", "colegio_detalle_audio_ubicacion"],
+        "receipt_contract": {
+            "kind": "school_payment_receipt",
+            "builder": "education_contracts.receipt_ready",
+            "pre_message_key": "_twilio_pre_messages",
+            "tracking_required": False,
+        },
+    },
+    "school_family_case_created": {
+        "variables": ["case_code", "student_name", "status"],
+        "fallback_body": "Creamos el caso familiar y dejamos el estado visible para seguimiento.",
+        "qa_cases": ["colegio_seleccion_inasistencia", "colegio_detalle_audio_ubicacion"],
+    },
+}
+
+
+def _action_contracts(actions: list[str], *, entrypoint: str) -> list[dict[str, Any]]:
+    webview_actions = {
+        "add_to_cart",
+        "checkout",
+        "download_certificate",
+        "download_document",
+        "download_receipt",
+        "open_catalog",
+        "open_event",
+        "open_help_center",
+        "open_support_case",
+        "pay_expense",
+        "pay_fee",
+        "pay_order",
+        "pay_securely",
+        "pay_tax",
+        "review_order",
+        "review_quote",
+        "start_admission",
+        "start_procedure",
+        "track_claim",
+        "track_order",
+        "vote",
+    }
+    results: list[dict[str, Any]] = []
+    for action in actions:
+        action_id = str(action or "").strip()
+        if not action_id:
+            continue
+        surface = "signed_webview" if entrypoint == "webview" or action_id in webview_actions else "whatsapp_reply"
+        results.append(
+            {
+                "id": action_id,
+                "surface": surface,
+                "requires_approved_template": surface == "whatsapp_reply",
+                "requires_signed_url": surface == "signed_webview",
+            }
+        )
+    return results
+
+
+def _audio_cache_contract_for_template(
+    template_id: str,
+    *,
+    stage: str,
+    entrypoint: str,
+    contract: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    menu_id = contract.get("audio_cache_menu_id")
+    if not menu_id and stage != "menu":
+        return None
+    menu_id = str(menu_id or template_id).replace("_", "-")
+    return {
+        "enabled": True,
+        "kind": "fixed_menu",
+        "scope": "tenant",
+        "inclusive": True,
+        "menu_id": menu_id,
+        "entrypoint": entrypoint,
+        "cache": "tts_audio_cache",
+        "namespace_pattern": "whatsapp:menu:{tenant_slug}:{menu_id}:whatsapp:{variant}:v{version}",
+        "invalidate_on": ["menu_version_change", "tenant_voice_profile_change", "language_change"],
+    }
+
+
+def _operational_template_contract(
+    template_id: str,
+    *,
+    stage: str,
+    entrypoint: str,
+    actions: list[str],
+) -> dict[str, Any]:
+    contract = OPERATIONAL_TEMPLATE_CONTRACTS.get(_lower(template_id), {})
+    variables = [str(value) for value in contract.get("variables", []) if str(value).strip()]
+    next_actions = contract.get("next_actions")
+    if not isinstance(next_actions, list):
+        next_actions = _action_contracts(actions, entrypoint=entrypoint)
+    fallback_body = str(
+        contract.get("fallback_body")
+        or f"Actualizacion de {template_id}. Continuamos por mensaje de texto mientras la plantilla se aprueba."
+    )
+    payload: dict[str, Any] = {
+        "contract_version": "whatsapp.operational_template_contract.v1",
+        "variables": variables,
+        "variable_contract": {
+            "format": "twilio_content_variables",
+            "required": variables,
+            "sample_values": _numbered_content_variables(variables),
+        },
+        "fallback": {
+            "mode": "plain_text",
+            "trigger": "missing_pending_rejected_or_unapproved_template",
+            "body": fallback_body,
+            "inside_24h_allowed": True,
+            "outside_24h_requires_approved_template": True,
+        },
+        "next_actions": next_actions,
+        "qa_cases": [str(value) for value in contract.get("qa_cases", []) if str(value).strip()],
+    }
+    receipt_contract = contract.get("receipt_contract")
+    if isinstance(receipt_contract, Mapping):
+        payload["receipt_contract"] = dict(receipt_contract)
+    audio_cache = _audio_cache_contract_for_template(
+        template_id,
+        stage=stage,
+        entrypoint=entrypoint,
+        contract=contract,
+    )
+    if audio_cache:
+        payload["audio_cache_contract"] = audio_cache
+    return payload
+
+
 def _template_execution_hint(
     *,
     template_id: str,
@@ -1203,7 +1402,13 @@ def _template_catalog_item(
         entrypoint=entrypoint,
         actions=actions,
     )
-    return {
+    template_contract = _operational_template_contract(
+        template_id,
+        stage=stage,
+        entrypoint=entrypoint,
+        actions=actions,
+    )
+    item = {
         "id": template_id,
         "friendly_name": friendly_name,
         "stage": stage,
@@ -1215,7 +1420,18 @@ def _template_catalog_item(
         "actions": actions,
         "status": status_payload,
         "readiness": _template_readiness_payload(status_payload, execution),
+        "variables": template_contract["variables"],
+        "variable_contract": template_contract["variable_contract"],
+        "fallback": template_contract["fallback"],
+        "next_actions": template_contract["next_actions"],
+        "qa_cases": template_contract["qa_cases"],
+        "template_contract": template_contract,
     }
+    if "receipt_contract" in template_contract:
+        item["receipt_contract"] = template_contract["receipt_contract"]
+    if "audio_cache_contract" in template_contract:
+        item["audio_cache_contract"] = template_contract["audio_cache_contract"]
+    return item
 
 
 def _operational_template_groups_payload(
@@ -1231,6 +1447,10 @@ def _operational_template_groups_payload(
     webviews = 0
     flow_candidates = 0
     catalog_candidates = 0
+    fallback_contracts = 0
+    receipt_contracts = 0
+    qa_case_links = 0
+    audio_cache_contracts = 0
 
     for group_id, group in OPERATIONAL_TEMPLATE_GROUPS.items():
         items = []
@@ -1252,6 +1472,10 @@ def _operational_template_groups_payload(
             webviews += 1 if item.get("requires_webview") else 0
             flow_candidates += 1 if item["readiness"].get("requires_whatsapp_flow_design") else 0
             catalog_candidates += 1 if item["readiness"].get("requires_catalog_sync") else 0
+            fallback_contracts += 1 if item.get("fallback") else 0
+            receipt_contracts += 1 if item.get("receipt_contract") else 0
+            qa_case_links += len(item.get("qa_cases") or [])
+            audio_cache_contracts += 1 if item.get("audio_cache_contract") else 0
 
         groups[group_id] = {
             "label": group["label"],
@@ -1267,6 +1491,10 @@ def _operational_template_groups_payload(
                 "webviews": sum(1 for item in items if item.get("requires_webview")),
                 "whatsapp_flow_candidates": sum(1 for item in items if item["readiness"].get("requires_whatsapp_flow_design")),
                 "catalog_candidates": sum(1 for item in items if item["readiness"].get("requires_catalog_sync")),
+                "fallback_contracts": sum(1 for item in items if item.get("fallback")),
+                "receipt_contracts": sum(1 for item in items if item.get("receipt_contract")),
+                "qa_case_links": sum(len(item.get("qa_cases") or []) for item in items),
+                "audio_cache_contracts": sum(1 for item in items if item.get("audio_cache_contract")),
             },
         }
 
@@ -1283,6 +1511,10 @@ def _operational_template_groups_payload(
             "webviews": webviews,
             "whatsapp_flow_candidates": flow_candidates,
             "catalog_candidates": catalog_candidates,
+            "fallback_contracts": fallback_contracts,
+            "receipt_contracts": receipt_contracts,
+            "qa_case_links": qa_case_links,
+            "audio_cache_contracts": audio_cache_contracts,
         },
     }
 
@@ -1603,6 +1835,10 @@ def _template_blueprint_payload(
             "operational_webviews": operational_catalog["summary"]["webviews"],
             "operational_whatsapp_flow_candidates": operational_catalog["summary"]["whatsapp_flow_candidates"],
             "operational_catalog_candidates": operational_catalog["summary"]["catalog_candidates"],
+            "operational_fallback_contracts": operational_catalog["summary"]["fallback_contracts"],
+            "operational_receipt_contracts": operational_catalog["summary"]["receipt_contracts"],
+            "operational_qa_case_links": operational_catalog["summary"]["qa_case_links"],
+            "operational_audio_cache_contracts": operational_catalog["summary"]["audio_cache_contracts"],
         },
         "next_actions": _sorted_readiness_actions(readiness_action_items),
         "creation_manifest": creation_manifest,
@@ -2111,8 +2347,22 @@ def _qa_playbook_payload(
                 "junin_imagen",
                 "junin_dni_reclamo",
                 "junin_confirmacion_reclamo",
+            ],
+        },
+        {
+            "id": "gov_claim_location_to_tracking",
+            "label": "Reclamo municipal con ubicacion",
+            "verticals": ["gobierno", "municipio"],
+            "persona": "vecino",
+            "entrypoint": "whatsapp_location",
+            "templates": ["welcome_menu", "gov_claim_sla", "gov_claim_created", "gov_claim_status_update"],
+            "webview_flow": "claim_tracking_helpdesk",
+            "covers": ["ubicacion", "geopunto", "sin_foto", "datos_contacto", "pin", "estado_reclamo"],
+            "script_cases": [
                 "junin_ubicacion_inicio",
                 "junin_ubicacion_compartida",
+                "junin_ubicacion_sin_foto",
+                "junin_ubicacion_datos",
                 "junin_ubicacion_confirmar",
             ],
         },
@@ -2139,9 +2389,6 @@ def _qa_playbook_payload(
             "script_cases": [
                 "cuatro_fincas_pedido",
                 "cuatro_fincas_confirmar",
-                "chatboc_demo_empresas",
-                "chatboc_demo_order_start",
-                "chatboc_demo_order_confirm",
             ],
         },
         {
@@ -2158,7 +2405,6 @@ def _qa_playbook_payload(
                 "chatboc_demo_empresas",
                 "chatboc_demo_order_start",
                 "chatboc_demo_order_confirm",
-                "chatboc_demo_surveys",
             ],
         },
         {

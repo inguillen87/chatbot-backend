@@ -1761,7 +1761,7 @@ def whatsapp_tech_provider_smoke_test_v2(current_user, test_id: str, tenant_slug
 
     if normalized_test == "provider_status":
         provider_status = build_whatsapp_provider_status(tenant, current_app.config)
-        checks = provider_status.get("checks") if isinstance(provider_status.get("checks"), list) else []
+        checks = provider_status.get("readiness_checks") if isinstance(provider_status.get("readiness_checks"), list) else []
         failed = [item for item in checks if isinstance(item, Mapping) and not item.get("ok")]
         return _json_response(
             _whatsapp_smoke_execution_result(
@@ -1775,6 +1775,11 @@ def whatsapp_tech_provider_smoke_test_v2(current_user, test_id: str, tenant_slug
                     "failed": failed,
                     "next_action": provider_status.get("next_action"),
                     "provider_contract": provider_status.get("contract_version"),
+                    "readiness_check_ids": [
+                        item.get("id")
+                        for item in checks
+                        if isinstance(item, Mapping) and item.get("id")
+                    ],
                 },
                 next_action=provider_status.get("next_action") or "continue_playbook",
                 status="pass" if not failed else "warning",

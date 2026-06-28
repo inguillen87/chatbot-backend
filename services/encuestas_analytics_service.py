@@ -2398,35 +2398,51 @@ def export_csv(encuesta_id: int, filtros: Optional[Dict[str, Any]] = None) -> It
 def calculate_live_results(
     slug_publico: str,
     *,
+    preferred_tenant_id: Optional[int] = None,
     include_heatmap: bool = True,
     max_points: int = 2000,
     max_cells: int = 200,
     momentum_window_minutes: int = 10,
+    filtros: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Returns simplified aggregate counts for live voting animations.
     Optimized for frequent polling.
     """
-    encuesta = get_public_encuesta(slug_publico)
-    responses_count = EncRespuesta.query.filter_by(encuesta_id=encuesta.id).count()
-
-    option_counts = {
-        (pregunta_id, opcion_id): total
-        for pregunta_id, opcion_id, total in (
-            db.session.query(
-                EncRespuestaDetalle.pregunta_id,
-                EncRespuestaDetalle.opcion_id,
-                db.func.count(EncRespuestaDetalle.id),
-            )
-            .join(EncRespuesta, EncRespuesta.id == EncRespuestaDetalle.respuesta_id)
-            .filter(
-                EncRespuesta.encuesta_id == encuesta.id,
-                EncRespuestaDetalle.opcion_id.isnot(None),
-            )
-            .group_by(EncRespuestaDetalle.pregunta_id, EncRespuestaDetalle.opcion_id)
-            .all()
+    encuesta = get_public_encuesta(slug_publico, preferred_tenant_id=preferred_tenant_id)
+    if not bool(getattr(encuesta, "mostrar_resultados_envivo", False)):
+        raise EncuestaError(
+            "Los resultados en vivo no estan publicados para esta encuesta.",
+            status_code=403,
+            payload={
+                "reason_code": "live_results_hidden",
+                "action_hint": "wait_for_results_publication",
+            },
         )
-    }
+
+    filtros = dict(filtros or {})
+    respuestas_filtradas = _collect_respuestas(encuesta, filtros)
+    response_ids = [respuesta.id for respuesta in respuestas_filtradas if getattr(respuesta, "id", None) is not None]
+    responses_count = len(respuestas_filtradas)
+
+    option_counts: Dict[Tuple[int, int], int] = {}
+    if response_ids:
+        option_counts = {
+            (pregunta_id, opcion_id): total
+            for pregunta_id, opcion_id, total in (
+                db.session.query(
+                    EncRespuestaDetalle.pregunta_id,
+                    EncRespuestaDetalle.opcion_id,
+                    db.func.count(EncRespuestaDetalle.id),
+                )
+                .filter(
+                    EncRespuestaDetalle.respuesta_id.in_(response_ids),
+                    EncRespuestaDetalle.opcion_id.isnot(None),
+                )
+                .group_by(EncRespuestaDetalle.pregunta_id, EncRespuestaDetalle.opcion_id)
+                .all()
+            )
+        }
 
     preguntas: List[Dict[str, Any]] = []
     highlights: List[str] = []
@@ -2444,6 +2460,7 @@ def calculate_live_results(
                 {
                     "id": opcion.id,
                     "label": opcion.texto,
+                    "texto": opcion.texto,
                     "value": votos,
                     "votos": votos,
                 }
@@ -2474,17 +2491,16 @@ def calculate_live_results(
     now = datetime.now(timezone.utc)
     window = max(5, min(momentum_window_minutes, 30))
     last_hour = now.timestamp() - 3600
-    recent_responses = (
-        EncRespuesta.query.with_entities(EncRespuesta.submitted_at)
-        .filter(EncRespuesta.encuesta_id == encuesta.id)
-        .order_by(EncRespuesta.submitted_at.desc())
-        .limit(1000)
-        .all()
-    )
+    recent_responses = sorted(
+        [respuesta for respuesta in respuestas_filtradas if getattr(respuesta, "submitted_at", None)],
+        key=lambda respuesta: respuesta.submitted_at,
+        reverse=True,
+    )[:1000]
     bucket_counts: Counter = Counter()
     last_10m = 0
     previous_10m = 0
-    for (submitted_at,) in recent_responses:
+    for respuesta in recent_responses:
+        submitted_at = respuesta.submitted_at
         if not submitted_at:
             continue
         dt = submitted_at.astimezone(timezone.utc)
@@ -2507,15 +2523,23 @@ def calculate_live_results(
         trend = "bajando"
 
     timeline = [
-        {"timestamp": bucket.isoformat(), "total": bucket_counts[bucket]}
+        {
+            "timestamp": bucket.isoformat(),
+            "minute": bucket.isoformat(),
+            "total": bucket_counts[bucket],
+            "respuestas": bucket_counts[bucket],
+            "value": bucket_counts[bucket],
+        }
         for bucket in sorted(bucket_counts.keys())
     ]
 
     points: List[Dict[str, Any]] = []
     cells: List[Dict[str, Any]] = []
     if include_heatmap:
+        heatmap_filters = dict(filtros)
+        heatmap_filters.setdefault("desde", (now.replace(hour=0, minute=0, second=0, microsecond=0)).isoformat())
         points, cells = _aggregate_heatmap_cells(
-            _collect_respuestas(encuesta, filtros={"desde": (now.replace(hour=0, minute=0, second=0, microsecond=0)).isoformat()}),
+            _collect_respuestas(encuesta, filtros=heatmap_filters),
             resolution=9,
         )
 
@@ -2549,24 +2573,51 @@ def calculate_live_results(
         "participation_per_minute": participation_per_minute,
         "heatmap_coverage_cells": len(cells),
         "leader": top_question,
+        "leader_label": (top_question or {}).get("lider", {}).get("label") if top_question else None,
+        "active_filters": filtros,
     }
 
     ai_insights: List[str] = []
-    if top_question and top_question.get("lider"):
+    if responses_count == 0:
+        ai_insights.append("Todavia no hay respuestas para mostrar: conviene revisar difusion y canales activos.")
+    elif top_question and top_question.get("lider"):
         ai_insights.append(
             f"La pregunta con mayor tracción es '{top_question['pregunta'][:70]}' y lidera '{top_question['lider']['label']}' con {top_question['lider']['porcentaje']}%."
         )
-    if trend == "subiendo":
+    if responses_count > 0 and trend == "subiendo":
         ai_insights.append("La curva reciente de participación está acelerando: conviene reforzar distribución del link ahora.")
-    elif trend == "bajando":
+    elif responses_count > 0 and trend == "bajando":
         ai_insights.append("La curva reciente está desacelerando: conviene activar recordatorios o pauta segmentada.")
-    else:
+    elif responses_count > 0:
         ai_insights.append("La curva reciente se mantiene estable: se sugiere sostener frecuencia de difusión.")
 
+    polling_interval_ms = 3000 if trend == "subiendo" else 8000 if trend == "bajando" else 5000
+    public_endpoint = f"/api/public/encuestas/v1/{slug_publico}/live-results"
+    v2_endpoint = f"/api/v2/public/surveys/{slug_publico}/live-results"
+    empty_state = {
+        "is_empty": responses_count == 0,
+        "title": "Todavia no hay respuestas",
+        "message": "Publica el enlace o espera nuevas participaciones para ver metricas en vivo.",
+        "action_hint": "share_survey" if responses_count == 0 else None,
+    }
+    live_telemetry = {
+        "has_responses": responses_count > 0,
+        "responses_total": responses_count,
+        "responses_last_hour": responses_last_hour,
+        "participation_per_minute": participation_per_minute,
+        "trend": trend,
+        "polling_interval_ms": polling_interval_ms,
+        "active_filters": filtros,
+    }
+
     return {
+        "contract_version": "surveys.live_results.v2",
         "encuesta_id": encuesta.id,
         "slug": slug_publico,
+        "slug_publico": slug_publico,
         "total_respuestas": responses_count,
+        "empty_state": empty_state,
+        "live_telemetry": live_telemetry,
         "preguntas": preguntas,
         "timeline_minute": timeline,
         "momentum": {
@@ -2593,5 +2644,29 @@ def calculate_live_results(
         },
         "ai_summary": ai_summary,
         "ai_insights": ai_insights,
+        "render_contract": {
+            "preferred_visualization": "live_vote_command_center",
+            "supports": [
+                "cards",
+                "bars",
+                "timeline",
+                "heatmap",
+                "map_pulses",
+                "ai_summary",
+                "csv_export",
+            ],
+            "polling_interval_ms": polling_interval_ms,
+            "empty_state": "Todavia no hay respuestas para mostrar.",
+            "filter_keys": ["canal", "barrio", "ciudad", "provincia"],
+            "map_experience": "interactive_heatmap_with_ai_layers",
+        },
+        "ui_actions": [
+            {"id": "refresh_live_results", "label": "Actualizar resultados", "ui_hint": "refresh"},
+            {"id": "export_live_csv", "label": "Exportar CSV", "ui_hint": "download_csv"},
+        ],
+        "links": {
+            "public_live_results": public_endpoint,
+            "v2_live_results": v2_endpoint,
+        },
         "updated_at": now.isoformat(),
     }

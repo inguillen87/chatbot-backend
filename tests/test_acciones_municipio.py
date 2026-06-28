@@ -19,7 +19,7 @@ from services.actions.municipio_actions import (
 )
 from services.herramientas_municipio import direccion_es_valida
 from services.constants import CONTEXTO_MUNICIPIO
-from models import User
+from models import User, TenantProfile
 from config import Config
 
 class TestConfigAll(Config):
@@ -204,11 +204,40 @@ class TestAccionesMunicipio(unittest.TestCase):
     def test_accion_consultar_estado_ticket(self):
         from models import MunicipioTicket
 
-        ticket = MunicipioTicket(pregunta="p", nro_ticket="88888", estado="en_proceso", categoria="Alumbrado", consulta_pin="123456")
+        owner = User(
+            name="Municipio Estado",
+            email="estado-ticket@test.com",
+            rol="admin",
+            tipo_chat="municipio",
+        )
+        owner.set_password("secret123")
+        db.session.add(owner)
+        db.session.flush()
+        tenant = TenantProfile(
+            slug="estado-ticket",
+            nombre="Municipio Estado",
+            tipo="municipio",
+            municipio_id=owner.id,
+            configuracion={"tenant_slug": "estado-ticket"},
+        )
+        db.session.add(tenant)
+        db.session.flush()
+        ticket = MunicipioTicket(
+            pregunta="p",
+            nro_ticket="88888",
+            estado="en_proceso",
+            categoria="Alumbrado",
+            consulta_pin="123456",
+            tenant_id=tenant.id,
+            municipio_id=owner.id,
+        )
         db.session.add(ticket)
         db.session.commit()
 
-        handler = ConsultarEstadoTicketActionHandler({})
+        handler = ConsultarEstadoTicketActionHandler({
+            "user_obj": owner,
+            "municipio_config_actual": {"tenant_slug": "estado-ticket"},
+        })
         result = handler.execute({"id_ticket_mencionado": "88888", "pin": "123456"})
 
         self.assertTrue(result["success"])

@@ -6,6 +6,8 @@ import sys
 import time
 from urllib.parse import urlparse
 
+from sqlalchemy import or_
+
 from .base_action_handler import BaseActionHandler
 from typing import Dict, Any, Optional
 import random
@@ -28,7 +30,7 @@ from services.whatsapp_receipts import (
     build_claim_created_template_pre_message,
     render_ticket_whatsapp,
 )
-from services.live_chat_schedule import build_live_chat_status
+from services.live_chat_schedule import build_tenant_live_chat_status
 from utils.ticket_utils import normalize_category
 from services.common_utils import validar_telefono, formatear_telefono_e164, validar_email
 from services.config_loader import cargar_configuracion_municipio
@@ -1233,7 +1235,29 @@ class ConsultarEstadoTicketActionHandler(BaseActionHandler):
                 "pedir_info": "pin_ticket",
             }
 
-        ticket = MunicipioTicket.query.filter_by(nro_ticket=ticket_id_str, consulta_pin=pin).first()
+        owner_user = self.context.get("user_obj")
+        tenant_id, municipio_id = _resolve_municipio_tenant_ids(owner_user, self.context)
+        if not tenant_id and not municipio_id:
+            logger.warning(
+                "[tickets] refusing unscoped status lookup for ticket=%s",
+                ticket_id_str,
+            )
+            return {
+                "success": False,
+                "message_to_user": "No pude validar el municipio asociado a esta consulta. VolvÃ© a iniciar el seguimiento desde el enlace del ticket.",
+                "message_type": "text",
+            }
+
+        ticket_query = MunicipioTicket.query.filter_by(
+            nro_ticket=ticket_id_str,
+            consulta_pin=pin,
+        )
+        scope_filters = []
+        if tenant_id:
+            scope_filters.append(MunicipioTicket.tenant_id == tenant_id)
+        if municipio_id:
+            scope_filters.append(MunicipioTicket.municipio_id == municipio_id)
+        ticket = ticket_query.filter(or_(*scope_filters)).first()
         if not ticket:
             return {
                 "success": False,
@@ -1638,11 +1662,11 @@ class DerivarHumanoActionHandler(BaseActionHandler):
             )
 
             # Emitir evento de socket para notificar al panel de administración
+            socket_room = f"municipio_{sala_obj.municipio_id}"
             try:
                 ticket_json = serialize_ticket_to_json(sala_obj, ticket_type)
-                room_name = f"municipio_{sala_obj.municipio_id}"
-                socketio.emit('live_chat_request', ticket_json, room=room_name)
-                logger.info(f"Socket event 'live_chat_request' emitted to room '{room_name}' for ticket {sala_obj.id}")
+                socketio.emit('live_chat_request', ticket_json, room=socket_room)
+                logger.info(f"Socket event 'live_chat_request' emitted to room '{socket_room}' for ticket {sala_obj.id}")
             except Exception as e_socket:
                 logger.error(f"Failed to emit socket event for new live chat ticket {sala_obj.id}: {e_socket}", exc_info=True)
 
@@ -1657,7 +1681,10 @@ class DerivarHumanoActionHandler(BaseActionHandler):
                 "Atención en Vivo",
                 chat_id,
             )
-            live_chat_status = build_live_chat_status()
+            tenant_profile = self.context.get("tenant_profile") or self.context.get("tenant")
+            if not tenant_profile:
+                tenant_profile = getattr(owner_user, "tenant", None)
+            live_chat_status = build_tenant_live_chat_status(tenant_profile, socket_room=socket_room)
             if not live_chat_status.get("available"):
                 schedule_text = live_chat_status.get("description")
                 if schedule_text:
@@ -1675,6 +1702,8 @@ class DerivarHumanoActionHandler(BaseActionHandler):
                     "chat_id": chat_id,
                     "status": "esperando_agente_en_vivo",
                     "live_chat": live_chat_status,
+                    "socket_room": socket_room,
+                    "channel_mode": live_chat_status.get("mode"),
                 },
             }
         except Exception as e:

@@ -137,6 +137,149 @@ def test_dedupe_unified_orders_prefers_market_order_mirror_for_conversational_ch
     assert deduped[0]["source_id"] == 7
 
 
+def test_serialize_unified_order_exposes_assisted_marketplace_upload_contract():
+    app = create_app(TestConfig)
+    with app.app_context():
+        db.create_all()
+
+        owner = User(email="owner-assisted@test.com", name="Owner Assisted", rol="admin", tipo_chat="pyme")
+        owner.set_password("pass")
+        db.session.add(owner)
+        db.session.commit()
+
+        tenant = TenantProfile(slug="assisted-market", nombre="Assisted Market", tipo="pyme", pyme_id=owner.id)
+        db.session.add(tenant)
+        db.session.commit()
+
+        catalog_candidates = [
+            {
+                "item": "clavos bolsa",
+                "row": {"nombre": "clavos bolsa"},
+                "candidates": [
+                    {
+                        "catalogo_item_id": 33,
+                        "product_id": 33,
+                        "sku": "CL-33",
+                        "nombre": "Clavos punta paris",
+                        "name": "Clavos punta paris",
+                        "score": 0.71,
+                        "confidence": "medium",
+                        "reason": "Comparte terminos clave: clavos",
+                    }
+                ],
+            }
+        ]
+
+        pedido = PedidoConversacional(
+            tenant_id=tenant.id,
+            user_id=owner.id,
+            estado="confirmado",
+            tipo="nota_de_pedido",
+            origen="marketplace",
+            monto_monetario=0,
+            items=[
+                {
+                    "archivo_url": "https://cdn.test/pedido.jpg",
+                    "archivo_nombre": "pedido.jpg",
+                    "items_detectados": [
+                        {
+                            "catalogo_item_id": 12,
+                            "nombre": "Chapa acanalada",
+                            "cantidad": 6,
+                            "precio_float": 1200,
+                            "sku": "CH-01",
+                        }
+                    ],
+                    "no_encontrados": [{"nombre": "clavos bolsa", "catalog_candidates": catalog_candidates[0]["candidates"]}],
+                    "no_encontrados_labels": ["clavos bolsa"],
+                    "catalog_candidates": catalog_candidates,
+                    "customer_message": "Recibimos tu nota y armamos un borrador.",
+                }
+            ],
+            metadata_payload={
+                "contract_version": "marketplace.assisted_request.v1",
+                "mode": "order_note_upload",
+                "crm_state": "pending_operator_review",
+                "request_kind": "quote_request",
+                "request_kind_label": "pedido de cotizacion",
+                "document_profile": {
+                    "primary_intent": "create_quote",
+                    "catalog_matching": True,
+                    "input_mode": "file",
+                },
+                "contact": {"name": "Marcelo", "phone": "+5492613168608", "email": "marcelo@example.com", "notes": "retira por deposito"},
+                "source": {
+                    "channel": "marketplace",
+                    "input_type": "jpg",
+                    "archivo_url": "https://cdn.test/pedido.jpg",
+                    "archivo_nombre": "pedido.jpg",
+                    "extraction_error": "lectura parcial",
+                },
+                "match_summary": {"matched": 1, "unmatched": 1, "detected": 2, "needs_operator_review": True},
+                "review_context": {
+                    "primary_intent": "create_quote",
+                    "review_reasons": ["items_sin_match_exacto"],
+                    "recommended_channels": ["whatsapp", "email", "phone", "crm"],
+                },
+                "catalog_candidates": catalog_candidates,
+                "row_errors": [{"index": 1, "reason": "cantidad_asumida"}],
+                "customer_next_steps": [{"id": "reply", "label": "Respuesta por canal", "status": "pending"}],
+                "intake_experience": {
+                    "contract_version": "marketplace.assisted_intake_experience.v1",
+                    "render_as": "anonymous_assisted_marketplace_intake",
+                    "title": "Pedido asistido por foto, papel o texto",
+                    "anonymous_intake": True,
+                    "catalog_matching": True,
+                    "needs_operator_review": True,
+                    "pipeline": [
+                        {"id": "capture", "label": "Archivo o texto recibido", "status": "done"},
+                        {"id": "catalog_match", "label": "Cruce con catalogo", "status": "pending_review"},
+                    ],
+                    "capabilities": [{"id": "handwritten_note_ocr", "label": "Notas manuscritas"}],
+                },
+                "next_actions": [{"id": "tracking", "reference": "pedido:1"}],
+            },
+        )
+
+        serialized = serialize_unified_order(pedido)
+
+        assert serialized["source_model"] == "PedidoConversacional"
+        assert serialized["channel"] == "marketplace"
+        assert serialized["total"] == 0
+        assert serialized["items"][0]["name"] == "Chapa acanalada"
+        assert serialized["items"][0]["quantity"] == 6
+        assert serialized["items"][0]["price"] == 1200
+        assert serialized["assisted_request"]["contract_version"] == "marketplace.assisted_request.v1"
+        assert serialized["assisted_request"]["request_kind"] == "quote_request"
+        assert serialized["assisted_request"]["request_kind_label"] == "pedido de cotizacion"
+        assert serialized["assisted_request"]["document_profile"]["primary_intent"] == "create_quote"
+        assert serialized["assisted_request"]["contact"]["phone"] == "+5492613168608"
+        assert serialized["assisted_request"]["source"]["archivo_url"] == "https://cdn.test/pedido.jpg"
+        assert serialized["assisted_request"]["match_summary"]["unmatched"] == 1
+        assert serialized["assisted_request"]["review_context"]["review_reasons"] == ["items_sin_match_exacto"]
+        assert serialized["assisted_request"]["customer_next_steps"][0]["id"] == "reply"
+        assert serialized["assisted_request"]["intake_experience"]["contract_version"] == "marketplace.assisted_intake_experience.v1"
+        assert serialized["assisted_request"]["intake_experience"]["pipeline"][1]["id"] == "catalog_match"
+        assert serialized["assisted_request"]["row_errors"][0]["reason"] == "cantidad_asumida"
+        assert serialized["assisted_request"]["extraction_error"] == "lectura parcial"
+        assert serialized["assisted_request"]["unmatched_items"] == ["clavos bolsa"]
+        assisted_candidates = serialized["assisted_request"]["catalog_candidates"]
+        assert assisted_candidates[0]["item"] == "clavos bolsa"
+        assert assisted_candidates[0]["candidates"][0]["catalogo_item_id"] == 33
+        assert assisted_candidates[0]["candidates"][0]["score"] == 0.71
+        assert assisted_candidates[0]["candidates"][0]["reason"] == "Comparte terminos clave: clavos"
+        assert serialized["assisted_request"]["next_actions"][0]["id"] == "tracking"
+        assert serialized["assisted_request"]["operator_pack"]["priority"] == "high"
+        assert serialized["assisted_request"]["operator_pack"]["reference"] is None
+        assert "clavos bolsa" in serialized["assisted_request"]["operator_pack"]["suggested_reply"]
+        assert serialized["assisted_request"]["operator_pack"]["contact_links"][0]["type"] == "whatsapp"
+        assert any(
+            task["id"] == "resolve_unmatched_items"
+            for task in serialized["assisted_request"]["operator_pack"]["suggested_tasks"]
+        )
+        assert serialized["contact"]["phone"] == "+5492613168608"
+
+
 def test_market_order_legacy_safe_count_query_omits_deferred_columns():
     app = create_app(TestConfig)
     with app.app_context():

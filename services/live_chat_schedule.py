@@ -327,8 +327,8 @@ def _describe_day_ranges(days: Iterable[int]) -> str:
     return ", ".join(parts[:-1]) + f" y {parts[-1]}"
 
 
-def get_schedule_description() -> str:
-    schedule = get_live_chat_schedule()
+def get_schedule_description(schedule: Optional[LiveChatSchedule] = None) -> str:
+    schedule = schedule or get_live_chat_schedule()
     if not schedule.days:
         return "sin horario definido"
     days_desc = _describe_day_ranges(schedule.days)
@@ -343,7 +343,7 @@ def get_schedule_description() -> str:
 
 def build_live_chat_status(now: Optional[datetime] = None, schedule_override: Optional[dict] = None) -> dict:
     schedule = build_schedule_from_config(schedule_override) if schedule_override is not None else get_live_chat_schedule()
-    description = get_schedule_description()
+    description = get_schedule_description(schedule)
     days_sorted = sorted(schedule.days)
     days = [DAY_NAMES[day] for day in days_sorted if 0 <= day < len(DAY_NAMES)]
     tz_label = getattr(schedule.timezone, "key", str(schedule.timezone))
@@ -356,6 +356,92 @@ def build_live_chat_status(now: Optional[datetime] = None, schedule_override: Op
         "end_time": schedule.end_time.strftime("%H:%M"),
         "timezone": tz_label,
     }
+
+
+def _build_channel_metadata(status: dict) -> dict:
+    live_available = bool(status.get("enabled") and status.get("available"))
+    mode = "live" if live_available else "offline"
+    schedule_label = status.get("description")
+    if live_available:
+        primary_label = "Chatear con un agente"
+        primary_action = "open_live_chat"
+        availability_state = "online"
+        badge_label = "En vivo"
+        helper_text = "Un agente puede responder ahora por este canal."
+    else:
+        primary_label = "Dejar mensaje"
+        primary_action = "queue_offline_message"
+        availability_state = "offline_accepting_messages"
+        badge_label = "Fuera de horario"
+        helper_text = "El mensaje queda guardado en el ticket para que el equipo lo responda."
+
+    return {
+        "mode": mode,
+        "availability_state": availability_state,
+        "primary_cta": primary_label,
+        "primary_action": primary_action,
+        "ui": {
+            "badge": "online" if live_available else "offline",
+            "badge_label": badge_label,
+            "primary_cta_label": primary_label,
+            "primary_action": primary_action,
+            "schedule_label": schedule_label,
+            "show_schedule": bool(schedule_label),
+            "helper_text": helper_text,
+        },
+        "cta": {
+            "primary": {
+                "id": "open_live_chat" if live_available else "leave_offline_message",
+                "label": primary_label,
+                "action": primary_action,
+                "mode": mode,
+            },
+            "schedule": {
+                "id": "view_live_chat_schedule",
+                "label": "Ver horario de atencion",
+                "schedule_label": schedule_label,
+            },
+        },
+        "offline_message": {
+            "enabled": True,
+            "action": "queue_offline_message",
+            "type": "ticket_bound_message",
+            "requires_existing_thread": True,
+            "safe_when_outside_hours": True,
+        },
+    }
+
+
+def build_tenant_live_chat_status(
+    tenant=None,
+    *,
+    now: Optional[datetime] = None,
+    socket_room: Optional[str] = None,
+) -> dict:
+    tenant_config = getattr(tenant, "configuracion", None) if tenant is not None else None
+    schedule_config = (
+        tenant_config.get("live_chat_schedule")
+        if isinstance(tenant_config, dict)
+        and isinstance(tenant_config.get("live_chat_schedule"), dict)
+        else None
+    )
+    status = build_live_chat_status(now=now, schedule_override=schedule_config)
+    status["contract_version"] = "live_chat.schedule.v1"
+    status["source"] = "tenant_config" if schedule_config else "global_config"
+    status.update(_build_channel_metadata(status))
+    status["offline_message_enabled"] = True
+    status["channel_policy"] = {
+        "opens_ticket_room": True,
+        "allows_offline_messages": True,
+        "frontend_must_keep_user_in_ticket_context": True,
+        "offline_action": "queue_offline_message",
+    }
+    if socket_room:
+        status["socket_room"] = socket_room
+    if tenant is not None:
+        status["tenant_id"] = getattr(tenant, "id", None)
+        status["tenant_slug"] = getattr(tenant, "slug", None)
+    return status
 
 
 def _load_custom_urgency_terms() -> Tuple[Set[str], Set[str]]:

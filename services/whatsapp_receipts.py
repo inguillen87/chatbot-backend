@@ -3,6 +3,10 @@ from typing import Any, Dict, Optional
 
 
 CLAIM_CREATED_TEMPLATE_NAME = "chatboc_gov_claim_created_v2"
+CLAIM_CREATED_TEMPLATE_VARIABLES = {
+    "1": "claim_code",
+    "2": "tracking_path",
+}
 
 
 def _format_business_hours(value: Any) -> str:
@@ -191,14 +195,37 @@ def build_claim_created_template_pre_message(
     if nombre:
         body_lines.append("Tu mensaje queda asociado al expediente para seguimiento.")
 
+    variables = {
+        "1": ticket_code,
+        "2": tracking_path,
+    }
+
     return {
         "channels": ["whatsapp"],
         "template_name": CLAIM_CREATED_TEMPLATE_NAME,
-        "variables": {
-            "1": ticket_code,
-            "2": tracking_path,
-        },
+        "variables": variables,
+        "content_variables": variables,
         "body": "\n".join(body_lines),
+        "fallback": {
+            "mode": "plain_text",
+            "trigger": "template_missing_pending_or_unapproved",
+            "body": "\n".join(body_lines),
+            "inside_24h_allowed": True,
+        },
+        "template_contract": {
+            "contract_version": "whatsapp.operational_template_contract.v1",
+            "id": "gov_claim_created",
+            "friendly_name": CLAIM_CREATED_TEMPLATE_NAME,
+            "variables": CLAIM_CREATED_TEMPLATE_VARIABLES,
+            "receipt_contract": {
+                "kind": "municipal_claim_receipt",
+                "tracking_required": True,
+                "pin_supported": True,
+                "pre_message_key": "_twilio_pre_messages",
+            },
+        },
+        "next_actions": ["track_claim", "attach_photo_or_audio", "reply_with_comment"],
+        "qa_cases": ["junin_texto_reclamo", "junin_confirmacion_reclamo"],
     }
 
 

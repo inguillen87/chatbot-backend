@@ -1143,6 +1143,16 @@ class V2SaasContractsTest(unittest.TestCase):
             get_payload["promotions"]["frontend_contract"]["render_as"],
             "catalog_promotions_command_center",
         )
+        self.assertTrue(get_payload["frontend_contract"]["supports_marketplace_readiness"])
+        readiness = get_payload["marketplace_readiness"]
+        self.assertEqual(readiness["contract_version"], "tenant.marketplace_readiness.v1")
+        self.assertEqual(readiness["frontend_contract"]["render_as"], "marketplace_readiness_panel")
+        self.assertEqual(readiness["metrics"]["products_total"], 1)
+        self.assertEqual(readiness["metrics"]["products_with_images"], 1)
+        self.assertEqual(readiness["metrics"]["products_with_promotions"], 1)
+        self.assertTrue(readiness["metrics"]["checkout_configured"])
+        self.assertFalse(readiness["ready"])
+        self.assertIn("missing_prices", {item["id"] for item in readiness["warnings"]})
 
         draft_response = self.client.put(
             f"/api/admin/tenants/{self.tenant.slug}/catalog/draft",
@@ -1527,6 +1537,18 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertTrue(gov_claim_sla["status"]["approved"])
         self.assertEqual(gov_claim_sla["execution"]["twilio_type"], "twilio/quick-reply")
         self.assertTrue(gov_claim_sla["execution"]["meta_surface"]["whatsapp_flows_candidate"])
+        self.assertEqual(
+            gov_claim_sla["variable_contract"]["required"],
+            ["claim_code", "category", "tracking_url"],
+        )
+        self.assertEqual(gov_claim_sla["fallback"]["mode"], "plain_text")
+        self.assertEqual(gov_claim_sla["audio_cache_contract"]["kind"], "fixed_menu")
+        self.assertIn("junin_confirmacion_reclamo", gov_claim_sla["qa_cases"])
+        gov_claim_created = next(item for item in government_group["items"] if item["id"] == "gov_claim_created")
+        self.assertEqual(
+            gov_claim_created["receipt_contract"]["builder"],
+            "services.whatsapp_receipts.build_claim_created_template_pre_message",
+        )
         gov_survey_template = next(
             item
             for item in payload["template_blueprint"]["vertical_templates"]["gobierno"]
@@ -1535,8 +1557,19 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(gov_survey_template["status"]["resolved_name"], "chatboc_gov_survey_invite_v2")
         self.assertTrue(gov_survey_template["status"]["approved"])
         self.assertEqual(gov_survey_template["readiness"]["state"], "approved_requires_webview")
+        commerce_group = payload["template_blueprint"]["operational_template_groups"]["commerce_and_payments"]
+        pyme_order_ready = next(item for item in commerce_group["items"] if item["id"] == "pyme_order_ready")
+        self.assertEqual(pyme_order_ready["variables"], ["order_code", "total", "checkout_url"])
+        self.assertEqual(pyme_order_ready["receipt_contract"]["kind"], "pyme_order_receipt")
+        education_group = payload["template_blueprint"]["operational_template_groups"]["education"]
+        school_receipt_ready = next(item for item in education_group["items"] if item["id"] == "school_receipt_ready")
+        self.assertEqual(school_receipt_ready["receipt_contract"]["kind"], "school_payment_receipt")
+        self.assertIn("colegio_menu_sandbox", school_receipt_ready["qa_cases"])
         self.assertGreaterEqual(payload["template_blueprint"]["registry_summary"]["operational_catalog_total"], 40)
         self.assertGreater(payload["template_blueprint"]["registry_summary"]["operational_webviews"], 0)
+        self.assertGreaterEqual(payload["template_blueprint"]["registry_summary"]["operational_receipt_contracts"], 3)
+        self.assertGreaterEqual(payload["template_blueprint"]["registry_summary"]["operational_qa_case_links"], 10)
+        self.assertGreaterEqual(payload["template_blueprint"]["registry_summary"]["operational_audio_cache_contracts"], 3)
         self.assertGreaterEqual(len(payload["template_blueprint"]["next_actions"]), 1)
         self.assertIn(
             payload["template_blueprint"]["next_actions"][0]["severity"],

@@ -10472,13 +10472,18 @@ def responder_municipio(
 
     # --- CONTEXT INITIALIZATION ---
     # This is now at the top to ensure all parts of the function have access to the full context.
-    final_municipio_config = CONFIG_MUNICIPIO
+    final_municipio_config = (
+        final_municipio_config.copy()
+        if isinstance(final_municipio_config, dict)
+        else CONFIG_MUNICIPIO.copy()
+    )
     resolved_specific_identifier = resolve_municipio_identifier(owner_user)
     if resolved_specific_identifier is not None:
         owner_user_municipio_id_str = str(resolved_specific_identifier)
         loaded_specific_config = cargar_configuracion_municipio(owner_user_municipio_id_str, "config.json")
         if loaded_specific_config:
-            final_municipio_config = loaded_specific_config
+            for config_key, config_value in loaded_specific_config.items():
+                final_municipio_config.setdefault(config_key, config_value)
 
     received_payload = {}
     pregunta_str = ""
@@ -12199,9 +12204,10 @@ def responder_municipio(
         })
 
 
-    # Initialize the context if it's empty
-    # This dictionary is passed to handlers and used throughout this function.
-    context = {
+    # Keep the tenant-aware context built at the beginning of responder_municipio.
+    # Older branches below still expect this refresh point, but recreating the
+    # dictionary with CONFIG_MUNICIPIO loses the real tenant/municipality data.
+    context.update({
         CONTEXTO_MUNICIPIO: contexto_municipio_actual, # The specific state for municipio flow
         "user_obj": owner_user, # The User object of the bot instance (e.g., the Municipality)
         "viewer_user_obj": viewer_user, # The User object of the end-user (vecino/ciudadano)
@@ -12209,20 +12215,24 @@ def responder_municipio(
         "anon_id": anon_id,
         "rubro_obj": rubro_obj,
         "channel": channel,
-        "municipio_config_actual": CONFIG_MUNICIPIO, # Use the correct global constant here
+        "municipio_config_actual": final_municipio_config,
+        "municipio_id": owner_user_municipio_id_str,
         "chat_session_uuid": kwargs.get("chat_session_uuid"),
         "chat_db_context_data": chat_db_context_live_data, # Use the safely accessed live data dict
         # Fields to be populated by payload/kwargs or later logic:
         "intencion": kwargs.get("intencion"), # Initial intent from Orchestrator/kwargs
-        "ubicacion_usuario": location or received_payload.get("ubicacion_usuario"),
-        "es_foto": False, "foto_url": None, # Defaults, will be updated after inspecting payload
+        "ubicacion_usuario": normalized_location or location or received_payload.get("ubicacion_usuario"),
+        "es_foto": received_payload.get("es_foto", context.get("es_foto", False)),
+        "foto_url": received_payload.get("foto_url", context.get("foto_url")),
         "es_ubicacion": received_payload.get("es_ubicacion", False),
         "es_archivo": received_payload.get("es_archivo", False),
         "es_audio": received_payload.get("es_audio", False),
         "action": received_payload.get("action"), # From button clicks, etc.
         "datos_interpretados_archivo": kwargs.get("datos_interpretados_archivo"),
         "archivo_id_para_asociar": kwargs.get("archivo_id_para_asociar"),
-    }
+        "location_link_info": location_link_info,
+        "demo_metadata": demo_metadata if isinstance(demo_metadata, dict) else None,
+    })
     if not (chat_db_context and hasattr(chat_db_context, 'context_data')):
         logger_actual.critical("chat_db_context.context_data no disponible al inicializar 'context'. Usando dict vacío. Esto es problemático.")
 

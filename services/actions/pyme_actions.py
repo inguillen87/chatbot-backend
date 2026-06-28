@@ -9,7 +9,7 @@ from services.promocion_service import promocion_service
 from services.qdrant_search import buscar_catalogo_qdrant, CATALOGO_PYME
 from services.preferences import add_preference
 from services.config_loader import cargar_configuracion_pyme
-from services.live_chat_schedule import build_live_chat_status
+from services.live_chat_schedule import build_live_chat_status, build_tenant_live_chat_status
 from models import db
 import models
 from services.common_utils import parse_precio_flexible
@@ -453,9 +453,12 @@ class DerivarHumanoActionHandlerPyme(BasePymeHandler):
                 "En breve un representante se pondrá en contacto contigo. "
                 f"Tu número de chat es {chat_id}."
             )
-            live_chat_status = build_live_chat_status()
-            if socket_room:
-                live_chat_status["socket_room"] = socket_room
+            tenant_profile = self.context.get("tenant_profile") or self.context.get("tenant")
+            if not tenant_profile and self.context.get("tenant_id"):
+                tenant_profile = db.session.get(models.TenantProfile, self.context.get("tenant_id"))
+            if not tenant_profile:
+                tenant_profile = getattr(owner_user, "tenant", None)
+            live_chat_status = build_tenant_live_chat_status(tenant_profile, socket_room=socket_room)
             if not live_chat_status.get("available"):
                 schedule_text = live_chat_status.get("description")
                 if schedule_text:
@@ -474,6 +477,7 @@ class DerivarHumanoActionHandlerPyme(BasePymeHandler):
                     "status": "esperando_agente_en_vivo",
                     "live_chat": live_chat_status,
                     "socket_room": socket_room,
+                    "channel_mode": live_chat_status.get("mode"),
                 },
             }
         except Exception as e:

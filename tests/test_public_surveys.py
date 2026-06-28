@@ -392,6 +392,8 @@ class PublicSurveyFlowTests(unittest.TestCase):
         create_payload = {
             "titulo": "Pulso liviano",
             "publicar": True,
+            "es_votacion_envivo": True,
+            "mostrar_resultados_envivo": True,
             "preguntas": [
                 {
                     "titulo": "¿Te parece útil?",
@@ -430,6 +432,50 @@ class PublicSurveyFlowTests(unittest.TestCase):
         self.assertFalse(payload["heatmap"]["enabled"])
         self.assertEqual(payload["heatmap"]["points"], [])
         self.assertEqual(payload["momentum"]["window_minutes"], 20)
+        self.assertEqual(payload["render_contract"]["preferred_visualization"], "live_vote_command_center")
+        self.assertTrue(payload["empty_state"]["is_empty"])
+        self.assertFalse(payload["live_telemetry"]["has_responses"])
+        self.assertEqual(payload["live_telemetry"]["responses_total"], 0)
+
+    def test_live_results_hidden_when_admin_does_not_publish_partial_results(self):
+        create_payload = {
+            "titulo": "Pulso privado",
+            "publicar": True,
+            "es_votacion_envivo": True,
+            "mostrar_resultados_envivo": False,
+            "preguntas": [
+                {
+                    "titulo": "Â¿Te parece Ãºtil?",
+                    "tipo": "opcion_unica",
+                    "obligatoria": True,
+                    "opciones": [
+                        {"texto": "SÃ­", "valor": "si"},
+                        {"texto": "No", "valor": "no"},
+                    ],
+                }
+            ],
+        }
+        resp = self.client.post("/admin/encuestas/", json=create_payload, headers=self._auth_headers())
+        self.assertEqual(resp.status_code, 201, resp.get_json())
+        data = resp.get_json()
+        encuesta_id = data["id"]
+
+        publish_resp = self.client.post(
+            f"/admin/encuestas/{encuesta_id}/publicar",
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(publish_resp.status_code, 200, publish_resp.get_json())
+        slug = publish_resp.get_json().get("slug_publico") or data["slug"]
+
+        with self.app.app_context():
+            encuesta = EncEncuesta.query.get(encuesta_id)
+            encuesta.inicio_at = None
+            encuesta.fin_at = None
+            db.session.commit()
+
+        live_resp = self.client.get(f"/api/public/encuestas/{slug}/live-results")
+        self.assertEqual(live_resp.status_code, 403)
+        self.assertEqual(live_resp.get_json().get("reason_code"), "live_results_hidden")
 
     def test_admin_no_puede_modificar_otra_municipalidad(self):
         create_resp = self.client.post(

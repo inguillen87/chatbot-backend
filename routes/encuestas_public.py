@@ -49,6 +49,7 @@ from services.demo_surveys import (
     build_demo_surveys_votings_contract,
     is_demo_survey_slug,
 )
+from models import TenantProfile
 from utils.auth_helpers import obtener_token, user_from_token
 
 ENCUESTAS_PUBLIC_RESPONSE_CONTRACT_VERSION = "encuestas.public_response.v1"
@@ -652,6 +653,7 @@ def _resolve_tenant_from_request() -> Optional[int]:
 
     arg_candidates = [
         request.args.get("tenant_id", type=int),
+        request.args.get("tenant", type=int),
         request.args.get("municipio_id", type=int),
         request.args.get("owner_id", type=int),
         request.args.get("owner", type=int),
@@ -663,6 +665,7 @@ def _resolve_tenant_from_request() -> Optional[int]:
 
     header_candidates = [
         request.headers.get("X-Tenant-Id"),
+        request.headers.get("X-Tenant"),
         request.headers.get("X-Municipio-Id"),
         request.headers.get("X-Owner-Id"),
     ]
@@ -674,6 +677,23 @@ def _resolve_tenant_from_request() -> Optional[int]:
             return int(raw_value)
         except (TypeError, ValueError):
             continue
+
+    slug_candidates = [
+        request.args.get("tenant_slug"),
+        request.args.get("tenant"),
+        request.headers.get("X-Tenant-Slug"),
+        request.headers.get("X-Tenant"),
+    ]
+    for raw_slug in slug_candidates:
+        slug = str(raw_slug or "").strip().lower()
+        if not slug:
+            continue
+        tenant = TenantProfile.query.filter_by(slug=slug).first()
+        if tenant is not None:
+            try:
+                return int(tenant.id)
+            except (TypeError, ValueError):
+                continue
 
     token = obtener_token()
     owner_candidate = getattr(g, "_obtener_token_owner", None)
@@ -781,6 +801,8 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
                     "X-Chat-Session-Id",
                     "X-Anon-Id",
                     "Anon-Id",
+                    "X-Tenant-Slug",
+                    "X-Tenant",
                 ],
             )
 
@@ -996,17 +1018,28 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
         max_points = request.args.get("max_points", default=2000, type=int) or 2000
         max_cells = request.args.get("max_cells", default=200, type=int) or 200
         window_minutes = request.args.get("window_minutes", default=10, type=int) or 10
+        filtros = {
+            key: value
+            for key in ("canal", "barrio", "ciudad", "provincia")
+            if (value := (request.args.get(key) or "").strip())
+        }
 
         try:
-            # Reusing existing service/analytics logic
+            tenant_id = _resolve_tenant_from_request()
             results = calculate_live_results(
                 slug,
+                preferred_tenant_id=tenant_id,
                 include_heatmap=include_heatmap,
                 max_points=max(100, min(max_points, 5000)),
                 max_cells=max(50, min(max_cells, 1000)),
                 momentum_window_minutes=window_minutes,
+                filtros=filtros,
             )
-            return jsonify(results)
+            request_id = _resolve_request_id()
+            results.setdefault("request_id", request_id)
+            response = jsonify(results)
+            response.headers.setdefault("X-Request-Id", request_id)
+            return response
         except EncuestaError as err:
             return _public_error_response(err)
         except Exception as e:

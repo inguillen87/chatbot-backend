@@ -272,19 +272,20 @@ def _attach_user_to_tenant(user: User, tenant: Optional[TenantProfile]) -> bool:
 
     # Validar si la columna existe antes de intentar asignarla para evitar errores 500
     # si la migración no se ha aplicado.
+    changed = False
     if hasattr(user, "tenant_id") and user_table_has_tenant_id_column():
         if user.tenant_id != tenant.id:
             user.tenant_id = tenant.id
-            db.session.add(user)
-            return True
-        return False
-    else:
-        current_slug = getattr(user, "tenant_slug", None)
-        if current_slug != tenant.slug:
-            user.tenant_slug = tenant.slug
-            db.session.add(user)
-            return True
-        return False
+            changed = True
+
+    current_slug = getattr(user, "tenant_slug", None)
+    if current_slug != tenant.slug:
+        user.tenant_slug = tenant.slug
+        changed = True
+
+    if changed:
+        db.session.add(user)
+    return changed
 
 
 def _tenant_market_payload(tenant: Optional[TenantProfile]) -> Dict[str, object]:

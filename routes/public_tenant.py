@@ -1,6 +1,5 @@
 from datetime import timezone
 import uuid
-from urllib.parse import quote_plus
 
 from flask import Blueprint, request, jsonify, g, current_app
 from sqlalchemy import func, or_
@@ -16,7 +15,6 @@ from models import (
     TenantProfile,
     TenantConfig,
     TenantTicket,
-    Promocion,
     User,
     WidgetSettings,
     db,
@@ -27,6 +25,7 @@ from routes.carrito import _product_query_for_tenant
 from middleware.tenant_context import require_tenant
 from services.catalog_seed import ensure_seed_catalog
 from services.commerce_contracts import build_checkout_experience_payload
+from services.public_market_catalog import build_public_market_catalog_contract
 from services.plan_access import (
     integration_access_payload,
     integration_plan_required_payload,
@@ -106,80 +105,6 @@ def _catalog_resolution_payload(slug: object, *, reason_code: str = "tenant_reso
         "cart": {"enabled": False},
     }
 
-
-def _public_catalog_promotions(tenant: TenantProfile, owner: User, *, limit: int = 6) -> dict:
-    structured = (
-        Promocion.query.filter_by(pyme_user_id=owner.id, is_active=True)
-        .order_by(Promocion.updated_at.desc())
-        .limit(limit)
-        .all()
-    )
-    catalog_badges = (
-        CatalogoItem.query.filter(
-            CatalogoItem.tenant_id == tenant.id,
-            CatalogoItem.user_id == owner.id,
-            CatalogoItem.promocion_info.isnot(None),
-        )
-        .order_by(CatalogoItem.timestamp.desc())
-        .limit(limit)
-        .all()
-    )
-
-    items = [
-        {
-            "id": promo.id,
-            "title": promo.nombre_promocion,
-            "description": promo.descripcion_publica or promo.tipo_promocion,
-            "type": "structured",
-            "discount_type": promo.tipo_promocion,
-            "discount_value": promo.valor_descuento,
-            "min_cart_amount": promo.monto_minimo_carrito,
-            "min_quantity": promo.cantidad_minima_aplicable,
-            "code": promo.codigo_promocion,
-            "starts_at": promo.fecha_inicio.isoformat() if promo.fecha_inicio else None,
-            "ends_at": promo.fecha_fin.isoformat() if promo.fecha_fin else None,
-            "alcances": [
-                {
-                    "id": scope.id,
-                    "tipo_alcance": scope.tipo_alcance,
-                    "catalogo_item_id": scope.catalogo_item_id,
-                    "nombre_categoria": scope.nombre_categoria,
-                    "nombre_marca": scope.nombre_marca,
-                }
-                for scope in (promo.alcances.all() if hasattr(promo.alcances, "all") else list(promo.alcances or []))
-            ],
-        }
-        for promo in structured
-    ]
-    seen_ids = {str(item["id"]) for item in items}
-    for product in catalog_badges:
-        promo_id = f"catalog-item-{product.id}"
-        if promo_id in seen_ids:
-            continue
-        items.append(
-            {
-                "id": promo_id,
-                "title": product.promocion_info,
-                "description": product.nombre,
-                "type": "catalog_badge",
-                "catalogo_item_id": product.id,
-                "product_name": product.nombre,
-                "category": product.categoria,
-            }
-        )
-        if len(items) >= limit:
-            break
-
-    return {
-        "contract_version": "public.catalog_promotions.v1",
-        "enabled": bool(items),
-        "total": len(items),
-        "active": len(structured),
-        "structured_total": len(structured),
-        "catalog_badge_total": len(catalog_badges),
-        "catalog_items_with_promo_badge": len(catalog_badges),
-        "items": items,
-    }
 
 def _add_cors_headers(response):
     origin = request.headers.get('Origin', '*')
@@ -764,29 +689,17 @@ def get_catalog(slug):
 
     contract_mode = str(request.args.get("contract") or request.args.get("view") or "").strip().lower()
     if contract_mode in {"marketplace", "market", "v2", "full"}:
-        base_web = current_app.config.get("APP_BASE_URL", "https://chatboc.ar").rstrip("/")
-        public_url = f"{base_web}/{tenant.slug}/productos"
-        share_text = f"Catalogo de {tenant.nombre or tenant.slug}: {public_url}"
-        payload = {
-            "contract_version": "public.market_catalog.v1",
-            "tenant": _tenant_public_summary(tenant),
-            "tenant_slug": tenant.slug,
-            "tenantName": tenant.nombre or tenant.slug,
-            "tenantLogoUrl": tenant.logo_url,
-            "products": productos,
-            "items": productos,
-            "promotions": _public_catalog_promotions(tenant, owner),
-            "publicCartUrl": f"{base_web}/{tenant.slug}/cart",
-            "public_cart_url": f"{base_web}/{tenant.slug}/cart",
-            "whatsappShareUrl": f"https://wa.me/?text={quote_plus(share_text)}",
-            "heroSubtitle": "Catalogo actualizado con promociones y disponibilidad operativa.",
-            "frontend_contract": {
-                "render_as": "marketplace_catalog",
-                "show_promotions_strip": True,
-                "show_product_promo_badges": True,
-                "show_cart_entrypoint": True,
-            },
-        }
+        payload = build_public_market_catalog_contract(
+            tenant,
+            owner,
+            base_web_url=current_app.config.get("APP_BASE_URL", "https://chatboc.ar"),
+            categoria=request.args.get("categoria"),
+            q=request.args.get("q"),
+            precio_min=request.args.get("precio_min"),
+            precio_max=request.args.get("precio_max"),
+            en_promocion=request.args.get("en_promocion"),
+            sort=request.args.get("sort"),
+        )
         response = jsonify(payload)
         return _add_cors_headers(response)
 

@@ -165,6 +165,7 @@ def send_public_claim_tracking_message(ticket_id):
                 {
                     "tenant_type": "municipio",
                     "tenant_id": tenant.id,
+                    "municipio_id": ticket.municipio_id,
                     "ticket_id": ticket.id,
                     "message": {
                         "comentario": mensaje,
@@ -294,6 +295,9 @@ def tracking_claim(nro_ticket):
     ticket = MunicipioTicket.query.filter_by(nro_ticket=nro_ticket).first()
     if not ticket:
         abort(404, "Reclamo no encontrado")
+    pin = (request.args.get('pin') or '').strip()
+    if getattr(ticket, 'consulta_pin', None) and str(ticket.consulta_pin) != str(pin):
+        abort(403, "PIN requerido para consultar este reclamo")
 
     # 2. Fetch Tenant
     tenant = None
@@ -489,6 +493,7 @@ def send_claim_message():
             full_payload = {
                 "tenant_type": "municipio",
                 "tenant_id": tenant.id,
+                "municipio_id": ticket.municipio_id,
                 "ticket_id": ticket.id,
                 "message": {
                     "comentario": mensaje,

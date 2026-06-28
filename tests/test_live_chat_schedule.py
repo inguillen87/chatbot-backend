@@ -1,11 +1,14 @@
 import pytest
 from datetime import datetime
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 from unittest.mock import patch
 
 from app import db
 from models import ChatSessionContext, User, Rubro
 from services.live_chat_schedule import (
+    build_live_chat_status,
+    build_tenant_live_chat_status,
     detect_urgency_reason,
     get_schedule_description,
     is_live_chat_available,
@@ -140,3 +143,53 @@ def test_schedule_description_contains_range(app):
         assert "lunes" in description.lower() or "viernes" in description.lower()
         assert "hs" in description
 
+
+def test_live_chat_status_description_uses_schedule_override(app):
+    with app.app_context():
+        status = build_live_chat_status(
+            schedule_override={
+                "enabled": True,
+                "days": ["lunes", "martes"],
+                "start_time": "15:30",
+                "end_time": "19:45",
+                "timezone": "America/Argentina/Buenos_Aires",
+            }
+        )
+        assert status["start_time"] == "15:30"
+        assert status["end_time"] == "19:45"
+        assert "15:30" in status["description"]
+        assert "19:45" in status["description"]
+
+
+def test_tenant_live_chat_status_exposes_online_and_offline_cta(app):
+    tenant = SimpleNamespace(
+        id=7,
+        slug="muni-demo",
+        configuracion={
+            "live_chat_schedule": {
+                "enabled": True,
+                "days": ["lunes"],
+                "start_time": "09:00",
+                "end_time": "13:00",
+                "timezone": "America/Argentina/Buenos_Aires",
+            }
+        },
+    )
+
+    with app.app_context():
+        online = datetime(2024, 7, 1, 10, 0, tzinfo=ZoneInfo("America/Argentina/Buenos_Aires"))
+        online_status = build_tenant_live_chat_status(tenant, now=online, socket_room="municipio_7")
+        assert online_status["mode"] == "live"
+        assert online_status["availability_state"] == "online"
+        assert online_status["cta"]["primary"]["action"] == "open_live_chat"
+        assert online_status["ui"]["primary_cta_label"] == "Chatear con un agente"
+        assert online_status["socket_room"] == "municipio_7"
+
+        offline = datetime(2024, 7, 1, 18, 0, tzinfo=ZoneInfo("America/Argentina/Buenos_Aires"))
+        offline_status = build_tenant_live_chat_status(tenant, now=offline, socket_room="municipio_7")
+        assert offline_status["mode"] == "offline"
+        assert offline_status["availability_state"] == "offline_accepting_messages"
+        assert offline_status["cta"]["primary"]["action"] == "queue_offline_message"
+        assert offline_status["ui"]["primary_cta_label"] == "Dejar mensaje"
+        assert offline_status["offline_message"]["safe_when_outside_hours"] is True
+        assert offline_status["channel_policy"]["frontend_must_keep_user_in_ticket_context"] is True

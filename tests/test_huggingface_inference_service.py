@@ -41,6 +41,9 @@ class FakeClient:
     def object_detection(self, image, *, model=None, threshold=None):
         return [FakeObject("traffic light", 0.77)]
 
+    def image_to_text(self, image, *, model=None):
+        return {"generated_text": "2 chapas galvanizadas"}
+
 
 class FailingZeroShotClient:
     def zero_shot_classification(self, text, *, candidate_labels, multi_label=False, model=None):
@@ -105,5 +108,22 @@ def test_analyze_image_for_chatboc(monkeypatch):
     assert result == {
         "labels": ["pothole"],
         "objects": ["traffic light"],
-        "text": "",
+        "text": "2 chapas galvanizadas",
     }
+
+
+def test_image_to_text_uses_optional_huggingface_model(monkeypatch):
+    monkeypatch.setenv("VISION_HUGGINGFACE_ENABLED", "true")
+    monkeypatch.setenv("HUGGINGFACE_IMAGE_TO_TEXT_MODEL", "test/image-to-text")
+    seen = {}
+
+    class TextClient:
+        def image_to_text(self, image, *, model=None):
+            seen["image"] = image
+            seen["model"] = model
+            return {"generated_text": "lista escrita a mano"}
+
+    monkeypatch.setattr(hf, "_get_client", lambda model=None: TextClient())
+
+    assert hf.image_to_text(b"image-bytes") == "lista escrita a mano"
+    assert seen == {"image": b"image-bytes", "model": "test/image-to-text"}

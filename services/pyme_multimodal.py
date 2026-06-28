@@ -18,7 +18,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from flask import current_app
 
-from models import CatalogoItem, ChatSessionContext, PymePedido, db
+from models import CatalogoItem, ChatSessionContext, PedidoConversacional, PymePedido, db
 from services.multimodal_analyzer import analizar_imagen_con_fallback
 from services.pyme_menu import get_pyme_menu_payload
 from services.config_loader import cargar_configuracion_pyme
@@ -126,6 +126,8 @@ def _parse_price(value: Any) -> float:
 
 def _serialise_item(item: CatalogoItem) -> Dict[str, Any]:
     return {
+        "id": item.id,
+        "catalogo_item_id": item.id,
         "sku": item.sku or item.nombre,
         "nombre": item.nombre,
         "descripcion": item.descripcion or item.descripcion_corta,
@@ -850,6 +852,446 @@ def persist_order(
 # ---------------------------------------------------------------------------
 
 
+ASSISTED_REQUEST_CONTRACT_VERSION = "marketplace.assisted_request.v1"
+ASSISTED_INTAKE_CONTRACT_VERSION = "marketplace.assisted_intake_experience.v1"
+
+
+def _clean_text(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    return normalized or None
+
+
+def _assisted_channel(channel: Optional[str]) -> str:
+    normalized = (channel or "web").strip().lower()
+    if normalized in {"whatsapp", "wa", "twilio_whatsapp"}:
+        return "whatsapp"
+    if normalized in {"widget", "chat_widget", "web_widget"}:
+        return "chat_widget"
+    return normalized or "web"
+
+
+def _assisted_contact_payload(context: Optional[Dict[str, Any]], anon_id: Optional[str]) -> Dict[str, str]:
+    context = context or {}
+    contact = {
+        "name": _clean_text(context.get("nombre_cliente") or context.get("nombre") or context.get("profile_name")),
+        "phone": _clean_text(context.get("telefono_cliente") or context.get("telefono") or anon_id),
+        "email": _clean_text(context.get("email_cliente") or context.get("email")),
+        "address": _clean_text(context.get("direccion_cliente") or context.get("direccion")),
+    }
+    return {key: value for key, value in contact.items() if value}
+
+
+def _assisted_source_payload(
+    *,
+    source_type: str,
+    channel: Optional[str],
+    attachment_info: Dict[str, Any],
+    text_preview: Optional[str] = None,
+) -> Dict[str, Any]:
+    source = {
+        "channel": _assisted_channel(channel),
+        "input_type": source_type,
+        "archivo_url": attachment_info.get("url"),
+        "archivo_nombre": attachment_info.get("name") or attachment_info.get("filename"),
+        "attachment_id": attachment_info.get("id"),
+        "mime_type": attachment_info.get("mime_type") or attachment_info.get("mimeType"),
+    }
+    if text_preview:
+        source["text_preview"] = text_preview[:500]
+    return {key: value for key, value in source.items() if value}
+
+
+def _catalog_match_payload(item: Dict[str, Any]) -> Dict[str, Any]:
+    product_id = item.get("catalogo_item_id") or item.get("id") or item.get("product_id")
+    return {
+        "catalogo_item_id": product_id,
+        "product_id": product_id,
+        "sku": item.get("sku"),
+        "nombre": item.get("nombre") or item.get("title"),
+        "name": item.get("nombre") or item.get("title"),
+        "precio": item.get("precio"),
+        "price": _parse_price(item.get("precio")),
+        "moneda": item.get("moneda") or item.get("currency") or "ARS",
+        "presentacion": item.get("presentacion"),
+        "descripcion": item.get("descripcion"),
+    }
+
+
+def _is_placeholder_item(item: Dict[str, Any]) -> bool:
+    sku = str(item.get("sku") or "")
+    return sku.startswith("GENERIC_") or sku.startswith("PDF_")
+
+
+def _assisted_items_from_matches(
+    matches: List[Tuple[Dict[str, Any], int]]
+) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
+    detected_items: List[Dict[str, Any]] = []
+    unmatched_rows: List[Dict[str, Any]] = []
+    catalog_candidates: List[Dict[str, Any]] = []
+    for item, qty in matches:
+        name = item.get("nombre") or item.get("title") or item.get("sku") or "Producto"
+        row = {
+            "nombre": name,
+            "cantidad": max(1, int(qty or 1)),
+            "sku": item.get("sku"),
+            "descripcion": item.get("descripcion"),
+            "catalog_match": None,
+        }
+        if _is_placeholder_item(item):
+            unmatched_rows.append({key: value for key, value in row.items() if key != "catalog_match" and value})
+        else:
+            row["catalog_match"] = _catalog_match_payload(item)
+            catalog_candidates.append(
+                {
+                    "item": name,
+                    "row": {"nombre": name, "cantidad": row["cantidad"], "sku": item.get("sku")},
+                    "candidates": [row["catalog_match"]],
+                }
+            )
+        detected_items.append(row)
+    return detected_items, unmatched_rows, catalog_candidates
+
+
+def _assisted_intake_experience(
+    *,
+    source_channel: str,
+    matched_count: int,
+    unmatched_count: int,
+    detected_count: int,
+    extraction_error: Optional[str] = None,
+) -> Dict[str, Any]:
+    needs_review = unmatched_count > 0 or matched_count == 0 or bool(extraction_error)
+    return {
+        "contract_version": ASSISTED_INTAKE_CONTRACT_VERSION,
+        "render_as": "anonymous_assisted_marketplace_intake",
+        "title": "Pedido asistido por IA",
+        "summary": "Fotos, PDFs o notas de pedido quedan convertidas en una solicitud operativa para CRM.",
+        "anonymous_intake": True,
+        "source_channel": source_channel,
+        "catalog_matching": True,
+        "needs_operator_review": needs_review,
+        "pipeline": [
+            {
+                "id": "capture",
+                "label": "Archivo recibido",
+                "description": "Entrada desde WhatsApp, widget o marketplace.",
+                "status": "done",
+            },
+            {
+                "id": "ai_parse",
+                "label": "Lectura IA",
+                "description": "La imagen o documento se transforma en renglones de pedido.",
+                "status": "warning" if extraction_error else ("done" if detected_count else "pending_review"),
+            },
+            {
+                "id": "catalog_match",
+                "label": "Cruce con catalogo",
+                "description": "La IA propone productos reales, alternativas y faltantes.",
+                "status": "done" if matched_count else "pending_review",
+            },
+            {
+                "id": "crm_handoff",
+                "label": "CRM operativo",
+                "description": "El tenant admin recibe tareas, contexto y respuesta sugerida.",
+                "status": "pending_review" if needs_review else "ready",
+            },
+        ],
+        "crm_handoff": {
+            "label": "Solicitud lista para CRM",
+            "recommended_next_action": "revisar_y_responder" if needs_review else "confirmar_stock_precio_y_enviar",
+            "channels": ["whatsapp", "chat_widget", "email", "phone", "crm"],
+        },
+        "frontend_contract": {
+            "render_as": "marketplace_assisted_intake",
+            "primary_cta": "Subir foto o papel",
+            "secondary_cta": "Escribir pedido",
+            "show_on_empty_catalog": True,
+        },
+    }
+
+
+def _assisted_next_actions(
+    *,
+    pedido_id: int,
+    tenant_slug: Optional[str],
+    matched_count: int,
+    unmatched_count: int,
+) -> List[Dict[str, Any]]:
+    tenant_path = f"/t/{tenant_slug}" if tenant_slug else ""
+    actions = [
+        {
+            "id": "operator_review",
+            "label": "Revisar en CRM",
+            "type": "crm",
+            "description": "Validar lectura IA, stock, precio y datos de contacto.",
+            "enabled": True,
+        },
+        {
+            "id": "complete_by_chat",
+            "label": "Responder por canal",
+            "type": "handoff",
+            "description": "Continuar por WhatsApp, widget, email o telefono.",
+            "enabled": True,
+        },
+        {
+            "id": "open_marketplace",
+            "label": "Abrir marketplace",
+            "type": "link",
+            "href": f"{tenant_path}/market" if tenant_path else "/market",
+            "description": "Mostrar catalogo para completar o reemplazar articulos.",
+            "enabled": True,
+        },
+        {
+            "id": "tracking",
+            "label": "Seguimiento interno",
+            "type": "reference",
+            "reference": f"pedido:{pedido_id}",
+            "description": "Referencia para auditoria y seguimiento omnicanal.",
+            "enabled": True,
+        },
+    ]
+    if unmatched_count:
+        actions.insert(
+            1,
+            {
+                "id": "review_unmatched_items",
+                "label": "Resolver faltantes",
+                "type": "crm_task",
+                "description": "Hay articulos que la IA no pudo asociar con seguridad al catalogo.",
+                "enabled": True,
+            },
+        )
+    return actions
+
+
+def _operator_pack(
+    *,
+    record_id: Optional[int],
+    request_kind_label: str,
+    contact: Dict[str, Any],
+    match_summary: Dict[str, Any],
+    unmatched_items: List[Any],
+    extraction_error: Optional[str],
+) -> Dict[str, Any]:
+    try:
+        from services.commerce_unified import _build_assisted_operator_pack
+
+        return _build_assisted_operator_pack(
+            record_id=record_id,
+            request_kind_label=request_kind_label,
+            contact=contact,
+            match_summary=match_summary,
+            unmatched_items=unmatched_items,
+            extraction_error=extraction_error,
+        )
+    except Exception:
+        priority = "high" if match_summary.get("needs_operator_review") else "normal"
+        return {
+            "priority": priority,
+            "reference": f"pedido:{record_id}" if record_id else None,
+            "needs_human_review": priority == "high",
+            "suggested_reply": "Recibimos tu pedido por archivo. Lo revisamos y te respondemos por este canal.",
+            "suggested_tasks": [],
+            "contact_links": [],
+        }
+
+
+def _persist_assisted_intake_request(
+    *,
+    state: PymeSessionState,
+    owner_user_id: Optional[int],
+    viewer_user_id: Optional[int],
+    tenant_id: Optional[int],
+    tenant_slug: Optional[str],
+    channel: Optional[str],
+    source_type: str,
+    attachment_info: Dict[str, Any],
+    detected_items: List[Dict[str, Any]],
+    unmatched_rows: List[Dict[str, Any]],
+    catalog_candidates: List[Dict[str, Any]],
+    context: Optional[Dict[str, Any]] = None,
+    anon_id: Optional[str] = None,
+    request_id: Optional[str] = None,
+    extraction_error: Optional[str] = None,
+    text_preview: Optional[str] = None,
+) -> Dict[str, Any]:
+    matched_count = sum(1 for item in detected_items if item.get("catalog_match"))
+    unmatched_count = len(unmatched_rows)
+    detected_count = len(detected_items)
+    source_channel = _assisted_channel(channel)
+    contact = _assisted_contact_payload(context, anon_id)
+    source = _assisted_source_payload(
+        source_type=source_type,
+        channel=source_channel,
+        attachment_info=attachment_info,
+        text_preview=text_preview,
+    )
+    match_summary = {
+        "matched": matched_count,
+        "unmatched": unmatched_count,
+        "detected": detected_count,
+        "needs_operator_review": unmatched_count > 0 or matched_count == 0 or bool(extraction_error),
+    }
+    unmatched_labels = [
+        str(row.get("nombre") or row.get("sku") or row.get("descripcion") or row)
+        for row in unmatched_rows
+        if row
+    ]
+    intake_experience = _assisted_intake_experience(
+        source_channel=source_channel,
+        matched_count=matched_count,
+        unmatched_count=unmatched_count,
+        detected_count=detected_count,
+        extraction_error=extraction_error,
+    )
+    request_kind_label = "pedido por adjunto"
+    crm_state = "pending_operator_review" if match_summary["needs_operator_review"] else "ready_for_confirmation"
+    review_context = {
+        "summary": "Solicitud creada desde archivo o imagen enviada por el cliente.",
+        "recommended_channels": ["whatsapp", "chat_widget", "email", "phone", "crm"],
+        "operator_goal": "convertir_a_pedido_o_cotizacion",
+        "needs_operator_review": match_summary["needs_operator_review"],
+    }
+    customer_message = (
+        f"Recibimos tu {request_kind_label}. Detectamos {detected_count} renglon(es): "
+        f"{matched_count} asociado(s) al catalogo y {unmatched_count} para revisar."
+    )
+    customer_next_steps = [
+        {
+            "id": "operator_review",
+            "label": "Revision del equipo",
+            "description": "Un operador valida faltantes, stock y precio antes de responder.",
+            "status": "pending_review" if match_summary["needs_operator_review"] else "ready",
+        },
+        {
+            "id": "reply",
+            "label": "Respuesta por canal",
+            "description": "La respuesta puede continuar por WhatsApp, widget, email o telefono.",
+            "status": "pending",
+        },
+    ]
+    next_actions = _assisted_next_actions(
+        pedido_id=0,
+        tenant_slug=tenant_slug,
+        matched_count=matched_count,
+        unmatched_count=unmatched_count,
+    )
+    operator_pack = _operator_pack(
+        record_id=None,
+        request_kind_label=request_kind_label,
+        contact=contact,
+        match_summary=match_summary,
+        unmatched_items=unmatched_labels,
+        extraction_error=extraction_error,
+    )
+    assisted_request = {
+        "contract_version": ASSISTED_REQUEST_CONTRACT_VERSION,
+        "mode": "order_note_upload",
+        "request_kind": "order_note",
+        "request_kind_label": request_kind_label,
+        "crm_state": crm_state,
+        "source": source,
+        "contact": contact,
+        "match_summary": match_summary,
+        "review_context": review_context,
+        "detected_items": detected_items,
+        "unmatched_items": unmatched_labels,
+        "raw_unmatched_rows": unmatched_rows,
+        "catalog_candidates": catalog_candidates,
+        "customer_message": customer_message,
+        "customer_next_steps": customer_next_steps,
+        "intake_experience": intake_experience,
+        "operator_pack": operator_pack,
+        "next_actions": next_actions,
+        "request_id": request_id,
+    }
+
+    if not owner_user_id or not tenant_id:
+        assisted_request["persistence_skipped"] = "missing_owner_or_tenant"
+        return assisted_request
+
+    record_payload = {
+        "archivo_url": source.get("archivo_url"),
+        "archivo_nombre": source.get("archivo_nombre"),
+        "request_kind": "order_note",
+        "request_kind_label": request_kind_label,
+        "contact": contact,
+        "items_detectados": detected_items,
+        "no_encontrados": unmatched_rows,
+        "no_encontrados_labels": unmatched_labels,
+        "catalog_candidates": catalog_candidates,
+        "origen": source_channel,
+        "contract_version": ASSISTED_REQUEST_CONTRACT_VERSION,
+        "review_context": review_context,
+        "match_summary": match_summary,
+        "customer_message": customer_message,
+        "customer_next_steps": customer_next_steps,
+        "intake_experience": intake_experience,
+        "operator_pack": operator_pack,
+        "extraction_error": extraction_error,
+        "request_id": request_id,
+    }
+    pedido = PedidoConversacional(
+        tenant_id=tenant_id,
+        user_id=viewer_user_id or owner_user_id,
+        tipo="nota_de_pedido",
+        estado="confirmado",
+        items=[record_payload],
+        monto_monetario=state.cart.get("total") or state.cart.get("subtotal") or 0,
+        monto_puntos=0,
+        anon_id=anon_id,
+        origen=source_channel,
+        metadata_payload={
+            "contract_version": ASSISTED_REQUEST_CONTRACT_VERSION,
+            "mode": "order_note_upload",
+            "request_kind": "order_note",
+            "request_kind_label": request_kind_label,
+            "crm_state": crm_state,
+            "source": source,
+            "contact": contact,
+            "match_summary": match_summary,
+            "review_context": review_context,
+            "catalog_candidates": catalog_candidates,
+            "customer_next_steps": customer_next_steps,
+            "intake_experience": intake_experience,
+            "operator_pack": operator_pack,
+            "next_actions": next_actions,
+            "request_id": request_id,
+        },
+    )
+    db.session.add(pedido)
+    db.session.flush()
+    for action in next_actions:
+        if action.get("id") == "tracking":
+            action["reference"] = f"pedido:{pedido.id}"
+    operator_pack = _operator_pack(
+        record_id=pedido.id,
+        request_kind_label=request_kind_label,
+        contact=contact,
+        match_summary=match_summary,
+        unmatched_items=unmatched_labels,
+        extraction_error=extraction_error,
+    )
+    assisted_request.update(
+        {
+            "pedido_id": pedido.id,
+            "lead_id": pedido.id,
+            "operator_pack": operator_pack,
+            "next_actions": next_actions,
+        }
+    )
+    pedido.metadata_payload = {
+        **(pedido.metadata_payload or {}),
+        "operator_pack": operator_pack,
+        "next_actions": next_actions,
+    }
+    pedido.items = [{**record_payload, "operator_pack": operator_pack}, *pedido.items[1:]]
+    db.session.commit()
+    return assisted_request
+
+
 def analyse_image_for_products(image_url: str) -> List[Dict[str, Any]]:
     if not image_url:
         return []
@@ -884,6 +1326,13 @@ def handle_image_payload(
     catalog: Iterable[Dict[str, Any]],
     *,
     request_id: Optional[str] = None,
+    owner_user_id: Optional[int] = None,
+    viewer_user_id: Optional[int] = None,
+    tenant_id: Optional[int] = None,
+    tenant_slug: Optional[str] = None,
+    channel: Optional[str] = None,
+    context: Optional[Dict[str, Any]] = None,
+    anon_id: Optional[str] = None,
 ) -> Optional[PymeFlowResult]:
     image_url = image_info.get("url")
     detected = analyse_image_for_products(image_url)
@@ -966,12 +1415,34 @@ def handle_image_payload(
     )
 
     add_items_to_cart(state, matched)
+    detected_items, unmatched_rows, catalog_candidates = _assisted_items_from_matches(matched)
+    assisted_request = _persist_assisted_intake_request(
+        state=state,
+        owner_user_id=owner_user_id or state.pyme_id,
+        viewer_user_id=viewer_user_id,
+        tenant_id=tenant_id,
+        tenant_slug=tenant_slug,
+        channel=channel or "web",
+        source_type="image_order_note",
+        attachment_info=image_info,
+        detected_items=detected_items,
+        unmatched_rows=unmatched_rows,
+        catalog_candidates=catalog_candidates,
+        context=context,
+        anon_id=anon_id,
+        request_id=request_id,
+    )
 
     msg = "Leí tu pedido de la imagen:\n\n" + "\n".join(items_to_confirm) + "\n\n¿Es correcto? Confirmame para procesarlo."
 
     return PymeFlowResult(
         message_body=msg,
         source="pyme_imagen_items_agregados",
+        data={
+            "assisted_request": assisted_request,
+            "pedido_id": assisted_request.get("pedido_id"),
+            "lead_id": assisted_request.get("lead_id"),
+        },
         options_list=[
             {"texto": "Confirmar pedido", "action_id": "confirmar_pedido"},
             {"texto": "Modificar", "action_id": "ver_carrito_pyme"},
@@ -985,6 +1456,13 @@ def handle_pdf_payload(
     catalog: Iterable[Dict[str, Any]],
     *,
     request_id: Optional[str] = None,
+    owner_user_id: Optional[int] = None,
+    viewer_user_id: Optional[int] = None,
+    tenant_id: Optional[int] = None,
+    tenant_slug: Optional[str] = None,
+    channel: Optional[str] = None,
+    context: Optional[Dict[str, Any]] = None,
+    anon_id: Optional[str] = None,
 ) -> PymeFlowResult:
     extracted_items: List[Dict[str, Any]] = []
     text_blocks: List[str] = []
@@ -1084,12 +1562,35 @@ def handle_pdf_payload(
         },
     )
     add_items_to_cart(state, matches)
+    detected_items, unmatched_rows, catalog_candidates = _assisted_items_from_matches(matches)
+    assisted_request = _persist_assisted_intake_request(
+        state=state,
+        owner_user_id=owner_user_id or state.pyme_id,
+        viewer_user_id=viewer_user_id,
+        tenant_id=tenant_id,
+        tenant_slug=tenant_slug,
+        channel=channel or "web",
+        source_type="pdf_order_note",
+        attachment_info=pdf_info,
+        detected_items=detected_items,
+        unmatched_rows=unmatched_rows,
+        catalog_candidates=catalog_candidates,
+        context=context,
+        anon_id=anon_id,
+        request_id=request_id,
+        text_preview="\n".join(text_blocks),
+    )
 
     msg = "Procesé el pedido del archivo:\n\n" + "\n".join(items_to_confirm) + "\n\n¿Confirmamos?"
 
     return PymeFlowResult(
         message_body=msg,
         source="pyme_pdf_items_agregados",
+        data={
+            "assisted_request": assisted_request,
+            "pedido_id": assisted_request.get("pedido_id"),
+            "lead_id": assisted_request.get("lead_id"),
+        },
         options_list=[
             {"texto": "Confirmar pedido", "action_id": "confirmar_pedido"},
             {"texto": "Modificar", "action_id": "ver_carrito_pyme"},

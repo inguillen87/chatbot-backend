@@ -1011,6 +1011,383 @@ def _heatmap_realtime_contract(points: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _bounds_center(bounds: dict[str, Any] | None) -> dict[str, float] | None:
+    if not bounds:
+        return None
+    try:
+        return {
+            "lat": round((float(bounds["north"]) + float(bounds["south"])) / 2, 6),
+            "lng": round((float(bounds["east"]) + float(bounds["west"])) / 2, 6),
+        }
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _heatmap_narrative_contract(
+    tenant: TenantProfile,
+    *,
+    summary: dict[str, Any],
+    quality: dict[str, Any],
+    category_layers: list[dict[str, Any]],
+    geocoding_candidates: list[dict[str, Any]],
+    ai_summary: dict[str, Any],
+) -> dict[str, Any]:
+    state = str(quality.get("state") or "empty")
+    points = int(summary.get("points") or 0)
+    cells = int(summary.get("cells") or 0)
+    pending_geocode = len(geocoding_candidates or [])
+    top_category = (category_layers[0] if category_layers else {}).get("key")
+    tenant_type = _norm(getattr(tenant, "tipo", None), "operacion")
+
+    if points:
+        headline = f"{points} puntos territoriales listos para decision"
+        body = (
+            f"El mapa consolida {cells} zonas activas con cobertura "
+            f"{quality.get('coverage_percent', 0)}% y senales AI en modo {ai_summary.get('risk_level') or 'normal'}."
+        )
+    elif pending_geocode:
+        headline = f"{pending_geocode} direcciones listas para geocodificar"
+        body = "La UI puede mostrar la cola territorial y pedir coordenadas antes de pintar calor real."
+    elif state == "blocked":
+        headline = "Sin coordenadas reales para pintar el territorio"
+        body = "Hay actividad operativa, pero falta latitud/longitud o direcciones utiles para construir hotspots."
+    else:
+        headline = "Sin eventos territoriales para el periodo"
+        body = "El mapa queda en estado vacio y puede mostrar configuracion, captura de ubicacion y filtros."
+
+    return {
+        "contract_version": "operations.heatmap_narrative.v1",
+        "state": state,
+        "tenant_type": tenant_type,
+        "headline": headline,
+        "body": body,
+        "primary_metric": {"key": "visible_points", "label": "Puntos visibles", "value": points},
+        "secondary_metrics": [
+            {"key": "hotspot_cells", "label": "Zonas activas", "value": cells},
+            {"key": "coverage_percent", "label": "Cobertura GPS", "value": quality.get("coverage_percent", 0)},
+            {"key": "pending_geocode", "label": "Direcciones pendientes", "value": pending_geocode},
+        ],
+        "focus": {
+            "top_category": top_category,
+            "risk_level": ai_summary.get("risk_level") or "normal",
+            "dominant_intent": ai_summary.get("dominant_intent") or "general_query",
+            "requires_human_attention": bool(ai_summary.get("requires_human_attention")),
+        },
+        "empty_state": {
+            "reason_code": quality.get("reason_code"),
+            "recommended_view": "geocoding_queue" if pending_geocode else "capture_location_setup",
+        },
+    }
+
+
+def _heatmap_viewport_presets(
+    *,
+    bounds: dict[str, Any] | None,
+    hotspots: list[dict[str, Any]],
+    quality: dict[str, Any],
+    geocoding_candidates: list[dict[str, Any]],
+) -> dict[str, Any]:
+    center = _bounds_center(bounds)
+    presets: list[dict[str, Any]] = []
+    if bounds and center:
+        presets.append(
+            {
+                "id": "fit_operational_bounds",
+                "label": "Territorio activo",
+                "mode": "fit_bounds",
+                "default": True,
+                "bounds": bounds,
+                "center": center,
+                "padding_px": 72,
+                "reason_code": "points_available",
+            }
+        )
+    if hotspots:
+        hotspot = hotspots[0]
+        presets.append(
+            {
+                "id": "top_hotspot",
+                "label": "Hotspot principal",
+                "mode": "fly_to",
+                "default": not bool(presets),
+                "center": {"lat": hotspot.get("lat"), "lng": hotspot.get("lng")},
+                "zoom": 14,
+                "bearing": 0,
+                "pitch": 45,
+                "target_cell_id": hotspot.get("id"),
+                "reason_code": "highest_weight_cell",
+            }
+        )
+    if geocoding_candidates:
+        presets.append(
+            {
+                "id": "geocoding_queue",
+                "label": "Direcciones pendientes",
+                "mode": "queue_panel",
+                "default": not bool(presets),
+                "reason_code": "addresses_need_geocoding",
+                "candidate_count": len(geocoding_candidates),
+            }
+        )
+    if not presets:
+        presets.append(
+            {
+                "id": "tenant_region_empty",
+                "label": "Region sin coordenadas",
+                "mode": "frontend_default_region",
+                "default": True,
+                "reason_code": quality.get("reason_code") or "no_points",
+                "requires_frontend_default_center": True,
+            }
+        )
+
+    return {
+        "contract_version": "operations.heatmap_viewport_presets.v1",
+        "default_preset_id": next((preset["id"] for preset in presets if preset.get("default")), presets[0]["id"]),
+        "camera_constraints": {
+            "min_zoom": 4,
+            "max_zoom": 18,
+            "fit_bounds_padding_px": 72,
+            "prefer_reduced_motion": False,
+        },
+        "presets": presets,
+    }
+
+
+def _heatmap_layer_style_contract(
+    *,
+    ai_layers: dict[str, Any],
+    category_layers: list[dict[str, Any]],
+    quality: dict[str, Any],
+) -> dict[str, Any]:
+    style_tokens = _as_dict(ai_layers.get("style_tokens")) or {
+        "risk": "#EF4444",
+        "whatsapp": "#10B981",
+        "survey": "#7C3AED",
+        "attention": "#F59E0B",
+        "neutral": "#2563EB",
+    }
+    return {
+        "contract_version": "operations.heatmap_layer_styles.v1",
+        "default_engine": "maplibre",
+        "compatible_engines": ["maplibre", "deckgl", "google"],
+        "quality_state": quality.get("state"),
+        "style_tokens": style_tokens,
+        "layers": [
+            {
+                "id": "base_heatmap",
+                "source": "points",
+                "geometry": "weighted_points",
+                "default_visible": True,
+                "style": {"type": "heatmap", "weight_field": "weight", "radius_px": 34, "intensity": 0.75},
+                "interaction": {"hover": True, "click": "inspect_point"},
+            },
+            {
+                "id": "hotspot_cells",
+                "source": "cells",
+                "geometry": "cell_centroids",
+                "default_visible": True,
+                "style": {"type": "circle", "color": style_tokens.get("attention"), "radius_field": "weight"},
+                "interaction": {"hover": True, "click": "open_hotspot_actions"},
+            },
+            {
+                "id": "category_layers",
+                "source": "category_layers",
+                "geometry": "grouped_points",
+                "default_visible": bool(category_layers),
+                "style": {"type": "category_heatmap", "max_categories": 12},
+                "interaction": {"toggle": True, "filter_key": "category"},
+            },
+            {
+                "id": "ai_risk_layers",
+                "source": "ai_layers.layers.risk_pulses",
+                "geometry": "animated_scatter",
+                "default_visible": True,
+                "style": {"type": "pulse", "color": style_tokens.get("risk"), "reduced_motion": "static_circle"},
+                "interaction": {"click": "inspect_ai_signals"},
+            },
+            {
+                "id": "whatsapp_activity",
+                "source": "ai_layers.layers.whatsapp_activity",
+                "geometry": "pulse_points",
+                "default_visible": True,
+                "style": {"type": "pulse", "color": style_tokens.get("whatsapp"), "reduced_motion": "static_circle"},
+                "interaction": {"click": "filter_channel_whatsapp"},
+            },
+            {
+                "id": "survey_participation",
+                "source": "ai_layers.layers.survey_participation",
+                "geometry": "territory_heat",
+                "default_visible": True,
+                "style": {"type": "heatmap", "color": style_tokens.get("survey")},
+                "interaction": {"click": "open_survey_context"},
+            },
+            {
+                "id": "geocoding_queue",
+                "source": "geocoding.candidates",
+                "geometry": "address_rows",
+                "default_visible": quality.get("state") == "pending_geocode",
+                "style": {"type": "queue_badge", "color": style_tokens.get("attention")},
+                "interaction": {"click": "open_geocoding_queue"},
+            },
+        ],
+        "legend_contract": {
+            "color_mode": "category_source_quality",
+            "show_quality_badge": True,
+            "show_ai_badge": True,
+            "show_geocoding_badge": True,
+        },
+    }
+
+
+def _heatmap_hotspot_actions_contract(
+    *,
+    hotspots: list[dict[str, Any]],
+    quality: dict[str, Any],
+    geocoding_candidates: list[dict[str, Any]],
+    ai_summary: dict[str, Any],
+) -> dict[str, Any]:
+    actions: list[dict[str, Any]] = []
+    for index, hotspot in enumerate(hotspots[:5]):
+        actions.append(
+            {
+                "id": f"inspect_hotspot_{index + 1}",
+                "label": "Inspeccionar hotspot",
+                "priority": "high" if float(hotspot.get("weight") or 0) >= 1.4 else "medium",
+                "action_type": "client_filter",
+                "target": {"type": "cell", "cell_id": hotspot.get("id"), "lat": hotspot.get("lat"), "lng": hotspot.get("lng")},
+                "ui_hint": "open_heatmap_cell",
+                "writes_enabled": False,
+            }
+        )
+
+    if geocoding_candidates:
+        actions.append(
+            {
+                "id": "open_geocoding_queue",
+                "label": "Completar coordenadas pendientes",
+                "priority": "high",
+                "action_type": "open_queue",
+                "target": {"type": "geocoding_queue", "candidate_count": len(geocoding_candidates)},
+                "ui_hint": "open_geocoding_queue",
+                "writes_enabled": False,
+            }
+        )
+
+    if ai_summary.get("requires_human_attention"):
+        actions.append(
+            {
+                "id": "open_ai_risk_queue",
+                "label": "Revisar senales AI de riesgo",
+                "priority": "high",
+                "action_type": "open_panel",
+                "target": {"type": "ai_risk", "risk_level": ai_summary.get("risk_level")},
+                "ui_hint": "open_ai_risk_layers",
+                "writes_enabled": False,
+            }
+        )
+
+    return {
+        "contract_version": "operations.heatmap_hotspot_actions.v1",
+        "safe_by_default": True,
+        "writes_enabled": False,
+        "quality_state": quality.get("state"),
+        "actions": actions,
+        "playbook": [
+            {
+                "id": "triage_high_density_zone",
+                "label": "Priorizar zona de mayor concentracion",
+                "trigger": "hotspots_present",
+                "enabled": bool(hotspots),
+                "steps": ["filter_top_cell", "inspect_records", "assign_owner_or_followup", "monitor_realtime_updates"],
+                "confirmation_required_for_writes": True,
+            },
+            {
+                "id": "recover_missing_geolocation",
+                "label": "Recuperar ubicaciones faltantes",
+                "trigger": "pending_geocode",
+                "enabled": bool(geocoding_candidates),
+                "steps": ["open_geocoding_queue", "validate_address", "patch_lat_lng", "refresh_heatmap"],
+                "confirmation_required_for_writes": True,
+            },
+            {
+                "id": "watch_ai_risk_layer",
+                "label": "Vigilar capa AI de riesgo",
+                "trigger": "ai_requires_attention",
+                "enabled": bool(ai_summary.get("requires_human_attention")),
+                "steps": ["show_ai_risk_layers", "open_related_records", "escalate_if_confirmed"],
+                "confirmation_required_for_writes": True,
+            },
+        ],
+    }
+
+
+def _heatmap_geocoding_guidance(
+    *,
+    geocoding_candidates: list[dict[str, Any]],
+    location_quality: dict[str, Any],
+    quality: dict[str, Any],
+) -> dict[str, Any]:
+    candidate_count = len(geocoding_candidates or [])
+    return {
+        "contract_version": "operations.heatmap_geocoding_guidance.v1",
+        "state": "pending" if candidate_count else "clear",
+        "reason_code": "addresses_need_coordinates" if candidate_count else "no_pending_addresses",
+        "candidate_count": candidate_count,
+        "coverage_percent": location_quality.get("coordinate_coverage_pct"),
+        "quality_state": quality.get("state"),
+        "backend_external_calls": "none",
+        "queue_behavior": "show_candidates_and_require_user_or_batch_confirmation" if candidate_count else "hide_queue_or_show_success",
+        "field_contract": {
+            "record_id": "string",
+            "record_source": "tenant_ticket|municipio_ticket|pyme_ticket",
+            "address": "string",
+            "latitud": "number",
+            "longitud": "number",
+        },
+        "validation_rules": [
+            "latitud must be between -90 and 90",
+            "longitud must be between -180 and 180",
+            "do not mutate records without user confirmation",
+            "refresh /api/v2/analytics/operations/heatmap after patching coordinates",
+        ],
+        "recommended_actions": [
+            {
+                "id": "open_geocoding_queue",
+                "label": "Abrir cola de geocodificacion",
+                "enabled": bool(candidate_count),
+                "ui_hint": "open_geocoding_queue",
+            },
+            {
+                "id": "request_whatsapp_location",
+                "label": "Pedir ubicacion por WhatsApp",
+                "enabled": True,
+                "ui_hint": "open_template_or_live_chat",
+            },
+        ],
+    }
+
+
+def _heatmap_ai_status_contract(ai_insights: dict[str, Any], ai_layers: dict[str, Any]) -> dict[str, Any]:
+    hf_status = _as_dict(ai_insights.get("hf_status"))
+    frontend_contract = _as_dict(ai_insights.get("frontend_contract"))
+    used_hf = bool(hf_status.get("used"))
+    return {
+        "contract_version": "operations.heatmap_ai_status.v1",
+        "provider_family": ai_insights.get("provider_family") or "huggingface",
+        "mode": ai_insights.get("mode") or ("huggingface_zero_shot" if used_hf else "deterministic_local_fallback"),
+        "status": "hf_active" if used_hf else "local_fallback",
+        "configured": bool(hf_status.get("configured")),
+        "zero_shot_enabled": bool(hf_status.get("zero_shot_enabled")),
+        "used_hf": used_hf,
+        "fallback_reason": hf_status.get("fallback_reason"),
+        "safe_to_render_without_hf_token": bool(frontend_contract.get("safe_to_render_without_hf_token", True)),
+        "ai_layers_ready": bool((ai_layers.get("layers") or {}) if isinstance(ai_layers, dict) else {}),
+        "map_layer_hints": (ai_insights.get("summary") or {}).get("map_layer_hints") or [],
+        "requires_human_attention": bool((ai_insights.get("summary") or {}).get("requires_human_attention")),
+    }
+
+
 def _ai_items_from_heatmap(
     records: list[dict[str, Any]],
     points: list[dict[str, Any]],
@@ -1288,6 +1665,60 @@ def build_operational_heatmap(
     )
     ai_layers = build_map_ai_layers(points, category_layers=category_layers, insights=ai_insights)
     ai_summary = ai_insights.get("summary") or {}
+    heatmap_summary = {
+        "points": len(points),
+        "cells": len(cell_items),
+        "can_render_heatmap": bool(points),
+        "ticket_points": len([point for point in points if point["source"] == "ticket"]),
+        "survey_points": len([point for point in points if point["source"] == "survey"]),
+        "event_points": len([point for point in points if point["source"] == "analytics_event"]),
+        "points_with_gender": points_with_gender,
+        "points_with_age": points_with_age,
+        "unknown_gender_points": len(points) - points_with_gender,
+        "unknown_age_points": len(points) - points_with_age,
+        "filtered": bool(normalized_filters),
+        "pending_geocode": len(geocoding_candidates),
+        "coordinate_coverage_pct": location_quality.get("coordinate_coverage_pct"),
+        "coverage_rate": quality.get("coverage_rate"),
+        "coverage_percent": quality.get("coverage_percent"),
+        "quality_state": quality.get("state"),
+        "quality_reason_code": quality.get("reason_code"),
+        "ai_risk_level": ai_summary.get("risk_level") or "normal",
+        "dominant_intent": ai_summary.get("dominant_intent") or "general_query",
+        "requires_human_attention": bool(ai_summary.get("requires_human_attention")),
+    }
+    hotspots = cell_items[:10]
+    geocoding_guidance = _heatmap_geocoding_guidance(
+        geocoding_candidates=geocoding_candidates,
+        location_quality=location_quality,
+        quality=quality,
+    )
+    hotspot_actions = _heatmap_hotspot_actions_contract(
+        hotspots=hotspots,
+        quality=quality,
+        geocoding_candidates=geocoding_candidates,
+        ai_summary=ai_summary,
+    )
+    viewport_presets = _heatmap_viewport_presets(
+        bounds=bounds,
+        hotspots=hotspots,
+        quality=quality,
+        geocoding_candidates=geocoding_candidates,
+    )
+    layer_style_contract = _heatmap_layer_style_contract(
+        ai_layers=ai_layers,
+        category_layers=category_layers,
+        quality=quality,
+    )
+    map_narrative = _heatmap_narrative_contract(
+        tenant,
+        summary=heatmap_summary,
+        quality=quality,
+        category_layers=category_layers,
+        geocoding_candidates=geocoding_candidates,
+        ai_summary=ai_summary,
+    )
+    ai_status = _heatmap_ai_status_contract(ai_insights, ai_layers)
 
     return {
         "contract_version": "operations.heatmap.v1",
@@ -1317,29 +1748,21 @@ def build_operational_heatmap(
                 "whatsapp_activity_layer",
                 "survey_participation_layer",
             ],
+            "premium_metadata": [
+                "map_narrative",
+                "viewport_presets",
+                "layer_style_contract",
+                "hotspot_actions",
+                "geocoding.guidance",
+                "ai_status",
+            ],
         },
-        "summary": {
-            "points": len(points),
-            "cells": len(cell_items),
-            "can_render_heatmap": bool(points),
-            "ticket_points": len([point for point in points if point["source"] == "ticket"]),
-            "survey_points": len([point for point in points if point["source"] == "survey"]),
-            "event_points": len([point for point in points if point["source"] == "analytics_event"]),
-            "points_with_gender": points_with_gender,
-            "points_with_age": points_with_age,
-            "unknown_gender_points": len(points) - points_with_gender,
-            "unknown_age_points": len(points) - points_with_age,
-            "filtered": bool(normalized_filters),
-            "pending_geocode": len(geocoding_candidates),
-            "coordinate_coverage_pct": location_quality.get("coordinate_coverage_pct"),
-            "coverage_rate": quality.get("coverage_rate"),
-            "coverage_percent": quality.get("coverage_percent"),
-            "quality_state": quality.get("state"),
-            "quality_reason_code": quality.get("reason_code"),
-            "ai_risk_level": ai_summary.get("risk_level") or "normal",
-            "dominant_intent": ai_summary.get("dominant_intent") or "general_query",
-            "requires_human_attention": bool(ai_summary.get("requires_human_attention")),
-        },
+        "summary": heatmap_summary,
+        "map_narrative": map_narrative,
+        "viewport_presets": viewport_presets,
+        "layer_style_contract": layer_style_contract,
+        "hotspot_actions": hotspot_actions,
+        "ai_status": ai_status,
         "ai_insights": ai_insights,
         "ai_layers": ai_layers,
         "map_experience": {
@@ -1349,6 +1772,11 @@ def build_operational_heatmap(
             "layer_groups": ["base_heatmap", "category_layers", "ai_risk_layers", "whatsapp_activity", "survey_participation"],
             "empty_state_behavior": "show_geocoding_queue_and_ai_summary",
             "supports_reduced_motion": True,
+            "narrative_contract": map_narrative.get("contract_version"),
+            "viewport_contract": viewport_presets.get("contract_version"),
+            "layer_style_contract": layer_style_contract.get("contract_version"),
+            "hotspot_actions_contract": hotspot_actions.get("contract_version"),
+            "ai_status_contract": ai_status.get("contract_version"),
         },
         "quality": quality,
         "realtime": realtime,
@@ -1388,6 +1816,7 @@ def build_operational_heatmap(
             "reason_code": "address_without_coordinates" if geocoding_candidates else "no_pending_addresses",
             "candidate_count": len(geocoding_candidates),
             "candidates": geocoding_candidates[:50],
+            "guidance": geocoding_guidance,
             "recommended_action": {
                 "action_id": "geocode_ticket_addresses",
                 "label": "Geocodificar direcciones pendientes",
@@ -1400,7 +1829,7 @@ def build_operational_heatmap(
         "bounds": bounds,
         "points": points,
         "cells": cell_items,
-        "hotspots": cell_items[:10],
+        "hotspots": hotspots,
         "ui": {
             "labels": {
                 "map_quality": "Calidad del mapa",

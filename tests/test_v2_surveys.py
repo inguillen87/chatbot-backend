@@ -9,6 +9,7 @@ os.environ.setdefault("FLASK_SKIP_GLOBAL_APP", "1")
 from app import create_app, db
 from config import Config
 from models import TenantProfile, User
+from routes.v2.surveys import _public_response_rate_buckets
 
 
 class V2SurveysTestConfig(Config):
@@ -86,6 +87,8 @@ class V2SurveysApiTest(unittest.TestCase):
             "title": "Encuesta de satisfacción",
             "description": "Qué te pareció el servicio",
             "channel": "web",
+            "live_vote": True,
+            "show_live_results": True,
             "opens_at": (now - timedelta(days=1)).isoformat() + "Z",
             "closes_at": (now + timedelta(days=7)).isoformat() + "Z",
             "questions": [
@@ -134,11 +137,116 @@ class V2SurveysApiTest(unittest.TestCase):
         live_payload = live_resp.get_json()
         self.assertEqual(live_payload.get("contract_version"), "surveys.live_results.v2")
         self.assertEqual(live_payload.get("total_respuestas"), 1)
-        self.assertEqual(live_payload.get("render_contract", {}).get("preferred_visualization"), "live_vote_dashboard")
+        self.assertEqual(live_payload.get("render_contract", {}).get("preferred_visualization"), "live_vote_command_center")
         self.assertFalse(live_payload.get("heatmap", {}).get("enabled"))
         first_question = live_payload.get("preguntas", [])[0]
         self.assertEqual(first_question.get("total_votos"), 1)
+        self.assertEqual(first_question.get("opciones", [])[0].get("texto"), "Excelente")
         self.assertEqual(first_question.get("opciones", [])[0].get("votos"), 1)
+        self.assertEqual(live_payload.get("timeline_minute", [])[0].get("respuestas"), 1)
+        self.assertIn("ai_summary", live_payload.get("render_contract", {}).get("supports", []))
+        self.assertFalse(live_payload.get("empty_state", {}).get("is_empty"))
+        self.assertTrue(live_payload.get("live_telemetry", {}).get("has_responses"))
+
+    def test_v2_public_live_results_hidden_when_not_enabled(self):
+        headers = {**self._auth(self.admin_1), "X-Tenant-Slug": self.tenant_1.slug}
+        payload = self._create_payload()
+        payload["show_live_results"] = False
+
+        survey_id = self.client.post("/api/v2/surveys", json=payload, headers=headers).get_json()["id"]
+        token = self.client.post(f"/api/v2/surveys/{survey_id}/publish", headers=headers).get_json()["public_token"]
+
+        public_get = self.client.get(f"/api/v2/public/surveys/{token}").get_json()
+        question_id = public_get.get("preguntas", [])[0].get("id")
+        option_id = public_get.get("preguntas", [])[0].get("opciones", [])[0].get("id")
+
+        respond_resp = self.client.post(
+            f"/api/v2/public/surveys/{token}/respond",
+            json={
+                "anon_id": "anon-hidden-1",
+                "source": "web",
+                "respuestas": [{"pregunta_id": question_id, "opcion_id": option_id}],
+            },
+        )
+        self.assertEqual(respond_resp.status_code, 201)
+        self.assertNotIn("live_results_url", respond_resp.get_json())
+
+        live_resp = self.client.get(f"/api/v2/public/surveys/{token}/live-results")
+        self.assertEqual(live_resp.status_code, 403)
+        self.assertEqual(live_resp.get_json().get("reason_code"), "live_results_hidden")
+
+    def test_v2_public_response_live_action_preserves_tenant_slug(self):
+        headers = {**self._auth(self.admin_1), "X-Tenant-Slug": self.tenant_1.slug}
+        survey_id = self.client.post("/api/v2/surveys", json=self._create_payload(), headers=headers).get_json()["id"]
+        token = self.client.post(f"/api/v2/surveys/{survey_id}/publish", headers=headers).get_json()["public_token"]
+
+        public_get = self.client.get(f"/api/v2/public/surveys/{token}?tenant_slug={self.tenant_1.slug}").get_json()
+        question_id = public_get.get("preguntas", [])[0].get("id")
+        option_id = public_get.get("preguntas", [])[0].get("opciones", [])[0].get("id")
+
+        respond_resp = self.client.post(
+            f"/api/v2/public/surveys/{token}/respond?tenant_slug={self.tenant_1.slug}",
+            json={
+                "anon_id": "anon-tenant-scoped-1",
+                "source": "web",
+                "respuestas": [{"pregunta_id": question_id, "opcion_id": option_id}],
+            },
+        )
+
+        self.assertEqual(respond_resp.status_code, 201, respond_resp.get_json())
+        ack = respond_resp.get_json()
+        expected_live_url = f"/api/v2/public/surveys/{token}/live-results?tenant_slug={self.tenant_1.slug}"
+        self.assertEqual(ack.get("live_results_url"), expected_live_url)
+        self.assertEqual(ack.get("ui_actions", [])[0].get("href"), expected_live_url)
+
+        live_resp = self.client.get(f"{expected_live_url}&include_heatmap=0")
+        self.assertEqual(live_resp.status_code, 200, live_resp.get_json())
+        self.assertEqual(live_resp.get_json().get("total_respuestas"), 1)
+
+    def test_v2_public_response_rate_limit_returns_contract_and_headers(self):
+        self.app.config["PUBLIC_ENCUESTAS_RATE_LIMIT"] = 1
+        self.app.config["PUBLIC_ENCUESTAS_RATE_PERIOD"] = 60
+        _public_response_rate_buckets.clear()
+
+        headers = {**self._auth(self.admin_1), "X-Tenant-Slug": self.tenant_1.slug}
+        survey_id = self.client.post("/api/v2/surveys", json=self._create_payload(), headers=headers).get_json()["id"]
+        token = self.client.post(f"/api/v2/surveys/{survey_id}/publish", headers=headers).get_json()["public_token"]
+
+        public_get = self.client.get(f"/api/v2/public/surveys/{token}").get_json()
+        question_id = public_get.get("preguntas", [])[0].get("id")
+        option_id = public_get.get("preguntas", [])[0].get("opciones", [])[0].get("id")
+
+        first_resp = self.client.post(
+            f"/api/v2/public/surveys/{token}/respond",
+            json={
+                "anon_id": "anon-rate-1",
+                "source": "web",
+                "respuestas": [{"pregunta_id": question_id, "opcion_id": option_id}],
+            },
+            headers={"X-Forwarded-For": "198.51.100.20", "X-Request-Id": "survey-rate-1"},
+        )
+        self.assertEqual(first_resp.status_code, 201, first_resp.get_json())
+        self.assertEqual(first_resp.headers.get("X-RateLimit-Limit"), "1")
+        self.assertEqual(first_resp.headers.get("X-RateLimit-Remaining"), "0")
+        self.assertEqual(first_resp.get_json().get("request_id"), "survey-rate-1")
+
+        limited_resp = self.client.post(
+            f"/api/v2/public/surveys/{token}/respond",
+            json={
+                "anon_id": "anon-rate-2",
+                "source": "web",
+                "respuestas": [{"pregunta_id": question_id, "opcion_id": option_id}],
+            },
+            headers={"X-Forwarded-For": "198.51.100.20", "X-Request-Id": "survey-rate-2"},
+        )
+        self.assertEqual(limited_resp.status_code, 429, limited_resp.get_json())
+        payload = limited_resp.get_json()
+        self.assertEqual(payload.get("contract_version"), "surveys.public_response.v2")
+        self.assertEqual(payload.get("reason_code"), "rate_limited")
+        self.assertEqual(payload.get("request_id"), "survey-rate-2")
+        self.assertEqual(limited_resp.headers.get("X-RateLimit-Remaining"), "0")
+        self.assertTrue(limited_resp.headers.get("Retry-After"))
+        self.assertGreaterEqual(payload.get("rate_limit", {}).get("retry_after_seconds"), 1)
 
     def test_survey_draft_accepts_incomplete_payload(self):
         headers = {

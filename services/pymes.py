@@ -2544,6 +2544,13 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
                     uploaded_info,
                     catalog_items,
                     request_id=request_id,
+                    owner_user_id=getattr(owner_user, "id", None),
+                    viewer_user_id=getattr(viewer_user, "id", None),
+                    tenant_id=getattr(tenant_profile, "id", None) if tenant_profile else None,
+                    tenant_slug=tenant_slug,
+                    channel=channel,
+                    context=helper_context_for_success,
+                    anon_id=anon_id,
                 )
                 return _finalize_early_response(image_result, intent="image_catalog_match")
         elif mime_type == "application/pdf" or mime_type.endswith("+pdf"):
@@ -2561,6 +2568,13 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
                     uploaded_info,
                     catalog_items,
                     request_id=request_id,
+                    owner_user_id=getattr(owner_user, "id", None),
+                    viewer_user_id=getattr(viewer_user, "id", None),
+                    tenant_id=getattr(tenant_profile, "id", None) if tenant_profile else None,
+                    tenant_slug=tenant_slug,
+                    channel=channel,
+                    context=helper_context_for_success,
+                    anon_id=anon_id,
                 )
                 return _finalize_early_response(pdf_result, intent="pdf_catalog_match")
         elif mime_type.startswith("audio/"):

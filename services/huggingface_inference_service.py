@@ -295,15 +295,39 @@ def detect_objects(image_bytes: bytes, *, model: str | None = None, threshold: f
         return None
 
 
+def image_to_text(image_bytes: bytes, *, model: str | None = None) -> Optional[str]:
+    if not vision_enabled() or not image_bytes:
+        return None
+
+    resolved_model = model or os.getenv("HUGGINGFACE_IMAGE_TO_TEXT_MODEL", "Salesforce/blip-image-captioning-base")
+
+    try:
+        client = _get_client(model=resolved_model)
+        result = client.image_to_text(image_bytes, model=resolved_model)
+        payload = _as_dict(result)
+        text = (
+            payload.get("generated_text")
+            or payload.get("text")
+            or payload.get("summary_text")
+            or payload.get("label")
+            or ""
+        )
+        return str(text).strip() or None
+    except Exception as exc:
+        _log_provider_failure("image_to_text", exc)
+        return None
+
+
 def analyze_image_for_chatboc(image_bytes: bytes) -> Optional[dict]:
     labels = classify_image(image_bytes) or []
     objects = detect_objects(image_bytes) or []
+    text = image_to_text(image_bytes) or ""
 
-    if not labels and not objects:
+    if not labels and not objects and not text:
         return None
 
     return {
         "labels": [str(item.get("label") or "") for item in labels if item.get("label")],
         "objects": [str(item.get("label") or "") for item in objects if item.get("label")],
-        "text": "",
+        "text": text,
     }

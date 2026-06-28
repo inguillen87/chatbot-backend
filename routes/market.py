@@ -28,6 +28,7 @@ from routes.pwa_public import _build_public_cart_url
 from services.catalog_seed import ensure_seed_catalog
 from services.commerce_contracts import build_customer_profile, normalize_sales_channel, resolve_order_contact_payload
 from services.common_utils import parse_precio_flexible
+from services.public_market_catalog import build_public_market_catalog_contract
 from services.promocion_service import promocion_service
 from services.rewards_demo import reward_profile_for_tenant
 from services.tenant_resolver import TenantResolutionError, resolve_tenant_only
@@ -782,6 +783,22 @@ def public_catalog(slug: str):
         abort(make_response(jsonify({"error": "Tenant sin propietario"}), 404))
 
     ensure_seed_catalog(owner, tenant)
+
+    contract_mode = str(request.args.get("contract") or request.args.get("view") or "").strip().lower()
+    if contract_mode in {"marketplace", "market", "v2", "full"}:
+        return jsonify(
+            build_public_market_catalog_contract(
+                tenant,
+                owner,
+                base_web_url=current_app.config.get("APP_BASE_URL", "https://chatboc.ar"),
+                categoria=request.args.get("categoria"),
+                q=request.args.get("q"),
+                precio_min=request.args.get("precio_min"),
+                precio_max=request.args.get("precio_max"),
+                en_promocion=request.args.get("en_promocion"),
+                sort=request.args.get("sort"),
+            )
+        )
 
     categoria = request.args.get("categoria")
     search_text = request.args.get("q")

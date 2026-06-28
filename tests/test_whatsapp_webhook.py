@@ -44,6 +44,7 @@ from routes.whatsapp_webhook import (
     CHATBOC_DEMO_DEFAULT_RESET_WHATSAPP_NUMBER,
     CHATBOC_DEMO_TENANT_SLUG,
 )
+from services.whatsapp_receipts import build_claim_created_template_pre_message
 # Moved model imports after app and config to ensure they are found via sys.path
 # and to avoid potential issues if models.py itself tries to import app-context related things early.
 # However, for direct use in tests, they are typically at the top. Let's try keeping them here.
@@ -3146,6 +3147,31 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
             json.loads(template_kwargs.get("content_variables", "{}")),
             {"1": "Junin", "2": "641277", "3": "Luminaria"},
         )
+
+    def test_claim_created_pre_message_exposes_template_contract_metadata(self):
+        pre_message = build_claim_created_template_pre_message(
+            ticket_nro="M-12345",
+            categoria="Luminaria",
+            consulta_pin="654321",
+            base_chat_url="https://example.com/chat",
+            nombre="Ana",
+            direccion="Calle 123",
+        )
+
+        self.assertEqual(pre_message["template_name"], "chatboc_gov_claim_created_v2")
+        self.assertEqual(
+            pre_message["variables"],
+            {"1": "M-12345", "2": "chat/12345?pin=654321"},
+        )
+        self.assertEqual(pre_message["content_variables"], pre_message["variables"])
+        self.assertEqual(pre_message["fallback"]["mode"], "plain_text")
+        self.assertIn("https://example.com/chat/12345?pin=654321", pre_message["fallback"]["body"])
+        self.assertEqual(
+            pre_message["template_contract"]["receipt_contract"]["kind"],
+            "municipal_claim_receipt",
+        )
+        self.assertIn("track_claim", pre_message["next_actions"])
+        self.assertIn("junin_texto_reclamo", pre_message["qa_cases"])
 
     def test_whatsapp_pre_message_manifest_rejects_unsubmitted_template(self):
         self._set_owner_tipo_chat("municipio")

@@ -6,7 +6,7 @@ from decimal import Decimal
 from typing import Any
 
 from models import MarketOrder, MunicipioTicket, OrderEvent, PedidoConversacional, PymePedido, TenantProfile, TicketComentario
-from services.live_chat_schedule import build_live_chat_status
+from services.live_chat_schedule import build_tenant_live_chat_status
 
 
 TRACKING_EXPERIENCE_CONTRACT_VERSION = "tracking.experience.v1"
@@ -171,11 +171,7 @@ def _comment_timeline(comments_rel: Any) -> list[dict[str, Any]]:
 
 
 def _tenant_live_chat_status(tenant: TenantProfile | None) -> dict[str, Any]:
-    cfg = tenant.configuracion if tenant and isinstance(tenant.configuracion, dict) else {}
-    schedule_cfg = cfg.get("live_chat_schedule") if isinstance(cfg.get("live_chat_schedule"), dict) else None
-    status = build_live_chat_status(schedule_override=schedule_cfg)
-    status["contract_version"] = "live_chat.schedule.v1"
-    status["source"] = "tenant_config" if schedule_cfg else "global_config"
+    status = build_tenant_live_chat_status(tenant)
     status.setdefault("fallback_mode", "http_chat")
     return status
 
@@ -200,6 +196,11 @@ def _claim_support_contract(
         if live_chat.get("start_time") and live_chat.get("end_time")
         else None
     )
+    primary_cta_label = "Chatear con un agente" if available else "Dejar mensaje para el equipo"
+    primary_cta_action = "socket_live_message" if available else "queue_ticket_comment"
+    primary_cta_id = "open_live_chat" if available else "leave_offline_message"
+    primary_action_variant = "primary" if available else "secondary"
+    support_action_label = "Chatear con un agente" if available else "Dejar mensaje"
     return {
         "contract_version": "tracking.support.v1",
         "enabled": True,
@@ -213,6 +214,26 @@ def _claim_support_contract(
                 if available
                 else "Tu mensaje queda asociado al reclamo para que el equipo lo responda en horario administrativo."
             ),
+        },
+        "cta": {
+            "primary": {
+                "id": primary_cta_id,
+                "label": primary_cta_label,
+                "action": primary_cta_action,
+                "endpoint": public_endpoint,
+                "method": "POST",
+                "mode": mode,
+                "requires": ["pin", "comentario"],
+                "variant": primary_action_variant,
+                "safe_for_offline": True,
+                "bound_resource": "municipio_ticket",
+            },
+            "schedule": {
+                "id": "view_live_chat_schedule",
+                "label": "Ver horario de atencion",
+                "schedule_label": schedule_label,
+                "timezone": live_chat.get("timezone"),
+            },
         },
         "service_window": {
             "mode": mode,
@@ -271,9 +292,13 @@ def _claim_support_contract(
         },
         "ui": {
             "render_as": "ticket_bound_helpdesk",
-            "primary_cta": "Enviar mensaje al reclamo",
+            "primary_cta": primary_cta_label,
+            "primary_action": primary_cta_action,
+            "primary_action_variant": primary_action_variant,
+            "support_action_label": support_action_label,
             "live_label": "Chat en vivo",
             "offline_label": "Dejar mensaje",
+            "schedule_label": schedule_label,
             "empty_state": "Todavia no hay mensajes publicos en este reclamo.",
         },
     }
@@ -298,6 +323,41 @@ def _legacy_order_items(details: Any) -> list[dict[str, Any]]:
                 "image_url": item.get("imagen_url") or item.get("image_url"),
             }
         )
+    return items
+
+
+def _public_assisted_items(order: PedidoConversacional, metadata: dict[str, Any]) -> list[dict[str, Any]]:
+    if metadata.get("contract_version") != "marketplace.assisted_request.v1":
+        return order.items or []
+
+    raw_payload = order.items[0] if order.items and isinstance(order.items[0], dict) else {}
+    items: list[dict[str, Any]] = []
+    for index, item in enumerate(raw_payload.get("items_detectados") or []):
+        if not isinstance(item, dict):
+            continue
+        title = item.get("nombre") or item.get("title") or item.get("name") or item.get("sku") or "Item detectado"
+        items.append(
+            {
+                "id": item.get("catalogo_item_id") or f"detected-{index + 1}",
+                "title": title,
+                "quantity": item.get("cantidad") or item.get("quantity") or 1,
+                "status": "matched_catalog",
+            }
+        )
+
+    for index, label in enumerate(raw_payload.get("no_encontrados_labels") or []):
+        items.append(
+            {
+                "id": f"review-{index + 1}",
+                "title": str(label),
+                "quantity": 1,
+                "status": "operator_review",
+            }
+        )
+
+    if not items:
+        label = metadata.get("request_kind_label") or raw_payload.get("request_kind_label") or "Solicitud recibida"
+        items.append({"id": f"assisted-{order.id}", "title": label, "quantity": 1, "status": "operator_review"})
     return items
 
 
@@ -366,7 +426,13 @@ def _order_snapshot(order: Any) -> dict[str, Any]:
 
     if isinstance(order, PedidoConversacional):
         metadata = order.metadata_payload if isinstance(order.metadata_payload, dict) else {}
+        contact = metadata.get("contact") if isinstance(metadata.get("contact"), dict) else {}
         contacto = metadata.get("contacto") if isinstance(metadata.get("contacto"), dict) else {}
+        effective_contact = contact or {
+            "name": contacto.get("nombre"),
+            "email": contacto.get("email"),
+            "phone": contacto.get("telefono"),
+        }
         return {
             "id": f"conversational:{order.id}",
             "source_model": "PedidoConversacional",
@@ -375,16 +441,16 @@ def _order_snapshot(order: Any) -> dict[str, Any]:
             "status": order.estado,
             "channel": order.origen or "whatsapp",
             "contact": {
-                "name": contacto.get("nombre"),
-                "email": contacto.get("email"),
-                "phone": contacto.get("telefono"),
+                "name": effective_contact.get("name") or effective_contact.get("nombre"),
+                "email": effective_contact.get("email"),
+                "phone": effective_contact.get("phone") or effective_contact.get("telefono"),
             },
             "totals": {
                 "monetary": _as_float(order.monto_monetario) or 0.0,
                 "points": order.monto_puntos or 0,
                 "currency": metadata.get("currency") or "ARS",
             },
-            "items": order.items or [],
+            "items": _public_assisted_items(order, metadata),
             "metadata": metadata,
             "created_at": _iso(order.created_at),
             "updated_at": _iso(order.updated_at),
@@ -434,6 +500,12 @@ def build_claim_tracking_experience(ticket: MunicipioTicket, tenant: TenantProfi
 
     code = str(getattr(ticket, "nro_ticket", "") or "")
     display_code = code if code.upper().startswith(("M-", "S-")) else f"M-{code}"
+    pin = str(getattr(ticket, "consulta_pin", "") or "")
+    tracking_page_url = f"/tracking/claim/{code}"
+    if pin:
+        tracking_page_url = f"{tracking_page_url}?pin={pin}"
+    support = _claim_support_contract(ticket, tenant, code=display_code, conversation=conversation)
+    support_primary_cta = (support.get("cta") or {}).get("primary") or {}
     return {
         "contract_version": TRACKING_EXPERIENCE_CONTRACT_VERSION,
         "kind": "claim",
@@ -451,10 +523,24 @@ def build_claim_tracking_experience(ticket: MunicipioTicket, tenant: TenantProfi
         "location": location,
         "map": _tracking_map(location),
         "timeline": [item for item in timeline if item.get("created_at") or item.get("message") or item.get("status")],
-        "support": _claim_support_contract(ticket, tenant, code=display_code, conversation=conversation),
+        "support": support,
         "actions": [
-            {"id": "send_message", "label": "Enviar mensaje", "endpoint": f"/api/public/tracking/claims/{ticket.id}/messages", "requires": ["pin", "comentario"]},
-            {"id": "open_tracking_page", "label": "Abrir seguimiento", "url": f"/tracking/claim/{code}"},
+            {
+                "id": "send_message",
+                "label": support_primary_cta.get("label") or "Enviar mensaje",
+                "endpoint": f"/api/public/tracking/claims/{ticket.id}/messages",
+                "requires": ["pin", "comentario"],
+                "mode": support.get("mode"),
+                "action": support_primary_cta.get("action"),
+                "safe_for_offline": True,
+                "bound_resource": "municipio_ticket",
+            },
+            {
+                "id": "open_tracking_page",
+                "label": "Abrir seguimiento",
+                "url": tracking_page_url,
+                "requires_pin": bool(pin),
+            },
         ],
         "frontend_contract": {
             "render_as": "tracking_map_timeline_helpdesk",

@@ -19,9 +19,23 @@ def _seed_pyme_tenant_with_catalog():
         categoria="general",
         precio="100",
         cantidad="10",
+        marca="Marca Demo",
         disponible=True,
+        promocion_info="Oferta destacada",
     )
     db.session.add(item)
+    db.session.add(
+        CatalogoItem(
+            user_id=owner.id,
+            tenant_id=tenant.id,
+            nombre="Producto Premium",
+            categoria="premium",
+            precio="350",
+            cantidad="4",
+            marca="Marca Premium",
+            disponible=True,
+        )
+    )
     db.session.commit()
 
     return tenant
@@ -121,9 +135,104 @@ def test_public_market_catalog_contract_includes_promotions(client):
     assert payload["promotions"]["contract_version"] == "public.catalog_promotions.v1"
     assert payload["promotions"]["enabled"] is True
     assert payload["promotions"]["items"][0]["title"] == "15% lanzamiento"
+    assert payload["promotions"]["items"][0]["display_badge"] == "15% OFF"
+    assert payload["promotions"]["items"][0]["status"] == "active_now"
+    assert payload["promotions"]["items"][0]["eligible_product_ids"] == [payload["products"][0]["catalogo_item_id"]]
     assert payload["promotions"]["items"][0]["alcances"][0]["tipo_alcance"] == "CATEGORIA"
     assert payload["promotions"]["items"][0]["alcances"][0]["nombre_categoria"] == "general"
+    assert payload["facets"]["contract_version"] == "public.market_catalog_facets.v1"
+    assert any(item["value"] == "general" for item in payload["facets"]["categories"])
+    assert any(item["value"] == "Marca Demo" for item in payload["facets"]["brands"])
+    assert payload["facets"]["promotion_count"] >= 1
+    assert payload["assisted_intake"]["contract_version"] == "marketplace.assisted_intake_entry.v1"
+    assert payload["assisted_intake"]["mode"] == "catalog_plus_assisted"
+    assert payload["assisted_intake"]["anonymous_intake"] is True
+    assert payload["assisted_intake"]["submit"]["contract_version"] == "marketplace.assisted_intake_submit.v1"
+    assert payload["assisted_intake"]["submit"]["endpoint"] == "/api/pedidos/from-file?origen=marketplace"
+    assert payload["assisted_intake"]["submit"]["file_field"] == "archivo"
+    assert payload["assisted_intake"]["submit"]["text_field"] == "pedido_text"
+    assert "image/jpeg" in payload["assisted_intake"]["submit"]["accepted_mime_types"]
+    assert "service_request" in {item["id"] for item in payload["assisted_intake"]["document_types"]}
+    assert payload["assisted_intake"]["frontend_contract"]["show_quick_examples"] is True
+    assert payload["assisted_intake"]["frontend_contract"]["submit_endpoint"] == "/api/pedidos/from-file?origen=marketplace"
+    assert payload["assisted_intake"]["frontend_contract"]["max_file_mb"] == 8
+    assert any(example["document_type"] == "quote_request" for example in payload["assisted_intake"]["text_examples"])
     assert payload["frontend_contract"]["show_promotions_strip"] is True
+    assert payload["frontend_contract"]["show_faceted_filters"] is True
+    assert payload["frontend_contract"]["show_assisted_intake"] is True
+
+
+def test_public_market_catalog_contract_for_empty_catalog_promotes_assisted_intake(client):
+    owner = User(email="owner-empty-market@test.com", name="Owner Empty", rol="admin", tipo_chat="pyme")
+    owner.set_password("pass")
+    db.session.add(owner)
+    db.session.commit()
+
+    tenant = TenantProfile(slug="empty-market", nombre="Empty Market", tipo="pyme", plan="full", pyme_id=owner.id)
+    db.session.add(tenant)
+    db.session.commit()
+
+    resp = client.get(f"/api/public/tenants/{tenant.slug}/catalog?contract=marketplace")
+
+    assert resp.status_code == 200
+    payload = resp.get_json()
+    assert payload["products"] == []
+    assert payload["total"] == 0
+    assert payload["heroSubtitle"] == "Marketplace asistido para pedidos, boletas y documentos sin registro."
+    assert payload["assisted_intake"]["mode"] == "assisted_first"
+    assert payload["assisted_intake"]["show_on_empty_catalog"] is True
+    assert payload["assisted_intake"]["empty_state"]["primary_cta"] == "Subir pedido o documento"
+    assert payload["frontend_contract"]["empty_catalog_mode"] == "assisted_first"
+
+
+def test_market_catalog_contract_matches_public_catalog_contract_shape(client):
+    tenant = _seed_pyme_tenant_with_catalog()
+
+    public_resp = client.get(f"/api/public/tenants/{tenant.slug}/catalog?contract=marketplace")
+    market_resp = client.get(f"/api/market/{tenant.slug}/catalog?contract=marketplace")
+
+    assert public_resp.status_code == 200
+    assert market_resp.status_code == 200
+    public_payload = public_resp.get_json()
+    market_payload = market_resp.get_json()
+    for payload in (public_payload, market_payload):
+        assert payload["contract_version"] == "public.market_catalog.v1"
+        assert payload["tenant_slug"] == tenant.slug
+        assert payload["products"]
+        assert payload["facets"]["categories"]
+        assert payload["promotions"]["contract_version"] == "public.catalog_promotions.v1"
+        assert payload["frontend_contract"]["render_as"] == "marketplace_catalog"
+    assert set(public_payload.keys()) == set(market_payload.keys())
+
+
+def test_municipio_market_catalog_contract_exposes_service_request_intake(client):
+    tenant = _seed_municipio_tenant_with_catalog()
+
+    resp = client.get(f"/api/market/{tenant.slug}/catalog?contract=marketplace")
+
+    assert resp.status_code == 200
+    payload = resp.get_json()
+    assisted = payload["assisted_intake"]
+    assert "municipio" in assisted["title"].lower()
+    assert any(item["id"] == "service_request" for item in assisted["document_types"])
+    assert any(example["document_type"] == "service_request" for example in assisted["text_examples"])
+    assert "boleta" in assisted["empty_state"]["description"].lower()
+
+
+def test_market_catalog_contract_filters_promotions_and_price_range(client):
+    tenant = _seed_pyme_tenant_with_catalog()
+
+    resp = client.get(
+        f"/api/market/{tenant.slug}/catalog?contract=marketplace&en_promocion=true&precio_max=150&sort=promo_first"
+    )
+
+    assert resp.status_code == 200
+    payload = resp.get_json()
+    assert payload["total"] == 1
+    assert payload["products"][0]["nombre"] == "Producto Demo"
+    assert payload["filters"]["en_promocion"] is True
+    assert payload["filters"]["precio_max"] == 150.0
+    assert payload["sort_options"][1]["id"] == "promo_first"
 
 
 def test_public_catalog_legacy_alias_without_api_prefix(client):

@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+from collections import defaultdict, deque
+import os
+from threading import Lock
+import time
 from typing import Any
 import uuid
 
-from flask import Blueprint, g, jsonify, request
+from flask import Blueprint, current_app, g, jsonify, request
 
 from extensions import db
 from routes.v2.tenants import V2TenantResolutionError, resolve_tenant_v2
@@ -33,6 +37,10 @@ from utils.permissions import require_role
 v2_surveys_bp = Blueprint("v2_surveys", __name__, url_prefix="/api/v2")
 v2_public_surveys_bp = Blueprint("v2_public_surveys", __name__, url_prefix="/api/v2/public/surveys")
 
+_DEFAULT_PUBLIC_RESPONSE_RATE_LIMIT = 150
+_DEFAULT_PUBLIC_RESPONSE_RATE_PERIOD = 60
+_public_response_rate_buckets: defaultdict[str, deque[float]] = defaultdict(deque)
+_public_response_rate_lock = Lock()
 
 _TYPE_MAP = {
     "single": "opcion_unica",
@@ -46,8 +54,15 @@ _TYPE_MAP = {
 
 
 def _request_id() -> str:
-    incoming = (request.headers.get("X-Request-Id") or "").strip()
-    return incoming or uuid.uuid4().hex
+    incoming = (
+        request.headers.get("X-Request-Id")
+        or request.headers.get("X-Correlation-Id")
+        or getattr(g, "request_id", None)
+        or ""
+    )
+    request_id = str(incoming).strip() or uuid.uuid4().hex
+    g.request_id = request_id
+    return request_id
 
 
 def _json_response(payload: dict[str, Any], status: int = 200):
@@ -73,6 +88,102 @@ def _error_response(message: str, status_code: int, reason_code: str = "request_
         },
         status_code,
     )
+
+
+def _encuesta_error_response(exc: EncuestaError):
+    payload = exc.to_dict() if hasattr(exc, "to_dict") else {"message": str(exc)}
+    status_code = int(getattr(exc, "status_code", None) or payload.get("status_code") or 500)
+    raw_error = payload.get("error")
+    message = (
+        payload.get("message")
+        or (raw_error.get("message") if isinstance(raw_error, dict) else None)
+        or (raw_error if isinstance(raw_error, str) else None)
+        or str(exc)
+    )
+    reason_code = payload.get("reason_code") or "survey_error"
+    error_payload = raw_error if isinstance(raw_error, dict) else {"code": status_code, "message": message}
+    return _json_response(
+        {
+            **payload,
+            "contract_version": payload.get("contract_version") or "shared.error.v1",
+            "status_code": status_code,
+            "reason_code": reason_code,
+            "retryable": bool(payload.get("retryable", status_code >= 500)),
+            "action_hint": payload.get("action_hint") or ("retry_later" if status_code == 429 else "check_request"),
+            "error": error_payload,
+            "message": message,
+        },
+        status_code,
+    )
+
+
+def _coerce_positive_int(value: Any, default: int) -> int:
+    try:
+        coerced = int(value)
+    except (TypeError, ValueError):
+        return default
+    return coerced if coerced > 0 else default
+
+
+def _public_client_ip() -> str:
+    forwarded = request.headers.get("X-Forwarded-For")
+    if forwarded:
+        return forwarded.split(",")[0].strip() or "0.0.0.0"
+    return request.remote_addr or "0.0.0.0"
+
+
+def _public_response_rate_settings() -> tuple[int, int]:
+    limit = current_app.config.get("PUBLIC_ENCUESTAS_RATE_LIMIT")
+    period = current_app.config.get("PUBLIC_ENCUESTAS_RATE_PERIOD")
+    if limit is None:
+        limit = os.getenv("PUBLIC_ENCUESTAS_RATE_LIMIT")
+    if period is None:
+        period = os.getenv("PUBLIC_ENCUESTAS_RATE_PERIOD")
+    return (
+        _coerce_positive_int(limit, _DEFAULT_PUBLIC_RESPONSE_RATE_LIMIT),
+        _coerce_positive_int(period, _DEFAULT_PUBLIC_RESPONSE_RATE_PERIOD),
+    )
+
+
+def _public_response_rate_limit(token: str) -> dict[str, Any]:
+    limit, period = _public_response_rate_settings()
+    now = time.time()
+    key = f"{token}:{_public_client_ip()}"
+    with _public_response_rate_lock:
+        bucket = _public_response_rate_buckets[key]
+        while bucket and now - bucket[0] > period:
+            bucket.popleft()
+
+        if len(bucket) >= limit:
+            retry_after = max(1, int(period - (now - bucket[0]) + 0.999))
+            return {
+                "allowed": False,
+                "limit": limit,
+                "remaining": 0,
+                "window_seconds": period,
+                "retry_after_seconds": retry_after,
+                "reset_after_seconds": retry_after,
+            }
+
+        bucket.append(now)
+        reset_after = max(1, int(period - (now - bucket[0]) + 0.999))
+        return {
+            "allowed": True,
+            "limit": limit,
+            "remaining": max(0, limit - len(bucket)),
+            "window_seconds": period,
+            "retry_after_seconds": 0,
+            "reset_after_seconds": reset_after,
+        }
+
+
+def _attach_rate_limit_headers(response, telemetry: dict[str, Any]):
+    response.headers["X-RateLimit-Limit"] = str(telemetry.get("limit", ""))
+    response.headers["X-RateLimit-Remaining"] = str(telemetry.get("remaining", ""))
+    response.headers["X-RateLimit-Window"] = str(telemetry.get("window_seconds", ""))
+    if not telemetry.get("allowed", True):
+        response.headers["Retry-After"] = str(telemetry.get("retry_after_seconds", 1))
+    return response
 
 
 def _survey_plan_required_response(tenant):
@@ -178,6 +289,11 @@ def _normalize_admin_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "tags": payload.get("tags") or [f"channel:{channel}"],
         "anonimo_permitido": bool(payload.get("allow_anonymous", True)),
         "politica_unicidad": payload.get("uniqueness_policy") or payload.get("politica_unicidad") or "anon_id",
+        "es_votacion_envivo": bool(payload.get("live_vote") or payload.get("es_votacion_envivo", False)),
+        "mostrar_resultados_envivo": bool(
+            payload.get("show_live_results") or payload.get("mostrar_resultados_envivo", False)
+        ),
+        "permitir_comentarios": bool(payload.get("allow_comments") or payload.get("permitir_comentarios", False)),
     }
 
 
@@ -399,11 +515,11 @@ def survey_public_by_token_v2(token: str):
     try:
         encuesta = get_public_encuesta(token, preferred_tenant_id=preferred_tenant_id)
     except EncuestaError as exc:
-        return jsonify(exc.to_dict()), exc.status_code
+        return _encuesta_error_response(exc)
 
     payload = serialize_public_encuesta(encuesta, slug_publico=token)
     payload.pop("tenant_id", None)
-    return jsonify(payload)
+    return _json_response(payload)
 
 
 @v2_public_surveys_bp.route("/<string:token>/respond", methods=["POST"])
@@ -413,61 +529,116 @@ def respond_public_survey_v2(token: str):
         return error
 
     payload = request.get_json(silent=True) or {}
+    client_ip = _public_client_ip()
     request_ctx = {
-        "ip": request.remote_addr,
+        "ip": client_ip,
         "user_agent": request.headers.get("User-Agent"),
         "referer": request.headers.get("Referer"),
         "anon_id": payload.get("anon_id") or payload.get("anonId") or request.cookies.get("anon_id"),
         "canal": payload.get("source") or payload.get("channel") or payload.get("canal") or "public_link",
     }
     preferred_tenant_id = tenant.id if tenant is not None else None
+    rate_limit = _public_response_rate_limit(token)
+    if not rate_limit["allowed"]:
+        response = _json_response(
+            {
+                "contract_version": "surveys.public_response.v2",
+                "ok": False,
+                "status_code": 429,
+                "reason_code": "rate_limited",
+                "retryable": False,
+                "action_hint": "retry_later",
+                "message": "Demasiadas respuestas desde esta IP. Intenta mas tarde.",
+                "error": {"code": 429, "message": "Demasiadas respuestas desde esta IP. Intenta mas tarde."},
+                "rate_limit": {
+                    "limit": rate_limit["limit"],
+                    "remaining": rate_limit["remaining"],
+                    "window_seconds": rate_limit["window_seconds"],
+                    "retry_after_seconds": rate_limit["retry_after_seconds"],
+                },
+            },
+            429,
+        )
+        return _attach_rate_limit_headers(response, rate_limit)
 
     try:
         respuesta = save_respuesta(token, payload, request_ctx, preferred_tenant_id=preferred_tenant_id)
         db.session.commit()
     except EncuestaError as exc:
         db.session.rollback()
-        return jsonify(exc.to_dict()), exc.status_code
+        return _encuesta_error_response(exc)
     except Exception:
         db.session.rollback()
         raise
 
-    return _json_response(
-        {
-            "ok": True,
-            "contract_version": "surveys.public_response.v2",
-            "respuesta_id": respuesta.id,
-            "response_id": respuesta.id,
-            "live_results_url": f"/api/v2/public/surveys/{token}/live-results",
-            "ui_actions": [
-                {
-                    "id": "open_live_results",
-                    "label": "Ver resultados en vivo",
-                    "href": f"/api/v2/public/surveys/{token}/live-results",
-                }
-            ],
+    live_results_enabled = bool(getattr(getattr(respuesta, "encuesta", None), "mostrar_resultados_envivo", False))
+    response_payload = {
+        "ok": True,
+        "contract_version": "surveys.public_response.v2",
+        "respuesta_id": respuesta.id,
+        "response_id": respuesta.id,
+        "rate_limit": {
+            "limit": rate_limit["limit"],
+            "remaining": rate_limit["remaining"],
+            "window_seconds": rate_limit["window_seconds"],
+            "reset_after_seconds": rate_limit["reset_after_seconds"],
         },
-        201,
-    )
+        "ui_actions": [],
+    }
+    if live_results_enabled:
+        live_results_url = f"/api/v2/public/surveys/{token}/live-results"
+        if tenant is not None and getattr(tenant, "slug", None):
+            live_results_url = f"{live_results_url}?tenant_slug={tenant.slug}"
+        response_payload["live_results_url"] = live_results_url
+        response_payload["ui_actions"].append(
+            {
+                "id": "open_live_results",
+                "label": "Ver resultados en vivo",
+                "href": live_results_url,
+            }
+        )
+
+    response = _json_response(response_payload, 201)
+    return _attach_rate_limit_headers(response, rate_limit)
 
 
 @v2_public_surveys_bp.route("/<string:token>/live-results", methods=["GET"])
 def survey_live_results_v2(token: str):
+    tenant, error = _resolve_tenant_or_error(required=False)
+    if error:
+        return error
+
     include_heatmap = str(request.args.get("include_heatmap", "1")).strip().lower() not in {"0", "false", "no", "off"}
     max_points = request.args.get("max_points", default=2000, type=int) or 2000
     max_cells = request.args.get("max_cells", default=200, type=int) or 200
     window_minutes = request.args.get("window_minutes", default=10, type=int) or 10
+    filtros = {
+        key: value
+        for key in ("canal", "barrio", "ciudad", "provincia")
+        if (value := (request.args.get(key) or "").strip())
+    }
+    preferred_tenant_id = tenant.id if tenant is not None else None
 
     try:
+        encuesta = get_public_encuesta(token, preferred_tenant_id=preferred_tenant_id)
+        if not bool(getattr(encuesta, "mostrar_resultados_envivo", False)):
+            return _error_response(
+                "Los resultados en vivo no estan publicados para esta encuesta.",
+                403,
+                "live_results_hidden",
+                "wait_for_results_publication",
+            )
         results = calculate_live_results(
             token,
+            preferred_tenant_id=preferred_tenant_id,
             include_heatmap=include_heatmap,
             max_points=max(100, min(max_points, 5000)),
             max_cells=max(50, min(max_cells, 1000)),
             momentum_window_minutes=max(5, min(window_minutes, 30)),
+            filtros=filtros,
         )
     except EncuestaError as exc:
-        return jsonify(exc.to_dict()), exc.status_code
+        return _encuesta_error_response(exc)
 
     results.setdefault("contract_version", "surveys.live_results.v2")
     results.setdefault("slug_publico", token)

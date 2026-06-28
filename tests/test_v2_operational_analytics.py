@@ -28,6 +28,8 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.ctx.push()
         db.create_all()
         self.client = self.app.test_client()
+        self.hf_zero_shot_patch = patch("services.huggingface_ai_insights.classify_zero_shot", return_value=None)
+        self.hf_zero_shot_patch.start()
 
         self.admin = User(name="Mauricio Junin", email="mauricio@junin.com", rol="admin", tenant_slug="junin")
         self.admin.set_password("123456")
@@ -172,6 +174,7 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         db.session.commit()
 
     def tearDown(self):
+        self.hf_zero_shot_patch.stop()
         db.session.remove()
         db.drop_all()
         self.ctx.pop()
@@ -252,6 +255,28 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertEqual((payload.get("ai_layers") or {}).get("contract_version"), "huggingface.map_ai_layers.v1")
         self.assertEqual((payload.get("map_experience") or {}).get("preferred_visualization"), "interactive_globe_heatmap")
         self.assertIn("deckgl", ((payload.get("ai_layers") or {}).get("frontend_contract") or {}).get("map_engines") or [])
+        self.assertEqual((payload.get("map_narrative") or {}).get("contract_version"), "operations.heatmap_narrative.v1")
+        self.assertEqual(((payload.get("map_narrative") or {}).get("primary_metric") or {}).get("value"), (payload.get("summary") or {}).get("points"))
+        self.assertEqual((payload.get("viewport_presets") or {}).get("contract_version"), "operations.heatmap_viewport_presets.v1")
+        self.assertEqual((payload.get("viewport_presets") or {}).get("default_preset_id"), "fit_operational_bounds")
+        viewport_ids = {item.get("id") for item in (payload.get("viewport_presets") or {}).get("presets") or []}
+        self.assertIn("top_hotspot", viewport_ids)
+        self.assertEqual((payload.get("layer_style_contract") or {}).get("contract_version"), "operations.heatmap_layer_styles.v1")
+        layer_ids = {item.get("id") for item in (payload.get("layer_style_contract") or {}).get("layers") or []}
+        self.assertIn("base_heatmap", layer_ids)
+        self.assertIn("ai_risk_layers", layer_ids)
+        self.assertIn("geocoding_queue", layer_ids)
+        self.assertEqual((payload.get("hotspot_actions") or {}).get("contract_version"), "operations.heatmap_hotspot_actions.v1")
+        action_ids = {item.get("id") for item in (payload.get("hotspot_actions") or {}).get("actions") or []}
+        self.assertIn("inspect_hotspot_1", action_ids)
+        playbook_ids = {item.get("id") for item in (payload.get("hotspot_actions") or {}).get("playbook") or []}
+        self.assertIn("triage_high_density_zone", playbook_ids)
+        self.assertEqual((payload.get("ai_status") or {}).get("contract_version"), "operations.heatmap_ai_status.v1")
+        self.assertIn((payload.get("ai_status") or {}).get("status"), {"hf_active", "local_fallback"})
+        self.assertTrue((payload.get("ai_status") or {}).get("safe_to_render_without_hf_token"))
+        self.assertTrue((payload.get("ai_status") or {}).get("ai_layers_ready"))
+        self.assertIn("map_narrative", (payload.get("render_contract") or {}).get("premium_metadata") or [])
+        self.assertEqual((payload.get("map_experience") or {}).get("viewport_contract"), "operations.heatmap_viewport_presets.v1")
         self.assertEqual((payload.get("quality") or {}).get("contract_version"), "operations.heatmap_quality.v1")
         self.assertTrue((payload.get("quality") or {}).get("can_render_heatmap"))
         self.assertIn((payload.get("quality") or {}).get("state"), {"ready", "partial"})
@@ -394,6 +419,9 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertEqual((payload.get("quality") or {}).get("state"), "blocked")
         self.assertEqual((payload.get("quality") or {}).get("reason_code"), "missing_coordinates")
         self.assertEqual((payload.get("quality") or {}).get("visible_points"), 0)
+        self.assertEqual((payload.get("map_narrative") or {}).get("state"), "blocked")
+        self.assertEqual((payload.get("viewport_presets") or {}).get("default_preset_id"), "tenant_region_empty")
+        self.assertEqual((payload.get("ai_status") or {}).get("contract_version"), "operations.heatmap_ai_status.v1")
 
     def test_operations_heatmap_surfaces_addresses_pending_geocode(self):
         db.session.add(
@@ -433,6 +461,19 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertTrue((payload.get("render_contract") or {}).get("address_geocoding"))
         self.assertEqual((payload.get("quality") or {}).get("state"), "pending_geocode")
         self.assertEqual((payload.get("quality") or {}).get("pending_geocode"), 1)
+        self.assertEqual(((payload.get("geocoding") or {}).get("guidance") or {}).get("contract_version"), "operations.heatmap_geocoding_guidance.v1")
+        self.assertEqual(((payload.get("geocoding") or {}).get("guidance") or {}).get("state"), "pending")
+        self.assertEqual(((payload.get("geocoding") or {}).get("guidance") or {}).get("backend_external_calls"), "none")
+        viewport_ids = {item.get("id") for item in (payload.get("viewport_presets") or {}).get("presets") or []}
+        self.assertIn("geocoding_queue", viewport_ids)
+        self.assertEqual(((payload.get("map_narrative") or {}).get("empty_state") or {}).get("recommended_view"), "geocoding_queue")
+        action_ids = {item.get("id") for item in (payload.get("hotspot_actions") or {}).get("actions") or []}
+        self.assertIn("open_geocoding_queue", action_ids)
+        geocode_playbook = {
+            item.get("id"): item
+            for item in (payload.get("hotspot_actions") or {}).get("playbook") or []
+        }
+        self.assertTrue((geocode_playbook.get("recover_missing_geolocation") or {}).get("enabled"))
 
     def test_operations_executive_summary_returns_ai_contract(self):
         with patch(
