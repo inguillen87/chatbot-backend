@@ -203,6 +203,23 @@ if cors_env:
 else:
     allowed_urls = [PANEL_URL.rstrip('/'), WIDGET_URL.rstrip('/')]
 
+# Keep local admin/widget validation usable against deployed APIs. These origins
+# are browser-only development origins and still require normal auth/capability
+# checks on protected endpoints.
+if os.getenv("CORS_ALLOW_LOCAL_DEV", "1").strip().lower() not in {"0", "false", "no"}:
+    allowed_urls.extend(
+        [
+            "http://localhost:4173",
+            "http://127.0.0.1:4173",
+            "http://localhost:4174",
+            "http://127.0.0.1:4174",
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+            "http://localhost:8080",
+            "http://127.0.0.1:8080",
+        ]
+    )
+
 # Always add the root domain(s) so that the public widget can reach the API
 host = parsed_backend.hostname
 if host and host != "localhost":

@@ -82,5 +82,27 @@ class CorsOptionsTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertIn('Access-Control-Allow-Origin', resp.headers)
 
+    def test_local_vite_origin_allowed_for_pwa_tenant_info(self):
+        origin = 'http://127.0.0.1:4174'
+        resp = self.client.options('/api/pwa/public/tenant-info?tenant=junin', headers={
+            'Origin': origin,
+            'Access-Control-Request-Method': 'GET',
+            'Access-Control-Request-Headers': 'x-tenant,x-tenant-slug'
+        })
+        self.assertIn(resp.status_code, {200, 204})
+        self.assertEqual(resp.headers.get('Access-Control-Allow-Origin'), origin)
+        self.assertEqual(resp.headers.getlist('Access-Control-Allow-Origin'), [origin])
+
+    def test_api_me_cors_origin_is_not_duplicated(self):
+        origin = 'http://127.0.0.1:4174'
+        resp = self.client.options('/api/me?tenant_slug=junin&tenant=junin', headers={
+            'Origin': origin,
+            'Access-Control-Request-Method': 'GET',
+            'Access-Control-Request-Headers': 'authorization,x-tenant,x-tenant-slug'
+        })
+        self.assertIn(resp.status_code, {200, 204})
+        self.assertEqual(resp.headers.get('Access-Control-Allow-Origin'), origin)
+        self.assertEqual(resp.headers.getlist('Access-Control-Allow-Origin'), [origin])
+
 if __name__ == '__main__':
     unittest.main()

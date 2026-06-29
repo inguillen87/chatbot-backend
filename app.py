@@ -441,24 +441,6 @@ def create_app(config_class=Config):
 
         allow_methods = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
 
-        CORS(
-            app,
-            resources=cors_resources,
-            supports_credentials=True,
-            methods=allow_methods,
-            allow_headers=allow_headers,
-            expose_headers=[
-                "Content-Type",
-                "Authorization",
-                "X-Request-Id",
-                "X-Correlation-Id",
-                "X-Anon-Id",
-                "Anon-Id",
-                "X-Contact-Key",
-                "X-Conversation-Id",
-            ],
-        )
-
         @app.after_request
         def add_permissions_policy(resp):
             policy = current_app.config.get("PERMISSIONS_POLICY_HEADER", "geolocation=(self)")
@@ -489,10 +471,17 @@ def create_app(config_class=Config):
                 if isinstance(allowed, Pattern):
                     if allowed.match(origin):
                         return True
+                elif str(allowed).strip() == "*":
+                    return True
                 elif origin.rstrip("/") == str(allowed).rstrip("/"):
                     return True
 
             return False
+
+        def _set_single_header(resp, header_name: str, value: str) -> None:
+            while header_name in resp.headers:
+                del resp.headers[header_name]
+            resp.headers[header_name] = value
 
         @app.after_request
         def ensure_cors_headers(resp):
@@ -504,14 +493,16 @@ def create_app(config_class=Config):
 
             # Override any duplicate CORS headers emitted upstream so browsers
             # don't reject responses with repeated origins.
-            resp.headers["Access-Control-Allow-Origin"] = origin
-            resp.headers["Access-Control-Allow-Credentials"] = "true"
+            _set_single_header(resp, "Access-Control-Allow-Origin", origin)
+            _set_single_header(resp, "Access-Control-Allow-Credentials", "true")
 
             # Echo CORS allowances for preflight responses to ensure custom headers like
             # "x-anon-id" are accepted by browsers.
-            resp.headers["Access-Control-Allow-Headers"] = ", ".join(allow_headers)
-            resp.headers["Access-Control-Allow-Methods"] = ", ".join(allow_methods)
-            resp.headers["Access-Control-Expose-Headers"] = (
+            _set_single_header(resp, "Access-Control-Allow-Headers", ", ".join(allow_headers))
+            _set_single_header(resp, "Access-Control-Allow-Methods", ", ".join(allow_methods))
+            _set_single_header(
+                resp,
+                "Access-Control-Expose-Headers",
                 "Content-Type, Authorization, X-Request-Id, X-Correlation-Id, "
                 "X-Anon-Id, Anon-Id, X-Contact-Key, X-Conversation-Id"
             )
@@ -524,6 +515,24 @@ def create_app(config_class=Config):
                 resp.headers["Vary"] = "Origin"
 
             return resp
+
+        CORS(
+            app,
+            resources=cors_resources,
+            supports_credentials=True,
+            methods=allow_methods,
+            allow_headers=allow_headers,
+            expose_headers=[
+                "Content-Type",
+                "Authorization",
+                "X-Request-Id",
+                "X-Correlation-Id",
+                "X-Anon-Id",
+                "Anon-Id",
+                "X-Contact-Key",
+                "X-Conversation-Id",
+            ],
+        )
 
     # --- Blueprints (solo runtime normal) ---
     # Register blueprints carefully to avoid circular imports
