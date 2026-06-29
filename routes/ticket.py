@@ -47,6 +47,7 @@ from utils.ticket_utils import normalize_category
 from utils.time_utils import datetime_to_iso_utc, get_local_now
 from utils.tenant import get_current_tenant, get_current_tenant_profile
 from utils.errors import ApiError
+from utils.roles import canonical_role, ROLE_EMPLEADO, ROLE_SUPERADMIN, ROLE_TENANT_ADMIN
 logger = logging.getLogger("app")
 
 from utils.recaptcha import verify_recaptcha
@@ -55,6 +56,8 @@ ticket_bp = Blueprint('ticket_bp', __name__)
 
 MENSAJE_CHAT_CERRADO = "El chat fue cerrado"
 MENSAJE_SIN_PERMISOS = "No tienes permiso para acceder a este chat."
+
+TICKET_BACKOFFICE_ROLES = {ROLE_TENANT_ADMIN, ROLE_EMPLEADO, ROLE_SUPERADMIN}
 
 # Estados válidos para los tickets que pueden ser utilizados por la UI.
 TICKET_ALLOWED_STATES = [
@@ -1199,7 +1202,7 @@ def get_tickets_del_usuario_logic(current_user: User):
 @ticket_bp.route('/tickets/', methods=['GET'])
 @token_requerido
 def get_tickets_del_usuario(current_user: User):
-    if current_user.rol not in ['admin', 'empleado']:
+    if canonical_role(getattr(current_user, "rol", None)) not in TICKET_BACKOFFICE_ROLES:
         return redirect(url_for('ticket_bp.get_mis_tickets'))
 
     return get_tickets_del_usuario_logic(current_user)

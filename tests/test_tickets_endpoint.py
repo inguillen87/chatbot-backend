@@ -1,6 +1,4 @@
 import unittest
-from types import SimpleNamespace, ModuleType
-from unittest.mock import patch, MagicMock
 import sys
 import os
 from flask import Flask
@@ -11,13 +9,6 @@ from models import db, User, MunicipioTicket, Rubro
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
-
-# Proveer un módulo mínimo de services.logic para evitar dependencias pesadas en los tests
-if 'services.logic' not in sys.modules:
-    mock_logic = ModuleType('services.logic')
-    mock_logic.es_rubro_publico = lambda *args, **kwargs: False
-    mock_logic.normalizar_rubro = lambda value: value
-    sys.modules['services.logic'] = mock_logic
 
 from routes.ticket import get_tickets_del_usuario_logic
 
@@ -70,7 +61,7 @@ class TicketsEndpointTest(unittest.TestCase):
             db.session.add(ticket)
             db.session.commit()
 
-            with patch('routes.ticket.request', SimpleNamespace(args={})):
+            with self.app.test_request_context('/tickets'):
                 resp = get_tickets_del_usuario_logic(user)
                 self.assertEqual(resp.status_code, 200)
                 data = resp.get_json()
@@ -117,8 +108,7 @@ class TicketsEndpointTest(unittest.TestCase):
             db.session.add_all(tickets)
             db.session.commit()
 
-            request_args = {'per_page': '0'}
-            with patch('routes.ticket.request', SimpleNamespace(args=request_args)):
+            with self.app.test_request_context('/tickets?per_page=0'):
                 resp = get_tickets_del_usuario_logic(user)
                 self.assertEqual(resp.status_code, 200)
                 data = resp.get_json()

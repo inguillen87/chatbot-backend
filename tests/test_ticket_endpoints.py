@@ -29,6 +29,16 @@ class TicketEndpointsTest(unittest.TestCase):
         )
         admin_user.set_password('adminpass')
         db.session.add(admin_user)
+        admin_pyme_alias_user = User(
+            email='alias@junin.com',
+            name='Alias Junin',
+            rol='admin_pyme',
+            municipio_id=1,
+            rubro_id=municipio_rubro.id,
+            tipo_chat='municipio'
+        )
+        admin_pyme_alias_user.set_password('adminpass')
+        db.session.add(admin_pyme_alias_user)
 
         # Crear tickets para el municipio 1
         ticket1 = MunicipioTicket(
@@ -106,6 +116,21 @@ class TicketEndpointsTest(unittest.TestCase):
         self.assertEqual(len(ticket_map['Bache en la calle']['historial_chat']), 2)
         self.assertEqual(ticket_map['Bache en la calle']['historial_chat'][0]['texto'], 'Hola')
         self.assertEqual(ticket_map['Bache en la calle']['historial_chat'][0]['autor'], 'vecino')
+
+    def test_get_tickets_accepts_modern_admin_role_aliases(self):
+        login_resp = self.client.post('/auth/admin/login', json={
+            'email': 'alias@junin.com',
+            'password': 'adminpass'
+        })
+        self.assertEqual(login_resp.status_code, 200)
+        token = json.loads(login_resp.data)['token']
+
+        headers = {'Authorization': f'Bearer {token}'}
+        tickets_resp = self.client.get('/tickets', headers=headers)
+        self.assertEqual(tickets_resp.status_code, 200)
+        data = json.loads(tickets_resp.data)
+        self.assertIn('tickets', data)
+        self.assertEqual(len(data['tickets']), 2)
 
     def test_ticket_details_includes_chat_history(self):
         login_resp = self.client.post('/auth/login', json={
