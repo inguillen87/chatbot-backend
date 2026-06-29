@@ -615,6 +615,7 @@ def create_app(config_class=Config):
     from routes.webauthn import webauthn_bp
     from routes.admin_tenant import admin_tenant_bp
     from routes.public_tenant import public_tenant_bp
+    from routes.public_finance import public_finance_bp
     from routes.integrations import integrations_bp
     from routes.pyme_catalog_fixes import pyme_catalog_fix_bp
     from routes.pyme_api import pyme_api_bp
@@ -782,6 +783,7 @@ def create_app(config_class=Config):
     app.register_blueprint(webauthn_bp)
     app.register_blueprint(admin_tenant_bp)
     app.register_blueprint(public_tenant_bp)
+    app.register_blueprint(public_finance_bp)
 
     if encuestas_admin_publicas_bp:
         app.register_blueprint(encuestas_admin_publicas_bp)

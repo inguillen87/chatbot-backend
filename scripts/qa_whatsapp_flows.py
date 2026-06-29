@@ -6,6 +6,7 @@ import base64
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -106,6 +107,39 @@ QA_SCENARIOS = {
     ],
 }
 
+FINANCE_QA_SCENARIOS = {
+    "finance_onboarding_collection_signature",
+    "finance_account_servicing",
+    "finance_remittance_transfer",
+    "finance_insurance_claim",
+    "finance_fee_financing_tax",
+}
+
+QA_SCENARIO_CONTRACTS = {
+    "gov_claim_text_to_tracking": {
+        "alias": "municipal_claim_full",
+        "required_links_any": ["chatboc.ar/chat/", "/tracking/claim/"],
+        "required_delta": {"municipio_tickets": 1},
+        "probes": ["claim_tracking_experience"],
+    },
+    "pyme_catalog_order_checkout": {
+        "required_links_any": ["/checkout/", "/catalogo/", "/api/checkout/crear-preferencia"],
+        "required_delta": {"pyme_commerce_records": 1},
+        "probes": ["public_market_catalog", "order_tracking_experience", "checkout_route_registered"],
+    },
+    "survey_vote_realtime": {
+        "required_links_any": ["chatboc.ar/e/", "/e/"],
+        "probes": ["demo_survey_detail", "demo_survey_vote", "demo_survey_live_results"],
+    },
+}
+
+for _finance_scenario in FINANCE_QA_SCENARIOS:
+    QA_SCENARIO_CONTRACTS[_finance_scenario] = {
+        "required_links_any": ["/finanzas/"],
+        "probes": ["finance_webview_or_activation_pending"],
+        "finance_activation_pending_allowed": True,
+    }
+
 
 class FakeTwilioMessages:
     def __init__(self):
@@ -192,6 +226,187 @@ def _row_counts(session_id_prefix: str):
     }
 
 
+def _row_markers() -> dict[str, int]:
+    return {
+        "municipio_tickets": db.session.query(db.func.max(MunicipioTicket.id)).scalar() or 0,
+        "pyme_tickets": db.session.query(db.func.max(PymeTicket.id)).scalar() or 0,
+        "pyme_pedidos": db.session.query(db.func.max(PymePedido.id)).scalar() or 0,
+        "adjuntos": db.session.query(db.func.max(ArchivoAdjunto.id)).scalar() or 0,
+    }
+
+
+def _delta(before: dict[str, int], after: dict[str, int]) -> dict[str, int]:
+    return {key: int(after.get(key, 0)) - int(before.get(key, 0)) for key in before}
+
+
+def _messages_for_labels(case_results: list[dict], labels: list[str]) -> list[dict]:
+    wanted = set(labels)
+    messages: list[dict] = []
+    for result in case_results:
+        if result.get("label") in wanted:
+            messages.extend(result.get("messages") or [])
+    return messages
+
+
+def _scenario_delta(case_results: list[dict], labels: list[str]) -> dict[str, int]:
+    wanted = set(labels)
+    totals = {key: 0 for key in _row_counts("whatsapp_")}
+    for result in case_results:
+        if result.get("label") not in wanted:
+            continue
+        for key, value in (result.get("delta") or {}).items():
+            totals[key] = totals.get(key, 0) + int(value or 0)
+    totals["pyme_commerce_records"] = (
+        totals.get("pyme_pedidos", 0)
+        + totals.get("pyme_tickets", 0)
+    )
+    return totals
+
+
+def _message_bodies(messages: list[dict]) -> str:
+    return "\n".join(json.dumps(message, ensure_ascii=False, default=str) for message in messages)
+
+
+def _has_any_marker(text: str, markers: list[str]) -> list[str]:
+    return [marker for marker in markers if marker and marker in text]
+
+
+def _route_prefix_registered(app, prefix: str) -> bool:
+    normalized = "/" + str(prefix or "").strip("/")
+    return any(str(rule).startswith(normalized) for rule in app.url_map.iter_rules())
+
+
+def _route_registered(app, route: str) -> bool:
+    return any(str(rule) == route for rule in app.url_map.iter_rules())
+
+
+def _probe_response(client, method: str, path: str, *, expected_statuses: set[int] | None = None, **kwargs) -> dict:
+    expected = expected_statuses or {200}
+    response = client.open(path, method=method, **kwargs)
+    payload = response.get_json(silent=True)
+    return {
+        "method": method,
+        "path": path,
+        "status": response.status_code,
+        "ok": response.status_code in expected,
+        "contract_version": payload.get("contract_version") if isinstance(payload, dict) else None,
+        "reason_code": payload.get("reason_code") if isinstance(payload, dict) else None,
+    }
+
+
+def _latest_claim_after(markers: dict[str, int]) -> MunicipioTicket | None:
+    return (
+        MunicipioTicket.query.filter(MunicipioTicket.id > int(markers.get("municipio_tickets") or 0))
+        .order_by(MunicipioTicket.id.desc())
+        .first()
+    )
+
+
+def _latest_order_after(markers: dict[str, int]) -> PymePedido | None:
+    return (
+        PymePedido.query.filter(PymePedido.id > int(markers.get("pyme_pedidos") or 0))
+        .order_by(PymePedido.id.desc())
+        .first()
+    )
+
+
+def _demo_survey_slug() -> str:
+    from services.demo_surveys import build_demo_survey_chat_menu
+
+    menu = build_demo_survey_chat_menu(sector="empresas", tenant_slug="chatboc-demo")
+    first_survey = ((menu.get("surveys") or [{}])[0] or {})
+    return str(first_survey.get("slug") or "demo-empresas-chatboc-demo-preferencias-productos")
+
+
+def _probe_contract(app, client, probe_id: str, markers: dict[str, int]) -> dict[str, Any]:
+    if probe_id == "claim_tracking_experience":
+        ticket = _latest_claim_after(markers)
+        if not ticket:
+            return {"id": probe_id, "ok": False, "reason": "claim_not_created"}
+        return {
+            "id": probe_id,
+            **_probe_response(
+                client,
+                "GET",
+                f"/api/public/tracking/experience?kind=claim&code=M-{ticket.nro_ticket}&pin={ticket.consulta_pin}",
+            ),
+        }
+    if probe_id == "order_tracking_experience":
+        order = _latest_order_after(markers)
+        if not order:
+            return {"id": probe_id, "ok": False, "reason": "order_not_created"}
+        return {
+            "id": probe_id,
+            **_probe_response(
+                client,
+                "GET",
+                f"/api/public/tracking/experience?kind=order&code={order.nro_pedido}",
+            ),
+        }
+    if probe_id == "public_market_catalog":
+        return {
+            "id": probe_id,
+            **_probe_response(client, "GET", "/api/public/market/cuatro-fincas/productos"),
+        }
+    if probe_id == "checkout_route_registered":
+        return {
+            "id": probe_id,
+            "route": "/api/checkout/crear-preferencia",
+            "ok": _route_registered(app, "/api/checkout/crear-preferencia"),
+        }
+    if probe_id == "demo_survey_detail":
+        slug = _demo_survey_slug()
+        return {
+            "id": probe_id,
+            **_probe_response(client, "GET", f"/api/public/encuestas/v1/{slug}"),
+        }
+    if probe_id == "demo_survey_vote":
+        slug = _demo_survey_slug()
+        detail = client.get(f"/api/public/encuestas/v1/{slug}")
+        detail_payload = detail.get_json(silent=True) or {}
+        question = ((detail_payload.get("preguntas") or [{}])[0] or {})
+        option = ((question.get("opciones") or [{}])[0] or {})
+        if not question.get("id") or not option.get("id"):
+            return {"id": probe_id, "ok": False, "reason": "survey_question_or_option_missing"}
+        return {
+            "id": probe_id,
+            **_probe_response(
+                client,
+                "POST",
+                f"/api/public/encuestas/v1/{slug}/responder",
+                expected_statuses={201},
+                json={"answers": [{"question_id": question["id"], "option_id": option["id"]}]},
+            ),
+        }
+    if probe_id == "demo_survey_live_results":
+        slug = _demo_survey_slug()
+        return {
+            "id": probe_id,
+            **_probe_response(client, "GET", f"/api/public/encuestas/v1/{slug}/live-results?include_heatmap=0"),
+        }
+    if probe_id == "finance_webview_or_activation_pending":
+        return _finance_webview_or_activation_pending(app)
+    return {"id": probe_id, "ok": False, "reason": "unknown_probe"}
+
+
+def _finance_webview_or_activation_pending(app) -> dict[str, Any]:
+    has_finance_route = _route_prefix_registered(app, "/finanzas")
+    if has_finance_route:
+        return {"id": "finance_webview_or_activation_pending", "ok": True, "route_prefix": "/finanzas"}
+    return {
+        "id": "finance_webview_or_activation_pending",
+        "ok": True,
+        "ready": False,
+        "route_prefix": "/finanzas",
+        "activation_contract": {
+            "contract_version": "finance.activation_plan.v1",
+            "state": "activation_pending",
+            "reason_code": "finance_webviews_not_registered",
+            "required_next_step": "register_and_probe_finance_webview_routes_before_marking_ready",
+        },
+    }
+
+
 def _assert_whatsapp_copy_quality(sent_messages: list[dict]) -> None:
     failures: list[str] = []
     banned_fragments = [
@@ -250,6 +465,78 @@ def _assert_case_matrix(case_results: list[dict]) -> list[dict]:
             blocking.append(f"{scenario_id}: missing={missing}, failed={failed}")
     if blocking:
         raise RuntimeError("Matriz QA WhatsApp incompleta: " + "; ".join(blocking))
+    return reports
+
+
+def _assert_contract_matrix(app, client, *, case_results: list[dict], markers: dict[str, int]) -> list[dict]:
+    by_label = {item["label"]: item for item in case_results}
+    reports: list[dict] = []
+    blocking: list[str] = []
+
+    for scenario_id, contract in QA_SCENARIO_CONTRACTS.items():
+        labels = QA_SCENARIOS[scenario_id]
+        messages = _messages_for_labels(case_results, labels)
+        bodies = _message_bodies(messages)
+        delta = _scenario_delta(case_results, labels)
+        missing = [label for label in labels if label not in by_label]
+        failed = [
+            label
+            for label in labels
+            if label in by_label and int(by_label[label].get("status") or 0) != 200
+        ]
+
+        link_markers = list(contract.get("required_links_any") or [])
+        found_links = _has_any_marker(bodies, link_markers)
+        probes = [_probe_contract(app, client, probe_id, markers) for probe_id in (contract.get("probes") or [])]
+        required_delta = contract.get("required_delta") or {}
+        delta_failures = [
+            f"{key}>={minimum} actual={delta.get(key, 0)}"
+            for key, minimum in required_delta.items()
+            if int(delta.get(key, 0)) < int(minimum)
+        ]
+
+        finance_pending = next(
+            (
+                probe
+                for probe in probes
+                if isinstance(probe.get("activation_contract"), dict)
+                and probe["activation_contract"].get("state") == "activation_pending"
+            ),
+            None,
+        )
+        if finance_pending and contract.get("finance_activation_pending_allowed"):
+            ready = False
+            status = "activation_pending"
+            link_failures: list[str] = []
+            probe_failures = []
+        else:
+            link_failures = [] if (not link_markers or found_links) else [f"missing_any_link={link_markers}"]
+            probe_failures = [probe for probe in probes if not probe.get("ok")]
+            ready = not (missing or failed or link_failures or probe_failures or delta_failures)
+            status = "ready" if ready else "blocked"
+
+        report = {
+            "scenario": scenario_id,
+            "alias": contract.get("alias"),
+            "ready": ready,
+            "status": status,
+            "missing": missing,
+            "failed": failed,
+            "delta": delta,
+            "required_links_found": found_links,
+            "probes": probes,
+            "delta_failures": delta_failures,
+        }
+        reports.append(report)
+
+        if status == "blocked":
+            blocking.append(
+                f"{scenario_id}: missing={missing}, failed={failed}, "
+                f"links={link_failures}, probes={probe_failures}, delta={delta_failures}"
+            )
+
+    if blocking:
+        raise RuntimeError("Contratos QA WhatsApp incompletos: " + "; ".join(blocking))
     return reports
 
 
@@ -1034,6 +1321,7 @@ def main():
             )
 
         before = _row_counts("whatsapp_")
+        markers = _row_markers()
 
         with app.test_client() as client, patch("routes.whatsapp_webhook.twilio_client", fake_twilio), patch(
             "routes.whatsapp_webhook.create_attachment_with_thumbnail",
@@ -1048,6 +1336,8 @@ def main():
             failures = []
             case_results = []
             for case in cases:
+                case_before = _row_counts("whatsapp_")
+                sent_before = len(fake_twilio.messages.sent)
                 data = _twilio_form(case)
                 response = client.post(
                     "/webhook/whatsapp",
@@ -1063,27 +1353,34 @@ def main():
                         "body": response.get_data(as_text=True)[:200],
                     },
                 )
+                case_after = _row_counts("whatsapp_")
                 case_results.append(
                     {
                         "label": case.label,
                         "status": response.status_code,
                         "body": response.get_data(as_text=True)[:200],
+                        "delta": _delta(case_before, case_after),
+                        "messages": fake_twilio.messages.sent[sent_before:],
                     }
                 )
                 if response.status_code != 200:
                     failures.append((case.label, response.status_code, response.get_data(as_text=True)[:500]))
 
-        after = _row_counts("whatsapp_")
-        _safe_print("delta", {key: after[key] - before[key] for key in before})
-        _safe_print("twilio_messages", json.dumps(fake_twilio.messages.sent, ensure_ascii=False, default=str)[:4000])
-        _assert_whatsapp_copy_quality(fake_twilio.messages.sent)
-        _safe_print("qa_matrix", _assert_case_matrix(case_results))
-        _safe_print(
-            "artifact_health",
-            _assert_artifact_health(before=before, after=after, sent_messages=fake_twilio.messages.sent),
-        )
-        if failures:
-            raise RuntimeError(f"Fallaron casos WhatsApp QA: {failures}")
+            after = _row_counts("whatsapp_")
+            _safe_print("delta", _delta(before, after))
+            _safe_print("twilio_messages", json.dumps(fake_twilio.messages.sent, ensure_ascii=False, default=str)[:4000])
+            _assert_whatsapp_copy_quality(fake_twilio.messages.sent)
+            _safe_print("qa_matrix", _assert_case_matrix(case_results))
+            _safe_print(
+                "contract_matrix",
+                _assert_contract_matrix(app, client, case_results=case_results, markers=markers),
+            )
+            _safe_print(
+                "artifact_health",
+                _assert_artifact_health(before=before, after=after, sent_messages=fake_twilio.messages.sent),
+            )
+            if failures:
+                raise RuntimeError(f"Fallaron casos WhatsApp QA: {failures}")
 
         if isolated_db:
             db.session.remove()
