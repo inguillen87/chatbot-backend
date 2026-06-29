@@ -465,6 +465,7 @@ def _build_assisted_request(metadata: dict[str, Any], raw_items: list[Any], *, r
         "public_follow_up": _as_dict(metadata.get("public_follow_up")) or _as_dict(raw_payload.get("public_follow_up")),
         "intake_experience": _as_dict(metadata.get("intake_experience")) or _as_dict(raw_payload.get("intake_experience")),
         "operator_pack": operator_pack,
+        "operator_intake_summary": _as_dict(metadata.get("operator_intake_summary")) or _as_dict(raw_payload.get("operator_intake_summary")),
         "customer_message": raw_payload.get("customer_message") or metadata.get("customer_message"),
         "customer_next_steps": _as_list(metadata.get("customer_next_steps")) or _as_list(raw_payload.get("customer_next_steps")),
         "detected_items": [

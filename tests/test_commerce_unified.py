@@ -238,6 +238,13 @@ def test_serialize_unified_order_exposes_assisted_marketplace_upload_contract():
                     "capabilities": [{"id": "handwritten_note_ocr", "label": "Notas manuscritas"}],
                 },
                 "next_actions": [{"id": "tracking", "reference": "pedido:1"}],
+                "operator_intake_summary": {
+                    "contract_version": "marketplace.operator_intake_summary.v1",
+                    "objective": "Confirmar stock, precio, alternativas y convertir la nota en pedido o cotizacion.",
+                    "target_module": "orders",
+                    "recommended_next_step": "resolver_faltantes_y_responder",
+                    "contact_state": "available",
+                },
             },
         )
 
@@ -271,6 +278,8 @@ def test_serialize_unified_order_exposes_assisted_marketplace_upload_contract():
         assert serialized["assisted_request"]["next_actions"][0]["id"] == "tracking"
         assert serialized["assisted_request"]["operator_pack"]["priority"] == "high"
         assert serialized["assisted_request"]["operator_pack"]["reference"] is None
+        assert serialized["assisted_request"]["operator_intake_summary"]["target_module"] == "orders"
+        assert serialized["assisted_request"]["operator_intake_summary"]["recommended_next_step"] == "resolver_faltantes_y_responder"
         assert "clavos bolsa" in serialized["assisted_request"]["operator_pack"]["suggested_reply"]
         assert serialized["assisted_request"]["operator_pack"]["contact_links"][0]["type"] == "whatsapp"
         assert any(

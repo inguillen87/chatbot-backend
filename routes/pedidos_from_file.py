@@ -626,6 +626,84 @@ def _build_crm_handoff_payload(
     return base
 
 
+def _build_operator_intake_summary(
+    *,
+    document_profile: dict[str, Any],
+    request_kind_label: str,
+    source_payload: dict[str, Any],
+    contact_payload: dict[str, str],
+    match_summary: dict[str, Any],
+    crm_handoff: dict[str, Any],
+    enriched_items: list[dict[str, Any]],
+    unmatched_labels: list[str],
+    public_follow_up: dict[str, Any],
+) -> dict[str, Any]:
+    primary_intent = str(document_profile.get("primary_intent") or "")
+    target_module = str(crm_handoff.get("target_module") or "orders")
+    has_contact = bool(contact_payload.get("phone") or contact_payload.get("email"))
+    needs_review = bool(match_summary.get("needs_operator_review"))
+    preview: list[str] = []
+    for item in enriched_items[:4]:
+        label = _clean_optional_text(
+            item.get("nombre") or item.get("name") or item.get("title") or item.get("sku")
+        )
+        if label:
+            quantity = item.get("cantidad") or item.get("quantity")
+            preview.append(f"{quantity} {label}" if quantity else label)
+    for label in unmatched_labels:
+        if label and label not in preview:
+            preview.append(label)
+        if len(preview) >= 6:
+            break
+
+    if primary_intent == "municipal_service_request":
+        objective = "Validar categoria, direccion, urgencia y derivar area responsable."
+        recommended_next_step = "derivar_area_y_responder"
+    elif target_module == "document_requests":
+        objective = "Validar datos del documento y responder proximo paso del tramite."
+        recommended_next_step = "revisar_documento_y_responder"
+    else:
+        objective = "Confirmar stock, precio, alternativas y convertir la nota en pedido o cotizacion."
+        recommended_next_step = "confirmar_stock_precio_y_responder"
+    if needs_review:
+        recommended_next_step = "resolver_faltantes_y_responder"
+    if not has_contact:
+        recommended_next_step = "pedir_contacto_y_responder"
+
+    tracking = public_follow_up.get("tracking") if isinstance(public_follow_up.get("tracking"), dict) else {}
+    return {
+        "contract_version": "marketplace.operator_intake_summary.v1",
+        "title": f"{request_kind_label.capitalize()} desde {source_payload.get('channel') or 'marketplace'}",
+        "objective": objective,
+        "primary_intent": primary_intent,
+        "target_module": target_module,
+        "recommended_record": crm_handoff.get("recommended_record"),
+        "recommended_next_step": recommended_next_step,
+        "needs_operator_review": needs_review,
+        "contact_state": "available" if has_contact else "missing",
+        "contact_channels": [
+            channel
+            for channel in ("phone", "email")
+            if contact_payload.get(channel)
+        ],
+        "input": {
+            "mode": document_profile.get("input_mode"),
+            "type": source_payload.get("input_type"),
+            "channel": source_payload.get("channel"),
+            "file_name": source_payload.get("archivo_nombre"),
+            "has_file": bool(source_payload.get("archivo_url")),
+            "has_text": bool(source_payload.get("text_preview")),
+        },
+        "detected_preview": preview,
+        "match_summary": match_summary,
+        "follow_up": {
+            "kind": tracking.get("kind"),
+            "code": tracking.get("code"),
+            "path": tracking.get("path"),
+        },
+    }
+
+
 def _build_customer_next_steps(
     *,
     document_profile: dict[str, Any],
@@ -1099,6 +1177,14 @@ def _unmatched_catalog_candidates_payload(rows: List[dict]) -> List[dict]:
     return payload
 
 
+def _whatsapp_handoff_url(phone: Optional[str], text: str) -> str:
+    encoded_text = quote_plus(text)
+    digits = re.sub(r"\D+", "", str(phone or ""))
+    if digits:
+        return f"https://wa.me/{digits}?text={encoded_text}"
+    return f"https://wa.me/?text={encoded_text}"
+
+
 def _build_public_follow_up(
     *,
     pedido_id: int,
@@ -1106,6 +1192,7 @@ def _build_public_follow_up(
     request_kind_label: str,
     customer_message: str,
     linked_claim: Optional[dict[str, Any]] = None,
+    whatsapp_phone: Optional[str] = None,
 ) -> dict[str, Any]:
     if linked_claim:
         raw_code = str(linked_claim.get("nro_ticket") or "").strip()
@@ -1121,7 +1208,7 @@ def _build_public_follow_up(
             f"Hola, quiero continuar mi {request_kind_label}. "
             f"Reclamo {display_code}. PIN {pin}. {customer_message}"
         )
-        whatsapp_url = f"https://wa.me/?text={quote_plus(whatsapp_text)}"
+        whatsapp_url = _whatsapp_handoff_url(whatsapp_phone, whatsapp_text)
         return {
             "contract_version": "marketplace.assisted_followup.v1",
             "tracking": {
@@ -1164,7 +1251,7 @@ def _build_public_follow_up(
         f"Hola, quiero continuar mi {request_kind_label}. "
         f"Referencia {tracking_code}. {customer_message}"
     )
-    whatsapp_url = f"https://wa.me/?text={quote_plus(whatsapp_text)}"
+    whatsapp_url = _whatsapp_handoff_url(whatsapp_phone, whatsapp_text)
     return {
         "contract_version": "marketplace.assisted_followup.v1",
         "tracking": {
@@ -1880,6 +1967,20 @@ def pedidos_desde_archivo():
         request_kind_label=request_kind_label,
         customer_message=customer_message,
         linked_claim=linked_record,
+        whatsapp_phone=getattr(tenant, "dispatch_phone", None)
+        if getattr(tenant, "send_dispatch_whatsapp", True)
+        else None,
+    )
+    operator_intake_summary = _build_operator_intake_summary(
+        document_profile=document_profile,
+        request_kind_label=request_kind_label,
+        source_payload=source_payload,
+        contact_payload=contact_payload,
+        match_summary=match_summary,
+        crm_handoff=crm_handoff,
+        enriched_items=enriched,
+        unmatched_labels=unmatched_labels,
+        public_follow_up=public_follow_up,
     )
     for action in next_actions:
         if action.get("id") == "tracking":
@@ -1909,6 +2010,7 @@ def pedidos_desde_archivo():
     metadata_payload["operator_pack"] = operator_pack
     metadata_payload["public_follow_up"] = public_follow_up
     metadata_payload["crm_handoff"] = crm_handoff
+    metadata_payload["operator_intake_summary"] = operator_intake_summary
     if linked_record:
         metadata_payload["linked_record"] = linked_record
         metadata_payload["crm_state"] = "materialized_ticket_pending_review"
@@ -1918,6 +2020,7 @@ def pedidos_desde_archivo():
         first_item_payload["operator_pack"] = operator_pack
         first_item_payload["public_follow_up"] = public_follow_up
         first_item_payload["crm_handoff"] = crm_handoff
+        first_item_payload["operator_intake_summary"] = operator_intake_summary
         if linked_record:
             first_item_payload["linked_record"] = linked_record
         pedido.items = [first_item_payload, *pedido.items[1:]]
@@ -1949,6 +2052,7 @@ def pedidos_desde_archivo():
         "customer_next_steps": customer_next_steps,
         "intake_experience": intake_experience,
         "operator_pack": operator_pack,
+        "operator_intake_summary": operator_intake_summary,
         "public_follow_up": public_follow_up,
         "row_errors": row_errors,
         "next_actions": next_actions,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 from typing import Any
+from collections import defaultdict
 
 from models import TicketComentario, TicketRealtimeState, db
 from utils.time_utils import get_local_now, datetime_to_iso_utc
@@ -216,6 +217,119 @@ def build_ticket_realtime_summary(*, ticket_type: str, ticket_id: int) -> dict[s
             "stale_retention_hours": PRESENCE_STALE_RETENTION_HOURS,
         },
     }
+
+
+def build_ticket_collaboration_states(
+    *,
+    ticket_type: str,
+    ticket_ids: list[int],
+    latest_comment_ids: dict[int, int] | None = None,
+    comment_counts: dict[int, int] | None = None,
+) -> dict[int, dict[str, Any]]:
+    """Return lightweight collaboration state for many tickets in one DB pass."""
+
+    unique_ids = sorted({int(ticket_id) for ticket_id in ticket_ids if ticket_id is not None})
+    if not unique_ids:
+        return {}
+
+    now = get_local_now()
+    active_cutoff = now - timedelta(minutes=PRESENCE_ACTIVE_WINDOW_MINUTES)
+    prune_stale_ticket_realtime_states(now=now)
+
+    latest_comment_ids = dict(latest_comment_ids or {})
+    comment_counts = dict(comment_counts or {})
+
+    missing_stats_ids = [
+        ticket_id
+        for ticket_id in unique_ids
+        if ticket_id not in latest_comment_ids or ticket_id not in comment_counts
+    ]
+    if missing_stats_ids:
+        comment_column = (
+            TicketComentario.municipio_ticket_id
+            if ticket_type == "municipio"
+            else TicketComentario.pyme_ticket_id
+        )
+        rows = (
+            db.session.query(
+                comment_column.label("ticket_id"),
+                db.func.max(TicketComentario.id).label("latest_comment_id"),
+                db.func.count(TicketComentario.id).label("comment_count"),
+            )
+            .filter(comment_column.in_(missing_stats_ids))
+            .group_by(comment_column)
+            .all()
+        )
+        for row in rows:
+            latest_comment_ids[int(row.ticket_id)] = int(row.latest_comment_id or 0)
+            comment_counts[int(row.ticket_id)] = int(row.comment_count or 0)
+
+    realtime_rows = (
+        TicketRealtimeState.query
+        .filter(
+            TicketRealtimeState.ticket_type == ticket_type,
+            TicketRealtimeState.ticket_id.in_(unique_ids),
+        )
+        .all()
+    )
+
+    rows_by_ticket: dict[int, list[TicketRealtimeState]] = defaultdict(list)
+    for row in realtime_rows:
+        rows_by_ticket[int(row.ticket_id)].append(row)
+
+    states: dict[int, dict[str, Any]] = {}
+    for ticket_id in unique_ids:
+        latest_comment_id = int(latest_comment_ids.get(ticket_id) or 0)
+        total_comments = int(comment_counts.get(ticket_id) or 0)
+        active_count = 0
+        idle_count = 0
+        unread_count = 0
+        latest_read_at = None
+
+        for row in _dedupe_rows(rows_by_ticket.get(ticket_id, [])):
+            last_presence_at = _normalize_presence_dt(row.last_presence_at, now)
+            effective_presence_status = _derive_effective_presence_status(
+                stored_status=row.presence_status,
+                last_presence_at=last_presence_at,
+                now=now,
+            )
+            if (
+                effective_presence_status == "active"
+                and last_presence_at
+                and last_presence_at >= active_cutoff
+            ):
+                active_count += 1
+            elif effective_presence_status == "idle":
+                idle_count += 1
+
+            last_read_comment_id = int(row.last_read_comment_id or 0)
+            if latest_comment_id and (not last_read_comment_id or latest_comment_id > last_read_comment_id):
+                unread_count += 1
+
+            row_last_read_at = row.last_read_at
+            if row_last_read_at and (latest_read_at is None or row_last_read_at > latest_read_at):
+                latest_read_at = row_last_read_at
+
+        status = "healthy"
+        if unread_count > 0:
+            status = "attention_needed"
+        if unread_count > 0 and active_count > 0:
+            status = "actively_managed"
+
+        states[ticket_id] = {
+            "active_viewers_count": active_count,
+            "idle_viewers_count": idle_count,
+            "unread_viewer_count": unread_count,
+            "latest_comment_id": latest_comment_id,
+            "latest_read_at": datetime_to_iso_utc(latest_read_at),
+            "active_window_minutes": PRESENCE_ACTIVE_WINDOW_MINUTES,
+            "idle_window_minutes": PRESENCE_IDLE_WINDOW_MINUTES,
+            "operational_status": status,
+            "collaboration_hint": f"{active_count} activos / {idle_count} idle / {unread_count} unread",
+            "comment_count": total_comments,
+        }
+
+    return states
 
 
 def build_ticket_collaboration_state(*, ticket_type: str, ticket_id: int) -> dict[str, Any]:

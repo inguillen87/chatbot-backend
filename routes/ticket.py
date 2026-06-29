@@ -30,6 +30,7 @@ from datetime import datetime, timedelta
 from services.ticket_service import servicio_tickets
 from services.ticket_realtime_state import (
     build_ticket_collaboration_state,
+    build_ticket_collaboration_states,
     build_ticket_realtime_summary,
     build_viewer_key,
     mark_ticket_read,
@@ -722,7 +723,14 @@ def _ticket_location_payload(ticket, fallback_address=None):
     }
 
 
-def serialize_ticket_to_json(ticket, ticket_type, *, compact: bool = False):
+def serialize_ticket_to_json(
+    ticket,
+    ticket_type,
+    *,
+    compact: bool = False,
+    comentarios_count_override: int | None = None,
+    collaboration_state_override: dict | None = None,
+):
     """
     Serializa un objeto de ticket a un diccionario JSON con el formato
     específico requerido por el frontend del panel de CRM.
@@ -730,8 +738,8 @@ def serialize_ticket_to_json(ticket, ticket_type, *, compact: bool = False):
     """
     # Serializar todos los comentarios del ticket
     comentarios_serializados = []
-    comentarios_count = 0
-    if ticket.comentarios:
+    comentarios_count = comentarios_count_override if comentarios_count_override is not None else 0
+    if comentarios_count_override is None and ticket.comentarios:
         try:
             comentarios_count = ticket.comentarios.count()
         except Exception:
@@ -774,7 +782,11 @@ def serialize_ticket_to_json(ticket, ticket_type, *, compact: bool = False):
 
     assigned_user = getattr(ticket, "asignado_a", None)
     operational_hints = _build_ticket_operational_badges(ticket)
-    collaboration_state = build_ticket_collaboration_state(ticket_type=ticket_type, ticket_id=ticket.id)
+    collaboration_state = (
+        collaboration_state_override
+        if collaboration_state_override is not None
+        else build_ticket_collaboration_state(ticket_type=ticket_type, ticket_id=ticket.id)
+    )
 
     estado_original = getattr(ticket, "estado", None) or "desconocido"
     estado_serializado = "resuelto" if estado_original == "cerrado" else estado_original
@@ -868,6 +880,55 @@ def build_ticket_comment_payload(ticket, ticket_type, comment_obj, ticket_snapsh
         payload["actor"] = "agent" if comment_dict.get("es_admin") else "neighbor"
 
     return payload
+
+
+def _prefetch_compact_ticket_inbox_state(tickets: list, ticket_type: str) -> dict:
+    """Precompute list-only ticket fields that used to cause N+1 queries."""
+
+    ticket_ids = [int(t.id) for t in tickets if getattr(t, "id", None) is not None]
+    if not ticket_ids:
+        return {"comment_counts": {}, "collaboration_states": {}}
+
+    comment_column = (
+        TicketComentario.municipio_ticket_id
+        if ticket_type == "municipio"
+        else TicketComentario.pyme_ticket_id
+    )
+    rows = (
+        db.session.query(
+            comment_column.label("ticket_id"),
+            func.count(TicketComentario.id).label("comment_count"),
+            func.max(TicketComentario.id).label("latest_comment_id"),
+        )
+        .filter(comment_column.in_(ticket_ids))
+        .group_by(comment_column)
+        .all()
+    )
+    comment_counts = {int(row.ticket_id): int(row.comment_count or 0) for row in rows}
+    latest_comment_ids = {int(row.ticket_id): int(row.latest_comment_id or 0) for row in rows}
+
+    user_ids = {
+        int(user_id)
+        for ticket in tickets
+        for user_id in (getattr(ticket, "user_id", None), getattr(ticket, "asignado_a_id", None))
+        if user_id is not None
+    }
+    if user_ids:
+        # Populate SQLAlchemy's identity map so _get_user_info() and assigned-user
+        # relationships do not hit the DB one row at a time.
+        User.query.filter(User.id.in_(user_ids)).all()
+
+    collaboration_states = build_ticket_collaboration_states(
+        ticket_type=ticket_type,
+        ticket_ids=ticket_ids,
+        latest_comment_ids=latest_comment_ids,
+        comment_counts=comment_counts,
+    )
+
+    return {
+        "comment_counts": comment_counts,
+        "collaboration_states": collaboration_states,
+    }
 
 
 def get_tickets_del_usuario_logic(current_user: User):
@@ -1078,8 +1139,22 @@ def get_tickets_del_usuario_logic(current_user: User):
         ).strip().lower()
         compact_view = include_mode in {"1", "true", "yes", "compact", "list", "summary"}
 
+        compact_prefetch = (
+            _prefetch_compact_ticket_inbox_state(tickets_for_list_page, tipo_ticket_str)
+            if compact_view
+            else {"comment_counts": {}, "collaboration_states": {}}
+        )
+        comment_counts = compact_prefetch.get("comment_counts", {})
+        collaboration_states = compact_prefetch.get("collaboration_states", {})
+
         serialized_tickets = [
-            serialize_ticket_to_json(t, tipo_ticket_str, compact=compact_view)
+            serialize_ticket_to_json(
+                t,
+                tipo_ticket_str,
+                compact=compact_view,
+                comentarios_count_override=comment_counts.get(t.id, 0) if compact_view else None,
+                collaboration_state_override=collaboration_states.get(t.id) if compact_view else None,
+            )
             for t in tickets_for_list_page
         ]
 

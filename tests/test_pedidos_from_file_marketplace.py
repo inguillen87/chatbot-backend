@@ -105,6 +105,11 @@ def test_marketplace_order_note_upload_creates_assisted_request_contract(client,
     assert "items_sin_match_exacto" in payload["review_context"]["review_reasons"]
     assert payload["operator_pack"]["needs_human_review"] is True
     assert "Clavos 2 pulgadas" in payload["operator_pack"]["suggested_reply"]
+    assert payload["operator_intake_summary"]["contract_version"] == "marketplace.operator_intake_summary.v1"
+    assert payload["operator_intake_summary"]["target_module"] == "orders"
+    assert payload["operator_intake_summary"]["recommended_next_step"] == "pedir_contacto_y_responder"
+    assert payload["operator_intake_summary"]["contact_state"] == "missing"
+    assert payload["operator_intake_summary"]["detected_preview"] == ["2 Chapa galvanizada", "1 Clavos 2 pulgadas"]
     assert any(step["id"] == "human_review" for step in payload["customer_next_steps"])
     assert any(action["id"] == "review_unmatched_items" for action in payload["next_actions"])
     tracking_action = next(action for action in payload["next_actions"] if action.get("id") == "tracking")
@@ -129,6 +134,7 @@ def test_marketplace_order_note_upload_creates_assisted_request_contract(client,
     assert pedido.metadata_payload["source"]["channel"] == "marketplace"
     assert pedido.metadata_payload["match_summary"]["unmatched"] == 1
     assert pedido.metadata_payload["operator_pack"]["reference"] == f"pedido:{payload['pedido_id']}"
+    assert pedido.metadata_payload["operator_intake_summary"]["follow_up"]["code"] == f"pc-{payload['pedido_id']}"
     assert pedido.metadata_payload["public_follow_up"]["tracking"]["code"] == f"pc-{payload['pedido_id']}"
     assert pedido.metadata_payload["catalog_candidates"][0]["candidates"][0]["catalogo_item_id"] == clavos_candidate.id
     assert pedido.items[0]["catalog_candidates"][0]["row"]["nombre"] == "Clavos 2 pulgadas"
@@ -137,7 +143,14 @@ def test_marketplace_order_note_upload_creates_assisted_request_contract(client,
 
 def test_marketplace_order_note_upload_persists_kind_and_contact(client, init_database, monkeypatch):
     owner = User.query.filter_by(email="admin@test.com").first()
-    tenant = TenantProfile(slug="market-contact", nombre="Market Contact", tipo="pyme", pyme_id=owner.id, plan="full")
+    tenant = TenantProfile(
+        slug="market-contact",
+        nombre="Market Contact",
+        tipo="pyme",
+        pyme_id=owner.id,
+        plan="full",
+        dispatch_phone="+54 9 261 000 0000",
+    )
     db.session.add(tenant)
     db.session.commit()
 
@@ -172,6 +185,10 @@ def test_marketplace_order_note_upload_persists_kind_and_contact(client, init_da
         "phone": "+5492613168608",
         "email": "marcelo@example.com",
     }
+    whatsapp_channel = next(
+        channel for channel in payload["public_follow_up"]["channels"] if channel.get("id") == "whatsapp_handoff"
+    )
+    assert whatsapp_channel["href"].startswith("https://wa.me/5492610000000?text=")
     assert payload["items_no_encontrados"] == ["2 Chapas sinusoidales"]
     assert payload["row_errors"] == []
 
@@ -698,6 +715,8 @@ def test_marketplace_tax_bill_text_creates_document_review_contract(client, init
     assert payload["intake_experience"]["catalog_matching"] is False
     assert payload["intake_experience"]["crm_handoff"]["recommended_next_action"] == "revisar_y_responder"
     assert payload["operator_pack"]["contact_links"][0]["type"] == "email"
+    assert payload["operator_intake_summary"]["target_module"] == "document_requests"
+    assert payload["operator_intake_summary"]["recommended_next_step"] == "resolver_faltantes_y_responder"
     assert any(step["id"] == "reply" for step in payload["customer_next_steps"])
 
 

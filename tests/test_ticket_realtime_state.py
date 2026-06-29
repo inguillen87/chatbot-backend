@@ -6,7 +6,11 @@ from app import create_app, db
 from config import TestConfig
 from models import MunicipioTicket, TicketComentario, TicketRealtimeState, User
 from routes.ticket import serialize_ticket_to_json
-from services.ticket_realtime_state import build_ticket_realtime_summary, prune_stale_ticket_realtime_states
+from services.ticket_realtime_state import (
+    build_ticket_collaboration_states,
+    build_ticket_realtime_summary,
+    prune_stale_ticket_realtime_states,
+)
 from utils.time_utils import get_local_now
 
 
@@ -232,3 +236,68 @@ def test_realtime_summary_unread_count_counts_comments_not_id_gap():
         assert viewer["latest_comment_id"] == second.id
         assert viewer["last_read_comment_id"] == first.id
         assert viewer["unread_count"] == 1
+
+
+def test_compact_inbox_collaboration_state_uses_bulk_realtime_summary():
+    app = create_app(TestConfig)
+    with app.app_context():
+        db.create_all()
+        owner = User(email="owner-rt-bulk@test.com", name="Owner RT", rol="admin", tipo_chat="municipio", municipio_id=92)
+        owner.set_password("pass")
+        db.session.add(owner)
+        db.session.commit()
+
+        ticket = MunicipioTicket(
+            municipio_id=92,
+            user_id=owner.id,
+            pregunta="Necesito ayuda",
+            asunto="Realtime bulk",
+            estado="nuevo",
+            nombre_vecino="Vecino RT",
+        )
+        db.session.add(ticket)
+        db.session.commit()
+
+        first = TicketComentario(municipio_ticket_id=ticket.id, comentario="Primer mensaje", user_id=owner.id, es_admin=True)
+        second = TicketComentario(municipio_ticket_id=ticket.id, comentario="Segundo mensaje", user_id=owner.id, es_admin=True)
+        db.session.add_all([first, second])
+        db.session.commit()
+
+        db.session.add(
+            TicketRealtimeState(
+                ticket_type="municipio",
+                ticket_id=ticket.id,
+                viewer_key=f"user:{owner.id}",
+                viewer_user_id=owner.id,
+                viewer_role="admin",
+                presence_status="active",
+                last_presence_at=get_local_now(),
+                last_read_comment_id=first.id,
+            )
+        )
+        db.session.commit()
+
+        states = build_ticket_collaboration_states(
+            ticket_type="municipio",
+            ticket_ids=[ticket.id],
+            latest_comment_ids={ticket.id: second.id},
+            comment_counts={ticket.id: 2},
+        )
+
+        assert states[ticket.id]["active_viewers_count"] == 1
+        assert states[ticket.id]["latest_comment_id"] == second.id
+        assert states[ticket.id]["unread_viewer_count"] == 1
+
+        payload = serialize_ticket_to_json(
+            ticket,
+            "municipio",
+            compact=True,
+            comentarios_count_override=2,
+            collaboration_state_override=states[ticket.id],
+        )
+
+        assert payload["comentarios"] == []
+        assert payload["historial_chat"] == []
+        assert payload["comentarios_count"] == 2
+        assert payload["collaboration_state"]["latest_comment_id"] == second.id
+        assert payload["collaboration_state"]["active_viewers_count"] == 1
