@@ -9,6 +9,7 @@ from socket_service import (
     emit_ticket_presence_changed,
     emit_conversation_message_read,
     emit_ticket_unread_changed,
+    emit_survey_update,
 )
 
 
@@ -106,6 +107,27 @@ class SocketServiceEventTests(unittest.TestCase):
         self.assertEqual(event_payload['ticket']['id'], 11)
         self.assertEqual(event_payload['payload']['summary']['unread_viewer_count'], 2)
         self.assertEqual(mock_emit.call_args.kwargs, {'room': 'municipio_7'})
+
+    def test_emit_survey_update_emits_legacy_and_v2_payloads(self):
+        legacy_payload = {"total_respuestas": 1, "preguntas": {"10": {"opciones": []}}}
+        modern_payload = {
+            "contract_version": "surveys.live_results.v2",
+            "result_version": 42,
+            "total_respuestas": 1,
+            "preguntas": [{"id": 10, "opciones": []}],
+            "legacy_results": legacy_payload,
+        }
+
+        with patch('socket_service.socketio.emit') as mock_emit:
+            emit_survey_update("consulta-barrial", modern_payload)
+
+        self.assertEqual(mock_emit.call_args_list[0], call('survey_update', legacy_payload, room='encuesta_consulta-barrial'))
+        event_name, event_payload = mock_emit.call_args_list[1].args[:2]
+        self.assertEqual(event_name, 'survey_update_v2')
+        self.assertEqual(event_payload["contract_version"], "surveys.live_results.v2")
+        self.assertEqual(event_payload["result_version"], 42)
+        self.assertNotIn("legacy_results", event_payload)
+        self.assertEqual(mock_emit.call_args_list[1].kwargs, {'room': 'encuesta_consulta-barrial'})
 
 
 if __name__ == '__main__':

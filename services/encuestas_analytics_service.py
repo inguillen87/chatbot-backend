@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
 import json
 import logging
@@ -2424,6 +2425,11 @@ def calculate_live_results(
     respuestas_filtradas = _collect_respuestas(encuesta, filtros)
     response_ids = [respuesta.id for respuesta in respuestas_filtradas if getattr(respuesta, "id", None) is not None]
     responses_count = len(respuestas_filtradas)
+    result_version = max(response_ids) if response_ids else 0
+    filters_fingerprint = hashlib.sha1(
+        json.dumps(filtros, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()[:12]
+    snapshot_version = f"{encuesta.id}:{responses_count}:{result_version}:{filters_fingerprint}"
 
     option_counts: Dict[Tuple[int, int], int] = {}
     if response_ids:
@@ -2612,6 +2618,8 @@ def calculate_live_results(
 
     return {
         "contract_version": "surveys.live_results.v2",
+        "result_version": result_version,
+        "snapshot_version": snapshot_version,
         "encuesta_id": encuesta.id,
         "slug": slug_publico,
         "slug_publico": slug_publico,

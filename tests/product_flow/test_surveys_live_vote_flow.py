@@ -128,12 +128,20 @@ class ProductFlowSurveyLiveVoteTest(unittest.TestCase):
 
         emit_update.assert_called_once()
         self.assertEqual(emit_update.call_args.args[0], token)
-        self.assertEqual(emit_update.call_args.args[1]["total_respuestas"], 1)
+        emitted_payload = emit_update.call_args.args[1]
+        self.assertEqual(emitted_payload["contract_version"], "surveys.live_results.v2")
+        self.assertEqual(emitted_payload["total_respuestas"], 1)
+        self.assertEqual(emitted_payload["preguntas"][0]["total_votos"], 1)
+        self.assertEqual(emitted_payload["preguntas"][0]["opciones"][0]["votos"], 1)
+        self.assertIn("result_version", emitted_payload)
+        self.assertIn("snapshot_version", emitted_payload)
+        self.assertEqual(emitted_payload["legacy_results"]["total_respuestas"], 1)
 
         live = self.client.get(f"/api/v2/public/surveys/{token}/live-results?include_heatmap=0")
         self.assertEqual(live.status_code, 200, live.get_json())
         data = live.get_json()
         self.assertEqual(data["contract_version"], "surveys.live_results.v2")
+        self.assertEqual(data["result_version"], emitted_payload["result_version"])
         self.assertEqual(data["total_respuestas"], 1)
         self.assertEqual(data["preguntas"][0]["total_votos"], 1)
         self.assertEqual(data["preguntas"][0]["opciones"][0]["votos"], 1)

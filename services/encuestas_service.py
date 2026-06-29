@@ -3116,9 +3116,23 @@ def save_respuesta(
     # Emitir actualizaciones en tiempo real si corresponde
     if encuesta.mostrar_resultados_envivo and emit_survey_update:
         try:
-            live_stats = _compute_live_results(encuesta)
+            public_slug = _resolve_public_slug(encuesta) or encuesta.slug or slug_publico
+            try:
+                from services.encuestas_analytics_service import calculate_live_results
+
+                live_stats = calculate_live_results(
+                    public_slug,
+                    preferred_tenant_id=tenant_id,
+                    include_heatmap=True,
+                )
+                live_stats["legacy_results"] = _compute_live_results(encuesta)
+            except Exception:
+                current_app.logger.exception(
+                    "[encuestas] Error calculando live-results v2 para socket; se emite contrato legacy"
+                )
+                live_stats = _compute_live_results(encuesta)
             emit_slugs = [
-                _resolve_public_slug(encuesta) or encuesta.slug,
+                public_slug,
                 slug_publico,
             ]
             for emit_slug in dict.fromkeys(str(item).strip() for item in emit_slugs if item):

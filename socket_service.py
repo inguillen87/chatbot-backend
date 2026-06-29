@@ -305,6 +305,12 @@ def emit_new_chat_message(data: Any) -> None:
 def emit_survey_update(slug_publico: str, data: Any) -> None:
     """Emit a live update for a specific survey/poll."""
     room = f"encuesta_{slug_publico}"
+    if isinstance(data, dict) and data.get("contract_version") == "surveys.live_results.v2":
+        legacy_payload = data.get("legacy_results")
+        modern_payload = {key: value for key, value in data.items() if key != "legacy_results"}
+        socketio.emit('survey_update', legacy_payload or modern_payload, room=room)
+        socketio.emit('survey_update_v2', modern_payload, room=room)
+        return
     socketio.emit('survey_update', data, room=room)
 
 
