@@ -1683,6 +1683,22 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertIn("insurance_claim_documentation", journey_ids)
         self.assertFalse(payload["finance_transactional"]["security_policy"]["card_data_in_chat_allowed"])
         self.assertIn("collections", [item["id"] for item in payload["finance_transactional"]["crm_operating_model"]["queues"]])
+        finance_activation = payload["finance_transactional"]["activation_plan"]
+        self.assertEqual(finance_activation["contract_version"], "finance.activation_plan.v1")
+        self.assertEqual(finance_activation["frontend_contract"]["render_as"], "finance_activation_plan")
+        capability_ids = {item["id"] for item in finance_activation["required_capabilities"]}
+        self.assertIn("identity_or_kyc_provider", capability_ids)
+        self.assertIn("document_signature_provider", capability_ids)
+        self.assertIn("secure_checkout_or_payment_gateway", capability_ids)
+        track_ids = {item["id"] for item in finance_activation["launch_tracks"]}
+        self.assertIn("collections_payments_signature", track_ids)
+        self.assertIn("fees_taxes_school_government", track_ids)
+        self.assertGreaterEqual(len(finance_activation["setup_questions"]), 4)
+        self.assertGreaterEqual(len(finance_activation["next_actions"]), 1)
+        self.assertEqual(
+            payload["finance_transactional"]["summary"]["activation_blockers"],
+            finance_activation["blocking_count"],
+        )
         self.assertEqual(payload["qa_playbook"]["contract_version"], "whatsapp.qa_playbook.v1")
         self.assertEqual(payload["qa_playbook"]["local_command"], "python scripts/qa_whatsapp_flows.py")
         self.assertGreaterEqual(payload["qa_playbook"]["scenario_count"], 8)

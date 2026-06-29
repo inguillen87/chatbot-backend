@@ -2910,6 +2910,290 @@ def _qa_playbook_payload(
     }
 
 
+def _finance_activation_plan_payload(
+    tenant: TenantProfile,
+    *,
+    journeys: list[Mapping[str, Any]],
+    finance_templates: list[Any],
+    finance_flows: list[Mapping[str, Any]],
+    finance_scenarios: list[Mapping[str, Any]],
+    checkout_experience: Mapping[str, Any],
+    integration_access: Mapping[str, Any],
+) -> dict[str, Any]:
+    cfg = _tenant_cfg(tenant)
+    whatsapp_ready = bool(_whatsapp_number(tenant, cfg))
+    access_enabled = bool(integration_access.get("enabled"))
+    checkout_ready = bool(checkout_experience.get("ready"))
+    flow_ids = {str(flow.get("id") or "") for flow in finance_flows if isinstance(flow, Mapping)}
+    template_ids = {str(item.get("id") or "") for item in finance_templates if isinstance(item, Mapping)}
+    approved_template_ids = {
+        str(item.get("id") or "")
+        for item in finance_templates
+        if isinstance(item, Mapping)
+        and isinstance(item.get("status"), Mapping)
+        and bool(item["status"].get("approved"))
+    }
+    ready_scenario_ids = {
+        str(scenario.get("id") or "")
+        for scenario in finance_scenarios
+        if isinstance(scenario, Mapping) and bool(scenario.get("ready"))
+    }
+    has_kyc_provider = bool(
+        cfg.get("kyc_provider")
+        or cfg.get("identity_provider")
+        or cfg.get("identity_verification_provider")
+    )
+    has_signature_provider = bool(
+        cfg.get("signature_provider")
+        or cfg.get("document_signature_provider")
+        or cfg.get("signature_webhook_url")
+    )
+
+    def capability(
+        capability_id: str,
+        label: str,
+        ready: bool,
+        *,
+        owner: str,
+        required: bool = True,
+        action: str,
+    ) -> dict[str, Any]:
+        return {
+            "id": capability_id,
+            "label": label,
+            "ready": bool(ready),
+            "required": bool(required),
+            "owner": owner,
+            "action": action,
+        }
+
+    capabilities = [
+        capability(
+            "whatsapp_sender",
+            "Remitente WhatsApp verificado",
+            whatsapp_ready,
+            owner="tenant_admin",
+            action="Conectar numero oficial o revisar sender aprobado.",
+        ),
+        capability(
+            "twilio_content_templates",
+            "Plantillas finance aprobadas",
+            len(approved_template_ids) >= min(len(template_ids), 6) and bool(template_ids),
+            owner="chatboc_ops",
+            action="Crear, aprobar y versionar plantillas de KYC, pago, firma y soporte.",
+        ),
+        capability(
+            "signed_webviews",
+            "Webviews firmados y Meta Flows",
+            len(flow_ids) >= 6,
+            owner="chatboc_engineering",
+            action="Publicar webviews transaccionales con sesion firmada y data exchange.",
+        ),
+        capability(
+            "secure_checkout_or_payment_gateway",
+            "Checkout o gateway seguro",
+            checkout_ready,
+            owner="tenant_admin",
+            action="Configurar checkout, webhook server-to-server e idempotency key.",
+        ),
+        capability(
+            "identity_or_kyc_provider",
+            "Proveedor de identidad/KYC",
+            has_kyc_provider,
+            owner="tenant_admin",
+            action="Definir proveedor KYC o modo de revision manual auditada.",
+        ),
+        capability(
+            "document_signature_provider",
+            "Firma y documentos",
+            has_signature_provider,
+            owner="tenant_admin",
+            action="Conectar proveedor de firma o webview de consentimiento validado.",
+        ),
+        capability(
+            "crm_queues",
+            "Colas CRM operativas",
+            True,
+            owner="chatboc_product",
+            action="Mapear owner, SLA y handoff por cola financiera.",
+        ),
+        capability(
+            "audit_trail",
+            "Trazabilidad y auditoria",
+            True,
+            owner="chatboc_product",
+            action="Persistir eventos de pago, KYC, firma, webview y operador.",
+        ),
+        capability(
+            "whatsapp_qa_playbook",
+            "QA reproducible WhatsApp/webview",
+            len(ready_scenario_ids) >= 3,
+            owner="chatboc_qa",
+            action="Ejecutar playbook de finance antes de vender el tenant.",
+        ),
+    ]
+
+    def launch_track(
+        track_id: str,
+        label: str,
+        journey_ids: list[str],
+        required_templates: list[str],
+        webview_flow: str,
+        surfaces: list[str],
+        *,
+        requires_checkout: bool = False,
+        requires_kyc: bool = False,
+        requires_signature: bool = False,
+    ) -> dict[str, Any]:
+        ready = (
+            webview_flow in flow_ids
+            and set(required_templates).issubset(template_ids)
+            and (not requires_checkout or checkout_ready)
+            and (not requires_kyc or has_kyc_provider)
+            and (not requires_signature or has_signature_provider)
+        )
+        matching_journeys = [
+            journey
+            for journey in journeys
+            if isinstance(journey, Mapping) and str(journey.get("id") or "") in journey_ids
+        ]
+        return {
+            "id": track_id,
+            "label": label,
+            "journey_ids": journey_ids,
+            "required_templates": required_templates,
+            "webview_flow": webview_flow,
+            "surfaces": surfaces,
+            "ready": ready,
+            "mapped_journeys": len(matching_journeys),
+        }
+
+    launch_tracks = [
+        launch_track(
+            "finance_core_servicing",
+            "Atencion financiera y estado de cuenta",
+            ["account_statement_support"],
+            ["finance_account_status", "finance_support_case"],
+            "finance_account_servicing",
+            ["whatsapp", "secure_webview", "crm_queue", "analytics"],
+        ),
+        launch_track(
+            "onboarding_kyc",
+            "Alta digital y verificacion KYC",
+            ["digital_account_opening"],
+            ["finance_account_onboarding", "finance_kyc_review"],
+            "finance_onboarding_kyc",
+            ["whatsapp", "meta_flow", "kyc_review_queue", "audit_trail"],
+            requires_kyc=True,
+        ),
+        launch_track(
+            "collections_payments_signature",
+            "Cobranzas, pagos y firma",
+            ["collections_payment_plan_signature"],
+            ["finance_collection_due", "finance_secure_payment", "finance_document_signature"],
+            "finance_credit_collection_signature",
+            ["whatsapp_template", "payment_webview", "signature_flow", "crm_queue"],
+            requires_checkout=True,
+            requires_signature=True,
+        ),
+        launch_track(
+            "remittance_and_receipts",
+            "Remesas, transferencias y comprobantes",
+            ["remittance_transfer_tracking"],
+            ["finance_remittance_transfer", "finance_secure_payment"],
+            "finance_remittance_transfer",
+            ["whatsapp", "receipt_webview", "operator_review", "analytics"],
+            requires_checkout=True,
+        ),
+        launch_track(
+            "insurance_claims",
+            "Siniestros y documentacion",
+            ["insurance_claim_documentation"],
+            ["finance_insurance_claim", "finance_document_signature", "finance_support_case"],
+            "finance_insurance_claim",
+            ["whatsapp", "attachment_webview", "signature_flow", "support_queue"],
+            requires_signature=True,
+        ),
+        launch_track(
+            "fees_taxes_school_government",
+            "Cuotas, tasas e impuestos",
+            ["fees_taxes_financing"],
+            ["finance_fee_financing", "finance_tax_payment", "finance_document_signature"],
+            "finance_fee_financing_tax",
+            ["whatsapp", "payment_plan_webview", "public_sector_crm", "analytics"],
+            requires_checkout=True,
+            requires_signature=True,
+        ),
+    ]
+
+    next_actions: list[dict[str, Any]] = []
+    for item in capabilities:
+        if not item["ready"] and item["required"]:
+            next_actions.append(
+                {
+                    "id": f"activate_{item['id']}",
+                    "severity": "blocking",
+                    "owner": item["owner"],
+                    "label": item["label"],
+                    "action": item["action"],
+                }
+            )
+
+    if not next_actions:
+        next_actions.append(
+            {
+                "id": "run_finance_pilot",
+                "severity": "ready",
+                "owner": "chatboc_ops",
+                "label": "Pilot finance listo",
+                "action": "Ejecutar pruebas end-to-end con tenant piloto y aprobar salida comercial.",
+            }
+        )
+
+    ready_tracks = len([track for track in launch_tracks if track["ready"]])
+    blocking_count = len([action for action in next_actions if action["severity"] == "blocking"])
+    go_live_state = "ready" if blocking_count == 0 else "blocked"
+
+    return {
+        "contract_version": "finance.activation_plan.v1",
+        "go_live_state": go_live_state,
+        "ready_tracks": ready_tracks,
+        "blocking_count": blocking_count,
+        "required_capabilities": capabilities,
+        "launch_tracks": launch_tracks,
+        "next_actions": next_actions,
+        "setup_questions": [
+            {
+                "id": "finance_segment",
+                "label": "Rubro financiero",
+                "prompt": "Banco, fintech, colegio, municipio, mutual, cooperativa, pyme o cobranzas.",
+            },
+            {
+                "id": "provider_stack",
+                "label": "Stack de proveedores",
+                "prompt": "Gateway de pago, KYC, firma, ERP/core, horarios y responsable operativo.",
+            },
+            {
+                "id": "service_catalog",
+                "label": "Catalogo transaccional",
+                "prompt": "Productos, cuotas, tasas, creditos, remesas, seguros, certificados o comprobantes.",
+            },
+            {
+                "id": "human_escalation",
+                "label": "Escalamiento humano",
+                "prompt": "Colas, SLA, horarios, mensajes offline y reglas de derivacion por riesgo.",
+            },
+        ],
+        "frontend_contract": {
+            "render_as": "finance_activation_plan",
+            "show_capabilities": True,
+            "show_launch_tracks": True,
+            "show_next_actions": True,
+            "show_setup_questions": True,
+        },
+    }
+
+
 def _finance_transactional_payload(
     tenant: TenantProfile,
     *,
@@ -3022,6 +3306,16 @@ def _finance_transactional_payload(
         },
     ]
 
+    activation_plan = _finance_activation_plan_payload(
+        tenant,
+        journeys=journeys,
+        finance_templates=finance_templates,
+        finance_flows=finance_flows,
+        finance_scenarios=finance_scenarios,
+        checkout_experience=checkout_experience,
+        integration_access=integration_access,
+    )
+
     return {
         "contract_version": "finance.transactional_whatsapp.v1",
         "enabled": bool(integration_access.get("enabled")),
@@ -3035,8 +3329,11 @@ def _finance_transactional_payload(
             "checkout_ready": bool(checkout_experience.get("ready")),
             "journeys": len(journeys),
             "ready_journeys": len([journey for journey in journeys if journey["ready"]]),
+            "activation_blockers": activation_plan["blocking_count"],
+            "activation_ready_tracks": activation_plan["ready_tracks"],
         },
         "journeys": journeys,
+        "activation_plan": activation_plan,
         "crm_operating_model": {
             "contract_version": "finance.crm_operating_model.v1",
             "queues": [
