@@ -40,7 +40,14 @@ def test_finance_webview_public_contract(client):
     assert payload["security_policy"]["card_data_in_chat_allowed"] is False
     assert payload["security_policy"]["identity_data_in_chat_allowed"] is False
     assert payload["security_policy"]["session_state"] == "present"
+    assert payload["security_policy"]["requires_idempotency_key"] is True
+    assert "CVV" in payload["security_policy"]["never_request_in_chat"]
     assert payload["actions"]["primary"]["enabled"] is True
+    assert payload["actions"]["primary"]["label"] == "Revisar y continuar"
+    assert payload["experience"]["webview_flow_id"] == "finance_credit_collection_signature"
+    assert payload["experience"]["crm_queue"]["id"] == "collections"
+    assert "payment_webhook" in payload["events"]["success"]
+    assert "payment_started" in payload["analytics"]["events"]
 
 
 def test_finance_webview_api_alias_marks_missing_session(client):
@@ -52,3 +59,6 @@ def test_finance_webview_api_alias_marks_missing_session(client):
     assert payload["operation"]["status"] == "session_required"
     assert payload["security_policy"]["session_state"] == "missing_or_short"
     assert payload["actions"]["primary"]["enabled"] is False
+    assert payload["actions"]["primary"]["label"] == "Iniciar alta segura"
+    assert payload["experience"]["webview_flow_id"] == "finance_onboarding_kyc"
+    assert payload["experience"]["templates"] == ["finance_account_onboarding", "finance_kyc_review"]

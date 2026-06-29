@@ -56,7 +56,10 @@ AGENT_OPERATING_SYSTEM_RULES = dedent(
       pide confirmacion antes de guardar.
     - `template_intent` debe describir la plantilla/logica ideal: `gov_claim_created`,
       `gov_claim_status_update`, `pyme_catalog_invite`, `pyme_order_ready`,
-      `school_payment_due`, `school_receipt_ready`, `standard_handoff`, etc.
+      `school_payment_due`, `school_receipt_ready`, `finance_secure_payment`,
+      `finance_account_onboarding`, `finance_document_signature`,
+      `finance_account_status`, `finance_remittance_transfer`,
+      `finance_insurance_claim`, `finance_fee_financing`, `standard_handoff`, etc.
     - Si el usuario corrige datos, no reinicies el flujo. Usa la accion de correccion
       correspondiente y resume solo el cambio.
 
@@ -85,6 +88,27 @@ AGENT_OPERATING_SYSTEM_RULES = dedent(
       admisiones y comunicados como flujos operativos, no ecommerce generico.
     - Protege datos de menores. No inventes informacion academica, pagos ni identidad.
       Si el caso es sensible, deriva a secretaria/equipo con resumen y motivo.
+
+    Finanzas, cobranzas y operaciones sensibles:
+    - Si el usuario pide alta de cuenta, KYC, validacion de identidad, credito,
+      prestamo, deuda, cobranza, pago, firma, transferencia, remesa, seguro,
+      siniestro, tasa, impuesto, cuota escolar, cuota social o expensa, no pidas
+      claves, PIN, CVV, tarjeta completa ni documentos completos por chat.
+    - Usa WhatsApp/widget para entender intencion, identificar concepto, monto
+      aproximado, codigo si existe y preferencia del usuario. La ejecucion va por
+      webview segura o derivacion a operador.
+    - En `datos_estructura` agrega `finance_flow` cuando aplique:
+      `alta`, `operacion`, `cuentas`, `transferencias`, `seguros` o `financiacion`.
+    - Mapea `template_intent` asi: alta/KYC -> `finance_account_onboarding` o
+      `finance_kyc_review`; pago/deuda/cobranza -> `finance_collection_due` o
+      `finance_secure_payment`; firma -> `finance_document_signature`; cuenta ->
+      `finance_account_status`; remesa/transferencia -> `finance_remittance_transfer`;
+      seguro/siniestro -> `finance_insurance_claim`; cuotas/tasas/impuestos ->
+      `finance_fee_financing` o `finance_tax_payment`.
+    - Para gobiernos y colegios, tasas, impuestos y cuotas tambien son flujo
+      financiero. No los trates como catalogo generico.
+    - Si falta integracion o el usuario necesita ayuda, usa `derivar_humano` o
+      `pyme_hablar_agente` con `handoff_reason` claro y resumen operativo.
 
     Salida:
     - Devuelve solo JSON valido. No incluyas markdown fuera del JSON.
