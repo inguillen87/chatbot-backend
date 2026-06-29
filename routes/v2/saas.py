@@ -722,6 +722,18 @@ def _admin_modules_payload(tenant: TenantProfile, *, education_profile: dict[str
             "widgets": ["catalog_quality", "bulk_import", "image_coverage", "orders", "pdf_catalog"],
         },
         {
+            "id": "transactions",
+            "label": "Transacciones",
+            "route": f"{base}/transactions",
+            "endpoint": "/api/v2/whatsapp/experience",
+            "secondary_endpoints": [
+                "/api/v2/payments/checkout-status",
+                f"/api/v2/tenants/{tenant.slug}/payments/status",
+                f"/api/v2/tenants/{tenant.slug}/payments/checkout-session",
+            ],
+            "widgets": ["finance_flows", "secure_checkout", "kyc", "collections", "signature", "audit_trail"],
+        },
+        {
             "id": "widget_whatsapp",
             "label": "Widget/WhatsApp/Voz",
             "route": f"{base}/channels",
@@ -763,7 +775,7 @@ def _admin_navigation_payload(tenant: TenantProfile, modules: list[dict[str, Any
             "visible": True,
         }
         for module in modules
-        if module.get("id") in {"profile", "inbox", "analytics", "surveys_votings", "employees", "marketplace", "widget_whatsapp"}
+        if module.get("id") in {"profile", "inbox", "analytics", "surveys_votings", "employees", "marketplace", "transactions", "widget_whatsapp"}
     ]
     base = f"/t/{tenant.slug}"
     return {
@@ -1025,7 +1037,7 @@ def _build_tenant_ops_qa_playbook(
             check_id="admin_os_contract",
             label="CRM operativo del tenant",
             ok=admin.get("contract_version") == "tenant.admin_experience.v1"
-            and {"inbox", "analytics", "widget_whatsapp"}.issubset(set(modules.keys())),
+            and {"inbox", "analytics", "transactions", "widget_whatsapp"}.issubset(set(modules.keys())),
             severity="critical",
             endpoint="/api/v2/tenant/admin-experience",
             next_action="fix_admin_experience_contract",
@@ -1122,6 +1134,22 @@ def _build_tenant_ops_qa_playbook(
                 "operational_webviews": (whatsapp_templates or {}).get("operational_webviews"),
                 "webview_flows_total": (whatsapp_webviews or {}).get("flows_total"),
                 "qa_scenarios": (whatsapp.get("qa_playbook") or {}).get("scenario_count") if isinstance(whatsapp.get("qa_playbook"), Mapping) else None,
+            },
+        ),
+        _ops_qa_check_result(
+            check_id="transactional_finance_flows",
+            label="Transacciones in-chat: alta, KYC, cobranza, pago y firma",
+            ok="transactions" in modules
+            and int((whatsapp_webviews or {}).get("flows_total") or 0) >= 2
+            and "financial_services" in (((whatsapp.get("template_blueprint") or {}).get("operational_template_groups") or {}) if isinstance(whatsapp.get("template_blueprint"), Mapping) else {}),
+            severity="critical",
+            endpoint="/api/v2/whatsapp/experience",
+            next_action="run_finance_onboarding_collection_signature_smoke",
+            details={
+                "module": "transactions" if "transactions" in modules else None,
+                "templates_group": "financial_services",
+                "webview_flows": ["finance_onboarding_kyc", "finance_credit_collection_signature"],
+                "confirmation_policy": "server_to_server_webhook",
             },
         ),
         _ops_qa_check_result(
@@ -2684,6 +2712,24 @@ def _build_production_e2e_readiness(
                 "webview_flow": "school_payment_receipt",
             },
             next_action="run_school_payment_receipt_and_family_case_demo",
+        ),
+        _smoke_e2e_flow(
+            "finance_in_chat_transactional",
+            label="Finance in-chat: alta, KYC, cobranza, pago y firma",
+            surface="finanzas_pymes_gobiernos_colegios",
+            ready=flow_meta_ready("finance_onboarding_kyc")
+            and flow_meta_ready("finance_credit_collection_signature")
+            and "financial_services" in ((whatsapp.get("template_blueprint") or {}).get("operational_template_groups") or {}),
+            endpoint="/api/v2/whatsapp/experience",
+            qa_scenario_id="finance_onboarding_collection_signature",
+            meta_flow_ready=flow_meta_ready("finance_onboarding_kyc") and flow_meta_ready("finance_credit_collection_signature"),
+            evidence={
+                "templates_group": "financial_services",
+                "onboarding_flow": "finance_onboarding_kyc",
+                "operation_flow": "finance_credit_collection_signature",
+                "checkout_ready": checkout.get("ready"),
+            },
+            next_action="run_finance_onboarding_collection_signature_smoke",
         ),
         _smoke_e2e_flow(
             "analytics_heatmap",

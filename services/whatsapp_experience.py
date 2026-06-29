@@ -94,6 +94,13 @@ CHATBOC_TEMPLATE_FRIENDLY_NAMES = {
     "turnero_school_admission_webview": "turnero_colegio_admision_webview",
     "turnero_government_procedure_webview": "turnero_gobierno_tramite_webview",
     "turnero_support_case_webview": "turnero_soporte_caso_webview",
+    "finance_account_onboarding": "chatboc_finance_account_onboarding_v1",
+    "finance_kyc_review": "chatboc_finance_kyc_review_v1",
+    "finance_credit_offer": "chatboc_finance_credit_offer_v1",
+    "finance_collection_due": "chatboc_finance_collection_due_v1",
+    "finance_secure_payment": "chatboc_finance_secure_payment_v1",
+    "finance_document_signature": "chatboc_finance_document_signature_v1",
+    "finance_support_case": "chatboc_finance_support_case_v1",
 }
 
 OPERATIONAL_TEMPLATE_GROUPS = {
@@ -124,6 +131,19 @@ OPERATIONAL_TEMPLATE_GROUPS = {
             ("entrepreneur_receipt_review", "payment", "whatsapp", ["review_receipt"]),
             ("order_tracking_list", "tracking", "whatsapp", ["track_order"]),
             ("promo_media", "marketing", "whatsapp", ["open_promotion"]),
+        ],
+    },
+    "financial_services": {
+        "label": "Servicios financieros transaccionales",
+        "purpose": "Resolver onboarding, KYC, creditos, cobranzas, pagos, firma y soporte dentro de WhatsApp con webviews seguros.",
+        "items": [
+            ("finance_account_onboarding", "onboarding", "webview", ["start_account_opening"]),
+            ("finance_kyc_review", "identity", "webview", ["continue_kyc"]),
+            ("finance_credit_offer", "credit", "webview", ["review_credit_offer"]),
+            ("finance_collection_due", "collection", "webview", ["pay_debt", "request_payment_plan"]),
+            ("finance_secure_payment", "payment", "webview", ["pay_securely"]),
+            ("finance_document_signature", "signature", "webview", ["sign_document"]),
+            ("finance_support_case", "support", "whatsapp", ["track_case", "human_handoff"]),
         ],
     },
     "education": {
@@ -191,6 +211,9 @@ OPERATIONAL_TEMPLATE_GROUPS = {
             ("turnero_school_admission_webview", "education", "webview", ["start_admission"]),
             ("turnero_government_procedure_webview", "procedure", "webview", ["start_procedure"]),
             ("turnero_support_case_webview", "support", "webview", ["open_support_case"]),
+            ("finance_account_onboarding", "finance", "webview", ["start_account_opening"]),
+            ("finance_secure_payment", "finance", "webview", ["pay_securely"]),
+            ("finance_document_signature", "finance", "webview", ["sign_document"]),
         ],
     },
 }
@@ -279,6 +302,47 @@ OPERATIONAL_TEMPLATE_CONTRACTS = {
         "fallback_body": "Creamos el caso familiar y dejamos el estado visible para seguimiento.",
         "qa_cases": ["colegio_seleccion_inasistencia", "colegio_detalle_audio_ubicacion"],
     },
+    "finance_account_onboarding": {
+        "variables": ["contact_name", "institution_name", "onboarding_url"],
+        "fallback_body": "Podemos iniciar tu alta digital desde una pantalla segura con validacion de identidad.",
+        "qa_cases": ["finance_account_opening", "chatboc_demo_finance_onboarding"],
+    },
+    "finance_kyc_review": {
+        "variables": ["contact_name", "case_code", "kyc_url"],
+        "fallback_body": "Tu validacion de identidad sigue pendiente. Continua desde el enlace seguro.",
+        "qa_cases": ["finance_kyc_document_review"],
+    },
+    "finance_credit_offer": {
+        "variables": ["contact_name", "offer_code", "offer_url"],
+        "fallback_body": "Tenes una propuesta disponible para revisar condiciones antes de aceptarla.",
+        "qa_cases": ["finance_credit_offer_review"],
+    },
+    "finance_collection_due": {
+        "variables": ["contact_name", "concept", "payment_url"],
+        "fallback_body": "Tenes un saldo pendiente. Podes pagarlo o solicitar un plan desde el portal seguro.",
+        "qa_cases": ["finance_collection_payment_plan"],
+    },
+    "finance_secure_payment": {
+        "variables": ["operation_code", "amount", "payment_url"],
+        "fallback_body": "La operacion esta lista para pagar desde un checkout seguro. Nunca pedimos datos de tarjeta por chat.",
+        "qa_cases": ["finance_secure_payment"],
+        "receipt_contract": {
+            "kind": "finance_payment_receipt",
+            "builder": "payments_contracts.finance_payment_receipt",
+            "pre_message_key": "_twilio_pre_messages",
+            "tracking_required": True,
+        },
+    },
+    "finance_document_signature": {
+        "variables": ["document_code", "document_type", "signature_url"],
+        "fallback_body": "El documento esta listo para firmar digitalmente desde una pantalla segura.",
+        "qa_cases": ["finance_document_signature"],
+    },
+    "finance_support_case": {
+        "variables": ["case_code", "status", "support_url"],
+        "fallback_body": "Creamos tu caso de soporte financiero y dejamos el seguimiento disponible.",
+        "qa_cases": ["finance_support_handoff"],
+    },
 }
 
 
@@ -289,20 +353,27 @@ def _action_contracts(actions: list[str], *, entrypoint: str) -> list[dict[str, 
         "download_certificate",
         "download_document",
         "download_receipt",
+        "continue_kyc",
         "open_catalog",
         "open_event",
         "open_help_center",
         "open_support_case",
+        "pay_debt",
         "pay_expense",
         "pay_fee",
         "pay_order",
         "pay_securely",
         "pay_tax",
+        "request_payment_plan",
+        "review_credit_offer",
         "review_order",
         "review_quote",
+        "sign_document",
+        "start_account_opening",
         "start_admission",
         "start_procedure",
         "track_claim",
+        "track_case",
         "track_order",
         "vote",
     }
@@ -418,20 +489,26 @@ def _template_execution_hint(
         "admission",
         "case",
         "claim",
+        "collection",
         "checkout",
+        "credit",
         "education",
+        "finance",
+        "identity",
+        "onboarding",
         "payment",
         "procedure",
+        "signature",
         "support",
         "survey",
     }
     webview_role = None
     if requires_webview:
-        if stage in {"payment", "checkout"}:
+        if stage in {"payment", "checkout", "collection"}:
             webview_role = "secure_checkout"
         elif stage in {"catalog", "order", "quote"}:
             webview_role = "catalog_cart_order"
-        elif stage in {"claim", "case", "procedure", "support"}:
+        elif stage in {"claim", "case", "procedure", "support", "onboarding", "identity", "credit", "finance", "signature"}:
             webview_role = "case_tracking_or_form"
         elif stage in {"survey", "announcement", "event"}:
             webview_role = "survey_or_content_detail"
@@ -829,6 +906,11 @@ def _conversation_intelligence_payload(tenant: TenantProfile, cfg: Mapping[str, 
             "crear_checkout_seguro",
             "consultar_estado_pago",
             "confirmar_pago_por_webhook",
+            "iniciar_alta_digital",
+            "continuar_kyc",
+            "evaluar_oferta_credito",
+            "gestionar_cobranza",
+            "firmar_documento",
             "registrar_encuesta",
             "derivar_humano",
         ],
@@ -1945,6 +2027,49 @@ def _webview_blueprint_payload(
             "status": "ready" if checkout_experience.get("ready") and integration_access.get("enabled") else "needs_checkout_setup",
         },
         {
+            "id": "finance_onboarding_kyc",
+            "label": "Alta digital con KYC y biometria",
+            "verticals": ["finanzas", "cooperativa", "mutual", "gobierno", "pyme"],
+            "surface": "whatsapp_flow_or_signed_webview",
+            "template_ids": ["finance_account_onboarding", "finance_kyc_review"],
+            "url_template": "/finanzas/{tenant_slug}/alta/{operation_code}?session={session_token}",
+            "requires": ["tenant_slug", "operation_code", "session_token"],
+            "signed_params": ["tenant_slug", "operation_code", "contact_key", "expires_at"],
+            "server_confirmation": ["identity_verified", "onboarding_submitted", "crm_lead_updated"],
+            "fallback": "human_identity_review_inside_crm",
+            "security": {
+                "card_data_in_chat": False,
+                "identity_data_in_chat": False,
+                "requires_consent": True,
+                "audit_trail": True,
+            },
+            "status": "ready" if integration_access.get("enabled") else "blocked_by_access",
+        },
+        {
+            "id": "finance_credit_collection_signature",
+            "label": "Credito, cobranza, pago y firma",
+            "verticals": ["finanzas", "cooperativa", "mutual", "gobierno", "pyme", "colegio"],
+            "surface": "whatsapp_cta_webview",
+            "template_ids": [
+                "finance_credit_offer",
+                "finance_collection_due",
+                "finance_secure_payment",
+                "finance_document_signature",
+            ],
+            "url_template": "/finanzas/{tenant_slug}/operacion/{operation_code}?session={session_token}",
+            "requires": ["tenant_slug", "operation_code", "session_token"],
+            "signed_params": ["tenant_slug", "operation_code", "amount", "contact_key", "expires_at"],
+            "server_confirmation": ["payment_webhook", "signature_completed", "crm_operation_updated"],
+            "fallback": "secure_payment_or_signature_link_inside_24h",
+            "security": {
+                "card_data_in_chat": False,
+                "confirmation_source": "server_to_server_webhook",
+                "requires_idempotency_key": True,
+                "audit_trail": True,
+            },
+            "status": "ready" if checkout_experience.get("ready") and integration_access.get("enabled") else "needs_checkout_setup",
+        },
+        {
             "id": "survey_vote",
             "label": "Encuesta o votacion publica",
             "verticals": ["gobierno", "pyme", "colegio"],
@@ -2066,6 +2191,30 @@ def _webview_blueprint_payload(
             "completion_event": "order_created",
             "data_contract": ["order_id", "cart_id", "customer_profile", "payment_state"],
         },
+        "finance_onboarding_kyc": {
+            "flow_name": "chatboc_finance_onboarding_kyc",
+            "category": "TRANSACTIONAL",
+            "endpoint_mode": "data_exchange",
+            "screens": [
+                {"id": "consent", "title": "Consentimiento", "components": ["privacy_notice", "accept_terms", "start"]},
+                {"id": "identity", "title": "Identidad", "components": ["document_upload", "selfie_or_biometric_vendor", "contact_data"]},
+                {"id": "review", "title": "Revision", "components": ["risk_status", "manual_review_state", "crm_lead_link"]},
+            ],
+            "completion_event": "onboarding_submitted",
+            "data_contract": ["operation_code", "contact_key", "consent_version", "identity_status"],
+        },
+        "finance_credit_collection_signature": {
+            "flow_name": "chatboc_finance_credit_collection_signature",
+            "category": "TRANSACTIONAL",
+            "endpoint_mode": "data_exchange",
+            "screens": [
+                {"id": "operation_summary", "title": "Operacion", "components": ["amount", "concept", "installments", "terms"]},
+                {"id": "payment_or_plan", "title": "Pago", "components": ["secure_checkout", "payment_plan_request", "receipt_upload"]},
+                {"id": "signature", "title": "Firma", "components": ["document_preview", "signature_provider", "completion_receipt"]},
+            ],
+            "completion_event": "crm_operation_updated",
+            "data_contract": ["operation_code", "amount", "payment_state", "signature_state", "idempotency_key"],
+        },
         "survey_vote": {
             "flow_name": "chatboc_survey_vote_live",
             "category": "SURVEY",
@@ -2162,6 +2311,8 @@ def _webview_blueprint_payload(
                 "claim_tracking_helpdesk",
                 "claim_live_or_offline_helpdesk",
                 "order_checkout",
+                "finance_onboarding_kyc",
+                "finance_credit_collection_signature",
                 "survey_vote",
                 "catalog_order_builder",
                 "government_procedure_intake",
@@ -2429,6 +2580,28 @@ def _qa_playbook_payload(
             "covers": ["menu_familia", "inasistencia", "certificado_audio", "cuotas", "comprobante"],
             "script_cases": ["colegio_menu_sandbox", "colegio_seleccion_inasistencia", "colegio_detalle_audio_ubicacion"],
         },
+        {
+            "id": "finance_onboarding_collection_signature",
+            "label": "Alta financiera, cobranza y firma in-chat",
+            "verticals": ["finanzas", "cooperativa", "mutual", "gobierno", "colegio", "pyme"],
+            "persona": "cliente",
+            "entrypoint": "whatsapp_cta_webview",
+            "templates": [
+                "finance_account_onboarding",
+                "finance_kyc_review",
+                "finance_credit_offer",
+                "finance_collection_due",
+                "finance_secure_payment",
+                "finance_document_signature",
+            ],
+            "webview_flow": "finance_credit_collection_signature",
+            "covers": ["consentimiento", "kyc", "oferta", "cobranza", "pago_seguro", "firma", "webhook_crm"],
+            "script_cases": [
+                "finance_alta_digital",
+                "finance_revision_kyc",
+                "finance_cobranza_pago_firma",
+            ],
+        },
     ]
 
     enriched: list[dict[str, Any]] = []
@@ -2652,6 +2825,7 @@ def build_whatsapp_experience(
                 "commerce_checkout",
                 "template_blueprint",
                 "webview_checkout",
+                "transactional_finance",
                 "qa_playbook",
                 "message_ux_policy",
                 "voice_realtime",

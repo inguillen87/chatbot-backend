@@ -1265,10 +1265,14 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertIn("pyme_catalog_order_checkout", flow_ids)
         self.assertIn("survey_vote_realtime", flow_ids)
         self.assertIn("school_family_case", flow_ids)
+        self.assertIn("finance_in_chat_transactional", flow_ids)
         self.assertIn("analytics_heatmap", flow_ids)
         claim_flow = next(item for item in e2e["flows"] if item["id"] == "gov_claim_text_to_tracking")
         self.assertEqual(claim_flow["qa_scenario_id"], "gov_claim_text_to_tracking")
         self.assertEqual(claim_flow["endpoint"], "/api/public/tracking/experience?kind=claim&code={code}&pin={pin}")
+        finance_flow = next(item for item in e2e["flows"] if item["id"] == "finance_in_chat_transactional")
+        self.assertEqual(finance_flow["qa_scenario_id"], "finance_onboarding_collection_signature")
+        self.assertEqual(finance_flow["evidence"]["templates_group"], "financial_services")
         self.assertIn("next_action", claim_flow)
 
     def test_omnichannel_inbox_action_updates_ticket(self):
@@ -1324,6 +1328,7 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertIn("analytics", module_ids)
         self.assertIn("surveys_votings", module_ids)
         self.assertIn("marketplace", module_ids)
+        self.assertIn("transactions", module_ids)
         self.assertIn("education", module_ids)
         self.assertNotIn("portal", module_ids)
         self.assertEqual(payload["navigation"]["contract_version"], "tenant.admin_navigation.v1")
@@ -1332,6 +1337,8 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertIn("open_employees", quick_action_ids)
         self.assertIn("open_heatmap", quick_action_ids)
         self.assertNotIn("open_portal", quick_action_ids)
+        primary_nav_ids = {item["id"] for item in payload["navigation"]["primary"]}
+        self.assertIn("transactions", primary_nav_ids)
         self.assertIn("workspace", payload["navigation"]["hide_legacy_tabs"])
         self.assertEqual(payload["admin_panel_widgets"]["contract_version"], "tenant.admin_panel_widgets.v1")
         hero_widget_ids = {item["id"] for item in payload["admin_panel_widgets"]["hero_widgets"]}
@@ -1345,6 +1352,9 @@ class V2SaasContractsTest(unittest.TestCase):
         whatsapp_module = next(item for item in payload["modules"] if item["id"] == "widget_whatsapp")
         self.assertEqual(whatsapp_module["label"], "Widget/WhatsApp/Voz")
         self.assertEqual(whatsapp_module["endpoint"], "/api/v2/whatsapp/experience")
+        transactions_module = next(item for item in payload["modules"] if item["id"] == "transactions")
+        self.assertEqual(transactions_module["label"], "Transacciones")
+        self.assertIn("finance_flows", transactions_module["widgets"])
         for module in payload["modules"]:
             self.assertIn("secondary_endpoints", module)
             self.assertIn("widgets", module)
@@ -1392,6 +1402,7 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertIn("admin_os_contract", check_ids)
         self.assertIn("claims_inbox", check_ids)
         self.assertIn("catalog_orders", check_ids)
+        self.assertIn("transactional_finance_flows", check_ids)
         self.assertIn("survey_live_vote", check_ids)
         self.assertIn("heatmap_analytics", check_ids)
         self.assertIn("employee_routing", check_ids)
@@ -1561,6 +1572,14 @@ class V2SaasContractsTest(unittest.TestCase):
         pyme_order_ready = next(item for item in commerce_group["items"] if item["id"] == "pyme_order_ready")
         self.assertEqual(pyme_order_ready["variables"], ["order_code", "total", "checkout_url"])
         self.assertEqual(pyme_order_ready["receipt_contract"]["kind"], "pyme_order_receipt")
+        self.assertIn("financial_services", payload["template_blueprint"]["operational_template_groups"])
+        finance_group = payload["template_blueprint"]["operational_template_groups"]["financial_services"]
+        finance_template_ids = {item["id"] for item in finance_group["items"]}
+        self.assertIn("finance_account_onboarding", finance_template_ids)
+        self.assertIn("finance_secure_payment", finance_template_ids)
+        finance_payment_template = next(item for item in finance_group["items"] if item["id"] == "finance_secure_payment")
+        self.assertEqual(finance_payment_template["execution"]["webview"]["role"], "secure_checkout")
+        self.assertEqual(finance_payment_template["receipt_contract"]["kind"], "finance_payment_receipt")
         education_group = payload["template_blueprint"]["operational_template_groups"]["education"]
         school_receipt_ready = next(item for item in education_group["items"] if item["id"] == "school_receipt_ready")
         self.assertEqual(school_receipt_ready["receipt_contract"]["kind"], "school_payment_receipt")
@@ -1597,6 +1616,8 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertIn("claim_tracking_helpdesk", webview_flows)
         self.assertIn("order_checkout", webview_flows)
         self.assertIn("survey_vote", webview_flows)
+        self.assertIn("finance_onboarding_kyc", webview_flows)
+        self.assertIn("finance_credit_collection_signature", webview_flows)
         self.assertIn("claim_live_or_offline_helpdesk", webview_flows)
         self.assertIn("government_procedure_intake", webview_flows)
         self.assertIn("school_payment_receipt", webview_flows)
@@ -1612,11 +1633,17 @@ class V2SaasContractsTest(unittest.TestCase):
         )
         self.assertIn("public_comment_created", webview_flows["claim_tracking_helpdesk"]["server_confirmation"])
         self.assertIn("order_checkout", webview_flows["order_checkout"]["template_ids"])
-        self.assertGreaterEqual(payload["webview_blueprint"]["summary"]["flows_total"], 9)
-        self.assertGreaterEqual(payload["webview_blueprint"]["summary"]["meta_flow_blueprints"], 6)
+        self.assertIn("identity_verified", webview_flows["finance_onboarding_kyc"]["server_confirmation"])
+        self.assertFalse(webview_flows["finance_onboarding_kyc"]["security"]["identity_data_in_chat"])
+        self.assertIn("signature_completed", webview_flows["finance_credit_collection_signature"]["server_confirmation"])
+        self.assertGreaterEqual(payload["webview_blueprint"]["summary"]["flows_total"], 11)
+        self.assertGreaterEqual(payload["webview_blueprint"]["summary"]["meta_flow_blueprints"], 8)
         claim_flow_blueprint = webview_flows["claim_tracking_helpdesk"]["meta_flow_blueprint"]
         self.assertEqual(claim_flow_blueprint["endpoint_mode"], "data_exchange")
         self.assertIn("ticket_summary", [screen["id"] for screen in claim_flow_blueprint["screens"]])
+        finance_flow_blueprint = webview_flows["finance_onboarding_kyc"]["meta_flow_blueprint"]
+        self.assertEqual(finance_flow_blueprint["flow_name"], "chatboc_finance_onboarding_kyc")
+        self.assertIn("consent_version", finance_flow_blueprint["data_contract"])
         survey_flow_blueprint = webview_flows["survey_vote"]["meta_flow_blueprint"]
         self.assertEqual(survey_flow_blueprint["completion_event"], "survey_response_saved")
         self.assertIn("geo_permission", survey_flow_blueprint["data_contract"])
@@ -1624,16 +1651,21 @@ class V2SaasContractsTest(unittest.TestCase):
             "claim_live_or_offline_helpdesk",
             payload["webview_blueprint"]["summary"]["transactional_flows"],
         )
+        self.assertIn(
+            "finance_credit_collection_signature",
+            payload["webview_blueprint"]["summary"]["transactional_flows"],
+        )
         self.assertTrue(payload["webview_blueprint"]["security"]["requires_full_plan"])
         self.assertEqual(payload["qa_playbook"]["contract_version"], "whatsapp.qa_playbook.v1")
         self.assertEqual(payload["qa_playbook"]["local_command"], "python scripts/qa_whatsapp_flows.py")
-        self.assertGreaterEqual(payload["qa_playbook"]["scenario_count"], 5)
-        self.assertGreaterEqual(payload["qa_playbook"]["meta_flow_ready_count"], 5)
+        self.assertGreaterEqual(payload["qa_playbook"]["scenario_count"], 8)
+        self.assertGreaterEqual(payload["qa_playbook"]["meta_flow_ready_count"], 6)
         qa_scenarios = {item["id"]: item for item in payload["qa_playbook"]["scenarios"]}
         self.assertIn("gov_claim_text_to_tracking", qa_scenarios)
         self.assertIn("pyme_catalog_order_checkout", qa_scenarios)
         self.assertIn("chatboc_demo_hub", qa_scenarios)
         self.assertIn("survey_vote_realtime", qa_scenarios)
+        self.assertIn("finance_onboarding_collection_signature", qa_scenarios)
         claim_qa = qa_scenarios["gov_claim_text_to_tracking"]
         self.assertEqual(claim_qa["webview_state"]["id"], "claim_tracking_helpdesk")
         self.assertTrue(claim_qa["meta_flow_coverage"]["ready"])
@@ -1644,6 +1676,10 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertIn(claim_qa["status"], {"ready", "blocked_templates", "blocked_webview", "needs_template_review"})
         self.assertIn("chatboc_demo_order_start", qa_scenarios["chatboc_demo_hub"]["script_cases"])
         self.assertIn("chatboc_demo_survey_open", qa_scenarios["survey_vote_realtime"]["script_cases"])
+        self.assertIn(
+            "payment_state",
+            qa_scenarios["finance_onboarding_collection_signature"]["meta_flow_coverage"]["data_contract"],
+        )
         self.assertEqual(qa_scenarios["survey_vote_realtime"]["meta_flow_coverage"]["completion_event"], "survey_response_saved")
         self.assertIn("requiere TWILIO_AUTH_TOKEN real", payload["qa_playbook"]["live_mode_guardrails"])
         self.assertEqual(payload["message_ux_policy"]["interactive_limits"]["reply_buttons_max"], 3)
@@ -1658,6 +1694,7 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertIn("commerce_checkout", payload["frontend_contract"]["recommended_views"])
         self.assertIn("template_blueprint", payload["frontend_contract"]["recommended_views"])
         self.assertIn("webview_checkout", payload["frontend_contract"]["recommended_views"])
+        self.assertIn("transactional_finance", payload["frontend_contract"]["recommended_views"])
         self.assertIn("qa_playbook", payload["frontend_contract"]["recommended_views"])
         self.assertIn("huggingface_ai", payload["frontend_contract"]["recommended_views"])
 
