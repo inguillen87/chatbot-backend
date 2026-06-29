@@ -83,6 +83,27 @@ QA_SCENARIOS = {
         "colegio_seleccion_inasistencia",
         "colegio_detalle_audio_ubicacion",
     ],
+    "finance_onboarding_collection_signature": [
+        "finance_alta_digital",
+        "finance_revision_kyc",
+        "finance_cobranza_pago_firma",
+    ],
+    "finance_account_servicing": [
+        "finance_account_status",
+        "finance_support_handoff",
+    ],
+    "finance_remittance_transfer": [
+        "finance_remittance_transfer",
+        "finance_transfer_receipt",
+    ],
+    "finance_insurance_claim": [
+        "finance_insurance_claim",
+        "finance_insurance_document",
+    ],
+    "finance_fee_financing_tax": [
+        "finance_fee_financing",
+        "finance_tax_payment",
+    ],
 }
 
 
@@ -658,6 +679,7 @@ def main():
     sandbox_to = os.environ.get("QA_TWILIO_SANDBOX_TO", "+14155238886")
     os.environ["QA_AUDIO_PHONE"] = junin_audio_from
     demo_from = f"+54926160{run_seed}"
+    finance_from = f"+54926161{run_seed}"
 
     cases = [
         WhatsappCase(
@@ -851,6 +873,89 @@ def main():
                 "ButtonPayload": "chatboc_survey_open::empresas-experiencia-cliente",
                 "ButtonText": "Votar ahora",
             },
+        ),
+        WhatsappCase(
+            label="finance_alta_digital",
+            to_number=demo_to,
+            from_number=finance_from,
+            body="Hola, quiero abrir una cuenta digital y validar mi identidad por WhatsApp.",
+            extra={"_ProfileName": "QA Finance"},
+        ),
+        WhatsappCase(
+            label="finance_revision_kyc",
+            to_number=demo_to,
+            from_number=finance_from,
+            body="Tengo DNI y comprobante para continuar el KYC.",
+            extra={"_ProfileName": "QA Finance"},
+        ),
+        WhatsappCase(
+            label="finance_cobranza_pago_firma",
+            to_number=demo_to,
+            from_number=finance_from,
+            body="Necesito ver una deuda, pedir plan de pago, pagar y firmar el acuerdo.",
+            extra={"_ProfileName": "QA Finance"},
+        ),
+        WhatsappCase(
+            label="finance_account_status",
+            to_number=demo_to,
+            from_number=finance_from,
+            body="Quiero ver el estado de cuenta sin compartir datos sensibles por chat.",
+            extra={"_ProfileName": "QA Finance"},
+        ),
+        WhatsappCase(
+            label="finance_support_handoff",
+            to_number=demo_to,
+            from_number=finance_from,
+            body="Necesito que un operador revise mi caso financiero.",
+            extra={"_ProfileName": "QA Finance"},
+        ),
+        WhatsappCase(
+            label="finance_remittance_transfer",
+            to_number=demo_to,
+            from_number=finance_from,
+            body="Quiero enviar una transferencia y seguir el estado hasta el comprobante.",
+            extra={"_ProfileName": "QA Finance"},
+        ),
+        WhatsappCase(
+            label="finance_transfer_receipt",
+            to_number=demo_to,
+            from_number=finance_from,
+            body="Ya complete la transferencia, necesito el comprobante.",
+            extra={"_ProfileName": "QA Finance"},
+        ),
+        WhatsappCase(
+            label="finance_insurance_claim",
+            to_number=demo_to,
+            from_number=finance_from,
+            body="Quiero denunciar un siniestro del seguro y adjuntar documentacion.",
+            extra={"_ProfileName": "QA Finance"},
+        ),
+        WhatsappCase(
+            label="finance_insurance_document",
+            to_number=demo_to,
+            from_number=finance_from,
+            body="Adjunto foto y PDF del siniestro para seguimiento.",
+            extra={
+                "_ProfileName": "QA Finance",
+                "NumMedia": "1",
+                "MediaUrl0": "https://media.local/qa-finance-document.png",
+                "MediaContentType0": "image/png",
+                "MediaSid0": f"ME{uuid.uuid4().hex[:30]}",
+            },
+        ),
+        WhatsappCase(
+            label="finance_fee_financing",
+            to_number=demo_to,
+            from_number=finance_from,
+            body="Quiero financiar una cuota o tasa vencida en varias cuotas.",
+            extra={"_ProfileName": "QA Finance"},
+        ),
+        WhatsappCase(
+            label="finance_tax_payment",
+            to_number=demo_to,
+            from_number=finance_from,
+            body="Necesito pagar una tasa con descuento y recibir el recibo.",
+            extra={"_ProfileName": "QA Finance"},
         ),
     ]
 

@@ -101,6 +101,11 @@ CHATBOC_TEMPLATE_FRIENDLY_NAMES = {
     "finance_secure_payment": "chatboc_finance_secure_payment_v1",
     "finance_document_signature": "chatboc_finance_document_signature_v1",
     "finance_support_case": "chatboc_finance_support_case_v1",
+    "finance_account_status": "chatboc_finance_account_status_v1",
+    "finance_remittance_transfer": "chatboc_finance_remittance_transfer_v1",
+    "finance_insurance_claim": "chatboc_finance_insurance_claim_v1",
+    "finance_fee_financing": "chatboc_finance_fee_financing_v1",
+    "finance_tax_payment": "chatboc_finance_tax_payment_v1",
 }
 
 OPERATIONAL_TEMPLATE_GROUPS = {
@@ -144,6 +149,11 @@ OPERATIONAL_TEMPLATE_GROUPS = {
             ("finance_secure_payment", "payment", "webview", ["pay_securely"]),
             ("finance_document_signature", "signature", "webview", ["sign_document"]),
             ("finance_support_case", "support", "whatsapp", ["track_case", "human_handoff"]),
+            ("finance_account_status", "banking", "webview", ["open_statement", "track_case"]),
+            ("finance_remittance_transfer", "remittance", "webview", ["track_transfer", "download_transfer_receipt"]),
+            ("finance_insurance_claim", "insurance", "webview", ["start_insurance_claim", "track_case"]),
+            ("finance_fee_financing", "financing", "webview", ["review_financing_plan", "sign_document"]),
+            ("finance_tax_payment", "payment", "webview", ["pay_tax", "download_receipt"]),
         ],
     },
     "education": {
@@ -214,6 +224,8 @@ OPERATIONAL_TEMPLATE_GROUPS = {
             ("finance_account_onboarding", "finance", "webview", ["start_account_opening"]),
             ("finance_secure_payment", "finance", "webview", ["pay_securely"]),
             ("finance_document_signature", "finance", "webview", ["sign_document"]),
+            ("finance_remittance_transfer", "finance", "webview", ["track_transfer", "download_transfer_receipt"]),
+            ("finance_insurance_claim", "finance", "webview", ["start_insurance_claim", "track_case"]),
         ],
     },
 }
@@ -343,6 +355,37 @@ OPERATIONAL_TEMPLATE_CONTRACTS = {
         "fallback_body": "Creamos tu caso de soporte financiero y dejamos el seguimiento disponible.",
         "qa_cases": ["finance_support_handoff"],
     },
+    "finance_account_status": {
+        "variables": ["contact_name", "account_code", "statement_url"],
+        "fallback_body": "Tu resumen esta disponible en una pantalla segura. No compartimos saldos ni datos sensibles por chat.",
+        "qa_cases": ["finance_account_status"],
+    },
+    "finance_remittance_transfer": {
+        "variables": ["operation_code", "beneficiary_name", "tracking_url"],
+        "fallback_body": "Tu transferencia o remesa quedo registrada. Podes seguir el estado desde el enlace seguro.",
+        "qa_cases": ["finance_remittance_transfer"],
+        "receipt_contract": {
+            "kind": "finance_transfer_receipt",
+            "builder": "payments_contracts.finance_transfer_receipt",
+            "pre_message_key": "_twilio_pre_messages",
+            "tracking_required": True,
+        },
+    },
+    "finance_insurance_claim": {
+        "variables": ["claim_code", "claim_type", "tracking_url"],
+        "fallback_body": "Registramos tu siniestro o reclamo de seguro. El seguimiento queda disponible para adjuntar documentacion.",
+        "qa_cases": ["finance_insurance_claim"],
+    },
+    "finance_fee_financing": {
+        "variables": ["contact_name", "concept", "financing_url"],
+        "fallback_body": "Podemos simular y solicitar un plan de financiacion desde una pantalla segura antes de confirmar.",
+        "qa_cases": ["finance_fee_financing"],
+    },
+    "finance_tax_payment": {
+        "variables": ["concept", "due_date", "payment_url"],
+        "fallback_body": "La tasa o concepto esta listo para revisar y pagar desde checkout seguro.",
+        "qa_cases": ["finance_tax_payment"],
+    },
 }
 
 
@@ -366,15 +409,18 @@ def _action_contracts(actions: list[str], *, entrypoint: str) -> list[dict[str, 
         "pay_tax",
         "request_payment_plan",
         "review_credit_offer",
+        "review_financing_plan",
         "review_order",
         "review_quote",
         "sign_document",
         "start_account_opening",
         "start_admission",
+        "start_insurance_claim",
         "start_procedure",
         "track_claim",
         "track_case",
         "track_order",
+        "track_transfer",
         "vote",
     }
     results: list[dict[str, Any]] = []
@@ -501,6 +547,10 @@ def _template_execution_hint(
         "signature",
         "support",
         "survey",
+        "banking",
+        "remittance",
+        "insurance",
+        "financing",
     }
     webview_role = None
     if requires_webview:
@@ -510,6 +560,8 @@ def _template_execution_hint(
             webview_role = "catalog_cart_order"
         elif stage in {"claim", "case", "procedure", "support", "onboarding", "identity", "credit", "finance", "signature"}:
             webview_role = "case_tracking_or_form"
+        elif stage in {"banking", "remittance", "insurance", "financing"}:
+            webview_role = "secure_transactional_form"
         elif stage in {"survey", "announcement", "event"}:
             webview_role = "survey_or_content_detail"
         else:
@@ -2070,6 +2122,79 @@ def _webview_blueprint_payload(
             "status": "ready" if checkout_experience.get("ready") and integration_access.get("enabled") else "needs_checkout_setup",
         },
         {
+            "id": "finance_account_servicing",
+            "label": "Estado de cuenta, resumen y soporte transaccional",
+            "verticals": ["finanzas", "cooperativa", "mutual", "gobierno", "pyme", "colegio"],
+            "surface": "whatsapp_cta_webview",
+            "template_ids": ["finance_account_status", "finance_support_case"],
+            "url_template": "/finanzas/{tenant_slug}/cuentas/{account_code}?session={session_token}",
+            "requires": ["tenant_slug", "account_code", "session_token"],
+            "signed_params": ["tenant_slug", "account_code", "contact_key", "expires_at"],
+            "server_confirmation": ["statement_opened", "support_case_linked", "crm_contact_updated"],
+            "fallback": "secure_statement_link_inside_24h",
+            "security": {
+                "balance_data_in_chat": False,
+                "account_data_in_chat": False,
+                "requires_signed_session": True,
+                "audit_trail": True,
+            },
+            "status": "ready" if integration_access.get("enabled") else "blocked_by_access",
+        },
+        {
+            "id": "finance_remittance_transfer",
+            "label": "Remesas y transferencias con tracking",
+            "verticals": ["finanzas", "cooperativa", "mutual", "pyme"],
+            "surface": "whatsapp_cta_webview",
+            "template_ids": ["finance_remittance_transfer", "finance_secure_payment"],
+            "url_template": "/finanzas/{tenant_slug}/transferencias/{operation_code}?session={session_token}",
+            "requires": ["tenant_slug", "operation_code", "session_token"],
+            "signed_params": ["tenant_slug", "operation_code", "contact_key", "amount", "expires_at"],
+            "server_confirmation": ["transfer_validated", "transfer_receipt_ready", "crm_operation_updated"],
+            "fallback": "transfer_tracking_link_inside_24h",
+            "security": {
+                "beneficiary_data_in_chat": False,
+                "requires_idempotency_key": True,
+                "audit_trail": True,
+            },
+            "status": "ready" if checkout_experience.get("ready") and integration_access.get("enabled") else "needs_checkout_setup",
+        },
+        {
+            "id": "finance_insurance_claim",
+            "label": "Seguro, siniestro y documentacion",
+            "verticals": ["finanzas", "seguros", "mutual", "cooperativa", "gobierno"],
+            "surface": "whatsapp_flow_or_signed_webview",
+            "template_ids": ["finance_insurance_claim", "finance_document_signature", "finance_support_case"],
+            "url_template": "/finanzas/{tenant_slug}/seguros/{claim_code}?session={session_token}",
+            "requires": ["tenant_slug", "claim_code", "session_token"],
+            "signed_params": ["tenant_slug", "claim_code", "contact_key", "expires_at"],
+            "server_confirmation": ["insurance_claim_created", "attachments_uploaded", "crm_case_updated"],
+            "fallback": "manual_insurance_review_inside_crm",
+            "security": {
+                "policy_data_in_chat": False,
+                "attachment_review_required": True,
+                "audit_trail": True,
+            },
+            "status": "ready" if integration_access.get("enabled") else "blocked_by_access",
+        },
+        {
+            "id": "finance_fee_financing_tax",
+            "label": "Financiacion de cuotas, tasas e impuestos",
+            "verticals": ["gobierno", "colegio", "club", "consorcio", "finanzas"],
+            "surface": "whatsapp_cta_webview",
+            "template_ids": ["finance_fee_financing", "finance_tax_payment", "finance_document_signature"],
+            "url_template": "/finanzas/{tenant_slug}/financiacion/{operation_code}?session={session_token}",
+            "requires": ["tenant_slug", "operation_code", "session_token"],
+            "signed_params": ["tenant_slug", "operation_code", "amount", "contact_key", "expires_at"],
+            "server_confirmation": ["financing_plan_requested", "payment_webhook", "signature_completed"],
+            "fallback": "manual_payment_plan_review_inside_crm",
+            "security": {
+                "card_data_in_chat": False,
+                "requires_consent": True,
+                "audit_trail": True,
+            },
+            "status": "ready" if checkout_experience.get("ready") and integration_access.get("enabled") else "needs_checkout_setup",
+        },
+        {
             "id": "survey_vote",
             "label": "Encuesta o votacion publica",
             "verticals": ["gobierno", "pyme", "colegio"],
@@ -2215,6 +2340,54 @@ def _webview_blueprint_payload(
             "completion_event": "crm_operation_updated",
             "data_contract": ["operation_code", "amount", "payment_state", "signature_state", "idempotency_key"],
         },
+        "finance_account_servicing": {
+            "flow_name": "chatboc_finance_account_servicing",
+            "category": "TRANSACTIONAL",
+            "endpoint_mode": "data_exchange",
+            "screens": [
+                {"id": "account_gate", "title": "Acceso seguro", "components": ["otp_or_magic_link", "consent", "contact_check"]},
+                {"id": "statement", "title": "Resumen", "components": ["status", "movements_summary", "download_statement"]},
+                {"id": "support", "title": "Soporte", "components": ["case_picker", "comment_box", "human_handoff"]},
+            ],
+            "completion_event": "statement_opened",
+            "data_contract": ["account_code", "contact_key", "statement_period", "support_case_id"],
+        },
+        "finance_remittance_transfer": {
+            "flow_name": "chatboc_finance_remittance_transfer",
+            "category": "TRANSACTIONAL",
+            "endpoint_mode": "data_exchange",
+            "screens": [
+                {"id": "transfer_summary", "title": "Transferencia", "components": ["amount", "beneficiary_alias", "fees"]},
+                {"id": "validation", "title": "Validacion", "components": ["risk_status", "confirm_identity", "terms"]},
+                {"id": "receipt", "title": "Comprobante", "components": ["status", "download_receipt", "support_case"]},
+            ],
+            "completion_event": "transfer_receipt_ready",
+            "data_contract": ["operation_code", "contact_key", "amount", "beneficiary_ref", "transfer_state"],
+        },
+        "finance_insurance_claim": {
+            "flow_name": "chatboc_finance_insurance_claim",
+            "category": "CUSTOMER_SUPPORT",
+            "endpoint_mode": "data_exchange",
+            "screens": [
+                {"id": "claim_type", "title": "Siniestro", "components": ["claim_picker", "policy_hint", "start"]},
+                {"id": "documents", "title": "Documentacion", "components": ["photo_upload", "pdf_upload", "voice_note"]},
+                {"id": "tracking", "title": "Seguimiento", "components": ["claim_code", "timeline", "next_step"]},
+            ],
+            "completion_event": "insurance_claim_created",
+            "data_contract": ["claim_code", "contact_key", "claim_type", "attachments", "manual_review_state"],
+        },
+        "finance_fee_financing_tax": {
+            "flow_name": "chatboc_finance_fee_financing_tax",
+            "category": "TRANSACTIONAL",
+            "endpoint_mode": "data_exchange",
+            "screens": [
+                {"id": "debt_summary", "title": "Concepto", "components": ["concept", "due_date", "amount"]},
+                {"id": "plan_options", "title": "Opciones", "components": ["installments", "discounts", "payment_methods"]},
+                {"id": "confirm", "title": "Confirmar", "components": ["secure_checkout", "signature_provider", "receipt"]},
+            ],
+            "completion_event": "financing_plan_requested",
+            "data_contract": ["operation_code", "contact_key", "amount", "installments", "payment_state"],
+        },
         "survey_vote": {
             "flow_name": "chatboc_survey_vote_live",
             "category": "SURVEY",
@@ -2313,6 +2486,10 @@ def _webview_blueprint_payload(
                 "order_checkout",
                 "finance_onboarding_kyc",
                 "finance_credit_collection_signature",
+                "finance_account_servicing",
+                "finance_remittance_transfer",
+                "finance_insurance_claim",
+                "finance_fee_financing_tax",
                 "survey_vote",
                 "catalog_order_builder",
                 "government_procedure_intake",
@@ -2602,6 +2779,62 @@ def _qa_playbook_payload(
                 "finance_cobranza_pago_firma",
             ],
         },
+        {
+            "id": "finance_account_servicing",
+            "label": "Estado de cuenta y soporte seguro",
+            "verticals": ["finanzas", "cooperativa", "mutual", "gobierno", "colegio", "pyme"],
+            "persona": "cliente",
+            "entrypoint": "whatsapp_cta_webview",
+            "templates": ["finance_account_status", "finance_support_case"],
+            "webview_flow": "finance_account_servicing",
+            "covers": ["estado_cuenta", "resumen", "soporte", "handoff_crm", "auditoria"],
+            "script_cases": [
+                "finance_account_status",
+                "finance_support_handoff",
+            ],
+        },
+        {
+            "id": "finance_remittance_transfer",
+            "label": "Remesa o transferencia con tracking",
+            "verticals": ["finanzas", "cooperativa", "mutual", "pyme"],
+            "persona": "cliente",
+            "entrypoint": "whatsapp_cta_webview",
+            "templates": ["finance_remittance_transfer", "finance_secure_payment"],
+            "webview_flow": "finance_remittance_transfer",
+            "covers": ["transferencia", "validacion", "comprobante", "tracking", "webhook_crm"],
+            "script_cases": [
+                "finance_remittance_transfer",
+                "finance_transfer_receipt",
+            ],
+        },
+        {
+            "id": "finance_insurance_claim",
+            "label": "Seguro o siniestro con documentacion",
+            "verticals": ["finanzas", "seguros", "mutual", "cooperativa", "gobierno"],
+            "persona": "asegurado",
+            "entrypoint": "whatsapp_image_or_document",
+            "templates": ["finance_insurance_claim", "finance_document_signature", "finance_support_case"],
+            "webview_flow": "finance_insurance_claim",
+            "covers": ["tipo_siniestro", "foto", "pdf", "voz", "seguimiento", "mesa_ayuda"],
+            "script_cases": [
+                "finance_insurance_claim",
+                "finance_insurance_document",
+            ],
+        },
+        {
+            "id": "finance_fee_financing_tax",
+            "label": "Financiacion de cuotas, tasas e impuestos",
+            "verticals": ["gobierno", "colegio", "club", "consorcio", "finanzas"],
+            "persona": "pagador",
+            "entrypoint": "whatsapp_cta_webview",
+            "templates": ["finance_fee_financing", "finance_tax_payment", "finance_document_signature"],
+            "webview_flow": "finance_fee_financing_tax",
+            "covers": ["deuda", "plan_pago", "descuento", "pago_seguro", "firma", "recibo"],
+            "script_cases": [
+                "finance_fee_financing",
+                "finance_tax_payment",
+            ],
+        },
     ]
 
     enriched: list[dict[str, Any]] = []
@@ -2677,6 +2910,194 @@ def _qa_playbook_payload(
     }
 
 
+def _finance_transactional_payload(
+    tenant: TenantProfile,
+    *,
+    template_blueprint: Mapping[str, Any],
+    webview_blueprint: Mapping[str, Any],
+    qa_playbook: Mapping[str, Any],
+    checkout_experience: Mapping[str, Any],
+    integration_access: Mapping[str, Any],
+) -> dict[str, Any]:
+    template_groups = (
+        template_blueprint.get("operational_template_groups")
+        if isinstance(template_blueprint.get("operational_template_groups"), Mapping)
+        else {}
+    )
+    finance_group = template_groups.get("financial_services") if isinstance(template_groups, Mapping) else {}
+    finance_templates = finance_group.get("items") if isinstance(finance_group, Mapping) and isinstance(finance_group.get("items"), list) else []
+    flows = webview_blueprint.get("flows") if isinstance(webview_blueprint.get("flows"), list) else []
+    finance_flows = [
+        flow
+        for flow in flows
+        if isinstance(flow, Mapping) and str(flow.get("id") or "").startswith("finance_")
+    ]
+    qa_scenarios = qa_playbook.get("scenarios") if isinstance(qa_playbook.get("scenarios"), list) else []
+    finance_scenarios = [
+        scenario
+        for scenario in qa_scenarios
+        if isinstance(scenario, Mapping) and str(scenario.get("id") or "").startswith("finance_")
+    ]
+    ready_flows = [flow for flow in finance_flows if str(flow.get("status") or "").lower() == "ready"]
+    ready_scenarios = [scenario for scenario in finance_scenarios if bool(scenario.get("ready"))]
+    template_ids = {str(item.get("id") or "") for item in finance_templates if isinstance(item, Mapping)}
+    flow_ids = {str(item.get("id") or "") for item in finance_flows if isinstance(item, Mapping)}
+
+    journeys = [
+        {
+            "id": "digital_account_opening",
+            "label": "Alta digital de cuenta o producto",
+            "segments": ["bancos", "fintech", "cooperativas", "mutuales", "gobiernos", "pymes"],
+            "templates": ["finance_account_onboarding", "finance_kyc_review"],
+            "webview_flow": "finance_onboarding_kyc",
+            "crm_stage": "lead_verificacion_identidad",
+            "success_event": "onboarding_submitted",
+            "analytics_events": ["finance_onboarding_started", "kyc_submitted", "manual_review_required"],
+            "ready": "finance_onboarding_kyc" in flow_ids
+            and {"finance_account_onboarding", "finance_kyc_review"}.issubset(template_ids),
+        },
+        {
+            "id": "collections_payment_plan_signature",
+            "label": "Cobranza, plan de pago, checkout y firma",
+            "segments": ["finanzas", "colegios", "municipios", "clubes", "consorcios"],
+            "templates": [
+                "finance_collection_due",
+                "finance_secure_payment",
+                "finance_document_signature",
+            ],
+            "webview_flow": "finance_credit_collection_signature",
+            "crm_stage": "operacion_transaccional",
+            "success_event": "crm_operation_updated",
+            "analytics_events": ["collection_opened", "payment_started", "signature_completed"],
+            "ready": "finance_credit_collection_signature" in flow_ids
+            and {"finance_collection_due", "finance_secure_payment", "finance_document_signature"}.issubset(template_ids),
+        },
+        {
+            "id": "account_statement_support",
+            "label": "Estado de cuenta y soporte asociado",
+            "segments": ["bancos", "fintech", "cooperativas", "mutuales", "colegios", "gobiernos"],
+            "templates": ["finance_account_status", "finance_support_case"],
+            "webview_flow": "finance_account_servicing",
+            "crm_stage": "soporte_cuenta",
+            "success_event": "statement_opened",
+            "analytics_events": ["statement_opened", "support_case_created", "operator_handoff"],
+            "ready": "finance_account_servicing" in flow_ids
+            and {"finance_account_status", "finance_support_case"}.issubset(template_ids),
+        },
+        {
+            "id": "remittance_transfer_tracking",
+            "label": "Remesa o transferencia con comprobante",
+            "segments": ["fintech", "cooperativas", "mutuales", "pymes"],
+            "templates": ["finance_remittance_transfer", "finance_secure_payment"],
+            "webview_flow": "finance_remittance_transfer",
+            "crm_stage": "transferencia_en_validacion",
+            "success_event": "transfer_receipt_ready",
+            "analytics_events": ["transfer_started", "transfer_validated", "transfer_receipt_ready"],
+            "ready": "finance_remittance_transfer" in flow_ids
+            and {"finance_remittance_transfer", "finance_secure_payment"}.issubset(template_ids),
+        },
+        {
+            "id": "insurance_claim_documentation",
+            "label": "Seguro o siniestro con documentacion",
+            "segments": ["aseguradoras", "mutuales", "cooperativas", "gobiernos"],
+            "templates": ["finance_insurance_claim", "finance_document_signature", "finance_support_case"],
+            "webview_flow": "finance_insurance_claim",
+            "crm_stage": "siniestro_documentacion",
+            "success_event": "insurance_claim_created",
+            "analytics_events": ["insurance_claim_started", "attachment_uploaded", "manual_review_assigned"],
+            "ready": "finance_insurance_claim" in flow_ids
+            and {"finance_insurance_claim", "finance_document_signature", "finance_support_case"}.issubset(template_ids),
+        },
+        {
+            "id": "fees_taxes_financing",
+            "label": "Financiacion de cuotas, tasas e impuestos",
+            "segments": ["municipios", "colegios", "clubes", "consorcios", "finanzas"],
+            "templates": ["finance_fee_financing", "finance_tax_payment", "finance_document_signature"],
+            "webview_flow": "finance_fee_financing_tax",
+            "crm_stage": "plan_pago_en_revision",
+            "success_event": "financing_plan_requested",
+            "analytics_events": ["debt_summary_opened", "financing_plan_requested", "tax_payment_completed"],
+            "ready": "finance_fee_financing_tax" in flow_ids
+            and {"finance_fee_financing", "finance_tax_payment", "finance_document_signature"}.issubset(template_ids),
+        },
+    ]
+
+    return {
+        "contract_version": "finance.transactional_whatsapp.v1",
+        "enabled": bool(integration_access.get("enabled")),
+        "tenant": _tenant_ref(tenant),
+        "summary": {
+            "templates": len(finance_templates),
+            "webview_flows": len(finance_flows),
+            "ready_flows": len(ready_flows),
+            "qa_scenarios": len(finance_scenarios),
+            "ready_qa_scenarios": len(ready_scenarios),
+            "checkout_ready": bool(checkout_experience.get("ready")),
+            "journeys": len(journeys),
+            "ready_journeys": len([journey for journey in journeys if journey["ready"]]),
+        },
+        "journeys": journeys,
+        "crm_operating_model": {
+            "contract_version": "finance.crm_operating_model.v1",
+            "queues": [
+                {"id": "identity_review", "label": "KYC y validacion manual", "sla_minutes": 240},
+                {"id": "collections", "label": "Cobranzas y planes de pago", "sla_minutes": 120},
+                {"id": "payments", "label": "Pagos y comprobantes", "sla_minutes": 60},
+                {"id": "signature", "label": "Firma y documentacion", "sla_minutes": 180},
+                {"id": "support", "label": "Soporte financiero", "sla_minutes": 240},
+            ],
+            "required_events": [
+                "operation_created",
+                "identity_verified",
+                "payment_webhook",
+                "signature_completed",
+                "crm_operation_updated",
+            ],
+            "admin_actions": [
+                "assign_owner",
+                "request_missing_document",
+                "approve_manual_review",
+                "send_secure_webview",
+                "close_operation",
+            ],
+        },
+        "analytics_model": {
+            "contract_version": "finance.analytics_model.v1",
+            "funnels": [
+                "onboarding_to_kyc",
+                "collection_to_payment",
+                "credit_offer_to_signature",
+                "transfer_to_receipt",
+                "insurance_claim_to_resolution",
+            ],
+            "risk_signals": [
+                "stale_kyc",
+                "payment_failed",
+                "signature_abandoned",
+                "manual_review_overdue",
+                "high_value_operation",
+            ],
+            "dashboards": ["conversion", "collections", "identity_review", "operator_sla", "whatsapp_templates"],
+        },
+        "security_policy": {
+            "card_data_in_chat_allowed": False,
+            "identity_data_in_chat_allowed": False,
+            "requires_signed_session": True,
+            "requires_server_to_server_confirmation": True,
+            "requires_idempotency_key": True,
+            "audit_trail_required": True,
+            "fallback_inside_24h_only_until_template_approved": True,
+        },
+        "frontend_contract": {
+            "render_as": "finance_transactional_command_center",
+            "show_journey_grid": True,
+            "show_crm_queues": True,
+            "show_security_policy": True,
+            "show_analytics_model": True,
+        },
+    }
+
+
 def build_whatsapp_experience(
     tenant: TenantProfile,
     *,
@@ -2716,6 +3137,14 @@ def build_whatsapp_experience(
     )
     message_ux_policy = _message_ux_policy_payload(
         channel_ready=channel_ready,
+        integration_access=integration_access,
+    )
+    finance_transactional = _finance_transactional_payload(
+        tenant,
+        template_blueprint=template_blueprint,
+        webview_blueprint=webview_blueprint,
+        qa_playbook=qa_playbook,
+        checkout_experience=checkout_experience,
         integration_access=integration_access,
     )
     channel_reason = None
@@ -2805,6 +3234,7 @@ def build_whatsapp_experience(
         },
         "template_blueprint": template_blueprint,
         "webview_blueprint": webview_blueprint,
+        "finance_transactional": finance_transactional,
         "qa_playbook": qa_playbook,
         "message_ux_policy": message_ux_policy,
         "admin_panel": _admin_panel_payload(tenant),

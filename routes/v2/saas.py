@@ -1030,6 +1030,8 @@ def _build_tenant_ops_qa_playbook(
     whatsapp = build_whatsapp_experience(tenant, app_config=app_config)
     whatsapp_templates = (whatsapp.get("template_blueprint") or {}).get("registry_summary") if isinstance(whatsapp.get("template_blueprint"), Mapping) else {}
     whatsapp_webviews = (whatsapp.get("webview_blueprint") or {}).get("summary") if isinstance(whatsapp.get("webview_blueprint"), Mapping) else {}
+    finance_runtime = whatsapp.get("finance_transactional") if isinstance(whatsapp.get("finance_transactional"), Mapping) else {}
+    finance_summary = finance_runtime.get("summary") if isinstance(finance_runtime.get("summary"), Mapping) else {}
     hf_runtime = (((whatsapp.get("conversation_intelligence") or {}).get("huggingface_ai") or {}) if isinstance(whatsapp.get("conversation_intelligence"), Mapping) else {})
 
     checks = [
@@ -1149,6 +1151,9 @@ def _build_tenant_ops_qa_playbook(
                 "module": "transactions" if "transactions" in modules else None,
                 "templates_group": "financial_services",
                 "webview_flows": ["finance_onboarding_kyc", "finance_credit_collection_signature"],
+                "finance_runtime": finance_runtime.get("contract_version"),
+                "finance_journeys": finance_summary.get("journeys"),
+                "finance_ready_journeys": finance_summary.get("ready_journeys"),
                 "confirmation_policy": "server_to_server_webhook",
             },
         ),
@@ -2620,6 +2625,8 @@ def _build_production_e2e_readiness(
     market_summary = marketplace.get("summary") if isinstance(marketplace.get("summary"), Mapping) else {}
     commerce = whatsapp.get("commerce") if isinstance(whatsapp.get("commerce"), Mapping) else {}
     checkout = commerce.get("checkout_experience") if isinstance(commerce.get("checkout_experience"), Mapping) else {}
+    finance_runtime = whatsapp.get("finance_transactional") if isinstance(whatsapp.get("finance_transactional"), Mapping) else {}
+    finance_summary = finance_runtime.get("summary") if isinstance(finance_runtime.get("summary"), Mapping) else {}
 
     def scenario_ready(scenario_id: str) -> bool:
         scenario = scenarios.get(scenario_id) or {}
@@ -2728,8 +2735,39 @@ def _build_production_e2e_readiness(
                 "onboarding_flow": "finance_onboarding_kyc",
                 "operation_flow": "finance_credit_collection_signature",
                 "checkout_ready": checkout.get("ready"),
+                "finance_runtime": finance_runtime.get("contract_version"),
+                "ready_journeys": finance_summary.get("ready_journeys"),
             },
             next_action="run_finance_onboarding_collection_signature_smoke",
+        ),
+        _smoke_e2e_flow(
+            "finance_servicing_transfer_insurance",
+            label="Finance avanzado: estado de cuenta, remesas, seguros y financiacion",
+            surface="finanzas_banca_seguros",
+            ready=bool(finance_runtime.get("contract_version") == "finance.transactional_whatsapp.v1")
+            and int(finance_summary.get("journeys") or 0) >= 6
+            and flow_meta_ready("finance_account_servicing")
+            and flow_meta_ready("finance_remittance_transfer")
+            and flow_meta_ready("finance_insurance_claim")
+            and flow_meta_ready("finance_fee_financing_tax"),
+            endpoint="/api/v2/whatsapp/experience",
+            qa_scenario_id="finance_account_servicing",
+            meta_flow_ready=flow_meta_ready("finance_account_servicing")
+            and flow_meta_ready("finance_remittance_transfer")
+            and flow_meta_ready("finance_insurance_claim")
+            and flow_meta_ready("finance_fee_financing_tax"),
+            evidence={
+                "finance_runtime": finance_runtime.get("contract_version"),
+                "journeys": finance_summary.get("journeys"),
+                "ready_journeys": finance_summary.get("ready_journeys"),
+                "webview_flows": [
+                    "finance_account_servicing",
+                    "finance_remittance_transfer",
+                    "finance_insurance_claim",
+                    "finance_fee_financing_tax",
+                ],
+            },
+            next_action="run_finance_servicing_transfer_insurance_smoke",
         ),
         _smoke_e2e_flow(
             "analytics_heatmap",

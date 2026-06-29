@@ -62,6 +62,18 @@ def _build_playbook() -> dict:
         "school_family_case_created",
         "school_payment_due",
         "school_receipt_ready",
+        "finance_account_onboarding",
+        "finance_kyc_review",
+        "finance_credit_offer",
+        "finance_collection_due",
+        "finance_secure_payment",
+        "finance_document_signature",
+        "finance_support_case",
+        "finance_account_status",
+        "finance_remittance_transfer",
+        "finance_insurance_claim",
+        "finance_fee_financing",
+        "finance_tax_payment",
     }
     return _qa_playbook_payload(
         SimpleNamespace(slug="qa-tenant"),
@@ -77,6 +89,11 @@ def _build_playbook() -> dict:
                 _ready_flow("catalog_order_builder"),
                 _ready_flow("survey_vote"),
                 _ready_flow("order_checkout"),
+                _ready_flow("finance_credit_collection_signature"),
+                _ready_flow("finance_account_servicing"),
+                _ready_flow("finance_remittance_transfer"),
+                _ready_flow("finance_insurance_claim"),
+                _ready_flow("finance_fee_financing_tax"),
             ]
         },
         integration_access={"enabled": True},
@@ -99,6 +116,11 @@ def test_whatsapp_qa_playbook_matches_executable_script_matrix():
         "chatboc_demo_hub",
         "survey_vote_realtime",
         "school_family_case",
+        "finance_onboarding_collection_signature",
+        "finance_account_servicing",
+        "finance_remittance_transfer",
+        "finance_insurance_claim",
+        "finance_fee_financing_tax",
     }
 
     assert required_full_flows.issubset(script_scenarios)
