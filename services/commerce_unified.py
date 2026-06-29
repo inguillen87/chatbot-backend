@@ -60,6 +60,8 @@ def _dedupe_key(order: dict[str, Any]) -> str:
     external_refs = order.get("external_refs") if isinstance(order.get("external_refs"), dict) else {}
     metadata = order.get("metadata") if isinstance(order.get("metadata"), dict) else {}
 
+    if source_model == "MarketOrder" and metadata.get("source_conversational_id"):
+        return f"conv:{metadata.get('source_conversational_id')}"
     if source_model == "MarketOrder" and external_refs.get("provider") == "pedido_conversacional" and external_refs.get("order_id"):
         return f"conv:{external_refs.get('order_id')}"
     if source_model == "PedidoConversacional" and order.get("source_id") is not None:
@@ -76,6 +78,8 @@ def _dedupe_priority(order: dict[str, Any]) -> int:
     external_refs = order.get("external_refs") if isinstance(order.get("external_refs"), dict) else {}
     metadata = order.get("metadata") if isinstance(order.get("metadata"), dict) else {}
 
+    if source_model == "MarketOrder" and metadata.get("source_conversational_id"):
+        return 4
     if source_model == "MarketOrder" and external_refs.get("provider") == "pedido_conversacional":
         return 4
     if source_model == "PedidoConversacional":

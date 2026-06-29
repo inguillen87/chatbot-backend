@@ -1,6 +1,7 @@
 import json
 import logging
-from typing import Optional
+import re
+from typing import Any, Optional
 
 from models import (
     db,
@@ -74,6 +75,11 @@ class PedidoService:
             metadata_payload={
                 "pyme_pedido_id": pedido.id,
                 "pyme_id": pedido.pyme_id,
+                **(
+                    {"source_conversational_id": str(pedido.idempotency_key).split("conv_order_", 1)[1]}
+                    if str(getattr(pedido, "idempotency_key", "") or "").startswith("conv_order_")
+                    else {}
+                ),
             },
         )
 
@@ -358,6 +364,149 @@ class PedidoService:
             )
             return None
 
+    @staticmethod
+    def _as_dict(value: Any) -> dict[str, Any]:
+        return value if isinstance(value, dict) else {}
+
+    @staticmethod
+    def _as_list(value: Any) -> list[Any]:
+        return value if isinstance(value, list) else []
+
+    @staticmethod
+    def _parse_quantity(value: Any) -> int:
+        if value is None:
+            return 1
+        if isinstance(value, (int, float)):
+            return max(int(value), 1)
+        match = re.search(r"\d+(?:[\.,]\d+)?", str(value))
+        if not match:
+            return 1
+        try:
+            return max(int(float(match.group(0).replace(",", "."))), 1)
+        except (TypeError, ValueError):
+            return 1
+
+    @staticmethod
+    def _parse_money(value: Any) -> float:
+        if value is None:
+            return 0.0
+        if isinstance(value, (int, float)):
+            return float(value)
+        raw = str(value).strip()
+        if not raw:
+            return 0.0
+        cleaned = re.sub(r"[^\d,.\-]", "", raw)
+        if "," in cleaned and "." in cleaned:
+            cleaned = cleaned.replace(".", "").replace(",", ".")
+        else:
+            cleaned = cleaned.replace(",", ".")
+        try:
+            return float(cleaned)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _build_data_from_assisted_marketplace(
+        self,
+        conversacional: PedidoConversacional,
+        tenant: TenantProfile,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        metadata = self._as_dict(conversacional.metadata_payload)
+        raw_payload = self._as_dict((conversacional.items or [None])[0])
+        detected_items = self._as_list(raw_payload.get("items_detectados"))
+        unmatched_items = self._as_list(raw_payload.get("no_encontrados"))
+        contact = self._as_dict(metadata.get("contact")) or self._as_dict(raw_payload.get("contact"))
+        source = self._as_dict(metadata.get("source")) or self._as_dict(raw_payload.get("source"))
+
+        detalles: list[dict[str, Any]] = []
+        total = 0.0
+
+        for item in detected_items:
+            if not isinstance(item, dict):
+                continue
+            quantity = self._parse_quantity(item.get("cantidad") or item.get("quantity"))
+            price = self._parse_money(
+                item.get("precio_float")
+                or item.get("precio_unitario")
+                or item.get("unit_price")
+                or item.get("precio")
+            )
+            subtotal = quantity * price
+            total += subtotal
+            detalles.append(
+                {
+                    "nombre": item.get("nombre") or item.get("producto") or item.get("title") or item.get("sku") or "Articulo detectado",
+                    "cantidad": quantity,
+                    "precio_unitario": price,
+                    "subtotal": subtotal,
+                    "sku": item.get("sku"),
+                    "catalogo_item_id": item.get("catalogo_item_id"),
+                    "source": "catalog_match",
+                }
+            )
+
+        for item in unmatched_items:
+            if not isinstance(item, dict):
+                continue
+            quantity = self._parse_quantity(item.get("cantidad") or item.get("quantity"))
+            detalles.append(
+                {
+                    "nombre": item.get("nombre") or item.get("producto") or item.get("descripcion") or item.get("detalle") or "Articulo para revisar",
+                    "cantidad": quantity,
+                    "precio_unitario": 0,
+                    "subtotal": 0,
+                    "sku": item.get("sku"),
+                    "source": "operator_review",
+                    "requires_operator_review": True,
+                    "catalog_candidates": item.get("catalog_candidates") if isinstance(item.get("catalog_candidates"), list) else [],
+                }
+            )
+
+        if not detalles:
+            detalles.append(
+                {
+                    "nombre": metadata.get("request_kind_label") or raw_payload.get("request_kind_label") or "Solicitud asistida",
+                    "cantidad": 1,
+                    "precio_unitario": 0,
+                    "subtotal": 0,
+                    "source": "operator_review",
+                    "requires_operator_review": True,
+                }
+            )
+
+        request_label = metadata.get("request_kind_label") or raw_payload.get("request_kind_label") or "pedido asistido"
+        return {
+            "pyme_id": tenant.pyme_id,
+            "tenant_id": tenant.id,
+            "asunto": f"{request_label.title()} #{conversacional.id}",
+            "detalles": json.dumps(detalles, ensure_ascii=False),
+            "monto_total": total or float(conversacional.monto_monetario or 0),
+            "nombre_cliente": contact.get("name") or contact.get("nombre"),
+            "email_cliente": contact.get("email"),
+            "telefono_cliente": contact.get("phone") or contact.get("telefono"),
+            "direccion": contact.get("address") or contact.get("direccion"),
+            "user_id": conversacional.user_id,
+            "rubro": metadata.get("request_kind") or raw_payload.get("request_kind") or "marketplace",
+            "idempotency_key": idempotency_key,
+            "channel": source.get("channel") or conversacional.origen or "marketplace",
+        }
+
+    @staticmethod
+    def _mark_conversational_materialized(
+        conversacional: PedidoConversacional,
+        pedido: PymePedido,
+        idempotency_key: str,
+    ) -> None:
+        metadata_payload = dict(conversacional.metadata_payload or {})
+        metadata_payload["crm_state"] = "materialized_order"
+        metadata_payload["materialized_order"] = {
+            "source_model": "PymePedido",
+            "id": pedido.id,
+            "nro_pedido": pedido.nro_pedido,
+            "idempotency_key": idempotency_key,
+        }
+        conversacional.metadata_payload = metadata_payload
+
     def create_from_conversational(self, conversacional: PedidoConversacional) -> Optional[PymePedido]:
         """Creates a PymePedido from a confirmed PedidoConversacional."""
         try:
@@ -373,6 +522,25 @@ class PedidoService:
             # Check if already linked via idempotency or similar logic?
             # We use idempotency_key constructed from conversacional.id
             idempotency_key = f"conv_order_{conversacional.id}"
+            existing = PymePedido.query.filter_by(idempotency_key=idempotency_key).first()
+            if existing:
+                self._mark_conversational_materialized(conversacional, existing, idempotency_key)
+                db.session.commit()
+                return existing
+
+            metadata = self._as_dict(conversacional.metadata_payload)
+            if metadata.get("contract_version") == "marketplace.assisted_request.v1":
+                pedido = self.crear_nuevo_pedido(
+                    self._build_data_from_assisted_marketplace(
+                        conversacional,
+                        tenant,
+                        idempotency_key,
+                    )
+                )
+                if pedido:
+                    self._mark_conversational_materialized(conversacional, pedido, idempotency_key)
+                    db.session.commit()
+                return pedido
 
             # Map items to detalles
             # PedidoConversacional items format:

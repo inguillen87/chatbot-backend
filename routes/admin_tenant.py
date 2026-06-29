@@ -2933,6 +2933,19 @@ def _apply_tenant_order_status(record, status: str) -> None:
         record.estado = normalized
 
 
+def _should_materialize_assisted_order(record, tenant: TenantProfile, status: str) -> bool:
+    normalized = str(status or "").strip().lower()
+    metadata = getattr(record, "metadata_payload", None)
+    return (
+        isinstance(record, PedidoConversacional)
+        and normalized in {"confirmed", "confirmado"}
+        and bool(getattr(tenant, "pyme_id", None))
+        and isinstance(metadata, dict)
+        and metadata.get("contract_version") == "marketplace.assisted_request.v1"
+        and not metadata.get("materialized_order")
+    )
+
+
 @admin_tenant_bp.route('/api/admin/tenants/<slug>/orders/<path:order_id>', methods=['GET', 'PATCH'])
 @token_requerido
 @require_tenant
@@ -2951,9 +2964,17 @@ def tenant_order_detail(current_user, slug, order_id):
     if request.method == 'PATCH':
         payload = request.get_json(silent=True) or {}
         status = payload.get("status")
+        materialize_after_commit = False
         if status is not None:
             _apply_tenant_order_status(record, status)
+            materialize_after_commit = _should_materialize_assisted_order(record, tenant, status)
         db.session.commit()
+        if materialize_after_commit:
+            from services.pedido_service import PedidoService
+
+            materialized = PedidoService().create_from_conversational(record)
+            if materialized:
+                db.session.refresh(record)
 
     return jsonify(serialize_unified_order(record))
 

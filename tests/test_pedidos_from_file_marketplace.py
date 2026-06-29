@@ -1,10 +1,11 @@
 import io
+import json
 from datetime import datetime, timedelta
 
 import jwt
 
 from app import db
-from models import CatalogoItem, MunicipioTicket, PedidoConversacional, TenantProfile, TicketComentario, User
+from models import CatalogoItem, MarketOrder, MunicipioTicket, PedidoConversacional, PymePedido, TenantProfile, TicketComentario, User
 
 
 def _auth_headers(app, user: User, tenant_slug: str) -> dict:
@@ -279,8 +280,27 @@ def test_marketplace_order_note_upload_is_manageable_from_tenant_crm(client, app
         headers=headers,
     )
     assert patch_response.status_code == 200
-    assert patch_response.get_json()["status"] == "confirmed"
+    patch_payload = patch_response.get_json()
+    assert patch_payload["status"] == "confirmed"
     assert PedidoConversacional.query.get(pedido_id).estado == "confirmed"
+
+    materialized = PymePedido.query.filter_by(idempotency_key=f"conv_order_{pedido_id}").first()
+    assert materialized is not None
+    assert materialized.tenant_id == tenant.id
+    assert materialized.nombre_cliente == "Marcelo"
+    assert materialized.telefono_cliente == "+5492613168608"
+    detalles = json.loads(materialized.detalles)
+    assert detalles[0]["sku"] == "CL-01"
+    assert detalles[0]["source"] == "catalog_match"
+
+    market_order = MarketOrder.legacy_safe_query().filter_by(
+        tenant_id=tenant.id,
+        external_provider="pyme_pedido",
+        external_order_id=materialized.nro_pedido,
+    ).first()
+    assert market_order is not None
+    assert market_order.metadata_payload["source_conversational_id"] == str(pedido_id)
+    assert patch_payload["metadata"]["materialized_order"]["nro_pedido"] == materialized.nro_pedido
 
 
 def test_marketplace_text_order_creates_same_assisted_request_contract(client, init_database, monkeypatch):
