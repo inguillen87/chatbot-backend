@@ -3,7 +3,12 @@ from unittest.mock import patch
 
 from flask import Flask
 
-from routes.public_resolver import WIDGET_CONFIG_CONTRACT_VERSION, public_municipios_bp, public_resolver_bp
+from routes.public_resolver import (
+    WIDGET_CONFIG_CONTRACT_VERSION,
+    _support_channels_payload,
+    public_municipios_bp,
+    public_resolver_bp,
+)
 from services.tenant_resolver import TenantResolutionError
 
 
@@ -14,6 +19,9 @@ class _FakeTenant:
     nombre = "Colegio San Martin"
     configuracion = {}
     widget_settings = None
+    pyme = None
+    municipio = None
+    whatsapp_sender_id = None
 
     def to_public_dict(self):
         return {"slug": self.slug, "tipo": self.tipo}
@@ -52,6 +60,29 @@ class PublicResolverWidgetConfigContractTestCase(unittest.TestCase):
         self.assertEqual(body["onboarding"]["mode"], "tenant_quick_menu")
         self.assertEqual(body["ui_hints"]["density"], "compact")
         self.assertFalse(body["suppress_global_widget"])
+
+    def test_support_channels_live_chat_uses_http_fallback_without_socket(self):
+        with self.app.app_context():
+            payload = _support_channels_payload(
+                _FakeTenant(),
+                {
+                    "socket_enabled": False,
+                    "live_chat_schedule": {
+                        "enabled": True,
+                        "days": "all",
+                        "start_time": "00:00",
+                        "end_time": "23:59",
+                        "timezone": "America/Argentina/Buenos_Aires",
+                    },
+                },
+            )
+
+        live_chat = payload["live_chat"]
+        self.assertTrue(live_chat["available"])
+        self.assertFalse(live_chat["realtime"])
+        self.assertFalse(live_chat["socket_enabled"])
+        self.assertEqual(live_chat["fallback_mode"], "http_chat")
+        self.assertTrue(live_chat["fallback_available"])
 
     def test_widget_config_without_tenant_returns_platform_selector(self):
         response = self.client.get(

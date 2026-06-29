@@ -4540,7 +4540,11 @@ def whatsapp_webhook():
         try:
             # Download the file from Twilio's URL first
             auth = (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-            r = requests.get(media_url, auth=auth)
+            try:
+                media_timeout = float(current_app.config.get("WHATSAPP_MEDIA_DOWNLOAD_TIMEOUT_SECONDS", 12))
+            except (TypeError, ValueError):
+                media_timeout = 12.0
+            r = requests.get(media_url, auth=auth, timeout=max(1.0, media_timeout))
             r.raise_for_status()
             media_content = r.content
 
@@ -4580,11 +4584,22 @@ def whatsapp_webhook():
 
             if media_content_type.startswith("audio/"):
                 session_context_db_entry.context_data['source_is_audio'] = True
-                from services.audio_transcription_service import transcribe_audio_from_url
-                # We pass the direct URL to the transcription service
-                transcribed_text = transcribe_audio_from_url(media_url, media_content_type, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+                from services.audio_transcription_service import transcribe_audio_bytes
+
+                transcribed_text = transcribe_audio_bytes(
+                    media_content,
+                    media_content_type,
+                    cache_url=media_url,
+                )
                 if transcribed_text:
                     message_body = transcribed_text
+                    if uploaded_file_info is None:
+                        uploaded_file_info = {
+                            "url": media_url,
+                            "mime_type": media_content_type,
+                            "name": file_name,
+                            "source": "whatsapp",
+                        }
                     uploaded_file_info['transcribed_text'] = transcribed_text
                 else:
                     current_app.logger.warning("Audio transcription failed or returned empty.")

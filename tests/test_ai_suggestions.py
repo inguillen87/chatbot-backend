@@ -9,7 +9,7 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 from app import create_app, db
-from models import PlantillasRespuesta, User, Rubro
+from models import PlantillasRespuesta, TenantProfile, User, Rubro
 from routes.ai import ai_bp
 import json
 from config import Config
@@ -32,17 +32,21 @@ class TestAISuggestions(unittest.TestCase):
         db.create_all()
         self.client = self.app.test_client()
 
-        self.mock_rubro = Rubro(id=1, clave="pyme_test_rubro", nombre="Test Rubro PYME")
-        db.session.add(self.mock_rubro)
-        db.session.commit()
+        self.mock_rubro = Rubro.query.filter_by(clave="pyme_test_rubro").first()
+        if not self.mock_rubro:
+            self.mock_rubro = Rubro(clave="pyme_test_rubro", nombre="Test Rubro PYME")
+            db.session.add(self.mock_rubro)
+            db.session.commit()
 
-        self.mock_user = User(
-            id=1, name="Test Admin User", email="admin@test.com",
-            rol="admin", rubro_id=self.mock_rubro.id
-        )
-        self.mock_user.set_password("adminpass")
-        db.session.add(self.mock_user)
-        db.session.commit()
+        self.mock_user = User.query.filter_by(email="admin@test.com").first()
+        if not self.mock_user:
+            self.mock_user = User(
+                name="Test Admin User", email="admin@test.com",
+                rol="admin", rubro_id=self.mock_rubro.id
+            )
+            self.mock_user.set_password("adminpass")
+            db.session.add(self.mock_user)
+            db.session.commit()
 
         # Generate JWT for the mock user
         jwt_payload = {
@@ -63,12 +67,13 @@ class TestAISuggestions(unittest.TestCase):
         self.g_patcher.stop()
         patch.stopall()
 
-    def _crear_plantilla(self, name, text, keywords=None, is_active=True, embedding_value=None):
+    def _crear_plantilla(self, name, text, keywords=None, is_active=True, embedding_value=None, tenant_id=None):
         if embedding_value is None:
             embedding_value = [0.1] * 1024
 
         plantilla = PlantillasRespuesta(
             name=name, text=text,
+            tenant_id=tenant_id,
             keywords=json.dumps(keywords) if keywords else json.dumps([]),
             is_active=is_active, embedding=embedding_value
         )
@@ -94,6 +99,47 @@ class TestAISuggestions(unittest.TestCase):
         self.assertEqual(sugerencias[0]['name'], 'Saludo')
         self.assertIn("Hola, ¿cómo estás {{nombre_cliente}}?", sugerencias[0]['text'])
         mock_embed_textos_llm.assert_called_once()
+
+    @patch('routes.ai.embed_textos_llm')
+    def test_suggest_templates_does_not_cross_tenant_scope(self, mock_embed_textos_llm):
+        owner_b = User(email="ai-suggest-b-owner@test.com", name="AI Suggest Owner B", rol="admin", tipo_chat="pyme")
+        owner_b.set_password("pass")
+        db.session.add(owner_b)
+        db.session.flush()
+
+        tenant_a = TenantProfile(slug="ai-suggest-a", nombre="AI Suggest A", tipo="pyme", pyme_id=self.mock_user.id)
+        tenant_b = TenantProfile(slug="ai-suggest-b", nombre="AI Suggest B", tipo="pyme", pyme_id=owner_b.id)
+        db.session.add_all([tenant_a, tenant_b])
+        db.session.commit()
+
+        self._crear_plantilla(
+            "Tenant A Reclamo",
+            "Respuesta para A",
+            ["a"],
+            embedding_value=[0.1] * 1024,
+            tenant_id=tenant_a.id,
+        )
+        self._crear_plantilla(
+            "Tenant B Privada",
+            "Respuesta privada B",
+            ["b"],
+            embedding_value=[0.1] * 1024,
+            tenant_id=tenant_b.id,
+        )
+        self._crear_plantilla("Global Util", "Respuesta global", ["global"], embedding_value=[0.1] * 1024)
+        mock_embed_textos_llm.return_value = [[0.1] * 1024]
+
+        response = self.client.post(
+            '/api/ai/suggest-templates',
+            headers={'Authorization': f'Bearer {self.jwt_token}', 'X-Tenant-Slug': tenant_a.slug},
+            json={'asunto': 'reclamo', 'contexto_ticket': 'necesito respuesta', 'top_n': 5},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        names = {item['name'] for item in response.get_json()['sugerencias']}
+        self.assertIn("Tenant A Reclamo", names)
+        self.assertIn("Global Util", names)
+        self.assertNotIn("Tenant B Privada", names)
 
     def test_suggest_templates_missing_asunto(self):
         response = self.client.post('/api/ai/suggest-templates',

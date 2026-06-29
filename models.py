@@ -1653,6 +1653,7 @@ class ClienteNota(db.Model):
 class PlantillasRespuesta(db.Model):
     __tablename__ = "plantillas_respuesta"
     id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=True, index=True)
     name = db.Column(db.String(255), nullable=False)
     text = db.Column(db.Text, nullable=False)
     embedding = db.Column(JSONType, nullable=True) # Almacenará el embedding de Cohere
@@ -1660,6 +1661,11 @@ class PlantillasRespuesta(db.Model):
     is_active = db.Column(db.Boolean, default=True, nullable=False)
     created_at = db.Column(db.DateTime(timezone=True), default=get_local_now, nullable=False)
     updated_at = db.Column(db.DateTime(timezone=True), default=get_local_now, onupdate=get_local_now, nullable=False)
+    tenant = db.relationship(
+        "TenantProfile",
+        backref=db.backref("plantillas_respuesta", lazy="dynamic"),
+        foreign_keys=[tenant_id],
+    )
     # Opcional: Para vincular plantillas a un usuario/empresa específica si fuera necesario en el futuro
     # user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
     # user = db.relationship('User', backref=db.backref('plantillas_respuesta', lazy='dynamic'))

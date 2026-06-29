@@ -426,7 +426,7 @@ def _socket_realtime_contract(cfg: dict) -> dict:
     return {
         "socket_enabled": socket_enabled,
         "socket_url": socket_url if socket_enabled else None,
-        "fallback_mode": "socket_io_enabled" if socket_enabled else "polling_disabled",
+        "fallback_mode": "socket_io_enabled" if socket_enabled else "http_chat",
         "path": "/api/socket.io" if socket_enabled else None,
     }
 
@@ -440,7 +440,7 @@ def _widget_visibility_rules(*, realtime: dict, voice_enabled: bool = True, vide
         "allow_voice_call": bool(voice_enabled),
         "allow_video_call": bool(video_enabled),
         "socket_path": (realtime or {}).get("path") if allow_websocket else None,
-        "fallback_mode": (realtime or {}).get("fallback_mode") or "polling_disabled",
+        "fallback_mode": (realtime or {}).get("fallback_mode") or "http_chat",
     }
 
 
@@ -604,7 +604,7 @@ def _platform_widget_config_payload() -> dict:
     live_status["realtime"] = False
     live_status["socket_enabled"] = False
     live_status["socket_url"] = None
-    live_status["fallback_mode"] = "polling_disabled"
+    live_status["fallback_mode"] = "http_chat"
     support_channels = {
         "live_chat": live_status,
         "whatsapp": {
@@ -718,7 +718,11 @@ def _support_channels_payload(tenant: TenantProfile, cfg: dict) -> dict:
     live_status = build_live_chat_status(
         schedule_override=(cfg.get("live_chat_schedule") if isinstance(cfg.get("live_chat_schedule"), dict) else None)
     )
-    live_chat_available = bool(live_status.get("available")) and bool(socket_realtime.get("socket_enabled"))
+    fallback_mode = socket_realtime.get("fallback_mode") or "http_chat"
+    live_chat_fallback_available = fallback_mode not in {"disabled", "none", "polling_disabled"}
+    live_chat_available = bool(live_status.get("available")) and (
+        bool(socket_realtime.get("socket_enabled")) or live_chat_fallback_available
+    )
     realtime_trial_policy = _realtime_trial_policy(cfg)
     realtime_voice["trial_policy"] = realtime_trial_policy
 
@@ -730,7 +734,8 @@ def _support_channels_payload(tenant: TenantProfile, cfg: dict) -> dict:
             "realtime": bool(socket_realtime.get("socket_enabled")),
             "socket_enabled": bool(socket_realtime.get("socket_enabled")),
             "socket_url": socket_realtime.get("socket_url"),
-            "fallback_mode": socket_realtime.get("fallback_mode"),
+            "fallback_mode": fallback_mode,
+            "fallback_available": live_chat_fallback_available,
             "media": {"text": True, "image": True, "audio": True, "file": True},
         },
         "whatsapp": {

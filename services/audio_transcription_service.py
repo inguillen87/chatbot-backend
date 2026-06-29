@@ -19,6 +19,7 @@ from collections import OrderedDict
 http_client = httpx.Client(proxy=None, trust_env=False)
 openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY", "test"), http_client=http_client)
 DEFAULT_STT_MODEL = "gpt-4o-mini-transcribe"
+DEFAULT_AUDIO_DOWNLOAD_TIMEOUT_SECONDS = 12
 AUTO_LANGUAGE_MARKERS = {"", "auto", "detect", "none", "null"}
 SUPPORTED_TRANSLATION_LANGUAGES = ("es", "en", "pt")
 _TRUTHY_VALUES = {"1", "true", "yes", "on"}
@@ -110,6 +111,19 @@ def _stt_content_cache_key(audio_bytes: bytes, mime_type: str) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+def _audio_download_timeout_seconds() -> float:
+    try:
+        return max(1.0, float(os.getenv("STT_AUDIO_DOWNLOAD_TIMEOUT_SECONDS", str(DEFAULT_AUDIO_DOWNLOAD_TIMEOUT_SECONDS))))
+    except (TypeError, ValueError):
+        return float(DEFAULT_AUDIO_DOWNLOAD_TIMEOUT_SECONDS)
+
+
+def _safe_audio_filename(mime_type: str) -> str:
+    extension = mime_type.split("/")[-1] if "/" in mime_type else "audio"
+    safe_extension = re.sub(r"[^a-zA-Z0-9]", "", extension) or "audio"
+    return f"audio.{safe_extension}"
+
+
 def normalize_spanish_transcription(text: str) -> str:
     """Expand common abbreviations and regionalisms for clearer understanding.
 
@@ -191,6 +205,67 @@ def _transcribe_with_openai(audio_bytes: bytes, filename: str) -> str | None:
 
     return getattr(transcription, "text", None)
 
+
+def transcribe_audio_bytes(
+    audio_bytes: bytes,
+    mime_type: str,
+    *,
+    cache_url: str | None = None,
+) -> str | None:
+    """Transcribe an already-downloaded audio payload.
+
+    WhatsApp/Twilio webhooks already download media to persist the attachment.
+    This helper lets that path reuse the same bytes instead of downloading the
+    audio a second time only for STT.
+    """
+
+    if not audio_bytes:
+        return None
+
+    content_cache_key = _stt_content_cache_key(audio_bytes, mime_type)
+    cached_text = _stt_cache_get(content_cache_key)
+    if cached_text:
+        if cache_url:
+            _stt_cache_set(_stt_url_cache_key(cache_url, mime_type), cached_text)
+        return cached_text
+
+    url_cache_key = _stt_url_cache_key(cache_url, mime_type) if cache_url else None
+    if url_cache_key:
+        cached_text = _stt_cache_get(url_cache_key)
+        if cached_text:
+            _stt_cache_set(content_cache_key, cached_text)
+            return cached_text
+
+    filename = _safe_audio_filename(mime_type)
+    for provider in _stt_provider_order():
+        if provider == "openai":
+            try:
+                text = _transcribe_with_openai(audio_bytes, filename)
+            except Exception as exc:  # pragma: no cover - defensive logging
+                print(f"OpenAI STT error: {exc}")
+                text = None
+        elif provider == "cohere" and _cohere_stt_enabled():
+            try:
+                from services.cohere_stt_bridge import transcribir_audio_cohere
+
+                text = transcribir_audio_cohere(audio_bytes, mime_type)
+            except Exception as exc:  # pragma: no cover - defensive logging
+                print(f"Cohere STT error: {exc}")
+                text = None
+        else:
+            text = None
+
+        if text:
+            language = resolve_transcription_language()
+            if language == "es":
+                text = normalize_spanish_transcription(text)
+            _stt_cache_set(content_cache_key, text)
+            if url_cache_key:
+                _stt_cache_set(url_cache_key, text)
+            return text
+
+    return None
+
 def transcribe_audio_from_url(url: str, mime_type: str, account_sid: str = None, auth_token: str = None) -> str | None:
     """Download an audio file and transcribe it using OpenAI Whisper.
 
@@ -217,50 +292,11 @@ def transcribe_audio_from_url(url: str, mime_type: str, account_sid: str = None,
         if cached_text:
             return cached_text
 
-        # Download the audio file, using auth only if provided
         auth = (account_sid, auth_token) if account_sid and auth_token else None
-        audio_response = requests.get(url, auth=auth)
+        audio_response = requests.get(url, auth=auth, timeout=_audio_download_timeout_seconds())
         audio_response.raise_for_status()
 
-        audio_bytes = audio_response.content
-        content_cache_key = _stt_content_cache_key(audio_bytes, mime_type)
-        cached_text = _stt_cache_get(content_cache_key)
-        if cached_text:
-            _stt_cache_set(url_cache_key, cached_text)
-            return cached_text
-
-        # Determine a safe filename with a proper extension
-        extension = mime_type.split('/')[-1] if '/' in mime_type else 'audio'
-        safe_extension = re.sub(r'[^a-zA-Z0-9]', '', extension)
-        filename = f"audio.{safe_extension}"
-
-        for provider in _stt_provider_order():
-            if provider == "openai":
-                try:
-                    text = _transcribe_with_openai(audio_bytes, filename)
-                except Exception as exc:  # pragma: no cover - defensive logging
-                    print(f"OpenAI STT error: {exc}")
-                    text = None
-            elif provider == "cohere" and _cohere_stt_enabled():
-                try:
-                    from services.cohere_stt_bridge import transcribir_audio_cohere
-
-                    text = transcribir_audio_cohere(audio_bytes, mime_type)
-                except Exception as exc:  # pragma: no cover - defensive logging
-                    print(f"Cohere STT error: {exc}")
-                    text = None
-            else:
-                text = None
-
-            if text:
-                language = resolve_transcription_language()
-                if language == "es":
-                    text = normalize_spanish_transcription(text)
-                _stt_cache_set(url_cache_key, text)
-                _stt_cache_set(content_cache_key, text)
-                return text
-
-        return None
+        return transcribe_audio_bytes(audio_response.content, mime_type, cache_url=url)
 
     except requests.exceptions.RequestException as e:
         print(f"Error downloading audio file: {e}")
