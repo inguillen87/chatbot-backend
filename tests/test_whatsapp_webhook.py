@@ -743,7 +743,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self.assertTrue(any("Abrir demo colegios" in body for body in sent_bodies))
 
     @patch("routes.whatsapp_webhook.responder_chatboc")
-    @patch("services.audio_transcription_service.transcribe_audio_from_url")
+    @patch("services.audio_transcription_service.transcribe_audio_bytes")
     @patch("routes.whatsapp_webhook.create_attachment_with_thumbnail")
     @patch("routes.whatsapp_webhook.requests.get")
     def test_chatboc_demo_voice_note_is_transcribed_routed_and_saved_to_crm(
@@ -2841,7 +2841,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
 
         with patch('routes.whatsapp_webhook.responder_chatboc') as mock_bot, \
              patch('routes.whatsapp_webhook.create_attachment_with_thumbnail') as mock_create_attachment, \
-             patch('services.audio_transcription_service.transcribe_audio_from_url') as mock_transcribe, \
+             patch('services.audio_transcription_service.transcribe_audio_bytes') as mock_transcribe, \
              patch('routes.whatsapp_webhook.clasificar_adjunto_whatsapp') as mock_classifier:
             mock_bot.return_value = {"message_body": "Ok"}
             mock_adjunto = MagicMock()
@@ -2897,7 +2897,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
 
         with patch('routes.whatsapp_webhook.responder_chatboc') as mock_bot, \
              patch('routes.whatsapp_webhook.create_attachment_with_thumbnail') as mock_create_attachment, \
-             patch('services.audio_transcription_service.transcribe_audio_from_url') as mock_transcribe, \
+             patch('services.audio_transcription_service.transcribe_audio_bytes') as mock_transcribe, \
              patch('routes.whatsapp_webhook.clasificar_adjunto_whatsapp') as mock_classifier:
             mock_bot.return_value = {"message_body": "Ok"}
             mock_adjunto = MagicMock()

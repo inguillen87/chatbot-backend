@@ -6,6 +6,7 @@ from services.audio_transcription_service import (
     clear_transcription_cache,
     normalize_spanish_transcription,
     resolve_transcription_language,
+    transcribe_audio_bytes,
     transcribe_audio_from_url,
 )
 
@@ -32,7 +33,11 @@ class TestAudioTranscriptionService(unittest.TestCase):
         result = transcribe_audio_from_url("http://example.com/audio.ogg", "audio/ogg", "fake_sid", "fake_token")
 
         self.assertEqual(result, "hello world")
-        mock_requests_get.assert_called_once_with("http://example.com/audio.ogg", auth=("fake_sid", "fake_token"))
+        mock_requests_get.assert_called_once_with(
+            "http://example.com/audio.ogg",
+            auth=("fake_sid", "fake_token"),
+            timeout=12.0,
+        )
         mock_create.assert_called_once()
 
     @patch("services.audio_transcription_service.requests.get")
@@ -132,6 +137,20 @@ class TestAudioTranscriptionService(unittest.TestCase):
         self.assertEqual(first, "hola cache")
         self.assertEqual(second, "hola cache")
         mock_requests_get.assert_called_once()
+        mock_openai_client.audio.transcriptions.create.assert_called_once()
+
+    @patch("services.audio_transcription_service.openai_client")
+    def test_transcribe_audio_bytes_uses_content_cache_without_download(self, mock_openai_client):
+        mock_result = MagicMock()
+        mock_result.text = "menu accesible cacheado"
+        mock_openai_client.audio.transcriptions.create.return_value = mock_result
+
+        with patch.dict("os.environ", {"OPENAI_STT_LANGUAGE": "auto", "STT_PROVIDER_ORDER": "openai"}, clear=False):
+            first = transcribe_audio_bytes(b"same_menu_audio", "audio/ogg", cache_url="twilio://menu/main")
+            second = transcribe_audio_bytes(b"same_menu_audio", "audio/ogg", cache_url="twilio://menu/main")
+
+        self.assertEqual(first, "menu accesible cacheado")
+        self.assertEqual(second, "menu accesible cacheado")
         mock_openai_client.audio.transcriptions.create.assert_called_once()
 
 
