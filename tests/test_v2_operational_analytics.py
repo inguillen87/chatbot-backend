@@ -679,6 +679,14 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
             action = item.get("recommended_action") or {}
             self.assertEqual(action.get("method"), "GET")
             self.assertTrue(action.get("endpoint"))
+            self.assertTrue(action.get("href"))
+            self.assertEqual(action.get("frontend_path"), action.get("href"))
+            self.assertFalse(str(action.get("href")).startswith("/api/"))
+
+        actions_by_source = {item.get("source"): item.get("recommended_action") or {} for item in items}
+        self.assertIn("/tickets", actions_by_source.get("ticket", {}).get("href") or "")
+        self.assertIn("/pedidos/", actions_by_source.get("order", {}).get("href") or "")
+        self.assertIn("/admin/encuestas", actions_by_source.get("survey", {}).get("href") or "")
 
         encoded = str(payload).lower()
         self.assertNotIn("cliente.sensible@example.com", encoded)

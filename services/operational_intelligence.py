@@ -4,6 +4,7 @@ from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Any
 import json
+from urllib.parse import quote
 
 from sqlalchemy import or_
 
@@ -2268,18 +2269,24 @@ def _ai_ops_recommended_action(
     label: str,
     endpoint: str,
     ui_hint: str,
+    href: str | None = None,
 ) -> dict[str, Any]:
-    return {
+    action = {
         "id": action_id,
         "label": label,
         "method": "GET",
         "endpoint": endpoint,
         "ui_hint": ui_hint,
     }
+    if href:
+        action["href"] = href
+        action["frontend_path"] = href
+    return action
 
 
-def _ai_ops_ticket_items(ticket_records: list[dict[str, Any]], *, limit: int) -> list[dict[str, Any]]:
+def _ai_ops_ticket_items(tenant: TenantProfile, ticket_records: list[dict[str, Any]], *, limit: int) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
+    tenant_slug = quote(str(getattr(tenant, "slug", "") or "").strip(), safe="")
     for record in ticket_records:
         if record.get("status") in _CLOSED_STATES:
             continue
@@ -2311,6 +2318,11 @@ def _ai_ops_ticket_items(ticket_records: list[dict[str, Any]], *, limit: int) ->
                     label="Abrir caso",
                     endpoint=f"/api/v2/tickets/{record_id}" if source == "tenant_ticket" else "/api/v2/inbox/omnichannel",
                     ui_hint="open_ticket_detail",
+                    href=(
+                        f"/t/{tenant_slug}/tickets?ticket_id={quote(str(record_id), safe='')}&source={quote(source, safe='')}"
+                        if tenant_slug and record_id is not None
+                        else "/perfil?tab=tickets"
+                    ),
                 ),
                 "signals": {
                     "status": record.get("status"),
@@ -2395,6 +2407,7 @@ def _ai_ops_order_items(tenant: TenantProfile, start_date: datetime, end_date: d
                     label="Revisar pedido",
                     endpoint=f"/api/admin/tenants/{tenant.slug}/orders/{order.id}",
                     ui_hint="open_order_detail",
+                    href=f"/t/{quote(str(tenant.slug), safe='')}/pedidos/{quote(str(order.id), safe='')}",
                 ),
                 "signals": {
                     "state": getattr(order, "estado", None),
@@ -2448,6 +2461,11 @@ def _ai_ops_survey_items(surveys: dict[str, Any], *, limit: int) -> list[dict[st
                     label="Ver analitica",
                     endpoint=f"/api/v2/public/surveys/{monitor.get('public_token')}/live-results",
                     ui_hint="open_survey_analytics",
+                    href=(
+                        f"/admin/encuestas/{quote(str(record_id), safe='')}/analytics"
+                        if record_id is not None
+                        else "/admin/encuestas"
+                    ),
                 ),
                 "signals": {
                     "status": monitor.get("status"),
@@ -2466,7 +2484,7 @@ def _ai_ops_survey_items(surveys: dict[str, Any], *, limit: int) -> list[dict[st
 def build_ai_ops_queue(tenant: TenantProfile, start_date: datetime, end_date: datetime, *, limit: int = 15) -> dict[str, Any]:
     ticket_records = _collect_ticket_records(tenant, start_date, end_date)
     survey_metrics = _survey_metrics(tenant, start_date, end_date)
-    ticket_items = _ai_ops_ticket_items(ticket_records, limit=limit)
+    ticket_items = _ai_ops_ticket_items(tenant, ticket_records, limit=limit)
     order_items = _ai_ops_order_items(tenant, start_date, end_date, limit=limit)
     survey_items = _ai_ops_survey_items(survey_metrics, limit=limit)
     items = sorted([*ticket_items, *order_items, *survey_items], key=_ai_ops_priority)[:limit]
