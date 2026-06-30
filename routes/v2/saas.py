@@ -2615,7 +2615,7 @@ def _e2e_flow_qa_guidance(flow_id: str, *, endpoint: str, surface: str) -> dict[
             "suggested_command": "python -m pytest tests/test_v2_saas_contracts.py -q",
         },
         "claim_live_or_offline_helpdesk": {
-            "frontend_entry": "/chat/{ticket_id}?pin={pin}",
+            "frontend_entry": "/tracking/claim/{nro_ticket}?pin={pin}",
             "manual_test_steps": [
                 "Abrir el seguimiento publico del reclamo desde el link seguro.",
                 "Enviar una consulta desde la mesa de ayuda del ticket.",

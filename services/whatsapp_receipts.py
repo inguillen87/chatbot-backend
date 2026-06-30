@@ -1,6 +1,8 @@
 import json
 from typing import Any, Dict, Optional
 
+from services.ticket_utils import build_claim_tracking_url
+
 
 CLAIM_CREATED_TEMPLATE_NAME = "chatboc_gov_claim_created_v2"
 CLAIM_CREATED_TEMPLATE_VARIABLES = {
@@ -167,10 +169,10 @@ def build_claim_created_template_pre_message(
 ) -> Dict[str, Any]:
     """Build a Twilio Content pre-message for a municipal claim receipt.
 
-    The approved v2 template has a CTA at /t/{{2}}. We send {{2}} as
-    chat/<ticket>?pin=<pin> and the frontend redirects that route to the
-    public ticket view, keeping the approved template useful without sending a
-    broken tracking button.
+    The approved v2 template has a CTA at /t/{{2}}. Until that template is
+    replaced in Meta/Twilio, {{2}} remains chat/<ticket>?pin=<pin> because the
+    frontend redirects /t/chat/<ticket> to the public tracking page. The body
+    and all backend metadata use /tracking/claim directly.
     """
 
     ticket_code = str(ticket_nro or "").strip()
@@ -180,10 +182,9 @@ def build_claim_created_template_pre_message(
     if pin_value:
         tracking_path = f"{tracking_path}?pin={pin_value}"
 
-    base_url = str(base_chat_url or "https://www.chatboc.ar/chat").rstrip("/")
-    tracking_url = f"{base_url}/{ticket_numeric}" if ticket_numeric else base_url
-    if pin_value:
-        tracking_url = f"{tracking_url}?pin={pin_value}"
+    tracking_url = build_claim_tracking_url(base_chat_url, ticket_numeric, pin_value) or str(
+        base_chat_url or "https://www.chatboc.ar"
+    ).rstrip("/")
 
     body_lines = [
         f"Reclamo registrado: {ticket_code or 'pendiente'}",

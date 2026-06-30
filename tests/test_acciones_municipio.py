@@ -557,7 +557,7 @@ class TestAccionesMunicipio(unittest.TestCase):
 
         self.assertTrue(respuesta.get('success'))
         message = respuesta.get('message_body', '')
-        expected_url = 'https://example.com/chat/12345?pin=654321'
+        expected_url = 'https://example.com/tracking/claim/12345?pin=654321'
         self.assertIn('Ver mi Ticket', message)
         self.assertNotIn(expected_url, message)
         opciones = respuesta.get('options_list', [])
@@ -634,9 +634,9 @@ class TestAccionesMunicipio(unittest.TestCase):
             '1': 'M-12345',
             '2': 'chat/12345?pin=654321',
         })
-        self.assertIn('https://example.com/chat/12345?pin=654321', template.get('body', ''))
+        self.assertIn('https://example.com/tracking/claim/12345?pin=654321', template.get('body', ''))
         message_body = respuesta.get('message_body', '')
-        self.assertIn('Ver seguimiento: https://example.com/chat/12345?pin=654321', message_body)
+        self.assertIn('Ver seguimiento: https://example.com/tracking/claim/12345?pin=654321', message_body)
         self.assertIn('Reclamo recibido. El seguimiento quedo abierto', message_body)
         self.assertIn('Podes sumar una foto, audio o comentario', message_body)
         self.assertNotIn('Deje abierto', message_body)
@@ -645,13 +645,13 @@ class TestAccionesMunicipio(unittest.TestCase):
         self.assertEqual(respuesta.get('message_type'), 'text')
         self.assertEqual(respuesta.get('options_list'), [])
         self.assertEqual(respuesta.get('whatsapp_flow'), 'claim_status')
-        self.assertEqual(respuesta.get('tracking_url'), 'https://example.com/chat/12345?pin=654321')
-        self.assertEqual(respuesta.get('webview_url'), 'https://example.com/chat/12345?pin=654321')
-        self.assertEqual(respuesta.get('ticket_status_url'), 'https://example.com/chat/12345?pin=654321')
+        self.assertEqual(respuesta.get('tracking_url'), 'https://example.com/tracking/claim/12345?pin=654321')
+        self.assertEqual(respuesta.get('webview_url'), 'https://example.com/tracking/claim/12345?pin=654321')
+        self.assertEqual(respuesta.get('ticket_status_url'), 'https://example.com/tracking/claim/12345?pin=654321')
         self.assertEqual(respuesta.get('cta_label'), 'Ver estado')
         self.assertEqual(
             respuesta.get('data', {}).get('tracking_url'),
-            'https://example.com/chat/12345?pin=654321',
+            'https://example.com/tracking/claim/12345?pin=654321',
         )
 
     @patch('services.herramientas_municipio.geocode_address')

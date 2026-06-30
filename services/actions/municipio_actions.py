@@ -25,7 +25,7 @@ from services.categorias_municipio import (
     CATEGORIAS_SINONIMOS,
     normalizar_texto as normalizar_texto_municipio,
 )
-from services.ticket_utils import formatear_ticket_respuesta, remove_buttons_with_urls_in_message
+from services.ticket_utils import build_claim_tracking_url, formatear_ticket_respuesta, remove_buttons_with_urls_in_message
 from services.whatsapp_receipts import (
     build_claim_created_template_pre_message,
     render_ticket_whatsapp,
@@ -1114,12 +1114,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
                     "confirmation_card": claim_confirmation,
                 }
             }
-            tracking_url = None
-            if base_chat_url:
-                ticket_numeric = str(nro_ticket_str).replace("M-", "").replace("S-", "")
-                tracking_url = f"{base_chat_url.rstrip('/')}/{ticket_numeric}"
-                if pin_final:
-                    tracking_url = f"{tracking_url}?pin={pin_final}"
+            tracking_url = build_claim_tracking_url(base_chat_url, nro_ticket_str, pin_final)
             if tracking_url:
                 response_payload.update(
                     {
@@ -1289,11 +1284,8 @@ class ConsultarEstadoTicketActionHandler(BaseActionHandler):
         )
         botones = [{"texto": "Consultar otro ticket", "id_accion": "consultar_estado_ticket"}]
         municipio_config = self.context.get("municipio_config_actual", {}) if isinstance(self.context, dict) else {}
-        base_chat_url = municipio_config.get("base_chat_url", "https://www.chatboc.ar/chat")
-        ticket_numeric = str(ticket.nro_ticket).replace("M-", "").replace("S-", "")
-        tracking_url = f"{str(base_chat_url).rstrip('/')}/{ticket_numeric}"
-        if ticket.consulta_pin:
-            tracking_url = f"{tracking_url}?pin={ticket.consulta_pin}"
+        base_chat_url = municipio_config.get("base_chat_url", "https://www.chatboc.ar")
+        tracking_url = build_claim_tracking_url(base_chat_url, ticket.nro_ticket, ticket.consulta_pin)
         return {
             "success": True,
             "message_to_user": user_message,

@@ -34,9 +34,9 @@ def test_finance_probe_accepts_registered_finance_webview_route():
 
 
 def test_required_link_marker_detection_is_scenario_local():
-    bodies = "Tu reclamo esta listo: https://www.chatboc.ar/chat/123?pin=456"
+    bodies = "Tu reclamo esta listo: https://www.chatboc.ar/tracking/claim/123?pin=456"
 
-    assert _has_any_marker(bodies, ["chatboc.ar/chat/", "/api/public/tracking/experience"]) == [
-        "chatboc.ar/chat/"
+    assert _has_any_marker(bodies, ["/tracking/claim/", "/api/public/tracking/experience"]) == [
+        "/tracking/claim/"
     ]
     assert _has_any_marker("sin link", ["/checkout/", "/catalogo/"]) == []

@@ -14,6 +14,7 @@ from twilio.rest import Client
 
 from services.config_loader import cargar_configuracion_municipio
 from services.map_preview import generate_static_map
+from services.ticket_utils import build_claim_tracking_url
 
 from models import ArchivoAdjunto, TicketComentario, User
 
@@ -308,7 +309,7 @@ def _build_ticket_email_context(
     ticket_id = getattr(ticket, "id", None)
     chat_url = base_url
     if tipo_ticket == "municipio":
-        chat_url = f"{base_url}/chat/{ticket_id}" if ticket_id else base_url
+        chat_url = build_claim_tracking_url(base_url, ticket_numero, consulta_pin) or base_url
     else:
         chat_url = f"{base_url}/pyme/chat/{ticket_id}" if ticket_id else base_url
 
