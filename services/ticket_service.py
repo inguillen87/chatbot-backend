@@ -110,6 +110,7 @@ class PymeTicketCreator(TicketCreator):
             categoria=ticket_data.get("categoria", "General"),
             pregunta=ticket_data.get("pregunta"),
             nro_ticket=ticket_data.get("nro_ticket"),
+            consulta_pin=ticket_data.get("consulta_pin") or f"{random.randint(100000, 999999)}",
             rubro_id=rubro_id,
             direccion=ticket_data.get("direccion"),
             latitud=lat,

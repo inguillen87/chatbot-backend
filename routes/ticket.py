@@ -2268,31 +2268,30 @@ def get_chat_mensajes(current_user: User, ticket_id: int, anon_id: str = None, o
 
 # ---------- CHAT EN VIVO PYME: MENSAJES ----------
 @ticket_bp.route('/tickets/chat/pyme/<int:ticket_id>/mensajes', methods=['GET'])
-@token_requerido
-def get_chat_mensajes_pyme(current_user: User, ticket_id: int):
-    """Devuelve los mensajes del chat en vivo para una pyme."""
+@anon_o_token_requerido
+def get_chat_mensajes_pyme(current_user: User, ticket_id: int, anon_id: str = None, owner_user: User = None):
+    """Devuelve mensajes de chat PyME para agentes, duenios o acceso publico seguro."""
     try:
-        sala_de_chat = db.session.get(PymeTicket, ticket_id)
-        if not sala_de_chat:
-            return jsonify({"error": "Sala de chat no encontrada."}), 404
+        actor_user = _effective_ticket_actor(current_user, owner_user)
+        sala_de_chat, error_response, status_code, access = _resolve_ticket_with_access(
+            "pyme",
+            ticket_id,
+            actor_user,
+            anon_id,
+            request.args.get("pin"),
+        )
+        if error_response:
+            return error_response, status_code
 
-        es_agente_pyme = current_user.rubro_id and sala_de_chat.rubro_id == current_user.rubro_id
-        es_dueño = sala_de_chat.user_id == current_user.id
-
+        es_agente_pyme = access["es_agente"]
         if es_agente_pyme:
-            error_response = _validar_asignacion_empleado(sala_de_chat, current_user)
+            error_response = _validar_asignacion_empleado(sala_de_chat, actor_user)
             if error_response:
                 return error_response
 
-        log_ticket_debug("get_chat_mensajes_pyme", ticket_id, None, sala_de_chat)
+        log_ticket_debug("get_chat_mensajes_pyme", ticket_id, anon_id, sala_de_chat)
 
-        if sala_de_chat.user_id is None and not es_agente_pyme:
-            return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
-
-        if sala_de_chat.user_id is not None and not (es_agente_pyme or es_dueño):
-            return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
-
-        if sala_de_chat.estado == "cerrado" and not es_agente_pyme:
+        if sala_de_chat.estado == "cerrado" and not es_agente_pyme and not access["es_pin_valido"]:
             return jsonify({"error": MENSAJE_CHAT_CERRADO}), 403
 
         ultimo_mensaje_id = request.args.get('ultimo_mensaje_id', default=0, type=int)
@@ -2305,8 +2304,6 @@ def get_chat_mensajes_pyme(current_user: User, ticket_id: int):
             .order_by(TicketComentario.fecha.asc())
             .all()
         )
-        # Formatear los mensajes, renombrando "comentario" -> "texto" para
-        # mantener consistencia con el historial completo del ticket.
         mensajes_formateados = []
         for msg in mensajes_nuevos:
             data = msg.to_dict()
@@ -2315,7 +2312,6 @@ def get_chat_mensajes_pyme(current_user: User, ticket_id: int):
             data.pop("comentario", None)
             mensajes_formateados.append(data)
 
-        # Devolver una estructura consistente con get_chat_mensajes
         respuesta_final = {
             "estado_chat": sala_de_chat.estado,
             "mensajes": mensajes_formateados,
@@ -2664,33 +2660,52 @@ def responder_ciudadano_a_chat(current_user: User, ticket_id: int, anon_id: str 
 
 # ---------- CHAT EN VIVO PYME: RESPONDER CLIENTE ----------
 @ticket_bp.route('/tickets/chat/pyme/<int:ticket_id>/responder_cliente', methods=['POST'])
-@token_requerido
-def responder_cliente_a_chat(current_user: User, ticket_id: int):
-    """Permite al cliente responder en el chat de su pyme."""
-    data = request.get_json()
-    if not data or not data.get("comentario"):
-        return jsonify({"error": "El comentario no puede estar vacío."}), 400
+@ticket_bp.route('/tickets/chat/pyme/<int:ticket_id>/responder_ciudadano', methods=['POST'])
+@anon_o_token_requerido
+def responder_cliente_a_chat(current_user: User, ticket_id: int, anon_id: str = None, owner_user: User = None):
+    """Permite al cliente responder en el chat PyME desde sesion, anon_id o PIN."""
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        data = {}
+    if request.form:
+        form_payload = request.form.to_dict(flat=True)
+        for key in ("comentario", "mensaje", "texto"):
+            if key in form_payload and key not in data:
+                data[key] = form_payload.get(key)
 
-    sala_de_chat = db.session.get(PymeTicket, ticket_id)
-    if not sala_de_chat:
-        return jsonify({"error": "Sala de chat no encontrada."}), 404
+    comentario = (data.get("comentario") or data.get("mensaje") or data.get("texto") or "").strip()
+    if not comentario:
+        return jsonify({"error": "El comentario no puede estar vacio."}), 400
 
-    es_dueño = sala_de_chat.user_id == current_user.id
+    actor_user = _effective_ticket_actor(current_user, owner_user)
+    sala_de_chat, error_response, status_code, access = _resolve_ticket_with_access(
+        "pyme",
+        ticket_id,
+        actor_user,
+        anon_id,
+        request.args.get("pin"),
+    )
+    if error_response:
+        return error_response, status_code
 
-    log_ticket_debug("responder_cliente_pyme", ticket_id, None, sala_de_chat)
+    log_ticket_debug("responder_cliente_pyme", ticket_id, anon_id, sala_de_chat)
 
-    if sala_de_chat.user_id is None or not es_dueño:
+    if access["es_agente"]:
         return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
 
     if sala_de_chat.estado == "cerrado":
         return jsonify({"error": MENSAJE_CHAT_CERRADO}), 403
 
+    user_id_para_comentario = actor_user.id if access["es_dueno"] else None
+    anon_id_para_comentario = anon_id if access["es_anon_valido"] else getattr(sala_de_chat, "anon_id", None)
+
     nuevo_comentario = servicio_tickets.crear_comentario(
         ticket_id=ticket_id,
         tipo_ticket="pyme",
         comentario_data={
-            "comentario": data["comentario"],
-            "user_id": current_user.id,
+            "comentario": comentario,
+            "user_id": user_id_para_comentario,
+            "anon_id": anon_id_para_comentario,
             "es_admin": False,
             "emit_socket": False,
         },
@@ -2701,7 +2716,7 @@ def responder_cliente_a_chat(current_user: User, ticket_id: int):
             "message": f"El estado de tu ticket #{sala_de_chat.nro_ticket} ha sido actualizado a: '{sala_de_chat.estado}'.",
             "ticket_id": ticket_id,
             "tipo": "pyme",
-            "nuevo_estado": sala_de_chat.estado
+            "nuevo_estado": sala_de_chat.estado,
         }
         emit_ticket_update(data)
 
@@ -2721,7 +2736,13 @@ def responder_cliente_a_chat(current_user: User, ticket_id: int):
                 ticket_id,
                 socket_exc,
             )
-        return jsonify({"success": True, "mensaje_id": nuevo_comentario.id}), 201
+        return jsonify(
+            _build_public_ticket_reply_payload(
+                sala_de_chat,
+                "pyme",
+                nuevo_comentario,
+            )
+        ), 201
 
     return jsonify({"error": "No se pudo guardar la respuesta."}), 500
 

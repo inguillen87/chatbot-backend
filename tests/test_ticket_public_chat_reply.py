@@ -2,7 +2,7 @@ import unittest
 
 from app import create_app, db
 from config import TestConfig
-from models import MunicipioTicket, TicketComentario, User
+from models import MunicipioTicket, PymeTicket, TicketComentario, User
 
 
 class TicketPublicChatReplyTest(unittest.TestCase):
@@ -136,6 +136,89 @@ class TicketPublicChatReplyTest(unittest.TestCase):
         self.assertIn("id", payload["unified_conversation_stream"][0])
         self.assertIn("actor_type", payload["unified_conversation_stream"][0])
         self.assertIn("preview_text", payload["unified_conversation_stream"][0])
+
+    def test_public_pin_can_reply_to_pyme_ticket_chat(self):
+        ticket = PymeTicket(
+            rubro_id=77,
+            pregunta="quiero confirmar un pedido",
+            asunto="Pedido marketplace",
+            categoria="Pedidos",
+            estado="nuevo",
+            nro_ticket=445566,
+            consulta_pin="112233",
+        )
+        db.session.add(ticket)
+        db.session.commit()
+
+        response = self.client.post(
+            f"/tickets/chat/pyme/{ticket.id}/responder_cliente?pin=112233",
+            json={"comentario": "Hola, quiero hablar con ventas"},
+        )
+
+        self.assertEqual(response.status_code, 201)
+        payload = response.get_json()
+        self.assertEqual(payload["contract_version"], "tickets.public_chat_reply.v2")
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["ticket_id"], ticket.id)
+        self.assertEqual(payload["tipo"], "pyme")
+        self.assertEqual(payload["socket_room"], "pyme_77")
+        self.assertEqual(payload["delivery"]["channel"], "ticket_conversation")
+        self.assertTrue(payload["polling"]["enabled"])
+        self.assertEqual(payload["comment"]["comentario"], "Hola, quiero hablar con ventas")
+
+        comentario = TicketComentario.query.filter_by(pyme_ticket_id=ticket.id).one()
+        self.assertEqual(comentario.comentario, "Hola, quiero hablar con ventas")
+        self.assertFalse(comentario.es_admin)
+
+    def test_public_pin_can_read_pyme_ticket_chat_messages(self):
+        ticket = PymeTicket(
+            rubro_id=77,
+            pregunta="consulta de stock",
+            asunto="Consulta de stock",
+            categoria="Ventas",
+            estado="nuevo",
+            nro_ticket=445567,
+            consulta_pin="112233",
+        )
+        db.session.add(ticket)
+        db.session.flush()
+        db.session.add(
+            TicketComentario(
+                pyme_ticket_id=ticket.id,
+                comentario="Me interesa comprar 20 unidades",
+                es_admin=False,
+            )
+        )
+        db.session.commit()
+
+        response = self.client.get(f"/tickets/chat/pyme/{ticket.id}/mensajes?pin=112233")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["estado_chat"], "nuevo")
+        self.assertEqual(len(payload["mensajes"]), 1)
+        self.assertEqual(payload["mensajes"][0]["texto"], "Me interesa comprar 20 unidades")
+        self.assertIn("realtime_state", payload)
+
+    def test_public_pin_reply_rejects_invalid_pyme_pin(self):
+        ticket = PymeTicket(
+            rubro_id=77,
+            pregunta="consulta de stock",
+            asunto="Consulta de stock",
+            categoria="Ventas",
+            estado="nuevo",
+            nro_ticket=445568,
+            consulta_pin="112233",
+        )
+        db.session.add(ticket)
+        db.session.commit()
+
+        response = self.client.post(
+            f"/tickets/chat/pyme/{ticket.id}/responder_cliente?pin=000000",
+            json={"comentario": "Intento invalido"},
+        )
+
+        self.assertEqual(response.status_code, 403)
 
 
 if __name__ == "__main__":

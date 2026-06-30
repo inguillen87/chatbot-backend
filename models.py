@@ -792,6 +792,7 @@ class PymeTicket(db.Model):
     asignado_en = db.Column(db.DateTime(timezone=True), nullable=True)
     anon_id = db.Column(db.String(80), nullable=True, index=True)
     nro_ticket = db.Column(db.Integer, nullable=False, unique=True)
+    consulta_pin = db.Column(db.String(6), nullable=False, default=lambda: f"{random.randint(100000, 999999)}")
     fecha = db.Column(db.DateTime(timezone=True), default=get_local_now)
     rubro_id = db.Column(db.Integer, db.ForeignKey('rubro.id'), nullable=True)
     # archivo_url = db.Column(db.String(255), nullable=True) # Replaced by relationship
