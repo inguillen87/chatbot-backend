@@ -2904,14 +2904,6 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
                         return _finalize_early_response(flow_result, intent=reintento_intent)
                 break
 
-    llm_response_structured, _ = llamar_llm_con_fallback(
-        app=current_app,
-        mensaje_usuario=mensaje_para_llm,
-        usuario=usuario_info_for_llm,
-        historial=historial_chat_llm,
-        chat_session_id=kwargs.get("chat_session_uuid"),
-        task_type="voice" if channel == "voice" or pyme_ctx_actual.get("_voice_mode") else "whatsapp_realtime",
-    )
     contextual_notes: list[str] = []
     if isinstance(ubicacion_payload, dict) and ubicacion_payload:
         pyme_ctx_actual["ultima_ubicacion_usuario"] = ubicacion_payload
