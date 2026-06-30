@@ -618,6 +618,37 @@ def build_public_market_catalog_contract(
     public_url = f"{base_web}/{tenant.slug}/productos"
     share_text = f"Catalogo de {tenant.nombre or tenant.slug}: {public_url}"
     assisted_intake = public_market_assisted_intake(tenant, total_products=len(all_products))
+    public_api = {
+        "contract_version": "marketplace.public_api.v1",
+        "tenant_slug": tenant.slug,
+        "anonymous": True,
+        "identity_headers": ["X-Anon-Id", "X-Chat-Session-Id", "X-Tenant"],
+        "catalog": {
+            "method": "GET",
+            "endpoint": f"/api/market/{tenant.slug}/catalog?contract=marketplace",
+            "alias_endpoint": f"/api/public/tenants/{tenant.slug}/catalog?contract=marketplace",
+        },
+        "cart": {
+            "summary": {"method": "GET", "endpoint": f"/api/market/{tenant.slug}/cart"},
+            "add": {"method": "POST", "endpoint": f"/api/market/{tenant.slug}/cart/add"},
+            "update": {"method": "POST", "endpoint": f"/api/market/{tenant.slug}/cart/update"},
+            "remove": {"method": "POST", "endpoint": f"/api/market/{tenant.slug}/cart/remove"},
+            "clear": {"method": "POST", "endpoint": f"/api/market/{tenant.slug}/cart/clear"},
+            "checkout": {"method": "POST", "endpoint": f"/api/market/{tenant.slug}/cart/checkout"},
+        },
+        "checkout": {
+            "start": {"method": "POST", "endpoint": f"/api/market/{tenant.slug}/checkout/start"},
+            "requires_contact_before_checkout": True,
+            "guest_safe": True,
+            "fallback_behavior": "return_structured_plan_or_payment_error_never_tokenized_endpoint",
+        },
+        "assisted_upload": assisted_intake["submit"],
+        "tracking": {
+            "order_path_template": f"/tracking/order/{{code}}?tenant_slug={tenant.slug}",
+            "claim_path_template": f"/tracking/claim/{{code}}?tenant_slug={tenant.slug}",
+            "source": "public_follow_up_from_assisted_upload",
+        },
+    }
     return {
         "contract_version": PUBLIC_MARKET_CATALOG_CONTRACT_VERSION,
         "tenant": tenant_public_summary(tenant),
@@ -645,6 +676,7 @@ def build_public_market_catalog_contract(
         ],
         "promotions": public_catalog_promotions(tenant, owner, all_items),
         "assisted_intake": assisted_intake,
+        "public_api": public_api,
         "publicCartUrl": f"{base_web}/{tenant.slug}/cart",
         "public_cart_url": f"{base_web}/{tenant.slug}/cart",
         "whatsappShareUrl": f"https://wa.me/?text={quote_plus(share_text)}",
@@ -664,5 +696,7 @@ def build_public_market_catalog_contract(
             "show_assisted_intake": True,
             "assisted_intake_anchor_id": "market-assisted-upload",
             "empty_catalog_mode": assisted_intake["mode"],
+            "public_api_contract": public_api["contract_version"],
+            "use_public_api_endpoints": True,
         },
     }

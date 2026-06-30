@@ -157,9 +157,20 @@ def test_public_market_catalog_contract_includes_promotions(client):
     assert payload["assisted_intake"]["frontend_contract"]["submit_endpoint"] == "/api/pedidos/from-file?origen=marketplace"
     assert payload["assisted_intake"]["frontend_contract"]["max_file_mb"] == 8
     assert any(example["document_type"] == "quote_request" for example in payload["assisted_intake"]["text_examples"])
+    assert payload["public_api"]["contract_version"] == "marketplace.public_api.v1"
+    assert payload["public_api"]["anonymous"] is True
+    assert payload["public_api"]["catalog"]["endpoint"] == f"/api/market/{tenant.slug}/catalog?contract=marketplace"
+    assert payload["public_api"]["catalog"]["alias_endpoint"] == f"/api/public/tenants/{tenant.slug}/catalog?contract=marketplace"
+    assert payload["public_api"]["cart"]["add"]["endpoint"] == f"/api/market/{tenant.slug}/cart/add"
+    assert payload["public_api"]["checkout"]["start"]["endpoint"] == f"/api/market/{tenant.slug}/checkout/start"
+    assert payload["public_api"]["checkout"]["fallback_behavior"] == "return_structured_plan_or_payment_error_never_tokenized_endpoint"
+    assert payload["public_api"]["assisted_upload"]["endpoint"] == "/api/pedidos/from-file?origen=marketplace"
+    assert payload["public_api"]["tracking"]["order_path_template"] == f"/tracking/order/{{code}}?tenant_slug={tenant.slug}"
     assert payload["frontend_contract"]["show_promotions_strip"] is True
     assert payload["frontend_contract"]["show_faceted_filters"] is True
     assert payload["frontend_contract"]["show_assisted_intake"] is True
+    assert payload["frontend_contract"]["public_api_contract"] == "marketplace.public_api.v1"
+    assert payload["frontend_contract"]["use_public_api_endpoints"] is True
 
 
 def test_public_market_catalog_contract_for_empty_catalog_promotes_assisted_intake(client):
@@ -202,6 +213,8 @@ def test_market_catalog_contract_matches_public_catalog_contract_shape(client):
         assert payload["facets"]["categories"]
         assert payload["promotions"]["contract_version"] == "public.catalog_promotions.v1"
         assert payload["frontend_contract"]["render_as"] == "marketplace_catalog"
+        assert payload["public_api"]["contract_version"] == "marketplace.public_api.v1"
+        assert payload["public_api"]["cart"]["summary"]["endpoint"] == f"/api/market/{tenant.slug}/cart"
     assert set(public_payload.keys()) == set(market_payload.keys())
 
 
