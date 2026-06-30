@@ -124,6 +124,16 @@ class PublicResolverWidgetConfigContractTestCase(unittest.TestCase):
         self.assertFalse(body["visibility_rules"]["allow_websocket"])
         self.assertFalse(body["support_channels"]["live_chat"]["realtime"])
         self.assertFalse(body["support_channels"]["live_chat"]["socket_enabled"])
+        fixed_menu_audio = body["fixed_menu_audio"]
+        self.assertEqual(fixed_menu_audio["audio_cache_policy"]["kind"], "fixed_menu")
+        self.assertEqual(
+            fixed_menu_audio["tts_cache_namespace"],
+            "whatsapp:menu:chatboc-platform:platform-selector:widget:full:v1",
+        )
+        self.assertEqual(
+            body["builder_config"]["accessibility"]["fixed_menu_audio"],
+            fixed_menu_audio,
+        )
         self.assertFalse(body["suppress_global_widget"])
 
     def test_widget_config_without_tenant_uses_forwarded_platform_host(self):

@@ -48,6 +48,7 @@ from services.realtime_voice_profiles import (
     resolve_realtime_voice,
 )
 from services.plan_access import integration_access_payload
+from services.common_utils import build_menu_tts_cache_namespace, clean_text_for_tts
 
 public_resolver_bp = Blueprint("public_resolver_bp", __name__, url_prefix="/api/public")
 public_municipios_bp = Blueprint("public_municipios_bp", __name__)
@@ -646,6 +647,16 @@ def _platform_widget_config_payload() -> dict:
         "quick_menu": quick_menu,
         "sector_groups": sector_groups,
     }
+    fixed_menu_audio = _maybe_warm_widget_fixed_menu_audio(
+        _widget_fixed_menu_audio_contract(
+            {"slug": "chatboc-platform", "nombre": "Chatboc", "tipo": "platform"},
+            quick_menu,
+            surface="widget",
+            menu_key="platform_selector",
+            version="v1",
+        ),
+        {},
+    )
     builder_config = {
         "quick_menu": quick_menu,
         "onboarding": onboarding,
@@ -660,6 +671,10 @@ def _platform_widget_config_payload() -> dict:
         "realtime_trial_policy": realtime_trial_policy,
         "visibility_rules": visibility_rules,
         "ui_hints": _widget_ui_hints(mode="platform_selector"),
+        "fixed_menu_audio": fixed_menu_audio,
+        "accessibility": {
+            "fixed_menu_audio": fixed_menu_audio,
+        },
         "experience_blueprint": experience,
         "animation_tokens": experience.get("animation_tokens") or {},
         "first_visit": experience.get("first_visit") or {},
@@ -681,6 +696,7 @@ def _platform_widget_config_payload() -> dict:
             "realtime": realtime,
             "visibility_rules": visibility_rules,
             "ui_hints": builder_config["ui_hints"],
+            "fixed_menu_audio": fixed_menu_audio,
         },
         "builder_config": builder_config,
         "quick_menu": quick_menu,
@@ -691,6 +707,7 @@ def _platform_widget_config_payload() -> dict:
         "realtime": realtime,
         "visibility_rules": visibility_rules,
         "ui_hints": builder_config["ui_hints"],
+        "fixed_menu_audio": fixed_menu_audio,
         "suppress_global_widget": False,
         "integration_preview": False,
     }
@@ -892,6 +909,133 @@ def _quick_menu_for_widget(tenant: TenantProfile) -> list[dict]:
         {"id": "menu_estado_pedido", "label": "Estado pedido", "intent": "estado_pedido"},
         {"id": "menu_subir_catalogo", "label": "Subir PDF/Excel", "intent": "subir_catalogo"},
     ]
+
+
+def _tenant_attr(tenant: TenantProfile | dict, name: str, default=None):
+    if isinstance(tenant, dict):
+        return tenant.get(name, default)
+    return getattr(tenant, name, default)
+
+
+def _quick_menu_audio_text(tenant: TenantProfile | dict, quick_menu: list[dict]) -> str:
+    tenant_name = _tenant_attr(tenant, "nombre") or _tenant_attr(tenant, "slug") or "Chatboc"
+    labels: list[str] = []
+    for item in quick_menu:
+        if not isinstance(item, dict):
+            continue
+        label = item.get("label") or item.get("title") or item.get("texto") or item.get("id")
+        label = clean_text_for_tts(str(label or "")).strip()
+        if label:
+            labels.append(label)
+
+    option_text = " ".join(
+        f"Opcion {idx}, {label}." for idx, label in enumerate(labels[:8], start=1)
+    )
+    return " ".join(
+        part
+        for part in [
+            f"Menu principal de {clean_text_for_tts(str(tenant_name)).strip()}.",
+            "Elegi una opcion o escribi tu consulta.",
+            option_text,
+            "Tambien podes pedir ayuda, enviar audio o usar el teclado.",
+        ]
+        if part
+    )
+
+
+def _fixed_menu_audio_policy() -> dict:
+    return {
+        "kind": "fixed_menu",
+        "scope": "tenant",
+        "cache": "tts_audio_cache",
+        "inclusive": True,
+    }
+
+
+def _widget_fixed_menu_audio_contract(
+    tenant: TenantProfile | dict,
+    quick_menu: list[dict],
+    *,
+    surface: str = "widget",
+    menu_key: str = "quick_menu",
+    version: str = "v1",
+) -> dict:
+    text = _quick_menu_audio_text(tenant, quick_menu)
+    tenant_slug = _tenant_attr(tenant, "slug") or "chatboc-platform"
+    namespace = build_menu_tts_cache_namespace(
+        context={"tenant_slug": tenant_slug, "channel": surface},
+        tenant_name=_tenant_attr(tenant, "nombre") or tenant_slug,
+        menu_key=menu_key,
+        channel=surface,
+        reduced=False,
+        version=version,
+    )
+    return {
+        "enabled": bool(quick_menu),
+        "surface": surface,
+        "menu_key": menu_key,
+        "tts_cache_namespace": namespace,
+        "tts_cache_text": text,
+        "audio_text": text,
+        "tts_voice": os.getenv("OPENAI_TTS_WIDGET_MENU_VOICE", "shimmer"),
+        "tts_model": os.getenv("OPENAI_TTS_WIDGET_MENU_MODEL", "tts-1-hd"),
+        "tts_speed": 0.92,
+        "audio_cache_policy": _fixed_menu_audio_policy(),
+        "warmup": {
+            "enabled": False,
+            "status": "not_requested",
+        },
+    }
+
+
+def _warmup_enabled_for_fixed_menu_audio(cfg: dict | None) -> bool:
+    env_value = str(os.getenv("TTS_FIXED_MENU_WARMUP_ENABLED") or "").strip().lower()
+    env_enabled = env_value in {"1", "true", "yes", "si", "on"}
+    return env_enabled or _config_flag(
+        cfg,
+        "tts_fixed_menu_warmup_enabled",
+        "widget_fixed_menu_audio_warmup",
+        "fixed_menu_audio_warmup",
+        default=False,
+    )
+
+
+def _maybe_warm_widget_fixed_menu_audio(contract: dict, cfg: dict | None = None) -> dict:
+    if not isinstance(contract, dict) or not contract.get("enabled"):
+        return contract
+
+    warmup_enabled = _warmup_enabled_for_fixed_menu_audio(cfg)
+    contract["warmup"] = {
+        "enabled": warmup_enabled,
+        "status": "not_requested",
+    }
+    if not warmup_enabled:
+        return contract
+
+    try:
+        from services.tts_orchestrator import warm_tts_cache
+
+        result = warm_tts_cache([contract])
+    except Exception as exc:  # pragma: no cover - defensive public endpoint guard
+        current_app.logger.warning("WIDGET_TTS_WARMUP_FAILED namespace=%s error=%s", contract.get("tts_cache_namespace"), exc)
+        contract["warmup"] = {
+            "enabled": True,
+            "status": "failed",
+            "reason": "exception",
+        }
+        return contract
+
+    first_item = (result.get("items") or [{}])[0]
+    contract["warmup"] = {
+        "enabled": True,
+        "status": first_item.get("status") or "failed",
+        "requested": result.get("requested", 0),
+        "ready": result.get("ready", 0),
+        "failed": result.get("failed", 0),
+    }
+    if first_item.get("audio_url"):
+        contract["audio_url"] = first_item["audio_url"]
+    return contract
 
 
 
@@ -1648,6 +1792,16 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
     rubro_profile = _tenant_rubro_profile(tenant)
     demo_trial = _demo_trial_payload_for_widget(tenant, cfg)
     quick_menu = _quick_menu_for_widget(tenant)
+    fixed_menu_audio = _maybe_warm_widget_fixed_menu_audio(
+        _widget_fixed_menu_audio_contract(
+            tenant,
+            quick_menu,
+            surface="widget",
+            menu_key="quick_menu",
+            version="v1",
+        ),
+        cfg,
+    )
     education_profile = rubro_profile.get("education_profile") if isinstance(rubro_profile, dict) else None
     experience_blueprint = build_demo_experience_contract(
         tenant_type=tenant.tipo,
@@ -1747,6 +1901,10 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
         "rubro_profile": rubro_profile,
         "demo_trial": demo_trial,
         "quick_menu": quick_menu,
+        "fixed_menu_audio": fixed_menu_audio,
+        "accessibility": {
+            "fixed_menu_audio": fixed_menu_audio,
+        },
         "experience_blueprint": experience_blueprint,
         "first_visit": first_visit,
         "sample_conversations": sample_conversations,
@@ -1788,6 +1946,7 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
         "rubro_profile": rubro_profile,
         "demo_trial": demo_trial,
         "quick_menu": quick_menu,
+        "fixed_menu_audio": fixed_menu_audio,
         "experience_blueprint": experience_blueprint,
         "first_visit": first_visit,
         "sample_conversations": sample_conversations,
@@ -2380,6 +2539,7 @@ def widget_config():
         "widget": widget_payload,
         "builder_config": widget_payload.get("builder_config", {}),
         "quick_menu": widget_payload.get("quick_menu", []),
+        "fixed_menu_audio": widget_payload.get("fixed_menu_audio", {}),
         "onboarding": widget_payload.get("onboarding", {}),
         "media_capabilities": widget_payload.get("media_capabilities", {}),
         "conversion_ctas": widget_payload.get("conversion_ctas", {}),

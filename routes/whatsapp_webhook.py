@@ -2543,6 +2543,295 @@ def _resolve_public_url(url: Optional[str], base_url: str) -> Optional[str]:
     return f"{base}/{url}"
 
 
+WHATSAPP_FLOW_CONTRACT_VERSION = "whatsapp.flow_contract.v1"
+
+WHATSAPP_FLOW_CONFIG: Dict[str, Dict[str, Any]] = {
+    "claim_status": {
+        "label": "Ver estado",
+        "kind": "claim_status_webview",
+        "url_keys": ("ticket_status_url", "tracking_url", "ticket_url", "reclamo_url", "public_status_url"),
+        "reply_options": (
+            {"texto": "Actualizar reclamo", "action_id": "consultar_estado_reclamo"},
+            {"texto": "Menú", "action_id": "menu_principal"},
+        ),
+    },
+    "order_catalog": {
+        "label": "Abrir catálogo",
+        "kind": "catalog_order_webview",
+        "url_keys": (
+            "catalog_url",
+            "catalogo_url",
+            "public_catalog_url",
+            "checkout_url",
+            "order_url",
+            "pedido_url",
+            "tracking_url",
+        ),
+        "reply_options": (
+            {"texto": "Buscar producto", "action_id": "ver_catalogo_pyme_buscar_otra"},
+            {"texto": "Estado pedido", "action_id": "pyme_estado_pedido"},
+        ),
+    },
+    "survey": {
+        "label": "Responder encuesta",
+        "kind": "survey_vote_webview",
+        "url_keys": ("survey_url", "encuesta_url", "public_survey_url", "share_url", "vote_url"),
+        "reply_options": (
+            {"texto": "Ver encuestas", "action_id": "mostrar_menu_encuestas"},
+            {"texto": "Menú", "action_id": "menu_principal"},
+        ),
+    },
+}
+
+
+def _safe_whatsapp_webview_url(raw_url: Optional[Any], base_url: str) -> Optional[str]:
+    """Resolve a payload webview URL and keep only HTTPS links.
+
+    WhatsApp CTAs are user-visible and may come from tenant configuration or
+    LLM-adjacent payloads, so this function intentionally rejects javascript,
+    data, protocol-relative and plain HTTP URLs. Relative paths are allowed only
+    when the current backend base URL is HTTPS.
+    """
+
+    if raw_url is None:
+        return None
+    candidate = str(raw_url).strip()
+    if not candidate or candidate.startswith("//"):
+        return None
+
+    parsed = urlsplit(candidate)
+    if parsed.scheme and parsed.scheme.lower() != "https":
+        return None
+
+    base = (base_url or "").strip().rstrip("/")
+    if not parsed.scheme:
+        base_parts = urlsplit(base)
+        if base_parts.scheme.lower() != "https" or not base_parts.netloc:
+            return None
+
+    resolved = _resolve_public_url(candidate, base)
+    if not resolved:
+        return None
+
+    resolved_parts = urlsplit(resolved)
+    if resolved_parts.scheme.lower() != "https" or not resolved_parts.netloc:
+        return None
+    return urlunsplit(
+        (
+            "https",
+            resolved_parts.netloc,
+            resolved_parts.path or "/",
+            resolved_parts.query,
+            "",
+        )
+    )
+
+
+def _payload_value(payload: Dict[str, Any], *keys: str) -> Optional[Any]:
+    for key in keys:
+        if key in payload and payload.get(key):
+            return payload.get(key)
+
+    nested_containers = (
+        payload.get("data"),
+        payload.get("datos"),
+        payload.get("metadata"),
+        payload.get("whatsapp_receipt"),
+    )
+    for container in nested_containers:
+        if not isinstance(container, dict):
+            continue
+        for key in keys:
+            if container.get(key):
+                return container.get(key)
+    return None
+
+
+def _normalize_whatsapp_options(raw_options: Any) -> List[Dict[str, Any]]:
+    if not isinstance(raw_options, list):
+        return []
+    normalized: List[Dict[str, Any]] = []
+    for item in raw_options:
+        if isinstance(item, dict):
+            normalized.append(dict(item))
+    return normalized
+
+
+def _option_identity(option: Dict[str, Any]) -> str:
+    for key in ("action_id", "id", "url", "texto", "label", "title"):
+        value = option.get(key)
+        if value:
+            return str(value).strip().lower()
+    return ""
+
+
+def _detect_whatsapp_flow_kind(payload: Dict[str, Any]) -> Optional[str]:
+    explicit = (
+        payload.get("whatsapp_flow")
+        or payload.get("flow_kind")
+        or payload.get("template_kind")
+    )
+    if isinstance(payload.get("webview"), dict):
+        explicit = explicit or payload["webview"].get("flow_kind") or payload["webview"].get("kind")
+    for option in _normalize_whatsapp_options(payload.get("options_list") or payload.get("botones")):
+        explicit = explicit or option.get("flow_kind") or option.get("whatsapp_flow")
+    explicit_text = str(explicit or "").strip().lower()
+    if explicit_text in WHATSAPP_FLOW_CONFIG:
+        return explicit_text
+    if explicit_text in {"claim", "reclamo", "estado_reclamo", "ticket_status"}:
+        return "claim_status"
+    if explicit_text in {"pedido", "order", "catalog", "catalogo", "checkout"}:
+        return "order_catalog"
+    if explicit_text in {"encuesta", "survey", "votacion", "poll"}:
+        return "survey"
+
+    for flow_kind, config in WHATSAPP_FLOW_CONFIG.items():
+        if _payload_value(payload, *config["url_keys"]):
+            return flow_kind
+
+    structured_hints = {
+        "claim_status": ("ticket_id", "ticket_nro", "nro_ticket", "consulta_pin", "reclamo_id"),
+        "order_catalog": ("pedido_id", "nro_pedido", "cart_id", "catalog_items", "catalogo"),
+        "survey": ("encuesta_id", "survey_id", "poll_id"),
+    }
+    for flow_kind, keys in structured_hints.items():
+        if _payload_value(payload, *keys):
+            return flow_kind
+
+    has_url_cta = bool(
+        payload.get("webview_url")
+        or payload.get("cta_url")
+        or any(
+            option.get("url")
+            for option in _normalize_whatsapp_options(payload.get("options_list") or payload.get("botones"))
+        )
+    )
+    if has_url_cta:
+        source_text = " ".join(
+            str(payload.get(key) or "")
+            for key in ("fuente", "accion_backend", "message_type")
+        ).lower()
+        if any(token in source_text for token in ("encuesta", "survey", "votacion", "poll")):
+            return "survey"
+        if any(token in source_text for token in ("catalog", "catalogo", "pedido", "checkout", "carrito")):
+            return "order_catalog"
+        if any(token in source_text for token in ("reclamo", "ticket", "estado")):
+            return "claim_status"
+    return None
+
+
+def _first_safe_payload_url(payload: Dict[str, Any], flow_kind: str, base_url: str) -> Optional[str]:
+    config = WHATSAPP_FLOW_CONFIG.get(flow_kind) or {}
+    candidates: List[Any] = []
+    direct_webview = payload.get("webview")
+    if isinstance(direct_webview, dict):
+        candidates.extend([direct_webview.get("url"), direct_webview.get("href")])
+    candidates.extend(
+        [
+            payload.get("webview_url"),
+            payload.get("cta_url"),
+            payload.get("url"),
+            _payload_value(payload, *config.get("url_keys", ())),
+        ]
+    )
+    for option in _normalize_whatsapp_options(payload.get("options_list") or payload.get("botones")):
+        if option.get("url"):
+            candidates.append(option.get("url"))
+
+    for candidate in candidates:
+        safe = _safe_whatsapp_webview_url(candidate, base_url)
+        if safe:
+            return safe
+    return None
+
+
+def _normalize_whatsapp_flow_contract(payload: Dict[str, Any], *, base_url: str) -> Dict[str, Any]:
+    """Canonicalize local WhatsApp/webview CTA payload metadata.
+
+    This does not infer user intent. It only upgrades already-structured backend
+    responses so WhatsApp, webviews and future frontend clients see the same
+    CTA contract with a clean text fallback.
+    """
+
+    if not isinstance(payload, dict):
+        return payload
+
+    flow_kind = _detect_whatsapp_flow_kind(payload)
+    if not flow_kind:
+        return payload
+
+    config = WHATSAPP_FLOW_CONFIG[flow_kind]
+    safe_url = _first_safe_payload_url(payload, flow_kind, base_url)
+
+    options = _normalize_whatsapp_options(payload.get("options_list"))
+    if not options:
+        options = _normalize_whatsapp_options(payload.get("botones"))
+
+    existing = {_option_identity(option) for option in options}
+    ctas: List[Dict[str, Any]] = []
+
+    if safe_url:
+        label = str(payload.get("cta_label") or config["label"]).strip() or config["label"]
+        webview = {
+            "kind": config["kind"],
+            "flow_kind": flow_kind,
+            "label": label,
+            "url": safe_url,
+            "source": "whatsapp_webhook_contract",
+        }
+        payload["webview"] = webview
+        ctas.append({"type": "webview", "label": label, "url": safe_url, "flow_kind": flow_kind})
+
+        url_option = {
+            "texto": label,
+            "type": "url",
+            "url": safe_url,
+            "webview": True,
+            "flow_kind": flow_kind,
+        }
+        if _option_identity(url_option) not in existing:
+            options.insert(0, url_option)
+            existing.add(_option_identity(url_option))
+
+    max_actionable_options = 2 if safe_url else 3
+    for reply in config["reply_options"]:
+        if len([option for option in options if not option.get("url")]) >= max_actionable_options:
+            break
+        reply_option = dict(reply)
+        reply_option.setdefault("id", reply_option.get("action_id"))
+        identity = _option_identity(reply_option)
+        if identity and identity not in existing:
+            options.append(reply_option)
+            existing.add(identity)
+
+    if options:
+        payload["options_list"] = options
+        payload["botones"] = options
+
+    payload["whatsapp_ctas"] = ctas
+    payload["whatsapp_contract"] = {
+        "contract_version": WHATSAPP_FLOW_CONTRACT_VERSION,
+        "flow_kind": flow_kind,
+        "surface": "whatsapp",
+        "render_as": "interactive_reply_with_safe_webview_cta" if safe_url else "interactive_reply",
+        "webview_safe": bool(safe_url),
+        "fallback": {
+            "mode": "clean_text_with_url",
+            "links": [safe_url] if safe_url else [],
+        },
+    }
+
+    actionable_count = len([option for option in options if not option.get("url")])
+    if actionable_count and len(options) <= 10:
+        payload["_force_whatsapp_interactive"] = True
+        if actionable_count <= 3:
+            payload["message_type"] = "interactive_buttons"
+        else:
+            payload["message_type"] = "interactive_list"
+
+    return payload
+
+
 def _resolve_public_media_url(url: Optional[str], default_base_url: Optional[str] = None) -> Optional[str]:
     """Return an absolute backend URL for media downloaded by Twilio."""
 
@@ -2812,6 +3101,7 @@ def _resolve_approved_whatsapp_template_sid(
             content_sid = (row.content_sid or "").strip()
             if status == "approved" and content_sid.startswith("HX"):
                 return content_sid
+            return None
 
     return _resolve_approved_whatsapp_template_sid_from_manifest(
         normalized_name,
@@ -3323,15 +3613,16 @@ def _ensure_welcome_audio_payload(payload: dict) -> None:
 
     has_menu_content = bool(payload.get("options_list") or payload.get("categorias") or payload.get("botones"))
     audio_policy = payload.get("audio_cache_policy") if isinstance(payload.get("audio_cache_policy"), dict) else {}
+    is_fixed_menu_audio = bool(
+        audio_policy.get("kind") == "fixed_menu"
+        or payload.get("menu_audio_enabled")
+        or payload.get("tts_cache_namespace")
+    )
     prefers_cached_menu_audio = bool(
         payload.get("audio_url")
         and has_menu_content
         and payload.get("audio_text")
-        and (
-            payload.get("menu_audio_enabled")
-            or audio_policy.get("kind") == "fixed_menu"
-            or payload.get("tts_cache_namespace")
-        )
+        and is_fixed_menu_audio
     )
     fallback_audio_url = payload.get("audio_url") if prefers_cached_menu_audio else None
     if prefers_cached_menu_audio:
@@ -3360,7 +3651,9 @@ def _ensure_welcome_audio_payload(payload: dict) -> None:
     if not payload.get("generar_audio") and not payload.get("audio_text"):
         return
 
-    text_to_speak = payload.get("audio_text")
+    text_to_speak = payload.get("tts_cache_text") if is_fixed_menu_audio else None
+    if not text_to_speak:
+        text_to_speak = payload.get("audio_text")
     if not text_to_speak:
         categorias_for_audio = payload.get("categorias")
         options_for_audio = payload.get("options_list") or payload.get("botones") or []
@@ -3434,6 +3727,8 @@ def _prepare_cached_welcome_audio(payload: dict, *, tenant_profile=None, client_
         payload["tts_cache_namespace"] = next_namespace
     else:
         payload.setdefault("tts_cache_namespace", next_namespace)
+    if payload.get("audio_text") and not payload.get("tts_cache_text"):
+        payload["tts_cache_text"] = payload.get("audio_text")
     payload.setdefault(
         "audio_cache_policy",
         {
@@ -3477,6 +3772,13 @@ def _send_delayed_payload(client, to_number: str, from_number: str, payload: dic
         with app.app_context():
             from services.response_formatter import build_interactive_response
 
+            delayed_base_url = (
+                payload.get("_base_url")
+                or payload.get("_request_url_root")
+                or app.config.get("APP_BASE_URL")
+                or ""
+            )
+            _normalize_whatsapp_flow_contract(payload, base_url=str(delayed_base_url).rstrip("/"))
             _ensure_welcome_audio_payload(payload)
 
             audio_url = payload.get("audio_url")
@@ -4024,7 +4326,7 @@ def whatsapp_webhook():
                 should_send_sticker = bool(resolved_sticker_url) and not sticker_state.get("disabled", False)
                 sticker_metadata_allowed = True
                 public_welcome_identity = (
-                    f"{assistant_name} - {municipio_name}"
+                    f"{assistant_name} de {municipio_name}"
                     if is_municipio_client and assistant_name
                     else municipio_name
                     or assistant_name
@@ -5312,6 +5614,11 @@ def whatsapp_webhook():
             if receipt_payload.get("media_url"):
                 bot_response_dict["image_url"] = receipt_payload.get("media_url")
 
+        response_base_url = (
+            (current_app.config.get("APP_BASE_URL") or "").rstrip("/")
+            or (request.url_root or "").rstrip("/")
+        )
+        _normalize_whatsapp_flow_contract(bot_response_dict, base_url=response_base_url)
         body_text = bot_response_dict.get("message_body", "")
 
         # This call will modify bot_response_dict to include context for the numeric menu

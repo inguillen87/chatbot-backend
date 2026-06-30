@@ -35,6 +35,9 @@ def test_get_anomaly_report_includes_top_anomalies_metadata(monkeypatch):
     payload = svc.get_anomaly_report(10, burst_threshold=1)
 
     assert "severity" in payload
+    assert payload["advisory_policy"]["mutates_operational_state"] is False
+    assert payload["state_mutation"]["applied"] is False
+    assert payload["thresholds"]["risk_score_high"] == 65
     assert isinstance(payload["top_anomalies"], list)
     assert payload["top_anomalies"]
     first = payload["top_anomalies"][0]
@@ -71,6 +74,7 @@ def test_get_heatmap_exposes_render_contract_hierarchy(monkeypatch):
     assert payload["render_contract"]["state"] == "ready"
     assert payload["render_contract"]["chart_hierarchy"][0] == "echarts"
     assert payload["render_contract"]["map_hierarchy"][0] == "maplibre"
+    assert payload["ai_policy"]["state_mutation_allowed"] is False
 
 
 def test_category_heatmap_layers_publish_maplibre_enterprise_contract(monkeypatch):
@@ -111,3 +115,44 @@ def test_category_heatmap_layers_publish_maplibre_enterprise_contract(monkeypatc
     assert layers["categories"][0]["color"]
     assert layers["categories"][0]["event_count"] == 1
     assert layers["categories"][0]["total_weight"] == 8
+
+
+def test_get_executive_brief_uses_gemini_advisory_contract(monkeypatch):
+    encuesta = SimpleNamespace(id=88, titulo="Movilidad urbana")
+    summary = {
+        "total_respuestas": 42,
+        "participantes_unicos": 38,
+        "tasa_completitud": 91.2,
+    }
+    forecast = {"projected_total": 60, "horizon_minutes": 120, "momentum": "subiendo"}
+    alerts = {"alerts": [{"type": "participation_spike"}]}
+
+    monkeypatch.setenv("ENCUESTAS_AI_BRIEF_PROVIDERS", "gemini")
+    monkeypatch.setattr(svc, "get_encuesta", lambda encuesta_id: encuesta)
+    monkeypatch.setattr(svc, "get_summary", lambda encuesta_id, filtros=None: summary)
+    monkeypatch.setattr(svc, "get_forecast", lambda encuesta_id, filtros=None: forecast)
+    monkeypatch.setattr(svc, "get_alerts", lambda encuesta_id, filtros=None: alerts)
+    monkeypatch.setattr(
+        svc,
+        "_generate_gemini_executive_brief",
+        lambda encuesta_obj, summary_obj, forecast_obj, alerts_obj: {
+            "contract_version": svc.SURVEY_AI_BRIEF_CONTRACT_VERSION,
+            "provider": "gemini",
+            "model": "gemini-test",
+            "headline": "La participacion acelera en zonas clave.",
+            "insights": ["Revisar barrios con mayor traccion."],
+            "risk_level": "medium",
+            "advisory_policy": dict(svc.SURVEY_AI_ADVISORY_POLICY),
+            "state_mutation": {"requested": False, "applied": False},
+        },
+    )
+
+    payload = svc.get_executive_brief(88)
+
+    assert payload["contract_version"] == "encuestas.ai_executive_brief.v1"
+    assert payload["ai_enhanced"] is True
+    assert payload["ai_provider"] == "gemini"
+    assert payload["ai_model"] == "gemini-test"
+    assert payload["ai_policy"]["mutates_operational_state"] is False
+    assert payload["state_mutation"]["applied"] is False
+    assert payload["risk_level"] == "medium"

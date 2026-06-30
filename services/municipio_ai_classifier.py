@@ -7,6 +7,20 @@ from services.categorias_municipio import CATEGORIAS_RECLAMO, normalizar_texto
 logger = logging.getLogger(__name__)
 
 RECLAMO_AI_ENRICHMENT_CONTRACT_VERSION = "municipio.reclamo_ai_enrichment.v1"
+RECLAMO_AI_ADVISORY_POLICY = {
+    "advisory_only": True,
+    "mutates_operational_state": False,
+    "state_mutation_allowed": False,
+    "python_handlers_remain_authority": True,
+    "requires_operator_confirmation": True,
+}
+DEFAULT_RECLAMO_AI_THRESHOLDS = {
+    "category_min_score": 0.72,
+    "priority_min_score": 0.66,
+    "signal_min_score": 0.62,
+    "sentiment_min_score": 0.56,
+}
+DEFAULT_RECLAMO_AI_MAX_TEXT_CHARS = 4000
 
 RECLAMO_OPERATIONAL_SIGNAL_LABELS = {
     "riesgo_personas": "riesgo para personas",
@@ -34,6 +48,44 @@ def _float_env(name: str, default: float) -> float:
         return default
 
 
+def _bounded_float_env(name: str, default: float, *, min_value: float = 0.0, max_value: float = 1.0) -> float:
+    value = _float_env(name, default)
+    return max(min_value, min(max_value, value))
+
+
+def _int_env(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+
+
+def reclamo_ai_thresholds() -> dict[str, float]:
+    return {
+        "category_min_score": _bounded_float_env(
+            "HUGGINGFACE_RECLAMO_CATEGORY_MIN_SCORE",
+            DEFAULT_RECLAMO_AI_THRESHOLDS["category_min_score"],
+        ),
+        "priority_min_score": _bounded_float_env(
+            "HUGGINGFACE_RECLAMO_PRIORITY_MIN_SCORE",
+            DEFAULT_RECLAMO_AI_THRESHOLDS["priority_min_score"],
+        ),
+        "signal_min_score": _bounded_float_env(
+            "HUGGINGFACE_RECLAMO_SIGNAL_MIN_SCORE",
+            DEFAULT_RECLAMO_AI_THRESHOLDS["signal_min_score"],
+        ),
+        "sentiment_min_score": _bounded_float_env(
+            "HUGGINGFACE_SENTIMENT_MIN_SCORE",
+            DEFAULT_RECLAMO_AI_THRESHOLDS["sentiment_min_score"],
+        ),
+    }
+
+
+def _clean_reclamo_text(text: Any) -> str:
+    max_chars = max(500, min(_int_env("AI_RECLAMO_ENRICHMENT_MAX_TEXT_CHARS", DEFAULT_RECLAMO_AI_MAX_TEXT_CHARS), 12000))
+    return str(text or "").strip()[:max_chars]
+
+
 def _normalize_result_label(label: Any, allowed_labels: list[str]) -> Optional[str]:
     normalized = normalizar_texto(str(label or ""))
     if not normalized:
@@ -57,9 +109,8 @@ def _top_candidates(results: list[dict], allowed_labels: list[str], limit: int =
         except (TypeError, ValueError):
             score = 0.0
         candidates.append({"label": label, "score": round(score, 4)})
-        if len(candidates) >= limit:
-            break
-    return candidates
+    candidates.sort(key=lambda item: float(item.get("score") or 0), reverse=True)
+    return candidates[:limit]
 
 
 def _top_code_candidates(results: list[dict], labels_by_code: dict[str, str], limit: int = 8) -> list[dict]:
@@ -85,9 +136,8 @@ def _top_code_candidates(results: list[dict], labels_by_code: dict[str, str], li
                 "score": round(score, 4),
             }
         )
-        if len(candidates) >= limit:
-            break
-    return candidates
+    candidates.sort(key=lambda item: float(item.get("score") or 0), reverse=True)
+    return candidates[:limit]
 
 
 def infer_reclamo_category(text: str, categories: list[str] | None = None) -> Optional[dict]:
@@ -116,7 +166,7 @@ def infer_reclamo_category(text: str, categories: list[str] | None = None) -> Op
     if not results:
         return None
 
-    min_score = _float_env("HUGGINGFACE_RECLAMO_CATEGORY_MIN_SCORE", 0.72)
+    min_score = reclamo_ai_thresholds()["category_min_score"]
     candidates = _top_candidates(results, allowed_labels)
     if not candidates:
         return None
@@ -133,6 +183,8 @@ def infer_reclamo_category(text: str, categories: list[str] | None = None) -> Op
     return {
         "categoria": best["label"],
         "score": best["score"],
+        "threshold": min_score,
+        "meets_threshold": True,
         "provider": "huggingface_zero_shot",
         "candidates": candidates,
     }
@@ -161,7 +213,7 @@ def infer_reclamo_priority(text: str) -> Optional[dict]:
     if not candidates:
         return None
 
-    min_score = _float_env("HUGGINGFACE_RECLAMO_PRIORITY_MIN_SCORE", 0.66)
+    min_score = reclamo_ai_thresholds()["priority_min_score"]
     best = candidates[0]
     if float(best["score"]) < min_score:
         return None
@@ -169,6 +221,8 @@ def infer_reclamo_priority(text: str) -> Optional[dict]:
     return {
         "prioridad": best["label"],
         "score": best["score"],
+        "threshold": min_score,
+        "meets_threshold": True,
         "provider": "huggingface_zero_shot",
         "candidates": candidates,
     }
@@ -210,7 +264,7 @@ def infer_reclamo_operational_signals(text: str) -> Optional[dict]:
     if not candidates:
         return None
 
-    min_score = _float_env("HUGGINGFACE_RECLAMO_SIGNAL_MIN_SCORE", 0.62)
+    min_score = reclamo_ai_thresholds()["signal_min_score"]
     selected = [candidate for candidate in candidates if float(candidate["score"]) >= min_score]
     if not selected:
         return None
@@ -219,6 +273,8 @@ def infer_reclamo_operational_signals(text: str) -> Optional[dict]:
     top_score = float(selected[0].get("score") or 0)
     return {
         "provider": "huggingface_zero_shot",
+        "threshold": min_score,
+        "meets_threshold": True,
         "risk_level": _risk_level_from_signal_codes(signal_codes, top_score),
         "requires_photo": "requiere_evidencia" in signal_codes,
         "requires_exact_location": "requiere_ubicacion_exacta" in signal_codes,
@@ -249,7 +305,7 @@ def infer_reclamo_sentiment(text: str) -> Optional[dict]:
     if not candidates:
         return None
 
-    min_score = _float_env("HUGGINGFACE_SENTIMENT_MIN_SCORE", 0.56)
+    min_score = reclamo_ai_thresholds()["sentiment_min_score"]
     best = candidates[0]
     if float(best["score"]) < min_score:
         return None
@@ -259,6 +315,8 @@ def infer_reclamo_sentiment(text: str) -> Optional[dict]:
         "sentiment": best["code"],
         "label": best["label"],
         "score": best["score"],
+        "threshold": min_score,
+        "meets_threshold": True,
         "candidates": candidates,
     }
 
@@ -266,7 +324,9 @@ def infer_reclamo_sentiment(text: str) -> Optional[dict]:
 def build_reclamo_ai_enrichment(text: str, categories: list[str] | None = None) -> dict:
     """Build a compact Hugging Face enrichment payload for municipal claims."""
 
-    cleaned_text = str(text or "").strip()
+    raw_text = str(text or "").strip()
+    cleaned_text = _clean_reclamo_text(raw_text)
+    thresholds = reclamo_ai_thresholds()
     category = infer_reclamo_category(cleaned_text, categories)
     priority = infer_reclamo_priority(cleaned_text)
     signals = infer_reclamo_operational_signals(cleaned_text)
@@ -290,10 +350,46 @@ def build_reclamo_ai_enrichment(text: str, categories: list[str] | None = None) 
         seen.add(tag)
         deduped_tags.append(tag)
 
+    requires_human_attention = bool((signals or {}).get("requires_human_attention")) or bool(
+        (sentiment or {}).get("sentiment") == "frustracion_alta"
+    )
+    recommended_actions: list[dict[str, Any]] = []
+    if requires_human_attention:
+        recommended_actions.append(
+            {
+                "id": "review_reclamo_ai_signal",
+                "label": "Revisar reclamo con operador",
+                "priority": "high",
+            }
+        )
+    if (signals or {}).get("requires_exact_location"):
+        recommended_actions.append(
+            {
+                "id": "validate_exact_location",
+                "label": "Validar ubicacion exacta",
+                "priority": "medium",
+            }
+        )
+    if (signals or {}).get("requires_photo"):
+        recommended_actions.append(
+            {
+                "id": "request_or_review_photo",
+                "label": "Solicitar o revisar evidencia",
+                "priority": "medium",
+            }
+        )
+
     return {
         "contract_version": RECLAMO_AI_ENRICHMENT_CONTRACT_VERSION,
         "input_chars": len(cleaned_text),
         "provider_family": "huggingface",
+        "advisory_policy": dict(RECLAMO_AI_ADVISORY_POLICY),
+        "thresholds": thresholds,
+        "source": {
+            "raw_input_chars": len(raw_text),
+            "analyzed_chars": len(cleaned_text),
+            "truncated": len(cleaned_text) < len(raw_text),
+        },
         "category": category,
         "priority": priority,
         "operational_signals": signals,
@@ -302,8 +398,15 @@ def build_reclamo_ai_enrichment(text: str, categories: list[str] | None = None) 
             "risk_level": (signals or {}).get("risk_level") or "sin_senal",
             "requires_photo": bool((signals or {}).get("requires_photo")),
             "requires_exact_location": bool((signals or {}).get("requires_exact_location")),
-            "requires_human_attention": bool((signals or {}).get("requires_human_attention"))
-            or bool((sentiment or {}).get("sentiment") == "frustracion_alta"),
+            "requires_human_attention": requires_human_attention,
             "tags": deduped_tags,
+            "recommended_actions": recommended_actions,
+            "advisory_only": True,
+            "mutates_operational_state": False,
+        },
+        "state_mutation": {
+            "requested": False,
+            "applied": False,
+            "reason": "ai_enrichment_is_advisory_only",
         },
     }

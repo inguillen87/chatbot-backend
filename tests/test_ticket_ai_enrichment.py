@@ -46,6 +46,9 @@ def test_build_ticket_ai_enrichment_for_municipio(monkeypatch):
     assert result["tenant_id"] == 20
     assert result["source"]["comments_count"] == 1
     assert result["crm_hints"]["risk_level"] == "medio"
+    assert result["advisory_policy"]["state_mutation_allowed"] is False
+    assert result["state_mutation"]["applied"] is False
+    assert result["persisted"] is False
     assert result["secret_values_exposed"] is False
 
 
@@ -72,6 +75,8 @@ def test_build_ticket_ai_enrichment_for_pyme_intent(monkeypatch):
     result = build_ticket_ai_enrichment(PymeTicket(), scope="pyme")
 
     assert result["huggingface"]["intent"]["intent"] == "crear_pedido"
+    assert result["huggingface"]["intent"]["threshold"] == 0.6
+    assert result["huggingface"]["advisory_policy"]["mutates_operational_state"] is False
     assert result["crm_hints"]["suggested_queue"] == "crear_pedido"
 
 
@@ -124,3 +129,16 @@ def test_admin_ticket_ai_enrichment_endpoint(client, monkeypatch):
     assert payload["contract_version"] == "ticket.ai_enrichment.v1"
     assert payload["ticket_id"] == ticket.id
     assert payload["crm_hints"]["risk_level"] == "medio"
+
+    db.session.expire_all()
+    assert MunicipioTicket.query.get(ticket.id).estado == "nuevo"
+
+    rejected = client.post(
+        f"/admin/tickets/{ticket.id}/ai-enrichment",
+        json={"scope": "municipio", "apply": True},
+        headers={"X-Debug-Role": "operador", "X-Debug-Tenant": str(tenant.id)},
+    )
+
+    assert rejected.status_code == 400
+    db.session.expire_all()
+    assert MunicipioTicket.query.get(ticket.id).estado == "nuevo"

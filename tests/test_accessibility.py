@@ -1,6 +1,6 @@
 import pytest
 from types import SimpleNamespace
-from services.common_utils import _get_main_menu_payload
+from services.common_utils import _get_main_menu_payload, build_menu_tts_cache_namespace
 from services.constants import CONTEXTO_MUNICIPIO, ConversationState
 
 @pytest.fixture
@@ -102,7 +102,8 @@ def test_main_menu_uses_contact_name_if_available(base_context):
 
     assert "Marcelo" in payload["message_body"]
     assert payload.get("fuente") != "pedir_nombre_inicial"
-    assert "Marcelo" in payload["audio_text"]
+    assert "Marcelo" not in payload["audio_text"]
+    assert payload["tts_cache_text"] == payload["audio_text"]
 
 
 def test_main_menu_audio_text_lists_categories(base_context):
@@ -162,3 +163,23 @@ def test_main_menu_audio_cache_namespace_changes_for_reduced_menu(base_context):
     assert full_payload.get("tts_cache_namespace").endswith(":full:v2")
     assert reduced_payload.get("tts_cache_namespace").endswith(":reduced:v2")
     assert full_payload.get("tts_cache_namespace") != reduced_payload.get("tts_cache_namespace")
+
+
+def test_menu_audio_cache_namespace_avoids_email_or_phone_tokens():
+    namespace = build_menu_tts_cache_namespace(
+        context={
+            "tenant_slug": "vecino@example.com",
+            "tenant": "+5491122334455",
+            "user_obj": SimpleNamespace(id=42),
+        },
+        tenant_name="Marcelo Perez",
+        menu_key="main_menu",
+        channel="whatsapp",
+        reduced=False,
+        version="v2",
+    )
+
+    assert namespace == "whatsapp:menu:42:main-menu:whatsapp:full:v2"
+    assert "example" not in namespace
+    assert "5491122334455" not in namespace
+    assert "marcelo" not in namespace

@@ -29,6 +29,23 @@ def test_infer_reclamo_category_rejects_low_confidence(monkeypatch):
     assert classifier.infer_reclamo_category("problema raro", ["Luminaria"]) is None
 
 
+def test_infer_reclamo_category_sorts_candidates_before_threshold(monkeypatch):
+    monkeypatch.setenv("HUGGINGFACE_RECLAMO_CATEGORY_MIN_SCORE", "0.70")
+    monkeypatch.setattr(
+        "services.huggingface_inference_service.classify_zero_shot",
+        lambda text, labels, multi_label=False: [
+            {"label": "Limpieza", "score": 0.11},
+            {"label": "Luminaria", "score": 0.88},
+        ],
+    )
+
+    result = classifier.infer_reclamo_category("luz rota en la esquina", ["Luminaria", "Limpieza"])
+
+    assert result["categoria"] == "Luminaria"
+    assert result["threshold"] == 0.7
+    assert result["meets_threshold"] is True
+
+
 def test_infer_reclamo_priority_is_advisory(monkeypatch):
     monkeypatch.setenv("HUGGINGFACE_RECLAMO_PRIORITY_MIN_SCORE", "0.60")
     monkeypatch.setattr(
@@ -88,5 +105,9 @@ def test_build_reclamo_ai_enrichment_combines_hf_hints(monkeypatch):
     assert result["contract_version"] == "municipio.reclamo_ai_enrichment.v1"
     assert result["category"]["categoria"] == "Luminaria"
     assert result["priority"]["prioridad"] == "alta"
+    assert result["advisory_policy"]["mutates_operational_state"] is False
+    assert result["state_mutation"]["applied"] is False
+    assert result["thresholds"]["signal_min_score"] == 0.6
     assert result["crm_hints"]["requires_exact_location"] is True
+    assert result["crm_hints"]["mutates_operational_state"] is False
     assert "sentiment:preocupacion" in result["crm_hints"]["tags"]

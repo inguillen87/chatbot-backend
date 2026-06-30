@@ -40,6 +40,7 @@ from routes.whatsapp_webhook import (
     _prepare_cached_welcome_audio,
     _ensure_welcome_audio_payload,
     _sanitize_twilio_message_params,
+    _normalize_whatsapp_flow_contract,
     CHATBOC_DEMO_DEFAULT_WHATSAPP_NUMBER,
     CHATBOC_DEMO_DEFAULT_RESET_WHATSAPP_NUMBER,
     CHATBOC_DEMO_TENANT_SLUG,
@@ -219,6 +220,28 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
             "whatsapp:menu:junin:reclamos:whatsapp:full:v5",
         )
 
+    def test_fixed_menu_audio_uses_stable_tts_cache_text(self):
+        payload = {
+            "audio_text": "Hola Marcelo. Elegi una opcion para tu reclamo.",
+            "tts_cache_text": "Elegi una opcion para tu reclamo.",
+            "options_list": [{"texto": "Luminaria", "id_accion": "1"}],
+            "menu_audio_enabled": True,
+            "tts_cache_namespace": "whatsapp:menu:junin:reclamos:whatsapp:full:v5",
+            "audio_cache_policy": {"kind": "fixed_menu", "inclusive": True},
+        }
+
+        with patch(
+            "routes.whatsapp_webhook.generar_audio",
+            return_value="https://api.chatboc.ar/static/audio_cache/junin-reclamos.mp3",
+        ) as mock_generar_audio:
+            _ensure_welcome_audio_payload(payload)
+
+        self.assertEqual(
+            mock_generar_audio.call_args.args[0],
+            "Elegi una opcion para tu reclamo.",
+        )
+        self.assertNotIn("Marcelo", mock_generar_audio.call_args.args[0])
+
     def test_fixed_menu_audio_keeps_generic_fallback_when_tts_fails(self):
         payload = {
             "audio_url": "https://api.chatboc.ar/static/welcome/generic.mp3",
@@ -236,6 +259,41 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
             payload.get("audio_url"),
             "https://api.chatboc.ar/static/welcome/generic.mp3",
         )
+
+    def test_whatsapp_flow_contract_adds_safe_claim_status_webview(self):
+        payload = {
+            "message_body": "Tu reclamo M-123 esta en revision.",
+            "ticket_nro": "M-123",
+            "tracking_url": "/chat/123?pin=9876",
+            "options_list": [{"texto": "Hablar con agente", "action_id": "derivar_humano"}],
+            "message_type": "text",
+            "fuente": "consulta_estado_reclamo",
+        }
+
+        _normalize_whatsapp_flow_contract(payload, base_url="https://api.chatboc.ar")
+
+        self.assertEqual(payload["whatsapp_contract"]["flow_kind"], "claim_status")
+        self.assertTrue(payload["whatsapp_contract"]["webview_safe"])
+        self.assertEqual(payload["webview"]["url"], "https://api.chatboc.ar/chat/123?pin=9876")
+        self.assertEqual(payload["whatsapp_ctas"][0]["label"], "Ver estado")
+        self.assertTrue(payload["_force_whatsapp_interactive"])
+        self.assertEqual(payload["message_type"], "interactive_buttons")
+        self.assertEqual(payload["options_list"][0]["type"], "url")
+
+    def test_whatsapp_flow_contract_rejects_unsafe_webview_url(self):
+        payload = {
+            "message_body": "Responde la encuesta desde el enlace.",
+            "whatsapp_flow": "survey",
+            "survey_url": "javascript:alert(1)",
+            "options_list": [{"texto": "Menu", "action_id": "menu_principal"}],
+        }
+
+        _normalize_whatsapp_flow_contract(payload, base_url="https://api.chatboc.ar")
+
+        self.assertNotIn("webview", payload)
+        self.assertEqual(payload["whatsapp_ctas"], [])
+        self.assertFalse(payload["whatsapp_contract"]["webview_safe"])
+        self.assertEqual(payload["whatsapp_contract"]["fallback"]["links"], [])
 
     def _set_owner_tipo_chat(self, tipo: str) -> None:
         self.mock_client_user.tipo_chat = tipo
@@ -1045,6 +1103,59 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
             ["https://example.com/static/encuestas/banner.png"],
         )
         self.assertEqual(main_message.get("body"), "Mensaje principal")
+
+    @patch('routes.whatsapp_webhook.threading.Timer')
+    def test_send_delayed_payload_normalizes_survey_webview_contract(self, mock_timer):
+        self.app.config["APP_BASE_URL"] = "https://example.com"
+        payload = {
+            "message_body": "Tu opinion ayuda a priorizar las mejoras.",
+            "whatsapp_flow": "survey",
+            "survey_url": "/encuestas/publicas/abc",
+            "options_list": [{"texto": "Menu", "action_id": "menu_principal"}],
+            "message_type": "text",
+            "skip_audio_generation": True,
+        }
+
+        class ImmediateTimer:
+            def __init__(self, delay, callback):
+                self.callback = callback
+
+            def start(self):
+                self.callback()
+
+        mock_timer.side_effect = lambda delay, callback: ImmediateTimer(delay, callback)
+
+        sent_messages = []
+
+        def fake_create(**kwargs):
+            sent_messages.append(kwargs)
+            msg = MagicMock()
+            msg.sid = f"SM{len(sent_messages)}"
+            return msg
+
+        client = MagicMock()
+        client.messages.create.side_effect = fake_create
+
+        _send_delayed_payload(
+            client=client,
+            to_number="whatsapp:+111111111",
+            from_number="whatsapp:+222222222",
+            payload=payload,
+            delay=0,
+            app=self.app,
+        )
+
+        self.assertEqual(len(sent_messages), 1)
+        params = sent_messages[0]
+        self.assertIn("persistent_action", params)
+        interactive_json = json.loads(params["persistent_action"][0].split("whatsapp:", 1)[1])
+        self.assertEqual(interactive_json["type"], "button")
+        self.assertIn("https://example.com/encuestas/publicas/abc", interactive_json["body"]["text"])
+        button_ids = [
+            button["reply"]["id"]
+            for button in interactive_json["action"]["buttons"]
+        ]
+        self.assertIn("menu_principal", button_ids)
 
     @patch('routes.whatsapp_webhook.threading.Timer')
     @patch('services.response_formatter.build_interactive_response')

@@ -67,6 +67,18 @@ def _slug_for_audio_cache(value: Optional[object], fallback: str = "default") ->
     return slug or fallback
 
 
+def _looks_sensitive_for_audio_cache(value: Optional[object], slug: str) -> bool:
+    raw_value = str(value or "").strip()
+    if not raw_value:
+        return False
+    if "@" in raw_value:
+        return True
+    digit_count = len(re.sub(r"\D", "", raw_value))
+    if digit_count >= 6:
+        return True
+    return len(slug) > 80
+
+
 def _first_audio_cache_token(*values: Optional[object], fallback: str = "default") -> str:
     ignored = {
         "",
@@ -79,7 +91,12 @@ def _first_audio_cache_token(*values: Optional[object], fallback: str = "default
     }
     for value in values:
         slug = _slug_for_audio_cache(value, "")
-        if slug and slug not in ignored and "municipio-inteligente" not in slug:
+        if (
+            slug
+            and slug not in ignored
+            and "municipio-inteligente" not in slug
+            and not _looks_sensitive_for_audio_cache(value, slug)
+        ):
             return slug
     return fallback
 
@@ -996,8 +1013,6 @@ def _get_main_menu_payload(
         normalized = clean_text_for_tts(value) if isinstance(value, str) else clean_text_for_tts(str(value) if value else "")
         return normalized.strip()
 
-    safe_user_name = _normalize_for_audio(user_name)
-
     # Determine tenant/bot name dynamically
     tenant_name = tenant_name_text
     bot_name = "el asistente virtual"
@@ -1006,10 +1021,9 @@ def _get_main_menu_payload(
             municipio_config.get("assistant_name") or municipio_config.get("bot_name")
         ) or bot_name
 
-    if safe_user_name:
-        audio_greeting = f"Hola {safe_user_name}, soy {bot_name} de {tenant_name}."
-    else:
-        audio_greeting = f"Hola, soy {bot_name} de {tenant_name}."
+    # Fixed menu audio is shared per tenant/channel/mode. Do not personalize it
+    # with the viewer name or it would regenerate and cache a different MP3 per user.
+    audio_greeting = f"Hola, soy {bot_name} de {tenant_name}."
 
     if reduced:
         audio_intro = (
@@ -1073,6 +1087,7 @@ def _get_main_menu_payload(
         "tts_voice": "shimmer",
         "tts_model": os.getenv("OPENAI_TTS_MENU_MODEL", "tts-1-hd"),
         "tts_speed": menu_tts_speed,
+        "tts_cache_text": audio_text,
         "tts_cache_namespace": build_menu_tts_cache_namespace(
             context=context,
             tenant_name=tenant_name_text,

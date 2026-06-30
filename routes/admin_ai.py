@@ -91,6 +91,44 @@ def _validated_branding(payload: dict):
     return branding
 
 
+def _payload_truthy(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "on", "si"}
+
+
+def _parse_ai_enrichment_scope(payload: dict) -> str:
+    raw_scope = payload.get("scope", "municipio")
+    if not isinstance(raw_scope, str):
+        abort(400, description="scope must be municipio|pyme")
+    scope = raw_scope.strip().lower() or "municipio"
+    if scope not in {"municipio", "pyme"}:
+        abort(400, description="scope must be municipio|pyme")
+    return scope
+
+
+def _parse_comments_limit(payload: dict, *, default: int = 40) -> int:
+    if _payload_truthy(payload.get("exclude_comments")):
+        return 0
+    raw_limit = payload.get("comments_limit", default)
+    try:
+        return max(0, min(int(raw_limit), 100))
+    except (TypeError, ValueError):
+        abort(400, description="comments_limit must be an integer")
+
+
+def _reject_ai_enrichment_mutation_request(payload: dict) -> None:
+    mutation_flags = ("apply", "persist", "mutate", "auto_update", "auto_apply")
+    if any(_payload_truthy(payload.get(flag)) for flag in mutation_flags):
+        abort(400, description="ai-enrichment is advisory-only; state mutation is not supported")
+
+    mutation_fields = ("estado", "state", "new_state", "assigned_to", "asignado_a_id")
+    if any(field in payload for field in mutation_fields):
+        abort(400, description="ai-enrichment cannot receive operational mutation fields")
+
+
 @admin_ai_bp.get("/bot/settings")
 def get_bot_settings():
     tenant_id = _parse_tenant_id(request.args.get("tenant_id"))
@@ -263,9 +301,11 @@ def ticket_ai_summary(ticket_id: int):
 @admin_ai_bp.post("/tickets/<int:ticket_id>/ai-enrichment")
 def ticket_ai_enrichment(ticket_id: int):
     payload = request.get_json(silent=True) or {}
-    scope = (payload.get("scope") or "municipio").lower()
-    if scope not in {"municipio", "pyme"}:
-        abort(400, description="scope must be municipio|pyme")
+    if not isinstance(payload, dict):
+        abort(400, description="payload must be an object")
+    _reject_ai_enrichment_mutation_request(payload)
+    scope = _parse_ai_enrichment_scope(payload)
+    comments_limit = _parse_comments_limit(payload)
 
     model = MunicipioTicket if scope == "municipio" else PymeTicket
     ticket = model.query.get(ticket_id)
@@ -287,8 +327,10 @@ def ticket_ai_enrichment(ticket_id: int):
             else TicketComentario.pyme_ticket_id == ticket_id
         )
         .order_by(TicketComentario.fecha.asc())
-        .limit(40)
+        .limit(comments_limit)
         .all()
+        if comments_limit
+        else []
     )
     tenant = TenantProfile.query.get(getattr(ticket, "tenant_id", None)) if getattr(ticket, "tenant_id", None) else None
 

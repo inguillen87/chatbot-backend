@@ -6,6 +6,7 @@ import hashlib
 import io
 import json
 import logging
+import os
 from collections import Counter, defaultdict
 from datetime import datetime, timezone, timedelta
 from statistics import mean, median
@@ -59,6 +60,14 @@ _MULTIPLE_CHOICE_TYPES = {
 
 logger = logging.getLogger(__name__)
 _MAP_CONTRACT_VERSION = "2026.04-maplibre-v1"
+SURVEY_AI_BRIEF_CONTRACT_VERSION = "encuestas.ai_executive_brief.v1"
+SURVEY_AI_ADVISORY_POLICY = {
+    "advisory_only": True,
+    "mutates_operational_state": False,
+    "state_mutation_allowed": False,
+    "python_handlers_remain_authority": True,
+    "requires_operator_confirmation": True,
+}
 _TEXT_TYPES = {
     "abierta",
     "text",
@@ -1000,6 +1009,161 @@ def _generate_openai_executive_brief(
         return None
 
 
+def _build_executive_ai_payload(
+    encuesta: EncEncuesta,
+    summary: Dict[str, Any],
+    forecast: Dict[str, Any],
+    alerts: Dict[str, Any],
+) -> Dict[str, Any]:
+    return {
+        "contract_version": SURVEY_AI_BRIEF_CONTRACT_VERSION,
+        "encuesta_id": encuesta.id,
+        "titulo": encuesta.titulo,
+        "summary": {
+            "total_respuestas": summary.get("total_respuestas", 0),
+            "participantes_unicos": summary.get("participantes_unicos", 0),
+            "tasa_completitud": summary.get("tasa_completitud", 0),
+        },
+        "forecast": {
+            "projected_total": forecast.get("projected_total", 0),
+            "horizon_minutes": forecast.get("horizon_minutes", 0),
+            "momentum": forecast.get("momentum", "stable"),
+        },
+        "alerts": alerts.get("alerts", []),
+        "policy": SURVEY_AI_ADVISORY_POLICY,
+    }
+
+
+def _executive_ai_system_prompt() -> str:
+    return (
+        "Eres un consultor senior de analitica civica y experiencia ciudadana. "
+        "Devuelve SOLO JSON con campos: headline (string <= 35 palabras), "
+        "insights (array de 2 strings accionables), risk_level (low|medium|high). "
+        "No indiques cambios de estado ni automatizaciones operativas; solo recomendaciones advisory."
+    )
+
+
+def _strip_json_fence(raw: str) -> str:
+    text = (raw or "").strip()
+    if text.startswith("```json"):
+        text = text[len("```json") :].strip()
+    if text.startswith("```"):
+        text = text[len("```") :].strip()
+    if text.endswith("```"):
+        text = text[: -len("```")].strip()
+    return text
+
+
+def _normalize_ai_brief_response(
+    raw_payload: Any,
+    *,
+    provider: str,
+    model: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    try:
+        parsed = raw_payload if isinstance(raw_payload, dict) else json.loads(_strip_json_fence(str(raw_payload or "")))
+    except Exception:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+
+    headline = str(parsed.get("headline") or "").strip()
+    insights = parsed.get("insights") if isinstance(parsed.get("insights"), list) else []
+    insights = [str(item).strip()[:240] for item in insights if str(item).strip()][:2]
+    risk_level = str(parsed.get("risk_level") or "").strip().lower()
+
+    if not headline:
+        return None
+    if risk_level not in {"low", "medium", "high"}:
+        risk_level = "medium"
+
+    return {
+        "contract_version": SURVEY_AI_BRIEF_CONTRACT_VERSION,
+        "provider": provider,
+        "model": model,
+        "headline": headline[:280],
+        "insights": insights,
+        "risk_level": risk_level,
+        "advisory_policy": dict(SURVEY_AI_ADVISORY_POLICY),
+        "state_mutation": {
+            "requested": False,
+            "applied": False,
+            "reason": "survey_ai_brief_is_advisory_only",
+        },
+    }
+
+
+def _generate_gemini_executive_brief(
+    encuesta: EncEncuesta,
+    summary: Dict[str, Any],
+    forecast: Dict[str, Any],
+    alerts: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """Optionally enrich executive brief with Gemini when credentials are configured."""
+
+    try:
+        from services import gemini_bridge
+
+        if not gemini_bridge.is_gemini_llm_configured():
+            return None
+
+        genai, types = gemini_bridge._get_genai_modules()
+        api_key = gemini_bridge._gemini_api_key()
+        if not api_key:
+            return None
+
+        model = os.getenv("GEMINI_SURVEY_ANALYTICS_MODEL") or gemini_bridge._gemini_chat_model()
+        client = genai.Client(api_key=api_key)
+        payload = _build_executive_ai_payload(encuesta, summary, forecast, alerts)
+        response = client.models.generate_content(
+            model=model,
+            contents=[
+                types.Content(
+                    role="user",
+                    parts=[types.Part(text=json.dumps(payload, ensure_ascii=False, default=str))],
+                )
+            ],
+            config=types.GenerateContentConfig(
+                system_instruction=_executive_ai_system_prompt(),
+                temperature=0.2,
+                response_mime_type="application/json",
+            ),
+        )
+        raw = gemini_bridge._extract_response_text(response)
+        return _normalize_ai_brief_response(raw, provider="gemini", model=model)
+    except Exception:
+        logger.warning("[encuestas_analytics] Gemini brief enrichment failed", exc_info=True)
+        return None
+
+
+def _executive_brief_provider_order() -> List[str]:
+    raw = os.getenv("ENCUESTAS_AI_BRIEF_PROVIDERS", "gemini,openai")
+    providers = [item.strip().lower() for item in raw.split(",") if item.strip()]
+    ordered = [provider for provider in providers if provider in {"gemini", "openai"}]
+    return ordered or ["gemini", "openai"]
+
+
+def _generate_ai_executive_brief(
+    encuesta: EncEncuesta,
+    summary: Dict[str, Any],
+    forecast: Dict[str, Any],
+    alerts: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    for provider in _executive_brief_provider_order():
+        if provider == "gemini":
+            brief = _generate_gemini_executive_brief(encuesta, summary, forecast, alerts)
+        else:
+            raw_brief = _generate_openai_executive_brief(encuesta, summary, forecast, alerts)
+            brief = _normalize_ai_brief_response(
+                raw_brief,
+                provider="openai",
+                model=os.getenv("OPENAI_SURVEY_ANALYTICS_MODEL", "gpt-4o-mini"),
+            )
+        if brief:
+            return brief
+    return None
+
+
 def get_executive_brief(encuesta_id: int, filtros: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Return an executive-ready summary object for frontend reporting."""
 
@@ -1013,7 +1177,7 @@ def get_executive_brief(encuesta_id: int, filtros: Optional[Dict[str, Any]] = No
         f"{forecast['projected_total']} en {forecast['horizon_minutes']} minutos."
     )
 
-    ai_brief = _generate_openai_executive_brief(encuesta, summary, forecast, alerts)
+    ai_brief = _generate_ai_executive_brief(encuesta, summary, forecast, alerts)
     final_headline = ai_brief.get("headline") if ai_brief else headline
     final_insights = (ai_brief.get("insights") if ai_brief else None) or [
         headline,
@@ -1021,6 +1185,7 @@ def get_executive_brief(encuesta_id: int, filtros: Optional[Dict[str, Any]] = No
     ]
 
     return {
+        "contract_version": SURVEY_AI_BRIEF_CONTRACT_VERSION,
         "encuesta_id": encuesta.id,
         "titulo": encuesta.titulo,
         "headline": final_headline,
@@ -1033,6 +1198,15 @@ def get_executive_brief(encuesta_id: int, filtros: Optional[Dict[str, Any]] = No
         "alerts": alerts,
         "insights": final_insights,
         "ai_enhanced": bool(ai_brief),
+        "ai_provider": (ai_brief or {}).get("provider") or "deterministic_fallback",
+        "ai_model": (ai_brief or {}).get("model"),
+        "ai_policy": dict(SURVEY_AI_ADVISORY_POLICY),
+        "advisory_only": True,
+        "state_mutation": {
+            "requested": False,
+            "applied": False,
+            "reason": "survey_ai_brief_is_advisory_only",
+        },
         "risk_level": (ai_brief or {}).get("risk_level", "medium"),
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -2167,11 +2341,23 @@ def get_anomaly_report(
 
     return {
         "encuesta_id": encuesta.id,
+        "advisory_policy": dict(SURVEY_AI_ADVISORY_POLICY),
         "risk_score": score,
         "risk_level": risk_level,
         "severity": _severity_from_score(score),
         "burst_window_minutes": window,
         "burst_threshold": threshold,
+        "thresholds": {
+            "burst_count": threshold,
+            "risk_score_medium": 35,
+            "risk_score_high": 65,
+            "risk_score_critical": 80,
+        },
+        "state_mutation": {
+            "requested": False,
+            "applied": False,
+            "reason": "survey_anomaly_detection_is_advisory_only",
+        },
         "burst_count": burst_count,
         "signals": {
             "suspicious_ips": suspicious_ips,
@@ -2260,6 +2446,7 @@ def get_heatmap(
     }
     metadata["ai_insights"] = ai_insights
     metadata["ai_layers"] = ai_layers
+    metadata["ai_policy"] = dict(SURVEY_AI_ADVISORY_POLICY)
     metadata["map_experience"] = map_experience
     metadata["map_layers"]["ai_risk"] = {
         "kind": "ai_risk",
@@ -2309,6 +2496,7 @@ def get_heatmap(
         "recommended_action": recommended_action,
         "ai_insights": ai_insights,
         "ai_layers": ai_layers,
+        "ai_policy": dict(SURVEY_AI_ADVISORY_POLICY),
         "map_experience": map_experience,
         "metadata": metadata,
         "render_contract": render_contract,

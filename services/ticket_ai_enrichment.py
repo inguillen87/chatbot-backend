@@ -5,10 +5,17 @@ from datetime import datetime, timezone
 from typing import Any, Iterable
 
 from services.categorias_municipio import CATEGORIAS_RECLAMO, normalizar_texto
-from services.municipio_ai_classifier import build_reclamo_ai_enrichment
+from services.municipio_ai_classifier import build_reclamo_ai_enrichment, reclamo_ai_thresholds
 
 
 TICKET_AI_ENRICHMENT_CONTRACT_VERSION = "ticket.ai_enrichment.v1"
+TICKET_AI_ADVISORY_POLICY = {
+    "advisory_only": True,
+    "mutates_operational_state": False,
+    "state_mutation_allowed": False,
+    "python_handlers_remain_authority": True,
+    "requires_operator_confirmation": True,
+}
 
 PYME_INTENT_LABELS = {
     "crear_pedido": "crear pedido",
@@ -26,6 +33,20 @@ def _float_env(name: str, default: float) -> float:
         return float(os.getenv(name, str(default)))
     except ValueError:
         return default
+
+
+def _bounded_float_env(name: str, default: float, *, min_value: float = 0.0, max_value: float = 1.0) -> float:
+    value = _float_env(name, default)
+    return max(min_value, min(max_value, value))
+
+
+def ticket_ai_thresholds() -> dict[str, Any]:
+    return {
+        "municipio": reclamo_ai_thresholds(),
+        "pyme": {
+            "intent_min_score": _bounded_float_env("HUGGINGFACE_PYME_INTENT_MIN_SCORE", 0.62),
+        },
+    }
 
 
 def _safe_text(value: Any) -> str:
@@ -89,7 +110,7 @@ def _build_pyme_enrichment(text: str) -> dict[str, Any]:
 
     candidates = _ranked_code_candidates(results or [], PYME_INTENT_LABELS)
     if candidates:
-        min_score = _float_env("HUGGINGFACE_PYME_INTENT_MIN_SCORE", 0.62)
+        min_score = ticket_ai_thresholds()["pyme"]["intent_min_score"]
         best = candidates[0]
         if float(best["score"]) >= min_score:
             intent = {
@@ -97,6 +118,8 @@ def _build_pyme_enrichment(text: str) -> dict[str, Any]:
                 "intent": best["code"],
                 "label": best["label"],
                 "score": best["score"],
+                "threshold": min_score,
+                "meets_threshold": True,
                 "candidates": candidates,
             }
 
@@ -111,11 +134,20 @@ def _build_pyme_enrichment(text: str) -> dict[str, Any]:
         "contract_version": "pyme.ticket_ai_enrichment.v1",
         "input_chars": len(text),
         "provider_family": "huggingface",
+        "advisory_policy": dict(TICKET_AI_ADVISORY_POLICY),
+        "thresholds": ticket_ai_thresholds()["pyme"],
         "intent": intent,
         "crm_hints": {
             "suggested_queue": intent.get("intent") if intent else None,
             "requires_human_attention": requires_human,
             "tags": tags,
+            "advisory_only": True,
+            "mutates_operational_state": False,
+        },
+        "state_mutation": {
+            "requested": False,
+            "applied": False,
+            "reason": "ai_enrichment_is_advisory_only",
         },
     }
 
@@ -146,6 +178,8 @@ def build_ticket_ai_enrichment(
     comments_list = list(comments or [])
     text = _ticket_text(ticket, comments_list)
     tenant_id = getattr(ticket, "tenant_id", None) or getattr(tenant, "id", None)
+    current_state = getattr(ticket, "estado", None)
+    thresholds = ticket_ai_thresholds()
 
     if normalized_scope == "municipio":
         provider_payload = build_reclamo_ai_enrichment(text, _municipio_categories(tenant))
@@ -154,7 +188,11 @@ def build_ticket_ai_enrichment(
         provider_payload = _build_pyme_enrichment(text)
         crm_hints = provider_payload.get("crm_hints") or {}
     else:
-        provider_payload = {"reason": "unsupported_scope", "provider_family": "huggingface"}
+        provider_payload = {
+            "reason": "unsupported_scope",
+            "provider_family": "huggingface",
+            "advisory_policy": dict(TICKET_AI_ADVISORY_POLICY),
+        }
         crm_hints = {}
 
     return {
@@ -163,13 +201,24 @@ def build_ticket_ai_enrichment(
         "ticket_id": getattr(ticket, "id", None),
         "ticket_type": normalized_scope,
         "tenant_id": tenant_id,
+        "advisory_policy": dict(TICKET_AI_ADVISORY_POLICY),
+        "thresholds": thresholds.get(normalized_scope, {}),
         "source": {
             "text_chars": len(text),
             "comments_count": len(comments_list),
             "has_location": bool(getattr(ticket, "direccion", None) or getattr(ticket, "latitud", None)),
             "has_media": bool(getattr(ticket, "foto_url_directa", None)),
+            "operational_state_before": current_state,
         },
         "huggingface": provider_payload,
         "crm_hints": crm_hints,
+        "state_mutation": {
+            "requested": False,
+            "applied": False,
+            "estado_before": current_state,
+            "estado_after": current_state,
+            "reason": "ai_enrichment_is_advisory_only",
+        },
+        "persisted": False,
         "secret_values_exposed": False,
     }

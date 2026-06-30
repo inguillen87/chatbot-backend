@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from collections import Counter
 from typing import Any, Mapping, Sequence
 
@@ -13,6 +14,19 @@ from services.huggingface_inference_service import (
 AI_INSIGHTS_CONTRACT_VERSION = "huggingface.ai_insights.v1"
 MAP_AI_LAYERS_CONTRACT_VERSION = "huggingface.map_ai_layers.v1"
 WHATSAPP_AI_RUNTIME_CONTRACT_VERSION = "huggingface.whatsapp_ai_runtime.v1"
+AI_INSIGHTS_ADVISORY_POLICY = {
+    "advisory_only": True,
+    "mutates_operational_state": False,
+    "state_mutation_allowed": False,
+    "python_handlers_remain_authority": True,
+    "requires_operator_confirmation": True,
+}
+DEFAULT_AI_INSIGHTS_THRESHOLDS = {
+    "intent_min_score": 0.56,
+    "risk_min_score": 0.56,
+    "sentiment_min_score": 0.52,
+    "map_risk_min_weight": 1.4,
+}
 
 INTENT_LABELS = [
     "reclamo de servicio publico",
@@ -117,6 +131,48 @@ DEFAULT_LABEL = {
 }
 
 
+def _float_env(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+
+
+def _bounded_float_env(name: str, default: float, *, min_value: float = 0.0, max_value: float = 1.0) -> float:
+    value = _float_env(name, default)
+    return max(min_value, min(max_value, value))
+
+
+def ai_insights_thresholds() -> dict[str, float]:
+    return {
+        "intent_min_score": _bounded_float_env(
+            "HUGGINGFACE_AI_INTENT_MIN_SCORE",
+            DEFAULT_AI_INSIGHTS_THRESHOLDS["intent_min_score"],
+        ),
+        "risk_min_score": _bounded_float_env(
+            "HUGGINGFACE_AI_RISK_MIN_SCORE",
+            DEFAULT_AI_INSIGHTS_THRESHOLDS["risk_min_score"],
+        ),
+        "sentiment_min_score": _bounded_float_env(
+            "HUGGINGFACE_AI_SENTIMENT_MIN_SCORE",
+            DEFAULT_AI_INSIGHTS_THRESHOLDS["sentiment_min_score"],
+        ),
+        "map_risk_min_weight": max(
+            0.1,
+            min(_float_env("HUGGINGFACE_MAP_RISK_MIN_WEIGHT", DEFAULT_AI_INSIGHTS_THRESHOLDS["map_risk_min_weight"]), 20.0),
+        ),
+    }
+
+
+def _threshold_for_group(group: str) -> float:
+    thresholds = ai_insights_thresholds()
+    if group == "risk":
+        return thresholds["risk_min_score"]
+    if group == "sentiment":
+        return thresholds["sentiment_min_score"]
+    return thresholds["intent_min_score"]
+
+
 def _clean_text(value: Any, *, max_chars: int = 4000) -> str:
     return " ".join(str(value or "").replace("\n", " ").split())[:max_chars]
 
@@ -183,14 +239,28 @@ def _group_result(text: str, group: str, labels: Sequence[str]) -> dict[str, Any
     hf_result = _hf_candidates(text, labels, multi_label=(group != "sentiment"))
     candidates = hf_result or _local_candidates(text, labels, group)
     top = candidates[0] if candidates else {}
+    threshold = _threshold_for_group(group)
+    top_score = float(top.get("score") or 0)
     return {
         "group": group,
         "top_label": top.get("label"),
         "top_code": top.get("code"),
         "score": top.get("score", 0),
+        "threshold": threshold,
+        "meets_threshold": top_score >= threshold,
         "provider": top.get("provider") or "deterministic_local_fallback",
         "candidates": candidates[:6],
     }
+
+
+def _effective_group_value(group_result: Mapping[str, Any], group: str) -> tuple[str, str]:
+    default_label = DEFAULT_LABEL.get(group, "")
+    default_code = _code(default_label) if default_label else ""
+    top_label = str(group_result.get("top_label") or default_label)
+    top_code = str(group_result.get("top_code") or default_code)
+    if bool(group_result.get("meets_threshold")) or top_label == default_label:
+        return top_code, top_label
+    return default_code, default_label
 
 
 def build_text_ai_insights(
@@ -209,11 +279,16 @@ def build_text_ai_insights(
     intent = groups.get("intent") or {}
     risk = groups.get("risk") or {}
     sentiment = groups.get("sentiment") or {}
+    intent_code, intent_label = _effective_group_value(intent, "intent")
+    risk_code, _risk_label = _effective_group_value(risk, "risk")
+    sentiment_code, _sentiment_label = _effective_group_value(sentiment, "sentiment")
     return {
         "contract_version": AI_INSIGHTS_CONTRACT_VERSION,
         "provider_family": "huggingface",
         "mode": "huggingface_zero_shot" if used_hf else "deterministic_local_fallback",
         "domain": domain,
+        "advisory_policy": dict(AI_INSIGHTS_ADVISORY_POLICY),
+        "thresholds": ai_insights_thresholds(),
         "hf_status": {
             "configured": huggingface_configured(),
             "zero_shot_enabled": zero_shot_enabled(),
@@ -223,13 +298,15 @@ def build_text_ai_insights(
         "text_length": len(cleaned),
         "groups": groups,
         "summary": {
-            "dominant_intent": intent.get("top_code") or "general_query",
-            "dominant_intent_label": intent.get("top_label") or "consulta general",
-            "risk_signal": risk.get("top_code") or "normal",
-            "sentiment": sentiment.get("top_code") or "neutral",
-            "requires_human_attention": (risk.get("top_code") in {"critical", "handoff_to_agent"})
-            or (sentiment.get("top_code") == "frustration_or_anger"),
-            "requires_location_focus": risk.get("top_code") == "needs_exact_location",
+            "dominant_intent": intent_code or "general_query",
+            "dominant_intent_label": intent_label or "consulta general",
+            "risk_signal": risk_code or "normal",
+            "sentiment": sentiment_code or "neutral",
+            "requires_human_attention": (risk_code in {"critical", "handoff_to_agent"})
+            or (sentiment_code == "frustration_or_anger"),
+            "requires_location_focus": risk_code == "needs_exact_location",
+            "advisory_only": True,
+            "mutates_operational_state": False,
             "secret_values_exposed": False,
         },
     }
@@ -325,6 +402,7 @@ def build_collection_ai_insights(
     ]
     return {
         **insights,
+        "advisory_policy": dict(AI_INSIGHTS_ADVISORY_POLICY),
         "collection": {
             "items_analyzed": len(normalized_items),
             "text_items_analyzed": len([item for item in text_items if item]),
@@ -338,6 +416,7 @@ def build_collection_ai_insights(
             "recommended_widgets": ["ai_summary_cards", "risk_queue", "intent_breakdown", "map_layer_toggles"],
             "refresh_seconds": 30,
             "safe_to_render_without_hf_token": True,
+            "advisory_only": True,
         },
     }
 
@@ -375,6 +454,8 @@ def build_map_ai_layers(
     insights: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     normalized_points = [point for point in (points or []) if isinstance(point, Mapping)]
+    thresholds = ai_insights_thresholds()
+    risk_weight_threshold = thresholds["map_risk_min_weight"]
     risk_points: list[dict[str, Any]] = []
     whatsapp_points: list[dict[str, Any]] = []
     survey_points: list[dict[str, Any]] = []
@@ -383,7 +464,7 @@ def build_map_ai_layers(
         channel = str(point.get("channel") or point.get("canal") or "").lower()
         source = str(point.get("source") or "").lower()
         weight = float(point.get("weight") or point.get("w") or 1.0)
-        if weight >= 1.4 or status in {"vencido", "overdue", "breached"}:
+        if weight >= risk_weight_threshold or status in {"vencido", "overdue", "breached"}:
             compact = _compact_point(point, reason="high_weight_or_overdue")
             if compact:
                 risk_points.append(compact)
@@ -399,6 +480,8 @@ def build_map_ai_layers(
     return {
         "contract_version": MAP_AI_LAYERS_CONTRACT_VERSION,
         "provider_family": "huggingface",
+        "advisory_policy": dict(AI_INSIGHTS_ADVISORY_POLICY),
+        "thresholds": {"map_risk_min_weight": risk_weight_threshold},
         "visual_preset": "premium_city_intelligence_map",
         "preferred_visualization": "interactive_globe_heatmap",
         "supports_globe": True,
@@ -431,6 +514,7 @@ def build_map_ai_layers(
             "map_engines": ["maplibre", "deckgl", "google"],
             "preferred_camera": "city_or_region_globe",
             "fallback": "2d_heatmap_with_same_layers",
+            "advisory_only": True,
         },
     }
 
@@ -456,6 +540,8 @@ def build_whatsapp_ai_runtime_contract() -> dict[str, Any]:
         "runtime_policy": {
             "must_not_expose_tokens": True,
             "python_validates_actions": True,
+            "advisory_only": True,
+            "mutates_operational_state": False,
             "safe_fallback_without_hf": "deterministic_local_fallback",
         },
         "frontend_contract": {
