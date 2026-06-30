@@ -12,7 +12,7 @@ def test_add_to_cart_form_data(client):
         user = User.query.get(1)
         if not user:
             # Create a minimal user if missing
-            user = User(id=1, name="Test User", email="test@test.com")
+            user = User(id=1, name="Test User", email="test@test.com", password_hash="hash")
             db.session.add(user)
 
         # Use pyme_id instead of user_id as TenantProfile doesn't have user_id
@@ -47,7 +47,25 @@ def test_add_to_cart_form_data(client):
     assert resp.status_code == 200, f"Alias add failed: {resp.data}"
     assert resp.json['items_count'] == 4
 
-    # Case 4: Missing ID - should fail 400
+    # Case 4: Modern marketplace route removes by path with DELETE
+    resp = client.delete('/api/test-cart-fix/carrito/9999',
+                         headers={'X-Tenant': 'test-cart-fix'})
+    assert resp.status_code == 200, f"DELETE item failed: {resp.data}"
+    assert resp.json['items_count'] == 0
+
+    # Case 5: Modern marketplace route clears the cart with DELETE
+    resp = client.post('/carrito/agregar',
+                       json={'catalogo_item_id': 9999, 'cantidad': 2},
+                       headers={'X-Tenant': 'test-cart-fix'})
+    assert resp.status_code == 200, f"Re-add failed: {resp.data}"
+    assert resp.json['items_count'] == 2
+
+    resp = client.delete('/api/test-cart-fix/carrito',
+                         headers={'X-Tenant': 'test-cart-fix'})
+    assert resp.status_code == 200, f"DELETE clear failed: {resp.data}"
+    assert resp.json['items_count'] == 0
+
+    # Case 6: Missing ID - should fail 400
     resp = client.post('/carrito/agregar',
                        json={'cantidad': 1},
                        headers={'X-Tenant': 'test-cart-fix'})

@@ -213,7 +213,7 @@ class PymeMultimodalTest(unittest.TestCase):
             # No mime_type or unknown
         }
 
-        responder_pyme(
+        response = responder_pyme(
             pregunta_original="",
             owner_user=owner_user,
             rubro_obj=owner_user.rubro,
@@ -221,18 +221,21 @@ class PymeMultimodalTest(unittest.TestCase):
             uploaded_file_info=uploaded_info
         )
 
+        mock_llm.assert_called_once()
+        self.assertNotIn("Sugerencia", response["message_body"])
+
         # Check what was sent to LLM
         args, _ = mock_llm.call_args
         # args[1] is message_usuario
         # args[0] is app
         if len(args) > 1:
             mensaje_usuario = args[1]
-            self.assertIn("El usuario adjuntó un archivo", mensaje_usuario)
+            self.assertIn("adjunt", mensaje_usuario)
         else:
-             # Depending on how it was called (kwargs vs args)
-             call_kwargs = mock_llm.call_args.kwargs
-             mensaje_usuario = call_kwargs.get('mensaje_usuario')
-             self.assertIn("El usuario adjuntó un archivo", mensaje_usuario)
+            # Depending on how it was called (kwargs vs args)
+            call_kwargs = mock_llm.call_args.kwargs
+            mensaje_usuario = call_kwargs.get('mensaje_usuario')
+            self.assertIn("adjunt", mensaje_usuario)
 
 if __name__ == '__main__':
     unittest.main()

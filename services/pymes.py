@@ -3390,6 +3390,19 @@ def _trim_to_words(text: str, max_words: int) -> str:
 
 def _is_low_signal_message(msg: str) -> bool:
     m = (msg or "").strip().lower()
+    ascii_m = m.translate(str.maketrans("áéíóúüñ", "aeiouun"))
+    technical_context_markers = (
+        "el usuario adjunto",
+        "el usuario envio una imagen",
+        "el usuario envio una nota de voz",
+        "el usuario envio un catalogo",
+        "el usuario compartio su ubicacion",
+        "contexto adicional proporcionado por el usuario",
+        "transcripcion de audio:",
+        "texto extraido del archivo:",
+    )
+    if any(marker in ascii_m for marker in technical_context_markers):
+        return True
     return m in {"ok", "dale", "gracias", "👍", "si", "no", "bien"} or len(m) < 3
 
 def _pick_seed_product_from_cart(cart_summary: Optional[dict]) -> Optional[str]:
