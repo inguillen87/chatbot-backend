@@ -6,6 +6,7 @@ import uuid
 
 from flask import Blueprint, Response, jsonify, request
 
+import config.feature_flags as feature_flags
 from models import TenantTicket
 from routes import analytics_routes as legacy_analytics
 from routes.v2.tenants import V2TenantResolutionError, resolve_tenant_v2
@@ -14,6 +15,7 @@ from services.llm_orchestrator import build_llm_task_policy
 from services.openai_bridge import generate_analytics_report
 from services.operational_intelligence import (
     build_action_center,
+    build_ai_ops_queue,
     build_operational_dashboard,
     build_operational_freshness,
     build_operational_heatmap,
@@ -457,6 +459,65 @@ def operations_ai_brief_v2(current_user):
         }
     )
     return _json_response(brief)
+
+
+@v2_analytics_bp.route("/operations/ai-ops-queue", methods=["GET"])
+@token_requerido
+@require_role("admin", "empleado", "super_admin")
+def operations_ai_ops_queue_v2(current_user):
+    tenant, error = _resolve_tenant_or_error(current_user)
+    if error:
+        return error
+
+    if not feature_flags.FEATURE_AI_OPS_QUEUE:
+        return _json_response(
+            _with_access(
+                {
+                    "contract_version": "operations.ai_ops_queue.v1",
+                    "enabled": False,
+                    "reason_code": "feature_disabled",
+                    "agent_display_name": "Valeria IA-Analytics",
+                    "summary": {
+                        "total": 0,
+                        "high": 0,
+                        "medium": 0,
+                        "low": 0,
+                        "tickets_needing_human": 0,
+                        "orders_unmatched": 0,
+                        "survey_alerts": 0,
+                        "advisory_only": True,
+                    },
+                    "advisory_policy": {
+                        "advisory_only": True,
+                        "mutates_operational_state": False,
+                        "requires_operator_confirmation": True,
+                        "human_decision_required_for_critical_actions": True,
+                        "external_ai_required": False,
+                    },
+                    "items": [],
+                    "frontend_contract": {
+                        "render_as": "ai_ops_queue",
+                        "state": "disabled_by_feature_flag",
+                        "empty_state_behavior": "hide_or_show_upgrade_preview",
+                    },
+                },
+                tenant,
+            )
+        )
+
+    if not _feature_enabled(_integration_access(tenant), "analytics_dashboard"):
+        return _integration_plan_required_response(tenant, "analytics_dashboard")
+
+    try:
+        limit = max(1, min(int(request.args.get("limit") or 15), 50))
+    except (TypeError, ValueError):
+        limit = 15
+
+    start_date, end_date = _date_range()
+    payload = build_ai_ops_queue(tenant, start_date, end_date, limit=limit)
+    payload["enabled"] = True
+    payload["model_policy"] = build_llm_task_policy("analytics")
+    return _json_response(_with_access(payload, tenant))
 
 
 @v2_analytics_bp.route("/operations/freshness", methods=["GET"])

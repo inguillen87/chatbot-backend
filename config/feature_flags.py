@@ -20,3 +20,4 @@ def _parse_feature_flag(env_name: str, default: bool = True) -> bool:
 
 
 FEATURE_ENCUESTAS = _parse_feature_flag("FEATURE_ENCUESTAS", default=True)
+FEATURE_AI_OPS_QUEUE = _parse_feature_flag("FEATURE_AI_OPS_QUEUE", default=False)

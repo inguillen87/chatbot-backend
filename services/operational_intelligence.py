@@ -13,6 +13,7 @@ from models import (
     EncEncuesta,
     EncRespuesta,
     MunicipioTicket,
+    PedidoConversacional,
     PublicSurvey,
     PublicSurveyResponse,
     PymeTicket,
@@ -2253,6 +2254,258 @@ def _build_ai_operational_brief(
             "recommended_widgets": ["priority_banner", "focus_cards", "ai_signal_badges", "next_best_action"],
             "refresh_seconds": 30,
             "safe_empty_state": "show_monitoring_ok",
+        },
+    }
+
+
+def _ai_ops_priority(item: dict[str, Any]) -> int:
+    return {"high": 0, "medium": 1, "low": 2}.get(_norm(item.get("priority"), "low"), 3)
+
+
+def _ai_ops_recommended_action(
+    *,
+    action_id: str,
+    label: str,
+    endpoint: str,
+    ui_hint: str,
+) -> dict[str, Any]:
+    return {
+        "id": action_id,
+        "label": label,
+        "method": "GET",
+        "endpoint": endpoint,
+        "ui_hint": ui_hint,
+    }
+
+
+def _ai_ops_ticket_items(ticket_records: list[dict[str, Any]], *, limit: int) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for record in ticket_records:
+        if record.get("status") in _CLOSED_STATES:
+            continue
+        reason_codes: list[str] = []
+        if record.get("overdue") or _norm(record.get("sla_state"), "normal") in _OVERDUE_STATES:
+            reason_codes.append("sla_overdue")
+        if not record.get("assignee_id"):
+            reason_codes.append("unassigned")
+        if _norm(record.get("priority"), "normal") in {"high", "alta", "urgent", "critica"}:
+            reason_codes.append("high_priority")
+        if _norm(record.get("channel"), "") in {"whatsapp", "widget"}:
+            reason_codes.append("citizen_or_customer_channel")
+        if not reason_codes:
+            continue
+        priority = "high" if "sla_overdue" in reason_codes or "high_priority" in reason_codes else "medium"
+        record_id = record.get("id")
+        source = _norm(record.get("source"), "ticket")
+        items.append(
+            {
+                "id": f"ticket:{source}:{record_id}",
+                "source": "ticket",
+                "source_model": source,
+                "record_id": record_id,
+                "title": "Reclamo requiere revision humana",
+                "priority": priority,
+                "reason_codes": reason_codes,
+                "recommended_action": _ai_ops_recommended_action(
+                    action_id="open_ticket",
+                    label="Abrir caso",
+                    endpoint=f"/api/v2/tickets/{record_id}" if source == "tenant_ticket" else "/api/v2/inbox/omnichannel",
+                    ui_hint="open_ticket_detail",
+                ),
+                "signals": {
+                    "status": record.get("status"),
+                    "category": record.get("category"),
+                    "channel": record.get("channel"),
+                    "sla_state": record.get("sla_state"),
+                    "assignee_id": record.get("assignee_id"),
+                    "confidence": "deterministic",
+                },
+                "pii": {"redacted": True},
+            }
+        )
+        if len(items) >= limit:
+            break
+    return items
+
+
+def _order_metadata(order: PedidoConversacional) -> dict[str, Any]:
+    metadata = _json_object(getattr(order, "metadata_payload", None))
+    if metadata:
+        return metadata
+    items = getattr(order, "items", None)
+    if isinstance(items, list) and items and isinstance(items[0], dict):
+        return _json_object(items[0].get("metadata")) or _json_object(items[0])
+    return {}
+
+
+def _order_draft_from_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    draft = _json_object(metadata.get("crm_order_draft"))
+    if draft:
+        return draft
+    handoff = _json_object(metadata.get("crm_handoff"))
+    return _json_object(handoff.get("draft_order"))
+
+
+def _order_needs_operator_review(order: PedidoConversacional) -> tuple[bool, dict[str, Any]]:
+    metadata = _order_metadata(order)
+    draft = _order_draft_from_metadata(metadata)
+    summary = _json_object(draft.get("summary")) or _json_object(metadata.get("match_summary"))
+    intake = _json_object(metadata.get("intake_experience"))
+    needs_review = bool(
+        summary.get("needs_operator_review")
+        or intake.get("needs_operator_review")
+        or metadata.get("needs_operator_review")
+        or int(summary.get("unmatched") or 0) > 0
+    )
+    return needs_review, {"metadata": metadata, "draft": draft, "summary": summary, "intake": intake}
+
+
+def _ai_ops_order_items(tenant: TenantProfile, start_date: datetime, end_date: datetime, *, limit: int) -> list[dict[str, Any]]:
+    orders = (
+        _between(PedidoConversacional.query.filter_by(tenant_id=tenant.id), PedidoConversacional.created_at, start_date, end_date)
+        .order_by(PedidoConversacional.created_at.desc())
+        .limit(max(limit * 3, limit))
+        .all()
+    )
+    items: list[dict[str, Any]] = []
+    for order in orders:
+        needs_review, payload = _order_needs_operator_review(order)
+        if not needs_review:
+            continue
+        summary = payload.get("summary") or {}
+        reason_codes = ["order_needs_operator_review"]
+        unmatched = int(summary.get("unmatched") or 0)
+        detected = int(summary.get("detected") or 0)
+        if unmatched:
+            reason_codes.append("unmatched_items")
+        if not detected:
+            reason_codes.append("low_extraction_confidence")
+        priority = "high" if unmatched >= 2 or not detected else "medium"
+        items.append(
+            {
+                "id": f"order:pedido_conversacional:{order.id}",
+                "source": "order",
+                "source_model": "pedido_conversacional",
+                "record_id": order.id,
+                "title": "Pedido asistido requiere revision",
+                "priority": priority,
+                "reason_codes": reason_codes,
+                "recommended_action": _ai_ops_recommended_action(
+                    action_id="open_assisted_order",
+                    label="Revisar pedido",
+                    endpoint=f"/api/admin/tenants/{tenant.slug}/orders/{order.id}",
+                    ui_hint="open_order_detail",
+                ),
+                "signals": {
+                    "state": getattr(order, "estado", None),
+                    "origin": getattr(order, "origen", None),
+                    "matched": summary.get("matched"),
+                    "unmatched": unmatched,
+                    "detected": detected,
+                    "confidence": "deterministic",
+                },
+                "pii": {"redacted": True},
+            }
+        )
+        if len(items) >= limit:
+            break
+    return items
+
+
+def _ai_ops_survey_items(surveys: dict[str, Any], *, limit: int) -> list[dict[str, Any]]:
+    live_room = _json_object(surveys.get("live_control_room"))
+    monitors = live_room.get("monitors") if isinstance(live_room.get("monitors"), list) else []
+    items: list[dict[str, Any]] = []
+    for monitor in monitors:
+        if not isinstance(monitor, dict):
+            continue
+        reason_codes: list[str] = []
+        responses = int(monitor.get("responses") or 0)
+        geo_rate = float(monitor.get("geo_coverage_rate") or 0)
+        if responses == 0:
+            reason_codes.append("survey_no_responses")
+        if 0 < responses < 10:
+            reason_codes.append("low_participation")
+        if responses and geo_rate < 50:
+            reason_codes.append("low_geo_coverage")
+        if not bool(monitor.get("show_live_results")):
+            reason_codes.append("live_results_hidden")
+        if not reason_codes and bool(monitor.get("published")):
+            reason_codes.append("survey_live_monitoring")
+        priority = "medium" if set(reason_codes).intersection({"survey_no_responses", "low_geo_coverage"}) else "low"
+        record_id = monitor.get("id")
+        items.append(
+            {
+                "id": f"survey:enc_encuesta:{record_id}",
+                "source": "survey",
+                "source_model": "enc_encuesta",
+                "record_id": record_id,
+                "title": "Encuesta o votacion en monitoreo",
+                "priority": priority,
+                "reason_codes": reason_codes,
+                "recommended_action": _ai_ops_recommended_action(
+                    action_id="open_survey_analytics",
+                    label="Ver analitica",
+                    endpoint=f"/api/v2/public/surveys/{monitor.get('public_token')}/live-results",
+                    ui_hint="open_survey_analytics",
+                ),
+                "signals": {
+                    "status": monitor.get("status"),
+                    "responses": responses,
+                    "geo_coverage_rate": geo_rate,
+                    "confidence": "deterministic",
+                },
+                "pii": {"redacted": True},
+            }
+        )
+        if len(items) >= limit:
+            break
+    return items
+
+
+def build_ai_ops_queue(tenant: TenantProfile, start_date: datetime, end_date: datetime, *, limit: int = 15) -> dict[str, Any]:
+    ticket_records = _collect_ticket_records(tenant, start_date, end_date)
+    survey_metrics = _survey_metrics(tenant, start_date, end_date)
+    ticket_items = _ai_ops_ticket_items(ticket_records, limit=limit)
+    order_items = _ai_ops_order_items(tenant, start_date, end_date, limit=limit)
+    survey_items = _ai_ops_survey_items(survey_metrics, limit=limit)
+    items = sorted([*ticket_items, *order_items, *survey_items], key=_ai_ops_priority)[:limit]
+    priority_counts = Counter(_norm(item.get("priority"), "low") for item in items)
+    source_counts = Counter(_norm(item.get("source"), "unknown") for item in items)
+    return {
+        "contract_version": "operations.ai_ops_queue.v1",
+        "agent_display_name": "Valeria IA-Analytics",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "tenant": _tenant_ref(tenant),
+        "period": {"from": _iso(start_date), "to": _iso(end_date)},
+        "summary": {
+            "total": len(items),
+            "high": int(priority_counts.get("high", 0)),
+            "medium": int(priority_counts.get("medium", 0)),
+            "low": int(priority_counts.get("low", 0)),
+            "tickets_needing_human": int(source_counts.get("ticket", 0)),
+            "orders_unmatched": int(source_counts.get("order", 0)),
+            "survey_alerts": int(source_counts.get("survey", 0)),
+            "advisory_only": True,
+        },
+        "advisory_policy": {
+            "advisory_only": True,
+            "mutates_operational_state": False,
+            "requires_operator_confirmation": True,
+            "human_decision_required_for_critical_actions": True,
+            "external_ai_required": False,
+        },
+        "items": items,
+        "signals": {
+            "deterministic": True,
+            "hf_gemini_advisory_layer": "optional_enrichment",
+            "data_redaction": "pii_minimized",
+        },
+        "frontend_contract": {
+            "render_as": "ai_ops_queue",
+            "recommended_widgets": ["priority_queue", "source_tabs", "advisory_policy_banner"],
+            "primary_refresh_seconds": 30,
+            "empty_state_behavior": "show_no_items_to_review",
         },
     }
 

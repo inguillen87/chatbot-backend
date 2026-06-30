@@ -9,7 +9,8 @@ os.environ.setdefault("FLASK_SKIP_GLOBAL_APP", "1")
 
 from app import create_app, db
 from config import Config
-from models import AnalyticsEventV2, ChatSessionContext, EncEncuesta, EncLink, EncRespuesta, MunicipioTicket, TenantProfile, TenantTicket, TicketRealtimeState, User
+import config.feature_flags as feature_flags
+from models import AnalyticsEventV2, ChatSessionContext, EncEncuesta, EncLink, EncRespuesta, MunicipioTicket, PedidoConversacional, TenantProfile, TenantTicket, TicketRealtimeState, User
 
 
 class V2OperationalAnalyticsTestConfig(Config):
@@ -171,6 +172,29 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
                 last_presence_at=now,
             )
         )
+        self.assisted_order = PedidoConversacional(
+            tenant_id=self.tenant.id,
+            user_id=self.admin.id,
+            estado="pendiente_revision",
+            tipo="compra",
+            origen="marketplace_upload",
+            items=[],
+            metadata_payload={
+                "needs_operator_review": True,
+                "match_summary": {
+                    "matched": 1,
+                    "unmatched": 2,
+                    "detected": 3,
+                    "needs_operator_review": True,
+                },
+                "customer": {
+                    "name": "Cliente sensible",
+                    "email": "cliente.sensible@example.com",
+                    "phone": "+5492610000000",
+                },
+            },
+        )
+        db.session.add(self.assisted_order)
         db.session.commit()
 
     def tearDown(self):
@@ -597,6 +621,76 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         signal_keys = (payload.get("signals") or {}).keys()
         self.assertIn("hf_configured", signal_keys)
         self.assertIn("hf_mode", signal_keys)
+
+    def test_operations_ai_ops_queue_disabled_by_feature_flag(self):
+        with patch.object(feature_flags, "FEATURE_AI_OPS_QUEUE", False):
+            response = self.client.get(
+                "/api/v2/analytics/operations/ai-ops-queue",
+                headers={**self._auth(), "X-Request-Id": "ops-ai-queue-disabled"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload.get("contract_version"), "operations.ai_ops_queue.v1")
+        self.assertFalse(payload.get("enabled"))
+        self.assertEqual(payload.get("reason_code"), "feature_disabled")
+        self.assertEqual(payload.get("request_id"), "ops-ai-queue-disabled")
+        self.assertEqual(payload.get("items"), [])
+        self.assertTrue((payload.get("advisory_policy") or {}).get("advisory_only"))
+        self.assertFalse((payload.get("advisory_policy") or {}).get("mutates_operational_state"))
+        self.assertEqual((payload.get("frontend_contract") or {}).get("state"), "disabled_by_feature_flag")
+
+    def test_operations_ai_ops_queue_prioritizes_without_mutating_or_leaking_pii(self):
+        before_ticket_state = self.ticket.estado
+        before_order_state = self.assisted_order.estado
+
+        with patch.object(feature_flags, "FEATURE_AI_OPS_QUEUE", True):
+            response = self.client.get(
+                "/api/v2/analytics/operations/ai-ops-queue?limit=10",
+                headers={**self._auth(), "X-Request-Id": "ops-ai-queue-1"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload.get("contract_version"), "operations.ai_ops_queue.v1")
+        self.assertTrue(payload.get("enabled"))
+        self.assertEqual(payload.get("agent_display_name"), "Valeria IA-Analytics")
+        self.assertEqual(payload.get("request_id"), "ops-ai-queue-1")
+        self.assertEqual((payload.get("tenant") or {}).get("slug"), "junin")
+        self.assertEqual((payload.get("frontend_contract") or {}).get("render_as"), "ai_ops_queue")
+        self.assertEqual((payload.get("model_policy") or {}).get("contract_version"), "llm.task_policy.v1")
+        self.assertTrue((payload.get("summary") or {}).get("total") >= 3)
+        self.assertGreaterEqual((payload.get("summary") or {}).get("high"), 1)
+        self.assertTrue((payload.get("summary") or {}).get("advisory_only"))
+
+        policy = payload.get("advisory_policy") or {}
+        self.assertTrue(policy.get("advisory_only"))
+        self.assertFalse(policy.get("mutates_operational_state"))
+        self.assertTrue(policy.get("requires_operator_confirmation"))
+        self.assertFalse(policy.get("external_ai_required"))
+
+        items = payload.get("items") or []
+        sources = {item.get("source") for item in items}
+        self.assertIn("ticket", sources)
+        self.assertIn("order", sources)
+        self.assertIn("survey", sources)
+        for item in items:
+            self.assertTrue((item.get("pii") or {}).get("redacted"))
+            action = item.get("recommended_action") or {}
+            self.assertEqual(action.get("method"), "GET")
+            self.assertTrue(action.get("endpoint"))
+
+        encoded = str(payload).lower()
+        self.assertNotIn("cliente.sensible@example.com", encoded)
+        self.assertNotIn("+5492610000000", encoded)
+        self.assertNotIn("cliente sensible", encoded)
+        self.assertNotIn("mauricio@junin.com", encoded)
+        self.assertNotIn("operador@test.com", encoded)
+
+        db.session.refresh(self.ticket)
+        db.session.refresh(self.assisted_order)
+        self.assertEqual(self.ticket.estado, before_ticket_state)
+        self.assertEqual(self.assisted_order.estado, before_order_state)
 
     def test_operations_freshness_returns_source_diagnostics(self):
         response = self.client.get(

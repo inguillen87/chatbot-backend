@@ -1453,6 +1453,18 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(run_payload["execution_mode"], "read_only")
         self.assertFalse(run_payload["sends_real_message"])
         self.assertIn("webview_flows_total", run_payload["details"])
+        matrix = run_payload["details"]["executable_matrix"]
+        self.assertEqual(matrix["contract_version"], "whatsapp.qa_script_matrix.v1")
+        self.assertTrue(matrix["loaded"])
+        self.assertFalse(matrix["sends_real_message"])
+        self.assertGreaterEqual(matrix["summary"]["scenarios"], 10)
+        self.assertGreaterEqual(matrix["summary"]["cases"], 20)
+        self.assertEqual(matrix["local_command"], "python scripts/qa_whatsapp_flows.py")
+        coverage = run_payload["details"]["e2e_matrix_coverage"]
+        self.assertEqual(coverage["contract_version"], "whatsapp.qa_e2e_matrix_coverage.v1")
+        self.assertTrue(coverage["safe_by_default"])
+        self.assertIn("gov_claim_text_to_tracking", coverage["covered_scenarios"])
+        self.assertEqual(run_payload["details"]["runner"]["sends_real_message"], False)
 
         missing_response = self.client.post(
             f"/api/v2/tenants/{self.tenant.slug}/ops-qa/check/no-existe",

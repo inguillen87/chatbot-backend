@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import ast
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import quote_plus
 import uuid
@@ -61,6 +63,7 @@ v2_saas_bp = Blueprint("v2_saas", __name__, url_prefix="/api/v2")
 
 _ACTIVE_TICKET_STATES = {"nuevo", "open", "pendiente", "in_progress", "en_proceso", "waiting_customer"}
 _CLOSED_TICKET_STATES = {"resuelto", "cerrado", "closed", "resolved"}
+_WHATSAPP_QA_SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "qa_whatsapp_flows.py"
 
 
 def _request_id() -> str:
@@ -1002,6 +1005,59 @@ def _ops_qa_check_result(
     }
 
 
+def _whatsapp_qa_script_matrix_contract() -> dict[str, Any]:
+    contract: dict[str, Any] = {
+        "contract_version": "whatsapp.qa_script_matrix.v1",
+        "source": "scripts/qa_whatsapp_flows.py",
+        "local_command": "python scripts/qa_whatsapp_flows.py",
+        "safe_by_default": True,
+        "uses_fake_twilio": True,
+        "sends_real_message": False,
+        "loaded": False,
+        "summary": {"scenarios": 0, "cases": 0},
+        "scenarios": [],
+    }
+    try:
+        module = ast.parse(_WHATSAPP_QA_SCRIPT.read_text(encoding="utf-8"), filename=str(_WHATSAPP_QA_SCRIPT))
+        scenarios: dict[str, list[str]] = {}
+        for node in module.body:
+            if not isinstance(node, ast.Assign):
+                continue
+            target_names = [target.id for target in node.targets if isinstance(target, ast.Name)]
+            if "QA_SCENARIOS" not in target_names:
+                continue
+            raw_value = ast.literal_eval(node.value)
+            scenarios = {
+                str(scenario_id): [str(case_id) for case_id in case_ids]
+                for scenario_id, case_ids in raw_value.items()
+                if isinstance(case_ids, list)
+            }
+            break
+        if not scenarios:
+            raise ValueError("QA_SCENARIOS not found")
+        items = [
+            {"id": scenario_id, "case_count": len(case_ids), "cases": case_ids}
+            for scenario_id, case_ids in sorted(scenarios.items())
+        ]
+        case_count = sum(item["case_count"] for item in items)
+        contract.update(
+            {
+                "loaded": True,
+                "summary": {
+                    "scenarios": len(items),
+                    "cases": case_count,
+                    "municipal_flows": len([item for item in items if item["id"].startswith("gov_")]),
+                    "commerce_flows": len([item for item in items if "catalog" in item["id"] or "order" in item["id"]]),
+                    "finance_flows": len([item for item in items if item["id"].startswith("finance_")]),
+                },
+                "scenarios": items,
+            }
+        )
+    except Exception as exc:
+        contract["error"] = {"reason_code": "qa_script_matrix_unavailable", "detail": str(exc)}
+    return contract
+
+
 def _build_tenant_ops_qa_playbook(
     tenant: TenantProfile,
     *,
@@ -1228,17 +1284,48 @@ def _tenant_ops_qa_execution_result(
     check: Mapping[str, Any],
     playbook: Mapping[str, Any],
 ) -> dict[str, Any]:
+    details = dict(check.get("details") or {})
+    check_id = str(check.get("id") or "")
+    if check_id == "whatsapp_templates_webviews":
+        matrix = _whatsapp_qa_script_matrix_contract()
+        e2e = playbook.get("e2e_flow_readiness") if isinstance(playbook.get("e2e_flow_readiness"), Mapping) else {}
+        flows = e2e.get("flows") if isinstance(e2e.get("flows"), list) else []
+        matrix_scenarios = {
+            str(item.get("id"))
+            for item in matrix.get("scenarios", [])
+            if isinstance(item, Mapping) and item.get("id")
+        }
+        e2e_scenarios = {
+            str(item.get("qa_scenario_id"))
+            for item in flows
+            if isinstance(item, Mapping) and item.get("qa_scenario_id")
+        }
+        details["executable_matrix"] = matrix
+        details["e2e_matrix_coverage"] = {
+            "contract_version": "whatsapp.qa_e2e_matrix_coverage.v1",
+            "e2e_flows": len(flows),
+            "e2e_scenarios": len(e2e_scenarios),
+            "covered_scenarios": sorted(e2e_scenarios.intersection(matrix_scenarios)),
+            "missing_from_script": sorted(e2e_scenarios.difference(matrix_scenarios)),
+            "safe_by_default": True,
+        }
+        details["runner"] = {
+            "contract_version": "tenant.ops_qa.runner.v1",
+            "local_command": matrix.get("local_command"),
+            "sends_real_message": False,
+            "requires_operator_confirmation_for_live_whatsapp": True,
+        }
     return {
         "contract_version": "tenant.ops_qa.execution.v1",
         "tenant": _tenant_ref(tenant),
-        "check_id": check.get("id"),
+        "check_id": check_id,
         "label": check.get("label"),
         "ok": bool(check.get("ok")),
         "status": check.get("status"),
         "severity": check.get("severity"),
         "execution_mode": "read_only",
         "sends_real_message": False,
-        "details": check.get("details") or {},
+        "details": details,
         "next_action": check.get("next_action"),
         "playbook_status": playbook.get("status"),
         "playbook_score": playbook.get("score"),
