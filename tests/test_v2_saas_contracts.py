@@ -1604,6 +1604,25 @@ class V2SaasContractsTest(unittest.TestCase):
         )
         self.assertEqual(gov_claim_sla["fallback"]["mode"], "plain_text")
         self.assertEqual(gov_claim_sla["audio_cache_contract"]["kind"], "fixed_menu")
+        gov_audio_contract = gov_claim_sla["audio_cache_contract"]
+        self.assertEqual(
+            gov_audio_contract["namespace_pattern"],
+            "whatsapp:menu:{tenant_slug}:{menu_id}:whatsapp:{variant}:v{menu_version}",
+        )
+        self.assertEqual(
+            gov_audio_contract["manifest"]["contract_version"],
+            "whatsapp.fixed_menu_audio_manifest.v1",
+        )
+        self.assertEqual(gov_audio_contract["manifest"]["items"][0]["menu_id"], "claim-categories")
+        self.assertEqual(
+            gov_audio_contract["manifest"]["prewarm_job"]["executor"],
+            "services.tts_orchestrator.warm_tts_cache",
+        )
+        self.assertFalse(gov_audio_contract["manifest"]["privacy"]["free_user_text_allowed"])
+        self.assertTrue(
+            gov_audio_contract["accessibility_gate"]["required"]["stable_numbered_options"]
+        )
+        self.assertIn("cancelar", gov_audio_contract["accessibility_gate"]["must_include_keywords"])
         self.assertIn("junin_confirmacion_reclamo", gov_claim_sla["qa_cases"])
         gov_claim_created = next(item for item in government_group["items"] if item["id"] == "gov_claim_created")
         self.assertEqual(
@@ -1832,6 +1851,25 @@ class V2SaasContractsTest(unittest.TestCase):
             payload["message_ux_policy"]["accessibility"]["fixed_menu_audio_cache"]["scope"],
         )
         fixed_menu_cache = payload["message_ux_policy"]["accessibility"]["fixed_menu_audio_cache"]
+        fixed_manifest = fixed_menu_cache["manifest"]
+        self.assertEqual(fixed_manifest["contract_version"], "whatsapp.fixed_menu_audio_manifest.v1")
+        self.assertEqual(
+            fixed_manifest["prewarm_job"]["executor"],
+            "services.tts_orchestrator.warm_tts_cache",
+        )
+        self.assertFalse(fixed_manifest["privacy"]["cache_key_contains_pii"])
+        manifest_scopes = {item["scope"] for item in fixed_manifest["items"]}
+        self.assertIn("main_menu", manifest_scopes)
+        self.assertIn("claim_categories", manifest_scopes)
+        self.assertIn("survey_menu", manifest_scopes)
+        accessibility_gate = fixed_menu_cache["accessibility_gate"]
+        self.assertEqual(
+            accessibility_gate["contract_version"],
+            "whatsapp.fixed_menu_accessibility_gate.v1",
+        )
+        self.assertTrue(accessibility_gate["required"]["audio_alternative_required"])
+        self.assertTrue(accessibility_gate["required"]["emoji_never_required_for_meaning"])
+        self.assertIn("ayuda", accessibility_gate["must_include_keywords"])
         self.assertEqual(
             fixed_menu_cache["observability"]["contract_version"],
             "tts.audio_cache_observability.v1",

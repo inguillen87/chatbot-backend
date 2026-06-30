@@ -44,6 +44,111 @@ PENDING_TEMPLATE_STATUSES = {"draft", "pending", "submitted", "in_review", "revi
 REJECTED_TEMPLATE_STATUSES = {"rejected", "failed", "disabled", "paused"}
 LOCAL_TWILIO_MANIFEST_PATH = Path(__file__).resolve().parents[1] / "scripts" / "twilio_content_templates.local.json"
 _FALSEY_CONFIG_VALUES = {"0", "false", "no", "off"}
+FIXED_MENU_AUDIO_NAMESPACE_PATTERN = "whatsapp:menu:{tenant_slug}:{menu_id}:whatsapp:{variant}:v{menu_version}"
+FIXED_MENU_AUDIO_SCOPES = [
+    {"scope": "main_menu", "menu_id": "main-menu", "label": "Menu principal"},
+    {"scope": "claim_categories", "menu_id": "claim-categories", "label": "Categorias de reclamo"},
+    {"scope": "survey_menu", "menu_id": "survey-menu", "label": "Encuestas y votaciones"},
+    {"scope": "catalog_menu", "menu_id": "catalog-menu", "label": "Catalogo y pedidos"},
+    {"scope": "status_menu", "menu_id": "status-menu", "label": "Estado y seguimiento"},
+]
+
+
+def _fixed_menu_accessibility_gate() -> dict[str, Any]:
+    return {
+        "contract_version": "whatsapp.fixed_menu_accessibility_gate.v1",
+        "purpose": "visual_and_motor_accessibility",
+        "required": {
+            "stable_numbered_options": True,
+            "include_menu_cancel_help_paths": True,
+            "audio_alternative_required": True,
+            "emoji_never_required_for_meaning": True,
+            "screen_reader_text_required": True,
+            "large_motor_safe_replies": True,
+            "max_options_without_list": 9,
+        },
+        "must_include_keywords": ["menu", "cancelar", "ayuda"],
+        "checks": [
+            {
+                "id": "stable_numbered_options",
+                "description": "Every fixed menu keeps predictable numeric replies across text, audio and fallback.",
+                "failure_policy": "block_template_or_fallback_to_plain_numbered_text",
+            },
+            {
+                "id": "menu_cancel_help_paths",
+                "description": "Menu, cancelar and ayuda remain reachable without relying on buttons.",
+                "failure_policy": "block_template_or_fallback_to_plain_numbered_text",
+            },
+            {
+                "id": "audio_alternative",
+                "description": "A cached audio note is generated from the same screen-reader-safe menu text.",
+                "failure_policy": "allow_text_only_but_mark_accessibility_degraded",
+            },
+            {
+                "id": "no_emoji_dependency",
+                "description": "Emojis can add tone, but the option meaning must be present in plain words.",
+                "failure_policy": "strip_or_rewrite_menu_copy",
+            },
+        ],
+    }
+
+
+def _fixed_menu_audio_manifest(menu_ids: list[str] | None = None) -> dict[str, Any]:
+    requested = {str(menu_id).strip() for menu_id in menu_ids or [] if str(menu_id).strip()}
+    base_items = FIXED_MENU_AUDIO_SCOPES
+    if requested:
+        known_by_id = {item["menu_id"]: item for item in FIXED_MENU_AUDIO_SCOPES}
+        base_items = []
+        for menu_id in requested:
+            base_items.append(
+                known_by_id.get(
+                    menu_id,
+                    {
+                        "scope": menu_id.replace("-", "_"),
+                        "menu_id": menu_id,
+                        "label": menu_id.replace("-", " ").title(),
+                    },
+                )
+            )
+
+    items: list[dict[str, Any]] = []
+    for item in base_items:
+        menu_id = str(item["menu_id"])
+        items.append(
+            {
+                "scope": item["scope"],
+                "menu_id": menu_id,
+                "label": item["label"],
+                "namespace_pattern": FIXED_MENU_AUDIO_NAMESPACE_PATTERN,
+                "idempotency_key_pattern": "{tenant_slug}:whatsapp:"
+                "{menu_id}:{language}:{voice_profile}:v{menu_version}:{variant}",
+                "language": "{language|default:es}",
+                "voice_profile": "{tenant_voice_profile|default:tenant_default}",
+                "variant": "{full|reduced|default}",
+                "menu_version": "{menu_version}",
+                "text_source": "rendered_fixed_menu_audio_text",
+                "sensitive_user_content_allowed": False,
+            }
+        )
+
+    return {
+        "contract_version": "whatsapp.fixed_menu_audio_manifest.v1",
+        "cache": "tts_audio_cache",
+        "namespace_pattern": FIXED_MENU_AUDIO_NAMESPACE_PATTERN,
+        "prewarm_job": {
+            "supported": True,
+            "executor": "services.tts_orchestrator.warm_tts_cache",
+            "mode": "idempotent_batch",
+            "trigger": ["tenant_activation", "menu_version_change", "voice_profile_change"],
+            "dry_run_safe": True,
+        },
+        "privacy": {
+            "text_content_persisted": False,
+            "free_user_text_allowed": False,
+            "cache_key_contains_pii": False,
+        },
+        "items": items,
+    }
 
 
 def _runtime_flag_enabled(
@@ -537,7 +642,9 @@ def _audio_cache_contract_for_template(
         "menu_id": menu_id,
         "entrypoint": entrypoint,
         "cache": "tts_audio_cache",
-        "namespace_pattern": "whatsapp:menu:{tenant_slug}:{menu_id}:whatsapp:{variant}:v{version}",
+        "namespace_pattern": FIXED_MENU_AUDIO_NAMESPACE_PATTERN,
+        "manifest": _fixed_menu_audio_manifest([menu_id]),
+        "accessibility_gate": _fixed_menu_accessibility_gate(),
         "invalidate_on": ["menu_version_change", "tenant_voice_profile_change", "language_change"],
     }
 
@@ -2838,6 +2945,8 @@ def _message_ux_policy_payload(
                 "scope": ["main_menu", "claim_categories", "survey_menu", "catalog_menu", "status_menu"],
                 "purpose": "visual_and_motor_accessibility",
                 "cache_key": "tenant_slug:channel:menu_id:language:voice_profile",
+                "manifest": _fixed_menu_audio_manifest(),
+                "accessibility_gate": _fixed_menu_accessibility_gate(),
                 "invalidate_on": ["menu_version_change", "tenant_voice_profile_change", "language_change"],
                 "observability": dict(audio_cache),
             },
