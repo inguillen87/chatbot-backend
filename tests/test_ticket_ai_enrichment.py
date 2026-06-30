@@ -133,6 +133,17 @@ def test_admin_ticket_ai_enrichment_endpoint(client, monkeypatch):
     db.session.expire_all()
     assert MunicipioTicket.query.get(ticket.id).estado == "nuevo"
 
+    fallback_response = client.post(
+        f"/admin/tickets/{ticket.id + 9999}/ai-enrichment",
+        json={"scope": "municipio", "nro_ticket": f"M-{ticket.nro_ticket}"},
+        headers={"X-Debug-Role": "operador", "X-Debug-Tenant": str(tenant.id)},
+    )
+
+    assert fallback_response.status_code == 200
+    fallback_payload = fallback_response.get_json()
+    assert fallback_payload["ticket_id"] == ticket.id
+    assert fallback_payload["ticket_type"] == "municipio"
+
     rejected = client.post(
         f"/admin/tickets/{ticket.id}/ai-enrichment",
         json={"scope": "municipio", "apply": True},

@@ -129,6 +129,80 @@ def _reject_ai_enrichment_mutation_request(payload: dict) -> None:
         abort(400, description="ai-enrichment cannot receive operational mutation fields")
 
 
+def _ticket_number_candidates(payload: dict) -> list[str]:
+    raw_values = [
+        payload.get("nro_ticket"),
+        payload.get("ticket_number"),
+        payload.get("ticketNumber"),
+        payload.get("numero_ticket"),
+        payload.get("numero"),
+    ]
+    seen: set[str] = set()
+    candidates: list[str] = []
+
+    def add(value) -> None:
+        if value is None:
+            return
+        normalized = str(value).strip().upper()
+        if not normalized:
+            return
+        normalized = normalized.lstrip("#").strip()
+        variants = [normalized]
+        for prefix in ("M-", "P-", "T-"):
+            if normalized.startswith(prefix):
+                variants.append(normalized[len(prefix) :].strip())
+        if normalized.startswith("TICKET "):
+            variants.append(normalized[7:].strip())
+        for variant in variants:
+            if variant and variant not in seen:
+                seen.add(variant)
+                candidates.append(variant)
+
+    for raw in raw_values:
+        add(raw)
+    return candidates
+
+
+def _resolve_ticket_for_ai(ticket_id: int, scope: str, payload: dict):
+    model = MunicipioTicket if scope == "municipio" else PymeTicket
+    ticket = db.session.get(model, ticket_id)
+    if ticket:
+        return ticket
+
+    for candidate in _ticket_number_candidates(payload):
+        query_value = candidate
+        if scope == "pyme":
+            try:
+                query_value = int(candidate)
+            except (TypeError, ValueError):
+                continue
+        ticket = model.query.filter(model.nro_ticket == query_value).first()
+        if ticket:
+            return ticket
+
+    abort(404, description="ticket not found")
+
+
+def _resolve_ticket_access_tenant(ticket, scope: str):
+    tenant_id = getattr(ticket, "tenant_id", None)
+    if tenant_id:
+        tenant = db.session.get(TenantProfile, tenant_id)
+        return str(tenant_id), tenant
+
+    if scope == "municipio":
+        owner_id = getattr(ticket, "municipio_id", None) or getattr(ticket, "user_id", None)
+        tenant = TenantProfile.query.filter_by(municipio_id=owner_id).first() if owner_id else None
+    else:
+        owner_id = getattr(ticket, "rubro_id", None) or getattr(ticket, "pyme_id", None) or getattr(ticket, "user_id", None)
+        tenant = TenantProfile.query.filter_by(pyme_id=owner_id).first() if owner_id else None
+
+    if tenant:
+        return str(tenant.id), tenant
+    if owner_id:
+        return str(owner_id), None
+    abort(404, description="ticket tenant not resolved")
+
+
 @admin_ai_bp.get("/bot/settings")
 def get_bot_settings():
     tenant_id = _parse_tenant_id(request.args.get("tenant_id"))
@@ -252,24 +326,15 @@ def ticket_ai_summary(ticket_id: int):
     if scope not in {"municipio", "pyme"}:
         abort(400, description="scope must be municipio|pyme")
 
-    model = MunicipioTicket if scope == "municipio" else PymeTicket
-    ticket = model.query.get(ticket_id)
-    if not ticket:
-        abort(404, description="ticket not found")
-
-    tenant_hint = getattr(ticket, "tenant_id", None)
-    if not tenant_hint:
-        tenant_hint = getattr(ticket, "municipio_id", None) or getattr(ticket, "user_id", None)
-    if not tenant_hint:
-        abort(404, description="ticket tenant not resolved")
-
-    require_access(str(tenant_hint), "operador")
+    ticket = _resolve_ticket_for_ai(ticket_id, scope, payload)
+    access_tenant_id, _tenant = _resolve_ticket_access_tenant(ticket, scope)
+    require_access(access_tenant_id, "operador")
 
     comments = (
         TicketComentario.query.filter(
-            TicketComentario.municipio_ticket_id == ticket_id
+            TicketComentario.municipio_ticket_id == ticket.id
             if scope == "municipio"
-            else TicketComentario.pyme_ticket_id == ticket_id
+            else TicketComentario.pyme_ticket_id == ticket.id
         )
         .order_by(TicketComentario.fecha.asc())
         .all()
@@ -307,24 +372,15 @@ def ticket_ai_enrichment(ticket_id: int):
     scope = _parse_ai_enrichment_scope(payload)
     comments_limit = _parse_comments_limit(payload)
 
-    model = MunicipioTicket if scope == "municipio" else PymeTicket
-    ticket = model.query.get(ticket_id)
-    if not ticket:
-        abort(404, description="ticket not found")
-
-    tenant_hint = getattr(ticket, "tenant_id", None)
-    if not tenant_hint:
-        tenant_hint = getattr(ticket, "municipio_id", None) or getattr(ticket, "user_id", None)
-    if not tenant_hint:
-        abort(404, description="ticket tenant not resolved")
-
-    require_access(str(tenant_hint), "operador")
+    ticket = _resolve_ticket_for_ai(ticket_id, scope, payload)
+    access_tenant_id, tenant = _resolve_ticket_access_tenant(ticket, scope)
+    require_access(access_tenant_id, "operador")
 
     comments = (
         TicketComentario.query.filter(
-            TicketComentario.municipio_ticket_id == ticket_id
+            TicketComentario.municipio_ticket_id == ticket.id
             if scope == "municipio"
-            else TicketComentario.pyme_ticket_id == ticket_id
+            else TicketComentario.pyme_ticket_id == ticket.id
         )
         .order_by(TicketComentario.fecha.asc())
         .limit(comments_limit)
@@ -332,7 +388,6 @@ def ticket_ai_enrichment(ticket_id: int):
         if comments_limit
         else []
     )
-    tenant = TenantProfile.query.get(getattr(ticket, "tenant_id", None)) if getattr(ticket, "tenant_id", None) else None
 
     from services.ticket_ai_enrichment import build_ticket_ai_enrichment
 
