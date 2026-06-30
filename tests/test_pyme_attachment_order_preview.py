@@ -84,6 +84,26 @@ def test_build_order_attachment_preview_returns_structured_preview(mock_extract,
     assert "resolve_catalog_matches" in _operator_task_ids(preview)
     assert "confirm_stock_price" in _operator_task_ids(preview)
 
+    crm_order_draft = preview["crm_order_draft"]
+    assert crm_order_draft["contract_version"] == "marketplace.crm_order_draft.v1"
+    assert crm_order_draft["source"]["channel"] == "web"
+    assert crm_order_draft["contact_state"] == "available"
+    assert crm_order_draft["recommended_next_step"] == "resolver_items_y_confirmar"
+    assert crm_order_draft["summary"] == {
+        "detected": 2,
+        "matched": 1,
+        "unmatched": 1,
+        "has_contact": True,
+        "needs_operator_review": True,
+    }
+    assert [line["status"] for line in crm_order_draft["lines"]] == [
+        "catalog_matched",
+        "needs_catalog_resolution",
+    ]
+    assert crm_order_draft["lines"][0]["catalog_item_id"] == 11
+    assert crm_order_draft["lines"][1]["source_name"] == "Cabernet"
+    assert preview["crm_handoff"]["draft_order"] == crm_order_draft
+
     assisted_request = preview["assisted_request"]
     assert assisted_request["contract_version"] == "marketplace.assisted_request.v1"
     assert assisted_request["mode"] == "order_note_upload"
@@ -95,6 +115,7 @@ def test_build_order_attachment_preview_returns_structured_preview(mock_extract,
     assert assisted_request["match_summary"] == preview["catalog_match_summary"]
     assert assisted_request["intake_experience"] == preview["intake_experience"]
     assert assisted_request["crm_handoff"] == preview["crm_handoff"]
+    assert assisted_request["crm_order_draft"] == crm_order_draft
 
 
 @patch("services.order_attachment_preview.buscar_item_en_catalogo")
@@ -136,6 +157,11 @@ def test_build_order_attachment_preview_falls_back_when_items_are_not_detected(m
     assert preview["crm_handoff"]["summary"]["detected"] == 0
     assert "review_ocr_to_items" in _operator_task_ids(preview)
     assert "confirm_contact_channel" in _operator_task_ids(preview)
+    assert preview["crm_order_draft"]["contract_version"] == "marketplace.crm_order_draft.v1"
+    assert preview["crm_order_draft"]["lines"] == []
+    assert preview["crm_order_draft"]["contact_state"] == "missing"
+    assert preview["crm_order_draft"]["recommended_next_step"] == "separar_items_desde_adjunto"
+    assert preview["crm_handoff"]["draft_order"] == preview["crm_order_draft"]
 
     assisted_request = preview["assisted_request"]
     assert assisted_request["contract_version"] == "marketplace.assisted_request.v1"
@@ -143,3 +169,4 @@ def test_build_order_attachment_preview_falls_back_when_items_are_not_detected(m
     assert assisted_request["detected_items"] == []
     assert assisted_request["source"]["channel"] == "whatsapp"
     assert assisted_request["intake_experience"]["crm_handoff"]["summary"]["needs_operator_review"] is True
+    assert assisted_request["crm_order_draft"] == preview["crm_order_draft"]

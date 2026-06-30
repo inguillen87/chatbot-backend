@@ -19,6 +19,7 @@ from routes.productos import _resolve_public_owner
 from services.cart import _get_pyme_cart
 from services.commerce_unified import _build_assisted_operator_pack
 from services.gcs_service import upload_to_gcs
+from services.order_attachment_preview import build_crm_order_draft
 from services.tenant_resolver import TenantResolutionError, resolve_tenant_and_user
 from services.vision_extractor import extract_table_from_file
 from config import ALLOWED_ORIGINS
@@ -1847,6 +1848,19 @@ def pedidos_desde_archivo():
         "detected": detected_count,
         "needs_operator_review": unmatched_count > 0 or matched_count == 0 or bool(extraction_error),
     }
+    crm_order_draft = None
+    if catalog_matching_enabled:
+        crm_order_draft = build_crm_order_draft(
+            request_kind=request_kind,
+            request_kind_label=request_kind_label,
+            source=source_payload,
+            contact=contact_payload,
+            matched_items=enriched,
+            unmatched_items=not_found,
+            catalog_candidates=catalog_candidates,
+            match_summary=match_summary,
+        )
+        crm_handoff["draft_order"] = crm_order_draft
     review_context = _build_review_context(
         document_profile=document_profile,
         matched_count=matched_count,
@@ -1909,6 +1923,7 @@ def pedidos_desde_archivo():
                 "document_profile": document_profile,
                 "structured_extraction": structured_extraction,
                 "crm_handoff": crm_handoff,
+                "crm_order_draft": crm_order_draft,
                 "review_context": review_context,
                 "match_summary": match_summary,
                 "customer_message": customer_message,
@@ -1931,6 +1946,7 @@ def pedidos_desde_archivo():
             "document_profile": document_profile,
             "structured_extraction": structured_extraction,
             "crm_handoff": crm_handoff,
+            "crm_order_draft": crm_order_draft,
             "contact": contact_payload,
             "crm_state": "pending_operator_review" if match_summary["needs_operator_review"] else "ready_for_confirmation",
             "source": source_payload,
@@ -1971,6 +1987,14 @@ def pedidos_desde_archivo():
         if getattr(tenant, "send_dispatch_whatsapp", True)
         else None,
     )
+    if crm_order_draft:
+        crm_order_draft = {
+            **crm_order_draft,
+            "pedido_id": pedido.id,
+            "lead_id": pedido.id,
+            "reference": f"pedido:{pedido.id}",
+        }
+        crm_handoff["draft_order"] = crm_order_draft
     operator_intake_summary = _build_operator_intake_summary(
         document_profile=document_profile,
         request_kind_label=request_kind_label,
@@ -2010,6 +2034,7 @@ def pedidos_desde_archivo():
     metadata_payload["operator_pack"] = operator_pack
     metadata_payload["public_follow_up"] = public_follow_up
     metadata_payload["crm_handoff"] = crm_handoff
+    metadata_payload["crm_order_draft"] = crm_order_draft
     metadata_payload["operator_intake_summary"] = operator_intake_summary
     if linked_record:
         metadata_payload["linked_record"] = linked_record
@@ -2020,6 +2045,7 @@ def pedidos_desde_archivo():
         first_item_payload["operator_pack"] = operator_pack
         first_item_payload["public_follow_up"] = public_follow_up
         first_item_payload["crm_handoff"] = crm_handoff
+        first_item_payload["crm_order_draft"] = crm_order_draft
         first_item_payload["operator_intake_summary"] = operator_intake_summary
         if linked_record:
             first_item_payload["linked_record"] = linked_record
@@ -2034,6 +2060,7 @@ def pedidos_desde_archivo():
         "document_profile": document_profile,
         "structured_extraction": structured_extraction,
         "crm_handoff": crm_handoff,
+        "crm_order_draft": crm_order_draft,
         "tenant_id": tenant.id,
         "tenant_slug": tenant_slug_resolved,
         "items": enriched,

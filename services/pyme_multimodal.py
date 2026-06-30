@@ -20,6 +20,7 @@ from flask import current_app
 
 from models import CatalogoItem, ChatSessionContext, PedidoConversacional, PymePedido, db
 from services.multimodal_analyzer import analizar_imagen_con_fallback
+from services.order_attachment_preview import build_crm_order_draft
 from services.pyme_menu import get_pyme_menu_payload
 from services.config_loader import cargar_configuracion_pyme
 from services.document_processing_service import document_processing_service
@@ -1186,6 +1187,16 @@ def _persist_assisted_intake_request(
         unmatched_items=unmatched_labels,
         extraction_error=extraction_error,
     )
+    crm_order_draft = build_crm_order_draft(
+        request_kind="order_note",
+        request_kind_label=request_kind_label,
+        source=source,
+        contact=contact,
+        matched_items=[item for item in detected_items if item.get("catalog_match")],
+        unmatched_items=unmatched_rows,
+        catalog_candidates=catalog_candidates,
+        match_summary=match_summary,
+    )
     assisted_request = {
         "contract_version": ASSISTED_REQUEST_CONTRACT_VERSION,
         "mode": "order_note_upload",
@@ -1195,6 +1206,7 @@ def _persist_assisted_intake_request(
         "source": source,
         "contact": contact,
         "match_summary": match_summary,
+        "crm_order_draft": crm_order_draft,
         "review_context": review_context,
         "detected_items": detected_items,
         "unmatched_items": unmatched_labels,
@@ -1226,6 +1238,7 @@ def _persist_assisted_intake_request(
         "contract_version": ASSISTED_REQUEST_CONTRACT_VERSION,
         "review_context": review_context,
         "match_summary": match_summary,
+        "crm_order_draft": crm_order_draft,
         "customer_message": customer_message,
         "customer_next_steps": customer_next_steps,
         "intake_experience": intake_experience,
@@ -1252,6 +1265,7 @@ def _persist_assisted_intake_request(
             "source": source,
             "contact": contact,
             "match_summary": match_summary,
+            "crm_order_draft": crm_order_draft,
             "review_context": review_context,
             "catalog_candidates": catalog_candidates,
             "customer_next_steps": customer_next_steps,
@@ -1274,20 +1288,28 @@ def _persist_assisted_intake_request(
         unmatched_items=unmatched_labels,
         extraction_error=extraction_error,
     )
+    crm_order_draft = {
+        **crm_order_draft,
+        "pedido_id": pedido.id,
+        "lead_id": pedido.id,
+        "reference": f"pedido:{pedido.id}",
+    }
     assisted_request.update(
         {
             "pedido_id": pedido.id,
             "lead_id": pedido.id,
             "operator_pack": operator_pack,
             "next_actions": next_actions,
+            "crm_order_draft": crm_order_draft,
         }
     )
     pedido.metadata_payload = {
         **(pedido.metadata_payload or {}),
         "operator_pack": operator_pack,
         "next_actions": next_actions,
+        "crm_order_draft": crm_order_draft,
     }
-    pedido.items = [{**record_payload, "operator_pack": operator_pack}, *pedido.items[1:]]
+    pedido.items = [{**record_payload, "operator_pack": operator_pack, "crm_order_draft": crm_order_draft}, *pedido.items[1:]]
     db.session.commit()
     return assisted_request
 

@@ -126,6 +126,21 @@ def test_marketplace_order_note_upload_creates_assisted_request_contract(client,
     assert payload["operator_intake_summary"]["recommended_next_step"] == "pedir_contacto_y_responder"
     assert payload["operator_intake_summary"]["contact_state"] == "missing"
     assert payload["operator_intake_summary"]["detected_preview"] == ["2 Chapa galvanizada", "1 Clavos 2 pulgadas"]
+    assert payload["crm_order_draft"]["contract_version"] == "marketplace.crm_order_draft.v1"
+    assert payload["crm_order_draft"]["pedido_id"] == payload["pedido_id"]
+    assert payload["crm_order_draft"]["reference"] == f"pedido:{payload['pedido_id']}"
+    assert payload["crm_order_draft"]["contact_state"] == "missing"
+    assert payload["crm_order_draft"]["recommended_next_step"] == "pedir_contacto_y_responder"
+    assert payload["crm_order_draft"]["summary"]["matched"] == 1
+    assert payload["crm_order_draft"]["summary"]["unmatched"] == 1
+    assert [line["status"] for line in payload["crm_order_draft"]["lines"]] == [
+        "catalog_matched",
+        "needs_catalog_resolution",
+    ]
+    assert payload["crm_order_draft"]["lines"][0]["catalog_item_id"] == chapa.id
+    assert payload["crm_order_draft"]["lines"][1]["source_name"] == "Clavos 2 pulgadas"
+    assert payload["crm_order_draft"]["lines"][1]["candidate_count"] == 1
+    assert payload["crm_handoff"]["draft_order"] == payload["crm_order_draft"]
     assert any(step["id"] == "human_review" for step in payload["customer_next_steps"])
     assert any(action["id"] == "review_unmatched_items" for action in payload["next_actions"])
     tracking_action = next(action for action in payload["next_actions"] if action.get("id") == "tracking")
@@ -152,6 +167,8 @@ def test_marketplace_order_note_upload_creates_assisted_request_contract(client,
     assert pedido.metadata_payload["operator_pack"]["reference"] == f"pedido:{payload['pedido_id']}"
     assert pedido.metadata_payload["operator_intake_summary"]["follow_up"]["code"] == f"pc-{payload['pedido_id']}"
     assert pedido.metadata_payload["public_follow_up"]["tracking"]["code"] == f"pc-{payload['pedido_id']}"
+    assert pedido.metadata_payload["crm_order_draft"]["reference"] == f"pedido:{payload['pedido_id']}"
+    assert pedido.items[0]["crm_order_draft"]["contract_version"] == "marketplace.crm_order_draft.v1"
     assert pedido.metadata_payload["catalog_candidates"][0]["candidates"][0]["catalogo_item_id"] == clavos_candidate.id
     assert pedido.items[0]["catalog_candidates"][0]["row"]["nombre"] == "Clavos 2 pulgadas"
     assert pedido.items[0]["public_follow_up"]["tracking"]["path"] == tracking_action["href"]
@@ -373,11 +390,16 @@ def test_marketplace_text_order_creates_same_assisted_request_contract(client, i
     assert payload["source"]["text_preview"] == "2 Clavos punta paris\n4 Chapas para cotizar"
     assert payload["match_summary"]["matched"] == 1
     assert payload["match_summary"]["unmatched"] == 1
+    assert payload["crm_order_draft"]["source"]["input_type"] == "txt"
+    assert payload["crm_order_draft"]["source"]["text_preview"] == "2 Clavos punta paris\n4 Chapas para cotizar"
+    assert payload["crm_order_draft"]["contact_state"] == "available"
+    assert payload["crm_order_draft"]["recommended_next_step"] == "resolver_items_y_cotizar"
 
     pedido = PedidoConversacional.query.get(payload["pedido_id"])
     assert pedido is not None
     assert pedido.items[0]["texto_original"] == "2 Clavos punta paris\n4 Chapas para cotizar"
     assert pedido.metadata_payload["source"]["text_preview"].startswith("2 Clavos")
+    assert pedido.metadata_payload["crm_order_draft"]["reference"] == f"pedido:{payload['pedido_id']}"
 
 
 def test_marketplace_text_without_document_type_infers_quote_request(client, init_database, monkeypatch):

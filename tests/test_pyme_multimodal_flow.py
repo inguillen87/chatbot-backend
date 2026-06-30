@@ -157,6 +157,19 @@ class PymeMultimodalTest(unittest.TestCase):
             },
         )
         self.assertEqual(assisted_request["unmatched_items"], ["Clavos 2 pulgadas"])
+        crm_order_draft = assisted_request["crm_order_draft"]
+        self.assertEqual(crm_order_draft["contract_version"], "marketplace.crm_order_draft.v1")
+        self.assertEqual(crm_order_draft["pedido_id"], assisted_request["pedido_id"])
+        self.assertEqual(crm_order_draft["reference"], f"pedido:{assisted_request['pedido_id']}")
+        self.assertEqual(crm_order_draft["source"]["channel"], "whatsapp")
+        self.assertEqual(crm_order_draft["contact_state"], "available")
+        self.assertEqual(crm_order_draft["recommended_next_step"], "resolver_items_y_confirmar")
+        self.assertEqual(
+            [line["status"] for line in crm_order_draft["lines"]],
+            ["catalog_matched", "needs_catalog_resolution"],
+        )
+        self.assertEqual(crm_order_draft["lines"][0]["catalog_item_id"], 10)
+        self.assertEqual(crm_order_draft["lines"][1]["source_name"], "Clavos 2 pulgadas")
         self.assertEqual(result.data["pedido_id"], assisted_request["pedido_id"])
 
         pedido = db.session.get(PedidoConversacional, assisted_request["pedido_id"])
@@ -166,9 +179,11 @@ class PymeMultimodalTest(unittest.TestCase):
         self.assertEqual(pedido.metadata_payload["source"]["channel"], "whatsapp")
         self.assertEqual(pedido.metadata_payload["contract_version"], "marketplace.assisted_request.v1")
         self.assertEqual(pedido.metadata_payload["operator_pack"]["reference"], f"pedido:{pedido.id}")
+        self.assertEqual(pedido.metadata_payload["crm_order_draft"]["reference"], f"pedido:{pedido.id}")
         self.assertEqual(pedido.metadata_payload["match_summary"]["unmatched"], 1)
         self.assertEqual(pedido.items[0]["items_detectados"][0]["catalog_match"]["sku"], "CH-001")
         self.assertEqual(pedido.items[0]["no_encontrados"][0]["nombre"], "Clavos 2 pulgadas")
+        self.assertEqual(pedido.items[0]["crm_order_draft"]["contract_version"], "marketplace.crm_order_draft.v1")
 
     @patch('services.pymes.llamar_llm_con_fallback')
     def test_responder_pyme_with_attachment_no_text(self, mock_llm):
