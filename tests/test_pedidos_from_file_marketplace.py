@@ -17,6 +17,12 @@ def _auth_headers(app, user: User, tenant_slug: str) -> dict:
     return {"Authorization": f"Bearer {token}", "X-Tenant": tenant_slug}
 
 
+def _assert_public_copy_without_internal_jargon(*parts: str) -> None:
+    visible_copy = "\n".join(part for part in parts if part)
+    for forbidden in ("CRM", "IA", "tenant admin", "auditoria", "operativo", "operativa"):
+        assert forbidden not in visible_copy
+
+
 def test_marketplace_order_note_upload_creates_assisted_request_contract(client, init_database, monkeypatch):
     owner = User.query.filter_by(email="admin@test.com").first()
     tenant = TenantProfile(slug="market-notes", nombre="Market Notes", tipo="pyme", pyme_id=owner.id, plan="full")
@@ -84,6 +90,15 @@ def test_marketplace_order_note_upload_creates_assisted_request_contract(client,
     assert payload["intake_experience"]["needs_operator_review"] is True
     assert payload["intake_experience"]["frontend_contract"]["render_as"] == "marketplace_assisted_intake"
     assert any(step["id"] == "catalog_match" for step in payload["intake_experience"]["pipeline"])
+    _assert_public_copy_without_internal_jargon(
+        payload["customer_message"],
+        payload["intake_experience"]["title"],
+        payload["intake_experience"]["summary"],
+        *(f"{step['label']} {step['description']}" for step in payload["intake_experience"]["pipeline"]),
+        *(f"{capability['label']} {capability['description']}" for capability in payload["intake_experience"]["capabilities"]),
+        payload["intake_experience"]["crm_handoff"]["label"],
+        *(f"{action['label']} {action['description']}" for action in payload["next_actions"]),
+    )
     assert payload["tenant_slug"] == tenant.slug
     assert payload["pedido_id"] == payload["lead_id"]
     assert payload["match_summary"] == {

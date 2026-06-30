@@ -428,10 +428,10 @@ def public_market_assisted_intake(tenant: TenantProfile, *, total_products: int)
             },
         ]
     else:
-        title = "Subi una nota, foto o pedido y Chatboc lo convierte en lead/pedido trazable"
+        title = "Subi una nota, foto o pedido y Chatboc la deja lista para responder"
         summary = (
-            "Para clientes que no saben usar IA ni quieren cargar un carrito: pegan una lista, suben una foto "
-            "de papel o adjuntan un documento y el CRM recibe items, faltantes, contacto y seguimiento publico."
+            "Para clientes que no quieren cargar un carrito: pegan una lista, suben una foto "
+            "de papel o adjuntan un documento y el equipo recibe items, faltantes, contacto y seguimiento publico."
         )
         examples = [
             "Foto de papel, mostrador o manuscrito",
@@ -521,12 +521,12 @@ def public_market_assisted_intake(tenant: TenantProfile, *, total_products: int)
             },
             {
                 "id": "ai_parse",
-                "label": "IA desmenuza",
-                "description": "OCR, clasificacion, rubro probable, articulos/cantidades y candidatos de catalogo.",
+                "label": "Datos ordenados",
+                "description": "Lectura del documento, rubro probable, articulos/cantidades y candidatos de catalogo.",
             },
             {
                 "id": "crm_handoff",
-                "label": "CRM responde",
+                "label": "Equipo responde",
                 "description": "El operador ve archivo original, resumen, faltantes, canal sugerido y respuesta lista.",
             },
             {
@@ -537,7 +537,7 @@ def public_market_assisted_intake(tenant: TenantProfile, *, total_products: int)
         ],
         "crm_receives": [
             "Archivo o texto original",
-            "Resumen IA con articulos, cantidades, rubro o tramite detectado",
+            "Resumen con articulos, cantidades, rubro o tramite detectado",
             "Cruce con catalogo, candidatos y articulos faltantes",
             "Contacto y canal preferido",
             "Respuesta sugerida para WhatsApp, email o llamada",
@@ -547,7 +547,7 @@ def public_market_assisted_intake(tenant: TenantProfile, *, total_products: int)
             "title": "Catalogo sin productos visibles, solicitud asistida activa",
             "description": (
                 "Aunque todavia no haya productos publicados, el usuario puede subir una nota, manuscrito, "
-                "boleta, certificado o reclamo para que la IA lo ordene y el equipo responda desde el CRM."
+                "boleta, certificado o reclamo para que quede ordenado y el equipo responda desde el panel."
             ),
             "primary_cta": "Subir pedido o documento",
             "secondary_cta": "Pegar pedido de ejemplo",

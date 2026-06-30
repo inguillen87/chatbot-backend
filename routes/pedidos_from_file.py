@@ -106,7 +106,7 @@ _REQUEST_KIND_CONFIG = {
         "prompt": (
             'Extrae numero de cuenta, padron, periodo, vencimiento, importe, titular y concepto de la boleta. '
             'Devuelve JSON {"items": [{"sku": null, "nombre": "...", "cantidad": 1}]}. '
-            "Si parece un impuesto, tasa municipal o pago de servicio, deja una descripcion clara para el CRM."
+            "Si parece un impuesto, tasa municipal o pago de servicio, deja una descripcion clara para el equipo."
         ),
     },
     "certificate": {
@@ -115,7 +115,7 @@ _REQUEST_KIND_CONFIG = {
         "primary_intent": "certificate_or_procedure_review",
         "catalog_matching": False,
         "prompt": (
-            'Extrae el tipo de certificado, datos principales y referencia operativa. Devuelve JSON '
+            'Extrae el tipo de certificado, datos principales y referencia principal. Devuelve JSON '
             '{"items": [{"sku": null, "nombre": "...", "cantidad": 1}]}.'
         ),
     },
@@ -129,7 +129,7 @@ _REQUEST_KIND_CONFIG = {
             "Interpreta reclamos, solicitudes vecinales o notas para un municipio. "
             "Extrae categoria probable, direccion, referencia, urgencia, descripcion y datos de contacto si aparecen. "
             'Devuelve JSON {"items": [{"sku": null, "nombre": "...", "cantidad": 1}]}. '
-            "Cada item debe representar un problema o gestion concreta para que el CRM pueda derivarlo."
+            "Cada item debe representar un problema o gestion concreta para que el equipo pueda derivarlo."
         ),
     },
     "other": {
@@ -138,7 +138,7 @@ _REQUEST_KIND_CONFIG = {
         "primary_intent": "manual_review",
         "catalog_matching": False,
         "prompt": (
-            'Extrae los puntos operativos principales del archivo. Devuelve JSON '
+            'Extrae los puntos principales del archivo. Devuelve JSON '
             '{"items": [{"sku": null, "nombre": "...", "cantidad": 1}]}.'
         ),
     },
@@ -796,7 +796,7 @@ def _build_intake_experience(
         analysis_step = {
             "id": "catalog_match",
             "label": "Cruce con catalogo",
-            "description": "Productos compatibles, alternativas y renglones pendientes para el operador.",
+            "description": "Productos compatibles, alternativas y renglones pendientes para revisar.",
             "status": "done" if matched_count else "pending_review",
         }
         handoff_description = "Pedido o cotizacion queda listo para confirmar stock, precio y proximo paso."
@@ -816,7 +816,7 @@ def _build_intake_experience(
         analysis_step = {
             "id": "document_review",
             "label": "Revision documental",
-            "description": "Datos utiles del comprobante, boleta o certificado quedan preparados para el operador.",
+            "description": "Datos utiles del comprobante, boleta o certificado quedan preparados para revisar.",
             "status": "done" if detected_count else "pending_review",
         }
         handoff_description = "Documento queda listo para validar datos y responder el proximo paso."
@@ -832,14 +832,14 @@ def _build_intake_experience(
         },
         {
             "id": "ai_parse",
-            "label": "Lectura IA",
-            "description": "OCR, documento o texto convertido a renglones operativos.",
+            "label": "Lectura automatica",
+            "description": "Archivo o texto convertido a datos ordenados para revisar.",
             "status": "warning" if extraction_error else ("done" if detected_count else "pending_review"),
         },
         analysis_step,
         {
             "id": "crm_handoff",
-            "label": "CRM operativo",
+            "label": "Listo para el equipo",
             "description": handoff_description,
             "status": "pending_review" if needs_review else "ready",
         },
@@ -871,7 +871,7 @@ def _build_intake_experience(
         contextual_capability = {
             "id": "municipal_triage",
             "label": "Derivacion municipal",
-            "description": "Ordena categoria, ubicacion, urgencia y area responsable para el CRM.",
+            "description": "Ordena categoria, ubicacion, urgencia y area responsable para el equipo.",
             "status": "enabled",
         }
     elif is_document_review:
@@ -887,8 +887,8 @@ def _build_intake_experience(
         "render_as": "anonymous_assisted_marketplace_intake",
         "title": title,
         "summary": (
-            f"Chatboc recibio tu {request_kind_label}, separa datos utiles y lo deja en el CRM para "
-            "que el equipo responda sin exigir registro previo."
+            f"Chatboc recibio tu {request_kind_label}, separa datos utiles y lo deja listo "
+            "para que el equipo responda sin exigir registro previo."
         ),
         "anonymous_intake": True,
         "customer_has_contact": customer_has_contact,
@@ -905,8 +905,8 @@ def _build_intake_experience(
             contextual_capability,
             {
                 "id": "crm_operator_pack",
-                "label": "Pack para operador",
-                "description": "Incluye resumen, faltantes, respuesta sugerida y canales de contacto.",
+                "label": "Resumen para el equipo",
+                "description": "Incluye resumen, faltantes, proximo paso y canales de contacto.",
                 "status": "enabled",
             },
             {
@@ -923,7 +923,7 @@ def _build_intake_experience(
             {"id": "send_bill", "label": "Adjuntar boleta o comprobante", "document_type": "tax_bill"},
         ],
         "crm_handoff": {
-            "label": "Lead listo para CRM" if not catalog_matching else "Lead/Pedido listo para CRM",
+            "label": "Solicitud lista para seguimiento" if not catalog_matching else "Pedido listo para seguimiento",
             "recommended_next_action": recommended_next_action,
             "channels": ["whatsapp", "chat_widget", "email", "phone"],
         },
@@ -1360,7 +1360,7 @@ def _materialize_municipal_claim_from_handoff(
         municipio_ticket_id=ticket.id,
         comentario=(
             "Solicitud creada automaticamente desde marketplace asistido. "
-            f"Referencia intake pc-{pedido.id}. La IA sugirio categoria '{categoria}'"
+            f"Referencia intake pc-{pedido.id}. La lectura sugirio categoria '{categoria}'"
             + (f" y direccion '{direccion}'." if direccion else ".")
         ),
         user_id=actor_id or municipio_id,
@@ -1431,7 +1431,7 @@ def _build_next_actions(
     actions = [
         {
             "id": "operator_review",
-            "label": "Enviar al CRM",
+            "label": "Enviar al equipo",
             "type": "crm",
             "description": operator_description,
             "enabled": True,
@@ -1441,7 +1441,7 @@ def _build_next_actions(
             "label": "Ver pedido armado",
             "type": "link",
             "href": f"{tenant_path}/cart" if tenant_path else "/cart",
-            "description": "Continua con los productos que la IA pudo asociar al catalogo.",
+            "description": "Continua con los productos que quedaron asociados al catalogo.",
             "enabled": matched_count > 0 and catalog_matching,
         },
         {
@@ -1469,7 +1469,7 @@ def _build_next_actions(
             "label": "Seguir solicitud",
             "type": "reference",
             "reference": f"pedido:{pedido_id}",
-            "description": "Identificador interno para estado, auditoria y seguimiento omnicanal.",
+            "description": "Referencia para estado, historial y seguimiento por canal.",
             "enabled": True,
         }
     )
@@ -1557,12 +1557,12 @@ def _row_from_text_line(line: str) -> dict:
 def _extract_rows_from_text(text: str, prompt: Optional[str] = None) -> List[dict]:
     text_prompt = (
         f"{prompt or _PROMPT}\n\n"
-        "El contenido fue pegado por el usuario como texto. Extrae renglones operativos y respeta cantidades."
+        "El contenido fue pegado por el usuario como texto. Extrae renglones del pedido y respeta cantidades."
     )
     try:
         rows = extract_table_from_file(text.encode("utf-8"), text_prompt)
     except Exception as exc:  # noqa: BLE001
-        logger.info("No se pudo extraer texto pegado con IA; se usara fallback por renglones. error=%s", exc)
+        logger.info("No se pudo extraer texto pegado automaticamente; se usara fallback por renglones. error=%s", exc)
         rows = None
     if rows:
         return rows
@@ -1771,12 +1771,12 @@ def pedidos_desde_archivo():
     if extraction_error:
         customer_message = (
             f"Recibimos tu {request_kind_label}. No pudimos extraer renglones con suficiente seguridad, "
-            "pero ya quedo cargada para revision del equipo en el CRM."
+            "pero ya quedo cargada para revision del equipo."
         )
     elif is_service_request:
         customer_message = (
             f"Recibimos tu {request_kind_label}. La solicitud quedo cargada para validar direccion, categoria, "
-            "urgencia y area responsable desde el CRM."
+            "urgencia y area responsable."
         )
         if unmatched_count:
             customer_message = (
@@ -1785,8 +1785,8 @@ def pedidos_desde_archivo():
             )
     elif is_document_review:
         customer_message = (
-            f"Recibimos tu {request_kind_label}. La IA separo los datos utiles y el equipo puede validar "
-            "el documento o tramite desde el CRM."
+            f"Recibimos tu {request_kind_label}. Ya separamos los datos utiles y el equipo puede validar "
+            "el documento o tramite."
         )
         if unmatched_count:
             customer_message = (
@@ -1807,8 +1807,8 @@ def pedidos_desde_archivo():
         )
     else:
         customer_message = (
-            f"Recibimos tu {request_kind_label}. La IA ya separo los datos detectados y el equipo puede revisar "
-            "faltantes, stock, precios y datos de entrega desde el CRM."
+            f"Recibimos tu {request_kind_label}. Ya separamos los datos detectados y el equipo puede revisar "
+            "faltantes, stock, precios y datos de entrega."
         )
     source_payload = {
         "channel": origen,

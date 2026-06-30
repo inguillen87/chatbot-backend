@@ -1,5 +1,5 @@
 import logging
-from typing import Optional
+from typing import Any, Optional
 
 from models import PymePedido, TenantProfile, OrderEvent, db
 from services.email_service import (
@@ -205,3 +205,121 @@ class NotificationDispatcher:
 
 notification_dispatcher = NotificationDispatcher()
 dispatch_order_update = notification_dispatcher.dispatch_order_update
+
+
+def _dispatch_ticket_channels(
+    ticket: Any,
+    mensaje: str,
+    *,
+    tipo_ticket: str,
+    comentario_reciente: Any = None,
+    enable_whatsapp: bool = True,
+    archivos_adjuntos: Optional[list[Any]] = None,
+) -> dict[str, bool]:
+    """Send ticket updates through configured customer channels.
+
+    Ticket responses must not fail just because one notification channel is
+    down. Keep imports local so tests can patch the email/WhatsApp functions and
+    to avoid circular imports while routes are loading.
+    """
+
+    results = {"email": False, "sms": False, "whatsapp": False}
+    ticket_ref = getattr(ticket, "nro_ticket", None) or getattr(ticket, "id", "N/A")
+    safe_message = (mensaje or "").strip() or f"Tu ticket {ticket_ref} tiene novedades."
+
+    try:
+        from services import email_service
+
+        results["email"] = bool(
+            email_service.enviar_email_ticket_novedad(
+                ticket,
+                safe_message,
+                comentario_reciente=comentario_reciente,
+            )
+        )
+    except Exception as exc:  # pragma: no cover - defensive logging
+        logger.error(
+            "Error sending ticket email notification ticket=%s tipo=%s: %s",
+            ticket_ref,
+            tipo_ticket,
+            exc,
+            exc_info=True,
+        )
+
+    try:
+        from services import email_service
+
+        results["sms"] = bool(email_service.enviar_sms_ticket_novedad(ticket, safe_message))
+    except Exception as exc:  # pragma: no cover - defensive logging
+        logger.error(
+            "Error sending ticket SMS notification ticket=%s tipo=%s: %s",
+            ticket_ref,
+            tipo_ticket,
+            exc,
+            exc_info=True,
+        )
+
+    if enable_whatsapp:
+        try:
+            from services import email_service
+
+            results["whatsapp"] = bool(
+                email_service.enviar_whatsapp_ticket_novedad(
+                    ticket,
+                    safe_message,
+                    archivos_adjuntos=archivos_adjuntos,
+                )
+            )
+        except Exception as exc:  # pragma: no cover - defensive logging
+            logger.error(
+                "Error sending ticket WhatsApp notification ticket=%s tipo=%s: %s",
+                ticket_ref,
+                tipo_ticket,
+                exc,
+                exc_info=True,
+            )
+
+    return results
+
+
+def dispatch_ticket_update(
+    ticket: Any,
+    tipo_ticket: str,
+    mensaje: str,
+    *,
+    comentario_reciente: Any = None,
+    enable_whatsapp: bool = True,
+    archivos_adjuntos: Optional[list[Any]] = None,
+) -> dict[str, bool]:
+    """Notify a citizen/customer that an agent replied or attached evidence."""
+
+    return _dispatch_ticket_channels(
+        ticket,
+        mensaje,
+        tipo_ticket=tipo_ticket,
+        comentario_reciente=comentario_reciente,
+        enable_whatsapp=enable_whatsapp,
+        archivos_adjuntos=archivos_adjuntos,
+    )
+
+
+def dispatch_ticket_state_change(
+    ticket: Any,
+    tipo_ticket: str,
+    nuevo_estado: str,
+    *,
+    comentario_estado: Any = None,
+    enable_whatsapp: bool = True,
+) -> dict[str, bool]:
+    """Notify a citizen/customer when the visible ticket state changes."""
+
+    ticket_ref = getattr(ticket, "nro_ticket", None) or getattr(ticket, "id", "N/A")
+    estado_label = str(nuevo_estado or "").replace("_", " ").strip() or "actualizado"
+    mensaje = f"Tu ticket {ticket_ref} fue actualizado a {estado_label}."
+    return _dispatch_ticket_channels(
+        ticket,
+        mensaje,
+        tipo_ticket=tipo_ticket,
+        comentario_reciente=comentario_estado,
+        enable_whatsapp=enable_whatsapp,
+    )

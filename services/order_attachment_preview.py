@@ -72,26 +72,26 @@ def _build_pipeline(
     return [
         {
             "id": "ocr",
-            "label": "OCR / texto extraido",
-            "description": "Foto, documento o nota convertida a texto operativo.",
+            "label": "Texto extraido",
+            "description": "Foto, documento o nota convertida a texto para revisar.",
             "status": "done" if text_available else "pending_review",
         },
         {
             "id": "ai_parse",
-            "label": "Interpretacion IA",
+            "label": "Lectura automatica",
             "description": "Texto separado en renglones de pedido, cantidades y unidades.",
             "status": "done" if detected_count else "pending_review",
         },
         {
             "id": "catalog_match",
-            "label": "Match catalogo",
-            "description": "Cruce de productos detectados contra el catalogo del tenant.",
+            "label": "Cruce con catalogo",
+            "description": "Cruce de productos detectados contra el catalogo del equipo.",
             "status": catalog_status,
         },
         {
             "id": "crm_handoff",
-            "label": "CRM operativo",
-            "description": "Paquete de pedido, faltantes y respuesta queda listo para el operador.",
+            "label": "Listo para el equipo",
+            "description": "Pedido, faltantes y proximo paso quedan listos para revisar.",
             "status": "pending_review" if needs_operator_review else "ready",
         },
         {
@@ -157,13 +157,13 @@ def _build_crm_handoff(
         _operator_task(
             "send_customer_reply",
             "Responder al cliente",
-            "Usar el resumen operativo para confirmar, corregir o derivar el pedido.",
+            "Usar el resumen del pedido para confirmar, corregir o derivar.",
             tone="primary",
         )
     )
 
     return {
-        "label": "Lead/Pedido listo para CRM",
+        "label": "Pedido listo para seguimiento",
         "active_channel": channel,
         "channels": ["whatsapp", "chat_widget", "email", "phone"],
         "recommended_next_action": (
@@ -199,8 +199,8 @@ def _build_intake_experience(
         "render_as": "anonymous_assisted_marketplace_intake",
         "title": "Pedido asistido por foto, papel o texto",
         "summary": (
-            "Chatboc interpreta fotos, documentos o notas de pedido y deja un paquete operativo "
-            "para que el tenant responda desde CRM sin exigir registro previo."
+            "Chatboc interpreta fotos, documentos o notas de pedido y prepara un resumen "
+            "para que el equipo responda sin exigir registro previo."
         ),
         "channel": channel,
         "anonymous_intake": True,
@@ -227,8 +227,8 @@ def _build_intake_experience(
             },
             {
                 "id": "crm_operator_pack",
-                "label": "Pack para operador",
-                "description": "Incluye resumen, faltantes y proximos pasos para CRM.",
+                "label": "Resumen para el equipo",
+                "description": "Incluye resumen, faltantes y proximos pasos.",
                 "status": "enabled",
             },
             {

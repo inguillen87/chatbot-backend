@@ -11,6 +11,12 @@ def _operator_task_ids(preview):
     return [step["id"] for step in preview["crm_handoff"]["operator_next_steps"]]
 
 
+def _assert_public_copy_without_internal_jargon(*parts):
+    visible_copy = "\n".join(part for part in parts if part)
+    for forbidden in ("CRM", "IA", "tenant admin", "auditoria", "operativo", "operativa"):
+        assert forbidden not in visible_copy
+
+
 @patch("services.order_attachment_preview.buscar_item_en_catalogo")
 @patch("services.order_attachment_preview.extraer_lista_pedido_de_texto_con_llm")
 def test_build_order_attachment_preview_returns_structured_preview(mock_extract, mock_match):
@@ -63,6 +69,14 @@ def test_build_order_attachment_preview_returns_structured_preview(mock_extract,
     assert _pipeline_ids(preview) == ["ocr", "ai_parse", "catalog_match", "crm_handoff", "contact"]
     assert intake["pipeline"][2]["status"] == "pending_review"
     assert intake["pipeline"][4]["status"] == "done"
+    _assert_public_copy_without_internal_jargon(
+        intake["title"],
+        intake["summary"],
+        *(f"{step['label']} {step['description']}" for step in intake["pipeline"]),
+        *(f"{capability['label']} {capability['description']}" for capability in intake["capabilities"]),
+        preview["crm_handoff"]["label"],
+        *(f"{step['label']} {step['description']}" for step in preview["crm_handoff"]["operator_next_steps"]),
+    )
 
     assert preview["crm_handoff"]["active_channel"] == "web"
     assert preview["crm_handoff"]["recommended_next_action"] == "revisar_y_responder"

@@ -966,8 +966,8 @@ def _assisted_intake_experience(
     return {
         "contract_version": ASSISTED_INTAKE_CONTRACT_VERSION,
         "render_as": "anonymous_assisted_marketplace_intake",
-        "title": "Pedido asistido por IA",
-        "summary": "Fotos, PDFs o notas de pedido quedan convertidas en una solicitud operativa para CRM.",
+        "title": "Pedido asistido por foto, papel o texto",
+        "summary": "Fotos, PDFs o notas de pedido quedan convertidas en una solicitud lista para revisar.",
         "anonymous_intake": True,
         "source_channel": source_channel,
         "catalog_matching": True,
@@ -981,25 +981,25 @@ def _assisted_intake_experience(
             },
             {
                 "id": "ai_parse",
-                "label": "Lectura IA",
+                "label": "Lectura automatica",
                 "description": "La imagen o documento se transforma en renglones de pedido.",
                 "status": "warning" if extraction_error else ("done" if detected_count else "pending_review"),
             },
             {
                 "id": "catalog_match",
                 "label": "Cruce con catalogo",
-                "description": "La IA propone productos reales, alternativas y faltantes.",
+                "description": "Propone productos del catalogo, alternativas y faltantes.",
                 "status": "done" if matched_count else "pending_review",
             },
             {
                 "id": "crm_handoff",
-                "label": "CRM operativo",
-                "description": "El tenant admin recibe tareas, contexto y respuesta sugerida.",
+                "label": "Listo para el equipo",
+                "description": "El equipo recibe tareas, contexto y proximo paso sugerido.",
                 "status": "pending_review" if needs_review else "ready",
             },
         ],
         "crm_handoff": {
-            "label": "Solicitud lista para CRM",
+            "label": "Solicitud lista para seguimiento",
             "recommended_next_action": "revisar_y_responder" if needs_review else "confirmar_stock_precio_y_enviar",
             "channels": ["whatsapp", "chat_widget", "email", "phone", "crm"],
         },
@@ -1023,9 +1023,9 @@ def _assisted_next_actions(
     actions = [
         {
             "id": "operator_review",
-            "label": "Revisar en CRM",
+            "label": "Revisar en panel",
             "type": "crm",
-            "description": "Validar lectura IA, stock, precio y datos de contacto.",
+            "description": "Validar lectura, stock, precio y datos de contacto.",
             "enabled": True,
         },
         {
@@ -1045,10 +1045,10 @@ def _assisted_next_actions(
         },
         {
             "id": "tracking",
-            "label": "Seguimiento interno",
+            "label": "Seguimiento",
             "type": "reference",
             "reference": f"pedido:{pedido_id}",
-            "description": "Referencia para auditoria y seguimiento omnicanal.",
+            "description": "Referencia para historial y seguimiento por canal.",
             "enabled": True,
         },
     ]
@@ -1059,7 +1059,7 @@ def _assisted_next_actions(
                 "id": "review_unmatched_items",
                 "label": "Resolver faltantes",
                 "type": "crm_task",
-                "description": "Hay articulos que la IA no pudo asociar con seguridad al catalogo.",
+                "description": "Hay articulos que no quedaron asociados con seguridad al catalogo.",
                 "enabled": True,
             },
         )

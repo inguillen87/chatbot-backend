@@ -1994,27 +1994,8 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
                 tipo == "municipio"
                 or current_app.config.get("ENABLE_PYME_WHATSAPP_CHAT", True)
             ),
+            archivos_adjuntos=archivos_adjuntados_db,
         )
-
-        # Envío de adjuntos por WhatsApp si aplica
-        if archivos_adjuntados_db and resultados_notif.get("whatsapp") and (
-            tipo == "municipio" or current_app.config.get("ENABLE_PYME_WHATSAPP_CHAT", True)
-        ):
-            try:
-                from services.email_service import enviar_whatsapp_ticket_novedad
-
-                enviar_whatsapp_ticket_novedad(
-                    ticket_obj,
-                    mensaje_notificacion_base,
-                    archivos_adjuntos=archivos_adjuntados_db,
-                )
-            except Exception as exc:  # pragma: no cover - logging defensivo
-                current_app.logger.error(
-                    "Error enviando adjuntos por WhatsApp para ticket %s: %s",
-                    ticket_id,
-                    exc,
-                    exc_info=True,
-                )
 
         current_app.logger.info(
             "Notificaciones para respuesta de ticket %s (tipo %s) -> email=%s sms=%s whatsapp=%s",
@@ -2195,6 +2176,7 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
     # Notificación por Websocket
     ticket_json = serialize_ticket_to_json(ticket_obj, tipo)
     emit_ticket_status_changed(ticket_json)
+    emit_ticket_update(ticket_json)
 
     comentarios = [
         {

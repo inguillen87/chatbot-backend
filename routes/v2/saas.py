@@ -1037,7 +1037,7 @@ def _build_tenant_ops_qa_playbook(
     checks = [
         _ops_qa_check_result(
             check_id="admin_os_contract",
-            label="CRM operativo del tenant",
+            label="Panel del tenant",
             ok=admin.get("contract_version") == "tenant.admin_experience.v1"
             and {"inbox", "analytics", "transactions", "widget_whatsapp"}.issubset(set(modules.keys())),
             severity="critical",

@@ -62,7 +62,7 @@ CHATBOC_TEMPLATE_FRIENDLY_NAMES = {
     "gov_claim_status_update": "chatboc_gov_claim_status_update_v1",
     "gov_turn_reminder": "chatboc_gov_turn_reminder_v1",
     "gov_document_ready": "chatboc_gov_document_ready_v1",
-    "gov_survey_invite": "chatboc_gov_survey_invite_v1",
+    "gov_survey_invite": "chatboc_gov_survey_invite_v2",
     "gov_claim_sla": "gobiernos_reclamo_sla",
     "gov_tax_due": "gobiernos_tasa_vencimiento",
     "gov_turn_confirmation": "gobiernos_turno_confirmacion",

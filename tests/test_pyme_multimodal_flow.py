@@ -7,6 +7,13 @@ from models import CatalogoItem, PedidoConversacional, TenantProfile, User
 from services.pymes import responder_pyme, CONTEXTO_PYME
 from services.pyme_multimodal import PymeSessionState, handle_image_payload
 
+
+def _assert_public_copy_without_internal_jargon(*parts):
+    visible_copy = "\n".join(part for part in parts if part)
+    for forbidden in ("CRM", "IA", "tenant admin", "auditoria", "operativo", "operativa"):
+        assert forbidden not in visible_copy
+
+
 class PymeMultimodalTest(unittest.TestCase):
     def setUp(self):
         self.app = create_app(TestConfig)
@@ -130,6 +137,16 @@ class PymeMultimodalTest(unittest.TestCase):
         self.assertEqual(assisted_request["contract_version"], "marketplace.assisted_request.v1")
         self.assertEqual(assisted_request["source"]["channel"], "whatsapp")
         self.assertEqual(assisted_request["contact"]["phone"], "+5492613168608")
+        intake = assisted_request["intake_experience"]
+        _assert_public_copy_without_internal_jargon(
+            assisted_request["customer_message"],
+            intake["title"],
+            intake["summary"],
+            *(f"{step['label']} {step['description']}" for step in intake["pipeline"]),
+            intake["crm_handoff"]["label"],
+            *(f"{step['label']} {step['description']}" for step in assisted_request["customer_next_steps"]),
+            *(f"{action['label']} {action['description']}" for action in assisted_request["next_actions"]),
+        )
         self.assertEqual(
             assisted_request["match_summary"],
             {

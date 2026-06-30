@@ -39,3 +39,9 @@ def test_twilio_sync_declares_finance_templates_and_webviews():
     assert "/finanzas/{{2}}/transferencias/" in content
     assert "/finanzas/{{2}}/seguros/" in content
     assert "/finanzas/{{2}}/financiacion/" in content
+
+
+def test_government_survey_invite_uses_approved_v2_template():
+    from services.whatsapp_experience import CHATBOC_TEMPLATE_FRIENDLY_NAMES
+
+    assert CHATBOC_TEMPLATE_FRIENDLY_NAMES["gov_survey_invite"] == "chatboc_gov_survey_invite_v2"
