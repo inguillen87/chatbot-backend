@@ -282,6 +282,8 @@ def test_marketplace_order_note_upload_is_manageable_from_tenant_crm(client, app
     listed_order = next(order for order in listed if order["id"] == crm_id)
     assert listed_order["assisted_request"]["request_kind_label"] == "nota de pedido"
     assert listed_order["assisted_request"]["contact"]["phone"] == "+5492613168608"
+    assert listed_order["assisted_request"]["crm_order_draft"]["contract_version"] == "marketplace.crm_order_draft.v1"
+    assert listed_order["assisted_request"]["crm_handoff"]["draft_order"] == listed_order["assisted_request"]["crm_order_draft"]
     assert listed_order["customer_profile"]["phone"] == "+5492613168608"
 
     detail_response = client.get(f"/api/admin/tenants/{tenant.slug}/orders/{crm_id}", headers=headers)
@@ -299,6 +301,8 @@ def test_marketplace_order_note_upload_is_manageable_from_tenant_crm(client, app
         "email",
         "phone",
     ]
+    assert detail_payload["assisted_request"]["crm_order_draft"]["reference"] == f"pedido:{pedido_id}"
+    assert detail_payload["assisted_request"]["crm_handoff"]["draft_order"] == detail_payload["assisted_request"]["crm_order_draft"]
     operator_pack = detail_payload["assisted_request"]["operator_pack"]
     assert operator_pack["reference"] == f"pedido:{pedido_id}"
     assert operator_pack["priority"] == "normal"

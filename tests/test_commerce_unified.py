@@ -169,6 +169,15 @@ def test_serialize_unified_order_exposes_assisted_marketplace_upload_contract():
                 ],
             }
         ]
+        crm_order_draft = {
+            "contract_version": "marketplace.crm_order_draft.v1",
+            "reference": "pedido:manual",
+            "summary": {"matched": 1, "unmatched": 1},
+            "lines": [
+                {"status": "catalog_matched", "catalog_item_id": 12, "source_name": "Chapa acanalada"},
+                {"status": "needs_catalog_resolution", "source_name": "clavos bolsa"},
+            ],
+        }
 
         pedido = PedidoConversacional(
             tenant_id=tenant.id,
@@ -223,6 +232,7 @@ def test_serialize_unified_order_exposes_assisted_marketplace_upload_contract():
                 },
                 "catalog_candidates": catalog_candidates,
                 "row_errors": [{"index": 1, "reason": "cantidad_asumida"}],
+                "crm_order_draft": crm_order_draft,
                 "customer_next_steps": [{"id": "reply", "label": "Respuesta por canal", "status": "pending"}],
                 "intake_experience": {
                     "contract_version": "marketplace.assisted_intake_experience.v1",
@@ -270,6 +280,8 @@ def test_serialize_unified_order_exposes_assisted_marketplace_upload_contract():
         assert serialized["assisted_request"]["row_errors"][0]["reason"] == "cantidad_asumida"
         assert serialized["assisted_request"]["extraction_error"] == "lectura parcial"
         assert serialized["assisted_request"]["unmatched_items"] == ["clavos bolsa"]
+        assert serialized["assisted_request"]["crm_order_draft"] == crm_order_draft
+        assert serialized["assisted_request"]["crm_handoff"]["draft_order"] == crm_order_draft
         assisted_candidates = serialized["assisted_request"]["catalog_candidates"]
         assert assisted_candidates[0]["item"] == "clavos bolsa"
         assert assisted_candidates[0]["candidates"][0]["catalogo_item_id"] == 33
@@ -287,6 +299,43 @@ def test_serialize_unified_order_exposes_assisted_marketplace_upload_contract():
             for task in serialized["assisted_request"]["operator_pack"]["suggested_tasks"]
         )
         assert serialized["contact"]["phone"] == "+5492613168608"
+
+
+def test_serialize_unified_order_uses_first_item_crm_order_draft_when_metadata_missing():
+    app = create_app(TestConfig)
+    with app.app_context():
+        crm_order_draft = {
+            "contract_version": "marketplace.crm_order_draft.v1",
+            "reference": "pedido:item-only",
+            "summary": {"matched": 0, "unmatched": 1},
+            "lines": [{"status": "needs_catalog_resolution", "source_name": "Tornillos"}],
+        }
+        pedido = PedidoConversacional(
+            tenant_id=1,
+            user_id=2,
+            estado="confirmado",
+            tipo="nota_de_pedido",
+            origen="marketplace",
+            monto_monetario=0,
+            items=[
+                {
+                    "crm_order_draft": crm_order_draft,
+                    "items_detectados": [],
+                }
+            ],
+            metadata_payload={
+                "contract_version": "marketplace.assisted_request.v1",
+                "mode": "order_note_upload",
+                "crm_handoff": {"target_module": "orders"},
+            },
+        )
+
+        serialized = serialize_unified_order(pedido)
+
+        assisted_request = serialized["assisted_request"]
+        assert assisted_request["crm_order_draft"] == crm_order_draft
+        assert assisted_request["crm_handoff"]["target_module"] == "orders"
+        assert assisted_request["crm_handoff"]["draft_order"] == crm_order_draft
 
 
 def test_market_order_legacy_safe_count_query_omits_deferred_columns():

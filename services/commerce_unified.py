@@ -434,6 +434,18 @@ def _build_assisted_request(metadata: dict[str, Any], raw_items: list[Any], *, r
     match_summary = _as_dict(metadata.get("match_summary")) or raw_payload.get("match_summary") or {}
     extraction_error = metadata.get("extraction_error") or _as_dict(metadata.get("source")).get("extraction_error")
     request_kind_label = metadata.get("request_kind_label") or raw_payload.get("request_kind_label")
+    metadata_crm_handoff = _as_dict(metadata.get("crm_handoff"))
+    raw_crm_handoff = _as_dict(raw_payload.get("crm_handoff"))
+    crm_handoff = dict(metadata_crm_handoff or raw_crm_handoff)
+    crm_order_draft = (
+        _as_dict(metadata.get("crm_order_draft"))
+        or _as_dict(raw_payload.get("crm_order_draft"))
+        or _as_dict(metadata_crm_handoff.get("draft_order"))
+        or _as_dict(raw_crm_handoff.get("draft_order"))
+    )
+    if crm_order_draft:
+        crm_order_draft = dict(crm_order_draft)
+        crm_handoff = {**crm_handoff, "draft_order": crm_order_draft}
     persisted_operator_pack = _as_dict(metadata.get("operator_pack")) or _as_dict(raw_payload.get("operator_pack"))
     if persisted_operator_pack and persisted_operator_pack.get("suggested_reply"):
         operator_pack = dict(persisted_operator_pack)
@@ -458,7 +470,8 @@ def _build_assisted_request(metadata: dict[str, Any], raw_items: list[Any], *, r
         "request_kind_label": request_kind_label,
         "document_profile": _as_dict(metadata.get("document_profile")) or _as_dict(raw_payload.get("document_profile")),
         "structured_extraction": _as_dict(metadata.get("structured_extraction")) or _as_dict(raw_payload.get("structured_extraction")),
-        "crm_handoff": _as_dict(metadata.get("crm_handoff")) or _as_dict(raw_payload.get("crm_handoff")),
+        "crm_handoff": crm_handoff,
+        "crm_order_draft": crm_order_draft or None,
         "contact": assisted_contact,
         "source": source,
         "match_summary": match_summary,
