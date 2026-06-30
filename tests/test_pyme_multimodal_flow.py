@@ -175,6 +175,7 @@ class PymeMultimodalTest(unittest.TestCase):
         pedido = db.session.get(PedidoConversacional, assisted_request["pedido_id"])
         self.assertIsNotNone(pedido)
         self.assertEqual(pedido.tipo, "nota_de_pedido")
+        self.assertEqual(pedido.estado, "nuevo")
         self.assertEqual(pedido.origen, "whatsapp")
         self.assertEqual(pedido.metadata_payload["source"]["channel"], "whatsapp")
         self.assertEqual(pedido.metadata_payload["contract_version"], "marketplace.assisted_request.v1")

@@ -148,6 +148,9 @@ def test_marketplace_order_note_upload_creates_assisted_request_contract(client,
     assert payload["crm_order_draft"]["reference"] == f"pedido:{payload['pedido_id']}"
     assert payload["crm_order_draft"]["contact_state"] == "missing"
     assert payload["crm_order_draft"]["recommended_next_step"] == "pedir_contacto_y_responder"
+    pedido = PedidoConversacional.query.get(payload["pedido_id"])
+    assert pedido.estado == "nuevo"
+    assert pedido.metadata_payload["crm_state"] == "pending_operator_review"
     assert payload["crm_order_draft"]["summary"]["matched"] == 1
     assert payload["crm_order_draft"]["summary"]["unmatched"] == 1
     assert [line["status"] for line in payload["crm_order_draft"]["lines"]] == [
@@ -839,6 +842,7 @@ def test_marketplace_order_note_upload_creates_review_request_when_extraction_fa
     assert any(action["id"] == "whatsapp_handoff" for action in payload["next_actions"])
 
     pedido = PedidoConversacional.query.get(payload["pedido_id"])
+    assert pedido.estado == "nuevo"
     assert pedido.metadata_payload["source"]["extraction_error"]
 
 

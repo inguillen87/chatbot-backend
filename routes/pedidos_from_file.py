@@ -1923,6 +1923,7 @@ def pedidos_desde_archivo():
             or not bool(contact_payload.get("phone") or contact_payload.get("email"))
         ),
     }
+    crm_state = "pending_operator_review" if match_summary["needs_operator_review"] else "ready_for_confirmation"
     crm_order_draft = None
     if catalog_matching_enabled:
         crm_order_draft = build_crm_order_draft(
@@ -1983,7 +1984,7 @@ def pedidos_desde_archivo():
         tenant_id=tenant.id,
         user_id=getattr(user, "id", None) or owner.id,
         tipo=request_kind_config.get("crm_type") or "nota_de_pedido",
-        estado="confirmado",
+        estado="nuevo",
         items=[
             {
                 "archivo_url": upload_meta.get("public_url"),
@@ -2026,7 +2027,7 @@ def pedidos_desde_archivo():
             "crm_handoff": crm_handoff,
             "crm_order_draft": crm_order_draft,
             "contact": contact_payload,
-            "crm_state": "pending_operator_review" if match_summary["needs_operator_review"] else "ready_for_confirmation",
+            "crm_state": crm_state,
             "source": source_payload,
             "match_summary": match_summary,
             "review_context": review_context,

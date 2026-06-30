@@ -1250,7 +1250,7 @@ def _persist_assisted_intake_request(
         tenant_id=tenant_id,
         user_id=viewer_user_id or owner_user_id,
         tipo="nota_de_pedido",
-        estado="confirmado",
+        estado="nuevo",
         items=[record_payload],
         monto_monetario=state.cart.get("total") or state.cart.get("subtotal") or 0,
         monto_puntos=0,
