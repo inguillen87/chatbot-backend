@@ -2471,6 +2471,7 @@ def build_unique_fingerprint(
     tenant_id: int,
     dni: Optional[str] = None,
     phone: Optional[str] = None,
+    user_id: Optional[Any] = None,
     ip: Optional[str] = None,
     anon_cookie: Optional[str] = None,
 ) -> Optional[str]:
@@ -2489,6 +2490,7 @@ def build_unique_fingerprint(
 
     dni_clean = _clean_identifier(dni)
     phone_clean = _clean_identifier(phone)
+    user_id_clean = _clean_identifier(user_id)
     cookie_clean = _clean_identifier(anon_cookie)
     ip_clean = _clean_identifier(ip)
 
@@ -2518,8 +2520,11 @@ def build_unique_fingerprint(
     elif policy in {"por_dni_o_phone", "dni_o_phone"}:
         _append("dni", dni_clean)
         _append("phone", phone_clean)
+    elif policy in {"por_usuario", "usuario", "user_id", "por_user_id"}:
+        _append("user_id", user_id_clean)
     else:
         # fallback usa todo lo disponible
+        _append("user_id", user_id_clean)
         _append("dni", dni_clean)
         _append("phone", phone_clean)
         _append("cookie", cookie_clean)
@@ -2531,6 +2536,69 @@ def build_unique_fingerprint(
 
     canonical = "|".join(source_parts)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _validate_required_identity(encuesta: EncEncuesta, payload: Mapping[str, Any]) -> None:
+    if not (bool(getattr(encuesta, "requiere_identidad", False)) or not bool(getattr(encuesta, "anonimo_permitido", True))):
+        return
+
+    def _clean_identity(value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        cleaned = str(value).strip()
+        return cleaned or None
+
+    policy = str(getattr(encuesta, "politica_unicidad", "") or "libre").strip().lower()
+    user_id = _clean_identity(payload.get("user_id") or payload.get("userId"))
+    dni = _clean_identity(payload.get("dni") or payload.get("documento") or payload.get("document"))
+    phone = _clean_identity(
+        payload.get("phone")
+        or payload.get("telefono")
+        or payload.get("tel")
+        or payload.get("whatsapp")
+    )
+
+    requirements_by_policy = {
+        "por_dni": ("dni",),
+        "dni": ("dni",),
+        "por_phone": ("phone",),
+        "phone": ("phone",),
+        "por_telefono": ("phone",),
+        "telefono": ("phone",),
+        "por_usuario": ("user_id",),
+        "usuario": ("user_id",),
+        "user_id": ("user_id",),
+        "por_user_id": ("user_id",),
+    }
+    requirements = requirements_by_policy.get(policy)
+    identity_values = {"user_id": user_id, "dni": dni, "phone": phone}
+
+    if requirements and not any(identity_values.get(key) for key in requirements):
+        missing_label = " o ".join(requirements)
+        raise EncuestaError(
+            "Esta votacion requiere identidad verificada para registrar la participacion.",
+            status_code=400,
+            payload={
+                "contract_version": "surveys.public_response.v2",
+                "reason_code": "identity_required",
+                "action_hint": "provide_identity",
+                "required_identity": list(requirements),
+                "message": f"Necesitamos {missing_label} para esta votacion.",
+            },
+        )
+
+    if not any(identity_values.values()):
+        raise EncuestaError(
+            "Esta votacion requiere identidad verificada para registrar la participacion.",
+            status_code=400,
+            payload={
+                "contract_version": "surveys.public_response.v2",
+                "reason_code": "identity_required",
+                "action_hint": "provide_identity",
+                "required_identity": ["user_id", "dni", "phone"],
+                "message": "Necesitamos DNI, telefono o usuario verificado para esta votacion.",
+            },
+        )
 
 
 def _sanitize_text(value: Optional[str]) -> Optional[str]:
@@ -2977,12 +3045,23 @@ def save_respuesta(
     metadata_payload = metadata if isinstance(metadata, (dict, list)) else None
 
     tenant_id = encuesta.tenant_id
-    dni = payload.get("dni")
-    phone = payload.get("phone")
+    _validate_required_identity(encuesta, payload)
+
+    dni = payload.get("dni") or payload.get("documento") or payload.get("document")
+    phone = payload.get("phone") or payload.get("telefono") or payload.get("tel") or payload.get("whatsapp")
+    user_id = payload.get("user_id") or payload.get("userId")
     anon_cookie = request_ctx.get("anon_id")
     ip = request_ctx.get("ip")
 
-    fingerprint = build_unique_fingerprint(encuesta, tenant_id, dni=dni, phone=phone, ip=ip, anon_cookie=anon_cookie)
+    fingerprint = build_unique_fingerprint(
+        encuesta,
+        tenant_id,
+        dni=dni,
+        phone=phone,
+        user_id=user_id,
+        ip=ip,
+        anon_cookie=anon_cookie,
+    )
     if fingerprint:
         existing = EncRespuesta.query.filter_by(encuesta_id=encuesta.id, huella_unica=fingerprint).first()
         if existing:
@@ -3063,7 +3142,7 @@ def save_respuesta(
         encuesta_id=encuesta.id,
         tenant_id=tenant_id,
         huella_unica=fingerprint,
-        user_id=payload.get("user_id"),
+        user_id=user_id,
         dni=dni,
         phone=phone,
         ip=ip,

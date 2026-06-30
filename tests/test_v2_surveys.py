@@ -217,6 +217,40 @@ class V2SurveysApiTest(unittest.TestCase):
         self.assertEqual(live_resp.status_code, 403)
         self.assertEqual(live_resp.get_json().get("reason_code"), "live_results_hidden")
 
+    def test_v2_public_response_requires_identity_when_anonymous_is_disabled(self):
+        headers = {**self._auth(self.admin_1), "X-Tenant-Slug": self.tenant_1.slug}
+        payload = self._create_payload()
+        payload["allow_anonymous"] = False
+        payload["uniqueness_policy"] = "por_dni"
+
+        survey_id = self.client.post("/api/v2/surveys", json=payload, headers=headers).get_json()["id"]
+        token = self.client.post(f"/api/v2/surveys/{survey_id}/publish", headers=headers).get_json()["public_token"]
+
+        public_get = self.client.get(f"/api/v2/public/surveys/{token}").get_json()
+        question_id = public_get.get("preguntas", [])[0].get("id")
+        option_id = public_get.get("preguntas", [])[0].get("opciones", [])[0].get("id")
+        answer = {"respuestas": [{"pregunta_id": question_id, "opcion_id": option_id}]}
+
+        missing_identity = self.client.post(f"/api/v2/public/surveys/{token}/respond", json=answer)
+        self.assertEqual(missing_identity.status_code, 400, missing_identity.get_json())
+        missing_payload = missing_identity.get_json()
+        self.assertEqual(missing_payload.get("contract_version"), "surveys.public_response.v2")
+        self.assertEqual(missing_payload.get("reason_code"), "identity_required")
+        self.assertEqual(missing_payload.get("action_hint"), "provide_identity")
+        self.assertEqual(missing_payload.get("required_identity"), ["dni"])
+
+        identified = self.client.post(
+            f"/api/v2/public/surveys/{token}/respond",
+            json={**answer, "dni": "32877851"},
+        )
+        self.assertEqual(identified.status_code, 201, identified.get_json())
+
+        duplicate = self.client.post(
+            f"/api/v2/public/surveys/{token}/respond",
+            json={**answer, "dni": "32877851"},
+        )
+        self.assertEqual(duplicate.status_code, 409, duplicate.get_json())
+
     def test_v2_public_response_live_action_preserves_tenant_slug(self):
         headers = {**self._auth(self.admin_1), "X-Tenant-Slug": self.tenant_1.slug}
         survey_id = self.client.post("/api/v2/surveys", json=self._create_payload(), headers=headers).get_json()["id"]

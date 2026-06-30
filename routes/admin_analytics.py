@@ -951,10 +951,68 @@ def _build_realtime_recommendations(
     return recommendations
 
 
+def _build_survey_operations_contract(
+    *,
+    survey_responses: int,
+    survey_comments: int,
+    event_counts: dict[str, int],
+    window_minutes: int,
+) -> dict[str, Any]:
+    vote_events = sum(
+        int(count or 0)
+        for name, count in event_counts.items()
+        if "survey" in str(name or "").lower() or "encuesta" in str(name or "").lower() or "vote" in str(name or "").lower()
+    )
+    engagement = int(survey_responses or 0) + int(survey_comments or 0) + vote_events
+    if engagement > 0:
+        status = "live"
+        headline = f"{engagement} senales de participacion en los ultimos {window_minutes} minutos."
+    else:
+        status = "quiet"
+        headline = "Sin actividad de encuestas en la ventana actual."
+
+    next_actions: list[dict[str, str]] = [
+        {
+            "id": "open_surveys_admin",
+            "label": "Abrir encuestas",
+            "route": "/admin/encuestas",
+        },
+        {
+            "id": "review_live_results",
+            "label": "Revisar resultados en vivo",
+            "route": "/admin/encuestas?focus=live",
+        },
+    ]
+    if survey_comments:
+        next_actions.insert(
+            0,
+            {
+                "id": "moderate_comments",
+                "label": "Moderar comentarios",
+                "route": "/admin/encuestas?focus=comments",
+            },
+        )
+
+    return {
+        "contract_version": "analytics.survey_operations.v1",
+        "status": status,
+        "headline": headline,
+        "window_minutes": window_minutes,
+        "responses": int(survey_responses or 0),
+        "comments": int(survey_comments or 0),
+        "vote_events": vote_events,
+        "engagement": engagement,
+        "live_signal": engagement > 0,
+        "recommended_actions": next_actions,
+    }
+
+
 def _realtime_hub_ui_contract() -> dict[str, Any]:
     return {
         "labels": {
             "tabs_realtime_hub": "Realtime Hub",
+            "survey_ops_title": "Encuestas y votaciones en vivo",
+            "survey_ops_quiet": "Sin actividad de encuestas en este periodo",
             "sections_map": "Mapa en tiempo real",
             "sections_segments": "Segmentos",
             "empty": "Sin datos para este periodo",
@@ -1267,6 +1325,12 @@ def _build_realtime_hub_payload(filters, *, window_minutes: int = 30) -> dict[st
         sentiment=sentiment,
         hotspots=hotspots,
     )
+    survey_operations = _build_survey_operations_contract(
+        survey_responses=survey_responses,
+        survey_comments=survey_comments,
+        event_counts=event_counts,
+        window_minutes=window_minutes,
+    )
 
     return {
         "contract_version": "analytics.realtime_hub.v1",
@@ -1286,6 +1350,7 @@ def _build_realtime_hub_payload(filters, *, window_minutes: int = 30) -> dict[st
         "channels": top_channels,
         "events": top_events,
         "sentiment": sentiment,
+        "survey_operations": survey_operations,
         "comments": comments,
         "recommendations": recommendations,
         "hotspots": hotspots,

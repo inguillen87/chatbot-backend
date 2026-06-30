@@ -827,6 +827,13 @@ def test_admin_analytics_realtime_hub_includes_surveys_and_geo(client):
     assert data.get('totals', {}).get('events', 0) >= 1
     assert data.get('totals', {}).get('survey_responses', 0) >= 1
     assert data.get('totals', {}).get('survey_comments', 0) >= 1
+    survey_ops = data.get('survey_operations') or {}
+    assert survey_ops.get('contract_version') == 'analytics.survey_operations.v1'
+    assert survey_ops.get('status') == 'live'
+    assert survey_ops.get('responses') >= 1
+    assert survey_ops.get('comments') >= 1
+    assert survey_ops.get('engagement') >= 2
+    assert (survey_ops.get('recommended_actions') or [])[0].get('id') == 'moderate_comments'
     assert (data.get('top_channels') or [])[0]['channel'] == 'realtime_voice'
     assert (data.get('top_events') or [])[0]['event'] == 'realtime_business_action_executed'
     assert data.get('comments')
@@ -845,6 +852,7 @@ def test_admin_analytics_realtime_hub_includes_surveys_and_geo(client):
     assert (data.get('segments') or {}).get('categoria')
     labels = (data.get('ui') or {}).get('labels', {})
     assert labels.get('tabs_realtime_hub') == 'Realtime Hub'
+    assert labels.get('survey_ops_title') == 'Encuestas y votaciones en vivo'
     assert labels.get('sections_map') == 'Mapa en tiempo real'
     assert labels.get('sections_segments') == 'Segmentos'
     assert labels.get('empty_map')
