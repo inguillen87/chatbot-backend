@@ -52,6 +52,32 @@ def test_build_ticket_ai_enrichment_for_municipio(monkeypatch):
     assert result["secret_values_exposed"] is False
 
 
+def test_build_ticket_ai_enrichment_for_municipio_uses_local_fallback_without_hf(monkeypatch):
+    monkeypatch.setenv("HUGGINGFACE_RECLAMO_CATEGORY_MIN_SCORE", "0.60")
+    monkeypatch.setenv("HUGGINGFACE_RECLAMO_PRIORITY_MIN_SCORE", "0.60")
+    monkeypatch.setenv("HUGGINGFACE_RECLAMO_SIGNAL_MIN_SCORE", "0.60")
+    monkeypatch.setenv("HUGGINGFACE_SENTIMENT_MIN_SCORE", "0.55")
+    monkeypatch.setattr(
+        "services.huggingface_inference_service.classify_zero_shot",
+        lambda text, labels, multi_label=False: None,
+    )
+
+    class RiskTicket(_MunicipioTicket):
+        pregunta = "Poste de luz por caer con cable suelto en la esquina de una escuela. Estoy preocupado."
+        detalles = "Mando foto para que lo revisen urgente."
+        direccion = "Don Bosco 55"
+
+    result = build_ticket_ai_enrichment(RiskTicket(), scope="municipio")
+
+    assert result["huggingface"]["category"]["provider"] == "deterministic_local_fallback"
+    assert result["huggingface"]["priority"]["prioridad"] == "urgente"
+    assert result["crm_hints"]["requires_human_attention"] is True
+    assert result["crm_hints"]["requires_photo"] is True
+    assert "signal:riesgo_personas" in result["crm_hints"]["tags"]
+    assert result["state_mutation"]["applied"] is False
+    assert result["persisted"] is False
+
+
 def test_build_ticket_ai_enrichment_for_pyme_intent(monkeypatch):
     class PymeTicket:
         id = 11

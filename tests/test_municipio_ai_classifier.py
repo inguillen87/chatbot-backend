@@ -29,6 +29,24 @@ def test_infer_reclamo_category_rejects_low_confidence(monkeypatch):
     assert classifier.infer_reclamo_category("problema raro", ["Luminaria"]) is None
 
 
+def test_infer_reclamo_category_uses_local_fallback_when_hf_unavailable(monkeypatch):
+    monkeypatch.setenv("HUGGINGFACE_RECLAMO_CATEGORY_MIN_SCORE", "0.70")
+    monkeypatch.setattr(
+        "services.huggingface_inference_service.classify_zero_shot",
+        lambda text, labels, multi_label=False: None,
+    )
+
+    result = classifier.infer_reclamo_category(
+        "poste de luz apagado y esquina oscura",
+        ["luminaria", "limpieza"],
+    )
+
+    assert result["categoria"] == "luminaria"
+    assert result["provider"] == "deterministic_local_fallback"
+    assert result["fallback_reason"] == "huggingface_unavailable"
+    assert "poste" in result["matched_keywords"]
+
+
 def test_infer_reclamo_category_sorts_candidates_before_threshold(monkeypatch):
     monkeypatch.setenv("HUGGINGFACE_RECLAMO_CATEGORY_MIN_SCORE", "0.70")
     monkeypatch.setattr(
@@ -111,3 +129,31 @@ def test_build_reclamo_ai_enrichment_combines_hf_hints(monkeypatch):
     assert result["crm_hints"]["requires_exact_location"] is True
     assert result["crm_hints"]["mutates_operational_state"] is False
     assert "sentiment:preocupacion" in result["crm_hints"]["tags"]
+
+
+def test_build_reclamo_ai_enrichment_local_fallback_keeps_advisory_policy(monkeypatch):
+    monkeypatch.setenv("HUGGINGFACE_RECLAMO_CATEGORY_MIN_SCORE", "0.60")
+    monkeypatch.setenv("HUGGINGFACE_RECLAMO_PRIORITY_MIN_SCORE", "0.60")
+    monkeypatch.setenv("HUGGINGFACE_RECLAMO_SIGNAL_MIN_SCORE", "0.60")
+    monkeypatch.setenv("HUGGINGFACE_SENTIMENT_MIN_SCORE", "0.55")
+    monkeypatch.setattr(
+        "services.huggingface_inference_service.classify_zero_shot",
+        lambda text, labels, multi_label=False: None,
+    )
+
+    result = classifier.build_reclamo_ai_enrichment(
+        "poste de luz por caer con cable suelto en la esquina de una escuela, mando foto y estoy preocupado",
+        ["luminaria", "arbol caido", "limpieza"],
+    )
+
+    assert result["category"]["provider"] == "deterministic_local_fallback"
+    assert result["priority"]["prioridad"] == "urgente"
+    assert result["operational_signals"]["requires_human_attention"] is True
+    assert result["operational_signals"]["requires_photo"] is True
+    assert result["operational_signals"]["requires_exact_location"] is True
+    assert result["sentiment"]["sentiment"] == "preocupacion"
+    assert result["crm_hints"]["risk_level"] in {"alto", "critico"}
+    assert "signal:riesgo_personas" in result["crm_hints"]["tags"]
+    assert any(action["id"] == "review_reclamo_ai_signal" for action in result["crm_hints"]["recommended_actions"])
+    assert result["advisory_policy"]["mutates_operational_state"] is False
+    assert result["state_mutation"]["applied"] is False

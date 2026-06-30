@@ -2,7 +2,7 @@ import logging
 import os
 from typing import Any, Optional
 
-from services.categorias_municipio import CATEGORIAS_RECLAMO, normalizar_texto
+from services.categorias_municipio import CATEGORIAS_RECLAMO, CATEGORIAS_SINONIMOS, normalizar_texto
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +38,154 @@ RECLAMO_SENTIMENT_LABELS = {
     "preocupacion": "preocupado",
     "neutral": "neutral",
     "positivo": "satisfecho",
+}
+
+LOCAL_PRIORITY_SIGNALS = {
+    "urgente": [
+        "urgente",
+        "emergencia",
+        "peligro",
+        "peligroso",
+        "se esta cayendo",
+        "por caer",
+        "cable suelto",
+        "incendio",
+        "fuego",
+        "accidente",
+        "lastimado",
+        "herido",
+        "electrocut",
+    ],
+    "alta": [
+        "sin luz",
+        "sin agua",
+        "semaforo apagado",
+        "esquina oscura",
+        "calle cortada",
+        "perdida de agua",
+        "basural",
+        "ratas",
+        "mosquitos",
+        "humo",
+    ],
+}
+
+LOCAL_OPERATIONAL_SIGNAL_KEYWORDS = {
+    "riesgo_personas": [
+        "peligro",
+        "peligroso",
+        "por caer",
+        "se cae",
+        "cable suelto",
+        "electrocut",
+        "herido",
+        "lastimado",
+        "ninos",
+        "escuela",
+    ],
+    "riesgo_vial": [
+        "transito",
+        "vehiculo",
+        "autos",
+        "motos",
+        "calle",
+        "esquina",
+        "ruta",
+        "semaforo",
+        "choque",
+        "accidente",
+    ],
+    "servicio_interrumpido": [
+        "sin luz",
+        "sin agua",
+        "corte",
+        "apagado",
+        "fuera de servicio",
+        "roto",
+        "rota",
+        "no funciona",
+    ],
+    "salud_publica": [
+        "basura",
+        "residuos",
+        "ratas",
+        "mosquitos",
+        "olor",
+        "cloaca",
+        "aguas servidas",
+        "insectos",
+        "plaga",
+        "pastizal",
+    ],
+    "inspeccion_urgente": [
+        "urgente",
+        "hoy",
+        "inmediato",
+        "peligro",
+        "incendio",
+        "fuego",
+        "humo",
+        "por caer",
+        "se esta cayendo",
+    ],
+    "requiere_evidencia": [
+        "foto",
+        "imagen",
+        "video",
+        "adjunto",
+        "mando foto",
+        "se ve",
+    ],
+    "requiere_ubicacion_exacta": [
+        "direccion",
+        "altura",
+        "esquina",
+        "interseccion",
+        "frente a",
+        "barrio",
+        "manzana",
+        "lote",
+        "ubicacion",
+    ],
+    "consulta_administrativa": [
+        "tramite",
+        "expediente",
+        "habilitacion",
+        "permiso",
+        "consulta",
+        "certificado",
+        "boleta",
+    ],
+}
+
+LOCAL_SENTIMENT_KEYWORDS = {
+    "frustracion_alta": [
+        "cansado",
+        "harto",
+        "enojo",
+        "enojado",
+        "nadie responde",
+        "otra vez",
+        "reclame",
+        "verguenza",
+    ],
+    "preocupacion": [
+        "preocupado",
+        "miedo",
+        "peligro",
+        "peligroso",
+        "urgente",
+        "ninos",
+        "escuela",
+        "accidente",
+    ],
+    "positivo": [
+        "gracias",
+        "excelente",
+        "buenisimo",
+        "solucionado",
+        "conforme",
+    ],
 }
 
 
@@ -86,6 +234,29 @@ def _clean_reclamo_text(text: Any) -> str:
     return str(text or "").strip()[:max_chars]
 
 
+def _contains_phrase(normalized_text: str, phrase: str) -> bool:
+    normalized_phrase = normalizar_texto(phrase)
+    if not normalized_phrase:
+        return False
+    return f" {normalized_phrase} " in f" {normalized_text} "
+
+
+def _keyword_hits(text: str, keywords: list[str]) -> list[str]:
+    normalized = normalizar_texto(text)
+    hits: list[str] = []
+    for keyword in keywords:
+        if _contains_phrase(normalized, keyword):
+            hits.append(keyword)
+    return hits
+
+
+def _score_from_hits(hits: list[str], *, base: float = 0.66, per_hit: float = 0.08) -> float:
+    if not hits:
+        return 0.0
+    long_phrase_bonus = min(0.08, len([hit for hit in hits if len(normalizar_texto(hit).split()) >= 2]) * 0.02)
+    return round(min(0.94, base + (len(hits) * per_hit) + long_phrase_bonus), 4)
+
+
 def _normalize_result_label(label: Any, allowed_labels: list[str]) -> Optional[str]:
     normalized = normalizar_texto(str(label or ""))
     if not normalized:
@@ -111,6 +282,151 @@ def _top_candidates(results: list[dict], allowed_labels: list[str], limit: int =
         candidates.append({"label": label, "score": round(score, 4)})
     candidates.sort(key=lambda item: float(item.get("score") or 0), reverse=True)
     return candidates[:limit]
+
+
+def _local_category_candidates(text: str, allowed_labels: list[str], limit: int = 3) -> list[dict]:
+    normalized_allowed = {normalizar_texto(label): label for label in allowed_labels}
+    synonym_map = {
+        normalizar_texto(category): keywords
+        for category, keywords in CATEGORIAS_SINONIMOS.items()
+        if normalizar_texto(category) in normalized_allowed
+    }
+    candidates: list[dict] = []
+    for normalized_category, keywords in synonym_map.items():
+        hits = _keyword_hits(text, keywords + [normalized_category])
+        score = _score_from_hits(hits, base=0.68, per_hit=0.07)
+        if score <= 0:
+            continue
+        candidates.append(
+            {
+                "label": normalized_allowed[normalized_category],
+                "score": score,
+                "matched_keywords": hits[:6],
+            }
+        )
+    candidates.sort(key=lambda item: float(item.get("score") or 0), reverse=True)
+    return candidates[:limit]
+
+
+def _local_category_fallback(text: str, allowed_labels: list[str]) -> Optional[dict]:
+    candidates = _local_category_candidates(text, allowed_labels)
+    if not candidates:
+        return None
+    min_score = reclamo_ai_thresholds()["category_min_score"]
+    best = candidates[0]
+    if float(best["score"]) < min_score:
+        return None
+    return {
+        "categoria": best["label"],
+        "score": best["score"],
+        "threshold": min_score,
+        "meets_threshold": True,
+        "provider": "deterministic_local_fallback",
+        "fallback_reason": "huggingface_unavailable",
+        "matched_keywords": best.get("matched_keywords", []),
+        "candidates": candidates,
+    }
+
+
+def _local_priority_fallback(text: str) -> Optional[dict]:
+    candidates: list[dict] = []
+    for label, keywords in LOCAL_PRIORITY_SIGNALS.items():
+        hits = _keyword_hits(text, keywords)
+        score = _score_from_hits(hits, base=0.69, per_hit=0.08)
+        if score > 0:
+            candidates.append({"label": label, "score": score, "matched_keywords": hits[:6]})
+    if not candidates:
+        candidates.append({"label": "normal", "score": 0.67, "matched_keywords": []})
+    candidates.sort(key=lambda item: float(item.get("score") or 0), reverse=True)
+    min_score = reclamo_ai_thresholds()["priority_min_score"]
+    best = candidates[0]
+    if float(best["score"]) < min_score:
+        return None
+    return {
+        "prioridad": best["label"],
+        "score": best["score"],
+        "threshold": min_score,
+        "meets_threshold": True,
+        "provider": "deterministic_local_fallback",
+        "fallback_reason": "huggingface_unavailable",
+        "matched_keywords": best.get("matched_keywords", []),
+        "candidates": [{"label": item["label"], "score": item["score"]} for item in candidates[:3]],
+    }
+
+
+def _local_operational_signals_fallback(text: str) -> Optional[dict]:
+    candidates: list[dict] = []
+    for code, keywords in LOCAL_OPERATIONAL_SIGNAL_KEYWORDS.items():
+        hits = _keyword_hits(text, keywords)
+        score = _score_from_hits(hits, base=0.64, per_hit=0.08)
+        if score <= 0:
+            continue
+        candidates.append(
+            {
+                "code": code,
+                "label": RECLAMO_OPERATIONAL_SIGNAL_LABELS[code],
+                "score": score,
+                "matched_keywords": hits[:6],
+            }
+        )
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: float(item.get("score") or 0), reverse=True)
+    min_score = reclamo_ai_thresholds()["signal_min_score"]
+    selected = [candidate for candidate in candidates if float(candidate["score"]) >= min_score]
+    if not selected:
+        return None
+    signal_codes = {candidate["code"] for candidate in selected}
+    top_score = float(selected[0].get("score") or 0)
+    return {
+        "provider": "deterministic_local_fallback",
+        "fallback_reason": "huggingface_unavailable",
+        "threshold": min_score,
+        "meets_threshold": True,
+        "risk_level": _risk_level_from_signal_codes(signal_codes, top_score),
+        "requires_photo": "requiere_evidencia" in signal_codes,
+        "requires_exact_location": "requiere_ubicacion_exacta" in signal_codes,
+        "requires_human_attention": bool(
+            {"riesgo_personas", "riesgo_vial", "inspeccion_urgente"} & signal_codes
+        ),
+        "signals": selected,
+        "candidates": candidates[:8],
+    }
+
+
+def _local_sentiment_fallback(text: str) -> Optional[dict]:
+    candidates: list[dict] = []
+    for code, keywords in LOCAL_SENTIMENT_KEYWORDS.items():
+        hits = _keyword_hits(text, keywords)
+        score = _score_from_hits(hits, base=0.64, per_hit=0.08)
+        if score <= 0:
+            continue
+        candidates.append(
+            {
+                "code": code,
+                "label": RECLAMO_SENTIMENT_LABELS[code],
+                "score": score,
+                "matched_keywords": hits[:5],
+            }
+        )
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: float(item.get("score") or 0), reverse=True)
+    min_score = reclamo_ai_thresholds()["sentiment_min_score"]
+    best = candidates[0]
+    if float(best["score"]) < min_score:
+        return None
+    return {
+        "provider": "deterministic_local_fallback",
+        "fallback_reason": "huggingface_unavailable",
+        "sentiment": best["code"],
+        "label": best["label"],
+        "score": best["score"],
+        "threshold": min_score,
+        "meets_threshold": True,
+        "matched_keywords": best.get("matched_keywords", []),
+        "candidates": candidates[:4],
+    }
 
 
 def _top_code_candidates(results: list[dict], labels_by_code: dict[str, str], limit: int = 8) -> list[dict]:
@@ -161,10 +477,10 @@ def infer_reclamo_category(text: str, categories: list[str] | None = None) -> Op
         results = classify_zero_shot(str(text), allowed_labels, multi_label=False)
     except Exception as exc:
         logger.warning("Hugging Face reclamo category inference skipped: %s", exc)
-        return None
+        return _local_category_fallback(str(text), allowed_labels)
 
     if not results:
-        return None
+        return _local_category_fallback(str(text), allowed_labels)
 
     min_score = reclamo_ai_thresholds()["category_min_score"]
     candidates = _top_candidates(results, allowed_labels)
@@ -207,11 +523,11 @@ def infer_reclamo_priority(text: str) -> Optional[dict]:
         )
     except Exception as exc:
         logger.warning("Hugging Face reclamo priority inference skipped: %s", exc)
-        return None
+        return _local_priority_fallback(str(text))
 
     candidates = _top_candidates(results or [], labels)
     if not candidates:
-        return None
+        return _local_priority_fallback(str(text))
 
     min_score = reclamo_ai_thresholds()["priority_min_score"]
     best = candidates[0]
@@ -258,11 +574,11 @@ def infer_reclamo_operational_signals(text: str) -> Optional[dict]:
         results = classify_zero_shot(str(text), labels, multi_label=True)
     except Exception as exc:
         logger.warning("Hugging Face reclamo signal inference skipped: %s", exc)
-        return None
+        return _local_operational_signals_fallback(str(text))
 
     candidates = _top_code_candidates(results or [], RECLAMO_OPERATIONAL_SIGNAL_LABELS)
     if not candidates:
-        return None
+        return _local_operational_signals_fallback(str(text))
 
     min_score = reclamo_ai_thresholds()["signal_min_score"]
     selected = [candidate for candidate in candidates if float(candidate["score"]) >= min_score]
@@ -299,11 +615,11 @@ def infer_reclamo_sentiment(text: str) -> Optional[dict]:
         results = classify_zero_shot(str(text), labels, multi_label=False)
     except Exception as exc:
         logger.warning("Hugging Face reclamo sentiment inference skipped: %s", exc)
-        return None
+        return _local_sentiment_fallback(str(text))
 
     candidates = _top_code_candidates(results or [], RECLAMO_SENTIMENT_LABELS, limit=4)
     if not candidates:
-        return None
+        return _local_sentiment_fallback(str(text))
 
     min_score = reclamo_ai_thresholds()["sentiment_min_score"]
     best = candidates[0]
