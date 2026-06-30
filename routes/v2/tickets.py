@@ -10,6 +10,8 @@ from models import TenantTicket
 from routes.v2.tenants import V2TenantResolutionError, resolve_tenant_v2
 from services.v2.ticket_event_service import list_ticket_events
 from services.v2.ticket_service import add_comment, create_ticket, list_tickets, patch_ticket, serialize_comment, serialize_ticket
+from utils.auth_decorators import _is_authorized_for_tenant
+from utils.roles import ROLE_EMPLEADO, ROLE_SUPERADMIN, ROLE_TENANT_ADMIN, canonical_role
 
 v2_tickets_bp = Blueprint("v2_tickets", __name__, url_prefix="/api/v2")
 
@@ -48,6 +50,38 @@ def _viewer():
     return getattr(g, "viewer", None)
 
 
+def _tenant_access_error(tenant):
+    viewer = _viewer()
+    if viewer is None:
+        return _error_response("Autenticacion requerida", 401, "auth_required", "login")
+    if not _is_authorized_for_tenant(viewer, tenant_id=tenant.id, tenant_slug=tenant.slug):
+        return _error_response("Acceso denegado para este tenant", 403, "tenant_access_denied", "switch_tenant")
+    return None
+
+
+def _viewer_role() -> str:
+    return canonical_role(getattr(_viewer(), "rol", None))
+
+
+def _is_operator() -> bool:
+    return _viewer_role() in {ROLE_SUPERADMIN, ROLE_TENANT_ADMIN, ROLE_EMPLEADO}
+
+
+def _ticket_access_error(ticket: TenantTicket):
+    if _is_operator():
+        return None
+    viewer = _viewer()
+    if viewer is not None and ticket.user_id and str(ticket.user_id) == str(getattr(viewer, "id", "")):
+        return None
+    return _error_response("ticket no encontrado", 404, "ticket_not_found", "refresh_tickets")
+
+
+def _operator_error():
+    if _is_operator():
+        return None
+    return _error_response("Permisos insuficientes para operar tickets", 403, "operator_required", "ask_operator")
+
+
 def _resolve_tenant_or_error():
     explicit_slug = (
         request.headers.get("X-Tenant-Slug")
@@ -69,6 +103,9 @@ def list_tickets_v2():
     tenant, error = _resolve_tenant_or_error()
     if error:
         return error
+    access_error = _tenant_access_error(tenant)
+    if access_error:
+        return access_error
 
     filters = {
         "status": request.args.get("status"),
@@ -93,6 +130,9 @@ def create_ticket_v2():
     tenant, error = _resolve_tenant_or_error()
     if error:
         return error
+    access_error = _tenant_access_error(tenant)
+    if access_error:
+        return access_error
 
     payload = request.get_json(silent=True) or {}
     try:
@@ -119,6 +159,12 @@ def patch_ticket_v2(ticket_id: int):
     tenant, error = _resolve_tenant_or_error()
     if error:
         return error
+    access_error = _tenant_access_error(tenant)
+    if access_error:
+        return access_error
+    role_error = _operator_error()
+    if role_error:
+        return role_error
 
     ticket = TenantTicket.query.get(ticket_id)
     if not ticket or ticket.tenant_id != tenant.id:
@@ -153,12 +199,20 @@ def add_ticket_comment_v2(ticket_id: int):
     tenant, error = _resolve_tenant_or_error()
     if error:
         return error
+    access_error = _tenant_access_error(tenant)
+    if access_error:
+        return access_error
 
     ticket = TenantTicket.query.get(ticket_id)
     if not ticket or ticket.tenant_id != tenant.id:
         return _error_response("ticket no encontrado", 404, "ticket_not_found", "refresh_tickets")
+    ticket_error = _ticket_access_error(ticket)
+    if ticket_error:
+        return ticket_error
 
     payload = request.get_json(silent=True) or {}
+    if (payload.get("visibility") or "public").strip().lower() == "internal" and not _is_operator():
+        return _error_response("Solo el equipo puede crear notas internas", 403, "operator_required", "send_public_comment")
     try:
         comment = add_comment(
             tenant=tenant,
@@ -189,6 +243,12 @@ def list_ticket_events_v2(ticket_id: int):
     tenant, error = _resolve_tenant_or_error()
     if error:
         return error
+    access_error = _tenant_access_error(tenant)
+    if access_error:
+        return access_error
+    role_error = _operator_error()
+    if role_error:
+        return role_error
 
     ticket = TenantTicket.query.get(ticket_id)
     if not ticket or ticket.tenant_id != tenant.id:

@@ -97,6 +97,18 @@ class V2TicketsApiTest(unittest.TestCase):
         self.assertEqual(payload.get("reason_code"), "missing_tenant")
         self.assertTrue(payload.get("request_id"))
 
+    def test_list_tickets_requires_authenticated_tenant_member(self):
+        no_token = self.client.get("/api/v2/tickets", headers={"X-Tenant-Slug": "tenant-1"})
+        self.assertEqual(no_token.status_code, 401)
+        self.assertEqual((no_token.get_json() or {}).get("reason_code"), "auth_required")
+
+        cross_tenant = self.client.get(
+            "/api/v2/tickets",
+            headers={**self._auth_header(self.employee), "X-Tenant-Slug": "tenant-2"},
+        )
+        self.assertEqual(cross_tenant.status_code, 403)
+        self.assertEqual((cross_tenant.get_json() or {}).get("reason_code"), "tenant_access_denied")
+
     def test_create_ticket_rejects_cross_tenant_assignee_with_json_contract(self):
         headers = {**self._auth_header(self.employee), "X-Tenant-Slug": "tenant-1", "X-Request-Id": "ticket-assignee-1"}
         other_employee = self._create_user("empleado@t2.test", "empleado", tenant_slug="tenant-2", tenant_id=self.tenant_2.id)
@@ -151,6 +163,19 @@ class V2TicketsApiTest(unittest.TestCase):
         types = [e.get("event_type") for e in events]
         self.assertIn("ticket.status_changed", types)
 
+    def test_customer_cannot_patch_or_read_events(self):
+        headers = {**self._auth_header(self.end_user), "X-Tenant-Slug": "tenant-1"}
+        created = self.client.post("/api/v2/tickets", json={"title": "Vecino", "description": "Caso"}, headers=headers).get_json()
+        ticket_id = created["id"]
+
+        patch = self.client.patch(f"/api/v2/tickets/{ticket_id}", json={"status": "in_progress"}, headers=headers)
+        self.assertEqual(patch.status_code, 403)
+        self.assertEqual((patch.get_json() or {}).get("reason_code"), "operator_required")
+
+        events = self.client.get(f"/api/v2/tickets/{ticket_id}/events", headers=headers)
+        self.assertEqual(events.status_code, 403)
+        self.assertEqual((events.get_json() or {}).get("reason_code"), "operator_required")
+
     def test_patch_assigns_employee_and_blocks_cross_tenant_employee(self):
         headers = {**self._auth_header(self.employee), "X-Tenant-Slug": "tenant-1"}
         created = self.client.post("/api/v2/tickets", json={"title": "A", "description": "A"}, headers=headers).get_json()
@@ -185,6 +210,19 @@ class V2TicketsApiTest(unittest.TestCase):
         target = next(item for item in items if item["id"] == ticket_id)
         self.assertEqual(target.get("comments"), [])
 
+    def test_customer_cannot_create_internal_comment(self):
+        headers = {**self._auth_header(self.end_user), "X-Tenant-Slug": "tenant-1"}
+        created = self.client.post("/api/v2/tickets", json={"title": "C", "description": "C"}, headers=headers).get_json()
+        ticket_id = created["id"]
+
+        comment_resp = self.client.post(
+            f"/api/v2/tickets/{ticket_id}/comments",
+            json={"body": "Nota privada falsa", "visibility": "internal"},
+            headers=headers,
+        )
+        self.assertEqual(comment_resp.status_code, 403)
+        self.assertEqual((comment_resp.get_json() or {}).get("reason_code"), "operator_required")
+
     def test_sla_due_date_is_computed(self):
         headers = {**self._auth_header(self.employee), "X-Tenant-Slug": "tenant-1"}
         created = self.client.post(
@@ -216,6 +254,25 @@ class V2TicketsApiTest(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         items = (resp.get_json() or {}).get("items") or []
         self.assertTrue(any(item.get("ticket_id") == ticket.id for item in items))
+
+    def test_sla_endpoints_require_operator_in_tenant(self):
+        no_token = self.client.get("/api/v2/sla/policies", headers={"X-Tenant-Slug": "tenant-1"})
+        self.assertEqual(no_token.status_code, 401)
+        self.assertEqual((no_token.get_json() or {}).get("reason_code"), "auth_required")
+
+        cross_tenant = self.client.get(
+            "/api/v2/sla/policies",
+            headers={**self._auth_header(self.employee), "X-Tenant-Slug": "tenant-2"},
+        )
+        self.assertEqual(cross_tenant.status_code, 403)
+        self.assertEqual((cross_tenant.get_json() or {}).get("reason_code"), "tenant_access_denied")
+
+        customer = self.client.get(
+            "/api/v2/sla/policies",
+            headers={**self._auth_header(self.end_user), "X-Tenant-Slug": "tenant-1"},
+        )
+        self.assertEqual(customer.status_code, 403)
+        self.assertEqual((customer.get_json() or {}).get("reason_code"), "operator_required")
 
 
 if __name__ == "__main__":

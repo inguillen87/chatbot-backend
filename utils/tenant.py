@@ -14,7 +14,14 @@ from utils.errors import ApiError
 TENANT_HEADER = "X-Tenant"
 TENANT_SLUG_HEADER = "X-Tenant-Slug"
 TENANT_QUERY_KEYS = ("tenant", "tenant_slug", "municipio_slug", "slug")
-TENANT_HEADER_KEYS = ("X-Chatboc-Tenant", "X-Tenant", "X-CHATBOC-TENANT", "X-TENANT")
+TENANT_HEADER_KEYS = (
+    "X-Chatboc-Tenant",
+    "X-Tenant",
+    "X-Tenant-Slug",
+    "X-CHATBOC-TENANT",
+    "X-TENANT",
+    "X-TENANT-SLUG",
+)
 
 
 def get_current_tenant() -> Optional[str]:
@@ -251,4 +258,3 @@ def require_tenant(func=None):
         return func(*args, **kwargs)
 
     return wrapper
-

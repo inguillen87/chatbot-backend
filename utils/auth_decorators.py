@@ -6,7 +6,7 @@ from functools import wraps
 from typing import Callable, TypeVar
 
 from flask import abort, g
-from utils.roles import has_permission, ROLE_SUPERADMIN
+from utils.roles import canonical_role, has_permission, ROLE_SUPERADMIN
 
 F = TypeVar("F", bound=Callable[..., object])
 
@@ -71,7 +71,7 @@ def _is_authorized_for_tenant(
     """
     Checks if a user is authorized for a given tenant.
     Authorization rules:
-    - Platform admins ('super_admin', 'admin') are always authorized.
+    - Platform admins ('super_admin') are always authorized.
     - Users are authorized if their `tenant_id` matches.
     - Users are authorized if they are the owner of the tenant (`municipio_id` or `pyme_id`).
     - Users (like employees) are authorized if their `empresa_id` links to the tenant's owner.
@@ -79,13 +79,22 @@ def _is_authorized_for_tenant(
     if not user:
         return False
 
-    # Platform-level admins are authorized for any tenant
-    if user.rol in ("super_admin", "admin"):
+    role = canonical_role(getattr(user, "rol", None))
+
+    # Platform-level admins are authorized for any tenant. Tenant admins are
+    # deliberately not global: a gobierno/colegio/pyme admin must stay inside
+    # its own tenant.
+    if role == ROLE_SUPERADMIN:
         return True
 
     # Direct tenant membership
-    if tenant_id is not None and getattr(user, "tenant_id", None) == tenant_id:
+    if tenant_id is not None and str(getattr(user, "tenant_id", "") or "") == str(tenant_id):
         return True
+
+    if tenant_slug:
+        user_slug = str(getattr(user, "tenant_slug", "") or "").strip().lower()
+        if user_slug and user_slug == str(tenant_slug).strip().lower():
+            return True
 
     # Resolve tenant to check ownership if tenant_id or tenant_slug is provided
     from models import TenantProfile  # Local import to avoid circular dependencies
@@ -101,7 +110,7 @@ def _is_authorized_for_tenant(
         return False
 
     # Re-check direct membership with the resolved tenant object
-    if getattr(user, "tenant_id", None) == tenant.id:
+    if str(getattr(user, "tenant_id", "") or "") == str(tenant.id):
         return True
 
     # Direct ownership

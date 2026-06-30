@@ -1,12 +1,23 @@
-from flask import Blueprint, request, jsonify, g
-from models import db, Order, OrderItem, CatalogoItem, User, TenantProfile
+from flask import Blueprint, abort, request, jsonify, g
+from models import db, Order, OrderItem, CatalogoItem, User
 from middleware.tenant_context import require_tenant
 from services.notification_dispatcher import notification_dispatcher
 from utils.auth_helpers import token_requerido
-import uuid
+from utils.auth_decorators import _is_authorized_for_tenant
+from utils.permissions import require_role
 from datetime import datetime
 
 orders_bp = Blueprint('orders_bp', __name__)
+
+
+def _ensure_tenant_operator(current_user, tenant):
+    if not tenant or not _is_authorized_for_tenant(current_user, tenant_id=tenant.id, tenant_slug=tenant.slug):
+        abort(403, description="Acceso denegado")
+
+
+def _tenant_config(tenant) -> dict:
+    return tenant.configuracion if isinstance(getattr(tenant, "configuracion", None), dict) else {}
+
 
 @orders_bp.route('/api/orders', methods=['POST'])
 @require_tenant
@@ -41,8 +52,12 @@ def create_order():
             # Use database price, ignore client price for catalog items
             unit_price = float(catalog_item.precio_monetario or 0)
         else:
-            # For ad-hoc items (manual), accept client price (or validate against policy)
-            unit_price = float(item.get('unit_price') or 0)
+            cfg = _tenant_config(tenant)
+            if not cfg.get("allow_public_ad_hoc_orders", True):
+                return jsonify({"error": "Catalog item is required for this tenant"}), 400
+            # Public/manual items are accepted as quote requests, but the buyer
+            # cannot set the final price from the client payload.
+            unit_price = 0.0
 
         qty = int(item.get('quantity') or 1)
         if qty < 1: continue
@@ -119,15 +134,14 @@ def create_order():
 @orders_bp.route('/api/admin/orders', methods=['GET'])
 @orders_bp.route('/api/orders', methods=['GET'])
 @token_requerido
+@require_role("admin", "empleado", "super_admin")
 @require_tenant
 def list_admin_orders(current_user):
     """
     Admin endpoint to list orders.
     """
     tenant = g.tenant_profile
-    # Verify admin access
-    # (Assuming _is_authorized_for_tenant check logic is handled or we trust token_requerido + tenant context for now)
-    # Ideally reuse the check from admin_tenant_bp
+    _ensure_tenant_operator(current_user, tenant)
 
     page = request.args.get('page', 1, type=int)
     per_page = request.args.get('per_page', 20, type=int)
@@ -196,9 +210,11 @@ def list_admin_orders(current_user):
 
 @orders_bp.route('/api/admin/orders/<order_id>', methods=['PATCH'])
 @token_requerido
+@require_role("admin", "empleado", "super_admin")
 @require_tenant
 def update_order(current_user, order_id):
     tenant = g.tenant_profile
+    _ensure_tenant_operator(current_user, tenant)
     order = Order.query.filter_by(id=order_id, tenant_id=tenant.id).first()
     if not order:
         return jsonify({"error": "Order not found"}), 404
