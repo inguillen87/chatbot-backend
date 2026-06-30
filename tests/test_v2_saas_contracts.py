@@ -1643,12 +1643,46 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertTrue(creation_manifest["policy"]["store_content_sid_in_message_template_registry"])
         manifest_items = {item["id"]: item for item in creation_manifest["items"]}
         self.assertIn("order_checkout", manifest_items)
+        self.assertIn("finance_secure_payment", manifest_items)
+        self.assertIn("finance_account_onboarding", manifest_items)
         self.assertEqual(manifest_items["order_checkout"]["create_request"]["friendly_name"], "chatboc_order_checkout_v1")
         self.assertIn("twilio/text", manifest_items["order_checkout"]["create_request"]["types"])
+        order_cta_action = manifest_items["order_checkout"]["create_request"]["types"]["twilio/call-to-action"]["actions"][0]
+        self.assertEqual(order_cta_action["type"], "URL")
+        self.assertEqual(order_cta_action["url"], "https://www.chatboc.ar/{{3}}")
+        self.assertEqual(
+            manifest_items["order_checkout"]["create_request"]["variables"]["3"],
+            f"t/{self.tenant.slug}/checkout",
+        )
+        cta_manifest_items = [
+            item
+            for item in manifest_items.values()
+            if item["create_request"]["types"].get("twilio/call-to-action")
+        ]
+        self.assertGreater(len(cta_manifest_items), 0)
+        for item in cta_manifest_items:
+            action = item["create_request"]["types"]["twilio/call-to-action"]["actions"][0]
+            self.assertTrue(action["url"].startswith("https://www.chatboc.ar/"))
+            self.assertNotEqual(action["url"], "{{1}}")
+            self.assertNotEqual(action["url"], "{{2}}")
+            self.assertNotEqual(action["url"], "{{3}}")
+            self.assertIn("{{", action["url"])
         self.assertEqual(manifest_items["order_checkout"]["approval_request"]["category"], "UTILITY")
         self.assertEqual(
             manifest_items["order_checkout"]["send_example"]["content_variables"]["1"],
             "P-123456",
+        )
+        self.assertEqual(
+            manifest_items["order_checkout"]["send_example"]["content_variables"]["3"],
+            f"t/{self.tenant.slug}/checkout",
+        )
+        self.assertEqual(
+            manifest_items["finance_secure_payment"]["send_example"]["content_variables"]["3"],
+            f"finanzas/{self.tenant.slug}/operacion/OP-1001?session=session-demo-123456",
+        )
+        self.assertEqual(
+            manifest_items["finance_secure_payment"]["create_request"]["types"]["twilio/call-to-action"]["actions"][0]["url"],
+            "https://www.chatboc.ar/{{3}}",
         )
         self.assertIn("whatsapp_flows", payload["template_blueprint"]["meta_business_strategy"])
         self.assertIn("signed_webviews", payload["template_blueprint"]["meta_business_strategy"])

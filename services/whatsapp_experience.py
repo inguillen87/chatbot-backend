@@ -1307,6 +1307,125 @@ def _numbered_content_variables(variables: list[str], *, tenant: TenantProfile |
     }
 
 
+URL_TEMPLATE_VARIABLES = {
+    "url",
+    "link",
+    "tracking_url",
+    "checkout_url",
+    "payment_url",
+    "survey_url",
+    "catalog_url",
+    "receipt_url",
+    "turn_url",
+    "document_url",
+    "quote_url",
+    "event_url",
+    "onboarding_url",
+    "kyc_url",
+    "offer_url",
+    "signature_url",
+    "support_url",
+    "statement_url",
+    "financing_url",
+}
+
+
+def _public_web_base_url() -> str:
+    base = (
+        os.getenv("APP_BASE_URL")
+        or os.getenv("PUBLIC_FRONTEND_URL")
+        or os.getenv("FRONTEND_URL")
+        or os.getenv("CHATBOC_PUBLIC_BASE_URL")
+        or "https://www.chatboc.ar"
+    )
+    base = str(base).strip().rstrip("/") or "https://www.chatboc.ar"
+    if not base.startswith(("http://", "https://")):
+        return f"https://{base.lstrip('/')}"
+    return base
+
+
+def _cta_url_variable_index(variables: list[str]) -> int | None:
+    for index, variable in enumerate(variables, start=1):
+        if _lower(variable) in URL_TEMPLATE_VARIABLES:
+            return index
+    return None
+
+
+def _cta_route_suffix_sample(
+    variable: str,
+    *,
+    item: Mapping[str, Any],
+    tenant: TenantProfile | None = None,
+) -> str:
+    key = _lower(variable)
+    stage = _stage_for_blueprint_item(item)
+    template_id = _lower(item.get("id") or item.get("name"))
+    tenant_slug = str(getattr(tenant, "slug", None) or "demo").strip() or "demo"
+    session = "session-demo-123456"
+
+    if template_id.startswith("finance_") and key in {"checkout_url", "payment_url"}:
+        return f"finanzas/{tenant_slug}/operacion/OP-1001?session={session}"
+    if key in {"checkout_url", "payment_url"}:
+        return f"t/{tenant_slug}/checkout"
+    if key == "catalog_url":
+        return f"t/{tenant_slug}/market"
+    if key == "survey_url":
+        return "e/encuesta-demo"
+    if key in {"quote_url"}:
+        return f"t/{tenant_slug}/checkout?quote=COT-1234"
+    if key in {"receipt_url"}:
+        return f"t/{tenant_slug}/portal/pedidos?receipt=REC-1234"
+    if key in {"turn_url"}:
+        return f"t/{tenant_slug}/portal/dashboard?turno=T-1234"
+    if key in {"event_url"}:
+        return f"t/{tenant_slug}/portal/eventos?event=EVT-1234"
+    if key in {"document_url"}:
+        return f"t/{tenant_slug}/portal/cuenta?document=DOC-1234"
+    if key in {"onboarding_url", "kyc_url"}:
+        return f"finanzas/{tenant_slug}/alta/ONB-1001?session={session}"
+    if key in {"offer_url", "signature_url", "financing_url"}:
+        return f"finanzas/{tenant_slug}/operacion/OP-1001?session={session}"
+    if key in {"statement_url"}:
+        return f"finanzas/{tenant_slug}/cuentas/CTA-1001?session={session}"
+    if key in {"support_url"}:
+        return f"finanzas/{tenant_slug}/cuentas/FIN-1001?session={session}"
+    if key in {"tracking_url", "url", "link"}:
+        if stage in {"order", "delivery", "tracking", "checkout", "catalog"} or template_id.startswith("pyme_"):
+            return f"tracking/order/P-123456?tenant_slug={tenant_slug}"
+        if template_id.startswith("finance_insurance"):
+            return f"finanzas/{tenant_slug}/seguros/SIN-1001?session={session}"
+        if template_id.startswith("finance_remittance"):
+            return f"finanzas/{tenant_slug}/transferencias/TRF-1001?session={session}"
+        return f"tracking/claim/123456?pin=900144&tenant_slug={tenant_slug}"
+    return f"t/{tenant_slug}/portal/dashboard"
+
+
+def _numbered_content_variables_for_creation(
+    variables: list[str],
+    *,
+    item: Mapping[str, Any],
+    tenant: TenantProfile | None = None,
+    cta_url_index: int | None = None,
+) -> dict[str, str]:
+    values = _numbered_content_variables(variables, tenant=tenant)
+    if cta_url_index is not None and 1 <= cta_url_index <= len(variables):
+        values[str(cta_url_index)] = _cta_route_suffix_sample(
+            variables[cta_url_index - 1],
+            item=item,
+            tenant=tenant,
+        )
+    return values
+
+
+def _body_with_canonical_cta_url(body: str, cta_url_index: int | None) -> str:
+    if cta_url_index is None:
+        return body
+    placeholder = "{{" + str(cta_url_index) + "}}"
+    if placeholder not in body:
+        return body
+    return body.replace(placeholder, f"{_public_web_base_url()}/{placeholder}")
+
+
 def _template_button_title(item: Mapping[str, Any]) -> str:
     stage = _stage_for_blueprint_item(item)
     if stage in {"payment", "checkout"}:
@@ -1377,8 +1496,16 @@ def _template_creation_manifest_item(
     language = str(item.get("language") or "es").strip() or "es"
     category = str(item.get("category") or "UTILITY").strip().upper() or "UTILITY"
     twilio_type = str(execution.get("twilio_type") or readiness.get("twilio_type") or "twilio/text")
-    sample_values = _numbered_content_variables(variables, tenant=tenant)
-    types: dict[str, Any] = {"twilio/text": {"body": body or f"Actualizacion de {friendly_name}: {{{{1}}}}"}}
+    cta_url_index = _cta_url_variable_index(variables) if twilio_type == "twilio/call-to-action" else None
+    sample_values = _numbered_content_variables_for_creation(
+        variables,
+        item=item,
+        tenant=tenant,
+        cta_url_index=cta_url_index,
+    )
+    base_body = body or f"Actualizacion de {friendly_name}: {{{{1}}}}"
+    text_body = _body_with_canonical_cta_url(base_body, cta_url_index)
+    types: dict[str, Any] = {"twilio/text": {"body": text_body}}
 
     if twilio_type == "twilio/quick-reply":
         action_labels = [str(action).replace("_", " ").title()[:20] for action in item.get("suggested_actions", []) if action]
@@ -1404,13 +1531,14 @@ def _template_creation_manifest_item(
             ],
         }
     elif twilio_type == "twilio/call-to-action":
+        cta_url = f"{_public_web_base_url()}/{{{{{cta_url_index or max(1, len(variables))}}}}}"
         types["twilio/call-to-action"] = {
-            "body": body or types["twilio/text"]["body"],
+            "body": text_body,
             "actions": [
                 {
                     "type": "URL",
                     "title": _template_button_title(item),
-                    "url": "{{" + str(max(1, len(variables))) + "}}",
+                    "url": cta_url,
                 }
             ],
         }
@@ -1452,6 +1580,7 @@ def _template_creation_manifest_item(
         "create_request": {
             "friendly_name": friendly_name,
             "language": language,
+            "variables": sample_values,
             "types": types,
         },
         "approval_request": {
@@ -1486,15 +1615,26 @@ def _template_creation_manifest_payload(
     tenant: TenantProfile,
     required_templates: list[dict[str, Any]],
     vertical_templates: Mapping[str, list[dict[str, Any]]],
+    operational_templates: list[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    template_items: list[dict[str, Any]] = []
+    template_items: list[Mapping[str, Any]] = []
     template_items.extend(required_templates)
     for vertical in ("gobierno", "colegio", "pyme"):
         template_items.extend(vertical_templates.get(vertical, []))
+    template_items.extend(operational_templates or [])
+
+    deduped_items: list[Mapping[str, Any]] = []
+    seen_template_ids: set[str] = set()
+    for item in template_items:
+        template_key = _lower(item.get("id") or item.get("name") or item.get("friendly_name"))
+        if not template_key or template_key in seen_template_ids:
+            continue
+        seen_template_ids.add(template_key)
+        deduped_items.append(item)
 
     manifests = [
         _template_creation_manifest_item(item, tenant=tenant)
-        for item in template_items
+        for item in deduped_items
     ]
     actionable = [
         item
@@ -1549,7 +1689,7 @@ def _template_creation_manifest_payload(
             ),
             "recommendation": "Usar templates aprobadas para recontacto, WhatsApp Flows donde Meta lo habilite y webviews firmados para pagos/datos sensibles.",
         },
-        "items": actionable[:20],
+        "items": actionable,
         "all_template_ids": [str(item.get("id") or "") for item in manifests if item.get("id")],
         "policy": {
             "create_first": True,
@@ -2006,6 +2146,12 @@ def _template_blueprint_payload(
         recommended_verticals = ["pyme", "colegio", "gobierno"]
 
     operational_catalog = _operational_template_groups_payload(templates)
+    operational_manifest_items: list[Mapping[str, Any]] = []
+    for group in operational_catalog["groups"].values():
+        if isinstance(group, Mapping) and isinstance(group.get("items"), list):
+            operational_manifest_items.extend(
+                item for item in group["items"] if isinstance(item, Mapping)
+            )
     readiness_action_items: list[dict[str, Any]] = []
     readiness_action_items.extend(
         _readiness_action_item(item, group="required")
@@ -2025,6 +2171,7 @@ def _template_blueprint_payload(
         tenant=tenant,
         required_templates=required_templates,
         vertical_templates=vertical_templates,
+        operational_templates=operational_manifest_items,
     )
 
     return {

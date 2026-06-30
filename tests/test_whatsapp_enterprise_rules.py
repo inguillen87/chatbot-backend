@@ -164,9 +164,29 @@ def test_twilio_content_sync_dry_run_returns_creation_payload(client, app):
     assert payload["meta_business"]["cta_webview_candidate"] is True
     assert payload["meta_business"]["outside_24h_requires_approval"] is True
     assert payload["create_request"]["types"]["twilio/call-to-action"]["actions"][0]["type"] == "URL"
+    cta_url = payload["create_request"]["types"]["twilio/call-to-action"]["actions"][0]["url"]
+    assert cta_url.startswith("https://www.chatboc.ar/")
+    assert cta_url != "{{3}}"
+    assert cta_url.endswith("/{{3}}")
+    assert payload["create_request"]["variables"]["3"] == f"t/{tenant.slug}/checkout"
     assert payload["quality_gate"]["webview_ready"] is True
     assert payload["quality_gate"]["requires_signed_url_for_cta"] is True
     assert payload["existing_registry"]["configured"] is False
+
+    finance_response = client.post(
+        "/api/admin/templates/twilio-content/sync",
+        headers=headers,
+        json={"template_id": "finance_secure_payment", "dry_run": True},
+    )
+    assert finance_response.status_code == 200
+    finance_payload = finance_response.get_json()
+    finance_cta = finance_payload["create_request"]["types"]["twilio/call-to-action"]["actions"][0]
+    assert finance_cta["url"] == "https://www.chatboc.ar/{{3}}"
+    assert (
+        finance_payload["create_request"]["variables"]["3"]
+        == f"finanzas/{tenant.slug}/operacion/OP-1001?session=session-demo-123456"
+    )
+    assert finance_payload["content_family"] == "cta_webview"
 
 
 def test_twilio_content_sync_creates_content_and_registry_row(client, app):
