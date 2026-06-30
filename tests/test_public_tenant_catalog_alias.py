@@ -432,6 +432,16 @@ def test_widget_commerce_session_returns_embedded_operating_contract(client):
     assert body["session"]["anon_id"] == "anon_public_1"
     assert body["session"]["widget_session_token"].startswith("wst_")
     assert body["catalog"]["endpoint"] == f"/api/public/tenants/{tenant.slug}/catalog"
+    assert body["catalog"]["marketplace_endpoint"] == f"/api/public/tenants/{tenant.slug}/catalog?contract=marketplace"
+    assert body["catalog"]["products_count"] == 2
+    assert body["catalog"]["has_products"] is True
+    assert body["catalog"]["assisted_intake_enabled"] is True
+    assert body["catalog"]["assisted_upload_endpoint"] == "/api/pedidos/from-file?origen=marketplace"
+    assert body["assisted_intake"]["contract_version"] == "marketplace.assisted_intake_entry.v1"
+    assert body["assisted_intake"]["mode"] == "catalog_plus_assisted"
+    assert body["assisted_intake"]["anonymous_intake"] is True
+    assert body["assisted_intake"]["submit"]["endpoint"] == "/api/pedidos/from-file?origen=marketplace"
+    assert body["assisted_intake"]["frontend_contract"]["supports_anonymous_follow_up"] is True
     assert body["cart"]["summary_endpoint"] == "/api/pwa/public/cart/summary"
     assert body["cart"]["items_endpoint"] == "/api/pwa/public/cart/items"
     assert body["cart"]["legacy_endpoint"] == "/api/pwa/public/cart"
@@ -460,8 +470,52 @@ def test_widget_commerce_session_returns_embedded_operating_contract(client):
     assert body["accessibility"]["respect_prefers_reduced_motion"] is True
     assert body["accessibility"]["touch_target_min_px"] == 44
     assert body["frontend_contract"]["render_as"] == "embedded_tenant_operating_widget"
+    assert "assisted_upload" in body["frontend_contract"]["primary_actions"]
+    assert body["frontend_contract"]["supports_anonymous_assisted_upload"] is True
     assert resp.headers.get("Access-Control-Allow-Origin") == "https://www.chatboc.ar"
     assert resp.headers.get("X-Request-Id")
+
+
+def test_widget_commerce_session_empty_municipio_promotes_assisted_upload(client):
+    owner = User(email="empty-muni@test.com", name="Municipio sin catalogo", rol="admin", tipo_chat="municipio")
+    owner.set_password("pass")
+    db.session.add(owner)
+    db.session.flush()
+    tenant = TenantProfile(
+        slug="junin-empty",
+        nombre="Municipalidad de Junin",
+        tipo="municipio",
+        plan="full",
+        municipio_id=owner.id,
+        vertical="gobierno",
+    )
+    db.session.add(tenant)
+    db.session.commit()
+
+    resp = client.get(
+        "/api/public/widget-commerce-session",
+        query_string={"tenant_slug": tenant.slug},
+        headers={
+            "Origin": "https://www.chatboc.ar",
+            "X-Chat-Session-Id": "chat_empty_muni",
+            "X-Anon-Id": "anon_empty_muni",
+        },
+    )
+
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body["tenant"]["slug"] == tenant.slug
+    assert body["catalog"]["enabled"] is True
+    assert body["catalog"]["products_count"] == 0
+    assert body["catalog"]["has_products"] is False
+    assert body["catalog"]["empty_catalog_mode"] == "assisted_first"
+    assert body["assisted_intake"]["mode"] == "assisted_first"
+    assert body["assisted_intake"]["show_on_empty_catalog"] is True
+    assert body["assisted_intake"]["empty_state"]["primary_cta"] == "Subir pedido o documento"
+    assert "service_request" in {item["id"] for item in body["assisted_intake"]["document_types"]}
+    assert body["assisted_intake"]["frontend_contract"]["render_as"] == "marketplace_assisted_intake"
+    assert body["frontend_contract"]["empty_state_behavior"] == "assisted_intake_first"
+    assert body["frontend_contract"]["primary_actions"][1] == "assisted_upload"
 
 
 def test_widget_commerce_session_requires_full_plan(client):

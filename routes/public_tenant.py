@@ -25,7 +25,7 @@ from routes.carrito import _product_query_for_tenant
 from middleware.tenant_context import require_tenant
 from services.catalog_seed import ensure_seed_catalog
 from services.commerce_contracts import build_checkout_experience_payload
-from services.public_market_catalog import build_public_market_catalog_contract
+from services.public_market_catalog import build_public_market_catalog_contract, public_market_assisted_intake
 from services.plan_access import (
     integration_access_payload,
     integration_plan_required_payload,
@@ -738,18 +738,27 @@ def public_widget_commerce_session():
 
     session_payload = _session_context_payload()
     owner = _resolve_catalog_owner(tenant)
-    has_catalog_items = bool(
-        owner
-        and CatalogoItem.query.options(*CatalogoItem.legacy_safe_options())
-        .filter_by(tenant_id=tenant.id, user_id=owner.id)
-        .first()
-    )
+    catalog_products_count = 0
+    if owner:
+        catalog_products_count = (
+            CatalogoItem.query.options(*CatalogoItem.legacy_safe_options())
+            .filter_by(tenant_id=tenant.id, user_id=owner.id)
+            .count()
+        )
+    has_catalog_items = catalog_products_count > 0
     catalog_enabled = bool(
         owner
-        and ((tenant.tipo or "").lower() == "pyme" or tenant.pyme_id or has_catalog_items)
+        and (
+            (tenant.tipo or "").lower() in {"pyme", "municipio", "gobierno", "government"}
+            or tenant.pyme_id
+            or tenant.municipio_id
+            or has_catalog_items
+        )
     )
     cart_enabled = catalog_enabled
     checkout_experience = build_checkout_experience_payload(tenant, channel="widget")
+    assisted_intake = public_market_assisted_intake(tenant, total_products=catalog_products_count)
+    assisted_primary_action = "assisted_upload" if assisted_intake.get("show_on_empty_catalog") else "catalog"
 
     payload = {
         "contract_version": "public.widget_commerce_session.v1",
@@ -758,9 +767,16 @@ def public_widget_commerce_session():
         "catalog": {
             "enabled": catalog_enabled,
             "endpoint": f"/api/public/tenants/{tenant.slug}/catalog",
+            "marketplace_endpoint": f"/api/public/tenants/{tenant.slug}/catalog?contract=marketplace",
             "pwa_endpoint": f"/api/pwa/public/catalog?tenant={tenant.slug}",
             "quality_endpoint": f"/api/v2/tenants/{tenant.slug}/catalog/quality",
+            "products_count": catalog_products_count,
+            "has_products": has_catalog_items,
+            "empty_catalog_mode": assisted_intake.get("mode"),
+            "assisted_intake_enabled": True,
+            "assisted_upload_endpoint": assisted_intake.get("submit", {}).get("endpoint"),
         },
+        "assisted_intake": assisted_intake,
         "cart": {
             "enabled": cart_enabled,
             "summary_endpoint": "/api/pwa/public/cart/summary",
@@ -812,8 +828,14 @@ def public_widget_commerce_session():
         },
         "frontend_contract": {
             "render_as": "embedded_tenant_operating_widget",
-            "primary_actions": ["chat", "catalog", "cart", "checkout", "portal"],
-            "empty_state_behavior": "chat_first_catalog_when_enabled",
+            "primary_actions": ["chat", assisted_primary_action, "catalog", "cart", "checkout", "portal"],
+            "empty_state_behavior": (
+                "assisted_intake_first"
+                if assisted_intake.get("mode") == "assisted_first"
+                else "chat_first_catalog_when_enabled"
+            ),
+            "assisted_intake_anchor_id": "market-assisted-upload",
+            "supports_anonymous_assisted_upload": True,
         },
     }
     return _public_json(payload)
