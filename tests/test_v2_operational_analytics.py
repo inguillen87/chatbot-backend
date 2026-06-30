@@ -286,14 +286,38 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertEqual((payload.get("demographics") or {}).get("source"), "real_metadata_only")
         self.assertGreaterEqual((payload.get("summary") or {}).get("points_with_gender"), 3)
         self.assertGreaterEqual((payload.get("summary") or {}).get("points_with_age"), 3)
+        render_filters = set((payload.get("render_contract") or {}).get("segment_filters") or [])
+        self.assertIn("estado", render_filters)
+        self.assertIn("zona", render_filters)
+        self.assertIn("sla_state", render_filters)
+        self.assertIn("assignee_id", render_filters)
+
+        ticket_point = next(
+            point for point in payload.get("points") or []
+            if point.get("id") == f"tenant_ticket:{self.ticket.id}"
+        )
+        self.assertEqual(ticket_point.get("sla_state"), "breached")
+        self.assertTrue(ticket_point.get("overdue"))
+        self.assertEqual(ticket_point.get("zone"), "centro")
+        self.assertEqual(ticket_point.get("assignee_id"), self.employee.id)
+        ticket_actions = {item.get("id"): item for item in ticket_point.get("actions") or []}
+        self.assertEqual(ticket_actions.get("open_record", {}).get("endpoint"), f"/api/v2/tickets/{self.ticket.id}")
+        self.assertEqual(ticket_actions.get("update_location", {}).get("method"), "PATCH")
+        self.assertEqual(ticket_actions.get("update_location", {}).get("endpoint"), f"/api/v2/tickets/{self.ticket.id}")
 
         categories = {item.get("key") for item in (payload.get("segments") or {}).get("category") or []}
         genders = {item.get("key") for item in (payload.get("segments") or {}).get("gender") or []}
         age_ranges = {item.get("key") for item in (payload.get("segments") or {}).get("age_range") or []}
+        statuses = {item.get("key") for item in (payload.get("segments") or {}).get("status") or []}
+        zones = {item.get("key") for item in (payload.get("segments") or {}).get("zone") or []}
+        sla_states = {item.get("key") for item in (payload.get("segments") or {}).get("sla_state") or []}
         self.assertIn("reclamos", categories)
         self.assertIn("arbolado", categories)
         self.assertIn("votacion_plaza", categories)
         self.assertIn("consulta", categories)
+        self.assertIn("nuevo", statuses)
+        self.assertIn("centro", zones)
+        self.assertIn("breached", sla_states)
         self.assertIn("femenino", genders)
         self.assertIn("masculino", genders)
         self.assertIn("no_binario", genders)
@@ -334,6 +358,20 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertEqual(point.get("source"), "ticket")
         self.assertEqual((payload.get("applied_filters") or {}).get("category"), ["reclamos"])
         self.assertEqual((payload.get("applied_filters") or {}).get("source"), ["tickets"])
+
+        operational_response = self.client.get(
+            f"/api/v2/analytics/operations/heatmap?source=tickets&estado=nuevo&zona=centro&sla=breached&assignee_id={self.employee.id}",
+            headers=self._auth(),
+        )
+        self.assertEqual(operational_response.status_code, 200)
+        operational_payload = operational_response.get_json()
+        self.assertEqual((operational_payload.get("summary") or {}).get("points"), 1)
+        operational_point = (operational_payload.get("points") or [])[0]
+        self.assertEqual(operational_point.get("id"), f"tenant_ticket:{self.ticket.id}")
+        self.assertEqual((operational_payload.get("applied_filters") or {}).get("status"), ["nuevo"])
+        self.assertEqual((operational_payload.get("applied_filters") or {}).get("zone"), ["centro"])
+        self.assertEqual((operational_payload.get("applied_filters") or {}).get("sla_state"), ["breached"])
+        self.assertEqual((operational_payload.get("applied_filters") or {}).get("assignee_id"), [str(self.employee.id)])
 
     def test_operations_heatmap_includes_legacy_municipio_owner_tickets(self):
         response = self.client.get(
@@ -458,12 +496,19 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         candidate = ((payload.get("geocoding") or {}).get("candidates") or [])[0]
         self.assertEqual(candidate.get("address"), "Av. San Martin 123, Junin")
         self.assertEqual(candidate.get("reason_code"), "address_without_coordinates")
+        candidate_actions = {item.get("id"): item for item in candidate.get("actions") or []}
+        self.assertEqual(candidate_actions.get("open_record", {}).get("endpoint"), f"/api/v2/tickets/{candidate.get('record_id')}")
+        self.assertEqual(candidate_actions.get("update_location", {}).get("method"), "PATCH")
+        self.assertEqual(candidate_actions.get("update_location", {}).get("endpoint"), f"/api/v2/tickets/{candidate.get('record_id')}")
+        self.assertIn("location.lat", candidate_actions.get("update_location", {}).get("requires") or [])
         self.assertTrue((payload.get("render_contract") or {}).get("address_geocoding"))
         self.assertEqual((payload.get("quality") or {}).get("state"), "pending_geocode")
         self.assertEqual((payload.get("quality") or {}).get("pending_geocode"), 1)
         self.assertEqual(((payload.get("geocoding") or {}).get("guidance") or {}).get("contract_version"), "operations.heatmap_geocoding_guidance.v1")
         self.assertEqual(((payload.get("geocoding") or {}).get("guidance") or {}).get("state"), "pending")
         self.assertEqual(((payload.get("geocoding") or {}).get("guidance") or {}).get("backend_external_calls"), "none")
+        self.assertEqual(((payload.get("geocoding") or {}).get("recommended_action") or {}).get("method"), "dynamic")
+        self.assertIn("candidates[]", ((payload.get("geocoding") or {}).get("recommended_action") or {}).get("endpoint_template") or "")
         viewport_ids = {item.get("id") for item in (payload.get("viewport_presets") or {}).get("presets") or []}
         self.assertIn("geocoding_queue", viewport_ids)
         self.assertEqual(((payload.get("map_narrative") or {}).get("empty_state") or {}).get("recommended_view"), "geocoding_queue")
@@ -474,6 +519,10 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
             for item in (payload.get("hotspot_actions") or {}).get("playbook") or []
         }
         self.assertTrue((geocode_playbook.get("recover_missing_geolocation") or {}).get("enabled"))
+        self.assertIn(
+            "use_update_location_action",
+            (geocode_playbook.get("recover_missing_geolocation") or {}).get("steps") or [],
+        )
 
     def test_operations_executive_summary_returns_ai_contract(self):
         with patch(

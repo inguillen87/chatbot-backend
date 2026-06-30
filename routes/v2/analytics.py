@@ -271,10 +271,14 @@ def _csv_values(*names: str) -> list[str]:
 def _heatmap_segment_filters() -> dict[str, list[str]]:
     filters = {
         "category": _csv_values("categoria", "categorias", "category", "categories"),
+        "status": _csv_values("estado", "estados", "status", "statuses"),
         "gender": _csv_values("genero", "gender", "sexo"),
         "age_range": _csv_values("rango_edad", "age_range", "edad", "age"),
         "source": _csv_values("source", "fuente"),
         "channel": _csv_values("channel", "canal"),
+        "zone": _csv_values("zona", "zonas", "zone", "barrio", "barrios", "distrito", "distritos"),
+        "sla_state": _csv_values("sla", "sla_state", "sla_status"),
+        "assignee_id": _csv_values("assignee_id", "assigned_to", "agent", "agente"),
     }
     return {key: value for key, value in filters.items() if value}
 

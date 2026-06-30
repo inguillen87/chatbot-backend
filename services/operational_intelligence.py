@@ -248,6 +248,10 @@ def _point_matches_filters(point: dict[str, Any], filters: dict[str, Any]) -> bo
         "age_range": point.get("age_range"),
         "source": point.get("source"),
         "channel": point.get("channel"),
+        "status": point.get("status"),
+        "zone": point.get("zone"),
+        "sla_state": point.get("sla_state"),
+        "assignee_id": point.get("assignee_id"),
     }
     for key, raw_values in (filters or {}).items():
         allowed = _normalized_heatmap_filter_values(key, raw_values)
@@ -273,6 +277,7 @@ def _point_matches_filters(point: dict[str, Any], filters: dict[str, Any]) -> bo
 def _tenant_ticket_record(ticket: TenantTicket) -> dict[str, Any]:
     extra = _as_dict(ticket.datos_extra)
     status = _norm(ticket.estado, "nuevo")
+    sla_state = _norm(extra.get("sla_state") or extra.get("sla_status"), "normal")
     priority = _norm(extra.get("priority") or extra.get("prioridad"), "normal")
     channel = _norm(extra.get("channel") or extra.get("canal") or ticket.origen, "web")
     address = _record_address_from_metadata(extra)
@@ -292,7 +297,8 @@ def _tenant_ticket_record(ticket: TenantTicket) -> dict[str, Any]:
         "demographics": _demographics_from_metadata(extra),
         "created_at": getattr(ticket, "created_at", None),
         "updated_at": getattr(ticket, "updated_at", None),
-        "overdue": status in _OVERDUE_STATES or _norm(extra.get("sla_status") or extra.get("sla_state"), "") in _OVERDUE_STATES,
+        "sla_state": sla_state,
+        "overdue": status in _OVERDUE_STATES or sla_state in _OVERDUE_STATES,
     }
 
 
@@ -301,6 +307,7 @@ def _municipio_ticket_record(ticket: MunicipioTicket) -> dict[str, Any]:
     channel = _norm(getattr(ticket, "canal_ingreso", None), "web")
     details = _json_object(getattr(ticket, "detalles", None))
     address = _clean_text(getattr(ticket, "direccion", None)) or _record_address_from_metadata(details)
+    overdue = status in _OVERDUE_STATES
     return {
         "source": "municipio_ticket",
         "id": ticket.id,
@@ -317,13 +324,15 @@ def _municipio_ticket_record(ticket: MunicipioTicket) -> dict[str, Any]:
         "demographics": _demographics_from_metadata(details),
         "created_at": ticket.fecha,
         "updated_at": ticket.ultima_actividad or ticket.fecha,
-        "overdue": status in _OVERDUE_STATES,
+        "sla_state": "overdue" if overdue else "normal",
+        "overdue": overdue,
     }
 
 
 def _pyme_ticket_record(ticket: PymeTicket) -> dict[str, Any]:
     status = _norm(ticket.estado, "nuevo")
     address = _clean_text(getattr(ticket, "direccion", None))
+    overdue = status in _OVERDUE_STATES
     return {
         "source": "pyme_ticket",
         "id": ticket.id,
@@ -340,7 +349,8 @@ def _pyme_ticket_record(ticket: PymeTicket) -> dict[str, Any]:
         "demographics": {"gender": "unknown", "age": None, "age_range": "unknown", "source": "missing"},
         "created_at": ticket.fecha,
         "updated_at": ticket.fecha,
-        "overdue": status in _OVERDUE_STATES,
+        "sla_state": "overdue" if overdue else "normal",
+        "overdue": overdue,
     }
 
 
@@ -876,9 +886,70 @@ def _record_to_filter_probe(record: dict[str, Any]) -> dict[str, Any]:
         "record_source": record.get("source"),
         "category": record.get("category"),
         "channel": record.get("channel"),
+        "status": record.get("status"),
+        "zone": record.get("zone"),
+        "sla_state": record.get("sla_state"),
+        "assignee_id": str(record.get("assignee_id")) if record.get("assignee_id") is not None else None,
         "gender": demographics.get("gender") or "unknown",
         "age_range": demographics.get("age_range") or "unknown",
     }
+
+
+def _ticket_action_contract(record: dict[str, Any]) -> list[dict[str, Any]]:
+    record_source = str(record.get("source") or "")
+    record_id = record.get("id")
+    if record_id is None:
+        return []
+
+    source_config = {
+        "tenant_ticket": {
+            "open_endpoint": f"/api/v2/tickets/{record_id}",
+            "location_endpoint": f"/api/v2/tickets/{record_id}",
+            "location_method": "PATCH",
+            "location_body_template": {"location": {"lat": "number", "lng": "number", "address": "string"}},
+            "requires": ["location.lat", "location.lng"],
+        },
+        "municipio_ticket": {
+            "open_endpoint": f"/tickets/municipio/{record_id}",
+            "location_endpoint": f"/tickets/municipio/{record_id}/ubicacion",
+            "location_method": "PUT",
+            "location_body_template": {"latitud": "number", "longitud": "number", "direccion": "string"},
+            "requires": ["latitud", "longitud"],
+        },
+        "pyme_ticket": {
+            "open_endpoint": f"/tickets/pyme/{record_id}",
+            "location_endpoint": f"/tickets/pyme/{record_id}/ubicacion",
+            "location_method": "PUT",
+            "location_body_template": {"latitud": "number", "longitud": "number", "direccion": "string"},
+            "requires": ["latitud", "longitud"],
+        },
+    }.get(record_source)
+
+    if not source_config:
+        return []
+
+    return [
+        {
+            "id": "open_record",
+            "label": "Abrir caso",
+            "type": "api",
+            "method": "GET",
+            "endpoint": source_config["open_endpoint"],
+            "record_source": record_source,
+            "record_id": record_id,
+        },
+        {
+            "id": "update_location",
+            "label": "Actualizar ubicacion",
+            "type": "api",
+            "method": source_config["location_method"],
+            "endpoint": source_config["location_endpoint"],
+            "record_source": record_source,
+            "record_id": record_id,
+            "requires": source_config["requires"],
+            "body_template": source_config["location_body_template"],
+        },
+    ]
 
 
 def _geocoding_candidate(record: dict[str, Any]) -> dict[str, Any]:
@@ -897,6 +968,10 @@ def _geocoding_candidate(record: dict[str, Any]) -> dict[str, Any]:
         "gender": demographics.get("gender") or "unknown",
         "age_range": demographics.get("age_range") or "unknown",
         "reason_code": "address_without_coordinates",
+        "sla_state": record.get("sla_state") or "normal",
+        "overdue": bool(record.get("overdue")),
+        "assignee_id": record.get("assignee_id"),
+        "actions": _ticket_action_contract(record),
     }
 
 
@@ -1307,7 +1382,7 @@ def _heatmap_hotspot_actions_contract(
                 "label": "Recuperar ubicaciones faltantes",
                 "trigger": "pending_geocode",
                 "enabled": bool(geocoding_candidates),
-                "steps": ["open_geocoding_queue", "validate_address", "patch_lat_lng", "refresh_heatmap"],
+                "steps": ["open_geocoding_queue", "validate_address", "use_update_location_action", "refresh_heatmap"],
                 "confirmation_required_for_writes": True,
             },
             {
@@ -1342,6 +1417,8 @@ def _heatmap_geocoding_guidance(
             "record_id": "string",
             "record_source": "tenant_ticket|municipio_ticket|pyme_ticket",
             "address": "string",
+            "actions": "array<open_record|update_location>",
+            "location_endpoint": "use candidate.actions[id=update_location].endpoint",
             "latitud": "number",
             "longitud": "number",
         },
@@ -1349,7 +1426,7 @@ def _heatmap_geocoding_guidance(
             "latitud must be between -90 and 90",
             "longitud must be between -180 and 180",
             "do not mutate records without user confirmation",
-            "refresh /api/v2/analytics/operations/heatmap after patching coordinates",
+            "refresh /api/v2/analytics/operations/heatmap after update_location succeeds",
         ],
         "recommended_actions": [
             {
@@ -1502,11 +1579,17 @@ def build_operational_heatmap(
             "category": record["category"],
             "channel": record["channel"],
             "status": record["status"],
+            "sla_state": record.get("sla_state") or "normal",
+            "overdue": bool(record.get("overdue")),
+            "assignee_id": record.get("assignee_id"),
+            "zone": record.get("zone"),
+            "address": record.get("address"),
             "label": record["title"],
             "timestamp": _iso(record.get("created_at")),
             "gender": demographics.get("gender") or "unknown",
             "age_range": demographics.get("age_range") or "unknown",
             "demographics_source": demographics.get("source") or "missing",
+            "actions": _ticket_action_contract(record),
         }
         if _point_matches_filters(point, filters):
             points.append(point)
@@ -1623,6 +1706,9 @@ def build_operational_heatmap(
     age_range_counter = Counter(point.get("age_range") or "unknown" for point in points)
     channel_counter = Counter(point.get("channel") or "unknown" for point in points)
     source_counter = Counter(point.get("source") or "unknown" for point in points)
+    status_counter = Counter(point.get("status") or "unknown" for point in points)
+    zone_counter = Counter(point.get("zone") or "unknown" for point in points)
+    sla_counter = Counter(point.get("sla_state") or "normal" for point in points)
 
     category_layers = []
     for category, count in category_counter.most_common(20):
@@ -1731,7 +1817,7 @@ def build_operational_heatmap(
             "map_engine": "maplibre",
             "layers": ["tickets", "surveys", "analytics_events", "ai_risk", "whatsapp_activity"],
             "point_format": {"lat": "number", "lng": "number", "weight": "number"},
-            "segment_filters": ["categoria", "genero", "rango_edad", "source", "channel"],
+            "segment_filters": ["categoria", "estado", "genero", "rango_edad", "source", "channel", "zona", "sla_state", "assignee_id"],
             "category_layers": True,
             "demographics_source": "metadata_fields_only",
             "address_geocoding": True,
@@ -1799,6 +1885,9 @@ def build_operational_heatmap(
             "age_range": _segment_items(age_range_counter),
             "channel": _segment_items(channel_counter),
             "source": _segment_items(source_counter),
+            "status": _segment_items(status_counter),
+            "zone": _segment_items(zone_counter),
+            "sla_state": _segment_items(sla_counter),
         },
         "demographics": {
             "source": "real_metadata_only",
@@ -1820,9 +1909,10 @@ def build_operational_heatmap(
             "recommended_action": {
                 "action_id": "geocode_ticket_addresses",
                 "label": "Geocodificar direcciones pendientes",
-                "method": "PATCH",
-                "endpoint_template": "/api/tickets/{record_id}/ubicacion",
-                "requires": ["latitud", "longitud"],
+                "method": "dynamic",
+                "endpoint_template": "use candidates[].actions[id=update_location].endpoint",
+                "requires": ["latitud|location.lat", "longitud|location.lng"],
+                "body_template": "use candidates[].actions[id=update_location].body_template",
             },
         },
         "category_layers": category_layers,
