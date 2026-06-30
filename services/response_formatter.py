@@ -100,6 +100,22 @@ def _url_description(option: dict) -> str:
     return text[:72]
 
 
+def _whatsapp_options_fallback_text(options: list[dict], *, include_urls: bool = True) -> str:
+    lines: list[str] = []
+    for index, option in enumerate(options[:10], start=1):
+        label = _clean_text(option.get("texto") or option.get("label") or option.get("title"), f"Opcion {index}")
+        if not label:
+            continue
+        url = _clean_text(option.get("url")) if include_urls else ""
+        if url:
+            lines.append(f"{index}. {label}: {url}")
+        else:
+            lines.append(f"{index}. {label}")
+    if not lines:
+        return ""
+    return "\n\nOpciones:\n" + "\n".join(lines)
+
+
 def render_audio_text(
     message: str,
     options: list | None = None,
@@ -443,6 +459,17 @@ def build_interactive_response(options: list,
             if url_texts:
                 body_text_to_update += "\n\n" + "\n".join(url_texts)
 
+            button_fallback_text = _whatsapp_options_fallback_text(
+                [
+                    option
+                    for option in options
+                    if not (option.get("type") == "url" and option.get("url"))
+                ],
+                include_urls=False,
+            )
+            if button_fallback_text:
+                body_text_to_update += button_fallback_text
+
             if not reply_buttons:
                 # If there are no reply buttons left (e.g., it was only a URL option),
                 # we must fall back to a text message.
@@ -515,6 +542,12 @@ def build_interactive_response(options: list,
                 }]
 
             interactive_data["action"]["sections"] = sections_payload
+            list_fallback_text = _whatsapp_options_fallback_text(options, include_urls=True)
+            if list_fallback_text:
+                interactive_data["body"]["text"] = (
+                    _repair_text(interactive_data["body"]["text"]).strip()
+                    + list_fallback_text
+                ).strip()
 
         # This is the start of the corrected block
         payload = {

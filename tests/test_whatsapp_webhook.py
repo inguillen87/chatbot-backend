@@ -42,6 +42,7 @@ from routes.whatsapp_webhook import (
     _prepare_cached_welcome_audio,
     _ensure_welcome_audio_payload,
     _sanitize_twilio_message_params,
+    _send_twilio_message,
     _normalize_whatsapp_flow_contract,
     _build_chatboc_demo_root_payload,
     CHATBOC_DEMO_DEFAULT_WHATSAPP_NUMBER,
@@ -197,6 +198,47 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
                 "inclusive": True,
             },
         )
+
+    def test_send_twilio_message_adds_status_callback_for_whatsapp(self):
+        self.app.config["PUBLIC_API_BASE_URL"] = "https://api.chatboc.test"
+        client = MagicMock()
+        message = MagicMock()
+        message.sid = "SM_STATUS_CALLBACK_TEST"
+        client.messages.create.return_value = message
+
+        result = _send_twilio_message(
+            client,
+            from_="whatsapp:+15551234567",
+            to="whatsapp:+15557654321",
+            body="Hola",
+        )
+
+        self.assertEqual(result, message)
+        kwargs = client.messages.create.call_args.kwargs
+        self.assertEqual(
+            kwargs.get("status_callback"),
+            "https://api.chatboc.test/twilio/whatsapp/status",
+        )
+
+    def test_send_twilio_message_respects_explicit_callback_and_skips_sms(self):
+        client = MagicMock()
+        client.messages.create.return_value = MagicMock(sid="SM_CALLBACK_OVERRIDE")
+
+        _send_twilio_message(
+            client,
+            from_="whatsapp:+15551234567",
+            to="whatsapp:+15557654321",
+            body="Hola",
+            status_callback="https://callbacks.example.com/custom",
+        )
+        self.assertEqual(
+            client.messages.create.call_args.kwargs.get("status_callback"),
+            "https://callbacks.example.com/custom",
+        )
+
+        client.messages.create.reset_mock()
+        _send_twilio_message(client, from_="+15551234567", to="+15557654321", body="SMS")
+        self.assertNotIn("status_callback", client.messages.create.call_args.kwargs)
 
     def test_fixed_menu_audio_prefers_tenant_cache_over_generic_audio_url(self):
         payload = {

@@ -1,4 +1,4 @@
-from flask import Blueprint, request, jsonify, abort, current_app, g, has_app_context  # Basic Flask components
+from flask import Blueprint, request, jsonify, abort, current_app, g, has_app_context, has_request_context  # Basic Flask components
 from twilio.request_validator import RequestValidator  # For validating Twilio requests
 from twilio.rest import Client  # For sending messages via Twilio
 import logging
@@ -3327,8 +3327,98 @@ def _sanitize_twilio_message_params(params: Dict[str, Any]) -> Dict[str, Any]:
     return sanitized
 
 
+def _clean_status_callback_url(value: Any) -> Optional[str]:
+    cleaned = str(value or "").strip().rstrip("/")
+    if not cleaned:
+        return None
+    if cleaned.startswith("/"):
+        return None
+    if not cleaned.startswith(("http://", "https://")):
+        return None
+    if cleaned.startswith("http://") and "localhost" not in cleaned and "127.0.0.1" not in cleaned:
+        cleaned = "https://" + cleaned.split("://", 1)[1]
+    return cleaned
+
+
+def _twilio_whatsapp_status_callback_url(params: Dict[str, Any]) -> Optional[str]:
+    if has_app_context():
+        configured = (
+            current_app.config.get("TWILIO_WHATSAPP_STATUS_CALLBACK_URL")
+            or current_app.config.get("WHATSAPP_STATUS_CALLBACK_URL")
+        )
+        callback = _clean_status_callback_url(configured)
+        if callback:
+            return callback
+
+        try:
+            _, provider_sender = _resolve_status_callback_tenant_and_sender(
+                {
+                    "From": params.get("from_") or params.get("from"),
+                    "MessagingServiceSid": params.get("messaging_service_sid"),
+                    "ServiceSid": params.get("service_sid"),
+                }
+            )
+            callback = _clean_status_callback_url(getattr(provider_sender, "status_callback_url", None))
+            if callback:
+                return callback
+        except Exception as exc:
+            current_app.logger.debug(
+                "[TWILIO_WHATSAPP_STATUS] Could not resolve provider callback for outbound send: %s",
+                exc,
+            )
+
+        for key in (
+            "PUBLIC_API_BASE_URL",
+            "BACKEND_URL",
+            "API_BASE_URL",
+            "APP_BASE_URL",
+            "BASE_URL",
+            "PUBLIC_BASE_URL",
+        ):
+            base = _clean_status_callback_url(current_app.config.get(key))
+            if base:
+                return f"{base}/twilio/whatsapp/status"
+
+    for key in (
+        "TWILIO_WHATSAPP_STATUS_CALLBACK_URL",
+        "WHATSAPP_STATUS_CALLBACK_URL",
+        "PUBLIC_API_BASE_URL",
+        "BACKEND_URL",
+        "API_BASE_URL",
+        "APP_BASE_URL",
+        "BASE_URL",
+        "PUBLIC_BASE_URL",
+        "RENDER_EXTERNAL_URL",
+    ):
+        base = _clean_status_callback_url(os.getenv(key))
+        if not base:
+            continue
+        if key.endswith("STATUS_CALLBACK_URL"):
+            return base
+        return f"{base}/twilio/whatsapp/status"
+
+    if has_request_context():
+        base = _clean_status_callback_url(request.url_root)
+        if base:
+            return f"{base}/twilio/whatsapp/status"
+
+    return None
+
+
+def _is_whatsapp_twilio_message(params: Dict[str, Any]) -> bool:
+    return any(
+        str(params.get(key) or "").strip().lower().startswith("whatsapp:")
+        for key in ("to", "from_", "from")
+    )
+
+
 def _send_twilio_message(client, **params):
-    return client.messages.create(**_sanitize_twilio_message_params(params))
+    sanitized = _sanitize_twilio_message_params(params)
+    if _is_whatsapp_twilio_message(sanitized) and not sanitized.get("status_callback"):
+        callback = _twilio_whatsapp_status_callback_url(sanitized)
+        if callback:
+            sanitized["status_callback"] = callback
+    return client.messages.create(**sanitized)
 
 
 def _dispatch_twilio_pre_messages(
