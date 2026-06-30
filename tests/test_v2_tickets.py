@@ -192,6 +192,61 @@ class V2TicketsApiTest(unittest.TestCase):
         self.assertEqual(blocked.status_code, 404)
         self.assertEqual((blocked.get_json() or {}).get("reason_code"), "assignee_not_found")
 
+    def test_patch_location_updates_heatmap_ready_coordinates_and_audit_event(self):
+        headers = {**self._auth_header(self.employee), "X-Tenant-Slug": "tenant-1"}
+        created = self.client.post(
+            "/api/v2/tickets",
+            json={
+                "title": "Direccion sin coordenadas",
+                "description": "Caso que debe salir en cola de geocodificacion",
+                "location": {"address": "Don Bosco 55, Junin, Mendoza, AR"},
+            },
+            headers=headers,
+        ).get_json()
+        ticket_id = created["id"]
+
+        patch = self.client.patch(
+            f"/api/v2/tickets/{ticket_id}",
+            json={"location": {"lat": "-34.5852", "lng": "-60.9441", "address": "Don Bosco 55, Junin, Mendoza, AR"}},
+            headers=headers,
+        )
+
+        self.assertEqual(patch.status_code, 200)
+        ticket_payload = (patch.get_json() or {}).get("ticket") or {}
+        self.assertEqual(ticket_payload.get("location"), {
+            "address": "Don Bosco 55, Junin, Mendoza, AR",
+            "lat": -34.5852,
+            "lng": -60.9441,
+        })
+
+        refreshed = TenantTicket.query.get(ticket_id)
+        self.assertEqual(refreshed.latitud, -34.5852)
+        self.assertEqual(refreshed.longitud, -60.9441)
+        self.assertEqual((refreshed.datos_extra or {}).get("address"), "Don Bosco 55, Junin, Mendoza, AR")
+
+        events_resp = self.client.get(f"/api/v2/tickets/{ticket_id}/events", headers=headers)
+        events = (events_resp.get_json() or {}).get("items") or []
+        location_event = next((event for event in events if event.get("event_type") == "ticket.location_updated"), None)
+        self.assertIsNotNone(location_event)
+        self.assertEqual(((location_event or {}).get("details") or {}).get("source"), "api_v2_patch_ticket")
+
+    def test_patch_location_rejects_invalid_coordinates(self):
+        headers = {**self._auth_header(self.employee), "X-Tenant-Slug": "tenant-1"}
+        created = self.client.post("/api/v2/tickets", json={"title": "Geo", "description": "Geo"}, headers=headers).get_json()
+        ticket_id = created["id"]
+
+        patch = self.client.patch(
+            f"/api/v2/tickets/{ticket_id}",
+            json={"location": {"lat": "120", "lng": "-60.9441"}},
+            headers=headers,
+        )
+
+        self.assertEqual(patch.status_code, 400)
+        payload = patch.get_json() or {}
+        self.assertEqual(payload.get("contract_version"), "shared.error.v1")
+        self.assertEqual(payload.get("reason_code"), "validation_failed")
+        self.assertIn("location.lat", (payload.get("message") or ""))
+
     def test_internal_comment_hidden_for_end_user(self):
         admin_headers = {**self._auth_header(self.admin), "X-Tenant-Slug": "tenant-1"}
         user_headers = {**self._auth_header(self.end_user), "X-Tenant-Slug": "tenant-1"}

@@ -26,6 +26,40 @@ _ALLOWED_PRIORITIES = {"low", "medium", "high", "urgent"}
 _ALLOWED_CHANNELS = {"web", "widget", "whatsapp", "manual", "chat"}
 
 
+def _parse_coordinate(value: Any, *, field: str, minimum: float, maximum: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field} invalido") from exc
+    if parsed < minimum or parsed > maximum:
+        raise ValueError(f"{field} fuera de rango")
+    return parsed
+
+
+def _location_from_payload(value: Any) -> dict[str, Any]:
+    if value in (None, ""):
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError("location debe ser un objeto")
+
+    lat_raw = value.get("lat", value.get("latitude", value.get("latitud")))
+    lng_raw = value.get("lng", value.get("lon", value.get("longitude", value.get("longitud"))))
+    address = str(value.get("address") or value.get("direccion") or "").strip()
+
+    has_lat = lat_raw not in (None, "")
+    has_lng = lng_raw not in (None, "")
+    if has_lat != has_lng:
+        raise ValueError("location.lat y location.lng son obligatorios juntos")
+
+    parsed: dict[str, Any] = {}
+    if has_lat and has_lng:
+        parsed["lat"] = _parse_coordinate(lat_raw, field="location.lat", minimum=-90, maximum=90)
+        parsed["lng"] = _parse_coordinate(lng_raw, field="location.lng", minimum=-180, maximum=180)
+    if address:
+        parsed["address"] = address
+    return parsed
+
+
 def _role_of(user: User | None) -> str:
     return str(getattr(user, "rol", "usuario") or "usuario").lower()
 
@@ -144,7 +178,7 @@ def create_ticket(*, tenant, actor_user: User | None, payload: dict[str, Any]) -
     if status not in _ALLOWED_STATUSES:
         status = "nuevo"
 
-    location = payload.get("location") if isinstance(payload.get("location"), dict) else {}
+    location = _location_from_payload(payload.get("location")) if "location" in payload else {}
     assignee_id = payload.get("assignee_id")
     if assignee_id not in (None, ""):
         try:
@@ -346,6 +380,31 @@ def patch_ticket(*, tenant, actor_user: User | None, ticket: TenantTicket, paylo
 
     if "category" in payload:
         ticket.categoria = payload.get("category") or ticket.categoria
+
+    if "location" in payload:
+        location = _location_from_payload(payload.get("location"))
+        previous = {"lat": ticket.latitud, "lng": ticket.longitud, "address": extra.get("address")}
+        changed = False
+        if "lat" in location and "lng" in location:
+            if ticket.latitud != location["lat"] or ticket.longitud != location["lng"]:
+                ticket.latitud = location["lat"]
+                ticket.longitud = location["lng"]
+                changed = True
+        if "address" in location and location["address"] != (extra.get("address") or ""):
+            extra["address"] = location["address"]
+            changed = True
+        if changed:
+            record_ticket_event(
+                tenant_id=tenant.id,
+                event_type="ticket.location_updated",
+                ticket=ticket,
+                actor_user=actor_user,
+                details={
+                    "from": previous,
+                    "to": {"lat": ticket.latitud, "lng": ticket.longitud, "address": extra.get("address")},
+                    "source": "api_v2_patch_ticket",
+                },
+            )
 
     ticket.datos_extra = extra
     policies = get_policies_for_tenant(tenant)
