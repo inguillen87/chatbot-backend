@@ -82,6 +82,9 @@ def test_marketplace_order_note_upload_creates_assisted_request_contract(client,
     assert payload["mode"] == "order_note_upload"
     assert payload["request_kind"] == "order_note"
     assert payload["request_kind_label"] == "nota de pedido"
+    assert payload["source"]["original_filename"] == "nota.png"
+    assert payload["source"]["mime_type"] == "image/png"
+    assert payload["source"]["file_size_bytes"] == len(b"foto-nota")
     assert payload["document_profile"]["primary_intent"] == "create_order_or_quote"
     assert payload["document_profile"]["catalog_matching"] is True
     assert payload["intake_experience"]["contract_version"] == "marketplace.assisted_intake_experience.v1"
@@ -119,10 +122,24 @@ def test_marketplace_order_note_upload_creates_assisted_request_contract(client,
     assert payload["crm_state"] == "pending_operator_review"
     assert payload["review_context"]["primary_intent"] == "create_order_or_quote"
     assert "items_sin_match_exacto" in payload["review_context"]["review_reasons"]
+    assert payload["review_context"]["operator_queue"] == "commerce_assisted_orders"
+    assert payload["review_context"]["priority_reason"] == "contacto_incompleto"
+    assert payload["review_context"]["primary_missing_field"] == "contact"
+    assert payload["review_context"]["sla_hint"]["minutes"] == 120
     assert payload["operator_pack"]["needs_human_review"] is True
+    assert payload["operator_pack"]["operator_queue"] == "commerce_assisted_orders"
+    assert payload["operator_pack"]["priority_reason"] == "contacto_incompleto"
+    assert payload["operator_pack"]["primary_missing_field"] == "contact"
+    assert payload["operator_pack"]["sla_hint"]["minutes"] == 120
     assert "Clavos 2 pulgadas" in payload["operator_pack"]["suggested_reply"]
     assert payload["operator_intake_summary"]["contract_version"] == "marketplace.operator_intake_summary.v1"
     assert payload["operator_intake_summary"]["target_module"] == "orders"
+    assert payload["operator_intake_summary"]["operator_queue"] == "commerce_assisted_orders"
+    assert payload["operator_intake_summary"]["priority_reason"] == "contacto_incompleto"
+    assert payload["operator_intake_summary"]["primary_missing_field"] == "contact"
+    assert payload["operator_intake_summary"]["sla_hint"]["minutes"] == 120
+    assert payload["operator_intake_summary"]["input"]["file_size_bytes"] == len(b"foto-nota")
+    assert payload["operator_intake_summary"]["input"]["mime_type"] == "image/png"
     assert payload["operator_intake_summary"]["recommended_next_step"] == "pedir_contacto_y_responder"
     assert payload["operator_intake_summary"]["contact_state"] == "missing"
     assert payload["operator_intake_summary"]["detected_preview"] == ["2 Chapa galvanizada", "1 Clavos 2 pulgadas"]
@@ -163,9 +180,13 @@ def test_marketplace_order_note_upload_creates_assisted_request_contract(client,
     assert pedido.metadata_payload["document_profile"]["operator_goal"] == "convertir_a_pedido_o_cotizacion"
     assert pedido.metadata_payload["intake_experience"]["render_as"] == "anonymous_assisted_marketplace_intake"
     assert pedido.metadata_payload["source"]["channel"] == "marketplace"
+    assert pedido.metadata_payload["source"]["original_filename"] == "nota.png"
+    assert pedido.metadata_payload["source"]["file_size_bytes"] == len(b"foto-nota")
     assert pedido.metadata_payload["match_summary"]["unmatched"] == 1
     assert pedido.metadata_payload["operator_pack"]["reference"] == f"pedido:{payload['pedido_id']}"
+    assert pedido.metadata_payload["operator_pack"]["priority_reason"] == "contacto_incompleto"
     assert pedido.metadata_payload["operator_intake_summary"]["follow_up"]["code"] == f"pc-{payload['pedido_id']}"
+    assert pedido.metadata_payload["operator_intake_summary"]["operator_queue"] == "commerce_assisted_orders"
     assert pedido.metadata_payload["public_follow_up"]["tracking"]["code"] == f"pc-{payload['pedido_id']}"
     assert pedido.metadata_payload["crm_order_draft"]["reference"] == f"pedido:{payload['pedido_id']}"
     assert pedido.items[0]["crm_order_draft"]["contract_version"] == "marketplace.crm_order_draft.v1"

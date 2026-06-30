@@ -236,6 +236,95 @@ def _operator_task(task_id: str, label: str, description: str, *, tone: str = "n
     return {"id": task_id, "label": label, "description": description, "tone": tone}
 
 
+def _build_operator_triage(
+    *,
+    primary_intent: str | None = None,
+    target_module: str | None = None,
+    contact: dict[str, Any] | None = None,
+    match_summary: dict[str, Any] | None = None,
+    unmatched_items: list[Any] | None = None,
+    extraction_error: Any = None,
+    missing_fields: list[Any] | None = None,
+) -> dict[str, Any]:
+    intent = str(primary_intent or "").strip()
+    contact = contact or {}
+    match_summary = match_summary or {}
+    missing = [
+        str(field).strip()
+        for field in (missing_fields or [])
+        if str(field or "").strip()
+    ]
+    matched = int(match_summary.get("matched") or 0)
+    unmatched = int(match_summary.get("unmatched") or len(unmatched_items or []) or 0)
+    phone = str(contact.get("phone") or contact.get("telefono") or contact.get("whatsapp") or "").strip()
+    email = str(contact.get("email") or "").strip()
+    has_contact = bool(phone or email)
+    module = str(target_module or "").strip()
+    if not module:
+        if intent == "municipal_service_request":
+            module = "municipal_claims"
+        elif intent in {"document_review", "tax_or_payment_support", "certificate_or_procedure_review", "manual_review"}:
+            module = "document_requests"
+        else:
+            module = "orders"
+
+    if module == "municipal_claims":
+        queue = "municipal_claims_triage"
+        queue_label = "Reclamos y solicitudes municipales"
+    elif module == "document_requests":
+        queue = "document_requests_review"
+        queue_label = "Tramites y documentos"
+    else:
+        queue = "commerce_assisted_orders"
+        queue_label = "Pedidos asistidos y catalogo"
+
+    primary_missing = missing[0] if missing else None
+    if not has_contact:
+        primary_missing = "contact"
+
+    if extraction_error:
+        reason = "lectura_ia_baja_confianza"
+        reason_label = "Lectura IA con baja confianza"
+        sla_minutes = 60
+    elif not has_contact:
+        reason = "contacto_incompleto"
+        reason_label = "Falta contacto para responder"
+        sla_minutes = 120
+    elif missing:
+        reason = "datos_requeridos_pendientes"
+        reason_label = "Faltan datos obligatorios"
+        sla_minutes = 120
+    elif unmatched or matched == 0:
+        reason = "datos_no_interpretados"
+        reason_label = "Hay datos para resolver"
+        sla_minutes = 180
+    else:
+        reason = "listo_para_confirmar"
+        reason_label = "Listo para confirmar"
+        sla_minutes = 480
+
+    priority = "normal" if reason == "listo_para_confirmar" else "high"
+    if primary_missing and primary_missing not in missing:
+        missing = [primary_missing, *missing]
+
+    return {
+        "priority": priority,
+        "priority_reason": reason,
+        "priority_reason_label": reason_label,
+        "sla_hint": {
+            "label": f"{sla_minutes // 60} h" if sla_minutes % 60 == 0 else f"{sla_minutes} min",
+            "minutes": sla_minutes,
+            "basis": reason,
+            "severity": priority,
+        },
+        "operator_queue": queue,
+        "operator_queue_label": queue_label,
+        "target_module": module,
+        "primary_missing_field": primary_missing,
+        "missing_fields": missing,
+    }
+
+
 def _build_assisted_operator_pack(
     *,
     record_id: Any = None,
@@ -245,6 +334,8 @@ def _build_assisted_operator_pack(
     unmatched_items: list[Any],
     extraction_error: Any = None,
     primary_intent: str | None = None,
+    target_module: str | None = None,
+    missing_fields: list[Any] | None = None,
 ) -> dict[str, Any]:
     matched = int(match_summary.get("matched") or 0)
     unmatched = int(match_summary.get("unmatched") or 0)
@@ -262,6 +353,15 @@ def _build_assisted_operator_pack(
         "certificate_or_procedure_review",
         "manual_review",
     }
+    triage = _build_operator_triage(
+        primary_intent=intent,
+        target_module=target_module,
+        contact=contact,
+        match_summary=match_summary,
+        unmatched_items=unmatched_items,
+        extraction_error=extraction_error,
+        missing_fields=missing_fields,
+    )
 
     tasks: list[dict[str, str]] = []
     if extraction_error:
@@ -332,7 +432,7 @@ def _build_assisted_operator_pack(
         )
     )
 
-    priority = "high" if extraction_error or unmatched or (not phone and not email) else "normal"
+    priority = str(triage.get("priority") or "normal")
     reply_parts = [
         f"Hola {name}, recibimos tu {label}.",
     ]
@@ -389,6 +489,14 @@ def _build_assisted_operator_pack(
         "priority": priority,
         "reference": ref,
         "primary_intent": intent or None,
+        "priority_reason": triage.get("priority_reason"),
+        "priority_reason_label": triage.get("priority_reason_label"),
+        "sla_hint": triage.get("sla_hint"),
+        "operator_queue": triage.get("operator_queue"),
+        "operator_queue_label": triage.get("operator_queue_label"),
+        "target_module": triage.get("target_module"),
+        "primary_missing_field": triage.get("primary_missing_field"),
+        "missing_fields": triage.get("missing_fields"),
         "suggested_reply": suggested_reply,
         "suggested_tasks": tasks,
         "contact_links": contact_links,

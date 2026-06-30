@@ -1,5 +1,6 @@
 import io
 import logging
+import mimetypes
 import random
 import re
 import unicodedata
@@ -17,7 +18,7 @@ from models import CatalogoItem, MunicipioTicket, PedidoConversacional, TicketCo
 from routes.catalogo import _formatear_producto
 from routes.productos import _resolve_public_owner
 from services.cart import _get_pyme_cart
-from services.commerce_unified import _build_assisted_operator_pack
+from services.commerce_unified import _build_assisted_operator_pack, _build_operator_triage
 from services.gcs_service import upload_to_gcs
 from services.order_attachment_preview import build_crm_order_draft
 from services.tenant_resolver import TenantResolutionError, resolve_tenant_and_user
@@ -377,6 +378,7 @@ def _build_review_context(
     catalog_candidates: list[dict[str, Any]],
     extraction_error: Optional[str],
     contact_payload: dict[str, str],
+    missing_fields: Optional[list[Any]] = None,
 ) -> dict[str, Any]:
     reasons: list[str] = []
     primary_intent = str(document_profile.get("primary_intent") or "")
@@ -397,11 +399,33 @@ def _build_review_context(
     if not reasons:
         reasons.append("listo_para_confirmar")
 
+    triage = _build_operator_triage(
+        primary_intent=document_profile.get("primary_intent"),
+        contact=contact_payload,
+        match_summary={
+            "matched": matched_count,
+            "unmatched": unmatched_count,
+            "detected": matched_count + unmatched_count,
+            "needs_operator_review": bool(unmatched_count or extraction_error),
+        },
+        unmatched_items=[],
+        extraction_error=extraction_error,
+        missing_fields=missing_fields or [],
+    )
+
     return {
         "contract_version": "marketplace.assisted_review.v1",
         "primary_intent": document_profile.get("primary_intent"),
         "operator_goal": document_profile.get("operator_goal"),
         "review_reasons": reasons,
+        "priority": triage.get("priority"),
+        "priority_reason": triage.get("priority_reason"),
+        "priority_reason_label": triage.get("priority_reason_label"),
+        "sla_hint": triage.get("sla_hint"),
+        "operator_queue": triage.get("operator_queue"),
+        "operator_queue_label": triage.get("operator_queue_label"),
+        "primary_missing_field": triage.get("primary_missing_field"),
+        "missing_fields": triage.get("missing_fields"),
         "catalog_matching_enabled": bool(document_profile.get("catalog_matching")),
         "catalog_candidate_groups": len(catalog_candidates),
         "recommended_channels": ["whatsapp", "email", "phone", "crm"],
@@ -591,6 +615,9 @@ def _build_crm_handoff_payload(
             "channel": source_payload.get("channel"),
             "archivo_url": source_payload.get("archivo_url"),
             "archivo_nombre": source_payload.get("archivo_nombre"),
+            "original_filename": source_payload.get("original_filename"),
+            "mime_type": source_payload.get("mime_type"),
+            "file_size_bytes": source_payload.get("file_size_bytes"),
             "text_preview": source_payload.get("text_preview"),
         },
         "structured_extraction": structured_extraction,
@@ -643,6 +670,25 @@ def _build_operator_intake_summary(
     target_module = str(crm_handoff.get("target_module") or "orders")
     has_contact = bool(contact_payload.get("phone") or contact_payload.get("email"))
     needs_review = bool(match_summary.get("needs_operator_review"))
+    structured_extraction = (
+        crm_handoff.get("structured_extraction")
+        if isinstance(crm_handoff.get("structured_extraction"), dict)
+        else {}
+    )
+    missing_fields = (
+        structured_extraction.get("missing_fields")
+        if isinstance(structured_extraction.get("missing_fields"), list)
+        else []
+    )
+    triage = _build_operator_triage(
+        primary_intent=primary_intent,
+        target_module=target_module,
+        contact=contact_payload,
+        match_summary=match_summary,
+        unmatched_items=unmatched_labels,
+        extraction_error=source_payload.get("extraction_error"),
+        missing_fields=missing_fields,
+    )
     preview: list[str] = []
     for item in enriched_items[:4]:
         label = _clean_optional_text(
@@ -681,6 +727,14 @@ def _build_operator_intake_summary(
         "recommended_record": crm_handoff.get("recommended_record"),
         "recommended_next_step": recommended_next_step,
         "needs_operator_review": needs_review,
+        "priority": triage.get("priority"),
+        "priority_reason": triage.get("priority_reason"),
+        "priority_reason_label": triage.get("priority_reason_label"),
+        "sla_hint": triage.get("sla_hint"),
+        "operator_queue": triage.get("operator_queue"),
+        "operator_queue_label": triage.get("operator_queue_label"),
+        "primary_missing_field": triage.get("primary_missing_field"),
+        "missing_fields": triage.get("missing_fields"),
         "contact_state": "available" if has_contact else "missing",
         "contact_channels": [
             channel
@@ -692,6 +746,9 @@ def _build_operator_intake_summary(
             "type": source_payload.get("input_type"),
             "channel": source_payload.get("channel"),
             "file_name": source_payload.get("archivo_nombre"),
+            "original_filename": source_payload.get("original_filename"),
+            "mime_type": source_payload.get("mime_type"),
+            "file_size_bytes": source_payload.get("file_size_bytes"),
             "has_file": bool(source_payload.get("archivo_url")),
             "has_text": bool(source_payload.get("text_preview")),
         },
@@ -1819,6 +1876,13 @@ def pedidos_desde_archivo():
         "classification": request_kind_classification,
         "archivo_url": upload_meta.get("public_url"),
         "archivo_nombre": original_name,
+        "original_filename": original_name,
+        "mime_type": (
+            _clean_optional_text(getattr(archivo, "mimetype", None) if archivo else None)
+            or mimetypes.guess_type(original_name or "")[0]
+            or ("text/plain" if text_payload else "application/octet-stream")
+        ),
+        "file_size_bytes": len(contenido or b""),
     }
     if chat_session_id:
         source_payload["chat_session_id"] = chat_session_id
@@ -1836,6 +1900,11 @@ def pedidos_desde_archivo():
         text_payload=text_payload,
         contact_payload=contact_payload,
     )
+    structured_missing_fields = (
+        structured_extraction.get("missing_fields")
+        if isinstance(structured_extraction.get("missing_fields"), list)
+        else []
+    )
     crm_handoff = _build_crm_handoff_payload(
         document_profile=document_profile,
         structured_extraction=structured_extraction,
@@ -1846,7 +1915,13 @@ def pedidos_desde_archivo():
         "matched": matched_count,
         "unmatched": unmatched_count,
         "detected": detected_count,
-        "needs_operator_review": unmatched_count > 0 or matched_count == 0 or bool(extraction_error),
+        "needs_operator_review": (
+            unmatched_count > 0
+            or matched_count == 0
+            or bool(extraction_error)
+            or bool(structured_missing_fields)
+            or not bool(contact_payload.get("phone") or contact_payload.get("email"))
+        ),
     }
     crm_order_draft = None
     if catalog_matching_enabled:
@@ -1868,6 +1943,7 @@ def pedidos_desde_archivo():
         catalog_candidates=catalog_candidates,
         extraction_error=extraction_error,
         contact_payload=contact_payload,
+        missing_fields=structured_missing_fields,
     )
     customer_next_steps = _build_customer_next_steps(
         document_profile=document_profile,
@@ -1892,6 +1968,8 @@ def pedidos_desde_archivo():
         unmatched_items=unmatched_labels,
         extraction_error=extraction_error,
         primary_intent=document_profile.get("primary_intent"),
+        target_module=crm_handoff.get("target_module"),
+        missing_fields=structured_missing_fields,
     )
     next_actions = _build_next_actions(
         pedido_id=0,
@@ -2028,6 +2106,8 @@ def pedidos_desde_archivo():
         unmatched_items=unmatched_labels,
         extraction_error=extraction_error,
         primary_intent=document_profile.get("primary_intent"),
+        target_module=crm_handoff.get("target_module"),
+        missing_fields=structured_missing_fields,
     )
     metadata_payload = dict(pedido.metadata_payload or {})
     metadata_payload["next_actions"] = next_actions
