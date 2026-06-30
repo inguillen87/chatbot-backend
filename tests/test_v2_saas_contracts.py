@@ -32,6 +32,7 @@ from models import (
     WhatsAppContactState,
     WhatsAppEnterpriseRule,
 )
+from services.tts_orchestrator import reset_tts_cache_metrics
 
 
 class V2SaasTestConfig(Config):
@@ -55,6 +56,7 @@ class _FakeTwilioResponse:
 
 class V2SaasContractsTest(unittest.TestCase):
     def setUp(self):
+        reset_tts_cache_metrics()
         self.app = create_app(V2SaasTestConfig)
         self.ctx = self.app.app_context()
         self.ctx.push()
@@ -1493,6 +1495,19 @@ class V2SaasContractsTest(unittest.TestCase):
             "reclamo de servicio publico",
             payload["conversation_intelligence"]["huggingface_ai"]["classification_groups"]["intent"],
         )
+        audio_cache = payload["conversation_intelligence"]["audio_cache"]
+        self.assertEqual(audio_cache["contract_version"], "tts.audio_cache_observability.v1")
+        self.assertTrue(audio_cache["enabled"])
+        self.assertTrue(audio_cache["ready"])
+        self.assertIn(audio_cache["status"], {"ready", "active", "degraded"})
+        self.assertEqual(audio_cache["cache"], "tts_audio_cache")
+        self.assertEqual(audio_cache["storage"]["public_path"], "/static/audio_cache")
+        self.assertFalse(audio_cache["storage"]["content_text_exposed"])
+        self.assertIn("fixed_whatsapp_menus", audio_cache["warmup"]["recommended_for"])
+        self.assertIn("cache_hits", audio_cache["metrics"])
+        self.assertIn("generation_failures", audio_cache["metrics"])
+        self.assertNotIn("tts_cache_text", audio_cache)
+        self.assertNotIn("audio_text", audio_cache)
         self.assertEqual(payload["content_modules"]["catalog"]["items"], 1)
         self.assertEqual(payload["content_modules"]["catalog"]["items_with_images"], 1)
         self.assertGreaterEqual(payload["content_modules"]["surveys_votings"]["responses"], 1)
@@ -1770,6 +1785,16 @@ class V2SaasContractsTest(unittest.TestCase):
             "claim_categories",
             payload["message_ux_policy"]["accessibility"]["fixed_menu_audio_cache"]["scope"],
         )
+        fixed_menu_cache = payload["message_ux_policy"]["accessibility"]["fixed_menu_audio_cache"]
+        self.assertEqual(
+            fixed_menu_cache["observability"]["contract_version"],
+            "tts.audio_cache_observability.v1",
+        )
+        self.assertEqual(
+            fixed_menu_cache["observability"]["summary"]["requests"],
+            audio_cache["summary"]["requests"],
+        )
+        self.assertFalse(fixed_menu_cache["observability"]["storage"]["content_text_exposed"])
         self.assertEqual(payload["admin_panel"]["inbox"], "/api/v2/inbox/omnichannel")
         self.assertTrue(payload["education"]["enabled"])
         self.assertEqual(payload["frontend_contract"]["render_as"], "whatsapp_operations_hub")

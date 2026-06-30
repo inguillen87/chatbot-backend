@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
@@ -33,6 +34,7 @@ from services.huggingface_ai_insights import build_whatsapp_ai_runtime_contract
 from services.plan_access import integration_access_payload
 from services.realtime_voice_profiles import build_realtime_voice_capabilities
 from services.audio_transcription_service import audio_translation_capabilities
+from services.tts_orchestrator import get_tts_cache_metrics
 
 
 WHATSAPP_EXPERIENCE_CONTRACT_VERSION = "whatsapp.experience.v1"
@@ -41,6 +43,82 @@ APPROVED_TEMPLATE_STATUSES = {"approved", "active", "ready", "published", "onlin
 PENDING_TEMPLATE_STATUSES = {"draft", "pending", "submitted", "in_review", "review", "twilio_review"}
 REJECTED_TEMPLATE_STATUSES = {"rejected", "failed", "disabled", "paused"}
 LOCAL_TWILIO_MANIFEST_PATH = Path(__file__).resolve().parents[1] / "scripts" / "twilio_content_templates.local.json"
+_FALSEY_CONFIG_VALUES = {"0", "false", "no", "off"}
+
+
+def _runtime_flag_enabled(
+    name: str,
+    app_config: Mapping[str, Any] | None,
+    *,
+    default: bool = True,
+) -> bool:
+    value: Any = None
+    if app_config is not None:
+        value = app_config.get(name)
+    if value is None:
+        value = os.getenv(name)
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() not in _FALSEY_CONFIG_VALUES
+
+
+def _tts_audio_cache_observability_payload(app_config: Mapping[str, Any] | None) -> dict[str, Any]:
+    metrics = get_tts_cache_metrics()
+    requests = int(metrics.get("requests", 0) or 0)
+    cache_hits = int(metrics.get("cache_hits", 0) or 0)
+    cache_misses = int(metrics.get("cache_misses", 0) or 0)
+    failures = (
+        int(metrics.get("provider_failures", 0) or 0)
+        + int(metrics.get("generation_failures", 0) or 0)
+        + int(metrics.get("warmup_failures", 0) or 0)
+        + int(metrics.get("cache_write_failures", 0) or 0)
+    )
+    cache_enabled = _runtime_flag_enabled("TTS_CACHE_ENABLED", app_config, default=True)
+    menu_audio_enabled = _runtime_flag_enabled("WHATSAPP_MENU_AUDIO_ENABLED", app_config, default=True)
+    enabled = cache_enabled and menu_audio_enabled
+    if not enabled:
+        status = "disabled"
+    elif failures:
+        status = "degraded"
+    elif requests:
+        status = "active"
+    else:
+        status = "ready"
+
+    return {
+        "contract_version": "tts.audio_cache_observability.v1",
+        "enabled": enabled,
+        "ready": enabled,
+        "cache_enabled": cache_enabled,
+        "menu_audio_enabled": menu_audio_enabled,
+        "status": status,
+        "cache": "tts_audio_cache",
+        "storage": {
+            "public_path": "/static/audio_cache",
+            "file_format": "mp3",
+            "content_text_exposed": False,
+        },
+        "scope": ["main_menu", "claim_categories", "survey_menu", "catalog_menu", "status_menu"],
+        "metrics": metrics,
+        "summary": {
+            "requests": requests,
+            "cache_hits": cache_hits,
+            "cache_misses": cache_misses,
+            "hit_rate": round(cache_hits / requests, 4) if requests else 0.0,
+            "failures": failures,
+            "warmup_successes": int(metrics.get("warmup_successes", 0) or 0),
+        },
+        "warmup": {
+            "supported": True,
+            "recommended_for": ["fixed_whatsapp_menus", "widget_quick_menus"],
+            "fixed_menu_text_only": True,
+            "sensitive_user_content_allowed": False,
+        },
+    }
+
+
 CHATBOC_TEMPLATE_FRIENDLY_NAMES = {
     "welcome_menu": "chatboc_welcome_menu_v2",
     "case_created": "chatboc_gov_claim_created_v2",
@@ -912,7 +990,13 @@ def _tracking_modules_payload(tenant: TenantProfile) -> dict[str, Any]:
     }
 
 
-def _conversation_intelligence_payload(tenant: TenantProfile, cfg: Mapping[str, Any], app_config: Mapping[str, Any] | None) -> dict[str, Any]:
+def _conversation_intelligence_payload(
+    tenant: TenantProfile,
+    cfg: Mapping[str, Any],
+    app_config: Mapping[str, Any] | None,
+    *,
+    audio_cache: Mapping[str, Any],
+) -> dict[str, Any]:
     voice = build_realtime_voice_capabilities(tenant, cfg, app_config)
     return {
         "llm_strategy": {
@@ -966,6 +1050,7 @@ def _conversation_intelligence_payload(tenant: TenantProfile, cfg: Mapping[str, 
             "registrar_encuesta",
             "derivar_humano",
         ],
+        "audio_cache": dict(audio_cache),
         "huggingface_ai": build_whatsapp_ai_runtime_contract(),
     }
 
@@ -2576,6 +2661,7 @@ def _message_ux_policy_payload(
     *,
     channel_ready: bool,
     integration_access: Mapping[str, Any],
+    audio_cache: Mapping[str, Any],
 ) -> dict[str, Any]:
     return {
         "enabled": bool(channel_ready),
@@ -2606,6 +2692,7 @@ def _message_ux_policy_payload(
                 "purpose": "visual_and_motor_accessibility",
                 "cache_key": "tenant_slug:channel:menu_id:language:voice_profile",
                 "invalidate_on": ["menu_version_change", "tenant_voice_profile_change", "language_change"],
+                "observability": dict(audio_cache),
             },
             "screen_reader_text": "render_audio_text",
             "translation": "audio_translation_capabilities",
@@ -3478,6 +3565,7 @@ def build_whatsapp_experience(
         checkout_experience=checkout_experience,
         integration_access=integration_access,
     )
+    audio_cache = _tts_audio_cache_observability_payload(app_config)
     qa_playbook = _qa_playbook_payload(
         tenant,
         channel_ready=channel_ready,
@@ -3488,6 +3576,7 @@ def build_whatsapp_experience(
     message_ux_policy = _message_ux_policy_payload(
         channel_ready=channel_ready,
         integration_access=integration_access,
+        audio_cache=audio_cache,
     )
     finance_transactional = _finance_transactional_payload(
         tenant,
@@ -3566,7 +3655,12 @@ def build_whatsapp_experience(
         "channel": channel,
         "enterprise_rules": _enterprise_rule_payload(tenant),
         "contact_window": _contact_window_payload(tenant),
-        "conversation_intelligence": _conversation_intelligence_payload(tenant, cfg, app_config),
+        "conversation_intelligence": _conversation_intelligence_payload(
+            tenant,
+            cfg,
+            app_config,
+            audio_cache=audio_cache,
+        ),
         "content_modules": {
             **content,
             "links": {**content["links"], "tenant_config_links": tenant_config_links},
