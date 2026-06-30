@@ -2039,6 +2039,57 @@ def _template_blueprint_payload(
     }
 
 
+def _webview_executable_contract(flow: Mapping[str, Any]) -> dict[str, Any]:
+    flow_id = str(flow.get("id") or "")
+    required_fields = [str(item) for item in flow.get("requires", []) if item]
+    signed_params = [str(item) for item in flow.get("signed_params", []) if item]
+    confirmations = [str(item) for item in flow.get("server_confirmation", []) if item]
+    template_ids = [str(item) for item in flow.get("template_ids", []) if item]
+    surface = str(flow.get("surface") or "whatsapp_cta_webview")
+
+    return {
+        "contract_version": "whatsapp.webview.executable_contract.v1",
+        "trigger": {
+            "surface": surface,
+            "template_ids": template_ids,
+            "entrypoints": ["whatsapp_template_cta", "widget_action", "admin_crm_reply"],
+        },
+        "preconditions": {
+            "required_fields": required_fields,
+            "signed_params": signed_params,
+            "tenant_access_enabled": True,
+            "requires_signed_session": bool(signed_params),
+            "requires_idempotency_key": True,
+            "template_or_24h_policy": "approved_template_outside_24h_freeform_inside_window",
+        },
+        "backend_actions": [
+            "resolve_tenant_and_contact",
+            "create_signed_webview_session",
+            "persist_interaction_event",
+            "open_or_update_crm_record",
+            "await_server_to_server_confirmation",
+        ],
+        "crm_writebacks": confirmations,
+        "fallback": {
+            "mode": str(flow.get("fallback") or "plain_text_inside_24h"),
+            "show_operator_prompt": True,
+            "preserve_ticket_or_order_context": True,
+        },
+        "qa_assertions": [
+            f"{flow_id}:signed_session_created",
+            f"{flow_id}:no_sensitive_data_in_chat",
+            f"{flow_id}:crm_timeline_updated",
+            f"{flow_id}:fallback_available",
+        ],
+        "frontend_contract": {
+            "render_as": "whatsapp_flow_execution_card",
+            "show_preconditions": True,
+            "show_crm_writebacks": True,
+            "show_qa_assertions": True,
+        },
+    }
+
+
 def _webview_blueprint_payload(
     tenant: TenantProfile,
     *,
@@ -2439,6 +2490,7 @@ def _webview_blueprint_payload(
     }
     for flow in flows:
         design = meta_flow_designs.get(str(flow.get("id") or ""))
+        flow["executable_contract"] = _webview_executable_contract(flow)
         if design:
             flow["meta_flow_blueprint"] = {
                 **design,
@@ -2500,6 +2552,7 @@ def _webview_blueprint_payload(
             "requires_signed_session": True,
             "requires_server_confirmation": True,
             "meta_flow_blueprints": len(meta_flow_designs),
+            "executable_contracts": len(flows),
         },
         "security": {
             "requires_full_plan": True,

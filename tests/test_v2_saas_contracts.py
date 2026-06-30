@@ -1672,6 +1672,20 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertIn("insurance_claim_created", webview_flows["finance_insurance_claim"]["server_confirmation"])
         self.assertGreaterEqual(payload["webview_blueprint"]["summary"]["flows_total"], 11)
         self.assertGreaterEqual(payload["webview_blueprint"]["summary"]["meta_flow_blueprints"], 12)
+        self.assertEqual(
+            payload["webview_blueprint"]["summary"]["executable_contracts"],
+            payload["webview_blueprint"]["summary"]["flows_total"],
+        )
+        claim_executable_contract = webview_flows["claim_tracking_helpdesk"]["executable_contract"]
+        self.assertEqual(
+            claim_executable_contract["contract_version"],
+            "whatsapp.webview.executable_contract.v1",
+        )
+        self.assertIn("gov_claim_created", claim_executable_contract["trigger"]["template_ids"])
+        self.assertTrue(claim_executable_contract["preconditions"]["requires_signed_session"])
+        self.assertIn("create_signed_webview_session", claim_executable_contract["backend_actions"])
+        self.assertIn("public_comment_created", claim_executable_contract["crm_writebacks"])
+        self.assertIn("claim_tracking_helpdesk:crm_timeline_updated", claim_executable_contract["qa_assertions"])
         claim_flow_blueprint = webview_flows["claim_tracking_helpdesk"]["meta_flow_blueprint"]
         self.assertEqual(claim_flow_blueprint["endpoint_mode"], "data_exchange")
         self.assertIn("ticket_summary", [screen["id"] for screen in claim_flow_blueprint["screens"]])
