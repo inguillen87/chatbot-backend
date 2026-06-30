@@ -43,6 +43,7 @@ from routes.whatsapp_webhook import (
     _ensure_welcome_audio_payload,
     _sanitize_twilio_message_params,
     _normalize_whatsapp_flow_contract,
+    _build_chatboc_demo_root_payload,
     CHATBOC_DEMO_DEFAULT_WHATSAPP_NUMBER,
     CHATBOC_DEMO_DEFAULT_RESET_WHATSAPP_NUMBER,
     CHATBOC_DEMO_TENANT_SLUG,
@@ -296,6 +297,21 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self.assertEqual(payload["whatsapp_ctas"], [])
         self.assertFalse(payload["whatsapp_contract"]["webview_safe"])
         self.assertEqual(payload["whatsapp_contract"]["fallback"]["links"], [])
+
+    def test_chatboc_demo_root_payload_exposes_interactive_list_sections_with_text_fallback(self):
+        payload = _build_chatboc_demo_root_payload("Marcelo", None)
+
+        self.assertEqual(payload.get("message_type"), "interactive_list")
+        self.assertTrue(payload.get("_force_whatsapp_interactive"))
+        self.assertEqual(payload.get("interactive_list_button_text"), "Elegir demo")
+        sections = payload.get("interactive_list_sections") or []
+        self.assertEqual(sections[0]["title"], "Demos Chatboc")
+        row_ids = {row.get("id") for row in sections[0].get("rows", [])}
+        self.assertIn("chatboc_demo:gobierno", row_ids)
+        self.assertIn("chatboc_demo:empresas", row_ids)
+        self.assertIn("chatboc_sales_lead", row_ids)
+        self.assertIn("_twilio_pre_messages", payload)
+        self.assertIn("Hola Marcelo", payload.get("message_body", ""))
 
     def _set_owner_tipo_chat(self, tipo: str) -> None:
         self.mock_client_user.tipo_chat = tipo

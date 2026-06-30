@@ -66,3 +66,31 @@ def test_payload_pedido_prioriza_profile_name_sobre_vecino_placeholder():
     )
 
     assert "Pedido recibido, QA Bodega" in payload["message_body"]
+
+
+def test_payload_pedido_expone_whatsapp_order_catalog_contract():
+    payload = _build_pyme_order_success_payload(
+        {
+            CONTEXTO_PYME: {"nombre_cliente": "Cliente"},
+            "profile_name": "Cliente Demo",
+            "chat_db_context_data": {"profile_name": "Cliente Demo"},
+        },
+        {
+            "data": {
+                "nro_pedido": "PED-20260630-ABC",
+                "pedido_id": 10,
+                "monto_total": 25000,
+                "cart_summary": {"items_detalle": []},
+                "cliente": {"nombre": "Cliente Demo"},
+            },
+            "message_body": "Pedido registrado",
+        },
+    )
+
+    assert payload["whatsapp_flow"] == "order_catalog"
+    assert payload["cta_label"] == "Abrir catálogo"
+    expected_url = "https://www.chatboc.ar/tracking/order/PED-20260630-ABC"
+    assert payload["order_url"] == expected_url
+    assert payload["tracking_url"] == expected_url
+    assert payload["webview_url"] == expected_url
+    assert payload["data"]["tracking_url"] == expected_url

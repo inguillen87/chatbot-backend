@@ -1006,6 +1006,43 @@ def _chatboc_demo_option(text: str, action_id: Optional[str] = None, url: Option
     return option
 
 
+def _apply_chatboc_demo_interactive_list(
+    payload: Dict[str, Any],
+    *,
+    title: str = "Opciones Chatboc",
+    button_text: str = "Ver opciones",
+) -> Dict[str, Any]:
+    if not isinstance(payload, dict):
+        return payload
+
+    rows: list[dict[str, str]] = []
+    for option in payload.get("options_list") or []:
+        if not isinstance(option, dict):
+            continue
+        action_id = option.get("action_id") or option.get("id")
+        if not action_id:
+            continue
+        label = str(option.get("texto") or option.get("label") or "").strip()
+        if not label:
+            continue
+        rows.append(
+            {
+                "id": str(action_id),
+                "title": label,
+                "description": str(option.get("description") or "").strip(),
+            }
+        )
+
+    if not rows:
+        return payload
+
+    payload["interactive_list_sections"] = [{"title": title, "rows": rows[:10]}]
+    payload["interactive_list_button_text"] = button_text
+    payload["_force_whatsapp_interactive"] = True
+    payload["message_type"] = "interactive_list"
+    return payload
+
+
 def _normalize_chatboc_demo_text(value: Any) -> str:
     text = str(value or "").strip().lower()
     text = unicodedata.normalize("NFKD", text)
@@ -1168,6 +1205,7 @@ def _build_chatboc_demo_root_payload(contact_name: Optional[str], ticket: Option
         "fuente": "chatboc_demo_whatsapp_hub",
         "skip_audio_generation": True,
     }
+    _apply_chatboc_demo_interactive_list(payload, title="Demos Chatboc", button_text="Elegir demo")
     return _attach_chatboc_demo_template(
         payload,
         "chatboc_welcome_menu_v2",
@@ -1219,6 +1257,7 @@ def _build_chatboc_demo_sector_payload(sector: str) -> Dict[str, Any]:
         "fuente": f"chatboc_demo_{sector}_menu",
         "skip_audio_generation": True,
     }
+    _apply_chatboc_demo_interactive_list(payload, title="Acciones demo", button_text="Elegir accion")
     if sector == "empresas":
         return _attach_chatboc_demo_template(
             payload,
@@ -1380,6 +1419,7 @@ def _build_chatboc_demo_business_order_payload(
         "fuente": "chatboc_demo_business_order",
         "skip_audio_generation": True,
     }
+    _apply_chatboc_demo_interactive_list(payload, title="Pedido demo", button_text="Pedido demo")
     return _attach_chatboc_demo_template(
         payload,
         "chatboc_pyme_catalog_invite_v1",
@@ -1411,6 +1451,7 @@ def _build_chatboc_demo_order_confirm_payload(
         "fuente": "chatboc_demo_order_confirm",
         "skip_audio_generation": True,
     }
+    _apply_chatboc_demo_interactive_list(payload, title="Despues del pedido", button_text="Ver acciones")
     return _attach_chatboc_demo_template(
         payload,
         "chatboc_order_checkout_v1",
@@ -1443,6 +1484,7 @@ def _build_chatboc_demo_claim_payload(
         "fuente": "chatboc_demo_claim_start",
         "skip_audio_generation": True,
     }
+    _apply_chatboc_demo_interactive_list(payload, title="Reclamo demo", button_text="Ver acciones")
     claim_ref = _chatboc_demo_tracking_ref("REC", ticket)
     return _attach_chatboc_demo_template(
         payload,
@@ -1476,6 +1518,7 @@ def _build_chatboc_demo_school_payload(
         "fuente": "chatboc_demo_school_start",
         "skip_audio_generation": True,
     }
+    _apply_chatboc_demo_interactive_list(payload, title="Colegio demo", button_text="Ver acciones")
     return _attach_chatboc_demo_template(
         payload,
         "chatboc_school_family_case_created_v1",

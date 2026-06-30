@@ -644,6 +644,15 @@ class TestAccionesMunicipio(unittest.TestCase):
         self.assertNotIn('2. Cancelar', message_body)
         self.assertEqual(respuesta.get('message_type'), 'text')
         self.assertEqual(respuesta.get('options_list'), [])
+        self.assertEqual(respuesta.get('whatsapp_flow'), 'claim_status')
+        self.assertEqual(respuesta.get('tracking_url'), 'https://example.com/chat/12345?pin=654321')
+        self.assertEqual(respuesta.get('webview_url'), 'https://example.com/chat/12345?pin=654321')
+        self.assertEqual(respuesta.get('ticket_status_url'), 'https://example.com/chat/12345?pin=654321')
+        self.assertEqual(respuesta.get('cta_label'), 'Ver estado')
+        self.assertEqual(
+            respuesta.get('data', {}).get('tracking_url'),
+            'https://example.com/chat/12345?pin=654321',
+        )
 
     @patch('services.herramientas_municipio.geocode_address')
     def test_direccion_es_valida(self, mock_geocode):

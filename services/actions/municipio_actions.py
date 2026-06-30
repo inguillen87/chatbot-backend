@@ -1120,6 +1120,23 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 tracking_url = f"{base_chat_url.rstrip('/')}/{ticket_numeric}"
                 if pin_final:
                     tracking_url = f"{tracking_url}?pin={pin_final}"
+            if tracking_url:
+                response_payload.update(
+                    {
+                        "whatsapp_flow": "claim_status",
+                        "tracking_url": tracking_url,
+                        "ticket_status_url": tracking_url,
+                        "webview_url": tracking_url,
+                        "cta_label": "Ver estado",
+                    }
+                )
+                response_payload.setdefault("data", {}).update(
+                    {
+                        "tracking_url": tracking_url,
+                        "ticket_status_url": tracking_url,
+                        "webview_url": tracking_url,
+                    }
+                )
             response_payload["contexto_actualizado"] = {
                 "latest_ticket_id": ticket_creado.get("id"),
                 "latest_ticket_nro": nro_ticket_str,
@@ -1271,12 +1288,29 @@ class ConsultarEstadoTicketActionHandler(BaseActionHandler):
             f"El ticket M-{ticket.nro_ticket} sobre '{asunto}' se encuentra actualmente: **{ticket.estado}**."
         )
         botones = [{"texto": "Consultar otro ticket", "id_accion": "consultar_estado_ticket"}]
+        municipio_config = self.context.get("municipio_config_actual", {}) if isinstance(self.context, dict) else {}
+        base_chat_url = municipio_config.get("base_chat_url", "https://www.chatboc.ar/chat")
+        ticket_numeric = str(ticket.nro_ticket).replace("M-", "").replace("S-", "")
+        tracking_url = f"{str(base_chat_url).rstrip('/')}/{ticket_numeric}"
+        if ticket.consulta_pin:
+            tracking_url = f"{tracking_url}?pin={ticket.consulta_pin}"
         return {
             "success": True,
             "message_to_user": user_message,
             "options_list": botones,
             "message_type": "interactive_buttons",
-            "data": {"ticket_id": ticket.nro_ticket, "status": ticket.estado}
+            "whatsapp_flow": "claim_status",
+            "tracking_url": tracking_url,
+            "ticket_status_url": tracking_url,
+            "webview_url": tracking_url,
+            "cta_label": "Ver estado",
+            "data": {
+                "ticket_id": ticket.nro_ticket,
+                "status": ticket.estado,
+                "tracking_url": tracking_url,
+                "ticket_status_url": tracking_url,
+                "webview_url": tracking_url,
+            }
         }
 
 class ConsultarInfoTramiteActionHandler(BaseActionHandler):

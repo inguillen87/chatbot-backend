@@ -840,6 +840,22 @@ def _normalize_order_tracking_base_url(value: Optional[str]) -> Optional[str]:
     return base or None
 
 
+def _public_tenant_market_url(base_url: Optional[str], tenant_slug: Optional[str]) -> Optional[str]:
+    slug = str(tenant_slug or "").strip().strip("/")
+    base = _normalize_order_tracking_base_url(base_url)
+    if not slug or not base:
+        return None
+    return f"{base}/t/{slug}/market"
+
+
+def _public_order_tracking_url(base_url: Optional[str], order_code: Optional[Any]) -> Optional[str]:
+    code = str(order_code or "").strip()
+    base = _normalize_order_tracking_base_url(base_url)
+    if not code or not base:
+        return None
+    return f"{base}/tracking/order/{code}"
+
+
 def formatear_carrito_desde_summary(summary_cart_obj: dict, context: dict = None) -> str:
     if not summary_cart_obj or not summary_cart_obj.get("items_detalle"):
         return "Tu carrito está vacío."
@@ -1161,6 +1177,9 @@ def _build_pyme_order_success_payload(context: dict, handler_response: dict) -> 
         owner_user_obj = db.session.get(models.User, owner_user_id)
         if owner_user_obj:
             tenant_profile = getattr(owner_user_obj, "tenant_profile_pyme", None)
+    tenant_slug = getattr(tenant_profile, "slug", None) if tenant_profile else None
+    catalog_url = _public_tenant_market_url(base_tracking_url, tenant_slug)
+    order_tracking_url = _public_order_tracking_url(base_tracking_url, nro_pedido)
 
     # Explicitly disabled for Pymes to prevent "Punto Limpio" leakage
     # Pymes should strictly have their own branding or no promo section by default
@@ -1198,7 +1217,20 @@ def _build_pyme_order_success_payload(context: dict, handler_response: dict) -> 
         "message_type": message_type,
         "data": data,
         "fuente": "pyme_pedido_confirmado",
+        "whatsapp_flow": "order_catalog",
+        "cta_label": "Abrir catálogo",
     }
+    if catalog_url:
+        result["catalog_url"] = catalog_url
+        result["public_catalog_url"] = catalog_url
+        result["webview_url"] = catalog_url
+        data.setdefault("catalog_url", catalog_url)
+    if order_tracking_url:
+        result["order_url"] = order_tracking_url
+        result["tracking_url"] = order_tracking_url
+        result.setdefault("webview_url", order_tracking_url)
+        data.setdefault("order_url", order_tracking_url)
+        data.setdefault("tracking_url", order_tracking_url)
 
     if pedido_id:
         result["ticket_id"] = pedido_id
@@ -1660,12 +1692,37 @@ class CatalogoHandler(BaseHandler):
         if interactive_options_count == 0 and any(opt.get("type") == "url" for opt in options):
              message_type = 'text'
 
-        return {
+        app_base_url = "https://chatboc.ar"
+        try:
+            if current_app:
+                configured_base = current_app.config.get("APP_BASE_URL")
+                if configured_base:
+                    app_base_url = configured_base
+        except Exception:
+            pass
+
+        catalog_url = None
+        try:
+            owner_obj = db.session.get(models.User, self.pyme_id_actual) if self.pyme_id_actual else None
+            tenant_profile = getattr(owner_obj, "tenant_profile_pyme", None) if owner_obj else None
+            tenant_slug = getattr(tenant_profile, "slug", None)
+            catalog_url = _public_tenant_market_url(app_base_url, tenant_slug)
+        except Exception as exc:
+            logger.debug("No se pudo resolver catalog_url pyme para WhatsApp: %s", exc)
+
+        response_payload = {
             "message_body": body,
             "options_list": options,
             "message_type": message_type,
-            "fuente": fuente_catalogo
+            "fuente": fuente_catalogo,
+            "whatsapp_flow": "order_catalog",
+            "cta_label": "Abrir catálogo",
         }
+        if catalog_url:
+            response_payload["catalog_url"] = catalog_url
+            response_payload["public_catalog_url"] = catalog_url
+            response_payload["webview_url"] = catalog_url
+        return response_payload
 
 class OfertasHandler(BaseHandler):
     def execute(self, action_data):
