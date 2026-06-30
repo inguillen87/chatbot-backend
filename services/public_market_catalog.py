@@ -406,7 +406,7 @@ def public_market_assisted_intake(tenant: TenantProfile, *, total_products: int)
     is_education = any(token in vertical_text for token in ("colegio", "escuela", "educacion", "education"))
 
     if is_government:
-        title = "Subi boletas, certificados, reclamos o notas y el municipio lo toma desde el CRM"
+        title = "Subi boletas, certificados, reclamos o notas y el municipio las responde con seguimiento"
         summary = (
             "Para vecinos que no quieren navegar formularios: Chatboc recibe una foto, PDF o texto, "
             "clasifica si es boleta, certificado, reclamo, pedido o consulta y deja seguimiento publico."
@@ -444,10 +444,10 @@ def public_market_assisted_intake(tenant: TenantProfile, *, total_products: int)
             },
         ]
     elif is_education:
-        title = "Subi comprobantes, certificados o pedidos y el colegio los ordena por IA"
+        title = "Subi comprobantes, certificados o pedidos y el colegio los recibe ordenados"
         summary = (
             "El portal acepta documentos de familias, proveedores o administracion y crea un caso trazable "
-            "para responder desde el CRM sin exigir registro previo."
+            "para responder desde el panel sin exigir registro previo."
         )
         examples = [
             "Comprobante de cuota o transferencia",

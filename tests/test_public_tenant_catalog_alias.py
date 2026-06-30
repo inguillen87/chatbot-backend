@@ -232,6 +232,16 @@ def test_municipio_market_catalog_contract_exposes_service_request_intake(client
     payload = resp.get_json()
     assisted = payload["assisted_intake"]
     assert "municipio" in assisted["title"].lower()
+    public_copy = "\n".join(
+        [
+            assisted["title"],
+            assisted["summary"],
+            assisted["empty_state"]["title"],
+            assisted["empty_state"]["description"],
+        ]
+    )
+    assert "CRM" not in public_copy
+    assert "IA" not in public_copy
     assert any(item["id"] == "service_request" for item in assisted["document_types"])
     assert any(example["document_type"] == "service_request" for example in assisted["text_examples"])
     assert "boleta" in assisted["empty_state"]["description"].lower()
