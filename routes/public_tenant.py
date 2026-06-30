@@ -25,7 +25,11 @@ from routes.carrito import _product_query_for_tenant
 from middleware.tenant_context import require_tenant
 from services.catalog_seed import ensure_seed_catalog
 from services.commerce_contracts import build_checkout_experience_payload
-from services.public_market_catalog import build_public_market_catalog_contract, public_market_assisted_intake
+from services.public_market_catalog import (
+    build_public_market_catalog_contract,
+    public_market_api_contract,
+    public_market_assisted_intake,
+)
 from services.plan_access import (
     integration_access_payload,
     integration_plan_required_payload,
@@ -758,6 +762,7 @@ def public_widget_commerce_session():
     cart_enabled = catalog_enabled
     checkout_experience = build_checkout_experience_payload(tenant, channel="widget")
     assisted_intake = public_market_assisted_intake(tenant, total_products=catalog_products_count)
+    public_api = public_market_api_contract(tenant, assisted_intake)
     assisted_primary_action = "assisted_upload" if assisted_intake.get("show_on_empty_catalog") else "catalog"
 
     payload = {
@@ -791,8 +796,10 @@ def public_widget_commerce_session():
             "admin_checkout_session_endpoint": f"/api/v2/tenants/{tenant.slug}/payments/checkout-session",
             "allow_guest_cart": True,
             "requires_contact_before_checkout": True,
+            "public_api": public_api.get("cart"),
             **_cart_counts_for_tenant(tenant, session_payload),
         },
+        "public_api": public_api,
         "payment": checkout_experience,
         "portal": {
             "enabled": True,

@@ -159,10 +159,14 @@ def test_public_market_catalog_contract_includes_promotions(client):
     assert any(example["document_type"] == "quote_request" for example in payload["assisted_intake"]["text_examples"])
     assert payload["public_api"]["contract_version"] == "marketplace.public_api.v1"
     assert payload["public_api"]["anonymous"] is True
+    assert payload["public_api"]["guest_safe"] is True
     assert payload["public_api"]["catalog"]["endpoint"] == f"/api/market/{tenant.slug}/catalog?contract=marketplace"
     assert payload["public_api"]["catalog"]["alias_endpoint"] == f"/api/public/tenants/{tenant.slug}/catalog?contract=marketplace"
-    assert payload["public_api"]["cart"]["add"]["endpoint"] == f"/api/market/{tenant.slug}/cart/add"
-    assert payload["public_api"]["checkout"]["start"]["endpoint"] == f"/api/market/{tenant.slug}/checkout/start"
+    assert payload["public_api"]["cart"]["summary"]["endpoint"] == f"/api/pwa/public/cart/summary?tenant={tenant.slug}"
+    assert payload["public_api"]["cart"]["summary"]["guest_safe"] is True
+    assert payload["public_api"]["cart"]["add"]["endpoint"] == f"/api/pwa/public/cart/add?tenant={tenant.slug}"
+    assert payload["public_api"]["cart"]["add"]["guest_safe"] is True
+    assert payload["public_api"]["checkout"]["start"]["endpoint"] == "/api/checkout/crear-preferencia"
     assert payload["public_api"]["checkout"]["fallback_behavior"] == "return_structured_plan_or_payment_error_never_tokenized_endpoint"
     assert payload["public_api"]["assisted_upload"]["endpoint"] == "/api/pedidos/from-file?origen=marketplace"
     assert payload["public_api"]["tracking"]["order_path_template"] == f"/tracking/order/{{code}}?tenant_slug={tenant.slug}"
@@ -214,7 +218,8 @@ def test_market_catalog_contract_matches_public_catalog_contract_shape(client):
         assert payload["promotions"]["contract_version"] == "public.catalog_promotions.v1"
         assert payload["frontend_contract"]["render_as"] == "marketplace_catalog"
         assert payload["public_api"]["contract_version"] == "marketplace.public_api.v1"
-        assert payload["public_api"]["cart"]["summary"]["endpoint"] == f"/api/market/{tenant.slug}/cart"
+        assert payload["public_api"]["cart"]["summary"]["endpoint"] == f"/api/pwa/public/cart/summary?tenant={tenant.slug}"
+        assert payload["public_api"]["cart"]["summary"]["guest_safe"] is True
     assert set(public_payload.keys()) == set(market_payload.keys())
 
 
@@ -445,6 +450,10 @@ def test_widget_commerce_session_returns_embedded_operating_contract(client):
     assert body["cart"]["summary_endpoint"] == "/api/pwa/public/cart/summary"
     assert body["cart"]["items_endpoint"] == "/api/pwa/public/cart/items"
     assert body["cart"]["legacy_endpoint"] == "/api/pwa/public/cart"
+    assert body["cart"]["public_api"]["summary"]["endpoint"] == f"/api/pwa/public/cart/summary?tenant={tenant.slug}"
+    assert body["cart"]["public_api"]["add"]["endpoint"] == f"/api/pwa/public/cart/add?tenant={tenant.slug}"
+    assert body["public_api"]["contract_version"] == "marketplace.public_api.v1"
+    assert body["public_api"]["guest_safe"] is True
     assert body["cart"]["checkout_preview_endpoint"] == "/api/pwa/public/cart/summary"
     assert body["cart"]["checkout_session_endpoint"] == "/api/checkout/crear-preferencia"
     assert body["cart"]["allow_guest_cart"] is True

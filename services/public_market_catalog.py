@@ -14,6 +14,7 @@ from services.common_utils import parse_precio_flexible
 PUBLIC_MARKET_CATALOG_CONTRACT_VERSION = "public.market_catalog.v1"
 PUBLIC_CATALOG_PROMOTIONS_CONTRACT_VERSION = "public.catalog_promotions.v1"
 PUBLIC_MARKET_ASSISTED_INTAKE_CONTRACT_VERSION = "marketplace.assisted_intake_entry.v1"
+PUBLIC_MARKET_API_CONTRACT_VERSION = "marketplace.public_api.v1"
 
 
 def tenant_public_summary(tenant: TenantProfile) -> dict[str, Any]:
@@ -115,6 +116,53 @@ def _parse_float(value: Any) -> float | None:
         return float(str(value).replace(",", "."))
     except (TypeError, ValueError):
         return None
+
+
+def public_market_api_contract(tenant: TenantProfile, assisted_intake: dict[str, Any]) -> dict[str, Any]:
+    tenant_param = quote_plus(str(tenant.slug or ""))
+    pwa_cart_base = f"/api/pwa/public/cart?tenant={tenant_param}"
+    pwa_cart_summary = f"/api/pwa/public/cart/summary?tenant={tenant_param}"
+    return {
+        "contract_version": PUBLIC_MARKET_API_CONTRACT_VERSION,
+        "tenant_slug": tenant.slug,
+        "anonymous": True,
+        "guest_safe": True,
+        "identity_headers": ["X-Anon-Id", "X-Chat-Session-Id", "X-Tenant"],
+        "catalog": {
+            "method": "GET",
+            "endpoint": f"/api/market/{tenant.slug}/catalog?contract=marketplace",
+            "alias_endpoint": f"/api/public/tenants/{tenant.slug}/catalog?contract=marketplace",
+            "guest_safe": True,
+        },
+        "cart": {
+            "summary": {"method": "GET", "endpoint": pwa_cart_summary, "guest_safe": True},
+            "items": {"method": "GET", "endpoint": f"/api/pwa/public/cart/items?tenant={tenant_param}", "guest_safe": True},
+            "add": {"method": "POST", "endpoint": f"/api/pwa/public/cart/add?tenant={tenant_param}", "guest_safe": True},
+            "update": {"method": "POST", "endpoint": f"/api/pwa/public/cart/update?tenant={tenant_param}", "guest_safe": True},
+            "remove": {"method": "POST", "endpoint": f"/api/pwa/public/cart/remove?tenant={tenant_param}", "guest_safe": True},
+            "clear": {"method": "POST", "endpoint": f"/api/pwa/public/cart/clear?tenant={tenant_param}", "guest_safe": True},
+            "legacy": {"method": "GET", "endpoint": pwa_cart_base, "guest_safe": True},
+            "checkout": {
+                "method": "GET",
+                "endpoint": pwa_cart_summary,
+                "guest_safe": True,
+                "mode": "checkout_preview",
+            },
+        },
+        "checkout": {
+            "start": {"method": "POST", "endpoint": "/api/checkout/crear-preferencia"},
+            "preview": {"method": "GET", "endpoint": pwa_cart_summary, "guest_safe": True},
+            "requires_contact_before_checkout": True,
+            "guest_safe": True,
+            "fallback_behavior": "return_structured_plan_or_payment_error_never_tokenized_endpoint",
+        },
+        "assisted_upload": assisted_intake["submit"],
+        "tracking": {
+            "order_path_template": f"/tracking/order/{{code}}?tenant_slug={tenant.slug}",
+            "claim_path_template": f"/tracking/claim/{{code}}?tenant_slug={tenant.slug}",
+            "source": "public_follow_up_from_assisted_upload",
+        },
+    }
 
 
 def _facets_from_products(products: list[dict[str, Any]]) -> dict[str, Any]:
@@ -618,37 +666,7 @@ def build_public_market_catalog_contract(
     public_url = f"{base_web}/{tenant.slug}/productos"
     share_text = f"Catalogo de {tenant.nombre or tenant.slug}: {public_url}"
     assisted_intake = public_market_assisted_intake(tenant, total_products=len(all_products))
-    public_api = {
-        "contract_version": "marketplace.public_api.v1",
-        "tenant_slug": tenant.slug,
-        "anonymous": True,
-        "identity_headers": ["X-Anon-Id", "X-Chat-Session-Id", "X-Tenant"],
-        "catalog": {
-            "method": "GET",
-            "endpoint": f"/api/market/{tenant.slug}/catalog?contract=marketplace",
-            "alias_endpoint": f"/api/public/tenants/{tenant.slug}/catalog?contract=marketplace",
-        },
-        "cart": {
-            "summary": {"method": "GET", "endpoint": f"/api/market/{tenant.slug}/cart"},
-            "add": {"method": "POST", "endpoint": f"/api/market/{tenant.slug}/cart/add"},
-            "update": {"method": "POST", "endpoint": f"/api/market/{tenant.slug}/cart/update"},
-            "remove": {"method": "POST", "endpoint": f"/api/market/{tenant.slug}/cart/remove"},
-            "clear": {"method": "POST", "endpoint": f"/api/market/{tenant.slug}/cart/clear"},
-            "checkout": {"method": "POST", "endpoint": f"/api/market/{tenant.slug}/cart/checkout"},
-        },
-        "checkout": {
-            "start": {"method": "POST", "endpoint": f"/api/market/{tenant.slug}/checkout/start"},
-            "requires_contact_before_checkout": True,
-            "guest_safe": True,
-            "fallback_behavior": "return_structured_plan_or_payment_error_never_tokenized_endpoint",
-        },
-        "assisted_upload": assisted_intake["submit"],
-        "tracking": {
-            "order_path_template": f"/tracking/order/{{code}}?tenant_slug={tenant.slug}",
-            "claim_path_template": f"/tracking/claim/{{code}}?tenant_slug={tenant.slug}",
-            "source": "public_follow_up_from_assisted_upload",
-        },
-    }
+    public_api = public_market_api_contract(tenant, assisted_intake)
     return {
         "contract_version": PUBLIC_MARKET_CATALOG_CONTRACT_VERSION,
         "tenant": tenant_public_summary(tenant),
