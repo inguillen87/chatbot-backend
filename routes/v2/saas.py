@@ -1175,6 +1175,12 @@ def _build_tenant_ops_qa_playbook(
     passed = sum(1 for item in checks if item.get("ok"))
     critical_failed = [item for item in checks if item.get("severity") == "critical" and not item.get("ok")]
     status = "pass" if passed == len(checks) else ("fail" if critical_failed else "warning")
+    e2e_readiness = _build_production_e2e_readiness(
+        tenant=tenant,
+        admin_payload=admin,
+        marketplace=marketplace,
+        whatsapp=whatsapp,
+    )
     return {
         "contract_version": "tenant.ops_qa.playbook.v1",
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -1189,8 +1195,11 @@ def _build_tenant_ops_qa_playbook(
             "warnings": sum(1 for item in checks if item.get("status") == "warning"),
             "critical_failed": len(critical_failed),
             "real_messages_sent": 0,
+            "e2e_flows_total": (e2e_readiness.get("summary") or {}).get("total"),
+            "e2e_flows_ready": (e2e_readiness.get("summary") or {}).get("ready"),
         },
         "checks": checks,
+        "e2e_flow_readiness": e2e_readiness,
         "recommended_next_actions": [item for item in checks if not item.get("ok")][:5],
         "execution": {
             "endpoint": f"/api/v2/tenants/{tenant.slug}/ops-qa/check/{{check_id}}",
@@ -1200,8 +1209,15 @@ def _build_tenant_ops_qa_playbook(
         },
         "frontend_contract": {
             "render_as": "tenant_ops_qa_command_center",
-            "recommended_views": ["readiness_score", "critical_blockers", "safe_check_runner", "module_drilldown"],
+            "recommended_views": [
+                "readiness_score",
+                "critical_blockers",
+                "safe_check_runner",
+                "module_drilldown",
+                "e2e_flow_matrix",
+            ],
             "refresh_seconds": 30,
+            "show_e2e_flow_readiness": True,
         },
     }
 
@@ -2568,6 +2584,151 @@ def _routes_available(paths: list[str]) -> dict[str, bool]:
     return {path: path in registered for path in paths}
 
 
+def _e2e_flow_qa_guidance(flow_id: str, *, endpoint: str, surface: str) -> dict[str, Any]:
+    default_guidance = {
+        "frontend_entry": "/perfil",
+        "manual_test_steps": [
+            "Abrir el modulo operativo del tenant.",
+            "Ejecutar el flujo completo con datos de prueba.",
+            "Verificar que el evento queda visible para el equipo administrativo.",
+        ],
+        "acceptance_criteria": [
+            "El usuario final recibe una respuesta clara y accionable.",
+            "El admin ve el caso con historial, canal y siguiente accion.",
+            "El flujo degrada con un estado explicito si falta una integracion.",
+        ],
+        "suggested_command": "python -m pytest tests/test_v2_saas_contracts.py -q",
+    }
+    guidance_by_flow: dict[str, dict[str, Any]] = {
+        "gov_claim_text_to_tracking": {
+            "frontend_entry": "/perfil?tab=tickets",
+            "manual_test_steps": [
+                "Enviar un reclamo por WhatsApp o widget con categoria y direccion.",
+                "Confirmar el reclamo y abrir el link publico de seguimiento.",
+                "Abrir el CRM y verificar que la conversacion queda en la bandeja de reclamos.",
+            ],
+            "acceptance_criteria": [
+                "Se crea un ticket con codigo, pin y estado inicial.",
+                "El link publico muestra resumen, timeline y canal de seguimiento.",
+                "El admin puede leer el reclamo, responder y cambiar estado sin salir del CRM.",
+            ],
+            "suggested_command": "python -m pytest tests/test_v2_saas_contracts.py -q",
+        },
+        "claim_live_or_offline_helpdesk": {
+            "frontend_entry": "/chat/{ticket_id}?pin={pin}",
+            "manual_test_steps": [
+                "Abrir el seguimiento publico del reclamo desde el link seguro.",
+                "Enviar una consulta desde la mesa de ayuda del ticket.",
+                "Verificar en el CRM que el mensaje entra como conversacion del reclamo.",
+            ],
+            "acceptance_criteria": [
+                "El mensaje publico exige pin o token seguro.",
+                "Fuera de horario se guarda como offline y mantiene contexto del ticket.",
+                "En horario de atencion queda listo para respuesta de un agente humano.",
+            ],
+            "suggested_command": "python -m pytest tests/test_v2_saas_contracts.py -q",
+        },
+        "pyme_catalog_order_checkout": {
+            "frontend_entry": "/t/{tenant_slug}/market",
+            "manual_test_steps": [
+                "Abrir el marketplace publico del tenant.",
+                "Buscar productos, agregar items al pedido o subir una nota de pedido.",
+                "Confirmar el pedido y verificar que aparece en CRM/pedidos.",
+            ],
+            "acceptance_criteria": [
+                "El catalogo muestra precio, stock, promociones o un estado vacio util.",
+                "La nota de pedido se convierte en items sugeridos o en lead de compra.",
+                "El checkout o contacto por WhatsApp devuelve confirmacion trazable.",
+            ],
+            "suggested_command": "python -m pytest tests/test_pedidos_from_file_marketplace.py tests/test_pyme_multimodal_flow.py -q",
+        },
+        "survey_vote_realtime": {
+            "frontend_entry": "/perfil?tab=surveys",
+            "manual_test_steps": [
+                "Publicar una encuesta o votacion demo.",
+                "Votar desde el link publico o QR.",
+                "Verificar resultados en vivo, conteos y capas geograficas cuando existan datos.",
+            ],
+            "acceptance_criteria": [
+                "Cada voto queda registrado una sola vez por identidad o sesion permitida.",
+                "El panel actualiza resultados sin recargar toda la pagina.",
+                "El estado publico diferencia encuesta activa, cerrada y sin datos.",
+            ],
+            "suggested_command": "python -m pytest tests/product_flow/test_surveys_live_vote_flow.py tests/test_v2_surveys.py -q",
+        },
+        "school_family_case": {
+            "frontend_entry": "/perfil?tab=education",
+            "manual_test_steps": [
+                "Simular una familia consultando cuota, comprobante o tramite escolar.",
+                "Adjuntar comprobante o mensaje desde WhatsApp/widget.",
+                "Verificar que el caso queda asignable en el panel del colegio.",
+            ],
+            "acceptance_criteria": [
+                "El agente pide solo los datos faltantes y respeta privacidad.",
+                "El comprobante queda asociado al alumno, familia o caso administrativo.",
+                "El equipo puede responder y cerrar el caso desde el CRM.",
+            ],
+            "suggested_command": "python -m pytest tests/test_v2_saas_contracts.py -q",
+        },
+        "finance_in_chat_transactional": {
+            "frontend_entry": "/perfil?tab=transactions",
+            "manual_test_steps": [
+                "Iniciar alta, KYC, cobranza, pago o firma desde una conversacion.",
+                "Abrir el webview seguro para completar datos sensibles.",
+                "Confirmar que el backend recibe webhook server-to-server antes de actualizar estado.",
+            ],
+            "acceptance_criteria": [
+                "Datos sensibles no quedan expuestos en mensajes de WhatsApp.",
+                "El webview usa token firmado y estado verificable.",
+                "El CRM muestra etapa, comprobante y proxima accion transaccional.",
+            ],
+            "suggested_command": "python -m pytest tests/test_v2_saas_contracts.py -q",
+        },
+        "finance_servicing_transfer_insurance": {
+            "frontend_entry": "/perfil?tab=transactions",
+            "manual_test_steps": [
+                "Probar estado de cuenta, transferencia/remesa, seguro y financiacion.",
+                "Verificar que cada journey tenga plantilla, webview y confirmacion backend.",
+                "Revisar que el panel muestre trazabilidad por journey.",
+            ],
+            "acceptance_criteria": [
+                "Cada journey financiero declara datos requeridos y riesgos.",
+                "Las acciones criticas esperan confirmacion del servicio externo.",
+                "El admin ve estado, historial y error recuperable si el proveedor falla.",
+            ],
+            "suggested_command": "python -m pytest tests/test_v2_saas_contracts.py -q",
+        },
+        "analytics_heatmap": {
+            "frontend_entry": "/perfil?tab=analytics",
+            "manual_test_steps": [
+                "Abrir analitica operacional y mapa de calor.",
+                "Filtrar por canal, estado, categoria y periodo.",
+                "Verificar capas de tickets, pedidos, encuestas y estados sin datos.",
+            ],
+            "acceptance_criteria": [
+                "El mapa no muestra una imagen estatica si no hay datos georreferenciados.",
+                "Cada punto o zona de calor abre contexto operativo.",
+                "El panel muestra frescura, fuente de datos y fallback cuando falta geocoding.",
+            ],
+            "suggested_command": "python -m pytest tests/test_v2_saas_contracts.py -q",
+        },
+    }
+    selected = guidance_by_flow.get(flow_id, default_guidance)
+    return {
+        "frontend_entry": selected["frontend_entry"],
+        "manual_test_steps": list(selected["manual_test_steps"]),
+        "acceptance_criteria": list(selected["acceptance_criteria"]),
+        "automation": {
+            "safe_by_default": True,
+            "live_side_effects": False,
+            "uses_real_whatsapp": False,
+            "surface": surface,
+            "endpoint": endpoint,
+            "suggested_command": selected["suggested_command"],
+        },
+    }
+
+
 def _smoke_e2e_flow(
     flow_id: str,
     *,
@@ -2581,6 +2742,7 @@ def _smoke_e2e_flow(
     meta_flow_ready: bool | None = None,
 ) -> dict[str, Any]:
     status = "ready" if ready else "needs_attention"
+    guidance = _e2e_flow_qa_guidance(flow_id, endpoint=endpoint, surface=surface)
     return {
         "id": flow_id,
         "label": label,
@@ -2592,6 +2754,10 @@ def _smoke_e2e_flow(
         "meta_flow_ready": bool(meta_flow_ready) if meta_flow_ready is not None else None,
         "evidence": dict(evidence or {}),
         "next_action": next_action or ("run_live_smoke" if ready else "complete_flow_contract"),
+        "frontend_entry": guidance["frontend_entry"],
+        "manual_test_steps": guidance["manual_test_steps"],
+        "acceptance_criteria": guidance["acceptance_criteria"],
+        "automation": guidance["automation"],
     }
 
 

@@ -263,6 +263,133 @@ def _coordinate_base(sector: str, tenant_slug: str) -> tuple[float, float]:
     return -34.5844, -60.9433
 
 
+def _demo_public_state(*, is_live_vote: bool = True) -> dict[str, Any]:
+    status = "live" if is_live_vote else "open"
+    return {
+        "contract_version": "surveys.public_state.v2",
+        "status": status,
+        "is_open": True,
+        "accepts_responses": True,
+        "is_live_vote": bool(is_live_vote),
+        "results_visible": True,
+        "comments_enabled": False,
+        "opens_at": None,
+        "closes_at": None,
+        "server_time": datetime.now(timezone.utc).isoformat(),
+        "demo_mode": True,
+    }
+
+
+def _demo_survey_links(slug: str, public_base_url: str) -> dict[str, Any]:
+    public_base = str(public_base_url or "https://www.chatboc.ar").rstrip("/")
+    public_page_path = f"/e/{slug}"
+    public_page_url = f"{public_base}{public_page_path}"
+    qr_endpoint = f"/api/public/encuestas/v1/{slug}/qr?size=320"
+    qr_url = f"{public_base}{qr_endpoint}"
+    return {
+        "contract_version": "surveys.links.v2",
+        "public_token": slug,
+        "public_page_path": public_page_path,
+        "public_page_url": public_page_url,
+        "share_url": public_page_url,
+        "public_api_endpoint": f"/api/public/encuestas/v1/{slug}",
+        "respond_endpoint": f"/api/public/encuestas/v1/{slug}/responder",
+        "live_results_endpoint": f"/api/public/encuestas/v1/{slug}/live-results",
+        "qr_endpoint": qr_endpoint,
+        "qr_url": qr_url,
+        "qr_image_url": qr_url,
+        "legacy_public_api_endpoint": f"/api/public/encuestas/v1/{slug}",
+        "legacy_live_results_endpoint": f"/api/public/encuestas/v1/{slug}/live-results",
+    }
+
+
+def _demo_share_contract(title: str, slug: str, public_base_url: str) -> dict[str, Any]:
+    links = _demo_survey_links(slug, public_base_url)
+    share_text = f"Participa en {title}: {links['public_page_url']}"
+    whatsapp_url = f"https://wa.me/?text={quote_plus(share_text)}"
+    return {
+        "contract_version": "surveys.share.v2",
+        "url": links["public_page_url"],
+        "text": share_text,
+        "whatsapp_text": share_text,
+        "whatsapp_url": whatsapp_url,
+        "copy": {
+            "url": links["public_page_url"],
+            "text": share_text,
+        },
+        "qr": {
+            "target_url": links["public_page_url"],
+            "image_url": links["qr_image_url"],
+            "download_url": links["qr_image_url"],
+            "endpoint": links["qr_endpoint"],
+            "size": 320,
+        },
+        "channels": ["copy_link", "qr", "whatsapp"],
+    }
+
+
+def _demo_realtime_contract(slug: str, public_base_url: str) -> dict[str, Any]:
+    links = _demo_survey_links(slug, public_base_url)
+    return {
+        "contract_version": "surveys.realtime.v2",
+        "enabled": True,
+        "demo_mode": True,
+        "transports": ["polling"],
+        "room": None,
+        "socket": {
+            "enabled": False,
+            "reason": "demo_seeded_results_do_not_emit_socket",
+            "path": "/api/socket.io",
+            "join_event": "join",
+            "join_payload": {"room": f"encuesta_{slug}"},
+            "events": [
+                {"name": "survey_update_v2", "contract_version": "surveys.live_results.v2"},
+                {"name": "survey_update", "contract_version": "legacy"},
+            ],
+        },
+        "polling": {
+            "enabled": True,
+            "href": links["live_results_endpoint"],
+            "interval_ms": 8000,
+            "fallback_after_ms": 15000,
+        },
+        "versioning": {
+            "result_version": DEMO_SURVEY_RESPONSE_COUNT,
+            "snapshot_version": f"demo:{slug}:{DEMO_SURVEY_RESPONSE_COUNT}",
+            "result_version_field": "result_version",
+            "snapshot_version_field": "snapshot_version",
+        },
+    }
+
+
+def _demo_operational_next_steps(slug: str, public_base_url: str) -> dict[str, Any]:
+    links = _demo_survey_links(slug, public_base_url)
+    return {
+        "contract_version": "surveys.operational_next_steps.v2",
+        "status": "live",
+        "items": [
+            {
+                "id": "share_public_link",
+                "label": "Compartir enlace publico",
+                "href": links["share_url"],
+                "priority": 1,
+            },
+            {
+                "id": "download_qr",
+                "label": "Descargar QR",
+                "href": links["qr_image_url"],
+                "priority": 2,
+            },
+            {
+                "id": "open_live_results",
+                "label": "Abrir resultados demo",
+                "href": links["live_results_endpoint"],
+                "priority": 3,
+            },
+        ],
+    }
+
+
 def _results_for_template(template: dict[str, Any], *, sector: str, tenant_slug: str, slug: str) -> dict[str, Any]:
     total = DEMO_SURVEY_RESPONSE_COUNT
     option_counts = _split_counts(total, list(template.get("opciones") or []), f"{slug}:options")
@@ -309,9 +436,13 @@ def _build_demo_item(
     normalized = normalize_demo_sector(sector)
     safe_tenant = _slug_part(tenant_slug or normalized)
     slug = f"demo-{normalized}-{safe_tenant}-{template['id']}"
-    public_base = str(public_base_url or "https://www.chatboc.ar").rstrip("/")
-    public_url = f"{public_base}/e/{slug}"
-    share_text = f"Participa en {template['titulo']}: {public_url}"
+    links = _demo_survey_links(slug, public_base_url)
+    public_url = links["public_page_url"]
+    share = _demo_share_contract(str(template.get("titulo") or "esta encuesta"), slug, public_base_url)
+    share_text = share["text"]
+    realtime = _demo_realtime_contract(slug, public_base_url)
+    next_steps = _demo_operational_next_steps(slug, public_base_url)
+    public_state = _demo_public_state(is_live_vote=template.get("tipo") == "votacion")
     results = _results_for_template(template, sector=normalized, tenant_slug=safe_tenant, slug=slug)
     return {
         "contract_version": "demo.survey_item.v1",
@@ -327,6 +458,8 @@ def _build_demo_item(
         "description": template.get("descripcion"),
         "estado": "demo_publicada",
         "status": "demo_publicada",
+        "public_state": public_state,
+        "estado_publico": public_state,
         "demo_mode": True,
         "es_votacion_envivo": template.get("tipo") == "votacion",
         "mostrar_resultados_envivo": True,
@@ -349,12 +482,21 @@ def _build_demo_item(
         "url_publica": public_url,
         "public_url": public_url,
         "share_url": public_url,
+        "public_page_url": links["public_page_url"],
+        "links": links,
+        "share": share,
+        "realtime": realtime,
+        "operational_next_steps": next_steps,
+        "next_steps": next_steps["items"],
+        "qr_url": links["qr_url"],
+        "qr_image_url": links["qr_image_url"],
         "whatsapp_share_text": share_text,
-        "whatsapp_share_url": f"https://wa.me/?text={quote_plus(share_text)}",
-        "share_whatsapp_url": f"https://wa.me/?text={quote_plus(share_text)}",
+        "whatsapp_share_url": share["whatsapp_url"],
+        "share_whatsapp_url": share["whatsapp_url"],
         "public_api_endpoint": f"/api/public/encuestas/v1/{slug}",
         "respond_endpoint": f"/api/public/encuestas/v1/{slug}/responder",
         "results_endpoint": f"/api/public/encuestas/v1/{slug}/live-results",
+        "live_results_endpoint": links["live_results_endpoint"],
     }
 
 
@@ -542,6 +684,11 @@ def build_demo_live_results_payload(
     if not item:
         return None
     question_id = f"q_{item['id']}"
+    links = _demo_survey_links(item["slug"], public_base_url)
+    share = _demo_share_contract(str(item.get("titulo") or "esta encuesta"), item["slug"], public_base_url)
+    realtime = _demo_realtime_contract(item["slug"], public_base_url)
+    next_steps = _demo_operational_next_steps(item["slug"], public_base_url)
+    public_state = _demo_public_state(is_live_vote=bool(item.get("es_votacion_envivo")))
     opciones = [
         {
             "id": f"{question_id}_op_{index}",
@@ -557,8 +704,12 @@ def build_demo_live_results_payload(
         "slug": item["slug"],
         "tenant_slug": tenant_slug,
         "sector": sector,
+        "public_state": public_state,
+        "estado_publico": public_state,
         "total_respuestas": DEMO_SURVEY_RESPONSE_COUNT,
         "seeded_responses": DEMO_SURVEY_RESPONSE_COUNT,
+        "result_version": DEMO_SURVEY_RESPONSE_COUNT,
+        "snapshot_version": f"demo:{item['slug']}:{DEMO_SURVEY_RESPONSE_COUNT}",
         "preguntas": {
             question_id: {
                 "tipo": "opcion_unica",
@@ -571,6 +722,30 @@ def build_demo_live_results_payload(
             "points": item["results"]["heatmap_points"],
             "source": "demo_seeded_responses",
         },
+        "links": links,
+        "share": share,
+        "realtime": realtime,
+        "operational_next_steps": next_steps,
+        "next_steps": next_steps["items"],
+        "render_contract": {
+            "preferred_visualization": "live_vote_command_center",
+            "supports": [
+                "cards",
+                "bars",
+                "heatmap",
+                "ai_summary",
+                "polling_fallback",
+                "qr_share",
+                "admin_next_steps",
+            ],
+            "polling_interval_ms": 8000,
+            "empty_state": "Todavia no hay respuestas para mostrar.",
+        },
+        "ui_actions": [
+            {"id": "share_public_link", "label": "Compartir", "href": links["share_url"]},
+            {"id": "download_qr", "label": "QR", "href": links["qr_image_url"]},
+            {"id": "open_public_page", "label": "Abrir encuesta", "href": links["public_page_url"]},
+        ],
     }
 
 
@@ -761,8 +936,19 @@ def build_demo_survey_response_ack(
         "seeded_responses_before": DEMO_SURVEY_RESPONSE_COUNT,
         "seeded_responses_after": DEMO_SURVEY_RESPONSE_COUNT + 1,
         "public_url": public_payload["public_url"],
+        "public_page_url": public_payload.get("public_page_url"),
         "respond_endpoint": public_payload["respond_endpoint"],
         "results_endpoint": public_payload["results_endpoint"],
+        "live_results_endpoint": public_payload.get("live_results_endpoint"),
+        "qr_url": public_payload.get("qr_url"),
+        "qr_image_url": public_payload.get("qr_image_url"),
+        "links": public_payload.get("links"),
+        "share": public_payload.get("share"),
+        "realtime": public_payload.get("realtime"),
+        "public_state": public_payload.get("public_state"),
+        "estado_publico": public_payload.get("estado_publico"),
+        "operational_next_steps": public_payload.get("operational_next_steps"),
+        "next_steps": public_payload.get("next_steps") or [],
         "next_url": f"{public_payload['public_url']}?resultados=1",
         "results_url": f"{public_payload['public_url']}?resultados=1",
         "resultados_envivo": public_payload.get("resultados_envivo"),

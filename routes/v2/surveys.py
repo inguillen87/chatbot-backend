@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from collections import defaultdict, deque
+from datetime import datetime, timezone
 import os
 from threading import Lock
 import time
 from typing import Any
+from urllib.parse import quote_plus, urlencode
 import uuid
 
 from flask import Blueprint, current_app, g, jsonify, request
@@ -220,6 +222,412 @@ def _resolve_tenant_or_error(*, required: bool = True):
         return resolve_tenant_v2(required=required, explicit_slug=explicit_slug or None), None
     except V2TenantResolutionError as exc:
         return None, _error_response(exc.message, exc.status_code, "tenant_resolution_failed", "check_tenant_slug")
+
+
+def _clean_base_url(value: Any) -> str | None:
+    if isinstance(value, str) and value.strip():
+        return value.strip().rstrip("/")
+    return None
+
+
+def _public_frontend_base_url() -> str:
+    for key in (
+        "PUBLIC_ENCUESTAS_CANONICAL_BASE_URL",
+        "PUBLIC_ENCUESTAS_QR_TARGET_BASE_URL",
+        "FRONTEND_URL",
+        "PUBLIC_FRONTEND_URL",
+        "APP_BASE_URL",
+        "PUBLIC_BASE_URL",
+    ):
+        configured = _clean_base_url(current_app.config.get(key))
+        if configured:
+            return configured
+    return request.host_url.rstrip("/")
+
+
+def _public_api_base_url() -> str:
+    for key in ("PUBLIC_ENCUESTAS_API_BASE_URL", "BACKEND_URL", "API_BASE_URL", "PUBLIC_API_BASE_URL"):
+        configured = _clean_base_url(current_app.config.get(key))
+        if configured:
+            return configured
+    return request.host_url.rstrip("/")
+
+
+def _absolute_url(path_or_url: str | None, base_url: str) -> str | None:
+    if not path_or_url:
+        return None
+    value = str(path_or_url)
+    if value.startswith(("http://", "https://")):
+        return value
+    if value.startswith("/"):
+        return f"{base_url}{value}"
+    return f"{base_url}/{value}"
+
+
+def _append_query(path: str, params: dict[str, Any] | None = None) -> str:
+    clean = {
+        key: value
+        for key, value in (params or {}).items()
+        if value not in (None, "")
+    }
+    if not clean:
+        return path
+    separator = "&" if "?" in path else "?"
+    return f"{path}{separator}{urlencode(clean)}"
+
+
+def _tenant_slug_value(tenant=None) -> str | None:
+    slug = getattr(tenant, "slug", None)
+    if isinstance(slug, str) and slug.strip():
+        return slug.strip()
+    return None
+
+
+def _datetime_utc(value: Any) -> datetime | None:
+    if not isinstance(value, datetime):
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _survey_public_state(encuesta) -> dict[str, Any]:
+    now = datetime.now(timezone.utc)
+    estado = str(getattr(encuesta, "estado", "") or "").strip().lower()
+    opens_at = _datetime_utc(getattr(encuesta, "inicio_at", None))
+    closes_at = _datetime_utc(getattr(encuesta, "fin_at", None))
+    is_live_vote = bool(getattr(encuesta, "es_votacion_envivo", False))
+
+    if estado != "publicada":
+        status = estado or "draft"
+        accepts_responses = False
+    elif opens_at and now < opens_at:
+        status = "scheduled"
+        accepts_responses = False
+    elif closes_at and now > closes_at:
+        status = "closed"
+        accepts_responses = False
+    else:
+        status = "live" if is_live_vote else "open"
+        accepts_responses = True
+
+    return {
+        "contract_version": "surveys.public_state.v2",
+        "status": status,
+        "is_open": accepts_responses,
+        "accepts_responses": accepts_responses,
+        "is_live_vote": is_live_vote,
+        "results_visible": bool(getattr(encuesta, "mostrar_resultados_envivo", False)),
+        "comments_enabled": bool(getattr(encuesta, "permitir_comentarios", False)),
+        "opens_at": opens_at.isoformat() if opens_at else None,
+        "closes_at": closes_at.isoformat() if closes_at else None,
+        "server_time": now.isoformat(),
+    }
+
+
+def _survey_response_count(encuesta) -> int:
+    respuestas = getattr(encuesta, "respuestas", None)
+    if respuestas is None:
+        return 0
+    count_attr = getattr(respuestas, "count", None)
+    if callable(count_attr):
+        try:
+            return int(count_attr())
+        except TypeError:
+            return 0
+    try:
+        return len(respuestas)
+    except TypeError:
+        return 0
+
+
+def _build_survey_links(token: str, *, tenant_slug: str | None = None) -> dict[str, Any]:
+    public_token = str(token or "").strip()
+    tenant_query = {"tenant_slug": tenant_slug}
+    public_page_path = f"/e/{public_token}" if public_token else None
+    public_page_url = _absolute_url(public_page_path, _public_frontend_base_url())
+    public_api_endpoint = _append_query(f"/api/v2/public/surveys/{public_token}", tenant_query)
+    respond_endpoint = _append_query(f"/api/v2/public/surveys/{public_token}/respond", tenant_query)
+    live_results_endpoint = _append_query(f"/api/v2/public/surveys/{public_token}/live-results", tenant_query)
+    qr_endpoint = f"/api/public/encuestas/v1/{public_token}/qr?size=320"
+    qr_url = _absolute_url(qr_endpoint, _public_api_base_url())
+    legacy_public_api_endpoint = f"/api/public/encuestas/v1/{public_token}"
+    legacy_live_results_endpoint = f"/api/public/encuestas/v1/{public_token}/live-results"
+
+    return {
+        "contract_version": "surveys.links.v2",
+        "public_token": public_token,
+        "public_page_path": public_page_path,
+        "public_page_url": public_page_url,
+        "share_url": public_page_url,
+        "public_api_endpoint": public_api_endpoint,
+        "respond_endpoint": respond_endpoint,
+        "live_results_endpoint": live_results_endpoint,
+        "qr_endpoint": qr_endpoint,
+        "qr_url": qr_url,
+        "qr_image_url": qr_url,
+        "legacy_public_api_endpoint": legacy_public_api_endpoint,
+        "legacy_live_results_endpoint": legacy_live_results_endpoint,
+    }
+
+
+def _build_share_contract(
+    token: str,
+    *,
+    title: str | None = None,
+    tenant_slug: str | None = None,
+) -> dict[str, Any]:
+    links = _build_survey_links(token, tenant_slug=tenant_slug)
+    share_url = links["public_page_url"]
+    share_text = f"Participa en {title or 'esta encuesta'}: {share_url}" if share_url else None
+    whatsapp_url = f"https://wa.me/?text={quote_plus(share_text)}" if share_text else None
+    return {
+        "contract_version": "surveys.share.v2",
+        "url": share_url,
+        "text": share_text,
+        "whatsapp_text": share_text,
+        "whatsapp_url": whatsapp_url,
+        "copy": {
+            "url": share_url,
+            "text": share_text,
+        },
+        "qr": {
+            "target_url": share_url,
+            "image_url": links["qr_image_url"],
+            "download_url": links["qr_image_url"],
+            "endpoint": links["qr_endpoint"],
+            "size": 320,
+        },
+        "channels": ["copy_link", "qr", "whatsapp"],
+    }
+
+
+def _build_realtime_contract(
+    token: str,
+    *,
+    tenant_slug: str | None = None,
+    enabled: bool,
+    polling_interval_ms: int = 5000,
+    result_version: Any = None,
+    snapshot_version: Any = None,
+) -> dict[str, Any]:
+    room = f"encuesta_{token}"
+    live_results_endpoint = _build_survey_links(token, tenant_slug=tenant_slug)["live_results_endpoint"]
+    return {
+        "contract_version": "surveys.realtime.v2",
+        "enabled": bool(enabled),
+        "transports": ["socket.io", "polling"] if enabled else [],
+        "room": room if enabled else None,
+        "socket": {
+            "enabled": bool(enabled),
+            "path": "/api/socket.io",
+            "join_event": "join",
+            "join_payload": {"room": room},
+            "events": [
+                {"name": "survey_update_v2", "contract_version": "surveys.live_results.v2"},
+                {"name": "survey_update", "contract_version": "legacy"},
+            ],
+        },
+        "polling": {
+            "enabled": bool(enabled),
+            "href": live_results_endpoint if enabled else None,
+            "interval_ms": polling_interval_ms,
+            "fallback_after_ms": 15000,
+        },
+        "versioning": {
+            "result_version": result_version,
+            "snapshot_version": snapshot_version,
+            "result_version_field": "result_version",
+            "snapshot_version_field": "snapshot_version",
+        },
+    }
+
+
+def _build_operational_next_steps(
+    token: str,
+    *,
+    tenant_slug: str | None = None,
+    live_results_enabled: bool,
+    public_state: dict[str, Any] | None = None,
+    responses_count: int | None = None,
+) -> dict[str, Any]:
+    links = _build_survey_links(token, tenant_slug=tenant_slug)
+    status = (public_state or {}).get("status")
+    items = [
+        {
+            "id": "share_public_link",
+            "label": "Compartir enlace publico",
+            "href": links["share_url"],
+            "priority": 1,
+        },
+        {
+            "id": "download_qr",
+            "label": "Descargar QR",
+            "href": links["qr_image_url"],
+            "priority": 2,
+        },
+    ]
+    if live_results_enabled:
+        items.extend(
+            [
+                {
+                    "id": "open_live_results",
+                    "label": "Abrir resultados en vivo",
+                    "href": links["live_results_endpoint"],
+                    "priority": 3,
+                },
+                {
+                    "id": "subscribe_realtime_room",
+                    "label": "Suscribirse a realtime",
+                    "room": f"encuesta_{token}",
+                    "event": "survey_update_v2",
+                    "priority": 4,
+                },
+            ]
+        )
+    else:
+        items.append(
+            {
+                "id": "enable_live_results",
+                "label": "Activar publicacion de resultados",
+                "priority": 3,
+            }
+        )
+    if responses_count == 0:
+        items.append(
+            {
+                "id": "promote_survey",
+                "label": "Reforzar difusion",
+                "href": links["share_url"],
+                "priority": 5,
+            }
+        )
+
+    return {
+        "contract_version": "surveys.operational_next_steps.v2",
+        "status": status,
+        "items": items,
+    }
+
+
+def _merge_ui_actions(existing: list[dict[str, Any]] | None, additions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for action in list(existing or []) + additions:
+        if not isinstance(action, dict):
+            continue
+        action_id = str(action.get("id") or action.get("label") or len(merged))
+        if action_id in seen:
+            continue
+        seen.add(action_id)
+        merged.append(action)
+    return merged
+
+
+def _attach_public_contract(
+    payload: dict[str, Any],
+    encuesta,
+    token: str,
+    *,
+    tenant_slug: str | None = None,
+    responses_count: int | None = None,
+) -> dict[str, Any]:
+    title = payload.get("titulo") or payload.get("title") or getattr(encuesta, "titulo", None)
+    public_state = _survey_public_state(encuesta)
+    live_results_enabled = bool(getattr(encuesta, "mostrar_resultados_envivo", False))
+    links = _build_survey_links(token, tenant_slug=tenant_slug)
+    realtime = _build_realtime_contract(token, tenant_slug=tenant_slug, enabled=live_results_enabled)
+    next_steps = _build_operational_next_steps(
+        token,
+        tenant_slug=tenant_slug,
+        live_results_enabled=live_results_enabled,
+        public_state=public_state,
+        responses_count=responses_count,
+    )
+
+    payload.setdefault("contract_version", "surveys.public.v2")
+    payload["public_state"] = public_state
+    payload["estado_publico"] = public_state
+    payload["links"] = {**(payload.get("links") or {}), **links}
+    payload["share"] = _build_share_contract(token, title=title, tenant_slug=tenant_slug)
+    payload["realtime"] = realtime
+    payload["operational_next_steps"] = next_steps
+    payload["next_steps"] = next_steps["items"]
+    payload.setdefault("public_page_url", links["public_page_url"])
+    payload.setdefault("public_api_endpoint", links["public_api_endpoint"])
+    payload.setdefault("respond_endpoint", links["respond_endpoint"])
+    payload.setdefault("live_results_endpoint", links["live_results_endpoint"])
+    payload.setdefault("results_endpoint", links["live_results_endpoint"])
+    payload.setdefault("qr_url", links["qr_url"])
+    payload.setdefault("qr_image_url", links["qr_image_url"])
+    payload["ui_actions"] = _merge_ui_actions(
+        payload.get("ui_actions"),
+        [
+            {"id": "share_public_link", "label": "Compartir", "href": links["share_url"]},
+            {"id": "download_qr", "label": "QR", "href": links["qr_image_url"]},
+        ],
+    )
+    return payload
+
+
+def _attach_live_results_contract(
+    results: dict[str, Any],
+    encuesta,
+    token: str,
+    *,
+    tenant_slug: str | None = None,
+) -> dict[str, Any]:
+    public_state = _survey_public_state(encuesta)
+    polling_interval_ms = int(
+        (results.get("live_telemetry") or {}).get("polling_interval_ms")
+        or (results.get("render_contract") or {}).get("polling_interval_ms")
+        or 5000
+    )
+    links = _build_survey_links(token, tenant_slug=tenant_slug)
+    next_steps = _build_operational_next_steps(
+        token,
+        tenant_slug=tenant_slug,
+        live_results_enabled=True,
+        public_state=public_state,
+        responses_count=int(results.get("total_respuestas") or 0),
+    )
+
+    results["public_state"] = public_state
+    results["estado_publico"] = public_state
+    results["links"] = {**(results.get("links") or {}), **links}
+    results["share"] = _build_share_contract(
+        token,
+        title=getattr(encuesta, "titulo", None),
+        tenant_slug=tenant_slug,
+    )
+    results["realtime"] = _build_realtime_contract(
+        token,
+        tenant_slug=tenant_slug,
+        enabled=True,
+        polling_interval_ms=polling_interval_ms,
+        result_version=results.get("result_version"),
+        snapshot_version=results.get("snapshot_version"),
+    )
+    results["operational_next_steps"] = next_steps
+    results["next_steps"] = next_steps["items"]
+
+    render_contract = results.setdefault("render_contract", {})
+    supports = list(render_contract.get("supports") or [])
+    for capability in ("realtime_socket", "polling_fallback", "qr_share", "admin_next_steps"):
+        if capability not in supports:
+            supports.append(capability)
+    render_contract["supports"] = supports
+    render_contract.setdefault("polling_interval_ms", polling_interval_ms)
+
+    results["ui_actions"] = _merge_ui_actions(
+        results.get("ui_actions"),
+        [
+            {"id": "share_public_link", "label": "Compartir", "href": links["share_url"]},
+            {"id": "download_qr", "label": "QR", "href": links["qr_image_url"]},
+            {"id": "open_public_page", "label": "Abrir encuesta", "href": links["public_page_url"]},
+        ],
+    )
+    return results
 
 
 def _user_tenant_candidates(current_user) -> set[int]:
@@ -461,6 +869,13 @@ def publish_survey_v2(current_user, survey_id: int):
     payload = serialize_encuesta(encuesta)
     payload["public_token"] = link.slug_publico
     payload["public_url"] = f"/api/v2/public/surveys/{link.slug_publico}"
+    _attach_public_contract(
+        payload,
+        encuesta,
+        link.slug_publico,
+        tenant_slug=_tenant_slug_value(tenant),
+        responses_count=0,
+    )
     return jsonify(payload)
 
 
@@ -519,6 +934,13 @@ def survey_public_by_token_v2(token: str):
 
     payload = serialize_public_encuesta(encuesta, slug_publico=token)
     payload.pop("tenant_id", None)
+    _attach_public_contract(
+        payload,
+        encuesta,
+        token,
+        tenant_slug=_tenant_slug_value(tenant),
+        responses_count=_survey_response_count(encuesta),
+    )
     return _json_response(payload)
 
 
@@ -571,12 +993,33 @@ def respond_public_survey_v2(token: str):
         db.session.rollback()
         raise
 
-    live_results_enabled = bool(getattr(getattr(respuesta, "encuesta", None), "mostrar_resultados_envivo", False))
+    encuesta = getattr(respuesta, "encuesta", None)
+    live_results_enabled = bool(getattr(encuesta, "mostrar_resultados_envivo", False))
+    tenant_slug = _tenant_slug_value(tenant)
+    links = _build_survey_links(token, tenant_slug=tenant_slug)
+    public_state = _survey_public_state(encuesta) if encuesta is not None else None
+    next_steps = _build_operational_next_steps(
+        token,
+        tenant_slug=tenant_slug,
+        live_results_enabled=live_results_enabled,
+        public_state=public_state,
+    )
     response_payload = {
         "ok": True,
         "contract_version": "surveys.public_response.v2",
         "respuesta_id": respuesta.id,
         "response_id": respuesta.id,
+        "public_state": public_state,
+        "estado_publico": public_state,
+        "links": links,
+        "share": _build_share_contract(
+            token,
+            title=getattr(encuesta, "titulo", None),
+            tenant_slug=tenant_slug,
+        ),
+        "realtime": _build_realtime_contract(token, tenant_slug=tenant_slug, enabled=live_results_enabled),
+        "operational_next_steps": next_steps,
+        "next_steps": next_steps["items"],
         "rate_limit": {
             "limit": rate_limit["limit"],
             "remaining": rate_limit["remaining"],
@@ -586,9 +1029,7 @@ def respond_public_survey_v2(token: str):
         "ui_actions": [],
     }
     if live_results_enabled:
-        live_results_url = f"/api/v2/public/surveys/{token}/live-results"
-        if tenant is not None and getattr(tenant, "slug", None):
-            live_results_url = f"{live_results_url}?tenant_slug={tenant.slug}"
+        live_results_url = links["live_results_endpoint"]
         response_payload["live_results_url"] = live_results_url
         response_payload["ui_actions"].append(
             {
@@ -597,6 +1038,13 @@ def respond_public_survey_v2(token: str):
                 "href": live_results_url,
             }
         )
+    response_payload["ui_actions"] = _merge_ui_actions(
+        response_payload.get("ui_actions"),
+        [
+            {"id": "share_public_link", "label": "Compartir", "href": links["share_url"]},
+            {"id": "download_qr", "label": "QR", "href": links["qr_image_url"]},
+        ],
+    )
 
     response = _json_response(response_payload, 201)
     return _attach_rate_limit_headers(response, rate_limit)
@@ -651,4 +1099,5 @@ def survey_live_results_v2(token: str):
             "empty_state": "Todavia no hay respuestas para mostrar.",
         },
     )
+    _attach_live_results_contract(results, encuesta, token, tenant_slug=_tenant_slug_value(tenant))
     return _json_response(results)

@@ -10,6 +10,11 @@ from app import create_app, db
 from config import Config
 from models import TenantProfile, User
 from routes.v2.surveys import _public_response_rate_buckets
+from services.demo_surveys import (
+    build_demo_public_survey_payload,
+    build_demo_survey_response_ack,
+    build_demo_surveys_votings_contract,
+)
 
 
 class V2SurveysTestConfig(Config):
@@ -111,14 +116,34 @@ class V2SurveysApiTest(unittest.TestCase):
 
         publish_resp = self.client.post(f"/api/v2/surveys/{survey_id}/publish", headers=headers)
         self.assertEqual(publish_resp.status_code, 200)
-        token = publish_resp.get_json().get("public_token")
+        publish_payload = publish_resp.get_json()
+        token = publish_payload.get("public_token")
         self.assertTrue(token)
+        self.assertEqual(publish_payload.get("public_state", {}).get("status"), "live")
+        self.assertEqual(publish_payload.get("realtime", {}).get("room"), f"encuesta_{token}")
+        self.assertEqual(
+            publish_payload.get("realtime", {}).get("socket", {}).get("events", [])[0].get("name"),
+            "survey_update_v2",
+        )
+        self.assertEqual(
+            publish_payload.get("links", {}).get("qr_endpoint"),
+            f"/api/public/encuestas/v1/{token}/qr?size=320",
+        )
+        self.assertIn("download_qr", [item.get("id") for item in publish_payload.get("next_steps", [])])
 
         public_get = self.client.get(f"/api/v2/public/surveys/{token}")
         self.assertEqual(public_get.status_code, 200)
+        public_payload = public_get.get_json()
+        self.assertEqual(public_payload.get("contract_version"), "surveys.public.v2")
+        self.assertEqual(public_payload.get("public_state", {}).get("status"), "live")
+        self.assertEqual(
+            public_payload.get("links", {}).get("respond_endpoint"),
+            f"/api/v2/public/surveys/{token}/respond",
+        )
+        self.assertEqual(public_payload.get("share", {}).get("qr", {}).get("size"), 320)
 
-        question_id = public_get.get_json().get("preguntas", [])[0].get("id")
-        option_id = public_get.get_json().get("preguntas", [])[0].get("opciones", [])[0].get("id")
+        question_id = public_payload.get("preguntas", [])[0].get("id")
+        option_id = public_payload.get("preguntas", [])[0].get("opciones", [])[0].get("id")
 
         respond_payload = {
             "anon_id": "anon-survey-1",
@@ -131,6 +156,16 @@ class V2SurveysApiTest(unittest.TestCase):
         self.assertTrue(ack.get("ok"))
         self.assertEqual(ack.get("contract_version"), "surveys.public_response.v2")
         self.assertEqual(ack.get("live_results_url"), f"/api/v2/public/surveys/{token}/live-results")
+        self.assertEqual(ack.get("realtime", {}).get("room"), f"encuesta_{token}")
+        self.assertEqual(
+            ack.get("realtime", {}).get("polling", {}).get("href"),
+            f"/api/v2/public/surveys/{token}/live-results",
+        )
+        self.assertEqual(
+            ack.get("links", {}).get("qr_endpoint"),
+            f"/api/public/encuestas/v1/{token}/qr?size=320",
+        )
+        self.assertIn("share_public_link", [item.get("id") for item in ack.get("next_steps", [])])
 
         live_resp = self.client.get(f"/api/v2/public/surveys/{token}/live-results?include_heatmap=0")
         self.assertEqual(live_resp.status_code, 200)
@@ -145,6 +180,13 @@ class V2SurveysApiTest(unittest.TestCase):
         self.assertEqual(first_question.get("opciones", [])[0].get("votos"), 1)
         self.assertEqual(live_payload.get("timeline_minute", [])[0].get("respuestas"), 1)
         self.assertIn("ai_summary", live_payload.get("render_contract", {}).get("supports", []))
+        self.assertIn("realtime_socket", live_payload.get("render_contract", {}).get("supports", []))
+        self.assertIn("qr_share", live_payload.get("render_contract", {}).get("supports", []))
+        self.assertEqual(live_payload.get("realtime", {}).get("room"), f"encuesta_{token}")
+        self.assertEqual(
+            live_payload.get("realtime", {}).get("versioning", {}).get("result_version"),
+            live_payload.get("result_version"),
+        )
         self.assertFalse(live_payload.get("empty_state", {}).get("is_empty"))
         self.assertTrue(live_payload.get("live_telemetry", {}).get("has_responses"))
 
@@ -198,10 +240,13 @@ class V2SurveysApiTest(unittest.TestCase):
         expected_live_url = f"/api/v2/public/surveys/{token}/live-results?tenant_slug={self.tenant_1.slug}"
         self.assertEqual(ack.get("live_results_url"), expected_live_url)
         self.assertEqual(ack.get("ui_actions", [])[0].get("href"), expected_live_url)
+        self.assertEqual(ack.get("links", {}).get("live_results_endpoint"), expected_live_url)
+        self.assertEqual(ack.get("realtime", {}).get("polling", {}).get("href"), expected_live_url)
 
         live_resp = self.client.get(f"{expected_live_url}&include_heatmap=0")
         self.assertEqual(live_resp.status_code, 200, live_resp.get_json())
         self.assertEqual(live_resp.get_json().get("total_respuestas"), 1)
+        self.assertEqual(live_resp.get_json().get("links", {}).get("live_results_endpoint"), expected_live_url)
 
     def test_v2_public_response_rate_limit_returns_contract_and_headers(self):
         self.app.config["PUBLIC_ENCUESTAS_RATE_LIMIT"] = 1
@@ -342,6 +387,34 @@ class V2SurveysApiTest(unittest.TestCase):
         items = payload.get("items") or []
         self.assertTrue(items)
         self.assertTrue(all(item.get("tenant_id") == self.tenant_1.id for item in items))
+
+    def test_demo_survey_contract_exposes_qr_share_and_polling_realtime(self):
+        contract = build_demo_surveys_votings_contract(
+            sector="gobierno",
+            tenant_slug="demo-survey-v2",
+            public_base_url="https://demo.chatboc.test",
+        )
+        item = contract["items"][0]
+        slug = item["slug"]
+
+        self.assertEqual(item["links"]["qr_endpoint"], f"/api/public/encuestas/v1/{slug}/qr?size=320")
+        self.assertEqual(item["share"]["qr"]["target_url"], f"https://demo.chatboc.test/e/{slug}")
+        self.assertFalse(item["realtime"]["socket"]["enabled"])
+        self.assertEqual(item["realtime"]["polling"]["href"], f"/api/public/encuestas/v1/{slug}/live-results")
+        self.assertIn("download_qr", [step["id"] for step in item["next_steps"]])
+
+        public_payload = build_demo_public_survey_payload(slug, public_base_url="https://demo.chatboc.test")
+        self.assertEqual(public_payload["public_state"]["status"], "live")
+        self.assertEqual(public_payload["resultados_envivo"]["realtime"]["polling"]["href"], item["live_results_endpoint"])
+
+        ack = build_demo_survey_response_ack(
+            slug,
+            {"respuestas": [{"opcion": public_payload["preguntas"][0]["opciones"][0]["texto"]}]},
+            public_base_url="https://demo.chatboc.test",
+        )
+        self.assertTrue(ack["accepted"])
+        self.assertEqual(ack["links"]["qr_endpoint"], item["links"]["qr_endpoint"])
+        self.assertEqual(ack["realtime"]["transports"], ["polling"])
 
 
 if __name__ == "__main__":
