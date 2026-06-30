@@ -30,6 +30,8 @@ from models import (
     Notification,
     ProviderSender,
     MessageTemplateRegistry,
+    MessagingEventLedger,
+    WhatsAppContactState,
 )
 from models_memory import Contact, InteractionEvent
 from services.municipio_responder import CONTEXTO_MUNICIPIO
@@ -1388,6 +1390,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
     def test_whatsapp_webhook_valid_request(self):
         # Arrange
         self._set_owner_tipo_chat("municipio")
+        tenant = self._attach_tenant_to_owner(slug="junin", tipo="municipio")
         self.mock_validator.validate.return_value = True
         self.app.config["WELCOME_TEMPLATE_SID"] = "fake_template_sid"
 
@@ -1427,6 +1430,65 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
 
         # Legacy welcome helper is no longer used.
         self.mock_welcome.assert_not_called()
+        contact_state = WhatsAppContactState.query.filter_by(
+            tenant_id=tenant.id,
+            recipient=self.test_user_number_str,
+        ).first()
+        self.assertIsNotNone(contact_state)
+        self.assertIsNotNone(contact_state.last_inbound_at)
+
+    def test_twilio_whatsapp_status_persists_delivery_ledger_idempotently(self):
+        tenant = self._attach_tenant_to_owner(slug="junin-status", tipo="municipio")
+        sender = ProviderSender(
+            tenant_id=tenant.id,
+            channel="whatsapp",
+            phone_number=self.test_whatsapp_number_str,
+            sender_id=f"whatsapp:{self.test_whatsapp_number_str}",
+            messaging_service_sid="MG_STATUS_TEST",
+            status="active",
+        )
+        db.session.add(sender)
+        db.session.commit()
+
+        payload = {
+            "AccountSid": TestConfig.TWILIO_ACCOUNT_SID,
+            "MessagingServiceSid": "MG_STATUS_TEST",
+            "MessageSid": "SM_STATUS_DELIVERED_1",
+            "MessageStatus": "delivered",
+            "To": f"whatsapp:{self.test_user_number_str}",
+            "From": f"whatsapp:{self.test_whatsapp_number_str}",
+            "ApiVersion": "2010-04-01",
+        }
+
+        with patch("routes.whatsapp_webhook.TWILIO_AUTH_TOKEN", None):
+            first_response = self.client.post(
+                "/twilio/whatsapp/status",
+                data=payload,
+                headers={"I-Twilio-Idempotency-Token": "retry-token-1"},
+            )
+            second_response = self.client.post(
+                "/twilio/whatsapp/status",
+                data=payload,
+                headers={"I-Twilio-Idempotency-Token": "retry-token-2"},
+            )
+
+        self.assertEqual(first_response.status_code, 200)
+        self.assertEqual(second_response.status_code, 200)
+        events = MessagingEventLedger.query.filter_by(
+            tenant_id=tenant.id,
+            provider="twilio",
+            channel="whatsapp",
+            provider_event_id="SM_STATUS_DELIVERED_1:delivered",
+        ).all()
+        self.assertEqual(len(events), 1)
+        event = events[0]
+        self.assertEqual(event.direction, "outbound")
+        self.assertEqual(event.event_type, "delivery_status")
+        self.assertEqual(event.external_message_sid, "SM_STATUS_DELIVERED_1")
+        self.assertEqual(event.external_status, "delivered")
+        self.assertEqual(event.provider_sender_id, sender.id)
+        self.assertEqual(event.recipient, f"whatsapp:{self.test_user_number_str}")
+        self.assertEqual(event.payload.get("MessagingServiceSid"), "MG_STATUS_TEST")
 
     def test_junin_welcome_template_uses_public_municipality_identity(self):
         self._set_owner_tipo_chat("municipio")

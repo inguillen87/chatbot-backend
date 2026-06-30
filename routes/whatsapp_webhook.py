@@ -27,6 +27,7 @@ from models import (
     ProviderSender,
     Notification,
     MessageTemplateRegistry,
+    MessagingEventLedger,
 )  # Import necessary models
 from models_memory import Contact
 from extensions import db  # Import db instance for database operations
@@ -54,6 +55,7 @@ from services.contact_service import resolve_contact, sanitize_profile_name
 from services.ticket_service import servicio_tickets
 from services.crm_intelligence import record_contact_interaction, resolve_or_create_contact
 from services.demo_surveys import build_demo_survey_chat_menu
+from services.whatsapp_enterprise_rules import WhatsAppEnterpriseRulesService
 from services.education_contracts import (
     build_education_case_ack_payload,
     build_education_pending_case,
@@ -3549,6 +3551,110 @@ def _ensure_whatsapp_mapping_from_provider_sender(
     return mapping
 
 
+def _tenant_profile_for_user(user: Optional[User]) -> Optional[TenantProfile]:
+    if not user:
+        return None
+    tenant = (
+        getattr(user, "tenant", None)
+        or getattr(user, "tenant_profile", None)
+        or getattr(user, "tenant_profile_municipio", None)
+        or getattr(user, "tenant_profile_pyme", None)
+    )
+    if tenant:
+        return tenant
+    tenant_id = getattr(user, "tenant_id", None)
+    if tenant_id:
+        return db.session.get(TenantProfile, tenant_id)
+    return None
+
+
+def _register_whatsapp_inbound_activity(tenant_id: Optional[int], from_number: Optional[str]) -> None:
+    if not tenant_id or not from_number:
+        return
+    try:
+        WhatsAppEnterpriseRulesService(int(tenant_id)).register_inbound_activity(
+            recipient=from_number,
+        )
+    except Exception as exc:
+        current_app.logger.warning(
+            "[WHATSAPP_WEBHOOK] Could not register inbound activity for tenant_id=%s: %s",
+            tenant_id,
+            exc,
+            exc_info=True,
+        )
+
+
+def _resolve_status_callback_tenant_and_sender(
+    post_vars: Dict[str, Any],
+) -> Tuple[Optional[TenantProfile], Optional[ProviderSender]]:
+    from_number = post_vars.get("From") or ""
+    normalized_from = _normalize_whatsapp_address(from_number)
+    service_sid = post_vars.get("MessagingServiceSid") or post_vars.get("ServiceSid")
+
+    provider_sender = _provider_sender_for_inbound(
+        to_number_raw=from_number,
+        normalized_to=normalized_from,
+        messaging_service_sid=service_sid,
+    )
+    if provider_sender and getattr(provider_sender, "tenant", None):
+        return provider_sender.tenant, provider_sender
+
+    whatsapp_mapping, _, _ = _lookup_whatsapp_mapping(from_number)
+    if whatsapp_mapping and whatsapp_mapping.user:
+        return _tenant_profile_for_user(whatsapp_mapping.user), provider_sender
+
+    return None, provider_sender
+
+
+def _persist_twilio_whatsapp_status_event(post_vars: Dict[str, Any]) -> Optional[MessagingEventLedger]:
+    tenant, provider_sender = _resolve_status_callback_tenant_and_sender(post_vars)
+    if not tenant or not getattr(tenant, "id", None):
+        current_app.logger.warning(
+            "[TWILIO_WHATSAPP_STATUS] Could not resolve tenant for From=%s ServiceSid=%s MessageSid=%s",
+            post_vars.get("From"),
+            post_vars.get("MessagingServiceSid") or post_vars.get("ServiceSid"),
+            post_vars.get("MessageSid"),
+        )
+        return None
+
+    message_sid = post_vars.get("MessageSid") or post_vars.get("SmsMessageSid")
+    status = post_vars.get("MessageStatus") or post_vars.get("SmsStatus") or "unknown"
+    provider_event_id = f"{message_sid or 'unknown'}:{status}"
+    event = MessagingEventLedger.query.filter_by(
+        tenant_id=tenant.id,
+        provider="twilio",
+        channel="whatsapp",
+        provider_event_id=provider_event_id,
+    ).first()
+    if not event:
+        event = MessagingEventLedger(
+            tenant_id=tenant.id,
+            provider="twilio",
+            channel="whatsapp",
+            direction="outbound",
+            event_type="delivery_status",
+            provider_event_id=provider_event_id,
+            external_message_sid=message_sid,
+            provider_connection_id=getattr(provider_sender, "provider_connection_id", None),
+            provider_sender_id=getattr(provider_sender, "id", None),
+            sender=post_vars.get("From"),
+            recipient=post_vars.get("To"),
+            request_id=request.headers.get("I-Twilio-Idempotency-Token"),
+        )
+        db.session.add(event)
+
+    event.external_status = status
+    event.error_code = post_vars.get("ErrorCode")
+    event.error_message = post_vars.get("ErrorMessage")
+    event.payload = dict(post_vars)
+    event.metadata_json = {
+        "account_sid": post_vars.get("AccountSid"),
+        "messaging_service_sid": post_vars.get("MessagingServiceSid") or post_vars.get("ServiceSid"),
+        "api_version": post_vars.get("ApiVersion"),
+    }
+    return event
+
+
 def _is_truthy_config_value(value: Any) -> bool:
     if isinstance(value, bool):
         return value
@@ -4192,7 +4298,10 @@ def whatsapp_webhook():
     if media_message_sid:
         processed_media_sids.append(media_message_sid)
         session_context_db_entry.context_data["processed_media_sids"] = processed_media_sids[-50:]
+    _register_whatsapp_inbound_activity(tenant_id, from_number_cleaned)
     safe_flag_modified(session_context_db_entry, "context_data")
+    db.session.add(session_context_db_entry)
+    db.session.commit()
 
     # --- Boti-style Welcome Message Branch ---
     from services.municipio_responder import normalizar_texto
@@ -5981,4 +6090,16 @@ def twilio_whatsapp_status():
         to_number,
         from_number,
     )
+    try:
+        _persist_twilio_whatsapp_status_event(request.form.to_dict())
+        db.session.commit()
+    except Exception as exc:
+        db.session.rollback()
+        current_app.logger.warning(
+            "[TWILIO_WHATSAPP_STATUS] Could not persist status callback MessageSid=%s Status=%s: %s",
+            message_sid,
+            message_status,
+            exc,
+            exc_info=True,
+        )
     return "OK", 200
