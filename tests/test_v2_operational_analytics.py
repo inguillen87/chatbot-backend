@@ -249,6 +249,10 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertIn("surveys", (payload.get("render_contract") or {}).get("layers") or [])
         self.assertIn("analytics_events", (payload.get("render_contract") or {}).get("layers") or [])
         self.assertIn("ai_risk", (payload.get("render_contract") or {}).get("layers") or [])
+        declared_layers = set((payload.get("render_contract") or {}).get("layers") or [])
+        point_layers = {point.get("layer") for point in payload.get("points") or [] if point.get("layer")}
+        self.assertTrue({"tickets", "surveys", "analytics_events"}.issubset(point_layers))
+        self.assertTrue(point_layers.issubset(declared_layers))
         self.assertIn("interactive_globe", (payload.get("render_contract") or {}).get("recommended_views") or [])
         self.assertTrue(payload.get("category_layers"))
         self.assertEqual((payload.get("ai_insights") or {}).get("contract_version"), "huggingface.ai_insights.v1")

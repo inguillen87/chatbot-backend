@@ -1570,6 +1570,7 @@ def build_operational_heatmap(
             continue
         demographics = _as_dict(record.get("demographics"))
         point = {
+            "layer": "tickets",
             "source": "ticket",
             "record_source": record["source"],
             "id": f"{record['source']}:{record['id']}",
@@ -1610,6 +1611,7 @@ def build_operational_heatmap(
             }
         )
         point = {
+            "layer": "surveys",
             "source": "survey",
             "record_source": "survey_response",
             "id": f"survey_response:{response.id}",
@@ -1636,6 +1638,7 @@ def build_operational_heatmap(
         metadata = _as_dict(event.metadata_payload)
         demographics = _demographics_from_metadata(metadata)
         point = {
+            "layer": "analytics_events",
             "source": "analytics_event",
             "record_source": "analytics_event",
             "id": f"analytics_event:{event.id}",
