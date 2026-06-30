@@ -355,9 +355,24 @@ class PedidoService:
             )  # exc_info=True para ver el traceback
             return None
 
-    def obtener_pedido_por_nro(self, nro_pedido: str) -> PymePedido | None:
+    def obtener_pedido_por_nro(
+        self,
+        nro_pedido: str,
+        *,
+        pyme_id: int | None = None,
+        tenant_id: int | None = None,
+    ) -> PymePedido | None:
         try:
-            return PymePedido.query.filter_by(nro_pedido=nro_pedido).first()
+            nro_normalizado = str(nro_pedido or "").strip()
+            if not nro_normalizado:
+                return None
+
+            query = PymePedido.query.filter_by(nro_pedido=nro_normalizado)
+            if pyme_id is not None:
+                query = query.filter_by(pyme_id=pyme_id)
+            if tenant_id is not None:
+                query = query.filter_by(tenant_id=tenant_id)
+            return query.first()
         except Exception as e:
             logger.error(
                 f"Error al obtener pedido por número '{nro_pedido}': {e}", exc_info=True

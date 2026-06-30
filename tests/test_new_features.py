@@ -18,11 +18,11 @@ from services.whatsapp_receipts import render_ticket_whatsapp
 from services.municipio_responder import GreetingHandler
 from services.municipio_responder import responder_municipio
 from services.pymes import url_descargar_catalogo_pyme
-from services.actions.pyme_order_actions import AgregarItemCarritoAction
+from services.actions.pyme_order_actions import AgregarItemCarritoAction, ConsultarEstadoPedidoAction
 from services.common_utils import parse_cantidad_flexible
 from config import TestConfig
 from app import create_app
-from models import db, User, ArchivoAdjunto
+from models import db, User, ArchivoAdjunto, PymePedido, PedidoConversacional, TenantProfile
 
 class TestNewFeatures(unittest.TestCase):
 
@@ -313,6 +313,130 @@ class TestNewFeatures(unittest.TestCase):
         opciones = response.get("options_list") or []
         self.assertGreaterEqual(len(opciones), 2)
         self.assertTrue(any(str(opt.get("id_accion", "")).startswith("agregar_item_carrito__") for opt in opciones))
+
+    def test_consultar_estado_pedido_usa_estado_real_scoped(self):
+        owner = User(
+            email="pedido-real-owner@test.com",
+            name="Pedido Real Owner",
+            password_hash="hash",
+            rol="admin",
+            tipo_chat="pyme",
+        )
+        db.session.add(owner)
+        db.session.flush()
+
+        tenant = TenantProfile(
+            slug="pedido-real",
+            nombre="Pedido Real",
+            tipo="pyme",
+            pyme_id=owner.id,
+        )
+        db.session.add(tenant)
+        db.session.flush()
+
+        pedido = PymePedido(
+            pyme_id=owner.id,
+            tenant_id=tenant.id,
+            asunto="Pedido real",
+            detalles="[]",
+            monto_total=15800,
+            nombre_cliente="Cliente",
+        )
+        pedido.nro_pedido = "PED-REAL-1"
+        pedido.estado = "confirmado"
+        db.session.add(pedido)
+        db.session.commit()
+
+        handler = ConsultarEstadoPedidoAction({"user_id": owner.id, "tenant_id": tenant.id})
+        response = handler.execute({"id_pedido_mencionado": "PED-REAL-1"})
+
+        self.assertTrue(response.get("success"))
+        self.assertEqual(response["data"]["estado_actual"], "confirmado")
+        self.assertEqual(response["data"]["source_model"], "PymePedido")
+        self.assertNotIn("En preparaci", response.get("message_to_user", ""))
+        self.assertIn("confirmado", response.get("message_to_user", ""))
+
+    def test_consultar_estado_pedido_no_filtra_otro_tenant(self):
+        owner_a = User(
+            email="pedido-owner-a@test.com",
+            name="Pedido Owner A",
+            password_hash="hash",
+            rol="admin",
+            tipo_chat="pyme",
+        )
+        owner_b = User(
+            email="pedido-owner-b@test.com",
+            name="Pedido Owner B",
+            password_hash="hash",
+            rol="admin",
+            tipo_chat="pyme",
+        )
+        db.session.add_all([owner_a, owner_b])
+        db.session.flush()
+
+        tenant_a = TenantProfile(slug="pedido-a", nombre="Pedido A", tipo="pyme", pyme_id=owner_a.id)
+        tenant_b = TenantProfile(slug="pedido-b", nombre="Pedido B", tipo="pyme", pyme_id=owner_b.id)
+        db.session.add_all([tenant_a, tenant_b])
+        db.session.flush()
+
+        pedido_b = PymePedido(
+            pyme_id=owner_b.id,
+            tenant_id=tenant_b.id,
+            asunto="Pedido de B",
+            detalles="[]",
+            monto_total=4200,
+            nombre_cliente="Cliente B",
+        )
+        pedido_b.nro_pedido = "PED-OTRO-TENANT"
+        pedido_b.estado = "despachado"
+        db.session.add(pedido_b)
+        db.session.commit()
+
+        handler = ConsultarEstadoPedidoAction({"user_id": owner_a.id, "tenant_id": tenant_a.id})
+        response = handler.execute({"id_pedido_mencionado": "PED-OTRO-TENANT"})
+
+        self.assertTrue(response.get("success"))
+        self.assertIsNone(response["data"]["estado_actual"])
+        self.assertIsNone(response["data"]["source_model"])
+        self.assertNotIn("despachado", response.get("message_to_user", ""))
+
+    def test_consultar_estado_pedido_conversacional_por_id(self):
+        owner = User(
+            email="pedido-conv-owner@test.com",
+            name="Pedido Conv Owner",
+            password_hash="hash",
+            rol="admin",
+            tipo_chat="pyme",
+        )
+        db.session.add(owner)
+        db.session.flush()
+
+        tenant = TenantProfile(
+            slug="pedido-conv",
+            nombre="Pedido Conv",
+            tipo="pyme",
+            pyme_id=owner.id,
+        )
+        db.session.add(tenant)
+        db.session.flush()
+
+        pedido = PedidoConversacional(
+            tenant_id=tenant.id,
+            user_id=owner.id,
+            estado="pagado",
+            monto_monetario=9900,
+            items=[],
+        )
+        db.session.add(pedido)
+        db.session.commit()
+
+        handler = ConsultarEstadoPedidoAction({"tenant_id": tenant.id, "tenant_slug": tenant.slug})
+        response = handler.execute({"id_pedido_mencionado": str(pedido.id)})
+
+        self.assertTrue(response.get("success"))
+        self.assertEqual(response["data"]["estado_actual"], "pagado")
+        self.assertEqual(response["data"]["source_model"], "PedidoConversacional")
+        self.assertEqual(response["data"]["tenant_id"], tenant.id)
 
     def test_parse_cantidad_flexible_prioriza_empaque_sobre_medida(self):
         self.assertEqual(parse_cantidad_flexible("Caja x6 - 750 ml"), 6)

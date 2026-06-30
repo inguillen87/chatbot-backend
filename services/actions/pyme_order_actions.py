@@ -13,7 +13,14 @@ from services.cart import (
     update_item_quantity_in_cart, clear_pyme_cart, get_cart_summary
 )
 from services.qdrant_search import buscar_catalogo_qdrant, CATALOGO_PYME
-from models import CatalogoItem, db, User, PymePedido # Added PymePedido
+from models import (
+    CatalogoItem,
+    db,
+    User,
+    PymePedido,
+    PedidoConversacional,
+    TenantProfile,
+)
 from services.common_utils import parse_precio_flexible, validar_telefono, formatear_telefono_e164, validar_email
 from utils.money_ar import format_ars
 
@@ -40,6 +47,60 @@ def _get_pyme_carts_data_from_context(context: Dict[str, Any]) -> Dict[int, List
     if 'carritos_pymes' not in chat_db_context_data or not isinstance(chat_db_context_data['carritos_pymes'], dict):
         chat_db_context_data['carritos_pymes'] = {}
     return chat_db_context_data['carritos_pymes']
+
+
+def _coerce_int(value: Any) -> Optional[int]:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _resolve_pyme_id_from_context(context: Dict[str, Any]) -> Optional[int]:
+    for key in ("pyme_id", "owner_id", "user_id"):
+        value = _coerce_int(context.get(key))
+        if value:
+            return value
+
+    tenant_obj = context.get("tenant_profile") or context.get("tenant_obj")
+    value = _coerce_int(getattr(tenant_obj, "pyme_id", None))
+    if value:
+        return value
+
+    return None
+
+
+def _resolve_tenant_profile_from_context(context: Dict[str, Any]) -> Optional[TenantProfile]:
+    for key in ("tenant_profile", "tenant_obj"):
+        tenant_obj = context.get(key)
+        if isinstance(tenant_obj, TenantProfile):
+            return tenant_obj
+
+    tenant_id = _coerce_int(context.get("tenant_id") or context.get("tenant_profile_id"))
+    if tenant_id:
+        return db.session.get(TenantProfile, tenant_id)
+
+    tenant_slug = context.get("tenant_slug")
+    if not tenant_slug and isinstance(context.get("tenant"), str):
+        tenant_slug = context.get("tenant")
+    if tenant_slug:
+        return TenantProfile.query.filter_by(slug=str(tenant_slug)).first()
+
+    pyme_id = _resolve_pyme_id_from_context(context)
+    if pyme_id:
+        return TenantProfile.query.filter_by(pyme_id=pyme_id).first()
+
+    return None
+
+
+def _resolve_tenant_id_from_context(context: Dict[str, Any]) -> Optional[int]:
+    tenant_id = _coerce_int(context.get("tenant_id") or context.get("tenant_profile_id"))
+    if tenant_id:
+        return tenant_id
+
+    tenant_profile = _resolve_tenant_profile_from_context(context)
+    return tenant_profile.id if tenant_profile else None
+
 
 class AgregarItemCarritoAction(BaseActionHandler):
     def _build_product_info_from_qdrant_hit(self, payload: Dict[str, Any], fallback_name: str) -> Dict[str, Any]:
@@ -476,20 +537,86 @@ class SolicitarUbicacionTiendaAction(BaseActionHandler):
         return {"success": True, "message_to_user": simulated_loc, "data": {"direccion": "Av. Comercial 123"}}
 
 class ConsultarEstadoPedidoAction(BaseActionHandler):
+    def _buscar_pyme_pedido(self, nro_pedido: str) -> Optional[PymePedido]:
+        pyme_id = _resolve_pyme_id_from_context(self.context)
+        tenant_id = _resolve_tenant_id_from_context(self.context)
+        if not pyme_id and not tenant_id:
+            logger.warning("Consulta de pedido sin contexto pyme/tenant. nro=%s", nro_pedido)
+            return None
+        return servicio_pedidos.obtener_pedido_por_nro(
+            nro_pedido,
+            pyme_id=pyme_id,
+            tenant_id=tenant_id,
+        )
+
+    def _buscar_pedido_conversacional(self, nro_pedido: str) -> Optional[PedidoConversacional]:
+        pedido_id = _coerce_int(nro_pedido)
+        tenant_id = _resolve_tenant_id_from_context(self.context)
+        if not pedido_id or not tenant_id:
+            return None
+        return PedidoConversacional.query.filter_by(id=pedido_id, tenant_id=tenant_id).first()
+
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
         logger.info(f"Executing ConsultarEstadoPedidoAction for PYME with data: {action_data}")
         nro_pedido_llm = action_data.get("id_pedido_mencionado")
         if not nro_pedido_llm:
-            return {"success": False, "message_to_user": "Necesito el número de pedido para consultar.", "pedir_info": "id_pedido_mencionado"}
+            return {
+                "success": False,
+                "message_to_user": "Necesito el numero de pedido para consultar.",
+                "pedir_info": "id_pedido_mencionado",
+            }
 
-        nro_pedido_str = str(nro_pedido_llm)
-        # pedido = servicio_pedidos.consultar_pedido_por_numero(nro_pedido_str, pyme_id=self.context.get("user_id"))
-        sim_pedido_estado = "En preparación" # if pedido else None
-        if sim_pedido_estado:
-            msg = f"Tu pedido #{nro_pedido_str} está: **{sim_pedido_estado}**."
-        else:
-            msg = f"No encontré el pedido #{nro_pedido_str}."
-        return {"success": True, "message_to_user": msg, "data": {"nro_pedido": nro_pedido_str, "estado_actual": sim_pedido_estado}}
+        nro_pedido_str = str(nro_pedido_llm).strip()
+        if not nro_pedido_str:
+            return {
+                "success": False,
+                "message_to_user": "Necesito el numero de pedido para consultar.",
+                "pedir_info": "id_pedido_mencionado",
+            }
+
+        pedido = self._buscar_pyme_pedido(nro_pedido_str)
+        if pedido:
+            estado = pedido.estado or "sin_estado"
+            return {
+                "success": True,
+                "message_to_user": f"Tu pedido #{pedido.nro_pedido} esta: **{estado}**.",
+                "data": {
+                    "nro_pedido": pedido.nro_pedido,
+                    "estado_actual": estado,
+                    "source_model": "PymePedido",
+                    "tenant_id": pedido.tenant_id,
+                    "pyme_id": pedido.pyme_id,
+                    "monto_total": pedido.monto_total,
+                },
+            }
+
+        pedido_conversacional = self._buscar_pedido_conversacional(nro_pedido_str)
+        if pedido_conversacional:
+            estado = pedido_conversacional.estado or "sin_estado"
+            return {
+                "success": True,
+                "message_to_user": f"Tu pedido #{pedido_conversacional.id} esta: **{estado}**.",
+                "data": {
+                    "nro_pedido": str(pedido_conversacional.id),
+                    "estado_actual": estado,
+                    "source_model": "PedidoConversacional",
+                    "tenant_id": pedido_conversacional.tenant_id,
+                    "monto_monetario": str(pedido_conversacional.monto_monetario)
+                    if pedido_conversacional.monto_monetario is not None
+                    else None,
+                    "mp_status": pedido_conversacional.mp_status,
+                },
+            }
+
+        return {
+            "success": True,
+            "message_to_user": f"No encontre el pedido #{nro_pedido_str} en esta cuenta. Verifica el numero o escribi hablar con ventas.",
+            "data": {
+                "nro_pedido": nro_pedido_str,
+                "estado_actual": None,
+                "source_model": None,
+            },
+        }
 
 class CorregirDatosPedidoAction(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
