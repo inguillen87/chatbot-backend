@@ -435,6 +435,7 @@ def create_app(config_class=Config):
             "X-Token",
             "x-token",
             "X-Whatsapp-Dst",
+            "X-Checkout-Origin",
             "X-Contact-Key",
             "X-Conversation-Id",
         ]

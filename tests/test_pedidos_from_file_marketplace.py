@@ -198,6 +198,56 @@ def test_marketplace_order_note_upload_creates_assisted_request_contract(client,
     assert pedido.items[0]["public_follow_up"]["tracking"]["path"] == tracking_action["href"]
 
 
+def test_marketplace_order_note_preflight_allows_checkout_origin_header(client, init_database):
+    response = client.open(
+        "/api/pedidos/from-file?origen=marketplace",
+        method="OPTIONS",
+        headers={
+            "Origin": "http://127.0.0.1:4174",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "X-Checkout-Origin, X-Tenant",
+        },
+    )
+
+    assert response.status_code == 200
+    allowed_headers = response.headers.get("Access-Control-Allow-Headers", "")
+    assert "X-Checkout-Origin" in allowed_headers
+    assert "X-Tenant" in allowed_headers
+
+
+def test_marketplace_order_note_text_resolves_tenant_from_form(client, init_database, monkeypatch):
+    owner = User.query.filter_by(email="admin@test.com").first()
+    tenant = TenantProfile(slug="market-form-tenant", nombre="Market Form Tenant", tipo="pyme", pyme_id=owner.id, plan="full")
+    db.session.add(tenant)
+    db.session.commit()
+
+    monkeypatch.setattr(
+        "routes.pedidos_from_file.extract_table_from_file",
+        lambda content, prompt: [{"nombre": "Clavos punta paris", "cantidad": 2}],
+    )
+
+    response = client.post(
+        "/api/pedidos/from-file?origen=marketplace",
+        data={
+            "tenant_slug": tenant.slug,
+            "pedido_text": "2 cajas de clavos punta paris",
+            "contact_name": "Marcelo",
+            "contact_phone": "+5492613168608",
+        },
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 201
+    payload = response.get_json()
+    assert payload["tenant_slug"] == tenant.slug
+    assert payload["pedido_id"] == payload["lead_id"]
+
+    pedido = PedidoConversacional.query.get(payload["pedido_id"])
+    assert pedido is not None
+    assert pedido.tenant_id == tenant.id
+    assert pedido.metadata_payload["source"]["channel"] == "marketplace"
+
+
 def test_marketplace_order_note_upload_persists_kind_and_contact(client, init_database, monkeypatch):
     owner = User.query.filter_by(email="admin@test.com").first()
     tenant = TenantProfile(

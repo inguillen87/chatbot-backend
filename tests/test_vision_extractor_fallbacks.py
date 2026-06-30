@@ -39,17 +39,17 @@ def test_extract_table_from_image_uses_ocr_text_fallback(monkeypatch):
     ]
 
 
-def test_binary_documents_do_not_use_plain_text_fallback(monkeypatch):
-    class FakeResponses:
-        def create(self, *args, **kwargs):
-            raise RuntimeError("legacy stopped")
+def test_pdf_text_uses_local_text_fallback(monkeypatch):
+    captured = {}
 
-    class FakeClient:
-        responses = FakeResponses()
+    def fake_text_structured(text, prompt):
+        captured["text"] = text
+        return {"items": [{"nombre": "chapas galvanizadas", "cantidad": 2}]}
 
-    monkeypatch.setattr(vision_extractor, "analyze_text_structured", lambda text, prompt: {"items": [{"nombre": text}]})
-    monkeypatch.setattr(vision_extractor, "_client", lambda: FakeClient())
+    monkeypatch.setattr(vision_extractor, "analyze_text_structured", fake_text_structured)
+    monkeypatch.setattr(vision_extractor, "_client", lambda: (_ for _ in ()).throw(AssertionError("legacy not expected")))
 
     rows = vision_extractor.extract_table_from_file(b"%PDF-1.7\n2 chapas galvanizadas", "Extrae productos")
 
-    assert rows is None
+    assert rows == [{"nombre": "chapas galvanizadas", "cantidad": 2}]
+    assert "2 chapas galvanizadas" in captured["text"]

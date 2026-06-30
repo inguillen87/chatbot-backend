@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import io
 import re
 from typing import List, Optional
 
@@ -52,6 +53,53 @@ def _decode_text(file_bytes: bytes) -> Optional[str]:
         if text and sum(ch.isprintable() or ch.isspace() for ch in text) / max(len(text), 1) > 0.86:
             return text
     return None
+
+
+def _unescape_pdf_literal(value: str) -> str:
+    value = value.replace(r"\(", "(").replace(r"\)", ")").replace(r"\\", "\\")
+    value = value.replace(r"\n", "\n").replace(r"\r", "\n").replace(r"\t", "\t")
+    return value
+
+
+def _clean_pdf_text_candidate(text: str) -> Optional[str]:
+    cleaned = re.sub(r"%PDF-[^\r\n]*", " ", text)
+    cleaned = re.sub(r"\b(?:obj|endobj|stream|endstream|xref|trailer|startxref)\b", " ", cleaned)
+    cleaned = re.sub(r"[/<>[\]{}]+", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if len(cleaned) < 6:
+        return None
+    alpha_count = sum(ch.isalpha() for ch in cleaned)
+    if alpha_count < 4:
+        return None
+    return cleaned
+
+
+def _decode_pdf_text(file_bytes: bytes) -> Optional[str]:
+    if not file_bytes.startswith(b"%PDF"):
+        return None
+
+    try:
+        from pypdf import PdfReader  # type: ignore
+
+        reader = PdfReader(io.BytesIO(file_bytes))  # type: ignore[name-defined]
+        extracted = "\n".join(page.extract_text() or "" for page in reader.pages)
+        cleaned = _clean_pdf_text_candidate(extracted)
+        if cleaned:
+            return cleaned
+    except Exception:
+        pass
+
+    raw = file_bytes.decode("latin-1", errors="ignore")
+    literal_chunks = [
+        _unescape_pdf_literal(match)
+        for match in re.findall(r"\(((?:\\.|[^\\()]){2,})\)\s*(?:Tj|TJ|'|\")", raw)
+    ]
+    if literal_chunks:
+        cleaned = _clean_pdf_text_candidate("\n".join(chunk.strip() for chunk in literal_chunks))
+        if cleaned:
+            return cleaned
+
+    return _clean_pdf_text_candidate(raw)
 
 
 def _normalize_row(row: object, columns: list[str] | None = None) -> Optional[dict]:
@@ -149,6 +197,13 @@ def _extract_with_project_fallbacks(file_bytes: bytes, prompt: str) -> Optional[
     if decoded_text:
         structured_from_text = analyze_text_structured(decoded_text, structured_prompt)
         rows = _coerce_rows(structured_from_text) or _rows_from_plain_text(decoded_text)
+        if rows:
+            return rows
+
+    pdf_text = _decode_pdf_text(file_bytes)
+    if pdf_text:
+        structured_from_text = analyze_text_structured(pdf_text, structured_prompt)
+        rows = _coerce_rows(structured_from_text) or _rows_from_plain_text(pdf_text)
         if rows:
             return rows
 

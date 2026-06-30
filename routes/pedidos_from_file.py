@@ -47,6 +47,7 @@ _CORS_ALLOWED_HEADERS = [
     "X-Tenant-Id",
     "X-Widget-Token",
     "X-Whatsapp-Dst",
+    "X-Checkout-Origin",
 ]
 
 pedidos_from_file_bp = Blueprint("pedidos_from_file_bp", __name__, url_prefix="/api/pedidos")
@@ -1696,8 +1697,17 @@ def pedidos_desde_archivo():
     }
     contact_payload = {key: value for key, value in contact_payload.items() if value}
 
-    tenant_slug = request.headers.get("X-Tenant") or request.args.get("tenant") or request.args.get("tenant_slug")
-    tenant_id = request.headers.get("X-Tenant-Id") or request.args.get("tenant_id")
+    tenant_slug = _clean_optional_text(
+        request.headers.get("X-Tenant")
+        or request.args.get("tenant")
+        or request.args.get("tenant_slug")
+        or _form_or_json_value(json_payload, "tenant", "tenant_slug", "tenantSlug")
+    )
+    tenant_id = _clean_optional_text(
+        request.headers.get("X-Tenant-Id")
+        or request.args.get("tenant_id")
+        or _form_or_json_value(json_payload, "tenant_id", "tenantId")
+    )
     user = getattr(g, "user", None)
     owner = None
     try:
