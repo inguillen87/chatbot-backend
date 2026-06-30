@@ -2,6 +2,7 @@ import json
 import re
 import unicodedata
 from typing import Any
+from urllib.parse import quote
 
 from services.vocabulary_loader import get_ticket_vocabulary
 
@@ -29,6 +30,37 @@ GREETING_TOKEN_NORMS = {
 FILLER_PATTERNS = VOCABULARY.filler_patterns
 VERB_ENDINGS = VOCABULARY.verb_endings
 VERB_EXCEPTIONS = VOCABULARY.verb_exceptions
+
+
+def build_claim_tracking_url(
+    base_url: str | None,
+    ticket_nro: Any,
+    consulta_pin: Any = None,
+    *,
+    absolute: bool = True,
+) -> str | None:
+    """Build the public claim tracking URL, never the generic demo chat route."""
+
+    ticket_code = str(ticket_nro or "").strip()
+    if not ticket_code:
+        return None
+    ticket_code = re.sub(r"^(M|S)-", "", ticket_code, flags=re.IGNORECASE)
+    path = f"/tracking/claim/{quote(ticket_code, safe='')}"
+
+    pin_value = str(consulta_pin or "").strip()
+    if pin_value:
+        path = f"{path}?pin={quote(pin_value, safe='')}"
+
+    if not absolute:
+        return path
+
+    base = str(base_url or "https://www.chatboc.ar").strip().rstrip("/")
+    for suffix in ("/chat", "/tracking/claim"):
+        if base.lower().endswith(suffix):
+            base = base[: -len(suffix)].rstrip("/")
+    if not base:
+        base = "https://www.chatboc.ar"
+    return f"{base}{path}"
 
 
 def _normalize_token(token: str) -> str:
@@ -563,38 +595,15 @@ def formatear_ticket_respuesta(
             })
 
     if id_ticket and base_chat_url:
-        # Determine tracking path based on type
-        tracking_path = "/chat" # Default fallback
         if tipo == "reclamo":
-            tracking_path = "/tracking/claim"
-        elif tipo == "pedido":
-            tracking_path = "/tracking/order"
-
-        # Ensure base URL is clean (strip /chat if present in legacy config to get root)
-        base_url_clean = base_chat_url
-        if tracking_path != "/chat" and base_url_clean.rstrip("/").lower().endswith("/chat"):
-             base_url_clean = base_url_clean.rstrip("/")[: -len("/chat")]
-        if tipo == "pedido" and base_url_clean.rstrip("/").lower().endswith("/pyme/pedidos"):
-            base_url_clean = base_url_clean.rstrip("/")[: -len("/pyme/pedidos")]
-
-        if base_url_clean.endswith('/'):
-            base_url_clean = base_url_clean[:-1]
-
-        ticket_id_numeric = id_ticket.replace('M-', '').replace('S-', '')
-        chat_url = f"{base_url_clean}{tracking_path}/{ticket_id_numeric}"
-
-        if consulta_pin:
-            # Ensure no trailing punctuation is accidentally added
-            # We aggressively strip non-digit characters from the pin just in case
-            clean_pin = str(consulta_pin).strip()
-            clean_pin = re.sub(r"[^0-9]", "", clean_pin)
-            # Limit to 6 digits to avoid capturing trailing garbage if regex failed somehow (redundant but safe)
-            clean_pin = clean_pin[:6]
-            # For tracking pages, we might not need the pin in URL if not supported yet,
-            # but let's keep it compatible or maybe the tracking page doesn't require it?
-            # The tracking page lookup uses just nro_ticket.
-            # We can append it as query param just in case we add auth later.
-            pass
+            chat_url = build_claim_tracking_url(base_chat_url, id_ticket, consulta_pin)
+        else:
+            tracking_path = "/tracking/order" if tipo == "pedido" else "/chat"
+            base_url_clean = str(base_chat_url).rstrip("/")
+            if tipo == "pedido" and base_url_clean.lower().endswith("/pyme/pedidos"):
+                base_url_clean = base_url_clean[: -len("/pyme/pedidos")].rstrip("/")
+            ticket_id_numeric = str(id_ticket).replace("M-", "").replace("S-", "")
+            chat_url = f"{base_url_clean}{tracking_path}/{ticket_id_numeric}"
 
         botones.append({
             "texto": "💬 Ver Estado",
