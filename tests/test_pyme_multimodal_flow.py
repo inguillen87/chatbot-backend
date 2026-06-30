@@ -5,7 +5,7 @@ from app import create_app, db
 from config import TestConfig
 from models import CatalogoItem, PedidoConversacional, TenantProfile, User
 from services.pymes import responder_pyme, CONTEXTO_PYME
-from services.pyme_multimodal import PymeSessionState, handle_image_payload
+from services.pyme_multimodal import PymeSessionState, handle_image_payload, handle_pdf_payload
 
 
 def _assert_public_copy_without_internal_jargon(*parts):
@@ -185,6 +185,103 @@ class PymeMultimodalTest(unittest.TestCase):
         self.assertEqual(pedido.items[0]["items_detectados"][0]["catalog_match"]["sku"], "CH-001")
         self.assertEqual(pedido.items[0]["no_encontrados"][0]["nombre"], "Clavos 2 pulgadas")
         self.assertEqual(pedido.items[0]["crm_order_draft"]["contract_version"], "marketplace.crm_order_draft.v1")
+
+    @patch('services.pyme_multimodal.analyse_image_for_products', return_value=[])
+    def test_image_payload_persists_manual_review_when_unreadable(self, _mock_analyse):
+        owner = User(name="Ferreteria Demo", email="owner2@example.com", password_hash="x", rol="admin")
+        db.session.add(owner)
+        db.session.flush()
+        tenant = TenantProfile(slug="ferreteria-demo", nombre="Ferreteria Demo", tipo="pyme", pyme_id=owner.id)
+        db.session.add(tenant)
+        db.session.commit()
+
+        state = PymeSessionState({}, owner.id)
+        result = handle_image_payload(
+            state,
+            {
+                "url": "https://cdn.example.com/manuscrito-borroso.jpg",
+                "name": "manuscrito-borroso.jpg",
+                "mime_type": "image/jpeg",
+                "caption": "pedido escrito a mano",
+                "id": "media-unreadable",
+            },
+            [],
+            request_id="req-unreadable",
+            owner_user_id=owner.id,
+            tenant_id=tenant.id,
+            tenant_slug=tenant.slug,
+            channel="whatsapp",
+            context={
+                "nombre_cliente": "Marcelo",
+                "telefono_cliente": "+5492613168608",
+            },
+            anon_id="+5492613168608",
+        )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result.source, "pyme_imagen_revision_manual")
+        assisted_request = result.data["assisted_request"]
+        self.assertEqual(assisted_request["source"]["input_type"], "image_manual_review")
+        self.assertEqual(assisted_request["source"]["channel"], "whatsapp")
+        self.assertEqual(assisted_request["match_summary"]["detected"], 0)
+        self.assertEqual(assisted_request["match_summary"]["matched"], 0)
+        self.assertEqual(assisted_request["match_summary"]["unmatched"], 1)
+        self.assertTrue(assisted_request["match_summary"]["needs_operator_review"])
+        self.assertEqual(assisted_request["crm_order_draft"]["recommended_next_step"], "resolver_items_y_confirmar")
+
+        pedido = db.session.get(PedidoConversacional, assisted_request["pedido_id"])
+        self.assertIsNotNone(pedido)
+        self.assertEqual(pedido.origen, "whatsapp")
+        self.assertEqual(pedido.metadata_payload["source"]["input_type"], "image_manual_review")
+        self.assertTrue(pedido.metadata_payload["match_summary"]["needs_operator_review"])
+        self.assertEqual(pedido.items[0]["extraction_error"], "imagen_sin_lectura")
+        self.assertEqual(pedido.items[0]["no_encontrados"][0]["status"], "needs_operator_review")
+
+    def test_pdf_payload_persists_manual_review_without_catalog_match(self):
+        owner = User(name="Mayorista Demo", email="owner3@example.com", password_hash="x", rol="admin")
+        db.session.add(owner)
+        db.session.flush()
+        tenant = TenantProfile(slug="mayorista-demo", nombre="Mayorista Demo", tipo="pyme", pyme_id=owner.id)
+        db.session.add(tenant)
+        db.session.commit()
+
+        state = PymeSessionState({}, owner.id)
+        result = handle_pdf_payload(
+            state,
+            {
+                "name": "pedido-ferretero.pdf",
+                "mime_type": "application/pdf",
+                "texto_extraido": "necesito clavos, chapas y tornillos para entregar manana",
+                "id": None,
+            },
+            [],
+            request_id="req-pdf-unmatched",
+            owner_user_id=owner.id,
+            tenant_id=tenant.id,
+            tenant_slug=tenant.slug,
+            channel="chat_widget",
+            context={
+                "nombre_cliente": "Cliente Mostrador",
+                "email_cliente": "cliente@example.com",
+            },
+            anon_id="anon-market",
+        )
+
+        self.assertEqual(result.source, "pyme_pdf_revision_manual")
+        assisted_request = result.data["assisted_request"]
+        self.assertEqual(assisted_request["source"]["input_type"], "pdf_manual_review")
+        self.assertEqual(assisted_request["source"]["channel"], "chat_widget")
+        self.assertEqual(assisted_request["match_summary"]["detected"], 0)
+        self.assertEqual(assisted_request["match_summary"]["unmatched"], 1)
+        self.assertTrue(assisted_request["match_summary"]["needs_operator_review"])
+        self.assertEqual(assisted_request["crm_order_draft"]["recommended_next_step"], "resolver_items_y_confirmar")
+
+        pedido = db.session.get(PedidoConversacional, assisted_request["pedido_id"])
+        self.assertIsNotNone(pedido)
+        self.assertEqual(pedido.origen, "chat_widget")
+        self.assertEqual(pedido.metadata_payload["source"]["input_type"], "pdf_manual_review")
+        self.assertEqual(pedido.items[0]["extraction_error"], "pdf_sin_match")
+        self.assertIn("clavos", pedido.metadata_payload["source"]["text_preview"])
 
     @patch('services.pymes.llamar_llm_con_fallback')
     def test_responder_pyme_with_attachment_no_text(self, mock_llm):

@@ -955,6 +955,46 @@ def _assisted_items_from_matches(
     return detected_items, unmatched_rows, catalog_candidates
 
 
+def _attachment_text_preview(attachment_info: Dict[str, Any], *extra_parts: Any) -> Optional[str]:
+    parts: List[str] = []
+    for value in (
+        attachment_info.get("caption"),
+        attachment_info.get("texto_extraido"),
+        attachment_info.get("text"),
+        attachment_info.get("description"),
+        *extra_parts,
+    ):
+        cleaned = _clean_text(value)
+        if cleaned:
+            parts.append(cleaned)
+    if not parts:
+        return None
+    return "\n".join(parts)[:500]
+
+
+def _manual_review_unmatched_rows(
+    attachment_info: Dict[str, Any],
+    *,
+    default_name: str,
+    text_preview: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    name = _clean_text(
+        attachment_info.get("name")
+        or attachment_info.get("filename")
+        or attachment_info.get("id")
+        or default_name
+    ) or default_name
+    description = _clean_text(text_preview) or "Archivo recibido para revision manual."
+    return [
+        {
+            "nombre": name,
+            "cantidad": 1,
+            "descripcion": description[:280],
+            "status": "needs_operator_review",
+        }
+    ]
+
+
 def _assisted_intake_experience(
     *,
     source_channel: str,
@@ -1360,9 +1400,38 @@ def handle_image_payload(
     detected = analyse_image_for_products(image_url)
 
     if not detected:
+        text_preview = _attachment_text_preview(image_info)
+        unmatched_rows = _manual_review_unmatched_rows(
+            image_info,
+            default_name="Imagen de pedido para revisar",
+            text_preview=text_preview,
+        )
+        assisted_request = _persist_assisted_intake_request(
+            state=state,
+            owner_user_id=owner_user_id or state.pyme_id,
+            viewer_user_id=viewer_user_id,
+            tenant_id=tenant_id,
+            tenant_slug=tenant_slug,
+            channel=channel or "web",
+            source_type="image_manual_review",
+            attachment_info=image_info,
+            detected_items=[],
+            unmatched_rows=unmatched_rows,
+            catalog_candidates=[],
+            context=context,
+            anon_id=anon_id,
+            request_id=request_id,
+            extraction_error="imagen_sin_lectura",
+            text_preview=text_preview,
+        )
         return PymeFlowResult(
             message_body="Recibí la imagen pero no pude leer el contenido claramente. ¿Podrías decirme qué necesitás?",
-            source="pyme_imagen_sin_match",
+            source="pyme_imagen_revision_manual",
+            data={
+                "assisted_request": assisted_request,
+                "pedido_id": assisted_request.get("pedido_id"),
+                "lead_id": assisted_request.get("lead_id"),
+            },
         )
 
     matched: List[Tuple[Dict[str, Any], int]] = []
@@ -1557,20 +1626,55 @@ def handle_pdf_payload(
                 items_to_confirm.append(f"- {qty} x {item.get('nombre')}")
 
     if not matches:
+        text_preview = _attachment_text_preview(pdf_info, "\n".join(text_blocks))
+        unmatched_rows = _manual_review_unmatched_rows(
+            pdf_info,
+            default_name="Archivo de pedido para revisar",
+            text_preview=text_preview,
+        )
+        extraction_error = "pdf_sin_contenido" if not text_blocks and not extracted_items else "pdf_sin_match"
+        assisted_request = _persist_assisted_intake_request(
+            state=state,
+            owner_user_id=owner_user_id or state.pyme_id,
+            viewer_user_id=viewer_user_id,
+            tenant_id=tenant_id,
+            tenant_slug=tenant_slug,
+            channel=channel or "web",
+            source_type="pdf_manual_review",
+            attachment_info=pdf_info,
+            detected_items=[],
+            unmatched_rows=unmatched_rows,
+            catalog_candidates=[],
+            context=context,
+            anon_id=anon_id,
+            request_id=request_id,
+            extraction_error=extraction_error,
+            text_preview=text_preview,
+        )
         if not text_blocks and not extracted_items:
             return PymeFlowResult(
                 message_body=(
                     "Recibí el archivo pero no pude leer el contenido. Si tenés otra versión "
                     "podés reenviarla o contarme qué necesitás."
                 ),
-                source="pyme_pdf_sin_contenido",
+                source="pyme_pdf_revision_manual",
+                data={
+                    "assisted_request": assisted_request,
+                    "pedido_id": assisted_request.get("pedido_id"),
+                    "lead_id": assisted_request.get("lead_id"),
+                },
             )
         return PymeFlowResult(
             message_body=(
                 "Analicé el documento pero no encontré coincidencias exactas en el catálogo. "
                 "¿Me confirmás qué productos te interesan?"
             ),
-            source="pyme_pdf_sin_match",
+            source="pyme_pdf_revision_manual",
+            data={
+                "assisted_request": assisted_request,
+                "pedido_id": assisted_request.get("pedido_id"),
+                "lead_id": assisted_request.get("lead_id"),
+            },
         )
 
     logger.info(
