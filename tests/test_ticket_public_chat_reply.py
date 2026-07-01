@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 from app import create_app, db
 from config import TestConfig
@@ -136,6 +137,120 @@ class TicketPublicChatReplyTest(unittest.TestCase):
         self.assertIn("id", payload["unified_conversation_stream"][0])
         self.assertIn("actor_type", payload["unified_conversation_stream"][0])
         self.assertIn("preview_text", payload["unified_conversation_stream"][0])
+
+    def test_public_chat_messages_degrade_when_comment_serializer_fails(self):
+        ticket = MunicipioTicket(
+            municipio_id=self.admin.id,
+            pregunta="bache en la calle",
+            estado="nuevo",
+            nro_ticket="123458",
+            consulta_pin="654321",
+        )
+        db.session.add(ticket)
+        db.session.flush()
+        db.session.add(
+            TicketComentario(
+                municipio_ticket_id=ticket.id,
+                comentario="Mensaje ciudadano",
+                es_admin=False,
+            )
+        )
+        db.session.commit()
+
+        with patch.object(TicketComentario, "to_dict", side_effect=RuntimeError("serializer unavailable")):
+            response = self.client.get(
+                f"/tickets/chat/{ticket.id}/mensajes?pin=654321",
+                headers={"X-Request-Id": "chat-serializer-degraded"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers.get("X-Request-Id"), "chat-serializer-degraded")
+        payload = response.get_json()
+        self.assertEqual(payload["request_id"], "chat-serializer-degraded")
+        self.assertEqual(len(payload["mensajes"]), 1)
+        self.assertEqual(payload["mensajes"][0]["texto"], "Mensaje ciudadano")
+        self.assertTrue(payload["mensajes"][0]["serializer_degraded"])
+        self.assertTrue(payload["meta"]["degraded"])
+        self.assertIn("ticket_comment_serializer_unavailable", payload["meta"]["degraded_reasons"])
+
+    def test_public_chat_messages_degrade_when_realtime_fails(self):
+        ticket = MunicipioTicket(
+            municipio_id=self.admin.id,
+            pregunta="bache en la calle",
+            estado="nuevo",
+            nro_ticket="123459",
+            consulta_pin="654321",
+        )
+        db.session.add(ticket)
+        db.session.flush()
+        db.session.add(
+            TicketComentario(
+                municipio_ticket_id=ticket.id,
+                comentario="Mensaje ciudadano",
+                es_admin=False,
+            )
+        )
+        db.session.commit()
+
+        with patch("routes.ticket.build_ticket_realtime_summary", side_effect=RuntimeError("realtime unavailable")):
+            response = self.client.get(
+                f"/tickets/chat/{ticket.id}/mensajes?pin=654321",
+                headers={"X-Request-Id": "chat-realtime-degraded"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["request_id"], "chat-realtime-degraded")
+        self.assertEqual(len(payload["mensajes"]), 1)
+        self.assertTrue(payload["meta"]["degraded"])
+        self.assertTrue(payload["meta"]["retryable"])
+        self.assertTrue(payload["realtime_state"]["meta"]["degraded"])
+        self.assertEqual(
+            payload["realtime_state"]["meta"]["reason_code"],
+            "ticket_realtime_summary_unavailable",
+        )
+
+    def test_ticket_timeline_degrades_when_history_and_realtime_fail(self):
+        ticket = MunicipioTicket(
+            municipio_id=self.admin.id,
+            pregunta="bache en la calle",
+            estado="nuevo",
+            nro_ticket="123460",
+            consulta_pin="654321",
+        )
+        db.session.add(ticket)
+        db.session.flush()
+        db.session.add(
+            TicketComentario(
+                municipio_ticket_id=ticket.id,
+                comentario="Seguimos esperando novedades",
+                es_admin=False,
+            )
+        )
+        db.session.commit()
+
+        with patch(
+            "routes.ticket.servicio_tickets.obtener_historial_chat",
+            side_effect=RuntimeError("history unavailable"),
+        ), patch(
+            "routes.ticket.build_ticket_realtime_summary",
+            side_effect=RuntimeError("realtime unavailable"),
+        ):
+            response = self.client.get(
+                f"/tickets/municipio/{ticket.id}/timeline?pin=654321",
+                headers={"X-Request-Id": "timeline-degraded"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers.get("X-Request-Id"), "timeline-degraded")
+        payload = response.get_json()
+        self.assertEqual(payload["request_id"], "timeline-degraded")
+        self.assertIsInstance(payload["timeline"], list)
+        self.assertEqual(payload["historial_chat"], [])
+        self.assertIsInstance(payload["unified_conversation_stream"], list)
+        self.assertTrue(payload["meta"]["degraded"])
+        self.assertIn("ticket_chat_history_unavailable", payload["meta"]["degraded_reasons"])
+        self.assertIn("ticket_realtime_summary_unavailable", payload["meta"]["degraded_reasons"])
 
     def test_public_pin_can_reply_to_pyme_ticket_chat(self):
         ticket = PymeTicket(

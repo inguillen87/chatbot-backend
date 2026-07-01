@@ -1,6 +1,7 @@
 import jwt
 
 from datetime import timedelta
+from unittest.mock import patch
 
 from app import create_app, db
 from config import TestConfig
@@ -180,6 +181,51 @@ def test_realtime_summary_dedupes_viewers_and_prunes_stale_rows():
         summary = build_ticket_realtime_summary(ticket_type="municipio", ticket_id=ticket.id)
         assert summary["presence"]["active_count"] == 1
         assert summary["meta"]["viewer_rows_considered"] == 1
+
+
+def test_realtime_summary_degrades_when_row_serializer_fails():
+    app = create_app(TestConfig)
+    with app.app_context():
+        db.create_all()
+        owner = User(email="owner-rt-degrade@test.com", name="Owner RT", rol="admin", tipo_chat="municipio", municipio_id=93)
+        owner.set_password("pass")
+        db.session.add(owner)
+        db.session.commit()
+
+        ticket = MunicipioTicket(
+            municipio_id=93,
+            user_id=owner.id,
+            pregunta="Necesito ayuda",
+            asunto="Realtime degraded",
+            estado="nuevo",
+            nombre_vecino="Vecino RT",
+        )
+        db.session.add(ticket)
+        db.session.commit()
+
+        db.session.add(
+            TicketRealtimeState(
+                ticket_type="municipio",
+                ticket_id=ticket.id,
+                viewer_key=f"user:{owner.id}",
+                viewer_user_id=owner.id,
+                viewer_role="admin",
+                presence_status="active",
+                last_presence_at=get_local_now(),
+                last_read_comment_id=0,
+            )
+        )
+        db.session.commit()
+
+        with patch.object(TicketRealtimeState, "to_dict", side_effect=RuntimeError("bad realtime row")):
+            summary = build_ticket_realtime_summary(ticket_type="municipio", ticket_id=ticket.id)
+
+        assert summary["presence"]["active_count"] == 0
+        assert summary["presence"]["active_viewers"] == []
+        assert summary["read_state"]["viewers"] == []
+        assert summary["meta"]["degraded"] is True
+        assert summary["meta"]["retryable"] is True
+        assert summary["meta"]["reason_code"] == "ticket_realtime_summary_unavailable"
 
 
 def test_realtime_summary_unread_count_counts_comments_not_id_gap():

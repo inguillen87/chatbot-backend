@@ -280,6 +280,154 @@ def _request_active_session_id() -> Optional[str]:
     return anon_id
 
 
+def _ticket_request_id() -> str:
+    request_id = (
+        request.headers.get("X-Request-Id")
+        or request.headers.get("X-Correlation-Id")
+        or getattr(g, "request_id", None)
+        or uuid.uuid4().hex
+    )
+    request_id = str(request_id).strip() or uuid.uuid4().hex
+    g.request_id = request_id
+    return request_id
+
+
+def _ticket_json(payload: dict, status_code: int = 200, request_id: Optional[str] = None):
+    payload = dict(payload or {})
+    request_id = request_id or _ticket_request_id()
+    payload.setdefault("request_id", request_id)
+    response = jsonify(payload)
+    response.status_code = status_code
+    response.headers["X-Request-Id"] = request_id
+    return response
+
+
+def _ticket_degraded_meta(reasons: list[str] | None = None) -> dict:
+    reasons = [str(reason) for reason in (reasons or []) if reason]
+    return {
+        "degraded": bool(reasons),
+        "retryable": bool(reasons),
+        "degraded_reasons": reasons,
+    }
+
+
+def _empty_ticket_realtime_state(ticket_type: str, ticket_id: int, reason_code: str) -> dict:
+    return {
+        "presence": {
+            "active_count": 0,
+            "active_viewers": [],
+            "idle_count": 0,
+            "idle_viewers": [],
+            "active_window_minutes": 5,
+            "idle_window_minutes": 15,
+        },
+        "read_state": {
+            "latest_comment_id": 0,
+            "viewers": [],
+            "unread_viewers": [],
+            "unread_viewer_count": 0,
+            "latest_read_at": None,
+        },
+        "meta": {
+            "generated_at": datetime_to_iso_utc(get_local_now()),
+            "viewer_rows_considered": 0,
+            "stale_retention_hours": 24,
+            "degraded": True,
+            "retryable": True,
+            "reason_code": reason_code,
+            "ticket_type": ticket_type,
+            "ticket_id": ticket_id,
+        },
+    }
+
+
+def _safe_ticket_realtime_summary(ticket_type: str, ticket_id: int, request_id: Optional[str] = None) -> dict:
+    try:
+        return build_ticket_realtime_summary(ticket_type=ticket_type, ticket_id=ticket_id)
+    except Exception as exc:
+        current_app.logger.warning(
+            "Realtime summary degraded for %s ticket %s request_id=%s: %s",
+            ticket_type,
+            ticket_id,
+            request_id,
+            exc,
+            exc_info=True,
+        )
+        return _empty_ticket_realtime_state(
+            ticket_type,
+            ticket_id,
+            reason_code="ticket_realtime_summary_unavailable",
+        )
+
+
+def _safe_ticket_comment_payload(comment: TicketComentario, request_id: Optional[str] = None) -> dict:
+    try:
+        data = comment.to_dict()
+    except Exception as exc:
+        current_app.logger.warning(
+            "Ticket comment serializer degraded comment_id=%s request_id=%s: %s",
+            getattr(comment, "id", None),
+            request_id,
+            exc,
+            exc_info=True,
+        )
+        data = {
+            "id": getattr(comment, "id", None),
+            "pyme_ticket_id": getattr(comment, "pyme_ticket_id", None),
+            "municipio_ticket_id": getattr(comment, "municipio_ticket_id", None),
+            "comentario": getattr(comment, "comentario", "") or "",
+            "texto": getattr(comment, "comentario", "") or "",
+            "fecha": datetime_to_iso_utc(getattr(comment, "fecha", None)),
+            "user_id": getattr(comment, "user_id", None),
+            "anon_id": getattr(comment, "anon_id", None),
+            "es_admin": bool(getattr(comment, "es_admin", False)),
+            "origen": getattr(comment, "origen", None) or "chat",
+            "estado_ticket": getattr(comment, "estado_ticket", None),
+            "serializer_degraded": True,
+        }
+
+    if "texto" not in data or data.get("texto") is None:
+        data["texto"] = data.get("comentario")
+    data.pop("comentario", None)
+    return data
+
+
+def _format_ticket_chat_messages(messages, request_id: Optional[str] = None) -> list[dict]:
+    return [_safe_ticket_comment_payload(message, request_id=request_id) for message in messages or []]
+
+
+def _ticket_degraded_error_payload(
+    *,
+    reason_code: str,
+    message: str,
+    ticket_type: Optional[str] = None,
+    ticket_id: Optional[int] = None,
+    request_id: Optional[str] = None,
+) -> dict:
+    payload = {
+        "contract_version": "shared.error.v1",
+        "status_code": 503,
+        "reason_code": reason_code,
+        "retryable": True,
+        "action_hint": "retry_or_use_cached_state",
+        "error": {"code": 503, "message": message},
+        "message": message,
+        "mensajes": [],
+        "timeline": [],
+        "historial_chat": [],
+        "unified_conversation_stream": [],
+    }
+    if ticket_type and ticket_id is not None:
+        payload["realtime_state"] = _empty_ticket_realtime_state(
+            ticket_type,
+            ticket_id,
+            reason_code=f"{reason_code}_realtime_unavailable",
+        )
+    if request_id:
+        payload["request_id"] = request_id
+    return payload
+
+
 def _effective_ticket_actor(current_user: Optional[User], owner_user: Optional[User] = None) -> Optional[User]:
     """Return the authenticated user that should be evaluated for ticket access."""
 
@@ -741,6 +889,7 @@ def serialize_ticket_to_json(
     """
     # Serializar todos los comentarios del ticket
     comentarios_serializados = []
+    degraded_reasons: list[str] = []
     comentarios_count = comentarios_count_override if comentarios_count_override is not None else 0
     if comentarios_count_override is None and ticket.comentarios:
         try:
@@ -749,9 +898,23 @@ def serialize_ticket_to_json(
             comentarios_count = 0
     if not compact and ticket.comentarios:
         # Ordenar por fecha ascendente para mostrar el historial cronológicamente
-        lista_comentarios = ticket.comentarios.order_by(TicketComentario.fecha.asc()).all()
-        comentarios_serializados = [c.to_dict() for c in lista_comentarios]
-        comentarios_count = len(comentarios_serializados)
+        try:
+            lista_comentarios = ticket.comentarios.order_by(TicketComentario.fecha.asc()).all()
+            comentarios_serializados = [
+                _safe_ticket_comment_payload(c, request_id=getattr(g, "request_id", None))
+                for c in lista_comentarios
+            ]
+            comentarios_count = len(comentarios_serializados)
+        except Exception as exc:
+            current_app.logger.warning(
+                "Ticket comments degraded for %s ticket %s: %s",
+                ticket_type,
+                getattr(ticket, "id", None),
+                exc,
+                exc_info=True,
+            )
+            comentarios_serializados = []
+            degraded_reasons.append("ticket_comments_unavailable")
 
     # Reutilizar la lógica existente para obtener la información de contacto unificada
     # Esta función necesita el modelo User, que ya está importado en este archivo.
@@ -760,7 +923,21 @@ def serialize_ticket_to_json(
     # El campo 'description' debe ser 'detalles' si existe, sino 'pregunta'.
     description = getattr(ticket, 'detalles', '') or getattr(ticket, 'pregunta', '')
 
-    historial_chat = [] if compact else servicio_tickets.obtener_historial_chat(ticket)
+    if compact:
+        historial_chat = []
+    else:
+        try:
+            historial_chat = servicio_tickets.obtener_historial_chat(ticket)
+        except Exception as exc:
+            current_app.logger.warning(
+                "Ticket chat history degraded for %s ticket %s: %s",
+                ticket_type,
+                getattr(ticket, "id", None),
+                exc,
+                exc_info=True,
+            )
+            historial_chat = []
+            degraded_reasons.append("ticket_chat_history_unavailable")
 
 
     # Construir el diccionario con la estructura deseada
@@ -785,11 +962,21 @@ def serialize_ticket_to_json(
 
     assigned_user = getattr(ticket, "asignado_a", None)
     operational_hints = _build_ticket_operational_badges(ticket)
-    collaboration_state = (
-        collaboration_state_override
-        if collaboration_state_override is not None
-        else build_ticket_collaboration_state(ticket_type=ticket_type, ticket_id=ticket.id)
-    )
+    if collaboration_state_override is not None:
+        collaboration_state = collaboration_state_override
+    else:
+        try:
+            collaboration_state = build_ticket_collaboration_state(ticket_type=ticket_type, ticket_id=ticket.id)
+        except Exception as exc:
+            current_app.logger.warning(
+                "Ticket collaboration state degraded for %s ticket %s: %s",
+                ticket_type,
+                getattr(ticket, "id", None),
+                exc,
+                exc_info=True,
+            )
+            collaboration_state = {"active_viewers": [], "meta": {"degraded": True, "retryable": True}}
+            degraded_reasons.append("ticket_collaboration_state_unavailable")
 
     estado_original = getattr(ticket, "estado", None) or "desconocido"
     estado_serializado = "resuelto" if estado_original == "cerrado" else estado_original
@@ -852,6 +1039,7 @@ def serialize_ticket_to_json(
             "inactivity_hours": operational_hints["inactivity_hours"],
         },
         "collaboration_state": collaboration_state,
+        "meta": _ticket_degraded_meta(degraded_reasons),
     }
     return serialized_data
 
@@ -1334,13 +1522,63 @@ def _get_user_info(ticket, user_model):
 def _serialize_ticket_details(ticket, ticket_type):
     """Serializa los detalles de un ticket (municipio o pyme) a un diccionario JSON."""
     user_data = _get_user_info(ticket, User)
+    degraded_reasons: list[str] = []
 
-    comentarios = [c.to_dict() for c in ticket.comentarios]
+    try:
+        comentarios_source = ticket.comentarios.order_by(TicketComentario.fecha.asc()).all()
+        comentarios = [
+            _safe_ticket_comment_payload(c, request_id=getattr(g, "request_id", None))
+            for c in comentarios_source
+        ]
+    except Exception as exc:
+        current_app.logger.warning(
+            "Ticket detail comments degraded for %s ticket %s: %s",
+            ticket_type,
+            getattr(ticket, "id", None),
+            exc,
+            exc_info=True,
+        )
+        comentarios = []
+        degraded_reasons.append("ticket_comments_unavailable")
 
-    timeline = servicio_tickets.obtener_timeline_ticket(ticket)
-    progreso_estados = servicio_tickets.obtener_estado_progreso(ticket)
+    try:
+        timeline = servicio_tickets.obtener_timeline_ticket(ticket)
+    except Exception as exc:
+        current_app.logger.warning(
+            "Ticket detail timeline degraded for %s ticket %s: %s",
+            ticket_type,
+            getattr(ticket, "id", None),
+            exc,
+            exc_info=True,
+        )
+        timeline = []
+        degraded_reasons.append("ticket_timeline_unavailable")
 
-    historial_chat = servicio_tickets.obtener_historial_chat(ticket)
+    try:
+        progreso_estados = servicio_tickets.obtener_estado_progreso(ticket)
+    except Exception as exc:
+        current_app.logger.warning(
+            "Ticket detail progress degraded for %s ticket %s: %s",
+            ticket_type,
+            getattr(ticket, "id", None),
+            exc,
+            exc_info=True,
+        )
+        progreso_estados = []
+        degraded_reasons.append("ticket_progress_unavailable")
+
+    try:
+        historial_chat = servicio_tickets.obtener_historial_chat(ticket)
+    except Exception as exc:
+        current_app.logger.warning(
+            "Ticket detail chat history degraded for %s ticket %s: %s",
+            ticket_type,
+            getattr(ticket, "id", None),
+            exc,
+            exc_info=True,
+        )
+        historial_chat = []
+        degraded_reasons.append("ticket_chat_history_unavailable")
 
     archivos_adjuntos_data = []
     if hasattr(ticket, 'archivos'):
@@ -1388,7 +1626,7 @@ def _serialize_ticket_details(ticket, ticket_type):
         "fecha_hora_creacion": datetime_to_iso_utc(ticket.fecha),
         "descripcion_completa_reclamo": getattr(ticket, 'pregunta', ''),
         "detalles_adicionales": user_data["descripcion"], # Datos extraídos del campo 'detalles'
-        "comentarios": sorted(comentarios, key=lambda c: c['fecha']),
+        "comentarios": sorted(comentarios, key=lambda c: c.get('fecha') or ""),
         "nombre_completo_solicitante": user_data["nombre"],
         "telefono_contacto": user_data["telefono"],
         "mail_contacto": user_data["email"],
@@ -1431,6 +1669,7 @@ def _serialize_ticket_details(ticket, ticket_type):
             else None
         ),
         "asignado_en": datetime_to_iso_utc(getattr(ticket, "asignado_en", None)),
+        "meta": _ticket_degraded_meta(degraded_reasons),
     }
 
     if hasattr(ticket, 'foto_url_directa'):
@@ -1461,13 +1700,17 @@ def _serialize_ticket_details(ticket, ticket_type):
 @anon_o_token_requerido
 def get_ticket_by_number_public(current_user, owner_user, anon_id, nro_ticket: str):
     """Consulta un ticket municipal por su número."""
+    request_id = _ticket_request_id()
 
     normalizado = str(nro_ticket).upper()
     if normalizado.startswith("M-"):
         normalizado = normalizado.split("-", 1)[1]
 
     ticket = None
-    if current_user:
+    authenticated_lookup = bool(current_user) or bool(
+        owner_user and getattr(g, "owner_resolution_source", None) == "jwt_widget_owner"
+    )
+    if authenticated_lookup:
         # Petición autenticada: no requiere PIN ni reCAPTCHA
         ticket = MunicipioTicket.query.filter_by(nro_ticket=normalizado).first()
     else:
@@ -1485,7 +1728,7 @@ def get_ticket_by_number_public(current_user, owner_user, anon_id, nro_ticket: s
         return jsonify({"error": "Ticket no encontrado."}), 404
 
     ticket_data = _serialize_ticket_details(ticket, "municipio")
-    return jsonify(ticket_data)
+    return _ticket_json(ticket_data, request_id=request_id)
 
 
 def _public_tracking_payload(ticket: MunicipioTicket) -> dict:
@@ -1620,6 +1863,7 @@ def get_ticket_details(current_user: User, ticket_id: int):
     Devuelve el detalle de un ticket municipal, verificando que el usuario
     (admin o empleado) pertenezca al municipio correcto.
     """
+    request_id = _ticket_request_id()
     ticket = db.session.get(MunicipioTicket, ticket_id)
     if not ticket:
         return jsonify({"error": "Ticket no encontrado."}), 404
@@ -1638,7 +1882,7 @@ def get_ticket_details(current_user: User, ticket_id: int):
         return error_response
 
     ticket_data = _serialize_ticket_details(ticket, "municipio")
-    return jsonify(ticket_data)
+    return _ticket_json(ticket_data, request_id=request_id)
 
 
 @ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/asignar', methods=['POST', 'PUT'])
@@ -1793,6 +2037,7 @@ def get_ticket_details_pyme(current_user: User, ticket_id: int):
     Devuelve el detalle de un ticket de pyme, verificando que el usuario
     (admin o empleado) pertenezca a la pyme correcta.
     """
+    request_id = _ticket_request_id()
     ticket = db.session.get(PymeTicket, ticket_id)
     if not ticket:
         return jsonify({"error": "Ticket no encontrado."}), 404
@@ -1815,7 +2060,7 @@ def get_ticket_details_pyme(current_user: User, ticket_id: int):
         return error_response
 
     ticket_data = _serialize_ticket_details(ticket, "pyme")
-    return jsonify(ticket_data)
+    return _ticket_json(ticket_data, request_id=request_id)
 
 # ---------- RESPONDER A TICKET (AGENTE) ----------
 @ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/responder', methods=['POST'])
@@ -2212,6 +2457,7 @@ def get_chat_mensajes(current_user: User, ticket_id: int, anon_id: str = None, o
     Devuelve los mensajes del chat en vivo para un ticket.
     Requiere que el usuario esté autenticado o que proporcione un anon_id válido.
     """
+    request_id = _ticket_request_id()
     try:
         actor_user = _effective_ticket_actor(current_user, owner_user)
         sala_de_chat = db.session.get(MunicipioTicket, ticket_id)
@@ -2245,25 +2491,34 @@ def get_chat_mensajes(current_user: User, ticket_id: int, anon_id: str = None, o
             .order_by(TicketComentario.fecha.asc())
             .all()
         )
-        # Formatear los mensajes, renombrando "comentario" -> "texto" para
-        # mantener consistencia con el historial completo del ticket.
-        mensajes_formateados = []
-        for msg in mensajes_nuevos:
-            data = msg.to_dict()
-            if "texto" not in data:
-                data["texto"] = data.get("comentario")
-            data.pop("comentario", None)
-            mensajes_formateados.append(data)
+        mensajes_formateados = _format_ticket_chat_messages(mensajes_nuevos, request_id=request_id)
+        realtime_state = _safe_ticket_realtime_summary("municipio", ticket_id, request_id=request_id)
+        degraded_reasons = []
+        if any(message.get("serializer_degraded") for message in mensajes_formateados):
+            degraded_reasons.append("ticket_comment_serializer_unavailable")
+        if realtime_state.get("meta", {}).get("degraded"):
+            degraded_reasons.append(realtime_state.get("meta", {}).get("reason_code") or "ticket_realtime_summary_unavailable")
 
         respuesta_final = {
             "estado_chat": sala_de_chat.estado,
             "mensajes": mensajes_formateados,
-            "realtime_state": build_ticket_realtime_summary(ticket_type="municipio", ticket_id=ticket_id),
+            "realtime_state": realtime_state,
+            "meta": _ticket_degraded_meta(degraded_reasons),
         }
-        return jsonify(respuesta_final)
+        return _ticket_json(respuesta_final, request_id=request_id)
     except Exception as e:
         current_app.logger.error(f"Error en get_chat_mensajes para ticket {ticket_id}: {e}", exc_info=True)
-        return jsonify({"error": "Error interno al obtener los mensajes del chat."}), 500
+        return _ticket_json(
+            _ticket_degraded_error_payload(
+                reason_code="ticket_chat_messages_failed",
+                message="No pudimos actualizar los mensajes del chat en este momento.",
+                ticket_type="municipio",
+                ticket_id=ticket_id,
+                request_id=request_id,
+            ),
+            status_code=503,
+            request_id=request_id,
+        )
 
 
 # ---------- CHAT EN VIVO PYME: MENSAJES ----------
@@ -2271,6 +2526,7 @@ def get_chat_mensajes(current_user: User, ticket_id: int, anon_id: str = None, o
 @anon_o_token_requerido
 def get_chat_mensajes_pyme(current_user: User, ticket_id: int, anon_id: str = None, owner_user: User = None):
     """Devuelve mensajes de chat PyME para agentes, duenios o acceso publico seguro."""
+    request_id = _ticket_request_id()
     try:
         actor_user = _effective_ticket_actor(current_user, owner_user)
         sala_de_chat, error_response, status_code, access = _resolve_ticket_with_access(
@@ -2304,23 +2560,34 @@ def get_chat_mensajes_pyme(current_user: User, ticket_id: int, anon_id: str = No
             .order_by(TicketComentario.fecha.asc())
             .all()
         )
-        mensajes_formateados = []
-        for msg in mensajes_nuevos:
-            data = msg.to_dict()
-            if "texto" not in data:
-                data["texto"] = data.get("comentario")
-            data.pop("comentario", None)
-            mensajes_formateados.append(data)
+        mensajes_formateados = _format_ticket_chat_messages(mensajes_nuevos, request_id=request_id)
+        realtime_state = _safe_ticket_realtime_summary("pyme", ticket_id, request_id=request_id)
+        degraded_reasons = []
+        if any(message.get("serializer_degraded") for message in mensajes_formateados):
+            degraded_reasons.append("ticket_comment_serializer_unavailable")
+        if realtime_state.get("meta", {}).get("degraded"):
+            degraded_reasons.append(realtime_state.get("meta", {}).get("reason_code") or "ticket_realtime_summary_unavailable")
 
         respuesta_final = {
             "estado_chat": sala_de_chat.estado,
             "mensajes": mensajes_formateados,
-            "realtime_state": build_ticket_realtime_summary(ticket_type="pyme", ticket_id=ticket_id),
+            "realtime_state": realtime_state,
+            "meta": _ticket_degraded_meta(degraded_reasons),
         }
-        return jsonify(respuesta_final)
+        return _ticket_json(respuesta_final, request_id=request_id)
     except Exception as e:
         current_app.logger.error(f"Error en get_chat_mensajes_pyme para ticket {ticket_id}: {e}", exc_info=True)
-        return jsonify({"error": "Error interno al obtener los mensajes del chat."}), 500
+        return _ticket_json(
+            _ticket_degraded_error_payload(
+                reason_code="ticket_chat_messages_failed",
+                message="No pudimos actualizar los mensajes del chat en este momento.",
+                ticket_type="pyme",
+                ticket_id=ticket_id,
+                request_id=request_id,
+            ),
+            status_code=503,
+            request_id=request_id,
+        )
 
 # ---------- RUTA HACIA EL TICKET ----------
 @ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/ruta', methods=['GET'])
@@ -2376,6 +2643,7 @@ def get_ticket_timeline(current_user: User, tipo: str, ticket_id: int, anon_id: 
     ticket. Esto permite que el frontend muestre una vista completa del flujo de
     interacción del reclamo o pedido, combinando mensajes del chat y estados.
     """
+    request_id = _ticket_request_id()
     anon_id = anon_id or _request_anon_id()
     actor_user = _effective_ticket_actor(current_user, owner_user)
     ticket_obj, error_response, status_code, access = _resolve_ticket_with_access(
@@ -2393,21 +2661,65 @@ def get_ticket_timeline(current_user: User, tipo: str, ticket_id: int, anon_id: 
         if error_response:
             return error_response
 
+    degraded_reasons: list[str] = []
     try:
-        timeline = servicio_tickets.obtener_timeline_ticket(ticket_obj)
-        historial_chat = servicio_tickets.obtener_historial_chat(ticket_obj)
-        realtime_state = build_ticket_realtime_summary(ticket_type=tipo, ticket_id=ticket_id)
+        try:
+            timeline = servicio_tickets.obtener_timeline_ticket(ticket_obj)
+        except Exception as exc:
+            current_app.logger.warning(
+                "Ticket timeline degraded for %s ticket %s request_id=%s: %s",
+                tipo,
+                ticket_id,
+                request_id,
+                exc,
+                exc_info=True,
+            )
+            timeline = []
+            degraded_reasons.append("ticket_timeline_unavailable")
+
+        try:
+            historial_chat = servicio_tickets.obtener_historial_chat(ticket_obj)
+        except Exception as exc:
+            current_app.logger.warning(
+                "Ticket chat history degraded for %s ticket %s request_id=%s: %s",
+                tipo,
+                ticket_id,
+                request_id,
+                exc,
+                exc_info=True,
+            )
+            historial_chat = []
+            degraded_reasons.append("ticket_chat_history_unavailable")
+
+        realtime_state = _safe_ticket_realtime_summary(tipo, ticket_id, request_id=request_id)
+        if realtime_state.get("meta", {}).get("degraded"):
+            degraded_reasons.append(realtime_state.get("meta", {}).get("reason_code") or "ticket_realtime_summary_unavailable")
+
+        try:
+            unified_conversation_stream = build_unified_conversation_stream(
+                timeline=timeline,
+                historial_chat=historial_chat,
+                latest_comment_id=realtime_state["read_state"]["latest_comment_id"],
+            )
+        except Exception as exc:
+            current_app.logger.warning(
+                "Ticket unified stream degraded for %s ticket %s request_id=%s: %s",
+                tipo,
+                ticket_id,
+                request_id,
+                exc,
+                exc_info=True,
+            )
+            unified_conversation_stream = []
+            degraded_reasons.append("ticket_unified_stream_unavailable")
 
         payload = {
             "estado_chat": ticket_obj.estado,
             "timeline": timeline,
             "historial_chat": historial_chat,
-            "unified_conversation_stream": build_unified_conversation_stream(
-                timeline=timeline,
-                historial_chat=historial_chat,
-                latest_comment_id=realtime_state["read_state"]["latest_comment_id"],
-            ),
+            "unified_conversation_stream": unified_conversation_stream,
             "realtime_state": realtime_state,
+            "meta": _ticket_degraded_meta(degraded_reasons),
         }
 
         contact_key = _request_contact_key()
@@ -2416,7 +2728,7 @@ def get_ticket_timeline(current_user: User, tipo: str, ticket_id: int, anon_id: 
         if anon_id:
             payload.setdefault("anon_id", anon_id)
 
-        return jsonify(payload)
+        return _ticket_json(payload, request_id=request_id)
     except Exception as exc:
         current_app.logger.error(
             "Error en get_ticket_timeline para %s ticket %s: %s",
@@ -2425,15 +2737,17 @@ def get_ticket_timeline(current_user: User, tipo: str, ticket_id: int, anon_id: 
             exc,
             exc_info=True,
         )
-        return jsonify({
-            "contract_version": "shared.error.v1",
-            "status_code": 500,
-            "reason_code": "ticket_timeline_failed",
-            "retryable": True,
-            "action_hint": "retry_or_use_messages_fallback",
-            "error": {"code": 500, "message": "Error interno al obtener la timeline del ticket."},
-            "message": "Error interno al obtener la timeline del ticket.",
-        }), 500
+        return _ticket_json(
+            _ticket_degraded_error_payload(
+                reason_code="ticket_timeline_failed",
+                message="No pudimos actualizar la timeline del ticket en este momento.",
+                ticket_type=tipo,
+                ticket_id=ticket_id,
+                request_id=request_id,
+            ),
+            status_code=503,
+            request_id=request_id,
+        )
 
 
 @ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/presence', methods=['POST'])

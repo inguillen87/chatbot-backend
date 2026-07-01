@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import timedelta
 from typing import Any
 from collections import defaultdict
@@ -7,6 +8,8 @@ from collections import defaultdict
 from models import TicketComentario, TicketRealtimeState, db
 from utils.time_utils import get_local_now, datetime_to_iso_utc
 
+
+logger = logging.getLogger(__name__)
 
 PRESENCE_ACTIVE_WINDOW_MINUTES = 5
 PRESENCE_IDLE_WINDOW_MINUTES = 15
@@ -131,7 +134,37 @@ def _dedupe_rows(rows: list[TicketRealtimeState]) -> list[TicketRealtimeState]:
     return list(selected.values())
 
 
-def build_ticket_realtime_summary(*, ticket_type: str, ticket_id: int) -> dict[str, Any]:
+def _empty_ticket_realtime_summary(*, ticket_type: str, ticket_id: int, reason_code: str) -> dict[str, Any]:
+    return {
+        "presence": {
+            "active_count": 0,
+            "active_viewers": [],
+            "idle_count": 0,
+            "idle_viewers": [],
+            "active_window_minutes": PRESENCE_ACTIVE_WINDOW_MINUTES,
+            "idle_window_minutes": PRESENCE_IDLE_WINDOW_MINUTES,
+        },
+        "read_state": {
+            "latest_comment_id": 0,
+            "viewers": [],
+            "unread_viewers": [],
+            "unread_viewer_count": 0,
+            "latest_read_at": None,
+        },
+        "meta": {
+            "generated_at": datetime_to_iso_utc(get_local_now()),
+            "viewer_rows_considered": 0,
+            "stale_retention_hours": PRESENCE_STALE_RETENTION_HOURS,
+            "degraded": True,
+            "retryable": True,
+            "reason_code": reason_code,
+            "ticket_type": ticket_type,
+            "ticket_id": ticket_id,
+        },
+    }
+
+
+def _build_ticket_realtime_summary_unchecked(*, ticket_type: str, ticket_id: int) -> dict[str, Any]:
     now = get_local_now()
     active_cutoff = now - timedelta(minutes=PRESENCE_ACTIVE_WINDOW_MINUTES)
     prune_stale_ticket_realtime_states(now=now)
@@ -217,6 +250,24 @@ def build_ticket_realtime_summary(*, ticket_type: str, ticket_id: int) -> dict[s
             "stale_retention_hours": PRESENCE_STALE_RETENTION_HOURS,
         },
     }
+
+
+def build_ticket_realtime_summary(*, ticket_type: str, ticket_id: int) -> dict[str, Any]:
+    try:
+        return _build_ticket_realtime_summary_unchecked(ticket_type=ticket_type, ticket_id=ticket_id)
+    except Exception as exc:
+        logger.warning(
+            "Ticket realtime summary degraded for %s ticket %s: %s",
+            ticket_type,
+            ticket_id,
+            exc,
+            exc_info=True,
+        )
+        return _empty_ticket_realtime_summary(
+            ticket_type=ticket_type,
+            ticket_id=ticket_id,
+            reason_code="ticket_realtime_summary_unavailable",
+        )
 
 
 def build_ticket_collaboration_states(
