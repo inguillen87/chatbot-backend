@@ -2393,28 +2393,47 @@ def get_ticket_timeline(current_user: User, tipo: str, ticket_id: int, anon_id: 
         if error_response:
             return error_response
 
-    timeline = servicio_tickets.obtener_timeline_ticket(ticket_obj)
-    historial_chat = servicio_tickets.obtener_historial_chat(ticket_obj)
+    try:
+        timeline = servicio_tickets.obtener_timeline_ticket(ticket_obj)
+        historial_chat = servicio_tickets.obtener_historial_chat(ticket_obj)
+        realtime_state = build_ticket_realtime_summary(ticket_type=tipo, ticket_id=ticket_id)
 
-    payload = {
-        "estado_chat": ticket_obj.estado,
-        "timeline": timeline,
-        "historial_chat": historial_chat,
-        "unified_conversation_stream": build_unified_conversation_stream(
-            timeline=timeline,
-            historial_chat=historial_chat,
-            latest_comment_id=build_ticket_realtime_summary(ticket_type=tipo, ticket_id=ticket_id)["read_state"]["latest_comment_id"],
-        ),
-        "realtime_state": build_ticket_realtime_summary(ticket_type=tipo, ticket_id=ticket_id),
-    }
+        payload = {
+            "estado_chat": ticket_obj.estado,
+            "timeline": timeline,
+            "historial_chat": historial_chat,
+            "unified_conversation_stream": build_unified_conversation_stream(
+                timeline=timeline,
+                historial_chat=historial_chat,
+                latest_comment_id=realtime_state["read_state"]["latest_comment_id"],
+            ),
+            "realtime_state": realtime_state,
+        }
 
-    contact_key = _request_contact_key()
-    if contact_key:
-        payload["contact_key"] = contact_key
-    if anon_id:
-        payload.setdefault("anon_id", anon_id)
+        contact_key = _request_contact_key()
+        if contact_key:
+            payload["contact_key"] = contact_key
+        if anon_id:
+            payload.setdefault("anon_id", anon_id)
 
-    return jsonify(payload)
+        return jsonify(payload)
+    except Exception as exc:
+        current_app.logger.error(
+            "Error en get_ticket_timeline para %s ticket %s: %s",
+            tipo,
+            ticket_id,
+            exc,
+            exc_info=True,
+        )
+        return jsonify({
+            "contract_version": "shared.error.v1",
+            "status_code": 500,
+            "reason_code": "ticket_timeline_failed",
+            "retryable": True,
+            "action_hint": "retry_or_use_messages_fallback",
+            "error": {"code": 500, "message": "Error interno al obtener la timeline del ticket."},
+            "message": "Error interno al obtener la timeline del ticket.",
+        }), 500
 
 
 @ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/presence', methods=['POST'])

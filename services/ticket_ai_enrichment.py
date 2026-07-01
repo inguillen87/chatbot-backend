@@ -55,19 +55,44 @@ def _safe_text(value: Any) -> str:
     return str(value).strip()
 
 
+def _read_field(source: Any, *keys: str) -> Any:
+    if isinstance(source, dict):
+        for key in keys:
+            if key in source:
+                return source.get(key)
+        return None
+    for key in keys:
+        value = getattr(source, key, None)
+        if value not in (None, ""):
+            return value
+    return None
+
+
 def _ticket_text(ticket: Any, comments: Iterable[Any] | None = None, *, max_comment_chars: int = 4000) -> str:
+    extra = getattr(ticket, "datos_extra", None)
+    if not isinstance(extra, dict):
+        extra = {}
+    contact = extra.get("contact") if isinstance(extra.get("contact"), dict) else {}
+
     parts = [
-        _safe_text(getattr(ticket, "asunto", None)),
-        _safe_text(getattr(ticket, "categoria", None)),
-        _safe_text(getattr(ticket, "pregunta", None)),
-        _safe_text(getattr(ticket, "detalles", None)),
-        _safe_text(getattr(ticket, "direccion", None)),
-        _safe_text(getattr(ticket, "distrito", None)),
+        _safe_text(_read_field(ticket, "asunto")),
+        _safe_text(extra.get("title")),
+        _safe_text(_read_field(ticket, "categoria")),
+        _safe_text(extra.get("type")),
+        _safe_text(_read_field(ticket, "pregunta")),
+        _safe_text(_read_field(ticket, "detalles")),
+        _safe_text(_read_field(ticket, "descripcion")),
+        _safe_text(extra.get("description")),
+        _safe_text(_read_field(ticket, "direccion")),
+        _safe_text(extra.get("address")),
+        _safe_text(_read_field(ticket, "distrito")),
+        _safe_text(contact.get("name")),
+        _safe_text(contact.get("phone")),
     ]
 
     remaining = max_comment_chars
     for comment in comments or []:
-        text = _safe_text(getattr(comment, "comentario", None))
+        text = _safe_text(_read_field(comment, "comentario", "body", "texto", "message"))
         if not text:
             continue
         if remaining <= 0:

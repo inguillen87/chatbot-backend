@@ -10,7 +10,7 @@ from flask import Blueprint, abort, jsonify, request
 import pdfplumber
 
 from extensions import db
-from models import CatalogoItem, MunicipioTicket, PymePedido, PymeTicket, TenantProfile, TicketComentario
+from models import CatalogoItem, MunicipioTicket, PymePedido, PymeTicket, TenantProfile, TenantTicket, TicketComentario
 from services.analytics import get_summary
 from services.analytics.filters import parse_filters
 from services.analytics.rbac import require_access
@@ -102,10 +102,12 @@ def _payload_truthy(value) -> bool:
 def _parse_ai_enrichment_scope(payload: dict) -> str:
     raw_scope = payload.get("scope", "municipio")
     if not isinstance(raw_scope, str):
-        abort(400, description="scope must be municipio|pyme")
+        abort(400, description="scope must be municipio|pyme|tenant")
     scope = raw_scope.strip().lower() or "municipio"
-    if scope not in {"municipio", "pyme"}:
-        abort(400, description="scope must be municipio|pyme")
+    if scope in {"crm", "v2", "tenant_ticket"}:
+        scope = "tenant"
+    if scope not in {"municipio", "pyme", "tenant"}:
+        abort(400, description="scope must be municipio|pyme|tenant")
     return scope
 
 
@@ -164,6 +166,22 @@ def _ticket_number_candidates(payload: dict) -> list[str]:
 
 
 def _resolve_ticket_for_ai(ticket_id: int, scope: str, payload: dict):
+    if scope == "tenant":
+        ticket = db.session.get(TenantTicket, ticket_id)
+        if ticket:
+            return ticket
+
+        for candidate in _ticket_number_candidates(payload):
+            try:
+                candidate_id = int(candidate.removeprefix("T-"))
+            except (TypeError, ValueError):
+                continue
+            ticket = db.session.get(TenantTicket, candidate_id)
+            if ticket:
+                return ticket
+
+        abort(404, description="ticket not found")
+
     model = MunicipioTicket if scope == "municipio" else PymeTicket
     ticket = db.session.get(model, ticket_id)
     if ticket:
@@ -201,6 +219,14 @@ def _resolve_ticket_access_tenant(ticket, scope: str):
     if owner_id:
         return str(owner_id), None
     abort(404, description="ticket tenant not resolved")
+
+
+def _tenant_ticket_comments(ticket: TenantTicket, limit: int) -> list[dict]:
+    if not limit:
+        return []
+    extra = ticket.datos_extra if isinstance(ticket.datos_extra, dict) else {}
+    comments = extra.get("comments") if isinstance(extra.get("comments"), list) else []
+    return [item for item in comments if isinstance(item, dict)][:limit]
 
 
 @admin_ai_bp.get("/bot/settings")
@@ -376,29 +402,36 @@ def ticket_ai_enrichment(ticket_id: int):
     access_tenant_id, tenant = _resolve_ticket_access_tenant(ticket, scope)
     require_access(access_tenant_id, "operador")
 
-    comments = (
-        TicketComentario.query.filter(
-            TicketComentario.municipio_ticket_id == ticket.id
-            if scope == "municipio"
-            else TicketComentario.pyme_ticket_id == ticket.id
+    if scope == "tenant":
+        comments = _tenant_ticket_comments(ticket, comments_limit)
+        enrichment_scope = "municipio" if str(getattr(tenant, "tipo", "") or "").lower() == "municipio" else "pyme"
+    else:
+        comments = (
+            TicketComentario.query.filter(
+                TicketComentario.municipio_ticket_id == ticket.id
+                if scope == "municipio"
+                else TicketComentario.pyme_ticket_id == ticket.id
+            )
+            .order_by(TicketComentario.fecha.asc())
+            .limit(comments_limit)
+            .all()
+            if comments_limit
+            else []
         )
-        .order_by(TicketComentario.fecha.asc())
-        .limit(comments_limit)
-        .all()
-        if comments_limit
-        else []
-    )
+        enrichment_scope = scope
 
     from services.ticket_ai_enrichment import build_ticket_ai_enrichment
 
-    return jsonify(
-        build_ticket_ai_enrichment(
-            ticket,
-            scope=scope,
-            comments=comments,
-            tenant=tenant,
-        )
+    enrichment = build_ticket_ai_enrichment(
+        ticket,
+        scope=enrichment_scope,
+        comments=comments,
+        tenant=tenant,
     )
+    if scope == "tenant":
+        enrichment["ticket_type"] = "tenant"
+        enrichment["domain_scope"] = enrichment_scope
+    return jsonify(enrichment)
 
 
 @admin_ai_bp.post("/ai/product-recommendations")

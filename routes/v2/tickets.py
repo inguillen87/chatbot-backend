@@ -76,6 +76,183 @@ def _ticket_access_error(ticket: TenantTicket):
     return _error_response("ticket no encontrado", 404, "ticket_not_found", "refresh_tickets")
 
 
+def _resolve_ticket_or_error(ticket_id: int, tenant: Any):
+    ticket = TenantTicket.query.get(ticket_id)
+    if not ticket or ticket.tenant_id != tenant.id:
+        return None, _error_response("ticket no encontrado", 404, "ticket_not_found", "refresh_tickets")
+    ticket_error = _ticket_access_error(ticket)
+    if ticket_error:
+        return None, ticket_error
+    return ticket, None
+
+
+def _comment_author_type(ticket: TenantTicket, comment: dict[str, Any]) -> str:
+    author_user_id = comment.get("author_user_id")
+    if author_user_id and ticket.user_id and str(author_user_id) == str(ticket.user_id):
+        return "citizen"
+    if author_user_id:
+        return "agent"
+    return "citizen"
+
+
+def _visible_ticket_comments(ticket: TenantTicket) -> list[dict[str, Any]]:
+    extra = ticket.datos_extra if isinstance(ticket.datos_extra, dict) else {}
+    comments = extra.get("comments") if isinstance(extra.get("comments"), list) else []
+    if _is_operator():
+        return [item for item in comments if isinstance(item, dict)]
+    return [
+        item
+        for item in comments
+        if isinstance(item, dict) and (item.get("visibility") or "public") == "public"
+    ]
+
+
+def _message_from_comment(ticket: TenantTicket, comment: dict[str, Any]) -> dict[str, Any]:
+    created_at = comment.get("created_at")
+    text = comment.get("body") or comment.get("texto") or ""
+    author_type = _comment_author_type(ticket, comment)
+    return {
+        "id": comment.get("id"),
+        "comment_id": comment.get("id"),
+        "texto": text,
+        "comentario": text,
+        "body": text,
+        "fecha": created_at,
+        "timestamp": created_at,
+        "visibility": comment.get("visibility") or "public",
+        "author_user_id": comment.get("author_user_id"),
+        "author_type": author_type,
+        "actor_type": author_type,
+        "es_admin": author_type == "agent",
+    }
+
+
+def _ticket_v2_realtime_summary(ticket: TenantTicket, comments: list[dict[str, Any]]) -> dict[str, Any]:
+    latest_comment_id = max(
+        (int(item.get("id") or 0) for item in comments if str(item.get("id") or "").isdigit()),
+        default=0,
+    )
+    return {
+        "presence": {
+            "active_count": 0,
+            "active_viewers": [],
+            "idle_count": 0,
+            "idle_viewers": [],
+        },
+        "read_state": {
+            "latest_comment_id": latest_comment_id,
+            "viewers": [],
+            "unread_viewers": [],
+            "unread_viewer_count": 0,
+        },
+        "meta": {
+            "ticket_type": "tenant",
+            "ticket_id": ticket.id,
+            "source": "tickets.v2.json_comments",
+        },
+    }
+
+
+def _ticket_v2_timeline(ticket: TenantTicket, tenant: Any, comments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    extra = ticket.datos_extra if isinstance(ticket.datos_extra, dict) else {}
+    title = extra.get("title") or ticket.categoria or "Ticket"
+    timeline: list[dict[str, Any]] = [
+        {
+            "id": f"ticket-created-{ticket.id}",
+            "tipo": "ticket_creado",
+            "event_type": "ticket.created",
+            "fecha": ticket.created_at.isoformat() if ticket.created_at else None,
+            "estado": ticket.estado,
+            "texto": f"Ticket creado: {title}",
+            "actor_type": "system",
+            "source": "tenant_ticket",
+        }
+    ]
+
+    for comment in comments:
+        message = _message_from_comment(ticket, comment)
+        timeline.append(
+            {
+                **message,
+                "id": f"comment-{message.get('id')}",
+                "tipo": "comentario",
+                "event_type": "ticket.comment_added",
+                "source": "tenant_ticket_comment",
+            }
+        )
+
+    if _is_operator():
+        for event in list_ticket_events(tenant_id=tenant.id, ticket_id=ticket.id):
+            if event.event_type == "ticket.created":
+                continue
+            timeline.append(
+                {
+                    "id": f"audit-{event.id}",
+                    "tipo": "estado" if event.event_type == "ticket.status_changed" else "evento",
+                    "event_type": event.event_type,
+                    "resource_type": event.resource_type,
+                    "resource_id": event.resource_id,
+                    "fecha": event.created_at.isoformat() if event.created_at else None,
+                    "estado": (event.details or {}).get("to") if event.event_type == "ticket.status_changed" else None,
+                    "texto": event.event_type,
+                    "actor_user_id": event.actor_user_id,
+                    "actor_type": "agent" if event.actor_user_id else "system",
+                    "details": event.details or {},
+                    "source": "audit_event",
+                }
+            )
+
+    return sorted(timeline, key=lambda item: item.get("fecha") or "")
+
+
+def _ticket_detail_payload(ticket: TenantTicket, *, viewer: Any = None) -> dict[str, Any]:
+    serialized = serialize_ticket(ticket, viewer=viewer)
+    base = f"/api/v2/tickets/{ticket.id}"
+    return {
+        **serialized,
+        "source_model": "TenantTicket",
+        "ticket_type": "tenant_ticket",
+        "detail_endpoint": base,
+        "messages_endpoint": f"{base}/messages",
+        "timeline_endpoint": f"{base}/timeline",
+        "events_endpoint": f"{base}/events",
+        "ai_enrichment_endpoint": f"{base}/ai-enrichment",
+    }
+
+
+def _payload_truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "on", "si"}
+
+
+def _reject_ai_enrichment_mutation_request(payload: dict[str, Any]) -> str | None:
+    mutation_flags = ("apply", "persist", "mutate", "auto_update", "auto_apply")
+    if any(_payload_truthy(payload.get(flag)) for flag in mutation_flags):
+        return "ai-enrichment is advisory-only; state mutation is not supported"
+
+    mutation_fields = ("estado", "state", "new_state", "assigned_to", "asignado_a_id")
+    if any(field in payload for field in mutation_fields):
+        return "ai-enrichment cannot receive operational mutation fields"
+    return None
+
+
+def _parse_comments_limit(payload: dict[str, Any], *, default: int = 40) -> int:
+    if _payload_truthy(payload.get("exclude_comments")):
+        return 0
+    raw_limit = payload.get("comments_limit", default)
+    try:
+        return max(0, min(int(raw_limit), 100))
+    except (TypeError, ValueError):
+        return default
+
+
+def _domain_scope_for_tenant(tenant: Any) -> str:
+    return "municipio" if str(getattr(tenant, "tipo", "") or "").strip().lower() == "municipio" else "pyme"
+
+
 def _operator_error():
     if _is_operator():
         return None
@@ -142,7 +319,7 @@ def create_ticket_v2():
         db.session.rollback()
         return _error_response(str(exc), 400, "validation_failed", "fix_ticket_payload")
 
-    serialized = serialize_ticket(ticket, viewer=_viewer())
+    serialized = _ticket_detail_payload(ticket, viewer=_viewer())
     return _json_response(
         {
             **serialized,
@@ -151,6 +328,34 @@ def create_ticket_v2():
             "ticket": serialized,
         },
         201,
+    )
+
+
+@v2_tickets_bp.route("/tickets/<int:ticket_id>", methods=["GET"])
+def get_ticket_v2(ticket_id: int):
+    tenant, error = _resolve_tenant_or_error()
+    if error:
+        return error
+    access_error = _tenant_access_error(tenant)
+    if access_error:
+        return access_error
+
+    ticket, error = _resolve_ticket_or_error(ticket_id, tenant)
+    if error:
+        return error
+
+    comments = _visible_ticket_comments(ticket)
+    serialized = _ticket_detail_payload(ticket, viewer=_viewer())
+    return _json_response(
+        {
+            **serialized,
+            "contract_version": "tickets.v2.detail",
+            "ok": True,
+            "source_model": "TenantTicket",
+            "ticket_type": "tenant_ticket",
+            "ticket": serialized,
+            "realtime_state": _ticket_v2_realtime_summary(ticket, comments),
+        }
     )
 
 
@@ -183,7 +388,7 @@ def patch_ticket_v2(ticket_id: int):
         db.session.rollback()
         return _error_response(str(exc), 400, "validation_failed", "fix_ticket_payload")
 
-    serialized = serialize_ticket(updated, viewer=_viewer())
+    serialized = _ticket_detail_payload(updated, viewer=_viewer())
     return _json_response(
         {
             **serialized,
@@ -236,6 +441,123 @@ def add_ticket_comment_v2(ticket_id: int):
         },
         201,
     )
+
+
+@v2_tickets_bp.route("/tickets/<int:ticket_id>/messages", methods=["GET"])
+def list_ticket_messages_v2(ticket_id: int):
+    tenant, error = _resolve_tenant_or_error()
+    if error:
+        return error
+    access_error = _tenant_access_error(tenant)
+    if access_error:
+        return access_error
+
+    ticket, error = _resolve_ticket_or_error(ticket_id, tenant)
+    if error:
+        return error
+
+    comments = _visible_ticket_comments(ticket)
+    messages = [_message_from_comment(ticket, comment) for comment in comments]
+    return _json_response(
+        {
+            "contract_version": "tickets.v2.messages",
+            "ticket_id": ticket.id,
+            "ticket_type": "tenant",
+            "estado_chat": ticket.estado,
+            "messages": messages,
+            "mensajes": messages,
+            "realtime_state": _ticket_v2_realtime_summary(ticket, comments),
+        }
+    )
+
+
+@v2_tickets_bp.route("/tickets/<int:ticket_id>/timeline", methods=["GET"])
+def list_ticket_timeline_v2(ticket_id: int):
+    tenant, error = _resolve_tenant_or_error()
+    if error:
+        return error
+    access_error = _tenant_access_error(tenant)
+    if access_error:
+        return access_error
+
+    ticket, error = _resolve_ticket_or_error(ticket_id, tenant)
+    if error:
+        return error
+
+    comments = _visible_ticket_comments(ticket)
+    messages = [_message_from_comment(ticket, comment) for comment in comments]
+    timeline = _ticket_v2_timeline(ticket, tenant, comments)
+    realtime_state = _ticket_v2_realtime_summary(ticket, comments)
+    unified = [
+        {
+            "id": item.get("id"),
+            "source": item.get("source") or "tenant_ticket",
+            "stream_type": "message" if item.get("tipo") == "comentario" else item.get("tipo") or "timeline_event",
+            "timestamp": item.get("fecha") or item.get("timestamp"),
+            "actor_type": item.get("actor_type") or item.get("author_type") or "system",
+            "preview_text": item.get("texto") or item.get("comentario") or item.get("body"),
+            "status": item.get("estado"),
+            "comment_id": item.get("comment_id"),
+            "payload": item,
+        }
+        for item in timeline
+    ]
+
+    return _json_response(
+        {
+            "contract_version": "tickets.v2.timeline",
+            "ticket_id": ticket.id,
+            "ticket_type": "tenant",
+            "estado_chat": ticket.estado,
+            "timeline": timeline,
+            "historial_chat": messages,
+            "unified_conversation_stream": unified,
+            "realtime_state": realtime_state,
+        }
+    )
+
+
+@v2_tickets_bp.route("/tickets/<int:ticket_id>/ai-enrichment", methods=["POST"])
+def ticket_ai_enrichment_v2(ticket_id: int):
+    tenant, error = _resolve_tenant_or_error()
+    if error:
+        return error
+    access_error = _tenant_access_error(tenant)
+    if access_error:
+        return access_error
+    role_error = _operator_error()
+    if role_error:
+        return role_error
+
+    ticket, error = _resolve_ticket_or_error(ticket_id, tenant)
+    if error:
+        return error
+
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict):
+        return _error_response("payload debe ser un objeto JSON", 400, "validation_failed", "fix_ai_payload")
+
+    mutation_rejection = _reject_ai_enrichment_mutation_request(payload)
+    if mutation_rejection:
+        return _error_response(mutation_rejection, 400, "ai_enrichment_mutation_rejected", "remove_mutation_fields")
+
+    comments_limit = _parse_comments_limit(payload)
+    comments = _visible_ticket_comments(ticket)[:comments_limit] if comments_limit else []
+    domain_scope = _domain_scope_for_tenant(tenant)
+
+    from services.ticket_ai_enrichment import build_ticket_ai_enrichment
+
+    enrichment = build_ticket_ai_enrichment(
+        ticket,
+        scope=domain_scope,
+        comments=comments,
+        tenant=tenant,
+    )
+    enrichment["ticket_id"] = ticket.id
+    enrichment["ticket_type"] = "tenant"
+    enrichment["source_model"] = "TenantTicket"
+    enrichment["domain_scope"] = domain_scope
+    return _json_response(enrichment)
 
 
 @v2_tickets_bp.route("/tickets/<int:ticket_id>/events", methods=["GET"])

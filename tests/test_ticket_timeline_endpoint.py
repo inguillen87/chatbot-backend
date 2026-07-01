@@ -1,17 +1,31 @@
+import os
 import unittest
+
+os.environ.setdefault("FLASK_SKIP_GLOBAL_APP", "1")
+
 from app import create_app, db
+from config import Config
 from models import MunicipioTicket, User, TicketComentario
 from utils.auth_helpers import generar_token
 
+
+class TicketTimelineTestConfig(Config):
+    TESTING = True
+    SQLALCHEMY_DATABASE_URI = "sqlite:///:memory:"
+    SQLALCHEMY_ENGINE_OPTIONS = {"connect_args": {"check_same_thread": False}}
+    ENABLE_RUNTIME_SCHEMA_SYNC = False
+    ENABLE_RUNTIME_TENANT_INIT = False
+
+
 class TicketTimelineEndpointTest(unittest.TestCase):
     def setUp(self):
-        self.app = create_app()
+        self.app = create_app(TicketTimelineTestConfig)
         self.app_context = self.app.app_context()
         self.app_context.push()
         db.create_all()
         self.client = self.app.test_client()
 
-        user = User(name='Admin', email='admin@example.com', rol='admin', tipo_chat='municipio', municipio_id=1)
+        user = User(name='Admin', email='timeline-admin@example.test', rol='admin', tipo_chat='municipio', municipio_id=1)
         user.set_password('pass')
         db.session.add(user)
         db.session.commit()

@@ -128,9 +128,9 @@ def huggingface_configured() -> bool:
 
 def _timeout() -> float:
     try:
-        return float(os.getenv("HUGGINGFACE_TIMEOUT_SECONDS", "30"))
+        return float(os.getenv("HUGGINGFACE_TIMEOUT_SECONDS", "5"))
     except ValueError:
-        return 30.0
+        return 5.0
 
 
 def _provider() -> str:

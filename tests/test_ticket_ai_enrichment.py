@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from models import MunicipioTicket, TenantProfile, User, db
+from models import MunicipioTicket, TenantProfile, TenantTicket, User, db
 from services.ticket_ai_enrichment import build_ticket_ai_enrichment
 
 
@@ -179,3 +179,77 @@ def test_admin_ticket_ai_enrichment_endpoint(client, monkeypatch):
     assert rejected.status_code == 400
     db.session.expire_all()
     assert MunicipioTicket.query.get(ticket.id).estado == "nuevo"
+
+
+def test_admin_ticket_ai_enrichment_supports_tenant_ticket_scope(client, monkeypatch):
+    owner = User(
+        name="Bodega Demo",
+        email="bodega-demo@example.com",
+        rol="admin",
+        tipo_chat="pyme",
+    )
+    owner.set_password("admin")
+    db.session.add(owner)
+    db.session.flush()
+    tenant = TenantProfile(slug="bodega-demo", nombre="Bodega Demo", tipo="pyme", pyme_id=owner.id)
+    db.session.add(tenant)
+    db.session.flush()
+    ticket = TenantTicket(
+        tenant_id=tenant.id,
+        user_id=owner.id,
+        categoria="Ventas",
+        descripcion="Cliente pregunta por promociones",
+        estado="nuevo",
+        origen="widget",
+        datos_extra={
+            "title": "Consulta de venta",
+            "type": "lead",
+            "contact": {"name": "Marcelo"},
+            "comments": [
+                {
+                    "id": 1,
+                    "body": "Quiere tres cajas y envio",
+                    "visibility": "public",
+                    "author_user_id": owner.id,
+                    "created_at": "2026-06-01T12:00:00",
+                }
+            ],
+        },
+    )
+    db.session.add(ticket)
+    db.session.commit()
+
+    seen = {}
+
+    def fake_enrichment(ticket_arg, scope, comments=None, tenant=None):
+        seen["scope"] = scope
+        seen["comments"] = list(comments or [])
+        seen["tenant_id"] = tenant.id if tenant else None
+        return {
+            "contract_version": "ticket.ai_enrichment.v1",
+            "ticket_id": ticket_arg.id,
+            "ticket_type": scope,
+            "tenant_id": tenant.id if tenant else ticket_arg.tenant_id,
+            "crm_hints": {"suggested_queue": "crear_pedido"},
+            "secret_values_exposed": False,
+        }
+
+    monkeypatch.setattr(
+        "services.ticket_ai_enrichment.build_ticket_ai_enrichment",
+        fake_enrichment,
+    )
+
+    response = client.post(
+        f"/admin/tickets/{ticket.id}/ai-enrichment",
+        json={"scope": "tenant", "comments_limit": 5},
+        headers={"X-Debug-Role": "operador", "X-Debug-Tenant": str(tenant.id)},
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["ticket_id"] == ticket.id
+    assert payload["ticket_type"] == "tenant"
+    assert payload["domain_scope"] == "pyme"
+    assert seen["scope"] == "pyme"
+    assert seen["tenant_id"] == tenant.id
+    assert len(seen["comments"]) == 1

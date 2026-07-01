@@ -2,6 +2,7 @@ import os
 import unittest
 import copy
 from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
 import jwt
 
@@ -163,6 +164,33 @@ class V2TicketsApiTest(unittest.TestCase):
         types = [e.get("event_type") for e in events]
         self.assertIn("ticket.status_changed", types)
 
+    def test_detail_endpoint_returns_tenant_ticket_contract(self):
+        headers = {**self._auth_header(self.employee), "X-Tenant-Slug": "tenant-1"}
+        created = self.client.post(
+            "/api/v2/tickets",
+            json={"title": "Detalle", "description": "Contrato estable", "channel": "widget"},
+            headers=headers,
+        ).get_json()
+        ticket_id = created["id"]
+
+        detail = self.client.get(f"/api/v2/tickets/{ticket_id}", headers=headers)
+        self.assertEqual(detail.status_code, 200)
+        payload = detail.get_json() or {}
+        self.assertEqual(payload.get("contract_version"), "tickets.v2.detail")
+        self.assertEqual(payload.get("source_model"), "TenantTicket")
+        self.assertEqual(payload.get("ticket_type"), "tenant_ticket")
+        self.assertEqual(payload.get("detail_endpoint"), f"/api/v2/tickets/{ticket_id}")
+        self.assertEqual(payload.get("messages_endpoint"), f"/api/v2/tickets/{ticket_id}/messages")
+        self.assertEqual(payload.get("timeline_endpoint"), f"/api/v2/tickets/{ticket_id}/timeline")
+        self.assertEqual((payload.get("ticket") or {}).get("id"), ticket_id)
+
+        cross_tenant = self.client.get(
+            f"/api/v2/tickets/{ticket_id}",
+            headers={**self._auth_header(self.admin_2), "X-Tenant-Slug": "tenant-2"},
+        )
+        self.assertEqual(cross_tenant.status_code, 404)
+        self.assertEqual((cross_tenant.get_json() or {}).get("reason_code"), "ticket_not_found")
+
     def test_customer_cannot_patch_or_read_events(self):
         headers = {**self._auth_header(self.end_user), "X-Tenant-Slug": "tenant-1"}
         created = self.client.post("/api/v2/tickets", json={"title": "Vecino", "description": "Caso"}, headers=headers).get_json()
@@ -264,6 +292,105 @@ class V2TicketsApiTest(unittest.TestCase):
         items = listed.get("items") or []
         target = next(item for item in items if item["id"] == ticket_id)
         self.assertEqual(target.get("comments"), [])
+
+    def test_messages_and_timeline_filter_internal_comments_for_customer(self):
+        admin_headers = {**self._auth_header(self.admin), "X-Tenant-Slug": "tenant-1"}
+        user_headers = {**self._auth_header(self.end_user), "X-Tenant-Slug": "tenant-1"}
+        created = self.client.post(
+            "/api/v2/tickets",
+            json={"title": "Conversacion", "description": "Vecino"},
+            headers=user_headers,
+        ).get_json()
+        ticket_id = created["id"]
+
+        public_comment = self.client.post(
+            f"/api/v2/tickets/{ticket_id}/comments",
+            json={"body": "Respuesta publica", "visibility": "public"},
+            headers=admin_headers,
+        )
+        self.assertEqual(public_comment.status_code, 201)
+        internal_comment = self.client.post(
+            f"/api/v2/tickets/{ticket_id}/comments",
+            json={"body": "Nota interna de equipo", "visibility": "internal"},
+            headers=admin_headers,
+        )
+        self.assertEqual(internal_comment.status_code, 201)
+
+        user_messages = self.client.get(f"/api/v2/tickets/{ticket_id}/messages", headers=user_headers)
+        self.assertEqual(user_messages.status_code, 200)
+        user_payload = user_messages.get_json() or {}
+        user_texts = [item.get("body") for item in user_payload.get("messages") or []]
+        self.assertEqual(user_texts, ["Respuesta publica"])
+
+        admin_messages = self.client.get(f"/api/v2/tickets/{ticket_id}/messages", headers=admin_headers)
+        self.assertEqual(admin_messages.status_code, 200)
+        admin_texts = [item.get("body") for item in (admin_messages.get_json() or {}).get("messages") or []]
+        self.assertIn("Respuesta publica", admin_texts)
+        self.assertIn("Nota interna de equipo", admin_texts)
+
+        user_timeline = self.client.get(f"/api/v2/tickets/{ticket_id}/timeline", headers=user_headers)
+        self.assertEqual(user_timeline.status_code, 200)
+        timeline_text = " ".join(
+            str(item.get("preview_text") or "")
+            for item in (user_timeline.get_json() or {}).get("unified_conversation_stream") or []
+        )
+        self.assertIn("Respuesta publica", timeline_text)
+        self.assertNotIn("Nota interna de equipo", timeline_text)
+
+    def test_v2_ai_enrichment_is_advisory_for_tenant_ticket(self):
+        admin_headers = {**self._auth_header(self.admin), "X-Tenant-Slug": "tenant-1"}
+        created = self.client.post(
+            "/api/v2/tickets",
+            json={"title": "Pedido", "description": "Cliente pregunta por stock"},
+            headers=admin_headers,
+        ).get_json()
+        ticket_id = created["id"]
+        self.client.post(
+            f"/api/v2/tickets/{ticket_id}/comments",
+            json={"body": "Quiere sumar dos unidades", "visibility": "public"},
+            headers=admin_headers,
+        )
+
+        seen = {}
+
+        def fake_enrichment(ticket, scope, comments=None, tenant=None):
+            seen["ticket_id"] = ticket.id
+            seen["scope"] = scope
+            seen["comments"] = list(comments or [])
+            seen["tenant_id"] = tenant.id if tenant else None
+            return {
+                "contract_version": "ticket.ai_enrichment.v1",
+                "ticket_id": ticket.id,
+                "tenant_id": tenant.id if tenant else ticket.tenant_id,
+                "crm_hints": {"suggested_queue": "crear_pedido"},
+                "state_mutation": {"applied": False},
+                "persisted": False,
+            }
+
+        with patch("services.ticket_ai_enrichment.build_ticket_ai_enrichment", side_effect=fake_enrichment):
+            response = self.client.post(
+                f"/api/v2/tickets/{ticket_id}/ai-enrichment",
+                json={"comments_limit": 10},
+                headers=admin_headers,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json() or {}
+        self.assertEqual(payload.get("contract_version"), "ticket.ai_enrichment.v1")
+        self.assertEqual(payload.get("ticket_type"), "tenant")
+        self.assertEqual(payload.get("source_model"), "TenantTicket")
+        self.assertEqual(payload.get("domain_scope"), "pyme")
+        self.assertEqual(seen["ticket_id"], ticket_id)
+        self.assertEqual(seen["scope"], "pyme")
+        self.assertEqual(len(seen["comments"]), 1)
+
+        rejected = self.client.post(
+            f"/api/v2/tickets/{ticket_id}/ai-enrichment",
+            json={"apply": True, "estado": "resuelto"},
+            headers=admin_headers,
+        )
+        self.assertEqual(rejected.status_code, 400)
+        self.assertEqual((rejected.get_json() or {}).get("reason_code"), "ai_enrichment_mutation_rejected")
 
     def test_customer_cannot_create_internal_comment(self):
         headers = {**self._auth_header(self.end_user), "X-Tenant-Slug": "tenant-1"}
