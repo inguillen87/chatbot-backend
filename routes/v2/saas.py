@@ -9,7 +9,7 @@ from urllib.parse import quote_plus
 import uuid
 
 from flask import Blueprint, current_app, g, jsonify, request
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm.attributes import flag_modified
 
 from extensions import db
@@ -26,6 +26,7 @@ from models import (
     PymeTicket,
     TenantProfile,
     TenantTicket,
+    TicketComentario,
     User,
 )
 from routes.v2.tenants import V2TenantResolutionError, resolve_tenant_v2
@@ -3312,8 +3313,17 @@ def omnichannel_inbox_v2(current_user):
         return error
 
     limit = max(1, min(int(request.args.get("limit", 50) or 50), 200))
-    tickets = TenantTicket.query.filter_by(tenant_id=tenant.id).order_by(TenantTicket.updated_at.desc()).limit(limit).all()
-    items = [_inbox_ticket_payload(ticket) for ticket in tickets]
+    tenant_tickets = (
+        TenantTicket.query.filter_by(tenant_id=tenant.id)
+        .order_by(TenantTicket.updated_at.desc())
+        .limit(limit)
+        .all()
+    )
+    legacy_claims = _legacy_claim_query_for_tenant(tenant).order_by(MunicipioTicket.ultima_actividad.desc()).limit(limit).all()
+    items = [_inbox_ticket_payload(ticket) for ticket in tenant_tickets]
+    items.extend(_legacy_claim_inbox_payload(ticket) for ticket in legacy_claims)
+    items.sort(key=_inbox_sort_key, reverse=True)
+    items = items[:limit]
 
     return _json_response(
         {
@@ -3332,6 +3342,38 @@ def omnichannel_inbox_v2(current_user):
             },
         }
     )
+
+
+def _legacy_claim_query_for_tenant(tenant: TenantProfile):
+    filters = [MunicipioTicket.tenant_id == tenant.id]
+    owner_ids = [
+        owner_id
+        for owner_id in (getattr(tenant, "municipio_id", None), getattr(tenant, "pyme_id", None))
+        if owner_id is not None
+    ]
+    if owner_ids:
+        filters.append((MunicipioTicket.tenant_id.is_(None)) & (MunicipioTicket.municipio_id.in_(owner_ids)))
+    return MunicipioTicket.query.filter(or_(*filters))
+
+
+def _legacy_claim_for_tenant(tenant: TenantProfile, ticket_id: int) -> MunicipioTicket | None:
+    return _legacy_claim_query_for_tenant(tenant).filter(MunicipioTicket.id == ticket_id).first()
+
+
+def _inbox_sort_key(item: Mapping[str, Any]) -> datetime:
+    for key in ("updated_at", "created_at"):
+        value = item.get(key)
+        if not value:
+            continue
+        if isinstance(value, datetime):
+            return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        if isinstance(value, str):
+            try:
+                parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+            except ValueError:
+                continue
+    return datetime.min.replace(tzinfo=timezone.utc)
 
 
 def _attachment_items(extra: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -3449,6 +3491,224 @@ def _source_metadata(ticket: TenantTicket, extra: Mapping[str, Any]) -> dict[str
     }
 
 
+def _legacy_claim_comments(ticket: MunicipioTicket, *, limit: int = 30) -> list[TicketComentario]:
+    rows = (
+        TicketComentario.query.filter_by(municipio_ticket_id=ticket.id)
+        .order_by(TicketComentario.fecha.desc())
+        .limit(limit)
+        .all()
+    )
+    return list(reversed(rows))
+
+
+def _legacy_claim_updated_at(ticket: MunicipioTicket, comments: list[TicketComentario]) -> datetime | None:
+    if comments:
+        latest = comments[-1].fecha
+        if latest:
+            return latest
+    return ticket.ultima_actividad or ticket.fecha
+
+
+def _legacy_claim_timeline(ticket: MunicipioTicket, comments: list[TicketComentario]) -> list[dict[str, Any]]:
+    timeline: list[dict[str, Any]] = []
+    for comment in comments:
+        origin = str(comment.origen or ("admin_panel" if comment.es_admin else "public_tracking")).strip().lower()
+        timeline.append(
+            {
+                "id": comment.id,
+                "type": "message" if not comment.estado_ticket else "status_change",
+                "origin": origin,
+                "body": comment.comentario or "",
+                "visibility": "internal" if comment.es_admin and origin == "internal" else "public",
+                "created_at": _iso(comment.fecha),
+                "actor": {
+                    "id": comment.user_id,
+                    "type": "agent" if comment.es_admin else "citizen",
+                    "name": "Equipo" if comment.es_admin else (ticket.nombre_vecino or "Vecino/a"),
+                },
+                "action": comment.estado_ticket,
+                "attachments": [],
+            }
+        )
+    return timeline
+
+
+def _legacy_claim_attachments(ticket: MunicipioTicket) -> list[dict[str, Any]]:
+    attachments: list[dict[str, Any]] = []
+    if ticket.foto_url_directa:
+        attachments.append(
+            {
+                "id": f"legacy-photo-{ticket.id}",
+                "name": "Foto adjunta",
+                "url": ticket.foto_url_directa,
+                "mimeType": None,
+                "kind": "image",
+                "source": "claim_attachment",
+            }
+        )
+    return attachments
+
+
+def _legacy_claim_assignee(ticket: MunicipioTicket) -> dict[str, Any] | None:
+    assignee = getattr(ticket, "asignado_a", None)
+    if not assignee:
+        return None
+    return {"id": assignee.id, "name": assignee.name, "email": assignee.email}
+
+
+def _legacy_claim_allowed_actions(ticket: MunicipioTicket) -> list[dict[str, Any]]:
+    base_endpoint = "/api/v2/inbox/omnichannel/actions"
+    defaults = {"source_model": "MunicipioTicket", "legacy_id": ticket.id, "ticket_id": ticket.id}
+    actions = [
+        {
+            "id": "reply",
+            "label": "Responder",
+            "method": "POST",
+            "endpoint": base_endpoint,
+            "requires": ["body"],
+            "payload_defaults": defaults,
+        },
+        {
+            "id": "assign",
+            "label": "Asignar",
+            "method": "POST",
+            "endpoint": base_endpoint,
+            "requires": ["assignee_id"],
+            "payload_defaults": defaults,
+        },
+    ]
+    if str(ticket.estado or "").lower() in _CLOSED_TICKET_STATES:
+        actions.append(
+            {
+                "id": "reopen",
+                "label": "Reabrir",
+                "method": "POST",
+                "endpoint": base_endpoint,
+                "requires": [],
+                "payload_defaults": defaults,
+            }
+        )
+    else:
+        actions.append(
+            {
+                "id": "close",
+                "label": "Cerrar",
+                "method": "POST",
+                "endpoint": base_endpoint,
+                "requires": [],
+                "payload_defaults": defaults,
+                "destructive": True,
+            }
+        )
+    actions.append(
+        {
+            "id": "open_tracking",
+            "label": "Ver seguimiento publico",
+            "method": "GET",
+            "endpoint": f"/api/public/tracking/experience?kind=claim&code={ticket.id}&pin={ticket.consulta_pin}",
+            "requires": [],
+        }
+    )
+    return actions
+
+
+def _legacy_claim_next_steps(ticket: MunicipioTicket) -> list[dict[str, Any]]:
+    steps: list[dict[str, Any]] = []
+    if not ticket.asignado_a_id:
+        steps.append({"id": "assign_owner", "label": "Asignar responsable municipal", "action": "assign", "priority": "high"})
+    if str(ticket.estado or "").lower() not in _CLOSED_TICKET_STATES:
+        steps.append({"id": "reply_citizen", "label": "Responder al vecino", "action": "reply", "priority": "high"})
+    if ticket.latitud is None and ticket.longitud is None and not ticket.direccion:
+        steps.append({"id": "collect_location", "label": "Pedir ubicacion o referencia", "action": "reply", "priority": "medium"})
+    return steps[:4]
+
+
+def _legacy_claim_inbox_payload(ticket: MunicipioTicket) -> dict[str, Any]:
+    comments = _legacy_claim_comments(ticket)
+    latest_comment = comments[-1].comentario if comments else None
+    updated_at = _legacy_claim_updated_at(ticket, comments)
+    assignee = _legacy_claim_assignee(ticket)
+    actions = _legacy_claim_allowed_actions(ticket)
+    channel = str(ticket.canal_ingreso or "whatsapp").strip().lower()
+    title = ticket.asunto or ticket.categoria or f"Reclamo {ticket.nro_ticket or ticket.id}"
+    description = ticket.detalles or ticket.pregunta or title
+    contact_name = ticket.nombre_vecino or ticket.nombre_display_whatsapp or "Vecino/a"
+
+    return {
+        "id": f"municipio:{ticket.id}",
+        "legacy_id": ticket.id,
+        "ticket_id": ticket.id,
+        "source_model": "MunicipioTicket",
+        "legacy_kind": "claim",
+        "conversation_id": f"municipio-ticket-{ticket.id}",
+        "detail_endpoint": f"/api/v2/inbox/omnichannel/{ticket.id}?source_model=MunicipioTicket",
+        "title": title,
+        "description": description,
+        "preview_text": latest_comment or description,
+        "status": ticket.estado,
+        "priority": "medium",
+        "channel": channel,
+        "category": ticket.categoria,
+        "intent": ticket.categoria or "municipal_claim",
+        "assignee": assignee,
+        "contact": {
+            "name": contact_name,
+            "phone": ticket.telefono_vecino,
+            "email": ticket.email_vecino,
+            "document": ticket.dni_vecino,
+            "avatar": {
+                "url": None,
+                "source": "fallback_identity",
+                "fallback": "initials_or_deterministic",
+                "reason": "WhatsApp profile images are not exposed unless a consented source is available.",
+            },
+        },
+        "location": {"lat": ticket.latitud, "lng": ticket.longitud, "address": ticket.direccion, "district": ticket.distrito},
+        "map": {
+            "can_render": ticket.latitud is not None and ticket.longitud is not None,
+            "fallback_when_no_coordinates": "timeline_only",
+        },
+        "attachments": _legacy_claim_attachments(ticket),
+        "sla": {
+            "status": "unassigned" if not assignee else "active",
+            "overdue": False,
+            "priority": "medium",
+            "first_response_due_at": None,
+            "resolution_due_at": None,
+            "next_update_due_at": None,
+            "paused": False,
+        },
+        "timeline": _legacy_claim_timeline(ticket, comments),
+        "presence": {"viewers": [], "locked_by": None},
+        "actions": [item["id"] for item in actions],
+        "allowed_actions": actions,
+        "next_steps": _legacy_claim_next_steps(ticket),
+        "source_metadata": {
+            "origin": "municipio_ticket",
+            "channel": channel,
+            "conversation_id": f"municipio-ticket-{ticket.id}",
+            "lead_source": ticket.canal_ingreso or "municipal_claim",
+            "source_model": "MunicipioTicket",
+            "read_model": "TicketComentario",
+            "admin_surface": "tenant_claims_inbox",
+            "legacy_reply_endpoint": f"/tickets/municipio/{ticket.id}/responder",
+            "public_messages_endpoint": f"/api/public/tracking/claims/{ticket.id}/messages",
+            "tracking_endpoint": f"/api/public/tracking/experience?kind=claim&code={ticket.id}&pin={ticket.consulta_pin}",
+        },
+        "handoff": None,
+        "created_at": _iso(ticket.fecha),
+        "updated_at": _iso(updated_at),
+        "frontend_contract": {
+            "render_as": "inbox_360_drawer",
+            "timeline_component": "conversation_timeline",
+            "map_fallback": "timeline_only",
+            "source_model": "MunicipioTicket",
+            "uses_legacy_bridge": True,
+            "avatar_policy": "consented_real_image_or_deterministic_fallback",
+        },
+    }
+
+
 def _inbox_ticket_payload(ticket: TenantTicket) -> dict[str, Any]:
     extra = _ticket_extra(ticket)
     timeline = _timeline_items(extra)
@@ -3507,8 +3767,34 @@ def omnichannel_inbox_detail_v2(current_user, ticket_id: int):
     tenant, error = _resolve_tenant_or_error(current_user)
     if error:
         return error
+    source_model = str(request.args.get("source_model") or "").strip().lower()
+    if source_model in {"municipioticket", "municipio_ticket", "municipio"}:
+        legacy_ticket = _legacy_claim_for_tenant(tenant, ticket_id)
+        if not legacy_ticket:
+            return _error_response("Ticket no encontrado", 404, "ticket_not_found", "refresh_inbox")
+        item = _legacy_claim_inbox_payload(legacy_ticket)
+        return _json_response(
+            {
+                "contract_version": "inbox.omnichannel.detail.v1",
+                "tenant": _tenant_ref(tenant),
+                "item": item,
+                "ticket": item,
+            }
+        )
+
     ticket = TenantTicket.query.filter_by(id=ticket_id, tenant_id=tenant.id).first()
     if not ticket:
+        legacy_ticket = _legacy_claim_for_tenant(tenant, ticket_id)
+        if legacy_ticket:
+            item = _legacy_claim_inbox_payload(legacy_ticket)
+            return _json_response(
+                {
+                    "contract_version": "inbox.omnichannel.detail.v1",
+                    "tenant": _tenant_ref(tenant),
+                    "item": item,
+                    "ticket": item,
+                }
+            )
         return _error_response("Ticket no encontrado", 404, "ticket_not_found", "refresh_inbox")
     item = _inbox_ticket_payload(ticket)
     return _json_response(
@@ -3537,6 +3823,121 @@ def _append_ticket_event(extra: dict[str, Any], *, action: str, actor: User, bod
     extra["comments"] = comments[-100:]
 
 
+def _is_legacy_claim_source(value: Any) -> bool:
+    return str(value or "").strip().lower() in {"municipioticket", "municipio_ticket", "municipio", "legacy_claim"}
+
+
+def _coerce_inbox_ticket_id(raw_value: Any) -> int | None:
+    if isinstance(raw_value, str) and raw_value.startswith("municipio:"):
+        raw_value = raw_value.split(":", 1)[1]
+    try:
+        return int(raw_value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfile, ticket_id: int, payload: Mapping[str, Any]):
+    ticket = _legacy_claim_for_tenant(tenant, ticket_id)
+    if not ticket:
+        return _error_response("Ticket no encontrado", 404, "ticket_not_found", "refresh_inbox")
+
+    action = str(payload.get("action") or payload.get("type") or "").strip().lower()
+    if action not in {"assign", "reply", "close", "reopen"}:
+        return _error_response("Accion de inbox no soportada para reclamos municipales", 400, "unsupported_legacy_inbox_action", "send_supported_action")
+
+    now = datetime.now(timezone.utc)
+
+    if action == "assign":
+        assignee_id = _coerce_inbox_ticket_id(payload.get("assignee_id") or payload.get("user_id"))
+        if not assignee_id:
+            return _error_response("assignee_id es obligatorio", 400, "assignee_required", "send_assignee_id")
+        owner_ids = [
+            owner_id
+            for owner_id in (getattr(tenant, "municipio_id", None), getattr(tenant, "pyme_id", None))
+            if owner_id is not None
+        ]
+        assignee_query = User.query.filter(User.id == assignee_id)
+        assignee_query = assignee_query.filter(or_(User.tenant_id == tenant.id, User.id.in_(owner_ids)))
+        assignee = assignee_query.first()
+        if not assignee:
+            return _error_response("Empleado no encontrado para este tenant", 404, "assignee_not_found", "choose_valid_assignee")
+        ticket.asignado_a_id = assignee.id
+        ticket.asignado_en = now
+        if str(ticket.estado or "").lower() in {"nuevo", "open"}:
+            ticket.estado = "en_proceso"
+        db.session.add(
+            TicketComentario(
+                municipio_ticket_id=ticket.id,
+                comentario=f"Asignado a {assignee.name}",
+                user_id=current_user.id,
+                es_admin=True,
+                origen="admin_panel",
+                estado_ticket=ticket.estado,
+            )
+        )
+
+    elif action == "reply":
+        if str(ticket.estado or "").lower() in _CLOSED_TICKET_STATES:
+            return _error_response("El reclamo esta cerrado. Reabrilo antes de responder.", 403, "ticket_closed", "reopen_ticket")
+        body = str(payload.get("body") or payload.get("message") or payload.get("comentario") or "").strip()
+        if not body:
+            return _error_response("El mensaje no puede estar vacio", 400, "reply_body_required", "send_reply_body")
+        db.session.add(
+            TicketComentario(
+                municipio_ticket_id=ticket.id,
+                comentario=body,
+                user_id=current_user.id,
+                es_admin=True,
+                origen="admin_panel",
+                estado_ticket=ticket.estado,
+            )
+        )
+        if str(ticket.estado or "").lower() in {"nuevo", "open"}:
+            ticket.estado = "en_proceso"
+
+    elif action == "close":
+        ticket.estado = str(payload.get("status") or "cerrado").strip().lower() or "cerrado"
+        body = str(payload.get("body") or "Reclamo cerrado desde la bandeja operativa").strip()
+        db.session.add(
+            TicketComentario(
+                municipio_ticket_id=ticket.id,
+                comentario=body,
+                user_id=current_user.id,
+                es_admin=True,
+                origen="admin_panel",
+                estado_ticket=ticket.estado,
+            )
+        )
+
+    elif action == "reopen":
+        ticket.estado = str(payload.get("status") or "en_proceso").strip().lower() or "en_proceso"
+        body = str(payload.get("body") or "Reclamo reabierto desde la bandeja operativa").strip()
+        db.session.add(
+            TicketComentario(
+                municipio_ticket_id=ticket.id,
+                comentario=body,
+                user_id=current_user.id,
+                es_admin=True,
+                origen="admin_panel",
+                estado_ticket=ticket.estado,
+            )
+        )
+
+    ticket.ultima_actividad = now
+    db.session.add(ticket)
+    db.session.commit()
+
+    return _json_response(
+        {
+            "ok": True,
+            "contract_version": "inbox.omnichannel.action.v1",
+            "tenant": _tenant_ref(tenant),
+            "action": action,
+            "ticket": _legacy_claim_inbox_payload(ticket),
+        }
+    )
+
+
 @v2_saas_bp.route("/inbox/omnichannel/<int:ticket_id>/actions", methods=["POST"])
 @v2_saas_bp.route("/inbox/omnichannel/actions", methods=["POST"])
 @token_requerido
@@ -3547,11 +3948,14 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
         return error
 
     payload = request.get_json(silent=True) or {}
-    resolved_ticket_id = ticket_id or payload.get("ticket_id") or payload.get("id")
-    try:
-        resolved_ticket_id = int(resolved_ticket_id)
-    except (TypeError, ValueError):
+    source_model = payload.get("source_model") or payload.get("legacy_model")
+    raw_ticket_id = ticket_id or payload.get("legacy_id") or payload.get("ticket_id") or payload.get("id")
+    resolved_ticket_id = _coerce_inbox_ticket_id(raw_ticket_id)
+    if resolved_ticket_id is None:
         return _error_response("ticket_id es obligatorio", 400, "ticket_id_required", "send_ticket_id")
+
+    if _is_legacy_claim_source(source_model) or (isinstance(raw_ticket_id, str) and raw_ticket_id.startswith("municipio:")):
+        return _omnichannel_legacy_claim_action_v2(current_user, tenant, resolved_ticket_id, payload)
 
     ticket = TenantTicket.query.filter_by(id=resolved_ticket_id, tenant_id=tenant.id).first()
     if not ticket:

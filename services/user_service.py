@@ -1,3 +1,5 @@
+import re
+import unicodedata
 from typing import Any, Iterable, Optional, Tuple
 from urllib.parse import urlparse
 
@@ -22,6 +24,25 @@ PROFILE_AVATAR_SOURCES = {
     "oauth",
     "social",
     "social_login",
+    "agent_profile",
+    "staff_profile",
+    "employee_profile",
+}
+PROFILE_AVATAR_SOURCE_PREFIXES = {
+    "profile_url",
+    "profile_upload",
+    "profile_picture",
+    "user_upload",
+    "google",
+    "clerk",
+    "facebook",
+    "linkedin",
+    "oauth",
+    "social",
+    "social_login",
+    "agent_profile",
+    "staff_profile",
+    "employee_profile",
 }
 BLOCKED_AVATAR_SOURCE_KEYWORDS = {
     "no_consent",
@@ -50,15 +71,30 @@ def _profile_metadata(user: User) -> dict:
     return user.accesibilidad if isinstance(getattr(user, "accesibilidad", None), dict) else {}
 
 
+def _normalize_avatar_source_token(value: Optional[str]) -> str:
+    text = str(value or "").strip().lower()
+    if not text:
+        return ""
+    text = unicodedata.normalize("NFD", text)
+    text = "".join(ch for ch in text if unicodedata.category(ch) != "Mn")
+    text = re.sub(r"[^a-z0-9]+", "_", text).strip("_")
+    return text
+
+
 def _normalize_avatar_source(value: Optional[str], fallback: str = "profile_url") -> str:
-    normalized = str(value or "").strip().lower()
+    normalized = _normalize_avatar_source_token(value)
     if not normalized:
         return fallback
-    return normalized if normalized in PROFILE_AVATAR_SOURCES else ""
+    if normalized in PROFILE_AVATAR_SOURCES:
+        return normalized
+    for prefix in PROFILE_AVATAR_SOURCE_PREFIXES:
+        if normalized == prefix or normalized.startswith(f"{prefix}_"):
+            return normalized
+    return ""
 
 
 def _has_blocked_avatar_source(value: Optional[str]) -> bool:
-    normalized = str(value or "").strip().lower()
+    normalized = _normalize_avatar_source_token(value)
     if not normalized:
         return False
     return any(keyword in normalized for keyword in BLOCKED_AVATAR_SOURCE_KEYWORDS)
@@ -143,21 +179,21 @@ def get_user_profile_identity(user: User) -> dict:
     raw_avatar_url = identity.get("avatar_url") or metadata.get("profile_avatar_url")
     raw_avatar_source = identity.get("avatar_source") or metadata.get("profile_avatar_source")
     avatar_source = str(raw_avatar_source).strip() if raw_avatar_source else ("profile_url" if raw_avatar_url else None)
-    normalized_source = str(avatar_source or "").strip().lower()
+    normalized_source = _normalize_avatar_source(avatar_source, fallback="")
     explicit_consent = identity.get("avatar_consent")
     avatar_url_valid, safe_avatar_url, _ = normalize_profile_avatar_url(raw_avatar_url)
     avatar_consent = bool(
         raw_avatar_url
         and avatar_url_valid
         and safe_avatar_url
-        and normalized_source in PROFILE_AVATAR_SOURCES
+        and normalized_source
         and not _has_blocked_avatar_source(normalized_source)
         and _avatar_consent_granted(explicit_consent)
     )
     avatar_url = safe_avatar_url if avatar_consent else None
     return {
         "avatar_url": avatar_url,
-        "avatar_source": avatar_source if avatar_url else None,
+        "avatar_source": normalized_source if avatar_url else None,
         "avatar_consent": avatar_consent,
     }
 

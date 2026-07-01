@@ -27,6 +27,135 @@ PYME_INTENT_LABELS = {
     "derivar_humano": "derivar a humano",
 }
 
+PYME_HUMAN_ATTENTION_INTENTS = {"derivar_humano", "reclamo_cliente", "soporte_postventa"}
+
+PYME_INTENT_KEYWORDS = {
+    "crear_pedido": [
+        "comprar",
+        "pedido",
+        "orden",
+        "cotizacion",
+        "cotización",
+        "presupuesto",
+        "carrito",
+        "reservar",
+        "quiero",
+        "necesito",
+        "caja",
+        "cajas",
+        "unidades",
+        "pack",
+    ],
+    "consulta_producto": [
+        "stock",
+        "precio",
+        "catalogo",
+        "catálogo",
+        "producto",
+        "productos",
+        "promo",
+        "promocion",
+        "promoción",
+        "descuento",
+        "disponible",
+        "medida",
+        "talle",
+        "color",
+    ],
+    "consulta_pago": [
+        "pago",
+        "pagar",
+        "transferencia",
+        "tarjeta",
+        "mercado pago",
+        "mp",
+        "factura",
+        "comprobante",
+        "cuota",
+        "seña",
+        "saldo",
+    ],
+    "consulta_envio": [
+        "envio",
+        "envío",
+        "delivery",
+        "domicilio",
+        "reparto",
+        "retirar",
+        "retiro",
+        "sucursal",
+        "direccion",
+        "dirección",
+        "zona",
+        "flete",
+    ],
+    "soporte_postventa": [
+        "garantia",
+        "garantía",
+        "devolucion",
+        "devolución",
+        "cambio",
+        "no llego",
+        "no llegó",
+        "llego mal",
+        "llegó mal",
+        "postventa",
+        "servicio tecnico",
+        "servicio técnico",
+    ],
+    "reclamo_cliente": [
+        "reclamo",
+        "queja",
+        "problema",
+        "mal estado",
+        "roto",
+        "rota",
+        "fallado",
+        "fallada",
+        "no funciona",
+        "nadie responde",
+        "me cobraron",
+    ],
+    "derivar_humano": [
+        "humano",
+        "persona",
+        "asesor",
+        "vendedor",
+        "ventas",
+        "atencion",
+        "atención",
+        "hablar con alguien",
+        "llamar",
+        "llamada",
+        "whatsapp",
+    ],
+}
+
+PYME_RECOMMENDED_ACTIONS_BY_INTENT = {
+    "crear_pedido": [
+        {"id": "prepare_order_draft", "label": "Preparar borrador de pedido", "priority": "high"},
+        {"id": "confirm_missing_order_data", "label": "Confirmar productos, cantidades y entrega", "priority": "medium"},
+    ],
+    "consulta_producto": [
+        {"id": "send_catalog_or_product_options", "label": "Enviar catalogo o alternativas disponibles", "priority": "medium"},
+    ],
+    "consulta_pago": [
+        {"id": "send_payment_options", "label": "Enviar medios de pago y validar comprobante", "priority": "medium"},
+    ],
+    "consulta_envio": [
+        {"id": "quote_shipping_or_pickup", "label": "Cotizar envio o coordinar retiro", "priority": "medium"},
+    ],
+    "soporte_postventa": [
+        {"id": "open_post_sale_case", "label": "Abrir seguimiento postventa", "priority": "high"},
+    ],
+    "reclamo_cliente": [
+        {"id": "review_customer_complaint", "label": "Revisar reclamo con operador", "priority": "high"},
+    ],
+    "derivar_humano": [
+        {"id": "handoff_to_sales_or_support", "label": "Derivar a una persona del equipo", "priority": "high"},
+    ],
+}
+
 
 def _float_env(name: str, default: float) -> float:
     try:
@@ -53,6 +182,29 @@ def _safe_text(value: Any) -> str:
     if value is None:
         return ""
     return str(value).strip()
+
+
+def _contains_phrase(normalized_text: str, phrase: str) -> bool:
+    normalized_phrase = normalizar_texto(phrase)
+    if not normalized_phrase:
+        return False
+    return f" {normalized_phrase} " in f" {normalized_text} "
+
+
+def _keyword_hits(text: str, keywords: list[str]) -> list[str]:
+    normalized = normalizar_texto(text)
+    hits: list[str] = []
+    for keyword in keywords:
+        if _contains_phrase(normalized, keyword):
+            hits.append(keyword)
+    return hits
+
+
+def _score_from_hits(hits: list[str], *, base: float = 0.64, per_hit: float = 0.07) -> float:
+    if not hits:
+        return 0.0
+    long_phrase_bonus = min(0.08, len([hit for hit in hits if len(normalizar_texto(hit).split()) >= 2]) * 0.02)
+    return round(min(0.94, base + (len(hits) * per_hit) + long_phrase_bonus), 4)
 
 
 def _read_field(source: Any, *keys: str) -> Any:
@@ -124,14 +276,56 @@ def _ranked_code_candidates(results: list[dict], labels_by_code: dict[str, str],
     return ranked
 
 
+def _local_pyme_intent_fallback(text: str, *, fallback_reason: str = "huggingface_unavailable") -> dict[str, Any] | None:
+    candidates: list[dict[str, Any]] = []
+    for code, keywords in PYME_INTENT_KEYWORDS.items():
+        hits = _keyword_hits(text, keywords)
+        score = _score_from_hits(hits)
+        if score <= 0:
+            continue
+        candidates.append(
+            {
+                "code": code,
+                "label": PYME_INTENT_LABELS[code],
+                "score": score,
+                "matched_keywords": hits[:8],
+            }
+        )
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda item: float(item.get("score") or 0), reverse=True)
+    min_score = ticket_ai_thresholds()["pyme"]["intent_min_score"]
+    best = candidates[0]
+    if float(best["score"]) < min_score:
+        return None
+
+    return {
+        "provider": "deterministic_local_fallback",
+        "fallback_reason": fallback_reason,
+        "intent": best["code"],
+        "label": best["label"],
+        "score": best["score"],
+        "threshold": min_score,
+        "meets_threshold": True,
+        "matched_keywords": best.get("matched_keywords", []),
+        "candidates": candidates[:6],
+    }
+
+
 def _build_pyme_enrichment(text: str) -> dict[str, Any]:
     intent = None
+    fallback_reason = "huggingface_unavailable"
     try:
         from services.huggingface_inference_service import classify_zero_shot
 
         results = classify_zero_shot(text, list(PYME_INTENT_LABELS.values()), multi_label=False)
     except Exception:
         results = None
+    else:
+        if results:
+            fallback_reason = "huggingface_below_threshold"
 
     candidates = _ranked_code_candidates(results or [], PYME_INTENT_LABELS)
     if candidates:
@@ -147,8 +341,15 @@ def _build_pyme_enrichment(text: str) -> dict[str, Any]:
                 "meets_threshold": True,
                 "candidates": candidates,
             }
+        else:
+            intent = _local_pyme_intent_fallback(text, fallback_reason=fallback_reason)
+    else:
+        if results:
+            fallback_reason = "huggingface_no_valid_candidates"
+        intent = _local_pyme_intent_fallback(text, fallback_reason=fallback_reason)
 
-    requires_human = bool(intent and intent.get("intent") in {"derivar_humano", "reclamo_cliente", "soporte_postventa"})
+    requires_human = bool(intent and intent.get("intent") in PYME_HUMAN_ATTENTION_INTENTS)
+    recommended_actions = list(PYME_RECOMMENDED_ACTIONS_BY_INTENT.get(intent.get("intent"), [])) if intent else []
     tags = []
     if intent:
         tags.append(f"intent:{intent['intent']}")
@@ -166,6 +367,7 @@ def _build_pyme_enrichment(text: str) -> dict[str, Any]:
             "suggested_queue": intent.get("intent") if intent else None,
             "requires_human_attention": requires_human,
             "tags": tags,
+            "recommended_actions": recommended_actions,
             "advisory_only": True,
             "mutates_operational_state": False,
         },

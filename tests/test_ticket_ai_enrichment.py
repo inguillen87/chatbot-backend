@@ -106,6 +106,95 @@ def test_build_ticket_ai_enrichment_for_pyme_intent(monkeypatch):
     assert result["crm_hints"]["suggested_queue"] == "crear_pedido"
 
 
+def test_build_ticket_ai_enrichment_for_pyme_uses_local_order_fallback_without_hf(monkeypatch):
+    class PymeTicket:
+        id = 12
+        tenant_id = 22
+        asunto = "Pedido por WhatsApp"
+        categoria = "Ventas"
+        pregunta = "Quiero comprar dos cajas de malbec y necesito envio a domicilio."
+        detalles = "Consultar stock, precio y promociones."
+        direccion = ""
+        foto_url_directa = None
+
+    monkeypatch.setenv("HUGGINGFACE_PYME_INTENT_MIN_SCORE", "0.60")
+    monkeypatch.setattr(
+        "services.huggingface_inference_service.classify_zero_shot",
+        lambda text, labels, multi_label=False: None,
+    )
+
+    result = build_ticket_ai_enrichment(PymeTicket(), scope="pyme")
+    intent = result["huggingface"]["intent"]
+
+    assert intent["provider"] == "deterministic_local_fallback"
+    assert intent["fallback_reason"] == "huggingface_unavailable"
+    assert intent["intent"] == "crear_pedido"
+    assert intent["meets_threshold"] is True
+    assert "comprar" in intent["matched_keywords"]
+    assert result["crm_hints"]["suggested_queue"] == "crear_pedido"
+    assert "intent:crear_pedido" in result["crm_hints"]["tags"]
+    assert result["crm_hints"]["recommended_actions"][0]["id"] == "prepare_order_draft"
+    assert result["state_mutation"]["applied"] is False
+    assert result["persisted"] is False
+
+
+def test_build_ticket_ai_enrichment_for_pyme_marks_human_attention_on_provider_failure(monkeypatch):
+    class PymeTicket:
+        id = 13
+        tenant_id = 23
+        asunto = "Reclamo postventa"
+        categoria = "Postventa"
+        pregunta = "Tengo un reclamo: el producto llego mal y necesito hablar con una persona."
+        detalles = "Nadie responde por WhatsApp."
+        direccion = ""
+        foto_url_directa = None
+
+    def raise_provider_error(text, labels, multi_label=False):
+        raise RuntimeError("provider offline")
+
+    monkeypatch.setenv("HUGGINGFACE_PYME_INTENT_MIN_SCORE", "0.60")
+    monkeypatch.setattr(
+        "services.huggingface_inference_service.classify_zero_shot",
+        raise_provider_error,
+    )
+
+    result = build_ticket_ai_enrichment(PymeTicket(), scope="pyme")
+    intent = result["huggingface"]["intent"]
+
+    assert intent["provider"] == "deterministic_local_fallback"
+    assert intent["intent"] in {"reclamo_cliente", "soporte_postventa", "derivar_humano"}
+    assert result["crm_hints"]["requires_human_attention"] is True
+    assert "requires_human_attention" in result["crm_hints"]["tags"]
+    assert any(action["priority"] == "high" for action in result["crm_hints"]["recommended_actions"])
+    assert result["advisory_policy"]["state_mutation_allowed"] is False
+
+
+def test_build_ticket_ai_enrichment_for_pyme_uses_local_fallback_when_hf_below_threshold(monkeypatch):
+    class PymeTicket:
+        id = 14
+        tenant_id = 24
+        asunto = "Cotizacion"
+        categoria = "Ventas"
+        pregunta = "Necesito presupuesto de chapas, clavos y envio a domicilio."
+        detalles = ""
+        direccion = ""
+        foto_url_directa = None
+
+    monkeypatch.setenv("HUGGINGFACE_PYME_INTENT_MIN_SCORE", "0.70")
+    monkeypatch.setattr(
+        "services.huggingface_inference_service.classify_zero_shot",
+        lambda text, labels, multi_label=False: [{"label": "consulta de producto", "score": 0.31}],
+    )
+
+    result = build_ticket_ai_enrichment(PymeTicket(), scope="pyme")
+    intent = result["huggingface"]["intent"]
+
+    assert intent["provider"] == "deterministic_local_fallback"
+    assert intent["fallback_reason"] == "huggingface_below_threshold"
+    assert intent["intent"] == "crear_pedido"
+    assert result["crm_hints"]["suggested_queue"] == "crear_pedido"
+
+
 def test_admin_ticket_ai_enrichment_endpoint(client, monkeypatch):
     owner = User(
         name="Municipio Junin",

@@ -28,6 +28,7 @@ from models import (
     TenantConfig,
     TenantProfile,
     TenantTicket,
+    TicketComentario,
     User,
     WhatsAppContactState,
     WhatsAppEnterpriseRule,
@@ -1222,6 +1223,75 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertTrue(item["map"]["can_render"])
         self.assertEqual(item["frontend_contract"]["render_as"], "inbox_360_drawer")
         self.assertEqual(payload["frontend_contract"]["drawer_contract"], "inbox.omnichannel.detail.v1")
+
+    def test_omnichannel_inbox_includes_legacy_municipio_tracking_chat(self):
+        legacy = MunicipioTicket(
+            tenant_id=self.tenant.id,
+            municipio_id=self.owner.id,
+            nro_ticket="M-900144",
+            consulta_pin="900144",
+            pregunta="Arreglo de calle",
+            asunto="Arreglo de calle",
+            categoria="arreglo_de_calle",
+            detalles="Bache abierto frente al domicilio",
+            estado="nuevo",
+            canal_ingreso="whatsapp",
+            direccion="Don Bosco 55, Junin, Mendoza",
+            latitud=-33.145,
+            longitud=-68.47,
+            nombre_vecino="Marcelo",
+            telefono_vecino="+5492613168608",
+            url_avatar_whatsapp="https://example.com/whatsapp-avatar.jpg",
+        )
+        db.session.add(legacy)
+        db.session.flush()
+        db.session.add(
+            TicketComentario(
+                municipio_ticket_id=legacy.id,
+                comentario="Hola, quiero hablar con alguien en vivo.",
+                es_admin=False,
+                origen="public_tracking",
+            )
+        )
+        db.session.commit()
+
+        response = self.client.get("/api/v2/inbox/omnichannel?limit=20", headers=self._auth(self.owner))
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        legacy_item = next(
+            item for item in payload["items"] if item.get("source_model") == "MunicipioTicket" and item.get("legacy_id") == legacy.id
+        )
+        self.assertEqual(legacy_item["legacy_kind"], "claim")
+        self.assertEqual(legacy_item["ticket_id"], legacy.id)
+        self.assertEqual(legacy_item["source_metadata"]["admin_surface"], "tenant_claims_inbox")
+        self.assertEqual(legacy_item["source_metadata"]["read_model"], "TicketComentario")
+        self.assertTrue(any("quiero hablar" in event["body"].lower() for event in legacy_item["timeline"]))
+        self.assertTrue(any(action["id"] == "reply" for action in legacy_item["allowed_actions"]))
+        self.assertIsNone(legacy_item["contact"]["avatar"]["url"])
+        self.assertEqual(legacy_item["frontend_contract"]["avatar_policy"], "consented_real_image_or_deterministic_fallback")
+
+        detail = self.client.get(
+            f"/api/v2/inbox/omnichannel/{legacy.id}?source_model=MunicipioTicket",
+            headers=self._auth(self.owner),
+        )
+        self.assertEqual(detail.status_code, 200)
+        self.assertEqual(detail.get_json()["item"]["source_model"], "MunicipioTicket")
+
+        reply = self.client.post(
+            "/api/v2/inbox/omnichannel/actions",
+            json={
+                "source_model": "MunicipioTicket",
+                "legacy_id": legacy.id,
+                "action": "reply",
+                "body": "Te respondemos desde mesa de ayuda.",
+            },
+            headers=self._auth(self.owner),
+        )
+        self.assertEqual(reply.status_code, 200, reply.get_json())
+        updated = reply.get_json()["ticket"]
+        self.assertEqual(updated["status"], "en_proceso")
+        self.assertTrue(any("mesa de ayuda" in event["body"].lower() for event in updated["timeline"]))
 
     def test_omnichannel_inbox_detail_contract_for_drawer_360(self):
         response = self.client.get(
