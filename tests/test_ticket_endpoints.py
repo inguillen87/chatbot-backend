@@ -132,6 +132,47 @@ class TicketEndpointsTest(unittest.TestCase):
         self.assertIn('tickets', data)
         self.assertEqual(len(data['tickets']), 2)
 
+    def test_api_tickets_for_client_role_returns_json_not_redirect(self):
+        cliente = User(
+            email='vecino@junin.com',
+            name='Vecino Junin',
+            rol='usuario',
+            rubro_id=Rubro.query.filter_by(clave='municipios').first().id,
+            tipo_chat='municipio',
+        )
+        cliente.set_password('clientpass')
+        db.session.add(cliente)
+        db.session.flush()
+        db.session.add(
+            MunicipioTicket(
+                municipio_id=1,
+                user_id=cliente.id,
+                asunto='Consulta propia',
+                categoria='consulta',
+                pregunta='Quiero ver mi reclamo.',
+            )
+        )
+        db.session.commit()
+
+        login_resp = self.client.post('/auth/login', json={
+            'email': 'vecino@junin.com',
+            'password': 'clientpass'
+        })
+        self.assertEqual(login_resp.status_code, 200)
+        token = json.loads(login_resp.data)['token']
+
+        resp = self.client.get(
+            '/api/tickets',
+            headers={'Authorization': f'Bearer {token}'},
+            follow_redirects=False,
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.content_type.split(';')[0], 'application/json')
+        data = json.loads(resp.data)
+        self.assertIn('tickets', data)
+        self.assertEqual(len(data['tickets']), 1)
+
     def test_ticket_details_includes_chat_history(self):
         login_resp = self.client.post('/auth/login', json={
             'email': 'admin@junin.com',
@@ -149,6 +190,33 @@ class TicketEndpointsTest(unittest.TestCase):
         self.assertEqual(len(data['historial_chat']), 2)
         self.assertEqual(data['historial_chat'][0]['texto'], 'Hola')
         self.assertEqual(data['historial_chat'][0]['autor'], 'vecino')
+
+    @patch('routes.ticket.obtener_ruta', side_effect=RuntimeError('osrm unavailable'))
+    def test_api_ticket_details_degrades_route_failures(self, _mock_route):
+        login_resp = self.client.post('/auth/login', json={
+            'email': 'admin@junin.com',
+            'password': 'adminpass'
+        })
+        self.assertEqual(login_resp.status_code, 200)
+        token = json.loads(login_resp.data)['token']
+        headers = {'Authorization': f'Bearer {token}'}
+
+        admin_user = User.query.filter_by(email='admin@junin.com').first()
+        admin_user.latitud = -33.08
+        admin_user.longitud = -68.47
+        ticket = MunicipioTicket.query.filter_by(asunto='Bache en la calle').first()
+        ticket.latitud = -33.09
+        ticket.longitud = -68.48
+        db.session.commit()
+
+        resp = self.client.get(f'/api/tickets/municipio/{ticket.id}', headers=headers)
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.content_type.split(';')[0], 'application/json')
+        data = json.loads(resp.data)
+        self.assertIsNone(data.get('ruta'))
+        self.assertIn('ticket_route_unavailable', data.get('meta', {}).get('degraded_reasons', []))
+        self.assertIsNone(data.get('nombre_y_avatar_whatsapp', {}).get('avatar_url'))
+        self.assertFalse(data.get('nombre_y_avatar_whatsapp', {}).get('avatar_consent'))
 
     def test_get_chat_mensajes_with_attachments(self):
         # 1. Login to get token

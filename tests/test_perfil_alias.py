@@ -208,6 +208,43 @@ def test_perfil_rejects_scraped_avatar_source_even_with_https(client):
     assert not user.accesibilidad
 
 
+def test_perfil_rejects_whatsapp_profile_avatar_source_even_with_consent(client):
+    rubro = Rubro.query.filter_by(clave="pyme").first()
+    if not rubro:
+        rubro = Rubro(nombre="pyme", clave="pyme", es_publico=False)
+        db.session.add(rubro)
+        db.session.commit()
+
+    user = User(
+        email="whatsapp-profile-avatar@test.com",
+        name="WhatsApp Profile Avatar",
+        token="whatsapp-profile-avatar-token",
+        rubro_id=rubro.id,
+    )
+    user.set_password("pw")
+    db.session.add(user)
+    db.session.commit()
+
+    jwt_payload = {"user_id": user.id, "exp": datetime.utcnow() + timedelta(days=1)}
+    jwt_token = jwt.encode(jwt_payload, current_app.config["SECRET_KEY"], algorithm="HS256")
+    if isinstance(jwt_token, bytes):
+        jwt_token = jwt_token.decode("utf-8")
+
+    response = client.put(
+        "/auth/perfil",
+        json={
+            "avatar_url": "https://cdn.example.com/profiles/wa-profile.jpg",
+            "avatar_source": "whatsapp_profile",
+            "avatar_consent": True,
+        },
+        headers={"Authorization": f"Bearer {jwt_token}"},
+    )
+    assert response.status_code == 400
+
+    db.session.refresh(user)
+    assert not user.accesibilidad
+
+
 def test_perfil_avatar_consent_false_clears_existing_avatar(client):
     rubro = Rubro.query.filter_by(clave="pyme").first()
     if not rubro:

@@ -29,9 +29,15 @@ BLOCKED_AVATAR_SOURCE_KEYWORDS = {
     "unconsented",
     "consent_denied",
     "consent_rejected",
+    "whatsapp_profile",
+    "whatsapp_avatar",
+    "whatsapp_photo",
+    "wa_profile",
+    "wa_avatar",
     "scrape",
     "scraping",
     "scraped",
+    "profile_scrape",
     "mock",
     "fake",
     "synthetic",
@@ -45,7 +51,9 @@ def _profile_metadata(user: User) -> dict:
 
 def _normalize_avatar_source(value: Optional[str], fallback: str = "profile_url") -> str:
     normalized = str(value or "").strip().lower()
-    return normalized if normalized in PROFILE_AVATAR_SOURCES else fallback
+    if not normalized:
+        return fallback
+    return normalized if normalized in PROFILE_AVATAR_SOURCES else ""
 
 
 def _has_blocked_avatar_source(value: Optional[str]) -> bool:
@@ -142,6 +150,9 @@ def set_user_profile_avatar(
         return False, message, 400
     if avatar_url and _has_blocked_avatar_source(source):
         return False, "La fuente de imagen de perfil no tiene consentimiento valido.", 400
+    normalized_source = _normalize_avatar_source(source)
+    if avatar_url and not normalized_source:
+        return False, "La fuente de imagen de perfil no es una fuente consentida.", 400
 
     metadata = dict(_profile_metadata(user))
     identity = dict(metadata.get("identity") if isinstance(metadata.get("identity"), dict) else {})
@@ -155,7 +166,7 @@ def set_user_profile_avatar(
 
     if avatar_url:
         identity["avatar_url"] = avatar_url
-        identity["avatar_source"] = _normalize_avatar_source(source)
+        identity["avatar_source"] = normalized_source
         identity["avatar_consent"] = True
         identity["avatar_consented_at"] = datetime.utcnow().isoformat() + "Z"
     else:

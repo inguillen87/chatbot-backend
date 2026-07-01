@@ -1391,6 +1391,8 @@ def get_tickets_del_usuario_logic(current_user: User):
 @token_requerido
 def get_tickets_del_usuario(current_user: User):
     if canonical_role(getattr(current_user, "rol", None)) not in TICKET_BACKOFFICE_ROLES:
+        if request.path.startswith("/api/"):
+            return get_mis_tickets.__wrapped__(current_user)
         return redirect(url_for('ticket_bp.get_mis_tickets'))
 
     return get_tickets_del_usuario_logic(current_user)
@@ -1581,23 +1583,34 @@ def _serialize_ticket_details(ticket, ticket_type):
         degraded_reasons.append("ticket_chat_history_unavailable")
 
     archivos_adjuntos_data = []
-    if hasattr(ticket, 'archivos'):
-        archivos_list = ticket.archivos.all() if hasattr(ticket.archivos, 'all') else ticket.archivos
-        for adj in archivos_list:
-            analisis_data = None
-            if adj.analisis:
-                analisis = adj.analisis
-                analisis_data = {
-                    "id": analisis.id, "resumen": analisis.resumen, "estado_analisis": analisis.estado_analisis,
-                    "fecha_analisis": datetime_to_iso_utc(analisis.fecha_analisis) if analisis.fecha_analisis else None,
-                    "error_analisis": analisis.error_analisis, "texto_extraido": analisis.texto_extraido,
-                    "datos_estructurados": analisis.datos_estructurados, "tipo_analisis": analisis.tipo_analisis,
-                }
-            archivos_adjuntos_data.append({
-                "id": adj.id, "name": adj.nombre_original or adj.filename, "mimeType": adj.mime,
-                "size": adj.tamano, "url": adj.url, "fecha": datetime_to_iso_utc(adj.fecha) if adj.fecha else None,
-                "analisis": analisis_data
-            })
+    try:
+        if hasattr(ticket, 'archivos'):
+            archivos_list = ticket.archivos.all() if hasattr(ticket.archivos, 'all') else ticket.archivos
+            for adj in archivos_list:
+                analisis_data = None
+                if adj.analisis:
+                    analisis = adj.analisis
+                    analisis_data = {
+                        "id": analisis.id, "resumen": analisis.resumen, "estado_analisis": analisis.estado_analisis,
+                        "fecha_analisis": datetime_to_iso_utc(analisis.fecha_analisis) if analisis.fecha_analisis else None,
+                        "error_analisis": analisis.error_analisis, "texto_extraido": analisis.texto_extraido,
+                        "datos_estructurados": analisis.datos_estructurados, "tipo_analisis": analisis.tipo_analisis,
+                    }
+                archivos_adjuntos_data.append({
+                    "id": adj.id, "name": adj.nombre_original or adj.filename, "mimeType": adj.mime,
+                    "size": adj.tamano, "url": adj.url, "fecha": datetime_to_iso_utc(adj.fecha) if adj.fecha else None,
+                    "analisis": analisis_data
+                })
+    except Exception as exc:
+        current_app.logger.warning(
+            "Ticket detail attachments degraded for %s ticket %s: %s",
+            ticket_type,
+            getattr(ticket, "id", None),
+            exc,
+            exc_info=True,
+        )
+        archivos_adjuntos_data = []
+        degraded_reasons.append("ticket_attachments_unavailable")
 
     informacion_personal = {
             "nombre": user_data["nombre"],
@@ -1646,7 +1659,10 @@ def _serialize_ticket_details(ticket, ticket_type):
         "contacto_seguimiento": getattr(ticket, 'contacto_seguimiento', None),
         "nombre_y_avatar_whatsapp": {
             "nombre": getattr(ticket, 'nombre_display_whatsapp', None),
-            "avatar_url": getattr(ticket, 'url_avatar_whatsapp', None),
+            "avatar_url": None,
+            "avatar_source": "whatsapp_profile_unavailable",
+            "avatar_consent": False,
+            "avatar_policy": "profile_picture_requires_social_login_or_user_upload",
         },
         "informacion_personal_vecino": informacion_personal,
         "historial_chat": historial_chat,
@@ -1677,22 +1693,34 @@ def _serialize_ticket_details(ticket, ticket_type):
 
     if ticket_type == "municipio":
         ruta_data = None
-        if getattr(ticket, 'latitud', None) is not None and getattr(ticket, 'longitud', None) is not None:
-            municipio_usuario = db.session.get(User, ticket.municipio_id)
-            if municipio_usuario and municipio_usuario.latitud is not None and municipio_usuario.longitud is not None:
-                ruta_osrm = obtener_ruta((municipio_usuario.latitud, municipio_usuario.longitud), (ticket.latitud, ticket.longitud))
-                if ruta_osrm:
-                    ruta_data = {
-                        "origen": {"lat": municipio_usuario.latitud, "lng": municipio_usuario.longitud},
-                        "destino": {"lat": ticket.latitud, "lng": ticket.longitud},
-                        **ruta_osrm,
-                    }
-                else:
-                    ruta_data = {
-                        "origen": {"lat": municipio_usuario.latitud, "lng": municipio_usuario.longitud},
-                        "destino": {"lat": ticket.latitud, "lng": ticket.longitud},
-                    }
+        try:
+            if getattr(ticket, 'latitud', None) is not None and getattr(ticket, 'longitud', None) is not None:
+                municipio_usuario = db.session.get(User, ticket.municipio_id)
+                if municipio_usuario and municipio_usuario.latitud is not None and municipio_usuario.longitud is not None:
+                    ruta_osrm = obtener_ruta((municipio_usuario.latitud, municipio_usuario.longitud), (ticket.latitud, ticket.longitud))
+                    if ruta_osrm:
+                        ruta_data = {
+                            "origen": {"lat": municipio_usuario.latitud, "lng": municipio_usuario.longitud},
+                            "destino": {"lat": ticket.latitud, "lng": ticket.longitud},
+                            **ruta_osrm,
+                        }
+                    else:
+                        ruta_data = {
+                            "origen": {"lat": municipio_usuario.latitud, "lng": municipio_usuario.longitud},
+                            "destino": {"lat": ticket.latitud, "lng": ticket.longitud},
+                        }
+        except Exception as exc:
+            current_app.logger.warning(
+                "Ticket detail route degraded for %s ticket %s: %s",
+                ticket_type,
+                getattr(ticket, "id", None),
+                exc,
+                exc_info=True,
+            )
+            ruta_data = None
+            degraded_reasons.append("ticket_route_unavailable")
         ticket_data["ruta"] = ruta_data
+        ticket_data["meta"] = _ticket_degraded_meta(degraded_reasons)
     return ticket_data
 
 
