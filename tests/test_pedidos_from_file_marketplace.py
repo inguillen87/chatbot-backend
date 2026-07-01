@@ -248,6 +248,36 @@ def test_marketplace_order_note_text_resolves_tenant_from_form(client, init_data
     assert pedido.metadata_payload["source"]["channel"] == "marketplace"
 
 
+def test_marketplace_order_note_accepts_legacy_text_aliases(client, init_database, monkeypatch):
+    owner = User.query.filter_by(email="admin@test.com").first()
+    tenant = TenantProfile(slug="market-text-alias", nombre="Market Text Alias", tipo="pyme", pyme_id=owner.id, plan="full")
+    db.session.add(tenant)
+    db.session.commit()
+
+    monkeypatch.setattr(
+        "routes.pedidos_from_file.extract_table_from_file",
+        lambda content, prompt: [{"nombre": "Chapas galvanizadas", "cantidad": 4}],
+    )
+
+    response = client.post(
+        "/api/pedidos/from-file?origen=marketplace",
+        data={
+            "tenant_slug": tenant.slug,
+            "texto_pedido": "4 chapas galvanizadas para cotizar",
+            "contact_name": "Marcelo",
+        },
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 201
+    payload = response.get_json()
+    assert payload["tenant_slug"] == tenant.slug
+
+    pedido = PedidoConversacional.query.get(payload["pedido_id"])
+    assert pedido is not None
+    assert pedido.items[0]["texto_original"] == "4 chapas galvanizadas para cotizar"
+
+
 def test_marketplace_order_note_upload_persists_kind_and_contact(client, init_database, monkeypatch):
     owner = User.query.filter_by(email="admin@test.com").first()
     tenant = TenantProfile(

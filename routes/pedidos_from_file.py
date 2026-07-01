@@ -1644,7 +1644,18 @@ def pedidos_desde_archivo():
     json_payload = request.get_json(silent=True) if request.is_json else None
     archivo = request.files.get("archivo") or request.files.get("file")
     text_payload = _clean_optional_text(
-        _form_or_json_value(json_payload, "pedido_text", "notes_text", "order_text", "texto", "text")
+        _form_or_json_value(
+            json_payload,
+            "pedido_text",
+            "texto_pedido",
+            "notes_text",
+            "order_text",
+            "message",
+            "description",
+            "descripcion",
+            "texto",
+            "text",
+        )
     )
     if not archivo and not text_payload:
         return _json_error(400, "archivo_o_texto_requerido", "Archivo o texto de pedido requerido")
