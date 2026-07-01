@@ -1253,12 +1253,12 @@ def anon_o_token_requerido(f):
         is_widget_token = False
 
         if token:
-            # Primero, intentar decodificar como JWT. Esto es para usuarios logueados.
+            # En endpoints anonimos, un JWT identifica el contexto owner del widget/panel.
+            # El viewer final sigue siendo anonimo y se expone por anon_id.
             jwt_user = user_from_token(token)
             token_payload = _decode_token_payload(token) if _is_jwt_token(token) else {}
             if jwt_user:
                 current_app.logger.info(f"Request authenticated via JWT. User ID: {jwt_user.id}")
-                current_user = jwt_user if request.headers.get("Authorization") else None
                 owner_user = _resolve_owner_user(jwt_user)
                 owner_resolution_source = "jwt_widget_owner"
                 g.widget_session = True
