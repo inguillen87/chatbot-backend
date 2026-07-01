@@ -21,7 +21,7 @@ from services.auth_notification_service import (
 )
 from services.logic import es_rubro_publico
 from services.tenant_factory import create_tenant_from_template
-from services.user_service import set_user_profile_avatar
+from services.user_service import get_user_profile_identity, set_user_profile_avatar
 from utils.auth_helpers import generar_token
 from utils.roles import normalize_tenant_type, role_for_tenant_type
 
@@ -379,6 +379,17 @@ def tenant_for_user(user: User) -> Optional[TenantProfile]:
     ).first()
 
 
+def _session_identity_payload(user: User) -> dict:
+    identity = get_user_profile_identity(user)
+    avatar_url = identity.get("avatar_url")
+    avatar_consent = bool(identity.get("avatar_consent"))
+    return {
+        **identity,
+        "picture": avatar_url,
+        "profile_picture_consent": avatar_consent,
+    }
+
+
 def build_chatboc_session_payload(user: User, tenant: Optional[TenantProfile] = None) -> dict:
     tenant = tenant or tenant_for_user(user)
     token = generar_token(
@@ -389,6 +400,7 @@ def build_chatboc_session_payload(user: User, tenant: Optional[TenantProfile] = 
         user.pyme_id,
     )
     onboarding = build_onboarding_contract(user, tenant)
+    identity = _session_identity_payload(user)
     return {
         "contract_version": CLERK_AUTH_CONTRACT_VERSION,
         "token": token,
@@ -405,6 +417,12 @@ def build_chatboc_session_payload(user: User, tenant: Optional[TenantProfile] = 
             "tenantSlug": getattr(tenant, "slug", None),
             "email_verified": bool(user.email_verified),
             "telefono": user.telefono,
+            "avatar_url": identity.get("avatar_url"),
+            "picture": identity.get("picture"),
+            "avatar_source": identity.get("avatar_source"),
+            "avatar_consent": bool(identity.get("avatar_consent")),
+            "profile_picture_consent": bool(identity.get("profile_picture_consent")),
+            "identity": identity,
         },
         "tenant": serialize_tenant(tenant),
         "onboarding": onboarding,

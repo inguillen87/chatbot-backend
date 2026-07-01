@@ -117,5 +117,11 @@ def test_complete_clerk_onboarding_creates_tenant_without_password_reset(client,
         payload = build_chatboc_session_payload(refreshed, tenant)
         assert payload["tenant"]["slug"] == "municipalidad-demo"
         assert payload["onboarding"]["required"] is False
+        assert payload["user"]["avatar_url"] == "https://img.clerk.test/users/user_clerk_123.jpg"
+        assert payload["user"]["picture"] == payload["user"]["avatar_url"]
+        assert payload["user"]["avatar_consent"] is True
+        assert payload["user"]["profile_picture_consent"] is True
+        assert payload["user"]["identity"]["policy"] == "consented_upload_or_social_only"
+        assert payload["user"]["identity"]["fallback"] == "deterministic_identity_avatar"
 
         assert TenantProfile.query.filter_by(slug="municipalidad-demo").count() == 1
