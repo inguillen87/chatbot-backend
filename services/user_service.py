@@ -13,11 +13,29 @@ PROFILE_AVATAR_MAX_LENGTH = 512
 PROFILE_AVATAR_SOURCES = {
     "profile_url",
     "profile_upload",
+    "profile_picture",
+    "user_upload",
     "google",
     "clerk",
     "facebook",
     "linkedin",
+    "oauth",
     "social_login",
+}
+BLOCKED_AVATAR_SOURCE_KEYWORDS = {
+    "no_consent",
+    "without_consent",
+    "not_consented",
+    "unconsented",
+    "consent_denied",
+    "consent_rejected",
+    "scrape",
+    "scraping",
+    "scraped",
+    "mock",
+    "fake",
+    "synthetic",
+    "realistic_generated",
 }
 
 
@@ -28,6 +46,32 @@ def _profile_metadata(user: User) -> dict:
 def _normalize_avatar_source(value: Optional[str], fallback: str = "profile_url") -> str:
     normalized = str(value or "").strip().lower()
     return normalized if normalized in PROFILE_AVATAR_SOURCES else fallback
+
+
+def _has_blocked_avatar_source(value: Optional[str]) -> bool:
+    normalized = str(value or "").strip().lower()
+    if not normalized:
+        return False
+    return any(keyword in normalized for keyword in BLOCKED_AVATAR_SOURCE_KEYWORDS)
+
+
+def _avatar_consent_denied(value: object) -> bool:
+    if value is False:
+        return True
+    if isinstance(value, (int, float)):
+        return value == 0
+    if isinstance(value, str):
+        return value.strip().lower() in {
+            "0",
+            "false",
+            "no",
+            "n",
+            "denied",
+            "rejected",
+            "unconsented",
+            "sin_consentimiento",
+        }
+    return False
 
 
 def normalize_profile_avatar_url(value: object) -> Tuple[bool, Optional[str], str]:
@@ -96,6 +140,8 @@ def set_user_profile_avatar(
     is_valid, avatar_url, message = normalize_profile_avatar_url(raw_avatar_url)
     if not is_valid:
         return False, message, 400
+    if avatar_url and _has_blocked_avatar_source(source):
+        return False, "La fuente de imagen de perfil no tiene consentimiento valido.", 400
 
     metadata = dict(_profile_metadata(user))
     identity = dict(metadata.get("identity") if isinstance(metadata.get("identity"), dict) else {})
@@ -330,9 +376,12 @@ def update_user_profile(user: User, data: dict) -> bool:
             None,
         )
         if avatar_key:
+            avatar_consent_denied = _avatar_consent_denied(data.get("avatar_consent")) or _avatar_consent_denied(
+                data.get("profile_picture_consent")
+            )
             success, message, status = set_user_profile_avatar(
                 user,
-                data.get(avatar_key),
+                "" if avatar_consent_denied else data.get(avatar_key),
                 source=data.get("avatar_source") or "profile_url",
                 overwrite=True,
                 commit=False,

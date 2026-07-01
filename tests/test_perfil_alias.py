@@ -1,5 +1,6 @@
 from models import User, Rubro, TenantProfile, db
 import jwt
+from io import BytesIO
 from datetime import datetime, timedelta
 from flask import current_app
 from utils.auth_helpers import anon_o_token_requerido
@@ -169,6 +170,142 @@ def test_perfil_rejects_unsafe_avatar_url(client):
 
     db.session.refresh(user)
     assert not user.accesibilidad
+
+
+def test_perfil_rejects_scraped_avatar_source_even_with_https(client):
+    rubro = Rubro.query.filter_by(clave="pyme").first()
+    if not rubro:
+        rubro = Rubro(nombre="pyme", clave="pyme", es_publico=False)
+        db.session.add(rubro)
+        db.session.commit()
+
+    user = User(
+        email="scraped-avatar@test.com",
+        name="Scraped Avatar",
+        token="scraped-avatar-token",
+        rubro_id=rubro.id,
+    )
+    user.set_password("pw")
+    db.session.add(user)
+    db.session.commit()
+
+    jwt_payload = {"user_id": user.id, "exp": datetime.utcnow() + timedelta(days=1)}
+    jwt_token = jwt.encode(jwt_payload, current_app.config["SECRET_KEY"], algorithm="HS256")
+    if isinstance(jwt_token, bytes):
+        jwt_token = jwt_token.decode("utf-8")
+
+    response = client.put(
+        "/auth/perfil",
+        json={
+            "avatar_url": "https://cdn.example.com/profiles/scraped.jpg",
+            "avatar_source": "whatsapp_scraped_unconsented",
+        },
+        headers={"Authorization": f"Bearer {jwt_token}"},
+    )
+    assert response.status_code == 400
+
+    db.session.refresh(user)
+    assert not user.accesibilidad
+
+
+def test_perfil_avatar_consent_false_clears_existing_avatar(client):
+    rubro = Rubro.query.filter_by(clave="pyme").first()
+    if not rubro:
+        rubro = Rubro(nombre="pyme", clave="pyme", es_publico=False)
+        db.session.add(rubro)
+        db.session.commit()
+
+    user = User(
+        email="avatar-clear@test.com",
+        name="Avatar Clear",
+        token="avatar-clear-token",
+        rubro_id=rubro.id,
+    )
+    user.set_password("pw")
+    user.accesibilidad = {
+        "identity": {
+            "avatar_url": "https://cdn.example.com/profiles/existing.jpg",
+            "avatar_source": "profile_upload",
+            "avatar_consent": True,
+        }
+    }
+    db.session.add(user)
+    db.session.commit()
+
+    jwt_payload = {"user_id": user.id, "exp": datetime.utcnow() + timedelta(days=1)}
+    jwt_token = jwt.encode(jwt_payload, current_app.config["SECRET_KEY"], algorithm="HS256")
+    if isinstance(jwt_token, bytes):
+        jwt_token = jwt_token.decode("utf-8")
+
+    response = client.put(
+        "/auth/perfil",
+        json={
+            "avatar_url": "https://cdn.example.com/profiles/should-not-save.jpg",
+            "avatar_source": "profile_upload",
+            "avatar_consent": False,
+        },
+        headers={"Authorization": f"Bearer {jwt_token}"},
+    )
+    assert response.status_code == 200
+
+    db.session.refresh(user)
+    assert "avatar_url" not in user.accesibilidad["identity"]
+
+
+def test_profile_avatar_upload_stores_consent_metadata(client, monkeypatch):
+    rubro = Rubro.query.filter_by(clave="pyme").first()
+    if not rubro:
+        rubro = Rubro(nombre="pyme", clave="pyme", es_publico=False)
+        db.session.add(rubro)
+        db.session.commit()
+
+    user = User(
+        email="avatar-upload@test.com",
+        name="Avatar Upload",
+        token="avatar-upload-token",
+        rubro_id=rubro.id,
+    )
+    user.set_password("pw")
+    db.session.add(user)
+    db.session.commit()
+
+    jwt_payload = {"user_id": user.id, "exp": datetime.utcnow() + timedelta(days=1)}
+    jwt_token = jwt.encode(jwt_payload, current_app.config["SECRET_KEY"], algorithm="HS256")
+    if isinstance(jwt_token, bytes):
+        jwt_token = jwt_token.decode("utf-8")
+
+    def fake_upload(file_storage, kind="attachments"):
+        assert kind == "profile_avatars"
+        assert file_storage.mimetype == "image/png"
+        return {
+            "original_url": "https://cdn.example.com/profile_avatars/avatar.png",
+            "original_name": file_storage.filename,
+            "mimetype": file_storage.mimetype,
+            "size": 12,
+            "thumbUrl": "https://cdn.example.com/profile_avatars/avatar-thumb.webp",
+        }
+
+    monkeypatch.setattr("routes.auth.upload_to_gcs", fake_upload)
+
+    response = client.post(
+        "/auth/profile/avatar",
+        data={"avatar": (BytesIO(b"fakepngbytes"), "avatar.png")},
+        content_type="multipart/form-data",
+        headers={"Authorization": f"Bearer {jwt_token}"},
+    )
+    assert response.status_code == 201
+    payload = response.get_json()
+    assert payload["avatar_url"] == "https://cdn.example.com/profile_avatars/avatar.png"
+    assert payload["picture"] == payload["avatar_url"]
+    assert payload["avatar_source"] == "profile_upload"
+    assert payload["avatar_consent"] is True
+    assert payload["upload"]["thumb_url"] == "https://cdn.example.com/profile_avatars/avatar-thumb.webp"
+
+    db.session.refresh(user)
+    identity = user.accesibilidad["identity"]
+    assert identity["avatar_url"] == payload["avatar_url"]
+    assert identity["avatar_source"] == "profile_upload"
+    assert identity["avatar_consent"] is True
 
 
 def test_perfil_returns_owner_token_for_employee(client):

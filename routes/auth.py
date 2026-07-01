@@ -130,9 +130,11 @@ from services.user_service import (
     create_password_reset_request,
     get_user_profile_identity,
     reset_password_with_token,
+    set_user_profile_avatar,
     split_password_reset_token,
     update_user_profile,
 )
+from services.gcs_service import upload_to_gcs
 from utils.map_config import get_map_config
 from utils.user_query import user_table_has_tenant_id_column
 
@@ -3206,6 +3208,96 @@ def me_perfil(user):
         else:
             message, status = getattr(g, "profile_update_error", ("Error interno al guardar el perfil.", 500))
             return jsonify({"error": message}), status
+
+
+PROFILE_AVATAR_UPLOAD_MAX_BYTES = 5 * 1024 * 1024
+PROFILE_AVATAR_ALLOWED_MIMES = {"image/jpeg", "image/png", "image/webp"}
+PROFILE_AVATAR_ALLOWED_EXTENSIONS = {"jpg", "jpeg", "png", "webp"}
+
+
+def _profile_avatar_payload(user: User, *, message: str) -> Dict[str, Any]:
+    identity = get_user_profile_identity(user)
+    avatar_url = identity.get("avatar_url")
+    avatar_consent = bool(identity.get("avatar_consent"))
+    return {
+        "mensaje": message,
+        "avatar_url": avatar_url,
+        "picture": avatar_url,
+        "avatar_source": identity.get("avatar_source"),
+        "avatar_consent": avatar_consent,
+        "profile_picture_consent": avatar_consent,
+    }
+
+
+@auth_bp.route('/profile/avatar', methods=['POST', 'DELETE'])
+@auth_bp.route('/me/avatar', methods=['POST', 'DELETE'])
+@cross_origin(supports_credentials=True)
+@token_requerido
+def upload_profile_avatar(user):
+    """Persist a consented profile avatar uploaded by the authenticated user."""
+
+    if request.method == 'DELETE':
+        success, message, status = set_user_profile_avatar(
+            user,
+            "",
+            source="profile_upload",
+            overwrite=True,
+        )
+        if not success:
+            return jsonify({"error": message}), status
+        return jsonify(_profile_avatar_payload(user, message=message))
+
+    if request.content_length and request.content_length > PROFILE_AVATAR_UPLOAD_MAX_BYTES + 2048:
+        return jsonify({"error": "La imagen de perfil no puede superar 5 MB."}), 413
+
+    uploaded = (
+        request.files.get("avatar")
+        or request.files.get("file")
+        or request.files.get("image")
+        or request.files.get("imagen")
+    )
+    if not uploaded or not uploaded.filename:
+        return jsonify({"error": "Envia una imagen de perfil."}), 400
+
+    filename = str(uploaded.filename or "")
+    extension = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    mimetype = (uploaded.mimetype or "").lower()
+    if extension not in PROFILE_AVATAR_ALLOWED_EXTENSIONS or mimetype not in PROFILE_AVATAR_ALLOWED_MIMES:
+        return jsonify({"error": "Formato de avatar no permitido. Usa JPG, PNG o WebP."}), 400
+
+    previous_user = getattr(g, "current_user", None)
+    g.current_user = user
+    try:
+        upload_result = upload_to_gcs(uploaded, kind="profile_avatars")
+    finally:
+        g.current_user = previous_user
+
+    if not upload_result:
+        return jsonify({"error": "No se pudo subir la imagen de perfil."}), 500
+
+    avatar_url = (
+        upload_result.get("original_url")
+        or upload_result.get("public_url")
+        or upload_result.get("url")
+    )
+    success, message, status = set_user_profile_avatar(
+        user,
+        avatar_url,
+        source="profile_upload",
+        overwrite=True,
+    )
+    if not success:
+        return jsonify({"error": message}), status
+
+    payload = _profile_avatar_payload(user, message=message)
+    payload["upload"] = {
+        "original_name": upload_result.get("original_name"),
+        "mimetype": upload_result.get("mimetype"),
+        "size": upload_result.get("size"),
+        "thumb_url": upload_result.get("thumbUrl")
+        or (upload_result.get("thumb_meta") or {}).get("url"),
+    }
+    return jsonify(payload), 201
 
 @auth_bp.route('/update_personal_data', methods=['POST'])
 @token_requerido
