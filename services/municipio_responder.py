@@ -4384,6 +4384,69 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
     logger_actual = app.logger if app else (current_app.logger if has_app_context() else logging.getLogger(__name__))
     datos_actuales = {} # Initialize to prevent UnboundLocalError
 
+    def _execute_llm_live_chat_handoff(datos_handoff=None, mensaje_previo=None):
+        from services.actions.municipio_actions import DerivarHumanoActionHandler
+
+        context["intencion"] = "hablar_con_agente"
+        context["pregunta_actual_usuario"] = pregunta_str
+        contexto_municipio_actual["mensaje_previo_llm_para_escalamiento"] = mensaje_previo
+
+        action_payload = dict(datos_handoff or {})
+        action_payload.setdefault(
+            "motivo_derivacion",
+            action_payload.get("handoff_reason")
+            or mensaje_previo
+            or "Solicitud de atencion humana",
+        )
+
+        handler = DerivarHumanoActionHandler(context)
+        handler_result = handler.execute(action_payload)
+        data = handler_result.get("data", {}) if isinstance(handler_result, dict) else {}
+        ticket_id = data.get("ticket_id") if isinstance(data, dict) else None
+        if ticket_id:
+            contexto_municipio_actual["live_chat_ticket_id"] = ticket_id
+            contexto_municipio_actual["live_chat_estado"] = data.get("status")
+            contexto_municipio_actual["live_chat_socket_room"] = data.get("socket_room")
+            contexto_municipio_actual["estado_conversacion"] = (
+                ConversationState.CONVERSACION_GENERAL_LLM.name
+            )
+
+        chat_data = context.get("chat_db_context_data")
+        context_updates = {CONTEXTO_MUNICIPIO: serializar_enum(contexto_municipio_actual)}
+        if isinstance(chat_data, dict):
+            chat_data[CONTEXTO_MUNICIPIO] = serializar_enum(contexto_municipio_actual)
+            for key in (
+                "human_chat_in_progress",
+                "ticket_id",
+                "tipo_ticket",
+                "room",
+                "live_chat_socket_room",
+                "live_chat_status",
+            ):
+                if key in chat_data:
+                    context_updates[key] = chat_data[key]
+        if chat_db_context and hasattr(chat_db_context, "context_data"):
+            chat_db_context.context_data[CONTEXTO_MUNICIPIO] = serializar_enum(
+                contexto_municipio_actual
+            )
+            flag_modified(chat_db_context, "context_data")
+
+        return {
+            "success": bool(handler_result.get("success")) if isinstance(handler_result, dict) else False,
+            "message_body": (
+                handler_result.get("message_to_user")
+                if isinstance(handler_result, dict)
+                else None
+            )
+            or mensaje_previo
+            or "Conectando con un agente disponible.",
+            "options_list": handler_result.get("options_list", []) if isinstance(handler_result, dict) else [],
+            "message_type": handler_result.get("message_type", "text") if isinstance(handler_result, dict) else "text",
+            "fuente": "llm_derivar_humano_live_chat",
+            "data": data,
+            "contexto_actualizado": context_updates,
+        }
+
     logger_actual.info(
         f"[HANDLE_LLM_START] pregunta='{pregunta_str}' estado_previo='{contexto_municipio_actual.get('estado_conversacion')}' ubicacion='{contexto_municipio_actual.get('datos_parciales_llm_reclamo', {}).get('ubicacion')}'"
     )
@@ -5124,10 +5187,11 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
             # para mantener la firma de retorno del LLM handler.
             return menu_response, contexto_municipio_actual
         elif accion_backend_llm == "derivar_humano":
-            context["intencion"] = "hablar_con_agente"
-            contexto_municipio_actual["mensaje_previo_llm_para_escalamiento"] = respuesta_usuario_llm
             logger.info("[HANDLE_LLM] LLM derivó a humano.")
-            return None, contexto_municipio_actual
+            return _execute_llm_live_chat_handoff(
+                datos_estructura_llm,
+                respuesta_usuario_llm,
+            ), contexto_municipio_actual
         elif accion_backend_llm == "finalizar_tramite":
             logger.info(
                 "[HANDLE_LLM] LLM finalizó el trámite. Reseteando contexto de reclamo."
@@ -5244,10 +5308,11 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                 }, contexto_municipio_actual
 
         elif accion_backend_llm == "derivar_humano":
-            context["intencion"] = "hablar_con_agente"
-            contexto_municipio_actual["mensaje_previo_llm_para_escalamiento"] = respuesta_usuario_llm
             logger.info("[HANDLE_LLM] LLM derivó a humano.")
-            return None, contexto_municipio_actual
+            return _execute_llm_live_chat_handoff(
+                datos_estructura_llm,
+                respuesta_usuario_llm,
+            ), contexto_municipio_actual
 
         elif accion_backend_llm == "responder_directamente":
             logger.info("[HANDLE_LLM] LLM solicitó responder directamente.")

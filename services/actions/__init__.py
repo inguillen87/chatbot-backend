@@ -33,7 +33,7 @@ ACTION_HANDLER_MAP = {
     "consultar_producto_pyme": "services.actions.pyme_actions.ConsultarProductoActionHandler",
     "consultar_ofertas_pyme": "services.actions.pyme_actions.ConsultarOfertasActionHandler",
     "solicitar_ubicacion_tienda": "services.actions.pyme_actions.SolicitarUbicacionTiendaActionHandler",
-    "consultar_estado_pedido": "services.actions.pyme_actions.ConsultarEstadoPedidoActionHandler",
+    "consultar_estado_pedido": "services.actions.pyme_order_actions.ConsultarEstadoPedidoAction",
     "hacer_sugerencia_pyme": "services.actions.pyme_actions.HacerSugerenciaActionHandler",
     "info_tramite_pyme": "services.actions.pyme_actions.ConsultarInfoPymeActionHandler",
 
@@ -53,9 +53,10 @@ ACTION_HANDLER_MAP = {
 
     # Handlers for PYME interactive menu
     "ver_catalogo": "services.actions.pyme_actions.CatalogoHandler",
+    "ver_catalogo_pyme": "services.actions.pyme_actions.CatalogoHandler",
     "pyme_productos_stock": "services.actions.pyme_actions.CatalogoHandler",
     "pyme_promociones": "services.actions.pyme_actions.OfertasHandler",
-    "pyme_estado_pedido": "services.actions.pyme_actions.ConsultarEstadoPedidoActionHandler",
+    "pyme_estado_pedido": "services.actions.pyme_order_actions.ConsultarEstadoPedidoAction",
     "pyme_hacer_pedido": "services.actions.pyme_order_actions.CrearPedidoAction",
     "pyme_hablar_agente": "services.actions.pyme_actions.DerivarHumanoActionHandlerPyme",
     "pyme_otras_consultas": "services.actions.pyme_actions.OtrasConsultasHandler",

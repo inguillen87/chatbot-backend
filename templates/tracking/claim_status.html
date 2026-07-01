@@ -328,7 +328,8 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         nro_ticket: "{{ ticket.nro_ticket }}",
-                        mensaje: text
+                        mensaje: text,
+                        pin: "{{ pin|default('', true)|e }}"
                     })
                 });
 

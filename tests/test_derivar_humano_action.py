@@ -164,13 +164,15 @@ class TestDerivarHumanoAction:
         db.session.add_all([owner_user, viewer_user])
         db.session.commit()
 
+        chat_context_data = {}
         context = {
             'viewer_user_obj': viewer_user,
             'user_obj': owner_user,
             'cliente_id': 9,
             'anon_id': None,
             'target_entity_type': 'pyme',
-            'pregunta_actual_usuario': 'Quiero hablar con alguien.'
+            'pregunta_actual_usuario': 'Quiero hablar con alguien.',
+            'chat_db_context_data': chat_context_data,
         }
         orchestrator = ChatOrchestrator(global_context=context)
 
@@ -182,12 +184,37 @@ class TestDerivarHumanoAction:
         assert result['success']
         assert 'P-' in result['data']['chat_id']
         assert result['data']['socket_room'] == 'pyme_20'
+        assert chat_context_data["human_chat_in_progress"] is True
+        assert chat_context_data["tipo_ticket"] == "pyme"
+        assert chat_context_data["ticket_id"] == result["data"]["ticket_id"]
+        assert chat_context_data["room"] == f"ticket_pyme_{result['data']['ticket_id']}"
         mock_emit_update.assert_called_once()
 
     def test_pyme_hablar_agente_alias_uses_modern_live_chat_handler(self):
         assert (
             ACTION_HANDLER_MAP["pyme_hablar_agente"]
             == "services.actions.pyme_actions.DerivarHumanoActionHandlerPyme"
+        )
+
+    def test_pyme_estado_pedido_aliases_use_order_status_handler(self):
+        assert (
+            ACTION_HANDLER_MAP["consultar_estado_pedido"]
+            == "services.actions.pyme_order_actions.ConsultarEstadoPedidoAction"
+        )
+        assert (
+            ACTION_HANDLER_MAP["pyme_estado_pedido"]
+            == "services.actions.pyme_order_actions.ConsultarEstadoPedidoAction"
+        )
+
+        orchestrator = ChatOrchestrator(global_context={"target_entity_type": "pyme"})
+
+        assert (
+            orchestrator._get_handler_class("consultar_estado_pedido").__name__
+            == "ConsultarEstadoPedidoAction"
+        )
+        assert (
+            orchestrator._get_handler_class("pyme_estado_pedido").__name__
+            == "ConsultarEstadoPedidoAction"
         )
 
 
@@ -202,13 +229,15 @@ class TestDerivarHumanoAction:
         db.session.add_all([owner_user, viewer_user])
         db.session.commit()
 
+        chat_context_data = {}
         context = {
             'viewer_user_obj': viewer_user,
             'user_obj': owner_user,
             'cliente_id': 5,
             'anon_id': None,
             'target_entity_type': 'municipio',
-            'pregunta_actual_usuario': 'Necesito ayuda con la app.'
+            'pregunta_actual_usuario': 'Necesito ayuda con la app.',
+            'chat_db_context_data': chat_context_data,
         }
         orchestrator = ChatOrchestrator(global_context=context)
 
@@ -219,5 +248,9 @@ class TestDerivarHumanoAction:
         assert result['executed_action_handler'] == 'DerivarHumanoActionHandler'
         assert result['success']
         assert 'M-' in result['data']['chat_id']
+        assert chat_context_data["human_chat_in_progress"] is True
+        assert chat_context_data["tipo_ticket"] == "municipio"
+        assert chat_context_data["ticket_id"] == result["data"]["ticket_id"]
+        assert chat_context_data["room"] == f"ticket_municipio_{result['data']['ticket_id']}"
         mock_socket_emit.assert_any_call('live_chat_request', ANY, room='municipio_10')
         mock_emit_update.assert_called_once()

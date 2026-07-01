@@ -98,9 +98,9 @@ class MunicipioLogicTests(unittest.TestCase):
     def tearDown(self):
         self.app_context.pop()
 
-    @patch('services.municipio_responder.servicio_tickets')
-    @patch('services.municipio_responder.llamar_llm_con_fallback')
-    def test_human_escalation(self, mock_llamar_llm, mock_servicio_tickets):
+    @patch('services.actions.municipio_actions.DerivarHumanoActionHandler.execute')
+    @patch('services.municipio_responder.llamar_gemini')
+    def test_human_escalation(self, mock_llamar_llm, mock_handoff_execute):
         mock_llamar_llm.return_value = (
             {
                 "message_body": "Te estoy derivando con un agente.",
@@ -111,7 +111,16 @@ class MunicipioLogicTests(unittest.TestCase):
             },
             {}
         )
-        mock_servicio_tickets.crear_nuevo_ticket.return_value = SimpleNamespace(id=1, nro_ticket="M-123456")
+        mock_handoff_execute.return_value = {
+            "success": True,
+            "message_to_user": "Chat en vivo creado.",
+            "data": {
+                "ticket_id": 1,
+                "chat_id": "M-123456",
+                "status": "esperando_agente_en_vivo",
+                "socket_room": "municipio_test_muni_id",
+            },
+        }
 
         from models import ChatSessionContext, db
         chat_context = ChatSessionContext(chat_session_id="test_session_escalation", context_data={})
@@ -126,7 +135,9 @@ class MunicipioLogicTests(unittest.TestCase):
             chat_db_context=chat_context
         )
 
-        self.assertIn('Te estoy derivando', resp['message_body'])
+        self.assertIn("Chat en vivo creado", resp["message_body"])
+        self.assertEqual(resp["data"]["ticket_id"], 1)
+        mock_handoff_execute.assert_called_once()
 
     @patch('services.municipio_responder.ReclamoFlowHandler.start_flow')
     def test_auto_flow_triggered_by_image(self, mock_start_flow):

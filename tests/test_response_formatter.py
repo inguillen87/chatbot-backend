@@ -317,6 +317,18 @@ class TestResponseFormatter(unittest.TestCase):
         self.assertEqual(button["id"], "long")
         self.assertEqual(button["title"], "A" * 20)
 
+    def test_whatsapp_interactive_button_uses_id_accion(self):
+        response = build_interactive_response(
+            options=[{"texto": "Finalizar Compra", "id_accion": "finalizar_compra"}],
+            body_text="Carrito:",
+            channel="whatsapp",
+            message_type='interactive_buttons',
+        )
+
+        button = response["interactive"]["action"]["buttons"][0]["reply"]
+        self.assertEqual(button["id"], "finalizar_compra")
+        self.assertEqual(button["title"], "Finalizar Compra")
+
     def test_whatsapp_interactive_list_labels_are_twilio_safe(self):
         response = build_interactive_response(
             options=[

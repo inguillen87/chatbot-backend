@@ -317,6 +317,7 @@ class TrackingExperienceContractTest(unittest.TestCase):
         accepted = self.client.get("/tracking/claim/123456?pin=654321")
         self.assertEqual(accepted.status_code, 200)
         self.assertIn(b"Cuadrilla asignada", accepted.data)
+        self.assertIn(b'pin: "654321"', accepted.data)
 
     def test_legacy_claim_message_endpoint_requires_pin_when_ticket_has_pin(self):
         rejected = self.client.post(

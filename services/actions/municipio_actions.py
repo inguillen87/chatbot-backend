@@ -1711,6 +1711,18 @@ class DerivarHumanoActionHandler(BaseActionHandler):
             if not tenant_profile:
                 tenant_profile = getattr(owner_user, "tenant", None)
             live_chat_status = build_tenant_live_chat_status(tenant_profile, socket_room=socket_room)
+            chat_context_data = self.context.get("chat_db_context_data")
+            if isinstance(chat_context_data, dict):
+                chat_context_data.update(
+                    {
+                        "human_chat_in_progress": True,
+                        "ticket_id": sala_dict["id"],
+                        "tipo_ticket": ticket_type,
+                        "room": f"ticket_{ticket_type}_{sala_dict['id']}",
+                        "live_chat_socket_room": socket_room,
+                        "live_chat_status": live_chat_status.get("mode"),
+                    }
+                )
             if not live_chat_status.get("available"):
                 schedule_text = live_chat_status.get("description")
                 if schedule_text:

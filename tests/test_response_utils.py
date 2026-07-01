@@ -28,6 +28,21 @@ class EnsureButtonsCompatibilityTest(unittest.TestCase):
         opciones = result.get("options_list")
         self.assertEqual(opciones[0]["action_id"], "open_url")
         self.assertEqual(opciones[0]["id"], "open_url")
+        self.assertEqual(opciones[0]["id_accion"], "open_url")
+
+    def test_uses_id_accion_before_visible_text(self):
+        payload = {
+            "options_list": [
+                {"texto": "Finalizar Compra", "id_accion": "finalizar_compra"}
+            ]
+        }
+
+        result = ensure_buttons_compatibility(payload)
+
+        boton = result["botones"][0]
+        self.assertEqual(boton["action_id"], "finalizar_compra")
+        self.assertEqual(boton["id"], "finalizar_compra")
+        self.assertEqual(boton["id_accion"], "finalizar_compra")
 
     def test_defaults_action_id_to_text(self):
         payload = {"options_list": [{"texto": "Contáctanos"}]}

@@ -75,13 +75,13 @@ def _truncate_label(value, limit: int, fallback: str) -> str:
 
 
 def _option_id(option: dict, fallback: str | int) -> str:
-    value = option.get("id") or option.get("action_id") or fallback
+    value = option.get("id") or option.get("action_id") or option.get("id_accion") or fallback
     return _clean_text(value, str(fallback))[:200]
 
 
 def _navigation_key(option: dict) -> str:
     action_value = _clean_text(
-        option.get("action_id") or option.get("id") or option.get("action")
+        option.get("action_id") or option.get("id_accion") or option.get("id") or option.get("action")
     ).casefold()
     text_value = _clean_text(
         option.get("texto") or option.get("label") or option.get("title")

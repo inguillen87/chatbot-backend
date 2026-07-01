@@ -39,7 +39,7 @@ def ensure_buttons_compatibility(payload: Any) -> Any:
         # Only attempt to normalize structures that look like interactive
         # options.  Requiring at least one of these keys avoids touching other
         # dictionaries (e.g. chart data with ``label``/``value`` pairs).
-        if not any(key in button for key in ("action_id", "action", "id", "texto")):
+        if not any(key in button for key in ("action_id", "id_accion", "action", "id", "texto")):
             return
 
         texto = button.get("texto")
@@ -57,7 +57,7 @@ def ensure_buttons_compatibility(payload: Any) -> Any:
 
         action_id = button.get("action_id")
         if not action_id:
-            for candidate in ("id", "action", "value", "key"):
+            for candidate in ("id_accion", "id", "action", "value", "key"):
                 value = button.get(candidate)
                 if value:
                     action_id = value
@@ -70,6 +70,8 @@ def ensure_buttons_compatibility(payload: Any) -> Any:
 
         if action_id and "id" not in button:
             button["id"] = action_id
+        if action_id and "id_accion" not in button:
+            button["id_accion"] = action_id
 
         url_value = button.get("url")
         if isinstance(url_value, str) and url_value.strip():

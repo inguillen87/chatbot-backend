@@ -286,7 +286,7 @@ def tracking_page(nro_pedido):
         current_year=datetime.now().year,
         widget_token=widget_token,
         google_maps_key=current_app.config.get('GOOGLE_MAPS_API_KEY', ''),
-        chat_history=chat_history
+        chat_history=chat_history,
     )
 
 @tracking_ui_bp.route('/tracking/claim/<nro_ticket>')
@@ -333,7 +333,8 @@ def tracking_claim(nro_ticket):
         current_year=datetime.now().year,
         widget_token=widget_token,
         google_maps_key=current_app.config.get('GOOGLE_MAPS_API_KEY', ''),
-        chat_history=chat_history
+        chat_history=chat_history,
+        pin=pin,
     )
 
 @tracking_ui_bp.route('/tracking/api/send-message', methods=['POST'])
