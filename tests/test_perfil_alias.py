@@ -126,6 +126,7 @@ def test_perfil_allows_consent_avatar_url_and_exposes_picture_alias(client):
     db.session.refresh(user)
     assert user.accesibilidad["identity"]["avatar_url"] == avatar_url
     assert user.accesibilidad["identity"]["avatar_source"] == "profile_upload"
+    assert user.accesibilidad["identity"]["avatar_consent"] is True
 
     response = client.get("/auth/perfil", headers={"Authorization": f"Bearer {jwt_token}"})
     assert response.status_code == 200
@@ -133,6 +134,8 @@ def test_perfil_allows_consent_avatar_url_and_exposes_picture_alias(client):
     assert data["avatar_url"] == avatar_url
     assert data["picture"] == avatar_url
     assert data["avatar_source"] == "profile_upload"
+    assert data["avatar_consent"] is True
+    assert data["profile_picture_consent"] is True
 
 
 def test_perfil_rejects_unsafe_avatar_url(client):

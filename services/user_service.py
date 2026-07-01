@@ -69,10 +69,19 @@ def get_user_profile_identity(user: User) -> dict:
     metadata = _profile_metadata(user)
     identity = metadata.get("identity") if isinstance(metadata.get("identity"), dict) else {}
     avatar_url = identity.get("avatar_url") or metadata.get("profile_avatar_url")
-    avatar_source = identity.get("avatar_source") or metadata.get("profile_avatar_source")
+    raw_avatar_source = identity.get("avatar_source") or metadata.get("profile_avatar_source")
+    avatar_source = str(raw_avatar_source).strip() if raw_avatar_source else ("profile_url" if avatar_url else None)
+    normalized_source = str(avatar_source or "").strip().lower()
+    explicit_consent = identity.get("avatar_consent")
+    avatar_consent = bool(
+        avatar_url
+        and normalized_source in PROFILE_AVATAR_SOURCES
+        and explicit_consent is not False
+    )
     return {
         "avatar_url": str(avatar_url).strip() if avatar_url else None,
-        "avatar_source": str(avatar_source).strip() if avatar_source else None,
+        "avatar_source": avatar_source,
+        "avatar_consent": avatar_consent,
     }
 
 
@@ -101,9 +110,13 @@ def set_user_profile_avatar(
     if avatar_url:
         identity["avatar_url"] = avatar_url
         identity["avatar_source"] = _normalize_avatar_source(source)
+        identity["avatar_consent"] = True
+        identity["avatar_consented_at"] = datetime.utcnow().isoformat() + "Z"
     else:
         identity.pop("avatar_url", None)
         identity.pop("avatar_source", None)
+        identity.pop("avatar_consent", None)
+        identity.pop("avatar_consented_at", None)
 
     metadata["identity"] = identity
     user.accesibilidad = metadata

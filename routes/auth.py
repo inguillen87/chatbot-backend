@@ -645,6 +645,7 @@ def build_profile_payload(user: User) -> Dict[str, Any]:
     profile_identity = get_user_profile_identity(user)
     profile_avatar_url = profile_identity.get("avatar_url")
     profile_avatar_source = profile_identity.get("avatar_source")
+    profile_avatar_consent = bool(profile_identity.get("avatar_consent"))
 
     profile_data: Dict[str, Any] = {
         "id": user.id,
@@ -679,6 +680,8 @@ def build_profile_payload(user: User) -> Dict[str, Any]:
         "avatar_url": profile_avatar_url,
         "picture": profile_avatar_url,
         "avatar_source": profile_avatar_source,
+        "avatar_consent": profile_avatar_consent,
+        "profile_picture_consent": profile_avatar_consent,
         "preguntas_usadas": getattr(user, "preguntas_usadas", None),
     }
 
@@ -2137,6 +2140,8 @@ def google_login():
                 "avatar_url": profile_identity.get("avatar_url"),
                 "picture": profile_identity.get("avatar_url"),
                 "avatar_source": profile_identity.get("avatar_source"),
+                "avatar_consent": bool(profile_identity.get("avatar_consent")),
+                "profile_picture_consent": bool(profile_identity.get("avatar_consent")),
             }
             entity_token_value = _include_entity_token_fields(response_payload, owner_token)
             resp = jsonify(response_payload)
@@ -2184,6 +2189,8 @@ def google_login():
             "avatar_url": profile_identity.get("avatar_url"),
             "picture": profile_identity.get("avatar_url"),
             "avatar_source": profile_identity.get("avatar_source"),
+            "avatar_consent": bool(profile_identity.get("avatar_consent")),
+            "profile_picture_consent": bool(profile_identity.get("avatar_consent")),
         }
 
         entity_token_value = _include_entity_token_fields(response_payload, owner_token)
