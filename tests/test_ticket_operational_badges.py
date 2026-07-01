@@ -155,6 +155,82 @@ class TicketOperationalBadgesTest(unittest.TestCase):
         self.assertIsNone(payload["contact_identity"]["avatar_url"])
         self.assertEqual(payload["contact_identity"]["fallback"], "deterministic_identity_avatar")
 
+    def test_ticket_payload_resolves_registered_profile_avatar_by_email_without_user_id(self):
+        vecino = User(
+            name="Vecino Registrado",
+            email="vecino-registrado@example.com",
+            telefono="+5492613168608",
+            rol="user",
+            tipo_chat="municipio",
+        )
+        vecino.set_password("pass")
+        vecino.accesibilidad = {
+            "identity": {
+                "avatar_url": "https://cdn.example.com/profile/vecino-registrado.webp",
+                "avatar_source": "social_login_google",
+                "avatar_consent": True,
+            }
+        }
+        db.session.add(vecino)
+        db.session.commit()
+
+        ticket = MunicipioTicket(
+            municipio_id=self.admin.id,
+            pregunta="arreglo de calle",
+            nro_ticket="777003",
+            estado="nuevo",
+            nombre_vecino="Vecino Registrado",
+            telefono_vecino="+54 9 261 316 8608",
+            email_vecino="vecino-registrado@example.com",
+        )
+        db.session.add(ticket)
+        db.session.commit()
+
+        payload = serialize_ticket_to_json(ticket, "municipio", compact=True)
+
+        self.assertEqual(payload["avatar_url"], "https://cdn.example.com/profile/vecino-registrado.webp")
+        self.assertTrue(payload["avatar_consent"])
+        self.assertEqual(payload["contact_identity"]["user_id"], vecino.id)
+        self.assertEqual(payload["contact_identity"]["avatar_source"], "social_login_google")
+        self.assertEqual(payload["contact"]["avatar_url"], "https://cdn.example.com/profile/vecino-registrado.webp")
+
+    def test_ticket_payload_resolves_registered_profile_avatar_by_phone_without_user_id(self):
+        vecino = User(
+            name="Vecino Telefono",
+            email="vecino-telefono@example.com",
+            telefono="+5492613000000",
+            rol="user",
+            tipo_chat="municipio",
+        )
+        vecino.set_password("pass")
+        vecino.accesibilidad = {
+            "identity": {
+                "avatar_url": "https://cdn.example.com/profile/vecino-telefono.webp",
+                "avatar_source": "profile_upload",
+                "avatar_consent": True,
+            }
+        }
+        db.session.add(vecino)
+        db.session.commit()
+
+        ticket = MunicipioTicket(
+            municipio_id=self.admin.id,
+            pregunta="luminaria",
+            nro_ticket="777004",
+            estado="nuevo",
+            nombre_vecino="Vecino Telefono",
+            telefono_vecino="5492613000000",
+        )
+        db.session.add(ticket)
+        db.session.commit()
+
+        payload = serialize_ticket_to_json(ticket, "municipio", compact=True)
+
+        self.assertEqual(payload["avatar_url"], "https://cdn.example.com/profile/vecino-telefono.webp")
+        self.assertTrue(payload["avatar_consent"])
+        self.assertEqual(payload["contact_identity"]["user_id"], vecino.id)
+        self.assertEqual(payload["contact_identity"]["avatar_source"], "profile_upload")
+
 
 if __name__ == "__main__":
     unittest.main()

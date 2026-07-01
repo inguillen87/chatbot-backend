@@ -1,5 +1,6 @@
 from models import User, Rubro, TenantProfile, db
 import jwt
+import pytest
 from io import BytesIO
 from datetime import datetime, timedelta
 from flask import current_app
@@ -92,6 +93,71 @@ def test_perfil_uses_tenant_slug_and_exposes_profile_sections(client):
     assert data["rubro_clave"] == rubro.clave
     assert "tickets" in (data.get("profile_sections") or [])
     assert data["requires_rubro_selection"] is False
+
+
+@pytest.mark.parametrize("role", ["tenant_admin", "admin_municipio", "admin_pyme"])
+def test_admin_role_aliases_receive_ticket_panels_and_capabilities(client, role):
+    rubro = Rubro.query.filter_by(clave="municipio").first()
+    if not rubro:
+        rubro = Rubro(nombre="municipio", clave="municipio", es_publico=True)
+        db.session.add(rubro)
+        db.session.commit()
+
+    user = User(
+        email=f"{role}@panel.test",
+        name=f"{role} Panel",
+        token=f"{role}-panel-token",
+        rubro_id=rubro.id,
+        tipo_chat="municipio",
+        rol=role,
+        municipio_id=9001,
+    )
+    user.set_password("secret123")
+    db.session.add(user)
+    db.session.flush()
+
+    tenant = TenantProfile(
+        slug=f"{role.replace('_', '-')}-tenant",
+        nombre=f"{role} Tenant",
+        tipo="municipio",
+        municipio_id=user.id,
+    )
+    db.session.add(tenant)
+    db.session.commit()
+
+    jwt_payload = {"user_id": user.id, "exp": datetime.utcnow() + timedelta(days=1)}
+    jwt_token = jwt.encode(jwt_payload, current_app.config["SECRET_KEY"], algorithm="HS256")
+    if isinstance(jwt_token, bytes):
+        jwt_token = jwt_token.decode("utf-8")
+    headers = {"Authorization": f"Bearer {jwt_token}"}
+
+    profile_response = client.get("/auth/perfil", headers=headers)
+    assert profile_response.status_code == 200
+    profile_payload = profile_response.get_json()
+    assert "tickets" in (profile_payload.get("profile_sections") or [])
+    assert "tickets.read" in (profile_payload.get("capabilities") or [])
+    assert "crm.tickets.read" in (profile_payload.get("permissions") or [])
+
+    bootstrap_response = client.get("/auth/session/bootstrap", headers=headers)
+    assert bootstrap_response.status_code == 200
+    bootstrap_payload = bootstrap_response.get_json()
+    assert "tickets" in (bootstrap_payload.get("ui", {}).get("panels") or [])
+    assert "tickets.read" in (bootstrap_payload.get("user", {}).get("capabilities") or [])
+
+    dashboard_response = client.get("/auth/me/dashboard", headers=headers)
+    assert dashboard_response.status_code == 200
+    dashboard_payload = dashboard_response.get_json()
+    assert "tickets" in (dashboard_payload.get("panels") or [])
+    assert "tickets.read" in (dashboard_payload.get("capabilities") or [])
+
+    login_response = client.post(
+        "/auth/admin/login",
+        json={"email": user.email, "password": "secret123"},
+    )
+    assert login_response.status_code == 200
+    login_payload = login_response.get_json()
+    assert login_payload["user"]["rol"] == role
+    assert "tickets.read" in (login_payload["user"].get("capabilities") or [])
 
 
 def test_perfil_allows_consent_avatar_url_and_exposes_picture_alias(client):

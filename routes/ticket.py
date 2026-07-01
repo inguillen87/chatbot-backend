@@ -1542,13 +1542,84 @@ def _get_user_info(ticket, user_model):
     return user_info
 
 
-def _ticket_contact_identity(ticket, ticket_type: str, user_data: dict) -> dict:
-    ticket_user = None
+def _normalize_identity_phone(value) -> Optional[str]:
+    if value is None:
+        return None
+    digits = "".join(ch for ch in str(value) if ch.isdigit())
+    if len(digits) < 8:
+        return None
+    return digits
+
+
+def _user_phone_digits_expression():
+    expression = User.telefono
+    for token in ("+", " ", "-", "(", ")", ".", "\t"):
+        expression = func.replace(expression, token, "")
+    return expression
+
+
+def _resolve_ticket_profile_user(ticket, user_data: dict) -> Optional[User]:
+    """Resolve a registered profile for visual identity without trusting channel avatars.
+
+    A ticket can arrive from WhatsApp/widget before the citizen/customer logs in.
+    If they later create a profile with the same email or phone and consent to a
+    profile image, this lets the CRM show that consented identity while keeping
+    WhatsApp profile pictures and scraped sources blocked by build_identity_subject.
+    """
+
     if getattr(ticket, "user_id", None):
         try:
             ticket_user = db.session.get(User, ticket.user_id)
+            if ticket_user:
+                return ticket_user
         except Exception:
-            ticket_user = None
+            return None
+
+    email = str(user_data.get("email") or "").strip().lower()
+    if email and email not in {"no especificado", "no especificada"}:
+        try:
+            matched_user = User.query.filter(func.lower(User.email) == email).first()
+            if matched_user:
+                return matched_user
+        except Exception:
+            current_app.logger.debug(
+                "Ticket identity email lookup failed for ticket %s",
+                getattr(ticket, "id", None),
+                exc_info=True,
+            )
+
+    phone_digits = _normalize_identity_phone(user_data.get("telefono"))
+    if phone_digits:
+        try:
+            phone_tail = phone_digits[-10:] if len(phone_digits) > 10 else phone_digits
+            phone_expression = _user_phone_digits_expression()
+            candidates = (
+                User.query
+                .filter(User.telefono.isnot(None))
+                .filter(phone_expression.like(f"%{phone_tail}"))
+                .limit(10)
+                .all()
+            )
+            for candidate in candidates:
+                candidate_digits = _normalize_identity_phone(getattr(candidate, "telefono", None))
+                if candidate_digits and (
+                    candidate_digits == phone_digits
+                    or candidate_digits.endswith(phone_tail)
+                    or phone_digits.endswith(candidate_digits[-10:])
+                ):
+                    return candidate
+        except Exception:
+            current_app.logger.debug(
+                "Ticket identity phone lookup failed for ticket %s",
+                getattr(ticket, "id", None),
+                exc_info=True,
+            )
+
+    return None
+
+
+def _ticket_contact_identity(ticket, ticket_type: str, user_data: dict) -> dict:
+    ticket_user = _resolve_ticket_profile_user(ticket, user_data)
     return build_identity_subject(
         user=ticket_user,
         display_name=user_data.get("nombre"),

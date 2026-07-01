@@ -112,6 +112,7 @@ from utils.auth_helpers import (
     _safe_user_query,
 )
 from flask_login import current_user
+from utils.roles import canonical_role
 from utils.plan_limits import limite_para_usuario
 from services.plan_config import (
     get_plan_metadata,
@@ -592,6 +593,93 @@ def _timestamp_to_iso(value: Optional[object]) -> Optional[str]:
         return None
 
 
+_CAPABILITY_ALIASES = {
+    "crm.tickets.read": "tickets.read",
+    "crm.tickets.admin": "tickets.read",
+    "tickets.admin": "tickets.read",
+    "claims.read": "tickets.read",
+    "claims.admin": "tickets.read",
+    "reclamos.read": "tickets.read",
+    "reclamos.admin": "tickets.read",
+    "crm_reclamos": "tickets.read",
+    "tickets_read": "tickets.read",
+    "tickets_update": "tickets.write",
+    "tickets_assign": "tickets.assign",
+    "pedidos.read": "market.orders.read",
+    "orders.read": "market.orders.read",
+    "commerce.orders.read": "market.orders.read",
+}
+
+
+def _flatten_capability_values(raw: object) -> list[str]:
+    if raw in (None, ""):
+        return []
+    if isinstance(raw, str):
+        return [item.strip() for item in raw.split(",") if item.strip()]
+    if isinstance(raw, dict):
+        values: list[str] = []
+        for key, enabled in raw.items():
+            if enabled:
+                values.append(str(key).strip())
+        return [value for value in values if value]
+    if isinstance(raw, (list, tuple, set)):
+        values = []
+        for item in raw:
+            values.extend(_flatten_capability_values(item))
+        return values
+    return [str(raw).strip()] if str(raw).strip() else []
+
+
+def _normalize_capability_tokens(*raw_values: object) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+
+    for raw in raw_values:
+        for value in _flatten_capability_values(raw):
+            token = value.strip().lower()
+            if not token:
+                continue
+            canonical = _CAPABILITY_ALIASES.get(token, token)
+            for candidate in (token, canonical):
+                if candidate and candidate not in seen:
+                    normalized.append(candidate)
+                    seen.add(candidate)
+
+    return normalized
+
+
+def _profile_capabilities_for_user(user: User) -> list[str]:
+    """Return frontend-facing capability tokens from role and stored profile scope."""
+
+    role = canonical_role(getattr(user, "rol", None))
+    metadata = getattr(user, "accesibilidad", None)
+    if not isinstance(metadata, dict):
+        metadata = {}
+
+    employee_scope = metadata.get("employee_scope") if isinstance(metadata.get("employee_scope"), dict) else {}
+    raw_values: list[object] = [
+        metadata.get("permissions"),
+        metadata.get("permisos"),
+        metadata.get("capabilities"),
+        metadata.get("scopes"),
+        employee_scope.get("permissions"),
+        employee_scope.get("permisos"),
+        employee_scope.get("capabilities"),
+        employee_scope.get("scopes"),
+    ]
+
+    if role in {"admin", "empleado", "super_admin"}:
+        raw_values.append(["tickets.read", "crm.tickets.read", "reclamos.read"])
+    if role == "admin":
+        raw_values.append(["settings.tenant.write", "market.catalog.write", "market.orders.read"])
+    if role == "super_admin":
+        raw_values.append(["*", "tickets.admin", "settings.tenant.write"])
+    if getattr(user, "ticket_categorias", None):
+        raw_values.append("tickets.read")
+
+    return _normalize_capability_tokens(*raw_values)
+
+
 @auth_bp.route('/plans', methods=['GET'])
 @cross_origin()
 def public_plan_catalog():
@@ -658,6 +746,7 @@ def build_profile_payload(user: User) -> Dict[str, Any]:
         "profile_picture_consent": profile_avatar_consent,
         **avatar_policy_contract,
     }
+    profile_capabilities = _profile_capabilities_for_user(user)
 
     profile_data: Dict[str, Any] = {
         "id": user.id,
@@ -695,6 +784,9 @@ def build_profile_payload(user: User) -> Dict[str, Any]:
         "avatar_consent": profile_avatar_consent,
         "profile_picture_consent": profile_avatar_consent,
         "identity": profile_identity_payload,
+        "permissions": profile_capabilities,
+        "capabilities": profile_capabilities,
+        "scopes": profile_capabilities,
         "preguntas_usadas": getattr(user, "preguntas_usadas", None),
     }
 
@@ -3063,8 +3155,9 @@ def _dashboard_panels_for_user(user: User, tipo_chat: str) -> list[str]:
     """Return a stable panel list for dashboard/bootstrap contracts."""
 
     panels = ["perfil"]
+    role = canonical_role(getattr(user, "rol", None))
 
-    if user.rol in ["admin", "empleado", "super_admin"]:
+    if role in ["admin", "empleado", "super_admin"]:
         panels.extend([
             "tickets",
             "usuarios_crm",
@@ -3077,10 +3170,10 @@ def _dashboard_panels_for_user(user: User, tipo_chat: str) -> list[str]:
         elif tipo_chat == "municipio":
             panels.append("sugerencias_ciudadano")
 
-    if user.rol in ["admin", "super_admin"]:
+    if role in ["admin", "super_admin"]:
         panels.append("empleados")
 
-    if user.rol == "super_admin":
+    if role == "super_admin":
         panels.append("tenants")
 
     return sorted(list(set(panels)))
@@ -3097,6 +3190,7 @@ def session_bootstrap(user: User):
     rubro = user.rubro
     tipo_chat = user.tipo_chat or ("municipio" if es_rubro_publico(rubro) else "pyme")
     panels = _dashboard_panels_for_user(user, tipo_chat)
+    profile_capabilities = _profile_capabilities_for_user(user)
 
     tenant_obj = _tenant_for_user(user)
     tenant_slug = getattr(user, "tenant_slug", None) or getattr(tenant_obj, "slug", None)
@@ -3108,6 +3202,9 @@ def session_bootstrap(user: User):
             "rol": user.rol,
             "tipo_chat": tipo_chat,
             "tenant_slug": tenant_slug,
+            "permissions": profile_capabilities,
+            "capabilities": profile_capabilities,
+            "scopes": profile_capabilities,
         },
         "ui": {
             "panels": panels,
@@ -3147,12 +3244,16 @@ def dashboard_info(user: User):
     rubro = user.rubro
     tipo_chat = user.tipo_chat or ("municipio" if es_rubro_publico(rubro) else "pyme")
     final_panels = _dashboard_panels_for_user(user, tipo_chat)
+    profile_capabilities = _profile_capabilities_for_user(user)
 
     return jsonify({
         "id": user.id,
         "rol": user.rol,
         "tipo_chat": tipo_chat,
         "panels": final_panels,
+        "permissions": profile_capabilities,
+        "capabilities": profile_capabilities,
+        "scopes": profile_capabilities,
     })
 
 @auth_bp.route(
@@ -3552,7 +3653,8 @@ def admin_login():
         return jsonify({"error": "Credenciales inválidas"}), 401
 
     # Check Role
-    if user.rol not in ['admin', 'empleado', 'super_admin', 'superadmin', 'admin_pyme']:
+    admin_role = canonical_role(getattr(user, "rol", None))
+    if admin_role not in ['admin', 'empleado', 'super_admin']:
         return jsonify({"error": "Acceso denegado: No tienes permisos administrativos."}), 403
 
     # Generate Token
@@ -3577,6 +3679,7 @@ def admin_login():
         'exp': datetime.now(timezone.utc) + timedelta(days=7)
     }
     token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
+    profile_capabilities = _profile_capabilities_for_user(user)
 
     return jsonify({
         "token": token,
@@ -3585,6 +3688,9 @@ def admin_login():
             "email": user.email,
             "name": user.name,
             "rol": user.rol,
+            "permissions": profile_capabilities,
+            "capabilities": profile_capabilities,
+            "scopes": profile_capabilities,
             "tenant_slug": tenant_slug
         }
     })
