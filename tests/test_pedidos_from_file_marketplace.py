@@ -342,17 +342,16 @@ def test_marketplace_order_note_upload_is_manageable_from_tenant_crm(client, app
     tenant = TenantProfile(slug="market-crm", nombre="Market CRM", tipo="pyme", pyme_id=owner.id, plan="full")
     db.session.add(tenant)
     db.session.flush()
-    db.session.add(
-        CatalogoItem(
-            user_id=owner.id,
-            tenant_id=tenant.id,
-            nombre="Clavos punta paris",
-            sku="CL-01",
-            precio="3000",
-            modalidad="venta",
-            disponible=True,
-        )
+    clavos = CatalogoItem(
+        user_id=owner.id,
+        tenant_id=tenant.id,
+        nombre="Clavos punta paris",
+        sku="CL-01",
+        precio="3000",
+        modalidad="venta",
+        disponible=True,
     )
+    db.session.add(clavos)
     db.session.commit()
 
     monkeypatch.setattr(
@@ -388,6 +387,12 @@ def test_marketplace_order_note_upload_is_manageable_from_tenant_crm(client, app
     assert listed_order["assisted_request"]["contact"]["phone"] == "+5492613168608"
     assert listed_order["assisted_request"]["crm_order_draft"]["contract_version"] == "marketplace.crm_order_draft.v1"
     assert listed_order["assisted_request"]["crm_handoff"]["draft_order"] == listed_order["assisted_request"]["crm_order_draft"]
+    assert listed_order["crm_review_card"]["contract_version"] == "marketplace.crm_review_card.v1"
+    assert listed_order["crm_review_card"]["reference"] == f"pedido:{pedido_id}"
+    assert listed_order["crm_review_card"]["contact"]["phone"] == "+5492613168608"
+    assert listed_order["crm_review_card"]["summary"]["matched"] == 1
+    assert listed_order["crm_review_card"]["lines"][0]["catalog_item_id"] == clavos.id
+    assert listed_order["crm_review_card"]["suggested_reply"]
     assert listed_order["customer_profile"]["phone"] == "+5492613168608"
 
     detail_response = client.get(f"/api/admin/tenants/{tenant.slug}/orders/{crm_id}", headers=headers)
@@ -407,6 +412,10 @@ def test_marketplace_order_note_upload_is_manageable_from_tenant_crm(client, app
     ]
     assert detail_payload["assisted_request"]["crm_order_draft"]["reference"] == f"pedido:{pedido_id}"
     assert detail_payload["assisted_request"]["crm_handoff"]["draft_order"] == detail_payload["assisted_request"]["crm_order_draft"]
+    assert detail_payload["crm_review_card"]["contract_version"] == "marketplace.crm_review_card.v1"
+    assert detail_payload["crm_review_card"]["reference"] == f"pedido:{pedido_id}"
+    assert detail_payload["crm_review_card"]["status"] == "ready_to_reply"
+    assert detail_payload["crm_review_card"]["contact_links"][0]["type"] == "whatsapp"
     operator_pack = detail_payload["assisted_request"]["operator_pack"]
     assert operator_pack["reference"] == f"pedido:{pedido_id}"
     assert operator_pack["priority"] == "normal"

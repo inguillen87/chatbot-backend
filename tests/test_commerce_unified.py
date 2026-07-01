@@ -298,6 +298,23 @@ def test_serialize_unified_order_exposes_assisted_marketplace_upload_contract():
             task["id"] == "resolve_unmatched_items"
             for task in serialized["assisted_request"]["operator_pack"]["suggested_tasks"]
         )
+        review_card = serialized["crm_review_card"]
+        assert review_card["contract_version"] == "marketplace.crm_review_card.v1"
+        assert review_card["reference"] == "pedido:manual"
+        assert review_card["request_kind"] == "quote_request"
+        assert review_card["request_kind_label"] == "pedido de cotizacion"
+        assert review_card["status"] == "needs_review"
+        assert review_card["priority"] == "high"
+        assert review_card["primary_intent"] == "create_quote"
+        assert review_card["needs_operator_review"] is True
+        assert review_card["contact"]["phone"] == "+5492613168608"
+        assert review_card["summary"] == {"matched": 1, "unmatched": 1}
+        assert review_card["lines"][0]["source_name"] == "Chapa acanalada"
+        assert review_card["unmatched_items"] == ["clavos bolsa"]
+        assert review_card["catalog_candidates"][0]["item"] == "clavos bolsa"
+        assert review_card["suggested_reply"] == serialized["assisted_request"]["operator_pack"]["suggested_reply"]
+        assert review_card["suggested_tasks"][0]["id"] == "review_ocr_confidence"
+        assert review_card["contact_links"][0]["type"] == "whatsapp"
         assert serialized["contact"]["phone"] == "+5492613168608"
 
 
@@ -336,6 +353,9 @@ def test_serialize_unified_order_uses_first_item_crm_order_draft_when_metadata_m
         assert assisted_request["crm_order_draft"] == crm_order_draft
         assert assisted_request["crm_handoff"]["target_module"] == "orders"
         assert assisted_request["crm_handoff"]["draft_order"] == crm_order_draft
+        assert serialized["crm_review_card"]["contract_version"] == "marketplace.crm_review_card.v1"
+        assert serialized["crm_review_card"]["reference"] == "pedido:item-only"
+        assert serialized["crm_review_card"]["lines"][0]["source_name"] == "Tornillos"
 
 
 def test_market_order_legacy_safe_count_query_omits_deferred_columns():

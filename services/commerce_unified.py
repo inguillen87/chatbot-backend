@@ -604,6 +604,86 @@ def _build_assisted_request(metadata: dict[str, Any], raw_items: list[Any], *, r
     }
 
 
+def _build_crm_review_card(assisted_request: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not assisted_request:
+        return None
+
+    crm_handoff = _as_dict(assisted_request.get("crm_handoff"))
+    draft = _as_dict(assisted_request.get("crm_order_draft")) or _as_dict(crm_handoff.get("draft_order"))
+    operator_pack = _as_dict(assisted_request.get("operator_pack"))
+    review_context = _as_dict(assisted_request.get("review_context"))
+    document_profile = _as_dict(assisted_request.get("document_profile"))
+    match_summary = _as_dict(assisted_request.get("match_summary"))
+    source = _as_dict(assisted_request.get("source"))
+    operator_summary = _as_dict(assisted_request.get("operator_intake_summary"))
+    contact = _as_dict(assisted_request.get("contact"))
+
+    lines = _as_list(draft.get("lines")) or _as_list(assisted_request.get("detected_items"))
+    unmatched_items = _as_list(assisted_request.get("unmatched_items"))
+    catalog_candidates = _as_list(assisted_request.get("catalog_candidates"))
+    suggested_tasks = _as_list(operator_pack.get("suggested_tasks"))
+    contact_links = _as_list(operator_pack.get("contact_links"))
+    next_actions = _as_list(assisted_request.get("next_actions"))
+    customer_next_steps = _as_list(assisted_request.get("customer_next_steps"))
+
+    needs_review = bool(
+        operator_pack.get("needs_human_review")
+        or match_summary.get("needs_operator_review")
+        or unmatched_items
+        or assisted_request.get("extraction_error")
+    )
+    priority = (
+        operator_pack.get("priority")
+        or review_context.get("priority")
+        or operator_summary.get("priority")
+        or ("high" if needs_review else "normal")
+    )
+    reference = draft.get("reference") or operator_pack.get("reference") or crm_handoff.get("reference")
+    primary_intent = (
+        review_context.get("primary_intent")
+        or operator_pack.get("primary_intent")
+        or document_profile.get("primary_intent")
+        or operator_summary.get("primary_intent")
+    )
+
+    source_preview = {
+        "channel": source.get("channel") or assisted_request.get("channel"),
+        "input_type": source.get("input_type"),
+        "archivo_url": source.get("archivo_url"),
+        "archivo_nombre": source.get("archivo_nombre"),
+        "thumbnail_url": source.get("thumbnail_url") or source.get("image_url") or source.get("archivo_url"),
+        "text_preview": source.get("text_preview"),
+    }
+
+    return {
+        "contract_version": "marketplace.crm_review_card.v1",
+        "reference": reference,
+        "request_kind": assisted_request.get("request_kind"),
+        "request_kind_label": assisted_request.get("request_kind_label"),
+        "status": "needs_review" if needs_review else "ready_to_reply",
+        "priority": priority,
+        "primary_intent": primary_intent,
+        "needs_operator_review": needs_review,
+        "contact_state": draft.get("contact_state") or operator_summary.get("contact_state"),
+        "recommended_next_step": (
+            draft.get("recommended_next_step")
+            or operator_summary.get("recommended_next_step")
+            or operator_pack.get("recommended_next_step")
+        ),
+        "summary": draft.get("summary") or match_summary,
+        "source": {key: value for key, value in source_preview.items() if value},
+        "contact": contact,
+        "lines": lines[:8],
+        "unmatched_items": unmatched_items[:8],
+        "catalog_candidates": catalog_candidates[:8],
+        "suggested_reply": operator_pack.get("suggested_reply"),
+        "suggested_tasks": suggested_tasks[:8],
+        "contact_links": contact_links[:6],
+        "next_actions": next_actions[:6],
+        "customer_next_steps": customer_next_steps[:6],
+    }
+
+
 def serialize_unified_order(record: Any) -> dict[str, Any]:
     from models import MarketOrder, Order, PedidoConversacional, PymePedido
 
@@ -663,6 +743,7 @@ def serialize_unified_order(record: Any) -> dict[str, Any]:
         metadata = record.metadata_payload or {}
         raw_items = record.items or []
         assisted_request = _build_assisted_request(metadata, raw_items, record_id=record.id)
+        crm_review_card = _build_crm_review_card(assisted_request)
         normalized_items = (
             assisted_request.get("detected_items", []) if assisted_request else [
                 _normalize_unified_item(item, index=index)
@@ -713,6 +794,7 @@ def serialize_unified_order(record: Any) -> dict[str, Any]:
             "created_at": _iso(record.created_at),
             "updated_at": _iso(record.updated_at),
             "assisted_request": assisted_request,
+            "crm_review_card": crm_review_card,
             "metadata": {
                 **metadata,
                 "idempotency_key": getattr(record, "idempotency_key", None),
