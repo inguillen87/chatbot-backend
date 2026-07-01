@@ -125,6 +125,7 @@ from services.plan_access import (
 )
 from services.rewards import recompensas_service
 from services.user_service import (
+    build_profile_avatar_policy_contract,
     change_user_email,
     change_user_password,
     create_password_reset_request,
@@ -648,29 +649,14 @@ def build_profile_payload(user: User) -> Dict[str, Any]:
     profile_avatar_url = profile_identity.get("avatar_url")
     profile_avatar_source = profile_identity.get("avatar_source")
     profile_avatar_consent = bool(profile_identity.get("avatar_consent"))
+    avatar_policy_contract = build_profile_avatar_policy_contract()
     profile_identity_payload = {
         "avatar_url": profile_avatar_url,
         "picture": profile_avatar_url,
         "avatar_source": profile_avatar_source,
         "avatar_consent": profile_avatar_consent,
         "profile_picture_consent": profile_avatar_consent,
-        "fallback": "deterministic_identity_avatar",
-        "policy": "consented_upload_or_social_only",
-        "blocked_sources": [
-            "whatsapp_profile",
-            "whatsapp_scraped",
-            "mock_avatar",
-            "synthetic_profile",
-        ],
-        "allowed_sources": [
-            "profile_upload",
-            "profile_url",
-            "clerk",
-            "google",
-            "facebook",
-            "linkedin",
-            "social_login",
-        ],
+        **avatar_policy_contract,
     }
 
     profile_data: Dict[str, Any] = {
@@ -3249,14 +3235,14 @@ def _profile_avatar_payload(user: User, *, message: str) -> Dict[str, Any]:
     identity = get_user_profile_identity(user)
     avatar_url = identity.get("avatar_url")
     avatar_consent = bool(identity.get("avatar_consent"))
+    avatar_policy_contract = build_profile_avatar_policy_contract()
     identity_payload = {
         "avatar_url": avatar_url,
         "picture": avatar_url,
         "avatar_source": identity.get("avatar_source"),
         "avatar_consent": avatar_consent,
         "profile_picture_consent": avatar_consent,
-        "fallback": "deterministic_identity_avatar",
-        "policy": "consented_upload_or_social_only",
+        **avatar_policy_contract,
     }
     return {
         "mensaje": message,

@@ -57,7 +57,11 @@ def test_profile_avatar_accepts_consented_oauth_source_prefix(client, bodega_rub
     assert subject["avatar_url"] == "https://cdn.example.com/profile/social-avatar.webp"
     assert subject["avatar_source"] == "oauth_google"
     assert subject["avatar_policy"] == "consented_upload_or_social_only"
+    assert subject["policy"] == "consented_upload_or_social_only"
     assert subject["fallback"] == "deterministic_identity_avatar"
+    assert "profile_upload" in subject["allowed_sources"]
+    assert "whatsapp_profile" in subject["blocked_sources"]
+    assert subject["consent_required"] is True
 
 
 @pytest.mark.parametrize("source", ["agent_profile", "staff_profile", "employee_profile"])

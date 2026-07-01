@@ -468,6 +468,10 @@ def test_profile_avatar_upload_stores_consent_metadata(client, monkeypatch):
     assert payload["avatar_consent"] is True
     assert payload["identity"]["avatar_url"] == payload["avatar_url"]
     assert payload["identity"]["policy"] == "consented_upload_or_social_only"
+    assert payload["identity"]["avatar_policy"] == "consented_upload_or_social_only"
+    assert payload["identity"]["consent_required"] is True
+    assert "profile_upload" in payload["identity"]["allowed_sources"]
+    assert "whatsapp_profile" in payload["identity"]["blocked_sources"]
     assert payload["upload"]["thumb_url"] == "https://cdn.example.com/profile_avatars/avatar-thumb.webp"
 
     db.session.refresh(user)

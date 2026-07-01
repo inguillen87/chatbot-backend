@@ -44,6 +44,24 @@ PROFILE_AVATAR_SOURCE_PREFIXES = {
     "staff_profile",
     "employee_profile",
 }
+PROFILE_AVATAR_POLICY = "consented_upload_or_social_only"
+PROFILE_AVATAR_FALLBACK = "deterministic_identity_avatar"
+PROFILE_AVATAR_ALLOWED_SOURCES = [
+    "profile_upload",
+    "profile_url",
+    "clerk",
+    "google",
+    "facebook",
+    "linkedin",
+    "social_login",
+]
+PROFILE_AVATAR_BLOCKED_SOURCES = [
+    "whatsapp_profile",
+    "whatsapp_scraped",
+    "mock_avatar",
+    "synthetic_profile",
+    "realistic_generated",
+]
 BLOCKED_AVATAR_SOURCE_KEYWORDS = {
     "no_consent",
     "without_consent",
@@ -65,6 +83,19 @@ BLOCKED_AVATAR_SOURCE_KEYWORDS = {
     "synthetic",
     "realistic_generated",
 }
+
+
+def build_profile_avatar_policy_contract() -> dict:
+    return {
+        "policy": PROFILE_AVATAR_POLICY,
+        "avatar_policy": PROFILE_AVATAR_POLICY,
+        "fallback": PROFILE_AVATAR_FALLBACK,
+        "allowed_sources": list(PROFILE_AVATAR_ALLOWED_SOURCES),
+        "blocked_sources": list(PROFILE_AVATAR_BLOCKED_SOURCES),
+        "consent_required": True,
+        "real_image_sources": ["profile_upload", "profile_url", "social_login"],
+        "fallback_strategy": "stable_initials_and_generated_pattern",
+    }
 
 
 def _profile_metadata(user: User) -> dict:
@@ -195,6 +226,7 @@ def get_user_profile_identity(user: User) -> dict:
         "avatar_url": avatar_url,
         "avatar_source": normalized_source if avatar_url else None,
         "avatar_consent": avatar_consent,
+        **build_profile_avatar_policy_contract(),
     }
 
 
@@ -265,8 +297,7 @@ def build_identity_subject(
         "avatar_consent": avatar_consent,
         "avatarConsent": avatar_consent,
         "profile_picture_consent": avatar_consent,
-        "avatar_policy": "consented_upload_or_social_only",
-        "fallback": "deterministic_identity_avatar",
+        **build_profile_avatar_policy_contract(),
         "source_context": source_context,
     }
 
