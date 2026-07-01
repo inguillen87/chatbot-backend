@@ -648,6 +648,30 @@ def build_profile_payload(user: User) -> Dict[str, Any]:
     profile_avatar_url = profile_identity.get("avatar_url")
     profile_avatar_source = profile_identity.get("avatar_source")
     profile_avatar_consent = bool(profile_identity.get("avatar_consent"))
+    profile_identity_payload = {
+        "avatar_url": profile_avatar_url,
+        "picture": profile_avatar_url,
+        "avatar_source": profile_avatar_source,
+        "avatar_consent": profile_avatar_consent,
+        "profile_picture_consent": profile_avatar_consent,
+        "fallback": "deterministic_identity_avatar",
+        "policy": "consented_upload_or_social_only",
+        "blocked_sources": [
+            "whatsapp_profile",
+            "whatsapp_scraped",
+            "mock_avatar",
+            "synthetic_profile",
+        ],
+        "allowed_sources": [
+            "profile_upload",
+            "profile_url",
+            "clerk",
+            "google",
+            "facebook",
+            "linkedin",
+            "social_login",
+        ],
+    }
 
     profile_data: Dict[str, Any] = {
         "id": user.id,
@@ -684,6 +708,7 @@ def build_profile_payload(user: User) -> Dict[str, Any]:
         "avatar_source": profile_avatar_source,
         "avatar_consent": profile_avatar_consent,
         "profile_picture_consent": profile_avatar_consent,
+        "identity": profile_identity_payload,
         "preguntas_usadas": getattr(user, "preguntas_usadas", None),
     }
 
@@ -3219,6 +3244,15 @@ def _profile_avatar_payload(user: User, *, message: str) -> Dict[str, Any]:
     identity = get_user_profile_identity(user)
     avatar_url = identity.get("avatar_url")
     avatar_consent = bool(identity.get("avatar_consent"))
+    identity_payload = {
+        "avatar_url": avatar_url,
+        "picture": avatar_url,
+        "avatar_source": identity.get("avatar_source"),
+        "avatar_consent": avatar_consent,
+        "profile_picture_consent": avatar_consent,
+        "fallback": "deterministic_identity_avatar",
+        "policy": "consented_upload_or_social_only",
+    }
     return {
         "mensaje": message,
         "avatar_url": avatar_url,
@@ -3226,7 +3260,20 @@ def _profile_avatar_payload(user: User, *, message: str) -> Dict[str, Any]:
         "avatar_source": identity.get("avatar_source"),
         "avatar_consent": avatar_consent,
         "profile_picture_consent": avatar_consent,
+        "identity": identity_payload,
     }
+
+
+def _request_avatar_consent_state() -> Optional[bool]:
+    for key in ("avatar_consent", "profile_picture_consent", "consent", "consented"):
+        if key not in request.form:
+            continue
+        value = str(request.form.get(key) or "").strip().lower()
+        if value in {"0", "false", "no", "n", "denied", "rejected", "unconsented"}:
+            return False
+        if value in {"1", "true", "yes", "y", "si", "sí", "accepted", "consented"}:
+            return True
+    return None
 
 
 @auth_bp.route('/profile/avatar', methods=['POST', 'DELETE'])
@@ -3258,6 +3305,9 @@ def upload_profile_avatar(user):
     )
     if not uploaded or not uploaded.filename:
         return jsonify({"error": "Envia una imagen de perfil."}), 400
+
+    if _request_avatar_consent_state() is not True:
+        return jsonify({"error": "Necesitamos tu consentimiento para usar esta imagen de perfil."}), 400
 
     filename = str(uploaded.filename or "")
     extension = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""

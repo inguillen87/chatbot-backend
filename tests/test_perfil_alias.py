@@ -137,6 +137,12 @@ def test_perfil_allows_consent_avatar_url_and_exposes_picture_alias(client):
     assert data["avatar_source"] == "profile_upload"
     assert data["avatar_consent"] is True
     assert data["profile_picture_consent"] is True
+    assert data["identity"]["avatar_url"] == avatar_url
+    assert data["identity"]["avatar_source"] == "profile_upload"
+    assert data["identity"]["avatar_consent"] is True
+    assert data["identity"]["fallback"] == "deterministic_identity_avatar"
+    assert data["identity"]["policy"] == "consented_upload_or_social_only"
+    assert "whatsapp_profile" in data["identity"]["blocked_sources"]
 
 
 def test_perfil_rejects_unsafe_avatar_url(client):
@@ -326,7 +332,10 @@ def test_profile_avatar_upload_stores_consent_metadata(client, monkeypatch):
 
     response = client.post(
         "/auth/profile/avatar",
-        data={"avatar": (BytesIO(b"fakepngbytes"), "avatar.png")},
+        data={
+            "avatar": (BytesIO(b"fakepngbytes"), "avatar.png"),
+            "avatar_consent": "true",
+        },
         content_type="multipart/form-data",
         headers={"Authorization": f"Bearer {jwt_token}"},
     )
@@ -336,6 +345,8 @@ def test_profile_avatar_upload_stores_consent_metadata(client, monkeypatch):
     assert payload["picture"] == payload["avatar_url"]
     assert payload["avatar_source"] == "profile_upload"
     assert payload["avatar_consent"] is True
+    assert payload["identity"]["avatar_url"] == payload["avatar_url"]
+    assert payload["identity"]["policy"] == "consented_upload_or_social_only"
     assert payload["upload"]["thumb_url"] == "https://cdn.example.com/profile_avatars/avatar-thumb.webp"
 
     db.session.refresh(user)
@@ -343,6 +354,97 @@ def test_profile_avatar_upload_stores_consent_metadata(client, monkeypatch):
     assert identity["avatar_url"] == payload["avatar_url"]
     assert identity["avatar_source"] == "profile_upload"
     assert identity["avatar_consent"] is True
+
+
+def test_profile_avatar_upload_requires_explicit_consent(client, monkeypatch):
+    rubro = Rubro.query.filter_by(clave="pyme").first()
+    if not rubro:
+        rubro = Rubro(nombre="pyme", clave="pyme", es_publico=False)
+        db.session.add(rubro)
+        db.session.commit()
+
+    user = User(
+        email="avatar-missing-consent@test.com",
+        name="Avatar Missing Consent",
+        token="avatar-missing-consent-token",
+        rubro_id=rubro.id,
+    )
+    user.set_password("pw")
+    db.session.add(user)
+    db.session.commit()
+
+    jwt_payload = {"user_id": user.id, "exp": datetime.utcnow() + timedelta(days=1)}
+    jwt_token = jwt.encode(jwt_payload, current_app.config["SECRET_KEY"], algorithm="HS256")
+    if isinstance(jwt_token, bytes):
+        jwt_token = jwt_token.decode("utf-8")
+
+    upload_called = False
+
+    def fake_upload(file_storage, kind="attachments"):
+        nonlocal upload_called
+        upload_called = True
+        return {"original_url": "https://cdn.example.com/profile_avatars/missing-consent.png"}
+
+    monkeypatch.setattr("routes.auth.upload_to_gcs", fake_upload)
+
+    response = client.post(
+        "/auth/profile/avatar",
+        data={"avatar": (BytesIO(b"fakepngbytes"), "avatar.png")},
+        content_type="multipart/form-data",
+        headers={"Authorization": f"Bearer {jwt_token}"},
+    )
+
+    assert response.status_code == 400
+    assert upload_called is False
+    db.session.refresh(user)
+    assert not user.accesibilidad
+
+
+def test_profile_avatar_upload_rejects_denied_consent(client, monkeypatch):
+    rubro = Rubro.query.filter_by(clave="pyme").first()
+    if not rubro:
+        rubro = Rubro(nombre="pyme", clave="pyme", es_publico=False)
+        db.session.add(rubro)
+        db.session.commit()
+
+    user = User(
+        email="avatar-denied@test.com",
+        name="Avatar Denied",
+        token="avatar-denied-token",
+        rubro_id=rubro.id,
+    )
+    user.set_password("pw")
+    db.session.add(user)
+    db.session.commit()
+
+    jwt_payload = {"user_id": user.id, "exp": datetime.utcnow() + timedelta(days=1)}
+    jwt_token = jwt.encode(jwt_payload, current_app.config["SECRET_KEY"], algorithm="HS256")
+    if isinstance(jwt_token, bytes):
+        jwt_token = jwt_token.decode("utf-8")
+
+    upload_called = False
+
+    def fake_upload(file_storage, kind="attachments"):
+        nonlocal upload_called
+        upload_called = True
+        return {"original_url": "https://cdn.example.com/profile_avatars/denied.png"}
+
+    monkeypatch.setattr("routes.auth.upload_to_gcs", fake_upload)
+
+    response = client.post(
+        "/auth/profile/avatar",
+        data={
+            "avatar": (BytesIO(b"fakepngbytes"), "avatar.png"),
+            "avatar_consent": "false",
+        },
+        content_type="multipart/form-data",
+        headers={"Authorization": f"Bearer {jwt_token}"},
+    )
+
+    assert response.status_code == 400
+    assert upload_called is False
+    db.session.refresh(user)
+    assert not user.accesibilidad
 
 
 def test_perfil_returns_owner_token_for_employee(client):
