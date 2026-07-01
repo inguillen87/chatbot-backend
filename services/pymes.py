@@ -243,7 +243,7 @@ def _handle_education_widget_turn(
         normalized_action = "menu_colegio"
 
     if normalized_action == "menu_colegio":
-        payload = build_education_whatsapp_menu_payload(tenant_profile, reduced=True)
+        payload = build_education_whatsapp_menu_payload(tenant_profile, reduced=True, channel=channel or "widget")
         options = _education_widget_primary_options()
         context_data["last_options_sent"] = options
         data = dict(payload.get("education_context") or {})
@@ -261,6 +261,16 @@ def _handle_education_widget_turn(
             options_list=options,
             message_type="interactive_buttons",
             data={"education_context": data},
+            audio_text=payload.get("audio_text"),
+            generar_audio=payload.get("generar_audio"),
+            menu_audio_enabled=payload.get("menu_audio_enabled"),
+            tts_cache_text=payload.get("tts_cache_text"),
+            tts_cache_namespace=payload.get("tts_cache_namespace"),
+            audio_cache_policy=payload.get("audio_cache_policy"),
+            tts_voice=payload.get("tts_voice"),
+            tts_model=payload.get("tts_model"),
+            tts_style=payload.get("tts_style"),
+            tts_speed=payload.get("tts_speed"),
         )
 
     if normalized_action == "derivar_humano":
@@ -2270,6 +2280,24 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
             final_payload["audio_url"] = flow_result.audio_url
         if flow_result.audio_text:
             final_payload["audio_text"] = flow_result.audio_text
+        if flow_result.generar_audio is not None:
+            final_payload["generar_audio"] = flow_result.generar_audio
+        if flow_result.menu_audio_enabled is not None:
+            final_payload["menu_audio_enabled"] = flow_result.menu_audio_enabled
+        if flow_result.tts_cache_text:
+            final_payload["tts_cache_text"] = flow_result.tts_cache_text
+        if flow_result.tts_cache_namespace:
+            final_payload["tts_cache_namespace"] = flow_result.tts_cache_namespace
+        if flow_result.audio_cache_policy:
+            final_payload["audio_cache_policy"] = flow_result.audio_cache_policy
+        if flow_result.tts_voice:
+            final_payload["tts_voice"] = flow_result.tts_voice
+        if flow_result.tts_model:
+            final_payload["tts_model"] = flow_result.tts_model
+        if flow_result.tts_style:
+            final_payload["tts_style"] = flow_result.tts_style
+        if flow_result.tts_speed is not None:
+            final_payload["tts_speed"] = flow_result.tts_speed
         if flow_result.delayed_payload:
             final_payload["delayed_payload"] = flow_result.delayed_payload
             final_payload["delay_seconds"] = flow_result.delay_seconds or 20

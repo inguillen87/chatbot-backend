@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from typing import Any
+import os
 import time
 import unicodedata
 
+from services.common_utils import build_menu_tts_cache_namespace
 
 EDUCATION_PROFILE_CONTRACT_VERSION = "education.profile.v1"
 EDUCATION_QUICK_MENU_CONTRACT_VERSION = "education.quick_menu.v1"
@@ -594,6 +596,7 @@ def build_education_whatsapp_menu_payload(
     *,
     profile_name: str | None = None,
     reduced: bool = False,
+    channel: str = "whatsapp",
 ) -> dict[str, Any]:
     playbook = build_education_whatsapp_playbook(tenant)
     tenant_name = getattr(tenant, "nombre", None) or "el colegio"
@@ -615,13 +618,58 @@ def build_education_whatsapp_menu_payload(
         }
         for item in menu_items
     ]
+    audio_options = [
+        f"Opcion {idx}: {option.get('texto')}."
+        for idx, option in enumerate(options, start=1)
+        if option.get("texto")
+    ]
+    audio_text = " ".join(
+        [
+            f"Hola. Soy el asistente de {tenant_name}.",
+            "Puedo ayudarte con asistencia, comunicados, agenda, documentacion, pagos o secretaria.",
+            "Elegi una opcion del menu o contame que necesitas.",
+            *audio_options,
+            "Tambien podes mandar audio, foto, archivo o ubicacion cuando corresponda.",
+        ]
+    )
+    try:
+        menu_tts_speed = float(os.getenv("OPENAI_TTS_MENU_SPEED", "0.92"))
+    except (TypeError, ValueError):
+        menu_tts_speed = 0.92
+    channel = str(channel or "whatsapp").strip().lower() or "whatsapp"
     return {
         "message_body": body,
         "message_type": "interactive_list" if len(options) > 3 else "interactive_buttons",
         "options_list": options,
         "fuente": "education_whatsapp_menu",
         "generar_audio": True,
-        "audio_text": "Hola. Soy el asistente del colegio. Elegi una opcion del menu o contame que necesitas.",
+        "menu_audio_enabled": True,
+        "audio_text": audio_text,
+        "tts_cache_text": audio_text,
+        "tts_cache_namespace": build_menu_tts_cache_namespace(
+            context={
+                "tenant_slug": getattr(tenant, "slug", None),
+                "tenant": getattr(tenant, "slug", None) or tenant_name,
+            },
+            tenant_name=tenant_name,
+            menu_key="menu_colegio",
+            channel=channel,
+            reduced=reduced,
+            version="v1",
+        ),
+        "tts_voice": "shimmer",
+        "tts_model": os.getenv("OPENAI_TTS_MENU_MODEL", "tts-1-hd"),
+        "tts_speed": menu_tts_speed,
+        "menu_key": "menu_colegio",
+        "menu_version": "v1",
+        "channel": channel,
+        "reduced": reduced,
+        "audio_cache_policy": {
+            "kind": "fixed_menu",
+            "scope": "tenant",
+            "cache": "tts_audio_cache",
+            "inclusive": True,
+        },
         "education_context": {
             "contract_version": EDUCATION_CASE_INTAKE_CONTRACT_VERSION,
             "vertical": "educacion",

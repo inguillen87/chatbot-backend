@@ -31,6 +31,7 @@ from services.logic import (
 from services.live_chat_schedule import build_live_chat_status
 from services.demo_registry import load_demo_rubros, demo_rubro_for_token
 from services.education_contracts import (
+    build_education_whatsapp_menu_payload,
     build_education_pending_case,
     education_intent_from_action,
     fold_text,
@@ -1046,27 +1047,58 @@ def _demo_widget_runtime_response(
     if sector == "educacion":
         intent = education_intent_from_action(action_id, tenant)
         if is_menu_request or intent == "menu_colegio":
+            menu_payload = build_education_whatsapp_menu_payload(
+                tenant,
+                reduced=True,
+                channel=str(contexto_chat.get("channel") or "widget"),
+            )
+            menu_buttons = menu_payload.get("options_list") or buttons[:6]
+            education_payload_context = (
+                menu_payload.get("education_context")
+                if isinstance(menu_payload.get("education_context"), dict)
+                else {}
+            )
             payload = {
                 "contract_version": "demo.widget_runtime.v1",
                 "ok": True,
                 "success": True,
                 "request_id": request_id,
-                "message_body": "Estas en la demo escolar. Elegi una opcion para continuar.",
-                "message_type": "interactive_buttons",
-                "botones": buttons[:6],
-                "options_list": buttons[:6],
+                "message_body": menu_payload.get("message_body")
+                or "Estas en la demo escolar. Elegi una opcion para continuar.",
+                "message_type": menu_payload.get("message_type") or "interactive_buttons",
+                "botones": menu_buttons,
+                "options_list": menu_buttons,
                 "fuente": "education_widget_menu",
                 "data": {
                     "sector": "educacion",
                     "tenant_slug": getattr(tenant, "slug", None),
                     "chat_id": chat_session_id,
                     "education_context": {
+                        **education_payload_context,
                         "is_education": True,
                         "tenant_slug": getattr(tenant, "slug", None),
                         "primary_actions": education_primary_actions(),
                     },
                 },
             }
+            for key in (
+                "generar_audio",
+                "menu_audio_enabled",
+                "audio_text",
+                "tts_cache_text",
+                "tts_cache_namespace",
+                "audio_cache_policy",
+                "tts_voice",
+                "tts_model",
+                "tts_style",
+                "tts_speed",
+                "menu_key",
+                "menu_version",
+                "channel",
+                "reduced",
+            ):
+                if key in menu_payload:
+                    payload[key] = menu_payload[key]
             normalize_response_payload(payload)
             return payload
 

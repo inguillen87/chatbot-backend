@@ -93,6 +93,41 @@ class EducationWidgetFlowTest(unittest.TestCase):
         self.assertIsInstance(pending, dict)
         self.assertEqual(pending.get("intent"), "tramites_secretaria")
 
+    def test_menu_colegio_uses_fixed_audio_cache_contract(self):
+        response = responder_pyme(
+            {
+                "pregunta": "",
+                "action_id": "menu_colegio",
+                "education_context": {"is_education": True, "tenant_slug": self.tenant.slug},
+            },
+            self.owner,
+            None,
+            chat_db_context=self.session_context,
+            anon_id="anon-edu",
+            channel="widget",
+        )
+
+        self.assertEqual(response.get("fuente"), "education_widget_menu")
+        self.assertTrue(response.get("generar_audio"))
+        self.assertTrue(response.get("menu_audio_enabled"))
+        self.assertTrue(response.get("audio_text"))
+        self.assertEqual(response.get("tts_cache_text"), response.get("audio_text"))
+        self.assertEqual(
+            response.get("tts_cache_namespace"),
+            "whatsapp:menu:qa-colegio-sandbox:menu-colegio:widget:reduced:v1",
+        )
+        self.assertEqual(
+            response.get("audio_cache_policy"),
+            {
+                "kind": "fixed_menu",
+                "scope": "tenant",
+                "cache": "tts_audio_cache",
+                "inclusive": True,
+            },
+        )
+        self.assertIn("Opcion 1", response.get("audio_text", ""))
+        self.assertNotIn("anon-edu", response.get("tts_cache_text", ""))
+
     def test_pending_school_case_detail_creates_ticket(self):
         responder_pyme(
             {

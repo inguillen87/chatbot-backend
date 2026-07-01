@@ -2,6 +2,7 @@ import pytest
 from types import SimpleNamespace
 from services.common_utils import _get_main_menu_payload, build_menu_tts_cache_namespace
 from services.constants import CONTEXTO_MUNICIPIO, ConversationState
+from services.education_contracts import build_education_whatsapp_menu_payload
 
 @pytest.fixture
 def base_context():
@@ -183,3 +184,22 @@ def test_menu_audio_cache_namespace_avoids_email_or_phone_tokens():
     assert "example" not in namespace
     assert "5491122334455" not in namespace
     assert "marcelo" not in namespace
+
+
+def test_education_whatsapp_menu_uses_fixed_audio_cache_contract():
+    tenant = SimpleNamespace(slug="colegio-demo", nombre="Colegio Demo", vertical="educacion")
+
+    payload = build_education_whatsapp_menu_payload(tenant, reduced=False, channel="whatsapp")
+
+    assert payload["generar_audio"] is True
+    assert payload["menu_audio_enabled"] is True
+    assert payload["tts_cache_text"] == payload["audio_text"]
+    assert payload["tts_cache_namespace"] == "whatsapp:menu:colegio-demo:menu-colegio:whatsapp:full:v1"
+    assert payload["audio_cache_policy"] == {
+        "kind": "fixed_menu",
+        "scope": "tenant",
+        "cache": "tts_audio_cache",
+        "inclusive": True,
+    }
+    assert "Opcion 1" in payload["audio_text"]
+    assert "Marcelo" not in payload["tts_cache_text"]

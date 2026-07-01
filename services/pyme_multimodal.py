@@ -404,6 +404,15 @@ class PymeFlowResult:
     delay_seconds: Optional[int] = None
     audio_url: Optional[str] = None
     audio_text: Optional[str] = None
+    generar_audio: Optional[bool] = None
+    menu_audio_enabled: Optional[bool] = None
+    tts_cache_text: Optional[str] = None
+    tts_cache_namespace: Optional[str] = None
+    audio_cache_policy: Optional[Dict[str, Any]] = None
+    tts_voice: Optional[str] = None
+    tts_model: Optional[str] = None
+    tts_style: Optional[str] = None
+    tts_speed: Optional[float] = None
 
 
 def _menu_response(state: PymeSessionState, context: Dict[str, Any], channel: str) -> PymeFlowResult:
