@@ -93,6 +93,81 @@ def test_perfil_uses_tenant_slug_and_exposes_profile_sections(client):
     assert data["requires_rubro_selection"] is False
 
 
+def test_perfil_allows_consent_avatar_url_and_exposes_picture_alias(client):
+    rubro = Rubro.query.filter_by(clave="pyme").first()
+    if not rubro:
+        rubro = Rubro(nombre="pyme", clave="pyme", es_publico=False)
+        db.session.add(rubro)
+        db.session.commit()
+
+    user = User(
+        email="avatar-profile@test.com",
+        name="Avatar Profile",
+        token="avatar-profile-token",
+        rubro_id=rubro.id,
+    )
+    user.set_password("pw")
+    db.session.add(user)
+    db.session.commit()
+
+    jwt_payload = {"user_id": user.id, "exp": datetime.utcnow() + timedelta(days=1)}
+    jwt_token = jwt.encode(jwt_payload, current_app.config["SECRET_KEY"], algorithm="HS256")
+    if isinstance(jwt_token, bytes):
+        jwt_token = jwt_token.decode("utf-8")
+
+    avatar_url = "https://cdn.example.com/profiles/avatar-profile.jpg"
+    update_response = client.put(
+        "/auth/perfil",
+        json={"avatar_url": avatar_url, "avatar_source": "profile_upload"},
+        headers={"Authorization": f"Bearer {jwt_token}"},
+    )
+    assert update_response.status_code == 200
+
+    db.session.refresh(user)
+    assert user.accesibilidad["identity"]["avatar_url"] == avatar_url
+    assert user.accesibilidad["identity"]["avatar_source"] == "profile_upload"
+
+    response = client.get("/auth/perfil", headers={"Authorization": f"Bearer {jwt_token}"})
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["avatar_url"] == avatar_url
+    assert data["picture"] == avatar_url
+    assert data["avatar_source"] == "profile_upload"
+
+
+def test_perfil_rejects_unsafe_avatar_url(client):
+    rubro = Rubro.query.filter_by(clave="pyme").first()
+    if not rubro:
+        rubro = Rubro(nombre="pyme", clave="pyme", es_publico=False)
+        db.session.add(rubro)
+        db.session.commit()
+
+    user = User(
+        email="unsafe-avatar@test.com",
+        name="Unsafe Avatar",
+        token="unsafe-avatar-token",
+        rubro_id=rubro.id,
+    )
+    user.set_password("pw")
+    db.session.add(user)
+    db.session.commit()
+
+    jwt_payload = {"user_id": user.id, "exp": datetime.utcnow() + timedelta(days=1)}
+    jwt_token = jwt.encode(jwt_payload, current_app.config["SECRET_KEY"], algorithm="HS256")
+    if isinstance(jwt_token, bytes):
+        jwt_token = jwt_token.decode("utf-8")
+
+    response = client.put(
+        "/auth/perfil",
+        json={"avatar_url": "javascript:alert(1)"},
+        headers={"Authorization": f"Bearer {jwt_token}"},
+    )
+    assert response.status_code == 400
+
+    db.session.refresh(user)
+    assert not user.accesibilidad
+
+
 def test_perfil_returns_owner_token_for_employee(client):
     """Employees should receive the owner's static token for integrations."""
 

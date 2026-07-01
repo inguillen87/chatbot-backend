@@ -21,6 +21,7 @@ from services.auth_notification_service import (
 )
 from services.logic import es_rubro_publico
 from services.tenant_factory import create_tenant_from_template
+from services.user_service import set_user_profile_avatar
 from utils.auth_helpers import generar_token
 from utils.roles import normalize_tenant_type, role_for_tenant_type
 
@@ -221,6 +222,25 @@ def _providers_from_profile(profile: dict, claims: dict) -> list[str]:
     return sorted(providers)
 
 
+def _avatar_url_from_profile(profile: dict, claims: dict) -> Optional[str]:
+    for source in (profile, claims):
+        for key in ("image_url", "profile_image_url", "avatar_url", "picture"):
+            value = source.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+
+    raw_accounts = profile.get("external_accounts") or claims.get("external_accounts")
+    if isinstance(raw_accounts, list):
+        for account in raw_accounts:
+            if not isinstance(account, dict):
+                continue
+            for key in ("image_url", "profile_image_url", "avatar_url", "picture"):
+                value = account.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+    return None
+
+
 def extract_clerk_identity(claims: dict, profile: Optional[dict] = None) -> dict:
     profile = profile or {}
     clerk_user_id = claims.get("sub") or profile.get("id") or profile.get("user_id")
@@ -259,6 +279,7 @@ def extract_clerk_identity(claims: dict, profile: Optional[dict] = None) -> dict
             or claims.get("evt") == "email_verified"
         ),
         "social_providers": _providers_from_profile(profile, claims),
+        "avatar_url": _avatar_url_from_profile(profile, claims),
         "created_at": profile.get("created_at") or claims.get("iat"),
         "updated_at": profile.get("updated_at"),
     }
@@ -322,6 +343,24 @@ def upsert_user_from_clerk(claims: dict, profile: Optional[dict] = None) -> User
             user.email_verified = True
 
     _merge_clerk_metadata(user, identity)
+    if identity.get("avatar_url"):
+        avatar_source = "clerk"
+        providers = identity.get("social_providers") or []
+        if len(providers) == 1:
+            avatar_source = providers[0]
+        success, message, _status = set_user_profile_avatar(
+            user,
+            identity["avatar_url"],
+            source=avatar_source,
+            overwrite=False,
+            commit=False,
+        )
+        if not success:
+            current_app.logger.warning(
+                "[clerk] Avatar social descartado para usuario %s: %s",
+                getattr(user, "id", None),
+                message,
+            )
     db.session.flush()
     return user
 

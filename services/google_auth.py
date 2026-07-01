@@ -10,6 +10,7 @@ except Exception:  # pragma: no cover - define stubs
     id_token = SimpleNamespace(verify_oauth2_token=lambda *a, **k: (_ for _ in ()).throw(ImportError("google-auth missing")))
     google_requests = SimpleNamespace(Request=object)
 from models import User, db
+from services.user_service import set_user_profile_avatar
 
 ALLOWED_CLIENT_IDS = []
 env_ids = os.getenv("GOOGLE_OAUTH_CLIENT_ID")
@@ -58,6 +59,7 @@ def login_o_crear_usuario(token_id: str, *, rol: str | None = None, tipo_chat: s
         raise ValueError("Token de Google sin email")
 
     user = User.query.filter_by(email=email.lower()).first()
+    created = False
     if not user:
         logger.info(f"Creating new user with Google info: {info}")
         tipo_normalizado = _normalizar_tipo(tipo_chat) or "pyme"
@@ -76,5 +78,18 @@ def login_o_crear_usuario(token_id: str, *, rol: str | None = None, tipo_chat: s
         )
         user.set_password(str(uuid.uuid4()))
         db.session.add(user)
+        created = True
+
+    picture_url = info.get("picture")
+    if picture_url:
+        set_user_profile_avatar(
+            user,
+            picture_url,
+            source="google",
+            overwrite=False,
+            commit=False,
+        )
+
+    if created or picture_url:
         db.session.commit()
     return user

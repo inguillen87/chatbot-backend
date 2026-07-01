@@ -1,12 +1,126 @@
 from typing import Iterable, Optional, Tuple
+from urllib.parse import urlparse
 
 from models import db, User, WhatsappNumero
 from flask import current_app, g
 from datetime import datetime
 from sqlalchemy import func
+from sqlalchemy.orm.attributes import flag_modified
 
 PASSWORD_MIN_LENGTH = 8
 PASSWORD_RESET_TOKEN_TTL_SECONDS = 3600
+PROFILE_AVATAR_MAX_LENGTH = 512
+PROFILE_AVATAR_SOURCES = {
+    "profile_url",
+    "profile_upload",
+    "google",
+    "clerk",
+    "facebook",
+    "linkedin",
+    "social_login",
+}
+
+
+def _profile_metadata(user: User) -> dict:
+    return user.accesibilidad if isinstance(getattr(user, "accesibilidad", None), dict) else {}
+
+
+def _normalize_avatar_source(value: Optional[str], fallback: str = "profile_url") -> str:
+    normalized = str(value or "").strip().lower()
+    return normalized if normalized in PROFILE_AVATAR_SOURCES else fallback
+
+
+def normalize_profile_avatar_url(value: object) -> Tuple[bool, Optional[str], str]:
+    """Return a safe profile avatar URL or a validation error.
+
+    We only persist consented/profile URLs. WhatsApp scraping, data URLs and
+    executable schemes are deliberately rejected.
+    """
+
+    if value is None:
+        return True, None, ""
+    if not isinstance(value, str):
+        return False, None, "La imagen de perfil debe ser una URL."
+
+    avatar_url = value.strip()
+    if not avatar_url:
+        return True, None, ""
+    if len(avatar_url) > PROFILE_AVATAR_MAX_LENGTH:
+        return False, None, "La URL de imagen de perfil es demasiado larga."
+
+    if avatar_url.startswith("/") and not avatar_url.startswith("//") and "\\" not in avatar_url:
+        allowed_prefixes = ("/uploads/", "/media/", "/static/", "/avatars/", "/profile/")
+        if avatar_url.startswith(allowed_prefixes):
+            return True, avatar_url, ""
+        return False, None, "Usa una URL HTTPS o una ruta interna de imagen permitida."
+
+    parsed = urlparse(avatar_url)
+    scheme = (parsed.scheme or "").lower()
+    hostname = (parsed.hostname or "").lower()
+    if scheme == "https" and hostname:
+        return True, avatar_url, ""
+    if scheme == "http" and hostname in {"localhost", "127.0.0.1", "::1"}:
+        return True, avatar_url, ""
+
+    return False, None, "La imagen de perfil debe usar HTTPS o una ruta interna segura."
+
+
+def get_user_profile_identity(user: User) -> dict:
+    metadata = _profile_metadata(user)
+    identity = metadata.get("identity") if isinstance(metadata.get("identity"), dict) else {}
+    avatar_url = identity.get("avatar_url") or metadata.get("profile_avatar_url")
+    avatar_source = identity.get("avatar_source") or metadata.get("profile_avatar_source")
+    return {
+        "avatar_url": str(avatar_url).strip() if avatar_url else None,
+        "avatar_source": str(avatar_source).strip() if avatar_source else None,
+    }
+
+
+def set_user_profile_avatar(
+    user: User,
+    raw_avatar_url: object,
+    *,
+    source: str = "profile_url",
+    overwrite: bool = True,
+    commit: bool = True,
+) -> Tuple[bool, str, int]:
+    is_valid, avatar_url, message = normalize_profile_avatar_url(raw_avatar_url)
+    if not is_valid:
+        return False, message, 400
+
+    metadata = dict(_profile_metadata(user))
+    identity = dict(metadata.get("identity") if isinstance(metadata.get("identity"), dict) else {})
+    existing_avatar = identity.get("avatar_url") or metadata.get("profile_avatar_url")
+    existing_source = identity.get("avatar_source") or metadata.get("profile_avatar_source")
+
+    if existing_avatar and not overwrite:
+        existing_source_normalized = _normalize_avatar_source(existing_source)
+        if existing_source_normalized in {"profile_upload", "profile_url"}:
+            return True, "Avatar existente preservado.", 200
+
+    if avatar_url:
+        identity["avatar_url"] = avatar_url
+        identity["avatar_source"] = _normalize_avatar_source(source)
+    else:
+        identity.pop("avatar_url", None)
+        identity.pop("avatar_source", None)
+
+    metadata["identity"] = identity
+    user.accesibilidad = metadata
+    flag_modified(user, "accesibilidad")
+
+    if commit:
+        try:
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+            current_app.logger.exception(
+                "[user_service] Error al guardar avatar de perfil para usuario %s",
+                getattr(user, "id", None),
+            )
+            return False, "No se pudo actualizar la imagen de perfil.", 500
+
+    return True, "Avatar actualizado correctamente.", 200
 
 
 def _validate_password_strength(password: str) -> Tuple[bool, str]:
@@ -198,6 +312,22 @@ def update_user_profile(user: User, data: dict) -> bool:
     try:
         # Lista de campos permitidos para la actualización desde este servicio.
         # Excluimos explícitamente campos sensibles como rol, token, etc.
+        avatar_key = next(
+            (key for key in ("avatar_url", "picture", "profile_avatar_url") if key in data),
+            None,
+        )
+        if avatar_key:
+            success, message, status = set_user_profile_avatar(
+                user,
+                data.get(avatar_key),
+                source=data.get("avatar_source") or "profile_url",
+                overwrite=True,
+                commit=False,
+            )
+            if not success:
+                g.profile_update_error = (message, status)
+                return False
+
         allowed_fields = ['name', 'telefono', 'direccion', 'acepta_marketing']
 
         for key, value in data.items():

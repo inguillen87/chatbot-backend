@@ -31,6 +31,7 @@ def _profile(email="owner@chatboc.test"):
             {"provider": "oauth_facebook"},
             {"provider": "oauth_linkedin_oidc"},
         ],
+        "image_url": "https://img.clerk.test/users/user_clerk_123.jpg",
     }
 
 
@@ -46,6 +47,8 @@ def test_upsert_user_from_clerk_creates_user_with_social_metadata(client):
         assert auth_meta["provider"] == "clerk"
         assert auth_meta["clerk"]["user_id"] == "user_clerk_123"
         assert auth_meta["clerk"]["social_providers"] == ["facebook", "linkedin"]
+        assert user.accesibilidad["identity"]["avatar_url"] == "https://img.clerk.test/users/user_clerk_123.jpg"
+        assert user.accesibilidad["identity"]["avatar_source"] == "clerk"
 
 
 def test_upsert_user_from_clerk_links_existing_email_without_resetting_identity(client):

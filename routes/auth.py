@@ -128,6 +128,7 @@ from services.user_service import (
     change_user_email,
     change_user_password,
     create_password_reset_request,
+    get_user_profile_identity,
     reset_password_with_token,
     split_password_reset_token,
     update_user_profile,
@@ -641,6 +642,10 @@ def build_profile_payload(user: User) -> Dict[str, Any]:
         or getattr(user, "plan", None)
     )
 
+    profile_identity = get_user_profile_identity(user)
+    profile_avatar_url = profile_identity.get("avatar_url")
+    profile_avatar_source = profile_identity.get("avatar_source")
+
     profile_data: Dict[str, Any] = {
         "id": user.id,
         "name": user.name,
@@ -671,6 +676,9 @@ def build_profile_payload(user: User) -> Dict[str, Any]:
         "longitud": getattr(user, "longitud", None),
         "link_web": getattr(user, "link_web", None),
         "logo_url": getattr(user, "logo_url", None),
+        "avatar_url": profile_avatar_url,
+        "picture": profile_avatar_url,
+        "avatar_source": profile_avatar_source,
         "preguntas_usadas": getattr(user, "preguntas_usadas", None),
     }
 
@@ -2113,6 +2121,7 @@ def google_login():
         current_app.logger.info(f"Login Google para: {user.email}")
 
         owner_token = _resolve_owner_token(user)
+        profile_identity = get_user_profile_identity(user)
 
         if not getattr(user, "rubro_id", None):
             # Aún si falta el rubro, generamos un token para que pueda continuar
@@ -2125,6 +2134,9 @@ def google_login():
                 "status": "falta_rubro",
                 "token": jwt_token,
                 "email": user.email,
+                "avatar_url": profile_identity.get("avatar_url"),
+                "picture": profile_identity.get("avatar_url"),
+                "avatar_source": profile_identity.get("avatar_source"),
             }
             entity_token_value = _include_entity_token_fields(response_payload, owner_token)
             resp = jsonify(response_payload)
@@ -2169,6 +2181,9 @@ def google_login():
             "categorias": getattr(user, "categorias_lista", []),
             "tenant_slug": tenant_slug_out,
             "tenantSlug": tenant_slug_out,
+            "avatar_url": profile_identity.get("avatar_url"),
+            "picture": profile_identity.get("avatar_url"),
+            "avatar_source": profile_identity.get("avatar_source"),
         }
 
         entity_token_value = _include_entity_token_fields(response_payload, owner_token)
