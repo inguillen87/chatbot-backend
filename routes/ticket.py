@@ -28,6 +28,7 @@ from models import (
 )
 from datetime import datetime, timedelta
 from services.ticket_service import servicio_tickets
+from services.user_service import build_identity_subject
 from services.ticket_realtime_state import (
     build_ticket_collaboration_state,
     build_ticket_collaboration_states,
@@ -919,6 +920,8 @@ def serialize_ticket_to_json(
     # Reutilizar la lógica existente para obtener la información de contacto unificada
     # Esta función necesita el modelo User, que ya está importado en este archivo.
     user_data = _get_user_info(ticket, User)
+    contact_identity = _ticket_contact_identity(ticket, ticket_type, user_data)
+    contact_identity_visual = _identity_visual_fields(contact_identity)
 
     # El campo 'description' debe ser 'detalles' si existe, sino 'pregunta'.
     description = getattr(ticket, 'detalles', '') or getattr(ticket, 'pregunta', '')
@@ -1005,17 +1008,34 @@ def serialize_ticket_to_json(
         "email": user_data.get("email", "No especificado"),
         "telefono": user_data.get("telefono", "No especificado"),
         "dni": dni_vecino,
+        "avatar_url": contact_identity.get("avatar_url"),
+        "avatar_source": contact_identity.get("avatar_source"),
+        "avatar_consent": contact_identity.get("avatar_consent"),
+        "profile_picture_consent": contact_identity.get("profile_picture_consent"),
+        "avatar_policy": contact_identity.get("avatar_policy"),
+        "identity": contact_identity,
+        "contact_identity": contact_identity,
         "description": description,
         "channel": getattr(ticket, 'canal_ingreso', 'desconocido'),
         "comentarios": comentarios_serializados,
         "comentarios_count": comentarios_count,
         "historial_chat": historial_chat,
+        "contact": {
+            "name": user_data.get("nombre", "No especificado"),
+            "email": user_data.get("email", "No especificado"),
+            "phone": user_data.get("telefono", "No especificado"),
+            "dni": dni_vecino,
+            "identity": contact_identity,
+            **contact_identity_visual,
+        },
         "informacion_personal_vecino": {
             "nombre": user_data.get("nombre", "No especificado"),
             "dni": dni_vecino,
             "direccion": user_data.get("direccion", "No especificada"),
             "email": user_data.get("email", "No especificado"),
-            "telefono": user_data.get("telefono", "No especificado")
+            "telefono": user_data.get("telefono", "No especificado"),
+            "identity": contact_identity,
+            **contact_identity_visual,
         },
         "municipio_id": municipio_id,
         "rubro_id": rubro_id,
@@ -1521,9 +1541,37 @@ def _get_user_info(ticket, user_model):
 
     return user_info
 
+
+def _ticket_contact_identity(ticket, ticket_type: str, user_data: dict) -> dict:
+    ticket_user = None
+    if getattr(ticket, "user_id", None):
+        try:
+            ticket_user = db.session.get(User, ticket.user_id)
+        except Exception:
+            ticket_user = None
+    return build_identity_subject(
+        user=ticket_user,
+        display_name=user_data.get("nombre"),
+        email=user_data.get("email"),
+        phone=user_data.get("telefono"),
+        anon_id=getattr(ticket, "anon_id", None),
+        source_context=f"{ticket_type}_ticket_contact",
+    )
+
+
+def _identity_visual_fields(identity: dict) -> dict:
+    return {
+        key: value
+        for key, value in (identity or {}).items()
+        if key not in {"name", "email", "phone", "user_id", "anon_id"}
+    }
+
+
 def _serialize_ticket_details(ticket, ticket_type):
     """Serializa los detalles de un ticket (municipio o pyme) a un diccionario JSON."""
     user_data = _get_user_info(ticket, User)
+    contact_identity = _ticket_contact_identity(ticket, ticket_type, user_data)
+    contact_identity_visual = _identity_visual_fields(contact_identity)
     degraded_reasons: list[str] = []
 
     try:
@@ -1617,7 +1665,9 @@ def _serialize_ticket_details(ticket, ticket_type):
             "telefono": user_data["telefono"],
             "email": user_data["email"],
             "direccion": user_data["direccion"],
-            "dni": user_data["dni"]
+            "dni": user_data["dni"],
+            "identity": contact_identity,
+            **contact_identity_visual,
         }
 
     canal_ingreso_valor = getattr(ticket, 'canal_ingreso', None)
@@ -1644,6 +1694,21 @@ def _serialize_ticket_details(ticket, ticket_type):
         "telefono_contacto": user_data["telefono"],
         "mail_contacto": user_data["email"],
         "dni": user_data["dni"],
+        "avatar_url": contact_identity.get("avatar_url"),
+        "avatar_source": contact_identity.get("avatar_source"),
+        "avatar_consent": contact_identity.get("avatar_consent"),
+        "profile_picture_consent": contact_identity.get("profile_picture_consent"),
+        "avatar_policy": contact_identity.get("avatar_policy"),
+        "identity": contact_identity,
+        "contact_identity": contact_identity,
+        "contact": {
+            "name": user_data["nombre"],
+            "phone": user_data["telefono"],
+            "email": user_data["email"],
+            "dni": user_data["dni"],
+            "identity": contact_identity,
+            **contact_identity_visual,
+        },
         "direccion_exacta_aproximada": location_payload["direccion"],
         "direccion": location_payload["direccion"],
         "latitud": location_payload["latitud"],

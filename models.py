@@ -871,6 +871,35 @@ class PymePedido(db.Model):
                 detalles_json = []
         except (json.JSONDecodeError, TypeError):
             detalles_json = []
+        try:
+            from services.user_service import build_identity_subject
+
+            customer_user = db.session.get(User, self.user_id) if self.user_id else None
+            customer_identity = build_identity_subject(
+                user=customer_user,
+                display_name=self.nombre_cliente,
+                email=self.email_cliente,
+                phone=self.telefono_cliente,
+                source_context="pyme_pedido_to_dict",
+            )
+        except Exception:
+            customer_identity = {
+                "display_name": self.nombre_cliente or "Cliente",
+                "name": self.nombre_cliente or "Cliente",
+                "email": self.email_cliente,
+                "phone": self.telefono_cliente,
+                "avatar_url": None,
+                "avatar_consent": False,
+                "profile_picture_consent": False,
+                "avatar_policy": "consented_upload_or_social_only",
+                "fallback": "deterministic_identity_avatar",
+                "source_context": "pyme_pedido_to_dict",
+            }
+        customer_identity_visual = {
+            key: value
+            for key, value in customer_identity.items()
+            if key not in {"name", "email", "phone", "user_id", "anon_id"}
+        }
 
         return {
             "id": self.id,
@@ -887,7 +916,16 @@ class PymePedido(db.Model):
             "direccion": self.direccion,
             "latitud": self.latitud,
             "longitud": self.longitud,
-            "user_id": self.user_id
+            "user_id": self.user_id,
+            "customer_identity": customer_identity,
+            "customer_profile": {
+                "user_id": self.user_id,
+                "name": self.nombre_cliente,
+                "email": self.email_cliente,
+                "phone": self.telefono_cliente,
+                "identity": customer_identity,
+                **customer_identity_visual,
+            },
         }
 
     def __repr__(self):
@@ -1068,6 +1106,27 @@ class TicketComentario(db.Model):
                 nombre_autor = "Vecino/a"
         data["autor"] = autor_tipo
         data["autor_nombre"] = nombre_autor
+        try:
+            from services.user_service import build_identity_subject
+
+            actor_user = db.session.get(User, self.user_id) if self.user_id else None
+            data["actor_identity"] = build_identity_subject(
+                user=actor_user,
+                display_name=nombre_autor,
+                anon_id=self.anon_id,
+                source_context="ticket_comment",
+            )
+        except Exception:
+            data["actor_identity"] = {
+                "display_name": nombre_autor,
+                "name": nombre_autor,
+                "avatar_url": None,
+                "avatar_consent": False,
+                "profile_picture_consent": False,
+                "avatar_policy": "consented_upload_or_social_only",
+                "fallback": "deterministic_identity_avatar",
+                "source_context": "ticket_comment",
+            }
 
         return data
 
@@ -2765,6 +2824,35 @@ class Order(db.Model, TimestampMixin):
     tenant = db.relationship("TenantProfile")
 
     def to_dict(self):
+        try:
+            from services.user_service import build_identity_subject
+
+            buyer_user = db.session.get(User, self.customer_id) if self.customer_id else None
+            buyer_identity = build_identity_subject(
+                user=buyer_user,
+                display_name=self.buyer_name,
+                email=self.buyer_email,
+                phone=self.buyer_phone,
+                source_context="order_to_dict",
+            )
+        except Exception:
+            buyer_identity = {
+                "display_name": self.buyer_name or "Cliente",
+                "name": self.buyer_name or "Cliente",
+                "email": self.buyer_email,
+                "phone": self.buyer_phone,
+                "avatar_url": None,
+                "avatar_consent": False,
+                "profile_picture_consent": False,
+                "avatar_policy": "consented_upload_or_social_only",
+                "fallback": "deterministic_identity_avatar",
+                "source_context": "order_to_dict",
+            }
+        buyer_identity_visual = {
+            key: value
+            for key, value in buyer_identity.items()
+            if key not in {"name", "email", "phone", "user_id", "anon_id"}
+        }
         return {
             "id": self.id,
             "status": self.status,
@@ -2774,7 +2862,10 @@ class Order(db.Model, TimestampMixin):
                 "name": self.buyer_name,
                 "email": self.buyer_email,
                 "phone": self.buyer_phone,
+                "identity": buyer_identity,
+                **buyer_identity_visual,
             },
+            "buyer_identity": buyer_identity,
             "totals": {
                 "subtotal": float(self.subtotal),
                 "total": float(self.total),

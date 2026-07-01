@@ -7,6 +7,7 @@ import requests
 
 from services.contact_intake import infer_phone_from_anon_id, normalize_email, normalize_name
 from services.plan_access import integration_access_payload
+from services.user_service import build_identity_subject
 
 
 class PaymentGatewayError(Exception):
@@ -99,6 +100,19 @@ def build_customer_profile(
     phone = str(raw_phone).strip() if raw_phone else None
     email = normalize_email(raw_email) or (str(raw_email).strip() if raw_email else None)
     name = normalize_name(raw_name) or (str(raw_name).strip() if raw_name else None)
+    identity = build_identity_subject(
+        user=user,
+        display_name=name,
+        email=email,
+        phone=phone,
+        anon_id=anon_id,
+        source_context="customer_profile",
+    )
+    identity_visual = {
+        key: value
+        for key, value in identity.items()
+        if key not in {"name", "email", "phone", "user_id", "anon_id"}
+    }
 
     return {
         "user_id": getattr(user, "id", None),
@@ -117,6 +131,8 @@ def build_customer_profile(
             anon_id=anon_id,
             session_id=session_id,
         ),
+        "identity": identity,
+        **identity_visual,
     }
 
 

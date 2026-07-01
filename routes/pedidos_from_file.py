@@ -1535,7 +1535,14 @@ def _build_next_actions(
     return actions
 
 
-def _normalize_items(owner_id: int, tenant_id: int, rows: List[dict], *, catalog_matching: bool = True):
+def _normalize_items(
+    owner_id: int,
+    tenant_id: int,
+    rows: List[dict],
+    *,
+    catalog_matching: bool = True,
+    mutate_cart: bool = True,
+):
     pyme_carts_data: Dict[int, list] = session.get("carritos_pymes", {})
     cart = _get_pyme_cart(pyme_carts_data, tenant_id)
     not_found: List[dict] = []
@@ -1572,15 +1579,17 @@ def _normalize_items(owner_id: int, tenant_id: int, rows: List[dict], *, catalog
             match = query.filter(func.lower(CatalogoItem.nombre) == nombre.lower()).first()
         if match:
             matched_entry = {"catalogo_item_id": match.id, "cantidad": cantidad}
-            cart.append(matched_entry)
+            if mutate_cart:
+                cart.append(matched_entry)
             matched_entries.append(matched_entry)
         else:
             candidates = _catalog_candidates_for_row(normalized_row, catalog_items)
             if candidates:
                 normalized_row = {**normalized_row, "catalog_candidates": candidates}
             not_found.append(normalized_row)
-    session["carritos_pymes"] = pyme_carts_data
-    session.modified = True
+    if mutate_cart:
+        session["carritos_pymes"] = pyme_carts_data
+        session.modified = True
     return cart, not_found, row_errors, matched_entries
 
 
@@ -1805,12 +1814,15 @@ def pedidos_desde_archivo():
         classification=request_kind_classification,
     )
 
+    origen = request.headers.get("X-Checkout-Origin") or request.args.get("origen") or "web"
     catalog_matching_enabled = bool(document_profile.get("catalog_matching"))
     cart, not_found, row_errors, matched_entries = _normalize_items(
         owner.id,
         tenant.id,
         rows or [],
         catalog_matching=catalog_matching_enabled,
+        mutate_cart=str(origen).strip().lower()
+        not in {"marketplace", "assisted_marketplace", "marketplace_intake"},
     )
 
     # Enriquecer respuesta reutilizando formateador existente
@@ -1836,7 +1848,6 @@ def pedidos_desde_archivo():
             )
             enriched.append({"catalogo_item_id": item.id, "cantidad": it.get("cantidad", 1), **formatted})
 
-    origen = request.headers.get("X-Checkout-Origin") or request.args.get("origen") or "web"
     tenant_slug_resolved = getattr(tenant, "slug", None) or tenant_slug
     unmatched_labels = [_row_label(row) for row in not_found]
     catalog_candidates = _unmatched_catalog_candidates_payload(not_found) if catalog_matching_enabled else []

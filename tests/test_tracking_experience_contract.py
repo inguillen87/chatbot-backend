@@ -130,6 +130,8 @@ class TrackingExperienceContractTest(unittest.TestCase):
         self.assertIn(payload["support"]["live_chat"]["mode"], {"live", "offline"})
         self.assertTrue(payload["support"]["live_chat"]["offline_message_enabled"])
         self.assertEqual(payload["support"]["conversation"]["message_count"], 1)
+        self.assertFalse(payload["support"]["conversation"]["unread_for_team"])
+        self.assertIn("admin_inbox_unread_incremented", payload["support"]["conversation"]["writebacks"])
         self.assertEqual(payload["support"]["service_window"]["tenant_schedule_source"], "tenant_config")
         self.assertTrue(payload["support"]["service_window"]["accepts_messages"])
         self.assertEqual(payload["support"]["service_window"]["outside_hours_mode"], "offline_message")
@@ -139,6 +141,9 @@ class TrackingExperienceContractTest(unittest.TestCase):
         self.assertFalse(payload["support"]["webview_policy"]["external_redirect_required"])
         self.assertEqual(payload["support"]["admin_response_surface"]["id"], "tenant_claims_inbox")
         self.assertEqual(payload["support"]["admin_response_surface"]["thread_binding"], "municipio_ticket_id")
+        self.assertEqual(payload["support"]["admin_response_surface"]["route"], "/perfil?tab=tickets")
+        self.assertTrue(payload["support"]["operator_queue"]["unread_on_customer_message"])
+        self.assertTrue(payload["support"]["operator_queue"]["requires_admin_response"])
         action_by_id = {item["id"]: item for item in payload["actions"]}
         self.assertEqual(
             action_by_id["send_message"]["endpoint"],
@@ -225,8 +230,22 @@ class TrackingExperienceContractTest(unittest.TestCase):
         self.assertEqual(payload["comment"]["source"], "public_tracking")
         self.assertEqual(payload["delivery"]["channel"], "ticket_bound_helpdesk")
         self.assertEqual(payload["delivery"]["admin_surface"], "tenant_claims_inbox")
+        self.assertTrue(payload["delivery"]["admin_unread"])
+        self.assertTrue(payload["delivery"]["timeline_updated"])
+        self.assertEqual(payload["delivery"]["reply_status"], "queued_for_agent")
+        self.assertEqual(payload["crm_writeback"]["admin_surface"], "tenant_claims_inbox")
+        self.assertEqual(payload["crm_writeback"]["route"], "/perfil?tab=tickets")
+        self.assertEqual(payload["crm_writeback"]["thread_binding"], "municipio_ticket_id")
+        self.assertTrue(payload["crm_writeback"]["unread_for_team"])
+        self.assertTrue(payload["crm_writeback"]["requires_admin_response"])
+        self.assertIn("admin_inbox_unread_incremented", payload["crm_writeback"]["writebacks"])
+        self.assertEqual(payload["unread_event"]["ticket_id"], self.claim.id)
+        self.assertEqual(payload["unread_event"]["comment_id"], payload["comment"]["id"])
+        self.assertTrue(payload["unread_event"]["has_unread"])
+        self.assertTrue(payload["unread_event"]["requires_response"])
         self.assertEqual(payload["timeline_endpoint"], f"/tickets/municipio/{self.claim.id}/timeline")
         self.assertEqual(payload["tracking"]["support"]["conversation"]["message_count"], 2)
+        self.assertTrue(payload["tracking"]["support"]["conversation"]["unread_for_team"])
         self.assertEqual(
             payload["tracking"]["support"]["endpoints"]["send_message"],
             f"/api/public/tracking/claims/{self.claim.id}/messages",

@@ -1,6 +1,8 @@
+import json
 import logging
 from typing import Dict, Any, List, Optional
-from services.llm_utils import _clean_llm_json_output, llamar_llm_para_generacion_texto
+from services.llm_bridge import llamar_llm_para_generacion_texto
+from services.llm_utils import _clean_llm_json_output
 
 logger = logging.getLogger(__name__)
 

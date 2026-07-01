@@ -1,4 +1,4 @@
-from typing import Iterable, Optional, Tuple
+from typing import Any, Iterable, Optional, Tuple
 from urllib.parse import urlparse
 
 from models import db, User, WhatsappNumero
@@ -20,6 +20,7 @@ PROFILE_AVATAR_SOURCES = {
     "facebook",
     "linkedin",
     "oauth",
+    "social",
     "social_login",
 }
 BLOCKED_AVATAR_SOURCE_KEYWORDS = {
@@ -82,6 +83,25 @@ def _avatar_consent_denied(value: object) -> bool:
     return False
 
 
+def _avatar_consent_granted(value: object) -> bool:
+    if value is True:
+        return True
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "y",
+            "si",
+            "s",
+            "accepted",
+            "consented",
+        }
+    return False
+
+
 def normalize_profile_avatar_url(value: object) -> Tuple[bool, Optional[str], str]:
     """Return a safe profile avatar URL or a validation error.
 
@@ -120,20 +140,98 @@ def normalize_profile_avatar_url(value: object) -> Tuple[bool, Optional[str], st
 def get_user_profile_identity(user: User) -> dict:
     metadata = _profile_metadata(user)
     identity = metadata.get("identity") if isinstance(metadata.get("identity"), dict) else {}
-    avatar_url = identity.get("avatar_url") or metadata.get("profile_avatar_url")
+    raw_avatar_url = identity.get("avatar_url") or metadata.get("profile_avatar_url")
     raw_avatar_source = identity.get("avatar_source") or metadata.get("profile_avatar_source")
-    avatar_source = str(raw_avatar_source).strip() if raw_avatar_source else ("profile_url" if avatar_url else None)
+    avatar_source = str(raw_avatar_source).strip() if raw_avatar_source else ("profile_url" if raw_avatar_url else None)
     normalized_source = str(avatar_source or "").strip().lower()
     explicit_consent = identity.get("avatar_consent")
+    avatar_url_valid, safe_avatar_url, _ = normalize_profile_avatar_url(raw_avatar_url)
     avatar_consent = bool(
-        avatar_url
+        raw_avatar_url
+        and avatar_url_valid
+        and safe_avatar_url
         and normalized_source in PROFILE_AVATAR_SOURCES
-        and explicit_consent is not False
+        and not _has_blocked_avatar_source(normalized_source)
+        and _avatar_consent_granted(explicit_consent)
     )
+    avatar_url = safe_avatar_url if avatar_consent else None
     return {
-        "avatar_url": str(avatar_url).strip() if avatar_url else None,
-        "avatar_source": avatar_source,
+        "avatar_url": avatar_url,
+        "avatar_source": avatar_source if avatar_url else None,
         "avatar_consent": avatar_consent,
+    }
+
+
+def _clean_identity_text(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.lower() in {
+        "no especificado",
+        "no especificada",
+        "sin especificar",
+        "none",
+        "null",
+        "undefined",
+    }:
+        return None
+    return text
+
+
+def build_identity_subject(
+    *,
+    user: Optional[User] = None,
+    display_name: Any = None,
+    name: Any = None,
+    email: Any = None,
+    phone: Any = None,
+    anon_id: Any = None,
+    source_context: str = "contact_profile",
+) -> dict:
+    """Build a safe identity contract for UI avatars.
+
+    Real profile images are only exposed when they come from consented upload or
+    social login metadata stored on the User profile. WhatsApp profile photos,
+    scraped images, mock URLs and synthetic realistic portraits are never
+    surfaced here.
+    """
+
+    resolved_name = (
+        _clean_identity_text(display_name)
+        or _clean_identity_text(name)
+        or _clean_identity_text(getattr(user, "name", None))
+        or _clean_identity_text(getattr(user, "email", None))
+        or "Contacto"
+    )
+    resolved_email = _clean_identity_text(email) or _clean_identity_text(getattr(user, "email", None))
+    resolved_phone = _clean_identity_text(phone) or _clean_identity_text(getattr(user, "telefono", None))
+    resolved_anon_id = _clean_identity_text(anon_id) or _clean_identity_text(getattr(user, "anon_id", None))
+
+    identity = get_user_profile_identity(user) if user else {}
+    avatar_url = identity.get("avatar_url") if identity.get("avatar_consent") else None
+    avatar_source = identity.get("avatar_source") if avatar_url else None
+    avatar_consent = bool(avatar_url and identity.get("avatar_consent"))
+
+    return {
+        "display_name": resolved_name,
+        "name": resolved_name,
+        "email": resolved_email,
+        "phone": resolved_phone,
+        "user_id": getattr(user, "id", None),
+        "anon_id": resolved_anon_id,
+        "avatar_url": avatar_url,
+        "avatarUrl": avatar_url,
+        "picture": avatar_url,
+        "avatar_source": avatar_source,
+        "avatarSource": avatar_source,
+        "avatar_consent": avatar_consent,
+        "avatarConsent": avatar_consent,
+        "profile_picture_consent": avatar_consent,
+        "avatar_policy": "consented_upload_or_social_only",
+        "fallback": "deterministic_identity_avatar",
+        "source_context": source_context,
     }
 
 
@@ -390,9 +488,19 @@ def update_user_profile(user: User, data: dict) -> bool:
             avatar_consent_denied = _avatar_consent_denied(data.get("avatar_consent")) or _avatar_consent_denied(
                 data.get("profile_picture_consent")
             )
+            avatar_consent_granted = _avatar_consent_granted(data.get("avatar_consent")) or _avatar_consent_granted(
+                data.get("profile_picture_consent")
+            )
+            raw_avatar_url = data.get(avatar_key)
+            if raw_avatar_url and not avatar_consent_denied and not avatar_consent_granted:
+                g.profile_update_error = (
+                    "Necesitamos tu consentimiento explicito para usar esta imagen de perfil.",
+                    400,
+                )
+                return False
             success, message, status = set_user_profile_avatar(
                 user,
-                "" if avatar_consent_denied else data.get(avatar_key),
+                "" if avatar_consent_denied else raw_avatar_url,
                 source=data.get("avatar_source") or "profile_url",
                 overwrite=True,
                 commit=False,

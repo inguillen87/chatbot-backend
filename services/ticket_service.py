@@ -21,6 +21,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from .integracion_municipal import enviar_ticket_a_sigem # SIGEM Integration
 from utils.heatmap import enrich_heatmap_points
 from services.notification_dispatcher import notification_dispatcher
+from services.user_service import build_identity_subject
 
 logger = logging.getLogger(__name__)
 
@@ -951,6 +952,15 @@ class ServicioTickets:
                 or getattr(ticket, "nombre_cliente", None)
                 or "Vecino/a"
             )
+            vecino_identity = build_identity_subject(
+                display_name=nombre_vecino,
+                anon_id=getattr(ticket, "anon_id", None),
+                source_context="ticket_chat_history",
+            )
+            chatbot_identity = build_identity_subject(
+                display_name="Chatbot",
+                source_context="ticket_chatbot_message",
+            )
 
             for conv in conversaciones:
                 if conv.pregunta:
@@ -960,6 +970,7 @@ class ServicioTickets:
                             "fecha": datetime_to_iso_utc(conv.timestamp),
                             "autor": "vecino",
                             "autor_nombre": nombre_vecino,
+                            "actor_identity": vecino_identity,
                             "es_admin": False,
                         }
                     )
@@ -974,6 +985,7 @@ class ServicioTickets:
                             "fecha": respuesta_fecha,
                             "autor": "municipio",
                             "autor_nombre": "Chatbot",
+                            "actor_identity": chatbot_identity,
                             "es_admin": True,
                         }
                     )
@@ -1026,11 +1038,14 @@ class ServicioTickets:
                 autor_tipo = "municipio" if c.es_admin else "vecino"
                 if c.es_admin:
                     nombre_autor = "Municipio"
+                    actor_user = None
                     if c.user_id:
                         usuario = db.session.get(User, c.user_id)
                         if usuario and usuario.name:
                             nombre_autor = usuario.name
+                        actor_user = usuario
                 else:
+                    actor_user = db.session.get(User, c.user_id) if c.user_id else None
                     nombre_autor = None
                     if c.municipio_ticket and getattr(c.municipio_ticket, "nombre_vecino", None):
                         nombre_autor = c.municipio_ticket.nombre_vecino
@@ -1047,6 +1062,12 @@ class ServicioTickets:
                         "user_id": c.user_id,
                         "autor": autor_tipo,
                         "autor_nombre": nombre_autor,
+                        "actor_identity": build_identity_subject(
+                            user=actor_user,
+                            display_name=nombre_autor,
+                            anon_id=c.anon_id,
+                            source_context="ticket_timeline",
+                        ),
                     }
                 )
 

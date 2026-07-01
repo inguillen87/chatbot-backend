@@ -3213,7 +3213,12 @@ def me_perfil(user):
                 )
 
         profile_data = build_profile_payload(user)
-        nullable_contract_fields = {"widget_embed_token"}
+        nullable_contract_fields = {
+            "widget_embed_token",
+            "avatar_url",
+            "picture",
+            "avatar_source",
+        }
         return jsonify(
             {
                 k: v

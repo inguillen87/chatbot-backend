@@ -20,6 +20,10 @@ def test_build_customer_profile_normalizes_phone_channels_and_identity():
     assert profile["channel_group"] == "conversational"
     assert profile["phone"] == "+5491166677788"
     assert profile["contact_key"] == "user:77"
+    assert profile["identity"]["display_name"] == "Ana Buyer"
+    assert profile["avatar_url"] is None
+    assert profile["avatar_consent"] is False
+    assert profile["avatar_policy"] == "consented_upload_or_social_only"
 
 
 def test_serialize_unified_order_supports_multiple_models():
@@ -29,6 +33,13 @@ def test_serialize_unified_order_supports_multiple_models():
 
         owner = User(email="owner-unified@test.com", name="Owner Unified", rol="admin", tipo_chat="pyme")
         owner.set_password("pass")
+        owner.accesibilidad = {
+            "identity": {
+                "avatar_url": "https://cdn.example.com/profile/owner.webp",
+                "avatar_source": "profile_upload",
+                "avatar_consent": True,
+            }
+        }
         db.session.add(owner)
         db.session.commit()
 
@@ -87,6 +98,48 @@ def test_serialize_unified_order_supports_multiple_models():
         assert serialized_conv["contact"]["contact_key"] == "email:test@test.com"
         assert serialized_legacy["source_model"] == "PymePedido"
         assert serialized_legacy["items"][0]["title"] == "Pan"
+        assert serialized_market["customer_profile"]["avatar_url"] == "https://cdn.example.com/profile/owner.webp"
+        assert serialized_market["customer_profile"]["identity"]["avatar_source"] == "profile_upload"
+        assert serialized_conv["customer_profile"]["avatar_consent"] is True
+        assert serialized_legacy["customer_identity"]["avatar_policy"] == "consented_upload_or_social_only"
+        assert serialized_legacy["contact"]["avatar_url"] == "https://cdn.example.com/profile/owner.webp"
+
+
+def test_serialize_unified_order_hides_unconsented_profile_avatar():
+    app = create_app(TestConfig)
+    with app.app_context():
+        db.create_all()
+
+        customer = User(email="unconsented-avatar@test.com", name="No Avatar", rol="user", tipo_chat="pyme")
+        customer.set_password("pass")
+        customer.accesibilidad = {
+            "identity": {
+                "avatar_url": "https://cdn.example.com/profile/unconsented.webp",
+                "avatar_source": "profile_upload",
+                "avatar_consent": False,
+            }
+        }
+        db.session.add(customer)
+        db.session.commit()
+
+        order = MarketOrder(
+            tenant_id=1,
+            user_id=customer.id,
+            status="pending",
+            contact_name="No Avatar",
+            contact_phone="+5491122233344",
+            channel="whatsapp",
+            total_monetary=1000,
+            currency="ARS",
+        )
+        db.session.add(order)
+        db.session.commit()
+
+        serialized = serialize_unified_order(order)
+
+        assert serialized["customer_profile"]["avatar_url"] is None
+        assert serialized["customer_profile"]["avatar_consent"] is False
+        assert serialized["customer_profile"]["identity"]["fallback"] == "deterministic_identity_avatar"
 
 
 def test_market_order_query_is_legacy_safe_for_deferred_columns():

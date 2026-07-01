@@ -101,6 +101,8 @@ class ProductFlowMunicipioClaimTrackingChatTest(unittest.TestCase):
 
     def test_claim_tracking_public_message_updates_support_flow(self):
         with patch("routes.tracking_ui.emit_new_chat_message") as emit_chat, patch(
+            "routes.tracking_ui.emit_ticket_unread_changed"
+        ) as emit_unread, patch(
             "services.tracking_experience.build_tenant_live_chat_status",
             side_effect=self._offline_status,
         ):
@@ -126,7 +128,17 @@ class ProductFlowMunicipioClaimTrackingChatTest(unittest.TestCase):
         self.assertEqual(message_payload["contract_version"], "tracking.support_message.v1")
         self.assertEqual(message_payload["request_id"], "claim-flow-1")
         self.assertEqual(message_payload["comment"]["source"], "public_tracking")
+        self.assertTrue(message_payload["comment"]["unread_for_team"])
         self.assertEqual(message_payload["delivery"]["admin_surface"], "tenant_claims_inbox")
+        self.assertTrue(message_payload["delivery"]["admin_unread"])
+        self.assertTrue(message_payload["delivery"]["timeline_updated"])
+        self.assertEqual(message_payload["delivery"]["reply_status"], "queued_for_agent")
+        self.assertEqual(message_payload["crm_writeback"]["thread_binding"], "municipio_ticket_id")
+        self.assertTrue(message_payload["crm_writeback"]["requires_admin_response"])
+        self.assertIn(
+            "admin_inbox_unread_incremented",
+            message_payload["crm_writeback"]["writebacks"],
+        )
         self.assertEqual(message_payload["tracking"]["support"]["conversation"]["message_count"], 2)
         emit_chat.assert_called_once()
         emitted_payload = emit_chat.call_args.args[0]
@@ -134,6 +146,16 @@ class ProductFlowMunicipioClaimTrackingChatTest(unittest.TestCase):
         self.assertEqual(emitted_payload["tenant_id"], self.tenant.id)
         self.assertEqual(emitted_payload["municipio_id"], self.owner.id)
         self.assertEqual(emitted_payload["ticket_id"], self.ticket.id)
+        self.assertEqual(emitted_payload["comment_id"], message_payload["comment"]["id"])
+        self.assertTrue(emitted_payload["requires_response"])
+        self.assertTrue(emitted_payload["admin_unread"])
+        emit_unread.assert_called_once()
+        unread_payload = emit_unread.call_args.args[0]
+        self.assertEqual(unread_payload["ticket_id"], self.ticket.id)
+        self.assertEqual(unread_payload["comment_id"], message_payload["comment"]["id"])
+        self.assertTrue(unread_payload["has_unread"])
+        self.assertTrue(unread_payload["requires_response"])
+        self.assertEqual(unread_payload["source"], "public_tracking")
 
         persisted = TicketComentario.query.filter_by(
             municipio_ticket_id=self.ticket.id,

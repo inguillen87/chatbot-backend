@@ -3,7 +3,7 @@ from unittest.mock import MagicMock, patch
 
 from app import create_app
 from config import TestConfig
-from models import db, EncEncuesta
+from models import db, EncEncuesta, User
 from services.encuestas_service import (
     create_comentario,
     issue_social_comment_token,
@@ -64,6 +64,64 @@ class EncuestasSocialCommentsTests(unittest.TestCase):
         self.assertEqual(listado[0]["comment_mode"], "social")
         self.assertEqual(listado[0]["auth_provider"], "instagram")
         self.assertEqual(listado[0]["auth_user_id"], "ig_12345")
+
+    def test_comment_list_exposes_only_consented_profile_avatar(self):
+        user = User(
+            email="avatar-survey@test.com",
+            name="Marcelo Avatar",
+            password_hash="hash",
+            accesibilidad={
+                "identity": {
+                    "avatar_url": "https://cdn.example.com/profile/marcelo.webp",
+                    "avatar_source": "profile_upload",
+                    "avatar_consent": True,
+                }
+            },
+        )
+        db.session.add(user)
+        db.session.commit()
+
+        create_comentario(
+            self.encuesta.id,
+            {"texto": "Comentario con perfil"},
+            user=user,
+        )
+
+        listado = list_comentarios(self.encuesta.id, limit=10, offset=0)
+
+        self.assertEqual(listado[0]["avatar_url"], "https://cdn.example.com/profile/marcelo.webp")
+        self.assertEqual(listado[0]["picture"], "https://cdn.example.com/profile/marcelo.webp")
+        self.assertEqual(listado[0]["avatar_source"], "profile_upload")
+        self.assertTrue(listado[0]["avatar_consent"])
+        self.assertTrue(listado[0]["profile_picture_consent"])
+
+    def test_comment_list_hides_profile_avatar_without_consent(self):
+        user = User(
+            email="avatar-hidden@test.com",
+            name="Avatar Hidden",
+            password_hash="hash",
+            accesibilidad={
+                "identity": {
+                    "avatar_url": "https://cdn.example.com/profile/hidden.webp",
+                    "avatar_source": "profile_upload",
+                    "avatar_consent": False,
+                }
+            },
+        )
+        db.session.add(user)
+        db.session.commit()
+
+        create_comentario(
+            self.encuesta.id,
+            {"texto": "Comentario sin consentimiento"},
+            user=user,
+        )
+
+        listado = list_comentarios(self.encuesta.id, limit=10, offset=0)
+
+        self.assertIsNone(listado[0]["avatar_url"])
+        self.assertIsNone(listado[0]["picture"])
+        self.assertFalse(listado[0]["avatar_consent"])
 
     def test_public_survey_payload_includes_social_providers(self):
         response = self.client.get(f"/api/public/encuestas/{self.encuesta.slug}")

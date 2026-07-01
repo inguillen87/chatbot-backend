@@ -36,6 +36,7 @@ from services.encuestas_service import (
     list_public_encuestas_for_tenant,
     save_respuesta,
     serialize_public_encuesta,
+    serialize_public_comment,
     create_comentario,
     list_comentarios,
     reportar_comentario,
@@ -1105,22 +1106,9 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
                     )
 
                 comentario = create_comentario(encuesta.id, payload, user)
-                auth_user_id = None
-                if isinstance(comentario.anon_id, str) and comentario.anon_id.startswith("social:"):
-                    parts = comentario.anon_id.split(":", 2)
-                    if len(parts) == 3:
-                        auth_user_id = parts[2] or None
                 return jsonify({
                     "ok": True,
-                    "comentario": {
-                        "id": comentario.id,
-                        "texto": comentario.texto,
-                        "nombre_autor": comentario.nombre_autor,
-                        "fecha": comentario.created_at.isoformat(),
-                        "comment_mode": "social" if isinstance(comentario.anon_id, str) and comentario.anon_id.startswith("social:") else "anon",
-                        "auth_provider": (comentario.anon_id.split(":", 2)[1] if isinstance(comentario.anon_id, str) and comentario.anon_id.startswith("social:") and len(comentario.anon_id.split(":", 2)) == 3 else None),
-                        "auth_user_id": auth_user_id,
-                    }
+                    "comentario": serialize_public_comment(comentario),
                 }), 201
             except EncuestaError as err:
                 return _public_error_response(err)

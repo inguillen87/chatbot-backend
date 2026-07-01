@@ -201,6 +201,16 @@ def _claim_support_contract(
     primary_cta_id = "open_live_chat" if available else "leave_offline_message"
     primary_action_variant = "primary" if available else "secondary"
     support_action_label = "Chatear con un agente" if available else "Dejar mensaje"
+    has_customer_activity = any(
+        str(item.get("author") or "").strip().lower() == "customer"
+        for item in conversation
+        if isinstance(item, dict)
+    )
+    crm_writebacks = [
+        "public_comment_created",
+        "ticket_timeline_updated",
+        "admin_inbox_unread_incremented",
+    ]
     return {
         "contract_version": "tracking.support.v1",
         "enabled": True,
@@ -260,6 +270,8 @@ def _claim_support_contract(
             "message_count": len(conversation),
             "public_messages_visible": True,
             "admin_surface": "tenant_claims_inbox",
+            "unread_for_team": has_customer_activity,
+            "writebacks": crm_writebacks,
         },
         "endpoints": {
             "send_message": public_endpoint,
@@ -289,6 +301,17 @@ def _claim_support_contract(
             "endpoint": "/api/v2/inbox/omnichannel",
             "thread_binding": "municipio_ticket_id",
             "socket_room": socket_room,
+            "route": "/perfil?tab=tickets",
+            "unread_counter_key": "claim_public_messages",
+            "writebacks": crm_writebacks,
+        },
+        "operator_queue": {
+            "id": "claim_helpdesk_queue",
+            "label": "Cola de mesa de ayuda",
+            "unread_on_customer_message": True,
+            "requires_admin_response": True,
+            "crm_writebacks": crm_writebacks,
+            "routing_key": f"municipio:{municipio_id}:ticket:{ticket_id}" if municipio_id and ticket_id else None,
         },
         "ui": {
             "render_as": "ticket_bound_helpdesk",
@@ -300,6 +323,7 @@ def _claim_support_contract(
             "offline_label": "Dejar mensaje",
             "schedule_label": schedule_label,
             "empty_state": "Todavia no hay mensajes publicos en este reclamo.",
+            "team_unread_label": "Queda como no leido para el equipo",
         },
     }
 

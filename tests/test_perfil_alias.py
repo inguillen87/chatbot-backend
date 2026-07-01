@@ -119,7 +119,11 @@ def test_perfil_allows_consent_avatar_url_and_exposes_picture_alias(client):
     avatar_url = "https://cdn.example.com/profiles/avatar-profile.jpg"
     update_response = client.put(
         "/auth/perfil",
-        json={"avatar_url": avatar_url, "avatar_source": "profile_upload"},
+        json={
+            "avatar_url": avatar_url,
+            "avatar_source": "profile_upload",
+            "avatar_consent": True,
+        },
         headers={"Authorization": f"Bearer {jwt_token}"},
     )
     assert update_response.status_code == 200
@@ -143,6 +147,123 @@ def test_perfil_allows_consent_avatar_url_and_exposes_picture_alias(client):
     assert data["identity"]["fallback"] == "deterministic_identity_avatar"
     assert data["identity"]["policy"] == "consented_upload_or_social_only"
     assert "whatsapp_profile" in data["identity"]["blocked_sources"]
+
+
+def test_perfil_rejects_avatar_url_without_explicit_consent(client):
+    rubro = Rubro.query.filter_by(clave="pyme").first()
+    if not rubro:
+        rubro = Rubro(nombre="pyme", clave="pyme", es_publico=False)
+        db.session.add(rubro)
+        db.session.commit()
+
+    user = User(
+        email="avatar-no-consent@test.com",
+        name="Avatar No Consent",
+        token="avatar-no-consent-token",
+        rubro_id=rubro.id,
+    )
+    user.set_password("pw")
+    db.session.add(user)
+    db.session.commit()
+
+    jwt_payload = {"user_id": user.id, "exp": datetime.utcnow() + timedelta(days=1)}
+    jwt_token = jwt.encode(jwt_payload, current_app.config["SECRET_KEY"], algorithm="HS256")
+    if isinstance(jwt_token, bytes):
+        jwt_token = jwt_token.decode("utf-8")
+
+    response = client.put(
+        "/auth/perfil",
+        json={
+            "avatar_url": "https://cdn.example.com/profiles/no-consent.jpg",
+            "avatar_source": "profile_upload",
+        },
+        headers={"Authorization": f"Bearer {jwt_token}"},
+    )
+    assert response.status_code == 400
+    assert "consentimiento" in response.get_json()["error"].lower()
+
+    db.session.refresh(user)
+    assert not user.accesibilidad
+
+
+def test_perfil_hides_legacy_avatar_without_explicit_consent(client):
+    rubro = Rubro.query.filter_by(clave="pyme").first()
+    if not rubro:
+        rubro = Rubro(nombre="pyme", clave="pyme", es_publico=False)
+        db.session.add(rubro)
+        db.session.commit()
+
+    user = User(
+        email="legacy-avatar@test.com",
+        name="Legacy Avatar",
+        token="legacy-avatar-token",
+        rubro_id=rubro.id,
+    )
+    user.set_password("pw")
+    user.accesibilidad = {
+        "identity": {
+            "avatar_url": "https://cdn.example.com/profiles/legacy.jpg",
+            "avatar_source": "profile_upload",
+        }
+    }
+    db.session.add(user)
+    db.session.commit()
+
+    jwt_payload = {"user_id": user.id, "exp": datetime.utcnow() + timedelta(days=1)}
+    jwt_token = jwt.encode(jwt_payload, current_app.config["SECRET_KEY"], algorithm="HS256")
+    if isinstance(jwt_token, bytes):
+        jwt_token = jwt_token.decode("utf-8")
+
+    response = client.get("/auth/perfil", headers={"Authorization": f"Bearer {jwt_token}"})
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["avatar_url"] is None
+    assert data["picture"] is None
+    assert data["avatar_source"] is None
+    assert data["avatar_consent"] is False
+    assert data["profile_picture_consent"] is False
+    assert data["identity"]["avatar_url"] is None
+    assert data["identity"]["avatar_consent"] is False
+
+
+def test_perfil_hides_legacy_avatar_with_unsafe_url_even_with_consent(client):
+    rubro = Rubro.query.filter_by(clave="pyme").first()
+    if not rubro:
+        rubro = Rubro(nombre="pyme", clave="pyme", es_publico=False)
+        db.session.add(rubro)
+        db.session.commit()
+
+    user = User(
+        email="legacy-unsafe-avatar@test.com",
+        name="Legacy Unsafe Avatar",
+        token="legacy-unsafe-avatar-token",
+        rubro_id=rubro.id,
+    )
+    user.set_password("pw")
+    user.accesibilidad = {
+        "identity": {
+            "avatar_url": "javascript:alert(1)",
+            "avatar_source": "profile_upload",
+            "avatar_consent": True,
+        }
+    }
+    db.session.add(user)
+    db.session.commit()
+
+    jwt_payload = {"user_id": user.id, "exp": datetime.utcnow() + timedelta(days=1)}
+    jwt_token = jwt.encode(jwt_payload, current_app.config["SECRET_KEY"], algorithm="HS256")
+    if isinstance(jwt_token, bytes):
+        jwt_token = jwt_token.decode("utf-8")
+
+    response = client.get("/auth/perfil", headers={"Authorization": f"Bearer {jwt_token}"})
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["avatar_url"] is None
+    assert data["picture"] is None
+    assert data["avatar_source"] is None
+    assert data["avatar_consent"] is False
+    assert data["identity"]["avatar_url"] is None
+    assert data["identity"]["avatar_consent"] is False
 
 
 def test_perfil_rejects_unsafe_avatar_url(client):

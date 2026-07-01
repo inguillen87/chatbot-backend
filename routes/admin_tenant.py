@@ -2964,17 +2964,28 @@ def tenant_order_detail(current_user, slug, order_id):
     if request.method == 'PATCH':
         payload = request.get_json(silent=True) or {}
         status = payload.get("status")
-        materialize_after_commit = False
         if status is not None:
             _apply_tenant_order_status(record, status)
-            materialize_after_commit = _should_materialize_assisted_order(record, tenant, status)
-        db.session.commit()
-        if materialize_after_commit:
-            from services.pedido_service import PedidoService
+            if _should_materialize_assisted_order(record, tenant, status):
+                from services.pedido_service import PedidoService
 
-            materialized = PedidoService().create_from_conversational(record)
-            if materialized:
+                materialized = PedidoService().create_from_conversational(record)
+                if not materialized:
+                    db.session.rollback()
+                    return jsonify(
+                        {
+                            "error": "materialization_failed",
+                            "message": (
+                                "No se pudo confirmar el pedido operativo. "
+                                "Revisa contacto, catalogo o datos minimos antes de confirmar."
+                            ),
+                        }
+                    ), 422
                 db.session.refresh(record)
+            else:
+                db.session.commit()
+        else:
+            db.session.commit()
 
     return jsonify(serialize_unified_order(record))
 

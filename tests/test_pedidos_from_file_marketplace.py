@@ -378,6 +378,9 @@ def test_marketplace_order_note_upload_is_manageable_from_tenant_crm(client, app
     pedido_id = upload_response.get_json()["pedido_id"]
     crm_id = f"conversational:{pedido_id}"
     headers = _auth_headers(app, owner, tenant.slug)
+    with client.session_transaction() as sess:
+        tenant_cart = (sess.get("carritos_pymes") or {}).get(str(tenant.id)) or (sess.get("carritos_pymes") or {}).get(tenant.id)
+        assert tenant_cart in (None, [])
 
     list_response = client.get(f"/api/admin/tenants/{tenant.slug}/orders?limit=25", headers=headers)
     assert list_response.status_code == 200
@@ -436,6 +439,7 @@ def test_marketplace_order_note_upload_is_manageable_from_tenant_crm(client, app
     materialized = PymePedido.query.filter_by(idempotency_key=f"conv_order_{pedido_id}").first()
     assert materialized is not None
     assert materialized.tenant_id == tenant.id
+    assert materialized.estado == "confirmado"
     assert materialized.nombre_cliente == "Marcelo"
     assert materialized.telefono_cliente == "+5492613168608"
     detalles = json.loads(materialized.detalles)
@@ -448,8 +452,70 @@ def test_marketplace_order_note_upload_is_manageable_from_tenant_crm(client, app
         external_order_id=materialized.nro_pedido,
     ).first()
     assert market_order is not None
+    assert market_order.status == "confirmed"
     assert market_order.metadata_payload["source_conversational_id"] == str(pedido_id)
     assert patch_payload["metadata"]["materialized_order"]["nro_pedido"] == materialized.nro_pedido
+
+
+def test_tenant_crm_confirm_assisted_order_is_atomic_when_materialization_fails(client, app, init_database, monkeypatch):
+    owner = User.query.filter_by(email="admin@test.com").first()
+    tenant = TenantProfile(slug="market-crm-fail", nombre="Market CRM Fail", tipo="pyme", pyme_id=owner.id, plan="full")
+    db.session.add(tenant)
+    db.session.flush()
+    db.session.add(
+        CatalogoItem(
+            user_id=owner.id,
+            tenant_id=tenant.id,
+            nombre="Tornillos zincados",
+            sku="TOR-01",
+            precio="2500",
+            modalidad="venta",
+            disponible=True,
+        )
+    )
+    db.session.commit()
+
+    monkeypatch.setattr(
+        "routes.pedidos_from_file.upload_to_gcs",
+        lambda file_storage: {"public_url": "https://cdn.example.com/pedido-fallido.jpg", "original_name": file_storage.filename},
+    )
+    monkeypatch.setattr(
+        "routes.pedidos_from_file.extract_table_from_file",
+        lambda content, prompt: [{"sku": "TOR-01", "producto": "Tornillos zincados", "cantidad": 2}],
+    )
+
+    upload_response = client.post(
+        "/api/pedidos/from-file?origen=marketplace",
+        data={
+            "archivo": (io.BytesIO(b"nota-ferreteria"), "pedido-fallido.jpg"),
+            "document_type": "order_note",
+            "contact_name": "Marcelo",
+            "contact_phone": "+5492613168608",
+        },
+        content_type="multipart/form-data",
+        headers={"X-Tenant": tenant.slug},
+    )
+    assert upload_response.status_code == 201
+    pedido_id = upload_response.get_json()["pedido_id"]
+    crm_id = f"conversational:{pedido_id}"
+    headers = _auth_headers(app, owner, tenant.slug)
+
+    monkeypatch.setattr(
+        "services.pedido_service.PedidoService.create_from_conversational",
+        lambda self, record: None,
+    )
+
+    patch_response = client.patch(
+        f"/api/admin/tenants/{tenant.slug}/orders/{crm_id}",
+        json={"status": "confirmed"},
+        headers=headers,
+    )
+    assert patch_response.status_code == 422
+    assert patch_response.get_json()["error"] == "materialization_failed"
+
+    db.session.expire_all()
+    assert PedidoConversacional.query.get(pedido_id).estado != "confirmed"
+    assert PymePedido.query.filter_by(idempotency_key=f"conv_order_{pedido_id}").first() is None
 
 
 def test_marketplace_text_order_creates_same_assisted_request_contract(client, init_database, monkeypatch):

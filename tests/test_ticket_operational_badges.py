@@ -73,6 +73,88 @@ class TicketOperationalBadgesTest(unittest.TestCase):
         self.assertIn("respuesta_pendiente", payload["operational_badges"])
         self.assertGreaterEqual(payload["operational_metrics"]["inactivity_hours"], 3)
 
+    def test_ticket_payload_exposes_only_consented_profile_avatar(self):
+        vecino = User(
+            name="Marcelo Vecino",
+            email="vecino-avatar@example.com",
+            rol="user",
+            tipo_chat="municipio",
+        )
+        vecino.set_password("pass")
+        vecino.accesibilidad = {
+            "identity": {
+                "avatar_url": "https://cdn.example.com/profile/vecino.webp",
+                "avatar_source": "profile_upload",
+                "avatar_consent": True,
+            }
+        }
+        db.session.add(vecino)
+        db.session.commit()
+
+        ticket = MunicipioTicket(
+            municipio_id=self.admin.id,
+            user_id=vecino.id,
+            pregunta="arreglo de calle",
+            nro_ticket="777001",
+            estado="nuevo",
+            nombre_vecino="Marcelo Vecino",
+            telefono_vecino="+5492613168608",
+        )
+        db.session.add(ticket)
+        db.session.commit()
+
+        list_payload = serialize_ticket_to_json(ticket, "municipio", compact=True)
+        detail_payload = _serialize_ticket_details(ticket, "municipio")
+
+        self.assertEqual(list_payload["avatar_url"], "https://cdn.example.com/profile/vecino.webp")
+        self.assertTrue(list_payload["avatar_consent"])
+        self.assertEqual(list_payload["contact_identity"]["avatar_source"], "profile_upload")
+        self.assertEqual(list_payload["contact"]["avatar_url"], "https://cdn.example.com/profile/vecino.webp")
+        self.assertEqual(
+            detail_payload["informacion_personal_vecino"]["avatar_url"],
+            "https://cdn.example.com/profile/vecino.webp",
+        )
+        self.assertEqual(
+            detail_payload["contact"]["identity"]["fallback"],
+            "deterministic_identity_avatar",
+        )
+
+    def test_ticket_payload_hides_untrusted_whatsapp_profile_avatar(self):
+        vecino = User(
+            name="WhatsApp Vecino",
+            email="vecino-whatsapp-avatar@example.com",
+            rol="user",
+            tipo_chat="municipio",
+        )
+        vecino.set_password("pass")
+        vecino.accesibilidad = {
+            "identity": {
+                "avatar_url": "https://cdn.example.com/profile/wa-profile.webp",
+                "avatar_source": "whatsapp_profile",
+                "avatar_consent": True,
+            }
+        }
+        db.session.add(vecino)
+        db.session.commit()
+
+        ticket = MunicipioTicket(
+            municipio_id=self.admin.id,
+            user_id=vecino.id,
+            pregunta="luminaria",
+            nro_ticket="777002",
+            estado="nuevo",
+            nombre_vecino="WhatsApp Vecino",
+        )
+        db.session.add(ticket)
+        db.session.commit()
+
+        payload = serialize_ticket_to_json(ticket, "municipio", compact=True)
+
+        self.assertIsNone(payload["avatar_url"])
+        self.assertFalse(payload["avatar_consent"])
+        self.assertIsNone(payload["contact_identity"]["avatar_url"])
+        self.assertEqual(payload["contact_identity"]["fallback"], "deterministic_identity_avatar")
+
 
 if __name__ == "__main__":
     unittest.main()

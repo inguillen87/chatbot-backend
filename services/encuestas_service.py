@@ -38,6 +38,7 @@ from models import (
     User,
 )
 from services.rewards import recompensas_service
+from services.user_service import get_user_profile_identity
 try:
     from socket_service import emit_survey_update, emit_survey_comment
 except ImportError:
@@ -4230,6 +4231,7 @@ def create_comentario(encuesta_id: int, payload: Dict[str, Any], user: Optional[
                 "fecha": comentario.created_at.isoformat(),
                 "user_id": comentario.user_id
             }
+            data.update(_comment_identity_payload(user))
             if isinstance(comentario.anon_id, str) and comentario.anon_id.startswith("social:"):
                 parts = comentario.anon_id.split(":", 2)
                 if len(parts) == 3:
@@ -4240,6 +4242,48 @@ def create_comentario(encuesta_id: int, payload: Dict[str, Any], user: Optional[
             current_app.logger.exception("[encuestas] Error al emitir comentario socket")
 
     return comentario
+
+
+def _comment_identity_payload(user: Optional[User]) -> Dict[str, Any]:
+    identity = get_user_profile_identity(user) if user else {}
+    avatar_url = identity.get("avatar_url") if identity.get("avatar_consent") else None
+    avatar_source = identity.get("avatar_source") if avatar_url else None
+    avatar_consent = bool(avatar_url and identity.get("avatar_consent"))
+    return {
+        "avatar_url": avatar_url,
+        "picture": avatar_url,
+        "avatar_source": avatar_source,
+        "avatar_consent": avatar_consent,
+        "profile_picture_consent": avatar_consent,
+        "avatar_policy": "consented_upload_or_social_only",
+    }
+
+
+def serialize_public_comment(comentario: EncComentario) -> Dict[str, Any]:
+    comment_mode = "anon"
+    auth_provider = None
+    auth_user_id = None
+    anon_ref = comentario.anon_id
+    if isinstance(anon_ref, str) and anon_ref.startswith("social:"):
+        parts = anon_ref.split(":", 2)
+        if len(parts) == 3:
+            comment_mode = "social"
+            auth_provider = parts[1] or None
+            auth_user_id = parts[2] or None
+
+    user = getattr(comentario, "user", None)
+    return {
+        "id": comentario.id,
+        "texto": _safe_text_value(comentario.texto, fallback=""),
+        "nombre_autor": _safe_text_value(comentario.nombre_autor or (user.name if user else "Anónimo"), fallback="Anónimo"),
+        "fecha": comentario.created_at.isoformat() if comentario.created_at else None,
+        "user_id": comentario.user_id,
+        "anon_id": comentario.anon_id,
+        "comment_mode": comment_mode,
+        "auth_provider": auth_provider,
+        "auth_user_id": auth_user_id,
+        **_comment_identity_payload(user),
+    }
 
 
 def list_comentarios(encuesta_id: int, limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
@@ -4262,7 +4306,7 @@ def list_comentarios(encuesta_id: int, limit: int = 50, offset: int = 0) -> List
                 EncComentario.anon_id,
                 EncComentario.estado,
                 EncComentario.report_count,
-            ))
+            ), joinedload(EncComentario.user).load_only(User.id, User.name, User.accesibilidad))
         else:
             query = query.options(load_only(
                 EncComentario.id,
@@ -4272,7 +4316,7 @@ def list_comentarios(encuesta_id: int, limit: int = 50, offset: int = 0) -> List
                 EncComentario.user_id,
                 EncComentario.anon_id,
                 EncComentario.estado,
-            ))
+            ), joinedload(EncComentario.user).load_only(User.id, User.name, User.accesibilidad))
         rows = query.all()
     except Exception as exc:
         logger = _current_app_logger()
@@ -4325,6 +4369,7 @@ def list_comentarios(encuesta_id: int, limit: int = 50, offset: int = 0) -> List
             "comment_mode": comment_mode,
             "auth_provider": auth_provider,
             "auth_user_id": auth_user_id,
+            **_comment_identity_payload(c.user),
         })
     return results
 

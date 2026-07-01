@@ -4,9 +4,10 @@ from services.pedido_service import servicio_pedidos
 import json
 from datetime import datetime
 from services.ticket_service import servicio_tickets
-from socket_service import emit_new_chat_message
+from socket_service import emit_new_chat_message, emit_ticket_unread_changed
 import random
 import uuid
+from services.ticket_realtime_state import build_ticket_collaboration_state
 from services.tracking_experience import (
     TRACKING_EXPERIENCE_CONTRACT_VERSION,
     build_claim_tracking_experience,
@@ -45,6 +46,62 @@ def _tracking_error(message: str, status_code: int, reason_code: str, action_hin
         },
         status_code,
     )
+
+
+def _build_public_claim_unread_payload(
+    ticket: MunicipioTicket,
+    comment: TicketComentario,
+    tenant: TenantProfile | None = None,
+) -> dict:
+    """Payload focused on admin inbox reconciliation for public tracking replies."""
+
+    try:
+        collaboration_state = build_ticket_collaboration_state(
+            ticket_type="municipio",
+            ticket_id=ticket.id,
+        )
+    except Exception:
+        collaboration_state = {}
+
+    latest_comment_id = comment.id or collaboration_state.get("latest_comment_id")
+    unread_count = max(int(collaboration_state.get("unread_count") or 0), 1)
+    unread_viewer_count = max(int(collaboration_state.get("unread_viewer_count") or 0), 1)
+    collaboration_state = {
+        **collaboration_state,
+        "latest_comment_id": latest_comment_id,
+        "unread_count": unread_count,
+        "has_unread": True,
+        "unread_viewer_count": unread_viewer_count,
+        "operational_status": "attention_needed",
+    }
+
+    municipio_id = getattr(ticket, "municipio_id", None)
+    socket_room = f"municipio_{municipio_id}" if municipio_id else None
+    return {
+        "ticket_id": ticket.id,
+        "ticket_number": getattr(ticket, "nro_ticket", None),
+        "comment_id": comment.id,
+        "latest_comment_id": latest_comment_id,
+        "unread_count": unread_count,
+        "has_unread": True,
+        "unread_viewer_count": unread_viewer_count,
+        "requires_response": True,
+        "tipo": "municipio",
+        "tenant_type": "municipio",
+        "tenant_id": municipio_id,
+        "tenant_profile_id": getattr(tenant, "id", None),
+        "tenant_slug": getattr(tenant, "slug", None),
+        "municipio_id": municipio_id,
+        "socket_room": socket_room,
+        "source": "public_tracking",
+        "summary": {
+            "latest_comment_id": latest_comment_id,
+            "unread_count": unread_count,
+            "has_unread": True,
+            "unread_viewer_count": unread_viewer_count,
+        },
+        "collaboration_state": collaboration_state,
+    }
 
 
 @tracking_ui_bp.route('/tracking/api/experience', methods=['GET'])
@@ -138,15 +195,19 @@ def send_public_claim_tracking_message(ticket_id):
             "send_valid_pin",
         )
 
+    now = datetime.now()
+    previous_status = getattr(ticket, "estado", None)
     comment = TicketComentario(
         municipio_ticket_id=ticket.id,
         comentario=mensaje,
-        fecha=datetime.now(),
+        fecha=now,
         es_admin=False,
         origen="public_tracking",
         user_id=getattr(ticket, "user_id", None),
     )
     db.session.add(comment)
+    if hasattr(ticket, "ultima_actividad"):
+        ticket.ultima_actividad = now
 
     if ticket.estado in ["resuelto", "cerrado"]:
         ticket.estado = "abierto"
@@ -167,20 +228,44 @@ def send_public_claim_tracking_message(ticket_id):
                     "tenant_id": tenant.id,
                     "municipio_id": ticket.municipio_id,
                     "ticket_id": ticket.id,
+                    "ticket_number": ticket.nro_ticket,
+                    "comment_id": comment.id,
+                    "requires_response": True,
+                    "admin_unread": True,
                     "message": {
+                        "id": comment.id,
                         "comentario": mensaje,
                         "user_id": ticket.user_id,
                         "es_admin": False,
-                        "fecha": datetime.now().isoformat(),
+                        "fecha": now.isoformat(),
                         "nombre_autor": ticket.nombre_vecino or "Vecino",
                         "origen": "public_tracking",
+                        "requires_response": True,
+                        "unread_for_team": True,
                     },
                 }
             )
+        emit_ticket_unread_changed(
+            _build_public_claim_unread_payload(ticket, comment, tenant)
+        )
     except Exception as e:
         current_app.logger.error(f"Error emitting public tracking claim message: {e}")
 
     live_mode = support.get("mode") or "offline"
+    unread_payload = _build_public_claim_unread_payload(ticket, comment, tenant)
+    admin_surface = support.get("admin_response_surface") or {}
+    operator_queue = support.get("operator_queue") or {}
+    support_conversation = support.get("conversation") or {}
+    crm_writebacks = (
+        operator_queue.get("crm_writebacks")
+        or admin_surface.get("writebacks")
+        or support_conversation.get("writebacks")
+        or [
+            "public_comment_created",
+            "ticket_timeline_updated",
+            "admin_inbox_unread_incremented",
+        ]
+    )
     comment_payload = {
         "id": comment.id,
         "message": comment.comentario,
@@ -188,6 +273,8 @@ def send_public_claim_tracking_message(ticket_id):
         "author": "customer",
         "source": comment.origen,
         "created_at": comment.fecha.isoformat() if comment.fecha else None,
+        "requires_response": True,
+        "unread_for_team": True,
     }
 
     return _tracking_json(
@@ -203,12 +290,18 @@ def send_public_claim_tracking_message(ticket_id):
             "ticket_number": ticket.nro_ticket,
             "comment": comment_payload,
             "chat_entry": {
+                "id": comment.id,
+                "ticket_id": ticket.id,
+                "ticket_number": ticket.nro_ticket,
+                "type": "public_tracking_message",
                 "comentario": comment.comentario,
                 "fecha": comment_payload["created_at"],
                 "es_admin": False,
                 "autor": "vecino",
                 "autor_nombre": ticket.nombre_vecino or "Yo",
                 "origen": comment.origen,
+                "requires_response": True,
+                "unread_for_team": True,
             },
             "delivery": {
                 "mode": live_mode,
@@ -216,7 +309,28 @@ def send_public_claim_tracking_message(ticket_id):
                 "realtime_available": live_mode == "live",
                 "offline_queue": live_mode != "live",
                 "admin_surface": "tenant_claims_inbox",
+                "reply_status": "sent_to_live_chat" if live_mode == "live" else "queued_for_agent",
+                "admin_unread": True,
+                "timeline_updated": True,
+                "inbox_increment": True,
+                "next_action": (support.get("service_window") or {}).get("next_action"),
             },
+            "crm_writeback": {
+                "admin_surface": admin_surface.get("id") or "tenant_claims_inbox",
+                "route": admin_surface.get("route") or "/perfil?tab=tickets",
+                "thread_binding": admin_surface.get("thread_binding") or "municipio_ticket_id",
+                "ticket_id": ticket.id,
+                "ticket_number": ticket.nro_ticket,
+                "comment_id": comment.id,
+                "unread_for_team": True,
+                "requires_admin_response": True,
+                "timeline_updated": True,
+                "inbox_increment": True,
+                "writebacks": crm_writebacks,
+                "previous_status": previous_status,
+                "current_status": ticket.estado,
+            },
+            "unread_event": unread_payload,
             "timeline_endpoint": support.get("endpoints", {}).get("timeline"),
             "tracking": tracking_payload,
         },

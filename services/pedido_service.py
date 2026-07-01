@@ -40,25 +40,47 @@ class PedidoService:
         if not tenant:
             return None
 
+        status_map = {
+            "pendiente": "pending",
+            "confirmado": "confirmed",
+            "confirmed": "confirmed",
+            "en_proceso": "processing",
+            "processing": "processing",
+            "enviado": "shipped",
+            "entregado": "delivered",
+            "completado": "completed",
+            "cancelado": "cancelled",
+            "cancelled": "cancelled",
+            "devuelto": "returned",
+        }
+        status = status_map.get((pedido.estado or "").lower(), "pending")
+
         existing = MarketOrder.legacy_safe_query().filter_by(
             tenant_id=tenant.id,
             external_provider="pyme_pedido",
             external_order_id=pedido.nro_pedido,
         ).first()
         if existing:
+            existing.status = status
+            existing.contact_name = pedido.nombre_cliente
+            existing.contact_phone = pedido.telefono_cliente
+            existing.contact_email = pedido.email_cliente
+            existing.channel = channel or existing.channel or "chat"
+            existing.total_monetary = pedido.monto_total
+            metadata_payload = dict(existing.metadata_payload or {})
+            metadata_payload.update(
+                {
+                    "pyme_pedido_id": pedido.id,
+                    "pyme_id": pedido.pyme_id,
+                    **(
+                        {"source_conversational_id": str(pedido.idempotency_key).split("conv_order_", 1)[1]}
+                        if str(getattr(pedido, "idempotency_key", "") or "").startswith("conv_order_")
+                        else {}
+                    ),
+                }
+            )
+            existing.metadata_payload = metadata_payload
             return existing
-
-        status_map = {
-            "pendiente": "pending",
-            "confirmado": "confirmed",
-            "en_proceso": "processing",
-            "enviado": "shipped",
-            "entregado": "delivered",
-            "completado": "completed",
-            "cancelado": "cancelled",
-            "devuelto": "returned",
-        }
-        status = status_map.get((pedido.estado or "").lower(), "pending")
 
         order = MarketOrder(
             tenant_id=tenant.id,
@@ -282,6 +304,8 @@ class PedidoService:
             )
             if pedido_data.get("rubro"):
                 nuevo_pedido.rubro = pedido_data.get("rubro")
+            if pedido_data.get("estado"):
+                nuevo_pedido.estado = str(pedido_data.get("estado")).strip()
             db.session.add(nuevo_pedido)
             db.session.commit()
             rubro_log = pedido_data.get("rubro") or getattr(nuevo_pedido, "rubro", None)
@@ -432,11 +456,63 @@ class PedidoService:
         unmatched_items = self._as_list(raw_payload.get("no_encontrados"))
         contact = self._as_dict(metadata.get("contact")) or self._as_dict(raw_payload.get("contact"))
         source = self._as_dict(metadata.get("source")) or self._as_dict(raw_payload.get("source"))
+        crm_handoff = self._as_dict(metadata.get("crm_handoff")) or self._as_dict(raw_payload.get("crm_handoff"))
+        crm_order_draft = (
+            self._as_dict(metadata.get("crm_order_draft"))
+            or self._as_dict(raw_payload.get("crm_order_draft"))
+            or self._as_dict(crm_handoff.get("draft_order"))
+        )
+        crm_lines = self._as_list(crm_order_draft.get("lines"))
 
         detalles: list[dict[str, Any]] = []
         total = 0.0
 
-        for item in detected_items:
+        for line in crm_lines:
+            if not isinstance(line, dict):
+                continue
+            catalog_match = self._as_dict(line.get("catalog_match"))
+            quantity = self._parse_quantity(line.get("quantity") or line.get("cantidad") or line.get("qty"))
+            price = self._parse_money(
+                line.get("price")
+                or line.get("precio")
+                or line.get("unit_price")
+                or catalog_match.get("price")
+                or catalog_match.get("precio")
+                or catalog_match.get("precio_unitario")
+            )
+            subtotal = quantity * price
+            total += subtotal
+            status = str(line.get("status") or "").strip().lower()
+            catalog_item_id = (
+                line.get("catalog_item_id")
+                or line.get("catalogo_item_id")
+                or catalog_match.get("catalogo_item_id")
+                or catalog_match.get("catalog_item_id")
+                or catalog_match.get("product_id")
+            )
+            has_match = bool(catalog_item_id)
+            detalles.append(
+                {
+                    "nombre": (
+                        catalog_match.get("name")
+                        or catalog_match.get("nombre")
+                        or line.get("source_name")
+                        or line.get("name")
+                        or line.get("nombre")
+                        or "Articulo detectado"
+                    ),
+                    "cantidad": quantity,
+                    "precio_unitario": price,
+                    "subtotal": subtotal,
+                    "sku": line.get("sku") or catalog_match.get("sku"),
+                    "catalogo_item_id": catalog_item_id,
+                    "source": "catalog_match" if has_match else "operator_review",
+                    "requires_operator_review": bool(line.get("needs_operator_review"))
+                    or status not in {"catalog_matched", "resolved", "confirmed"},
+                }
+            )
+
+        for item in detected_items if not detalles else []:
             if not isinstance(item, dict):
                 continue
             quantity = self._parse_quantity(item.get("cantidad") or item.get("quantity"))
@@ -460,7 +536,7 @@ class PedidoService:
                 }
             )
 
-        for item in unmatched_items:
+        for item in unmatched_items if not crm_lines else []:
             if not isinstance(item, dict):
                 continue
             quantity = self._parse_quantity(item.get("cantidad") or item.get("quantity"))
@@ -502,6 +578,9 @@ class PedidoService:
             "direccion": contact.get("address") or contact.get("direccion"),
             "user_id": conversacional.user_id,
             "rubro": metadata.get("request_kind") or raw_payload.get("request_kind") or "marketplace",
+            "estado": "confirmado"
+            if str(conversacional.estado or "").strip().lower() in {"confirmed", "confirmado"}
+            else "pendiente",
             "idempotency_key": idempotency_key,
             "channel": source.get("channel") or conversacional.origen or "marketplace",
         }
@@ -539,7 +618,10 @@ class PedidoService:
             idempotency_key = f"conv_order_{conversacional.id}"
             existing = PymePedido.query.filter_by(idempotency_key=idempotency_key).first()
             if existing:
+                if str(conversacional.estado or "").strip().lower() in {"confirmed", "confirmado"}:
+                    existing.estado = "confirmado"
                 self._mark_conversational_materialized(conversacional, existing, idempotency_key)
+                self.sync_market_order_from_pyme(existing, channel=conversacional.origen)
                 db.session.commit()
                 return existing
 

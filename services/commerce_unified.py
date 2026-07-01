@@ -7,6 +7,7 @@ from typing import Any
 from urllib.parse import quote
 
 from services.commerce_contracts import build_contact_key, normalize_sales_channel
+from services.user_service import build_identity_subject
 
 
 _COMMERCIAL_STAGE_BY_STATUS = {
@@ -123,6 +124,41 @@ def _normalize_contact(*, name: Any = None, email: Any = None, phone: Any = None
             anon_id=anon_id,
             session_id=session_id,
         ),
+    }
+
+
+def _customer_identity(
+    *,
+    user_id: Any = None,
+    name: Any = None,
+    email: Any = None,
+    phone: Any = None,
+    anon_id: Any = None,
+    source_context: str = "commerce_order",
+) -> dict[str, Any]:
+    user = None
+    if user_id:
+        try:
+            from models import User, db
+
+            user = db.session.get(User, int(user_id))
+        except Exception:
+            user = None
+    return build_identity_subject(
+        user=user,
+        display_name=name,
+        email=email,
+        phone=phone,
+        anon_id=anon_id,
+        source_context=source_context,
+    )
+
+
+def _identity_visual_fields(identity: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in (identity or {}).items()
+        if key not in {"name", "email", "phone", "user_id", "anon_id"}
     }
 
 
@@ -695,6 +731,14 @@ def serialize_unified_order(record: Any) -> dict[str, Any]:
             user_id=record.user_id,
             session_id=record.session_id,
         )
+        identity = _customer_identity(
+            user_id=record.user_id,
+            name=record.contact_name,
+            email=record.contact_email,
+            phone=record.contact_phone,
+            source_context="market_order",
+        )
+        identity_visual = _identity_visual_fields(identity)
         items = [
             _normalize_unified_item({
                 "id": item.id,
@@ -716,12 +760,15 @@ def serialize_unified_order(record: Any) -> dict[str, Any]:
             "status": record.status,
             "commercial_stage": _derive_stage(record.status),
             "channel": normalize_sales_channel(record.channel),
-            "contact": contact,
+            "contact": {**contact, **identity_visual, "identity": identity},
             "customer_profile": {
                 **contact,
                 "user_id": record.user_id,
                 "session_id": record.session_id,
+                "identity": identity,
+                **identity_visual,
             },
+            "customer_identity": identity,
             "totals": {
                 "monetary": _as_float(record.total_monetary) or 0.0,
                 "points": record.total_points or 0,
@@ -761,6 +808,15 @@ def serialize_unified_order(record: Any) -> dict[str, Any]:
             user_id=record.user_id,
             anon_id=record.anon_id,
         )
+        identity = _customer_identity(
+            user_id=record.user_id,
+            name=contacto.get("name") or contacto.get("nombre"),
+            email=contacto.get("email"),
+            phone=contacto.get("phone") or contacto.get("telefono"),
+            anon_id=record.anon_id,
+            source_context="conversational_order",
+        )
+        identity_visual = _identity_visual_fields(identity)
         return {
             "id": f"conversational:{record.id}",
             "source_model": "PedidoConversacional",
@@ -772,13 +828,18 @@ def serialize_unified_order(record: Any) -> dict[str, Any]:
             "contact": {
                 **contact,
                 "contact_key": metadata.get("contact_key") or contact.get("contact_key"),
+                "identity": identity,
+                **identity_visual,
             },
             "customer_profile": {
                 **contact,
                 "contact_key": metadata.get("contact_key") or contact.get("contact_key"),
                 "user_id": record.user_id,
                 "anon_id": record.anon_id,
+                "identity": identity,
+                **identity_visual,
             },
+            "customer_identity": identity,
             "totals": {
                 "monetary": _as_float(record.monto_monetario) or 0.0,
                 "points": record.monto_puntos or 0,
@@ -808,6 +869,14 @@ def serialize_unified_order(record: Any) -> dict[str, Any]:
             phone=record.telefono_cliente,
             user_id=record.user_id,
         )
+        identity = _customer_identity(
+            user_id=record.user_id,
+            name=record.nombre_cliente,
+            email=record.email_cliente,
+            phone=record.telefono_cliente,
+            source_context="pyme_pedido",
+        )
+        identity_visual = _identity_visual_fields(identity)
         metadata = {
             "direccion": record.direccion,
             "pyme_id": record.pyme_id,
@@ -823,11 +892,14 @@ def serialize_unified_order(record: Any) -> dict[str, Any]:
             "status": record.estado,
             "commercial_stage": _derive_stage(record.estado),
             "channel": normalize_sales_channel(getattr(record, "channel", None) or "whatsapp"),
-            "contact": contact,
+            "contact": {**contact, **identity_visual, "identity": identity},
             "customer_profile": {
                 **contact,
                 "user_id": record.user_id,
+                "identity": identity,
+                **identity_visual,
             },
+            "customer_identity": identity,
             "totals": {
                 "monetary": _as_float(record.monto_total) or 0.0,
                 "points": 0,
@@ -851,6 +923,14 @@ def serialize_unified_order(record: Any) -> dict[str, Any]:
             phone=record.buyer_phone,
             user_id=record.customer_id,
         )
+        identity = _customer_identity(
+            user_id=record.customer_id,
+            name=record.buyer_name,
+            email=record.buyer_email,
+            phone=record.buyer_phone,
+            source_context="order",
+        )
+        identity_visual = _identity_visual_fields(identity)
         return {
             "id": f"order:{record.id}",
             "source_model": "Order",
@@ -859,11 +939,14 @@ def serialize_unified_order(record: Any) -> dict[str, Any]:
             "status": record.status,
             "commercial_stage": _derive_stage(record.status),
             "channel": normalize_sales_channel(record.channel),
-            "contact": contact,
+            "contact": {**contact, **identity_visual, "identity": identity},
             "customer_profile": {
                 **contact,
                 "user_id": record.customer_id,
+                "identity": identity,
+                **identity_visual,
             },
+            "customer_identity": identity,
             "totals": {
                 "monetary": _as_float(record.total) or 0.0,
                 "points": 0,
