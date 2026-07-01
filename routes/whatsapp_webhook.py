@@ -4603,7 +4603,24 @@ def whatsapp_webhook():
                             )
 
                     if "template_sid" in pyme_welcome_overrides:
-                        template_sid = pyme_welcome_overrides.get("template_sid")
+                        template_ref = str(pyme_welcome_overrides.get("template_sid") or "").strip()
+                        if template_ref.startswith("HX"):
+                            template_sid = template_ref
+                        else:
+                            template_sid = _resolve_approved_whatsapp_template_sid(
+                                template_ref,
+                                tenant_profile=tenant_profile,
+                                language=str(
+                                    pyme_welcome_overrides.get("template_language")
+                                    or pyme_welcome_overrides.get("language")
+                                    or "es"
+                                ),
+                            )
+                            if template_ref and not template_sid:
+                                current_app.logger.warning(
+                                    "[WELCOME] PYME template override '%s' is not approved/resolved; using fallback menu.",
+                                    template_ref,
+                                )
                         should_send_template = bool(template_sid) and not template_state.get("disabled", False)
                     else:
                         should_send_template = False

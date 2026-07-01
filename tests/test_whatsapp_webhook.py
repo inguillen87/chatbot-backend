@@ -1685,6 +1685,63 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         greeting_kwargs = self.mock_twilio_create.call_args_list[2].kwargs
         self.assertIn("body", greeting_kwargs)
 
+    def test_pyme_welcome_resolves_non_hx_template_override_from_registry(self):
+        tenant = self._attach_tenant_to_owner(slug="cuatro-fincas", tipo="pyme")
+        self._register_whatsapp_template(
+            tenant,
+            "saludo_inicial_cfincas",
+            content_sid="HXcfincasapproved",
+            status="approved",
+        )
+        self._set_owner_tipo_chat("pyme")
+        rubro = Rubro(clave="bodega", nombre="Bodega")
+        db.session.add(rubro)
+        db.session.commit()
+
+        self.mock_client_user.rubro = rubro
+        self.mock_client_user.rubro_id = rubro.id
+        db.session.add(self.mock_client_user)
+        db.session.commit()
+
+        self.mock_validator.validate.return_value = True
+        self.app.config["WELCOME_TEMPLATE_SID"] = "municipio_template"
+        self.app.config["WELCOME_MEDIA_URL"] = None
+
+        override_config = {
+            "nombre_pyme": "Bodega Cuatro Fincas",
+            "whatsapp": {"numero": "+5492613168608"},
+            "welcome": {
+                "template_sid": "saludo_inicial_cfincas",
+                "template_variables": {"1": "{{pyme_whatsapp}}"},
+            },
+        }
+
+        def _mock_loader(slug, archivo):
+            if archivo != "config.json":
+                return {}
+            if slug == "bodega":
+                return override_config
+            if slug == "default":
+                return {"welcome": {}}
+            return {}
+
+        with patch("routes.whatsapp_webhook.cargar_configuracion_pyme", side_effect=_mock_loader):
+            response = self.client.post(
+                "/webhook/whatsapp",
+                data={
+                    "To": f"whatsapp:{self.test_whatsapp_number_str}",
+                    "From": f"whatsapp:{self.test_user_number_str}",
+                    "Body": "hola",
+                },
+                headers={"X-Twilio-Signature": "dummy_signature_valid"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        template_kwargs = self.mock_twilio_create.call_args_list[0].kwargs
+        self.assertEqual(template_kwargs.get("content_sid"), "HXcfincasapproved")
+        self.assertNotEqual(template_kwargs.get("content_sid"), "saludo_inicial_cfincas")
+        self.assertEqual(json.loads(template_kwargs.get("content_variables")), {"1": "+5492613168608"})
+
     def test_welcome_template_uses_approved_registry_when_global_sid_is_missing(self):
         tenant = self._attach_tenant_to_owner(tipo="municipio")
         self._register_whatsapp_template(

@@ -3,7 +3,7 @@ from unittest.mock import patch, MagicMock
 from app import create_app, db
 from config import TestConfig
 from models import User
-from services.pymes import responder_pyme, CONTEXTO_PYME
+from services.pymes import responder_pyme, CONTEXTO_PYME, SaludoHandler
 
 class PymesTestCase(unittest.TestCase):
     def setUp(self):
@@ -50,6 +50,44 @@ class PymesTestCase(unittest.TestCase):
             self.assertIn("message_body", response)
             self.assertIn("encontré esto en la web", response["message_body"])
             self.assertIn("Test Search Result", response["message_body"])
+
+    def test_saludo_handler_adds_whatsapp_template_pre_message(self):
+        chat_db_context_data = {CONTEXTO_PYME: {}}
+        context = {
+            CONTEXTO_PYME: {"nombre_cliente": "Marcelo"},
+            "user_id": self.user.id,
+            "tenant_id": 77,
+            "channel": "whatsapp",
+            "rubro_nombre": "bodega",
+            "chat_db_context_data": chat_db_context_data,
+        }
+        welcome_config = {
+            "nombre_pyme": "Bodega Test",
+            "whatsapp": {"numero": "+5492613168608"},
+            "welcome": {
+                "template_sid": "saludo_inicial_cfincas",
+                "template_variables": {"1": "{{user_name}}", "2": "{{pyme_whatsapp}}"},
+            },
+        }
+        menu_payload = {
+            "message_body": "Menu de la tienda",
+            "options_list": [{"texto": "Catalogo", "action_id": "pyme_productos_stock"}],
+        }
+
+        with patch("services.pymes.cargar_configuracion_pyme", return_value=welcome_config), patch(
+            "services.pymes.get_pyme_menu_payload",
+            return_value=menu_payload,
+        ):
+            response = SaludoHandler(context).execute({})
+
+        pre_messages = response.get("_twilio_pre_messages") or []
+        self.assertEqual(len(pre_messages), 1)
+        template = pre_messages[0]
+        self.assertEqual(template.get("template_name"), "saludo_inicial_cfincas")
+        self.assertEqual(template.get("tenant_id"), 77)
+        self.assertEqual(template.get("content_variables"), {"1": "Marcelo", "2": "+5492613168608"})
+        self.assertIn("Respond", response.get("message_body", ""))
+        self.assertEqual(response.get("message_type"), "text")
 
 if __name__ == '__main__':
     unittest.main()

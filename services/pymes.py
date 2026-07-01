@@ -72,6 +72,60 @@ from services.demo_surveys import build_demo_survey_chat_menu
 logger = logging.getLogger(__name__)
 
 
+def _render_pyme_template_variables(
+    variables: dict[str, Any] | None,
+    *,
+    user_name: str = "",
+    context: dict[str, Any] | None = None,
+) -> dict[str, str]:
+    resolved: dict[str, str] = {}
+    context = context or {}
+    replacements = {
+        "{{user_name}}": user_name or "",
+        "{{customer_name}}": user_name or "",
+        "{{pyme_nombre}}": str(context.get("nombre_pyme") or ""),
+        "{{pyme_whatsapp}}": str(context.get("whatsapp_numero") or ""),
+    }
+    for key, raw_value in (variables or {}).items():
+        value = "" if raw_value is None else str(raw_value)
+        for placeholder, replacement in replacements.items():
+            value = value.replace(placeholder, replacement)
+        resolved[str(key)] = value
+    return resolved
+
+
+def _build_twilio_template_pre_message(
+    template_ref: Any,
+    *,
+    variables: dict[str, Any] | None = None,
+    user_name: str = "",
+    context: dict[str, Any] | None = None,
+    tenant_id: int | None = None,
+    language: str = "es",
+) -> dict[str, Any] | None:
+    template_ref_clean = str(template_ref or "").strip()
+    if not template_ref_clean:
+        return None
+
+    pre_message: dict[str, Any] = {
+        "channels": ["whatsapp"],
+        "language": language or "es",
+        "content_variables": _render_pyme_template_variables(
+            variables,
+            user_name=user_name,
+            context=context,
+        ),
+    }
+    if tenant_id is not None:
+        pre_message["tenant_id"] = tenant_id
+
+    if template_ref_clean.startswith("HX"):
+        pre_message["content_sid"] = template_ref_clean
+    else:
+        pre_message["template_name"] = template_ref_clean
+    return pre_message
+
+
 def _is_demo_survey_menu_action(value: Optional[str]) -> bool:
     action = str(value or "").strip()
     if action == "mostrar_menu_encuestas" or action.startswith("mostrar_menu_encuestas::"):
@@ -1335,6 +1389,7 @@ class SaludoHandler(BaseHandler):
         # --- WhatsApp Template Handling ---
         if str(channel).lower() == "whatsapp":
             tenant_slug = None
+            tenant_profile = None
             owner_user_id = self.context.get("user_id")
             if owner_user_id:
                 owner_user_obj = db.session.get(models.User, owner_user_id)
@@ -1355,35 +1410,24 @@ class SaludoHandler(BaseHandler):
                 if user_name.lower() in ["vecino/a", "cliente", "usuario", "unknown"]:
                     user_name = "" # Let template handle empty name if configured, or it remains generic
 
-                # Prepare the template payload for whatsapp_webhook.py logic
-                whatsapp_receipt = {
-                    "body_text": "", # Template handles the body
-                    "media_url": welcome_config.get("sticker_url"), # Sticker if configured
-                    "options_list": [], # Template handles buttons usually, or they are app-defined
+                template_context = {
+                    "nombre_pyme": (
+                        pyme_config.get("nombre_pyme")
+                        or self.context.get("nombre_pyme")
+                        or self.pyme_ctx.get("nombre_pyme_cache")
+                    ),
+                    "whatsapp_numero": (pyme_config.get("whatsapp") or {}).get("numero"),
                 }
-
-                # Signal to webhook that we want to trigger the welcome flow which handles templates
-                # However, the webhook logic for "welcome" is usually triggered by "hola".
-                # If we are here, we might be in the middle of a flow or explicit "menu" request.
-                # To force a template, we can return a specific structure.
-
-                # Actually, `routes/whatsapp_webhook.py` handles the welcome template logic
-                # principally when it detects "hola" AND user is new/not-busy.
-                # But here we are EXPLICITLY executing the SaludoHandler.
-                # We should return a payload that tells the formatter/webhook to use the template if possible.
-
-                # CURRENT LIMITATION: The `whatsapp_webhook.py` logic for templates is tightly coupled
-                # to the initial "Boti-style" greeting block.
-                # Re-using it here requires simulating that behavior or replicating the template send.
-
-                # For now, we will assume standard text menu fallback if we can't invoke the template directly,
-                # BUT the user specifically requested the template fix.
-                # Let's try to leverage the webhook's `_load_pyme_welcome_settings` logic indirectly
-                # by ensuring our Pyme config is correct (which we did in step 2).
-
-                # If we return a standard menu payload, the webhook will render it as a list/buttons.
-                # To use the template, we might need to rely on the webhook's `should_trigger_welcome` logic.
-                pass
+                pre_message = _build_twilio_template_pre_message(
+                    welcome_config.get("template_sid"),
+                    variables=welcome_config.get("template_variables"),
+                    user_name=user_name,
+                    context=template_context,
+                    tenant_id=self.context.get("tenant_id") or getattr(tenant_profile, "id", None),
+                    language=str(welcome_config.get("language") or welcome_config.get("template_language") or "es"),
+                )
+                if pre_message:
+                    self.pyme_ctx["pending_whatsapp_pre_messages"] = [pre_message]
 
         menu_context = {
             "rubro_slug": rubro_slug,
@@ -1459,6 +1503,15 @@ class SaludoHandler(BaseHandler):
                     f"{existing_body}\n\n{reminder_line}" if existing_body else reminder_line
                 )
             menu_payload["message_type"] = "text"
+            pending_pre_messages = self.pyme_ctx.pop("pending_whatsapp_pre_messages", None)
+            if pending_pre_messages:
+                existing_pre_messages = menu_payload.get("_twilio_pre_messages")
+                merged_pre_messages = list(existing_pre_messages) if isinstance(existing_pre_messages, list) else []
+                merged_pre_messages.extend(
+                    entry for entry in pending_pre_messages if isinstance(entry, dict)
+                )
+                if merged_pre_messages:
+                    menu_payload["_twilio_pre_messages"] = merged_pre_messages
 
         self.pyme_ctx["last_options_sent"] = opciones_finales
         chat_context_data = self.context.get("chat_db_context_data")
@@ -3319,6 +3372,8 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
         final_response_dict["data"] = action_handler_result["data"]
     if action_handler_result.get("delayed_payload"):
         final_response_dict["delayed_payload"] = action_handler_result["delayed_payload"]
+    if action_handler_result.get("_twilio_pre_messages"):
+        final_response_dict["_twilio_pre_messages"] = action_handler_result["_twilio_pre_messages"]
 
     # Log de conversación (Legacy)
     if anon_id and not viewer_user:
