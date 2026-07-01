@@ -575,6 +575,27 @@ def _build_assisted_request(metadata: dict[str, Any], raw_items: list[Any], *, r
         "archivo_url": raw_payload.get("archivo_url"),
         "archivo_nombre": raw_payload.get("archivo_nombre"),
     }
+    source_attachment = (
+        _as_dict(metadata.get("source_attachment"))
+        or _as_dict(metadata.get("sourceAttachment"))
+        or _as_dict(metadata.get("attachmentInfo"))
+        or _as_dict(metadata.get("attachment_info"))
+        or _as_dict(source.get("source_attachment"))
+        or _as_dict(source.get("sourceAttachment"))
+        or _as_dict(source.get("attachmentInfo"))
+        or _as_dict(source.get("attachment_info"))
+        or _as_dict(raw_payload.get("source_attachment"))
+        or _as_dict(raw_payload.get("attachmentInfo"))
+    )
+    if source_attachment:
+        source = {
+            **source,
+            "attachment_id": source_attachment.get("id") or source_attachment.get("attachment_id") or source.get("attachment_id"),
+            "attachmentInfo": source_attachment,
+            "attachment_info": source_attachment,
+            "source_attachment": source_attachment,
+            "sourceAttachment": source_attachment,
+        }
     match_summary = _as_dict(metadata.get("match_summary")) or raw_payload.get("match_summary") or {}
     extraction_error = metadata.get("extraction_error") or _as_dict(metadata.get("source")).get("extraction_error")
     request_kind_label = metadata.get("request_kind_label") or raw_payload.get("request_kind_label")
@@ -618,6 +639,11 @@ def _build_assisted_request(metadata: dict[str, Any], raw_items: list[Any], *, r
         "crm_order_draft": crm_order_draft or None,
         "contact": assisted_contact,
         "source": source,
+        "attachment_id": source.get("attachment_id") if source_attachment else None,
+        "attachmentInfo": source_attachment or None,
+        "attachment_info": source_attachment or None,
+        "source_attachment": source_attachment or None,
+        "sourceAttachment": source_attachment or None,
         "match_summary": match_summary,
         "review_context": _as_dict(metadata.get("review_context")) or _as_dict(raw_payload.get("review_context")),
         "row_errors": _as_list(metadata.get("row_errors")) or _as_list(raw_payload.get("row_errors")),

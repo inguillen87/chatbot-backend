@@ -12,9 +12,10 @@ import pandas as pd
 from flask import Blueprint, jsonify, request, session, g
 from flask_cors import cross_origin
 from sqlalchemy import func
+from werkzeug.utils import secure_filename
 
 from database import db
-from models import CatalogoItem, MunicipioTicket, PedidoConversacional, TicketComentario
+from models import ArchivoAdjunto, CatalogoItem, MunicipioTicket, PedidoConversacional, TicketComentario
 from routes.catalogo import _formatear_producto
 from routes.productos import _resolve_public_owner
 from services.cart import _get_pyme_cart
@@ -24,6 +25,7 @@ from services.order_attachment_preview import build_crm_order_draft
 from services.tenant_resolver import TenantResolutionError, resolve_tenant_and_user
 from services.vision_extractor import extract_table_from_file
 from config import ALLOWED_ORIGINS
+from utils.time_utils import datetime_to_iso_utc
 
 logger = logging.getLogger(__name__)
 
@@ -620,6 +622,11 @@ def _build_crm_handoff_payload(
             "mime_type": source_payload.get("mime_type"),
             "file_size_bytes": source_payload.get("file_size_bytes"),
             "text_preview": source_payload.get("text_preview"),
+            "attachment_id": source_payload.get("attachment_id"),
+            "attachmentInfo": source_payload.get("attachmentInfo"),
+            "attachment_info": source_payload.get("attachment_info"),
+            "source_attachment": source_payload.get("source_attachment"),
+            "sourceAttachment": source_payload.get("sourceAttachment"),
         },
         "structured_extraction": structured_extraction,
     }
@@ -750,6 +757,9 @@ def _build_operator_intake_summary(
             "original_filename": source_payload.get("original_filename"),
             "mime_type": source_payload.get("mime_type"),
             "file_size_bytes": source_payload.get("file_size_bytes"),
+            "attachment_id": source_payload.get("attachment_id"),
+            "attachmentInfo": source_payload.get("attachmentInfo"),
+            "source_attachment": source_payload.get("source_attachment"),
             "has_file": bool(source_payload.get("archivo_url")),
             "has_text": bool(source_payload.get("text_preview")),
         },
@@ -1019,6 +1029,80 @@ def _json_error(status_code: int, code: str, message: str):
     response = jsonify({"codigo": code, "mensaje": message})
     response.status_code = status_code
     return response
+
+
+def _build_attachment_info_payload(attachment: Optional[ArchivoAdjunto]) -> Optional[dict[str, Any]]:
+    if not attachment:
+        return None
+    return {
+        "id": attachment.id,
+        "attachment_id": attachment.id,
+        "url": attachment.url,
+        "name": attachment.nombre_original or attachment.filename,
+        "filename": attachment.filename,
+        "original_filename": attachment.nombre_original or attachment.filename,
+        "mimeType": attachment.mime,
+        "mime_type": attachment.mime,
+        "size": attachment.tamano,
+        "file_size_bytes": attachment.tamano,
+        "uploadedAt": datetime_to_iso_utc(attachment.fecha),
+        "source": "marketplace_assisted_intake",
+    }
+
+
+def _safe_upload_filename(upload_meta: dict[str, Any], original_name: Optional[str]) -> str:
+    candidate = (
+        upload_meta.get("unique_name")
+        or upload_meta.get("filename")
+        or upload_meta.get("name")
+        or original_name
+        or "archivo-intake"
+    )
+    safe = secure_filename(str(candidate))
+    return safe or "archivo-intake"
+
+
+def _create_intake_attachment_from_upload(
+    *,
+    upload_meta: dict[str, Any],
+    source_payload: dict[str, Any],
+    user,
+    owner,
+    session_id: Optional[str],
+) -> Optional[ArchivoAdjunto]:
+    public_url = _clean_optional_text(upload_meta.get("public_url") or upload_meta.get("url"))
+    if not public_url:
+        return None
+
+    original_name = _clean_optional_text(source_payload.get("original_filename") or source_payload.get("archivo_nombre"))
+    attachment = ArchivoAdjunto(
+        user_id=getattr(user, "id", None) or getattr(owner, "id", None),
+        session_id=session_id,
+        filename=_safe_upload_filename(upload_meta, original_name),
+        nombre_original=original_name,
+        mime=_clean_optional_text(upload_meta.get("mimetype") or source_payload.get("mime_type")),
+        tamano=upload_meta.get("size") or source_payload.get("file_size_bytes"),
+        tipo="marketplace_intake",
+        url=public_url,
+    )
+    db.session.add(attachment)
+    db.session.flush()
+    return attachment
+
+
+def _attach_source_attachment_payload(
+    source_payload: dict[str, Any],
+    attachment: Optional[ArchivoAdjunto],
+) -> Optional[dict[str, Any]]:
+    attachment_info = _build_attachment_info_payload(attachment)
+    if not attachment_info:
+        return None
+    source_payload["attachment_id"] = attachment_info["id"]
+    source_payload["attachmentInfo"] = attachment_info
+    source_payload["attachment_info"] = attachment_info
+    source_payload["source_attachment"] = attachment_info
+    source_payload["sourceAttachment"] = attachment_info
+    return attachment_info
 
 
 def _reset_file_pointer(file_storage) -> None:
@@ -1361,6 +1445,7 @@ def _materialize_municipal_claim_from_handoff(
     rows: list[dict],
     text_payload: Optional[str],
     upload_meta: dict[str, Any],
+    intake_attachment: Optional[ArchivoAdjunto],
     origen: str,
 ) -> Optional[dict[str, Any]]:
     if str(document_profile.get("primary_intent") or "") != "municipal_service_request":
@@ -1415,6 +1500,11 @@ def _materialize_municipal_claim_from_handoff(
     db.session.add(ticket)
     db.session.flush()
 
+    if intake_attachment:
+        intake_attachment.municipio_ticket_id = ticket.id
+        db.session.add(intake_attachment)
+        db.session.flush()
+
     comentario = TicketComentario(
         municipio_ticket_id=ticket.id,
         comentario=(
@@ -1425,8 +1515,10 @@ def _materialize_municipal_claim_from_handoff(
         user_id=actor_id or municipio_id,
         es_admin=False,
         origen="marketplace_asistido",
+        archivo_adjunto_id=getattr(intake_attachment, "id", None),
     )
     db.session.add(comentario)
+    attachment_info = _build_attachment_info_payload(intake_attachment)
 
     linked_record = {
         "kind": "municipio_ticket",
@@ -1442,6 +1534,10 @@ def _materialize_municipal_claim_from_handoff(
         "address": ticket.direccion,
         "admin_thread_binding": "municipio_ticket_id",
     }
+    if attachment_info:
+        linked_record["attachment_id"] = attachment_info["id"]
+        linked_record["attachmentInfo"] = attachment_info
+        linked_record["source_attachment"] = attachment_info
     crm_handoff["materialized_record"] = linked_record
     crm_handoff["recommended_record"] = "municipio_ticket"
     crm_handoff["draft_ticket"] = {
@@ -1926,6 +2022,14 @@ def pedidos_desde_archivo():
         source_payload["extraction_error"] = extraction_error
     if row_errors:
         source_payload["row_errors"] = row_errors
+    intake_attachment = _create_intake_attachment_from_upload(
+        upload_meta=upload_meta,
+        source_payload=source_payload,
+        user=user,
+        owner=owner,
+        session_id=chat_session_id,
+    ) if archivo else None
+    attachment_info = _attach_source_attachment_payload(source_payload, intake_attachment)
     structured_extraction = _build_structured_extraction(
         document_profile=document_profile,
         rows=rows or [],
@@ -2021,6 +2125,9 @@ def pedidos_desde_archivo():
             {
                 "archivo_url": upload_meta.get("public_url"),
                 "archivo_nombre": original_name,
+                "attachment_id": attachment_info.get("id") if attachment_info else None,
+                "attachmentInfo": attachment_info,
+                "source_attachment": attachment_info,
                 "texto_original": text_payload,
                 "request_kind": request_kind,
                 "request_kind_label": request_kind_label,
@@ -2086,6 +2193,7 @@ def pedidos_desde_archivo():
         rows=rows or [],
         text_payload=text_payload,
         upload_meta=upload_meta,
+        intake_attachment=intake_attachment,
         origen=origen,
     )
     public_follow_up = _build_public_follow_up(
@@ -2099,6 +2207,20 @@ def pedidos_desde_archivo():
         else None,
     )
     if crm_order_draft:
+        if attachment_info:
+            crm_order_draft = {
+                **crm_order_draft,
+                "source_attachment": attachment_info,
+                "sourceAttachment": attachment_info,
+                "attachmentInfo": attachment_info,
+                "source": {
+                    **(crm_order_draft.get("source") if isinstance(crm_order_draft.get("source"), dict) else {}),
+                    "attachment_id": attachment_info.get("id"),
+                    "attachmentInfo": attachment_info,
+                    "source_attachment": attachment_info,
+                    "sourceAttachment": attachment_info,
+                },
+            }
         crm_order_draft = {
             **crm_order_draft,
             "pedido_id": pedido.id,
@@ -2183,6 +2305,11 @@ def pedidos_desde_archivo():
         "pedido_id": pedido.id,
         "lead_id": pedido.id,
         "archivo_url": upload_meta.get("public_url"),
+        "attachment_id": attachment_info.get("id") if attachment_info else None,
+        "attachmentInfo": attachment_info,
+        "attachment_info": attachment_info,
+        "source_attachment": attachment_info,
+        "sourceAttachment": attachment_info,
         "tipo": pedido.tipo,
         "contact": contact_payload,
         "source": source_payload,

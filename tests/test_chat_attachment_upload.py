@@ -15,6 +15,10 @@ class TestConfig(Config):
     WTF_CSRF_ENABLED = False
 
 
+def _response_json_and_status(response):
+    return response.get_json(), response.status_code
+
+
 class ChatAttachmentUploadTests(unittest.TestCase):
     def setUp(self):
         self.app = create_app(TestConfig)
@@ -54,8 +58,8 @@ class ChatAttachmentUploadTests(unittest.TestCase):
             ):
                 resp = archivos_route.upload_chat_attachment.__wrapped__(current_user=self.user)
 
-        self.assertEqual(resp[1], 200)
-        res_json = resp[0].get_json()
+        res_json, status = _response_json_and_status(resp)
+        self.assertEqual(status, 200)
         info = res_json["attachmentInfo"]
         self.assertEqual(info["url"], adjunto_mock.url)
         self.assertIn("thumbUrl", info)
@@ -96,8 +100,9 @@ class ChatAttachmentUploadTests(unittest.TestCase):
             ):
                 resp = archivos_route.upload_chat_attachment.__wrapped__(current_user=self.user)
 
-        self.assertEqual(resp[1], 200)
-        info = resp[0].get_json()["attachmentInfo"]
+        res_json, status = _response_json_and_status(resp)
+        self.assertEqual(status, 200)
+        info = res_json["attachmentInfo"]
         self.assertEqual(info["thumbUrl"], "https://cdn.example.com/foto_thumb.webp")
         self.assertEqual(info["thumbnailUrl"], info["thumbUrl"])
         self.assertEqual(info["meta"]["url"], info["thumbUrl"])
@@ -129,7 +134,8 @@ class ChatAttachmentUploadTests(unittest.TestCase):
                     current_user=self.user
                 )
 
-        self.assertEqual(resp[1], 200)
+        _, status = _response_json_and_status(resp)
+        self.assertEqual(status, 200)
 
     def test_ticket_comentario_to_dict_contains_thumbUrl(self):
         """Ensure model serialization uses local storage path when GCS is disabled."""

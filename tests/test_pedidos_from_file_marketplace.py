@@ -5,7 +5,17 @@ from datetime import datetime, timedelta
 import jwt
 
 from app import db
-from models import CatalogoItem, MarketOrder, MunicipioTicket, PedidoConversacional, PymePedido, TenantProfile, TicketComentario, User
+from models import (
+    ArchivoAdjunto,
+    CatalogoItem,
+    MarketOrder,
+    MunicipioTicket,
+    PedidoConversacional,
+    PymePedido,
+    TenantProfile,
+    TicketComentario,
+    User,
+)
 
 
 def _auth_headers(app, user: User, tenant_slug: str) -> dict:
@@ -85,6 +95,11 @@ def test_marketplace_order_note_upload_creates_assisted_request_contract(client,
     assert payload["source"]["original_filename"] == "nota.png"
     assert payload["source"]["mime_type"] == "image/png"
     assert payload["source"]["file_size_bytes"] == len(b"foto-nota")
+    assert payload["attachmentInfo"]["url"] == "https://cdn.example.com/nota.png"
+    assert payload["attachmentInfo"]["name"] == "nota.png"
+    assert payload["source"]["attachment_id"] == payload["attachment_id"]
+    assert payload["source"]["attachmentInfo"]["url"] == "https://cdn.example.com/nota.png"
+    assert payload["source_attachment"]["id"] == payload["attachment_id"]
     assert payload["document_profile"]["primary_intent"] == "create_order_or_quote"
     assert payload["document_profile"]["catalog_matching"] is True
     assert payload["intake_experience"]["contract_version"] == "marketplace.assisted_intake_experience.v1"
@@ -140,6 +155,8 @@ def test_marketplace_order_note_upload_creates_assisted_request_contract(client,
     assert payload["operator_intake_summary"]["sla_hint"]["minutes"] == 120
     assert payload["operator_intake_summary"]["input"]["file_size_bytes"] == len(b"foto-nota")
     assert payload["operator_intake_summary"]["input"]["mime_type"] == "image/png"
+    assert payload["operator_intake_summary"]["input"]["attachment_id"] == payload["attachment_id"]
+    assert payload["operator_intake_summary"]["input"]["attachmentInfo"]["url"] == "https://cdn.example.com/nota.png"
     assert payload["operator_intake_summary"]["recommended_next_step"] == "pedir_contacto_y_responder"
     assert payload["operator_intake_summary"]["contact_state"] == "missing"
     assert payload["operator_intake_summary"]["detected_preview"] == ["2 Chapa galvanizada", "1 Clavos 2 pulgadas"]
@@ -148,6 +165,10 @@ def test_marketplace_order_note_upload_creates_assisted_request_contract(client,
     assert payload["crm_order_draft"]["reference"] == f"pedido:{payload['pedido_id']}"
     assert payload["crm_order_draft"]["contact_state"] == "missing"
     assert payload["crm_order_draft"]["recommended_next_step"] == "pedir_contacto_y_responder"
+    assert payload["crm_order_draft"]["source_attachment"]["id"] == payload["attachment_id"]
+    assert payload["crm_order_draft"]["source"]["attachment_id"] == payload["attachment_id"]
+    assert payload["crm_handoff"]["source"]["attachment_id"] == payload["attachment_id"]
+    assert payload["crm_handoff"]["source"]["attachmentInfo"]["url"] == "https://cdn.example.com/nota.png"
     pedido = PedidoConversacional.query.get(payload["pedido_id"])
     assert pedido.estado == "nuevo"
     assert pedido.metadata_payload["crm_state"] == "pending_operator_review"
@@ -185,6 +206,8 @@ def test_marketplace_order_note_upload_creates_assisted_request_contract(client,
     assert pedido.metadata_payload["source"]["channel"] == "marketplace"
     assert pedido.metadata_payload["source"]["original_filename"] == "nota.png"
     assert pedido.metadata_payload["source"]["file_size_bytes"] == len(b"foto-nota")
+    assert pedido.metadata_payload["source"]["attachment_id"] == payload["attachment_id"]
+    assert pedido.metadata_payload["source"]["source_attachment"]["url"] == "https://cdn.example.com/nota.png"
     assert pedido.metadata_payload["match_summary"]["unmatched"] == 1
     assert pedido.metadata_payload["operator_pack"]["reference"] == f"pedido:{payload['pedido_id']}"
     assert pedido.metadata_payload["operator_pack"]["priority_reason"] == "contacto_incompleto"
@@ -192,10 +215,22 @@ def test_marketplace_order_note_upload_creates_assisted_request_contract(client,
     assert pedido.metadata_payload["operator_intake_summary"]["operator_queue"] == "commerce_assisted_orders"
     assert pedido.metadata_payload["public_follow_up"]["tracking"]["code"] == f"pc-{payload['pedido_id']}"
     assert pedido.metadata_payload["crm_order_draft"]["reference"] == f"pedido:{payload['pedido_id']}"
+    assert pedido.metadata_payload["crm_order_draft"]["source_attachment"]["id"] == payload["attachment_id"]
+    assert pedido.items[0]["attachmentInfo"]["id"] == payload["attachment_id"]
+    assert pedido.items[0]["source_attachment"]["url"] == "https://cdn.example.com/nota.png"
     assert pedido.items[0]["crm_order_draft"]["contract_version"] == "marketplace.crm_order_draft.v1"
+    assert pedido.items[0]["crm_order_draft"]["source_attachment"]["id"] == payload["attachment_id"]
     assert pedido.metadata_payload["catalog_candidates"][0]["candidates"][0]["catalogo_item_id"] == clavos_candidate.id
     assert pedido.items[0]["catalog_candidates"][0]["row"]["nombre"] == "Clavos 2 pulgadas"
     assert pedido.items[0]["public_follow_up"]["tracking"]["path"] == tracking_action["href"]
+
+    attachment = db.session.get(ArchivoAdjunto, payload["attachment_id"])
+    assert attachment is not None
+    assert attachment.url == "https://cdn.example.com/nota.png"
+    assert attachment.nombre_original == "nota.png"
+    assert attachment.mime == "image/png"
+    assert attachment.tamano == len(b"foto-nota")
+    assert attachment.municipio_ticket_id is None
 
 
 def test_marketplace_order_note_preflight_allows_checkout_origin_header(client, init_database):
@@ -388,8 +423,11 @@ def test_marketplace_order_note_upload_is_manageable_from_tenant_crm(client, app
     listed_order = next(order for order in listed if order["id"] == crm_id)
     assert listed_order["assisted_request"]["request_kind_label"] == "nota de pedido"
     assert listed_order["assisted_request"]["contact"]["phone"] == "+5492613168608"
+    assert listed_order["assisted_request"]["source_attachment"]["url"] == "https://cdn.example.com/pedido.jpg"
     assert listed_order["assisted_request"]["crm_order_draft"]["contract_version"] == "marketplace.crm_order_draft.v1"
+    assert listed_order["assisted_request"]["crm_order_draft"]["source_attachment"]["url"] == "https://cdn.example.com/pedido.jpg"
     assert listed_order["assisted_request"]["crm_handoff"]["draft_order"] == listed_order["assisted_request"]["crm_order_draft"]
+    assert listed_order["assisted_request"]["crm_handoff"]["source"]["source_attachment"]["url"] == "https://cdn.example.com/pedido.jpg"
     assert listed_order["crm_review_card"]["contract_version"] == "marketplace.crm_review_card.v1"
     assert listed_order["crm_review_card"]["reference"] == f"pedido:{pedido_id}"
     assert listed_order["crm_review_card"]["contact"]["phone"] == "+5492613168608"
@@ -402,6 +440,8 @@ def test_marketplace_order_note_upload_is_manageable_from_tenant_crm(client, app
     assert detail_response.status_code == 200
     detail_payload = detail_response.get_json()
     assert detail_payload["assisted_request"]["match_summary"]["matched"] == 1
+    assert detail_payload["assisted_request"]["attachmentInfo"]["url"] == "https://cdn.example.com/pedido.jpg"
+    assert detail_payload["assisted_request"]["source"]["attachmentInfo"]["url"] == "https://cdn.example.com/pedido.jpg"
     assert detail_payload["assisted_request"]["public_follow_up"]["tracking"]["code"] == f"pc-{pedido_id}"
     assert detail_payload["assisted_request"]["public_follow_up"]["tracking"]["path"] == (
         f"/tracking/order/pc-{pedido_id}?tenant_slug={tenant.slug}"
@@ -414,6 +454,7 @@ def test_marketplace_order_note_upload_is_manageable_from_tenant_crm(client, app
         "phone",
     ]
     assert detail_payload["assisted_request"]["crm_order_draft"]["reference"] == f"pedido:{pedido_id}"
+    assert detail_payload["assisted_request"]["crm_order_draft"]["source_attachment"]["url"] == "https://cdn.example.com/pedido.jpg"
     assert detail_payload["assisted_request"]["crm_handoff"]["draft_order"] == detail_payload["assisted_request"]["crm_order_draft"]
     assert detail_payload["crm_review_card"]["contract_version"] == "marketplace.crm_review_card.v1"
     assert detail_payload["crm_review_card"]["reference"] == f"pedido:{pedido_id}"
@@ -899,16 +940,23 @@ def test_marketplace_image_without_document_type_reclassifies_after_ocr(client, 
     assert payload["crm_handoff"]["draft_ticket"]["direccion"] == "Don Bosco 55 esquina Sarmiento"
     assert payload["crm_handoff"]["materialized_record"]["id"] == payload["ticket_id"]
     assert payload["crm_handoff"]["materialized_record"]["display_code"].startswith("M-")
+    assert payload["crm_handoff"]["materialized_record"]["attachment_id"] == payload["attachment_id"]
+    assert payload["crm_handoff"]["materialized_record"]["source_attachment"]["url"] == "https://cdn.example.com/img-1234.jpg"
     assert payload["public_follow_up"]["tracking"]["kind"] == "claim"
     assert payload["public_follow_up"]["tracking"]["ticket_id"] == payload["ticket_id"]
     assert payload["public_follow_up"]["tracking"]["path"].startswith("/tracking/claim/")
     assert payload["operator_pack"]["primary_intent"] == "municipal_service_request"
+    assert payload["attachmentInfo"]["url"] == "https://cdn.example.com/img-1234.jpg"
+    assert payload["source"]["attachmentInfo"]["url"] == "https://cdn.example.com/img-1234.jpg"
+    assert payload["linked_record"]["attachment_id"] == payload["attachment_id"]
 
     pedido = PedidoConversacional.query.get(payload["pedido_id"])
     assert pedido.tipo == "solicitud_vecinal_desde_archivo"
     assert pedido.metadata_payload["source"]["classification"]["method"] == "post_extraction_heuristic"
+    assert pedido.metadata_payload["source"]["source_attachment"]["url"] == "https://cdn.example.com/img-1234.jpg"
     assert pedido.metadata_payload["crm_handoff"]["target_module"] == "municipal_claims"
     assert pedido.metadata_payload["linked_record"]["id"] == payload["ticket_id"]
+    assert pedido.metadata_payload["linked_record"]["attachment_id"] == payload["attachment_id"]
 
     ticket = db.session.get(MunicipioTicket, payload["ticket_id"])
     assert ticket is not None
@@ -916,6 +964,14 @@ def test_marketplace_image_without_document_type_reclassifies_after_ocr(client, 
     assert ticket.direccion == "Don Bosco 55 esquina Sarmiento"
     assert ticket.foto_url_directa == "https://cdn.example.com/img-1234.jpg"
     assert ticket.canal_ingreso == "marketplace_asistido"
+    attachment = db.session.get(ArchivoAdjunto, payload["attachment_id"])
+    assert attachment is not None
+    assert attachment.municipio_ticket_id == ticket.id
+    assert attachment.url == "https://cdn.example.com/img-1234.jpg"
+    assert attachment.nombre_original == "IMG_1234.jpg"
+    comentario = TicketComentario.query.filter_by(municipio_ticket_id=ticket.id).one()
+    assert comentario.archivo_adjunto_id == attachment.id
+    assert comentario.to_dict()["attachmentInfo"]["url"] == "https://cdn.example.com/img-1234.jpg"
 
 
 def test_marketplace_tax_bill_text_creates_document_review_contract(client, init_database, monkeypatch):
