@@ -41,8 +41,10 @@ from services.qdrant_service import index_catalog_item
 from services.tenant_factory import create_tenant_from_template, assign_number_to_tenant
 from services.tenant_resolver import apply_tenant_alias
 from services.plan_access import (
+    FULL_INTEGRATION_PLANS,
     integration_access_payload,
     integration_plan_required_payload,
+    normalize_plan,
     plan_allows_full_integrations,
 )
 from services.live_chat_schedule import build_live_chat_status, build_schedule_from_config
@@ -56,6 +58,43 @@ from services.employee_routing import (
 )
 
 admin_tenant_bp = Blueprint('admin_tenant_bp', __name__)
+
+TENANT_CREATION_ALLOWED_PLANS = {
+    "free",
+    "pro",
+    "full",
+    "enterprise",
+    "premium",
+    *FULL_INTEGRATION_PLANS,
+}
+
+TENANT_CREATION_PLAN_ALIASES = {
+    "gratis": "free",
+    "gratuito": "free",
+    "demo": "free",
+    "trial": "free",
+    "basic": "free",
+    "starter": "free",
+}
+
+
+def _normalize_tenant_creation_plan(raw_plan) -> str:
+    normalized = normalize_plan(raw_plan) or "free"
+    normalized = TENANT_CREATION_PLAN_ALIASES.get(normalized, normalized)
+    if normalized not in TENANT_CREATION_ALLOWED_PLANS:
+        allowed = ", ".join(sorted(TENANT_CREATION_ALLOWED_PLANS))
+        raise ValueError(f"plan must be one of: {allowed}")
+    return normalized
+
+
+def _bool_from_payload(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "si", "sí", "s"}
+    return False
 
 
 def _cors_preflight_response():
@@ -1375,13 +1414,19 @@ def create_tenant():
     """Crea un nuevo tenant desde una plantilla. Actúa como registro público."""
     data = request.json or {}
     try:
+        requested_plan = _normalize_tenant_creation_plan(
+            data.get("plan") or data.get("tenant_plan") or data.get("subscription_plan")
+        )
+        auto_assign_whatsapp_number = _bool_from_payload(
+            data.get("auto_assign_whatsapp_number", data.get("autoAssignWhatsappNumber"))
+        )
         tenant = create_tenant_from_template(
             nombre=data.get('nombre') or data.get('name'),
             slug=data.get('slug'),
             tipo=data.get('tipo') or data.get('type') or data.get('vertical'),
             template_key=data.get('template_key'),
-            plan='free',
-            auto_assign_whatsapp_number=False,
+            plan=requested_plan,
+            auto_assign_whatsapp_number=auto_assign_whatsapp_number,
             owner_email=data.get('owner_email') or data.get('email_admin'),
             owner_password=data.get('owner_password')
         )

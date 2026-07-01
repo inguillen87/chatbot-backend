@@ -147,6 +147,7 @@ def create_tenant_from_template(
         nombre=nombre,
         tipo=tipo,
         plan=plan,
+        is_active=True,
         configuracion=configuracion
     )
 

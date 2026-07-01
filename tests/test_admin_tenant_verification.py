@@ -46,6 +46,58 @@ class TestAdminTenantVerification(unittest.TestCase):
         self.assertNotIn("whatsapp_onboarding", tenant.configuracion or {})
         self.assertEqual((tenant.configuracion or {})["provisioning"]["status"], "plan_required")
 
+    def test_create_tenant_honors_full_plan_and_prepares_onboarding(self):
+        self.app.config.update(
+            TWILIO_TENANT_AUTO_BOOTSTRAP_ENABLED=True,
+            TWILIO_TENANT_AUTO_PROVISION_ENABLED=False,
+        )
+        payload = {
+            "slug": "junin-full-verify",
+            "nombre": "Junin Full Verify",
+            "tipo": "municipio",
+            "plan": "full",
+            "owner_email": "admin@junin-full-verify.test",
+        }
+
+        response = self.client.post('/api/admin/tenants', json=payload)
+
+        self.assertEqual(response.status_code, 201, response.get_json())
+        data = response.get_json()
+        self.assertEqual(data["plan"], "full")
+        self.assertEqual(data["tenant"]["plan"], "full")
+        self.assertTrue(data["widget_token"])
+        self.assertTrue(data["integration_access"]["enabled"])
+        self.assertEqual(data["integration_access"]["status"], "enabled")
+        self.assertIsNone(data["integration_access"]["reason_code"])
+        self.assertEqual(data["whatsapp_onboarding"]["contract_version"], "tenant.whatsapp_onboarding.v1")
+        self.assertEqual(data["whatsapp_onboarding"]["provider"], "twilio_tech_provider")
+
+        tenant = TenantProfile.query.filter_by(slug="junin-full-verify").first()
+        self.assertIsNotNone(tenant)
+        self.assertEqual(tenant.plan, "full")
+        self.assertIn("widget_tokens", tenant.configuracion or {})
+        self.assertIn("whatsapp_onboarding", tenant.configuracion or {})
+        self.assertEqual((tenant.configuracion or {})["provisioning"]["status"], "created")
+        owner = db.session.get(User, tenant.municipio_id)
+        self.assertIsNotNone(owner)
+        self.assertEqual(owner.plan, "full")
+        self.assertEqual(owner.tenant_slug, tenant.slug)
+
+    def test_create_tenant_rejects_invalid_plan(self):
+        response = self.client.post(
+            '/api/admin/tenants',
+            json={
+                "slug": "invalid-plan-verify",
+                "nombre": "Invalid Plan Verify",
+                "tipo": "pyme",
+                "plan": "moonshot",
+            },
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("plan must be one of", response.get_json()["error"])
+        self.assertIsNone(TenantProfile.query.filter_by(slug="invalid-plan-verify").first())
+
     def test_create_colegio_without_owner_email_creates_synthetic_admin(self):
         response = self.client.post(
             '/api/admin/tenants',
