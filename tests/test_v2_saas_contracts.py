@@ -1279,20 +1279,130 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(detail.status_code, 200)
         self.assertEqual(detail.get_json()["item"]["source_model"], "MunicipioTicket")
 
-        reply = self.client.post(
-            "/api/v2/inbox/omnichannel/actions",
-            json={
-                "source_model": "MunicipioTicket",
-                "legacy_id": legacy.id,
-                "action": "reply",
-                "body": "Te respondemos desde mesa de ayuda.",
-            },
-            headers=self._auth(self.owner),
-        )
+        with patch(
+            "services.notification_dispatcher.dispatch_ticket_update",
+            return_value={"email": False, "sms": False, "whatsapp": False},
+        ) as dispatch_update:
+            reply = self.client.post(
+                "/api/v2/inbox/omnichannel/actions",
+                json={
+                    "source_model": "MunicipioTicket",
+                    "legacy_id": legacy.id,
+                    "action": "reply",
+                    "body": "Te respondemos desde mesa de ayuda.",
+                },
+                headers=self._auth(self.owner),
+            )
         self.assertEqual(reply.status_code, 200, reply.get_json())
-        updated = reply.get_json()["ticket"]
+        dispatch_update.assert_called_once()
+        reply_payload = reply.get_json()
+        delivery = reply_payload["delivery"]
+        self.assertEqual(delivery["contract_version"], "inbox.action_delivery.v1")
+        self.assertEqual(delivery["mode"], "timeline_only")
+        self.assertEqual(delivery["status"], "saved_to_crm")
+        self.assertEqual(delivery["reason"], "external_dispatch_no_channel_confirmed")
+        self.assertEqual(delivery["reply_status"], "saved_to_timeline")
+        self.assertEqual(delivery["admin_surface"], "tenant_claims_inbox")
+        self.assertFalse(delivery["external_dispatch"])
+        self.assertEqual(delivery["delivery_results"], {"email": False, "sms": False, "whatsapp": False})
+        self.assertTrue(delivery["timeline_updated"])
+        updated = reply_payload["ticket"]
         self.assertEqual(updated["status"], "en_proceso")
         self.assertTrue(any("mesa de ayuda" in event["body"].lower() for event in updated["timeline"]))
+
+    def test_omnichannel_legacy_claim_reply_reports_real_whatsapp_delivery(self):
+        legacy = MunicipioTicket(
+            tenant_id=self.tenant.id,
+            municipio_id=self.owner.id,
+            nro_ticket="M-777001",
+            consulta_pin="777001",
+            pregunta="Luminaria apagada",
+            asunto="Luminaria",
+            categoria="luminaria",
+            detalles="Lampara apagada en la esquina",
+            estado="nuevo",
+            canal_ingreso="whatsapp",
+            direccion="Rivadavia 100, Junin, Mendoza",
+            nombre_vecino="Marcelo",
+            telefono_vecino="+5492613168608",
+        )
+        db.session.add(legacy)
+        db.session.commit()
+
+        with patch(
+            "services.notification_dispatcher.dispatch_ticket_update",
+            return_value={"email": False, "sms": False, "whatsapp": True},
+        ) as dispatch_update:
+            response = self.client.post(
+                "/api/v2/inbox/omnichannel/actions",
+                json={
+                    "source_model": "MunicipioTicket",
+                    "legacy_id": legacy.id,
+                    "action": "reply",
+                    "body": "Recibimos tu reclamo y el equipo ya fue avisado.",
+                },
+                headers={**self._auth(self.owner), "X-Request-Id": "legacy-whatsapp-delivery-1"},
+            )
+
+        self.assertEqual(response.status_code, 200, response.get_json())
+        dispatch_update.assert_called_once()
+        payload = response.get_json()
+        self.assertEqual(payload.get("request_id"), "legacy-whatsapp-delivery-1")
+        delivery = payload["delivery"]
+        self.assertEqual(delivery["contract_version"], "inbox.action_delivery.v1")
+        self.assertEqual(delivery["mode"], "real_message")
+        self.assertEqual(delivery["channel"], "whatsapp")
+        self.assertEqual(delivery["status"], "sent")
+        self.assertEqual(delivery["reason"], "external_dispatch_confirmed")
+        self.assertEqual(delivery["reply_status"], "sent_to_contact")
+        self.assertEqual(delivery["admin_surface"], "tenant_claims_inbox")
+        self.assertTrue(delivery["external_dispatch"])
+        self.assertEqual(delivery["delivery_results"], {"email": False, "sms": False, "whatsapp": True})
+        self.assertTrue(any("equipo ya fue avisado" in event["body"].lower() for event in payload["ticket"]["timeline"]))
+
+    def test_omnichannel_legacy_claim_reply_survives_dispatcher_failure(self):
+        legacy = MunicipioTicket(
+            tenant_id=self.tenant.id,
+            municipio_id=self.owner.id,
+            nro_ticket="M-777002",
+            consulta_pin="777002",
+            pregunta="Perdida de agua",
+            asunto="Agua",
+            categoria="perdida_de_agua",
+            detalles="Perdida en la vereda",
+            estado="nuevo",
+            canal_ingreso="whatsapp",
+            direccion="Belgrano 200, Junin, Mendoza",
+            nombre_vecino="Marcelo",
+            telefono_vecino="+5492613168608",
+        )
+        db.session.add(legacy)
+        db.session.commit()
+
+        with patch(
+            "services.notification_dispatcher.dispatch_ticket_update",
+            side_effect=RuntimeError("twilio down"),
+        ):
+            response = self.client.post(
+                "/api/v2/inbox/omnichannel/actions",
+                json={
+                    "source_model": "MunicipioTicket",
+                    "legacy_id": legacy.id,
+                    "action": "reply",
+                    "body": "Guardamos tu mensaje y seguimos el caso.",
+                },
+                headers=self._auth(self.owner),
+            )
+
+        self.assertEqual(response.status_code, 200, response.get_json())
+        payload = response.get_json()
+        delivery = payload["delivery"]
+        self.assertEqual(delivery["mode"], "timeline_only")
+        self.assertEqual(delivery["status"], "saved_to_crm")
+        self.assertEqual(delivery["reason"], "notification_dispatch_failed")
+        self.assertFalse(delivery["external_dispatch"])
+        self.assertEqual(delivery["delivery_results"], {"email": False, "sms": False, "whatsapp": False})
+        self.assertTrue(any("seguimos el caso" in event["body"].lower() for event in payload["ticket"]["timeline"]))
 
     def test_omnichannel_inbox_detail_contract_for_drawer_360(self):
         response = self.client.get(
@@ -1372,6 +1482,13 @@ class V2SaasContractsTest(unittest.TestCase):
         payload = response.get_json()
         self.assertEqual(payload.get("contract_version"), "inbox.omnichannel.action.v1")
         self.assertEqual(payload.get("request_id"), "inbox-action-1")
+        self.assertEqual(payload["delivery"]["contract_version"], "inbox.action_delivery.v1")
+        self.assertEqual(payload["delivery"]["mode"], "timeline_only")
+        self.assertEqual(payload["delivery"]["status"], "saved_to_crm")
+        self.assertEqual(payload["delivery"]["reply_status"], "saved_to_timeline")
+        self.assertEqual(payload["delivery"]["admin_surface"], "omnichannel_inbox")
+        self.assertFalse(payload["delivery"]["external_dispatch"])
+        self.assertTrue(payload["delivery"]["timeline_updated"])
         self.assertTrue(payload["ticket"]["timeline"])
         self.assertTrue(any(item.get("body") == "Estamos revisando tu caso." for item in payload["ticket"]["timeline"]))
 

@@ -3860,6 +3860,102 @@ def _coerce_inbox_ticket_id(raw_value: Any) -> int | None:
         return None
 
 
+def _inbox_action_delivery_payload(
+    *,
+    action: str,
+    channel: str | None,
+    timeline_updated: bool,
+    source_model: str,
+    status: str | None = None,
+    reason: str | None = None,
+    external_dispatch: bool = False,
+    delivery_results: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    normalized_action = str(action or "").strip().lower()
+    normalized_channel = str(channel or "crm").strip().lower() or "crm"
+    is_reply = normalized_action == "reply"
+    mode = "real_message" if is_reply and external_dispatch else ("timeline_only" if is_reply else "internal_event")
+    resolved_status = status or ("sent" if external_dispatch else ("saved_to_crm" if is_reply else "applied"))
+    resolved_reason = reason or (
+        "external_dispatch_confirmed"
+        if external_dispatch
+        else (
+            "external_dispatch_not_configured_for_omnichannel_action"
+            if is_reply
+            else "internal_crm_action"
+        )
+    )
+    operator_message = (
+        "Mensaje enviado al contacto y registrado en el CRM."
+        if external_dispatch
+        else (
+            "Guardado en el CRM. No se envio por WhatsApp ni por socket en tiempo real desde esta accion."
+            if is_reply
+            else "Accion registrada en el CRM."
+        )
+    )
+    payload = {
+        "contract_version": "inbox.action_delivery.v1",
+        "mode": mode,
+        "channel": normalized_channel,
+        "status": resolved_status,
+        "reason": resolved_reason,
+        "external_dispatch": external_dispatch,
+        "timeline_updated": timeline_updated,
+        "reply_status": "sent_to_contact" if external_dispatch else ("saved_to_timeline" if is_reply else "not_a_reply"),
+        "admin_surface": "tenant_claims_inbox" if source_model == "MunicipioTicket" else "omnichannel_inbox",
+        "source_model": source_model,
+        "operator_message": operator_message,
+    }
+    if delivery_results is not None:
+        payload["delivery_results"] = {
+            "email": bool(delivery_results.get("email")),
+            "sms": bool(delivery_results.get("sms")),
+            "whatsapp": bool(delivery_results.get("whatsapp")),
+        }
+    return payload
+
+
+def _ticket_delivery_channel(results: Mapping[str, Any] | None, fallback: str | None) -> str:
+    normalized_results = results or {}
+    for channel in ("whatsapp", "sms", "email"):
+        if normalized_results.get(channel):
+            return channel
+    return str(fallback or "crm").strip().lower() or "crm"
+
+
+def _dispatch_legacy_claim_reply(
+    ticket: MunicipioTicket,
+    body: str,
+    recent_comment: TicketComentario | None,
+) -> tuple[dict[str, bool], str | None]:
+    try:
+        from services.notification_dispatcher import dispatch_ticket_update
+
+        raw_results = dispatch_ticket_update(
+            ticket,
+            "municipio",
+            body,
+            comentario_reciente=recent_comment,
+            enable_whatsapp=True,
+            archivos_adjuntos=[],
+        )
+        if not isinstance(raw_results, Mapping):
+            return {"email": False, "sms": False, "whatsapp": False}, "notification_dispatch_invalid_result"
+        return {
+            "email": bool(raw_results.get("email")),
+            "sms": bool(raw_results.get("sms")),
+            "whatsapp": bool(raw_results.get("whatsapp")),
+        }, None
+    except Exception as exc:  # pragma: no cover - defensive production logging
+        current_app.logger.exception(
+            "Error dispatching legacy claim reply ticket=%s: %s",
+            getattr(ticket, "nro_ticket", None) or getattr(ticket, "id", None),
+            exc,
+        )
+        return {"email": False, "sms": False, "whatsapp": False}, "notification_dispatch_failed"
+
+
 def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfile, ticket_id: int, payload: Mapping[str, Any]):
     ticket = _legacy_claim_for_tenant(tenant, ticket_id)
     if not ticket:
@@ -3870,6 +3966,10 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
         return _error_response("Accion de inbox no soportada para reclamos municipales", 400, "unsupported_legacy_inbox_action", "send_supported_action")
 
     now = datetime.now(timezone.utc)
+    timeline_updated = False
+    recent_comment: TicketComentario | None = None
+    delivery_results: dict[str, bool] | None = None
+    dispatch_error_reason: str | None = None
 
     if action == "assign":
         assignee_id = _coerce_inbox_ticket_id(payload.get("assignee_id") or payload.get("user_id"))
@@ -3899,6 +3999,7 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
                 estado_ticket=ticket.estado,
             )
         )
+        timeline_updated = True
 
     elif action == "reply":
         if str(ticket.estado or "").lower() in _CLOSED_TICKET_STATES:
@@ -3906,16 +4007,16 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
         body = str(payload.get("body") or payload.get("message") or payload.get("comentario") or "").strip()
         if not body:
             return _error_response("El mensaje no puede estar vacio", 400, "reply_body_required", "send_reply_body")
-        db.session.add(
-            TicketComentario(
-                municipio_ticket_id=ticket.id,
-                comentario=body,
-                user_id=current_user.id,
-                es_admin=True,
-                origen="admin_panel",
-                estado_ticket=ticket.estado,
-            )
+        recent_comment = TicketComentario(
+            municipio_ticket_id=ticket.id,
+            comentario=body,
+            user_id=current_user.id,
+            es_admin=True,
+            origen="admin_panel",
+            estado_ticket=ticket.estado,
         )
+        db.session.add(recent_comment)
+        timeline_updated = True
         if str(ticket.estado or "").lower() in {"nuevo", "open"}:
             ticket.estado = "en_proceso"
 
@@ -3932,6 +4033,7 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
                 estado_ticket=ticket.estado,
             )
         )
+        timeline_updated = True
 
     elif action == "reopen":
         ticket.estado = str(payload.get("status") or "en_proceso").strip().lower() or "en_proceso"
@@ -3946,10 +4048,33 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
                 estado_ticket=ticket.estado,
             )
         )
+        timeline_updated = True
 
     ticket.ultima_actividad = now
     db.session.add(ticket)
     db.session.commit()
+
+    if action == "reply" and recent_comment is not None:
+        delivery_results, dispatch_error_reason = _dispatch_legacy_claim_reply(ticket, body, recent_comment)
+
+    external_dispatch = bool(delivery_results and any(delivery_results.values()))
+    delivery_reason = None
+    if action == "reply":
+        delivery_reason = (
+            "external_dispatch_confirmed"
+            if external_dispatch
+            else (dispatch_error_reason or "external_dispatch_no_channel_confirmed")
+        )
+    delivery = _inbox_action_delivery_payload(
+        action=action,
+        channel=_ticket_delivery_channel(delivery_results, ticket.canal_ingreso or "whatsapp"),
+        timeline_updated=timeline_updated,
+        source_model="MunicipioTicket",
+        status="sent" if external_dispatch else None,
+        reason=delivery_reason,
+        external_dispatch=external_dispatch,
+        delivery_results=delivery_results,
+    )
 
     return _json_response(
         {
@@ -3957,6 +4082,7 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
             "contract_version": "inbox.omnichannel.action.v1",
             "tenant": _tenant_ref(tenant),
             "action": action,
+            "delivery": delivery,
             "ticket": _legacy_claim_inbox_payload(ticket),
         }
     )
@@ -3991,6 +4117,7 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
 
     extra = deepcopy(_ticket_extra(ticket))
     event_body = ""
+    timeline_updated = False
 
     if action == "assign":
         assignee_id = payload.get("assignee_id") or payload.get("user_id")
@@ -4015,6 +4142,7 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
         visibility = str(payload.get("visibility") or "public").strip().lower()
         event_body = body
         _append_ticket_event(extra, action=action, actor=current_user, body=body, visibility=visibility)
+        timeline_updated = True
 
     elif action == "handoff":
         channel = str(payload.get("channel") or payload.get("target_channel") or "operator").strip().lower()
@@ -4049,12 +4177,19 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
 
     if action != "reply":
         _append_ticket_event(extra, action=action, actor=current_user, body=str(event_body or action), visibility="internal")
+        timeline_updated = True
 
     ticket.datos_extra = extra
     flag_modified(ticket, "datos_extra")
     ticket.updated_at = datetime.now(timezone.utc)
     db.session.add(ticket)
     db.session.commit()
+    delivery = _inbox_action_delivery_payload(
+        action=action,
+        channel=_ticket_channel(ticket),
+        timeline_updated=timeline_updated,
+        source_model="TenantTicket",
+    )
 
     return _json_response(
         {
@@ -4062,6 +4197,7 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
             "contract_version": "inbox.omnichannel.action.v1",
             "tenant": _tenant_ref(tenant),
             "action": action,
+            "delivery": delivery,
             "ticket": _inbox_ticket_payload(ticket),
         }
     )

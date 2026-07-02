@@ -1083,6 +1083,7 @@ def _assisted_request_replay_payload(pedido: PedidoConversacional) -> dict[str, 
     if isinstance(stored, dict):
         payload = dict(stored)
     else:
+        stored_response = stored if isinstance(stored, dict) else {}
         source = metadata.get("source") if isinstance(metadata.get("source"), dict) else {}
         payload = {
             "contract_version": _ASSISTED_REQUEST_CONTRACT_VERSION,
@@ -1110,8 +1111,8 @@ def _assisted_request_replay_payload(pedido: PedidoConversacional) -> dict[str, 
             "public_follow_up": metadata.get("public_follow_up") or {},
             "row_errors": metadata.get("row_errors") or [],
             "next_actions": metadata.get("next_actions") or [],
-            "customer_message": (metadata.get("public_response") or {}).get("customer_message"),
-            "resumen": (metadata.get("public_response") or {}).get("resumen"),
+            "customer_message": stored_response.get("customer_message"),
+            "resumen": stored_response.get("resumen"),
         }
     payload["idempotent_replay"] = True
     if metadata.get("idempotency_key"):
