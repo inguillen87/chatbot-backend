@@ -176,6 +176,77 @@ def _tenant_live_chat_status(tenant: TenantProfile | None) -> dict[str, Any]:
     return status
 
 
+def _claim_helpdesk_queue_state(
+    conversation: list[dict[str, Any]],
+    *,
+    mode: str,
+    schedule_label: str | None,
+) -> dict[str, Any]:
+    """Derive the pending operator queue from public conversation comments."""
+
+    latest_team_index = -1
+    latest_customer_message: dict[str, Any] | None = None
+    pending_customer_messages: list[dict[str, Any]] = []
+
+    for index, item in enumerate(conversation):
+        if not isinstance(item, dict):
+            continue
+        author = str(item.get("author") or "").strip().lower()
+        if author in {"team", "admin", "agent", "municipio", "pyme"}:
+            latest_team_index = index
+            continue
+        if author != "customer":
+            continue
+        latest_customer_message = item
+        if index > latest_team_index:
+            pending_customer_messages.append(item)
+
+    pending_count = len(pending_customer_messages)
+    has_pending = pending_count > 0
+    state = "pending_admin_response" if has_pending else "up_to_date"
+    if has_pending and mode == "live":
+        state = "live_agent_attention_needed"
+    elif has_pending:
+        state = "offline_waiting_admin_response"
+
+    return {
+        "contract_version": "claim.helpdesk_queue.v1",
+        "state": state,
+        "has_pending_customer_message": has_pending,
+        "pending_customer_messages": pending_count,
+        "latest_customer_message": (
+            {
+                "id": latest_customer_message.get("id"),
+                "created_at": latest_customer_message.get("created_at"),
+                "source": latest_customer_message.get("source"),
+                "preview": str(latest_customer_message.get("message") or "")[:180],
+            }
+            if latest_customer_message
+            else None
+        ),
+        "pending_since": (
+            pending_customer_messages[0].get("created_at")
+            if pending_customer_messages
+            else None
+        ),
+        "sla_target_minutes": 30 if mode == "live" else 240,
+        "next_team_action": (
+            "reply_from_admin_inbox" if has_pending else "monitor_ticket"
+        ),
+        "next_team_action_label": (
+            "Responder desde la bandeja de reclamos"
+            if has_pending
+            else "Sin respuesta pendiente"
+        ),
+        "customer_visible_label": (
+            "Tu mensaje quedo pendiente para el equipo"
+            if has_pending
+            else "El equipo esta al dia con este reclamo"
+        ),
+        "schedule_label": schedule_label,
+    }
+
+
 def _claim_support_contract(
     ticket: MunicipioTicket,
     tenant: TenantProfile | None,
@@ -201,11 +272,12 @@ def _claim_support_contract(
     primary_cta_id = "open_live_chat" if available else "leave_offline_message"
     primary_action_variant = "primary" if available else "secondary"
     support_action_label = "Chatear con un agente" if available else "Dejar mensaje"
-    has_customer_activity = any(
-        str(item.get("author") or "").strip().lower() == "customer"
-        for item in conversation
-        if isinstance(item, dict)
+    queue_state = _claim_helpdesk_queue_state(
+        conversation,
+        mode=mode,
+        schedule_label=schedule_label,
     )
+    has_customer_activity = bool(queue_state["has_pending_customer_message"])
     crm_writebacks = [
         "public_comment_created",
         "ticket_timeline_updated",
@@ -306,10 +378,11 @@ def _claim_support_contract(
             "writebacks": crm_writebacks,
         },
         "operator_queue": {
+            **queue_state,
             "id": "claim_helpdesk_queue",
             "label": "Cola de mesa de ayuda",
             "unread_on_customer_message": True,
-            "requires_admin_response": True,
+            "requires_admin_response": has_customer_activity,
             "crm_writebacks": crm_writebacks,
             "routing_key": f"municipio:{municipio_id}:ticket:{ticket_id}" if municipio_id and ticket_id else None,
         },
@@ -324,6 +397,8 @@ def _claim_support_contract(
             "schedule_label": schedule_label,
             "empty_state": "Todavia no hay mensajes publicos en este reclamo.",
             "team_unread_label": "Queda como no leido para el equipo",
+            "queue_state_label": queue_state["customer_visible_label"],
+            "next_team_action_label": queue_state["next_team_action_label"],
         },
     }
 
