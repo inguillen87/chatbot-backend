@@ -1,11 +1,27 @@
 import unittest
 import json
+import os
+from unittest.mock import patch
+
+os.environ.setdefault("TESTING", "1")
+os.environ.setdefault("FLASK_SKIP_GLOBAL_APP", "1")
+
 from app import create_app, db
+from config import Config
 from models import User, MunicipioTicket, PymeTicket, Rubro
+
+
+class TicketStateSyncTestConfig(Config):
+    TESTING = True
+    SQLALCHEMY_DATABASE_URI = "sqlite:///:memory:"
+    SQLALCHEMY_ENGINE_OPTIONS = {"connect_args": {"check_same_thread": False}}
+    ENABLE_RUNTIME_SCHEMA_SYNC = False
+    ENABLE_RUNTIME_TENANT_INIT = False
+
 
 class TicketStateSyncTest(unittest.TestCase):
     def setUp(self):
-        self.app = create_app()
+        self.app = create_app(TicketStateSyncTestConfig)
         self.app_context = self.app.app_context()
         self.app_context.push()
         db.create_all()
@@ -48,11 +64,30 @@ class TicketStateSyncTest(unittest.TestCase):
     def test_admin_response_updates_public_state(self):
         res_login = self.client.post('/auth/login', data=json.dumps({'email': 'muni@example.com', 'password': 'pass'}), content_type='application/json')
         token = json.loads(res_login.data)['token']
-        res = self.client.post(f'/tickets/municipio/{self.muni_ticket.id}/responder',
-                               headers={'Authorization': f'Bearer {token}'},
-                               data=json.dumps({'comentario': 'Hola'}),
-                               content_type='application/json')
+        with patch(
+            'services.notification_dispatcher.dispatch_ticket_update',
+            return_value={'email': False, 'sms': False, 'whatsapp': True},
+        ), patch('routes.ticket.emit_ticket_update') as emit_update, patch(
+            'routes.ticket.emit_ticket_comment'
+        ) as emit_comment, patch('routes.ticket.emit_ticket_unread_changed'):
+            res = self.client.post(f'/tickets/municipio/{self.muni_ticket.id}/responder',
+                                   headers={'Authorization': f'Bearer {token}'},
+                                   data=json.dumps({'comentario': 'Hola'}),
+                                   content_type='application/json')
         self.assertEqual(res.status_code, 200)
+        payload = json.loads(res.data)
+        self.assertEqual(payload['delivery']['contract_version'], 'tickets.agent_reply_delivery.v1')
+        self.assertEqual(payload['delivery']['mode'], 'real_message')
+        self.assertEqual(payload['delivery']['channel'], 'whatsapp')
+        self.assertEqual(payload['delivery']['reply_status'], 'sent_to_contact')
+        self.assertTrue(payload['delivery']['external_dispatch'])
+        self.assertTrue(payload['delivery']['socket_emitted'])
+        self.assertEqual(
+            payload['delivery']['delivery_results'],
+            {'email': False, 'sms': False, 'whatsapp': True, 'socket': True},
+        )
+        emit_update.assert_called_once()
+        emit_comment.assert_called_once()
 
         resp_public = self.client.get(f'/tickets/municipio/por_numero/{self.muni_ticket.nro_ticket}?pin={self.muni_ticket.consulta_pin}')
         self.assertEqual(resp_public.status_code, 200)

@@ -1,7 +1,7 @@
 import os
 import uuid
 import logging
-from typing import Optional
+from typing import Any, Mapping, Optional
 from werkzeug.utils import secure_filename
 from flask import Blueprint, g, request, jsonify, current_app, send_from_directory, render_template
 from socket_service import (
@@ -77,6 +77,75 @@ TICKET_ALLOWED_TRANSITIONS = {
     "esperando_agente_en_vivo": ["en_vivo", "en_proceso", "cerrado"],
     "cerrado": [],
 }
+
+
+def _normalize_ticket_delivery_results(results: Mapping[str, Any] | None) -> dict[str, bool]:
+    return {
+        "email": bool((results or {}).get("email")),
+        "sms": bool((results or {}).get("sms")),
+        "whatsapp": bool((results or {}).get("whatsapp")),
+        "socket": bool((results or {}).get("socket")),
+    }
+
+
+def _ticket_delivery_channel(results: Mapping[str, Any] | None, fallback: str | None = None) -> str:
+    normalized = _normalize_ticket_delivery_results(results)
+    for channel in ("whatsapp", "sms", "email", "socket"):
+        if normalized[channel]:
+            return "live_socket" if channel == "socket" else channel
+    return str(fallback or "crm").strip().lower() or "crm"
+
+
+def _build_agent_ticket_delivery_payload(
+    *,
+    tipo: str,
+    notification_results: Mapping[str, Any] | None,
+    socket_emitted: bool,
+    timeline_updated: bool,
+    notification_error_reason: str | None = None,
+    socket_error_reason: str | None = None,
+) -> dict[str, Any]:
+    delivery_results = _normalize_ticket_delivery_results(notification_results)
+    delivery_results["socket"] = bool(socket_emitted)
+    external_dispatch = any(delivery_results[channel] for channel in ("email", "sms", "whatsapp"))
+    realtime_dispatch = bool(delivery_results["socket"])
+    delivered = external_dispatch or realtime_dispatch
+    channel = _ticket_delivery_channel(delivery_results, "whatsapp" if tipo == "municipio" else "crm")
+
+    if external_dispatch:
+        reason = "external_dispatch_confirmed"
+        reply_status = "sent_to_contact"
+    elif realtime_dispatch:
+        reason = "socket_dispatch_confirmed"
+        reply_status = "sent_to_live_chat"
+    elif notification_error_reason:
+        reason = notification_error_reason
+        reply_status = "saved_to_timeline"
+    elif socket_error_reason:
+        reason = socket_error_reason
+        reply_status = "saved_to_timeline"
+    else:
+        reason = "external_dispatch_no_channel_confirmed"
+        reply_status = "saved_to_timeline"
+
+    return {
+        "contract_version": "tickets.agent_reply_delivery.v1",
+        "mode": "real_message" if delivered else "timeline_only",
+        "channel": channel,
+        "status": "sent" if delivered else "saved_to_crm",
+        "reason": reason,
+        "external_dispatch": external_dispatch,
+        "socket_emitted": realtime_dispatch,
+        "timeline_updated": timeline_updated,
+        "reply_status": reply_status,
+        "delivery_results": delivery_results,
+        "admin_surface": "tenant_claims_inbox" if tipo == "municipio" else "tenant_commerce_inbox",
+        "operator_message": (
+            "Mensaje enviado y registrado en el CRM."
+            if delivered
+            else "Guardado en el CRM. No se confirmo envio externo ni socket en tiempo real."
+        ),
+    }
 
 
 def _build_ticket_operational_badges(ticket_obj) -> dict:
@@ -2388,6 +2457,10 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
     # --- Notificaciones ---
     # Construir el mensaje de notificación. Si hay texto, usarlo. Si solo hay archivos, un mensaje genérico.
     mensaje_notificacion_base = comentario_texto if comentario_texto.strip() else "Se han adjuntado nuevos archivos a tu ticket."
+    resultados_notif: dict[str, bool] = {"email": False, "sms": False, "whatsapp": False}
+    notification_error_reason: str | None = None
+    socket_error_reason: str | None = None
+    socket_emitted = False
 
     # El objeto 'ticket_obj' ya está cargado.
     # 'archivos_adjuntados_db' es la lista de objetos ArchivoAdjunto recién creados y guardados.
@@ -2419,6 +2492,7 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
         # Serializar el ticket completo para enviar todos los datos actualizados
         ticket_json = serialize_ticket_to_json(ticket_obj, tipo)
         emit_ticket_update(ticket_json)
+        socket_emitted = True
 
         for comentario in comentarios_creados:
             try:
@@ -2430,6 +2504,7 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
                 )
                 emit_ticket_comment(comment_payload)
                 emit_ticket_unread_changed(_build_ticket_unread_event_payload(ticket_obj, tipo))
+                socket_emitted = True
             except Exception as socket_exc:  # pragma: no cover - defensive log
                 current_app.logger.exception(
                     "Error emitting comment event for ticket %s: %s",
@@ -2439,8 +2514,33 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
 
 
     except Exception as e_notif:
+        notification_error_reason = "notification_dispatch_failed"
         current_app.logger.error(f"Error durante el envío de notificaciones para respuesta de ticket {ticket_id}: {e_notif}", exc_info=True)
         # No devolver error al cliente por fallo en notificaciones, ya que el ticket/comentario se guardó.
+
+    if not socket_emitted:
+        try:
+            ticket_json = serialize_ticket_to_json(ticket_obj, tipo)
+            emit_ticket_update(ticket_json)
+            socket_emitted = True
+
+            for comentario in comentarios_creados:
+                comment_payload = build_ticket_comment_payload(
+                    ticket_obj,
+                    tipo,
+                    comentario,
+                    ticket_snapshot=ticket_json,
+                )
+                emit_ticket_comment(comment_payload)
+                emit_ticket_unread_changed(_build_ticket_unread_event_payload(ticket_obj, tipo))
+                socket_emitted = True
+        except Exception as socket_exc:  # pragma: no cover - defensive log
+            socket_error_reason = "socket_dispatch_failed"
+            current_app.logger.exception(
+                "Error emitting websocket events for ticket %s: %s",
+                ticket_id,
+                socket_exc,
+            )
 
     # --- Preparar respuesta JSON ---
     # La función detalle_ticket ya serializa los archivos, así que podemos reusar esa lógica
@@ -2480,6 +2580,14 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
         "detalles": getattr(ticket_obj, 'detalles', getattr(ticket_obj, 'pregunta', '')),
         "comentarios": comentarios_actualizados, # Usar la lista actualizada
         "archivos_adjuntos": archivos_actualizados_data, # Usar la lista actualizada
+        "delivery": _build_agent_ticket_delivery_payload(
+            tipo=tipo,
+            notification_results=resultados_notif,
+            socket_emitted=socket_emitted,
+            timeline_updated=bool(comentarios_creados or archivos_adjuntados_db),
+            notification_error_reason=notification_error_reason,
+            socket_error_reason=socket_error_reason,
+        ),
         # ... (otros campos de ticket_obj si son necesarios en la respuesta)
     }
     return jsonify(ticket_data_respuesta), 200
