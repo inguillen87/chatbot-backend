@@ -1,5 +1,5 @@
 from app import db
-from models import CatalogoItem, MarketCart, MarketCartItem, MunicipioTicket, Promocion, PromocionAlcance, PymePedido, TenantFollower, TenantProfile, User
+from models import AnalyticsEventV2, CatalogoItem, MarketCart, MarketCartItem, MunicipioTicket, Promocion, PromocionAlcance, PymePedido, TenantFollower, TenantProfile, User
 
 
 def _seed_pyme_tenant_with_catalog():
@@ -169,12 +169,29 @@ def test_public_market_catalog_contract_includes_promotions(client):
     assert payload["public_api"]["checkout"]["start"]["endpoint"] == "/api/checkout/crear-preferencia"
     assert payload["public_api"]["checkout"]["fallback_behavior"] == "return_structured_plan_or_payment_error_never_tokenized_endpoint"
     assert payload["public_api"]["assisted_upload"]["endpoint"] == "/api/pedidos/from-file?origen=marketplace"
+    assert payload["public_api"]["flow_runtime"]["contract_version"] == "public.whatsapp.flow_runtime.v1"
+    assert payload["public_api"]["flow_runtime"]["endpoint"] == f"/api/public/flows/runtime?tenant={tenant.slug}&channel=whatsapp"
+    assert payload["public_api"]["flow_runtime"]["actions_endpoint"] == f"/api/public/flows/actions?tenant={tenant.slug}"
+    assert payload["public_api"]["flow_runtime"]["guest_safe"] is True
     assert payload["public_api"]["tracking"]["order_path_template"] == f"/tracking/order/{{code}}?tenant_slug={tenant.slug}"
+    assert payload["public_api"]["analytics"]["contract_version"] == "marketplace.public_analytics_loop.v1"
+    assert payload["public_api"]["analytics"]["public_client_can_write_events_directly"] is False
+    assert payload["public_api"]["analytics"]["event_endpoint"] == "/api/analytics/event"
+    assert "catalog_viewed" in payload["public_api"]["analytics"]["recommended_events"]
+    assert "checkout_session_created" in payload["public_api"]["analytics"]["recommended_events"]
+    assert "order_tracking_opened" in payload["public_api"]["analytics"]["recommended_events"]
     assert payload["frontend_contract"]["show_promotions_strip"] is True
     assert payload["frontend_contract"]["show_faceted_filters"] is True
     assert payload["frontend_contract"]["show_assisted_intake"] is True
     assert payload["frontend_contract"]["public_api_contract"] == "marketplace.public_api.v1"
     assert payload["frontend_contract"]["use_public_api_endpoints"] is True
+    assert payload["frontend_contract"]["flow_runtime_endpoint"] == f"/api/public/flows/runtime?tenant={tenant.slug}&channel=whatsapp"
+    event = AnalyticsEventV2.query.filter_by(tenant_id=tenant.id, event_name="catalog_viewed").first()
+    assert event is not None
+    assert event.metadata_payload["contract_version"] == "marketplace.commerce_loop.analytics.v1"
+    assert event.metadata_payload["source"] == "public_tenant_catalog_contract"
+    assert event.metadata_payload["product_count"] == len(payload["products"])
+    assert event.metadata_payload["assisted_intake_mode"] == payload["assisted_intake"]["mode"]
 
 
 def test_public_market_catalog_contract_for_empty_catalog_promotes_assisted_intake(client):
@@ -220,6 +237,7 @@ def test_market_catalog_contract_matches_public_catalog_contract_shape(client):
         assert payload["public_api"]["contract_version"] == "marketplace.public_api.v1"
         assert payload["public_api"]["cart"]["summary"]["endpoint"] == f"/api/pwa/public/cart/summary?tenant={tenant.slug}"
         assert payload["public_api"]["cart"]["summary"]["guest_safe"] is True
+        assert payload["public_api"]["flow_runtime"]["endpoint"] == f"/api/public/flows/runtime?tenant={tenant.slug}&channel=whatsapp"
     assert set(public_payload.keys()) == set(market_payload.keys())
 
 

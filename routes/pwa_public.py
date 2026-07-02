@@ -20,6 +20,7 @@ from services.encuestas_service import (
 )
 from services.catalog_seed import ensure_seed_catalog
 from services.common_utils import parse_precio_flexible
+from services.marketplace_analytics import track_marketplace_event
 from routes.catalogo import _formatear_producto
 from services.rewards_demo import reward_profile_for_tenant
 from services.tenant_resolver import (
@@ -488,7 +489,21 @@ def public_cart_summary():
             "recompensas_demo": reward_profile_for_tenant(tenant.id, 0.0),
         })
 
-    return jsonify(_db_cart_summary(cart, owner))
+    summary = _db_cart_summary(cart, owner)
+    if summary.get("items_count"):
+        track_marketplace_event(
+            tenant,
+            "checkout_previewed",
+            {
+                "source": "public_cart_summary",
+                "cart_id": getattr(cart, "id", None),
+                "items_count": summary.get("items_count"),
+                "total_estimado": summary.get("total_estimado"),
+                "badge_count": summary.get("badge_count"),
+            },
+            entity_ref=f"cart:{getattr(cart, 'id', '')}" if getattr(cart, "id", None) else None,
+        )
+    return jsonify(summary)
 
 
 @pwa_public_bp.post("/cart/add")
@@ -544,7 +559,21 @@ def public_cart_add():
         db.session.add(cart_item)
 
     db.session.commit()
-    return jsonify(_db_cart_summary(cart, owner, event="add"))
+    summary = _db_cart_summary(cart, owner, event="add")
+    track_marketplace_event(
+        tenant,
+        "cart_started",
+        {
+            "source": "public_cart_add",
+            "cart_id": getattr(cart, "id", None),
+            "product_id": item.id,
+            "quantity": cantidad,
+            "items_count": summary.get("items_count"),
+            "total_estimado": summary.get("total_estimado"),
+        },
+        entity_ref=f"cart:{getattr(cart, 'id', '')}" if getattr(cart, "id", None) else None,
+    )
+    return jsonify(summary)
 
 
 @pwa_public_bp.post("/cart/update")

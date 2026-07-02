@@ -12,6 +12,7 @@ os.environ.setdefault("TESTING", "1")
 from app import create_app, db
 from config import Config
 from models import (
+    AnalyticsEventV2,
     CatalogoItem,
     EncEncuesta,
     EncRespuesta,
@@ -1434,6 +1435,14 @@ class V2SaasContractsTest(unittest.TestCase):
             payload["admin_panel_widgets"]["ticket_workspace"]["auto_assign_endpoint"],
             "/api/v2/employee-routing/auto-assign",
         )
+        self.assertEqual(payload["e2e_flow_readiness"]["contract_version"], "platform.e2e_flow_readiness.v1")
+        self.assertGreaterEqual(payload["e2e_flow_readiness"]["summary"]["total"], 6)
+        self.assertEqual(payload["e2e_flow_readiness"]["frontend_contract"]["render_as"], "e2e_flow_readiness_grid")
+        e2e_flow_ids = {item["id"] for item in payload["e2e_flow_readiness"]["flows"]}
+        self.assertIn("gov_claim_text_to_tracking", e2e_flow_ids)
+        self.assertIn("pyme_catalog_order_checkout", e2e_flow_ids)
+        self.assertTrue(payload["frontend_contract"]["show_e2e_flow_readiness"])
+        self.assertIn("e2e_flow_readiness", payload["frontend_contract"]["recommended_views"])
         whatsapp_module = next(item for item in payload["modules"] if item["id"] == "widget_whatsapp")
         self.assertEqual(whatsapp_module["label"], "Widget/WhatsApp/Voz")
         self.assertEqual(whatsapp_module["endpoint"], "/api/v2/whatsapp/experience")
@@ -1858,6 +1867,26 @@ class V2SaasContractsTest(unittest.TestCase):
             payload["webview_blueprint"]["summary"]["transactional_flows"],
         )
         self.assertTrue(payload["webview_blueprint"]["security"]["requires_full_plan"])
+        self.assertEqual(payload["flow_runtime"]["contract_version"], "whatsapp.flow_runtime.v1")
+        self.assertTrue(payload["flow_runtime"]["runtime_policy"]["pause_conversation_while_webview_open"])
+        self.assertEqual(
+            payload["flow_runtime"]["public_endpoints"]["checkout"],
+            "/api/checkout/crear-preferencia",
+        )
+        runtime_flows = {item["id"]: item for item in payload["flow_runtime"]["flows"]}
+        self.assertIn("claim_tracking_helpdesk", runtime_flows)
+        self.assertIn("order_checkout", runtime_flows)
+        self.assertIn("survey_vote", runtime_flows)
+        self.assertIn("public_checkout", [item["id"] for item in runtime_flows["order_checkout"]["actions"]])
+        self.assertIn(
+            "claim_public_message",
+            [item["id"] for item in runtime_flows["claim_tracking_helpdesk"]["actions"]],
+        )
+        self.assertIn("commerce", payload["flow_runtime"]["summary"]["families"])
+        self.assertEqual(
+            payload["flow_runtime"]["frontend_contract"]["render_as"],
+            "flow_runtime_command_center",
+        )
         self.assertEqual(payload["finance_transactional"]["contract_version"], "finance.transactional_whatsapp.v1")
         self.assertGreaterEqual(payload["finance_transactional"]["summary"]["journeys"], 6)
         self.assertGreaterEqual(payload["finance_transactional"]["summary"]["webview_flows"], 6)
@@ -1968,6 +1997,147 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(alias_payload.get("contract_version"), "whatsapp.experience.v1")
         self.assertEqual(alias_payload.get("request_id"), "whatsapp-exp-alias-1")
         self.assertEqual(alias_payload["tenant"]["slug"], self.tenant.slug)
+
+    def test_whatsapp_flow_runtime_endpoint_exposes_transactional_webviews(self):
+        response = self.client.get(
+            f"/api/v2/tenants/{self.tenant.slug}/whatsapp/flow-runtime",
+            headers=self._auth(self.owner),
+        )
+
+        self.assertEqual(response.status_code, 200, response.get_json())
+        payload = response.get_json()
+        self.assertEqual(payload["contract_version"], "whatsapp.flow_runtime.v1")
+        self.assertEqual(
+            payload["public_endpoints"]["assisted_order_upload"],
+            "/api/pedidos/from-file?origen=marketplace",
+        )
+        self.assertTrue(payload["runtime_policy"]["resume_on_callback_or_timeout"])
+        runtime_flows = {item["id"]: item for item in payload["flows"]}
+        self.assertIn("order_checkout", runtime_flows)
+        self.assertIn(
+            "assisted_order_upload",
+            [item["id"] for item in runtime_flows["order_checkout"]["actions"]],
+        )
+        self.assertIn("claim_tracking_helpdesk", runtime_flows)
+        self.assertIn(
+            "server_to_server_callback",
+            [item["id"] for item in runtime_flows["claim_tracking_helpdesk"]["actions"]],
+        )
+        self.assertEqual(payload["frontend_contract"]["render_as"], "flow_runtime_command_center")
+
+    def test_public_flow_runtime_exposes_whatsapp_widget_action_manifest(self):
+        response = self.client.get(
+            f"/api/public/flows/runtime?tenant={self.tenant.slug}&channel=whatsapp",
+            headers={"X-Request-Id": "public-runtime-1"},
+        )
+
+        self.assertEqual(response.status_code, 200, response.get_json())
+        payload = response.get_json()
+        self.assertEqual(payload["contract_version"], "public.whatsapp.flow_runtime.v1")
+        self.assertEqual(payload["admin_contract_version"], "whatsapp.flow_runtime.v1")
+        self.assertEqual(payload["tenant"]["slug"], self.tenant.slug)
+        self.assertEqual(payload["channel"], "whatsapp")
+        self.assertFalse(payload["privacy"]["public_runtime_contains_secrets"])
+        self.assertTrue(payload["privacy"]["signed_session_required_for_private_records"])
+        allowed_actions = payload["action_manifest"]["allowed_actions"]
+        self.assertIn("order_checkout:public_checkout", allowed_actions)
+        self.assertIn("order_checkout:assisted_order_upload", allowed_actions)
+        self.assertIn("claim_tracking_helpdesk:claim_public_message", allowed_actions)
+        self.assertEqual(payload["action_manifest"]["post_endpoint"], "/api/public/flows/actions")
+        execution_policy = payload["action_manifest"]["execution_policy"]
+        self.assertEqual(execution_policy["contract_version"], "public.flow_runtime.execution_policy.v1")
+        self.assertEqual(
+            execution_policy["callback_endpoint_template"],
+            "/api/public/flows/{execution_id}/callback",
+        )
+        self.assertEqual(
+            execution_policy["resume_policy"],
+            "resume_conversation_on_callback_or_timeout",
+        )
+        analytics = payload["action_manifest"]["analytics"]
+        self.assertEqual(analytics["contract_version"], "public.flow_runtime.analytics.v1")
+        self.assertFalse(analytics["public_client_can_write_events_directly"])
+        self.assertIn("checkout_session_created", analytics["recommended_events"])
+        self.assertIn("assisted_upload_submitted", analytics["recommended_events"])
+
+    def test_public_flow_runtime_action_handoff_requires_idempotency_for_mutations(self):
+        missing_key_response = self.client.post(
+            f"/api/public/flows/actions?tenant={self.tenant.slug}",
+            json={"flow_id": "order_checkout", "action_id": "public_checkout"},
+        )
+        self.assertEqual(missing_key_response.status_code, 409, missing_key_response.get_json())
+        self.assertEqual(missing_key_response.get_json()["reason_code"], "idempotency_key_required")
+
+        response = self.client.post(
+            f"/api/public/flows/actions?tenant={self.tenant.slug}",
+            headers={"X-Idempotency-Key": "order-checkout-1"},
+            json={"flow_id": "order_checkout", "action_id": "public_checkout"},
+        )
+
+        self.assertEqual(response.status_code, 200, response.get_json())
+        payload = response.get_json()
+        self.assertEqual(payload["contract_version"], "public.flow_runtime.action.v1")
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["flow"]["family"], "commerce")
+        self.assertEqual(payload["action"]["endpoint"], "/api/checkout/crear-preferencia")
+        self.assertEqual(payload["handoff"]["method"], "POST")
+        self.assertEqual(payload["handoff"]["idempotency_key"], "order-checkout-1")
+        self.assertTrue(payload["execution"]["id"].startswith("exec-"))
+        self.assertEqual(payload["execution"]["flow_id"], "order_checkout")
+        self.assertEqual(payload["execution"]["action_id"], "public_checkout")
+        self.assertEqual(payload["execution"]["idempotency_key"], "order-checkout-1")
+        self.assertEqual(
+            payload["execution"]["callback_endpoint"],
+            f"/api/public/flows/{payload['execution']['id']}/callback",
+        )
+        self.assertEqual(payload["handoff"]["execution_id"], payload["execution"]["id"])
+        self.assertEqual(payload["handoff"]["callback_endpoint"], payload["execution"]["callback_endpoint"])
+        self.assertEqual(payload["handoff"]["target_endpoint"], "/api/checkout/crear-preferencia")
+        self.assertEqual(payload["analytics"]["contract_version"], "public.flow_runtime.analytics.v1")
+        self.assertIn("flow_webview_completed", payload["analytics"]["recommended_events"])
+
+        retry_response = self.client.post(
+            f"/api/public/flows/actions?tenant={self.tenant.slug}",
+            headers={"X-Idempotency-Key": "order-checkout-1"},
+            json={"flow_id": "order_checkout", "action_id": "public_checkout"},
+        )
+        self.assertEqual(retry_response.status_code, 200, retry_response.get_json())
+        self.assertEqual(retry_response.get_json()["execution"]["id"], payload["execution"]["id"])
+
+    def test_public_flow_runtime_callback_accepts_webview_completion_with_idempotency(self):
+        missing_key_response = self.client.post(
+            f"/api/public/flows/exec-123/callback?tenant={self.tenant.slug}",
+            json={"flow_id": "order_checkout", "status": "completed"},
+        )
+        self.assertEqual(missing_key_response.status_code, 409, missing_key_response.get_json())
+        self.assertEqual(missing_key_response.get_json()["reason_code"], "idempotency_key_required")
+
+        response = self.client.post(
+            f"/api/public/flows/exec-123/callback?tenant={self.tenant.slug}",
+            headers={"Idempotency-Key": "exec-123-final"},
+            json={
+                "flow_id": "order_checkout",
+                "action_id": "public_checkout",
+                "status": "completed",
+                "writebacks": ["order_checkout:crm_timeline_updated"],
+            },
+        )
+
+        self.assertEqual(response.status_code, 200, response.get_json())
+        payload = response.get_json()
+        self.assertEqual(payload["contract_version"], "public.flow_runtime.callback.v1")
+        self.assertTrue(payload["accepted"])
+        self.assertTrue(payload["conversation"]["resume"])
+        self.assertEqual(payload["execution"]["id"], "exec-123")
+        self.assertEqual(payload["execution"]["idempotency_key"], "exec-123-final")
+        self.assertEqual(payload["crm_writeback"]["writebacks"], ["order_checkout:crm_timeline_updated"])
+        self.assertEqual(payload["analytics"]["contract_version"], "public.flow_runtime.analytics.v1")
+        self.assertEqual(payload["analytics"]["event_name"], "flow_webview_completed")
+        saved_event = AnalyticsEventV2.query.filter_by(event_name="flow_webview_completed").first()
+        self.assertIsNotNone(saved_event)
+        self.assertEqual(saved_event.entity_ref, "exec-123")
+        self.assertEqual(saved_event.channel, "whatsapp")
+        self.assertEqual(saved_event.metadata_payload["flow_id"], "order_checkout")
 
     def test_superadmin_command_center_contract(self):
         response = self.client.get(

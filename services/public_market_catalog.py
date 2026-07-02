@@ -15,6 +15,7 @@ PUBLIC_MARKET_CATALOG_CONTRACT_VERSION = "public.market_catalog.v1"
 PUBLIC_CATALOG_PROMOTIONS_CONTRACT_VERSION = "public.catalog_promotions.v1"
 PUBLIC_MARKET_ASSISTED_INTAKE_CONTRACT_VERSION = "marketplace.assisted_intake_entry.v1"
 PUBLIC_MARKET_API_CONTRACT_VERSION = "marketplace.public_api.v1"
+PUBLIC_MARKET_ANALYTICS_CONTRACT_VERSION = "marketplace.public_analytics_loop.v1"
 
 
 def tenant_public_summary(tenant: TenantProfile) -> dict[str, Any]:
@@ -118,6 +119,43 @@ def _parse_float(value: Any) -> float | None:
         return None
 
 
+def _public_market_analytics_contract(tenant: TenantProfile) -> dict[str, Any]:
+    return {
+        "contract_version": PUBLIC_MARKET_ANALYTICS_CONTRACT_VERSION,
+        "event_endpoint": "/api/analytics/event",
+        "runtime_callback_endpoint_template": "/api/public/flows/{execution_id}/callback",
+        "public_client_can_write_events_directly": False,
+        "write_mode": "frontend_signal_plus_server_reconciliation",
+        "client_signal_channel": "dataLayer",
+        "tenant_slug": tenant.slug,
+        "recommended_events": [
+            "catalog_viewed",
+            "whatsapp_cta_clicked",
+            "assisted_upload_started",
+            "assisted_upload_submitted",
+            "product_viewed",
+            "cart_started",
+            "checkout_previewed",
+            "checkout_session_created",
+            "order_created",
+            "order_tracking_opened",
+        ],
+        "funnel": [
+            {"stage": "catalog", "event": "catalog_viewed", "label": "Catalogo visto"},
+            {"stage": "assist", "event": "assisted_upload_submitted", "label": "Pedido asistido"},
+            {"stage": "cart", "event": "cart_started", "label": "Carrito iniciado"},
+            {"stage": "checkout", "event": "checkout_session_created", "label": "Checkout creado"},
+            {"stage": "order", "event": "order_created", "label": "Pedido generado"},
+            {"stage": "tracking", "event": "order_tracking_opened", "label": "Seguimiento abierto"},
+        ],
+        "privacy": {
+            "raw_payment_data_allowed": False,
+            "card_data_in_chat_allowed": False,
+            "customer_pii_requires_consent": True,
+        },
+    }
+
+
 def public_market_api_contract(tenant: TenantProfile, assisted_intake: dict[str, Any]) -> dict[str, Any]:
     tenant_param = quote_plus(str(tenant.slug or ""))
     pwa_cart_base = f"/api/pwa/public/cart?tenant={tenant_param}"
@@ -157,11 +195,19 @@ def public_market_api_contract(tenant: TenantProfile, assisted_intake: dict[str,
             "fallback_behavior": "return_structured_plan_or_payment_error_never_tokenized_endpoint",
         },
         "assisted_upload": assisted_intake["submit"],
+        "flow_runtime": {
+            "method": "GET",
+            "endpoint": f"/api/public/flows/runtime?tenant={tenant_param}&channel=whatsapp",
+            "actions_endpoint": f"/api/public/flows/actions?tenant={tenant_param}",
+            "contract_version": "public.whatsapp.flow_runtime.v1",
+            "guest_safe": True,
+        },
         "tracking": {
             "order_path_template": f"/tracking/order/{{code}}?tenant_slug={tenant.slug}",
             "claim_path_template": f"/tracking/claim/{{code}}?tenant_slug={tenant.slug}",
             "source": "public_follow_up_from_assisted_upload",
         },
+        "analytics": _public_market_analytics_contract(tenant),
     }
 
 
@@ -716,5 +762,6 @@ def build_public_market_catalog_contract(
             "empty_catalog_mode": assisted_intake["mode"],
             "public_api_contract": public_api["contract_version"],
             "use_public_api_endpoints": True,
+            "flow_runtime_endpoint": public_api["flow_runtime"]["endpoint"],
         },
     }

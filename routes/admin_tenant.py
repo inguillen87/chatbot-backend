@@ -5,7 +5,8 @@ from sqlalchemy import func, or_
 from sqlalchemy.orm.attributes import flag_modified
 from datetime import datetime, timezone, timedelta
 
-from utils.auth_helpers import token_requerido
+from utils.auth_helpers import obtener_token, token_requerido, user_from_token
+from utils.roles import is_super_admin_role
 from middleware.tenant_context import require_tenant
 from models import (
     CatalogoItem,
@@ -95,6 +96,13 @@ def _bool_from_payload(value) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "y", "si", "sí", "s"}
     return False
+
+
+def _optional_tenant_creation_actor() -> User | None:
+    token = obtener_token()
+    if not token:
+        return None
+    return user_from_token(token)
 
 
 def _cors_preflight_response():
@@ -1417,6 +1425,24 @@ def create_tenant():
         requested_plan = _normalize_tenant_creation_plan(
             data.get("plan") or data.get("tenant_plan") or data.get("subscription_plan")
         )
+        actor = _optional_tenant_creation_actor()
+        actor_is_super_admin = bool(actor and is_super_admin_role(getattr(actor, "rol", None)))
+        if requested_plan != "free" and not actor_is_super_admin:
+            return jsonify(
+                {
+                    "error": "plan_requires_super_admin",
+                    "reason_code": "productive_plan_requires_super_admin",
+                    "requested_plan": requested_plan,
+                    "allowed_public_plan": "free",
+                    "next_action": "crear_trial_free_o_autenticar_super_admin_para_activar_plan_productivo",
+                    "frontend_contract": {
+                        "render_as": "tenant_creation_plan_gate",
+                        "allow_public_signup": True,
+                        "public_plan": "free",
+                        "requires_super_admin_for": sorted(plan for plan in TENANT_CREATION_ALLOWED_PLANS if plan != "free"),
+                    },
+                }
+            ), 403
         auto_assign_whatsapp_number = _bool_from_payload(
             data.get("auto_assign_whatsapp_number", data.get("autoAssignWhatsappNumber"))
         )
@@ -1428,7 +1454,9 @@ def create_tenant():
             plan=requested_plan,
             auto_assign_whatsapp_number=auto_assign_whatsapp_number,
             owner_email=data.get('owner_email') or data.get('email_admin'),
-            owner_password=data.get('owner_password')
+            owner_password=data.get('owner_password'),
+            allow_existing_owner=actor_is_super_admin,
+            reset_existing_owner_password=actor_is_super_admin,
         )
 
         widget_token = None

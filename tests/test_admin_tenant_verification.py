@@ -46,11 +46,33 @@ class TestAdminTenantVerification(unittest.TestCase):
         self.assertNotIn("whatsapp_onboarding", tenant.configuracion or {})
         self.assertEqual((tenant.configuracion or {})["provisioning"]["status"], "plan_required")
 
+    def test_public_create_tenant_rejects_productive_plan(self):
+        response = self.client.post(
+            '/api/admin/tenants',
+            json={
+                "slug": "junin-full-public-blocked",
+                "nombre": "Junin Full Public Blocked",
+                "tipo": "municipio",
+                "plan": "full",
+                "owner_email": "admin@junin-full-public-blocked.test",
+            },
+        )
+
+        self.assertEqual(response.status_code, 403)
+        payload = response.get_json()
+        self.assertEqual(payload["reason_code"], "productive_plan_requires_super_admin")
+        self.assertEqual(payload["allowed_public_plan"], "free")
+        self.assertIsNone(TenantProfile.query.filter_by(slug="junin-full-public-blocked").first())
+
     def test_create_tenant_honors_full_plan_and_prepares_onboarding(self):
         self.app.config.update(
             TWILIO_TENANT_AUTO_BOOTSTRAP_ENABLED=True,
             TWILIO_TENANT_AUTO_PROVISION_ENABLED=False,
         )
+        super_admin = User(email="platform@chatboc.test", name="Platform", rol="super_admin")
+        super_admin.set_password("pass")
+        db.session.add(super_admin)
+        db.session.commit()
         payload = {
             "slug": "junin-full-verify",
             "nombre": "Junin Full Verify",
@@ -59,7 +81,11 @@ class TestAdminTenantVerification(unittest.TestCase):
             "owner_email": "admin@junin-full-verify.test",
         }
 
-        response = self.client.post('/api/admin/tenants', json=payload)
+        response = self.client.post(
+            '/api/admin/tenants',
+            json=payload,
+            headers={"Authorization": f"Bearer {self.generate_token(super_admin)}"},
+        )
 
         self.assertEqual(response.status_code, 201, response.get_json())
         data = response.get_json()
@@ -82,6 +108,32 @@ class TestAdminTenantVerification(unittest.TestCase):
         self.assertIsNotNone(owner)
         self.assertEqual(owner.plan, "full")
         self.assertEqual(owner.tenant_slug, tenant.slug)
+
+    def test_public_create_tenant_does_not_reassign_existing_owner_email(self):
+        existing = User(email="taken-owner@test.local", name="Taken", rol="admin", tipo_chat="pyme", tenant_slug="existing")
+        existing.set_password("old-password")
+        db.session.add(existing)
+        db.session.commit()
+
+        response = self.client.post(
+            '/api/admin/tenants',
+            json={
+                "slug": "owner-takeover-attempt",
+                "nombre": "Owner Takeover Attempt",
+                "tipo": "municipio",
+                "owner_email": "taken-owner@test.local",
+                "owner_password": "new-password",
+            },
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("owner_email already exists", response.get_json()["error"])
+        refreshed = db.session.get(User, existing.id)
+        self.assertEqual(refreshed.tenant_slug, "existing")
+        self.assertEqual(refreshed.rol, "admin")
+        self.assertTrue(refreshed.check_password("old-password"))
+        self.assertFalse(refreshed.check_password("new-password"))
+        self.assertIsNone(TenantProfile.query.filter_by(slug="owner-takeover-attempt").first())
 
     def test_create_tenant_rejects_invalid_plan(self):
         response = self.client.post(

@@ -16,7 +16,8 @@ def seed_market_tenants():
                     tipo="pyme",
                     template_key="bodega",
                     owner_email="admin@cuatrofincas.com",
-                    owner_password="password123"
+                    owner_password="password123",
+                    allow_existing_owner=True,
                 )
             except Exception as e:
                 print(f"Error creating {slug}: {e}")
@@ -35,7 +36,8 @@ def seed_market_tenants():
                     tipo="pyme",
                     template_key="local_comercial_general",
                     owner_email="admin@servill.com",
-                    owner_password="password123"
+                    owner_password="password123",
+                    allow_existing_owner=True,
                 )
             except Exception as e:
                 print(f"Error creating {slug}: {e}")

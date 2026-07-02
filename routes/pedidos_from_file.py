@@ -21,6 +21,7 @@ from routes.productos import _resolve_public_owner
 from services.cart import _get_pyme_cart
 from services.commerce_unified import _build_assisted_operator_pack, _build_operator_triage
 from services.gcs_service import upload_to_gcs
+from services.marketplace_analytics import track_marketplace_event
 from services.order_attachment_preview import build_crm_order_draft
 from services.tenant_resolver import TenantResolutionError, resolve_tenant_and_user
 from services.vision_extractor import extract_table_from_file
@@ -2286,6 +2287,35 @@ def pedidos_desde_archivo():
             first_item_payload["linked_record"] = linked_record
         pedido.items = [first_item_payload, *pedido.items[1:]]
     db.session.commit()
+    track_marketplace_event(
+        tenant,
+        "assisted_upload_submitted",
+        {
+            "source": "pedidos_from_file",
+            "contract_version": _ASSISTED_REQUEST_CONTRACT_VERSION,
+            "mode": "order_note_upload",
+            "request_kind": request_kind,
+            "request_kind_label": request_kind_label,
+            "primary_intent": document_profile.get("primary_intent"),
+            "target_module": crm_handoff.get("target_module"),
+            "input_type": extension,
+            "has_file": bool(archivo),
+            "catalog_matching_enabled": catalog_matching_enabled,
+            "matched_count": matched_count,
+            "unmatched_count": unmatched_count,
+            "detected_count": detected_count,
+            "needs_operator_review": match_summary.get("needs_operator_review"),
+            "crm_state": pedido.metadata_payload.get("crm_state"),
+            "linked_record_type": linked_record.get("type") if linked_record else None,
+            "linked_record_id": linked_record.get("id") if linked_record else None,
+            "extraction_error": bool(extraction_error),
+        },
+        channel=origen,
+        session_id=chat_session_id,
+        anon_id=request_anon_id,
+        entity_ref=f"pedido:{pedido.id}",
+        user_id=getattr(user, "id", None),
+    )
 
     response_payload = {
         "contract_version": _ASSISTED_REQUEST_CONTRACT_VERSION,

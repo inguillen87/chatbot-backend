@@ -2911,6 +2911,258 @@ def _webview_blueprint_payload(
     }
 
 
+def _flow_runtime_family(flow_id: str) -> str:
+    normalized = flow_id.lower()
+    if normalized.startswith("claim") or "reclamo" in normalized:
+        return "claims"
+    if "order" in normalized or "checkout" in normalized or "catalog" in normalized:
+        return "commerce"
+    if "survey" in normalized or "vote" in normalized:
+        return "surveys"
+    if normalized.startswith("finance") or "payment" in normalized or "receipt" in normalized:
+        return "finance"
+    if "school" in normalized or "education" in normalized:
+        return "education"
+    if "procedure" in normalized or "appointment" in normalized or "document" in normalized:
+        return "government_services"
+    return "omnichannel"
+
+
+def _flow_runtime_action_contract(flow: Mapping[str, Any], tenant: TenantProfile) -> list[dict[str, Any]]:
+    flow_id = str(flow.get("id") or "").strip()
+    family = _flow_runtime_family(flow_id)
+    url_template = str(flow.get("url_template") or "").strip()
+    server_confirmation = [str(item) for item in flow.get("server_confirmation", []) if item]
+    signed_params = [str(item) for item in flow.get("signed_params", []) if item]
+
+    actions: list[dict[str, Any]] = [
+        {
+            "id": "open_webview",
+            "label": "Abrir webview seguro",
+            "method": "GET",
+            "endpoint_template": url_template,
+            "implementation_status": "ready" if url_template else "missing_url_template",
+            "requires_signed_session": bool(signed_params),
+        }
+    ]
+
+    if family == "claims":
+        actions.extend(
+            [
+                {
+                    "id": "public_tracking_experience",
+                    "label": "Consultar estado tipo delivery",
+                    "method": "GET",
+                    "endpoint": "/api/public/tracking/experience",
+                    "implementation_status": "ready",
+                },
+                {
+                    "id": "claim_public_message",
+                    "label": "Agregar comentario al reclamo",
+                    "method": "POST",
+                    "endpoint_template": "/api/public/tracking/claims/{ticket_id}/messages",
+                    "implementation_status": "ready",
+                },
+            ]
+        )
+    elif family == "commerce":
+        actions.extend(
+            [
+                {
+                    "id": "public_cart",
+                    "label": "Carrito publico del marketplace",
+                    "method": "GET",
+                    "endpoint": "/api/pwa/public/cart",
+                    "implementation_status": "ready",
+                },
+                {
+                    "id": "public_checkout",
+                    "label": "Checkout publico seguro",
+                    "method": "POST",
+                    "endpoint": "/api/checkout/crear-preferencia",
+                    "implementation_status": "ready",
+                },
+                {
+                    "id": "assisted_order_upload",
+                    "label": "Leer nota, foto o PDF de pedido",
+                    "method": "POST",
+                    "endpoint": "/api/pedidos/from-file?origen=marketplace",
+                    "implementation_status": "ready",
+                },
+            ]
+        )
+    elif family == "surveys":
+        actions.extend(
+            [
+                {
+                    "id": "public_survey",
+                    "label": "Responder encuesta o votacion",
+                    "method": "GET",
+                    "endpoint_template": "/e/{survey_slug}",
+                    "implementation_status": "ready",
+                },
+                {
+                    "id": "survey_response",
+                    "label": "Registrar respuesta",
+                    "method": "POST",
+                    "endpoint_template": "/api/pwa/public/surveys/{survey_slug}/respond",
+                    "implementation_status": "ready",
+                },
+            ]
+        )
+    elif family == "finance":
+        actions.extend(
+            [
+                {
+                    "id": "secure_finance_webview",
+                    "label": "Operacion financiera en webview",
+                    "method": "GET",
+                    "endpoint_template": "/finanzas/{tenant_slug}/{flow}/{operation_code}",
+                    "implementation_status": "contract_ready",
+                },
+                {
+                    "id": "server_confirmation",
+                    "label": "Confirmacion server-to-server",
+                    "method": "POST",
+                    "endpoint": "/api/v2/payments/status",
+                    "implementation_status": "adapter_pending",
+                },
+            ]
+        )
+    else:
+        actions.append(
+            {
+                "id": "crm_writeback",
+                "label": "Registrar actividad en CRM",
+                "method": "POST",
+                "endpoint": "/api/v2/inbox/omnichannel/actions",
+                "implementation_status": "ready",
+            }
+        )
+
+    if server_confirmation:
+        actions.append(
+            {
+                "id": "server_to_server_callback",
+                "label": "Writeback confirmado",
+                "method": "POST",
+                "endpoint_template": "/api/public/flows/{execution_id}/callback",
+                "implementation_status": "ready",
+                "writebacks": server_confirmation,
+                "idempotency_required": True,
+            }
+        )
+
+    return actions
+
+
+def _flow_runtime_contract(
+    tenant: TenantProfile,
+    *,
+    integration_access: Mapping[str, Any],
+    webview_blueprint: Mapping[str, Any],
+    template_blueprint: Mapping[str, Any],
+) -> dict[str, Any]:
+    flows = webview_blueprint.get("flows") if isinstance(webview_blueprint.get("flows"), list) else []
+    normalized_flows: list[dict[str, Any]] = []
+    ready_count = 0
+    contract_ready_count = 0
+    adapter_pending_count = 0
+
+    for index, raw_flow in enumerate(flows):
+        if not isinstance(raw_flow, Mapping):
+            continue
+        flow_id = str(raw_flow.get("id") or f"flow_{index + 1}").strip()
+        status = str(raw_flow.get("status") or "unknown").strip().lower()
+        is_ready = status == "ready"
+        actions = _flow_runtime_action_contract(raw_flow, tenant)
+        action_states = {str(item.get("implementation_status") or "") for item in actions}
+        ready_count += 1 if is_ready else 0
+        contract_ready_count += 1 if "contract_ready" in action_states else 0
+        adapter_pending_count += 1 if "adapter_pending" in action_states else 0
+
+        normalized_flows.append(
+            {
+                "id": flow_id,
+                "label": str(raw_flow.get("label") or flow_id).strip(),
+                "family": _flow_runtime_family(flow_id),
+                "status": status or "unknown",
+                "ready": is_ready,
+                "surface": raw_flow.get("surface") or "whatsapp_cta_webview",
+                "entrypoints": ["whatsapp_template_cta", "widget_action", "admin_crm_reply"],
+                "url_template": raw_flow.get("url_template"),
+                "template_ids": [str(item) for item in raw_flow.get("template_ids", []) if item],
+                "required_fields": [str(item) for item in raw_flow.get("requires", []) if item],
+                "signed_params": [str(item) for item in raw_flow.get("signed_params", []) if item],
+                "server_confirmation": [
+                    str(item) for item in raw_flow.get("server_confirmation", []) if item
+                ],
+                "actions": actions,
+                "qa": {
+                    "assertions": (
+                        raw_flow.get("executable_contract", {}).get("qa_assertions", [])
+                        if isinstance(raw_flow.get("executable_contract"), Mapping)
+                        else []
+                    ),
+                    "manual_probe": f"python scripts/qa_whatsapp_flows.py --flow {flow_id}",
+                },
+                "fallback": raw_flow.get("fallback") or "plain_text_inside_24h",
+                "raw_status": raw_flow.get("status"),
+            }
+        )
+
+    family_counts: dict[str, int] = {}
+    for item in normalized_flows:
+        family = str(item.get("family") or "omnichannel")
+        family_counts[family] = family_counts.get(family, 0) + 1
+
+    return {
+        "contract_version": "whatsapp.flow_runtime.v1",
+        "tenant": {"id": tenant.id, "slug": tenant.slug, "tipo": tenant.tipo, "vertical": tenant.vertical},
+        "enabled": bool(integration_access.get("enabled")),
+        "runtime_policy": {
+            "pause_conversation_while_webview_open": True,
+            "resume_on_callback_or_timeout": True,
+            "fallback_inside_24h_only_until_template_approved": True,
+            "idempotency_required": True,
+            "no_sensitive_data_in_chat": True,
+            "server_to_server_confirmation_required": True,
+        },
+        "entrypoints": {
+            "whatsapp": "approved_template_cta_or_24h_reply",
+            "widget": "authenticated_or_public_widget_action",
+            "admin": "crm_reply_action",
+        },
+        "public_endpoints": {
+            "tracking": "/api/public/tracking/experience",
+            "claim_messages": "/api/public/tracking/claims/{ticket_id}/messages",
+            "cart": "/api/pwa/public/cart",
+            "checkout": "/api/checkout/crear-preferencia",
+            "assisted_order_upload": "/api/pedidos/from-file?origen=marketplace",
+            "survey_response": "/api/pwa/public/surveys/{survey_slug}/respond",
+        },
+        "template_registry": {
+            "summary": template_blueprint.get("registry_summary") if isinstance(template_blueprint, Mapping) else {},
+            "creation_manifest": "/api/admin/templates/twilio-content/sync",
+        },
+        "summary": {
+            "flows_total": len(normalized_flows),
+            "ready_flows": ready_count,
+            "contract_ready_adapters": contract_ready_count,
+            "adapter_pending": adapter_pending_count,
+            "families": family_counts,
+        },
+        "flows": normalized_flows,
+        "frontend_contract": {
+            "render_as": "flow_runtime_command_center",
+            "show_family_filters": True,
+            "show_action_endpoints": True,
+            "show_adapter_pending_badges": True,
+            "primary_copy": "Webviews transaccionales para WhatsApp, widget y CRM sin pedir datos sensibles en el chat.",
+        },
+    }
+
+
 def _message_ux_policy_payload(
     *,
     channel_ready: bool,
@@ -3842,6 +4094,12 @@ def build_whatsapp_experience(
         checkout_experience=checkout_experience,
         integration_access=integration_access,
     )
+    flow_runtime = _flow_runtime_contract(
+        tenant,
+        integration_access=integration_access,
+        webview_blueprint=webview_blueprint,
+        template_blueprint=template_blueprint,
+    )
     channel_reason = None
     if not channel_ready:
         channel_reason = (
@@ -3934,6 +4192,7 @@ def build_whatsapp_experience(
         },
         "template_blueprint": template_blueprint,
         "webview_blueprint": webview_blueprint,
+        "flow_runtime": flow_runtime,
         "finance_transactional": finance_transactional,
         "qa_playbook": qa_playbook,
         "message_ux_policy": message_ux_policy,
@@ -3955,6 +4214,7 @@ def build_whatsapp_experience(
                 "commerce_checkout",
                 "template_blueprint",
                 "webview_checkout",
+                "flow_runtime",
                 "transactional_finance",
                 "qa_playbook",
                 "message_ux_policy",

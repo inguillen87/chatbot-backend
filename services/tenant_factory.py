@@ -84,6 +84,7 @@ def create_tenant_from_template(
     auto_assign_whatsapp_number: bool = False,
     owner_email: str = None,
     owner_password: str = None,
+    allow_existing_owner: bool = False,
     reset_existing_owner_password: bool = True,
 ) -> TenantProfile:
     nombre = str(nombre or "").strip()
@@ -123,12 +124,14 @@ def create_tenant_from_template(
         owner.set_password(owner_password)
         db.session.add(owner)
     else:
+        if not allow_existing_owner:
+            raise ValueError("owner_email already exists")
         owner.name = owner.name or nombre
         owner.rol = role_for_tenant_type(tipo)
         owner.tipo_chat = tipo
         owner.tenant_slug = slug
         owner.plan = plan
-        if owner_password and (reset_existing_owner_password or not owner_password_was_generated):
+        if owner_password and reset_existing_owner_password:
             owner.set_password(owner_password)
     db.session.flush()
 

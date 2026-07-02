@@ -6,6 +6,7 @@ import jwt
 
 from app import db
 from models import (
+    AnalyticsEventV2,
     ArchivoAdjunto,
     CatalogoItem,
     MarketOrder,
@@ -223,6 +224,18 @@ def test_marketplace_order_note_upload_creates_assisted_request_contract(client,
     assert pedido.metadata_payload["catalog_candidates"][0]["candidates"][0]["catalogo_item_id"] == clavos_candidate.id
     assert pedido.items[0]["catalog_candidates"][0]["row"]["nombre"] == "Clavos 2 pulgadas"
     assert pedido.items[0]["public_follow_up"]["tracking"]["path"] == tracking_action["href"]
+    analytics_event = AnalyticsEventV2.query.filter_by(
+        tenant_id=tenant.id,
+        event_name="assisted_upload_submitted",
+        entity_ref=f"pedido:{payload['pedido_id']}",
+    ).first()
+    assert analytics_event is not None
+    assert analytics_event.metadata_payload["contract_version"] == "marketplace.commerce_loop.analytics.v1"
+    assert analytics_event.metadata_payload["source"] == "pedidos_from_file"
+    assert analytics_event.metadata_payload["matched_count"] == 1
+    assert analytics_event.metadata_payload["unmatched_count"] == 1
+    assert analytics_event.metadata_payload["needs_operator_review"] is True
+    assert "contact" not in analytics_event.metadata_payload
 
     attachment = db.session.get(ArchivoAdjunto, payload["attachment_id"])
     assert attachment is not None

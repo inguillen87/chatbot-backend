@@ -3,7 +3,7 @@ import json
 import pytest
 
 from app import db
-from models import CatalogoItem, MarketOrder, OrderEvent, TenantProfile
+from models import AnalyticsEventV2, CatalogoItem, MarketOrder, OrderEvent, TenantProfile
 
 
 @pytest.fixture
@@ -108,6 +108,22 @@ def test_donation_checkout_confirms_without_payment(client, tenant_with_catalog)
     assert market_order.status == "confirmed"
     assert market_order.metadata_payload["customer_profile"]["email"] == "donor@example.com"
     assert OrderEvent.query.filter_by(market_order_id=market_order.id, type="checkout.created").count() == 1
+    checkout_event = AnalyticsEventV2.query.filter_by(
+        tenant_id=tenant.id,
+        event_name="checkout_session_created",
+        entity_ref=f"market_order:{market_order.id}",
+    ).first()
+    assert checkout_event is not None
+    assert checkout_event.metadata_payload["source"] == "checkout_api"
+    assert checkout_event.metadata_payload["payment_required"] is False
+    order_event = AnalyticsEventV2.query.filter_by(
+        tenant_id=tenant.id,
+        event_name="order_created",
+        entity_ref=f"market_order:{market_order.id}",
+    ).first()
+    assert order_event is not None
+    assert order_event.metadata_payload["status"] == "confirmed"
+    assert order_event.metadata_payload["items_count"] == 1
 
 
 @pytest.mark.usefixtures("client")
@@ -140,6 +156,14 @@ def test_checkout_rejects_when_mercadopago_missing(client, tenant_with_catalog, 
     market_order = MarketOrder.query.get(data["market_order_id"])
     assert market_order is not None
     assert market_order.status == "pending_payment"
+    order_event = AnalyticsEventV2.query.filter_by(
+        tenant_id=tenant.id,
+        event_name="order_created",
+        entity_ref=f"market_order:{market_order.id}",
+    ).first()
+    assert order_event is not None
+    assert order_event.metadata_payload["status"] == "pending_payment_missing_provider"
+    assert order_event.metadata_payload["provider_ready"] is False
 
 
 @pytest.mark.usefixtures("client")
@@ -172,7 +196,7 @@ def test_money_checkout_requires_full_plan_before_order_or_payment(client, tenan
     data = resp.get_json()
     assert data["reason_code"] == "plan_full_required"
     assert data["integration_access"]["enabled"] is False
-    assert data["frontend_contract"]["render_as"] == "integration_locked"
+    assert data["frontend_contract"]["render_as"] == "payment_integration_locked"
     assert data["frontend_contract"]["feature_id"] == "mercadopago_checkout"
     assert data["frontend_contract"]["hide_payment_credentials_form"] is True
     assert data["feature"]["enabled"] is False

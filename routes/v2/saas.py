@@ -910,7 +910,7 @@ def _build_tenant_admin_experience_payload(
     employee_routing = build_employee_routing_payload(tenant)
     modules = _admin_modules_payload(tenant, education_profile=education_profile)
 
-    return {
+    payload = {
         "contract_version": "tenant.admin_experience.v1",
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "period": {"from": _iso(start_date), "to": _iso(end_date)},
@@ -976,10 +976,19 @@ def _build_tenant_admin_experience_payload(
                 "marketplace_catalog_quality",
                 "whatsapp_operations_hub",
                 "employee_coverage",
+                "e2e_flow_readiness",
             ],
             "empty_state_behavior": "show_module_readiness_and_next_best_actions",
+            "show_e2e_flow_readiness": True,
         },
     }
+    payload["e2e_flow_readiness"] = _build_production_e2e_readiness(
+        tenant=tenant,
+        admin_payload=payload,
+        marketplace=marketplace,
+        whatsapp=whatsapp,
+    )
+    return payload
 
 
 def _ops_qa_check_result(
@@ -1799,6 +1808,21 @@ def whatsapp_experience_v2(current_user, tenant_slug: str | None = None):
     if error:
         return error
     return _json_response(build_whatsapp_experience(tenant, app_config=current_app.config))
+
+
+@v2_saas_bp.route("/whatsapp/flow-runtime", methods=["GET"])
+@v2_saas_bp.route("/tenants/<string:tenant_slug>/whatsapp/flow-runtime", methods=["GET"])
+@token_requerido
+@require_role("admin", "empleado", "super_admin")
+def whatsapp_flow_runtime_v2(current_user, tenant_slug: str | None = None):
+    tenant, error = _resolve_tenant_or_error(current_user, tenant_slug)
+    if error:
+        return error
+    experience = build_whatsapp_experience(tenant, app_config=current_app.config)
+    runtime = experience.get("flow_runtime") if isinstance(experience, Mapping) else {}
+    if not isinstance(runtime, dict):
+        runtime = {}
+    return _json_response(runtime)
 
 
 @v2_saas_bp.route("/integrations/whatsapp/status", methods=["GET"])

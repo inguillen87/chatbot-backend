@@ -2,7 +2,7 @@ import unittest
 
 from app import create_app, db
 from config import Config
-from models import CatalogoItem, TenantProfile, User
+from models import AnalyticsEventV2, CatalogoItem, TenantProfile, User
 
 
 class TestConfig(Config):
@@ -66,6 +66,7 @@ class PublicCatalogAndCartTest(unittest.TestCase):
         add_resp = self.client.post(
             f"/api/pwa/public/cart/add?tenant={self.tenant.slug}",
             json={"catalogo_item_id": item_id, "cantidad": 2},
+            headers={"X-Chat-Session-Id": "market-chat-1"},
         )
         self.assertEqual(add_resp.status_code, 200)
         summary = add_resp.get_json()
@@ -73,12 +74,34 @@ class PublicCatalogAndCartTest(unittest.TestCase):
         self.assertEqual(summary["items"][0]["cantidad"], 2)
         self.assertEqual(summary["badge_count"], 2)
         self.assertGreater(summary["total_puntos_estimado"], 0)
+        cart_event = AnalyticsEventV2.query.filter_by(
+            tenant_id=self.tenant.id,
+            event_name="cart_started",
+        ).first()
+        self.assertIsNotNone(cart_event)
+        self.assertEqual(cart_event.metadata_payload["source"], "public_cart_add")
+        self.assertEqual(cart_event.metadata_payload["product_id"], item_id)
+        self.assertEqual(cart_event.metadata_payload["quantity"], 2)
         rewards = summary.get("recompensas_demo", {})
         self.assertGreater(rewards.get("balance_resumen", {}).get("saldo_disponible", 0), rewards.get("balance_resumen", {}).get("saldo_estimado_post_compra", 0))
+
+        preview_resp = self.client.get(
+            f"/api/pwa/public/cart/summary?tenant={self.tenant.slug}",
+            headers={"X-Chat-Session-Id": "market-chat-1"},
+        )
+        self.assertEqual(preview_resp.status_code, 200)
+        preview_event = AnalyticsEventV2.query.filter_by(
+            tenant_id=self.tenant.id,
+            event_name="checkout_previewed",
+        ).first()
+        self.assertIsNotNone(preview_event)
+        self.assertEqual(preview_event.session_id, "market-chat-1")
+        self.assertEqual(preview_event.metadata_payload["source"], "public_cart_summary")
 
         update_resp = self.client.post(
             f"/api/pwa/public/cart/update?tenant={self.tenant.slug}",
             json={"catalogo_item_id": item_id, "cantidad": 1},
+            headers={"X-Chat-Session-Id": "market-chat-1"},
         )
         self.assertEqual(update_resp.status_code, 200)
         updated = update_resp.get_json()
@@ -87,12 +110,16 @@ class PublicCatalogAndCartTest(unittest.TestCase):
         remove_resp = self.client.post(
             f"/api/pwa/public/cart/remove?tenant={self.tenant.slug}",
             json={"catalogo_item_id": item_id},
+            headers={"X-Chat-Session-Id": "market-chat-1"},
         )
         self.assertEqual(remove_resp.status_code, 200)
         emptied = remove_resp.get_json()
         self.assertEqual(emptied["items_count"], 0)
 
-        clear_resp = self.client.post(f"/api/pwa/public/cart/clear?tenant={self.tenant.slug}")
+        clear_resp = self.client.post(
+            f"/api/pwa/public/cart/clear?tenant={self.tenant.slug}",
+            headers={"X-Chat-Session-Id": "market-chat-1"},
+        )
         self.assertEqual(clear_resp.status_code, 200)
         cleared = clear_resp.get_json()
         self.assertEqual(cleared["items_count"], 0)

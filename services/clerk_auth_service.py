@@ -567,6 +567,7 @@ def complete_clerk_onboarding(user: User, payload: dict) -> TenantProfile:
         plan=plan_for_factory,
         owner_email=user.email,
         owner_password=None,
+        allow_existing_owner=True,
         reset_existing_owner_password=False,
     )
 

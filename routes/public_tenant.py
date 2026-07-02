@@ -25,6 +25,7 @@ from routes.carrito import _product_query_for_tenant
 from middleware.tenant_context import require_tenant
 from services.catalog_seed import ensure_seed_catalog
 from services.commerce_contracts import build_checkout_experience_payload
+from services.marketplace_analytics import track_marketplace_event
 from services.public_market_catalog import (
     build_public_market_catalog_contract,
     public_market_api_contract,
@@ -703,6 +704,19 @@ def get_catalog(slug):
             precio_max=request.args.get("precio_max"),
             en_promocion=request.args.get("en_promocion"),
             sort=request.args.get("sort"),
+        )
+        track_marketplace_event(
+            tenant,
+            "catalog_viewed",
+            {
+                "source": "public_tenant_catalog_contract",
+                "contract_version": payload.get("contract_version"),
+                "total": payload.get("total"),
+                "product_count": len(payload.get("products") or []),
+                "filters": payload.get("filters"),
+                "sort": request.args.get("sort"),
+                "assisted_intake_mode": (payload.get("assisted_intake") or {}).get("mode"),
+            },
         )
         response = jsonify(payload)
         return _add_cors_headers(response)

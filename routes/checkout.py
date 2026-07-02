@@ -15,6 +15,7 @@ from services.commerce_contracts import (
     build_customer_profile,
     resolve_order_contact_payload,
 )
+from services.marketplace_analytics import track_marketplace_event
 from services.plan_access import integration_plan_required_payload, plan_allows_full_integrations
 from services.rewards import recompensas_service
 from services.tenant_resolver import TenantResolutionError, resolve_tenant_and_user
@@ -299,6 +300,49 @@ def _resolve_tenant_user(payload: dict) -> tuple[TenantProfile, User]:
     return tenant, user
 
 
+def _track_checkout_event(
+    tenant: TenantProfile,
+    event_name: str,
+    *,
+    pedido: PedidoConversacional,
+    market_order: MarketOrder,
+    total_money: float,
+    total_points: int,
+    cart_entries: list[dict],
+    channel: str,
+    session_id: str | None,
+    anon_id: str | None,
+    user_id: int | None,
+    status: str,
+    payment_required: bool,
+    payment_ready: bool,
+    extra: dict | None = None,
+) -> None:
+    track_marketplace_event(
+        tenant,
+        event_name,
+        {
+            "source": "checkout_api",
+            "pedido_id": pedido.id,
+            "market_order_id": market_order.id,
+            "items_count": len(cart_entries),
+            "total_monetario": total_money,
+            "total_puntos": total_points,
+            "order_status": getattr(market_order, "status", None),
+            "pedido_estado": getattr(pedido, "estado", None),
+            "status": status,
+            "payment_required": payment_required,
+            "payment_ready": payment_ready,
+            **(extra or {}),
+        },
+        channel=channel,
+        session_id=session_id,
+        anon_id=anon_id,
+        entity_ref=f"market_order:{market_order.id}",
+        user_id=user_id,
+    )
+
+
 def _crear_pedido(payload: dict):
     try:
         tenant, user = _resolve_tenant_user(payload)
@@ -465,6 +509,22 @@ def _crear_pedido(payload: dict):
         "contact_key": contact.get("contact_key"),
     }))
     db.session.commit()
+    _track_checkout_event(
+        tenant,
+        "checkout_session_created",
+        pedido=pedido,
+        market_order=market_order,
+        total_money=total_money,
+        total_points=total_points,
+        cart_entries=cart_entries,
+        channel=contact.get("channel") or checkout_channel,
+        session_id=session_identifier,
+        anon_id=getattr(user, "anon_id", None),
+        user_id=getattr(user, "id", None),
+        status="created",
+        payment_required=total_money > 0,
+        payment_ready=total_money == 0,
+    )
 
     tenant_cfg = tenant.configuracion or {}
     access_token = tenant_cfg.get("mercadopago_access_token")
@@ -482,6 +542,23 @@ def _crear_pedido(payload: dict):
     if total_money > 0 and demo_mode:
         _sync_checkout_order_state(pedido, market_order, "confirmado", mp_status="demo_skipped")
         db.session.commit()
+        _track_checkout_event(
+            tenant,
+            "order_created",
+            pedido=pedido,
+            market_order=market_order,
+            total_money=total_money,
+            total_points=total_points,
+            cart_entries=cart_entries,
+            channel=contact.get("channel") or checkout_channel,
+            session_id=session_identifier,
+            anon_id=getattr(user, "anon_id", None),
+            user_id=getattr(user, "id", None),
+            status="confirmed_demo",
+            payment_required=False,
+            payment_ready=True,
+            extra={"demo_mode": True},
+        )
         return jsonify(
             {
                 "pedido_id": pedido.id,
@@ -515,6 +592,23 @@ def _crear_pedido(payload: dict):
     if total_money > 0 and not access_token:
         _sync_checkout_order_state(pedido, market_order, "pendiente_pago")
         db.session.commit()
+        _track_checkout_event(
+            tenant,
+            "order_created",
+            pedido=pedido,
+            market_order=market_order,
+            total_money=total_money,
+            total_points=total_points,
+            cart_entries=cart_entries,
+            channel=contact.get("channel") or checkout_channel,
+            session_id=session_identifier,
+            anon_id=getattr(user, "anon_id", None),
+            user_id=getattr(user, "id", None),
+            status="pending_payment_missing_provider",
+            payment_required=True,
+            payment_ready=False,
+            extra={"provider": "mercadopago", "provider_ready": False},
+        )
         return (
             jsonify(
                 {
@@ -593,6 +687,23 @@ def _crear_pedido(payload: dict):
         except Exception as e:
             logger.error(f"Error creating PymePedido from checkout: {e}")
 
+    _track_checkout_event(
+        tenant,
+        "order_created",
+        pedido=pedido,
+        market_order=market_order,
+        total_money=total_money,
+        total_points=total_points,
+        cart_entries=cart_entries,
+        channel=contact.get("channel") or checkout_channel,
+        session_id=session_identifier,
+        anon_id=getattr(user, "anon_id", None),
+        user_id=getattr(user, "id", None),
+        status="pending_payment" if total_money > 0 else "confirmed",
+        payment_required=total_money > 0,
+        payment_ready=bool(preference_id or total_money == 0),
+        extra={"provider": "mercadopago" if total_money > 0 else "internal", "preference_created": bool(preference_id)},
+    )
     return jsonify(
         {
             "pedido_id": pedido.id,
