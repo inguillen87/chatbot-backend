@@ -157,6 +157,224 @@ PYME_RECOMMENDED_ACTIONS_BY_INTENT = {
 }
 
 
+def _humanize_code(value: Any) -> str:
+    return _safe_text(value).replace("_", " ").strip()
+
+
+def _first_text(*values: Any) -> str:
+    for value in values:
+        text = _safe_text(value)
+        if text:
+            return text
+    return ""
+
+
+def _dict_from(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _routing_hint_for_municipio(category: str, crm_hints: dict[str, Any]) -> str:
+    normalized = normalizar_texto(category)
+    tags = " ".join(_safe_text(tag) for tag in crm_hints.get("tags") or [])
+    combined = f"{normalized} {normalizar_texto(tags)}"
+
+    if any(token in combined for token in ("luminaria", "alumbrado", "luz")):
+        return "servicios_publicos_luminaria"
+    if any(token in combined for token in ("arreglo de calle", "bache", "calle", "riesgo vial", "transito")):
+        return "obras_publicas_calles"
+    if any(token in combined for token in ("arbolado", "arbol", "espacios verdes")):
+        return "espacios_verdes"
+    if any(token in combined for token in ("limpieza", "basura", "residuos", "higiene", "salud publica")):
+        return "higiene_urbana"
+    if any(token in combined for token in ("agua", "perdida", "servicio interrumpido")):
+        return "servicios_publicos_agua"
+    if "consulta administrativa" in combined:
+        return "atencion_ciudadana_tramites"
+    return "mesa_operativa_municipal"
+
+
+def _routing_hint_for_pyme(intent_code: str) -> str:
+    return {
+        "crear_pedido": "ventas_pedidos",
+        "consulta_producto": "ventas_catalogo",
+        "consulta_pago": "administracion_pagos",
+        "consulta_envio": "logistica_envios",
+        "soporte_postventa": "postventa_soporte",
+        "reclamo_cliente": "postventa_reclamos",
+        "derivar_humano": "atencion_humana",
+    }.get(intent_code, "mesa_comercial")
+
+
+def _add_checklist_item(
+    checklist: list[dict[str, Any]],
+    seen: set[str],
+    item_id: str,
+    label: str,
+    *,
+    priority: str = "medium",
+    done: bool = False,
+) -> None:
+    if item_id in seen:
+        return
+    seen.add(item_id)
+    checklist.append(
+        {
+            "id": item_id,
+            "label": label,
+            "priority": priority,
+            "done": done,
+        }
+    )
+
+
+def _build_municipio_operator_brief(provider_payload: dict[str, Any], crm_hints: dict[str, Any]) -> dict[str, Any]:
+    category = _first_text(
+        _dict_from(provider_payload.get("category")).get("categoria"),
+        _dict_from(provider_payload.get("category")).get("label"),
+        crm_hints.get("suggested_queue"),
+    )
+    priority = _first_text(
+        _dict_from(provider_payload.get("priority")).get("prioridad"),
+        _dict_from(provider_payload.get("priority")).get("label"),
+    )
+    sentiment = _first_text(
+        _dict_from(provider_payload.get("sentiment")).get("label"),
+        _dict_from(provider_payload.get("sentiment")).get("sentiment"),
+    )
+    risk = _safe_text(crm_hints.get("risk_level")) or "sin_senal"
+    risk_key = normalizar_texto(risk)
+    priority_risk = risk_key in {"alto", "alta", "critico", "critical", "high", "urgente"}
+    requires_human = bool(crm_hints.get("requires_human_attention"))
+    requires_location = bool(crm_hints.get("requires_exact_location"))
+    requires_photo = bool(crm_hints.get("requires_photo"))
+
+    checklist: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    _add_checklist_item(
+        checklist,
+        seen,
+        "send_acknowledgement",
+        "Responder acuse claro al vecino con proximo paso y canal de seguimiento",
+        priority="high" if requires_human else "medium",
+    )
+    if requires_location:
+        _add_checklist_item(
+            checklist,
+            seen,
+            "validate_location",
+            "Validar direccion exacta, esquina o referencia antes de derivar cuadrilla",
+            priority="high",
+        )
+    if requires_photo:
+        _add_checklist_item(
+            checklist,
+            seen,
+            "request_or_review_photo",
+            "Pedir o revisar foto/evidencia para acelerar diagnostico operativo",
+            priority="medium",
+        )
+    if requires_human or priority_risk:
+        _add_checklist_item(
+            checklist,
+            seen,
+            "operator_review",
+            "Revisar con operador antes de cambiar estado o prometer plazo",
+            priority="high",
+        )
+    _add_checklist_item(
+        checklist,
+        seen,
+        "route_area",
+        "Derivar al area responsable y dejar trazabilidad en el historial",
+        priority="medium",
+    )
+
+    first_reply_parts = [
+        "Hola, recibimos tu reclamo y lo vamos a revisar con el area correspondiente.",
+    ]
+    if requires_location:
+        first_reply_parts.append("Para avanzar, confirmame la direccion exacta o una referencia cercana.")
+    if requires_photo:
+        first_reply_parts.append("Si podes, adjunta una foto para que el equipo tenga mejor contexto.")
+    if requires_human or priority_risk:
+        first_reply_parts.append("Lo dejamos marcado para revision prioritaria del equipo.")
+    first_reply_parts.append("Te avisamos cualquier novedad por este mismo canal.")
+
+    category_copy = _humanize_code(category) or "reclamo municipal"
+    priority_copy = _humanize_code(priority) or "sin prioridad IA firme"
+    summary = f"Caso de {category_copy} con prioridad {priority_copy}."
+    if sentiment:
+        summary += f" Tono detectado: {_humanize_code(sentiment)}."
+
+    return {
+        "summary": summary,
+        "response_tone": "prioritario_empatico" if requires_human or priority_risk else "claro_operativo",
+        "routing_hint": _routing_hint_for_municipio(category_copy, crm_hints),
+        "recommended_first_reply": " ".join(first_reply_parts),
+        "checklist": checklist,
+        "confidence_notes": [
+            "Guia advisory-only: no cambia estado ni asigna responsables automaticamente.",
+            "Confirmar datos sensibles antes de responder plazos o cerrar el caso.",
+        ],
+    }
+
+
+def _build_pyme_operator_brief(provider_payload: dict[str, Any], crm_hints: dict[str, Any]) -> dict[str, Any]:
+    intent = _dict_from(provider_payload.get("intent"))
+    intent_code = _safe_text(intent.get("intent") or crm_hints.get("suggested_queue"))
+    intent_label = _first_text(intent.get("label"), PYME_INTENT_LABELS.get(intent_code), intent_code)
+    requires_human = bool(crm_hints.get("requires_human_attention"))
+
+    checklist: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    if intent_code == "crear_pedido":
+        _add_checklist_item(checklist, seen, "confirm_items", "Confirmar productos, cantidades y variantes", priority="high")
+        _add_checklist_item(checklist, seen, "confirm_delivery", "Definir entrega, retiro o zona de envio", priority="medium")
+        _add_checklist_item(checklist, seen, "confirm_payment", "Informar medios de pago y validar comprobante si aplica", priority="medium")
+    elif intent_code == "consulta_producto":
+        _add_checklist_item(checklist, seen, "send_catalog", "Enviar opciones de catalogo, stock y promociones relevantes", priority="medium")
+    elif intent_code == "consulta_pago":
+        _add_checklist_item(checklist, seen, "send_payment_options", "Enviar medios de pago, condiciones y datos de facturacion", priority="medium")
+    elif intent_code == "consulta_envio":
+        _add_checklist_item(checklist, seen, "quote_shipping", "Confirmar direccion o zona para calcular envio/retiro", priority="medium")
+    elif intent_code in {"soporte_postventa", "reclamo_cliente"}:
+        _add_checklist_item(checklist, seen, "open_post_sale_case", "Abrir seguimiento postventa con evidencia y orden asociada", priority="high")
+
+    if requires_human or intent_code == "derivar_humano":
+        _add_checklist_item(checklist, seen, "human_handoff", "Derivar a una persona del equipo y mantener contexto completo", priority="high")
+    _add_checklist_item(checklist, seen, "send_first_reply", "Responder con proximo paso concreto para no perder la conversacion", priority="medium")
+
+    replies = {
+        "crear_pedido": "Hola, te ayudo a armar el pedido. Confirmame productos, cantidades, entrega y medio de pago para dejarlo listo.",
+        "consulta_producto": "Hola, te paso opciones disponibles y promociones. Si me decis cantidad o uso esperado, te recomiendo la mejor alternativa.",
+        "consulta_pago": "Hola, te envio los medios de pago disponibles. Si ya tenes comprobante, mandalo por este canal y lo validamos.",
+        "consulta_envio": "Hola, coordinamos envio o retiro. Confirmame direccion o zona y te digo disponibilidad y costo.",
+        "soporte_postventa": "Hola, revisamos tu caso postventa. Mandame numero de pedido y una foto si aplica para acelerar la solucion.",
+        "reclamo_cliente": "Hola, recibimos tu reclamo y lo revisa una persona del equipo. Te vamos a pedir los datos necesarios para resolverlo.",
+        "derivar_humano": "Hola, te derivo con una persona del equipo manteniendo el contexto de esta conversacion.",
+    }
+
+    return {
+        "summary": f"Consulta pyme detectada como {_humanize_code(intent_label) or 'atencion comercial'}.",
+        "response_tone": "comercial_consultivo" if not requires_human else "empatico_resolutivo",
+        "routing_hint": _routing_hint_for_pyme(intent_code),
+        "recommended_first_reply": replies.get(intent_code, "Hola, recibimos tu consulta. Te respondemos con el proximo paso para avanzar sin perder contexto."),
+        "checklist": checklist,
+        "confidence_notes": [
+            "Guia advisory-only: no crea pedidos ni modifica estados sin confirmacion del operador.",
+            "Usar catalogo, stock y condiciones reales antes de confirmar precio o entrega.",
+        ],
+    }
+
+
+def _build_operator_brief(scope: str, provider_payload: dict[str, Any], crm_hints: dict[str, Any]) -> dict[str, Any] | None:
+    if scope == "municipio":
+        return _build_municipio_operator_brief(provider_payload, crm_hints)
+    if scope == "pyme":
+        return _build_pyme_operator_brief(provider_payload, crm_hints)
+    return None
+
+
 def _float_env(name: str, default: float) -> float:
     try:
         return float(os.getenv(name, str(default)))
@@ -356,26 +574,32 @@ def _build_pyme_enrichment(text: str) -> dict[str, Any]:
     if requires_human:
         tags.append("requires_human_attention")
 
-    return {
+    crm_hints = {
+        "suggested_queue": intent.get("intent") if intent else None,
+        "requires_human_attention": requires_human,
+        "tags": tags,
+        "recommended_actions": recommended_actions,
+        "advisory_only": True,
+        "mutates_operational_state": False,
+    }
+    provider_payload = {
         "contract_version": "pyme.ticket_ai_enrichment.v1",
         "input_chars": len(text),
         "provider_family": "huggingface",
         "advisory_policy": dict(TICKET_AI_ADVISORY_POLICY),
         "thresholds": ticket_ai_thresholds()["pyme"],
         "intent": intent,
-        "crm_hints": {
-            "suggested_queue": intent.get("intent") if intent else None,
-            "requires_human_attention": requires_human,
-            "tags": tags,
-            "recommended_actions": recommended_actions,
-            "advisory_only": True,
-            "mutates_operational_state": False,
-        },
+        "crm_hints": crm_hints,
         "state_mutation": {
             "requested": False,
             "applied": False,
             "reason": "ai_enrichment_is_advisory_only",
         },
+    }
+    provider_payload["operator_brief"] = _build_pyme_operator_brief(provider_payload, crm_hints)
+
+    return {
+        **provider_payload,
     }
 
 
@@ -421,6 +645,11 @@ def build_ticket_ai_enrichment(
             "advisory_policy": dict(TICKET_AI_ADVISORY_POLICY),
         }
         crm_hints = {}
+    operator_brief = (
+        provider_payload.get("operator_brief")
+        if isinstance(provider_payload.get("operator_brief"), dict)
+        else _build_operator_brief(normalized_scope, provider_payload, crm_hints)
+    )
 
     return {
         "contract_version": TICKET_AI_ENRICHMENT_CONTRACT_VERSION,
@@ -439,6 +668,7 @@ def build_ticket_ai_enrichment(
         },
         "huggingface": provider_payload,
         "crm_hints": crm_hints,
+        "operator_brief": operator_brief,
         "state_mutation": {
             "requested": False,
             "applied": False,

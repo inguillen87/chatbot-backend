@@ -51,6 +51,8 @@ _CORS_ALLOWED_HEADERS = [
     "X-Widget-Token",
     "X-Whatsapp-Dst",
     "X-Checkout-Origin",
+    "Idempotency-Key",
+    "X-Idempotency-Key",
 ]
 
 pedidos_from_file_bp = Blueprint("pedidos_from_file_bp", __name__, url_prefix="/api/pedidos")
@@ -1032,6 +1034,91 @@ def _json_error(status_code: int, code: str, message: str):
     return response
 
 
+def _request_idempotency_key(json_payload: Optional[dict]) -> Optional[str]:
+    value = (
+        request.headers.get("Idempotency-Key")
+        or request.headers.get("X-Idempotency-Key")
+        or request.args.get("idempotency_key")
+        or request.args.get("idempotencyKey")
+        or _form_or_json_value(json_payload, "idempotency_key", "idempotencyKey")
+    )
+    key = _clean_optional_text(value)
+    if not key:
+        return None
+    return key[:160]
+
+
+def _find_assisted_request_by_idempotency(
+    *,
+    tenant_id: Optional[int],
+    idempotency_key: Optional[str],
+    origin: str,
+) -> Optional[PedidoConversacional]:
+    if not tenant_id or not idempotency_key:
+        return None
+    normalized_origin = str(origin or "").strip().lower()
+    candidates = (
+        PedidoConversacional.query.filter_by(tenant_id=tenant_id)
+        .order_by(PedidoConversacional.id.desc())
+        .limit(250)
+        .all()
+    )
+    for pedido in candidates:
+        metadata = pedido.metadata_payload if isinstance(pedido.metadata_payload, dict) else {}
+        source = metadata.get("source") if isinstance(metadata.get("source"), dict) else {}
+        if metadata.get("contract_version") != _ASSISTED_REQUEST_CONTRACT_VERSION:
+            continue
+        if metadata.get("idempotency_key") != idempotency_key and source.get("idempotency_key") != idempotency_key:
+            continue
+        pedido_origin = str(source.get("channel") or pedido.origen or "").strip().lower()
+        if normalized_origin and pedido_origin and pedido_origin != normalized_origin:
+            continue
+        return pedido
+    return None
+
+
+def _assisted_request_replay_payload(pedido: PedidoConversacional) -> dict[str, Any]:
+    metadata = pedido.metadata_payload if isinstance(pedido.metadata_payload, dict) else {}
+    stored = metadata.get("public_response")
+    if isinstance(stored, dict):
+        payload = dict(stored)
+    else:
+        source = metadata.get("source") if isinstance(metadata.get("source"), dict) else {}
+        payload = {
+            "contract_version": _ASSISTED_REQUEST_CONTRACT_VERSION,
+            "mode": metadata.get("mode") or "order_note_upload",
+            "request_kind": metadata.get("request_kind"),
+            "request_kind_label": metadata.get("request_kind_label"),
+            "document_profile": metadata.get("document_profile") or {},
+            "structured_extraction": metadata.get("structured_extraction") or {},
+            "crm_handoff": metadata.get("crm_handoff") or {},
+            "crm_order_draft": metadata.get("crm_order_draft"),
+            "tenant_id": pedido.tenant_id,
+            "tenant_slug": metadata.get("tenant_slug"),
+            "pedido_id": pedido.id,
+            "lead_id": pedido.id,
+            "tipo": pedido.tipo,
+            "contact": metadata.get("contact") or {},
+            "source": source,
+            "crm_state": metadata.get("crm_state"),
+            "match_summary": metadata.get("match_summary") or {},
+            "review_context": metadata.get("review_context") or {},
+            "customer_next_steps": metadata.get("customer_next_steps") or [],
+            "intake_experience": metadata.get("intake_experience") or {},
+            "operator_pack": metadata.get("operator_pack") or {},
+            "operator_intake_summary": metadata.get("operator_intake_summary") or {},
+            "public_follow_up": metadata.get("public_follow_up") or {},
+            "row_errors": metadata.get("row_errors") or [],
+            "next_actions": metadata.get("next_actions") or [],
+            "customer_message": (metadata.get("public_response") or {}).get("customer_message"),
+            "resumen": (metadata.get("public_response") or {}).get("resumen"),
+        }
+    payload["idempotent_replay"] = True
+    if metadata.get("idempotency_key"):
+        payload["idempotency_key"] = metadata.get("idempotency_key")
+    return payload
+
+
 def _build_attachment_info_payload(attachment: Optional[ArchivoAdjunto]) -> Optional[dict[str, Any]]:
     if not attachment:
         return None
@@ -1842,6 +1929,16 @@ def pedidos_desde_archivo():
     if not owner:
         owner = getattr(tenant, "municipio", None) or getattr(tenant, "pyme", None)
 
+    origen = request.headers.get("X-Checkout-Origin") or request.args.get("origen") or "web"
+    idempotency_key = _request_idempotency_key(json_payload)
+    existing_pedido = _find_assisted_request_by_idempotency(
+        tenant_id=getattr(tenant, "id", None),
+        idempotency_key=idempotency_key,
+        origin=origen,
+    )
+    if existing_pedido:
+        return jsonify(_assisted_request_replay_payload(existing_pedido)), 200
+
     if archivo:
         try:
             contenido = archivo.read()
@@ -1911,7 +2008,6 @@ def pedidos_desde_archivo():
         classification=request_kind_classification,
     )
 
-    origen = request.headers.get("X-Checkout-Origin") or request.args.get("origen") or "web"
     catalog_matching_enabled = bool(document_profile.get("catalog_matching"))
     cart, not_found, row_errors, matched_entries = _normalize_items(
         owner.id,
@@ -2017,6 +2113,8 @@ def pedidos_desde_archivo():
         source_payload["chat_session_id"] = chat_session_id
     if request_anon_id:
         source_payload["anon_id"] = request_anon_id
+    if idempotency_key:
+        source_payload["idempotency_key"] = idempotency_key
     if text_payload:
         source_payload["text_preview"] = text_payload[:500]
     if extraction_error:
@@ -2160,6 +2258,8 @@ def pedidos_desde_archivo():
         metadata_payload={
             "contract_version": _ASSISTED_REQUEST_CONTRACT_VERSION,
             "mode": "order_note_upload",
+            "idempotency_key": idempotency_key,
+            "tenant_slug": tenant_slug_resolved,
             "request_kind": request_kind,
             "request_kind_label": request_kind_label,
             "document_profile": document_profile,
@@ -2320,6 +2420,8 @@ def pedidos_desde_archivo():
     response_payload = {
         "contract_version": _ASSISTED_REQUEST_CONTRACT_VERSION,
         "mode": "order_note_upload",
+        "idempotency_key": idempotency_key,
+        "idempotent_replay": False,
         "request_kind": request_kind,
         "request_kind_label": request_kind_label,
         "document_profile": document_profile,
@@ -2366,6 +2468,14 @@ def pedidos_desde_archivo():
                 "ticket_type": "municipio",
             }
         )
+
+    response_snapshot = dict(response_payload)
+    metadata_payload = dict(pedido.metadata_payload or {})
+    metadata_payload["public_response"] = response_snapshot
+    metadata_payload["idempotency_key"] = idempotency_key
+    metadata_payload["tenant_slug"] = tenant_slug_resolved
+    pedido.metadata_payload = metadata_payload
+    db.session.commit()
 
     return (
         jsonify(response_payload),

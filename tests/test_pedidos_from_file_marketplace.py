@@ -253,7 +253,7 @@ def test_marketplace_order_note_preflight_allows_checkout_origin_header(client, 
         headers={
             "Origin": "http://127.0.0.1:4174",
             "Access-Control-Request-Method": "POST",
-            "Access-Control-Request-Headers": "X-Checkout-Origin, X-Tenant",
+            "Access-Control-Request-Headers": "X-Checkout-Origin, X-Tenant, Idempotency-Key",
         },
     )
 
@@ -261,6 +261,68 @@ def test_marketplace_order_note_preflight_allows_checkout_origin_header(client, 
     allowed_headers = response.headers.get("Access-Control-Allow-Headers", "")
     assert "X-Checkout-Origin" in allowed_headers
     assert "X-Tenant" in allowed_headers
+    assert "Idempotency-Key" in allowed_headers
+
+
+def test_marketplace_order_note_upload_replays_idempotently_without_duplicate_processing(client, init_database, monkeypatch):
+    owner = User.query.filter_by(email="admin@test.com").first()
+    tenant = TenantProfile(slug="market-idempotent", nombre="Market Idempotent", tipo="pyme", pyme_id=owner.id, plan="full")
+    db.session.add(tenant)
+    db.session.commit()
+
+    calls = {"upload": 0, "extract": 0}
+
+    def fake_upload(file_storage):
+        calls["upload"] += 1
+        return {
+            "public_url": "https://cdn.example.com/replay.png",
+            "original_name": file_storage.filename,
+        }
+
+    def fake_extract(content, prompt):
+        calls["extract"] += 1
+        return [{"nombre": "Chapas galvanizadas", "cantidad": 2}]
+
+    monkeypatch.setattr("routes.pedidos_from_file.upload_to_gcs", fake_upload)
+    monkeypatch.setattr("routes.pedidos_from_file.extract_table_from_file", fake_extract)
+
+    headers = {
+        "X-Tenant": tenant.slug,
+        "X-Checkout-Origin": "marketplace",
+        "Idempotency-Key": "market-note-42",
+    }
+    first = client.post(
+        "/api/pedidos/from-file?origen=marketplace",
+        data={"archivo": (io.BytesIO(b"pedido-original"), "pedido.png")},
+        content_type="multipart/form-data",
+        headers=headers,
+    )
+    second = client.post(
+        "/api/pedidos/from-file?origen=marketplace",
+        data={"archivo": (io.BytesIO(b"pedido-reintento"), "pedido-cambiado.png")},
+        content_type="multipart/form-data",
+        headers=headers,
+    )
+
+    assert first.status_code == 201
+    assert second.status_code == 200
+    first_payload = first.get_json()
+    replay_payload = second.get_json()
+    assert first_payload["pedido_id"] == replay_payload["pedido_id"]
+    assert first_payload["idempotent_replay"] is False
+    assert replay_payload["idempotent_replay"] is True
+    assert replay_payload["idempotency_key"] == "market-note-42"
+    assert calls == {"upload": 1, "extract": 1}
+    assert PedidoConversacional.query.filter_by(tenant_id=tenant.id).count() == 1
+    assert AnalyticsEventV2.query.filter_by(
+        tenant_id=tenant.id,
+        event_name="assisted_upload_submitted",
+        entity_ref=f"pedido:{first_payload['pedido_id']}",
+    ).count() == 1
+
+    pedido = PedidoConversacional.query.get(first_payload["pedido_id"])
+    assert pedido.metadata_payload["idempotency_key"] == "market-note-42"
+    assert pedido.metadata_payload["public_response"]["pedido_id"] == first_payload["pedido_id"]
 
 
 def test_marketplace_order_note_text_resolves_tenant_from_form(client, init_database, monkeypatch):

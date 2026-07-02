@@ -46,6 +46,9 @@ def test_build_ticket_ai_enrichment_for_municipio(monkeypatch):
     assert result["tenant_id"] == 20
     assert result["source"]["comments_count"] == 1
     assert result["crm_hints"]["risk_level"] == "medio"
+    assert result["operator_brief"]["routing_hint"] == "servicios_publicos_luminaria"
+    assert "recibimos tu reclamo" in result["operator_brief"]["recommended_first_reply"].lower()
+    assert any(item["id"] == "request_or_review_photo" for item in result["operator_brief"]["checklist"])
     assert result["advisory_policy"]["state_mutation_allowed"] is False
     assert result["state_mutation"]["applied"] is False
     assert result["persisted"] is False
@@ -74,6 +77,8 @@ def test_build_ticket_ai_enrichment_for_municipio_uses_local_fallback_without_hf
     assert result["crm_hints"]["requires_human_attention"] is True
     assert result["crm_hints"]["requires_photo"] is True
     assert "signal:riesgo_personas" in result["crm_hints"]["tags"]
+    assert result["operator_brief"]["response_tone"] == "prioritario_empatico"
+    assert any(item["id"] == "operator_review" for item in result["operator_brief"]["checklist"])
     assert result["state_mutation"]["applied"] is False
     assert result["persisted"] is False
 
@@ -104,6 +109,9 @@ def test_build_ticket_ai_enrichment_for_pyme_intent(monkeypatch):
     assert result["huggingface"]["intent"]["threshold"] == 0.6
     assert result["huggingface"]["advisory_policy"]["mutates_operational_state"] is False
     assert result["crm_hints"]["suggested_queue"] == "crear_pedido"
+    assert result["operator_brief"]["routing_hint"] == "ventas_pedidos"
+    assert "Confirmame productos" in result["operator_brief"]["recommended_first_reply"]
+    assert any(item["id"] == "confirm_items" for item in result["operator_brief"]["checklist"])
 
 
 def test_build_ticket_ai_enrichment_for_pyme_uses_local_order_fallback_without_hf(monkeypatch):
@@ -134,6 +142,7 @@ def test_build_ticket_ai_enrichment_for_pyme_uses_local_order_fallback_without_h
     assert result["crm_hints"]["suggested_queue"] == "crear_pedido"
     assert "intent:crear_pedido" in result["crm_hints"]["tags"]
     assert result["crm_hints"]["recommended_actions"][0]["id"] == "prepare_order_draft"
+    assert result["huggingface"]["operator_brief"]["routing_hint"] == "ventas_pedidos"
     assert result["state_mutation"]["applied"] is False
     assert result["persisted"] is False
 
