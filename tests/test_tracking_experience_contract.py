@@ -382,11 +382,42 @@ class TrackingExperienceContractTest(unittest.TestCase):
             json={"nro_ticket": "123456", "mensaje": "sumo informacion"},
         )
         self.assertEqual(accepted.status_code, 200)
-        self.assertIsNotNone(
-            TicketComentario.query.filter_by(
-                municipio_ticket_id=self.claim.id,
-                comentario="sumo informacion",
-            ).first()
+        payload = accepted.get_json()
+        self.assertEqual(payload["contract_version"], "tracking.support_message.v1")
+        self.assertEqual(payload["legacy_contract_version"], "tracking.claim_message.v1")
+        self.assertEqual(payload["legacy_endpoint"], "/tracking/api/send-claim-message")
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(payload["ticket_id"], self.claim.id)
+        self.assertEqual(payload["comment"]["message"], "sumo informacion")
+        self.assertEqual(payload["comment"]["source"], "public_tracking")
+        self.assertTrue(payload["comment"]["requires_response"])
+        self.assertEqual(payload["chat_entry"]["origen"], "public_tracking")
+        self.assertEqual(payload["delivery"]["admin_surface"], "tenant_claims_inbox")
+        self.assertTrue(payload["delivery"]["admin_unread"])
+        self.assertTrue(payload["delivery"]["timeline_updated"])
+        self.assertTrue(payload["crm_writeback"]["unread_for_team"])
+        self.assertTrue(payload["crm_writeback"]["requires_admin_response"])
+        self.assertIn("admin_inbox_unread_incremented", payload["crm_writeback"]["writebacks"])
+        self.assertTrue(payload["unread_event"]["has_unread"])
+        self.assertEqual(payload["unread_event"]["source"], "public_tracking")
+        self.assertGreaterEqual(payload["tracking"]["support"]["conversation"]["message_count"], 2)
+
+        persisted = TicketComentario.query.filter_by(
+            municipio_ticket_id=self.claim.id,
+            comentario="sumo informacion",
+            origen="public_tracking",
+            es_admin=False,
+        ).first()
+        self.assertIsNotNone(persisted)
+
+        prefixed = self.client.post(
+            "/tracking/api/send-claim-message?pin=654321",
+            json={"nro_ticket": "M-123456", "mensaje": "prefijo ok"},
+        )
+        self.assertEqual(prefixed.status_code, 200)
+        self.assertEqual(
+            prefixed.get_json()["legacy_contract_version"],
+            "tracking.claim_message.v1",
         )
 
 

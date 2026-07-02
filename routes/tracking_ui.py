@@ -104,6 +104,171 @@ def _build_public_claim_unread_payload(
     }
 
 
+def _resolve_claim_tenant(ticket: MunicipioTicket) -> TenantProfile | None:
+    tenant = db.session.get(TenantProfile, ticket.tenant_id) if ticket.tenant_id else None
+    if not tenant and ticket.municipio_id:
+        tenant = TenantProfile.query.filter_by(municipio_id=ticket.municipio_id).first()
+    return tenant
+
+
+def _normalize_claim_code(code: str | None) -> str:
+    normalized = str(code or "").strip().upper()
+    return normalized[2:] if normalized.startswith(("M-", "S-")) else normalized
+
+
+def _build_public_claim_message_payload(
+    ticket: MunicipioTicket,
+    comment: TicketComentario,
+    tenant: TenantProfile | None,
+    previous_status: str | None,
+) -> dict:
+    tracking_payload = build_claim_tracking_experience(ticket, tenant)
+    support = tracking_payload.get("support") or {}
+    live_mode = support.get("mode") or "offline"
+    unread_payload = _build_public_claim_unread_payload(ticket, comment, tenant)
+    admin_surface = support.get("admin_response_surface") or {}
+    operator_queue = support.get("operator_queue") or {}
+    support_conversation = support.get("conversation") or {}
+    crm_writebacks = (
+        operator_queue.get("crm_writebacks")
+        or admin_surface.get("writebacks")
+        or support_conversation.get("writebacks")
+        or [
+            "public_comment_created",
+            "ticket_timeline_updated",
+            "admin_inbox_unread_incremented",
+        ]
+    )
+    comment_payload = {
+        "id": comment.id,
+        "message": comment.comentario,
+        "comentario": comment.comentario,
+        "author": "customer",
+        "source": comment.origen,
+        "created_at": comment.fecha.isoformat() if comment.fecha else None,
+        "requires_response": True,
+        "unread_for_team": True,
+    }
+
+    return {
+        "contract_version": "tracking.support_message.v1",
+        "success": True,
+        "status": "ok",
+        "message": (
+            "Mensaje enviado al canal de atencion en vivo."
+            if live_mode == "live"
+            else "Mensaje recibido. Queda asociado al reclamo para que el equipo lo responda."
+        ),
+        "ticket_id": ticket.id,
+        "ticket_number": ticket.nro_ticket,
+        "comment": comment_payload,
+        "chat_entry": {
+            "id": comment.id,
+            "ticket_id": ticket.id,
+            "ticket_number": ticket.nro_ticket,
+            "type": "public_tracking_message",
+            "comentario": comment.comentario,
+            "fecha": comment_payload["created_at"],
+            "es_admin": False,
+            "autor": "vecino",
+            "autor_nombre": ticket.nombre_vecino or "Yo",
+            "origen": comment.origen,
+            "requires_response": True,
+            "unread_for_team": True,
+        },
+        "delivery": {
+            "mode": live_mode,
+            "channel": "ticket_bound_helpdesk",
+            "realtime_available": live_mode == "live",
+            "offline_queue": live_mode != "live",
+            "admin_surface": "tenant_claims_inbox",
+            "reply_status": "sent_to_live_chat" if live_mode == "live" else "queued_for_agent",
+            "queue_state": operator_queue.get("state") or "pending_admin_response",
+            "pending_customer_messages": operator_queue.get("pending_customer_messages") or 1,
+            "next_team_action": operator_queue.get("next_team_action") or "reply_from_admin_inbox",
+            "admin_unread": True,
+            "timeline_updated": True,
+            "inbox_increment": True,
+            "next_action": (support.get("service_window") or {}).get("next_action"),
+        },
+        "crm_writeback": {
+            "admin_surface": admin_surface.get("id") or "tenant_claims_inbox",
+            "route": admin_surface.get("route") or "/perfil?tab=tickets",
+            "thread_binding": admin_surface.get("thread_binding") or "municipio_ticket_id",
+            "ticket_id": ticket.id,
+            "ticket_number": ticket.nro_ticket,
+            "comment_id": comment.id,
+            "unread_for_team": True,
+            "requires_admin_response": True,
+            "queue_state": operator_queue.get("state") or "pending_admin_response",
+            "pending_customer_messages": operator_queue.get("pending_customer_messages") or 1,
+            "next_team_action": operator_queue.get("next_team_action") or "reply_from_admin_inbox",
+            "timeline_updated": True,
+            "inbox_increment": True,
+            "writebacks": crm_writebacks,
+            "previous_status": previous_status,
+            "current_status": ticket.estado,
+        },
+        "unread_event": unread_payload,
+        "timeline_endpoint": support.get("endpoints", {}).get("timeline"),
+        "tracking": tracking_payload,
+    }
+
+
+def _persist_public_claim_tracking_message(ticket: MunicipioTicket, mensaje: str) -> dict:
+    now = datetime.now()
+    previous_status = getattr(ticket, "estado", None)
+    comment = TicketComentario(
+        municipio_ticket_id=ticket.id,
+        comentario=mensaje,
+        fecha=now,
+        es_admin=False,
+        origen="public_tracking",
+        user_id=getattr(ticket, "user_id", None),
+    )
+    db.session.add(comment)
+    if hasattr(ticket, "ultima_actividad"):
+        ticket.ultima_actividad = now
+
+    if ticket.estado in ["resuelto", "cerrado"]:
+        ticket.estado = "abierto"
+
+    db.session.commit()
+
+    tenant = _resolve_claim_tenant(ticket)
+    payload = _build_public_claim_message_payload(ticket, comment, tenant, previous_status)
+    try:
+        if tenant:
+            emit_new_chat_message(
+                {
+                    "tenant_type": "municipio",
+                    "tenant_id": tenant.id,
+                    "municipio_id": ticket.municipio_id,
+                    "ticket_id": ticket.id,
+                    "ticket_number": ticket.nro_ticket,
+                    "comment_id": comment.id,
+                    "requires_response": True,
+                    "admin_unread": True,
+                    "message": {
+                        "id": comment.id,
+                        "comentario": mensaje,
+                        "user_id": ticket.user_id,
+                        "es_admin": False,
+                        "fecha": now.isoformat(),
+                        "nombre_autor": ticket.nombre_vecino or "Vecino",
+                        "origen": "public_tracking",
+                        "requires_response": True,
+                        "unread_for_team": True,
+                    },
+                }
+            )
+        emit_ticket_unread_changed(payload["unread_event"])
+    except Exception as e:
+        current_app.logger.error(f"Error emitting public tracking claim message: {e}")
+
+    return payload
+
+
 @tracking_ui_bp.route('/tracking/api/experience', methods=['GET'])
 @tracking_ui_bp.route('/api/public/tracking/experience', methods=['GET'])
 def tracking_experience():
@@ -130,9 +295,7 @@ def tracking_experience():
         ticket = MunicipioTicket.query.filter_by(nro_ticket=normalized, consulta_pin=pin).first()
         if not ticket:
             return _tracking_error("Reclamo no encontrado.", 404, "claim_not_found", "check_code_and_pin")
-        tenant = TenantProfile.query.get(ticket.tenant_id) if ticket.tenant_id else None
-        if not tenant and ticket.municipio_id:
-            tenant = TenantProfile.query.filter_by(municipio_id=ticket.municipio_id).first()
+        tenant = _resolve_claim_tenant(ticket)
         return _tracking_json(build_claim_tracking_experience(ticket, tenant))
 
     order = resolve_order_by_code(code)
@@ -195,153 +358,7 @@ def send_public_claim_tracking_message(ticket_id):
             "send_valid_pin",
         )
 
-    now = datetime.now()
-    previous_status = getattr(ticket, "estado", None)
-    comment = TicketComentario(
-        municipio_ticket_id=ticket.id,
-        comentario=mensaje,
-        fecha=now,
-        es_admin=False,
-        origen="public_tracking",
-        user_id=getattr(ticket, "user_id", None),
-    )
-    db.session.add(comment)
-    if hasattr(ticket, "ultima_actividad"):
-        ticket.ultima_actividad = now
-
-    if ticket.estado in ["resuelto", "cerrado"]:
-        ticket.estado = "abierto"
-
-    db.session.commit()
-
-    tenant = db.session.get(TenantProfile, ticket.tenant_id) if ticket.tenant_id else None
-    if not tenant and ticket.municipio_id:
-        tenant = TenantProfile.query.filter_by(municipio_id=ticket.municipio_id).first()
-
-    tracking_payload = build_claim_tracking_experience(ticket, tenant)
-    support = tracking_payload.get("support") or {}
-    try:
-        if tenant:
-            emit_new_chat_message(
-                {
-                    "tenant_type": "municipio",
-                    "tenant_id": tenant.id,
-                    "municipio_id": ticket.municipio_id,
-                    "ticket_id": ticket.id,
-                    "ticket_number": ticket.nro_ticket,
-                    "comment_id": comment.id,
-                    "requires_response": True,
-                    "admin_unread": True,
-                    "message": {
-                        "id": comment.id,
-                        "comentario": mensaje,
-                        "user_id": ticket.user_id,
-                        "es_admin": False,
-                        "fecha": now.isoformat(),
-                        "nombre_autor": ticket.nombre_vecino or "Vecino",
-                        "origen": "public_tracking",
-                        "requires_response": True,
-                        "unread_for_team": True,
-                    },
-                }
-            )
-        emit_ticket_unread_changed(
-            _build_public_claim_unread_payload(ticket, comment, tenant)
-        )
-    except Exception as e:
-        current_app.logger.error(f"Error emitting public tracking claim message: {e}")
-
-    live_mode = support.get("mode") or "offline"
-    unread_payload = _build_public_claim_unread_payload(ticket, comment, tenant)
-    admin_surface = support.get("admin_response_surface") or {}
-    operator_queue = support.get("operator_queue") or {}
-    support_conversation = support.get("conversation") or {}
-    crm_writebacks = (
-        operator_queue.get("crm_writebacks")
-        or admin_surface.get("writebacks")
-        or support_conversation.get("writebacks")
-        or [
-            "public_comment_created",
-            "ticket_timeline_updated",
-            "admin_inbox_unread_incremented",
-        ]
-    )
-    comment_payload = {
-        "id": comment.id,
-        "message": comment.comentario,
-        "comentario": comment.comentario,
-        "author": "customer",
-        "source": comment.origen,
-        "created_at": comment.fecha.isoformat() if comment.fecha else None,
-        "requires_response": True,
-        "unread_for_team": True,
-    }
-
-    return _tracking_json(
-        {
-            "contract_version": "tracking.support_message.v1",
-            "success": True,
-            "message": (
-                "Mensaje enviado al canal de atencion en vivo."
-                if live_mode == "live"
-                else "Mensaje recibido. Queda asociado al reclamo para que el equipo lo responda."
-            ),
-            "ticket_id": ticket.id,
-            "ticket_number": ticket.nro_ticket,
-            "comment": comment_payload,
-            "chat_entry": {
-                "id": comment.id,
-                "ticket_id": ticket.id,
-                "ticket_number": ticket.nro_ticket,
-                "type": "public_tracking_message",
-                "comentario": comment.comentario,
-                "fecha": comment_payload["created_at"],
-                "es_admin": False,
-                "autor": "vecino",
-                "autor_nombre": ticket.nombre_vecino or "Yo",
-                "origen": comment.origen,
-                "requires_response": True,
-                "unread_for_team": True,
-            },
-            "delivery": {
-                "mode": live_mode,
-                "channel": "ticket_bound_helpdesk",
-                "realtime_available": live_mode == "live",
-                "offline_queue": live_mode != "live",
-                "admin_surface": "tenant_claims_inbox",
-                "reply_status": "sent_to_live_chat" if live_mode == "live" else "queued_for_agent",
-                "queue_state": operator_queue.get("state") or "pending_admin_response",
-                "pending_customer_messages": operator_queue.get("pending_customer_messages") or 1,
-                "next_team_action": operator_queue.get("next_team_action") or "reply_from_admin_inbox",
-                "admin_unread": True,
-                "timeline_updated": True,
-                "inbox_increment": True,
-                "next_action": (support.get("service_window") or {}).get("next_action"),
-            },
-            "crm_writeback": {
-                "admin_surface": admin_surface.get("id") or "tenant_claims_inbox",
-                "route": admin_surface.get("route") or "/perfil?tab=tickets",
-                "thread_binding": admin_surface.get("thread_binding") or "municipio_ticket_id",
-                "ticket_id": ticket.id,
-                "ticket_number": ticket.nro_ticket,
-                "comment_id": comment.id,
-                "unread_for_team": True,
-                "requires_admin_response": True,
-                "queue_state": operator_queue.get("state") or "pending_admin_response",
-                "pending_customer_messages": operator_queue.get("pending_customer_messages") or 1,
-                "next_team_action": operator_queue.get("next_team_action") or "reply_from_admin_inbox",
-                "timeline_updated": True,
-                "inbox_increment": True,
-                "writebacks": crm_writebacks,
-                "previous_status": previous_status,
-                "current_status": ticket.estado,
-            },
-            "unread_event": unread_payload,
-            "timeline_endpoint": support.get("endpoints", {}).get("timeline"),
-            "tracking": tracking_payload,
-        },
-        201,
-    )
+    return _tracking_json(_persist_public_claim_tracking_message(ticket, mensaje), 201)
 
 @tracking_ui_bp.route('/tracking/order/<nro_pedido>')
 def tracking_page(nro_pedido):
@@ -578,63 +595,25 @@ def send_message():
 @tracking_ui_bp.route('/tracking/api/send-claim-message', methods=['POST'])
 def send_claim_message():
     data = request.json or {}
-    nro_ticket = data.get('nro_ticket')
-    mensaje = data.get('mensaje')
+    raw_ticket = str(data.get('nro_ticket') or '').strip()
+    nro_ticket = _normalize_claim_code(raw_ticket)
+    mensaje = str(data.get('mensaje') or '').strip()
     pin = (data.get('pin') or request.args.get('pin') or '').strip()
 
-    if not nro_ticket or not mensaje:
+    if not raw_ticket or not mensaje:
         return jsonify({'error': 'Faltan datos'}), 400
+    if len(mensaje) > 2000:
+        return jsonify({'error': 'Mensaje demasiado largo'}), 400
 
     ticket = MunicipioTicket.query.filter_by(nro_ticket=nro_ticket).first()
+    if not ticket and raw_ticket != nro_ticket:
+        ticket = MunicipioTicket.query.filter_by(nro_ticket=raw_ticket).first()
     if not ticket:
         return jsonify({'error': 'Ticket no encontrado'}), 404
     if getattr(ticket, 'consulta_pin', None) and str(ticket.consulta_pin) != str(pin):
         return jsonify({'error': 'PIN invalido'}), 403
 
-    # Add comment
-    comment = TicketComentario(
-        municipio_ticket_id=ticket.id,
-        comentario=mensaje,
-        fecha=datetime.now(),
-        es_admin=False,
-        origen="tracking_page",
-        user_id=ticket.user_id
-    )
-    db.session.add(comment)
-
-    if ticket.estado in ['resuelto', 'cerrado']:
-        ticket.estado = 'abierto'
-
-    db.session.commit()
-
-    # Notify Admin via Socket
-    try:
-        tenant = TenantProfile.query.get(ticket.tenant_id) if ticket.tenant_id else None
-        if tenant:
-            full_payload = {
-                "tenant_type": "municipio",
-                "tenant_id": tenant.id,
-                "municipio_id": ticket.municipio_id,
-                "ticket_id": ticket.id,
-                "message": {
-                    "comentario": mensaje,
-                    "user_id": ticket.user_id,
-                    "es_admin": False,
-                    "fecha": datetime.now().isoformat(),
-                    "nombre_autor": ticket.nombre_vecino or "Vecino"
-                }
-            }
-            emit_new_chat_message(full_payload)
-    except Exception as e:
-        current_app.logger.error(f"Error emitting socket event: {e}")
-
-    return jsonify({
-        'status': 'ok',
-        'chat_entry': {
-             "comentario": mensaje,
-             "fecha": datetime.now().isoformat(),
-             "es_admin": False,
-             "autor": "vecino",
-             "autor_nombre": ticket.nombre_vecino or "Yo"
-        }
-    })
+    payload = _persist_public_claim_tracking_message(ticket, mensaje)
+    payload["legacy_contract_version"] = "tracking.claim_message.v1"
+    payload["legacy_endpoint"] = "/tracking/api/send-claim-message"
+    return _tracking_json(payload)
