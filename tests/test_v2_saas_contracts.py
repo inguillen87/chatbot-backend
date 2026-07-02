@@ -2043,6 +2043,8 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertIn("order_checkout:public_checkout", allowed_actions)
         self.assertIn("order_checkout:assisted_order_upload", allowed_actions)
         self.assertIn("claim_tracking_helpdesk:claim_public_message", allowed_actions)
+        self.assertIn("survey_vote:public_survey", allowed_actions)
+        self.assertIn("survey_vote:survey_response", allowed_actions)
         self.assertEqual(payload["action_manifest"]["post_endpoint"], "/api/public/flows/actions")
         execution_policy = payload["action_manifest"]["execution_policy"]
         self.assertEqual(execution_policy["contract_version"], "public.flow_runtime.execution_policy.v1")
@@ -2059,6 +2061,9 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertFalse(analytics["public_client_can_write_events_directly"])
         self.assertIn("checkout_session_created", analytics["recommended_events"])
         self.assertIn("assisted_upload_submitted", analytics["recommended_events"])
+        self.assertIn("survey_response_submitted", analytics["recommended_events"])
+        self.assertIn("survey_live_results_opened", analytics["recommended_events"])
+        self.assertIn("survey", [stage["id"] for stage in analytics["funnel_stages"]])
 
     def test_public_flow_runtime_action_handoff_requires_idempotency_for_mutations(self):
         missing_key_response = self.client.post(
@@ -2103,6 +2108,33 @@ class V2SaasContractsTest(unittest.TestCase):
         )
         self.assertEqual(retry_response.status_code, 200, retry_response.get_json())
         self.assertEqual(retry_response.get_json()["execution"]["id"], payload["execution"]["id"])
+
+    def test_public_flow_runtime_supports_survey_vote_response_handoff(self):
+        missing_key_response = self.client.post(
+            f"/api/public/flows/actions?tenant={self.tenant.slug}",
+            json={"flow_id": "survey_vote", "action_id": "survey_response", "payload": {"survey_slug": "voto-saas"}},
+        )
+        self.assertEqual(missing_key_response.status_code, 409, missing_key_response.get_json())
+        self.assertEqual(missing_key_response.get_json()["reason_code"], "idempotency_key_required")
+
+        response = self.client.post(
+            f"/api/public/flows/actions?tenant={self.tenant.slug}",
+            headers={"X-Idempotency-Key": "survey-vote-1"},
+            json={"flow_id": "survey_vote", "action_id": "survey_response", "payload": {"survey_slug": "voto-saas"}},
+        )
+
+        self.assertEqual(response.status_code, 200, response.get_json())
+        payload = response.get_json()
+        self.assertEqual(payload["contract_version"], "public.flow_runtime.action.v1")
+        self.assertEqual(payload["flow"]["family"], "surveys")
+        self.assertEqual(payload["action"]["endpoint_template"], "/api/pwa/public/surveys/{survey_slug}/respond")
+        self.assertEqual(payload["handoff"]["method"], "POST")
+        self.assertEqual(payload["handoff"]["target_endpoint"], "/api/pwa/public/surveys/{survey_slug}/respond")
+        self.assertTrue(payload["execution"]["id"].startswith("exec-"))
+        self.assertEqual(payload["execution"]["action_id"], "survey_response")
+        self.assertEqual(payload["handoff"]["execution_id"], payload["execution"]["id"])
+        self.assertIn("survey_response_submitted", payload["analytics"]["recommended_events"])
+        self.assertIn("survey_live_results_opened", payload["analytics"]["recommended_events"])
 
     def test_public_flow_runtime_callback_accepts_webview_completion_with_idempotency(self):
         missing_key_response = self.client.post(

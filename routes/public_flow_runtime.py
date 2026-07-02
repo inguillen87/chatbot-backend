@@ -39,6 +39,10 @@ _FLOW_ANALYTICS_EVENTS = [
     "checkout_previewed",
     "checkout_session_created",
     "order_tracking_opened",
+    "survey_opened",
+    "survey_response_submitted",
+    "survey_live_results_opened",
+    "survey_heatmap_opened",
 ]
 
 
@@ -182,6 +186,9 @@ def _analytics_contract(*, callback_endpoint_template: str = "/api/public/flows/
             {"id": "cart", "event": "cart_started", "label": "Carrito iniciado"},
             {"id": "checkout", "event": "checkout_session_created", "label": "Checkout creado"},
             {"id": "tracking", "event": "order_tracking_opened", "label": "Seguimiento abierto"},
+            {"id": "survey", "event": "survey_opened", "label": "Encuesta abierta"},
+            {"id": "vote", "event": "survey_response_submitted", "label": "Voto registrado"},
+            {"id": "live_results", "event": "survey_live_results_opened", "label": "Resultados en vivo"},
         ],
         "privacy": {
             "raw_payment_data_allowed": False,

@@ -700,13 +700,17 @@ def respond_survey(slug: str):
     payload = request.get_json(silent=True) or {}
     request_ctx = {
         "ip": request.headers.get("X-Forwarded-For") or request.remote_addr,
+        "user_agent": request.headers.get("User-Agent"),
+        "referer": request.headers.get("Referer"),
         "anon_id": (
-            request.headers.get("X-Anon-Id")
+            payload.get("anon_id")
+            or payload.get("anonId")
+            or request.headers.get("X-Anon-Id")
             or request.headers.get("Anon-Id")
             or request.cookies.get("Anon-Id")
             or request.cookies.get("anon_id")
         ),
-        "canal": "pwa",
+        "canal": payload.get("source") or payload.get("channel") or payload.get("canal") or "pwa",
     }
     try:
         respuesta = save_respuesta(
@@ -718,7 +722,72 @@ def respond_survey(slug: str):
     except EncuestaError as exc:
         return jsonify(exc.to_dict()), exc.status_code
 
-    return jsonify({"id": respuesta.id})
+    from routes.v2.surveys import (
+        _build_operational_next_steps,
+        _build_realtime_contract,
+        _build_share_contract,
+        _build_survey_links,
+        _merge_ui_actions,
+        _survey_public_state,
+    )
+
+    encuesta = getattr(respuesta, "encuesta", None)
+    live_results_enabled = bool(getattr(encuesta, "mostrar_resultados_envivo", False))
+    tenant_slug = getattr(tenant, "slug", None)
+    links = _build_survey_links(slug, tenant_slug=tenant_slug)
+    public_state = _survey_public_state(encuesta) if encuesta is not None else None
+    next_steps = _build_operational_next_steps(
+        slug,
+        tenant_slug=tenant_slug,
+        live_results_enabled=live_results_enabled,
+        public_state=public_state,
+    )
+    response_payload = {
+        "ok": True,
+        "contract_version": "surveys.public_response.v2",
+        "id": respuesta.id,
+        "respuesta_id": respuesta.id,
+        "response_id": respuesta.id,
+        "public_state": public_state,
+        "estado_publico": public_state,
+        "links": links,
+        "share": _build_share_contract(
+            slug,
+            title=getattr(encuesta, "titulo", None),
+            tenant_slug=tenant_slug,
+        ),
+        "realtime": _build_realtime_contract(slug, tenant_slug=tenant_slug, enabled=live_results_enabled),
+        "operational_next_steps": next_steps,
+        "next_steps": next_steps["items"],
+        "ui_actions": [],
+        "runtime": {
+            "contract_version": "surveys.pwa_runtime_response.v1",
+            "source": "pwa_public_survey",
+            "flow_id": "survey_vote",
+            "action_id": "survey_response",
+            "callback_expected": False,
+        },
+    }
+    if live_results_enabled:
+        live_results_url = links["live_results_endpoint"]
+        response_payload["live_results_url"] = live_results_url
+        response_payload["ui_actions"].append(
+            {
+                "id": "open_live_results",
+                "label": "Ver resultados en vivo",
+                "href": live_results_url,
+            }
+        )
+    response_payload["ui_actions"] = _merge_ui_actions(
+        response_payload.get("ui_actions"),
+        [
+            {"id": "share_public_link", "label": "Compartir", "href": links["share_url"]},
+            {"id": "download_qr", "label": "QR", "href": links["qr_image_url"]},
+        ],
+    )
+    response = jsonify(response_payload)
+    response.status_code = 201
+    return response
 
 
 @pwa_public_bp.get("/news")

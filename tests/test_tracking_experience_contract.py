@@ -214,11 +214,24 @@ class TrackingExperienceContractTest(unittest.TestCase):
         self.assertEqual(rejected_payload["reason_code"], "tracking_pin_required")
         self.assertEqual(rejected_payload["contract_version"], TRACKING_EXPERIENCE_CONTRACT_VERSION)
 
-        accepted = self.client.post(
-            f"/api/public/tracking/claims/{self.claim.id}/messages?pin=654321",
-            json={"mensaje": "hola seguimiento"},
-            headers={"X-Request-Id": "track-message-1"},
-        )
+        with patch(
+            "services.tracking_experience.build_tenant_live_chat_status",
+            return_value={
+                "contract_version": "live_chat.schedule.v1",
+                "enabled": True,
+                "available": False,
+                "mode": "offline",
+                "description": "lunes a viernes de 09:00 a 13:00 hs",
+                "source": "tenant_config",
+                "timezone": "America/Argentina/Buenos_Aires",
+                "offline_message_enabled": True,
+            },
+        ):
+            accepted = self.client.post(
+                f"/api/public/tracking/claims/{self.claim.id}/messages?pin=654321",
+                json={"mensaje": "hola seguimiento"},
+                headers={"X-Request-Id": "track-message-1"},
+            )
         self.assertEqual(accepted.status_code, 201)
         payload = accepted.get_json()
         self.assertEqual(payload["contract_version"], "tracking.support_message.v1")

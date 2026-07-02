@@ -215,7 +215,8 @@ def _build_whatsapp_funnel_payload(filters, *, window_minutes: int = 60) -> dict
                 "conversion_from_prev_pct": conversion,
             }
         )
-        previous_value = sessions
+        if sessions > 0:
+            previous_value = sessions
 
     return {
         "tenant_id": filters.tenant_id,

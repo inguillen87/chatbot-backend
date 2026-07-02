@@ -156,3 +156,34 @@ class ProductFlowSurveyLiveVoteTest(unittest.TestCase):
         self.assertEqual(data["realtime"]["polling"]["href"], f"/api/v2/public/surveys/{token}/live-results")
         self.assertIn("admin_next_steps", data["render_contract"]["supports"])
         self.assertTrue(data["live_telemetry"]["has_responses"])
+
+    def test_pwa_survey_response_matches_realtime_contract_for_whatsapp_webview(self):
+        token, question_id, option_id = self._create_live_vote()
+
+        response = self.client.post(
+            f"/api/pwa/public/surveys/{token}/respond?tenant={self.tenant.slug}",
+            json={
+                "anon_id": "flow-voter-pwa-1",
+                "source": "whatsapp_webview",
+                "respuestas": [{"pregunta_id": question_id, "opcion_id": option_id}],
+            },
+            headers={"X-Forwarded-For": "203.0.113.20"},
+        )
+
+        self.assertEqual(response.status_code, 201, response.get_json())
+        ack = response.get_json()
+        self.assertTrue(ack["ok"])
+        self.assertEqual(ack["contract_version"], "surveys.public_response.v2")
+        self.assertEqual(ack["id"], ack["response_id"])
+        self.assertEqual(ack["public_state"]["status"], "live")
+        self.assertEqual(
+            ack["live_results_url"],
+            f"/api/v2/public/surveys/{token}/live-results?tenant_slug={self.tenant.slug}",
+        )
+        self.assertEqual(ack["realtime"]["room"], f"encuesta_{token}")
+        self.assertEqual(ack["realtime"]["socket"]["events"][0]["name"], "survey_update_v2")
+        self.assertEqual(ack["links"]["qr_endpoint"], f"/api/public/encuestas/v1/{token}/qr?size=320")
+        self.assertEqual(ack["runtime"]["flow_id"], "survey_vote")
+        self.assertEqual(ack["runtime"]["action_id"], "survey_response")
+        self.assertIn("open_live_results", [action["id"] for action in ack["ui_actions"]])
+        self.assertIn("download_qr", [step["id"] for step in ack["next_steps"]])
