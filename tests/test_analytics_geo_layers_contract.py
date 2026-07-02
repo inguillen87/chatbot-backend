@@ -26,15 +26,27 @@ class AnalyticsGeoLayersContractTestCase(unittest.TestCase):
         self.assertEqual(layers["category_heatmap"]["top_categories"][0]["category"], "bache")
         self.assertEqual(layers["category_heatmap"]["top_categories"][0]["count"], 5)
         self.assertIn("bache", layers["category_heatmap"]["available_categories"])
+        self.assertEqual(layers["visual_system"]["style"], "premium_operational_map")
+        self.assertTrue(layers["visual_system"]["animations"]["radar_sweep"])
+        self.assertEqual(layers["intensity"]["total_cases"], 6)
+        self.assertEqual(layers["operator_metrics"]["top_category"], "bache")
+        self.assertEqual(layers["hotspots"]["focus"]["category"], "bache")
+        self.assertEqual(layers["hotspots"]["focus"]["risk"]["level"], "critical")
+        self.assertEqual(enriched["cells"][0]["dominant_category"], "bache")
+        self.assertEqual(enriched["cells"][0]["visual"]["label_mode"], "always")
+        self.assertEqual(enriched["render_contract"]["recommended_component"], "PremiumTerritoryMap")
 
     def test_points_uses_categoria_field_for_top_categories(self):
-        payload = {"points": [{"categoria": "recoleccion"}, {"categoria": "recoleccion"}, {"categoria": "alumbrado"}]}
+        payload = {"points": [{"categoria": "recoleccion", "estado": "nuevo"}, {"categoria": "recoleccion"}, {"categoria": "alumbrado"}]}
 
         enriched = _augment_geo_payload_for_frontend(payload, module="points")
 
         top = enriched["map_layers"]["category_heatmap"]["top_categories"]
         self.assertEqual(top[0]["category"], "recoleccion")
         self.assertEqual(top[0]["count"], 2)
+        self.assertEqual(enriched["points"][0]["risk"]["level"], "high")
+        self.assertEqual(enriched["points"][0]["visual"]["marker"], "pulse")
+        self.assertTrue(enriched["map_layers"]["visual_system"]["animations"]["live_beacon"])
 
     def test_heatmap_category_filter_recomputes_cell_count_and_intensity(self):
         payload = {

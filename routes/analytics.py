@@ -330,28 +330,141 @@ def _event_has_contact_identity(metadata: dict[str, Any] | None, session_id: str
     return bool(session_id or anon_id)
 
 
+def _geo_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return default
+
+
+def _geo_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _geo_risk_level(intensity: float) -> dict[str, Any]:
+    if intensity >= 0.85:
+        return {"level": "critical", "label": "Critico", "priority": 4, "tone": "red"}
+    if intensity >= 0.6:
+        return {"level": "high", "label": "Alto", "priority": 3, "tone": "amber"}
+    if intensity >= 0.3:
+        return {"level": "medium", "label": "Medio", "priority": 2, "tone": "violet"}
+    return {"level": "low", "label": "Bajo", "priority": 1, "tone": "cyan"}
+
+
+def _dominant_geo_category(categories: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(categories, dict) or not categories:
+        return {"category": "sin_dato", "count": 0}
+    rows = []
+    for category, count in categories.items():
+        value = _geo_int(count)
+        if value <= 0:
+            continue
+        rows.append({"category": str(category or "sin_dato").strip() or "sin_dato", "count": value})
+    if not rows:
+        return {"category": "sin_dato", "count": 0}
+    rows.sort(key=lambda item: item["count"], reverse=True)
+    return rows[0]
+
+
+def _geo_cell_count(cell: dict[str, Any]) -> int:
+    count = _geo_int(cell.get("count"))
+    if count > 0:
+        return count
+    categories = cell.get("categories") if isinstance(cell, dict) else None
+    if isinstance(categories, dict):
+        category_total = sum(_geo_int(value) for value in categories.values())
+        if category_total > 0:
+            return category_total
+    return max(count, 0)
+
+
+def _heatmap_cell_for_frontend(cell: dict[str, Any], *, max_count: int) -> dict[str, Any]:
+    enriched = dict(cell)
+    count = _geo_cell_count(enriched)
+    fallback_intensity = (count / max_count) if max_count else 0.0
+    intensity = _geo_float(enriched.get("intensity"), fallback_intensity)
+    intensity = max(0.0, min(1.0, round(intensity, 4)))
+    dominant = _dominant_geo_category(enriched.get("categories"))
+    risk = _geo_risk_level(intensity)
+    enriched["count"] = count
+    enriched["intensity"] = intensity
+    enriched["dominant_category"] = dominant["category"]
+    enriched["dominant_category_count"] = dominant["count"]
+    enriched["risk"] = risk
+    enriched["visual"] = {
+        "radius_px": 16 + int(34 * intensity),
+        "glow_opacity": round(0.25 + (0.55 * intensity), 2),
+        "pulse": risk["priority"] >= 3,
+        "label_mode": "always" if risk["priority"] >= 3 else "hover",
+        "z_index": 10 + risk["priority"],
+    }
+    enriched["operator_context"] = {
+        "summary": f"{count} casos en zona; foco {dominant['category']}",
+        "recommended_action": "prioritize_dispatch" if risk["priority"] >= 3 else "monitor",
+        "crm_filter": {
+            "category": dominant["category"],
+            "bbox_cell": enriched.get("cell_id"),
+        },
+    }
+    return enriched
+
+
+def _point_for_frontend(point: dict[str, Any]) -> dict[str, Any]:
+    enriched = dict(point)
+    status = str(enriched.get("estado") or "").strip().lower()
+    category = str(enriched.get("categoria") or enriched.get("rubro") or "sin_dato").strip() or "sin_dato"
+    high_attention = status in {"nuevo", "abierto", "en_proceso", "pendiente", "alta", "vencido"}
+    risk = (
+        {"level": "high", "label": "Requiere atencion", "priority": 3, "tone": "amber"}
+        if high_attention
+        else _geo_risk_level(0.25)
+    )
+    enriched["categoria"] = category
+    enriched["risk"] = risk
+    enriched["visual"] = {
+        "marker": "pulse" if high_attention else "dot",
+        "radius_px": 14 if high_attention else 9,
+        "label_mode": "hover",
+    }
+    return enriched
+
+
 def _augment_geo_payload_for_frontend(data: dict[str, Any], *, module: str) -> dict[str, Any]:
     """Attach frontend-ready geo layer hints (OSM/OpenStreet + category overlays)."""
     payload = dict(data or {})
     category_totals: dict[str, int] = {}
     bounds = (payload.get("meta") or {}).get("map", {}).get("bounds") if isinstance(payload.get("meta"), dict) else None
+    heatmap_cells = list(payload.get("cells") or [])
+    point_rows = list(payload.get("points") or [])
 
     if module == "heatmap":
-        for cell in payload.get("cells") or []:
+        max_count = max((_geo_cell_count(cell) for cell in heatmap_cells if isinstance(cell, dict)), default=0)
+        enriched_cells = []
+        for cell in heatmap_cells:
             if not isinstance(cell, dict):
                 continue
+            cell = _heatmap_cell_for_frontend(cell, max_count=max_count)
+            enriched_cells.append(cell)
             for category, count in (cell.get("categories") or {}).items():
                 category_key = str(category or "sin_dato").strip() or "sin_dato"
                 try:
                     category_totals[category_key] = category_totals.get(category_key, 0) + int(count or 0)
                 except (TypeError, ValueError):
                     continue
+        payload["cells"] = enriched_cells
     elif module == "points":
-        for point in payload.get("points") or []:
+        enriched_points = []
+        for point in point_rows:
             if not isinstance(point, dict):
                 continue
+            point = _point_for_frontend(point)
+            enriched_points.append(point)
             category_key = str(point.get("categoria") or "sin_dato").strip() or "sin_dato"
             category_totals[category_key] = category_totals.get(category_key, 0) + 1
+        payload["points"] = enriched_points
 
     top_categories = sorted(
         (
@@ -362,6 +475,41 @@ def _augment_geo_payload_for_frontend(data: dict[str, Any], *, module: str) -> d
         key=lambda item: item["count"],
         reverse=True,
     )
+    cells = payload.get("cells") or []
+    points = payload.get("points") or []
+    total_items = len(cells) if module == "heatmap" else len(points)
+    total_cases = sum(_geo_int(cell.get("count")) for cell in cells if isinstance(cell, dict)) if module == "heatmap" else total_items
+    top_hotspots = sorted(
+        [
+            {
+                "id": cell.get("cell_id"),
+                "lat": cell.get("centroid_lat"),
+                "lon": cell.get("centroid_lon"),
+                "count": cell.get("count"),
+                "intensity": cell.get("intensity"),
+                "category": cell.get("dominant_category"),
+                "risk": cell.get("risk"),
+            }
+            for cell in cells
+            if isinstance(cell, dict)
+        ],
+        key=lambda item: (_geo_int(item.get("count")), _geo_float(item.get("intensity"))),
+        reverse=True,
+    )[:8]
+    if module == "points":
+        top_hotspots = [
+            {
+                "id": index + 1,
+                "lat": point.get("lat"),
+                "lon": point.get("lon"),
+                "count": 1,
+                "intensity": 1.0,
+                "category": point.get("categoria"),
+                "risk": point.get("risk"),
+            }
+            for index, point in enumerate(points[:8])
+            if isinstance(point, dict)
+        ]
 
     payload["map_layers"] = {
         "contract_version": ANALYTICS_GEO_LAYERS_CONTRACT_VERSION,
@@ -369,6 +517,12 @@ def _augment_geo_payload_for_frontend(data: dict[str, Any], *, module: str) -> d
             "name": "openstreetmap",
             "tiles": [{"url": "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", "attribution": "© OpenStreetMap contributors"}],
             "recommended_engine": "maplibre-gl",
+        },
+        "viewport": {
+            "bounds": bounds,
+            "fit_bounds": bool(bounds),
+            "padding": 72,
+            "fallback_zoom": 12,
         },
         "category_heatmap": {
             "enabled": bool(top_categories),
@@ -378,7 +532,51 @@ def _augment_geo_payload_for_frontend(data: dict[str, Any], *, module: str) -> d
             "supports_multi_select": True,
             "bounds": bounds,
         },
+        "intensity": {
+            "metric": "case_count" if module == "heatmap" else "point_count",
+            "total_items": total_items,
+            "total_cases": total_cases,
+            "scale": [
+                {"stop": 0.0, "color": "#22d3ee", "label": "bajo"},
+                {"stop": 0.35, "color": "#8b5cf6", "label": "medio"},
+                {"stop": 0.65, "color": "#f59e0b", "label": "alto"},
+                {"stop": 0.9, "color": "#ef4444", "label": "critico"},
+            ],
+        },
+        "hotspots": {
+            "enabled": bool(top_hotspots),
+            "top": top_hotspots,
+            "focus": top_hotspots[0] if top_hotspots else None,
+            "suggested_crm_action": "open_filtered_ticket_inbox" if top_hotspots else "collect_more_geo_data",
+        },
+        "visual_system": {
+            "style": "premium_operational_map",
+            "renderer": "webgl_heatmap" if module == "heatmap" else "clustered_points",
+            "animations": {
+                "radar_sweep": True,
+                "pulse_hotspots": True,
+                "smooth_zoom": True,
+                "live_beacon": module == "points",
+            },
+            "legend_position": "bottom-left",
+            "panel_density": "crm_dense",
+        },
+        "operator_metrics": {
+            "total_cases": total_cases,
+            "visible_layers": total_items,
+            "top_category": top_categories[0]["category"] if top_categories else None,
+            "critical_hotspots": sum(
+                1 for item in top_hotspots if ((item.get("risk") or {}).get("level") == "critical")
+            ),
+            "recommended_next_step": "prioritize_top_hotspot" if top_hotspots else "request_location_capture",
+        },
     }
+    render_contract = payload.setdefault("render_contract", {})
+    if isinstance(render_contract, dict):
+        render_contract.setdefault("recommended_component", "PremiumTerritoryMap")
+        render_contract.setdefault("interaction_model", "filterable_operational_heatmap")
+        render_contract.setdefault("crm_deep_link", "/perfil?tab=tickets")
+        render_contract.setdefault("supports_live_refresh", True)
     return payload
 
 
