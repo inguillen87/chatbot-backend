@@ -30,6 +30,7 @@ def test_clerk_config_contract(client, monkeypatch):
     monkeypatch.delenv("VITE_CLERK_PUBLISHABLE_KEY", raising=False)
     monkeypatch.delenv("CLERK_PUBLISHABLE_KEY", raising=False)
     monkeypatch.setenv("NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY", "pk_test_public")
+    monkeypatch.setenv("CLERK_JWKS_URL", "https://clerk.test/.well-known/jwks.json")
 
     resp = client.get("/auth/clerk/config")
 
@@ -39,8 +40,26 @@ def test_clerk_config_contract(client, monkeypatch):
     assert payload["enabled"] is True
     assert payload["session_sync_endpoint"] == "/auth/clerk/session"
     assert payload["publishable_key"] == "pk_test_public"
+    assert payload["ready_for_session_sync"] is True
+    assert payload["configuration_warnings"] == []
     assert "facebook" in payload["social_providers"]
     assert "linkedin" in payload["social_providers"]
+
+
+def test_clerk_config_stays_disabled_without_jwt_verification(client, monkeypatch):
+    monkeypatch.setenv("CLERK_ENABLED", "true")
+    monkeypatch.setenv("NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY", "pk_test_public")
+    monkeypatch.delenv("CLERK_ISSUER", raising=False)
+    monkeypatch.delenv("CLERK_JWKS_URL", raising=False)
+
+    resp = client.get("/auth/clerk/config")
+
+    assert resp.status_code == 200
+    payload = resp.get_json()
+    assert payload["enabled"] is False
+    assert payload["publishable_key_configured"] is True
+    assert payload["ready_for_session_sync"] is False
+    assert any(item["code"] == "jwt_verification_missing" for item in payload["configuration_warnings"])
 
 
 def test_clerk_session_sync_returns_chatboc_token_and_onboarding(client, monkeypatch):

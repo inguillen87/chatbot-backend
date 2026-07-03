@@ -61,6 +61,15 @@ def _env_list(name: str, fallback: Iterable[str]) -> list[str]:
     return [item.strip().lower() for item in raw.split(",") if item.strip()]
 
 
+def _clerk_publishable_key() -> Optional[str]:
+    value = (
+        os.getenv("VITE_CLERK_PUBLISHABLE_KEY")
+        or os.getenv("NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY")
+        or os.getenv("CLERK_PUBLISHABLE_KEY")
+    )
+    return str(value).strip() if value and str(value).strip() else None
+
+
 def is_clerk_superadmin_email(email: str | None) -> bool:
     return is_authorized_superadmin_email(email)
 
@@ -68,9 +77,7 @@ def is_clerk_superadmin_email(email: str | None) -> bool:
 def clerk_enabled() -> bool:
     if _truthy(os.getenv("CLERK_DISABLED")):
         return False
-    return _truthy(os.getenv("CLERK_ENABLED")) or bool(
-        os.getenv("CLERK_ISSUER") or os.getenv("CLERK_JWKS_URL") or os.getenv("CLERK_SECRET_KEY")
-    )
+    return _truthy(os.getenv("CLERK_ENABLED")) or bool(os.getenv("CLERK_ISSUER") or os.getenv("CLERK_JWKS_URL"))
 
 
 def _clerk_issuer() -> Optional[str]:
@@ -94,16 +101,37 @@ def _clerk_jwks_url() -> str:
     return f"{issuer}/.well-known/jwks.json"
 
 
+def _clerk_verification_configured() -> bool:
+    return bool(os.getenv("CLERK_JWKS_URL") or _clerk_issuer())
+
+
+def _clerk_configuration_warnings(*, publishable_key: Optional[str], verification_configured: bool) -> list[dict]:
+    warnings: list[dict] = []
+    if not publishable_key:
+        warnings.append(
+            {
+                "code": "publishable_key_missing",
+                "message": "Configure VITE_CLERK_PUBLISHABLE_KEY or NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY for the web client.",
+            }
+        )
+    if not verification_configured:
+        warnings.append(
+            {
+                "code": "jwt_verification_missing",
+                "message": "Configure CLERK_ISSUER or CLERK_JWKS_URL on the backend. CLERK_SECRET_KEY alone does not validate session JWTs.",
+            }
+        )
+    return warnings
+
+
 def build_clerk_frontend_contract() -> dict:
     providers = _env_list("CLERK_SOCIAL_PROVIDERS", DEFAULT_SOCIAL_PROVIDERS)
-    publishable_key = (
-        os.getenv("VITE_CLERK_PUBLISHABLE_KEY")
-        or os.getenv("NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY")
-        or os.getenv("CLERK_PUBLISHABLE_KEY")
-    )
+    publishable_key = _clerk_publishable_key()
+    verification_configured = _clerk_verification_configured()
+    ui_enabled = bool(clerk_enabled() and publishable_key and verification_configured)
     return {
         "contract_version": CLERK_AUTH_CONTRACT_VERSION,
-        "enabled": clerk_enabled(),
+        "enabled": ui_enabled,
         "provider": "clerk",
         "session_sync_endpoint": "/auth/clerk/session",
         "onboarding_endpoint": "/auth/clerk/onboarding",
@@ -111,8 +139,13 @@ def build_clerk_frontend_contract() -> dict:
         "publishable_key": publishable_key,
         "publishable_key_configured": bool(publishable_key),
         "issuer_configured": bool(_clerk_issuer()),
-        "jwks_configured": bool(os.getenv("CLERK_JWKS_URL") or _clerk_issuer()),
+        "jwks_configured": verification_configured,
         "webhook_configured": bool(os.getenv("CLERK_WEBHOOK_SECRET")),
+        "ready_for_session_sync": verification_configured,
+        "configuration_warnings": _clerk_configuration_warnings(
+            publishable_key=publishable_key,
+            verification_configured=verification_configured,
+        ),
         "social_providers": providers,
         "frontend_env": {
             "VITE_CLERK_PUBLISHABLE_KEY": "required for Vite frontend",
