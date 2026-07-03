@@ -200,13 +200,23 @@ def test_marketplace_order_note_upload_creates_assisted_request_contract(client,
     assert intake_ticket.datos_extra["attachments"][0]["id"] == payload["attachment_id"]
     assert payload["crm_order_draft"]["summary"]["matched"] == 1
     assert payload["crm_order_draft"]["summary"]["unmatched"] == 1
+    assert payload["crm_order_draft"]["summary"]["confirmation_status"] == "operator_review_required"
+    assert payload["crm_order_draft"]["customer_confirmation"]["contract_version"] == "marketplace.customer_confirmation.v1"
+    assert payload["crm_order_draft"]["customer_confirmation"]["status"] == "operator_review_required"
+    assert payload["crm_order_draft"]["customer_confirmation"]["confidence_level"] == "medium"
+    assert payload["crm_order_draft"]["customer_confirmation"]["primary_action_id"] == "continue_by_whatsapp"
+    assert payload["crm_order_draft"]["customer_confirmation"]["blocking_reasons"][0]["id"] == "items_need_review"
     assert [line["status"] for line in payload["crm_order_draft"]["lines"]] == [
         "catalog_matched",
         "needs_catalog_resolution",
     ]
     assert payload["crm_order_draft"]["lines"][0]["catalog_item_id"] == chapa.id
+    assert payload["crm_order_draft"]["lines"][0]["confirmation_state"] == "ready"
+    assert payload["crm_order_draft"]["lines"][0]["confidence"] == "high"
     assert payload["crm_order_draft"]["lines"][1]["source_name"] == "Clavos 2 pulgadas"
     assert payload["crm_order_draft"]["lines"][1]["candidate_count"] == 1
+    assert payload["crm_order_draft"]["lines"][1]["confirmation_state"] == "needs_operator_review"
+    assert payload["crm_order_draft"]["lines"][1]["confidence"] == "medium"
     assert payload["crm_handoff"]["draft_order"] == payload["crm_order_draft"]
     assert any(step["id"] == "human_review" for step in payload["customer_next_steps"])
     assert any(action["id"] == "review_unmatched_items" for action in payload["next_actions"])
@@ -565,6 +575,11 @@ def test_marketplace_order_note_upload_is_manageable_from_tenant_crm(client, app
     assert detail_response.status_code == 200
     detail_payload = detail_response.get_json()
     assert detail_payload["assisted_request"]["match_summary"]["matched"] == 1
+    confirmation = detail_payload["assisted_request"]["crm_order_draft"]["customer_confirmation"]
+    assert confirmation["status"] == "ready_for_customer_confirmation"
+    assert confirmation["confidence_level"] == "high"
+    assert confirmation["blocking_reasons"] == []
+    assert confirmation["primary_action_id"] == "confirm_order_draft"
     assert detail_payload["assisted_request"]["attachmentInfo"]["url"] == "https://cdn.example.com/pedido.jpg"
     assert detail_payload["assisted_request"]["source"]["attachmentInfo"]["url"] == "https://cdn.example.com/pedido.jpg"
     assert detail_payload["assisted_request"]["public_follow_up"]["tracking"]["code"] == f"pc-{pedido_id}"

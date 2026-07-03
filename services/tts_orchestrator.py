@@ -7,6 +7,7 @@ import textwrap
 from collections import OrderedDict
 from threading import Lock
 from typing import Any, Callable, Iterable
+from urllib.parse import urlparse
 
 from config import BACKEND_URL
 
@@ -136,8 +137,53 @@ def _tts_cache_enabled() -> bool:
     return str(os.getenv("TTS_CACHE_ENABLED", "true")).strip().lower() not in _FALSEY_VALUES
 
 
+def _first_env_value(*names: str) -> str | None:
+    for name in names:
+        value = str(os.getenv(name) or "").strip()
+        if value:
+            return value
+
+    return None
+
+
+def _audio_cache_public_base_url() -> str | None:
+    return _first_env_value(
+        "TTS_AUDIO_CACHE_PUBLIC_BASE_URL",
+        "CLOUDFLARE_AUDIO_CACHE_PUBLIC_BASE_URL",
+    )
+
+
+def _is_audio_cache_path(relative_path: str) -> bool:
+    normalized = relative_path.replace("\\", "/").lstrip("/")
+    return normalized.startswith("static/audio_cache/")
+
+
+def get_tts_audio_cache_public_config() -> dict[str, Any]:
+    """Return cache publication settings without exposing spoken text."""
+
+    public_base_url = _audio_cache_public_base_url()
+    parsed = urlparse(public_base_url) if public_base_url else None
+    host = parsed.netloc if parsed and parsed.netloc else None
+
+    return {
+        "public_path": "/static/audio_cache",
+        "public_url_mode": "cdn" if public_base_url else "backend_static",
+        "cdn_configured": bool(public_base_url),
+        "cdn_host": host,
+        "cdn_env_vars": [
+            "TTS_AUDIO_CACHE_PUBLIC_BASE_URL",
+            "CLOUDFLARE_AUDIO_CACHE_PUBLIC_BASE_URL",
+        ],
+    }
+
+
 def _public_backend_url(relative_path: str) -> str:
     url_path = relative_path.replace("\\", "/")
+    if _is_audio_cache_path(url_path):
+        audio_cache_base_url = _audio_cache_public_base_url()
+        if audio_cache_base_url:
+            return f"{audio_cache_base_url.rstrip('/')}/{url_path.lstrip('/')}"
+
     return f"{BACKEND_URL}/{url_path.lstrip('/')}"
 
 

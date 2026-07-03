@@ -90,6 +90,96 @@ def _candidate_count_for_unmatched(item: dict[str, Any], catalog_candidates: lis
     return 0
 
 
+def _build_customer_confirmation_state(
+    *,
+    detected: int,
+    matched: int,
+    unmatched: int,
+    has_contact: bool,
+    needs_review: bool,
+) -> dict[str, Any]:
+    blocking_reasons: list[dict[str, str]] = []
+    if detected <= 0:
+        blocking_reasons.append(
+            {
+                "id": "no_items_detected",
+                "label": "No hay renglones confiables",
+                "description": "El equipo revisa el archivo o texto original antes de responder.",
+            }
+        )
+    if unmatched > 0:
+        blocking_reasons.append(
+            {
+                "id": "items_need_review",
+                "label": "Hay articulos para revisar",
+                "description": "Algunos renglones no se pudieron asociar al catalogo con seguridad.",
+            }
+        )
+    if not has_contact:
+        blocking_reasons.append(
+            {
+                "id": "missing_contact",
+                "label": "Falta contacto",
+                "description": "Conviene dejar WhatsApp o email para que el equipo confirme el pedido.",
+            }
+        )
+    if needs_review and not blocking_reasons:
+        blocking_reasons.append(
+            {
+                "id": "operator_review_required",
+                "label": "Requiere validacion",
+                "description": "El equipo confirma stock, precio y datos antes de avanzar.",
+            }
+        )
+
+    confidence_score = round((matched / detected), 2) if detected > 0 else 0.0
+    if detected <= 0:
+        status = "manual_review_required"
+        confidence_level = "low"
+        headline = "El equipo revisa tu solicitud"
+        description = "No hay datos suficientes para armar un pedido confiable automaticamente."
+        primary_action_id = "wait_operator_reply"
+        primary_action_label = "Esperar respuesta del equipo"
+    elif blocking_reasons:
+        status = "operator_review_required"
+        confidence_level = "medium" if matched > 0 else "low"
+        headline = "Solicitud lista para revision"
+        description = "Ya quedo cargada con lo que pudimos interpretar. El equipo completa faltantes y responde."
+        primary_action_id = "continue_by_whatsapp"
+        primary_action_label = "Continuar por WhatsApp o chat"
+    else:
+        status = "ready_for_customer_confirmation"
+        confidence_level = "high"
+        headline = "Borrador listo para confirmar"
+        description = "Los renglones detectados coinciden con el catalogo y el equipo puede confirmar stock y precio."
+        primary_action_id = "confirm_order_draft"
+        primary_action_label = "Confirmar borrador"
+
+    allowed_actions = ["open_tracking", "continue_by_whatsapp", "send_to_team"]
+    if status == "ready_for_customer_confirmation":
+        allowed_actions.insert(0, "confirm_order_draft")
+
+    return {
+        "contract_version": "marketplace.customer_confirmation.v1",
+        "status": status,
+        "status_label": {
+            "manual_review_required": "Revision manual",
+            "operator_review_required": "Revision del equipo necesaria",
+            "ready_for_customer_confirmation": "Listo para confirmar",
+        }[status],
+        "headline": headline,
+        "description": description,
+        "confidence_level": confidence_level,
+        "confidence_score": confidence_score,
+        "matched": matched,
+        "detected": detected,
+        "blocking_reasons": blocking_reasons,
+        "primary_action_id": primary_action_id,
+        "primary_action_label": primary_action_label,
+        "allowed_actions": allowed_actions,
+    }
+
+
 def build_crm_order_draft(
     *,
     request_kind: str = "order_note",
@@ -120,6 +210,9 @@ def build_crm_order_draft(
             {
                 "line_id": f"line-{len(lines) + 1}",
                 "status": "catalog_matched" if catalog_match else "needs_review",
+                "confirmation_state": "ready" if catalog_match else "needs_operator_review",
+                "confidence": "high" if catalog_match else "low",
+                "customer_visible_status": "Producto encontrado en catalogo" if catalog_match else "Revisar con el equipo",
                 "source_name": label,
                 "quantity": _quantity_value(item.get("cantidad") or item.get("quantity") or item.get("qty")),
                 "unit": item.get("unidad") or item.get("unit"),
@@ -152,6 +245,9 @@ def build_crm_order_draft(
             {
                 "line_id": f"line-{len(lines) + 1}",
                 "status": "needs_catalog_resolution",
+                "confirmation_state": "needs_operator_review",
+                "confidence": "low" if candidate_count == 0 else "medium",
+                "customer_visible_status": "Pendiente de asociar al catalogo",
                 "source_name": label,
                 "quantity": quantity,
                 "unit": unit,
@@ -178,6 +274,13 @@ def build_crm_order_draft(
         recommended_next_step = "resolver_items_y_cotizar" if is_quote else "resolver_items_y_confirmar"
     else:
         recommended_next_step = "cotizar_y_responder" if is_quote else "confirmar_stock_precio_y_responder"
+    customer_confirmation = _build_customer_confirmation_state(
+        detected=detected,
+        matched=matched,
+        unmatched=unmatched,
+        has_contact=has_contact,
+        needs_review=needs_review,
+    )
 
     return {
         "contract_version": _CRM_ORDER_DRAFT_CONTRACT_VERSION,
@@ -202,6 +305,8 @@ def build_crm_order_draft(
         "contact": contact,
         "contact_state": "available" if has_contact else "missing",
         "lines": lines,
+        "customer_confirmation": customer_confirmation,
+        "confirmation": customer_confirmation,
         "catalog_candidate_groups": len(catalog_candidates),
         "summary": {
             "detected": detected,
@@ -209,6 +314,9 @@ def build_crm_order_draft(
             "unmatched": unmatched,
             "has_contact": has_contact,
             "needs_operator_review": needs_review,
+            "confirmation_status": customer_confirmation["status"],
+            "confidence_level": customer_confirmation["confidence_level"],
+            "confidence_score": customer_confirmation["confidence_score"],
         },
     }
 

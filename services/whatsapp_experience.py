@@ -34,7 +34,7 @@ from services.huggingface_ai_insights import build_whatsapp_ai_runtime_contract
 from services.plan_access import integration_access_payload
 from services.realtime_voice_profiles import build_realtime_voice_capabilities
 from services.audio_transcription_service import audio_translation_capabilities
-from services.tts_orchestrator import get_tts_cache_metrics
+from services.tts_orchestrator import get_tts_audio_cache_public_config, get_tts_cache_metrics
 
 
 WHATSAPP_EXPERIENCE_CONTRACT_VERSION = "whatsapp.experience.v1"
@@ -171,6 +171,7 @@ def _runtime_flag_enabled(
 
 def _tts_audio_cache_observability_payload(app_config: Mapping[str, Any] | None) -> dict[str, Any]:
     metrics = get_tts_cache_metrics()
+    public_config = get_tts_audio_cache_public_config()
     requests = int(metrics.get("requests", 0) or 0)
     cache_hits = int(metrics.get("cache_hits", 0) or 0)
     cache_misses = int(metrics.get("cache_misses", 0) or 0)
@@ -204,6 +205,10 @@ def _tts_audio_cache_observability_payload(app_config: Mapping[str, Any] | None)
             "public_path": "/static/audio_cache",
             "file_format": "mp3",
             "content_text_exposed": False,
+            "public_url_mode": public_config["public_url_mode"],
+            "cdn_configured": public_config["cdn_configured"],
+            "cdn_host": public_config["cdn_host"],
+            "cdn_env_vars": public_config["cdn_env_vars"],
         },
         "scope": ["main_menu", "claim_categories", "survey_menu", "catalog_menu", "status_menu"],
         "metrics": metrics,

@@ -95,7 +95,13 @@ def test_build_order_attachment_preview_returns_structured_preview(mock_extract,
         "unmatched": 1,
         "has_contact": True,
         "needs_operator_review": True,
+        "confirmation_status": "operator_review_required",
+        "confidence_level": "medium",
+        "confidence_score": 0.5,
     }
+    assert crm_order_draft["customer_confirmation"]["status"] == "operator_review_required"
+    assert crm_order_draft["customer_confirmation"]["blocking_reasons"][0]["id"] == "items_need_review"
+    assert crm_order_draft["customer_confirmation"]["primary_action_id"] == "continue_by_whatsapp"
     assert [line["status"] for line in crm_order_draft["lines"]] == [
         "catalog_matched",
         "needs_catalog_resolution",

@@ -91,8 +91,8 @@ class R2Service:
                 # 'CacheControl': 'public, max-age=31536000' # Ideal for static assets
             }
 
-            # Add cache control for images/static assets
-            if content_type.startswith('image/') or content_type == 'application/pdf':
+            # Add cache control for immutable customer-facing static assets.
+            if content_type.startswith('image/') or content_type.startswith('audio/') or content_type == 'application/pdf':
                 extra_args['CacheControl'] = 'public, max-age=31536000'
 
             self.client.upload_fileobj(
