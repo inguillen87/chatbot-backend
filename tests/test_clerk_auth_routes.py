@@ -29,6 +29,10 @@ def test_clerk_config_contract(client, monkeypatch):
     monkeypatch.setenv("CLERK_ENABLED", "true")
     monkeypatch.delenv("VITE_CLERK_PUBLISHABLE_KEY", raising=False)
     monkeypatch.delenv("CLERK_PUBLISHABLE_KEY", raising=False)
+    monkeypatch.delenv("CHATBOC_SUPERADMIN_EMAILS", raising=False)
+    monkeypatch.delenv("CLERK_SUPERADMIN_EMAILS", raising=False)
+    monkeypatch.delenv("CHATBOC_SUPERADMIN_EMAIL", raising=False)
+    monkeypatch.delenv("CLERK_SUPERADMIN_EMAIL", raising=False)
     monkeypatch.setenv("NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY", "pk_test_public")
     monkeypatch.setenv("CLERK_JWKS_URL", "https://clerk.test/.well-known/jwks.json")
 
@@ -44,6 +48,11 @@ def test_clerk_config_contract(client, monkeypatch):
     assert payload["configuration_warnings"] == []
     assert "facebook" in payload["social_providers"]
     assert "linkedin" in payload["social_providers"]
+    assert payload["superadmin_policy"] == {
+        "mode": "email_allowlist",
+        "default_owner_guardrail": True,
+        "allowlist_env_configured": False,
+    }
 
 
 def test_clerk_config_stays_disabled_without_jwt_verification(client, monkeypatch):

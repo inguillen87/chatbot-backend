@@ -30,6 +30,7 @@ from utils.roles import (
     is_super_admin_role,
     normalize_tenant_type,
     role_for_tenant_type,
+    superadmin_email_allowlist_configured,
 )
 
 CLERK_AUTH_CONTRACT_VERSION = "auth.clerk.v1"
@@ -147,6 +148,11 @@ def build_clerk_frontend_contract() -> dict:
             verification_configured=verification_configured,
         ),
         "social_providers": providers,
+        "superadmin_policy": {
+            "mode": "email_allowlist",
+            "default_owner_guardrail": True,
+            "allowlist_env_configured": superadmin_email_allowlist_configured(),
+        },
         "frontend_env": {
             "VITE_CLERK_PUBLISHABLE_KEY": "required for Vite frontend",
             "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY": "supported for Next.js frontends",
