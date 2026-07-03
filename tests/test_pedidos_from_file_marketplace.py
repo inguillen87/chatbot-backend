@@ -13,6 +13,7 @@ from models import (
     MunicipioTicket,
     PedidoConversacional,
     PymePedido,
+    TenantTicket,
     TenantProfile,
     TicketComentario,
     User,
@@ -78,6 +79,7 @@ def test_marketplace_order_note_upload_creates_assisted_request_contract(client,
             {"nombre": "Clavos 2 pulgadas", "cantidad": 1},
         ],
     )
+    legacy_order_count = PymePedido.query.filter_by(tenant_id=tenant.id).count()
 
     response = client.post(
         "/api/pedidos/from-file",
@@ -170,9 +172,30 @@ def test_marketplace_order_note_upload_creates_assisted_request_contract(client,
     assert payload["crm_order_draft"]["source"]["attachment_id"] == payload["attachment_id"]
     assert payload["crm_handoff"]["source"]["attachment_id"] == payload["attachment_id"]
     assert payload["crm_handoff"]["source"]["attachmentInfo"]["url"] == "https://cdn.example.com/nota.png"
+    assert payload["ticket_type"] == "tenant_ticket"
+    assert payload["intake_ticket_id"] == payload["linked_record"]["id"]
+    assert payload["linked_record"]["kind"] == "tenant_ticket"
+    assert payload["linked_record"]["target_module"] == "orders"
+    assert payload["linked_record"]["category"] == "marketplace_assisted_order"
+    assert payload["crm_handoff"]["materialized_record"]["id"] == payload["intake_ticket_id"]
     pedido = PedidoConversacional.query.get(payload["pedido_id"])
     assert pedido.estado == "nuevo"
     assert pedido.metadata_payload["crm_state"] == "pending_operator_review"
+    assert pedido.metadata_payload["linked_record"]["id"] == payload["intake_ticket_id"]
+    assert pedido.metadata_payload["linked_record"]["kind"] == "tenant_ticket"
+    assert PymePedido.query.filter_by(tenant_id=tenant.id).count() == legacy_order_count
+    intake_ticket = TenantTicket.query.get(payload["intake_ticket_id"])
+    assert intake_ticket is not None
+    assert intake_ticket.tenant_id == tenant.id
+    assert intake_ticket.categoria == "marketplace_assisted_order"
+    assert intake_ticket.estado == "nuevo"
+    assert intake_ticket.origen == "marketplace"
+    assert intake_ticket.fingerprint.startswith(f"assisted_upload:{tenant.id}:")
+    assert intake_ticket.datos_extra["contract_version"] == "marketplace.commerce_intake_ticket.v1"
+    assert intake_ticket.datos_extra["pedido_conversacional_id"] == payload["pedido_id"]
+    assert intake_ticket.datos_extra["crm_order_draft"]["reference"] == f"pedido:{payload['pedido_id']}"
+    assert intake_ticket.datos_extra["operator_pack"]["reference"] == f"pedido:{payload['pedido_id']}"
+    assert intake_ticket.datos_extra["source_attachment"]["id"] == payload["attachment_id"]
     assert payload["crm_order_draft"]["summary"]["matched"] == 1
     assert payload["crm_order_draft"]["summary"]["unmatched"] == 1
     assert [line["status"] for line in payload["crm_order_draft"]["lines"]] == [
@@ -236,6 +259,20 @@ def test_marketplace_order_note_upload_creates_assisted_request_contract(client,
     assert analytics_event.metadata_payload["unmatched_count"] == 1
     assert analytics_event.metadata_payload["needs_operator_review"] is True
     assert "contact" not in analytics_event.metadata_payload
+    ticket_event = AnalyticsEventV2.query.filter_by(
+        tenant_id=tenant.id,
+        event_name="marketplace_intake_ticket_created",
+        entity_ref=f"tenant_ticket:{payload['intake_ticket_id']}",
+    ).first()
+    assert ticket_event is not None
+    assert ticket_event.metadata_payload["contract_version"] == "marketplace.commerce_loop.analytics.v1"
+    assert ticket_event.metadata_payload["intake_ticket_contract_version"] == "marketplace.commerce_intake_ticket.v1"
+    assert ticket_event.metadata_payload["request_kind"] == "order_note"
+    assert ticket_event.metadata_payload["target_module"] == "orders"
+    assert ticket_event.metadata_payload["ticket_category"] == "marketplace_assisted_order"
+    assert ticket_event.metadata_payload["linked_record_type"] == "tenant_ticket"
+    assert ticket_event.metadata_payload["linked_record_id"] == payload["intake_ticket_id"]
+    assert "contact" not in ticket_event.metadata_payload
 
     attachment = db.session.get(ArchivoAdjunto, payload["attachment_id"])
     assert attachment is not None
@@ -314,10 +351,19 @@ def test_marketplace_order_note_upload_replays_idempotently_without_duplicate_pr
     assert replay_payload["idempotency_key"] == "market-note-42"
     assert calls == {"upload": 1, "extract": 1}
     assert PedidoConversacional.query.filter_by(tenant_id=tenant.id).count() == 1
+    assert first_payload["intake_ticket_id"] == replay_payload["intake_ticket_id"]
+    assert first_payload["linked_record"]["kind"] == "tenant_ticket"
+    assert replay_payload["linked_record"]["kind"] == "tenant_ticket"
+    assert TenantTicket.query.filter_by(tenant_id=tenant.id).count() == 1
     assert AnalyticsEventV2.query.filter_by(
         tenant_id=tenant.id,
         event_name="assisted_upload_submitted",
         entity_ref=f"pedido:{first_payload['pedido_id']}",
+    ).count() == 1
+    assert AnalyticsEventV2.query.filter_by(
+        tenant_id=tenant.id,
+        event_name="marketplace_intake_ticket_created",
+        entity_ref=f"tenant_ticket:{first_payload['intake_ticket_id']}",
     ).count() == 1
 
     pedido = PedidoConversacional.query.get(first_payload["pedido_id"])
@@ -893,6 +939,16 @@ def test_marketplace_tax_bill_never_matches_catalog_items(client, init_database,
     assert payload["structured_extraction"]["fields"]["periodo"] == "06/2026"
     assert payload["structured_extraction"]["fields"]["vencimiento"] == "15/07/2026"
     assert payload["crm_handoff"]["target_module"] == "document_requests"
+    assert payload["ticket_type"] == "tenant_ticket"
+    assert payload["linked_record"]["kind"] == "tenant_ticket"
+    assert payload["linked_record"]["target_module"] == "document_requests"
+    assert payload["linked_record"]["category"] == "document_request"
+    intake_ticket = TenantTicket.query.get(payload["intake_ticket_id"])
+    assert intake_ticket.categoria == "document_request"
+    assert intake_ticket.datos_extra["target_module"] == "document_requests"
+    assert intake_ticket.datos_extra["request_kind"] == "tax_bill"
+    assert MunicipioTicket.query.filter_by(tenant_id=tenant.id).count() == 0
+    assert PymePedido.query.filter_by(tenant_id=tenant.id).count() == 0
     assert "stock, precio" not in payload["operator_pack"]["suggested_reply"]
     assert "catalogo" not in payload["operator_pack"]["suggested_reply"].lower()
 

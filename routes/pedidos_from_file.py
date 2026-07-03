@@ -1,4 +1,5 @@
 import io
+import hashlib
 import logging
 import mimetypes
 import random
@@ -15,7 +16,7 @@ from sqlalchemy import func
 from werkzeug.utils import secure_filename
 
 from database import db
-from models import ArchivoAdjunto, CatalogoItem, MunicipioTicket, PedidoConversacional, TicketComentario
+from models import ArchivoAdjunto, CatalogoItem, MunicipioTicket, PedidoConversacional, TenantTicket, TicketComentario
 from routes.catalogo import _formatear_producto
 from routes.productos import _resolve_public_owner
 from services.cart import _get_pyme_cart
@@ -1643,6 +1644,160 @@ def _materialize_municipal_claim_from_handoff(
     return linked_record
 
 
+def _commerce_intake_ticket_fingerprint(
+    *,
+    tenant_id: int | None,
+    pedido_id: int | None,
+    idempotency_key: str | None,
+) -> str:
+    seed = f"{tenant_id}:{idempotency_key or f'pedido:{pedido_id}'}"
+    digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:18]
+    return f"assisted_upload:{tenant_id}:{digest}"[:120]
+
+
+def _commerce_ticket_category(target_module: str, request_kind: str) -> str:
+    if target_module == "document_requests":
+        return "document_request"
+    if request_kind in {"receipt", "tax_bill", "certificate", "other"}:
+        return "document_request"
+    return "marketplace_assisted_order"
+
+
+def _materialize_commerce_intake_ticket_from_handoff(
+    *,
+    pedido: PedidoConversacional,
+    tenant,
+    user,
+    document_profile: dict[str, Any],
+    source_payload: dict[str, Any],
+    contact_payload: dict[str, str],
+    match_summary: dict[str, Any],
+    crm_handoff: dict[str, Any],
+    crm_order_draft: Optional[dict[str, Any]],
+    operator_pack: dict[str, Any],
+    operator_intake_summary: dict[str, Any],
+    public_follow_up: dict[str, Any],
+    review_context: dict[str, Any],
+    structured_extraction: dict[str, Any],
+    attachment_info: Optional[dict[str, Any]],
+    idempotency_key: Optional[str],
+) -> Optional[dict[str, Any]]:
+    primary_intent = str(document_profile.get("primary_intent") or "")
+    if primary_intent == "municipal_service_request":
+        return None
+
+    target_module = str(crm_handoff.get("target_module") or operator_intake_summary.get("target_module") or "orders")
+    if target_module not in {"orders", "document_requests"}:
+        return None
+
+    tenant_id = getattr(tenant, "id", None)
+    if not tenant_id:
+        return None
+
+    fingerprint = _commerce_intake_ticket_fingerprint(
+        tenant_id=tenant_id,
+        pedido_id=getattr(pedido, "id", None),
+        idempotency_key=idempotency_key,
+    )
+    existing = TenantTicket.query.filter_by(tenant_id=tenant_id, fingerprint=fingerprint).first()
+    if existing:
+        return {
+            "kind": "tenant_ticket",
+            "target_module": target_module,
+            "id": existing.id,
+            "ticket_id": existing.id,
+            "ticket_type": "tenant_ticket",
+            "status": existing.estado,
+            "category": existing.categoria,
+            "admin_thread_binding": "tenant_ticket_id",
+            "fingerprint": existing.fingerprint,
+            "reused": True,
+        }
+
+    request_kind = str(document_profile.get("kind") or "")
+    request_kind_label = str(document_profile.get("label") or request_kind or "solicitud")
+    category = _commerce_ticket_category(target_module, request_kind)
+    needs_review = bool(match_summary.get("needs_operator_review"))
+    title = operator_intake_summary.get("title") or f"{request_kind_label.capitalize()} desde marketplace"
+    description_parts = [
+        str(title),
+        f"Estado: {'requiere revision' if needs_review else 'listo para confirmar'}",
+    ]
+    if match_summary:
+        description_parts.append(
+            "Lectura: "
+            f"{int(match_summary.get('detected') or 0)} detectado(s), "
+            f"{int(match_summary.get('matched') or 0)} con match, "
+            f"{int(match_summary.get('unmatched') or 0)} para revisar."
+        )
+    source_name = source_payload.get("archivo_nombre") or source_payload.get("original_filename")
+    if source_name:
+        description_parts.append(f"Origen: {source_name}")
+
+    ticket = TenantTicket(
+        tenant_id=tenant_id,
+        user_id=getattr(user, "id", None),
+        categoria=category,
+        descripcion="\n".join(description_parts),
+        estado="nuevo",
+        origen=str(source_payload.get("channel") or "marketplace")[:20],
+        fingerprint=fingerprint,
+        datos_extra={
+            "contract_version": "marketplace.commerce_intake_ticket.v1",
+            "title": title,
+            "type": "commerce_assisted_intake",
+            "priority": operator_pack.get("priority") or review_context.get("priority") or "medium",
+            "channel": source_payload.get("channel") or "marketplace",
+            "source": "pedidos_from_file",
+            "pedido_conversacional_id": getattr(pedido, "id", None),
+            "pedido_reference": f"pedido:{getattr(pedido, 'id', None)}",
+            "request_kind": request_kind,
+            "request_kind_label": request_kind_label,
+            "target_module": target_module,
+            "crm_state": "pending_operator_review" if needs_review else "ready_for_confirmation",
+            "contact": contact_payload,
+            "lead_profile": {
+                "contact_state": operator_intake_summary.get("contact_state"),
+                "contact_channels": operator_intake_summary.get("contact_channels") or [],
+                "anon_id": source_payload.get("anon_id"),
+                "chat_session_id": source_payload.get("chat_session_id"),
+            },
+            "match_summary": match_summary,
+            "structured_extraction": structured_extraction,
+            "crm_handoff": crm_handoff,
+            "crm_order_draft": crm_order_draft,
+            "operator_pack": operator_pack,
+            "operator_intake_summary": operator_intake_summary,
+            "review_context": review_context,
+            "public_follow_up": public_follow_up,
+            "source_attachment": attachment_info,
+            "comments": [],
+        },
+    )
+    db.session.add(ticket)
+    db.session.flush()
+
+    linked_record = {
+        "kind": "tenant_ticket",
+        "target_module": target_module,
+        "id": ticket.id,
+        "ticket_id": ticket.id,
+        "ticket_type": "tenant_ticket",
+        "status": ticket.estado,
+        "category": ticket.categoria,
+        "admin_thread_binding": "tenant_ticket_id",
+        "fingerprint": ticket.fingerprint,
+    }
+    if attachment_info:
+        linked_record["attachment_id"] = attachment_info.get("id")
+        linked_record["attachmentInfo"] = attachment_info
+        linked_record["source_attachment"] = attachment_info
+
+    crm_handoff["materialized_record"] = linked_record
+    crm_handoff["recommended_record"] = "tenant_ticket"
+    return linked_record
+
+
 def _build_next_actions(
     *,
     pedido_id: int,
@@ -2366,6 +2521,25 @@ def pedidos_desde_archivo():
         target_module=crm_handoff.get("target_module"),
         missing_fields=structured_missing_fields,
     )
+    if not linked_record:
+        linked_record = _materialize_commerce_intake_ticket_from_handoff(
+            pedido=pedido,
+            tenant=tenant,
+            user=user,
+            document_profile=document_profile,
+            source_payload=source_payload,
+            contact_payload=contact_payload,
+            match_summary=match_summary,
+            crm_handoff=crm_handoff,
+            crm_order_draft=crm_order_draft,
+            operator_pack=operator_pack,
+            operator_intake_summary=operator_intake_summary,
+            public_follow_up=public_follow_up,
+            review_context=review_context,
+            structured_extraction=structured_extraction,
+            attachment_info=attachment_info,
+            idempotency_key=idempotency_key,
+        )
     metadata_payload = dict(pedido.metadata_payload or {})
     metadata_payload["next_actions"] = next_actions
     metadata_payload["operator_pack"] = operator_pack
@@ -2375,7 +2549,10 @@ def pedidos_desde_archivo():
     metadata_payload["operator_intake_summary"] = operator_intake_summary
     if linked_record:
         metadata_payload["linked_record"] = linked_record
-        metadata_payload["crm_state"] = "materialized_ticket_pending_review"
+        if linked_record.get("kind") == "municipio_ticket":
+            metadata_payload["crm_state"] = "materialized_ticket_pending_review"
+        else:
+            metadata_payload.setdefault("crm_state", crm_state)
     pedido.metadata_payload = metadata_payload
     if pedido.items and isinstance(pedido.items[0], dict):
         first_item_payload = dict(pedido.items[0])
@@ -2417,6 +2594,36 @@ def pedidos_desde_archivo():
         entity_ref=f"pedido:{pedido.id}",
         user_id=getattr(user, "id", None),
     )
+    if linked_record and linked_record.get("kind") == "tenant_ticket":
+        track_marketplace_event(
+            tenant,
+            "marketplace_intake_ticket_created",
+            {
+                "source": "pedidos_from_file",
+                "assisted_request_contract_version": _ASSISTED_REQUEST_CONTRACT_VERSION,
+                "intake_ticket_contract_version": "marketplace.commerce_intake_ticket.v1",
+                "mode": "order_note_upload",
+                "request_kind": request_kind,
+                "request_kind_label": request_kind_label,
+                "primary_intent": document_profile.get("primary_intent"),
+                "target_module": linked_record.get("target_module"),
+                "ticket_category": linked_record.get("category"),
+                "input_type": extension,
+                "has_file": bool(archivo),
+                "matched_count": matched_count,
+                "unmatched_count": unmatched_count,
+                "detected_count": detected_count,
+                "needs_operator_review": match_summary.get("needs_operator_review"),
+                "crm_state": pedido.metadata_payload.get("crm_state"),
+                "linked_record_type": linked_record.get("kind"),
+                "linked_record_id": linked_record.get("id"),
+            },
+            channel=origen,
+            session_id=chat_session_id,
+            anon_id=request_anon_id,
+            entity_ref=f"tenant_ticket:{linked_record.get('id')}",
+            user_id=getattr(user, "id", None),
+        )
 
     response_payload = {
         "contract_version": _ASSISTED_REQUEST_CONTRACT_VERSION,
@@ -2460,13 +2667,15 @@ def pedidos_desde_archivo():
         "resumen": customer_message,
     }
     if linked_record:
+        is_municipal_ticket = linked_record.get("kind") == "municipio_ticket"
         response_payload.update(
             {
                 "linked_record": linked_record,
                 "ticket_id": linked_record.get("id"),
+                "intake_ticket_id": linked_record.get("id") if not is_municipal_ticket else None,
                 "nro_ticket": linked_record.get("display_code") or linked_record.get("nro_ticket"),
                 "consulta_pin": linked_record.get("consulta_pin"),
-                "ticket_type": "municipio",
+                "ticket_type": "municipio" if is_municipal_ticket else "tenant_ticket",
             }
         )
 
