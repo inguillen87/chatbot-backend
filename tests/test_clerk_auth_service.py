@@ -42,6 +42,7 @@ def test_upsert_user_from_clerk_creates_user_with_social_metadata(client):
 
         assert user.id is not None
         assert user.email == "owner@chatboc.test"
+        assert user.rol == "usuario"
         assert user.email_verified is True
         auth_meta = user.accesibilidad["auth"]
         assert auth_meta["provider"] == "clerk"
@@ -113,8 +114,8 @@ def test_onboarding_contract_requires_tenant_until_created(client):
 
         assert contract["required"] is True
         assert contract["submit_endpoint"] == "/auth/clerk/onboarding"
-        assert "facebook" in contract["modal"]["social_login"]["required_dashboard_setup"]
-        assert "linkedin" in contract["modal"]["social_login"]["required_dashboard_setup"]
+        assert contract["modal"]["social_login"]["required_dashboard_setup"] == []
+        assert contract["modal"]["social_login"]["connection_aliases"]["linkedin"] == "linkedin_oidc"
 
 
 def test_complete_clerk_onboarding_creates_tenant_without_password_reset(client, monkeypatch):

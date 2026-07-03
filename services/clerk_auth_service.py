@@ -35,6 +35,7 @@ from utils.roles import (
 
 CLERK_AUTH_CONTRACT_VERSION = "auth.clerk.v1"
 DEFAULT_SOCIAL_PROVIDERS = ("google", "facebook", "linkedin")
+DEFAULT_REQUIRED_DASHBOARD_SETUP: tuple[str, ...] = ()
 
 
 class ClerkAuthError(ValueError):
@@ -398,7 +399,7 @@ def upsert_user_from_clerk(claims: dict, profile: Optional[dict] = None) -> User
             name=identity["name"],
             email=email,
             token=generate_token(),
-            rol="admin",
+            rol=ROLE_CLIENTE,
             plan="gratis",
             acepto_terminos=True,
             fecha_aceptacion_terminos=datetime.now(timezone.utc),
@@ -582,7 +583,13 @@ def build_onboarding_contract(user: User, tenant: Optional[TenantProfile] = None
             "social_login": {
                 "provider": "clerk",
                 "enabled_providers": _env_list("CLERK_SOCIAL_PROVIDERS", DEFAULT_SOCIAL_PROVIDERS),
-                "required_dashboard_setup": ["facebook", "linkedin"],
+                "required_dashboard_setup": _env_list(
+                    "CLERK_REQUIRED_DASHBOARD_SETUP",
+                    DEFAULT_REQUIRED_DASHBOARD_SETUP,
+                ),
+                "connection_aliases": {
+                    "linkedin": "linkedin_oidc",
+                },
             },
         },
     }

@@ -26,6 +26,7 @@ from models import (
     Promocion,
     ProviderConnection,
     ProviderSender,
+    PymeTicket,
     TenantConfig,
     TenantProfile,
     TenantTicket,
@@ -1225,6 +1226,62 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(item["frontend_contract"]["render_as"], "inbox_360_drawer")
         self.assertEqual(payload["frontend_contract"]["drawer_contract"], "inbox.omnichannel.detail.v1")
 
+    def test_omnichannel_pyme_inbound_creates_tenant_ticket_visible_in_inbox(self):
+        from services.omnichannel_service import registrar_interaccion_omnicanal
+
+        pyme_ticket_count = PymeTicket.query.count()
+
+        result = registrar_interaccion_omnicanal(
+            {
+                "tipo_ticket": "pyme",
+                "tenant_id": self.tenant.id,
+                "canal": "WhatsApp",
+                "mensaje": "Quiero cotizar uniformes para primer grado.",
+                "asunto": "Consulta commerce",
+                "categoria": "ventas",
+                "source": "commerce_widget",
+                "chat_session_id": "chat-commerce-1",
+                "pedido_reference": "pedido:tmp-123",
+                "lead_profile": {"interes": "uniformes"},
+                "contacto": {
+                    "nombre": "Cliente Anon",
+                    "email": "cliente-anon@example.com",
+                    "telefono": "+5492611111111",
+                    "external_id": "anon-commerce-1",
+                },
+            }
+        )
+
+        self.assertTrue(result["exito"], result)
+        self.assertTrue(result["nuevo_ticket"])
+        self.assertEqual(result["source_model"], "TenantTicket")
+        self.assertEqual(result["tenant_id"], self.tenant.id)
+        self.assertEqual(PymeTicket.query.count(), pyme_ticket_count)
+
+        ticket = db.session.get(TenantTicket, result["ticket_id"])
+        self.assertIsNotNone(ticket)
+        self.assertEqual(ticket.tenant_id, self.tenant.id)
+        self.assertEqual(ticket.origen, "whatsapp")
+        self.assertTrue(any("uniformes" in item.get("body", "") for item in ticket.datos_extra["comments"]))
+
+        response = self.client.get("/api/v2/inbox/omnichannel?limit=10", headers=self._auth(self.owner))
+        self.assertEqual(response.status_code, 200, response.get_json())
+        payload = response.get_json()
+        item = next(entry for entry in payload["items"] if entry["source_model"] == "TenantTicket" and entry["id"] == ticket.id)
+        self.assertEqual(item["channel"], "whatsapp")
+        self.assertTrue(any("uniformes" in event["body"] for event in item["timeline"]))
+        self.assertEqual(item["source_metadata"]["source"], "commerce_widget")
+        self.assertEqual(item["source_metadata"]["chat_session_id"], "chat-commerce-1")
+        self.assertEqual(item["source_metadata"]["anon_id"], "anon-commerce-1")
+        self.assertEqual(item["source_metadata"]["pedido_reference"], "pedido:tmp-123")
+        self.assertEqual(item["source_metadata"]["lead_profile"]["interes"], "uniformes")
+        self.assertEqual(item["source_metadata"]["lead_profile"]["tenant_slug"], self.tenant.slug)
+        self.assertEqual(item["source_metadata"]["contact"]["phone"], "+5492611111111")
+        reply_action = next(action for action in item["allowed_actions"] if action["id"] == "reply")
+        self.assertEqual(reply_action["delivery_mode"], "timeline_only")
+        self.assertEqual(reply_action["fallback"], "saved_to_crm_no_external_dispatch")
+        self.assertFalse(reply_action["external_dispatch"])
+
     def test_omnichannel_inbox_reads_source_attachment_as_regular_attachment(self):
         self.ticket.datos_extra = {
             **self.ticket.datos_extra,
@@ -1506,11 +1563,14 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(payload.get("request_id"), "inbox-action-1")
         self.assertEqual(payload["delivery"]["contract_version"], "inbox.action_delivery.v1")
         self.assertEqual(payload["delivery"]["mode"], "timeline_only")
+        self.assertEqual(payload["delivery"]["delivery_mode"], "timeline_only")
         self.assertEqual(payload["delivery"]["status"], "saved_to_crm")
+        self.assertEqual(payload["delivery"]["fallback"], "saved_to_crm_no_external_dispatch")
         self.assertEqual(payload["delivery"]["reply_status"], "saved_to_timeline")
         self.assertEqual(payload["delivery"]["admin_surface"], "omnichannel_inbox")
         self.assertFalse(payload["delivery"]["external_dispatch"])
         self.assertTrue(payload["delivery"]["timeline_updated"])
+        self.assertIn("No se envio", payload["delivery"]["operator_message"])
         self.assertTrue(payload["ticket"]["timeline"])
         self.assertTrue(any(item.get("body") == "Estamos revisando tu caso." for item in payload["ticket"]["timeline"]))
 

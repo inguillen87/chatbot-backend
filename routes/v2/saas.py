@@ -3475,8 +3475,21 @@ def _ticket_sla_payload(ticket: TenantTicket, extra: Mapping[str, Any]) -> dict[
 def _allowed_inbox_actions(ticket: TenantTicket, extra: Mapping[str, Any]) -> list[dict[str, Any]]:
     status = str(ticket.estado or "").lower()
     base_endpoint = f"/api/v2/inbox/omnichannel/{ticket.id}/actions"
+    reply_delivery = {
+        "delivery_mode": "timeline_only",
+        "fallback": "saved_to_crm_no_external_dispatch",
+        "external_dispatch": False,
+        "operator_message": "Guarda la respuesta en el timeline CRM. No envia WhatsApp, email, SMS ni socket en tiempo real desde esta accion.",
+    }
     actions = [
-        {"id": "reply", "label": "Responder", "method": "POST", "endpoint": base_endpoint, "requires": ["body"]},
+        {
+            "id": "reply",
+            "label": "Responder",
+            "method": "POST",
+            "endpoint": base_endpoint,
+            "requires": ["body"],
+            **reply_delivery,
+        },
         {"id": "assign", "label": "Asignar", "method": "POST", "endpoint": base_endpoint, "requires": ["assignee_id"]},
         {"id": "handoff", "label": "Derivar", "method": "POST", "endpoint": base_endpoint, "requires": ["channel"]},
         {"id": "set_priority", "label": "Cambiar prioridad", "method": "POST", "endpoint": base_endpoint, "requires": ["priority"]},
@@ -3502,6 +3515,15 @@ def _next_steps(ticket: TenantTicket, extra: Mapping[str, Any]) -> list[dict[str
 
 
 def _source_metadata(ticket: TenantTicket, extra: Mapping[str, Any]) -> dict[str, Any]:
+    contact = extra.get("contact") if isinstance(extra.get("contact"), dict) else {}
+    lead_profile = extra.get("lead_profile") if isinstance(extra.get("lead_profile"), dict) else {}
+    source = extra.get("source") or extra.get("lead_source") or ticket.origen
+    pedido_reference = (
+        extra.get("pedido_reference")
+        or extra.get("order_reference")
+        or extra.get("pedido_id")
+        or extra.get("order_id")
+    )
     return {
         "origin": ticket.origen,
         "channel": _ticket_channel(ticket),
@@ -3512,6 +3534,12 @@ def _source_metadata(ticket: TenantTicket, extra: Mapping[str, Any]) -> dict[str
         "contact_key": extra.get("contact_key"),
         "whatsapp_message_id": extra.get("whatsapp_message_id"),
         "lead_source": extra.get("lead_source") or ticket.origen,
+        "source": source,
+        "contact": contact,
+        "lead_profile": lead_profile,
+        "pedido_reference": pedido_reference,
+        "anon_id": extra.get("anon_id") or contact.get("anon_id") or contact.get("external_id"),
+        "source_model": "TenantTicket",
         "demo_mode": bool(extra.get("demo_mode")),
     }
 
@@ -3749,6 +3777,7 @@ def _inbox_ticket_payload(ticket: TenantTicket) -> dict[str, Any]:
     return {
         "id": ticket.id,
         "ticket_id": ticket.id,
+        "source_model": "TenantTicket",
         "conversation_id": extra.get("conversation_id") or f"ticket-{ticket.id}",
         "detail_endpoint": f"/api/v2/inbox/omnichannel/{ticket.id}",
         "title": extra.get("title") or ticket.categoria or f"Ticket {ticket.id}",
@@ -3898,9 +3927,11 @@ def _inbox_action_delivery_payload(
     payload = {
         "contract_version": "inbox.action_delivery.v1",
         "mode": mode,
+        "delivery_mode": mode,
         "channel": normalized_channel,
         "status": resolved_status,
         "reason": resolved_reason,
+        "fallback": "none" if external_dispatch else ("saved_to_crm_no_external_dispatch" if is_reply else "internal_crm_event"),
         "external_dispatch": external_dispatch,
         "timeline_updated": timeline_updated,
         "reply_status": "sent_to_contact" if external_dispatch else ("saved_to_timeline" if is_reply else "not_a_reply"),
