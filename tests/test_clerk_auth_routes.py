@@ -43,6 +43,7 @@ def test_clerk_config_contract(client, monkeypatch):
     assert payload["contract_version"] == "auth.clerk.v1"
     assert payload["enabled"] is True
     assert payload["session_sync_endpoint"] == "/auth/clerk/session"
+    assert payload["oauth_callback_path"] == "/sso-callback"
     assert payload["publishable_key"] == "pk_test_public"
     assert payload["ready_for_session_sync"] is True
     assert payload["configuration_warnings"] == []

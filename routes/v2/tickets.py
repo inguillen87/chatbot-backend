@@ -9,7 +9,15 @@ from extensions import db
 from models import AnalyticsEventV2, TenantTicket
 from routes.v2.tenants import V2TenantResolutionError, resolve_tenant_v2
 from services.v2.ticket_event_service import list_ticket_events
-from services.v2.ticket_service import add_comment, create_ticket, list_tickets, patch_ticket, serialize_comment, serialize_ticket
+from services.v2.ticket_service import (
+    add_comment,
+    create_ticket,
+    list_tickets,
+    patch_ticket,
+    serialize_comment,
+    serialize_ticket,
+    ticket_attachment_payloads,
+)
 from utils.auth_decorators import _is_authorized_for_tenant
 from utils.roles import ROLE_EMPLEADO, ROLE_SUPERADMIN, ROLE_TENANT_ADMIN, canonical_role
 
@@ -111,7 +119,13 @@ def _message_from_comment(ticket: TenantTicket, comment: dict[str, Any]) -> dict
     created_at = comment.get("created_at")
     text = comment.get("body") or comment.get("texto") or ""
     author_type = _comment_author_type(ticket, comment)
-    return {
+    attachment = (
+        comment.get("attachmentInfo")
+        or comment.get("attachment_info")
+        or comment.get("source_attachment")
+        or None
+    )
+    payload = {
         "id": comment.get("id"),
         "comment_id": comment.get("id"),
         "texto": text,
@@ -125,6 +139,57 @@ def _message_from_comment(ticket: TenantTicket, comment: dict[str, Any]) -> dict
         "actor_type": author_type,
         "es_admin": author_type == "agent",
     }
+    if isinstance(attachment, dict):
+        payload["attachmentInfo"] = attachment
+        payload["attachments"] = [attachment]
+    return payload
+
+
+def _comment_attachment_fingerprints(comments: list[dict[str, Any]]) -> set[str]:
+    fingerprints: set[str] = set()
+    for comment in comments:
+        attachment = (
+            comment.get("attachmentInfo")
+            or comment.get("attachment_info")
+            or comment.get("source_attachment")
+        )
+        if not isinstance(attachment, dict):
+            continue
+        value = attachment.get("id") or attachment.get("url") or attachment.get("name")
+        if value not in (None, ""):
+            fingerprints.add(str(value))
+    return fingerprints
+
+
+def _ticket_source_attachment_messages(ticket: TenantTicket, comments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    comment_fingerprints = _comment_attachment_fingerprints(comments)
+    messages: list[dict[str, Any]] = []
+    for index, attachment in enumerate(ticket_attachment_payloads(ticket), start=1):
+        fingerprint = attachment.get("id") or attachment.get("url") or attachment.get("name") or index
+        if str(fingerprint) in comment_fingerprints:
+            continue
+        attachment_name = attachment.get("name") or attachment.get("filename") or "archivo"
+        created_at = ticket.created_at.isoformat() if ticket.created_at else None
+        messages.append(
+            {
+                "id": f"attachment-{ticket.id}-{index}",
+                "comment_id": None,
+                "texto": f"Adjunto recibido: {attachment_name}",
+                "comentario": f"Adjunto recibido: {attachment_name}",
+                "body": f"Adjunto recibido: {attachment_name}",
+                "fecha": created_at,
+                "timestamp": created_at,
+                "visibility": "public",
+                "author_user_id": ticket.user_id,
+                "author_type": "citizen",
+                "actor_type": "citizen",
+                "es_admin": False,
+                "attachmentInfo": attachment,
+                "attachments": [attachment],
+                "source": "tenant_ticket_attachment",
+            }
+        )
+    return messages
 
 
 def _ticket_v2_realtime_summary(ticket: TenantTicket, comments: list[dict[str, Any]]) -> dict[str, Any]:
@@ -178,6 +243,17 @@ def _ticket_v2_timeline(ticket: TenantTicket, tenant: Any, comments: list[dict[s
                 "tipo": "comentario",
                 "event_type": "ticket.comment_added",
                 "source": "tenant_ticket_comment",
+            }
+        )
+
+    for message in _ticket_source_attachment_messages(ticket, comments):
+        timeline.append(
+            {
+                **message,
+                "id": f"ticket-attachment-{message.get('id')}",
+                "tipo": "archivo",
+                "event_type": "ticket.attachment_received",
+                "source": "tenant_ticket_attachment",
             }
         )
 
@@ -521,7 +597,10 @@ def list_ticket_messages_v2(ticket_id: int):
         return error
 
     comments = _visible_ticket_comments(ticket)
-    messages = [_message_from_comment(ticket, comment) for comment in comments]
+    messages = [
+        *_ticket_source_attachment_messages(ticket, comments),
+        *[_message_from_comment(ticket, comment) for comment in comments],
+    ]
     return _json_response(
         {
             "contract_version": "tickets.v2.messages",
@@ -549,7 +628,10 @@ def list_ticket_timeline_v2(ticket_id: int):
         return error
 
     comments = _visible_ticket_comments(ticket)
-    messages = [_message_from_comment(ticket, comment) for comment in comments]
+    messages = [
+        *_ticket_source_attachment_messages(ticket, comments),
+        *[_message_from_comment(ticket, comment) for comment in comments],
+    ]
     timeline = _ticket_v2_timeline(ticket, tenant, comments)
     realtime_state = _ticket_v2_realtime_summary(ticket, comments)
     unified = [

@@ -200,6 +200,8 @@ class PymeMultimodalTest(unittest.TestCase):
         self.assertEqual(intake_ticket.datos_extra["pedido_conversacional_id"], pedido.id)
         self.assertEqual(intake_ticket.datos_extra["public_follow_up"]["tracking"]["code"], f"pc-{pedido.id}")
         self.assertEqual(intake_ticket.datos_extra["attachments"][0]["url"], "https://cdn.example.com/pedido.jpg")
+        self.assertEqual(intake_ticket.datos_extra["comments"][0]["attachmentInfo"]["url"], "https://cdn.example.com/pedido.jpg")
+        self.assertIn("Adjunto recibido", intake_ticket.datos_extra["comments"][0]["body"])
 
         event = AnalyticsEventV2.query.filter_by(
             tenant_id=tenant.id,

@@ -191,6 +191,50 @@ class V2TicketsApiTest(unittest.TestCase):
         self.assertEqual(cross_tenant.status_code, 404)
         self.assertEqual((cross_tenant.get_json() or {}).get("reason_code"), "ticket_not_found")
 
+    def test_detail_messages_and_timeline_expose_source_attachments(self):
+        headers = {**self._auth_header(self.employee), "X-Tenant-Slug": "tenant-1"}
+        attachment = {
+            "id": 77,
+            "url": "https://cdn.example.com/pedido.jpg",
+            "name": "pedido.jpg",
+            "mime_type": "image/jpeg",
+        }
+        ticket = TenantTicket(
+            tenant_id=self.tenant_1.id,
+            user_id=self.end_user.id,
+            categoria="marketplace_assisted_order",
+            descripcion="Pedido por foto",
+            estado="nuevo",
+            origen="whatsapp",
+            datos_extra={
+                "title": "Pedido asistido",
+                "attachments": [attachment],
+                "attachmentInfo": attachment,
+                "comments": [],
+            },
+        )
+        db.session.add(ticket)
+        db.session.commit()
+
+        detail = self.client.get(f"/api/v2/tickets/{ticket.id}", headers=headers)
+        self.assertEqual(detail.status_code, 200, detail.get_json())
+        detail_payload = detail.get_json() or {}
+        self.assertEqual((detail_payload.get("ticket") or {}).get("attachmentInfo", {}).get("url"), attachment["url"])
+        self.assertEqual((detail_payload.get("ticket") or {}).get("attachments", [])[0]["name"], "pedido.jpg")
+
+        messages = self.client.get(f"/api/v2/tickets/{ticket.id}/messages", headers=headers)
+        self.assertEqual(messages.status_code, 200, messages.get_json())
+        message_payload = messages.get_json() or {}
+        self.assertEqual((message_payload.get("messages") or [])[0]["attachmentInfo"]["url"], attachment["url"])
+        self.assertIn("Adjunto recibido", (message_payload.get("messages") or [])[0]["body"])
+
+        timeline = self.client.get(f"/api/v2/tickets/{ticket.id}/timeline", headers=headers)
+        self.assertEqual(timeline.status_code, 200, timeline.get_json())
+        timeline_items = (timeline.get_json() or {}).get("timeline") or []
+        attachment_events = [item for item in timeline_items if item.get("event_type") == "ticket.attachment_received"]
+        self.assertTrue(attachment_events)
+        self.assertEqual(attachment_events[0]["attachmentInfo"]["url"], attachment["url"])
+
     def test_customer_cannot_patch_or_read_events(self):
         headers = {**self._auth_header(self.end_user), "X-Tenant-Slug": "tenant-1"}
         created = self.client.post("/api/v2/tickets", json={"title": "Vecino", "description": "Caso"}, headers=headers).get_json()

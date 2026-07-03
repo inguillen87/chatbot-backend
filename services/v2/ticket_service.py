@@ -110,14 +110,67 @@ def _ensure_extra(ticket: TenantTicket) -> dict[str, Any]:
     return extra
 
 
+def _normalize_attachment_payload(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    url = value.get("url") or value.get("public_url") or value.get("archivo_url")
+    name = value.get("name") or value.get("filename") or value.get("original_filename") or value.get("nombre")
+    payload = {
+        "id": value.get("id") or value.get("archivo_id") or value.get("attachment_id"),
+        "url": url,
+        "name": name,
+        "filename": value.get("filename") or name,
+        "original_filename": value.get("original_filename") or name,
+        "mime_type": value.get("mime_type") or value.get("mimetype") or value.get("mime") or value.get("tipo"),
+        "size": value.get("size") or value.get("tamano"),
+        "source": value.get("source") or value.get("relacion") or value.get("kind"),
+    }
+    cleaned = {key: item for key, item in payload.items() if item not in (None, "")}
+    return cleaned if cleaned.get("url") or cleaned.get("name") or cleaned.get("id") else None
+
+
+def ticket_attachment_payloads(ticket: TenantTicket) -> list[dict[str, Any]]:
+    extra = ticket.datos_extra if isinstance(ticket.datos_extra, dict) else {}
+    candidates: list[Any] = []
+    for key in ("attachments", "archivos_adjuntos"):
+        value = extra.get(key)
+        if isinstance(value, list):
+            candidates.extend(value)
+        elif isinstance(value, dict):
+            candidates.append(value)
+    for key in ("attachmentInfo", "attachment_info", "source_attachment"):
+        if isinstance(extra.get(key), dict):
+            candidates.append(extra.get(key))
+
+    normalized: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in candidates:
+        attachment = _normalize_attachment_payload(item)
+        if not attachment:
+            continue
+        fingerprint = str(attachment.get("id") or attachment.get("url") or attachment.get("name") or len(seen))
+        if fingerprint in seen:
+            continue
+        seen.add(fingerprint)
+        normalized.append(attachment)
+    return normalized
+
+
 def serialize_comment(comment: dict[str, Any]) -> dict[str, Any]:
-    return {
+    attachment = _normalize_attachment_payload(
+        comment.get("attachmentInfo") or comment.get("attachment_info") or comment.get("source_attachment")
+    )
+    payload = {
         "id": comment.get("id"),
         "body": comment.get("body") or "",
         "visibility": comment.get("visibility") or "public",
         "author_user_id": comment.get("author_user_id"),
         "created_at": comment.get("created_at"),
     }
+    if attachment:
+        payload["attachmentInfo"] = attachment
+        payload["attachments"] = [attachment]
+    return payload
 
 
 def serialize_ticket(ticket: TenantTicket, *, viewer: User | None = None) -> dict[str, Any]:
@@ -129,6 +182,8 @@ def serialize_ticket(ticket: TenantTicket, *, viewer: User | None = None) -> dic
     assignee_id = extra.get("assignee_id")
     assignee = _assignee_payload(assignee_id)
     sla_status = _sla_status(ticket)
+
+    attachments = ticket_attachment_payloads(ticket)
 
     return {
         "id": ticket.id,
@@ -155,6 +210,9 @@ def serialize_ticket(ticket: TenantTicket, *, viewer: User | None = None) -> dic
         "sla": extra.get("sla") or {},
         "overdue": is_ticket_overdue(ticket),
         "comments": [serialize_comment(c) for c in comments],
+        "attachmentInfo": attachments[0] if attachments else None,
+        "attachments": attachments,
+        "archivos_adjuntos": attachments,
         "created_at": ticket.created_at.isoformat() if ticket.created_at else None,
         "updated_at": ticket.updated_at.isoformat() if ticket.updated_at else None,
     }

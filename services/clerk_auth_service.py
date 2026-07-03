@@ -138,6 +138,7 @@ def build_clerk_frontend_contract() -> dict:
         "session_sync_endpoint": "/auth/clerk/session",
         "onboarding_endpoint": "/auth/clerk/onboarding",
         "webhook_endpoint": "/auth/clerk/webhook",
+        "oauth_callback_path": "/sso-callback",
         "publishable_key": publishable_key,
         "publishable_key_configured": bool(publishable_key),
         "issuer_configured": bool(_clerk_issuer()),

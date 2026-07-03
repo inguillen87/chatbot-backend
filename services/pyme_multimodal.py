@@ -13,6 +13,7 @@ import hashlib
 import logging
 import math
 from dataclasses import dataclass, field
+from datetime import datetime
 import re
 from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -1250,6 +1251,24 @@ def _materialize_assisted_intake_ticket(
         or source.get("source_attachment")
         or None
     )
+    initial_comments: List[Dict[str, Any]] = []
+    if isinstance(source_attachment, dict):
+        attachment_name = (
+            source_attachment.get("name")
+            or source_attachment.get("filename")
+            or source_name
+            or "archivo recibido"
+        )
+        initial_comments.append(
+            {
+                "id": 1,
+                "body": f"Adjunto recibido para revisar pedido: {attachment_name}",
+                "visibility": "public",
+                "author_user_id": user_id,
+                "created_at": datetime.utcnow().isoformat(),
+                "attachmentInfo": source_attachment,
+            }
+        )
 
     ticket = TenantTicket(
         tenant_id=tenant_id,
@@ -1293,7 +1312,7 @@ def _materialize_assisted_intake_ticket(
             "attachmentInfo": source_attachment,
             "attachment_info": source_attachment,
             "attachments": [source_attachment] if isinstance(source_attachment, dict) else [],
-            "comments": [],
+            "comments": initial_comments,
         },
     )
     db.session.add(ticket)

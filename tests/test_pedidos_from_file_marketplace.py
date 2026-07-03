@@ -1216,3 +1216,31 @@ def test_marketplace_order_note_upload_rejects_large_files_before_upload(client,
     assert response.status_code == 413
     assert response.get_json()["codigo"] == "archivo_demasiado_grande"
     assert called["upload"] is False
+
+
+def test_marketplace_order_note_upload_rejects_unsafe_mime_before_upload(client, init_database, monkeypatch):
+    owner = User.query.filter_by(email="admin@test.com").first()
+    tenant = TenantProfile(slug="market-unsafe", nombre="Market Unsafe", tipo="pyme", pyme_id=owner.id, plan="full")
+    db.session.add(tenant)
+    db.session.commit()
+
+    called = {"upload": False}
+
+    def fake_upload(file_storage):
+        called["upload"] = True
+        return {"public_url": "https://cdn.example.com/unsafe.png"}
+
+    monkeypatch.setattr("routes.pedidos_from_file.upload_to_gcs", fake_upload)
+
+    response = client.post(
+        "/api/pedidos/from-file",
+        data={"archivo": (io.BytesIO(b"not-an-image"), "pedido.png", "application/x-msdownload")},
+        content_type="multipart/form-data",
+        headers={"X-Tenant": tenant.slug},
+    )
+
+    assert response.status_code == 415
+    assert response.get_json()["codigo"] == "mime_no_permitido"
+    assert called["upload"] is False
+    assert PedidoConversacional.query.count() == 0
+    assert TenantTicket.query.filter_by(tenant_id=tenant.id).count() == 0

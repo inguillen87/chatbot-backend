@@ -167,6 +167,42 @@ class ProductFlowSurveyLiveVoteTest(unittest.TestCase):
         self.assertIn("admin_next_steps", data["render_contract"]["supports"])
         self.assertTrue(data["live_telemetry"]["has_responses"])
 
+    def test_live_results_with_heatmap_returns_real_vote_coordinates(self):
+        token, question_id, option_id = self._create_live_vote()
+
+        response = self.client.post(
+            f"/api/v2/public/surveys/{token}/respond",
+            json={
+                "anon_id": "flow-voter-geo-1",
+                "source": "whatsapp_webview",
+                "lat": -33.081,
+                "lng": -68.468,
+                "barrio": "Centro",
+                "ciudad": "Junin",
+                "provincia": "Mendoza",
+                "respuestas": [{"pregunta_id": question_id, "opcion_id": option_id}],
+            },
+            headers={"X-Forwarded-For": "203.0.113.30"},
+        )
+
+        self.assertEqual(response.status_code, 201, response.get_json())
+
+        live = self.client.get(f"/api/v2/public/surveys/{token}/live-results?include_heatmap=1")
+        self.assertEqual(live.status_code, 200, live.get_json())
+        data = live.get_json()
+        self.assertEqual(data["contract_version"], "surveys.live_results.v2")
+        self.assertEqual(data["realtime"]["room"], f"encuesta_{token}")
+        self.assertIn("heatmap", data["render_contract"]["supports"])
+        self.assertEqual(data["heatmap"]["enabled"], True)
+        self.assertGreaterEqual(len(data["heatmap"]["points"]), 1)
+        self.assertGreaterEqual(len(data["heatmap"]["cells"]), 1)
+        point = data["heatmap"]["points"][0]
+        self.assertAlmostEqual(point["lat"], -33.081, places=3)
+        self.assertAlmostEqual(point["lng"], -68.468, places=3)
+        self.assertEqual(point["barrio"], "Centro")
+        self.assertEqual(data["heatmap"]["metadata"]["points_count"], 1)
+        self.assertEqual(data["heatmap"]["metadata"]["cells_count"], 1)
+
     def test_pwa_survey_response_matches_realtime_contract_for_whatsapp_webview(self):
         token, question_id, option_id = self._create_live_vote()
 

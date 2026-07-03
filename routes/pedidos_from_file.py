@@ -36,6 +36,21 @@ _MAX_ORDER_NOTE_BYTES = 8 * 1024 * 1024
 _MAX_ORDER_TEXT_CHARS = 12000
 _MAX_CATALOG_CANDIDATES_PER_ROW = 3
 _MIN_CATALOG_CANDIDATE_SCORE = 0.34
+_ORDER_NOTE_ALLOWED_EXTENSIONS = {"pdf", "xls", "xlsx", "csv", "png", "jpg", "jpeg", "webp", "doc", "docx", "txt"}
+_ORDER_NOTE_ALLOWED_MIME_TYPES = {
+    "application/pdf",
+    "application/msword",
+    "application/vnd.ms-excel",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "image/jpeg",
+    "image/pjpeg",
+    "image/png",
+    "image/webp",
+    "text/csv",
+    "text/plain",
+}
+_ORDER_NOTE_GENERIC_MIME_TYPES = {"application/octet-stream", "binary/octet-stream"}
 
 _CORS_ALLOWED_HEADERS = [
     "Content-Type",
@@ -1983,6 +1998,26 @@ def _extract_rows_from_text(text: str, prompt: Optional[str] = None) -> List[dic
     return [_row_from_text_line(line) for line in lines[:50]]
 
 
+def _uploaded_order_note_extension(filename: str) -> str:
+    if "." not in filename:
+        return "txt"
+    return filename.rsplit(".", 1)[-1].lower().strip() or "txt"
+
+
+def _is_allowed_order_note_mimetype(mimetype: Optional[str], extension: str) -> bool:
+    normalized = _clean_optional_text(mimetype)
+    if not normalized:
+        return True
+    normalized = normalized.lower()
+    if normalized in _ORDER_NOTE_GENERIC_MIME_TYPES:
+        return True
+    if normalized in _ORDER_NOTE_ALLOWED_MIME_TYPES:
+        return True
+    if extension in {"txt", "csv"} and normalized.startswith("text/"):
+        return True
+    return False
+
+
 @pedidos_from_file_bp.route("/from-file", methods=["POST", "OPTIONS"])
 @cross_origin(
     origins=ALLOWED_ORIGINS,
@@ -2015,13 +2050,18 @@ def pedidos_desde_archivo():
     if archivo and not archivo.filename:
         return _json_error(400, "archivo_sin_nombre", "Archivo sin nombre")
 
-    extension = archivo.filename.rsplit(".", 1)[-1].lower() if archivo and "." in archivo.filename else "txt"
-    allowed = {"pdf", "xls", "xlsx", "csv", "png", "jpg", "jpeg", "webp", "doc", "docx", "txt"}
-    if archivo and extension not in allowed:
+    extension = _uploaded_order_note_extension(archivo.filename) if archivo else "txt"
+    if archivo and extension not in _ORDER_NOTE_ALLOWED_EXTENSIONS:
         return _json_error(
             415,
             "formato_no_permitido",
             "Formato no permitido. Usa PDF, Excel, documento o imagen.",
+        )
+    if archivo and not _is_allowed_order_note_mimetype(getattr(archivo, "mimetype", None), extension):
+        return _json_error(
+            415,
+            "mime_no_permitido",
+            "El tipo de archivo no coincide con formatos seguros para pedidos.",
         )
 
     requested_kind = (
