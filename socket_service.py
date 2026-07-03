@@ -302,22 +302,41 @@ def emit_new_chat_message(data: Any) -> None:
     _emit_standard_ticket_event('conversation.message.created', data)
 
 
-def emit_survey_update(slug_publico: str, data: Any) -> None:
+def _survey_realtime_rooms(slug_publico: str, data: Any = None, tenant_slug: str | None = None) -> list[str]:
+    slug = str(slug_publico or "").strip()
+    if not slug:
+        return []
+    resolved_tenant = (tenant_slug or "").strip()
+    if not resolved_tenant and isinstance(data, dict):
+        resolved_tenant = str(data.get("tenant_slug") or data.get("tenant") or "").strip()
+
+    rooms: list[str] = []
+    if resolved_tenant:
+        rooms.append(f"encuesta:{resolved_tenant}:{slug}")
+    rooms.append(f"encuesta_{slug}")
+    return list(dict.fromkeys(rooms))
+
+
+def emit_survey_update(slug_publico: str, data: Any, tenant_slug: str | None = None) -> None:
     """Emit a live update for a specific survey/poll."""
-    room = f"encuesta_{slug_publico}"
+    rooms = _survey_realtime_rooms(slug_publico, data, tenant_slug=tenant_slug)
+    if not rooms:
+        return
     if isinstance(data, dict) and data.get("contract_version") == "surveys.live_results.v2":
         legacy_payload = data.get("legacy_results")
         modern_payload = {key: value for key, value in data.items() if key != "legacy_results"}
-        socketio.emit('survey_update', legacy_payload or modern_payload, room=room)
-        socketio.emit('survey_update_v2', modern_payload, room=room)
+        for room in rooms:
+            socketio.emit('survey_update', legacy_payload or modern_payload, room=room)
+            socketio.emit('survey_update_v2', modern_payload, room=room)
         return
-    socketio.emit('survey_update', data, room=room)
+    for room in rooms:
+        socketio.emit('survey_update', data, room=room)
 
 
-def emit_survey_comment(slug_publico: str, data: Any) -> None:
+def emit_survey_comment(slug_publico: str, data: Any, tenant_slug: str | None = None) -> None:
     """Emit a live comment for a specific survey/poll."""
-    room = f"encuesta_{slug_publico}"
-    socketio.emit('survey_comment', data, room=room)
+    for room in _survey_realtime_rooms(slug_publico, data, tenant_slug=tenant_slug):
+        socketio.emit('survey_comment', data, room=room)
 
 
 

@@ -7,7 +7,7 @@ os.environ.setdefault("TESTING", "1")
 
 from app import create_app, db
 from config import Config
-from models import ChatSessionContext, MunicipioTicket, TenantProfile, User, WhatsappNumero
+from models import ChatSessionContext, MunicipioTicket, TenantProfile, TicketComentario, User, WhatsappNumero
 
 
 class V2BaseTestConfig(Config):
@@ -1250,6 +1250,36 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertEqual((preview_payload.get("cards") or [])[0].get("value"), "1")
         self.assertTrue((preview_payload.get("map") or {}).get("enabled"))
         self.assertEqual(len((preview_payload.get("map") or {}).get("points") or []), 1)
+
+        tracking = self.client.get(
+            f"/api/public/tracking/experience?kind=claim&code=M-{ticket.nro_ticket}&pin={ticket.consulta_pin}",
+            headers={"X-Request-Id": "demo-baches-tracking-1"},
+        )
+        self.assertEqual(tracking.status_code, 200, tracking.get_json())
+        tracking_payload = tracking.get_json()
+        self.assertEqual(tracking_payload.get("contract_version"), "tracking.experience.v1")
+        self.assertEqual((tracking_payload.get("resource") or {}).get("code"), f"M-{ticket.nro_ticket}")
+        self.assertIn((tracking_payload.get("support") or {}).get("mode"), {"offline", "live"})
+
+        reply = self.client.post(
+            f"/api/public/tracking/claims/{ticket.id}/messages?pin={ticket.consulta_pin}",
+            json={"mensaje": "La calle sigue rota y necesito seguimiento"},
+            headers={"X-Request-Id": "demo-baches-public-reply-1"},
+        )
+        self.assertEqual(reply.status_code, 201, reply.get_json())
+        reply_payload = reply.get_json()
+        self.assertEqual(reply_payload.get("contract_version"), "tracking.support_message.v1")
+        self.assertEqual(reply_payload.get("request_id"), "demo-baches-public-reply-1")
+        self.assertTrue((reply_payload.get("delivery") or {}).get("admin_unread"))
+        self.assertEqual((reply_payload.get("crm_writeback") or {}).get("thread_binding"), "municipio_ticket_id")
+
+        comments = TicketComentario.query.filter_by(
+            municipio_ticket_id=ticket.id,
+            comentario="La calle sigue rota y necesito seguimiento",
+            es_admin=False,
+            origen="public_tracking",
+        ).count()
+        self.assertEqual(comments, 1)
 
     def test_demo_municipio_runtime_answers_license_without_generic_menu(self):
         from routes.v2.tenants import create_demo_session_token

@@ -7,6 +7,7 @@ from services.ticket_service import servicio_tickets
 from socket_service import emit_new_chat_message, emit_ticket_unread_changed
 import random
 import uuid
+from sqlalchemy import func
 from services.ticket_realtime_state import build_ticket_collaboration_state
 from services.tracking_experience import (
     TRACKING_EXPERIENCE_CONTRACT_VERSION,
@@ -112,8 +113,40 @@ def _resolve_claim_tenant(ticket: MunicipioTicket) -> TenantProfile | None:
 
 
 def _normalize_claim_code(code: str | None) -> str:
-    normalized = str(code or "").strip().upper()
-    return normalized[2:] if normalized.startswith(("M-", "S-")) else normalized
+    normalized = str(code or "").strip()
+    prefix_probe = normalized.upper()
+    return normalized[2:].strip() if prefix_probe.startswith(("M-", "S-")) else normalized
+
+
+def _claim_code_candidates(code: str | None) -> list[str]:
+    raw = str(code or "").strip()
+    if not raw:
+        return []
+    normalized = _normalize_claim_code(raw)
+    candidates: list[str] = []
+    for value in (raw, normalized):
+        if value and value not in candidates:
+            candidates.append(value)
+    return candidates
+
+
+def _find_claim_by_public_code(code: str | None, pin: str | None = None) -> MunicipioTicket | None:
+    candidates = _claim_code_candidates(code)
+    if not candidates:
+        return None
+
+    base_query = MunicipioTicket.query
+    if pin is not None:
+        base_query = base_query.filter(MunicipioTicket.consulta_pin == str(pin))
+
+    ticket = base_query.filter(MunicipioTicket.nro_ticket.in_(candidates)).first()
+    if ticket:
+        return ticket
+
+    lower_candidates = list({candidate.lower() for candidate in candidates if candidate})
+    if not lower_candidates:
+        return None
+    return base_query.filter(func.lower(MunicipioTicket.nro_ticket).in_(lower_candidates)).first()
 
 
 def _build_public_claim_message_payload(
@@ -290,9 +323,7 @@ def tracking_experience():
         pin = (request.args.get("pin") or "").strip()
         if not pin:
             return _tracking_error("pin requerido.", 400, "tracking_pin_required", "send_pin")
-        normalized = code.upper()
-        normalized = normalized[2:] if normalized.startswith(("M-", "S-")) else normalized
-        ticket = MunicipioTicket.query.filter_by(nro_ticket=normalized, consulta_pin=pin).first()
+        ticket = _find_claim_by_public_code(code, pin)
         if not ticket:
             return _tracking_error("Reclamo no encontrado.", 404, "claim_not_found", "check_code_and_pin")
         tenant = _resolve_claim_tenant(ticket)
@@ -429,7 +460,7 @@ def tracking_page(nro_pedido):
 @tracking_ui_bp.route('/tracking/claim/<nro_ticket>')
 def tracking_claim(nro_ticket):
     # 1. Fetch Ticket
-    ticket = MunicipioTicket.query.filter_by(nro_ticket=nro_ticket).first()
+    ticket = _find_claim_by_public_code(nro_ticket)
     if not ticket:
         abort(404, "Reclamo no encontrado")
     pin = (request.args.get('pin') or '').strip()
@@ -596,7 +627,6 @@ def send_message():
 def send_claim_message():
     data = request.json or {}
     raw_ticket = str(data.get('nro_ticket') or '').strip()
-    nro_ticket = _normalize_claim_code(raw_ticket)
     mensaje = str(data.get('mensaje') or '').strip()
     pin = (data.get('pin') or request.args.get('pin') or '').strip()
 
@@ -605,9 +635,7 @@ def send_claim_message():
     if len(mensaje) > 2000:
         return jsonify({'error': 'Mensaje demasiado largo'}), 400
 
-    ticket = MunicipioTicket.query.filter_by(nro_ticket=nro_ticket).first()
-    if not ticket and raw_ticket != nro_ticket:
-        ticket = MunicipioTicket.query.filter_by(nro_ticket=raw_ticket).first()
+    ticket = _find_claim_by_public_code(raw_ticket)
     if not ticket:
         return jsonify({'error': 'Ticket no encontrado'}), 404
     if getattr(ticket, 'consulta_pin', None) and str(ticket.consulta_pin) != str(pin):

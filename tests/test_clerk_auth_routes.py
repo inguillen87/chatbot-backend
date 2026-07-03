@@ -56,6 +56,40 @@ def test_clerk_config_contract(client, monkeypatch):
     }
 
 
+def test_clerk_config_hides_social_providers_for_live_key_until_explicitly_enabled(client, monkeypatch):
+    monkeypatch.setenv("CLERK_ENABLED", "true")
+    monkeypatch.delenv("VITE_CLERK_PUBLISHABLE_KEY", raising=False)
+    monkeypatch.delenv("CLERK_PUBLISHABLE_KEY", raising=False)
+    monkeypatch.setenv("NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY", "pk_live_public")
+    monkeypatch.setenv("CLERK_JWKS_URL", "https://clerk.test/.well-known/jwks.json")
+    monkeypatch.delenv("CLERK_SOCIAL_PROVIDERS", raising=False)
+
+    resp = client.get("/auth/clerk/config")
+
+    assert resp.status_code == 200
+    payload = resp.get_json()
+    assert payload["enabled"] is True
+    assert payload["social_providers"] == []
+    assert any(item["code"] == "oauth_providers_missing" for item in payload["configuration_warnings"])
+
+
+def test_clerk_config_exposes_explicit_social_providers_for_live_key(client, monkeypatch):
+    monkeypatch.setenv("CLERK_ENABLED", "true")
+    monkeypatch.delenv("VITE_CLERK_PUBLISHABLE_KEY", raising=False)
+    monkeypatch.delenv("CLERK_PUBLISHABLE_KEY", raising=False)
+    monkeypatch.setenv("NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY", "pk_live_public")
+    monkeypatch.setenv("CLERK_JWKS_URL", "https://clerk.test/.well-known/jwks.json")
+    monkeypatch.setenv("CLERK_SOCIAL_PROVIDERS", "google, linkedin")
+
+    resp = client.get("/auth/clerk/config")
+
+    assert resp.status_code == 200
+    payload = resp.get_json()
+    assert payload["enabled"] is True
+    assert payload["social_providers"] == ["google", "linkedin"]
+    assert not any(item["code"] == "oauth_providers_missing" for item in payload["configuration_warnings"])
+
+
 def test_clerk_config_stays_disabled_without_jwt_verification(client, monkeypatch):
     monkeypatch.setenv("CLERK_ENABLED", "true")
     monkeypatch.setenv("NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY", "pk_test_public")

@@ -3286,6 +3286,10 @@ def save_respuesta(
     if encuesta.mostrar_resultados_envivo and emit_survey_update:
         try:
             public_slug = _resolve_public_slug(encuesta) or encuesta.slug or slug_publico
+            tenant_slug = None
+            if tenant_id:
+                tenant_profile = db.session.get(TenantProfile, tenant_id)
+                tenant_slug = getattr(tenant_profile, "slug", None)
             try:
                 from services.encuestas_analytics_service import calculate_live_results
 
@@ -3305,7 +3309,7 @@ def save_respuesta(
                 slug_publico,
             ]
             for emit_slug in dict.fromkeys(str(item).strip() for item in emit_slugs if item):
-                emit_survey_update(emit_slug, live_stats)
+                emit_survey_update(emit_slug, live_stats, tenant_slug=tenant_slug)
         except Exception:
             current_app.logger.exception("[encuestas] Error al emitir update socket")
 

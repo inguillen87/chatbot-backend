@@ -120,7 +120,9 @@ class V2SurveysApiTest(unittest.TestCase):
         token = publish_payload.get("public_token")
         self.assertTrue(token)
         self.assertEqual(publish_payload.get("public_state", {}).get("status"), "live")
-        self.assertEqual(publish_payload.get("realtime", {}).get("room"), f"encuesta_{token}")
+        self.assertEqual(publish_payload.get("realtime", {}).get("room"), f"encuesta:{self.tenant_1.slug}:{token}")
+        self.assertEqual(publish_payload.get("realtime", {}).get("legacy_room"), f"encuesta_{token}")
+        self.assertIn(f"encuesta_{token}", publish_payload.get("realtime", {}).get("rooms", []))
         self.assertEqual(
             publish_payload.get("realtime", {}).get("socket", {}).get("events", [])[0].get("name"),
             "survey_update_v2",

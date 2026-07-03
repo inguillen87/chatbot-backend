@@ -107,7 +107,23 @@ def _clerk_verification_configured() -> bool:
     return bool(os.getenv("CLERK_JWKS_URL") or _clerk_issuer())
 
 
-def _clerk_configuration_warnings(*, publishable_key: Optional[str], verification_configured: bool) -> list[dict]:
+def _explicit_clerk_social_providers_configured() -> bool:
+    return bool(str(os.getenv("CLERK_SOCIAL_PROVIDERS") or "").strip())
+
+
+def _configured_clerk_social_providers(publishable_key: Optional[str] = None) -> list[str]:
+    if _explicit_clerk_social_providers_configured():
+        return _env_list("CLERK_SOCIAL_PROVIDERS", ())
+    # Clerk shared OAuth credentials are acceptable in test/dev, but production
+    # must not advertise social buttons until provider credentials are loaded.
+    if str(publishable_key or "").startswith("pk_live_"):
+        return []
+    return list(DEFAULT_SOCIAL_PROVIDERS)
+
+
+def _clerk_configuration_warnings(
+    *, publishable_key: Optional[str], verification_configured: bool, social_providers: list[str]
+) -> list[dict]:
     warnings: list[dict] = []
     if not publishable_key:
         warnings.append(
@@ -123,12 +139,19 @@ def _clerk_configuration_warnings(*, publishable_key: Optional[str], verificatio
                 "message": "Configure CLERK_ISSUER or CLERK_JWKS_URL on the backend. CLERK_SECRET_KEY alone does not validate session JWTs.",
             }
         )
+    if str(publishable_key or "").startswith("pk_live_") and not social_providers:
+        warnings.append(
+            {
+                "code": "oauth_providers_missing",
+                "message": "Configure production OAuth credentials in Clerk and set CLERK_SOCIAL_PROVIDERS before showing social login buttons.",
+            }
+        )
     return warnings
 
 
 def build_clerk_frontend_contract() -> dict:
-    providers = _env_list("CLERK_SOCIAL_PROVIDERS", DEFAULT_SOCIAL_PROVIDERS)
     publishable_key = _clerk_publishable_key()
+    providers = _configured_clerk_social_providers(publishable_key)
     verification_configured = _clerk_verification_configured()
     ui_enabled = bool(clerk_enabled() and publishable_key and verification_configured)
     return {
@@ -148,6 +171,7 @@ def build_clerk_frontend_contract() -> dict:
         "configuration_warnings": _clerk_configuration_warnings(
             publishable_key=publishable_key,
             verification_configured=verification_configured,
+            social_providers=providers,
         ),
         "social_providers": providers,
         "superadmin_policy": {
@@ -583,7 +607,7 @@ def build_onboarding_contract(user: User, tenant: Optional[TenantProfile] = None
             ],
             "social_login": {
                 "provider": "clerk",
-                "enabled_providers": _env_list("CLERK_SOCIAL_PROVIDERS", DEFAULT_SOCIAL_PROVIDERS),
+                "enabled_providers": _configured_clerk_social_providers(_clerk_publishable_key()),
                 "required_dashboard_setup": _env_list(
                     "CLERK_REQUIRED_DASHBOARD_SETUP",
                     DEFAULT_REQUIRED_DASHBOARD_SETUP,
@@ -678,7 +702,7 @@ def complete_clerk_onboarding(user: User, payload: dict) -> TenantProfile:
     cfg["auth"] = {
         **(cfg.get("auth") if isinstance(cfg.get("auth"), dict) else {}),
         "provider": "clerk",
-        "social_providers": _env_list("CLERK_SOCIAL_PROVIDERS", DEFAULT_SOCIAL_PROVIDERS),
+        "social_providers": _configured_clerk_social_providers(_clerk_publishable_key()),
     }
     cfg["onboarding"] = {
         "status": "completed",

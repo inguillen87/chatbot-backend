@@ -226,7 +226,9 @@ class ProductFlowSurveyLiveVoteTest(unittest.TestCase):
             ack["live_results_url"],
             f"/api/v2/public/surveys/{token}/live-results?tenant_slug={self.tenant.slug}",
         )
-        self.assertEqual(ack["realtime"]["room"], f"encuesta_{token}")
+        self.assertEqual(ack["realtime"]["room"], f"encuesta:{self.tenant.slug}:{token}")
+        self.assertEqual(ack["realtime"]["legacy_room"], f"encuesta_{token}")
+        self.assertIn(f"encuesta_{token}", ack["realtime"]["rooms"])
         self.assertEqual(ack["realtime"]["socket"]["events"][0]["name"], "survey_update_v2")
         self.assertEqual(ack["links"]["qr_endpoint"], f"/api/public/encuestas/v1/{token}/qr?size=320")
         self.assertEqual(ack["runtime"]["flow_id"], "survey_vote")

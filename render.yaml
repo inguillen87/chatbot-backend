@@ -45,7 +45,7 @@ services:
       - key: CLERK_WEBHOOK_SECRET
         sync: false
       - key: CLERK_SOCIAL_PROVIDERS
-        value: google,facebook,linkedin
+        sync: false
       - key: AUTH_EMAIL_VERIFY_BASE_URL
         value: https://www.chatboc.ar
       - key: AUTH_EMAIL_FROM

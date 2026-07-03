@@ -411,18 +411,27 @@ def _build_realtime_contract(
     result_version: Any = None,
     snapshot_version: Any = None,
 ) -> dict[str, Any]:
-    room = f"encuesta_{token}"
+    legacy_room = f"encuesta_{token}"
+    normalized_tenant = (tenant_slug or "").strip()
+    primary_room = f"encuesta:{normalized_tenant}:{token}" if normalized_tenant else legacy_room
+    rooms = [primary_room]
+    if legacy_room not in rooms:
+        rooms.append(legacy_room)
     live_results_endpoint = _build_survey_links(token, tenant_slug=tenant_slug)["live_results_endpoint"]
     return {
         "contract_version": "surveys.realtime.v2",
         "enabled": bool(enabled),
         "transports": ["socket.io", "polling"] if enabled else [],
-        "room": room if enabled else None,
+        "room": primary_room if enabled else None,
+        "primary_room": primary_room if enabled else None,
+        "legacy_room": legacy_room if enabled else None,
+        "rooms": rooms if enabled else [],
         "socket": {
             "enabled": bool(enabled),
             "path": "/api/socket.io",
             "join_event": "join",
-            "join_payload": {"room": room},
+            "join_payload": {"room": primary_room},
+            "join_payloads": [{"room": room} for room in rooms],
             "events": [
                 {"name": "survey_update_v2", "contract_version": "surveys.live_results.v2"},
                 {"name": "survey_update", "contract_version": "legacy"},
@@ -479,7 +488,12 @@ def _build_operational_next_steps(
                 {
                     "id": "subscribe_realtime_room",
                     "label": "Suscribirse a realtime",
-                    "room": f"encuesta_{token}",
+                    "room": (
+                        f"encuesta:{tenant_slug.strip()}:{token}"
+                        if tenant_slug and tenant_slug.strip()
+                        else f"encuesta_{token}"
+                    ),
+                    "legacy_room": f"encuesta_{token}",
                     "event": "survey_update_v2",
                     "priority": 4,
                 },
