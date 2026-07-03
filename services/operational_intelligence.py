@@ -778,7 +778,14 @@ def build_operational_freshness(tenant: TenantProfile, start_date: datetime, end
     chat_latest = _latest_from_query(chat_query, ChatSessionContext.last_updated)
 
     employee_count = User.query.filter_by(tenant_id=tenant.id, es_empleado=True).count()
-    heatmap = build_operational_heatmap(tenant, start_date, end_date, ticket_records=ticket_records, max_points=250)
+    heatmap = build_operational_heatmap(
+        tenant,
+        start_date,
+        end_date,
+        ticket_records=ticket_records,
+        max_points=250,
+        include_ai=False,
+    )
     heatmap_latest = None
     for point in heatmap.get("points") or []:
         timestamp = point.get("timestamp")
@@ -1467,6 +1474,77 @@ def _heatmap_ai_status_contract(ai_insights: dict[str, Any], ai_layers: dict[str
     }
 
 
+def _lightweight_heatmap_ai_insights(
+    *,
+    points: list[dict[str, Any]],
+    category_layers: list[dict[str, Any]],
+    geocoding_candidates: list[dict[str, Any]],
+) -> dict[str, Any]:
+    risk_points = [
+        point
+        for point in points
+        if bool(point.get("overdue"))
+        or str(point.get("sla_state") or "").lower() in {"breached", "overdue", "vencido"}
+        or float(point.get("weight") or 0) >= 1.5
+    ]
+    whatsapp_points = [
+        point
+        for point in points
+        if "whatsapp" in str(point.get("channel") or "").lower()
+    ]
+    survey_points = [point for point in points if point.get("source") == "survey"]
+    top_category = (category_layers[0].get("key") if category_layers else None) or "general"
+    risk_level = "high" if risk_points else ("medium" if geocoding_candidates else "normal")
+    dominant_intent = "survey_or_vote" if len(survey_points) > len(whatsapp_points) else top_category
+    requires_human_attention = bool(risk_points or geocoding_candidates)
+
+    return {
+        "contract_version": "huggingface.ai_insights.v1",
+        "provider_family": "huggingface",
+        "mode": "deterministic_lightweight_dashboard",
+        "summary": {
+            "risk_level": risk_level,
+            "dominant_intent": dominant_intent,
+            "requires_human_attention": requires_human_attention,
+            "map_layer_hints": [
+                "ai_risk_pulses",
+                "whatsapp_activity",
+                "survey_participation",
+                "category_heat",
+            ],
+        },
+        "hf_status": {
+            "configured": False,
+            "zero_shot_enabled": False,
+            "used": False,
+            "fallback_reason": "lightweight_dashboard_mode",
+        },
+        "collection": {
+            "items_analyzed": len(points) + len(geocoding_candidates),
+            "text_items_analyzed": 0,
+            "categories": [
+                {"key": item.get("key"), "count": int(item.get("count") or 0)}
+                for item in category_layers[:8]
+            ],
+        },
+        "recommended_actions": [
+            {
+                "id": "inspect_top_hotspot" if points else "capture_location_setup",
+                "label": "Revisar mapa operativo" if points else "Completar ubicaciones",
+                "priority": "high" if risk_level == "high" else "medium",
+                "ui_hint": "open_heatmap",
+            }
+        ],
+        "frontend_contract": {
+            "recommended_widgets": ["ai_summary_cards", "risk_queue", "map_layer_toggles"],
+            "refresh_seconds": 30,
+            "safe_to_render_without_hf_token": True,
+            "advisory_only": True,
+            "lightweight": True,
+        },
+    }
+
+
 def _ai_items_from_heatmap(
     records: list[dict[str, Any]],
     points: list[dict[str, Any]],
@@ -1555,6 +1633,7 @@ def build_operational_heatmap(
     ticket_records: list[dict[str, Any]] | None = None,
     max_points: int = 1000,
     segment_filters: dict[str, Any] | None = None,
+    include_ai: bool = True,
 ) -> dict[str, Any]:
     records = ticket_records if ticket_records is not None else _collect_ticket_records(tenant, start_date, end_date)
     points: list[dict[str, Any]] = []
@@ -1750,10 +1829,17 @@ def build_operational_heatmap(
         max_points=max_points,
     )
     realtime = _heatmap_realtime_contract(points)
-    ai_insights = build_collection_ai_insights(
-        _ai_items_from_heatmap(records, points, geocoding_candidates, filters),
-        domain="operations",
-    )
+    if include_ai:
+        ai_insights = build_collection_ai_insights(
+            _ai_items_from_heatmap(records, points, geocoding_candidates, filters),
+            domain="operations",
+        )
+    else:
+        ai_insights = _lightweight_heatmap_ai_insights(
+            points=points,
+            category_layers=category_layers,
+            geocoding_candidates=geocoding_candidates,
+        )
     ai_layers = build_map_ai_layers(points, category_layers=category_layers, insights=ai_insights)
     ai_summary = ai_insights.get("summary") or {}
     heatmap_summary = {
@@ -2535,7 +2621,14 @@ def build_operational_dashboard(tenant: TenantProfile, start_date: datetime, end
     chat_metrics = _chat_metrics(tenant, start_date, end_date)
     employee_metrics = _employee_metrics(tenant, ticket_records)
     live_chat = _active_presence(ticket_records)
-    heatmap = build_operational_heatmap(tenant, start_date, end_date, ticket_records=ticket_records)
+    heatmap = build_operational_heatmap(
+        tenant,
+        start_date,
+        end_date,
+        ticket_records=ticket_records,
+        max_points=500,
+        include_ai=False,
+    )
     alerts = _build_alerts(ticket_metrics, survey_metrics, chat_metrics, employee_metrics, heatmap)
     summary = _summary_from_metrics(ticket_metrics, survey_metrics, chat_metrics, employee_metrics, heatmap, alerts)
     period = _period_delta(start_date, end_date)
@@ -2546,7 +2639,14 @@ def build_operational_dashboard(tenant: TenantProfile, start_date: datetime, end
     previous_survey_metrics = _survey_metrics(tenant, previous_start, previous_end)
     previous_chat_metrics = _chat_metrics(tenant, previous_start, previous_end)
     previous_employee_metrics = _employee_metrics(tenant, previous_ticket_records)
-    previous_heatmap = build_operational_heatmap(tenant, previous_start, previous_end, ticket_records=previous_ticket_records, max_points=250)
+    previous_heatmap = build_operational_heatmap(
+        tenant,
+        previous_start,
+        previous_end,
+        ticket_records=previous_ticket_records,
+        max_points=250,
+        include_ai=False,
+    )
     previous_summary = _summary_from_metrics(
         previous_ticket_metrics,
         previous_survey_metrics,
@@ -2621,8 +2721,14 @@ def build_operational_dashboard(tenant: TenantProfile, start_date: datetime, end
     }
 
 
-def build_action_center(tenant: TenantProfile, start_date: datetime, end_date: datetime) -> dict[str, Any]:
-    dashboard = build_operational_dashboard(tenant, start_date, end_date)
+def build_action_center(
+    tenant: TenantProfile,
+    start_date: datetime,
+    end_date: datetime,
+    *,
+    dashboard: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    dashboard = dashboard or build_operational_dashboard(tenant, start_date, end_date)
     actions = dashboard.get("next_best_actions") or []
     high = len([item for item in actions if item.get("priority") == "high"])
     medium = len([item for item in actions if item.get("priority") == "medium"])

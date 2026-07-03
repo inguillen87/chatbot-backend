@@ -1,16 +1,19 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import datetime, timedelta
+from time import monotonic
 from typing import Any
 import uuid
 
-from flask import Blueprint, Response, jsonify, request
+from flask import Blueprint, Response, current_app, jsonify, request
 
 import config.feature_flags as feature_flags
 from models import TenantTicket
 from routes import analytics_routes as legacy_analytics
 from routes.v2.tenants import V2TenantResolutionError, resolve_tenant_v2
 from services.analytics_service import analytics_service
+from services.ai_provider_status import build_ai_provider_status_public_view
 from services.llm_orchestrator import build_llm_task_policy
 from services.openai_bridge import generate_analytics_report
 from services.operational_intelligence import (
@@ -29,6 +32,9 @@ from utils.auth_helpers import token_requerido
 from utils.permissions import require_role
 
 v2_analytics_bp = Blueprint("v2_analytics", __name__, url_prefix="/api/v2/analytics")
+_OPERATIONS_DASHBOARD_CACHE_TTL_SECONDS = 20
+_OPERATIONS_DASHBOARD_CACHE_MAX_ENTRIES = 64
+_OPERATIONS_DASHBOARD_CACHE: dict[tuple[Any, ...], tuple[float, dict[str, Any]]] = {}
 
 
 def _request_id() -> str:
@@ -44,6 +50,68 @@ def _json_response(payload: dict[str, Any], status: int = 200):
     response.status_code = status
     response.headers["X-Request-Id"] = request_id
     return response
+
+
+def _operations_dashboard_cache_enabled() -> bool:
+    if current_app.config.get("TESTING") and not current_app.config.get("ENABLE_OPERATIONS_DASHBOARD_CACHE_FOR_TESTS"):
+        return False
+    return bool(current_app.config.get("ENABLE_OPERATIONS_DASHBOARD_CACHE", True))
+
+
+def _operation_cache_datetime(value: datetime) -> str:
+    if hasattr(value, "timestamp"):
+        try:
+            bucket = int(value.timestamp() // _OPERATIONS_DASHBOARD_CACHE_TTL_SECONDS)
+            return f"bucket:{bucket}"
+        except (OSError, OverflowError, ValueError):
+            pass
+    return value.isoformat() if hasattr(value, "isoformat") else str(value)
+
+
+def _operations_dashboard_cache_key(tenant, start_date: datetime, end_date: datetime) -> tuple[Any, ...]:
+    return (
+        getattr(tenant, "id", None),
+        getattr(tenant, "slug", None),
+        _operation_cache_datetime(start_date),
+        _operation_cache_datetime(end_date),
+    )
+
+
+def _prune_operations_dashboard_cache(now: float) -> None:
+    stale_keys = [
+        key
+        for key, (created_at, _) in _OPERATIONS_DASHBOARD_CACHE.items()
+        if now - created_at >= _OPERATIONS_DASHBOARD_CACHE_TTL_SECONDS
+    ]
+    for key in stale_keys:
+        _OPERATIONS_DASHBOARD_CACHE.pop(key, None)
+
+    overflow = len(_OPERATIONS_DASHBOARD_CACHE) - _OPERATIONS_DASHBOARD_CACHE_MAX_ENTRIES
+    if overflow <= 0:
+        return
+    oldest_keys = sorted(_OPERATIONS_DASHBOARD_CACHE, key=lambda key: _OPERATIONS_DASHBOARD_CACHE[key][0])[:overflow]
+    for key in oldest_keys:
+        _OPERATIONS_DASHBOARD_CACHE.pop(key, None)
+
+
+def _clear_operations_dashboard_cache_for_tests() -> None:
+    _OPERATIONS_DASHBOARD_CACHE.clear()
+
+
+def _cached_operational_dashboard(tenant, start_date: datetime, end_date: datetime) -> dict[str, Any]:
+    if not _operations_dashboard_cache_enabled():
+        return build_operational_dashboard(tenant, start_date, end_date)
+
+    now = monotonic()
+    _prune_operations_dashboard_cache(now)
+    key = _operations_dashboard_cache_key(tenant, start_date, end_date)
+    cached = _OPERATIONS_DASHBOARD_CACHE.get(key)
+    if cached and now - cached[0] < _OPERATIONS_DASHBOARD_CACHE_TTL_SECONDS:
+        return deepcopy(cached[1])
+
+    payload = build_operational_dashboard(tenant, start_date, end_date)
+    _OPERATIONS_DASHBOARD_CACHE[key] = (now, deepcopy(payload))
+    return payload
 
 
 def _pdf_escape(value: Any) -> str:
@@ -285,6 +353,18 @@ def _heatmap_segment_filters() -> dict[str, list[str]]:
     return {key: value for key, value in filters.items() if value}
 
 
+def _request_bool_arg(name: str, default: bool = True) -> bool:
+    raw = request.args.get(name)
+    if raw is None:
+        return default
+    normalized = str(raw).strip().lower()
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    if normalized in {"1", "true", "yes", "si", "on"}:
+        return True
+    return default
+
+
 @v2_analytics_bp.route("/overview", methods=["GET"])
 @token_requerido
 @require_role("admin", "empleado", "super_admin")
@@ -398,7 +478,7 @@ def operations_dashboard_v2(current_user):
         return error
 
     start_date, end_date = _date_range()
-    payload = build_operational_dashboard(tenant, start_date, end_date)
+    payload = _cached_operational_dashboard(tenant, start_date, end_date)
     return _json_response(_with_access(payload, tenant))
 
 
@@ -413,7 +493,14 @@ def operations_heatmap_v2(current_user):
         return _integration_plan_required_response(tenant, "heatmaps")
 
     start_date, end_date = _date_range(default_days=365)
-    payload = build_operational_heatmap(tenant, start_date, end_date, segment_filters=_heatmap_segment_filters())
+    include_ai = _request_bool_arg("include_ai", _request_bool_arg("ai", True))
+    payload = build_operational_heatmap(
+        tenant,
+        start_date,
+        end_date,
+        segment_filters=_heatmap_segment_filters(),
+        include_ai=include_ai,
+    )
     return _json_response(_with_access(payload, tenant))
 
 
@@ -428,7 +515,8 @@ def operations_action_center_v2(current_user):
         return _integration_plan_required_response(tenant, "analytics_dashboard")
 
     start_date, end_date = _date_range()
-    payload = build_action_center(tenant, start_date, end_date)
+    dashboard = _cached_operational_dashboard(tenant, start_date, end_date)
+    payload = build_action_center(tenant, start_date, end_date, dashboard=dashboard)
     return _json_response(_with_access(payload, tenant))
 
 
@@ -443,7 +531,7 @@ def operations_ai_brief_v2(current_user):
         return _integration_plan_required_response(tenant, "analytics_dashboard")
 
     start_date, end_date = _date_range()
-    dashboard = build_operational_dashboard(tenant, start_date, end_date)
+    dashboard = _cached_operational_dashboard(tenant, start_date, end_date)
     brief = dict(dashboard.get("ai_brief") or {})
     brief.setdefault("contract_version", "operations.ai_brief.v1")
     brief.update(
@@ -459,6 +547,31 @@ def operations_ai_brief_v2(current_user):
         }
     )
     return _json_response(brief)
+
+
+@v2_analytics_bp.route("/operations/ai-provider-status", methods=["GET"])
+@token_requerido
+@require_role("admin", "empleado", "super_admin")
+def operations_ai_provider_status_v2(current_user):
+    tenant, error = _resolve_tenant_or_error(current_user)
+    if error:
+        return error
+    if not _feature_enabled(_integration_access(tenant), "analytics_dashboard"):
+        return _integration_plan_required_response(tenant, "analytics_dashboard")
+
+    payload = build_ai_provider_status_public_view()
+    payload.update(
+        {
+            "tenant": {
+                "id": tenant.id,
+                "slug": tenant.slug,
+                "name": tenant.nombre,
+                "type": tenant.tipo,
+            },
+            "model_policy": build_llm_task_policy("analytics"),
+        }
+    )
+    return _json_response(_with_access(payload, tenant))
 
 
 @v2_analytics_bp.route("/operations/ai-ops-queue", methods=["GET"])
@@ -544,7 +657,7 @@ def operations_executive_summary_v2(current_user):
         return _integration_plan_required_response(tenant, "analytics_dashboard")
 
     start_date, end_date = _date_range()
-    dashboard = build_operational_dashboard(tenant, start_date, end_date)
+    dashboard = _cached_operational_dashboard(tenant, start_date, end_date)
     summary = dashboard.get("summary") or {}
     has_data = any(
         int(summary.get(key) or 0) > 0
@@ -611,7 +724,7 @@ def operations_export_pdf_v2(current_user):
 
     request_id = _request_id()
     start_date, end_date = _date_range()
-    dashboard = build_operational_dashboard(tenant, start_date, end_date)
+    dashboard = _cached_operational_dashboard(tenant, start_date, end_date)
     body = _build_simple_text_pdf(_dashboard_report_lines(dashboard))
     response = Response(
         body,

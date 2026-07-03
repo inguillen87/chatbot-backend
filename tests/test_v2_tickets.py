@@ -10,7 +10,7 @@ os.environ.setdefault("FLASK_SKIP_GLOBAL_APP", "1")
 
 from app import create_app, db
 from config import Config
-from models import TenantProfile, TenantTicket, User
+from models import AnalyticsEventV2, TenantProfile, TenantTicket, User
 from services.v2.sla_service import is_ticket_overdue
 
 
@@ -362,7 +362,16 @@ class V2TicketsApiTest(unittest.TestCase):
                 "contract_version": "ticket.ai_enrichment.v1",
                 "ticket_id": ticket.id,
                 "tenant_id": tenant.id if tenant else ticket.tenant_id,
-                "crm_hints": {"suggested_queue": "crear_pedido"},
+                "crm_hints": {
+                    "suggested_queue": "crear_pedido",
+                    "requires_human_attention": True,
+                    "recommended_actions": [{"id": "preparar_pedido"}, {"id": "confirmar_stock"}],
+                },
+                "huggingface": {
+                    "provider_family": "huggingface",
+                    "mode": "advisory",
+                    "intent": {"provider": "deterministic_local_fallback"},
+                },
                 "state_mutation": {"applied": False},
                 "persisted": False,
             }
@@ -384,6 +393,25 @@ class V2TicketsApiTest(unittest.TestCase):
         self.assertEqual(seen["scope"], "pyme")
         self.assertEqual(len(seen["comments"]), 1)
 
+        events = AnalyticsEventV2.query.filter_by(
+            tenant_id=self.tenant_1.id,
+            event_name="ticket_ai_enrichment_generated",
+            entity_ref=f"ticket:{ticket_id}",
+        ).all()
+        self.assertEqual(len(events), 1)
+        event_metadata = events[0].metadata_payload or {}
+        self.assertTrue(event_metadata.get("advisory_only"))
+        self.assertEqual(event_metadata.get("ticket_id"), ticket_id)
+        self.assertEqual(event_metadata.get("source_model"), "TenantTicket")
+        self.assertEqual(event_metadata.get("domain_scope"), "pyme")
+        self.assertEqual(event_metadata.get("provider_family"), "huggingface")
+        self.assertEqual(event_metadata.get("provider"), "deterministic_local_fallback")
+        self.assertEqual(event_metadata.get("suggested_queue"), "crear_pedido")
+        self.assertTrue(event_metadata.get("requires_human_attention"))
+        self.assertEqual(event_metadata.get("recommended_action_ids"), ["preparar_pedido", "confirmar_stock"])
+        self.assertEqual(event_metadata.get("comments_count"), 1)
+        self.assertNotIn("Quiere sumar dos unidades", str(event_metadata))
+
         rejected = self.client.post(
             f"/api/v2/tickets/{ticket_id}/ai-enrichment",
             json={"apply": True, "estado": "resuelto"},
@@ -391,6 +419,14 @@ class V2TicketsApiTest(unittest.TestCase):
         )
         self.assertEqual(rejected.status_code, 400)
         self.assertEqual((rejected.get_json() or {}).get("reason_code"), "ai_enrichment_mutation_rejected")
+        self.assertEqual(
+            AnalyticsEventV2.query.filter_by(
+                tenant_id=self.tenant_1.id,
+                event_name="ticket_ai_enrichment_generated",
+                entity_ref=f"ticket:{ticket_id}",
+            ).count(),
+            1,
+        )
 
     def test_customer_cannot_create_internal_comment(self):
         headers = {**self._auth_header(self.end_user), "X-Tenant-Slug": "tenant-1"}

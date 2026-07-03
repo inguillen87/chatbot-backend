@@ -7,6 +7,7 @@ from typing import Any
 
 
 CONTRACT_VERSION = "ai.provider_status.v1"
+PUBLIC_CONTRACT_VERSION = "ai.provider_status_public.v1"
 
 
 def _env(name: str, default: str | None = None) -> str | None:
@@ -50,6 +51,103 @@ def _safe_smoke_result(provider: str, ok: bool, **extra: Any) -> dict[str, Any]:
     result = {"provider": provider, "ok": bool(ok)}
     result.update(extra)
     return result
+
+
+def _safe_failure_view(value: Any) -> dict[str, str] | None:
+    if not isinstance(value, dict):
+        return None
+    failure: dict[str, str] = {}
+    for key in ("reason_code", "task", "error_type"):
+        raw = value.get(key)
+        if raw is None:
+            continue
+        text = str(raw).strip()
+        if text:
+            failure[key] = text[:120]
+    return failure or None
+
+
+def _safe_provider_view(provider_key: str, value: Any) -> dict[str, Any]:
+    source = value if isinstance(value, dict) else {}
+    allowed_keys = (
+        "configured",
+        "enabled",
+        "installed",
+        "install_extras_enabled",
+        "chat_default",
+        "provider_order_enabled",
+        "runtime_status",
+        "quota_depleted",
+        "fallback_behavior",
+        "provider",
+        "mode",
+        "chat_model",
+        "zero_shot_enabled",
+        "zero_shot_model",
+        "reclamo_category_min_score",
+        "reclamo_priority_min_score",
+        "reclamo_signal_min_score",
+        "sentiment_min_score",
+        "pyme_intent_min_score",
+        "embeddings_enabled",
+        "embedding_model",
+        "vision_enabled",
+        "max_file_mb",
+        "recommended_uses",
+        "required_env",
+        "optional_env",
+    )
+    result: dict[str, Any] = {"provider": provider_key}
+    for key in allowed_keys:
+        if key in source:
+            result[key] = source.get(key)
+    failure = _safe_failure_view(source.get("last_failure"))
+    if failure:
+        result["last_failure"] = failure
+    return result
+
+
+def build_ai_provider_status_public_view(source_payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Tenant/admin safe provider view for CRM surfaces.
+
+    This intentionally excludes smoke results, base URLs and raw failure messages.
+    It only exposes operational readiness signals and public env var names.
+    """
+
+    source = source_payload if isinstance(source_payload, dict) else build_ai_provider_status()
+    source_providers = source.get("providers") if isinstance(source.get("providers"), dict) else {}
+    providers = {
+        str(provider_key): _safe_provider_view(str(provider_key), provider_value)
+        for provider_key, provider_value in source_providers.items()
+    }
+    readiness_source = source.get("readiness") if isinstance(source.get("readiness"), dict) else {}
+    warnings = []
+    for warning in readiness_source.get("warnings") or []:
+        text = str(warning).strip()
+        if text:
+            warnings.append(text[:160])
+
+    return {
+        "contract_version": PUBLIC_CONTRACT_VERSION,
+        "generated_at": source.get("generated_at") or datetime.now(timezone.utc).isoformat(),
+        "secret_values_exposed": False,
+        "llm_provider_order": [str(item).strip() for item in source.get("llm_provider_order") or [] if str(item).strip()],
+        "readiness": {
+            "chat_ready": bool(readiness_source.get("chat_ready")),
+            "specialized_ai_ready": bool(readiness_source.get("specialized_ai_ready")),
+            "status": str(readiness_source.get("status") or "blocked"),
+            "warnings": warnings,
+        },
+        "providers": providers,
+        "frontend_contract": {
+            "render_as": "operations_ai_provider_status",
+            "tenant_scoped": True,
+            "safe_for_tenant_crm": True,
+            "advisory_only": True,
+            "secret_values_exposed": False,
+            "recommended_badges": ["chat_ready", "specialized_ai_ready", "fallback_status"],
+        },
+    }
 
 
 def _huggingface_live_smoke() -> dict[str, Any]:

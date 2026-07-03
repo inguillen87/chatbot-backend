@@ -1,3 +1,4 @@
+import json
 import os
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -354,6 +355,21 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertIn("45_59", age_ranges)
         self.assertIn("60_plus", age_ranges)
 
+    def test_operations_heatmap_can_skip_synchronous_ai_for_operational_load(self):
+        response = self.client.get("/api/v2/analytics/operations/heatmap?include_ai=0", headers=self._auth())
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload.get("contract_version"), "operations.heatmap.v1")
+        self.assertEqual((payload.get("ai_insights") or {}).get("mode"), "deterministic_lightweight_dashboard")
+        self.assertEqual(
+            ((payload.get("ai_insights") or {}).get("hf_status") or {}).get("fallback_reason"),
+            "lightweight_dashboard_mode",
+        )
+        self.assertEqual((payload.get("ai_status") or {}).get("status"), "local_fallback")
+        self.assertTrue((payload.get("ai_status") or {}).get("safe_to_render_without_hf_token"))
+        self.assertTrue((payload.get("ai_layers") or {}).get("layers"))
+
     def test_operations_heatmap_filters_by_demographics(self):
         response = self.client.get(
             "/api/v2/analytics/operations/heatmap?genero=femenino&edad=22",
@@ -621,6 +637,64 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         signal_keys = (payload.get("signals") or {}).keys()
         self.assertIn("hf_configured", signal_keys)
         self.assertIn("hf_mode", signal_keys)
+
+    def test_operations_ai_provider_status_returns_tenant_safe_contract(self):
+        with patch.dict(
+            os.environ,
+            {
+                "OPENAI_API_KEY": "sk-ops-secret",
+                "GEMINI_API_KEY": "gemini-ops-secret",
+                "HUGGINGFACE_API_TOKEN": "hf_ops_secret",
+                "LLM_PROVIDER_ORDER": "gemini,openai",
+                "HUGGINGFACE_ENABLED": "true",
+                "HUGGINGFACE_ZERO_SHOT_ENABLED": "true",
+            },
+            clear=False,
+        ):
+            response = self.client.get(
+                "/api/v2/analytics/operations/ai-provider-status",
+                headers={**self._auth(), "X-Request-Id": "ops-ai-provider-status-1"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        serialized = json.dumps(payload)
+        self.assertEqual(payload.get("contract_version"), "ai.provider_status_public.v1")
+        self.assertEqual(payload.get("request_id"), "ops-ai-provider-status-1")
+        self.assertEqual((payload.get("tenant") or {}).get("slug"), "junin")
+        self.assertFalse(payload.get("secret_values_exposed"))
+        self.assertEqual((payload.get("frontend_contract") or {}).get("render_as"), "operations_ai_provider_status")
+        self.assertEqual((payload.get("model_policy") or {}).get("contract_version"), "llm.task_policy.v1")
+        self.assertEqual((payload.get("model_policy") or {}).get("task_type"), "analytics")
+        self.assertTrue(((payload.get("providers") or {}).get("gemini") or {}).get("configured"))
+        self.assertTrue(((payload.get("providers") or {}).get("huggingface") or {}).get("configured"))
+        self.assertNotIn("sk-ops-secret", serialized)
+        self.assertNotIn("gemini-ops-secret", serialized)
+        self.assertNotIn("hf_ops_secret", serialized)
+
+    def test_operations_dashboard_cache_reuses_refresh_burst(self):
+        from routes.v2 import analytics as analytics_routes
+
+        self.app.config["ENABLE_OPERATIONS_DASHBOARD_CACHE_FOR_TESTS"] = True
+        analytics_routes._clear_operations_dashboard_cache_for_tests()
+        real_builder = analytics_routes.build_operational_dashboard
+
+        try:
+            with patch("routes.v2.analytics.build_operational_dashboard", wraps=real_builder) as mocked_builder:
+                responses = [
+                    self.client.get("/api/v2/analytics/operations/dashboard", headers=self._auth()),
+                    self.client.get("/api/v2/analytics/operations/action-center", headers=self._auth()),
+                    self.client.get("/api/v2/analytics/operations/ai-brief", headers=self._auth()),
+                ]
+
+            self.assertTrue(all(response.status_code == 200 for response in responses))
+            self.assertEqual(mocked_builder.call_count, 1)
+            self.assertEqual(responses[0].get_json().get("contract_version"), "operations.dashboard.v1")
+            self.assertEqual(responses[1].get_json().get("contract_version"), "operations.action_center.v1")
+            self.assertEqual(responses[2].get_json().get("contract_version"), "operations.ai_brief.v1")
+        finally:
+            analytics_routes._clear_operations_dashboard_cache_for_tests()
+            self.app.config["ENABLE_OPERATIONS_DASHBOARD_CACHE_FOR_TESTS"] = False
 
     def test_operations_ai_ops_queue_disabled_by_feature_flag(self):
         with patch.object(feature_flags, "FEATURE_AI_OPS_QUEUE", False):

@@ -3,10 +3,10 @@ from __future__ import annotations
 from typing import Any
 import uuid
 
-from flask import Blueprint, g, jsonify, request
+from flask import Blueprint, current_app, g, jsonify, request
 
 from extensions import db
-from models import TenantTicket
+from models import AnalyticsEventV2, TenantTicket
 from routes.v2.tenants import V2TenantResolutionError, resolve_tenant_v2
 from services.v2.ticket_event_service import list_ticket_events
 from services.v2.ticket_service import add_comment, create_ticket, list_tickets, patch_ticket, serialize_comment, serialize_ticket
@@ -237,6 +237,70 @@ def _reject_ai_enrichment_mutation_request(payload: dict[str, Any]) -> str | Non
     if any(field in payload for field in mutation_fields):
         return "ai-enrichment cannot receive operational mutation fields"
     return None
+
+
+def _safe_action_ids(actions: Any) -> list[str]:
+    if not isinstance(actions, list):
+        return []
+    ids: list[str] = []
+    for item in actions[:10]:
+        if isinstance(item, dict):
+            raw = item.get("id") or item.get("action_id") or item.get("name")
+        else:
+            raw = item
+        text = str(raw or "").strip()
+        if text:
+            ids.append(text[:80])
+    return ids
+
+
+def _record_ai_enrichment_analytics_event(
+    *,
+    tenant: Any,
+    ticket: TenantTicket,
+    enrichment: dict[str, Any],
+    domain_scope: str,
+    comments_count: int,
+) -> None:
+    crm_hints = enrichment.get("crm_hints") if isinstance(enrichment.get("crm_hints"), dict) else {}
+    huggingface = enrichment.get("huggingface") if isinstance(enrichment.get("huggingface"), dict) else {}
+    intent = huggingface.get("intent") if isinstance(huggingface.get("intent"), dict) else {}
+    provider_family = huggingface.get("provider_family") or intent.get("provider_family") or "local"
+    provider = intent.get("provider") or huggingface.get("provider") or enrichment.get("provider")
+    recommended_actions = _safe_action_ids(crm_hints.get("recommended_actions") or enrichment.get("recommended_actions"))
+    text_chars = len(str(getattr(ticket, "descripcion", "") or getattr(ticket, "description", "") or ""))
+
+    metadata = {
+        "advisory_only": True,
+        "ticket_id": ticket.id,
+        "source_model": "TenantTicket",
+        "domain_scope": domain_scope,
+        "provider_family": str(provider_family)[:80],
+        "mode": str(huggingface.get("mode") or enrichment.get("mode") or "advisory")[:80],
+        "provider": str(provider or "unavailable")[:120],
+        "suggested_queue": str(crm_hints.get("suggested_queue") or "")[:120],
+        "requires_human_attention": bool(crm_hints.get("requires_human_attention")),
+        "recommended_action_ids": recommended_actions,
+        "text_chars": text_chars,
+        "comments_count": comments_count,
+    }
+
+    try:
+        db.session.add(
+            AnalyticsEventV2(
+                tenant_id=tenant.id,
+                tenant_type=domain_scope,
+                user_id=getattr(_viewer(), "id", None),
+                channel="crm_panel",
+                event_name="ticket_ai_enrichment_generated",
+                metadata_payload=metadata,
+                entity_ref=f"ticket:{ticket.id}",
+            )
+        )
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        current_app.logger.exception("ticket_ai_enrichment_analytics_event_failed", extra={"ticket_id": ticket.id})
 
 
 def _parse_comments_limit(payload: dict[str, Any], *, default: int = 40) -> int:
@@ -557,6 +621,13 @@ def ticket_ai_enrichment_v2(ticket_id: int):
     enrichment["ticket_type"] = "tenant"
     enrichment["source_model"] = "TenantTicket"
     enrichment["domain_scope"] = domain_scope
+    _record_ai_enrichment_analytics_event(
+        tenant=tenant,
+        ticket=ticket,
+        enrichment=enrichment,
+        domain_scope=domain_scope,
+        comments_count=len(comments),
+    )
     return _json_response(enrichment)
 
 

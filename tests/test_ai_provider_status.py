@@ -1,7 +1,7 @@
 import json
 
 from services import huggingface_inference_service as hf
-from services.ai_provider_status import build_ai_provider_status
+from services.ai_provider_status import build_ai_provider_status, build_ai_provider_status_public_view
 
 
 def test_provider_status_never_exposes_secret_values(monkeypatch):
@@ -78,6 +78,42 @@ def test_provider_status_warns_when_ollama_ordered_but_disabled(monkeypatch):
 
     assert "ollama_in_provider_order_but_disabled" in payload["readiness"]["warnings"]
     assert payload["providers"]["ollama"]["enabled"] is False
+
+
+def test_public_provider_status_is_safe_for_tenant_crm(monkeypatch):
+    hf.clear_last_huggingface_failure()
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-public-secret")
+    monkeypatch.setenv("GEMINI_API_KEY", "gemini-public-secret")
+    monkeypatch.setenv("HUGGINGFACE_API_TOKEN", "hf_public_secret")
+    monkeypatch.setenv("LLM_PROVIDER_ORDER", "gemini,openai")
+    monkeypatch.setenv("HUGGINGFACE_ENABLED", "true")
+    monkeypatch.setenv("HUGGINGFACE_ZERO_SHOT_ENABLED", "true")
+
+    try:
+        raise RuntimeError("402 Payment Required: hf_public_secret depleted")
+    except RuntimeError as exc:
+        hf._record_failure("zero_shot", exc)
+
+    payload = build_ai_provider_status_public_view()
+    serialized = json.dumps(payload)
+
+    assert payload["contract_version"] == "ai.provider_status_public.v1"
+    assert payload["secret_values_exposed"] is False
+    assert payload["frontend_contract"]["render_as"] == "operations_ai_provider_status"
+    assert payload["providers"]["gemini"]["configured"] is True
+    assert payload["providers"]["huggingface"]["last_failure"] == {
+        "reason_code": "huggingface_quota_or_payment_required",
+        "task": "zero_shot",
+        "error_type": "RuntimeError",
+    }
+    assert "base_url" not in payload["providers"]["ollama"]
+    assert "smoke" not in payload
+    assert "sk-public-secret" not in serialized
+    assert "gemini-public-secret" not in serialized
+    assert "hf_public_secret" not in serialized
+    assert "Payment Required" not in serialized
+
+    hf.clear_last_huggingface_failure()
 
 
 def test_admin_provider_status_endpoint_requires_admin(client, monkeypatch):
