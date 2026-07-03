@@ -9,7 +9,7 @@ os.environ.setdefault("FLASK_SKIP_GLOBAL_APP", "1")
 
 from app import create_app, db
 from config import Config
-from models import TenantProfile, User
+from models import AnalyticsEventV2, TenantProfile, User
 from routes.v2.surveys import _public_response_rate_buckets
 
 
@@ -142,6 +142,16 @@ class ProductFlowSurveyLiveVoteTest(unittest.TestCase):
         self.assertIn("result_version", emitted_payload)
         self.assertIn("snapshot_version", emitted_payload)
         self.assertEqual(emitted_payload["legacy_results"]["total_respuestas"], 1)
+
+        analytics_event = AnalyticsEventV2.query.filter_by(
+            tenant_id=self.tenant.id,
+            event_name="vote_submitted",
+        ).first()
+        self.assertIsNotNone(analytics_event)
+        self.assertEqual(analytics_event.channel, "web")
+        self.assertEqual(analytics_event.entity_ref, f"survey:{emitted_payload['encuesta_id']}:response:{ack['response_id']}")
+        self.assertEqual((analytics_event.metadata_payload or {}).get("response_id"), ack["response_id"])
+        self.assertTrue((analytics_event.metadata_payload or {}).get("is_live_vote"))
 
         live = self.client.get(f"/api/v2/public/surveys/{token}/live-results?include_heatmap=0")
         self.assertEqual(live.status_code, 200, live.get_json())

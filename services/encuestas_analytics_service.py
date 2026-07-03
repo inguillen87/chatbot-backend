@@ -2803,6 +2803,128 @@ def calculate_live_results(
         "polling_interval_ms": polling_interval_ms,
         "active_filters": filtros,
     }
+    live_ai_items: List[Dict[str, Any]] = []
+    for pregunta in preguntas:
+        if not isinstance(pregunta, dict):
+            continue
+        opciones = pregunta.get("opciones") if isinstance(pregunta.get("opciones"), list) else []
+        for opcion in opciones[:4]:
+            if not isinstance(opcion, dict):
+                continue
+            live_ai_items.append(
+                {
+                    "source": "live_vote",
+                    "text": (
+                        f"{pregunta.get('titulo') or ''} "
+                        f"{opcion.get('label') or opcion.get('texto') or ''} "
+                        f"{opcion.get('votos') or 0} votos {opcion.get('porcentaje') or 0}%"
+                    ),
+                    "category": "encuesta o votacion",
+                    "channel": "public_live_results",
+                    "status": trend,
+                }
+            )
+    for point in points[:120]:
+        if not isinstance(point, Mapping):
+            continue
+        weight = point.get("weight") or point.get("w") or point.get("count") or 1
+        live_ai_items.append(
+            {
+                "source": "survey",
+                "text": " ".join(
+                    str(value)
+                    for value in (
+                        "encuesta",
+                        point.get("categoria"),
+                        point.get("barrio"),
+                        point.get("ciudad"),
+                        point.get("provincia"),
+                        point.get("canal"),
+                        weight,
+                    )
+                    if value is not None and value != ""
+                ),
+                "category": point.get("categoria") or "encuesta o votacion",
+                "channel": point.get("canal"),
+                "lat": point.get("lat"),
+                "lng": point.get("lng"),
+                "weight": weight,
+                "status": "active" if responses_count > 0 else "empty",
+            }
+        )
+    if not live_ai_items:
+        live_ai_items.append(
+            {
+                "source": "survey_empty_state",
+                "text": "Encuesta o votacion sin respuestas. Revisar difusion, QR, WhatsApp y canales activos.",
+                "category": "encuesta o votacion",
+                "channel": "public_link",
+                "status": "empty",
+            }
+        )
+    live_ai_insights = build_collection_ai_insights(
+        live_ai_items,
+        domain="survey_live_results",
+    )
+    live_ai_layers = build_map_ai_layers(
+        [
+            {
+                **dict(point),
+                "source": "survey",
+                "channel": point.get("canal"),
+                "weight": point.get("weight") or point.get("w") or point.get("count") or 1,
+            }
+            for point in points[:max_points]
+            if isinstance(point, Mapping)
+        ],
+        insights=live_ai_insights,
+    )
+    raw_recommendations = live_ai_insights.get("recommended_actions")
+    operator_recommendations = [
+        {
+            "id": str(action.get("id") or f"ai_recommendation_{index + 1}"),
+            "label": str(action.get("label") or "Revisar senal IA"),
+            "priority": action.get("priority") or "medium",
+            "ui_hint": action.get("ui_hint") or "open_ai_summary",
+            "source": "huggingface_ai_insights",
+            "requires_operator_confirmation": True,
+        }
+        for index, action in enumerate(raw_recommendations or [])
+        if isinstance(action, Mapping)
+    ]
+    if responses_count == 0:
+        operator_recommendations.insert(
+            0,
+            {
+                "id": "share_survey_now",
+                "label": "Reforzar difusion por WhatsApp, QR y redes",
+                "priority": "high",
+                "ui_hint": "share_public_link",
+                "source": "survey_live_results",
+                "requires_operator_confirmation": True,
+            },
+        )
+    ai_signal = {
+        "contract_version": "surveys.live_ai_signal.v1",
+        "provider_family": live_ai_insights.get("provider_family") or "huggingface",
+        "mode": live_ai_insights.get("mode"),
+        "hf_status": live_ai_insights.get("hf_status") or {},
+        "summary": live_ai_insights.get("summary") or {},
+        "collection": live_ai_insights.get("collection") or {},
+        "recommended_actions": operator_recommendations[:6],
+        "advisory_policy": dict(SURVEY_AI_ADVISORY_POLICY),
+        "frontend_contract": {
+            "recommended_widgets": [
+                "live_ai_signal_card",
+                "operator_recommendations",
+                "map_ai_layers",
+                "survey_heatmap",
+            ],
+            "safe_to_render_without_hf_token": True,
+            "refresh_seconds": 30,
+            "advisory_only": True,
+        },
+    }
 
     return {
         "contract_version": "surveys.live_results.v2",
@@ -2840,6 +2962,9 @@ def calculate_live_results(
         },
         "ai_summary": ai_summary,
         "ai_insights": ai_insights,
+        "ai_signal": ai_signal,
+        "ai_layers": live_ai_layers,
+        "operator_recommendations": operator_recommendations[:6],
         "render_contract": {
             "preferred_visualization": "live_vote_command_center",
             "supports": [
@@ -2849,6 +2974,9 @@ def calculate_live_results(
                 "heatmap",
                 "map_pulses",
                 "ai_summary",
+                "hf_ai_signals",
+                "ai_map_layers",
+                "operator_recommendations",
                 "csv_export",
             ],
             "polling_interval_ms": polling_interval_ms,
@@ -2859,6 +2987,7 @@ def calculate_live_results(
         "ui_actions": [
             {"id": "refresh_live_results", "label": "Actualizar resultados", "ui_hint": "refresh"},
             {"id": "export_live_csv", "label": "Exportar CSV", "ui_hint": "download_csv"},
+            {"id": "inspect_ai_signals", "label": "Ver senales IA", "ui_hint": "open_ai_summary"},
         ],
         "links": {
             "public_live_results": public_endpoint,

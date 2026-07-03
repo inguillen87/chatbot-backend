@@ -3018,6 +3018,89 @@ def _coerce_respuestas_payload(value: Optional[Any]) -> List[Dict[str, Any]]:
     return []
 
 
+def _track_survey_response_analytics(
+    encuesta: EncEncuesta,
+    respuesta: EncRespuesta,
+    *,
+    slug_publico: str,
+    respuestas_payload: Sequence[Dict[str, Any]],
+) -> None:
+    """Feed public survey/vote responses into the canonical analytics stream."""
+
+    if not analytics_ingestor:
+        return
+
+    try:
+        tenant = db.session.get(TenantProfile, encuesta.tenant_id)
+        tenant_type = _clean_str(getattr(tenant, "tipo", None), max_length=20) or "municipio"
+        public_slug = _resolve_public_slug(encuesta) or encuesta.slug or slug_publico
+        event_name = (
+            "vote_submitted"
+            if bool(getattr(encuesta, "es_votacion_envivo", False))
+            or str(getattr(encuesta, "tipo", "") or "").strip().lower() in {"votacion", "votacion_envivo", "live_vote"}
+            else "survey_answer_submitted"
+        )
+        selected_options: List[Dict[str, Any]] = []
+        open_answers = 0
+        for detalle in respuesta.detalles or []:
+            if getattr(detalle, "opcion_id", None) is not None:
+                selected_options.append(
+                    {
+                        "pregunta_id": detalle.pregunta_id,
+                        "opcion_id": detalle.opcion_id,
+                    }
+                )
+            if getattr(detalle, "texto_libre", None):
+                open_answers += 1
+
+        payload = {
+            "contract_version": "analytics.survey_response_event.v1",
+            "encuesta_id": encuesta.id,
+            "survey_id": encuesta.id,
+            "slug": public_slug,
+            "slug_publico": public_slug,
+            "response_id": respuesta.id,
+            "respuesta_id": respuesta.id,
+            "survey_type": getattr(encuesta, "tipo", None),
+            "is_live_vote": bool(getattr(encuesta, "es_votacion_envivo", False)),
+            "live_results_visible": bool(getattr(encuesta, "mostrar_resultados_envivo", False)),
+            "answers_count": len(respuestas_payload),
+            "selected_options_count": len(selected_options),
+            "open_answers_count": open_answers,
+            "selected_options": selected_options[:40],
+            "has_geo": respuesta.lat is not None and respuesta.lng is not None,
+            "has_contact_identity": bool(respuesta.user_id or respuesta.dni or respuesta.phone),
+            "has_demographics": bool(respuesta.genero or respuesta.rango_etario or respuesta.edad),
+            "utm_source": respuesta.utm_source,
+            "utm_campaign": respuesta.utm_campaign,
+            "barrio": respuesta.barrio,
+            "ciudad": respuesta.ciudad,
+            "provincia": respuesta.provincia,
+            "pais": respuesta.pais,
+        }
+        analytics_ingestor.track(
+            tenant_id=encuesta.tenant_id,
+            event_name=event_name,
+            payload=payload,
+            user_id=_coerce_int(respuesta.user_id),
+            anon_id=respuesta.huella_unica or None,
+            channel=respuesta.canal or "public_survey",
+            session_id=respuesta.huella_unica or None,
+            lat=respuesta.lat,
+            lng=respuesta.lng,
+            entity_ref=f"survey:{encuesta.id}:response:{respuesta.id}",
+            tenant_type=tenant_type,
+        )
+    except Exception:
+        logger = _current_app_logger()
+        if logger:
+            logger.exception(
+                "[encuestas] analytics ingest failed for response encuesta_id=%s respuesta_id=%s",
+                getattr(encuesta, "id", None),
+                getattr(respuesta, "id", None),
+            )
+
+
 def save_respuesta(
     slug_publico: str,
     payload: Dict[str, Any],
@@ -3173,6 +3256,12 @@ def save_respuesta(
         respuesta.id,
         encuesta.id,
         ip,
+    )
+    _track_survey_response_analytics(
+        encuesta,
+        respuesta,
+        slug_publico=slug_publico,
+        respuestas_payload=respuestas_payload,
     )
 
     # Otorgar puntos si corresponde
