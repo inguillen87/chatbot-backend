@@ -23,7 +23,14 @@ from services.logic import es_rubro_publico
 from services.tenant_factory import create_tenant_from_template
 from services.user_service import get_user_profile_identity, set_user_profile_avatar
 from utils.auth_helpers import generar_token
-from utils.roles import normalize_tenant_type, role_for_tenant_type
+from utils.roles import (
+    ROLE_CLIENTE,
+    ROLE_SUPERADMIN,
+    is_authorized_superadmin_email,
+    is_super_admin_role,
+    normalize_tenant_type,
+    role_for_tenant_type,
+)
 
 CLERK_AUTH_CONTRACT_VERSION = "auth.clerk.v1"
 DEFAULT_SOCIAL_PROVIDERS = ("google", "facebook", "linkedin")
@@ -52,6 +59,10 @@ def _env_list(name: str, fallback: Iterable[str]) -> list[str]:
     if not raw:
         return list(fallback)
     return [item.strip().lower() for item in raw.split(",") if item.strip()]
+
+
+def is_clerk_superadmin_email(email: str | None) -> bool:
+    return is_authorized_superadmin_email(email)
 
 
 def clerk_enabled() -> bool:
@@ -313,6 +324,27 @@ def _merge_clerk_metadata(user: User, identity: dict) -> None:
     flag_modified(user, "accesibilidad")
 
 
+def _fallback_role_for_clerk_user(user: User) -> str:
+    tenant = tenant_for_user(user)
+    if tenant:
+        return role_for_tenant_type(getattr(tenant, "tipo", None))
+    if getattr(user, "tipo_chat", None):
+        return role_for_tenant_type(getattr(user, "tipo_chat", None))
+    return ROLE_CLIENTE
+
+
+def apply_clerk_role_guardrail(user: User, identity: dict) -> None:
+    """Keep platform-wide superadmin access bound to an explicit email allowlist."""
+
+    if is_clerk_superadmin_email(identity.get("email")):
+        user.rol = ROLE_SUPERADMIN
+        user.tipo_chat = user.tipo_chat or "plataforma"
+        return
+
+    if is_super_admin_role(getattr(user, "rol", None)):
+        user.rol = _fallback_role_for_clerk_user(user)
+
+
 def upsert_user_from_clerk(claims: dict, profile: Optional[dict] = None) -> User:
     identity = extract_clerk_identity(claims, profile)
     email = identity.get("email")
@@ -343,6 +375,7 @@ def upsert_user_from_clerk(claims: dict, profile: Optional[dict] = None) -> User
             user.email_verified = True
 
     _merge_clerk_metadata(user, identity)
+    apply_clerk_role_guardrail(user, identity)
     if identity.get("avatar_url"):
         avatar_source = "clerk"
         providers = identity.get("social_providers") or []
@@ -445,6 +478,16 @@ def serialize_tenant(tenant: Optional[TenantProfile]) -> Optional[dict]:
 
 
 def build_onboarding_contract(user: User, tenant: Optional[TenantProfile] = None) -> dict:
+    if is_super_admin_role(getattr(user, "rol", None)):
+        return {
+            "required": False,
+            "status": "platform_admin",
+            "title": "Acceso superadmin activo",
+            "description": "Tu cuenta Clerk esta vinculada al panel global de Chatboc.",
+            "submit_endpoint": "/auth/clerk/onboarding",
+            "modal": {"steps": [], "vertical_options": [], "goal_options": []},
+        }
+
     tenant = tenant or tenant_for_user(user)
     return {
         "required": tenant is None,

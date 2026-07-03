@@ -67,6 +67,43 @@ def test_upsert_user_from_clerk_links_existing_email_without_resetting_identity(
         assert user.accesibilidad["auth"]["clerk"]["user_id"] == "user_clerk_123"
 
 
+def test_clerk_superadmin_role_is_limited_to_allowlisted_email(client, monkeypatch):
+    monkeypatch.setenv("CLERK_SUPERADMIN_EMAILS", "guillen.marce@gmail.com")
+
+    with client.application.app_context():
+        allowed = upsert_user_from_clerk(
+            _claims(sub="user_superadmin", email="guillen.marce@gmail.com"),
+            _profile(email="guillen.marce@gmail.com") | {"id": "user_superadmin"},
+        )
+        db.session.commit()
+
+        assert allowed.rol == "super_admin"
+        payload = build_chatboc_session_payload(allowed)
+        assert payload["user"]["role"] == "super_admin"
+        assert payload["onboarding"]["required"] is False
+        assert payload["onboarding"]["status"] == "platform_admin"
+
+
+def test_clerk_superadmin_role_is_removed_from_non_allowlisted_email(client, monkeypatch):
+    monkeypatch.setenv("CLERK_SUPERADMIN_EMAILS", "guillen.marce@gmail.com")
+
+    with client.application.app_context():
+        existing = User(name="Legacy Super", email="legacy-super@chatboc.test", rol="super_admin")
+        existing.set_password("legacy-password")
+        db.session.add(existing)
+        db.session.commit()
+
+        user = upsert_user_from_clerk(
+            _claims(sub="user_legacy_super", email="legacy-super@chatboc.test"),
+            _profile(email="legacy-super@chatboc.test") | {"id": "user_legacy_super"},
+        )
+        db.session.commit()
+
+        assert user.id == existing.id
+        assert user.rol == "usuario"
+        assert build_chatboc_session_payload(user)["user"]["role"] == "usuario"
+
+
 def test_onboarding_contract_requires_tenant_until_created(client):
     with client.application.app_context():
         user = upsert_user_from_clerk(_claims(), _profile())

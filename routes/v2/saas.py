@@ -57,7 +57,7 @@ from services.v2.sla_service import is_ticket_overdue
 from services.whatsapp_experience import _template_creation_manifest_payload, build_whatsapp_experience
 from utils.auth_helpers import token_requerido
 from utils.permissions import require_role
-from utils.roles import first_specific_tenant_slug, is_super_admin_role
+from utils.roles import first_specific_tenant_slug, is_authorized_superadmin_user
 
 v2_saas_bp = Blueprint("v2_saas", __name__, url_prefix="/api/v2")
 
@@ -150,8 +150,7 @@ def _resolve_tenant_or_error(current_user: User, path_slug: str | None = None):
 
 
 def _user_can_access_tenant(user: User, tenant: TenantProfile) -> bool:
-    role = str(getattr(user, "rol", "") or "").lower()
-    if is_super_admin_role(role):
+    if is_authorized_superadmin_user(user):
         return True
     if str(getattr(user, "tenant_id", "") or "") == str(tenant.id):
         return True
@@ -3083,7 +3082,7 @@ def _build_production_e2e_readiness(
 
 
 def _resolve_smoke_tenant(current_user: User, tenant_slug: str | None = None) -> tuple[TenantProfile | None, Any]:
-    if is_super_admin_role(getattr(current_user, "rol", None)):
+    if is_authorized_superadmin_user(current_user):
         resolved_slug = tenant_slug or _tenant_slug_from_request()
         if resolved_slug:
             tenant = TenantProfile.query.filter_by(slug=resolved_slug).first()

@@ -6,7 +6,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from datetime import datetime, timezone, timedelta
 
 from utils.auth_helpers import obtener_token, token_requerido, user_from_token
-from utils.roles import is_super_admin_role
+from utils.roles import is_authorized_superadmin_user
 from middleware.tenant_context import require_tenant
 from models import (
     CatalogoItem,
@@ -1426,7 +1426,7 @@ def create_tenant():
             data.get("plan") or data.get("tenant_plan") or data.get("subscription_plan")
         )
         actor = _optional_tenant_creation_actor()
-        actor_is_super_admin = bool(actor and is_super_admin_role(getattr(actor, "rol", None)))
+        actor_is_super_admin = bool(actor and is_authorized_superadmin_user(actor))
         if requested_plan != "free" and not actor_is_super_admin:
             return jsonify(
                 {

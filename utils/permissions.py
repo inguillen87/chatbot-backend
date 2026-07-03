@@ -3,7 +3,7 @@ import uuid
 
 from flask import g, jsonify, request
 
-from utils.roles import canonical_role
+from utils.roles import ROLE_SUPERADMIN, canonical_role, is_authorized_superadmin_user
 
 
 def _permission_error(reason_code: str):
@@ -39,6 +39,8 @@ def require_role(*roles):
             canonical = canonical_role(user_role)
             if canonical not in allowed_roles:
                 return _permission_error("insufficient_permissions")
+            if canonical == ROLE_SUPERADMIN and not is_authorized_superadmin_user(current_user):
+                return _permission_error("superadmin_email_not_authorized")
             return f(current_user, *args, **kwargs)
         return wrapper
     return decorator

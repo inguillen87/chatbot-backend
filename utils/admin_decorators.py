@@ -1,7 +1,7 @@
 from functools import wraps
 from flask import abort, g, jsonify
 from models import User
-from utils.roles import is_super_admin_role
+from utils.roles import is_authorized_superadmin_user
 
 def super_admin_required(f):
     @wraps(f)
@@ -26,7 +26,7 @@ def super_admin_required(f):
         if not user:
              return jsonify({"error": "Authentication required"}), 401
 
-        if not is_super_admin_role(getattr(user, "rol", None)):
+        if not is_authorized_superadmin_user(user):
             return jsonify({"error": f"Requires Super Admin privileges. User is {user.rol}"}), 403
 
         return f(*args, **kwargs)

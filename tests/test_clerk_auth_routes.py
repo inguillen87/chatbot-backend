@@ -68,6 +68,39 @@ def test_clerk_session_sync_returns_chatboc_token_and_onboarding(client, monkeyp
         assert user.accesibilidad["auth"]["clerk"]["social_providers"] == ["linkedin"]
 
 
+def test_clerk_session_sync_allows_only_configured_superadmin(client, monkeypatch):
+    monkeypatch.setenv("CLERK_SUPERADMIN_EMAILS", "guillen.marce@gmail.com")
+    monkeypatch.setattr(
+        "routes.auth.verify_clerk_session_token",
+        lambda token: {"sub": "user_super_route", "email": "guillen.marce@gmail.com", "email_verified": True},
+    )
+
+    resp = client.post(
+        "/auth/clerk/session",
+        headers={"Authorization": "Bearer clerk.jwt.token"},
+        json={
+            "user": {
+                "id": "user_super_route",
+                "first_name": "Marcelo",
+                "primary_email_address_id": "email_super",
+                "email_addresses": [
+                    {
+                        "id": "email_super",
+                        "email_address": "guillen.marce@gmail.com",
+                        "verification": {"status": "verified"},
+                    }
+                ],
+            }
+        },
+    )
+
+    assert resp.status_code == 200
+    payload = resp.get_json()
+    assert payload["user"]["role"] == "super_admin"
+    assert payload["onboarding"]["required"] is False
+    assert payload["onboarding"]["status"] == "platform_admin"
+
+
 def test_clerk_onboarding_route_creates_tenant(client, monkeypatch):
     monkeypatch.setattr(
         "routes.auth.verify_clerk_session_token",

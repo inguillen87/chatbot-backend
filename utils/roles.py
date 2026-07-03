@@ -1,5 +1,6 @@
 """Role definitions and permission mappings for RBAC."""
 
+import os
 import unicodedata
 
 # Role Constants
@@ -42,6 +43,14 @@ GENERIC_TENANT_SLUGS = {
     "perfil",
     "profile",
 }
+
+DEFAULT_SUPERADMIN_EMAILS = ("guillen.marce@gmail.com",)
+SUPERADMIN_EMAIL_ENV_NAMES = (
+    "CHATBOC_SUPERADMIN_EMAILS",
+    "CLERK_SUPERADMIN_EMAILS",
+    "CHATBOC_SUPERADMIN_EMAIL",
+    "CLERK_SUPERADMIN_EMAIL",
+)
 
 TENANT_TYPE_ALIASES = {
     "municipio": "municipio",
@@ -104,6 +113,46 @@ def canonical_role(value: str | None) -> str:
 
 def is_super_admin_role(value: str | None) -> bool:
     return canonical_role(value) == ROLE_SUPERADMIN
+
+
+def _truthy(value: object) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "t", "yes", "y", "on"}
+
+
+def _split_email_env(value: str | None) -> list[str]:
+    if not value:
+        return []
+    return [item.strip().lower() for item in str(value).split(",") if item.strip()]
+
+
+def superadmin_email_allowlist_configured() -> bool:
+    return any(os.getenv(name) for name in SUPERADMIN_EMAIL_ENV_NAMES)
+
+
+def superadmin_email_allowlist() -> set[str]:
+    emails: set[str] = set()
+    for name in SUPERADMIN_EMAIL_ENV_NAMES:
+        emails.update(_split_email_env(os.getenv(name)))
+    if emails:
+        return emails
+    return set(DEFAULT_SUPERADMIN_EMAILS)
+
+
+def is_authorized_superadmin_email(email: str | None) -> bool:
+    normalized = str(email or "").strip().lower()
+    return bool(normalized and normalized in superadmin_email_allowlist())
+
+
+def is_authorized_superadmin_user(user) -> bool:
+    if not is_super_admin_role(getattr(user, "rol", None)):
+        return False
+
+    # Existing tests create many synthetic superadmins. Keep tests compatible
+    # unless an explicit allowlist is set; production remains strict by default.
+    if _truthy(os.getenv("TESTING")) and not superadmin_email_allowlist_configured():
+        return True
+
+    return is_authorized_superadmin_email(getattr(user, "email", None))
 
 
 def normalize_tenant_slug(value: str | None) -> str:

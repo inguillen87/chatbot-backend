@@ -30,7 +30,7 @@ from services.plan_access import (
     integration_plan_required_payload,
 )
 from utils.auth_helpers import token_requerido
-from utils.roles import canonical_role, first_specific_tenant_slug, is_super_admin_role, normalize_tenant_slug
+from utils.roles import canonical_role, first_specific_tenant_slug, is_authorized_superadmin_user, normalize_tenant_slug
 
 backoffice_bp = Blueprint("backoffice", __name__, url_prefix="/api/app/backoffice")
 backoffice_v2_bp = Blueprint("backoffice_v2", __name__, url_prefix="/api/v2/backoffice")
@@ -90,7 +90,7 @@ def _resolve_tenant(current_user: User) -> TenantProfile | None:
 
 def _is_authorized(current_user: User, tenant: TenantProfile) -> bool:
     role = canonical_role(getattr(current_user, "rol", None))
-    if is_super_admin_role(role):
+    if is_authorized_superadmin_user(current_user):
         return True
     if getattr(current_user, "tenant_id", None) == tenant.id:
         return True

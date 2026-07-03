@@ -17,6 +17,7 @@ from extensions import db
 from services.contact_intake import is_placeholder_email, normalize_email
 from services.crm_intelligence import serialize_crm_contact
 from socket_service import emit_crm_contact_update, emit_crm_notification_update
+from utils.roles import is_authorized_superadmin_user
 
 crm_bp = Blueprint('crm_bp', __name__)
 
@@ -81,7 +82,7 @@ def _int_arg(name: str, default: int, *, min_value: int = 1, max_value: int = 10
 
 
 def _is_superadmin(user: User) -> bool:
-    return getattr(user, "rol", None) in {"super_admin", "superadmin", "platform_admin"}
+    return is_authorized_superadmin_user(user)
 
 
 def _clean_phone(value: str | None) -> str:
