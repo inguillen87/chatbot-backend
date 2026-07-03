@@ -9,21 +9,24 @@ logic side-effect free so it can be unit tested without network access.
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import math
 from dataclasses import dataclass, field
 import re
 from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, Iterable, List, Optional, Tuple
+from urllib.parse import quote_plus
 
 from flask import current_app
 
-from models import CatalogoItem, ChatSessionContext, PedidoConversacional, PymePedido, db
+from models import CatalogoItem, ChatSessionContext, PedidoConversacional, PymePedido, TenantProfile, TenantTicket, db
 from services.multimodal_analyzer import analizar_imagen_con_fallback
 from services.order_attachment_preview import build_crm_order_draft
 from services.pyme_menu import get_pyme_menu_payload
 from services.config_loader import cargar_configuracion_pyme
 from services.document_processing_service import document_processing_service
+from services.marketplace_analytics import track_marketplace_event
 from services.qdrant_search import buscar_catalogo_qdrant, CATALOGO_PYME
 from utils.money_ar import format_ars, parse_ars
 
@@ -900,6 +903,17 @@ def _assisted_source_payload(
     attachment_info: Dict[str, Any],
     text_preview: Optional[str] = None,
 ) -> Dict[str, Any]:
+    attachment_payload = {
+        "id": attachment_info.get("id"),
+        "url": attachment_info.get("url"),
+        "name": attachment_info.get("name") or attachment_info.get("filename"),
+        "filename": attachment_info.get("filename") or attachment_info.get("name"),
+        "mimeType": attachment_info.get("mime_type") or attachment_info.get("mimeType"),
+        "mime_type": attachment_info.get("mime_type") or attachment_info.get("mimeType"),
+        "size": attachment_info.get("size") or attachment_info.get("file_size_bytes"),
+        "source": "pyme_multimodal",
+    }
+    attachment_payload = {key: value for key, value in attachment_payload.items() if value}
     source = {
         "channel": _assisted_channel(channel),
         "input_type": source_type,
@@ -908,6 +922,10 @@ def _assisted_source_payload(
         "attachment_id": attachment_info.get("id"),
         "mime_type": attachment_info.get("mime_type") or attachment_info.get("mimeType"),
     }
+    if attachment_payload.get("url") or attachment_payload.get("id"):
+        source["attachmentInfo"] = attachment_payload
+        source["attachment_info"] = attachment_payload
+        source["source_attachment"] = attachment_payload
     if text_preview:
         source["text_preview"] = text_preview[:500]
     return {key: value for key, value in source.items() if value}
@@ -1114,6 +1132,183 @@ def _assisted_next_actions(
             },
         )
     return actions
+
+
+def _assisted_public_follow_up(
+    *,
+    pedido_id: int,
+    tenant_slug: Optional[str],
+    request_kind_label: str,
+    customer_message: str,
+) -> Dict[str, Any]:
+    tracking_code = f"pc-{pedido_id}"
+    tracking_path = f"/tracking/order/{quote_plus(tracking_code)}"
+    if tenant_slug:
+        tracking_path = f"{tracking_path}?tenant_slug={quote_plus(str(tenant_slug))}"
+    return {
+        "contract_version": "marketplace.assisted_followup.v1",
+        "kind": "order",
+        "title": f"Seguimiento de {request_kind_label}",
+        "summary": customer_message,
+        "tracking": {
+            "kind": "order",
+            "code": tracking_code,
+            "raw_code": tracking_code,
+            "pedido_id": pedido_id,
+            "path": tracking_path,
+            "label": "Seguimiento publico",
+        },
+        "channels": [
+            {
+                "id": "tracking_page",
+                "label": "Abrir seguimiento",
+                "type": "link",
+                "href": tracking_path,
+                "description": "Consultar estado y continuidad de la solicitud.",
+                "enabled": True,
+            }
+        ],
+    }
+
+
+def _assisted_ticket_fingerprint(
+    *,
+    tenant_id: Optional[int],
+    pedido_id: Optional[int],
+    request_id: Optional[str],
+    source_channel: str,
+) -> Optional[str]:
+    if not tenant_id:
+        return None
+    seed = f"{tenant_id}:{request_id or f'pedido:{pedido_id}'}:{source_channel or 'web'}"
+    digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:18]
+    return f"pyme_assisted_upload:{tenant_id}:{digest}"[:120]
+
+
+def _materialize_assisted_intake_ticket(
+    *,
+    pedido: PedidoConversacional,
+    tenant_id: Optional[int],
+    user_id: Optional[int],
+    source_channel: str,
+    source: Dict[str, Any],
+    contact: Dict[str, Any],
+    match_summary: Dict[str, Any],
+    crm_order_draft: Dict[str, Any],
+    review_context: Dict[str, Any],
+    intake_experience: Dict[str, Any],
+    operator_pack: Dict[str, Any],
+    public_follow_up: Dict[str, Any],
+    request_kind_label: str,
+    request_id: Optional[str],
+) -> Optional[Dict[str, Any]]:
+    fingerprint = _assisted_ticket_fingerprint(
+        tenant_id=tenant_id,
+        pedido_id=getattr(pedido, "id", None),
+        request_id=request_id,
+        source_channel=source_channel,
+    )
+    if not tenant_id or not fingerprint:
+        return None
+
+    existing = TenantTicket.query.filter_by(tenant_id=tenant_id, fingerprint=fingerprint).first()
+    if existing:
+        return {
+            "kind": "tenant_ticket",
+            "target_module": "orders",
+            "id": existing.id,
+            "ticket_id": existing.id,
+            "ticket_type": "tenant_ticket",
+            "status": existing.estado,
+            "category": existing.categoria,
+            "admin_thread_binding": "tenant_ticket_id",
+            "fingerprint": existing.fingerprint,
+            "reused": True,
+        }
+
+    detected = int(match_summary.get("detected") or 0)
+    matched = int(match_summary.get("matched") or 0)
+    unmatched = int(match_summary.get("unmatched") or 0)
+    needs_review = bool(match_summary.get("needs_operator_review"))
+    source_name = source.get("archivo_nombre") or source.get("name") or source.get("filename")
+    title = f"{request_kind_label.capitalize()} desde {source_channel.replace('_', ' ')}"
+    description_parts = [
+        title,
+        f"Estado: {'requiere revision' if needs_review else 'listo para confirmar'}",
+        f"Lectura: {detected} detectado(s), {matched} con match, {unmatched} para revisar.",
+    ]
+    if source_name:
+        description_parts.append(f"Origen: {source_name}")
+    if contact.get("name") or contact.get("phone") or contact.get("email"):
+        description_parts.append(
+            "Contacto: "
+            + ", ".join(str(value) for value in (contact.get("name"), contact.get("phone"), contact.get("email")) if value)
+        )
+    source_attachment = (
+        source.get("attachmentInfo")
+        or source.get("attachment_info")
+        or source.get("source_attachment")
+        or None
+    )
+
+    ticket = TenantTicket(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        categoria="marketplace_assisted_order",
+        descripcion="\n".join(description_parts),
+        estado="nuevo",
+        origen=str(source_channel or "web")[:20],
+        fingerprint=fingerprint,
+        datos_extra={
+            "contract_version": "marketplace.commerce_intake_ticket.v1",
+            "title": title,
+            "type": "commerce_assisted_intake",
+            "priority": operator_pack.get("priority") or ("high" if needs_review else "normal"),
+            "channel": source_channel,
+            "source": "pyme_multimodal",
+            "pedido_conversacional_id": getattr(pedido, "id", None),
+            "pedido_reference": f"pedido:{getattr(pedido, 'id', None)}",
+            "request_kind": "order_note",
+            "request_kind_label": request_kind_label,
+            "target_module": "orders",
+            "crm_state": "pending_operator_review" if needs_review else "ready_for_confirmation",
+            "contact": contact,
+            "lead_profile": {
+                "contact_state": "available" if contact.get("phone") or contact.get("email") else "missing",
+                "contact_channels": [
+                    channel for channel in ("phone", "email") if contact.get(channel)
+                ],
+                "anon_id": source.get("anon_id"),
+                "request_id": request_id,
+            },
+            "match_summary": match_summary,
+            "crm_order_draft": crm_order_draft,
+            "review_context": review_context,
+            "intake_experience": intake_experience,
+            "operator_pack": operator_pack,
+            "public_follow_up": public_follow_up,
+            "source_attachment": source.get("attachmentInfo")
+            or source.get("attachment_info")
+            or source.get("source_attachment"),
+            "attachmentInfo": source_attachment,
+            "attachment_info": source_attachment,
+            "attachments": [source_attachment] if isinstance(source_attachment, dict) else [],
+            "comments": [],
+        },
+    )
+    db.session.add(ticket)
+    db.session.flush()
+    return {
+        "kind": "tenant_ticket",
+        "target_module": "orders",
+        "id": ticket.id,
+        "ticket_id": ticket.id,
+        "ticket_type": "tenant_ticket",
+        "status": ticket.estado,
+        "category": ticket.categoria,
+        "admin_thread_binding": "tenant_ticket_id",
+        "fingerprint": ticket.fingerprint,
+    }
 
 
 def _operator_pack(
@@ -1326,9 +1521,19 @@ def _persist_assisted_intake_request(
     )
     db.session.add(pedido)
     db.session.flush()
+    public_follow_up = _assisted_public_follow_up(
+        pedido_id=pedido.id,
+        tenant_slug=tenant_slug,
+        request_kind_label=request_kind_label,
+        customer_message=customer_message,
+    )
     for action in next_actions:
         if action.get("id") == "tracking":
             action["reference"] = f"pedido:{pedido.id}"
+            action["type"] = "link"
+            action["href"] = public_follow_up["tracking"]["path"]
+            action["tracking_code"] = public_follow_up["tracking"]["code"]
+            action["tracking_kind"] = public_follow_up["tracking"]["kind"]
     operator_pack = _operator_pack(
         record_id=pedido.id,
         request_kind_label=request_kind_label,
@@ -1343,6 +1548,22 @@ def _persist_assisted_intake_request(
         "lead_id": pedido.id,
         "reference": f"pedido:{pedido.id}",
     }
+    linked_record = _materialize_assisted_intake_ticket(
+        pedido=pedido,
+        tenant_id=tenant_id,
+        user_id=viewer_user_id or owner_user_id,
+        source_channel=source_channel,
+        source=source,
+        contact=contact,
+        match_summary=match_summary,
+        crm_order_draft=crm_order_draft,
+        review_context=review_context,
+        intake_experience=intake_experience,
+        operator_pack=operator_pack,
+        public_follow_up=public_follow_up,
+        request_kind_label=request_kind_label,
+        request_id=request_id,
+    )
     assisted_request.update(
         {
             "pedido_id": pedido.id,
@@ -1350,16 +1571,77 @@ def _persist_assisted_intake_request(
             "operator_pack": operator_pack,
             "next_actions": next_actions,
             "crm_order_draft": crm_order_draft,
+            "public_follow_up": public_follow_up,
         }
     )
+    if linked_record:
+        assisted_request.update(
+            {
+                "linked_record": linked_record,
+                "intake_ticket_id": linked_record.get("id"),
+                "ticket_id": linked_record.get("id"),
+                "ticket_type": "tenant_ticket",
+                "crm_state": "materialized_ticket_pending_review"
+                if match_summary["needs_operator_review"]
+                else "materialized_ticket_ready_for_confirmation",
+            }
+        )
     pedido.metadata_payload = {
         **(pedido.metadata_payload or {}),
         "operator_pack": operator_pack,
         "next_actions": next_actions,
         "crm_order_draft": crm_order_draft,
+        "public_follow_up": public_follow_up,
     }
-    pedido.items = [{**record_payload, "operator_pack": operator_pack, "crm_order_draft": crm_order_draft}, *pedido.items[1:]]
+    if linked_record:
+        pedido.metadata_payload = {
+            **(pedido.metadata_payload or {}),
+            "linked_record": linked_record,
+            "intake_ticket_id": linked_record.get("id"),
+            "crm_state": assisted_request["crm_state"],
+        }
+    pedido.items = [
+        {
+            **record_payload,
+            "operator_pack": operator_pack,
+            "crm_order_draft": crm_order_draft,
+            "public_follow_up": public_follow_up,
+            **({"linked_record": linked_record} if linked_record else {}),
+        },
+        *pedido.items[1:],
+    ]
     db.session.commit()
+    if tenant_id:
+        tenant = db.session.get(TenantProfile, tenant_id)
+        if tenant:
+            track_marketplace_event(
+                tenant,
+                "assisted_multimodal_intake_submitted",
+                {
+                    "source": "pyme_multimodal",
+                    "assisted_request_contract_version": ASSISTED_REQUEST_CONTRACT_VERSION,
+                    "intake_ticket_contract_version": "marketplace.commerce_intake_ticket.v1"
+                    if linked_record
+                    else None,
+                    "mode": "order_note_upload",
+                    "request_kind": "order_note",
+                    "request_kind_label": request_kind_label,
+                    "target_module": "orders",
+                    "input_type": source_type,
+                    "has_file": bool(source.get("archivo_url") or source.get("attachment_id")),
+                    "matched_count": matched_count,
+                    "unmatched_count": unmatched_count,
+                    "detected_count": detected_count,
+                    "needs_operator_review": match_summary.get("needs_operator_review"),
+                    "crm_state": pedido.metadata_payload.get("crm_state"),
+                    "linked_record_type": linked_record.get("kind") if linked_record else None,
+                    "linked_record_id": linked_record.get("id") if linked_record else None,
+                },
+                channel=source_channel,
+                anon_id=anon_id,
+                entity_ref=f"pedido:{pedido.id}",
+                user_id=viewer_user_id or owner_user_id,
+            )
     return assisted_request
 
 

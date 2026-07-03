@@ -1225,6 +1225,28 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(item["frontend_contract"]["render_as"], "inbox_360_drawer")
         self.assertEqual(payload["frontend_contract"]["drawer_contract"], "inbox.omnichannel.detail.v1")
 
+    def test_omnichannel_inbox_reads_source_attachment_as_regular_attachment(self):
+        self.ticket.datos_extra = {
+            **self.ticket.datos_extra,
+            "attachments": [],
+            "source_attachment": {
+                "id": "source-att-1",
+                "name": "pedido-manuscrito.jpg",
+                "url": "https://cdn.example.com/pedido-manuscrito.jpg",
+                "mimeType": "image/jpeg",
+                "source": "pyme_multimodal",
+            },
+        }
+        db.session.commit()
+
+        response = self.client.get("/api/v2/inbox/omnichannel", headers=self._auth(self.owner))
+
+        self.assertEqual(response.status_code, 200)
+        item = response.get_json()["items"][0]
+        self.assertEqual(item["attachments"][0]["id"], "source-att-1")
+        self.assertEqual(item["attachments"][0]["url"], "https://cdn.example.com/pedido-manuscrito.jpg")
+        self.assertEqual(item["attachments"][0]["source"], "pyme_multimodal")
+
     def test_omnichannel_inbox_includes_legacy_municipio_tracking_chat(self):
         legacy = MunicipioTicket(
             tenant_id=self.tenant.id,

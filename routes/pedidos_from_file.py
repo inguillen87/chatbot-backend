@@ -1733,6 +1733,7 @@ def _materialize_commerce_intake_ticket_from_handoff(
     source_name = source_payload.get("archivo_nombre") or source_payload.get("original_filename")
     if source_name:
         description_parts.append(f"Origen: {source_name}")
+    source_attachment = attachment_info if isinstance(attachment_info, dict) else None
 
     ticket = TenantTicket(
         tenant_id=tenant_id,
@@ -1770,7 +1771,10 @@ def _materialize_commerce_intake_ticket_from_handoff(
             "operator_intake_summary": operator_intake_summary,
             "review_context": review_context,
             "public_follow_up": public_follow_up,
-            "source_attachment": attachment_info,
+            "source_attachment": source_attachment,
+            "attachmentInfo": source_attachment,
+            "attachment_info": source_attachment,
+            "attachments": [source_attachment] if source_attachment else [],
             "comments": [],
         },
     )
@@ -2584,7 +2588,7 @@ def pedidos_desde_archivo():
             "detected_count": detected_count,
             "needs_operator_review": match_summary.get("needs_operator_review"),
             "crm_state": pedido.metadata_payload.get("crm_state"),
-            "linked_record_type": linked_record.get("type") if linked_record else None,
+            "linked_record_type": linked_record.get("kind") if linked_record else None,
             "linked_record_id": linked_record.get("id") if linked_record else None,
             "extraction_error": bool(extraction_error),
         },

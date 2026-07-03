@@ -196,6 +196,8 @@ def test_marketplace_order_note_upload_creates_assisted_request_contract(client,
     assert intake_ticket.datos_extra["crm_order_draft"]["reference"] == f"pedido:{payload['pedido_id']}"
     assert intake_ticket.datos_extra["operator_pack"]["reference"] == f"pedido:{payload['pedido_id']}"
     assert intake_ticket.datos_extra["source_attachment"]["id"] == payload["attachment_id"]
+    assert intake_ticket.datos_extra["attachmentInfo"]["id"] == payload["attachment_id"]
+    assert intake_ticket.datos_extra["attachments"][0]["id"] == payload["attachment_id"]
     assert payload["crm_order_draft"]["summary"]["matched"] == 1
     assert payload["crm_order_draft"]["summary"]["unmatched"] == 1
     assert [line["status"] for line in payload["crm_order_draft"]["lines"]] == [
@@ -258,6 +260,8 @@ def test_marketplace_order_note_upload_creates_assisted_request_contract(client,
     assert analytics_event.metadata_payload["matched_count"] == 1
     assert analytics_event.metadata_payload["unmatched_count"] == 1
     assert analytics_event.metadata_payload["needs_operator_review"] is True
+    assert analytics_event.metadata_payload["linked_record_type"] == "tenant_ticket"
+    assert analytics_event.metadata_payload["linked_record_id"] == payload["intake_ticket_id"]
     assert "contact" not in analytics_event.metadata_payload
     ticket_event = AnalyticsEventV2.query.filter_by(
         tenant_id=tenant.id,

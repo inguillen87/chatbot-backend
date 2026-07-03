@@ -3,7 +3,7 @@ import unittest
 from unittest.mock import patch, MagicMock
 from app import create_app, db
 from config import TestConfig
-from models import CatalogoItem, PedidoConversacional, TenantProfile, User
+from models import AnalyticsEventV2, CatalogoItem, PedidoConversacional, TenantProfile, TenantTicket, User
 from services.pymes import responder_pyme, CONTEXTO_PYME
 from services.pyme_multimodal import PymeSessionState, handle_image_payload, handle_pdf_payload
 
@@ -171,6 +171,10 @@ class PymeMultimodalTest(unittest.TestCase):
         self.assertEqual(crm_order_draft["lines"][0]["catalog_item_id"], 10)
         self.assertEqual(crm_order_draft["lines"][1]["source_name"], "Clavos 2 pulgadas")
         self.assertEqual(result.data["pedido_id"], assisted_request["pedido_id"])
+        self.assertEqual(assisted_request["linked_record"]["kind"], "tenant_ticket")
+        self.assertEqual(assisted_request["ticket_type"], "tenant_ticket")
+        self.assertEqual(assisted_request["public_follow_up"]["tracking"]["code"], f"pc-{assisted_request['pedido_id']}")
+        self.assertIn("/tracking/order/pc-", assisted_request["public_follow_up"]["tracking"]["path"])
 
         pedido = db.session.get(PedidoConversacional, assisted_request["pedido_id"])
         self.assertIsNotNone(pedido)
@@ -181,10 +185,31 @@ class PymeMultimodalTest(unittest.TestCase):
         self.assertEqual(pedido.metadata_payload["contract_version"], "marketplace.assisted_request.v1")
         self.assertEqual(pedido.metadata_payload["operator_pack"]["reference"], f"pedido:{pedido.id}")
         self.assertEqual(pedido.metadata_payload["crm_order_draft"]["reference"], f"pedido:{pedido.id}")
+        self.assertEqual(pedido.metadata_payload["linked_record"]["id"], assisted_request["intake_ticket_id"])
+        self.assertEqual(pedido.metadata_payload["public_follow_up"]["tracking"]["code"], f"pc-{pedido.id}")
         self.assertEqual(pedido.metadata_payload["match_summary"]["unmatched"], 1)
         self.assertEqual(pedido.items[0]["items_detectados"][0]["catalog_match"]["sku"], "CH-001")
         self.assertEqual(pedido.items[0]["no_encontrados"][0]["nombre"], "Clavos 2 pulgadas")
         self.assertEqual(pedido.items[0]["crm_order_draft"]["contract_version"], "marketplace.crm_order_draft.v1")
+
+        intake_ticket = db.session.get(TenantTicket, assisted_request["intake_ticket_id"])
+        self.assertIsNotNone(intake_ticket)
+        self.assertEqual(intake_ticket.categoria, "marketplace_assisted_order")
+        self.assertEqual(intake_ticket.origen, "whatsapp")
+        self.assertEqual(intake_ticket.datos_extra["source"], "pyme_multimodal")
+        self.assertEqual(intake_ticket.datos_extra["pedido_conversacional_id"], pedido.id)
+        self.assertEqual(intake_ticket.datos_extra["public_follow_up"]["tracking"]["code"], f"pc-{pedido.id}")
+        self.assertEqual(intake_ticket.datos_extra["attachments"][0]["url"], "https://cdn.example.com/pedido.jpg")
+
+        event = AnalyticsEventV2.query.filter_by(
+            tenant_id=tenant.id,
+            event_name="assisted_multimodal_intake_submitted",
+            entity_ref=f"pedido:{pedido.id}",
+        ).first()
+        self.assertIsNotNone(event)
+        self.assertEqual(event.metadata_payload["source"], "pyme_multimodal")
+        self.assertEqual(event.metadata_payload["linked_record_type"], "tenant_ticket")
+        self.assertEqual(event.metadata_payload["linked_record_id"], assisted_request["intake_ticket_id"])
 
     @patch('services.pyme_multimodal.analyse_image_for_products', return_value=[])
     def test_image_payload_persists_manual_review_when_unreadable(self, _mock_analyse):
@@ -234,8 +259,13 @@ class PymeMultimodalTest(unittest.TestCase):
         self.assertEqual(pedido.origen, "whatsapp")
         self.assertEqual(pedido.metadata_payload["source"]["input_type"], "image_manual_review")
         self.assertTrue(pedido.metadata_payload["match_summary"]["needs_operator_review"])
+        self.assertEqual(pedido.metadata_payload["linked_record"]["kind"], "tenant_ticket")
+        self.assertEqual(pedido.metadata_payload["public_follow_up"]["tracking"]["code"], f"pc-{pedido.id}")
         self.assertEqual(pedido.items[0]["extraction_error"], "imagen_sin_lectura")
         self.assertEqual(pedido.items[0]["no_encontrados"][0]["status"], "needs_operator_review")
+        intake_ticket = db.session.get(TenantTicket, assisted_request["intake_ticket_id"])
+        self.assertIsNotNone(intake_ticket)
+        self.assertEqual(intake_ticket.datos_extra["attachments"][0]["url"], "https://cdn.example.com/manuscrito-borroso.jpg")
 
     def test_pdf_payload_persists_manual_review_without_catalog_match(self):
         owner = User(name="Mayorista Demo", email="owner3@example.com", password_hash="x", rol="admin")
@@ -280,8 +310,14 @@ class PymeMultimodalTest(unittest.TestCase):
         self.assertIsNotNone(pedido)
         self.assertEqual(pedido.origen, "chat_widget")
         self.assertEqual(pedido.metadata_payload["source"]["input_type"], "pdf_manual_review")
+        self.assertEqual(pedido.metadata_payload["linked_record"]["kind"], "tenant_ticket")
+        self.assertEqual(pedido.metadata_payload["public_follow_up"]["tracking"]["code"], f"pc-{pedido.id}")
         self.assertEqual(pedido.items[0]["extraction_error"], "pdf_sin_match")
         self.assertIn("clavos", pedido.metadata_payload["source"]["text_preview"])
+        intake_ticket = db.session.get(TenantTicket, assisted_request["intake_ticket_id"])
+        self.assertIsNotNone(intake_ticket)
+        self.assertEqual(intake_ticket.origen, "chat_widget")
+        self.assertEqual(intake_ticket.datos_extra["pedido_conversacional_id"], pedido.id)
 
     @patch('services.pymes.llamar_llm_con_fallback')
     def test_responder_pyme_with_attachment_no_text(self, mock_llm):

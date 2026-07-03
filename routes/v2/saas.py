@@ -3404,6 +3404,8 @@ def _attachment_items(extra: Mapping[str, Any]) -> list[dict[str, Any]]:
         extra.get("attachments")
         or extra.get("attachmentInfo")
         or extra.get("attachment_info")
+        or extra.get("source_attachment")
+        or extra.get("sourceAttachment")
         or extra.get("uploaded_file_info")
         or extra.get("files")
         or []
