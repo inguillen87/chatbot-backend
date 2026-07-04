@@ -1,7 +1,7 @@
 import models_analytics_k
 import logging
 from datetime import datetime, timezone, timedelta
-from app import db
+from extensions import db
 
 
 logger = logging.getLogger(__name__)

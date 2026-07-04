@@ -39,6 +39,7 @@ from services.ticket_realtime_state import (
 )
 from services.conversation_stream import build_unified_conversation_stream
 from services.gcs_service import upload_to_gcs # Import the new GCS service
+from services.attachment_delivery import serialize_attachment_for_delivery
 from services.geo.route import obtener_ruta
 from utils.auth_helpers import token_requerido, anon_o_token_requerido, admin_o_empleado_requerido
 from utils.permissions import require_role
@@ -59,6 +60,12 @@ MENSAJE_CHAT_CERRADO = "El chat fue cerrado"
 MENSAJE_SIN_PERMISOS = "No tienes permiso para acceder a este chat."
 
 TICKET_BACKOFFICE_ROLES = {ROLE_TENANT_ADMIN, ROLE_EMPLEADO, ROLE_SUPERADMIN}
+TICKET_READ_REQUIRED_CAPABILITIES = [
+    "tickets.read",
+    "crm.tickets.read",
+    "reclamos.read",
+    "crm_reclamos",
+]
 
 # Estados válidos para los tickets que pueden ser utilizados por la UI.
 TICKET_ALLOWED_STATES = [
@@ -222,13 +229,23 @@ def _build_ticket_operational_badges(ticket_obj) -> dict:
 def _validar_asignacion_empleado(ticket_obj, current_user: User):
     """Devuelve una respuesta de error si el empleado no está asignado al ticket."""
 
-    if current_user.rol != "empleado":
+    if not _is_employee_user(current_user):
         return None
 
     if getattr(ticket_obj, "asignado_a_id", None) != current_user.id:
         return jsonify({"error": "Ticket no asignado a este empleado."}), 403
 
     return None
+
+
+def _is_employee_user(user: Optional[User]) -> bool:
+    return bool(
+        user
+        and (
+            canonical_role(getattr(user, "rol", None)) == ROLE_EMPLEADO
+            or getattr(user, "es_empleado", False)
+        )
+    )
 
 
 def _resolver_acceso_chat_ticket(ticket_obj, current_user: User, anon_id: str = None, pin: Optional[str] = None) -> dict:
@@ -720,6 +737,8 @@ def _authorized_for_tenant_scope(current_user: User, tenant: Optional[TenantProf
         return False
     if current_user.tenant_id == tenant.id:
         return True
+    if tenant.municipio_id and current_user.id == tenant.municipio_id:
+        return True
     if tenant.municipio_id and current_user.municipio_id == tenant.municipio_id:
         return True
     if tenant.pyme_id and current_user.id == tenant.pyme_id:
@@ -728,14 +747,62 @@ def _authorized_for_tenant_scope(current_user: User, tenant: Optional[TenantProf
         return True
     if tenant.municipio_id and current_user.empresa_id == tenant.municipio_id:
         return True
-    if (
-        current_user.rol in {"admin", "empleado"}
-        and current_user.tipo_chat
-        and tenant.tipo
-        and current_user.tipo_chat == tenant.tipo
-    ):
-        return True
     return False
+
+
+def _ticket_access_contract_response(
+    current_user: User,
+    *,
+    reason_code: str,
+    message: str,
+    status_code: int = 403,
+    tenant: Optional[TenantProfile] = None,
+    action_hint: str = "repair_ticket_scope",
+):
+    request_id = (
+        request.headers.get("X-Request-Id")
+        or request.headers.get("X-Correlation-Id")
+        or getattr(g, "request_id", None)
+        or uuid.uuid4().hex
+    )
+    g.request_id = request_id
+    payload = {
+        "error": message,
+        "message": message,
+        "reason_code": reason_code,
+        "action_hint": action_hint,
+        "request_id": request_id,
+        "required_capabilities": TICKET_READ_REQUIRED_CAPABILITIES,
+        "access_contract": {
+            "contract_version": "tickets.access.v1",
+            "module": "tickets",
+            "scope_required": "tenant_municipio_or_pyme",
+            "repair_actions": [
+                "Asignar tenant_id al usuario",
+                "Vincular municipio_id o pyme_id segun el tipo de tenant",
+                "Confirmar capability tickets.read o reclamos.read",
+            ],
+        },
+        "current_scope": {
+            "user_id": getattr(current_user, "id", None),
+            "role": getattr(current_user, "rol", None),
+            "canonical_role": canonical_role(getattr(current_user, "rol", None)),
+            "tipo_chat": getattr(current_user, "tipo_chat", None),
+            "tenant_id": getattr(current_user, "tenant_id", None),
+            "municipio_id": getattr(current_user, "municipio_id", None),
+            "empresa_id": getattr(current_user, "empresa_id", None),
+            "pyme_id": getattr(current_user, "pyme_id", None),
+            "rubro_id": getattr(current_user, "rubro_id", None),
+            "tenant_slug": getattr(tenant, "slug", None),
+            "tenant_tipo": getattr(tenant, "tipo", None),
+            "tenant_municipio_id": getattr(tenant, "municipio_id", None),
+            "tenant_pyme_id": getattr(tenant, "pyme_id", None),
+        },
+    }
+    response = jsonify(payload)
+    response.status_code = status_code
+    response.headers.setdefault("X-Request-Id", request_id)
+    return response
 
 
 def _ticket_matches_tenant_scope(
@@ -750,7 +817,8 @@ def _ticket_matches_tenant_scope(
         return True
     if tenant_municipio_id and getattr(ticket_obj, "municipio_id", None) == tenant_municipio_id:
         return True
-    if tenant_pyme_id and getattr(ticket_obj, "rubro_id", None) == tenant_pyme_id:
+    tenant_owner_rubro_id = getattr(getattr(tenant, "pyme", None), "rubro_id", None)
+    if tenant_pyme_id and tenant_owner_rubro_id and getattr(ticket_obj, "rubro_id", None) == tenant_owner_rubro_id:
         return True
     return False
 
@@ -1224,6 +1292,22 @@ def get_tickets_del_usuario_logic(current_user: User):
         requested_estado_filter = request.args.get("estado")
         requested_categoria_filter = request.args.get("categoria")
         requested_categoria_id = request.args.get("categoria_id")
+        requested_channel_filter = (
+            request.args.get("channel")
+            or request.args.get("canal")
+            or request.args.get("canal_ingreso")
+        )
+        requested_assigned_agent = (
+            request.args.get("assigned_agent")
+            or request.args.get("assigned_agent_id")
+            or request.args.get("asignado_a_id")
+            or request.args.get("agent")
+        )
+        requested_unassigned = (
+            request.args.get("unassigned")
+            or request.args.get("sin_responsable")
+            or request.args.get("solo_sin_responsable")
+        )
 
         try:
             requested_categoria_id_int = int(requested_categoria_id) if requested_categoria_id else None
@@ -1263,7 +1347,12 @@ def get_tickets_del_usuario_logic(current_user: User):
             )
             if not municipio_ids_for_query:
                 current_app.logger.error(f"[DEBUG] Usuario {current_user.id} no tiene municipio_id.")
-                return jsonify({"error": "El usuario municipal no tiene asignado un municipio_id válido. Comuníquese con el soporte."}), 400
+                return _ticket_access_contract_response(
+                    current_user,
+                    reason_code="missing_municipal_scope",
+                    message="El usuario municipal no tiene municipio_id valido para operar la bandeja de reclamos.",
+                    tenant=tenant_for_query,
+                )
 
             query_base = TicketModel.query.filter(TicketModel.municipio_id.in_(municipio_ids_for_query))
             current_app.logger.info(f"[DEBUG] Querying for municipio_ids: {municipio_ids_for_query}")
@@ -1285,13 +1374,23 @@ def get_tickets_del_usuario_logic(current_user: User):
                 query_base = TicketModel.query.filter(PymeTicket.rubro_id == current_user.rubro_id)
             else:
                 current_app.logger.warning(f"Usuario PYME {current_user.id} sin rubro_id intentando acceder a /tickets")
-                return jsonify({"error": "Usuario PYME no tiene rubro asignado o configuración incorrecta."}), 400
+                return _ticket_access_contract_response(
+                    current_user,
+                    reason_code="missing_pyme_scope",
+                    message="El usuario de empresa no tiene pyme_id, rubro_id o tenant_id valido para operar tickets.",
+                    tenant=tenant_for_query,
+                )
             tipo_ticket_str = 'pyme'
         else:
             current_app.logger.warning(
                 f"[DEBUG] Usuario {current_user.id} no tiene tipo_chat ni IDs asociados para tickets"
             )
-            return jsonify({"error": "Usuario no tiene configuración de tickets asociada."}), 400
+            return _ticket_access_contract_response(
+                current_user,
+                reason_code="missing_ticket_scope",
+                message="El usuario no tiene configuracion de tickets asociada a un tenant, municipio o empresa.",
+                tenant=tenant_for_query,
+            )
 
         # Aplicar filtro de categoría si se proveyó (afecta tanto al summary como a la lista)
         if requested_categoria_id_int is not None:
@@ -1302,7 +1401,7 @@ def get_tickets_del_usuario_logic(current_user: User):
             else:
                 query_base = query_base.filter(TicketModel.categoria == requested_categoria_filter)
 
-        if current_user.rol == 'empleado' or getattr(current_user, "es_empleado", False):
+        if _is_employee_user(current_user):
             categorias_empleado, categorias_ids = _categorias_permitidas_para_empleado(current_user)
             if categorias_ids:
                 query_base = query_base.filter(TicketModel.categoria_id.in_(categorias_ids))
@@ -1357,6 +1456,8 @@ def get_tickets_del_usuario_logic(current_user: User):
 
         search_query = request.args.get("q")
         if search_query:
+            search_query = str(search_query).strip()
+        if search_query:
             like_pattern = f"%{search_query}%"
             search_filters = [
                 User.name.ilike(like_pattern),
@@ -1371,7 +1472,7 @@ def get_tickets_del_usuario_logic(current_user: User):
                 search_filters.append(TicketModel.dni_vecino.ilike(like_pattern))
             final_tickets_query = (
                 final_tickets_query
-                .join(User, TicketModel.user_id == User.id)
+                .outerjoin(User, TicketModel.user_id == User.id)
                 .filter(or_(*search_filters))
             )
 
@@ -1380,6 +1481,34 @@ def get_tickets_del_usuario_logic(current_user: User):
                 final_tickets_query = final_tickets_query.filter(TicketModel.estado.in_(["resuelto", "cerrado"]))
             else:
                 final_tickets_query = final_tickets_query.filter(TicketModel.estado == requested_estado_filter)
+
+        normalized_channel = str(requested_channel_filter or "").strip().lower()
+        if normalized_channel and normalized_channel not in {"all", "todos"}:
+            if hasattr(TicketModel, "canal_ingreso"):
+                final_tickets_query = final_tickets_query.filter(
+                    func.lower(func.coalesce(TicketModel.canal_ingreso, "desconocido")) == normalized_channel
+                )
+            elif hasattr(TicketModel, "origen"):
+                final_tickets_query = final_tickets_query.filter(
+                    func.lower(func.coalesce(TicketModel.origen, "desconocido")) == normalized_channel
+                )
+
+        normalized_unassigned = str(requested_unassigned or "").strip().lower()
+        wants_unassigned = normalized_unassigned in {"1", "true", "yes", "si", "sin_responsable", "unassigned"}
+        normalized_agent = str(requested_assigned_agent or "").strip().lower()
+        if normalized_agent == "unassigned":
+            wants_unassigned = True
+            normalized_agent = ""
+
+        if wants_unassigned and hasattr(TicketModel, "asignado_a_id"):
+            final_tickets_query = final_tickets_query.filter(TicketModel.asignado_a_id.is_(None))
+        elif normalized_agent and normalized_agent not in {"all", "todos"} and hasattr(TicketModel, "asignado_a_id"):
+            try:
+                assigned_agent_id = int(normalized_agent)
+            except (TypeError, ValueError):
+                assigned_agent_id = None
+            if assigned_agent_id is not None:
+                final_tickets_query = final_tickets_query.filter(TicketModel.asignado_a_id == assigned_agent_id)
 
         try:
             page = int(request.args.get("page", 1))
@@ -1400,6 +1529,7 @@ def get_tickets_del_usuario_logic(current_user: User):
             per_page = 0
             page = 1  # Cuando no hay paginación, forzamos la página a 1
 
+        filtered_total_tickets = final_tickets_query.count()
         ordered_query = final_tickets_query.order_by(TicketModel.fecha.desc())
         if per_page > 0:
             tickets_for_list_page = (
@@ -1439,8 +1569,8 @@ def get_tickets_del_usuario_logic(current_user: User):
         ]
 
         if per_page > 0:
-            total_pages = max(1, (total_tickets + per_page - 1) // per_page)
-            has_next = page * per_page < total_tickets
+            total_pages = max(1, (filtered_total_tickets + per_page - 1) // per_page)
+            has_next = page * per_page < filtered_total_tickets
             has_prev = page > 1
             per_page_value = per_page
         else:
@@ -1453,7 +1583,7 @@ def get_tickets_del_usuario_logic(current_user: User):
         pagination_info = {
             "page": page,
             "per_page": per_page_value,
-            "total_items": total_tickets,
+            "total_items": filtered_total_tickets,
             "total_pages": total_pages,
             "has_next": has_next,
             "has_prev": has_prev,
@@ -1784,11 +1914,9 @@ def _serialize_ticket_details(ticket, ticket_type):
                         "error_analisis": analisis.error_analisis, "texto_extraido": analisis.texto_extraido,
                         "datos_estructurados": analisis.datos_estructurados, "tipo_analisis": analisis.tipo_analisis,
                     }
-                archivos_adjuntos_data.append({
-                    "id": adj.id, "name": adj.nombre_original or adj.filename, "mimeType": adj.mime,
-                    "size": adj.tamano, "url": adj.url, "fecha": datetime_to_iso_utc(adj.fecha) if adj.fecha else None,
-                    "analisis": analisis_data
-                })
+                archivos_adjuntos_data.append(
+                    serialize_attachment_for_delivery(adj, analisis=analisis_data)
+                )
     except Exception as exc:
         current_app.logger.warning(
             "Ticket detail attachments degraded for %s ticket %s: %s",
@@ -2144,7 +2272,11 @@ def asignar_ticket(current_user: User, tipo: str, ticket_id: int):
         if ticket_obj.municipio_id not in allowed_municipio_ids and not tenant_scope_allows:
             return jsonify({"error": "No tienes permiso para asignar este ticket."}), 403
     else:
-        pyme_owner_id = current_user.id if current_user.rol == "admin" else current_user.empresa_id
+        pyme_owner_id = (
+            current_user.id
+            if canonical_role(getattr(current_user, "rol", None)) == ROLE_TENANT_ADMIN
+            else current_user.empresa_id
+        )
         tenant_scope_allows = (
             _authorized_for_tenant_scope(current_user, tenant)
             and _ticket_matches_tenant_scope(ticket_obj, tenant, None, tenant_pyme_id)
@@ -2152,7 +2284,7 @@ def asignar_ticket(current_user: User, tipo: str, ticket_id: int):
         if not tenant_scope_allows and (current_user.tipo_chat != "pyme" or ticket_obj.rubro_id != current_user.rubro_id):
             return jsonify({"error": "No tienes permiso para asignar este ticket."}), 403
         if pyme_owner_id is None and not tenant_scope_allows:
-            return jsonify({"error": "Usuario PYME sin empresa asociada."}), 400
+            return _ticket_access_contract_response(current_user, reason_code="missing_pyme_scope", message="El usuario de empresa no tiene pyme_id, rubro_id o tenant_id valido para operar tickets.", tenant=tenant_for_query)
 
     data = request.get_json(silent=True) or {}
     requested_user_id = (
@@ -2170,7 +2302,7 @@ def asignar_ticket(current_user: User, tipo: str, ticket_id: int):
         return jsonify({"error": "El agente seleccionado no es vÃ¡lido."}), 400
     auto = bool(data.get("auto"))
 
-    if current_user.rol == 'empleado':
+    if _is_employee_user(current_user):
         if ticket_obj.asignado_a_id and ticket_obj.asignado_a_id != current_user.id:
             return jsonify({"error": "El ticket ya está asignado a otro agente."}), 400
         requested_user_id = current_user.id
@@ -2275,17 +2407,13 @@ def get_ticket_details_pyme(current_user: User, ticket_id: int):
     if not ticket:
         return jsonify({"error": "Ticket no encontrado."}), 404
 
-    tenant, _tenant_municipio_id, tenant_pyme_id = _resolve_tenant_scope(current_user)
-    if current_user.tipo_chat != "pyme" or not current_user.rubro_id:
-        if not (_authorized_for_tenant_scope(current_user, tenant) and tenant_pyme_id):
-            return jsonify({"error": "Acceso denegado. Se requiere un usuario de pyme."}), 403
-
-    allowed_rubro_id = (
-        tenant_pyme_id
-        if _authorized_for_tenant_scope(current_user, tenant) and tenant_pyme_id
-        else current_user.rubro_id
+    tenant_scope_allows = _ticket_scope_access_allows("pyme", ticket, current_user)
+    rubro_scope_allows = bool(
+        current_user.tipo_chat == "pyme"
+        and current_user.rubro_id
+        and ticket.rubro_id == current_user.rubro_id
     )
-    if ticket.rubro_id != allowed_rubro_id:
+    if not (tenant_scope_allows or rubro_scope_allows):
         return jsonify({"error": "No tienes permiso para ver este ticket."}), 403
 
     error_response = _validar_asignacion_empleado(ticket, current_user)
@@ -2346,10 +2474,12 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
         if ticket_obj.municipio_id not in allowed_municipio_ids:
             return jsonify({"error": "No tienes permiso para responder este ticket."}), 403
     elif tipo == 'pyme':
-        if not (
-            current_user.rubro_id and
-            ticket_obj.rubro_id == current_user.rubro_id
-        ):
+        tenant_scope_allows = _ticket_scope_access_allows("pyme", ticket_obj, current_user)
+        rubro_scope_allows = bool(
+            current_user.rubro_id
+            and ticket_obj.rubro_id == current_user.rubro_id
+        )
+        if not (tenant_scope_allows or rubro_scope_allows):
             return jsonify({"error": "No tienes permiso para responder este ticket."}), 403
 
     error_response = _validar_asignacion_empleado(ticket_obj, current_user)
@@ -2563,15 +2693,9 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
 
         for adj in archivos_list: # Usar la lista recién consultada
             # La lógica de análisis no aplica para respuestas de agentes por ahora
-            archivos_actualizados_data.append({
-                "id": adj.id,
-                "name": adj.nombre_original or adj.filename,
-                "mimeType": adj.mime,
-                "size": adj.tamano,
-                "url": adj.url, 
-                "fecha": datetime_to_iso_utc(adj.fecha) if adj.fecha else None,
-                "analisis": None 
-            })
+            archivos_actualizados_data.append(
+                serialize_attachment_for_delivery(adj, analisis=None)
+            )
 
     ticket_data_respuesta = {
         "id": ticket_obj.id, "tipo": tipo, "nro_ticket": ticket_obj.nro_ticket,
@@ -3415,7 +3539,7 @@ def get_panel_por_categoria(current_user: User):
         # Por ahora, las métricas serán por categoría, y el empleado solo verá las categorías asignadas.
 
         tickets_to_process = all_tickets_for_user_municipio
-        if current_user.rol == 'empleado' or getattr(current_user, "es_empleado", False):
+        if _is_employee_user(current_user):
             cat_nombres, cat_ids = _categorias_permitidas_para_empleado(current_user)
             nombres_set = set(cat_nombres)
             ids_set = set(cat_ids)
@@ -3516,7 +3640,7 @@ def get_panel_pyme(current_user: User):
         all_tickets_for_user_pyme = query.order_by(PymeTicket.fecha.desc()).all()
 
         tickets_to_process = all_tickets_for_user_pyme
-        if current_user.rol == 'empleado' or getattr(current_user, "es_empleado", False):
+        if _is_employee_user(current_user):
             cat_nombres, cat_ids = _categorias_permitidas_para_empleado(current_user)
             nombres_set = set(cat_nombres)
             ids_set = set(cat_ids)

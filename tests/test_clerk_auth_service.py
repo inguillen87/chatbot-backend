@@ -116,6 +116,24 @@ def test_onboarding_contract_requires_tenant_until_created(client):
         assert contract["submit_endpoint"] == "/auth/clerk/onboarding"
         assert contract["modal"]["social_login"]["required_dashboard_setup"] == []
         assert contract["modal"]["social_login"]["connection_aliases"]["linkedin"] == "linkedin_oidc"
+        assert contract["modal"]["whatsapp_business_requirements"] == {
+            "production_enabled_by_default": False,
+            "required_plan": "full",
+            "required_provider_setup": ["meta_business", "twilio_whatsapp_sender"],
+            "free_plan_state": "created_without_waba_provisioning",
+            "message": "El tenant se crea en modo free. WhatsApp productivo y creacion real de plantillas se activan con plan Full y sender Meta/Twilio configurado.",
+        }
+        assert contract["modal"]["plan_policy"] == {
+            "self_service_plan": "free",
+            "requested_plan_allowed": False,
+            "productive_plan": "full",
+            "upgrade_requires": "superadmin_or_commercial_approval",
+            "message": "El registro publico siempre crea un espacio Free. El plan Full se solicita para revision comercial y solo se concede desde administracion.",
+        }
+        assert contract["modal"]["profile_picture_policy"] == "consented_upload_or_social_only"
+        assert "municipio" in contract["modal"]["vertical_presets"]
+        assert contract["modal"]["vertical_presets"]["municipio"]["primary_goal"] == "crm_reclamos"
+        assert any(module["id"] == "analytics_heatmaps" for module in contract["modal"]["starter_modules"])
 
 
 def test_complete_clerk_onboarding_creates_tenant_without_password_reset(client, monkeypatch):
@@ -138,14 +156,28 @@ def test_complete_clerk_onboarding_creates_tenant_without_password_reset(client,
                 "ciudad": "Junin",
                 "primary_goal": "crm_reclamos",
                 "preferred_channels": ["whatsapp", "web"],
+                "plan": "full",
             },
         )
 
         assert tenant.id is not None
         assert tenant.slug == "municipalidad-demo"
         assert tenant.tipo == "municipio"
+        assert tenant.plan == "free"
         assert tenant.configuracion["auth"]["provider"] == "clerk"
+        assert tenant.configuracion["provisioning"]["status"] == "plan_required"
+        assert tenant.configuracion["provisioning"]["blocked_reason"] == "plan_full_required"
         assert tenant.configuracion["onboarding"]["status"] == "completed"
+        assert tenant.configuracion["onboarding"]["primary_goal"] == "crm_reclamos"
+        assert tenant.configuracion["onboarding"]["preferred_channels"] == ["whatsapp", "web"]
+        assert tenant.configuracion["onboarding"]["requested_plan"] == "full"
+        assert tenant.configuracion["onboarding"]["granted_plan"] == "free"
+        assert tenant.configuracion["onboarding"]["plan_policy"] == "self_service_creates_free_until_admin_upgrade"
+        assert tenant.configuracion["onboarding"]["starter_modules"] == [
+            "crm_operativo",
+            "whatsapp_widget",
+            "analytics_heatmaps",
+        ]
 
         refreshed = User.query.get(user.id)
         assert refreshed.password_hash == previous_hash

@@ -3412,6 +3412,37 @@ def _is_whatsapp_twilio_message(params: Dict[str, Any]) -> bool:
     )
 
 
+def _can_send_whatsapp_freeform_pre_message(
+    *,
+    body: str,
+    tenant_profile: Optional[TenantProfile],
+    recipient: str,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> tuple[bool, Optional[str]]:
+    """Validate WhatsApp free-form pre-messages against tenant policy."""
+
+    tenant_id = getattr(tenant_profile, "id", None)
+    if not tenant_id:
+        return True, None
+
+    evaluation_metadata = dict(metadata or {})
+    evaluation_metadata.setdefault("recipient", recipient)
+    evaluation_metadata["is_template"] = False
+
+    try:
+        return WhatsAppEnterpriseRulesService(int(tenant_id)).evaluate_outbound(
+            body=body,
+            metadata=evaluation_metadata,
+        )
+    except Exception as exc:
+        current_app.logger.warning(
+            "[whatsapp] Could not evaluate free-form pre-message policy tenant_id=%s: %s",
+            tenant_id,
+            exc,
+        )
+        return True, None
+
+
 def _send_twilio_message(client, **params):
     sanitized = _sanitize_twilio_message_params(params)
     if _is_whatsapp_twilio_message(sanitized) and not sanitized.get("status_callback"):
@@ -3504,6 +3535,19 @@ def _dispatch_twilio_pre_messages(
 
             if "body" not in params:
                 params["body"] = ""
+
+            allowed, reason = _can_send_whatsapp_freeform_pre_message(
+                body=str(params.get("body") or ""),
+                tenant_profile=tenant_profile,
+                recipient=from_number,
+                metadata=entry.get("metadata") if isinstance(entry.get("metadata"), dict) else {},
+            )
+            if not allowed:
+                current_app.logger.warning(
+                    "[whatsapp] Skipping free-form pre-message because policy rejected it: reason=%s",
+                    reason,
+                )
+                continue
 
         try:
             _send_twilio_message(client, **params)
@@ -5520,16 +5564,17 @@ def whatsapp_webhook():
                 else:
                     if nuevo_comentario:
                         try:
-                            from socket_service import socketio
+                            from socket_service import emit_new_chat_message
 
                             room_name = f"ticket_{tipo_ticket}_{live_ticket.id}"
-                            socketio.emit(
-                                "new_chat_message",
+                            emit_new_chat_message(
                                 {
+                                    "socket_room": room_name,
+                                    "tenant_type": tipo_ticket,
                                     "ticket_id": live_ticket.id,
+                                    "channel": "whatsapp",
                                     "message": nuevo_comentario.to_dict(),
-                                },
-                                room=room_name,
+                                }
                             )
                         except Exception as socket_exc:
                             current_app.logger.error(

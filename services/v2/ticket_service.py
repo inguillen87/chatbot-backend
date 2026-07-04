@@ -10,6 +10,7 @@ from sqlalchemy.orm.attributes import flag_modified
 
 from extensions import db
 from models import TenantTicket, User, TicketComentario
+from services.attachment_delivery import serialize_attachment_for_delivery
 from services.v2.sla_service import apply_sla_to_ticket, get_policies_for_tenant, is_ticket_overdue
 from services.v2.ticket_event_service import record_ticket_event
 
@@ -152,7 +153,7 @@ def ticket_attachment_payloads(ticket: TenantTicket) -> list[dict[str, Any]]:
         if fingerprint in seen:
             continue
         seen.add(fingerprint)
-        normalized.append(attachment)
+        normalized.append(serialize_attachment_for_delivery(attachment))
     return normalized
 
 
@@ -168,8 +169,9 @@ def serialize_comment(comment: dict[str, Any]) -> dict[str, Any]:
         "created_at": comment.get("created_at"),
     }
     if attachment:
-        payload["attachmentInfo"] = attachment
-        payload["attachments"] = [attachment]
+        attachment_payload = serialize_attachment_for_delivery(attachment)
+        payload["attachmentInfo"] = attachment_payload
+        payload["attachments"] = [attachment_payload]
     return payload
 
 

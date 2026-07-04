@@ -25,3 +25,16 @@ class TestCorsInference(TestCase):
             self.assertIn("https://example.org", cfg.ALLOWED_ORIGINS)
             self.assertIn("https://www.example.org", cfg.ALLOWED_ORIGINS)
         importlib.reload(app_config)
+
+    def test_local_dev_origins_allow_dynamic_vite_ports(self):
+        with patch.dict(os.environ, {"CORS_ALLOW_LOCAL_DEV": "1"}, clear=True):
+            cfg = importlib.reload(app_config)
+            origin = "http://127.0.0.1:4194"
+            self.assertTrue(
+                any(
+                    getattr(allowed, "match", None) and allowed.match(origin)
+                    for allowed in cfg.ALLOWED_ORIGINS
+                ),
+                "local Vite preview ports should be accepted by CORS in dev",
+            )
+        importlib.reload(app_config)

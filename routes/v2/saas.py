@@ -46,6 +46,7 @@ from services.operational_intelligence import build_operational_dashboard, build
 from services.provider_platform import build_whatsapp_provider_status, sync_twilio_provider_records
 from services.plan_access import integration_access_payload, integration_frontend_contract, plan_allows_full_integrations
 from services.twilio_tech_provider import (
+    STATE_KEY,
     build_twilio_tech_provider_contract,
     merge_twilio_state,
     poll_whatsapp_sender_status,
@@ -65,6 +66,32 @@ v2_saas_bp = Blueprint("v2_saas", __name__, url_prefix="/api/v2")
 _ACTIVE_TICKET_STATES = {"nuevo", "open", "pendiente", "in_progress", "en_proceso", "waiting_customer"}
 _CLOSED_TICKET_STATES = {"resuelto", "cerrado", "closed", "resolved"}
 _WHATSAPP_QA_SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "qa_whatsapp_flows.py"
+_TWILIO_STATE_SECRET_KEYS = {
+    "embedded_signup_code",
+    "auth_code",
+    "authorization_code",
+    "access_token",
+    "refresh_token",
+}
+
+
+def _scrub_twilio_state_secrets(tenant: TenantProfile, state: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Remove short-lived Meta/Twilio secrets from persisted provider state."""
+
+    cfg = tenant.configuracion if isinstance(getattr(tenant, "configuracion", None), dict) else {}
+    provider_state = dict(state or cfg.get(STATE_KEY) or {})
+    changed = False
+    for key in _TWILIO_STATE_SECRET_KEYS:
+        if key in provider_state:
+            provider_state.pop(key, None)
+            changed = True
+
+    if changed:
+        cfg[STATE_KEY] = provider_state
+        tenant.configuracion = cfg
+        flag_modified(tenant, "configuracion")
+
+    return provider_state
 
 
 def _request_id() -> str:
@@ -2193,6 +2220,12 @@ def whatsapp_tech_provider_embedded_signup_v2(current_user, tenant_slug: str | N
     if not isinstance(payload, dict):
         payload = {}
     auth_response = payload.get("authResponse") if isinstance(payload.get("authResponse"), dict) else {}
+    embedded_signup_code = (
+        payload.get("code")
+        or payload.get("auth_code")
+        or payload.get("authorization_code")
+        or auth_response.get("code")
+    )
     state_patch = {
         "status": "pending_sender_registration",
         "last_step": "embedded_signup_completed",
@@ -2200,18 +2233,14 @@ def whatsapp_tech_provider_embedded_signup_v2(current_user, tenant_slug: str | N
         "waba_id": payload.get("waba_id") or payload.get("wabaId"),
         "phone_number_id": payload.get("phone_number_id") or payload.get("phoneNumberId"),
         "embedded_signup_session_id": payload.get("session_id") or payload.get("sessionId"),
-        "embedded_signup_code": (
-            payload.get("code")
-            or payload.get("auth_code")
-            or payload.get("authorization_code")
-            or auth_response.get("code")
-        ),
+        "embedded_signup_code_present": bool(embedded_signup_code),
         "embedded_signup_event": payload.get("event"),
     }
     merged_state = merge_twilio_state(tenant, state_patch)
+    public_state = _scrub_twilio_state_secrets(tenant, merged_state)
     sync_twilio_provider_records(
         tenant,
-        merged_state,
+        public_state,
         app_config=current_app.config,
         actor_user=current_user,
         request_id=_request_id(),
@@ -2224,7 +2253,7 @@ def whatsapp_tech_provider_embedded_signup_v2(current_user, tenant_slug: str | N
             "contract_version": "twilio.tech_provider.embedded_signup.v1",
             "ok": True,
             "tenant": _tenant_ref(tenant),
-            "state": merged_state,
+            "state": public_state,
             "next_action": "register_whatsapp_sender_via_senders_api",
             "contract": build_twilio_tech_provider_contract(tenant, current_app.config),
         }

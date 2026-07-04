@@ -812,8 +812,12 @@ class V2SaasContractsTest(unittest.TestCase):
         signup = signup_response.get_json()
         self.assertEqual(signup["contract_version"], "twilio.tech_provider.embedded_signup.v1")
         self.assertEqual(signup["state"]["waba_id"], "123456789")
-        self.assertEqual(signup["state"]["embedded_signup_code"], "meta-code")
+        self.assertTrue(signup["state"]["embedded_signup_code_present"])
+        self.assertNotIn("embedded_signup_code", signup["state"])
+        self.assertNotIn("meta-code", json.dumps(signup, sort_keys=True))
         self.assertEqual(signup["next_action"], "register_whatsapp_sender_via_senders_api")
+        refreshed_after_signup = db.session.get(TenantProfile, self.tenant.id)
+        self.assertNotIn("meta-code", json.dumps(refreshed_after_signup.configuracion, sort_keys=True))
 
         connection = ProviderConnection.query.filter_by(tenant_id=self.tenant.id, provider="twilio", channel="whatsapp").first()
         self.assertIsNotNone(connection)
@@ -825,6 +829,14 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(sender.waba_id, "123456789")
         self.assertEqual(sender.phone_number_id, "987654321")
         self.assertGreaterEqual(MessagingEventLedger.query.filter_by(tenant_id=self.tenant.id, channel="whatsapp").count(), 2)
+        ledger_blob = json.dumps(
+            [
+                {"payload": item.payload, "metadata_json": item.metadata_json, "error_message": item.error_message}
+                for item in MessagingEventLedger.query.filter_by(tenant_id=self.tenant.id, channel="whatsapp").all()
+            ],
+            sort_keys=True,
+        )
+        self.assertNotIn("meta-code", ledger_blob)
 
         status_response = self.client.get(
             f"/api/v2/tenants/{self.tenant.slug}/integrations/whatsapp/status",

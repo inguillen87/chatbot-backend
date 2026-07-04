@@ -32,6 +32,7 @@ from models import (
     MessageTemplateRegistry,
     MessagingEventLedger,
     WhatsAppContactState,
+    WhatsAppEnterpriseRule,
 )
 from models_memory import Contact, InteractionEvent
 from services.municipio_responder import CONTEXTO_MUNICIPIO
@@ -45,6 +46,7 @@ from routes.whatsapp_webhook import (
     _send_twilio_message,
     _normalize_whatsapp_flow_contract,
     _build_chatboc_demo_root_payload,
+    _dispatch_twilio_pre_messages,
     CHATBOC_DEMO_DEFAULT_WHATSAPP_NUMBER,
     CHATBOC_DEMO_DEFAULT_RESET_WHATSAPP_NUMBER,
     CHATBOC_DEMO_TENANT_SLUG,
@@ -3384,6 +3386,69 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         fallback_kwargs = self.mock_twilio_create.call_args_list[0].kwargs
         self.assertEqual(fallback_kwargs.get("body"), "Tu reclamo queda registrado y trazable.")
         self.assertNotIn("content_sid", fallback_kwargs)
+
+    def test_whatsapp_pre_message_policy_blocks_freeform_fallback_outside_24h(self):
+        tenant = self._attach_tenant_to_owner(tipo="municipio")
+        db.session.add(
+            WhatsAppEnterpriseRule(
+                tenant_id=tenant.id,
+                enforce_template_outside_24h=True,
+            )
+        )
+        db.session.commit()
+        client = MagicMock()
+
+        _dispatch_twilio_pre_messages(
+            client,
+            f"whatsapp:{self.test_whatsapp_number_str}",
+            f"whatsapp:{self.test_user_number_str}",
+            {
+                "_twilio_pre_messages": [
+                    {
+                        "channels": ["whatsapp"],
+                        "template_name": "pending_template",
+                        "body": "Tu reclamo queda registrado y trazable.",
+                    }
+                ]
+            },
+            lambda candidate: candidate,
+            tenant_profile=tenant,
+        )
+
+        client.messages.create.assert_not_called()
+
+    def test_whatsapp_pre_message_policy_allows_freeform_fallback_inside_24h(self):
+        tenant = self._attach_tenant_to_owner(tipo="municipio")
+        db.session.add(
+            WhatsAppEnterpriseRule(
+                tenant_id=tenant.id,
+                enforce_template_outside_24h=True,
+            )
+        )
+        db.session.commit()
+        client = MagicMock()
+
+        _dispatch_twilio_pre_messages(
+            client,
+            f"whatsapp:{self.test_whatsapp_number_str}",
+            f"whatsapp:{self.test_user_number_str}",
+            {
+                "_twilio_pre_messages": [
+                    {
+                        "channels": ["whatsapp"],
+                        "body": "Tu reclamo queda registrado y trazable.",
+                        "metadata": {"within_24h_window": True},
+                    }
+                ]
+            },
+            lambda candidate: candidate,
+            tenant_profile=tenant,
+        )
+
+        client.messages.create.assert_called_once()
+        kwargs = client.messages.create.call_args.kwargs
+        self.assertEqual(kwargs.get("body"), "Tu reclamo queda registrado y trazable.")
+        self.assertNotIn("content_sid", kwargs)
 
     def test_whatsapp_pre_message_template_uses_approved_manifest_fallback(self):
         self._set_owner_tipo_chat("municipio")

@@ -15,6 +15,7 @@ from services.tracking_experience import (
     build_order_tracking_experience,
     resolve_order_by_code,
     resolve_tenant_for_order,
+    validate_order_tracking_access,
 )
 
 tracking_ui_bp = Blueprint('tracking_ui_bp', __name__)
@@ -332,6 +333,15 @@ def tracking_experience():
     order = resolve_order_by_code(code)
     if not order:
         return _tracking_error("Pedido no encontrado.", 404, "order_not_found", "check_order_code")
+    token = (request.args.get("token") or request.args.get("access_token") or "").strip()
+    access_granted, access_reason = validate_order_tracking_access(order, token)
+    if not access_granted:
+        return _tracking_error(
+            "Pedido no encontrado.",
+            404,
+            "order_not_found",
+            "check_order_code",
+        )
     tenant = resolve_tenant_for_order(order)
     return _tracking_json(build_order_tracking_experience(order, tenant))
 

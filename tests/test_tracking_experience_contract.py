@@ -150,6 +150,10 @@ class TrackingExperienceContractTest(unittest.TestCase):
         self.assertEqual(payload["support"]["operator_queue"]["pending_customer_messages"], 0)
         self.assertEqual(payload["support"]["operator_queue"]["next_team_action"], "monitor_ticket")
         self.assertEqual(payload["support"]["ui"]["queue_state_label"], "El equipo esta al dia con este reclamo")
+        self.assertEqual(payload["support"]["ui"]["channel_binding_label"], "Canal interno del ticket")
+        self.assertEqual(payload["support"]["ui"]["no_external_redirect_label"], "Sin redireccion externa")
+        self.assertIn("Actualizacion cada", payload["support"]["ui"]["polling_label"])
+        self.assertIn("SLA objetivo", payload["support"]["ui"]["response_expectation_label"])
         action_by_id = {item["id"]: item for item in payload["actions"]}
         self.assertEqual(
             action_by_id["send_message"]["endpoint"],
@@ -187,6 +191,10 @@ class TrackingExperienceContractTest(unittest.TestCase):
         self.assertEqual(offline_support["cta"]["primary"]["label"], "Dejar mensaje para el equipo")
         self.assertEqual(offline_support["cta"]["primary"]["action"], "queue_ticket_comment")
         self.assertEqual(offline_support["ui"]["primary_cta"], "Dejar mensaje para el equipo")
+        self.assertEqual(
+            offline_support["ui"]["response_expectation_label"],
+            "El equipo lo ve en el CRM. SLA objetivo 240 min",
+        )
         offline_action = {item["id"]: item for item in offline_payload["actions"]}["send_message"]
         self.assertEqual(offline_action["action"], "queue_ticket_comment")
         self.assertTrue(offline_action["safe_for_offline"])
@@ -207,6 +215,7 @@ class TrackingExperienceContractTest(unittest.TestCase):
         self.assertEqual(live_support["availability"]["state"], "online")
         self.assertEqual(live_support["cta"]["primary"]["label"], "Chatear con un agente")
         self.assertEqual(live_support["cta"]["primary"]["action"], "socket_live_message")
+        self.assertEqual(live_support["ui"]["response_expectation_label"], "Respuesta esperada en hasta 30 min")
         live_action = {item["id"]: item for item in live_payload["actions"]}["send_message"]
         self.assertEqual(live_action["action"], "socket_live_message")
 
@@ -329,18 +338,54 @@ class TrackingExperienceContractTest(unittest.TestCase):
                 "request_kind": "service_request",
                 "request_kind_label": "reclamo o solicitud vecinal",
                 "contact": {"name": "Marcelo", "phone": "+5492613168608", "email": "marcelo@example.com"},
+                "public_follow_up": {
+                    "tracking": {
+                        "kind": "order",
+                        "code": "pc-placeholder",
+                        "token": "signed-token-123",
+                        "token_required": True,
+                        "access": "signed_link",
+                        "path": "/tracking/order/pc-placeholder?token=signed-token-123",
+                    }
+                },
             },
             monto_monetario=0,
             monto_puntos=0,
         )
         db.session.add(assisted)
         db.session.commit()
+        assisted_metadata = dict(assisted.metadata_payload or {})
+        assisted_metadata["public_follow_up"] = {
+            "tracking": {
+                **assisted_metadata["public_follow_up"]["tracking"],
+                "code": f"pc-{assisted.id}",
+                "path": f"/tracking/order/pc-{assisted.id}?token=signed-token-123",
+            }
+        }
+        assisted.metadata_payload = assisted_metadata
+        db.session.commit()
 
-        response = self.client.get(f"/api/public/tracking/experience?kind=order&code=pc-{assisted.id}")
+        rejected = self.client.get(f"/api/public/tracking/experience?kind=order&code=pc-{assisted.id}")
+        self.assertEqual(rejected.status_code, 404)
+        self.assertEqual(rejected.get_json()["reason_code"], "order_not_found")
+
+        invalid = self.client.get(
+            f"/api/public/tracking/experience?kind=order&code=pc-{assisted.id}&token=wrong"
+        )
+        self.assertEqual(invalid.status_code, 404)
+        self.assertEqual(invalid.get_json()["reason_code"], "order_not_found")
+
+        response = self.client.get(
+            f"/api/public/tracking/experience?kind=order&code=pc-{assisted.id}&token=signed-token-123"
+        )
 
         self.assertEqual(response.status_code, 200)
         payload = response.get_json()
         self.assertEqual(payload["kind"], "order")
+        self.assertEqual(payload["resource"]["code"], f"pc-{assisted.id}")
+        self.assertEqual(payload["frontend_contract"]["access"], "signed_link")
+        self.assertEqual(payload["actions"][1]["url"], f"/tracking/order/pc-{assisted.id}?token=signed-token-123")
+        self.assertTrue(payload["actions"][1]["requires_token"])
         self.assertEqual(payload["customer"]["name"], "Marcelo")
         self.assertEqual(payload["customer"]["phone"], "+5492613168608")
         self.assertEqual(payload["items"][0]["title"], "1 Luminaria quemada en Don Bosco 55")

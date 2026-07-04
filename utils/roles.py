@@ -23,6 +23,8 @@ ROLE_ALIASES = {
     "admin_colegio": ROLE_TENANT_ADMIN,
     "operador": ROLE_EMPLEADO,
     "operator": ROLE_EMPLEADO,
+    "agent": ROLE_EMPLEADO,
+    "employee": ROLE_EMPLEADO,
     "empleado": ROLE_EMPLEADO,
     "empleado_pyme": ROLE_EMPLEADO,
     "empleado_municipio": ROLE_EMPLEADO,

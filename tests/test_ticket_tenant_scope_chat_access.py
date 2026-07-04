@@ -97,3 +97,79 @@ def test_tenant_admin_can_read_public_ticket_conversation(client, app):
     read_state_payload = read_state_response.get_json()
     assert read_state_payload["read_state"]["viewer_user_id"] == owner.id
     assert read_state_payload["read_state"]["last_read_comment_id"] == comment.id
+
+
+def test_same_type_admin_cannot_read_other_tenant_ticket_conversation(client, app):
+    owner_a = User(
+        email="tenant-a-owner-chat@test.com",
+        name="Tenant A Owner",
+        rol="admin",
+        tipo_chat="municipio",
+    )
+    owner_a.set_password("pass")
+    owner_b = User(
+        email="tenant-b-owner-chat@test.com",
+        name="Tenant B Owner",
+        rol="admin",
+        tipo_chat="municipio",
+    )
+    owner_b.set_password("pass")
+    db.session.add_all([owner_a, owner_b])
+    db.session.flush()
+
+    tenant_a = TenantProfile(
+        slug="tenant-a-chat-scope",
+        nombre="Municipio A",
+        tipo="municipio",
+        municipio_id=owner_a.id,
+    )
+    tenant_b = TenantProfile(
+        slug="tenant-b-chat-scope",
+        nombre="Municipio B",
+        tipo="municipio",
+        municipio_id=owner_b.id,
+    )
+    db.session.add_all([tenant_a, tenant_b])
+    db.session.flush()
+    owner_a.tenant_id = tenant_a.id
+    owner_a.tenant_slug = tenant_a.slug
+    owner_b.tenant_id = tenant_b.id
+    owner_b.tenant_slug = tenant_b.slug
+
+    ticket_b = MunicipioTicket(
+        municipio_id=owner_b.id,
+        tenant_id=tenant_b.id,
+        nro_ticket="B-378430",
+        pregunta="Arreglo de calle en municipio B",
+        categoria="Arreglo de calle",
+        estado="nuevo",
+        consulta_pin="900144",
+    )
+    db.session.add(ticket_b)
+    db.session.flush()
+
+    db.session.add(
+        TicketComentario(
+            municipio_ticket_id=ticket_b.id,
+            comentario="mensaje privado del tenant B",
+            es_admin=False,
+        )
+    )
+    db.session.commit()
+
+    headers = _auth_headers(app, owner_a, tenant_b.slug)
+    query_string = {"tenant_slug": tenant_b.slug, "tenant": tenant_b.slug}
+
+    messages_response = client.get(
+        f"/tickets/chat/{ticket_b.id}/mensajes",
+        headers=headers,
+        query_string=query_string,
+    )
+    assert messages_response.status_code == 403
+
+    timeline_response = client.get(
+        f"/tickets/municipio/{ticket_b.id}/timeline",
+        headers=headers,
+        query_string=query_string,
+    )
+    assert timeline_response.status_code == 403

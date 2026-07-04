@@ -13,6 +13,7 @@ from services.gcs_service import (
     MAX_FILE_SIZE,
     resolve_attachment_thumb_url,
 )
+from services.attachment_delivery import serialize_attachment_for_delivery
 from services.attachment_service import create_attachment_with_thumbnail
 from services.archivo_service import guardar_archivo_adjunto_ticket
 from services.ticket_service import servicio_tickets
@@ -634,17 +635,13 @@ def upload_chat_attachment(current_user=None, anon_id=None, owner_user=None):
             meta=meta_data,
         )
 
-        # Build the final response object AFTER the commit.
-        attachment_info_payload = {
-            "id": adjunto.id,
-            "url": adjunto.url,
-            "thumbUrl": thumb_url,
-            "thumbnailUrl": thumb_url,
-            "mimeType": adjunto.mime,
-            "size": adjunto.tamano,
-            "name": adjunto.nombre_original,
-            "meta": meta_data,
-        }
+        # Build the final response object AFTER the commit using the same
+        # delivery contract used by ticket timelines and CRM inbox views.
+        attachment_info_payload = serialize_attachment_for_delivery(
+            adjunto,
+            meta=meta_data,
+            thumb_url=thumb_url,
+        )
 
         return _json({
             "ok": True,

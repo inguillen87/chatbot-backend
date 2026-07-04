@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from flask import Blueprint, jsonify, request
 from sqlalchemy import func
 
-from app import db
+from extensions import db
 from models import MunicipioTicket, PymeTicket, TenantProfile, TicketComentario, User
 from models_education import (
     AcademicLevel,

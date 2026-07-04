@@ -167,7 +167,7 @@ class ProductFlowSurveyLiveVoteTest(unittest.TestCase):
         self.assertIn("admin_next_steps", data["render_contract"]["supports"])
         self.assertTrue(data["live_telemetry"]["has_responses"])
 
-    def test_live_results_with_heatmap_returns_real_vote_coordinates(self):
+    def test_live_results_with_heatmap_returns_privacy_safe_vote_coordinates(self):
         token, question_id, option_id = self._create_live_vote()
 
         response = self.client.post(
@@ -175,8 +175,8 @@ class ProductFlowSurveyLiveVoteTest(unittest.TestCase):
             json={
                 "anon_id": "flow-voter-geo-1",
                 "source": "whatsapp_webview",
-                "lat": -33.081,
-                "lng": -68.468,
+                "lat": -33.08149,
+                "lng": -68.46849,
                 "barrio": "Centro",
                 "ciudad": "Junin",
                 "provincia": "Mendoza",
@@ -197,11 +197,20 @@ class ProductFlowSurveyLiveVoteTest(unittest.TestCase):
         self.assertGreaterEqual(len(data["heatmap"]["points"]), 1)
         self.assertGreaterEqual(len(data["heatmap"]["cells"]), 1)
         point = data["heatmap"]["points"][0]
-        self.assertAlmostEqual(point["lat"], -33.081, places=3)
-        self.assertAlmostEqual(point["lng"], -68.468, places=3)
+        self.assertEqual(point["privacy_mode"], "public_aggregated")
+        self.assertEqual(point["source"], "survey_heatmap_cell")
+        self.assertEqual(point["lat"], round(point["lat"], 3))
+        self.assertEqual(point["lng"], round(point["lng"], 3))
+        self.assertNotEqual(point["lat"], -33.08149)
+        self.assertNotEqual(point["lng"], -68.46849)
+        self.assertNotIn("submitted_at", point)
         self.assertEqual(point["barrio"], "Centro")
         self.assertEqual(data["heatmap"]["metadata"]["points_count"], 1)
         self.assertEqual(data["heatmap"]["metadata"]["cells_count"], 1)
+        self.assertEqual(data["heatmap"]["metadata"]["privacy_mode"], "public_aggregated")
+        self.assertTrue(data["heatmap"]["metadata"]["raw_points_redacted"])
+        self.assertEqual(data["heatmap"]["metadata"]["coordinate_precision"], "rounded_3_decimals")
+        self.assertEqual(data["heatmap"]["metadata"]["raw_points_count"], 1)
 
     def test_pwa_survey_response_matches_realtime_contract_for_whatsapp_webview(self):
         token, question_id, option_id = self._create_live_vote()

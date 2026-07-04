@@ -4,6 +4,7 @@ import logging
 import mimetypes
 import random
 import re
+import secrets
 import unicodedata
 from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional
@@ -20,6 +21,7 @@ from models import ArchivoAdjunto, CatalogoItem, MunicipioTicket, PedidoConversa
 from routes.catalogo import _formatear_producto
 from routes.productos import _resolve_public_owner
 from services.cart import _get_pyme_cart
+from services.attachment_delivery import serialize_attachment_for_delivery
 from services.commerce_unified import _build_assisted_operator_pack, _build_operator_triage
 from services.gcs_service import upload_to_gcs
 from services.marketplace_analytics import track_marketplace_event
@@ -28,6 +30,13 @@ from services.tenant_resolver import TenantResolutionError, resolve_tenant_and_u
 from services.vision_extractor import extract_table_from_file
 from config import ALLOWED_ORIGINS
 from utils.time_utils import datetime_to_iso_utc
+from utils.turnstile import (
+    TURNSTILE_TOKEN_FIELDS,
+    turnstile_enforce_public_intake,
+    turnstile_is_configured,
+    turnstile_public_intake_contract,
+    verify_turnstile,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -174,6 +183,17 @@ def _request_kind_config(raw_kind: Optional[str]) -> tuple[str, dict]:
     if normalized not in _REQUEST_KIND_CONFIG:
         normalized = "order_note"
     return normalized, _REQUEST_KIND_CONFIG[normalized]
+
+
+def _storage_context_for_request_kind(request_kind: str, config: dict) -> str:
+    primary_intent = str(config.get("primary_intent") or "")
+    if primary_intent == "municipal_service_request":
+        return "reclamos"
+    if primary_intent in {"create_order_or_quote", "create_quote"}:
+        return "pedidos"
+    if request_kind in {"order_note", "handwritten_order", "quote_request"}:
+        return "pedidos"
+    return "uploads"
 
 
 _REQUEST_KIND_INFERENCE_TERMS: dict[str, tuple[str, ...]] = {
@@ -1044,8 +1064,11 @@ def _form_or_json_value(json_payload: Optional[dict], *keys: str) -> Optional[st
     return None
 
 
-def _json_error(status_code: int, code: str, message: str):
-    response = jsonify({"codigo": code, "mensaje": message})
+def _json_error(status_code: int, code: str, message: str, extra: Optional[dict] = None):
+    payload = {"codigo": code, "mensaje": message}
+    if extra:
+        payload.update(extra)
+    response = jsonify(payload)
     response.status_code = status_code
     return response
 
@@ -1139,20 +1162,13 @@ def _assisted_request_replay_payload(pedido: PedidoConversacional) -> dict[str, 
 def _build_attachment_info_payload(attachment: Optional[ArchivoAdjunto]) -> Optional[dict[str, Any]]:
     if not attachment:
         return None
-    return {
-        "id": attachment.id,
+    payload = serialize_attachment_for_delivery(attachment)
+    payload.update({
         "attachment_id": attachment.id,
-        "url": attachment.url,
-        "name": attachment.nombre_original or attachment.filename,
-        "filename": attachment.filename,
-        "original_filename": attachment.nombre_original or attachment.filename,
-        "mimeType": attachment.mime,
-        "mime_type": attachment.mime,
-        "size": attachment.tamano,
         "file_size_bytes": attachment.tamano,
-        "uploadedAt": datetime_to_iso_utc(attachment.fecha),
         "source": "marketplace_assisted_intake",
-    }
+    })
+    return payload
 
 
 def _safe_upload_filename(upload_meta: dict[str, Any], original_name: Optional[str]) -> str:
@@ -1488,12 +1504,17 @@ def _build_public_follow_up(
         }
 
     tracking_code = f"pc-{pedido_id}"
+    tracking_token = secrets.token_urlsafe(24)
     tracking_path = f"/tracking/order/{quote_plus(tracking_code)}"
     tracking_api = f"/api/public/tracking/experience?kind=order&code={quote_plus(tracking_code)}"
+    encoded_token = quote_plus(tracking_token)
     if tenant_slug:
         encoded_tenant = quote_plus(tenant_slug)
-        tracking_path = f"{tracking_path}?tenant_slug={encoded_tenant}"
-        tracking_api = f"{tracking_api}&tenant_slug={encoded_tenant}"
+        tracking_path = f"{tracking_path}?tenant_slug={encoded_tenant}&token={encoded_token}"
+        tracking_api = f"{tracking_api}&tenant_slug={encoded_tenant}&token={encoded_token}"
+    else:
+        tracking_path = f"{tracking_path}?token={encoded_token}"
+        tracking_api = f"{tracking_api}&token={encoded_token}"
 
     whatsapp_text = (
         f"Hola, quiero continuar mi {request_kind_label}. "
@@ -1505,6 +1526,9 @@ def _build_public_follow_up(
         "tracking": {
             "kind": "order",
             "code": tracking_code,
+            "token": tracking_token,
+            "token_required": True,
+            "access": "signed_link",
             "path": tracking_path,
             "api_endpoint": tracking_api,
             "label": "Seguimiento de solicitud",
@@ -2114,8 +2138,9 @@ def pedidos_desde_archivo():
     )
     user = getattr(g, "user", None)
     owner = None
+    resolved_as_anon = False
     try:
-        tenant, user, _ = resolve_tenant_and_user(
+        tenant, user, resolved_as_anon = resolve_tenant_and_user(
             tenant_slug=tenant_slug,
             tenant_id=tenant_id,
             current_user=user,
@@ -2123,14 +2148,76 @@ def pedidos_desde_archivo():
         )
     except TenantResolutionError:
         tenant, owner = _resolve_public_owner()
+        resolved_as_anon = True
         if not tenant or not owner:
             return _json_error(404, "tenant_no_encontrado", "Tenant no encontrado")
 
     if not owner:
         owner = getattr(tenant, "municipio", None) or getattr(tenant, "pyme", None)
+    if tenant:
+        g.tenant_profile = tenant
 
     origen = request.headers.get("X-Checkout-Origin") or request.args.get("origen") or "web"
     idempotency_key = _request_idempotency_key(json_payload)
+    turnstile_token = (
+        request.headers.get("X-Turnstile-Token")
+        or _form_or_json_value(
+            json_payload,
+            *TURNSTILE_TOKEN_FIELDS,
+        )
+        or request.args.get("turnstile_token")
+    )
+    public_intake = resolved_as_anon and origen in {"marketplace", "widget", "web", "public"}
+    enforce_turnstile = turnstile_enforce_public_intake()
+    if public_intake and enforce_turnstile and not turnstile_is_configured():
+        logger.error(
+            "Cloudflare Turnstile enforcement activo sin secret configurado para intake publico"
+        )
+        return _json_error(
+            503,
+            "turnstile_no_configurado",
+            "La verificacion de seguridad no esta disponible. Intenta nuevamente mas tarde.",
+            {
+                "security": turnstile_public_intake_contract(
+                    surface="marketplace_assisted_upload",
+                    status="misconfigured",
+                    reason="missing_secret",
+                    retryable=False,
+                    reset_required=False,
+                ),
+                "frontend_contract": {
+                    "render_as": "public_intake_security_error",
+                    "can_retry": False,
+                    "reset_turnstile": False,
+                },
+            },
+        )
+
+    if public_intake and (turnstile_token or enforce_turnstile):
+        if not verify_turnstile(
+            turnstile_token,
+            remote_ip=request.headers.get("CF-Connecting-IP") or request.remote_addr,
+            idempotency_key=idempotency_key,
+        ):
+            return _json_error(
+                400,
+                "turnstile_verificacion_fallida",
+                "No pudimos validar la verificacion de seguridad. Intenta nuevamente.",
+                {
+                    "security": turnstile_public_intake_contract(
+                        surface="marketplace_assisted_upload",
+                        status="verification_failed",
+                        reason="invalid_or_expired_token",
+                        retryable=True,
+                        reset_required=True,
+                    ),
+                    "frontend_contract": {
+                        "render_as": "public_intake_security_error",
+                        "can_retry": True,
+                        "reset_turnstile": True,
+                    },
+                },
+            )
     existing_pedido = _find_assisted_request_by_idempotency(
         tenant_id=getattr(tenant, "id", None),
         idempotency_key=idempotency_key,
@@ -2165,7 +2252,10 @@ def pedidos_desde_archivo():
 
     if archivo:
         _reset_file_pointer(archivo)
-        upload_meta = upload_to_gcs(archivo)
+        upload_meta = upload_to_gcs(
+            archivo,
+            kind=_storage_context_for_request_kind(request_kind, request_kind_config),
+        )
         if not upload_meta or not upload_meta.get("public_url"):
             return _json_error(500, "upload_fallido", "No se pudo guardar el archivo")
         original_name = upload_meta.get("original_name") or archivo.filename
@@ -2674,6 +2764,17 @@ def pedidos_desde_archivo():
         "mode": "order_note_upload",
         "idempotency_key": idempotency_key,
         "idempotent_replay": False,
+        "security": turnstile_public_intake_contract(
+            surface="marketplace_assisted_upload",
+            status=(
+                "verified"
+                if public_intake and (turnstile_token or enforce_turnstile)
+                else "not_required"
+            ),
+            reason="anonymous_public_intake" if public_intake else "authenticated_or_internal",
+            retryable=False,
+            reset_required=False,
+        ),
         "request_kind": request_kind,
         "request_kind_label": request_kind_label,
         "document_profile": document_profile,

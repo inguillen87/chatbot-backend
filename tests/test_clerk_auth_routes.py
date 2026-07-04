@@ -124,6 +124,8 @@ def test_clerk_session_sync_returns_chatboc_token_and_onboarding(client, monkeyp
     assert payload["token"]
     assert payload["user"]["email"] == "laura@chatboc.test"
     assert payload["onboarding"]["required"] is True
+    assert payload["onboarding"]["modal"]["vertical_presets"]["pyme"]["primary_goal"] == "ventas"
+    assert payload["onboarding"]["modal"]["profile_picture_policy"] == "consented_upload_or_social_only"
 
     with client.application.app_context():
         user = User.query.filter_by(email="laura@chatboc.test").first()
@@ -186,6 +188,7 @@ def test_clerk_onboarding_route_creates_tenant(client, monkeypatch):
             "rubro": "educacion",
             "telefono": "+5492613000001",
             "primary_goal": "whatsapp_ai",
+            "plan": "full",
         },
     )
 
@@ -197,7 +200,11 @@ def test_clerk_onboarding_route_creates_tenant(client, monkeypatch):
     with client.application.app_context():
         tenant = TenantProfile.query.filter_by(slug="colegio-modelo").first()
         assert tenant is not None
+        assert tenant.plan == "free"
         assert tenant.configuracion["auth"]["provider"] == "clerk"
+        assert tenant.configuracion["onboarding"]["requested_plan"] == "full"
+        assert tenant.configuracion["onboarding"]["granted_plan"] == "free"
+        assert tenant.configuracion["provisioning"]["status"] == "plan_required"
 
 
 def test_clerk_webhook_syncs_user_with_valid_signature(client, monkeypatch):

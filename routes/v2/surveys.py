@@ -1098,6 +1098,7 @@ def survey_live_results_v2(token: str):
             max_cells=max(50, min(max_cells, 1000)),
             momentum_window_minutes=max(5, min(window_minutes, 30)),
             filtros=filtros,
+            geo_privacy="public_aggregated",
         )
     except EncuestaError as exc:
         return _encuesta_error_response(exc)

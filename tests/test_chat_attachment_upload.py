@@ -62,6 +62,10 @@ class ChatAttachmentUploadTests(unittest.TestCase):
         self.assertEqual(status, 200)
         info = res_json["attachmentInfo"]
         self.assertEqual(info["url"], adjunto_mock.url)
+        self.assertEqual(info["downloadUrl"], adjunto_mock.url)
+        self.assertEqual(info["storage_provider"], "external")
+        self.assertEqual(info["storage_access"], "external")
+        self.assertFalse(info["is_private"])
         self.assertIn("thumbUrl", info)
         self.assertEqual(info["thumbUrl"], "/static/uploads/foto_thumb.webp")
         self.assertEqual(info["thumbnailUrl"], info["thumbUrl"])

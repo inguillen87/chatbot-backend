@@ -3,6 +3,7 @@ import json
 from datetime import datetime, timedelta
 
 import jwt
+import pytest
 
 from app import db
 from models import (
@@ -20,6 +21,12 @@ from models import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _disable_turnstile_enforcement_by_default(monkeypatch, client):
+    monkeypatch.setenv("CLOUDFLARE_TURNSTILE_ENFORCE_PUBLIC_INTAKE", "false")
+    monkeypatch.setitem(client.application.config, "CLOUDFLARE_TURNSTILE_ENFORCE_PUBLIC_INTAKE", "")
+
+
 def _auth_headers(app, user: User, tenant_slug: str) -> dict:
     token = jwt.encode(
         {"user_id": user.id, "exp": datetime.utcnow() + timedelta(hours=1)},
@@ -33,6 +40,81 @@ def _assert_public_copy_without_internal_jargon(*parts: str) -> None:
     visible_copy = "\n".join(part for part in parts if part)
     for forbidden in ("CRM", "IA", "tenant admin", "auditoria", "operativo", "operativa"):
         assert forbidden not in visible_copy
+
+
+def test_marketplace_order_note_upload_rejects_invalid_turnstile_when_enforced(client, init_database, monkeypatch):
+    owner = User.query.filter_by(email="admin@test.com").first()
+    tenant = TenantProfile(slug="market-turnstile", nombre="Market Turnstile", tipo="pyme", pyme_id=owner.id, plan="full")
+    db.session.add(tenant)
+    db.session.commit()
+
+    monkeypatch.setenv("CLOUDFLARE_TURNSTILE_ENFORCE_PUBLIC_INTAKE", "true")
+    monkeypatch.setenv("CLOUDFLARE_TURNSTILE_SECRET_KEY", "test-turnstile-secret")
+    monkeypatch.setattr("routes.pedidos_from_file.verify_turnstile", lambda *args, **kwargs: False)
+    extract_called = {"value": False}
+
+    def fake_extract(*args, **kwargs):
+        extract_called["value"] = True
+        return []
+
+    monkeypatch.setattr("routes.pedidos_from_file.extract_table_from_file", fake_extract)
+
+    response = client.post(
+        "/api/pedidos/from-file",
+        data={"pedido_text": "2 chapas galvanizadas"},
+        headers={"X-Tenant": tenant.slug, "X-Checkout-Origin": "marketplace"},
+    )
+
+    assert response.status_code == 400
+    payload = response.get_json()
+    assert payload["codigo"] == "turnstile_verificacion_fallida"
+    assert payload["security"]["contract_version"] == "cloudflare.turnstile.public_intake.v1"
+    assert payload["security"]["surface"] == "marketplace_assisted_upload"
+    assert payload["security"]["status"] == "verification_failed"
+    assert payload["security"]["retryable"] is True
+    assert payload["security"]["reset_required"] is True
+    assert payload["frontend_contract"]["render_as"] == "public_intake_security_error"
+    assert payload["frontend_contract"]["can_retry"] is True
+    assert payload["frontend_contract"]["reset_turnstile"] is True
+    assert extract_called["value"] is False
+
+
+def test_marketplace_order_note_upload_fails_closed_when_turnstile_enforced_without_secret(client, init_database, monkeypatch):
+    owner = User.query.filter_by(email="admin@test.com").first()
+    tenant = TenantProfile(slug="market-turnstile-missing", nombre="Market Turnstile Missing", tipo="pyme", pyme_id=owner.id, plan="full")
+    db.session.add(tenant)
+    db.session.commit()
+
+    monkeypatch.setenv("CLOUDFLARE_TURNSTILE_ENFORCE_PUBLIC_INTAKE", "true")
+    monkeypatch.delenv("CLOUDFLARE_TURNSTILE_SECRET_KEY", raising=False)
+    monkeypatch.delenv("TURNSTILE_SECRET_KEY", raising=False)
+    monkeypatch.setitem(client.application.config, "CLOUDFLARE_TURNSTILE_SECRET_KEY", "")
+    monkeypatch.setitem(client.application.config, "TURNSTILE_SECRET_KEY", "")
+    monkeypatch.setattr("routes.pedidos_from_file.verify_turnstile", lambda *args, **kwargs: True)
+    extract_called = {"value": False}
+
+    def fake_extract(*args, **kwargs):
+        extract_called["value"] = True
+        return []
+
+    monkeypatch.setattr("routes.pedidos_from_file.extract_table_from_file", fake_extract)
+
+    response = client.post(
+        "/api/pedidos/from-file",
+        data={"pedido_text": "2 chapas galvanizadas"},
+        headers={"X-Tenant": tenant.slug, "X-Checkout-Origin": "marketplace"},
+    )
+
+    assert response.status_code == 503
+    payload = response.get_json()
+    assert payload["codigo"] == "turnstile_no_configurado"
+    assert payload["security"]["contract_version"] == "cloudflare.turnstile.public_intake.v1"
+    assert payload["security"]["status"] == "misconfigured"
+    assert payload["security"]["configured"] is False
+    assert payload["security"]["enforced"] is True
+    assert payload["security"]["retryable"] is False
+    assert payload["frontend_contract"]["can_retry"] is False
+    assert extract_called["value"] is False
 
 
 def test_marketplace_order_note_upload_creates_assisted_request_contract(client, init_database, monkeypatch):
@@ -64,7 +146,8 @@ def test_marketplace_order_note_upload_creates_assisted_request_contract(client,
 
     uploaded = {}
 
-    def fake_upload(file_storage):
+    def fake_upload(file_storage, *_, **kwargs):
+        assert kwargs.get("kind") == "pedidos"
         uploaded["bytes"] = file_storage.read()
         return {
             "public_url": "https://cdn.example.com/nota.png",
@@ -93,12 +176,20 @@ def test_marketplace_order_note_upload_creates_assisted_request_contract(client,
     assert uploaded["bytes"] == b"foto-nota"
     assert payload["contract_version"] == "marketplace.assisted_request.v1"
     assert payload["mode"] == "order_note_upload"
+    assert payload["security"]["contract_version"] == "cloudflare.turnstile.public_intake.v1"
+    assert payload["security"]["surface"] == "marketplace_assisted_upload"
+    assert payload["security"]["status"] == "not_required"
+    assert payload["security"]["reset_required"] is False
     assert payload["request_kind"] == "order_note"
     assert payload["request_kind_label"] == "nota de pedido"
     assert payload["source"]["original_filename"] == "nota.png"
     assert payload["source"]["mime_type"] == "image/png"
     assert payload["source"]["file_size_bytes"] == len(b"foto-nota")
     assert payload["attachmentInfo"]["url"] == "https://cdn.example.com/nota.png"
+    assert payload["attachmentInfo"]["downloadUrl"] == "https://cdn.example.com/nota.png"
+    assert payload["attachmentInfo"]["storage_provider"] == "external"
+    assert payload["attachmentInfo"]["storage_access"] == "external"
+    assert payload["attachmentInfo"]["is_private"] is False
     assert payload["attachmentInfo"]["name"] == "nota.png"
     assert payload["source"]["attachment_id"] == payload["attachment_id"]
     assert payload["source"]["attachmentInfo"]["url"] == "https://cdn.example.com/nota.png"
@@ -160,6 +251,7 @@ def test_marketplace_order_note_upload_creates_assisted_request_contract(client,
     assert payload["operator_intake_summary"]["input"]["mime_type"] == "image/png"
     assert payload["operator_intake_summary"]["input"]["attachment_id"] == payload["attachment_id"]
     assert payload["operator_intake_summary"]["input"]["attachmentInfo"]["url"] == "https://cdn.example.com/nota.png"
+    assert payload["operator_intake_summary"]["input"]["attachmentInfo"]["downloadUrl"] == "https://cdn.example.com/nota.png"
     assert payload["operator_intake_summary"]["recommended_next_step"] == "pedir_contacto_y_responder"
     assert payload["operator_intake_summary"]["contact_state"] == "missing"
     assert payload["operator_intake_summary"]["detected_preview"] == ["2 Chapa galvanizada", "1 Clavos 2 pulgadas"]
@@ -224,12 +316,17 @@ def test_marketplace_order_note_upload_creates_assisted_request_contract(client,
     assert tracking_action["type"] == "link"
     assert tracking_action["reference"] == f"pedido:{payload['pedido_id']}"
     assert tracking_action["tracking_code"] == f"pc-{payload['pedido_id']}"
-    assert tracking_action["href"] == f"/tracking/order/pc-{payload['pedido_id']}?tenant_slug={tenant.slug}"
+    assert tracking_action["href"].startswith(f"/tracking/order/pc-{payload['pedido_id']}?tenant_slug={tenant.slug}&token=")
     whatsapp_action = next(action for action in payload["next_actions"] if action.get("id") == "whatsapp_handoff")
     assert whatsapp_action["type"] == "link"
     assert whatsapp_action["href"].startswith("https://wa.me/?text=")
     assert payload["public_follow_up"]["contract_version"] == "marketplace.assisted_followup.v1"
     assert payload["public_follow_up"]["tracking"]["code"] == f"pc-{payload['pedido_id']}"
+    assert payload["public_follow_up"]["tracking"]["token_required"] is True
+    assert payload["public_follow_up"]["tracking"]["access"] == "signed_link"
+    assert len(payload["public_follow_up"]["tracking"]["token"]) >= 24
+    assert f"token={payload['public_follow_up']['tracking']['token']}" in payload["public_follow_up"]["tracking"]["path"]
+    assert f"token={payload['public_follow_up']['tracking']['token']}" in payload["public_follow_up"]["tracking"]["api_endpoint"]
     assert payload["public_follow_up"]["tracking"]["path"] == tracking_action["href"]
 
     pedido = PedidoConversacional.query.get(payload["pedido_id"])
@@ -297,6 +394,113 @@ def test_marketplace_order_note_upload_creates_assisted_request_contract(client,
     assert attachment.municipio_ticket_id is None
 
 
+def test_tenant_crm_rejects_confirm_assisted_order_with_review_gaps(client, app, init_database, monkeypatch):
+    owner = User.query.filter_by(email="admin@test.com").first()
+    tenant = TenantProfile(slug="market-review-gap", nombre="Market Review Gap", tipo="pyme", pyme_id=owner.id, plan="full")
+    db.session.add(tenant)
+    db.session.flush()
+    chapa = CatalogoItem(
+        user_id=owner.id,
+        tenant_id=tenant.id,
+        nombre="Chapa galvanizada",
+        sku="CH-GAP",
+        precio="12000",
+        modalidad="venta",
+        disponible=True,
+    )
+    clavos_candidate = CatalogoItem(
+        user_id=owner.id,
+        tenant_id=tenant.id,
+        nombre="Clavos punta paris",
+        sku="CL-GAP",
+        precio="3000",
+        unidad="caja",
+        modalidad="venta",
+        disponible=True,
+    )
+    db.session.add_all([chapa, clavos_candidate])
+    db.session.commit()
+
+    monkeypatch.setattr(
+        "routes.pedidos_from_file.upload_to_gcs",
+        lambda file_storage, *_, **__: {"public_url": "https://cdn.example.com/nota-gap.png", "original_name": file_storage.filename},
+    )
+    monkeypatch.setattr(
+        "routes.pedidos_from_file.extract_table_from_file",
+        lambda content, prompt: [
+            {"sku": "CH-GAP", "nombre": "Chapa galvanizada", "cantidad": 2},
+            {"nombre": "Clavos 2 pulgadas", "cantidad": 1},
+        ],
+    )
+
+    upload_response = client.post(
+        "/api/pedidos/from-file?origen=marketplace",
+        data={
+            "archivo": (io.BytesIO(b"foto-nota-gap"), "nota-gap.png"),
+            "document_type": "order_note",
+            "contact_name": "Marcelo",
+            "contact_phone": "+5492613168608",
+        },
+        content_type="multipart/form-data",
+        headers={"X-Tenant": tenant.slug},
+    )
+    assert upload_response.status_code == 201
+    pedido_id = upload_response.get_json()["pedido_id"]
+    crm_id = f"conversational:{pedido_id}"
+    headers = _auth_headers(app, owner, tenant.slug)
+
+    detail_response = client.get(f"/api/admin/tenants/{tenant.slug}/orders/{crm_id}", headers=headers)
+    assert detail_response.status_code == 200
+    detail_payload = detail_response.get_json()
+    assert detail_payload["crm_review_card"]["operational_state"] == "needs_catalog_resolution"
+    confirm_action = detail_payload["crm_review_card"]["operator_actions"][0]
+    assert confirm_action["id"] == "confirm_order_draft"
+    assert confirm_action["enabled"] is False
+    assert confirm_action["requires_review"] is True
+    assert confirm_action["disabled_reason"] == "resolve_catalog_or_review_pending"
+
+    patch_response = client.patch(
+        f"/api/admin/tenants/{tenant.slug}/orders/{crm_id}",
+        json={"status": "confirmed"},
+        headers=headers,
+    )
+    assert patch_response.status_code == 409
+    patch_payload = patch_response.get_json()
+    assert patch_payload["error"] == "assisted_order_needs_review"
+    blocker_codes = {reason["code"] for reason in patch_payload["blocking_reasons"]}
+    assert {"needs_operator_review", "unmatched_items", "catalog_candidates", "customer_confirmation_blocked", "line_needs_review"} & blocker_codes
+
+    db.session.expire_all()
+    assert PedidoConversacional.query.get(pedido_id).estado == "nuevo"
+    assert PymePedido.query.filter_by(idempotency_key=f"conv_order_{pedido_id}").first() is None
+
+    resolve_response = client.patch(
+        f"/api/admin/tenants/{tenant.slug}/orders/{crm_id}",
+        json={"catalog_resolutions": [{"line_id": "line-2", "catalog_item_id": clavos_candidate.id}]},
+        headers=headers,
+    )
+    assert resolve_response.status_code == 200
+    resolved_payload = resolve_response.get_json()
+    assert resolved_payload["crm_review_card"]["operational_state"] == "ready_for_order_creation"
+    resolved_confirm_action = resolved_payload["crm_review_card"]["operator_actions"][0]
+    assert resolved_confirm_action["enabled"] is True
+    assert resolved_confirm_action["requires_review"] is False
+    assert resolved_payload["assisted_request"]["match_summary"]["matched"] == 2
+    assert resolved_payload["assisted_request"]["match_summary"]["unmatched"] == 0
+    resolved_line = resolved_payload["assisted_request"]["crm_order_draft"]["lines"][1]
+    assert resolved_line["status"] == "catalog_matched"
+    assert resolved_line["confirmation_state"] == "ready"
+    assert resolved_line["catalog_item_id"] == clavos_candidate.id
+
+    confirm_response = client.patch(
+        f"/api/admin/tenants/{tenant.slug}/orders/{crm_id}",
+        json={"status": "confirmed"},
+        headers=headers,
+    )
+    assert confirm_response.status_code == 200
+    assert PymePedido.query.filter_by(idempotency_key=f"conv_order_{pedido_id}").first() is not None
+
+
 def test_marketplace_order_note_preflight_allows_checkout_origin_header(client, init_database):
     response = client.open(
         "/api/pedidos/from-file?origen=marketplace",
@@ -323,7 +527,7 @@ def test_marketplace_order_note_upload_replays_idempotently_without_duplicate_pr
 
     calls = {"upload": 0, "extract": 0}
 
-    def fake_upload(file_storage):
+    def fake_upload(file_storage, *_, **__):
         calls["upload"] += 1
         return {
             "public_url": "https://cdn.example.com/replay.png",
@@ -463,7 +667,7 @@ def test_marketplace_order_note_upload_persists_kind_and_contact(client, init_da
 
     monkeypatch.setattr(
         "routes.pedidos_from_file.upload_to_gcs",
-        lambda file_storage: {"public_url": "https://cdn.example.com/cotizacion.pdf", "original_name": file_storage.filename},
+        lambda file_storage, *_, **__: {"public_url": "https://cdn.example.com/cotizacion.pdf", "original_name": file_storage.filename},
     )
     monkeypatch.setattr(
         "routes.pedidos_from_file.extract_table_from_file",
@@ -526,7 +730,7 @@ def test_marketplace_order_note_upload_is_manageable_from_tenant_crm(client, app
 
     monkeypatch.setattr(
         "routes.pedidos_from_file.upload_to_gcs",
-        lambda file_storage: {"public_url": "https://cdn.example.com/pedido.jpg", "original_name": file_storage.filename},
+        lambda file_storage, *_, **__: {"public_url": "https://cdn.example.com/pedido.jpg", "original_name": file_storage.filename},
     )
     monkeypatch.setattr(
         "routes.pedidos_from_file.extract_table_from_file",
@@ -569,6 +773,14 @@ def test_marketplace_order_note_upload_is_manageable_from_tenant_crm(client, app
     assert listed_order["crm_review_card"]["summary"]["matched"] == 1
     assert listed_order["crm_review_card"]["lines"][0]["catalog_item_id"] == clavos.id
     assert listed_order["crm_review_card"]["suggested_reply"]
+    assert listed_order["crm_review_card"]["operational_state"] == "ready_for_order_creation"
+    assert listed_order["crm_review_card"]["primary_action_id"] == "confirm_order_draft"
+    listed_action = listed_order["crm_review_card"]["operator_actions"][0]
+    assert listed_action["id"] == "confirm_order_draft"
+    assert listed_action["label"] == "Crear pedido"
+    assert listed_action["target_status"] == "confirmed"
+    assert listed_action["creates"] == ["pyme_pedido", "market_order"]
+    assert listed_action["enabled"] is True
     assert listed_order["customer_profile"]["phone"] == "+5492613168608"
 
     detail_response = client.get(f"/api/admin/tenants/{tenant.slug}/orders/{crm_id}", headers=headers)
@@ -583,9 +795,11 @@ def test_marketplace_order_note_upload_is_manageable_from_tenant_crm(client, app
     assert detail_payload["assisted_request"]["attachmentInfo"]["url"] == "https://cdn.example.com/pedido.jpg"
     assert detail_payload["assisted_request"]["source"]["attachmentInfo"]["url"] == "https://cdn.example.com/pedido.jpg"
     assert detail_payload["assisted_request"]["public_follow_up"]["tracking"]["code"] == f"pc-{pedido_id}"
-    assert detail_payload["assisted_request"]["public_follow_up"]["tracking"]["path"] == (
-        f"/tracking/order/pc-{pedido_id}?tenant_slug={tenant.slug}"
-    )
+    detail_tracking = detail_payload["assisted_request"]["public_follow_up"]["tracking"]
+    assert detail_tracking["token_required"] is True
+    assert detail_tracking["access"] == "signed_link"
+    assert detail_tracking["path"].startswith(f"/tracking/order/pc-{pedido_id}?tenant_slug={tenant.slug}&token=")
+    assert f"token={detail_tracking['token']}" in detail_tracking["path"]
     assert detail_payload["assisted_request"]["intake_experience"]["anonymous_intake"] is True
     assert detail_payload["assisted_request"]["intake_experience"]["crm_handoff"]["channels"] == [
         "whatsapp",
@@ -600,6 +814,15 @@ def test_marketplace_order_note_upload_is_manageable_from_tenant_crm(client, app
     assert detail_payload["crm_review_card"]["reference"] == f"pedido:{pedido_id}"
     assert detail_payload["crm_review_card"]["status"] == "ready_to_reply"
     assert detail_payload["crm_review_card"]["contact_links"][0]["type"] == "whatsapp"
+    assert detail_payload["crm_review_card"]["operational_state"] == "ready_for_order_creation"
+    action_ids = [action["id"] for action in detail_payload["crm_review_card"]["operator_actions"]]
+    assert action_ids[:2] == ["confirm_order_draft", "reply_customer"]
+    assert "open_public_tracking" in action_ids
+    confirm_action = detail_payload["crm_review_card"]["operator_actions"][0]
+    assert confirm_action["label"] == "Crear pedido"
+    assert confirm_action["method"] == "PATCH"
+    assert confirm_action["target_status"] == "confirmed"
+    assert confirm_action["requires_review"] is False
     operator_pack = detail_payload["assisted_request"]["operator_pack"]
     assert operator_pack["reference"] == f"pedido:{pedido_id}"
     assert operator_pack["priority"] == "normal"
@@ -658,7 +881,7 @@ def test_tenant_crm_confirm_assisted_order_is_atomic_when_materialization_fails(
 
     monkeypatch.setattr(
         "routes.pedidos_from_file.upload_to_gcs",
-        lambda file_storage: {"public_url": "https://cdn.example.com/pedido-fallido.jpg", "original_name": file_storage.filename},
+        lambda file_storage, *_, **__: {"public_url": "https://cdn.example.com/pedido-fallido.jpg", "original_name": file_storage.filename},
     )
     monkeypatch.setattr(
         "routes.pedidos_from_file.extract_table_from_file",
@@ -1056,7 +1279,7 @@ def test_marketplace_image_without_document_type_reclassifies_after_ocr(client, 
 
     monkeypatch.setattr(
         "routes.pedidos_from_file.upload_to_gcs",
-        lambda file_storage: {"public_url": "https://cdn.example.com/img-1234.jpg", "original_name": file_storage.filename},
+        lambda file_storage, *_, **__: {"public_url": "https://cdn.example.com/img-1234.jpg", "original_name": file_storage.filename},
     )
     monkeypatch.setattr(
         "routes.pedidos_from_file.extract_table_from_file",
@@ -1097,6 +1320,8 @@ def test_marketplace_image_without_document_type_reclassifies_after_ocr(client, 
     assert payload["public_follow_up"]["tracking"]["path"].startswith("/tracking/claim/")
     assert payload["operator_pack"]["primary_intent"] == "municipal_service_request"
     assert payload["attachmentInfo"]["url"] == "https://cdn.example.com/img-1234.jpg"
+    assert payload["attachmentInfo"]["downloadUrl"] == "https://cdn.example.com/img-1234.jpg"
+    assert payload["attachmentInfo"]["storage_provider"] == "external"
     assert payload["source"]["attachmentInfo"]["url"] == "https://cdn.example.com/img-1234.jpg"
     assert payload["linked_record"]["attachment_id"] == payload["attachment_id"]
 
@@ -1174,7 +1399,7 @@ def test_marketplace_order_note_upload_creates_review_request_when_extraction_fa
 
     monkeypatch.setattr(
         "routes.pedidos_from_file.upload_to_gcs",
-        lambda file_storage: {"public_url": "https://cdn.example.com/manuscrito.png", "original_name": file_storage.filename},
+        lambda file_storage, *_, **__: {"public_url": "https://cdn.example.com/manuscrito.png", "original_name": file_storage.filename},
     )
 
     def fail_extract(content, prompt):
@@ -1200,6 +1425,9 @@ def test_marketplace_order_note_upload_creates_review_request_when_extraction_fa
     assert payload["items"] == []
     assert "revision del equipo" in payload["customer_message"]
     assert payload["public_follow_up"]["tracking"]["code"] == f"pc-{payload['pedido_id']}"
+    assert payload["public_follow_up"]["tracking"]["token_required"] is True
+    assert payload["public_follow_up"]["tracking"]["access"] == "signed_link"
+    assert "token=" in payload["public_follow_up"]["tracking"]["path"]
     assert any(action["id"] == "whatsapp_handoff" for action in payload["next_actions"])
 
     pedido = PedidoConversacional.query.get(payload["pedido_id"])

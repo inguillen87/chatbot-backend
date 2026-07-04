@@ -174,6 +174,7 @@ def _emit_standard_ticket_event(event_name: str, data: Any) -> None:
 def emit_ticket_update(data: Any) -> None:
     """Broadcast generic ticket updates to subscribed admin clients."""
     _emit_to_ticket_room('ticket_update', data)
+    _emit_standard_ticket_event('ticket.updated', data)
 
 
 def emit_crm_contact_update(tenant: TenantProfile, contact_payload: Any) -> None:
@@ -300,6 +301,7 @@ def emit_new_chat_message(data: Any) -> None:
     """Broadcast a new chat message to the live chat room."""
     _emit_to_ticket_room('new_chat_message', data)
     _emit_standard_ticket_event('conversation.message.created', data)
+    _emit_standard_ticket_event('whatsapp.message.created', data)
 
 
 def _survey_realtime_rooms(slug_publico: str, data: Any = None, tenant_slug: str | None = None) -> list[str]:
@@ -328,9 +330,11 @@ def emit_survey_update(slug_publico: str, data: Any, tenant_slug: str | None = N
         for room in rooms:
             socketio.emit('survey_update', legacy_payload or modern_payload, room=room)
             socketio.emit('survey_update_v2', modern_payload, room=room)
+            socketio.emit('survey.vote.created', modern_payload, room=room)
         return
     for room in rooms:
         socketio.emit('survey_update', data, room=room)
+        socketio.emit('survey.vote.created', data, room=room)
 
 
 def emit_survey_comment(slug_publico: str, data: Any, tenant_slug: str | None = None) -> None:

@@ -36,6 +36,114 @@ from utils.roles import (
 CLERK_AUTH_CONTRACT_VERSION = "auth.clerk.v1"
 DEFAULT_SOCIAL_PROVIDERS = ("google", "facebook", "linkedin")
 DEFAULT_REQUIRED_DASHBOARD_SETUP: tuple[str, ...] = ()
+ONBOARDING_STARTER_MODULES = [
+    {
+        "id": "crm_operativo",
+        "label": "CRM operativo",
+        "description": "Bandeja de reclamos, pedidos, chats y responsables desde el primer ingreso.",
+    },
+    {
+        "id": "whatsapp_widget",
+        "label": "WhatsApp y widget",
+        "description": "Canales listos para conectar IA, atencion humana y seguimiento por ticket.",
+    },
+    {
+        "id": "marketplace_catalogo",
+        "label": "Catalogo / marketplace",
+        "description": "Base para productos, promociones, pedidos asistidos y carga por foto o archivo.",
+    },
+    {
+        "id": "analytics_heatmaps",
+        "label": "Analitica y mapas",
+        "description": "Metricas iniciales para encuestas, reclamos, zonas calientes y actividad del canal.",
+    },
+]
+ONBOARDING_VERTICAL_PRESETS = {
+    "municipio": {
+        "rubro": "atencion ciudadana",
+        "primary_goal": "crm_reclamos",
+        "preferred_channels": ["whatsapp", "webchat", "email"],
+        "headline": "Reclamos, turnos, encuestas y mapa ciudadano",
+        "recommended_modules": ["crm_operativo", "whatsapp_widget", "analytics_heatmaps"],
+        "starter_questions": [
+            "Que areas reciben mas reclamos o consultas?",
+            "Que horario real de atencion humana debe respetar el bot?",
+            "Que estados publicos quiere mostrar al vecino?",
+        ],
+    },
+    "colegio": {
+        "rubro": "educacion",
+        "primary_goal": "whatsapp_ai",
+        "preferred_channels": ["whatsapp", "webchat", "email"],
+        "headline": "Familias, cuotas, comprobantes, turnos y admisiones",
+        "recommended_modules": ["crm_operativo", "whatsapp_widget", "analytics_heatmaps"],
+        "starter_questions": [
+            "Que consultas hacen las familias todos los meses?",
+            "Hay cuotas, comprobantes o certificados para automatizar?",
+            "Que roles del colegio responden cada tipo de solicitud?",
+        ],
+    },
+    "pyme": {
+        "rubro": "ventas y atencion",
+        "primary_goal": "ventas",
+        "preferred_channels": ["whatsapp", "webchat", "instagram"],
+        "headline": "Ventas, pedidos, catalogo y promociones",
+        "recommended_modules": ["crm_operativo", "whatsapp_widget", "marketplace_catalogo"],
+        "starter_questions": [
+            "Que productos o servicios se venden por WhatsApp?",
+            "Que promociones o descuentos por cantidad quiere ofrecer?",
+            "Como debe derivarse una compra a un vendedor humano?",
+        ],
+    },
+    "salud": {
+        "rubro": "turnos y pacientes",
+        "primary_goal": "whatsapp_ai",
+        "preferred_channels": ["whatsapp", "webchat", "email"],
+        "headline": "Turnos, recordatorios, admision y soporte al paciente",
+        "recommended_modules": ["crm_operativo", "whatsapp_widget", "analytics_heatmaps"],
+        "starter_questions": [
+            "Que especialidades o profesionales deben ofrecer turnos?",
+            "Que datos minimos se piden antes de derivar?",
+            "Que mensajes requieren revision humana obligatoria?",
+        ],
+    },
+    "inmobiliaria": {
+        "rubro": "propiedades",
+        "primary_goal": "ventas",
+        "preferred_channels": ["whatsapp", "webchat", "instagram"],
+        "headline": "Consultas, propiedades, visitas y leads comerciales",
+        "recommended_modules": ["crm_operativo", "whatsapp_widget", "marketplace_catalogo"],
+        "starter_questions": [
+            "Que tipos de propiedades se publican?",
+            "Que datos califican un lead antes de enviarlo al asesor?",
+            "Como se agenda una visita desde el chat?",
+        ],
+    },
+    "profesionales": {
+        "rubro": "servicios profesionales",
+        "primary_goal": "whatsapp_ai",
+        "preferred_channels": ["whatsapp", "webchat", "email"],
+        "headline": "Agenda, consultas frecuentes, presupuestos y seguimiento",
+        "recommended_modules": ["crm_operativo", "whatsapp_widget", "analytics_heatmaps"],
+        "starter_questions": [
+            "Que servicio debe presupuestarse primero?",
+            "Que preguntas califican mejor a un cliente?",
+            "Que mensajes requieren derivacion inmediata?",
+        ],
+    },
+    "otro": {
+        "rubro": "operacion general",
+        "primary_goal": "whatsapp_ai",
+        "preferred_channels": ["whatsapp", "webchat"],
+        "headline": "Atencion omnicanal, CRM y analitica inicial",
+        "recommended_modules": ["crm_operativo", "whatsapp_widget", "analytics_heatmaps"],
+        "starter_questions": [
+            "Que quiere resolver primero con Chatboc?",
+            "Que canal usan hoy sus clientes o vecinos?",
+            "Que tarea repetitiva consume mas tiempo del equipo?",
+        ],
+    },
+}
 
 
 class ClerkAuthError(ValueError):
@@ -61,6 +169,11 @@ def _env_list(name: str, fallback: Iterable[str]) -> list[str]:
     if not raw:
         return list(fallback)
     return [item.strip().lower() for item in raw.split(",") if item.strip()]
+
+
+def _vertical_preset(value: str | None) -> dict:
+    key = str(value or "").strip().lower()
+    return ONBOARDING_VERTICAL_PRESETS.get(key) or ONBOARDING_VERTICAL_PRESETS["otro"]
 
 
 def _clerk_publishable_key() -> Optional[str]:
@@ -561,6 +674,30 @@ def build_onboarding_contract(user: User, tenant: Optional[TenantProfile] = None
         "description": "Con estos datos creamos el tenant, plantilla inicial, CRM y canales.",
         "submit_endpoint": "/auth/clerk/onboarding",
         "modal": {
+            "summary_cards": [
+                {
+                    "id": "identity",
+                    "label": "Identidad verificada",
+                    "description": "Usamos Clerk para login social, email y foto solo con fuente consentida.",
+                },
+                {
+                    "id": "workspace",
+                    "label": "Tenant y CRM",
+                    "description": "Creamos el espacio operativo con rol, permisos y bandeja inicial.",
+                },
+                {
+                    "id": "channels",
+                    "label": "Canales y plantillas",
+                    "description": "Preparamos widget y plantillas base; WhatsApp productivo requiere plan Full y configuracion Meta/Twilio.",
+                },
+                {
+                    "id": "analytics",
+                    "label": "Metricas accionables",
+                    "description": "Dejamos preparado el tablero para reclamos, pedidos, encuestas y mapas.",
+                },
+            ],
+            "starter_modules": ONBOARDING_STARTER_MODULES,
+            "vertical_presets": ONBOARDING_VERTICAL_PRESETS,
             "steps": [
                 {
                     "id": "organization",
@@ -604,6 +741,8 @@ def build_onboarding_contract(user: User, tenant: Optional[TenantProfile] = None
                 {"value": "crm_reclamos", "label": "Gestionar reclamos/tickets"},
                 {"value": "ventas", "label": "Vender y tomar pedidos"},
                 {"value": "encuestas", "label": "Encuestas y analitica"},
+                {"value": "marketplace", "label": "Publicar catalogo / marketplace"},
+                {"value": "omnicanal", "label": "Centralizar conversaciones"},
             ],
             "social_login": {
                 "provider": "clerk",
@@ -616,6 +755,21 @@ def build_onboarding_contract(user: User, tenant: Optional[TenantProfile] = None
                     "linkedin": "linkedin_oidc",
                 },
             },
+            "whatsapp_business_requirements": {
+                "production_enabled_by_default": False,
+                "required_plan": "full",
+                "required_provider_setup": ["meta_business", "twilio_whatsapp_sender"],
+                "free_plan_state": "created_without_waba_provisioning",
+                "message": "El tenant se crea en modo free. WhatsApp productivo y creacion real de plantillas se activan con plan Full y sender Meta/Twilio configurado.",
+            },
+            "plan_policy": {
+                "self_service_plan": "free",
+                "requested_plan_allowed": False,
+                "productive_plan": "full",
+                "upgrade_requires": "superadmin_or_commercial_approval",
+                "message": "El registro publico siempre crea un espacio Free. El plan Full se solicita para revision comercial y solo se concede desde administracion.",
+            },
+            "profile_picture_policy": "consented_upload_or_social_only",
         },
     }
 
@@ -639,6 +793,15 @@ def _tenant_type_from_payload(payload: dict) -> str:
     except Exception:
         pass
     return normalize_tenant_type(raw_text if raw_text in {"municipio", "colegio", "pyme"} else "pyme")
+
+
+def _requested_plan_from_payload(payload: dict) -> str:
+    raw = str(payload.get("plan") or payload.get("requested_plan") or "free").strip().lower()
+    if raw in {"gratis", "free", "trial", "basic"}:
+        return "free"
+    if raw in {"full", "pro", "premium"}:
+        return raw
+    return "custom" if raw else "free"
 
 
 def _unique_tenant_slug(base: str) -> str:
@@ -669,10 +832,14 @@ def complete_clerk_onboarding(user: User, payload: dict) -> TenantProfile:
         raise ClerkAuthError("tenant_name is required")
 
     tenant_type = _tenant_type_from_payload(payload)
+    preset = _vertical_preset(payload.get("vertical") or tenant_type)
+    rubro = str(payload.get("rubro") or preset.get("rubro") or tenant_type).strip()
+    primary_goal = str(payload.get("primary_goal") or preset.get("primary_goal") or "whatsapp_ai").strip()
+    preferred_channels = payload.get("preferred_channels") or preset.get("preferred_channels") or ["whatsapp", "webchat"]
     requested_slug = payload.get("tenant_slug") or payload.get("slug") or tenant_name
     slug = _unique_tenant_slug(str(requested_slug))
-    plan = str(payload.get("plan") or "gratis").strip().lower()
-    plan_for_factory = "full" if plan in {"full", "pro", "premium"} else "free"
+    requested_plan = _requested_plan_from_payload(payload)
+    plan_for_factory = "free"
 
     tenant = create_tenant_from_template(
         nombre=tenant_name,
@@ -708,14 +875,19 @@ def complete_clerk_onboarding(user: User, payload: dict) -> TenantProfile:
         "status": "completed",
         "completed_at": datetime.now(timezone.utc).isoformat(),
         "source": "clerk",
-        "rubro": payload.get("rubro"),
-        "primary_goal": payload.get("primary_goal"),
+        "rubro": rubro,
+        "primary_goal": primary_goal,
         "team_size": payload.get("team_size"),
-        "preferred_channels": payload.get("preferred_channels") or [],
+        "preferred_channels": preferred_channels,
+        "vertical_preset": payload.get("vertical") or tenant_type,
+        "starter_modules": preset.get("recommended_modules") or [],
+        "requested_plan": requested_plan,
+        "granted_plan": plan_for_factory,
+        "plan_policy": "self_service_creates_free_until_admin_upgrade",
     }
     tenant.configuracion = cfg
     tenant.vertical = tenant.vertical or str(payload.get("vertical") or tenant_type)
-    tenant.subvertical = tenant.subvertical or (str(payload.get("rubro")) if payload.get("rubro") else None)
+    tenant.subvertical = tenant.subvertical or rubro
     flag_modified(tenant, "configuracion")
 
     db.session.add(user)

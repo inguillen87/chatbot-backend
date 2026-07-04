@@ -12,6 +12,7 @@ import json
 import hashlib
 import logging
 import math
+import secrets
 from dataclasses import dataclass, field
 from datetime import datetime
 import re
@@ -1143,9 +1144,16 @@ def _assisted_public_follow_up(
     customer_message: str,
 ) -> Dict[str, Any]:
     tracking_code = f"pc-{pedido_id}"
+    tracking_token = secrets.token_urlsafe(24)
     tracking_path = f"/tracking/order/{quote_plus(tracking_code)}"
+    tracking_api = f"/api/public/tracking/experience?kind=order&code={quote_plus(tracking_code)}"
     if tenant_slug:
-        tracking_path = f"{tracking_path}?tenant_slug={quote_plus(str(tenant_slug))}"
+        encoded_tenant = quote_plus(str(tenant_slug))
+        tracking_path = f"{tracking_path}?tenant_slug={encoded_tenant}&token={quote_plus(tracking_token)}"
+        tracking_api = f"{tracking_api}&tenant_slug={encoded_tenant}&token={quote_plus(tracking_token)}"
+    else:
+        tracking_path = f"{tracking_path}?token={quote_plus(tracking_token)}"
+        tracking_api = f"{tracking_api}&token={quote_plus(tracking_token)}"
     return {
         "contract_version": "marketplace.assisted_followup.v1",
         "kind": "order",
@@ -1157,6 +1165,10 @@ def _assisted_public_follow_up(
             "raw_code": tracking_code,
             "pedido_id": pedido_id,
             "path": tracking_path,
+            "api_endpoint": tracking_api,
+            "token": tracking_token,
+            "token_required": True,
+            "access": "signed_link",
             "label": "Seguimiento publico",
         },
         "channels": [

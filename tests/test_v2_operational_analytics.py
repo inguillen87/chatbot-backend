@@ -300,6 +300,17 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertIn("inspect_hotspot_1", action_ids)
         playbook_ids = {item.get("id") for item in (payload.get("hotspot_actions") or {}).get("playbook") or []}
         self.assertIn("triage_high_density_zone", playbook_ids)
+        operational_hotspots = payload.get("operational_hotspots") or []
+        self.assertTrue(operational_hotspots)
+        self.assertEqual((payload.get("summary") or {}).get("operational_hotspots"), len(operational_hotspots))
+        self.assertIn("operational_hotspots", (payload.get("render_contract") or {}).get("premium_metadata") or [])
+        first_operational_hotspot = operational_hotspots[0]
+        self.assertGreater(first_operational_hotspot.get("operational_score") or 0, 0)
+        self.assertEqual(first_operational_hotspot.get("rank_reason"), "sla_breached")
+        self.assertGreaterEqual((first_operational_hotspot.get("signals") or {}).get("breached_sla") or 0, 1)
+        self.assertGreaterEqual((first_operational_hotspot.get("signals") or {}).get("tickets") or 0, 1)
+        self.assertGreaterEqual((first_operational_hotspot.get("signals") or {}).get("recent_24h") or 0, 1)
+        self.assertEqual((first_operational_hotspot.get("recommended_action") or {}).get("ui_hint"), "focus_map_cell_and_filter_tickets")
         self.assertEqual((payload.get("ai_status") or {}).get("contract_version"), "operations.heatmap_ai_status.v1")
         self.assertIn((payload.get("ai_status") or {}).get("status"), {"hf_active", "local_fallback"})
         self.assertTrue((payload.get("ai_status") or {}).get("safe_to_render_without_hf_token"))
@@ -496,6 +507,8 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertEqual(payload.get("points"), [])
         self.assertEqual(payload.get("cells"), [])
         self.assertEqual(payload.get("hotspots"), [])
+        self.assertEqual(payload.get("operational_hotspots"), [])
+        self.assertEqual((payload.get("summary") or {}).get("operational_hotspots"), 0)
         self.assertFalse((payload.get("render_contract") or {}).get("can_render_heatmap"))
         self.assertEqual((payload.get("render_contract") or {}).get("state"), "empty")
         self.assertEqual((payload.get("quality") or {}).get("state"), "blocked")

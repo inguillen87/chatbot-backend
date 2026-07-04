@@ -3,6 +3,7 @@ from unittest.mock import patch, call
 
 from socket_service import (
     emit_new_ticket,
+    emit_new_chat_message,
     emit_ticket_comment,
     emit_ticket_status_changed,
     emit_ticket_assignment_changed,
@@ -26,6 +27,9 @@ class SocketServiceEventTests(unittest.TestCase):
                 call('ticket_update', payload, room='municipio_7'),
             ]
         )
+        self.assertEqual(mock_emit.call_args_list[2].args[0], 'ticket.updated')
+        self.assertEqual(mock_emit.call_args_list[2].args[1]['room'], 'municipio_7')
+        self.assertEqual(mock_emit.call_args_list[2].kwargs, {'room': 'municipio_7'})
 
     def test_emit_ticket_comment_prefers_explicit_room(self):
         payload = {"socket_room": "pyme_3", "tenant_type": "pyme", "ticket_id": 15}
@@ -56,6 +60,9 @@ class SocketServiceEventTests(unittest.TestCase):
         self.assertEqual(event_payload['payload'], payload)
         self.assertEqual(mock_emit.call_args_list[0].kwargs, {'room': 'municipio_7'})
         self.assertEqual(mock_emit.call_args_list[1], call('ticket_update', payload, room='municipio_7'))
+        self.assertEqual(mock_emit.call_args_list[2].args[0], 'ticket.updated')
+        self.assertEqual(mock_emit.call_args_list[2].args[1]['payload'], payload)
+        self.assertEqual(mock_emit.call_args_list[2].kwargs, {'room': 'municipio_7'})
 
     def test_emit_ticket_assignment_changed_emits_legacy_and_standard_events(self):
         payload = {"socket_room": "municipio_7", "tenant_type": "municipio", "ticket_id": 11, "assigned_to": {"id": 22}}
@@ -70,6 +77,21 @@ class SocketServiceEventTests(unittest.TestCase):
         self.assertEqual(event_payload['payload'], payload)
         self.assertEqual(mock_emit.call_args_list[0].kwargs, {'room': 'municipio_7'})
         self.assertEqual(mock_emit.call_args_list[1], call('ticket_update', payload, room='municipio_7'))
+        self.assertEqual(mock_emit.call_args_list[2].args[0], 'ticket.updated')
+        self.assertEqual(mock_emit.call_args_list[2].kwargs, {'room': 'municipio_7'})
+
+    def test_emit_new_chat_message_emits_whatsapp_analytics_alias(self):
+        payload = {"socket_room": "ticket_municipio_11", "tenant_type": "municipio", "ticket_id": 11, "channel": "whatsapp"}
+
+        with patch('socket_service.socketio.emit') as mock_emit:
+            emit_new_chat_message(payload)
+
+        self.assertEqual(mock_emit.call_args_list[0], call('new_chat_message', payload, room='ticket_municipio_11'))
+        self.assertEqual(mock_emit.call_args_list[1].args[0], 'conversation.message.created')
+        self.assertEqual(mock_emit.call_args_list[1].kwargs, {'room': 'ticket_municipio_11'})
+        self.assertEqual(mock_emit.call_args_list[2].args[0], 'whatsapp.message.created')
+        self.assertEqual(mock_emit.call_args_list[2].args[1]['payload'], payload)
+        self.assertEqual(mock_emit.call_args_list[2].kwargs, {'room': 'ticket_municipio_11'})
 
     def test_emit_ticket_presence_changed_uses_enterprise_envelope(self):
         payload = {"socket_room": "municipio_7", "tenant_type": "municipio", "ticket_id": 11, "presence_status": "active"}
@@ -128,6 +150,9 @@ class SocketServiceEventTests(unittest.TestCase):
         self.assertEqual(event_payload["result_version"], 42)
         self.assertNotIn("legacy_results", event_payload)
         self.assertEqual(mock_emit.call_args_list[1].kwargs, {'room': 'encuesta_consulta-barrial'})
+        self.assertEqual(mock_emit.call_args_list[2].args[0], 'survey.vote.created')
+        self.assertEqual(mock_emit.call_args_list[2].args[1]["result_version"], 42)
+        self.assertEqual(mock_emit.call_args_list[2].kwargs, {'room': 'encuesta_consulta-barrial'})
 
     def test_emit_survey_update_emits_tenant_scoped_room_and_legacy_room(self):
         legacy_payload = {"total_respuestas": 1}
@@ -145,9 +170,13 @@ class SocketServiceEventTests(unittest.TestCase):
         self.assertEqual(mock_emit.call_args_list[0], call('survey_update', legacy_payload, room='encuesta:junin:consulta-barrial'))
         self.assertEqual(mock_emit.call_args_list[1].args[0], 'survey_update_v2')
         self.assertEqual(mock_emit.call_args_list[1].kwargs, {'room': 'encuesta:junin:consulta-barrial'})
-        self.assertEqual(mock_emit.call_args_list[2], call('survey_update', legacy_payload, room='encuesta_consulta-barrial'))
-        self.assertEqual(mock_emit.call_args_list[3].args[0], 'survey_update_v2')
-        self.assertEqual(mock_emit.call_args_list[3].kwargs, {'room': 'encuesta_consulta-barrial'})
+        self.assertEqual(mock_emit.call_args_list[2].args[0], 'survey.vote.created')
+        self.assertEqual(mock_emit.call_args_list[2].kwargs, {'room': 'encuesta:junin:consulta-barrial'})
+        self.assertEqual(mock_emit.call_args_list[3], call('survey_update', legacy_payload, room='encuesta_consulta-barrial'))
+        self.assertEqual(mock_emit.call_args_list[4].args[0], 'survey_update_v2')
+        self.assertEqual(mock_emit.call_args_list[4].kwargs, {'room': 'encuesta_consulta-barrial'})
+        emitted_names = [call_args.args[0] for call_args in mock_emit.call_args_list]
+        self.assertEqual(emitted_names.count('survey.vote.created'), 2)
 
 
 if __name__ == '__main__':

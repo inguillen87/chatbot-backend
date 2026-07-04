@@ -1,6 +1,6 @@
 import logging
 from datetime import datetime, timezone
-from app import db
+from extensions import db
 from models_analytics_k import AIUsageLog, TenantBudget
 from schemas.ai_contracts import UsageMetrics
 

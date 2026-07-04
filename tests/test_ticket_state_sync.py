@@ -8,7 +8,7 @@ os.environ.setdefault("FLASK_SKIP_GLOBAL_APP", "1")
 
 from app import create_app, db
 from config import Config
-from models import User, MunicipioTicket, PymeTicket, Rubro
+from models import User, MunicipioTicket, PymeTicket, Rubro, TenantProfile
 
 
 class TicketStateSyncTestConfig(Config):
@@ -105,6 +105,69 @@ class TicketStateSyncTest(unittest.TestCase):
         actualizado = PymeTicket.query.get(self.pyme_ticket.id)
         self.assertEqual(actualizado.estado, 'cerrado')
         self.assertEqual(actualizado.estado_cliente, 'cerrado')
+
+    def test_tenant_scoped_pyme_admin_can_view_and_reply_without_rubro_id(self):
+        tenant_admin = User(
+            name='Tenant Pyme Admin',
+            email='tenant-pyme@example.com',
+            rol='admin',
+            tipo_chat='pyme',
+            tenant_slug='tenant-pyme',
+        )
+        tenant_admin.set_password('pass')
+        db.session.add(tenant_admin)
+        db.session.commit()
+
+        tenant = TenantProfile(
+            slug='tenant-pyme',
+            nombre='Tenant Pyme',
+            tipo='pyme',
+            pyme_id=tenant_admin.id,
+        )
+        db.session.add(tenant)
+        db.session.commit()
+        tenant_admin.tenant_id = tenant.id
+
+        ticket = PymeTicket(
+            nro_ticket=2,
+            tenant_id=tenant.id,
+            rubro_id=999,
+            pregunta='consulta tenant',
+            user_id=tenant_admin.id,
+        )
+        db.session.add(ticket)
+        db.session.commit()
+
+        res_login = self.client.post(
+            '/auth/login',
+            data=json.dumps({'email': 'tenant-pyme@example.com', 'password': 'pass'}),
+            content_type='application/json',
+        )
+        token = json.loads(res_login.data)['token']
+        headers = {
+            'Authorization': f'Bearer {token}',
+            'X-Tenant-Slug': 'tenant-pyme',
+        }
+
+        detail = self.client.get(f'/tickets/pyme/{ticket.id}', headers=headers)
+        self.assertEqual(detail.status_code, 200)
+
+        with patch(
+            'services.notification_dispatcher.dispatch_ticket_update',
+            return_value={'email': False, 'sms': False, 'whatsapp': False},
+        ), patch('routes.ticket.emit_ticket_update'), patch(
+            'routes.ticket.emit_ticket_comment'
+        ), patch('routes.ticket.emit_ticket_unread_changed'):
+            reply = self.client.post(
+                f'/tickets/pyme/{ticket.id}/responder',
+                headers=headers,
+                data=json.dumps({'comentario': 'Respuesta desde tenant'}),
+                content_type='application/json',
+            )
+
+        self.assertEqual(reply.status_code, 200)
+        payload = json.loads(reply.data)
+        self.assertEqual(payload['delivery']['contract_version'], 'tickets.agent_reply_delivery.v1')
 
     def test_get_ticket_estados_endpoint(self):
         res_login = self.client.post(

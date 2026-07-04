@@ -3,6 +3,7 @@ from unittest.mock import patch
 from app import create_app, db
 from models import User, MunicipioTicket, Rubro, TicketComentario, ArchivoAdjunto, Conversacion
 from config import TestConfig
+from utils.roles import ROLE_EMPLEADO, canonical_role
 import json
 
 class TicketEndpointsTest(unittest.TestCase):
@@ -39,6 +40,21 @@ class TicketEndpointsTest(unittest.TestCase):
         )
         admin_pyme_alias_user.set_password('adminpass')
         db.session.add(admin_pyme_alias_user)
+        db.session.flush()
+
+        employee_alias_user = User(
+            email='employee@junin.com',
+            name='Employee Junin',
+            rol='employee',
+            municipio_id=1,
+            empresa_id=admin_user.id,
+            rubro_id=municipio_rubro.id,
+            tipo_chat='municipio',
+            es_empleado=True,
+            ticket_categorias='calle,alumbrado',
+        )
+        employee_alias_user.set_password('employeepass')
+        db.session.add(employee_alias_user)
 
         # Crear tickets para el municipio 1
         ticket1 = MunicipioTicket(
@@ -71,6 +87,9 @@ class TicketEndpointsTest(unittest.TestCase):
             pregunta='Un arbol se cayo sobre la vereda.'
         )
         db.session.add_all([ticket1, ticket2, ticket3])
+        db.session.commit()
+
+        ticket1.asignado_a_id = employee_alias_user.id
         db.session.commit()
 
         # Conversación asociada al ticket1
@@ -116,6 +135,58 @@ class TicketEndpointsTest(unittest.TestCase):
         self.assertEqual(len(ticket_map['Bache en la calle']['historial_chat']), 2)
         self.assertEqual(ticket_map['Bache en la calle']['historial_chat'][0]['texto'], 'Hola')
         self.assertEqual(ticket_map['Bache en la calle']['historial_chat'][0]['autor'], 'vecino')
+
+    def test_canonical_role_accepts_employee_aliases(self):
+        self.assertEqual(canonical_role('employee'), ROLE_EMPLEADO)
+        self.assertEqual(canonical_role('agent'), ROLE_EMPLEADO)
+
+    def test_api_tickets_accepts_employee_role_alias(self):
+        login_resp = self.client.post('/auth/login', json={
+            'email': 'employee@junin.com',
+            'password': 'employeepass'
+        })
+        self.assertEqual(login_resp.status_code, 200)
+        token = json.loads(login_resp.data)['token']
+
+        resp = self.client.get(
+            '/api/tickets?include=compact',
+            headers={'Authorization': f'Bearer {token}'},
+            follow_redirects=False,
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.content_type.split(';')[0], 'application/json')
+        data = json.loads(resp.data)
+        self.assertIn('tickets', data)
+        self.assertEqual(len(data['tickets']), 2)
+        self.assertEqual(data.get('pagination', {}).get('total_items'), 2)
+
+    @patch('services.notification_dispatcher.dispatch_ticket_update', return_value={'email': False, 'sms': False, 'whatsapp': False})
+    def test_employee_role_alias_can_reply_only_assigned_ticket(self, _mock_dispatch):
+        login_resp = self.client.post('/auth/login', json={
+            'email': 'employee@junin.com',
+            'password': 'employeepass'
+        })
+        self.assertEqual(login_resp.status_code, 200)
+        token = json.loads(login_resp.data)['token']
+        headers = {'Authorization': f'Bearer {token}'}
+
+        assigned_ticket = MunicipioTicket.query.filter_by(asunto='Bache en la calle').first()
+        unassigned_ticket = MunicipioTicket.query.filter_by(asunto='Luz quemada').first()
+
+        assigned_resp = self.client.post(
+            f'/tickets/municipio/{assigned_ticket.id}/responder',
+            json={'comentario': 'Lo revisamos desde la mesa operativa.'},
+            headers=headers,
+        )
+        self.assertEqual(assigned_resp.status_code, 200)
+
+        blocked_resp = self.client.post(
+            f'/tickets/municipio/{unassigned_ticket.id}/responder',
+            json={'comentario': 'No deberia poder responder.'},
+            headers=headers,
+        )
+        self.assertEqual(blocked_resp.status_code, 403)
 
     def test_get_tickets_accepts_modern_admin_role_aliases(self):
         login_resp = self.client.post('/auth/admin/login', json={

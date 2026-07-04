@@ -854,8 +854,8 @@ def upload_to_gcs(file_storage, kind: str = "attachments") -> dict | None:
         if not owner and has_app_context() and hasattr(g, 'viewer'):
             owner = g.viewer
 
-        key_prefix = _determine_r2_key_prefix(owner, kind=kind)
-        r2_key = f"{key_prefix}/{unique_name}"
+        tenant_slug = _resolve_r2_tenant_slug(owner) or "anonymous"
+        r2_key = r2_service.generate_key(unique_name, tenant_slug, context_type=kind)
 
         file_stream_r2 = io.BytesIO(file_bytes)
         r2_url = r2_service.upload_file_with_key(file_stream_r2, r2_key, file_storage.mimetype)
@@ -997,6 +997,36 @@ def _determine_r2_key_prefix(owner_user, kind: str = "attachments") -> str:
     return f"{prefix_type}/{slug}/{safe_kind}"
 
 
+def _resolve_r2_tenant_slug(owner_user) -> str | None:
+    """Resolve the tenant slug used by R2Service.generate_key."""
+
+    tenant = None
+    if owner_user:
+        tenant = getattr(owner_user, 'tenant', None)
+        if not tenant and getattr(owner_user, 'tenant_profile_pyme', None):
+            tenant = owner_user.tenant_profile_pyme
+        if not tenant and getattr(owner_user, 'tenant_profile_municipio', None):
+            tenant = owner_user.tenant_profile_municipio
+
+    if has_app_context() and hasattr(g, 'tenant_profile') and g.tenant_profile:
+        tenant = g.tenant_profile
+
+    if tenant and getattr(tenant, 'slug', None):
+        return str(tenant.slug)
+
+    if owner_user:
+        if getattr(owner_user, 'tenant_slug', None):
+            return str(owner_user.tenant_slug)
+        if getattr(owner_user, 'municipio_id', None):
+            return str(owner_user.municipio_id)
+        if getattr(owner_user, 'pyme_id', None):
+            return str(owner_user.pyme_id)
+        if getattr(owner_user, 'id', None):
+            return str(owner_user.id)
+
+    return None
+
+
 def guardar_adjunto_y_thumbnail(file_storage, kind: str = "attachments") -> dict | None:
     """Upload a file and its generated thumbnail to storage.
 
@@ -1043,8 +1073,8 @@ def guardar_adjunto_y_thumbnail(file_storage, kind: str = "attachments") -> dict
         if not owner and has_app_context() and hasattr(g, 'viewer'):
             owner = g.viewer
 
-        key_prefix = _determine_r2_key_prefix(owner, kind=kind)
-        r2_key = f"{key_prefix}/{unique_name}"
+        tenant_slug = _resolve_r2_tenant_slug(owner) or "anonymous"
+        r2_key = r2_service.generate_key(unique_name, tenant_slug, context_type=kind)
 
         # Reset stream for R2
         file_stream_r2 = io.BytesIO(file_bytes)
@@ -1055,7 +1085,7 @@ def guardar_adjunto_y_thumbnail(file_storage, kind: str = "attachments") -> dict
             thumb_url = None
             if thumbnail_bytes and thumb_meta:
                 thumb_filename = get_thumb_filename(unique_name)
-                r2_thumb_key = f"{key_prefix}/{thumb_filename}"
+                r2_thumb_key = r2_service.generate_key(thumb_filename, tenant_slug, context_type=kind)
                 thumb_url = r2_service.upload_file_with_key(
                     io.BytesIO(thumbnail_bytes),
                     r2_thumb_key,

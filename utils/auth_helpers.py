@@ -15,6 +15,7 @@ from extensions import db
 from models import Rubro, TenantProfile, User
 import secrets
 from services.demo_registry import demo_rubro_for_token
+from utils.roles import ROLE_EMPLEADO, canonical_role
 from utils.user_query import _safe_user_query
 
 
@@ -1207,7 +1208,7 @@ def admin_o_empleado_requerido(f):
     """Permite solo a admins (empresa_id None) o empleados."""
     @wraps(f)
     def decorated(user: User, *args, **kwargs):
-        if user.empresa_id is not None and user.rol != "empleado":
+        if user.empresa_id is not None and canonical_role(getattr(user, "rol", None)) != ROLE_EMPLEADO:
             return jsonify({"error": "Permisos insuficientes"}), 403
         return f(user, *args, **kwargs)
 

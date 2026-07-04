@@ -8,6 +8,7 @@ from twilio.rest import Client
 from models import AuditEvent, MessageTemplateRegistry, NotificationTemplate, User, db
 from services.whatsapp_enterprise_rules import WhatsAppEnterpriseRulesService
 from services.whatsapp_experience import build_whatsapp_experience
+from services.plan_access import integration_access_payload, integration_frontend_contract
 from utils.auth_decorators import _is_authorized_for_tenant
 from utils.auth_helpers import token_requerido
 from utils.tenant import require_tenant
@@ -73,6 +74,69 @@ def _twilio_credentials() -> tuple[str | None, str | None]:
     account_sid = current_app.config.get("TWILIO_ACCOUNT_SID")
     auth_token = current_app.config.get("TWILIO_AUTH_TOKEN")
     return account_sid, auth_token
+
+
+def _twilio_content_confirmation_token(template_id: str) -> str:
+    return f"sync_twilio_content:{template_id}"
+
+
+def _twilio_template_frontend_contract(access: dict, *, action: str) -> dict:
+    return integration_frontend_contract(
+        access,
+        "whatsapp_sender_management",
+        render_as="whatsapp_template_creation_lock",
+        primary_action="upgrade_to_full",
+        action=action,
+        allow_dry_run_preview=True,
+        show_payload_preview=True,
+        hide_execute_controls=not bool(access.get("enabled")),
+        hide_refresh_controls=not bool(access.get("enabled")),
+        copy={
+            "title": "Plantillas productivas bloqueadas",
+            "description": (
+                access.get("message")
+                or "Las plantillas productivas de WhatsApp requieren plan Full activo."
+            ),
+        },
+    )
+
+
+def _twilio_operator_guardrails(access: dict, *, action: str, execute_confirmation_issued: bool) -> dict:
+    enabled = bool(access.get("enabled"))
+    return {
+        "contract_version": "twilio.content.operator_guardrails.v1",
+        "action": action,
+        "dry_run_preview_allowed": True,
+        "show_manifest_payload": True,
+        "execute_confirmation_issued": bool(enabled and execute_confirmation_issued),
+        "twilio_call_allowed": enabled,
+        "requires_full_plan": not enabled,
+        "blocked_actions": [] if enabled else ["create_twilio_content_template", "refresh_twilio_content_template"],
+        "next_action": "execute_twilio_content_call" if enabled else "upgrade_to_full",
+    }
+
+
+def _twilio_access_lock_response(tenant, *, action: str):
+    access = integration_access_payload(tenant)
+    return jsonify(
+        {
+            "ok": False,
+            "blocked": True,
+            "error": "plan_required",
+            "reason": access.get("reason_code") or "plan_full_required",
+            "locked_reason": access.get("lock_reason_code") or access.get("reason_code") or "plan_full_required",
+            "action": action,
+            "message": access.get("message"),
+            "integration_access": access,
+            "frontend_contract": _twilio_template_frontend_contract(access, action=action),
+            "operator_guardrails": _twilio_operator_guardrails(
+                access,
+                action=action,
+                execute_confirmation_issued=False,
+            ),
+            "upgrade": access.get("upgrade"),
+        }
+    ), 403
 
 
 @whatsapp_rules_bp.route("/api/admin/whatsapp/rules", methods=["GET"])
@@ -257,6 +321,8 @@ def sync_twilio_content_template(user: User):
     dry_run = payload.get("dry_run", True) is not False
     submit_for_approval = payload.get("submit_for_approval", True) is not False
     force = bool(payload.get("force", False))
+    integration_access = integration_access_payload(tenant)
+    access_enabled = bool(integration_access.get("enabled"))
 
     manifest_item = _find_twilio_manifest_item(tenant, template_id)
     if not manifest_item:
@@ -284,21 +350,41 @@ def sync_twilio_content_template(user: User):
     existing_has_sid = bool(existing and str(existing.content_sid or "").startswith("HX"))
 
     if dry_run:
+        ready_to_create = access_enabled
+        execute_confirmation = _twilio_content_confirmation_token(template_id) if access_enabled else None
+        response_payload = {
+            "dry_run": True,
+            "template_id": template_id,
+            "ready_to_create": ready_to_create,
+            "blocked": not access_enabled,
+            "locked_reason": None if access_enabled else integration_access.get("lock_reason_code"),
+            "integration_access": integration_access,
+            "frontend_contract": _twilio_template_frontend_contract(
+                integration_access,
+                action="create_twilio_content_template",
+            ),
+            "operator_guardrails": _twilio_operator_guardrails(
+                integration_access,
+                action="create_twilio_content_template",
+                execute_confirmation_issued=bool(execute_confirmation),
+            ),
+            "would_submit_for_approval": submit_for_approval,
+            "existing_registry": _template_registry_payload(existing),
+            "create_request": create_request,
+            "approval_request": approval_request,
+            "content_family": manifest_item.get("content_family"),
+            "action_capabilities": manifest_item.get("action_capabilities") or {},
+            "meta_business": manifest_item.get("meta_business") or {},
+            "quality_gate": manifest_item.get("quality_gate") or {},
+        }
+        if execute_confirmation:
+            response_payload["execute_confirmation"] = execute_confirmation
         return jsonify(
-            {
-                "dry_run": True,
-                "template_id": template_id,
-                "ready_to_create": True,
-                "would_submit_for_approval": submit_for_approval,
-                "existing_registry": _template_registry_payload(existing),
-                "create_request": create_request,
-                "approval_request": approval_request,
-                "content_family": manifest_item.get("content_family"),
-                "action_capabilities": manifest_item.get("action_capabilities") or {},
-                "meta_business": manifest_item.get("meta_business") or {},
-                "quality_gate": manifest_item.get("quality_gate") or {},
-            }
+            response_payload
         )
+
+    if not access_enabled:
+        return _twilio_access_lock_response(tenant, action="create_twilio_content_template")
 
     if existing_has_sid and not force:
         return jsonify(
@@ -310,6 +396,10 @@ def sync_twilio_content_template(user: User):
                 "meta_business": manifest_item.get("meta_business") or {},
             }
         )
+
+    expected_confirmation = _twilio_content_confirmation_token(template_id)
+    if payload.get("execute_confirmation") != expected_confirmation:
+        abort(409, description="Confirmacion requerida para crear o enviar plantilla real a Twilio")
 
     account_sid, auth_token = _twilio_credentials()
     if not account_sid or not auth_token:
@@ -391,6 +481,10 @@ def sync_twilio_content_template(user: User):
 def refresh_twilio_content_template(user: User):
     tenant = g.tenant_profile
     _guard(user, tenant)
+    integration_access = integration_access_payload(tenant)
+    if not integration_access.get("enabled"):
+        return _twilio_access_lock_response(tenant, action="refresh_twilio_content_template")
+
     payload = request.get_json(silent=True) or {}
 
     template_id = str(payload.get("template_id") or "").strip()

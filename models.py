@@ -33,6 +33,7 @@ import json
 import os
 import random
 from services.gcs_service import resolve_attachment_thumb_url
+from services.attachment_delivery import serialize_attachment_for_delivery
 
 try:  # pragma: no cover - defensive fallback for circular imports during tests
     from config import TIMEZONE_OFFSET as _CONFIG_TIMEZONE_OFFSET
@@ -1058,15 +1059,6 @@ class TicketComentario(db.Model):
             "estado_ticket": self.estado_ticket
         }
         if self.archivo_adjunto:
-            attachment_info = {
-                "id": self.archivo_adjunto.id,
-                "url": self.archivo_adjunto.url,
-                "name": self.archivo_adjunto.nombre_original,
-                "mimeType": self.archivo_adjunto.mime,
-                "size": self.archivo_adjunto.tamano,
-                "uploadedAt": datetime_to_iso_utc(self.archivo_adjunto.fecha),
-            }
-
             # Fetch metadata from AnalisisArchivo
             analisis = AnalisisArchivo.query.filter_by(
                 archivo_adjunto_id=self.archivo_adjunto.id,
@@ -1083,9 +1075,11 @@ class TicketComentario(db.Model):
                 meta=meta,
             )
 
-            attachment_info["thumbUrl"] = thumb_url
-            attachment_info["thumbnailUrl"] = thumb_url
-            attachment_info['meta'] = meta
+            attachment_info = serialize_attachment_for_delivery(
+                self.archivo_adjunto,
+                meta=meta,
+                thumb_url=thumb_url,
+            )
 
             data['attachmentInfo'] = attachment_info
         # Determine author information for clarity in timelines and chats

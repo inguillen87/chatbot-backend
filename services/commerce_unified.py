@@ -549,18 +549,22 @@ def _build_assisted_request(metadata: dict[str, Any], raw_items: list[Any], *, r
     raw_payload = _as_dict(raw_items[0]) if raw_items else {}
     detected = _as_list(raw_payload.get("items_detectados"))
     unmatched_rows = _as_list(raw_payload.get("no_encontrados"))
-    unmatched_labels = _as_list(raw_payload.get("no_encontrados_labels"))
-    if not unmatched_labels and unmatched_rows:
+    if "unmatched_items" in metadata:
+        unmatched_labels = _as_list(metadata.get("unmatched_items"))
+        if not unmatched_labels:
+            unmatched_rows = []
+    else:
+        unmatched_labels = _as_list(raw_payload.get("no_encontrados_labels"))
+    if "unmatched_items" not in metadata and not unmatched_labels and unmatched_rows:
         unmatched_labels = [
             str(row.get("nombre") or row.get("sku") or row.get("descripcion") or row.get("detalle") or row)
             for row in unmatched_rows
             if isinstance(row, dict) or row
         ]
-    catalog_candidates = (
-        _as_list(metadata.get("catalog_candidates"))
-        or _as_list(raw_payload.get("catalog_candidates"))
-        or _catalog_candidates_from_unmatched_rows(unmatched_rows)
-    )
+    if "catalog_candidates" in metadata:
+        catalog_candidates = _as_list(metadata.get("catalog_candidates"))
+    else:
+        catalog_candidates = _as_list(raw_payload.get("catalog_candidates")) or _catalog_candidates_from_unmatched_rows(unmatched_rows)
 
     raw_contact = _as_dict(metadata.get("contact")) or _as_dict(raw_payload.get("contact"))
     legacy_contact = _as_dict(metadata.get("contacto")) or _as_dict(raw_payload.get("contacto"))
@@ -687,6 +691,8 @@ def _build_crm_review_card(assisted_request: dict[str, Any] | None) -> dict[str,
     contact_links = _as_list(operator_pack.get("contact_links"))
     next_actions = _as_list(assisted_request.get("next_actions"))
     customer_next_steps = _as_list(assisted_request.get("customer_next_steps"))
+    public_follow_up = _as_dict(assisted_request.get("public_follow_up"))
+    tracking = _as_dict(public_follow_up.get("tracking"))
 
     needs_review = bool(
         operator_pack.get("needs_human_review")
@@ -707,6 +713,18 @@ def _build_crm_review_card(assisted_request: dict[str, Any] | None) -> dict[str,
         or document_profile.get("primary_intent")
         or operator_summary.get("primary_intent")
     )
+    has_draft_lines = bool(lines)
+    has_catalog_gaps = bool(unmatched_items or catalog_candidates)
+    ready_to_materialize = bool(draft and has_draft_lines and not needs_review and not has_catalog_gaps)
+    operational_state = (
+        "ready_for_order_creation"
+        if ready_to_materialize
+        else "needs_catalog_resolution"
+        if has_catalog_gaps
+        else "needs_operator_review"
+        if needs_review
+        else "ready_to_reply"
+    )
 
     source_preview = {
         "channel": source.get("channel") or assisted_request.get("channel"),
@@ -716,6 +734,59 @@ def _build_crm_review_card(assisted_request: dict[str, Any] | None) -> dict[str,
         "thumbnail_url": source.get("thumbnail_url") or source.get("image_url") or source.get("archivo_url"),
         "text_preview": source.get("text_preview"),
     }
+    operator_actions: list[dict[str, Any]] = [
+        {
+            "id": "confirm_order_draft",
+            "label": "Crear pedido" if ready_to_materialize else "Revisar y confirmar",
+            "type": "status_transition",
+            "method": "PATCH",
+            "target_status": "confirmed",
+            "enabled": ready_to_materialize,
+            "requires_review": bool(needs_review or has_catalog_gaps),
+            "creates": ["pyme_pedido", "market_order"] if draft and has_draft_lines else [],
+            "disabled_reason": None
+            if ready_to_materialize
+            else "resolve_catalog_or_review_pending"
+            if draft and has_draft_lines
+            else "missing_order_draft",
+            "description": (
+                "Materializa la nota en pedido operativo cuando stock, precios y contacto estan validados."
+            ),
+        }
+    ]
+    if has_catalog_gaps:
+        operator_actions.append(
+            {
+                "id": "resolve_catalog_candidates",
+                "label": "Resolver catalogo",
+                "type": "catalog_resolution",
+                "enabled": True,
+                "requires_review": True,
+                "description": "Vincula los renglones dudosos con productos reales antes de cotizar o crear el pedido.",
+            }
+        )
+    operator_actions.append(
+        {
+            "id": "reply_customer",
+            "label": "Responder cliente",
+            "type": "message",
+            "enabled": bool(operator_pack.get("suggested_reply") or contact_links),
+            "requires_review": False,
+            "description": "Usa la respuesta sugerida y los canales disponibles para cerrar datos faltantes o confirmar.",
+        }
+    )
+    if tracking.get("path"):
+        operator_actions.append(
+            {
+                "id": "open_public_tracking",
+                "label": "Abrir seguimiento",
+                "type": "link",
+                "href": tracking.get("path"),
+                "enabled": True,
+                "requires_review": False,
+                "description": "Abre el estado publico asociado a esta solicitud.",
+            }
+        )
 
     return {
         "contract_version": "marketplace.crm_review_card.v1",
@@ -726,6 +797,8 @@ def _build_crm_review_card(assisted_request: dict[str, Any] | None) -> dict[str,
         "priority": priority,
         "primary_intent": primary_intent,
         "needs_operator_review": needs_review,
+        "operational_state": operational_state,
+        "primary_action_id": operator_actions[0]["id"] if operator_actions else None,
         "contact_state": draft.get("contact_state") or operator_summary.get("contact_state"),
         "recommended_next_step": (
             draft.get("recommended_next_step")
@@ -743,6 +816,7 @@ def _build_crm_review_card(assisted_request: dict[str, Any] | None) -> dict[str,
         "contact_links": contact_links[:6],
         "next_actions": next_actions[:6],
         "customer_next_steps": customer_next_steps[:6],
+        "operator_actions": operator_actions[:8],
     }
 
 

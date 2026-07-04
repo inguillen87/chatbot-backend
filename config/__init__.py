@@ -219,6 +219,7 @@ if os.getenv("CORS_ALLOW_LOCAL_DEV", "1").strip().lower() not in {"0", "false", 
             "http://127.0.0.1:8080",
         ]
     )
+    allowed_urls.append(re.compile(r"^http://(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$"))
 
 # Always add the root domain(s) so that the public widget can reach the API
 host = parsed_backend.hostname

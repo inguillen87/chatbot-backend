@@ -3019,6 +3019,463 @@ def _should_materialize_assisted_order(record, tenant: TenantProfile, status: st
     )
 
 
+def _admin_dict(value):
+    return value if isinstance(value, dict) else {}
+
+
+def _admin_list(value):
+    return value if isinstance(value, list) else []
+
+
+def _add_unique_blocker(blockers, code: str, message: str, **extra) -> None:
+    if any(blocker.get("code") == code for blocker in blockers):
+        return
+    payload = {"code": code, "message": message}
+    payload.update({key: value for key, value in extra.items() if value not in (None, "", [])})
+    blockers.append(payload)
+
+
+def _assisted_order_confirmation_blockers(metadata) -> list[dict]:
+    if not isinstance(metadata, dict):
+        return [
+            {
+                "code": "missing_assisted_contract",
+                "message": "No hay contrato asistido suficiente para crear un pedido operativo.",
+            }
+        ]
+
+    blockers: list[dict] = []
+    source = _admin_dict(metadata.get("source"))
+    structured = _admin_dict(metadata.get("structured_extraction"))
+    match_summary = _admin_dict(metadata.get("match_summary"))
+    operator_pack = _admin_dict(metadata.get("operator_pack"))
+    intake = _admin_dict(metadata.get("intake_experience"))
+    crm_handoff = _admin_dict(metadata.get("crm_handoff"))
+    draft = _admin_dict(metadata.get("crm_order_draft")) or _admin_dict(crm_handoff.get("draft_order"))
+    confirmation = _admin_dict(draft.get("customer_confirmation"))
+
+    if (
+        metadata.get("extraction_error")
+        or source.get("extraction_error")
+        or structured.get("extraction_error")
+        or str(source.get("provider_status") or metadata.get("provider_status") or "").strip().lower() in {"failed", "error"}
+    ):
+        _add_unique_blocker(
+            blockers,
+            "extraction_error",
+            "La lectura IA de la solicitud fallo o quedo incompleta.",
+        )
+
+    if (
+        match_summary.get("needs_operator_review") is True
+        or operator_pack.get("needs_human_review") is True
+        or intake.get("needs_operator_review") is True
+        or metadata.get("needs_operator_review") is True
+    ):
+        _add_unique_blocker(
+            blockers,
+            "needs_operator_review",
+            "La solicitud todavia requiere revision operativa.",
+        )
+
+    unmatched_items = (
+        _admin_list(metadata.get("unmatched_items"))
+        or _admin_list(draft.get("unmatched_items"))
+        or _admin_list(structured.get("unmatched_items"))
+    )
+    if unmatched_items:
+        _add_unique_blocker(
+            blockers,
+            "unmatched_items",
+            "Hay articulos que no fueron vinculados con el catalogo.",
+            count=len(unmatched_items),
+        )
+
+    catalog_candidates = _admin_list(metadata.get("catalog_candidates")) or _admin_list(draft.get("catalog_candidates"))
+    if catalog_candidates:
+        _add_unique_blocker(
+            blockers,
+            "catalog_candidates",
+            "Hay candidatos de catalogo pendientes de resolucion.",
+            count=len(catalog_candidates),
+        )
+
+    blocking_reasons = _admin_list(confirmation.get("blocking_reasons"))
+    if blocking_reasons:
+        _add_unique_blocker(
+            blockers,
+            "customer_confirmation_blocked",
+            "La confirmacion del cliente tiene datos bloqueantes pendientes.",
+            reasons=blocking_reasons[:6],
+        )
+
+    row_errors = (
+        _admin_list(metadata.get("row_errors"))
+        or _admin_list(structured.get("row_errors"))
+        or _admin_list(draft.get("row_errors"))
+    )
+    if row_errors:
+        _add_unique_blocker(
+            blockers,
+            "row_errors",
+            "La extraccion contiene renglones con errores.",
+            count=len(row_errors),
+        )
+
+    lines = _admin_list(draft.get("lines")) or _admin_list(metadata.get("detected_items"))
+    if not lines:
+        _add_unique_blocker(
+            blockers,
+            "missing_draft_lines",
+            "No hay renglones validados para crear el pedido.",
+        )
+        return blockers
+
+    review_states = {
+        "needs_operator_review",
+        "catalog_gap",
+        "unmatched",
+        "pending_resolution",
+        "needs_catalog_resolution",
+        "manual_review",
+        "review_required",
+        "ai_unavailable",
+        "failed",
+        "error",
+    }
+    for line in lines:
+        if not isinstance(line, dict):
+            _add_unique_blocker(
+                blockers,
+                "invalid_draft_line",
+                "El borrador tiene renglones con estructura invalida.",
+            )
+            break
+        state = str(
+            line.get("confirmation_state")
+            or line.get("status")
+            or line.get("state")
+            or ""
+        ).strip().lower()
+        if (
+            line.get("needs_operator_review") is True
+            or line.get("requires_operator_review") is True
+            or state in review_states
+            or _admin_list(line.get("catalog_candidates"))
+        ):
+            _add_unique_blocker(
+                blockers,
+                "line_needs_review",
+                "Hay renglones del pedido que todavia no estan resueltos.",
+                line_id=line.get("line_id") or line.get("id"),
+                source_name=line.get("source_name") or line.get("name") or line.get("nombre"),
+            )
+            break
+
+    return blockers
+
+
+def _assisted_line_label(line: dict) -> str:
+    return str(
+        line.get("source_name")
+        or line.get("name")
+        or line.get("nombre")
+        or line.get("sku")
+        or ""
+    ).strip()
+
+
+def _catalog_match_payload(item: CatalogoItem) -> dict:
+    price_value = parse_precio_flexible(getattr(item, "precio", None))
+    return {
+        "catalogo_item_id": item.id,
+        "catalog_item_id": item.id,
+        "product_id": item.id,
+        "sku": item.sku,
+        "nombre": item.nombre,
+        "name": item.nombre,
+        "precio": item.precio,
+        "price": price_value,
+        "moneda": getattr(item, "moneda", None) or "ARS",
+        "unidad": getattr(item, "unidad", None),
+    }
+
+
+def _resolve_catalog_item_for_tenant(tenant: TenantProfile, catalog_item_id):
+    try:
+        numeric_id = int(catalog_item_id)
+    except (TypeError, ValueError):
+        return None
+    query = CatalogoItem.query.filter(CatalogoItem.id == numeric_id)
+    tenant_filters = [CatalogoItem.tenant_id == tenant.id]
+    if getattr(tenant, "pyme_id", None):
+        tenant_filters.append(CatalogoItem.user_id == tenant.pyme_id)
+    return query.filter(or_(*tenant_filters)).first()
+
+
+def _resolution_matches_line(line: dict, resolution: dict) -> bool:
+    line_id = str(line.get("line_id") or line.get("id") or "").strip()
+    requested_line_id = str(resolution.get("line_id") or resolution.get("id") or "").strip()
+    if requested_line_id and line_id == requested_line_id:
+        return True
+
+    source_name = str(resolution.get("source_name") or resolution.get("item") or resolution.get("label") or "").strip().lower()
+    if source_name and _assisted_line_label(line).lower() == source_name:
+        return True
+    return False
+
+
+def _customer_confirmation_from_resolved_draft(*, detected: int, matched: int, unmatched: int, has_contact: bool, needs_review: bool) -> dict:
+    blocking_reasons = []
+    if detected <= 0:
+        blocking_reasons.append(
+            {
+                "id": "no_items_detected",
+                "label": "No hay renglones confiables",
+                "description": "Revisa el archivo o texto original antes de responder.",
+            }
+        )
+    if unmatched > 0:
+        blocking_reasons.append(
+            {
+                "id": "items_need_review",
+                "label": "Hay articulos para revisar",
+                "description": "Algunos renglones siguen sin asociarse al catalogo.",
+            }
+        )
+    if not has_contact:
+        blocking_reasons.append(
+            {
+                "id": "missing_contact",
+                "label": "Falta contacto",
+                "description": "Hace falta WhatsApp, email o telefono antes de confirmar.",
+            }
+        )
+    if needs_review and not blocking_reasons:
+        blocking_reasons.append(
+            {
+                "id": "operator_review_required",
+                "label": "Requiere validacion",
+                "description": "Confirma stock, precio y datos antes de avanzar.",
+            }
+        )
+
+    confidence_score = round((matched / detected), 2) if detected else 0.0
+    ready = not blocking_reasons and detected > 0
+    return {
+        "contract_version": "marketplace.customer_confirmation.v1",
+        "status": "ready_for_customer_confirmation" if ready else "operator_review_required",
+        "status_label": "Listo para confirmar" if ready else "Revision del equipo necesaria",
+        "headline": "Borrador listo para confirmar" if ready else "Solicitud lista para revision",
+        "description": (
+            "Los renglones detectados coinciden con el catalogo y el equipo puede confirmar stock y precio."
+            if ready
+            else "Completa los datos pendientes antes de crear el pedido operativo."
+        ),
+        "confidence_level": "high" if ready else "medium" if matched > 0 else "low",
+        "confidence_score": confidence_score,
+        "matched": matched,
+        "detected": detected,
+        "blocking_reasons": blocking_reasons,
+        "primary_action_id": "confirm_order_draft" if ready else "continue_by_whatsapp",
+        "primary_action_label": "Confirmar borrador" if ready else "Continuar por WhatsApp o chat",
+        "allowed_actions": ["confirm_order_draft", "open_tracking", "continue_by_whatsapp", "send_to_team"]
+        if ready
+        else ["open_tracking", "continue_by_whatsapp", "send_to_team"],
+    }
+
+
+def _apply_assisted_catalog_resolutions(record, tenant: TenantProfile, resolutions):
+    if not isinstance(record, PedidoConversacional):
+        return None, (
+            {
+                "error": "unsupported_order_type",
+                "message": "La resolucion de catalogo solo aplica a solicitudes asistidas.",
+            },
+            400,
+        )
+    if not isinstance(resolutions, list) or not resolutions:
+        return None, (
+            {
+                "error": "invalid_catalog_resolutions",
+                "message": "Envia catalog_resolutions como una lista con line_id y catalog_item_id.",
+            },
+            400,
+        )
+
+    metadata = dict(record.metadata_payload or {})
+    if metadata.get("contract_version") != "marketplace.assisted_request.v1":
+        return None, (
+            {
+                "error": "unsupported_assisted_contract",
+                "message": "La solicitud no usa el contrato de pedido asistido esperado.",
+            },
+            400,
+        )
+
+    crm_handoff = _admin_dict(metadata.get("crm_handoff"))
+    draft = dict(_admin_dict(metadata.get("crm_order_draft")) or _admin_dict(crm_handoff.get("draft_order")))
+    lines = [dict(line) for line in _admin_list(draft.get("lines")) if isinstance(line, dict)]
+    if not lines:
+        return None, (
+            {
+                "error": "missing_draft_lines",
+                "message": "No hay renglones del borrador para resolver.",
+            },
+            422,
+        )
+
+    resolved_lines = []
+    resolution_errors = []
+    for resolution in resolutions:
+        if not isinstance(resolution, dict):
+            resolution_errors.append({"code": "invalid_resolution", "message": "Cada resolucion debe ser un objeto."})
+            continue
+        item = _resolve_catalog_item_for_tenant(tenant, resolution.get("catalog_item_id") or resolution.get("catalogo_item_id"))
+        if not item:
+            resolution_errors.append(
+                {
+                    "code": "catalog_item_not_found",
+                    "message": "El producto indicado no pertenece al catalogo del tenant.",
+                    "catalog_item_id": resolution.get("catalog_item_id") or resolution.get("catalogo_item_id"),
+                }
+            )
+            continue
+        line = next((candidate for candidate in lines if _resolution_matches_line(candidate, resolution)), None)
+        if not line:
+            resolution_errors.append(
+                {
+                    "code": "line_not_found",
+                    "message": "No se encontro el renglon a resolver.",
+                    "line_id": resolution.get("line_id") or resolution.get("id"),
+                }
+            )
+            continue
+
+        catalog_payload = _catalog_match_payload(item)
+        line.update(
+            {
+                "status": "catalog_matched",
+                "confirmation_state": "ready",
+                "confidence": "operator_confirmed",
+                "customer_visible_status": "Producto confirmado en catalogo",
+                "catalog_item_id": item.id,
+                "catalogo_item_id": item.id,
+                "catalog_match": catalog_payload,
+                "sku": item.sku or line.get("sku"),
+                "candidate_count": 0,
+                "needs_operator_review": False,
+                "resolved_by": "operator",
+                "resolved_at": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+        resolved_lines.append(
+            {
+                "line_id": line.get("line_id"),
+                "source_name": _assisted_line_label(line),
+                "catalog_item_id": item.id,
+                "sku": item.sku,
+                "name": item.nombre,
+            }
+        )
+
+    if not resolved_lines:
+        return None, (
+            {
+                "error": "catalog_resolution_failed",
+                "message": "No se pudo resolver ningun renglon con los datos enviados.",
+                "errors": resolution_errors,
+            },
+            422,
+        )
+
+    unresolved_labels = [
+        _assisted_line_label(line)
+        for line in lines
+        if line.get("needs_operator_review") is True
+        or str(line.get("status") or "").strip().lower() in {"needs_catalog_resolution", "needs_review", "unmatched"}
+    ]
+    unresolved_labels = [label for label in unresolved_labels if label]
+    detected = len(lines)
+    matched = detected - len(unresolved_labels)
+    unmatched = len(unresolved_labels)
+    needs_review = bool(unmatched)
+    contact = _admin_dict(metadata.get("contact"))
+    has_contact = bool(contact.get("phone") or contact.get("telefono") or contact.get("email") or contact.get("name") or contact.get("nombre"))
+
+    draft["lines"] = lines
+    draft["summary"] = {
+        **_admin_dict(draft.get("summary")),
+        "detected": detected,
+        "matched": matched,
+        "unmatched": unmatched,
+        "needs_operator_review": needs_review or not has_contact,
+        "confirmation_status": "ready_for_customer_confirmation" if not needs_review and has_contact else "operator_review_required",
+    }
+    draft["customer_confirmation"] = _customer_confirmation_from_resolved_draft(
+        detected=detected,
+        matched=matched,
+        unmatched=unmatched,
+        has_contact=has_contact,
+        needs_review=needs_review,
+    )
+    draft["recommended_next_step"] = "confirmar_pedido" if not needs_review and has_contact else "resolver_items_y_responder"
+
+    metadata["crm_order_draft"] = draft
+    metadata["crm_handoff"] = {**crm_handoff, "draft_order": draft}
+    metadata["unmatched_items"] = unresolved_labels
+    metadata["catalog_candidates"] = [
+        group
+        for group in _admin_list(metadata.get("catalog_candidates"))
+        if str(group.get("item") or _assisted_line_label(_admin_dict(group.get("row"))) or "").strip() in unresolved_labels
+    ]
+    metadata["match_summary"] = {
+        **_admin_dict(metadata.get("match_summary")),
+        "matched": matched,
+        "unmatched": unmatched,
+        "detected": detected,
+        "needs_operator_review": needs_review or not has_contact,
+    }
+    metadata["crm_state"] = "ready_for_confirmation" if not needs_review and has_contact else "pending_operator_review"
+    metadata["catalog_resolution"] = {
+        "contract_version": "marketplace.catalog_resolution.v1",
+        "resolved_lines": resolved_lines,
+        "errors": resolution_errors,
+        "resolved_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    operator_pack = dict(_admin_dict(metadata.get("operator_pack")))
+    operator_pack["needs_human_review"] = needs_review or not has_contact
+    operator_pack["priority"] = "normal" if not needs_review and has_contact else operator_pack.get("priority") or "high"
+    operator_pack["recommended_next_step"] = draft["recommended_next_step"]
+    metadata["operator_pack"] = operator_pack
+
+    intake = dict(_admin_dict(metadata.get("intake_experience")))
+    if intake:
+        intake["needs_operator_review"] = needs_review or not has_contact
+        metadata["intake_experience"] = intake
+
+    record.metadata_payload = metadata
+    flag_modified(record, "metadata_payload")
+    if isinstance(record.items, list) and record.items:
+        first_item = dict(record.items[0]) if isinstance(record.items[0], dict) else {}
+        first_item.update(
+            {
+                "crm_order_draft": draft,
+                "crm_handoff": metadata["crm_handoff"],
+                "unmatched_items": unresolved_labels,
+                "catalog_candidates": metadata["catalog_candidates"],
+                "match_summary": metadata["match_summary"],
+                "crm_state": metadata["crm_state"],
+                "catalog_resolution": metadata["catalog_resolution"],
+            }
+        )
+        record.items = [first_item, *record.items[1:]]
+        flag_modified(record, "items")
+
+    return metadata["catalog_resolution"], None
+
+
 @admin_tenant_bp.route('/api/admin/tenants/<slug>/orders/<path:order_id>', methods=['GET', 'PATCH'])
 @token_requerido
 @require_tenant
@@ -3036,8 +3493,28 @@ def tenant_order_detail(current_user, slug, order_id):
 
     if request.method == 'PATCH':
         payload = request.get_json(silent=True) or {}
+        catalog_resolutions = payload.get("catalog_resolutions")
+        if catalog_resolutions is not None:
+            _, resolution_error = _apply_assisted_catalog_resolutions(record, tenant, catalog_resolutions)
+            if resolution_error:
+                error_payload, status_code = resolution_error
+                return jsonify(error_payload), status_code
         status = payload.get("status")
         if status is not None:
+            if _should_materialize_assisted_order(record, tenant, status):
+                blockers = _assisted_order_confirmation_blockers(getattr(record, "metadata_payload", None))
+                if blockers:
+                    return jsonify(
+                        {
+                            "error": "assisted_order_needs_review",
+                            "message": (
+                                "No se puede crear el pedido operativo hasta resolver catalogo, "
+                                "datos bloqueantes o revision humana pendiente."
+                            ),
+                            "blocking_reasons": blockers,
+                            "status": getattr(record, "estado", None),
+                        }
+                    ), 409
             _apply_tenant_order_status(record, status)
             if _should_materialize_assisted_order(record, tenant, status):
                 from services.pedido_service import PedidoService

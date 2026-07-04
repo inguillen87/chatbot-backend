@@ -694,6 +694,18 @@ def _aware_datetime(value: Any) -> datetime | None:
     return value.astimezone(timezone.utc)
 
 
+def _parse_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return _aware_datetime(value)
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return _aware_datetime(parsed)
+
+
 def _latest_from_query(query, column) -> datetime | None:
     row = query.order_by(column.desc()).first()
     if not row:
@@ -1075,14 +1087,9 @@ def _heatmap_quality_contract(
 def _heatmap_realtime_contract(points: list[dict[str, Any]]) -> dict[str, Any]:
     timestamps: list[datetime] = []
     for point in points or []:
-        raw_ts = point.get("timestamp")
-        if not raw_ts:
-            continue
-        try:
-            parsed = datetime.fromisoformat(str(raw_ts).replace("Z", "+00:00"))
-        except ValueError:
-            continue
-        timestamps.append(parsed)
+        parsed = _parse_datetime(point.get("timestamp"))
+        if parsed:
+            timestamps.append(parsed)
 
     latest = max(timestamps) if timestamps else None
     return {
@@ -1093,6 +1100,100 @@ def _heatmap_realtime_contract(points: list[dict[str, Any]]) -> dict[str, Any]:
         "latest_event_at": _iso(latest) if latest else None,
         "sources": ["tickets", "surveys", "analytics_events", "whatsapp"],
     }
+
+
+def _heatmap_operational_rank_reason(signals: dict[str, int]) -> str:
+    if int(signals.get("breached_sla") or 0) > 0:
+        return "sla_breached"
+    if int(signals.get("overdue") or 0) > 0:
+        return "overdue_cases"
+    if int(signals.get("unassigned") or 0) > 0:
+        return "unassigned_cases"
+    if int(signals.get("recent_24h") or 0) > 0:
+        return "recent_activity"
+    if int(signals.get("tickets") or 0) > 0:
+        return "ticket_density"
+    return "activity_density"
+
+
+def _heatmap_operational_score(cell: dict[str, Any]) -> float:
+    breached = int(cell.get("breached_sla_count") or 0)
+    overdue = int(cell.get("overdue_count") or 0)
+    unassigned = int(cell.get("unassigned_count") or 0)
+    recent = int(cell.get("recent_24h_count") or 0)
+    tickets = int(cell.get("ticket_count") or 0)
+    surveys = int(cell.get("survey_count") or 0)
+    events = int(cell.get("event_count") or 0)
+    score = (
+        float(cell.get("weight") or 0) * 1.5
+        + int(cell.get("count") or 0)
+        + breached * 8
+        + overdue * 6
+        + unassigned * 4
+        + recent * 3
+        + min(tickets, 10) * 1.5
+        + min(surveys, 10) * 0.6
+        + min(events, 10) * 0.4
+    )
+    return round(score, 2)
+
+
+def _heatmap_operational_hotspots(cell_items: list[dict[str, Any]], *, limit: int = 10) -> list[dict[str, Any]]:
+    hotspots: list[dict[str, Any]] = []
+    for cell in cell_items:
+        signals = {
+            "overdue": int(cell.get("overdue_count") or 0),
+            "unassigned": int(cell.get("unassigned_count") or 0),
+            "breached_sla": int(cell.get("breached_sla_count") or 0),
+            "recent_24h": int(cell.get("recent_24h_count") or 0),
+            "tickets": int(cell.get("ticket_count") or 0),
+            "surveys": int(cell.get("survey_count") or 0),
+            "analytics_events": int(cell.get("event_count") or 0),
+        }
+        score = _heatmap_operational_score(cell)
+        top_category = (cell.get("top_categories") or [{}])[0].get("key")
+        top_channel = (cell.get("top_channels") or [{}])[0].get("key")
+        hotspots.append(
+            {
+                "id": cell.get("id"),
+                "lat": cell.get("lat"),
+                "lng": cell.get("lng"),
+                "weight": cell.get("weight"),
+                "count": cell.get("count"),
+                "operational_score": score,
+                "rank_reason": _heatmap_operational_rank_reason(signals),
+                "latest_event_at": cell.get("latest_event_at"),
+                "signals": signals,
+                "top_category": top_category,
+                "top_channel": top_channel,
+                "sources": cell.get("sources") or [],
+                "top_categories": cell.get("top_categories") or [],
+                "top_channels": cell.get("top_channels") or [],
+                "demographics": cell.get("demographics") or {},
+                "recommended_action": {
+                    "action_id": f"open_operational_hotspot_{cell.get('id')}",
+                    "label": "Abrir zona prioritaria",
+                    "ui_hint": "focus_map_cell_and_filter_tickets",
+                    "filters": {
+                        "category": top_category,
+                        "channel": top_channel,
+                        "cell_id": cell.get("id"),
+                    },
+                },
+            }
+        )
+
+    hotspots.sort(
+        key=lambda item: (
+            float(item.get("operational_score") or 0),
+            int((item.get("signals") or {}).get("breached_sla") or 0),
+            int((item.get("signals") or {}).get("overdue") or 0),
+            int((item.get("signals") or {}).get("recent_24h") or 0),
+            int(item.get("count") or 0),
+        ),
+        reverse=True,
+    )
+    return hotspots[:limit]
 
 
 def _bounds_center(bounds: dict[str, Any] | None) -> dict[str, float] | None:
@@ -1740,6 +1841,7 @@ def build_operational_heatmap(
 
     points = points[:max_points]
     cells: dict[str, dict[str, Any]] = {}
+    recent_cutoff = (_aware_datetime(end_date) or datetime.now(timezone.utc)) - timedelta(hours=24)
     for point in points:
         cell_id = f"{round(point['lat'], 3)}:{round(point['lng'], 3)}"
         cell = cells.setdefault(
@@ -1755,15 +1857,48 @@ def build_operational_heatmap(
                 "channels": Counter(),
                 "genders": Counter(),
                 "age_ranges": Counter(),
+                "statuses": Counter(),
+                "sla_states": Counter(),
+                "ticket_count": 0,
+                "survey_count": 0,
+                "event_count": 0,
+                "overdue_count": 0,
+                "unassigned_count": 0,
+                "breached_sla_count": 0,
+                "recent_24h_count": 0,
+                "latest_event_at": None,
             },
         )
+        source = _norm(point.get("source"), "unknown")
+        status = _norm(point.get("status"), "unknown")
+        sla_state = _norm(point.get("sla_state"), "normal")
+        parsed_timestamp = _parse_datetime(point.get("timestamp"))
         cell["weight"] += float(point.get("weight") or 1.0)
         cell["count"] += 1
-        cell["sources"][point["source"]] += 1
+        cell["sources"][source] += 1
         cell["categories"][point["category"]] += 1
         cell["channels"][point.get("channel") or "unknown"] += 1
         cell["genders"][point.get("gender") or "unknown"] += 1
         cell["age_ranges"][point.get("age_range") or "unknown"] += 1
+        cell["statuses"][status] += 1
+        cell["sla_states"][sla_state] += 1
+        if source == "ticket":
+            cell["ticket_count"] += 1
+            is_open_ticket = status not in _CLOSED_STATES
+            if is_open_ticket and not point.get("assignee_id"):
+                cell["unassigned_count"] += 1
+            if bool(point.get("overdue")):
+                cell["overdue_count"] += 1
+            if bool(point.get("overdue")) or sla_state in _OVERDUE_STATES:
+                cell["breached_sla_count"] += 1
+        elif source == "survey":
+            cell["survey_count"] += 1
+        elif source == "analytics_event":
+            cell["event_count"] += 1
+        if parsed_timestamp:
+            if parsed_timestamp >= recent_cutoff:
+                cell["recent_24h_count"] += 1
+            cell["latest_event_at"] = _max_datetime(cell.get("latest_event_at"), parsed_timestamp)
 
     cell_items = []
     for cell in cells.values():
@@ -1777,6 +1912,16 @@ def build_operational_heatmap(
                 "sources": _counter(cell["sources"], limit=5),
                 "top_categories": _counter(cell["categories"], limit=5),
                 "top_channels": _counter(cell["channels"], limit=5),
+                "top_statuses": _counter(cell["statuses"], limit=5),
+                "top_sla_states": _counter(cell["sla_states"], limit=5),
+                "ticket_count": int(cell["ticket_count"]),
+                "survey_count": int(cell["survey_count"]),
+                "event_count": int(cell["event_count"]),
+                "overdue_count": int(cell["overdue_count"]),
+                "unassigned_count": int(cell["unassigned_count"]),
+                "breached_sla_count": int(cell["breached_sla_count"]),
+                "recent_24h_count": int(cell["recent_24h_count"]),
+                "latest_event_at": _iso(cell.get("latest_event_at")),
                 "demographics": {
                     "gender": _segment_items(cell["genders"], limit=5),
                     "age_ranges": _segment_items(cell["age_ranges"], limit=5),
@@ -1784,6 +1929,8 @@ def build_operational_heatmap(
             }
         )
     cell_items.sort(key=lambda item: (item["weight"], item["count"]), reverse=True)
+    hotspots = cell_items[:10]
+    operational_hotspots = _heatmap_operational_hotspots(cell_items)
 
     category_counter = Counter(point.get("category") or "unknown" for point in points)
     gender_counter = Counter(point.get("gender") or "unknown" for point in points)
@@ -1845,6 +1992,7 @@ def build_operational_heatmap(
     heatmap_summary = {
         "points": len(points),
         "cells": len(cell_items),
+        "operational_hotspots": len(operational_hotspots),
         "can_render_heatmap": bool(points),
         "ticket_points": len([point for point in points if point["source"] == "ticket"]),
         "survey_points": len([point for point in points if point["source"] == "survey"]),
@@ -1864,7 +2012,6 @@ def build_operational_heatmap(
         "dominant_intent": ai_summary.get("dominant_intent") or "general_query",
         "requires_human_attention": bool(ai_summary.get("requires_human_attention")),
     }
-    hotspots = cell_items[:10]
     geocoding_guidance = _heatmap_geocoding_guidance(
         geocoding_candidates=geocoding_candidates,
         location_quality=location_quality,
@@ -1930,6 +2077,7 @@ def build_operational_heatmap(
                 "viewport_presets",
                 "layer_style_contract",
                 "hotspot_actions",
+                "operational_hotspots",
                 "geocoding.guidance",
                 "ai_status",
             ],
@@ -2011,6 +2159,7 @@ def build_operational_heatmap(
         "points": points,
         "cells": cell_items,
         "hotspots": hotspots,
+        "operational_hotspots": operational_hotspots,
         "ui": {
             "labels": {
                 "map_quality": "Calidad del mapa",

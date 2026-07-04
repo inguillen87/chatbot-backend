@@ -144,6 +144,68 @@ def _tenant_info_response():
     return response
 
 
+def _mask_public_name(value: object) -> str:
+    name = str(value or "").strip()
+    if not name:
+        return "Cliente"
+    first = name.split()[0]
+    if len(first) <= 2:
+        return f"{first[:1]}***"
+    return f"{first[:2]}***"
+
+
+def _public_order_tracking_payload(pedido: PymePedido) -> Dict[str, object]:
+    details = pedido.to_dict().get("detalles") or []
+    has_delivery_address = bool(str(pedido.direccion or "").strip())
+    payload: Dict[str, object] = {
+        "contract_version": "public.order_tracking.v1",
+        "privacy": {
+            "public_payload": True,
+            "pii_redacted": True,
+            "redacted_fields": [
+                "email_cliente",
+                "telefono_cliente",
+                "direccion",
+                "latitud",
+                "longitud",
+                "user_id",
+                "customer_identity",
+            ],
+            "private_detail_required": "secure_link_or_authenticated_portal",
+        },
+        "tracking_id": pedido.nro_pedido,
+        "nro_pedido": pedido.nro_pedido,
+        "estado": pedido.estado,
+        "asunto": pedido.asunto,
+        "monto_total": pedido.monto_total,
+        "fecha_creacion": pedido.fecha.isoformat() if pedido.fecha else None,
+        "nombre_cliente": _mask_public_name(pedido.nombre_cliente),
+        "email_cliente": None,
+        "telefono_cliente": None,
+        "direccion": "Direccion registrada" if has_delivery_address else "",
+        "delivery_summary": "Direccion registrada" if has_delivery_address else "Sin direccion registrada",
+        "latitud": None,
+        "longitud": None,
+        "detalles": details if isinstance(details, list) else [],
+        "support_context": {
+            "kind": "order",
+            "order_number": pedido.nro_pedido,
+        },
+    }
+
+    if pedido.pyme_id:
+        pyme_user = db.session.get(User, pedido.pyme_id)
+        if pyme_user:
+            payload["pyme_nombre"] = pyme_user.nombre_empresa or pyme_user.name
+            tenant = getattr(pyme_user, "tenant_profile_pyme", None)
+            if tenant:
+                payload["tenant_slug"] = tenant.slug
+                payload["tenant_logo"] = tenant.logo_url
+                payload["tenant_theme"] = tenant.tema
+
+    return payload
+
+
 @pwa_tenant_info_bp.route("/api/pwa/tenant-info", methods=["GET", "OPTIONS"])
 @cross_origin(**_cors_kwargs(["GET", "OPTIONS"]))
 def api_pwa_tenant_info():
@@ -1073,24 +1135,7 @@ def public_order_status(nro_pedido: str):
     if not pedido:
         abort(404, description="Pedido no encontrado")
 
-    # Serialize explicitly to control public fields
-    data = pedido.to_dict()
-
-    # Enrich with tenant info if available
-    if pedido.pyme_id:
-        pyme_user = db.session.get(User, pedido.pyme_id)
-        if pyme_user:
-            data['pyme_nombre'] = pyme_user.nombre_empresa or pyme_user.name
-
-            # Add branding/logo if available (via TenantProfile if linked)
-            # This allows the tracking page to be branded
-            tenant = getattr(pyme_user, "tenant_profile_pyme", None)
-            if tenant:
-                data['tenant_slug'] = tenant.slug
-                data['tenant_logo'] = tenant.logo_url
-                data['tenant_theme'] = tenant.tema
-
-    return jsonify(data)
+    return jsonify(_public_order_tracking_payload(pedido))
 
 
 @pwa_public_bp.get("/events")

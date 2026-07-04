@@ -104,6 +104,32 @@ services:
         value: es-US
       - key: TWILIO_GATHER_LANGUAGE
         value: es-AR
+      - key: TTS_CACHE_ENABLED
+        value: "true"
+      - key: WHATSAPP_MENU_AUDIO_ENABLED
+        value: "true"
+      - key: TTS_AUDIO_CACHE_PUBLIC_BASE_URL
+        sync: false
+      - key: CLOUDFLARE_AUDIO_CACHE_PUBLIC_BASE_URL
+        sync: false
+      - key: R2_ENDPOINT_URL
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: R2_BUCKET_NAME
+        sync: false
+      - key: R2_PUBLIC_BASE_URL
+        sync: false
+      - key: R2_REGION
+        value: auto
+      - key: R2_SIGNED_URL_TTL_SECONDS
+        value: "900"
+      - key: CLOUDFLARE_TURNSTILE_SECRET_KEY
+        sync: false
+      - key: CLOUDFLARE_TURNSTILE_ENFORCE_PUBLIC_INTAKE
+        value: "false"
       - key: TWILIO_META_APP_ID
         sync: false
       - key: TWILIO_META_EMBEDDED_SIGNUP_CONFIG_ID

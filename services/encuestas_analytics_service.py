@@ -323,6 +323,88 @@ def _aggregate_heatmap_cells(
     return points, cells_payload
 
 
+def _normalize_live_geo_privacy(value: Optional[str]) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"raw", "admin_raw", "exact"}:
+        return "raw"
+    return "public_aggregated"
+
+
+def _public_heatmap_point_from_cell(cell: Mapping[str, Any]) -> Dict[str, Any] | None:
+    lat = cell.get("centroid_lat")
+    lng = cell.get("centroid_lon")
+    try:
+        lat_value = float(lat)
+        lng_value = float(lng)
+    except (TypeError, ValueError):
+        return None
+
+    count = int(cell.get("count") or 0)
+    barrios = cell.get("barrios") if isinstance(cell.get("barrios"), Mapping) else {}
+    canales = cell.get("canales") if isinstance(cell.get("canales"), Mapping) else {}
+    barrio = next(iter(barrios.keys()), None) if barrios else None
+    canal = next(iter(canales.keys()), None) if canales else None
+
+    return {
+        "cell_id": cell.get("cell_id"),
+        "lat": round(lat_value, 3),
+        "lng": round(lng_value, 3),
+        "w": float(count or 1),
+        "weight": float(count or 1),
+        "count": count,
+        "barrio": barrio,
+        "canal": canal,
+        "source": "survey_heatmap_cell",
+        "privacy_mode": "public_aggregated",
+    }
+
+
+def _prepare_live_heatmap_payload(
+    points: Sequence[Mapping[str, Any]],
+    cells: Sequence[Mapping[str, Any]],
+    *,
+    geo_privacy: Optional[str] = None,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Any]]:
+    privacy_mode = _normalize_live_geo_privacy(geo_privacy)
+    if privacy_mode == "raw":
+        return (
+            [dict(point) for point in points],
+            [dict(cell) for cell in cells],
+            {
+                "privacy_mode": "raw",
+                "raw_points_redacted": False,
+                "coordinate_precision": "exact",
+            },
+        )
+
+    public_points = [
+        point
+        for point in (_public_heatmap_point_from_cell(cell) for cell in cells)
+        if point is not None
+    ]
+    public_cells: List[Dict[str, Any]] = []
+    for cell in cells:
+        next_cell = dict(cell)
+        if next_cell.get("centroid_lat") is not None:
+            next_cell["centroid_lat"] = round(float(next_cell["centroid_lat"]), 3)
+        if next_cell.get("centroid_lon") is not None:
+            next_cell["centroid_lon"] = round(float(next_cell["centroid_lon"]), 3)
+        next_cell["privacy_mode"] = "public_aggregated"
+        public_cells.append(next_cell)
+
+    return (
+        public_points,
+        public_cells,
+        {
+            "privacy_mode": "public_aggregated",
+            "raw_points_redacted": True,
+            "coordinate_precision": "rounded_3_decimals",
+            "aggregation": "one_point_per_heatmap_cell",
+            "raw_points_count": len(points),
+        },
+    )
+
+
 def _build_map_filter(points: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
     """Return filter metadata for the heatmap payload.
 
@@ -2593,6 +2675,7 @@ def calculate_live_results(
     max_cells: int = 200,
     momentum_window_minutes: int = 10,
     filtros: Optional[Dict[str, Any]] = None,
+    geo_privacy: Optional[str] = "public_aggregated",
 ) -> Dict[str, Any]:
     """
     Returns simplified aggregate counts for live voting animations.
@@ -2736,6 +2819,11 @@ def calculate_live_results(
             _collect_respuestas(encuesta, filtros=heatmap_filters),
             resolution=9,
         )
+    heatmap_points, heatmap_cells, heatmap_privacy = _prepare_live_heatmap_payload(
+        points,
+        cells,
+        geo_privacy=geo_privacy,
+    )
 
     ai_summary = "Sin datos suficientes para resumen en vivo."
     if responses_count > 0:
@@ -2824,7 +2912,7 @@ def calculate_live_results(
                     "status": trend,
                 }
             )
-    for point in points[:120]:
+    for point in heatmap_points[:120]:
         if not isinstance(point, Mapping):
             continue
         weight = point.get("weight") or point.get("w") or point.get("count") or 1
@@ -2874,7 +2962,7 @@ def calculate_live_results(
                 "channel": point.get("canal"),
                 "weight": point.get("weight") or point.get("w") or point.get("count") or 1,
             }
-            for point in points[:max_points]
+            for point in heatmap_points[:max_points]
             if isinstance(point, Mapping)
         ],
         insights=live_ai_insights,
@@ -2950,14 +3038,15 @@ def calculate_live_results(
         "kpis": kpis,
         "heatmap": {
             "enabled": include_heatmap,
-            "points": points[:max_points],
-            "cells": cells[:max_cells],
+            "points": heatmap_points[:max_points],
+            "cells": heatmap_cells[:max_cells],
             "metadata": {
                 "resolution": 9,
-                "points_count": len(points),
-                "cells_count": len(cells),
-                "truncated_points": max(0, len(points) - max_points),
-                "truncated_cells": max(0, len(cells) - max_cells),
+                "points_count": len(heatmap_points),
+                "cells_count": len(heatmap_cells),
+                "truncated_points": max(0, len(heatmap_points) - max_points),
+                "truncated_cells": max(0, len(heatmap_cells) - max_cells),
+                **heatmap_privacy,
             },
         },
         "ai_summary": ai_summary,

@@ -1,6 +1,6 @@
 import logging
 from datetime import datetime, timezone, timedelta
-from app import db
+from extensions import db
 from models_analytics_k import AIUsageLog, CostRollupHourly, CostRollupDaily
 from sqlalchemy import func
 

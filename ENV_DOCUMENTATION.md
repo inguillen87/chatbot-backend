@@ -27,6 +27,18 @@ New variables introduced for Multi-tenant Modules:
 *   `AUTH_EMAIL_VERIFY_BASE_URL`: Base URL used for verification links. Defaults to `APP_BASE_URL`.
 *   `AUTH_WHATSAPP_ONBOARDING_DISABLED`: Set to true to disable owner WhatsApp onboarding notifications.
 
+## WhatsApp accessibility audio cache / Cloudflare
+*   `TTS_CACHE_ENABLED`: Enables reusable MP3 cache for generated TTS audio. Defaults to true.
+*   `WHATSAPP_MENU_AUDIO_ENABLED`: Enables audio alternatives for fixed WhatsApp menus. Defaults to true.
+*   `TTS_AUDIO_CACHE_PUBLIC_BASE_URL`: Optional public CDN base URL for cached menu audios. When set, `static/audio_cache/*.mp3` links are returned from this base instead of `BACKEND_URL`.
+*   `CLOUDFLARE_AUDIO_CACHE_PUBLIC_BASE_URL`: Alias for `TTS_AUDIO_CACHE_PUBLIC_BASE_URL` when the CDN is managed in Cloudflare.
+*   `R2_ENDPOINT_URL`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME`, `R2_PUBLIC_BASE_URL`, `R2_REGION`: Optional Cloudflare R2 configuration for uploaded assets. Audio uploads are marked with long-lived cache headers and should never include spoken text or PII in object keys.
+*   `R2_SIGNED_URL_TTL_SECONDS`: Lifetime for private R2 download URLs generated for authenticated claim/ticket attachments. Defaults to `900` and is clamped between 60 and 3600 seconds.
+*   `CLOUDFLARE_TURNSTILE_SECRET_KEY`: Server-side Turnstile secret for anonymous marketplace/widget intake validation. Keep it only in backend/Render.
+*   `CLOUDFLARE_TURNSTILE_ENFORCE_PUBLIC_INTAKE`: When true, anonymous `/api/pedidos/from-file` requests from marketplace/widget/web must include a valid Turnstile token. Defaults to false so existing flows keep working until the frontend site key is enabled. If this is true but `CLOUDFLARE_TURNSTILE_SECRET_KEY` is missing, public intake fails closed instead of silently bypassing security.
+    *   Production requires a real Cloudflare Turnstile widget configured for `chatboc.ar` and tenant marketplace domains. Frontend uses `VITE_CLOUDFLARE_TURNSTILE_SITE_KEY`; backend uses this secret and validates the token with Siteverify.
+    *   Cloudflare dummy keys may be used only in local/dev smoke tests. Use dummy site key `1x00000000000000000000AA` with dummy secret `1x0000000000000000000000000000000AA` for an always-pass validation pair.
+
 ## Auth / Identity
 *   `CLERK_ENABLED`: Enables Clerk session sync and tenant onboarding endpoints.
 *   `VITE_CLERK_PUBLISHABLE_KEY`: Public Clerk key used by the Vite frontend. Safe to expose in the browser.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import secrets
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
@@ -277,6 +278,17 @@ def _claim_support_contract(
         mode=mode,
         schedule_label=schedule_label,
     )
+    sla_target_minutes = queue_state.get("sla_target_minutes")
+    polling_interval_ms = 10000 if available else 30000
+    response_expectation_label = (
+        f"Respuesta esperada en hasta {sla_target_minutes} min"
+        if available and sla_target_minutes
+        else f"El equipo lo ve en el CRM. SLA objetivo {sla_target_minutes} min"
+        if sla_target_minutes
+        else "El equipo responde desde el CRM del tenant"
+    )
+    channel_binding_label = "Canal interno del ticket"
+    polling_label = f"Actualizacion cada {int(polling_interval_ms / 1000)}s"
     has_customer_activity = bool(queue_state["has_pending_customer_message"])
     crm_writebacks = [
         "public_comment_created",
@@ -328,6 +340,8 @@ def _claim_support_contract(
             "timezone": live_chat.get("timezone"),
             "outside_hours_mode": "offline_message",
             "next_action": "socket_live_message" if available else "queue_ticket_comment",
+            "response_expectation_label": response_expectation_label,
+            "channel_binding_label": channel_binding_label,
         },
         "ticket": {
             "id": ticket_id,
@@ -358,7 +372,7 @@ def _claim_support_contract(
         },
         "polling": {
             "enabled": True,
-            "interval_ms": 10000 if available else 30000,
+            "interval_ms": polling_interval_ms,
             "endpoint": timeline_endpoint,
         },
         "webview_policy": {
@@ -399,6 +413,11 @@ def _claim_support_contract(
             "team_unread_label": "Queda como no leido para el equipo",
             "queue_state_label": queue_state["customer_visible_label"],
             "next_team_action_label": queue_state["next_team_action_label"],
+            "response_expectation_label": response_expectation_label,
+            "channel_binding_label": channel_binding_label,
+            "polling_label": polling_label,
+            "no_external_redirect_label": "Sin redireccion externa",
+            "operational_state_label": "Canal seguro asociado al reclamo",
         },
     }
 
@@ -458,6 +477,44 @@ def _public_assisted_items(order: PedidoConversacional, metadata: dict[str, Any]
         label = metadata.get("request_kind_label") or raw_payload.get("request_kind_label") or "Solicitud recibida"
         items.append({"id": f"assisted-{order.id}", "title": label, "quantity": 1, "status": "operator_review"})
     return items
+
+
+def _assisted_tracking_info(metadata: dict[str, Any]) -> dict[str, Any]:
+    follow_up = metadata.get("public_follow_up") if isinstance(metadata.get("public_follow_up"), dict) else {}
+    tracking = follow_up.get("tracking") if isinstance(follow_up.get("tracking"), dict) else {}
+    return tracking if isinstance(tracking, dict) else {}
+
+
+def _is_marketplace_assisted_order(order: Any) -> bool:
+    if not isinstance(order, PedidoConversacional):
+        return False
+    metadata = order.metadata_payload if isinstance(order.metadata_payload, dict) else {}
+    return metadata.get("contract_version") == "marketplace.assisted_request.v1"
+
+
+def validate_order_tracking_access(order: Any, token: str | None) -> tuple[bool, str | None]:
+    """Validate public access for order tracking without exposing enumerable assisted IDs."""
+
+    if not _is_marketplace_assisted_order(order):
+        return True, None
+
+    metadata = order.metadata_payload if isinstance(order.metadata_payload, dict) else {}
+    tracking = _assisted_tracking_info(metadata)
+    expected_token = str(
+        tracking.get("token")
+        or tracking.get("access_token")
+        or metadata.get("tracking_token")
+        or ""
+    ).strip()
+    provided_token = str(token or "").strip()
+
+    if not expected_token:
+        return False, "tracking_token_missing"
+    if not provided_token:
+        return False, "tracking_token_required"
+    if not secrets.compare_digest(expected_token, provided_token):
+        return False, "tracking_token_invalid"
+    return True, None
 
 
 def _order_snapshot(order: Any) -> dict[str, Any]:
@@ -525,6 +582,7 @@ def _order_snapshot(order: Any) -> dict[str, Any]:
 
     if isinstance(order, PedidoConversacional):
         metadata = order.metadata_payload if isinstance(order.metadata_payload, dict) else {}
+        tracking = _assisted_tracking_info(metadata)
         contact = metadata.get("contact") if isinstance(metadata.get("contact"), dict) else {}
         contacto = metadata.get("contacto") if isinstance(metadata.get("contacto"), dict) else {}
         effective_contact = contact or {
@@ -536,6 +594,8 @@ def _order_snapshot(order: Any) -> dict[str, Any]:
             "id": f"conversational:{order.id}",
             "source_model": "PedidoConversacional",
             "source_id": order.id,
+            "legacy_number": tracking.get("code") or f"pc-{order.id}",
+            "tracking": tracking,
             "tenant_id": order.tenant_id,
             "status": order.estado,
             "channel": order.origen or "whatsapp",
@@ -655,7 +715,9 @@ def build_order_tracking_experience(order: Any, tenant: TenantProfile | None = N
     source = serialized.get("source_model")
     status = serialized.get("status")
     items = serialized.get("items") or []
+    tracking = serialized.get("tracking") if isinstance(serialized.get("tracking"), dict) else {}
     code = serialized.get("legacy_number") or serialized.get("id") or str(getattr(order, "id", ""))
+    tracking_url = tracking.get("path") or f"/tracking/order/{code}"
     location = {
         "address": getattr(order, "direccion", None) or (serialized.get("metadata") or {}).get("direccion"),
         "lat": getattr(order, "latitud", None),
@@ -714,12 +776,18 @@ def build_order_tracking_experience(order: Any, tenant: TenantProfile | None = N
         "timeline": [item for item in timeline if item.get("created_at") or item.get("status") or item.get("label")],
         "actions": [
             {"id": "send_message", "label": "Enviar mensaje", "endpoint": "/tracking/api/send-message"},
-            {"id": "open_tracking_page", "label": "Abrir seguimiento", "url": f"/tracking/order/{code}"},
+            {
+                "id": "open_tracking_page",
+                "label": "Abrir seguimiento",
+                "url": tracking_url,
+                "requires_token": bool(tracking.get("token_required")),
+            },
         ],
         "frontend_contract": {
             "render_as": "tracking_map_timeline",
             "primary_refresh_seconds": 30,
             "empty_state_behavior": "timeline_only_when_no_coordinates",
+            "access": tracking.get("access") or ("signed_link" if tracking.get("token_required") else "public_code"),
         },
     }
 
