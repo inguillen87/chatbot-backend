@@ -28,6 +28,11 @@ from services.encuestas_service import (
     serialize_public_encuesta,
     update_encuesta,
 )
+from services.demo_surveys import (
+    build_demo_live_results_payload,
+    build_demo_public_survey_payload,
+    build_demo_survey_response_ack,
+)
 from services.plan_access import (
     integration_access_payload,
     integration_plan_required_payload,
@@ -696,6 +701,129 @@ def _attach_public_contract(
     return payload
 
 
+def _rewrite_demo_realtime_for_v2(realtime: dict[str, Any] | None, links: dict[str, Any]) -> dict[str, Any]:
+    updated = dict(realtime or {})
+    updated["demo_mode"] = True
+    polling = dict(updated.get("polling") or {})
+    polling["enabled"] = True
+    polling["href"] = links["live_results_endpoint"]
+    updated["polling"] = polling
+    return updated
+
+
+def _rewrite_demo_next_steps_for_v2(next_steps: dict[str, Any] | None, links: dict[str, Any]) -> dict[str, Any]:
+    updated = dict(next_steps or {})
+    items = []
+    for item in list(updated.get("items") or []):
+        if not isinstance(item, dict):
+            continue
+        cloned = dict(item)
+        if cloned.get("id") == "share_public_link":
+            cloned["href"] = links["share_url"]
+        elif cloned.get("id") == "download_qr":
+            cloned["href"] = links["qr_image_url"]
+        elif cloned.get("id") == "open_live_results":
+            cloned["href"] = links["live_results_endpoint"]
+        items.append(cloned)
+    updated["contract_version"] = "surveys.operational_next_steps.v2"
+    updated["items"] = items
+    return updated
+
+
+def _attach_demo_public_contract(payload: dict[str, Any], token: str) -> dict[str, Any]:
+    title = payload.get("titulo") or payload.get("title")
+    links = _build_survey_links(token)
+    share = _build_share_contract(token, title=title)
+    next_steps = _rewrite_demo_next_steps_for_v2(payload.get("operational_next_steps"), links)
+    security = _survey_security_contract(
+        status="required" if turnstile_enforce_public_intake() else "not_required",
+        reason="anonymous_demo_public_survey",
+        retryable=False,
+        reset_required=False,
+    )
+
+    payload["legacy_contract_version"] = payload.get("contract_version")
+    payload["contract_version"] = "surveys.public.v2"
+    payload["demo_mode"] = True
+    payload["links"] = {**(payload.get("links") or {}), **links}
+    payload["share"] = share
+    payload["realtime"] = _rewrite_demo_realtime_for_v2(payload.get("realtime"), links)
+    payload["operational_next_steps"] = next_steps
+    payload["next_steps"] = next_steps["items"]
+    payload["security"] = security
+    payload["frontend_contract"] = {
+        **(payload.get("frontend_contract") or {}),
+        **_survey_frontend_security_contract(security),
+    }
+    payload["public_page_url"] = links["public_page_url"]
+    payload["public_api_endpoint"] = links["public_api_endpoint"]
+    payload["respond_endpoint"] = links["respond_endpoint"]
+    payload["live_results_endpoint"] = links["live_results_endpoint"]
+    payload["results_endpoint"] = links["live_results_endpoint"]
+    payload["qr_url"] = links["qr_url"]
+    payload["qr_image_url"] = links["qr_image_url"]
+    payload["ui_actions"] = _merge_ui_actions(
+        payload.get("ui_actions"),
+        [
+            {"id": "share_public_link", "label": "Compartir", "href": links["share_url"]},
+            {"id": "download_qr", "label": "QR", "href": links["qr_image_url"]},
+        ],
+    )
+    return payload
+
+
+def _attach_demo_response_contract(
+    payload: dict[str, Any],
+    token: str,
+    *,
+    security: dict[str, Any],
+) -> dict[str, Any]:
+    links = _build_survey_links(token)
+    payload["legacy_contract_version"] = payload.get("contract_version")
+    payload["contract_version"] = "surveys.public_response.v2"
+    payload["demo_mode"] = True
+    payload["links"] = {**(payload.get("links") or {}), **links}
+    payload["share"] = _build_share_contract(token, title=payload.get("title") or payload.get("titulo"))
+    payload["realtime"] = _rewrite_demo_realtime_for_v2(payload.get("realtime"), links)
+    payload["respond_endpoint"] = links["respond_endpoint"]
+    payload["results_endpoint"] = links["live_results_endpoint"]
+    payload["live_results_endpoint"] = links["live_results_endpoint"]
+    payload["public_page_url"] = links["public_page_url"]
+    payload["public_url"] = links["public_page_url"]
+    payload["next_url"] = f"{links['public_page_url']}?resultados=1"
+    payload["results_url"] = f"{links['public_page_url']}?resultados=1"
+    payload["qr_url"] = links["qr_url"]
+    payload["qr_image_url"] = links["qr_image_url"]
+    payload["security"] = security
+    payload["frontend_contract"] = _survey_frontend_security_contract(
+        security,
+        render_as="public_survey_response_ack",
+        can_retry=False,
+        reset_turnstile=False,
+    )
+    return payload
+
+
+def _attach_demo_live_results_contract(results: dict[str, Any], token: str) -> dict[str, Any]:
+    links = _build_survey_links(token)
+    results["legacy_contract_version"] = results.get("contract_version")
+    results["contract_version"] = "surveys.live_results.v2"
+    results["demo_mode"] = True
+    results["links"] = {**(results.get("links") or {}), **links}
+    results["share"] = _build_share_contract(token, title=results.get("titulo") or results.get("title"))
+    results["realtime"] = _rewrite_demo_realtime_for_v2(results.get("realtime"), links)
+    results["live_results_endpoint"] = links["live_results_endpoint"]
+    results["results_endpoint"] = links["live_results_endpoint"]
+    results["public_page_url"] = links["public_page_url"]
+    results["qr_url"] = links["qr_url"]
+    results["qr_image_url"] = links["qr_image_url"]
+    render_contract = results.setdefault("render_contract", {})
+    render_contract.setdefault("preferred_visualization", "live_vote_dashboard")
+    render_contract.setdefault("supports", ["cards", "bars", "timeline", "heatmap", "map_pulses"])
+    render_contract.setdefault("polling_interval_ms", 8000)
+    return results
+
+
 def _attach_live_results_contract(
     results: dict[str, Any],
     encuesta,
@@ -1052,6 +1180,13 @@ def survey_public_by_token_v2(token: str):
     if error:
         return error
 
+    demo_payload = build_demo_public_survey_payload(
+        token,
+        public_base_url=_public_frontend_base_url(),
+    )
+    if demo_payload:
+        return _json_response(_attach_demo_public_contract(demo_payload, token))
+
     preferred_tenant_id = tenant.id if tenant is not None else None
     try:
         encuesta = get_public_encuesta(token, preferred_tenant_id=preferred_tenant_id)
@@ -1149,6 +1284,24 @@ def respond_public_survey_v2(token: str):
             )
             return _attach_rate_limit_headers(response, rate_limit)
 
+    demo_ack = build_demo_survey_response_ack(
+        token,
+        payload,
+        public_base_url=_public_frontend_base_url(),
+    )
+    if demo_ack:
+        security = _survey_security_contract(
+            status="verified" if (turnstile_token or enforce_turnstile) else "not_required",
+            reason="anonymous_demo_public_survey",
+            retryable=False,
+            reset_required=False,
+        )
+        response = _json_response(
+            _attach_demo_response_contract(demo_ack, token, security=security),
+            201,
+        )
+        return _attach_rate_limit_headers(response, rate_limit)
+
     try:
         respuesta = save_respuesta(token, payload, request_ctx, preferred_tenant_id=preferred_tenant_id)
         db.session.commit()
@@ -1243,6 +1396,13 @@ def survey_live_results_v2(token: str):
         if (value := (request.args.get(key) or "").strip())
     }
     preferred_tenant_id = tenant.id if tenant is not None else None
+
+    demo_results = build_demo_live_results_payload(
+        token,
+        public_base_url=_public_frontend_base_url(),
+    )
+    if demo_results:
+        return _json_response(_attach_demo_live_results_contract(demo_results, token))
 
     try:
         encuesta = get_public_encuesta(token, preferred_tenant_id=preferred_tenant_id)

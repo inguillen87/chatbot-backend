@@ -433,6 +433,76 @@ class V2SurveysApiTest(unittest.TestCase):
         self.assertEqual(EncRespuesta.query.count(), 1)
         verify_turnstile_mock.assert_called_once()
 
+    def test_v2_demo_public_survey_includes_turnstile_contract_when_enforced(self):
+        self.app.config["CLOUDFLARE_TURNSTILE_ENFORCE_PUBLIC_INTAKE"] = "true"
+        self.app.config["CLOUDFLARE_TURNSTILE_SECRET_KEY"] = "test-turnstile-secret"
+        token = "demo-gobierno-junin-prioridades-barriales"
+
+        response = self.client.get(f"/api/v2/public/surveys/{token}")
+
+        self.assertEqual(response.status_code, 200, response.get_json())
+        payload = response.get_json()
+        self.assertEqual(payload.get("contract_version"), "surveys.public.v2")
+        self.assertEqual(payload.get("legacy_contract_version"), "encuestas.public.v1")
+        self.assertTrue(payload.get("demo_mode"))
+        self.assertEqual(payload.get("security", {}).get("status"), "required")
+        self.assertTrue(payload.get("frontend_contract", {}).get("turnstile", {}).get("required"))
+        self.assertEqual(
+            payload.get("links", {}).get("respond_endpoint"),
+            f"/api/v2/public/surveys/{token}/respond",
+        )
+
+    def test_v2_demo_public_response_uses_turnstile_before_ack(self):
+        self.app.config["CLOUDFLARE_TURNSTILE_ENFORCE_PUBLIC_INTAKE"] = "true"
+        self.app.config["CLOUDFLARE_TURNSTILE_SECRET_KEY"] = "test-turnstile-secret"
+        _public_response_rate_buckets.clear()
+        token = "demo-gobierno-junin-prioridades-barriales"
+        public_get = self.client.get(f"/api/v2/public/surveys/{token}").get_json()
+        question_id = public_get.get("preguntas", [])[0].get("id")
+        option_id = public_get.get("preguntas", [])[0].get("opciones", [])[0].get("id")
+
+        with patch("routes.v2.surveys.verify_turnstile", return_value=True) as verify_turnstile_mock:
+            response = self.client.post(
+                f"/api/v2/public/surveys/{token}/respond",
+                json={
+                    "anon_id": "anon-demo-v2",
+                    "source": "web",
+                    "respuestas": [{"pregunta_id": question_id, "opcion_id": option_id}],
+                },
+                headers={"X-Turnstile-Token": "valid-turnstile-token"},
+            )
+
+        self.assertEqual(response.status_code, 201, response.get_json())
+        payload = response.get_json()
+        self.assertEqual(payload.get("contract_version"), "surveys.public_response.v2")
+        self.assertEqual(payload.get("legacy_contract_version"), "demo.survey_response_ack.v1")
+        self.assertTrue(payload.get("demo_mode"))
+        self.assertEqual(payload.get("security", {}).get("status"), "verified")
+        self.assertEqual(
+            payload.get("links", {}).get("live_results_endpoint"),
+            f"/api/v2/public/surveys/{token}/live-results",
+        )
+        self.assertEqual(EncRespuesta.query.count(), 0)
+        verify_turnstile_mock.assert_called_once()
+
+    def test_v2_demo_live_results_use_v2_links(self):
+        token = "demo-gobierno-junin-prioridades-barriales"
+
+        response = self.client.get(f"/api/v2/public/surveys/{token}/live-results")
+
+        self.assertEqual(response.status_code, 200, response.get_json())
+        payload = response.get_json()
+        self.assertEqual(payload.get("contract_version"), "surveys.live_results.v2")
+        self.assertTrue(payload.get("demo_mode"))
+        self.assertEqual(
+            payload.get("links", {}).get("live_results_endpoint"),
+            f"/api/v2/public/surveys/{token}/live-results",
+        )
+        self.assertEqual(
+            payload.get("realtime", {}).get("polling", {}).get("href"),
+            f"/api/v2/public/surveys/{token}/live-results",
+        )
+
     def test_survey_draft_accepts_incomplete_payload(self):
         headers = {
             **self._auth(self.admin_1),
