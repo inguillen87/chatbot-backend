@@ -1,6 +1,7 @@
 import os
 import unittest
 from datetime import datetime, timedelta
+from unittest.mock import patch
 
 import jwt
 
@@ -8,7 +9,7 @@ os.environ.setdefault("FLASK_SKIP_GLOBAL_APP", "1")
 
 from app import create_app, db
 from config import Config
-from models import TenantProfile, User
+from models import EncRespuesta, TenantProfile, User
 from routes.v2.surveys import _public_response_rate_buckets
 from services.demo_surveys import (
     build_demo_public_survey_payload,
@@ -138,6 +139,12 @@ class V2SurveysApiTest(unittest.TestCase):
         public_payload = public_get.get_json()
         self.assertEqual(public_payload.get("contract_version"), "surveys.public.v2")
         self.assertEqual(public_payload.get("public_state", {}).get("status"), "live")
+        self.assertEqual(public_payload.get("security", {}).get("surface"), "survey_public_response")
+        self.assertEqual(public_payload.get("security", {}).get("status"), "not_required")
+        self.assertEqual(
+            public_payload.get("frontend_contract", {}).get("turnstile", {}).get("token_header"),
+            "X-Turnstile-Token",
+        )
         self.assertEqual(
             public_payload.get("links", {}).get("respond_endpoint"),
             f"/api/v2/public/surveys/{token}/respond",
@@ -328,6 +335,103 @@ class V2SurveysApiTest(unittest.TestCase):
         self.assertEqual(limited_resp.headers.get("X-RateLimit-Remaining"), "0")
         self.assertTrue(limited_resp.headers.get("Retry-After"))
         self.assertGreaterEqual(payload.get("rate_limit", {}).get("retry_after_seconds"), 1)
+
+    def test_v2_public_response_rejects_invalid_turnstile_when_enforced(self):
+        self.app.config["CLOUDFLARE_TURNSTILE_ENFORCE_PUBLIC_INTAKE"] = "true"
+        self.app.config["CLOUDFLARE_TURNSTILE_SECRET_KEY"] = "test-turnstile-secret"
+        _public_response_rate_buckets.clear()
+
+        headers = {**self._auth(self.admin_1), "X-Tenant-Slug": self.tenant_1.slug}
+        survey_id = self.client.post("/api/v2/surveys", json=self._create_payload(), headers=headers).get_json()["id"]
+        token = self.client.post(f"/api/v2/surveys/{survey_id}/publish", headers=headers).get_json()["public_token"]
+        public_get = self.client.get(f"/api/v2/public/surveys/{token}").get_json()
+        question_id = public_get.get("preguntas", [])[0].get("id")
+        option_id = public_get.get("preguntas", [])[0].get("opciones", [])[0].get("id")
+
+        with patch("routes.v2.surveys.verify_turnstile", return_value=False) as verify_turnstile_mock:
+            response = self.client.post(
+                f"/api/v2/public/surveys/{token}/respond",
+                json={
+                    "anon_id": "anon-turnstile-invalid",
+                    "source": "web",
+                    "respuestas": [{"pregunta_id": question_id, "opcion_id": option_id}],
+                },
+                headers={"X-Forwarded-For": "198.51.100.77"},
+            )
+
+        self.assertEqual(response.status_code, 400, response.get_json())
+        payload = response.get_json()
+        self.assertEqual(payload.get("contract_version"), "surveys.public_response.v2")
+        self.assertEqual(payload.get("reason_code"), "turnstile_verificacion_fallida")
+        self.assertEqual(payload.get("security", {}).get("surface"), "survey_public_response")
+        self.assertEqual(payload.get("security", {}).get("status"), "verification_failed")
+        self.assertTrue(payload.get("frontend_contract", {}).get("reset_turnstile"))
+        self.assertTrue(payload.get("frontend_contract", {}).get("can_retry"))
+        self.assertEqual(EncRespuesta.query.count(), 0)
+        verify_turnstile_mock.assert_called_once()
+
+    def test_v2_public_response_fails_closed_when_turnstile_enforced_without_secret(self):
+        self.app.config["CLOUDFLARE_TURNSTILE_ENFORCE_PUBLIC_INTAKE"] = "true"
+        self.app.config["CLOUDFLARE_TURNSTILE_SECRET_KEY"] = ""
+        self.app.config["TURNSTILE_SECRET_KEY"] = ""
+        _public_response_rate_buckets.clear()
+
+        headers = {**self._auth(self.admin_1), "X-Tenant-Slug": self.tenant_1.slug}
+        survey_id = self.client.post("/api/v2/surveys", json=self._create_payload(), headers=headers).get_json()["id"]
+        token = self.client.post(f"/api/v2/surveys/{survey_id}/publish", headers=headers).get_json()["public_token"]
+        public_get = self.client.get(f"/api/v2/public/surveys/{token}").get_json()
+        question_id = public_get.get("preguntas", [])[0].get("id")
+        option_id = public_get.get("preguntas", [])[0].get("opciones", [])[0].get("id")
+
+        with patch.dict(os.environ, {"CLOUDFLARE_TURNSTILE_SECRET_KEY": "", "TURNSTILE_SECRET_KEY": ""}):
+            with patch("routes.v2.surveys.verify_turnstile", return_value=True) as verify_turnstile_mock:
+                response = self.client.post(
+                    f"/api/v2/public/surveys/{token}/respond",
+                    json={
+                        "anon_id": "anon-turnstile-missing-secret",
+                        "source": "web",
+                        "respuestas": [{"pregunta_id": question_id, "opcion_id": option_id}],
+                    },
+                )
+
+        self.assertEqual(response.status_code, 503, response.get_json())
+        payload = response.get_json()
+        self.assertEqual(payload.get("reason_code"), "turnstile_no_configurado")
+        self.assertEqual(payload.get("security", {}).get("status"), "misconfigured")
+        self.assertFalse(payload.get("security", {}).get("configured"))
+        self.assertFalse(payload.get("frontend_contract", {}).get("can_retry"))
+        self.assertEqual(EncRespuesta.query.count(), 0)
+        verify_turnstile_mock.assert_not_called()
+
+    def test_v2_public_response_accepts_valid_turnstile_token_when_enforced(self):
+        self.app.config["CLOUDFLARE_TURNSTILE_ENFORCE_PUBLIC_INTAKE"] = "true"
+        self.app.config["CLOUDFLARE_TURNSTILE_SECRET_KEY"] = "test-turnstile-secret"
+        _public_response_rate_buckets.clear()
+
+        headers = {**self._auth(self.admin_1), "X-Tenant-Slug": self.tenant_1.slug}
+        survey_id = self.client.post("/api/v2/surveys", json=self._create_payload(), headers=headers).get_json()["id"]
+        token = self.client.post(f"/api/v2/surveys/{survey_id}/publish", headers=headers).get_json()["public_token"]
+        public_get = self.client.get(f"/api/v2/public/surveys/{token}").get_json()
+        question_id = public_get.get("preguntas", [])[0].get("id")
+        option_id = public_get.get("preguntas", [])[0].get("opciones", [])[0].get("id")
+
+        with patch("routes.v2.surveys.verify_turnstile", return_value=True) as verify_turnstile_mock:
+            response = self.client.post(
+                f"/api/v2/public/surveys/{token}/respond",
+                json={
+                    "anon_id": "anon-turnstile-valid",
+                    "source": "web",
+                    "respuestas": [{"pregunta_id": question_id, "opcion_id": option_id}],
+                },
+                headers={"X-Turnstile-Token": "valid-turnstile-token"},
+            )
+
+        self.assertEqual(response.status_code, 201, response.get_json())
+        payload = response.get_json()
+        self.assertEqual(payload.get("security", {}).get("status"), "verified")
+        self.assertFalse(payload.get("frontend_contract", {}).get("reset_turnstile"))
+        self.assertEqual(EncRespuesta.query.count(), 1)
+        verify_turnstile_mock.assert_called_once()
 
     def test_survey_draft_accepts_incomplete_payload(self):
         headers = {

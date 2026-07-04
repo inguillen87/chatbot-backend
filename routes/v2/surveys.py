@@ -35,6 +35,14 @@ from services.plan_access import (
 )
 from utils.auth_helpers import token_requerido
 from utils.permissions import require_role
+from utils.turnstile import (
+    TURNSTILE_TOKEN_FIELDS,
+    TURNSTILE_TOKEN_HEADER,
+    turnstile_enforce_public_intake,
+    turnstile_is_configured,
+    turnstile_public_intake_contract,
+    verify_turnstile,
+)
 
 v2_surveys_bp = Blueprint("v2_surveys", __name__, url_prefix="/api/v2")
 v2_public_surveys_bp = Blueprint("v2_public_surveys", __name__, url_prefix="/api/v2/public/surveys")
@@ -186,6 +194,99 @@ def _attach_rate_limit_headers(response, telemetry: dict[str, Any]):
     if not telemetry.get("allowed", True):
         response.headers["Retry-After"] = str(telemetry.get("retry_after_seconds", 1))
     return response
+
+
+def _survey_turnstile_token(payload: dict[str, Any] | None) -> str | None:
+    header_value = request.headers.get(TURNSTILE_TOKEN_HEADER)
+    if header_value:
+        return header_value
+    if isinstance(payload, dict):
+        for field in TURNSTILE_TOKEN_FIELDS:
+            value = payload.get(field)
+            if value:
+                return str(value)
+    return request.args.get("turnstile_token")
+
+
+def _survey_security_contract(
+    *,
+    status: str | None = None,
+    reason: str | None = None,
+    retryable: bool | None = None,
+    reset_required: bool | None = None,
+) -> dict[str, Any]:
+    return turnstile_public_intake_contract(
+        surface="survey_public_response",
+        status=status,
+        reason=reason,
+        retryable=retryable,
+        reset_required=reset_required,
+    )
+
+
+def _survey_frontend_security_contract(
+    security: dict[str, Any],
+    *,
+    render_as: str = "public_survey_response",
+    can_retry: bool | None = None,
+    reset_turnstile: bool | None = None,
+) -> dict[str, Any]:
+    if can_retry is None:
+        can_retry = bool(security.get("retryable"))
+    if reset_turnstile is None:
+        reset_turnstile = bool(security.get("reset_required"))
+    return {
+        "contract_version": "surveys.public_frontend.v2",
+        "render_as": render_as,
+        "security_provider": security.get("provider"),
+        "turnstile": {
+            "enabled": bool(security.get("configured") or security.get("enforced")),
+            "required": bool(security.get("required")),
+            "status": security.get("status"),
+            "surface": security.get("surface"),
+            "token_header": security.get("token_header"),
+            "token_fields": security.get("token_fields") or [],
+            "can_retry": bool(can_retry),
+            "reset_required": bool(reset_turnstile),
+        },
+        "can_retry": bool(can_retry),
+        "reset_turnstile": bool(reset_turnstile),
+    }
+
+
+def _survey_security_error_response(
+    *,
+    status_code: int,
+    reason_code: str,
+    message: str,
+    security: dict[str, Any],
+    action_hint: str = "retry_security_challenge",
+    rate_limit: dict[str, Any] | None = None,
+):
+    payload = {
+        "contract_version": "surveys.public_response.v2",
+        "ok": False,
+        "status_code": status_code,
+        "reason_code": reason_code,
+        "retryable": bool(security.get("retryable")),
+        "action_hint": action_hint,
+        "message": message,
+        "error": {"code": status_code, "message": message},
+        "security": security,
+        "frontend_contract": _survey_frontend_security_contract(
+            security,
+            render_as="public_survey_security_error",
+        ),
+    }
+    if rate_limit:
+        payload["rate_limit"] = {
+            "limit": rate_limit.get("limit"),
+            "remaining": rate_limit.get("remaining"),
+            "window_seconds": rate_limit.get("window_seconds"),
+            "reset_after_seconds": rate_limit.get("reset_after_seconds"),
+            "retry_after_seconds": rate_limit.get("retry_after_seconds"),
+        }
+    return _json_response(payload, status_code)
 
 
 def _survey_plan_required_response(tenant):
@@ -567,6 +668,17 @@ def _attach_public_contract(
     payload["realtime"] = realtime
     payload["operational_next_steps"] = next_steps
     payload["next_steps"] = next_steps["items"]
+    security = _survey_security_contract(
+        status="required" if turnstile_enforce_public_intake() else "not_required",
+        reason="anonymous_public_survey",
+        retryable=False,
+        reset_required=False,
+    )
+    payload["security"] = security
+    payload["frontend_contract"] = {
+        **(payload.get("frontend_contract") or {}),
+        **_survey_frontend_security_contract(security),
+    }
     payload.setdefault("public_page_url", links["public_page_url"])
     payload.setdefault("public_api_endpoint", links["public_api_endpoint"])
     payload.setdefault("respond_endpoint", links["respond_endpoint"])
@@ -965,6 +1077,7 @@ def respond_public_survey_v2(token: str):
         return error
 
     payload = request.get_json(silent=True) or {}
+    turnstile_token = _survey_turnstile_token(payload)
     client_ip = _public_client_ip()
     request_ctx = {
         "ip": client_ip,
@@ -996,6 +1109,45 @@ def respond_public_survey_v2(token: str):
             429,
         )
         return _attach_rate_limit_headers(response, rate_limit)
+
+    enforce_turnstile = turnstile_enforce_public_intake()
+    if enforce_turnstile and not turnstile_is_configured():
+        security = _survey_security_contract(
+            status="misconfigured",
+            reason="missing_secret",
+            retryable=False,
+            reset_required=False,
+        )
+        response = _survey_security_error_response(
+            status_code=503,
+            reason_code="turnstile_no_configurado",
+            message="La verificacion de seguridad no esta disponible. Intenta nuevamente mas tarde.",
+            security=security,
+            action_hint="retry_later",
+            rate_limit=rate_limit,
+        )
+        return _attach_rate_limit_headers(response, rate_limit)
+
+    if turnstile_token or enforce_turnstile:
+        if not verify_turnstile(
+            turnstile_token,
+            remote_ip=request.headers.get("CF-Connecting-IP") or client_ip,
+            idempotency_key=_request_id(),
+        ):
+            security = _survey_security_contract(
+                status="verification_failed",
+                reason="invalid_or_expired_token",
+                retryable=True,
+                reset_required=True,
+            )
+            response = _survey_security_error_response(
+                status_code=400,
+                reason_code="turnstile_verificacion_fallida",
+                message="No pudimos validar la verificacion de seguridad. Intenta nuevamente.",
+                security=security,
+                rate_limit=rate_limit,
+            )
+            return _attach_rate_limit_headers(response, rate_limit)
 
     try:
         respuesta = save_respuesta(token, payload, request_ctx, preferred_tenant_id=preferred_tenant_id)
@@ -1040,8 +1192,19 @@ def respond_public_survey_v2(token: str):
             "window_seconds": rate_limit["window_seconds"],
             "reset_after_seconds": rate_limit["reset_after_seconds"],
         },
+        "security": _survey_security_contract(
+            status="verified" if (turnstile_token or enforce_turnstile) else "not_required",
+            reason="anonymous_public_survey",
+            retryable=False,
+            reset_required=False,
+        ),
         "ui_actions": [],
     }
+    response_payload["frontend_contract"] = _survey_frontend_security_contract(
+        response_payload["security"],
+        can_retry=False,
+        reset_turnstile=False,
+    )
     if live_results_enabled:
         live_results_url = links["live_results_endpoint"]
         response_payload["live_results_url"] = live_results_url
