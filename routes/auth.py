@@ -102,6 +102,7 @@ def _looks_like_uuid(value: Optional[str]) -> bool:
         return False
 
 auth_bp = Blueprint('auth', __name__, url_prefix='/auth')
+auth_api_bp = Blueprint('auth_api', __name__, url_prefix='/api/auth')
 
 from utils.auth_helpers import (
     token_requerido,
@@ -409,6 +410,7 @@ def _clerk_profile_from_payload(data: dict) -> dict:
     return profile if isinstance(profile, dict) else {}
 
 
+@auth_api_bp.route("/clerk/config", methods=["GET"])
 @auth_bp.route("/clerk/config", methods=["GET"])
 @cross_origin()
 def clerk_config():
@@ -417,6 +419,7 @@ def clerk_config():
     return jsonify(build_clerk_frontend_contract())
 
 
+@auth_api_bp.route("/clerk/session", methods=["POST"])
 @auth_bp.route("/clerk/session", methods=["POST"])
 @cross_origin()
 def clerk_session_sync():
@@ -451,6 +454,7 @@ def clerk_session_sync():
         return jsonify({"error": "Error interno", "reason_code": "clerk_session_failed"}), 500
 
 
+@auth_api_bp.route("/clerk/onboarding", methods=["POST"])
 @auth_bp.route("/clerk/onboarding", methods=["POST"])
 @cross_origin()
 def clerk_onboarding():
@@ -481,6 +485,7 @@ def clerk_onboarding():
         return jsonify({"error": "Error interno", "reason_code": "clerk_onboarding_failed"}), 500
 
 
+@auth_api_bp.route("/clerk/webhook", methods=["POST"])
 @auth_bp.route("/clerk/webhook", methods=["POST"])
 def clerk_webhook():
     """Receive Clerk user lifecycle events and keep local users synced."""

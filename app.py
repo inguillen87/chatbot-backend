@@ -538,7 +538,7 @@ def create_app(config_class=Config):
     # --- Blueprints (solo runtime normal) ---
     # Register blueprints carefully to avoid circular imports
     from routes.config import config_bp
-    from routes.auth import auth_bp, login_view_func, me_perfil_view_func
+    from routes.auth import auth_api_bp, auth_bp, login_view_func, me_perfil_view_func
     from routes.legacy_auth import legacy_auth_bp
     from routes.chat import chat_bp
     from routes.ticket import ticket_bp
@@ -669,6 +669,7 @@ def create_app(config_class=Config):
     # Register
     app.register_blueprint(config_bp)
     app.register_blueprint(auth_bp)
+    app.register_blueprint(auth_api_bp)
     register_v2_blueprints(app)
 
     # Alias de login para clientes que aún llaman a  en lugar de

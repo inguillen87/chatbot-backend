@@ -56,6 +56,24 @@ def test_clerk_config_contract(client, monkeypatch):
     }
 
 
+def test_clerk_config_contract_api_alias(client, monkeypatch):
+    monkeypatch.setenv("CLERK_ENABLED", "true")
+    monkeypatch.delenv("VITE_CLERK_PUBLISHABLE_KEY", raising=False)
+    monkeypatch.delenv("CLERK_PUBLISHABLE_KEY", raising=False)
+    monkeypatch.setenv("NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY", "pk_test_public")
+    monkeypatch.setenv("CLERK_JWKS_URL", "https://clerk.test/.well-known/jwks.json")
+
+    resp = client.get("/api/auth/clerk/config")
+
+    assert resp.status_code == 200
+    payload = resp.get_json()
+    assert payload["contract_version"] == "auth.clerk.v1"
+    assert payload["enabled"] is True
+    assert payload["session_sync_endpoint"] == "/auth/clerk/session"
+    assert payload["publishable_key"] == "pk_test_public"
+    assert payload["ready_for_session_sync"] is True
+
+
 def test_clerk_config_hides_social_providers_for_live_key_until_explicitly_enabled(client, monkeypatch):
     monkeypatch.setenv("CLERK_ENABLED", "true")
     monkeypatch.delenv("VITE_CLERK_PUBLISHABLE_KEY", raising=False)
