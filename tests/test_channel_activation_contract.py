@@ -65,6 +65,10 @@ def test_channel_activation_contract_blocks_productive_channels_without_secrets(
     assert by_id["whatsapp"]["status"] == "locked"
     assert by_id["widget"]["status"] == "locked"
     assert by_id["templates"]["status"] == "locked"
+    assert by_id["payments_checkout"]["status"] == "locked"
+    assert by_id["payments_checkout"]["required_plan"] == "full"
+    assert by_id["team_routing"]["status"] == "action_required"
+    assert by_id["team_routing"]["reason_code"] == "team_required"
     assert payload["preferred_channels"] == ["whatsapp", "webchat"]
 
     response = client.get(
@@ -84,6 +88,7 @@ def test_channel_activation_contract_marks_ready_full_tenant_channels(client):
         plan="full",
         configuracion={
             "widget_tokens": ["secret-widget-token"],
+            "mercadopago_access_token": "APP_USR-secret-token",
             "whatsapp_onboarding": {"provider": "twilio_tech_provider", "status": "online"},
             "live_chat_schedule": {
                 "enabled": True,
@@ -95,6 +100,16 @@ def test_channel_activation_contract_marks_ready_full_tenant_channels(client):
         },
     )
     tenant.whatsapp_sender_id = "whatsapp:+100000"
+    operator = User(
+        name="Operador Obras",
+        email="operador-obras@chatboc.test",
+        rol="empleado",
+        tenant_id=tenant.id,
+        tenant_slug=tenant.slug,
+        es_empleado=True,
+    )
+    operator.set_password("secret123")
+    db.session.add(operator)
     db.session.add(
         CatalogoItem(
             user_id=owner.id,
@@ -124,6 +139,10 @@ def test_channel_activation_contract_marks_ready_full_tenant_channels(client):
     assert by_id["widget"]["status"] == "ready"
     assert by_id["templates"]["status"] == "ready"
     assert by_id["catalog_marketplace"]["status"] == "ready"
+    assert by_id["payments_checkout"]["status"] == "ready"
+    assert by_id["team_routing"]["status"] == "ready"
     assert by_id["live_chat"]["status"] == "ready"
     assert payload["counts"]["approved_templates"] == 1
     assert payload["counts"]["catalog_items"] == 1
+    assert payload["counts"]["team_members"] == 1
+    assert "APP_USR-secret-token" not in str(payload)

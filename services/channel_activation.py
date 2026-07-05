@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from typing import Any, Mapping
 
 from models import CatalogoItem, EncEncuesta, MessageTemplateRegistry, PublicSurvey, TenantProfile, User
+from services.commerce_contracts import payment_capabilities
 from services.live_chat_schedule import build_live_chat_status
 from services.plan_access import integration_access_payload
 from services.twilio_tech_provider import STATE_KEY
@@ -128,6 +129,29 @@ def _live_chat_status(cfg: Mapping[str, Any]) -> tuple[str, list[str]]:
     ]
 
 
+def _payment_status(tenant: TenantProfile | None, access_enabled: bool) -> tuple[str, list[str], str | None]:
+    if tenant is None:
+        return "blocked", [], "tenant_missing"
+    try:
+        payment = payment_capabilities(tenant)
+    except Exception:
+        return "blocked", [], "payment_contract_unavailable"
+
+    evidence = [f"gateway:{payment.get('gateway') or 'mercadopago'}"]
+    if payment.get("gateway_configured") or payment.get("mercadopago_ready"):
+        evidence.append("gateway configurado")
+    missing = payment.get("missing") if isinstance(payment.get("missing"), list) else []
+    evidence.extend(f"faltante:{item}" for item in missing[:3] if item)
+
+    if not access_enabled:
+        return "locked", evidence, "plan_full_required"
+    if payment.get("payment_ready"):
+        return "ready", evidence, None
+    if not payment.get("gateway_configured"):
+        return "action_required", evidence, "payment_gateway_not_configured"
+    return "pending", evidence, "payment_verification_pending"
+
+
 def _counts(tenant: TenantProfile | None) -> dict[str, int]:
     if tenant is None or not getattr(tenant, "id", None):
         return {"catalog_items": 0, "approved_templates": 0, "surveys": 0, "team_members": 0}
@@ -154,6 +178,7 @@ def build_channel_activation_payload(tenant: TenantProfile | None) -> dict[str, 
     preferred_channels = onboarding.get("preferred_channels") if isinstance(onboarding.get("preferred_channels"), list) else []
     whatsapp_status, whatsapp_evidence, whatsapp_reason = _whatsapp_status(cfg, access_enabled)
     live_status, live_evidence = _live_chat_status(cfg)
+    payment_status, payment_evidence, payment_reason = _payment_status(tenant, access_enabled)
 
     widget_configured = bool(
         getattr(tenant, "widget_settings", None)
@@ -214,6 +239,25 @@ def build_channel_activation_payload(tenant: TenantProfile | None) -> dict[str, 
             "Productos, tramites, promociones y pedidos asistidos por IA desde WhatsApp o web.",
             actions=[_action("open_catalog", "Cargar catalogo", _profile_path("catalogo"), primary=True)],
             evidence=[f"{counts['catalog_items']} items"] if counts["catalog_items"] else [],
+        ),
+        _channel(
+            "payments_checkout",
+            "Cobros y checkout",
+            payment_status,
+            "Links de pago, webviews seguros y confirmacion por webhook para pedidos, cuotas y comprobantes.",
+            actions=[_action("configure_payments", "Configurar cobros", _tenant_path(tenant, "/integracion"), primary=True)],
+            evidence=payment_evidence,
+            reason_code=payment_reason,
+            required_plan=None if access_enabled else "full",
+        ),
+        _channel(
+            "team_routing",
+            "Equipo y responsables",
+            "ready" if counts["team_members"] > 0 else "action_required",
+            "Operadores, permisos y categorias para que reclamos, pedidos y chats no queden sin responsable.",
+            actions=[_action("open_team", "Configurar equipo", _profile_path("empleados"), primary=True)],
+            evidence=[f"{counts['team_members']} operadores"] if counts["team_members"] else [],
+            reason_code=None if counts["team_members"] > 0 else "team_required",
         ),
         _channel(
             "live_chat",
