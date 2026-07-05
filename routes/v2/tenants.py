@@ -2,15 +2,19 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
+from urllib.parse import quote_plus
 
 import jwt
 from flask import Blueprint, current_app, g, jsonify, request
+from flask_cors import cross_origin
 from sqlalchemy import func
 
 from models import TenantProfile
+from services.plan_access import integration_access_payload
 from utils.roles import normalize_tenant_slug, is_generic_tenant_slug
 
 v2_tenants_bp = Blueprint("v2_tenants", __name__, url_prefix="/api/v2/tenants")
+TENANT_PROFILE_V2_CONTRACT_VERSION = "public.tenant_profile.v1"
 
 
 class V2TenantResolutionError(Exception):
@@ -158,6 +162,145 @@ def resolve_tenant_v2(*, required: bool = True, explicit_slug: Optional[str] = N
         raise V2TenantResolutionError("tenant_slug es obligatorio para este endpoint", status_code=400)
 
     return None
+
+
+def _frontend_base_url() -> str:
+    base = (
+        current_app.config.get("PUBLIC_FRONTEND_URL")
+        or current_app.config.get("FRONTEND_URL")
+        or current_app.config.get("APP_BASE_URL")
+        or current_app.config.get("PUBLIC_BASE_URL")
+        or "https://www.chatboc.ar"
+    )
+    return str(base).strip().rstrip("/") or "https://www.chatboc.ar"
+
+
+def _widget_config_for_profile(tenant: TenantProfile) -> dict[str, Any]:
+    cfg = tenant.configuracion.copy() if isinstance(tenant.configuracion, dict) else {}
+    widget_settings = getattr(tenant, "widget_settings", None)
+    if widget_settings and hasattr(widget_settings, "to_config_dict"):
+        try:
+            cfg.update(widget_settings.to_config_dict())
+        except Exception:
+            current_app.logger.debug(
+                "[v2_tenants] widget settings serialization failed",
+                exc_info=True,
+            )
+
+    if not isinstance(cfg.get("menu"), dict):
+        cfg["menu"] = {"children": []}
+    else:
+        cfg["menu"].setdefault("children", [])
+
+    cfg.setdefault("copy", {})
+    cfg.setdefault("cta_messages", [])
+    cfg.setdefault("theme_config", {})
+
+    channels = cfg.get("channels") if isinstance(cfg.get("channels"), dict) else {}
+    channels.setdefault(
+        "web_widget",
+        {
+            "enabled": True,
+            "cta": cfg.get("widget_launcher_text") or "Necesitas ayuda?",
+            "welcome_message": cfg.get("widget_welcome_message")
+            or cfg.get("widget_welcome_subtitle")
+            or "Asistente Virtual",
+            "brand_name": cfg.get("widget_brand") or tenant.nombre or tenant.slug,
+        },
+    )
+    channels.setdefault(
+        "whatsapp",
+        {
+            "enabled": bool(
+                cfg.get("whatsapp_phone") or getattr(tenant, "whatsapp_sender_id", None)
+            ),
+            "phone": cfg.get("whatsapp_phone") or getattr(tenant, "whatsapp_sender_id", "") or "",
+            "cta": "Escribinos por WhatsApp",
+            "brand_name": cfg.get("whatsapp_brand") or tenant.nombre or tenant.slug,
+        },
+    )
+    cfg["channels"] = channels
+    return cfg
+
+
+def _tenant_profile_v2_payload(tenant: TenantProfile) -> dict[str, Any]:
+    base_url = _frontend_base_url()
+    market_path = f"/t/{tenant.slug}/market"
+    public_catalog_url = f"{base_url}{market_path}"
+    whatsapp_share_text = quote_plus(f"Catalogo {tenant.slug} {public_catalog_url}")
+    config = _widget_config_for_profile(tenant)
+    integration_access = integration_access_payload(tenant)
+
+    payload = tenant.to_public_dict()
+    payload.update(
+        {
+            "contract_version": TENANT_PROFILE_V2_CONTRACT_VERSION,
+            "tenant_id": tenant.id,
+            "tipo_chat": tenant.tipo,
+            "config": config,
+            "catalog": {
+                "enabled": bool(
+                    (tenant.tipo or "").lower() == "pyme"
+                    or config.get("catalog_widget_visible")
+                ),
+                "is_public": True,
+                "share_on_intent": True,
+                "prefer_pdf_on_whatsapp": bool(config.get("prefer_pdf_on_whatsapp", False)),
+                "banner_url": config.get("catalog_banner_url") or config.get("banner_url"),
+            },
+            "marketplace": {
+                "enabled": True,
+                "tenant_slug": tenant.slug,
+                "tenant_id": tenant.id,
+                "tenant_tipo": tenant.tipo,
+                "public_cart_url": public_catalog_url,
+            },
+            "public_base_url": f"{base_url}/t/{tenant.slug}",
+            "public_catalog_url": public_catalog_url,
+            "public_cart_url": public_catalog_url,
+            "whatsapp_share_url": f"https://wa.me/?text={whatsapp_share_text}",
+            "integration_access": integration_access,
+            "embed_locked": not bool(integration_access.get("enabled")),
+            "widget": {
+                "support_channels": config.get("channels", {}),
+                "realtime_voice": config.get("realtime_voice"),
+            },
+            "builder_config": (
+                config.get("builder_config")
+                if isinstance(config.get("builder_config"), dict)
+                else {}
+            ),
+        }
+    )
+    if (tenant.tipo or "").lower() == "municipio":
+        payload["rubro_publico"] = "municipios"
+    return payload
+
+
+@v2_tenants_bp.route(
+    "/<string:tenant_slug>/profile",
+    methods=["GET", "OPTIONS"],
+    provide_automatic_options=False,
+)
+@cross_origin(origins="*", automatic_options=False)
+def get_tenant_profile_v2(tenant_slug: str):
+    if request.method == "OPTIONS":
+        return jsonify({"ok": True, "contract_version": TENANT_PROFILE_V2_CONTRACT_VERSION})
+
+    try:
+        tenant = resolve_tenant_v2(required=True, explicit_slug=tenant_slug)
+    except V2TenantResolutionError as exc:
+        return (
+            jsonify(
+                {
+                    "contract_version": TENANT_PROFILE_V2_CONTRACT_VERSION,
+                    "error": {"code": exc.status_code, "message": exc.message},
+                }
+            ),
+            exc.status_code,
+        )
+
+    return jsonify(_tenant_profile_v2_payload(tenant))
 
 
 @v2_tenants_bp.route("/current", methods=["GET"])

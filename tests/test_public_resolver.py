@@ -59,6 +59,34 @@ class PublicResolverTest(unittest.TestCase):
         self.assertEqual(payload["tenant"]["logo_url"], self.tenant.logo_url)
         self.assertIn("config", payload["tenant"])
 
+    def test_v2_tenant_profile_by_slug_returns_flat_public_contract(self):
+        response = self.client.get(f"/api/v2/tenants/{self.tenant.slug}/profile")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["contract_version"], "public.tenant_profile.v1")
+        self.assertEqual(payload["slug"], self.tenant.slug)
+        self.assertEqual(payload["nombre"], self.tenant.nombre)
+        self.assertEqual(payload["logo_url"], self.tenant.logo_url)
+        self.assertIn("config", payload)
+        self.assertIn("marketplace", payload)
+        self.assertIn("integration_access", payload)
+
+    def test_v2_tenant_profile_preflight(self):
+        response = self.client.options(f"/api/v2/tenants/{self.tenant.slug}/profile")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload["ok"])
+
+    def test_v2_tenant_profile_not_found(self):
+        response = self.client.get("/api/v2/tenants/desconocido/profile")
+
+        self.assertEqual(response.status_code, 404)
+        payload = response.get_json()
+        self.assertEqual(payload["contract_version"], "public.tenant_profile.v1")
+        self.assertEqual(payload["error"]["code"], 404)
+
     def test_public_tenant_profile_by_widget_token(self):
         response = self.client.get(
             "/api/public/tenant-profile",
