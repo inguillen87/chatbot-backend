@@ -835,6 +835,10 @@ def test_marketplace_order_note_upload_is_manageable_from_tenant_crm(client, app
     assert confirm_action["method"] == "PATCH"
     assert confirm_action["target_status"] == "confirmed"
     assert confirm_action["requires_review"] is False
+    reply_action = detail_payload["crm_review_card"]["operator_actions"][1]
+    assert reply_action["href"].startswith("https://wa.me/5492613168608?text=")
+    assert reply_action["channel"] == "whatsapp"
+    assert reply_action["action_label"] == "Responder por WhatsApp"
     operator_pack = detail_payload["assisted_request"]["operator_pack"]
     assert operator_pack["reference"] == f"pedido:{pedido_id}"
     assert operator_pack["priority"] == "normal"

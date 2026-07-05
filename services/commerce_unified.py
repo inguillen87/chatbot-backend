@@ -693,6 +693,12 @@ def _build_crm_review_card(assisted_request: dict[str, Any] | None) -> dict[str,
     customer_next_steps = _as_list(assisted_request.get("customer_next_steps"))
     public_follow_up = _as_dict(assisted_request.get("public_follow_up"))
     tracking = _as_dict(public_follow_up.get("tracking"))
+    primary_contact_link: dict[str, Any] = {}
+    for link in contact_links:
+        normalized_link = _as_dict(link)
+        if normalized_link.get("href"):
+            primary_contact_link = normalized_link
+            break
 
     needs_review = bool(
         operator_pack.get("needs_human_review")
@@ -765,16 +771,23 @@ def _build_crm_review_card(assisted_request: dict[str, Any] | None) -> dict[str,
                 "description": "Vincula los renglones dudosos con productos reales antes de cotizar o crear el pedido.",
             }
         )
-    operator_actions.append(
-        {
-            "id": "reply_customer",
-            "label": "Responder cliente",
-            "type": "message",
-            "enabled": bool(operator_pack.get("suggested_reply") or contact_links),
-            "requires_review": False,
-            "description": "Usa la respuesta sugerida y los canales disponibles para cerrar datos faltantes o confirmar.",
-        }
-    )
+    reply_action = {
+        "id": "reply_customer",
+        "label": "Responder cliente",
+        "type": "message",
+        "enabled": bool(operator_pack.get("suggested_reply") or contact_links),
+        "requires_review": False,
+        "description": "Usa la respuesta sugerida y los canales disponibles para cerrar datos faltantes o confirmar.",
+    }
+    if primary_contact_link:
+        reply_action.update(
+            {
+                "href": primary_contact_link.get("href"),
+                "channel": primary_contact_link.get("type"),
+                "action_label": primary_contact_link.get("label") or "Abrir canal de respuesta",
+            }
+        )
+    operator_actions.append(reply_action)
     if tracking.get("path"):
         operator_actions.append(
             {

@@ -368,6 +368,10 @@ def test_serialize_unified_order_exposes_assisted_marketplace_upload_contract():
         assert review_card["suggested_reply"] == serialized["assisted_request"]["operator_pack"]["suggested_reply"]
         assert review_card["suggested_tasks"][0]["id"] == "review_ocr_confidence"
         assert review_card["contact_links"][0]["type"] == "whatsapp"
+        reply_action = next(action for action in review_card["operator_actions"] if action["id"] == "reply_customer")
+        assert reply_action["href"].startswith("https://wa.me/5492613168608?text=")
+        assert reply_action["channel"] == "whatsapp"
+        assert reply_action["action_label"] == "Responder por WhatsApp"
         assert serialized["contact"]["phone"] == "+5492613168608"
 
 
