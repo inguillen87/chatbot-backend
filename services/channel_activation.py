@@ -1,0 +1,296 @@
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import Any, Mapping
+
+from models import CatalogoItem, EncEncuesta, MessageTemplateRegistry, PublicSurvey, TenantProfile, User
+from services.live_chat_schedule import build_live_chat_status
+from services.plan_access import integration_access_payload
+from services.twilio_tech_provider import STATE_KEY
+
+
+CONTRACT_VERSION = "tenant.channel_activation.v1"
+READY_STATES = {"ready", "online", "connected", "approved", "sender_registered", "enabled"}
+LOCKED_STATES = {"locked", "blocked", "plan_required", "needs_platform_config"}
+
+
+def _cfg(tenant: TenantProfile | None) -> dict[str, Any]:
+    value = getattr(tenant, "configuracion", None) if tenant is not None else None
+    return value if isinstance(value, dict) else {}
+
+
+def _as_mapping(value: Any) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
+
+
+def _safe_count(query: Any) -> int:
+    try:
+        return int(query.count())
+    except Exception:
+        return 0
+
+
+def _tenant_ref(tenant: TenantProfile | None) -> dict[str, Any] | None:
+    if tenant is None:
+        return None
+    return {
+        "id": tenant.id,
+        "slug": tenant.slug,
+        "nombre": tenant.nombre,
+        "tipo": tenant.tipo,
+        "vertical": tenant.vertical,
+        "subvertical": tenant.subvertical,
+        "plan": tenant.plan,
+        "is_active": bool(getattr(tenant, "is_active", True)),
+    }
+
+
+def _tenant_path(tenant: TenantProfile | None, path: str) -> str:
+    slug = getattr(tenant, "slug", None)
+    if slug:
+        clean = path if path.startswith("/") else f"/{path}"
+        return f"/t/{slug}{clean}"
+    return path if path.startswith("/") else f"/{path}"
+
+
+def _profile_path(tab: str) -> str:
+    return "/perfil" if tab == "perfil" else f"/perfil?tab={tab}"
+
+
+def _action(action_id: str, label: str, href: str, *, kind: str = "link", primary: bool = False) -> dict[str, Any]:
+    return {"id": action_id, "label": label, "href": href, "kind": kind, "primary": primary}
+
+
+def _channel(
+    channel_id: str,
+    label: str,
+    status: str,
+    description: str,
+    *,
+    actions: list[dict[str, Any]] | None = None,
+    evidence: list[str] | None = None,
+    reason_code: str | None = None,
+    required_plan: str | None = None,
+    progress_hint: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "id": channel_id,
+        "label": label,
+        "status": status,
+        "state": status,
+        "ready": status in READY_STATES,
+        "locked": status in LOCKED_STATES,
+        "description": description,
+        "evidence": [item for item in (evidence or []) if item],
+        "actions": actions or [],
+        "reason_code": reason_code,
+        "required_plan": required_plan,
+        "progress_hint": progress_hint,
+    }
+
+
+def _whatsapp_status(cfg: Mapping[str, Any], access_enabled: bool) -> tuple[str, list[str], str | None]:
+    onboarding = _as_mapping(cfg.get("whatsapp_onboarding"))
+    state = _as_mapping(cfg.get(STATE_KEY))
+    raw_status = str(onboarding.get("status") or "").strip().lower()
+    sender_status = str(state.get("sender_status") or "").strip().lower()
+
+    evidence: list[str] = []
+    if onboarding.get("provider"):
+        evidence.append(f"provider:{onboarding.get('provider')}")
+    if sender_status:
+        evidence.append(f"sender:{sender_status}")
+
+    if not access_enabled:
+        return "locked", evidence, "plan_full_required"
+    if raw_status in READY_STATES or sender_status in READY_STATES:
+        return "ready", evidence, None
+    if raw_status in {"pending_sender_registration", "ready_for_embedded_signup", "provisioning_started", "plan_ready"}:
+        return "pending", evidence, raw_status
+    if raw_status in {"needs_platform_config", "disabled"}:
+        return "blocked", evidence, raw_status
+    return "action_required", evidence, "connect_whatsapp"
+
+
+def _live_chat_status(cfg: Mapping[str, Any]) -> tuple[str, list[str]]:
+    schedule_cfg = _as_mapping(cfg.get("live_chat_schedule"))
+    if not schedule_cfg:
+        return "action_required", ["horario global disponible"]
+    try:
+        status = build_live_chat_status(schedule_override=schedule_cfg)
+    except Exception:
+        return "blocked", ["horario invalido"]
+    if status.get("enabled") is False:
+        return "blocked", ["atencion humana deshabilitada"]
+    return "ready", [
+        f"{status.get('label') or 'horario configurado'}",
+        str(status.get("timezone") or schedule_cfg.get("timezone") or "").strip(),
+    ]
+
+
+def _counts(tenant: TenantProfile | None) -> dict[str, int]:
+    if tenant is None or not getattr(tenant, "id", None):
+        return {"catalog_items": 0, "approved_templates": 0, "surveys": 0, "team_members": 0}
+    return {
+        "catalog_items": _safe_count(CatalogoItem.query.filter_by(tenant_id=tenant.id)),
+        "approved_templates": _safe_count(
+            MessageTemplateRegistry.query.filter_by(tenant_id=tenant.id, channel="whatsapp", status="approved")
+        ),
+        "surveys": _safe_count(EncEncuesta.query.filter_by(tenant_id=tenant.id))
+        + _safe_count(PublicSurvey.query.filter_by(tenant_id=tenant.id)),
+        "team_members": _safe_count(User.query.filter_by(tenant_id=tenant.id, es_empleado=True)),
+    }
+
+
+def build_channel_activation_payload(tenant: TenantProfile | None) -> dict[str, Any]:
+    """Build a public, secret-free checklist for post-onboarding channel activation."""
+
+    cfg = _cfg(tenant)
+    access = integration_access_payload(tenant)
+    access_enabled = bool(access.get("enabled"))
+    counts = _counts(tenant)
+    onboarding = _as_mapping(cfg.get("onboarding"))
+    provisioning = _as_mapping(cfg.get("provisioning"))
+    preferred_channels = onboarding.get("preferred_channels") if isinstance(onboarding.get("preferred_channels"), list) else []
+    whatsapp_status, whatsapp_evidence, whatsapp_reason = _whatsapp_status(cfg, access_enabled)
+    live_status, live_evidence = _live_chat_status(cfg)
+
+    widget_configured = bool(
+        getattr(tenant, "widget_settings", None)
+        or getattr(tenant, "widget_config", None)
+        or cfg.get("widget_tokens")
+    )
+    widget_status = "locked" if not access_enabled else ("ready" if widget_configured else "action_required")
+    template_status = "locked" if not access_enabled else ("ready" if counts["approved_templates"] > 0 else "action_required")
+    catalog_status = "ready" if counts["catalog_items"] > 0 else "action_required"
+    analytics_status = "ready" if counts["surveys"] > 0 else "action_required"
+
+    channels = [
+        _channel(
+            "crm",
+            "CRM operativo",
+            "ready" if tenant else "blocked",
+            "Bandeja de reclamos, pedidos y conversaciones para operar desde el primer dia.",
+            actions=[_action("open_crm", "Abrir reclamos/tickets", _profile_path("tickets"), primary=True)],
+            evidence=["tenant creado"] if tenant else [],
+        ),
+        _channel(
+            "whatsapp",
+            "WhatsApp Business",
+            whatsapp_status,
+            "Sender productivo, proveedor Twilio/Meta y pruebas de conversacion.",
+            actions=[
+                _action("connect_whatsapp", "Conectar WhatsApp", _tenant_path(tenant, "/integracion"), primary=True),
+                _action("run_sandbox", "Probar sandbox", f"/api/v2/tenants/{getattr(tenant, 'slug', '')}/whatsapp/sandbox-test", kind="api"),
+            ],
+            evidence=whatsapp_evidence,
+            reason_code=whatsapp_reason,
+            required_plan=None if access_enabled else "full",
+        ),
+        _channel(
+            "widget",
+            "Widget web",
+            widget_status,
+            "Chat embebible para sitios, landing pages y portales de usuario.",
+            actions=[_action("open_integrations", "Configurar widget", _tenant_path(tenant, "/integracion"), primary=True)],
+            evidence=["widget token listo"] if widget_configured else [],
+            reason_code=None if access_enabled else "plan_full_required",
+            required_plan=None if access_enabled else "full",
+        ),
+        _channel(
+            "templates",
+            "Plantillas aprobadas",
+            template_status,
+            "Mensajes transaccionales, menus accesibles y webviews aprobados para WhatsApp.",
+            actions=[_action("manage_templates", "Gestionar plantillas", "/perfil/plantillas-respuesta", primary=True)],
+            evidence=[f"{counts['approved_templates']} aprobadas"] if counts["approved_templates"] else [],
+            reason_code=None if access_enabled else "plan_full_required",
+            required_plan=None if access_enabled else "full",
+        ),
+        _channel(
+            "catalog_marketplace",
+            "Catalogo y marketplace",
+            catalog_status,
+            "Productos, tramites, promociones y pedidos asistidos por IA desde WhatsApp o web.",
+            actions=[_action("open_catalog", "Cargar catalogo", _profile_path("catalogo"), primary=True)],
+            evidence=[f"{counts['catalog_items']} items"] if counts["catalog_items"] else [],
+        ),
+        _channel(
+            "live_chat",
+            "Atencion humana",
+            live_status,
+            "Horario, cola offline y derivacion a operadores para tickets sensibles.",
+            actions=[_action("configure_live_chat", "Configurar horario", _tenant_path(tenant, "/integracion"), primary=True)],
+            evidence=live_evidence,
+            reason_code=None if live_status == "ready" else "schedule_required",
+        ),
+        _channel(
+            "analytics_surveys",
+            "Encuestas y analitica",
+            analytics_status,
+            "Encuestas, votaciones, reportes y mapas de calor para decisiones operativas.",
+            actions=[_action("open_analytics", "Abrir analitica", _profile_path("analytics"), primary=True)],
+            evidence=[f"{counts['surveys']} encuestas/votaciones"] if counts["surveys"] else [],
+        ),
+    ]
+
+    ready_count = sum(1 for item in channels if item["ready"])
+    locked_count = sum(1 for item in channels if item["locked"])
+    attention_count = len(channels) - ready_count - locked_count
+    progress = round((ready_count / max(1, len(channels))) * 100)
+    first_actionable = next((item for item in channels if not item["ready"] and item["actions"]), None)
+    blockers = [
+        {
+            "id": item["id"],
+            "label": item["label"],
+            "reason_code": item.get("reason_code") or item.get("required_plan") or "action_required",
+            "required_plan": item.get("required_plan"),
+        }
+        for item in channels
+        if item["locked"] or item.get("reason_code") in {"plan_full_required", "needs_platform_config"}
+    ]
+
+    return {
+        "contract_version": CONTRACT_VERSION,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "tenant": _tenant_ref(tenant),
+        "status": "ready" if ready_count == len(channels) else ("locked" if locked_count else "needs_attention"),
+        "summary": {
+            "total": len(channels),
+            "ready": ready_count,
+            "locked": locked_count,
+            "attention": attention_count,
+            "progress": progress,
+            "primary_next_action": (first_actionable or {}).get("actions", [{}])[0],
+            "health_label": "Listo para operar" if progress >= 85 else "Activacion en progreso",
+        },
+        "preferred_channels": preferred_channels,
+        "counts": counts,
+        "channels": channels,
+        "blockers": blockers,
+        "integration_access": {
+            "enabled": access.get("enabled"),
+            "status": access.get("status"),
+            "required_plan": access.get("required_plan"),
+            "current_plan": access.get("current_plan"),
+            "reason_code": access.get("reason_code"),
+            "message": access.get("message"),
+        },
+        "provisioning": {
+            "status": provisioning.get("status"),
+            "blocked_reason": provisioning.get("blocked_reason"),
+            "channel_strategy": provisioning.get("channel_strategy"),
+        },
+        "endpoints": {
+            "self": f"/api/v2/tenants/{getattr(tenant, 'slug', '')}/activation/channels",
+            "profile": "/auth/me",
+            "bootstrap": "/auth/session/bootstrap",
+            "whatsapp_status": f"/api/v2/tenants/{getattr(tenant, 'slug', '')}/integrations/whatsapp/status",
+            "live_chat_schedule": f"/api/admin/tenants/{getattr(tenant, 'slug', '')}/live-chat/schedule",
+        },
+        "security": {
+            "secret_free": True,
+            "widget_tokens_exposed": False,
+            "provider_credentials_exposed": False,
+        },
+    }

@@ -19,6 +19,7 @@ from services.auth_notification_service import (
     send_onboarding_whatsapp,
     send_verification_email,
 )
+from services.channel_activation import build_channel_activation_payload
 from services.logic import es_rubro_publico
 from services.tenant_factory import create_tenant_from_template
 from services.user_service import get_user_profile_identity, set_user_profile_avatar
@@ -611,6 +612,7 @@ def build_chatboc_session_payload(user: User, tenant: Optional[TenantProfile] = 
         user.pyme_id,
     )
     onboarding = build_onboarding_contract(user, tenant)
+    channel_activation = build_channel_activation_payload(tenant)
     identity = _session_identity_payload(user)
     return {
         "contract_version": CLERK_AUTH_CONTRACT_VERSION,
@@ -637,6 +639,7 @@ def build_chatboc_session_payload(user: User, tenant: Optional[TenantProfile] = 
         },
         "tenant": serialize_tenant(tenant),
         "onboarding": onboarding,
+        "channel_activation": channel_activation,
     }
 
 

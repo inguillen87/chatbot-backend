@@ -35,6 +35,7 @@ from services.tenant_resolver import resolve_tenant_only
 from services.demo_registry import load_demo_rubros
 from services.demo_experience_contract import build_demo_experience_contract
 from services.auth_notification_service import send_verification_email
+from services.channel_activation import build_channel_activation_payload
 from services.clerk_auth_service import (
     ClerkAuthError,
     ClerkNotConfigured,
@@ -797,6 +798,7 @@ def build_profile_payload(user: User) -> Dict[str, Any]:
     profile_data["planes_disponibles"] = serialize_plan_catalog()
     integration_access = integration_access_payload(tenant_profile)
     profile_data["integration_access"] = integration_access
+    profile_data["channel_activation"] = build_channel_activation_payload(tenant_profile)
     profile_data["integrations_locked"] = not bool(integration_access.get("enabled"))
     profile_data["widget_embed_token"] = None
     profile_data["widget_embed_token_kind"] = "plan_required"
@@ -3194,6 +3196,7 @@ def session_bootstrap(user: User):
 
     tenant_obj = _tenant_for_user(user)
     tenant_slug = getattr(user, "tenant_slug", None) or getattr(tenant_obj, "slug", None)
+    channel_activation = build_channel_activation_payload(tenant_obj)
 
     payload = {
         "request_id": request_id,
@@ -3221,6 +3224,7 @@ def session_bootstrap(user: User):
                 "seed_demo_endpoint_template": "/admin/encuestas/{encuesta_id}/seed-demo/bulk",
             },
         },
+        "channel_activation": channel_activation,
     }
     elapsed_ms = round((time.perf_counter() - started) * 1000.0, 2)
     payload.setdefault("bootstrap", {})["timing_ms"] = elapsed_ms
@@ -3245,6 +3249,7 @@ def dashboard_info(user: User):
     tipo_chat = user.tipo_chat or ("municipio" if es_rubro_publico(rubro) else "pyme")
     final_panels = _dashboard_panels_for_user(user, tipo_chat)
     profile_capabilities = _profile_capabilities_for_user(user)
+    tenant_obj = _tenant_for_user(user)
 
     return jsonify({
         "id": user.id,
@@ -3254,6 +3259,7 @@ def dashboard_info(user: User):
         "permissions": profile_capabilities,
         "capabilities": profile_capabilities,
         "scopes": profile_capabilities,
+        "channel_activation": build_channel_activation_payload(tenant_obj),
     })
 
 @auth_bp.route(

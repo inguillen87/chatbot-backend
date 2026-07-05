@@ -41,6 +41,7 @@ from services.employee_routing import (
     workload_by_employee,
 )
 from services.catalog_quality import build_catalog_quality_fallback_payload, build_catalog_quality_payload
+from services.channel_activation import build_channel_activation_payload
 from services.demo_sandbox_contract import build_demo_whatsapp_sandbox_contract, sandbox_context_from_contract
 from services.operational_intelligence import build_operational_dashboard, build_operational_freshness
 from services.provider_platform import build_whatsapp_provider_status, sync_twilio_provider_records
@@ -1495,6 +1496,17 @@ def _templates_payload(tenant_id: int) -> list[dict[str, Any]]:
         }
         for item in rows
     ]
+
+
+@v2_saas_bp.route("/tenant/activation/channels", methods=["GET"])
+@v2_saas_bp.route("/tenants/<string:tenant_slug>/activation/channels", methods=["GET"])
+@token_requerido
+@require_role("admin", "empleado", "super_admin")
+def tenant_channel_activation_v2(current_user, tenant_slug: str | None = None):
+    tenant, error = _resolve_tenant_or_error(current_user, tenant_slug)
+    if error:
+        return error
+    return _json_response(build_channel_activation_payload(tenant))
 
 
 @v2_saas_bp.route("/employee-coverage", methods=["GET"])
