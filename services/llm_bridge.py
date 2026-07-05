@@ -7,7 +7,8 @@ from services.logging_config import log_text_block
 
 from cachetools import TTLCache
 
-from services.openai_bridge import llamar_openai
+from services.llm_orchestrator import llamar_llm_con_fallback
+from utils.response_utils import normalize_response_payload
 
 logger = logging.getLogger(__name__)
 
@@ -38,13 +39,37 @@ def _build_cache_key(
         return str(key_obj)
 
 
-def _truthy_env(*names: str) -> bool:
-    truthy = {"1", "true", "yes", "on"}
-    return any(str(os.getenv(name) or "").strip().lower() in truthy for name in names)
+def _controlled_llm_error(error_detail: str = "llm_unavailable", message: str | None = None) -> Dict[str, Any]:
+    payload = {
+        "message_body": message
+        or "El asistente IA esta tardando mas de lo normal en responder. Por favor, intenta de nuevo en unos momentos.",
+        "accion_backend": "derivar_humano",
+        "datos_estructura": {"error_detalle": error_detail},
+        "pedir_info": None,
+        "botones": [],
+    }
+    normalize_response_payload(payload)
+    return payload
 
 
-def _cohere_llm_enabled() -> bool:
-    return _truthy_env("LLM_COHERE_ENABLED", "COHERE_ENABLED")
+def _normalize_llm_bridge_payload(payload: Any) -> Dict[str, Any]:
+    if not isinstance(payload, dict):
+        payload = {"message_body": str(payload or ""), "accion_backend": "responder_directamente"}
+    else:
+        payload = dict(payload)
+
+    normalize_response_payload(payload)
+
+    if not isinstance(payload.get("datos_estructura"), dict):
+        payload["datos_estructura"] = {}
+    if not isinstance(payload.get("botones"), list):
+        payload["botones"] = []
+    if not isinstance(payload.get("options_list"), list):
+        payload["options_list"] = payload["botones"]
+
+    payload.setdefault("accion_backend", "responder_directamente")
+    payload.setdefault("pedir_info", None)
+    return payload
 
 
 def llamar_llm(
@@ -57,11 +82,12 @@ def llamar_llm(
     timeout_seconds: int = 20,
     model: str = "gpt-4o-mini",
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    """Generic LLM wrapper using OpenAI as the production default.
+    """Generic LLM wrapper using the configured multi-provider orchestrator.
 
     This function keeps the previous signature for backwards compatibility.
-    Cohere is only used when explicitly enabled by env. Responses are cached
-    in-memory to minimize repeated calls.
+    Responses are cached in-memory to minimize repeated calls, and payloads are
+    normalized to the legacy Chatboc response contract expected by municipal and
+    PyME flows.
     """
     user_msg = mensaje_usuario if mensaje_usuario is not None else mensaje
     cache_key = _build_cache_key(user_msg, chat_session_id, historial)
@@ -73,38 +99,25 @@ def llamar_llm(
     resolved_model = model or os.getenv("OPENAI_CHAT_MODEL_DEFAULT", "gpt-4o-mini")
 
     try:
-        respuesta = llamar_openai(app, user_msg, usuario or {}, historial or [], chat_session_id, model=resolved_model)
-        log_text_block(logger, "LLM OpenAI response", respuesta)
-    except Exception as e:
-        if not _cohere_llm_enabled():
-            logger.error("OpenAI call failed and Cohere LLM fallback is disabled: %s", e, exc_info=True)
-            error_response = ({
-                "message_body": "El asistente IA esta tardando mas de lo normal en responder. Por favor, intenta de nuevo en unos momentos.",
-                "accion_backend": "derivar_humano",
-                "datos_estructura": {"error_detalle": "openai_unavailable"},
-                "pedir_info": None,
-                "botones": [],
-            }, {})
-            LLM_CACHE[cache_key] = error_response
-            return error_response
-
-        logger.error("OpenAI call failed: %s; trying explicitly enabled Cohere fallback", e, exc_info=True)
-        try:
-            from services.cohere_bridge import llamar_cohere
-
-            respuesta = llamar_cohere(app, user_msg, usuario or {}, historial or [], chat_session_id)
-            log_text_block(logger, "LLM Cohere response", respuesta)
-        except Exception as e2:
-            logger.error(f"Cohere call failed: {e2}", exc_info=True)
-            error_response = ({
-                "message_body": "El asistente IA esta tardando mas de lo normal en responder. Por favor, intenta de nuevo en unos momentos.",
-                "accion_backend": "derivar_humano",
-                "datos_estructura": {"error_detalle": "llm_unavailable"},
-                "pedir_info": None,
-                "botones": [],
-            }, {})
-            LLM_CACHE[cache_key] = error_response
-            return error_response
+        respuesta_payload, respuesta_context = llamar_llm_con_fallback(
+            app,
+            user_msg,
+            usuario or {},
+            historial or [],
+            chat_session_id,
+            model=resolved_model,
+        )
+        normalized_payload = _normalize_llm_bridge_payload(respuesta_payload)
+        if normalized_payload.get("accion_backend") == "error_fatal_llm":
+            normalized_payload = _controlled_llm_error(
+                "llm_unavailable",
+                normalized_payload.get("message_body"),
+            )
+        respuesta = (normalized_payload, respuesta_context or {})
+        log_text_block(logger, "LLM orchestrator response", respuesta)
+    except Exception as exc:
+        logger.error("LLM orchestrator call failed: %s", exc, exc_info=True)
+        respuesta = (_controlled_llm_error("llm_unavailable"), {})
 
     LLM_CACHE[cache_key] = respuesta
     return respuesta
