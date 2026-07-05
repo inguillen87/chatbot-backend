@@ -89,6 +89,73 @@ def _resolve_promo_image_url(municipio_config: dict) -> str | None:
         return promo_section.get("image_url")
     return None
 
+
+def _resolve_tenant_for_ai(tenant_id: Any) -> TenantProfile | None:
+    if tenant_id in (None, ""):
+        return None
+    try:
+        return db.session.get(TenantProfile, int(tenant_id))
+    except (TypeError, ValueError):
+        return None
+
+
+def _persist_municipio_ticket_ai_enrichment(
+    ticket_obj: MunicipioTicket,
+    *,
+    tenant: TenantProfile | None = None,
+) -> dict[str, Any] | None:
+    """Persist advisory-only AI hints for CRM without mutating operational state."""
+
+    if not ticket_obj or not hasattr(ticket_obj, "datos_extra"):
+        return None
+
+    try:
+        from sqlalchemy.orm.attributes import flag_modified
+        from services.ticket_ai_enrichment import build_ticket_ai_enrichment
+
+        estado_before = getattr(ticket_obj, "estado", None)
+        categoria_before = getattr(ticket_obj, "categoria", None)
+        enrichment = build_ticket_ai_enrichment(
+            ticket_obj,
+            scope="municipio",
+            tenant=tenant,
+        )
+        enrichment["persisted"] = True
+        enrichment["source_model"] = "MunicipioTicket"
+        enrichment["state_mutation"] = {
+            **(enrichment.get("state_mutation") or {}),
+            "requested": False,
+            "applied": False,
+            "estado_before": estado_before,
+            "estado_after": getattr(ticket_obj, "estado", None),
+            "categoria_before": categoria_before,
+            "categoria_after": getattr(ticket_obj, "categoria", None),
+            "reason": "ai_enrichment_is_advisory_only",
+        }
+
+        extra = dict(ticket_obj.datos_extra) if isinstance(ticket_obj.datos_extra, dict) else {}
+        extra["ai_enrichment"] = enrichment
+        extra["ai_hints"] = enrichment.get("crm_hints") if isinstance(enrichment.get("crm_hints"), dict) else {}
+        extra["ai_operator_brief"] = (
+            enrichment.get("operator_brief") if isinstance(enrichment.get("operator_brief"), dict) else {}
+        )
+        extra["ai_enrichment_contract_version"] = enrichment.get("contract_version")
+        ticket_obj.datos_extra = extra
+        flag_modified(ticket_obj, "datos_extra")
+        db.session.add(ticket_obj)
+        db.session.commit()
+        return enrichment
+    except Exception as exc:
+        db.session.rollback()
+        logger.warning(
+            "No se pudo persistir enrichment IA advisory para reclamo municipal %s: %s",
+            getattr(ticket_obj, "id", None),
+            exc,
+            exc_info=True,
+        )
+        return None
+
+
 def _address_seems_generic(address: str | None) -> bool:
     if not address:
         return True
@@ -891,6 +958,10 @@ class CrearReclamoActionHandler(BaseActionHandler):
                                     archivo_id_para_asociar,
                                     nro_ticket_str,
                                 )
+                    _persist_municipio_ticket_ai_enrichment(
+                        ticket_obj,
+                        tenant=_resolve_tenant_for_ai(tenant_id),
+                    )
                     ticket_json = serialize_ticket_to_json(ticket_obj, "municipio")
                     emit_new_ticket(ticket_json)
                 else:

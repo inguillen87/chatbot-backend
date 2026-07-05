@@ -441,6 +441,7 @@ class MunicipioTicket(db.Model):
     contacto_seguimiento = db.Column(db.String(255), nullable=True) # ej: link a wa.me, mailto, etc.
     nombre_display_whatsapp = db.Column(db.String(150), nullable=True)
     url_avatar_whatsapp = db.Column(db.String(255), nullable=True)
+    datos_extra = db.Column(JSONType, nullable=True)
     # archivo_url = db.Column(db.String(255), nullable=True) # Campo obsoleto, se usará la relación
     comentarios = db.relationship('TicketComentario', back_populates='municipio_ticket', lazy='dynamic')
     archivos = db.relationship(
@@ -804,6 +805,7 @@ class PymeTicket(db.Model):
     direccion = db.Column(db.String(255), nullable=True)
     latitud = db.Column(db.Float, nullable=True)
     longitud = db.Column(db.Float, nullable=True)
+    datos_extra = db.Column(JSONType, nullable=True)
     comentarios = db.relationship('TicketComentario', back_populates='pyme_ticket', lazy='dynamic')
     archivos = db.relationship(
         'ArchivoAdjunto',

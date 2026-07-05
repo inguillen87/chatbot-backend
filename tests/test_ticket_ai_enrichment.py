@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 
 from models import MunicipioTicket, TenantProfile, TenantTicket, User, db
+from services.actions.municipio_actions import _persist_municipio_ticket_ai_enrichment
 from services.ticket_ai_enrichment import build_ticket_ai_enrichment
 
 
@@ -81,6 +82,82 @@ def test_build_ticket_ai_enrichment_for_municipio_uses_local_fallback_without_hf
     assert any(item["id"] == "operator_review" for item in result["operator_brief"]["checklist"])
     assert result["state_mutation"]["applied"] is False
     assert result["persisted"] is False
+
+
+def test_persist_municipio_ticket_ai_enrichment_is_advisory(client, monkeypatch):
+    owner = User(
+        name="Municipio Junin",
+        email="municipio-junin-ai-persist@example.com",
+        rol="admin",
+        tipo_chat="municipio",
+    )
+    owner.set_password("admin")
+    db.session.add(owner)
+    db.session.flush()
+    tenant = TenantProfile(slug="junin-ai-persist", nombre="Junin", tipo="municipio", municipio_id=owner.id)
+    db.session.add(tenant)
+    db.session.flush()
+    ticket = MunicipioTicket(
+        nro_ticket="915733",
+        tenant_id=tenant.id,
+        municipio_id=owner.id,
+        pregunta="Cable colgando y luminaria rota en la esquina",
+        asunto="Luminaria",
+        categoria="Luminaria",
+        estado="nuevo",
+        consulta_pin="915733",
+        fecha=datetime.now(timezone.utc),
+    )
+    db.session.add(ticket)
+    db.session.commit()
+
+    monkeypatch.setattr(
+        "services.ticket_ai_enrichment.build_ticket_ai_enrichment",
+        lambda ticket_arg, scope, comments=None, tenant=None: {
+            "contract_version": "ticket.ai_enrichment.v1",
+            "ticket_id": ticket_arg.id,
+            "ticket_type": scope,
+            "tenant_id": tenant.id if tenant else ticket_arg.tenant_id,
+            "crm_hints": {
+                "risk_level": "alto",
+                "requires_human_attention": True,
+                "recommended_actions": [{"id": "operator_review"}],
+            },
+            "operator_brief": {
+                "routing_hint": "servicios_publicos_luminaria",
+                "checklist": [{"id": "operator_review", "label": "Revisar riesgo"}],
+            },
+            "state_mutation": {"requested": False, "applied": False},
+            "persisted": False,
+            "secret_values_exposed": False,
+        },
+    )
+
+    enrichment = _persist_municipio_ticket_ai_enrichment(ticket, tenant=tenant)
+
+    assert enrichment["persisted"] is True
+    db.session.expire_all()
+    refreshed = db.session.get(MunicipioTicket, ticket.id)
+    assert refreshed.estado == "nuevo"
+    assert refreshed.categoria == "Luminaria"
+    assert refreshed.datos_extra["ai_enrichment"]["contract_version"] == "ticket.ai_enrichment.v1"
+    assert refreshed.datos_extra["ai_hints"]["risk_level"] == "alto"
+    assert refreshed.datos_extra["ai_operator_brief"]["routing_hint"] == "servicios_publicos_luminaria"
+    assert refreshed.datos_extra["ai_enrichment"]["state_mutation"]["applied"] is False
+    assert refreshed.datos_extra["ai_enrichment"]["source_model"] == "MunicipioTicket"
+
+    from routes.ticket import serialize_ticket_to_json
+
+    payload = serialize_ticket_to_json(
+        refreshed,
+        "municipio",
+        compact=True,
+        comentarios_count_override=0,
+        collaboration_state_override={"active_viewers": [], "meta": {}},
+    )
+    assert payload["ai_hints"]["risk_level"] == "alto"
+    assert payload["ai_enrichment"]["persisted"] is True
+    assert payload["ai_operator_brief"]["routing_hint"] == "servicios_publicos_luminaria"
 
 
 def test_build_ticket_ai_enrichment_for_pyme_intent(monkeypatch):

@@ -66,6 +66,7 @@ class MunicipioTicketCreator(TicketCreator):
             dni_vecino=ticket_data.get("dni") or ticket_data.get("dni_vecino"),
             foto_url_directa=ticket_data.get("foto_url_directa"), # Para la foto inicial del reclamo
             canal_ingreso=ticket_data.get("canal_ingreso"),
+            datos_extra=ticket_data.get("datos_extra"),
             estado=ticket_data.get("estado", "nuevo")
         )
 
@@ -119,6 +120,7 @@ class PymeTicketCreator(TicketCreator):
             telefono=telefono_contacto,
             email=email_contacto,
             dni=ticket_data.get("dni"),
+            datos_extra=ticket_data.get("datos_extra"),
             estado=ticket_data.get("estado", "nuevo"),
             estado_cliente=ticket_data.get("estado", "nuevo")
         )
@@ -507,10 +509,12 @@ class ServicioTickets:
                 ticket_dict["email_vecino"] = getattr(ticket, 'email_vecino', None)
                 ticket_dict["municipio_id"] = getattr(ticket, 'municipio_id', None)
                 ticket_dict["consulta_pin"] = getattr(ticket, 'consulta_pin', None)
+                ticket_dict["datos_extra"] = getattr(ticket, "datos_extra", None) or {}
             elif tipo_ticket == "pyme":
                 ticket_dict["consulta_pin"] = getattr(ticket, 'consulta_pin', None)
                 ticket_dict["detalles"] = ticket.pregunta # PymeTicket uses 'pregunta'
                 ticket_dict["rubro_id"] = getattr(ticket, 'rubro_id', None)
+                ticket_dict["datos_extra"] = getattr(ticket, "datos_extra", None) or {}
 
             if return_object:
                 return ticket

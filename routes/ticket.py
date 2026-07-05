@@ -1312,6 +1312,7 @@ def serialize_ticket_to_json(
     categoria_normalizada = normalize_category(categoria_ticket) or categoria_ticket
     location_payload = _ticket_location_payload(ticket, user_data.get("direccion"))
     priority_payload = _ticket_priority_payload(ticket)
+    ai_payload = _ticket_ai_enrichment_payload(ticket)
 
     serialized_data = {
         "id": ticket.id,
@@ -1387,6 +1388,7 @@ def serialize_ticket_to_json(
             "age_hours": operational_hints["age_hours"],
             "inactivity_hours": operational_hints["inactivity_hours"],
         },
+        **ai_payload,
         "collaboration_state": collaboration_state,
         "meta": _ticket_degraded_meta(degraded_reasons),
     }
@@ -2052,6 +2054,33 @@ def _identity_visual_fields(identity: dict) -> dict:
         key: value
         for key, value in (identity or {}).items()
         if key not in {"name", "email", "phone", "user_id", "anon_id"}
+    }
+
+
+def _ticket_ai_enrichment_payload(ticket) -> dict[str, Any]:
+    extra = getattr(ticket, "datos_extra", None)
+    if not isinstance(extra, dict):
+        return {
+            "datos_extra": {},
+            "ai_enrichment": None,
+            "ai_hints": {},
+            "ai_operator_brief": {},
+        }
+
+    ai_enrichment = extra.get("ai_enrichment") if isinstance(extra.get("ai_enrichment"), dict) else None
+    ai_hints = extra.get("ai_hints") if isinstance(extra.get("ai_hints"), dict) else {}
+    if ai_enrichment and isinstance(ai_enrichment.get("crm_hints"), dict):
+        ai_hints = {**ai_enrichment["crm_hints"], **ai_hints}
+
+    operator_brief = extra.get("ai_operator_brief") if isinstance(extra.get("ai_operator_brief"), dict) else {}
+    if not operator_brief and ai_enrichment and isinstance(ai_enrichment.get("operator_brief"), dict):
+        operator_brief = ai_enrichment["operator_brief"]
+
+    return {
+        "datos_extra": extra,
+        "ai_enrichment": ai_enrichment,
+        "ai_hints": ai_hints,
+        "ai_operator_brief": operator_brief,
     }
 
 
