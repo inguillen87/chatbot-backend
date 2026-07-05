@@ -1207,6 +1207,8 @@ def serialize_ticket_to_json(
     compact: bool = False,
     comentarios_count_override: int | None = None,
     collaboration_state_override: dict | None = None,
+    contact_profile_user_override: Optional[User] = None,
+    allow_profile_lookup: bool = True,
 ):
     """
     Serializa un objeto de ticket a un diccionario JSON con el formato
@@ -1245,7 +1247,13 @@ def serialize_ticket_to_json(
     # Reutilizar la lógica existente para obtener la información de contacto unificada
     # Esta función necesita el modelo User, que ya está importado en este archivo.
     user_data = _get_user_info(ticket, User)
-    contact_identity = _ticket_contact_identity(ticket, ticket_type, user_data)
+    contact_identity = _ticket_contact_identity(
+        ticket,
+        ticket_type,
+        user_data,
+        profile_user=contact_profile_user_override,
+        allow_lookup=allow_profile_lookup,
+    )
     contact_identity_visual = _identity_visual_fields(contact_identity)
 
     # El campo 'description' debe ser 'detalles' si existe, sino 'pregunta'.
@@ -1490,10 +1498,45 @@ def _prefetch_compact_ticket_inbox_state(tickets: list, ticket_type: str) -> dic
         for user_id in (getattr(ticket, "user_id", None), getattr(ticket, "asignado_a_id", None))
         if user_id is not None
     }
+    users_by_id: dict[int, User] = {}
     if user_ids:
         # Populate SQLAlchemy's identity map so _get_user_info() and assigned-user
         # relationships do not hit the DB one row at a time.
-        User.query.filter(User.id.in_(user_ids)).all()
+        users_by_id = {
+            int(user.id): user
+            for user in User.query.filter(User.id.in_(user_ids)).all()
+            if getattr(user, "id", None) is not None
+        }
+
+    contact_profile_users: dict[int, User] = {}
+    contact_emails_by_ticket_id: dict[int, str] = {}
+    for ticket in tickets:
+        ticket_id = getattr(ticket, "id", None)
+        if ticket_id is None:
+            continue
+        ticket_user_id = getattr(ticket, "user_id", None)
+        if ticket_user_id is not None and int(ticket_user_id) in users_by_id:
+            contact_profile_users[int(ticket_id)] = users_by_id[int(ticket_user_id)]
+            continue
+        email = (
+            _clean_display_value(getattr(ticket, "email_vecino", None))
+            or _clean_display_value(getattr(ticket, "email", None))
+        )
+        if email and "@" in str(email):
+            contact_emails_by_ticket_id[int(ticket_id)] = str(email).strip().lower()
+
+    if contact_emails_by_ticket_id:
+        matched_users_by_email = {
+            str(user.email or "").strip().lower(): user
+            for user in User.query.filter(
+                func.lower(User.email).in_(set(contact_emails_by_ticket_id.values()))
+            ).all()
+            if getattr(user, "email", None)
+        }
+        for ticket_id, email in contact_emails_by_ticket_id.items():
+            matched_user = matched_users_by_email.get(email)
+            if matched_user:
+                contact_profile_users[ticket_id] = matched_user
 
     collaboration_states = build_ticket_collaboration_states(
         ticket_type=ticket_type,
@@ -1505,6 +1548,7 @@ def _prefetch_compact_ticket_inbox_state(tickets: list, ticket_type: str) -> dic
     return {
         "comment_counts": comment_counts,
         "collaboration_states": collaboration_states,
+        "contact_profile_users": contact_profile_users,
     }
 
 
@@ -1811,6 +1855,7 @@ def get_tickets_del_usuario_logic(current_user: User):
         )
         comment_counts = compact_prefetch.get("comment_counts", {})
         collaboration_states = compact_prefetch.get("collaboration_states", {})
+        contact_profile_users = compact_prefetch.get("contact_profile_users", {})
 
         serialized_tickets = [
             serialize_ticket_to_json(
@@ -1819,6 +1864,8 @@ def get_tickets_del_usuario_logic(current_user: User):
                 compact=compact_view,
                 comentarios_count_override=comment_counts.get(t.id, 0) if compact_view else None,
                 collaboration_state_override=collaboration_states.get(t.id) if compact_view else None,
+                contact_profile_user_override=contact_profile_users.get(t.id) if compact_view else None,
+                allow_profile_lookup=not compact_view,
             )
             for t in tickets_for_list_page
         ]
@@ -2072,8 +2119,17 @@ def _resolve_ticket_profile_user(ticket, user_data: dict) -> Optional[User]:
     return None
 
 
-def _ticket_contact_identity(ticket, ticket_type: str, user_data: dict) -> dict:
-    ticket_user = _resolve_ticket_profile_user(ticket, user_data)
+def _ticket_contact_identity(
+    ticket,
+    ticket_type: str,
+    user_data: dict,
+    *,
+    profile_user: Optional[User] = None,
+    allow_lookup: bool = True,
+) -> dict:
+    ticket_user = profile_user
+    if ticket_user is None and allow_lookup:
+        ticket_user = _resolve_ticket_profile_user(ticket, user_data)
     return build_identity_subject(
         user=ticket_user,
         display_name=user_data.get("nombre"),
