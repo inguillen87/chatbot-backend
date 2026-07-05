@@ -1,3 +1,4 @@
+import json
 import os
 import uuid
 import logging
@@ -21,6 +22,7 @@ from models import (
     User,
     TenantProfile,
     TicketComentario,
+    TicketRealtimeState,
     TicketSatisfaccion,
     Conversacion,
     ArchivoAdjunto,
@@ -44,7 +46,7 @@ from services.geo.route import obtener_ruta
 from utils.auth_helpers import token_requerido, anon_o_token_requerido, admin_o_empleado_requerido
 from utils.permissions import require_role
 from collections import defaultdict
-from sqlalchemy import or_, func
+from sqlalchemy import or_, func, exists
 from utils.ticket_utils import normalize_category
 from utils.time_utils import datetime_to_iso_utc, get_local_now
 from utils.tenant import get_current_tenant, get_current_tenant_profile
@@ -224,6 +226,192 @@ def _build_ticket_operational_badges(ticket_obj) -> dict:
         "age_hours": round(age_hours, 2),
         "inactivity_hours": round(inactivity_hours, 2),
     }
+
+
+def _normalize_ticket_filter_token(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def _is_active_ticket_filter(value: Any) -> bool:
+    normalized = _normalize_ticket_filter_token(value)
+    return bool(normalized and normalized not in {"all", "todos"})
+
+
+def _parse_ticket_details_payload(ticket_obj) -> dict[str, Any]:
+    raw = getattr(ticket_obj, "detalles", None)
+    if isinstance(raw, dict):
+        return raw
+    if not isinstance(raw, str):
+        return {}
+    cleaned = raw.strip()
+    if not cleaned or cleaned[0] not in "{[":
+        return {}
+    try:
+        parsed = json.loads(cleaned)
+    except (TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _ticket_priority_payload(ticket_obj) -> dict[str, Any]:
+    details = _parse_ticket_details_payload(ticket_obj)
+    priority = (
+        getattr(ticket_obj, "prioridad", None)
+        or getattr(ticket_obj, "priority", None)
+        or details.get("prioridad_sugerida")
+        or details.get("priority")
+        or details.get("prioridad")
+    )
+    if not priority:
+        risk_level = _normalize_ticket_filter_token(details.get("riesgo_operativo"))
+        if risk_level in {"alto", "alta", "high", "critical", "critico", "critica", "urgente"}:
+            priority = "alta"
+
+    priority_value = str(priority).strip() if priority is not None and str(priority).strip() else None
+    try:
+        priority_score = float(details.get("prioridad_confianza"))
+    except (TypeError, ValueError):
+        priority_score = None
+
+    priority_breakdown = {}
+    for source_key, target_key in (
+        ("prioridad_provider", "provider"),
+        ("riesgo_operativo", "risk_level"),
+        ("requiere_atencion_humana_sugerida", "requires_human_attention"),
+    ):
+        if source_key in details:
+            priority_breakdown[target_key] = details.get(source_key)
+
+    return {
+        "priority": priority_value,
+        "priority_score": priority_score,
+        "priority_breakdown": priority_breakdown or None,
+    }
+
+
+def _ticket_priority_filter_condition(TicketModel, requested_priority):
+    normalized = _normalize_ticket_filter_token(requested_priority)
+    if not _is_active_ticket_filter(normalized):
+        return None
+
+    alias_groups = {
+        "alta": {"alta", "high", "urgent", "urgente", "critica", "crítica", "critical"},
+        "high": {"alta", "high", "urgent", "urgente", "critica", "crítica", "critical"},
+        "urgente": {"alta", "high", "urgent", "urgente", "critica", "crítica", "critical"},
+        "media": {"media", "medium", "normal"},
+        "medium": {"media", "medium", "normal"},
+        "normal": {"media", "medium", "normal"},
+        "baja": {"baja", "low"},
+        "low": {"baja", "low"},
+    }
+    aliases = alias_groups.get(normalized, {normalized})
+    conditions = []
+
+    for column_name in ("prioridad", "priority"):
+        if hasattr(TicketModel, column_name):
+            conditions.append(
+                func.lower(func.coalesce(getattr(TicketModel, column_name), "")).in_(list(aliases))
+            )
+
+    if hasattr(TicketModel, "detalles"):
+        details_text = func.lower(func.coalesce(TicketModel.detalles, ""))
+        searchable_keys = (
+            "prioridad_sugerida",
+            "prioridad",
+            "priority",
+            "riesgo_operativo",
+        )
+        for key in searchable_keys:
+            for alias in aliases:
+                conditions.append(details_text.like(f"%{key}%{alias}%"))
+
+    return or_(*conditions) if conditions else None
+
+
+def _ticket_sla_filter_condition(TicketModel, requested_sla):
+    normalized = _normalize_ticket_filter_token(requested_sla)
+    if not _is_active_ticket_filter(normalized):
+        return None
+
+    now = get_local_now()
+    closed_condition = func.lower(func.coalesce(TicketModel.estado, "")).in_(["cerrado", "resuelto"])
+    open_condition = ~closed_condition
+    assigned_column = getattr(TicketModel, "asignado_a_id", None)
+    if assigned_column is None:
+        return None
+
+    created_at = getattr(TicketModel, "fecha")
+    activity_at = getattr(TicketModel, "ultima_actividad", created_at)
+    activity_expr = func.coalesce(activity_at, created_at)
+    assigned = assigned_column.isnot(None)
+    unassigned = assigned_column.is_(None)
+    created_24h = created_at <= (now - timedelta(hours=24))
+    created_8h = created_at <= (now - timedelta(hours=8))
+    activity_24h = activity_expr <= (now - timedelta(hours=24))
+    activity_8h = activity_expr <= (now - timedelta(hours=8))
+    activity_2h = activity_expr <= (now - timedelta(hours=2))
+
+    vencido = open_condition & (
+        (unassigned & created_24h)
+        | (assigned & activity_24h)
+    )
+    por_vencer = open_condition & (
+        (unassigned & created_8h & ~created_24h)
+        | (assigned & activity_8h & ~activity_24h)
+    )
+    sin_asignar = open_condition & unassigned & ~created_8h
+    seguimiento = open_condition & assigned & activity_2h & ~activity_8h
+    ok = open_condition & assigned & ~activity_2h
+
+    if normalized in {"risk", "riesgo", "at_risk"}:
+        priority_condition = _ticket_priority_filter_condition(TicketModel, "alta")
+        return or_(vencido, por_vencer, priority_condition) if priority_condition is not None else or_(vencido, por_vencer)
+    if normalized in {"breached", "overdue", "vencido", "vencida"}:
+        return vencido
+    if normalized in {"por_vencer", "warning", "due_soon"}:
+        return por_vencer
+    if normalized in {"sin_asignar", "unassigned"}:
+        return sin_asignar
+    if normalized in {"seguimiento", "follow_up"}:
+        return seguimiento
+    if normalized in {"ok", "healthy"}:
+        return ok
+    if normalized in {"resuelto", "cerrado", "closed", "resolved"}:
+        return closed_condition
+    return None
+
+
+def _ticket_unread_filter_condition(TicketModel, ticket_type: str, requested_unread):
+    normalized = _normalize_ticket_filter_token(requested_unread)
+    if not _is_active_ticket_filter(normalized):
+        return None
+
+    wants_unread = normalized in {"1", "true", "yes", "si", "unread", "no_leidos", "no_leido"}
+    wants_read = normalized in {"0", "false", "no", "read", "leidos", "leido"}
+    if not wants_unread and not wants_read:
+        return None
+
+    comment_column = (
+        TicketComentario.municipio_ticket_id
+        if ticket_type == "municipio"
+        else TicketComentario.pyme_ticket_id
+    )
+    latest_comment_id = (
+        db.session.query(func.max(TicketComentario.id))
+        .filter(comment_column == TicketModel.id)
+        .correlate(TicketModel)
+        .scalar_subquery()
+    )
+    unread_exists = exists().where(
+        TicketRealtimeState.ticket_type == ticket_type,
+        TicketRealtimeState.ticket_id == TicketModel.id,
+        latest_comment_id.isnot(None),
+        or_(
+            TicketRealtimeState.last_read_comment_id.is_(None),
+            TicketRealtimeState.last_read_comment_id < latest_comment_id,
+        ),
+    )
+    return unread_exists if wants_unread else ~unread_exists
 
 
 def _validar_asignacion_empleado(ticket_obj, current_user: User):
@@ -1123,6 +1311,7 @@ def serialize_ticket_to_json(
     categoria_ticket = getattr(ticket, "categoria", None) or "Sin categoría"
     categoria_normalizada = normalize_category(categoria_ticket) or categoria_ticket
     location_payload = _ticket_location_payload(ticket, user_data.get("direccion"))
+    priority_payload = _ticket_priority_payload(ticket)
 
     serialized_data = {
         "id": ticket.id,
@@ -1190,6 +1379,9 @@ def serialize_ticket_to_json(
         ),
         "asignado_en": datetime_to_iso_utc(getattr(ticket, "asignado_en", None)),
         "sla_status": operational_hints["sla_status"],
+        "priority": priority_payload["priority"],
+        "priority_score": priority_payload["priority_score"],
+        "priority_breakdown": priority_payload["priority_breakdown"],
         "operational_badges": operational_hints["badges"],
         "operational_metrics": {
             "age_hours": operational_hints["age_hours"],
@@ -1307,6 +1499,20 @@ def get_tickets_del_usuario_logic(current_user: User):
             request.args.get("unassigned")
             or request.args.get("sin_responsable")
             or request.args.get("solo_sin_responsable")
+        )
+        requested_priority_filter = (
+            request.args.get("priority")
+            or request.args.get("prioridad")
+        )
+        requested_sla_filter = (
+            request.args.get("sla")
+            or request.args.get("sla_status")
+            or request.args.get("estado_sla")
+        )
+        requested_unread_filter = (
+            request.args.get("unread")
+            or request.args.get("no_leidos")
+            or request.args.get("lectura")
         )
 
         try:
@@ -1509,6 +1715,18 @@ def get_tickets_del_usuario_logic(current_user: User):
                 assigned_agent_id = None
             if assigned_agent_id is not None:
                 final_tickets_query = final_tickets_query.filter(TicketModel.asignado_a_id == assigned_agent_id)
+
+        priority_condition = _ticket_priority_filter_condition(TicketModel, requested_priority_filter)
+        if priority_condition is not None:
+            final_tickets_query = final_tickets_query.filter(priority_condition)
+
+        sla_condition = _ticket_sla_filter_condition(TicketModel, requested_sla_filter)
+        if sla_condition is not None:
+            final_tickets_query = final_tickets_query.filter(sla_condition)
+
+        unread_condition = _ticket_unread_filter_condition(TicketModel, tipo_ticket_str, requested_unread_filter)
+        if unread_condition is not None:
+            final_tickets_query = final_tickets_query.filter(unread_condition)
 
         try:
             page = int(request.args.get("page", 1))
@@ -1945,6 +2163,7 @@ def _serialize_ticket_details(ticket, ticket_type):
     assigned_user = getattr(ticket, "asignado_a", None)
     operational_hints = _build_ticket_operational_badges(ticket)
     location_payload = _ticket_location_payload(ticket, user_data["direccion"])
+    priority_payload = _ticket_priority_payload(ticket)
 
     ticket_data = {
         "id": ticket.id,
@@ -2003,6 +2222,9 @@ def _serialize_ticket_details(ticket, ticket_type):
         "progreso_estados": progreso_estados,
         "ultima_actualizacion": datetime_to_iso_utc(ultima_actualizacion_dt),
         "sla_status": operational_hints["sla_status"],
+        "priority": priority_payload["priority"],
+        "priority_score": priority_payload["priority_score"],
+        "priority_breakdown": priority_payload["priority_breakdown"],
         "operational_badges": operational_hints["badges"],
         "operational_metrics": {
             "age_hours": operational_hints["age_hours"],

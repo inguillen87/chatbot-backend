@@ -269,12 +269,22 @@ def test_marketplace_order_note_upload_creates_assisted_request_contract(client,
     assert payload["linked_record"]["kind"] == "tenant_ticket"
     assert payload["linked_record"]["target_module"] == "orders"
     assert payload["linked_record"]["category"] == "marketplace_assisted_order"
+    assert payload["operational_result"]["contract_version"] == "marketplace.assisted_operational_result.v1"
+    assert payload["operational_result"]["type"] == "assisted_order_request"
+    assert payload["operational_result"]["created_record"] == "tenant_ticket"
+    assert payload["operational_result"]["created_record_id"] == payload["intake_ticket_id"]
+    assert payload["operational_result"]["status_label"] == "Solicitud recibida"
+    assert payload["operational_result"]["requires_operator_confirmation"] is True
+    assert payload["operational_result"]["admin_surface"] == "orders"
+    assert payload["operational_result"]["tracking_code"] == f"pc-{payload['pedido_id']}"
+    assert payload["operational_result"]["tracking_path"] == payload["public_follow_up"]["tracking"]["path"]
     assert payload["crm_handoff"]["materialized_record"]["id"] == payload["intake_ticket_id"]
     pedido = PedidoConversacional.query.get(payload["pedido_id"])
     assert pedido.estado == "nuevo"
     assert pedido.metadata_payload["crm_state"] == "pending_operator_review"
     assert pedido.metadata_payload["linked_record"]["id"] == payload["intake_ticket_id"]
     assert pedido.metadata_payload["linked_record"]["kind"] == "tenant_ticket"
+    assert pedido.metadata_payload["operational_result"]["created_record_id"] == payload["intake_ticket_id"]
     assert PymePedido.query.filter_by(tenant_id=tenant.id).count() == legacy_order_count
     intake_ticket = TenantTicket.query.get(payload["intake_ticket_id"])
     assert intake_ticket is not None
@@ -347,12 +357,14 @@ def test_marketplace_order_note_upload_creates_assisted_request_contract(client,
     assert pedido.metadata_payload["operator_intake_summary"]["follow_up"]["code"] == f"pc-{payload['pedido_id']}"
     assert pedido.metadata_payload["operator_intake_summary"]["operator_queue"] == "commerce_assisted_orders"
     assert pedido.metadata_payload["public_follow_up"]["tracking"]["code"] == f"pc-{payload['pedido_id']}"
+    assert pedido.metadata_payload["operational_result"]["tracking_code"] == f"pc-{payload['pedido_id']}"
     assert pedido.metadata_payload["crm_order_draft"]["reference"] == f"pedido:{payload['pedido_id']}"
     assert pedido.metadata_payload["crm_order_draft"]["source_attachment"]["id"] == payload["attachment_id"]
     assert pedido.items[0]["attachmentInfo"]["id"] == payload["attachment_id"]
     assert pedido.items[0]["source_attachment"]["url"] == "https://cdn.example.com/nota.png"
     assert pedido.items[0]["crm_order_draft"]["contract_version"] == "marketplace.crm_order_draft.v1"
     assert pedido.items[0]["crm_order_draft"]["source_attachment"]["id"] == payload["attachment_id"]
+    assert pedido.items[0]["operational_result"]["created_record"] == "tenant_ticket"
     assert pedido.metadata_payload["catalog_candidates"][0]["candidates"][0]["catalogo_item_id"] == clavos_candidate.id
     assert pedido.items[0]["catalog_candidates"][0]["row"]["nombre"] == "Clavos 2 pulgadas"
     assert pedido.items[0]["public_follow_up"]["tracking"]["path"] == tracking_action["href"]

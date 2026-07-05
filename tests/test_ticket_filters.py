@@ -1,4 +1,5 @@
 import unittest
+import json
 from types import SimpleNamespace
 from unittest.mock import patch
 import sys
@@ -45,8 +46,9 @@ class DummyQuery:
     def limit(self, *args):
         return self
 
-from models import User, MunicipioTicket, PymeTicket
-from datetime import datetime
+from models import User, MunicipioTicket, PymeTicket, TicketComentario, TicketRealtimeState
+from datetime import datetime, timedelta
+from utils.time_utils import get_local_now
 
 class TicketFiltersTests(unittest.TestCase):
     def setUp(self):
@@ -163,6 +165,137 @@ class TicketFiltersTests(unittest.TestCase):
             data = response.get_json()
             self.assertEqual(data['pagination']['total_items'], 1)
             self.assertEqual(data['tickets'][0]['id'], 32)
+
+    def test_operational_sla_filter_is_applied_before_pagination(self):
+        admin_user = User(email='admin-sla@test.com', name='Admin SLA', rol='admin', municipio_id=18, tipo_chat='municipio')
+        admin_user.set_password('password')
+        db.session.add(admin_user)
+        db.session.commit()
+
+        recent_ticket = MunicipioTicket(
+            id=41,
+            nro_ticket='M-RECENT',
+            estado='nuevo',
+            fecha=get_local_now(),
+            categoria='A',
+            municipio_id=18,
+            asignado_a_id=None,
+        )
+        risk_ticket = MunicipioTicket(
+            id=42,
+            nro_ticket='M-RISK',
+            estado='nuevo',
+            fecha=get_local_now() - timedelta(hours=10),
+            ultima_actividad=get_local_now() - timedelta(hours=10),
+            categoria='A',
+            municipio_id=18,
+            asignado_a_id=None,
+        )
+        db.session.add_all([recent_ticket, risk_ticket])
+        db.session.commit()
+
+        with self.app.test_request_context('?sla=risk&per_page=1&include=compact'), patch('routes.ticket.get_current_tenant_profile', return_value=None):
+            response = get_tickets_del_usuario_logic(admin_user)
+            self.assertEqual(response.status_code, 200)
+            data = response.get_json()
+            self.assertEqual(data['pagination']['total_items'], 1)
+            self.assertEqual(data['tickets'][0]['id'], 42)
+            self.assertEqual(data['tickets'][0]['sla_status'], 'por_vencer')
+
+    def test_unread_filter_is_applied_before_pagination(self):
+        admin_user = User(email='admin-unread-filter@test.com', name='Admin Unread Filter', rol='admin', municipio_id=19, tipo_chat='municipio')
+        admin_user.set_password('password')
+        db.session.add(admin_user)
+        db.session.commit()
+
+        newest_ticket = MunicipioTicket(
+            id=51,
+            nro_ticket='M-NEWEST',
+            estado='nuevo',
+            fecha=get_local_now(),
+            categoria='A',
+            municipio_id=19,
+        )
+        unread_ticket = MunicipioTicket(
+            id=52,
+            nro_ticket='M-UNREAD',
+            estado='nuevo',
+            fecha=get_local_now() - timedelta(hours=2),
+            categoria='A',
+            municipio_id=19,
+        )
+        db.session.add_all([newest_ticket, unread_ticket])
+        db.session.commit()
+
+        comment = TicketComentario(
+            municipio_ticket_id=unread_ticket.id,
+            comentario='Vecino agrego informacion',
+            user_id=admin_user.id,
+            es_admin=False,
+        )
+        db.session.add(comment)
+        db.session.flush()
+        db.session.add(
+            TicketRealtimeState(
+                ticket_type='municipio',
+                ticket_id=unread_ticket.id,
+                viewer_key=f'user:{admin_user.id}',
+                viewer_user_id=admin_user.id,
+                viewer_role='admin',
+                presence_status='active',
+                last_presence_at=get_local_now(),
+                last_read_comment_id=0,
+            )
+        )
+        db.session.commit()
+
+        with self.app.test_request_context('?unread=unread&per_page=1&include=compact'), patch('routes.ticket.get_current_tenant_profile', return_value=None):
+            response = get_tickets_del_usuario_logic(admin_user)
+            self.assertEqual(response.status_code, 200)
+            data = response.get_json()
+            self.assertEqual(data['pagination']['total_items'], 1)
+            self.assertEqual(data['tickets'][0]['id'], 52)
+            self.assertEqual(data['tickets'][0]['collaboration_state']['unread_viewer_count'], 1)
+
+    def test_priority_filter_uses_ai_details_payload(self):
+        admin_user = User(email='admin-priority@test.com', name='Admin Priority', rol='admin', municipio_id=20, tipo_chat='municipio')
+        admin_user.set_password('password')
+        db.session.add(admin_user)
+        db.session.commit()
+
+        normal_ticket = MunicipioTicket(
+            id=61,
+            nro_ticket='M-NORMAL',
+            estado='nuevo',
+            fecha=get_local_now(),
+            categoria='A',
+            municipio_id=20,
+        )
+        high_priority_ticket = MunicipioTicket(
+            id=62,
+            nro_ticket='M-HIGH',
+            estado='nuevo',
+            fecha=get_local_now() - timedelta(minutes=10),
+            categoria='A',
+            municipio_id=20,
+            detalles=json.dumps({
+                'prioridad_sugerida': 'alta',
+                'prioridad_confianza': 0.87,
+                'prioridad_provider': 'huggingface',
+            }),
+        )
+        db.session.add_all([normal_ticket, high_priority_ticket])
+        db.session.commit()
+
+        with self.app.test_request_context('?priority=alta&per_page=1&include=compact'), patch('routes.ticket.get_current_tenant_profile', return_value=None):
+            response = get_tickets_del_usuario_logic(admin_user)
+            self.assertEqual(response.status_code, 200)
+            data = response.get_json()
+            self.assertEqual(data['pagination']['total_items'], 1)
+            self.assertEqual(data['tickets'][0]['id'], 62)
+            self.assertEqual(data['tickets'][0]['priority'], 'alta')
+            self.assertEqual(data['tickets'][0]['priority_score'], 0.87)
+            self.assertEqual(data['tickets'][0]['priority_breakdown']['provider'], 'huggingface')
 
     def test_categoria_filter_pyme(self):
         pyme_user = User(email='pyme@test.com', name='Pyme Test', rol='admin', rubro_id=7, tipo_chat='pyme')

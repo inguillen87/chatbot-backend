@@ -1147,6 +1147,7 @@ def _assisted_request_replay_payload(pedido: PedidoConversacional) -> dict[str, 
             "intake_experience": metadata.get("intake_experience") or {},
             "operator_pack": metadata.get("operator_pack") or {},
             "operator_intake_summary": metadata.get("operator_intake_summary") or {},
+            "operational_result": metadata.get("operational_result") or {},
             "public_follow_up": metadata.get("public_follow_up") or {},
             "row_errors": metadata.get("row_errors") or [],
             "next_actions": metadata.get("next_actions") or [],
@@ -1549,6 +1550,88 @@ def _build_public_follow_up(
                 "description": "Abri WhatsApp con la referencia y el resumen ya preparados.",
             },
         ],
+    }
+
+
+def _build_assisted_operational_result(
+    *,
+    pedido_id: int,
+    request_kind: str,
+    request_kind_label: str,
+    document_profile: dict[str, Any],
+    crm_state: Optional[str],
+    linked_record: Optional[dict[str, Any]],
+    public_follow_up: dict[str, Any],
+) -> dict[str, Any]:
+    tracking = public_follow_up.get("tracking") if isinstance(public_follow_up.get("tracking"), dict) else {}
+    primary_intent = str(document_profile.get("primary_intent") or "")
+    target_module = (
+        str(linked_record.get("target_module") or "")
+        if isinstance(linked_record, dict)
+        else str(document_profile.get("target_module") or "")
+    )
+    record_kind = str(linked_record.get("kind") or "") if isinstance(linked_record, dict) else ""
+    is_municipal_ticket = record_kind == "municipio_ticket" or primary_intent == "municipal_service_request"
+    is_document_request = target_module == "document_requests" or request_kind in {"receipt", "tax_bill", "certificate", "other"}
+
+    if is_municipal_ticket:
+        result_type = "municipal_ticket"
+        created_record = "municipio_ticket" if record_kind == "municipio_ticket" else "pedido_conversacional"
+        status_label = "Reclamo creado"
+        admin_surface = "tickets"
+        requires_operator_confirmation = False
+        customer_headline = "Tu reclamo quedo registrado"
+        customer_description = "El equipo municipal ya tiene el ticket, la lectura y el archivo o texto original para responder."
+        operator_next_step = "Revisar reclamo y actualizar estado"
+    elif is_document_request:
+        result_type = "document_request"
+        created_record = record_kind or "tenant_ticket"
+        status_label = "Documento recibido"
+        admin_surface = "document_requests"
+        requires_operator_confirmation = True
+        customer_headline = "Tu documento quedo listo para revision"
+        customer_description = "El equipo recibe el archivo, los datos detectados y los faltantes para responder sin reinterpretar la solicitud."
+        operator_next_step = "Validar documento y responder"
+    else:
+        result_type = "assisted_order_request"
+        created_record = record_kind or "pedido_conversacional"
+        status_label = "Solicitud recibida"
+        admin_surface = "orders"
+        requires_operator_confirmation = True
+        customer_headline = "Tu pedido quedo armado para revision"
+        customer_description = "El equipo recibe articulos, cantidades, candidatos de catalogo y faltantes antes de confirmar precio, stock o entrega."
+        operator_next_step = "Resolver faltantes y responder"
+
+    linked_id = linked_record.get("id") if isinstance(linked_record, dict) else None
+    record_reference = (
+        linked_record.get("display_code")
+        or linked_record.get("nro_ticket")
+        or linked_record.get("ticket_id")
+        if isinstance(linked_record, dict)
+        else None
+    )
+
+    return {
+        "contract_version": "marketplace.assisted_operational_result.v1",
+        "type": result_type,
+        "request_kind": request_kind,
+        "request_kind_label": request_kind_label,
+        "created_record": created_record,
+        "created_record_id": linked_id or pedido_id,
+        "pedido_id": pedido_id,
+        "status": crm_state or "pending_operator_review",
+        "status_label": status_label,
+        "requires_operator_confirmation": requires_operator_confirmation,
+        "admin_surface": admin_surface,
+        "admin_thread_binding": linked_record.get("admin_thread_binding") if isinstance(linked_record, dict) else "pedido_conversacional_id",
+        "record_reference": str(record_reference or f"pc-{pedido_id}"),
+        "tracking_path": tracking.get("path"),
+        "tracking_code": tracking.get("code"),
+        "tracking_kind": tracking.get("kind"),
+        "customer_headline": customer_headline,
+        "customer_description": customer_description,
+        "operator_next_step": operator_next_step,
+        "linked_record": linked_record,
     }
 
 
@@ -2674,10 +2757,24 @@ def pedidos_desde_archivo():
             attachment_info=attachment_info,
             idempotency_key=idempotency_key,
         )
+    operational_result = _build_assisted_operational_result(
+        pedido_id=pedido.id,
+        request_kind=request_kind,
+        request_kind_label=request_kind_label,
+        document_profile=document_profile,
+        crm_state=(
+            "materialized_ticket_pending_review"
+            if linked_record and linked_record.get("kind") == "municipio_ticket"
+            else crm_state
+        ),
+        linked_record=linked_record,
+        public_follow_up=public_follow_up,
+    )
     metadata_payload = dict(pedido.metadata_payload or {})
     metadata_payload["next_actions"] = next_actions
     metadata_payload["operator_pack"] = operator_pack
     metadata_payload["public_follow_up"] = public_follow_up
+    metadata_payload["operational_result"] = operational_result
     metadata_payload["crm_handoff"] = crm_handoff
     metadata_payload["crm_order_draft"] = crm_order_draft
     metadata_payload["operator_intake_summary"] = operator_intake_summary
@@ -2692,6 +2789,7 @@ def pedidos_desde_archivo():
         first_item_payload = dict(pedido.items[0])
         first_item_payload["operator_pack"] = operator_pack
         first_item_payload["public_follow_up"] = public_follow_up
+        first_item_payload["operational_result"] = operational_result
         first_item_payload["crm_handoff"] = crm_handoff
         first_item_payload["crm_order_draft"] = crm_order_draft
         first_item_payload["operator_intake_summary"] = operator_intake_summary
@@ -2805,6 +2903,7 @@ def pedidos_desde_archivo():
         "intake_experience": intake_experience,
         "operator_pack": operator_pack,
         "operator_intake_summary": operator_intake_summary,
+        "operational_result": operational_result,
         "public_follow_up": public_follow_up,
         "row_errors": row_errors,
         "next_actions": next_actions,
