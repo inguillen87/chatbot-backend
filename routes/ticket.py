@@ -1354,6 +1354,24 @@ def serialize_ticket_to_json(
 
     identity_payload = compact_contact_identity or contact_identity
     identity_visual_payload = compact_identity_visual or contact_identity_visual
+    if compact:
+        contact_visual_payload = {
+            key: value
+            for key, value in identity_visual_payload.items()
+            if key
+            in {
+                "avatar_url",
+                "avatarUrl",
+                "avatar_source",
+                "avatarSource",
+                "avatar_consent",
+                "avatarConsent",
+                "profile_picture_consent",
+                "picture",
+            }
+        }
+    else:
+        contact_visual_payload = identity_visual_payload
 
     serialized_data = {
         "id": ticket.id,
@@ -1394,7 +1412,7 @@ def serialize_ticket_to_json(
             "phone": user_data.get("telefono", "No especificado"),
             "dni": dni_vecino,
             **({"identity": contact_identity} if not compact else {}),
-            **identity_visual_payload,
+            **contact_visual_payload,
         },
         "informacion_personal_vecino": {
             "nombre": user_data.get("nombre", "No especificado"),
@@ -1403,7 +1421,7 @@ def serialize_ticket_to_json(
             "email": user_data.get("email", "No especificado"),
             "telefono": user_data.get("telefono", "No especificado"),
             **({"identity": contact_identity} if not compact else {}),
-            **identity_visual_payload,
+            **contact_visual_payload,
         },
         "municipio_id": municipio_id,
         "rubro_id": rubro_id,
