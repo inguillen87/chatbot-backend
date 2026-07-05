@@ -1314,6 +1314,39 @@ def serialize_ticket_to_json(
     priority_payload = _ticket_priority_payload(ticket)
     ai_payload = _ticket_ai_enrichment_payload(ticket)
 
+    compact_contact_identity = None
+    compact_identity_visual = None
+    if compact:
+        compact_contact_identity = {
+            "user_id": contact_identity.get("user_id"),
+            "anon_id": contact_identity.get("anon_id"),
+            "name": contact_identity.get("name"),
+            "display_name": contact_identity.get("display_name"),
+            "email": contact_identity.get("email"),
+            "phone": contact_identity.get("phone"),
+            "avatar_url": contact_identity.get("avatar_url"),
+            "avatarUrl": contact_identity.get("avatarUrl"),
+            "avatar_source": contact_identity.get("avatar_source"),
+            "avatarSource": contact_identity.get("avatarSource"),
+            "avatar_consent": contact_identity.get("avatar_consent"),
+            "avatarConsent": contact_identity.get("avatarConsent"),
+            "profile_picture_consent": contact_identity.get("profile_picture_consent"),
+            "picture": contact_identity.get("picture"),
+            "fallback": contact_identity.get("fallback"),
+            "fallback_strategy": contact_identity.get("fallback_strategy"),
+            "avatar_policy": contact_identity.get("avatar_policy"),
+            "policy": contact_identity.get("policy"),
+            "source_context": contact_identity.get("source_context"),
+        }
+        compact_identity_visual = {
+            key: value
+            for key, value in contact_identity_visual.items()
+            if key not in {"allowed_sources", "blocked_sources", "real_image_sources"}
+        }
+
+    identity_payload = compact_contact_identity or contact_identity
+    identity_visual_payload = compact_identity_visual or contact_identity_visual
+
     serialized_data = {
         "id": ticket.id,
         "tipo": ticket_type,
@@ -1341,7 +1374,7 @@ def serialize_ticket_to_json(
         "profile_picture_consent": contact_identity.get("profile_picture_consent"),
         "avatar_policy": contact_identity.get("avatar_policy"),
         "identity": contact_identity,
-        "contact_identity": contact_identity,
+        "contact_identity": identity_payload,
         "description": description,
         "channel": getattr(ticket, 'canal_ingreso', 'desconocido'),
         "comentarios": comentarios_serializados,
@@ -1352,8 +1385,8 @@ def serialize_ticket_to_json(
             "email": user_data.get("email", "No especificado"),
             "phone": user_data.get("telefono", "No especificado"),
             "dni": dni_vecino,
-            "identity": contact_identity,
-            **contact_identity_visual,
+            **({"identity": contact_identity} if not compact else {}),
+            **identity_visual_payload,
         },
         "informacion_personal_vecino": {
             "nombre": user_data.get("nombre", "No especificado"),
@@ -1361,8 +1394,8 @@ def serialize_ticket_to_json(
             "direccion": user_data.get("direccion", "No especificada"),
             "email": user_data.get("email", "No especificado"),
             "telefono": user_data.get("telefono", "No especificado"),
-            "identity": contact_identity,
-            **contact_identity_visual,
+            **({"identity": contact_identity} if not compact else {}),
+            **identity_visual_payload,
         },
         "municipio_id": municipio_id,
         "rubro_id": rubro_id,
@@ -1392,6 +1425,8 @@ def serialize_ticket_to_json(
         "collaboration_state": collaboration_state,
         "meta": _ticket_degraded_meta(degraded_reasons),
     }
+    if compact:
+        serialized_data.pop("identity", None)
     return serialized_data
 
 
