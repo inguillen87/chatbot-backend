@@ -1026,6 +1026,8 @@ def _widget_jwks_payload() -> dict[str, list[dict[str, str]]]:
     }
 
 
+@auth_api_bp.route("/.well-known/jwks.json", methods=["GET"], strict_slashes=False)
+@auth_api_bp.route("/widget/jwks.json", methods=["GET"], strict_slashes=False)
 @auth_bp.route("/.well-known/jwks.json", methods=["GET"], strict_slashes=False)
 @auth_bp.route("/widget/jwks.json", methods=["GET"], strict_slashes=False)
 def widget_jwks():
@@ -1035,6 +1037,7 @@ def widget_jwks():
     return resp
 
 
+@auth_api_bp.route("/widget/bootstrap", methods=["GET", "POST", "OPTIONS"], strict_slashes=False)
 @auth_bp.route("/widget/bootstrap", methods=["GET", "POST", "OPTIONS"], strict_slashes=False)
 def widget_bootstrap():
     if request.method == "OPTIONS":
@@ -1096,6 +1099,8 @@ def widget_bootstrap():
     )
 
 
+@auth_api_bp.route("/widget/token", methods=["POST", "OPTIONS"], strict_slashes=False)
+@auth_api_bp.route("/widget-token", methods=["POST", "OPTIONS"], strict_slashes=False)
 @auth_bp.route("/widget/token", methods=["POST", "OPTIONS"], strict_slashes=False)
 @auth_bp.route("/widget-token", methods=["POST", "OPTIONS"], strict_slashes=False)
 def widget_token():
@@ -1194,6 +1199,8 @@ def widget_token():
     )
 
 
+@auth_api_bp.route("/widget/refresh", methods=["POST", "OPTIONS"], strict_slashes=False)
+@auth_api_bp.route("/widget-refresh", methods=["POST", "OPTIONS"], strict_slashes=False)
 @auth_bp.route("/widget/refresh", methods=["POST", "OPTIONS"], strict_slashes=False)
 @auth_bp.route("/widget-refresh", methods=["POST", "OPTIONS"], strict_slashes=False)
 def widget_refresh():

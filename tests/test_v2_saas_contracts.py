@@ -660,6 +660,11 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertTrue(payload["smoke_playbook"]["safe_by_default"])
         self.assertTrue(any(item["id"] == "template_registry" and item["execution_mode"] == "dry_run_first" for item in payload["smoke_playbook"]["tests"]))
         self.assertTrue(any(item["id"] == "live_whatsapp_message" and item["confirmation_required"] for item in payload["smoke_playbook"]["tests"]))
+        live_smoke = next(item for item in payload["smoke_playbook"]["tests"] if item["id"] == "live_whatsapp_message")
+        self.assertEqual(
+            live_smoke["endpoint"],
+            f"/api/v2/tenants/{self.tenant.slug}/whatsapp/tech-provider/smoke-test/live_whatsapp_message",
+        )
         self.assertTrue(any(step["id"] == "create_subaccount" for step in payload["api_workflow"]))
         self.assertTrue(any(step["id"] == "create_or_update_voice_twiml_app" for step in payload["api_workflow"]))
         self.assertEqual(payload["voice"]["completion_endpoint"], f"/api/v2/tenants/{self.tenant.slug}/whatsapp/tech-provider/voice-app")

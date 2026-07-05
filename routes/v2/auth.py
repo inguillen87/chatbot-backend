@@ -6,7 +6,7 @@ import jwt
 from flask import Blueprint, current_app, jsonify, request
 
 from models import User
-from routes.auth import login as legacy_login, me_perfil as legacy_me
+from routes.auth import google_login as legacy_google_login, login as legacy_login, me_perfil as legacy_me
 
 v2_auth_bp = Blueprint("v2_auth", __name__, url_prefix="/api/v2/auth")
 
@@ -29,6 +29,14 @@ def _decode_token(token: str) -> dict | None:
 def login_v2():
     # Reuse current production login flow to avoid diverging auth semantics.
     return legacy_login()
+
+
+@v2_auth_bp.route('/google', methods=['POST', 'OPTIONS'], strict_slashes=False)
+def google_login_v2():
+    if request.method == "OPTIONS":
+        return jsonify({"ok": True})
+    # Reuse current Google login flow so v2 clients do not pay a failing fallback request.
+    return legacy_google_login()
 
 
 @v2_auth_bp.route('/refresh', methods=['POST'])

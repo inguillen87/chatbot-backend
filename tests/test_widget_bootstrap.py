@@ -84,6 +84,17 @@ class WidgetBootstrapTest(unittest.TestCase):
         self.assertEqual(data.get("contract_version"), "auth.widget_bootstrap.v1")
         self.assertEqual(data["tenant"]["slug"], self.tenant.slug)
 
+    def test_widget_bootstrap_api_alias_matches_frontend_proxy(self):
+        response = self.client.get(
+            "/api/auth/widget/bootstrap",
+            headers={"X-Tenant": self.tenant.slug},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()
+        self.assertEqual(data.get("contract_version"), "auth.widget_bootstrap.v1")
+        self.assertEqual(data["tenant"]["slug"], self.tenant.slug)
+
     def test_widget_bootstrap_requires_tenant(self):
         # In an environment where default tenants exist (via init_tenants),
         # the middleware falls back to the first available tenant instead of 400.
@@ -110,6 +121,13 @@ class WidgetBootstrapTest(unittest.TestCase):
 
     def test_widget_jwks_well_known_alias_matches_docs(self):
         response = self.client.get("/auth/.well-known/jwks.json")
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertIn("keys", payload)
+        self.assertEqual(payload["keys"][0]["kid"], "widget-hs256")
+
+    def test_widget_jwks_api_alias_matches_frontend_proxy(self):
+        response = self.client.get("/api/auth/widget/jwks.json")
         self.assertEqual(response.status_code, 200)
         payload = response.get_json()
         self.assertIn("keys", payload)

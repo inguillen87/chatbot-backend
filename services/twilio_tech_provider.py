@@ -349,7 +349,7 @@ def _build_smoke_playbook(
             "label": "Prueba real WhatsApp",
             "description": "Reservada para cuando el sender este online; debe pedir confirmacion explicita antes de enviar.",
             "method": "POST",
-            "endpoint": f"/api/v2/tenants/{tenant_slug}/whatsapp/live-message-test",
+            "endpoint": f"/api/v2/tenants/{tenant_slug}/whatsapp/tech-provider/smoke-test/live_whatsapp_message",
             "execution_mode": "manual_confirmation_required",
             "danger_level": "real_message",
             "can_execute": setup_health.get("status") == "ready",
