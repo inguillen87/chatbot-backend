@@ -43,6 +43,7 @@ from services.contact_intake import missing_contact_fields, resolve_contact_snap
 from services.logic import responder_chatboc
 from services.user_service import update_user_profile
 from services.media_classifier import clasificar_adjunto_whatsapp
+from services.whatsapp_assisted_intake import create_whatsapp_assisted_intake
 from utils.maps_utils import extraer_coordenadas_de_url_google_maps
 from services.openai_maps_service import geocodificar_inversa_llm
 from services.municipio_responder import CONTEXTO_MUNICIPIO
@@ -5138,6 +5139,7 @@ def whatsapp_webhook():
     media_url = post_vars.get("MediaUrl0")
     media_content_type = post_vars.get("MediaContentType0")
     uploaded_file_info = None
+    media_content = None
     skip_media_analysis = False
     message_body = incoming_text
 
@@ -5408,6 +5410,61 @@ def whatsapp_webhook():
                         body=f"✅ Listo. Adjunté la foto al ticket *{ticket.nro_ticket}*.",
                     )
                 return "OK", 200
+
+    if (
+        uploaded_file_info
+        and media_content
+        and tenant_profile
+        and client_user
+        and not force_chatboc_demo_hub
+        and not session_context_db_entry.context_data.get("human_chat_in_progress")
+        and not session_context_db_entry.context_data.get("room")
+    ):
+        try:
+            assisted_intake = create_whatsapp_assisted_intake(
+                tenant=tenant_profile,
+                owner_user=client_user,
+                end_user=end_user,
+                session_id=chat_session_id_internal,
+                from_number=from_number_cleaned,
+                message_body=message_body,
+                uploaded_file_info=uploaded_file_info,
+                media_bytes=media_content,
+                location_info=location_info,
+                idempotency_key=media_message_sid or message_sid,
+            )
+        except Exception as exc:  # noqa: BLE001
+            assisted_intake = None
+            current_app.logger.error(
+                "[WHATSAPP_ASSISTED_INTAKE] Error creando intake asistido: %s",
+                exc,
+                exc_info=True,
+            )
+
+        if assisted_intake and (assisted_intake.get("created") or assisted_intake.get("idempotent_replay")):
+            session_context_db_entry.context_data["last_whatsapp_assisted_intake"] = {
+                "ticket_id": assisted_intake.get("ticket_id"),
+                "pedido_id": assisted_intake.get("pedido_id"),
+                "request_kind": assisted_intake.get("request_kind"),
+                "created": bool(assisted_intake.get("created")),
+            }
+            safe_flag_modified(session_context_db_entry, "context_data")
+            db.session.add(session_context_db_entry)
+            db.session.commit()
+            if twilio_client:
+                ack_text = assisted_intake.get("customer_message") or (
+                    "Recibimos tu archivo y lo dejamos cargado para revision del equipo."
+                )
+                ticket_id = assisted_intake.get("ticket_id")
+                if ticket_id:
+                    ack_text = f"{ack_text}\n\nCaso CRM: #{ticket_id}"
+                _send_twilio_message(
+                    twilio_client,
+                    from_=to_number_raw,
+                    to=from_number_raw,
+                    body=ack_text[:MAX_TWILIO_BODY_LENGTH],
+                )
+            return "OK", 200
 
     # --- Numeric Menu Handling ---
     last_options = session_context_db_entry.context_data.get("last_options_sent")
