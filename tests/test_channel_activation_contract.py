@@ -146,3 +146,36 @@ def test_channel_activation_contract_marks_ready_full_tenant_channels(client):
     assert payload["counts"]["catalog_items"] == 1
     assert payload["counts"]["team_members"] == 1
     assert "APP_USR-secret-token" not in str(payload)
+
+
+def test_channel_activation_contract_surfaces_clerk_identity_readiness(client, monkeypatch):
+    monkeypatch.setenv("CLERK_ENABLED", "true")
+    monkeypatch.setenv("VITE_CLERK_PUBLISHABLE_KEY", "pk_live_visible_key")
+    monkeypatch.setenv("CLERK_ISSUER", "https://chatboc.clerk.accounts.dev")
+    monkeypatch.setenv("CLERK_SUPERADMIN_EMAILS", "guillen.marce@gmail.com")
+    monkeypatch.delenv("CLERK_WEBHOOK_SECRET", raising=False)
+    _, tenant = _create_owner_and_tenant(
+        slug="clerk-ready-tenant",
+        plan="full",
+        configuracion={
+            "auth": {"provider": "clerk"},
+            "onboarding": {"source": "clerk", "preferred_channels": ["whatsapp", "webchat"]},
+        },
+    )
+
+    payload = build_channel_activation_payload(tenant)
+
+    by_id = {item["id"]: item for item in payload["channels"]}
+    identity = by_id["identity_auth"]
+    assert identity["status"] == "pending"
+    assert identity["reason_code"] == "clerk_webhook_recommended"
+    assert "CLERK_WEBHOOK_SECRET" in identity["progress_hint"]
+    assert "pk_live_visible_key" not in str(payload)
+
+    monkeypatch.setenv("CLERK_WEBHOOK_SECRET", "whsec_secret_value")
+    ready_payload = build_channel_activation_payload(tenant)
+
+    ready_identity = {item["id"]: item for item in ready_payload["channels"]}["identity_auth"]
+    assert ready_identity["status"] == "ready"
+    assert ready_identity["reason_code"] is None
+    assert "whsec_secret_value" not in str(ready_payload)

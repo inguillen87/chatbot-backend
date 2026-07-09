@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import os
 from typing import Any, Mapping
 
 from models import CatalogoItem, EncEncuesta, MessageTemplateRegistry, PublicSurvey, TenantProfile, User
@@ -8,6 +9,7 @@ from services.commerce_contracts import payment_capabilities
 from services.live_chat_schedule import build_live_chat_status
 from services.plan_access import integration_access_payload
 from services.twilio_tech_provider import STATE_KEY
+from utils.roles import superadmin_email_allowlist_configured
 
 
 CONTRACT_VERSION = "tenant.channel_activation.v1"
@@ -22,6 +24,19 @@ def _cfg(tenant: TenantProfile | None) -> dict[str, Any]:
 
 def _as_mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
+
+
+def _env_value(*names: str) -> str | None:
+    for name in names:
+        value = os.getenv(name)
+        if value and str(value).strip():
+            return str(value).strip()
+    return None
+
+
+def _truthy_env(name: str) -> bool:
+    value = str(os.getenv(name) or "").strip().lower()
+    return value in {"1", "true", "yes", "y", "on"}
 
 
 def _safe_count(query: Any) -> int:
@@ -152,6 +167,75 @@ def _payment_status(tenant: TenantProfile | None, access_enabled: bool) -> tuple
     return "pending", evidence, "payment_verification_pending"
 
 
+def _identity_auth_status(
+    tenant: TenantProfile | None,
+    cfg: Mapping[str, Any],
+) -> tuple[str, list[str], str | None, str | None]:
+    """Summarize whether tenant identity, portal login and Clerk are production-ready.
+
+    This intentionally returns a secret-free operational view. It only exposes
+    which pieces are configured, never the configured key or secret values.
+    """
+
+    auth_cfg = _as_mapping(cfg.get("auth"))
+    onboarding = _as_mapping(cfg.get("onboarding"))
+    provider = str(auth_cfg.get("provider") or "").strip().lower()
+    linked_to_clerk = provider == "clerk" or str(onboarding.get("source") or "").strip().lower() == "clerk"
+    publishable = bool(_env_value("VITE_CLERK_PUBLISHABLE_KEY", "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY", "CLERK_PUBLISHABLE_KEY"))
+    jwt_verification = bool(_env_value("CLERK_JWKS_URL", "CLERK_ISSUER", "CLERK_JWT_ISSUER", "NEXT_PUBLIC_CLERK_FRONTEND_API"))
+    webhook = bool(_env_value("CLERK_WEBHOOK_SECRET"))
+    enabled = not _truthy_env("CLERK_DISABLED") and (
+        _truthy_env("CLERK_ENABLED") or publishable or jwt_verification
+    )
+
+    evidence: list[str] = []
+    if linked_to_clerk:
+        evidence.append("tenant vinculado a Clerk")
+    elif getattr(tenant, "id", None):
+        evidence.append("tenant usa auth legacy")
+    if publishable:
+        evidence.append("publishable key configurada")
+    if jwt_verification:
+        evidence.append("JWT/JWKS configurado")
+    if webhook:
+        evidence.append("webhook Clerk configurado")
+    if superadmin_email_allowlist_configured():
+        evidence.append("allowlist superadmin explicita")
+    else:
+        evidence.append("allowlist superadmin default")
+
+    missing_critical: list[str] = []
+    if not enabled:
+        missing_critical.append("CLERK_ENABLED")
+    if not publishable:
+        missing_critical.append("VITE_CLERK_PUBLISHABLE_KEY")
+    if not jwt_verification:
+        missing_critical.append("CLERK_ISSUER o CLERK_JWKS_URL")
+
+    if missing_critical:
+        return (
+            "blocked",
+            evidence,
+            "clerk_config_missing",
+            f"Completar configuracion Clerk: {', '.join(missing_critical)}.",
+        )
+    if not linked_to_clerk:
+        return (
+            "action_required",
+            evidence,
+            "tenant_auth_not_linked",
+            "Vincular el tenant al onboarding Clerk o mantenerlo como auth legacy hasta migrarlo.",
+        )
+    if not webhook:
+        return (
+            "pending",
+            evidence,
+            "clerk_webhook_recommended",
+            "Configurar CLERK_WEBHOOK_SECRET para sincronizar altas, bajas, avatar social consentido y cambios de email.",
+        )
+    return "ready", evidence, None, "Login social, portal y guardrail superadmin listos para operar."
+
+
 def _counts(tenant: TenantProfile | None) -> dict[str, int]:
     if tenant is None or not getattr(tenant, "id", None):
         return {"catalog_items": 0, "approved_templates": 0, "surveys": 0, "team_members": 0}
@@ -176,6 +260,7 @@ def build_channel_activation_payload(tenant: TenantProfile | None) -> dict[str, 
     onboarding = _as_mapping(cfg.get("onboarding"))
     provisioning = _as_mapping(cfg.get("provisioning"))
     preferred_channels = onboarding.get("preferred_channels") if isinstance(onboarding.get("preferred_channels"), list) else []
+    identity_status, identity_evidence, identity_reason, identity_hint = _identity_auth_status(tenant, cfg)
     whatsapp_status, whatsapp_evidence, whatsapp_reason = _whatsapp_status(cfg, access_enabled)
     live_status, live_evidence = _live_chat_status(cfg)
     payment_status, payment_evidence, payment_reason = _payment_status(tenant, access_enabled)
@@ -198,6 +283,19 @@ def build_channel_activation_payload(tenant: TenantProfile | None) -> dict[str, 
             "Bandeja de reclamos, pedidos y conversaciones para operar desde el primer dia.",
             actions=[_action("open_crm", "Abrir reclamos/tickets", _profile_path("tickets"), primary=True)],
             evidence=["tenant creado"] if tenant else [],
+        ),
+        _channel(
+            "identity_auth",
+            "Identidad y login social",
+            identity_status,
+            "Portal de usuario, login social con Clerk, avatar consentido y guardrail superadmin por email.",
+            actions=[
+                _action("open_profile", "Abrir perfil", _profile_path("perfil"), primary=identity_status != "ready"),
+                _action("open_user_portal", "Ver portal usuario", _tenant_path(tenant, "/portal")),
+            ],
+            evidence=identity_evidence,
+            reason_code=identity_reason,
+            progress_hint=identity_hint,
         ),
         _channel(
             "whatsapp",
