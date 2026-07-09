@@ -10,6 +10,7 @@ from typing import Any, Callable, Iterable
 from urllib.parse import urlparse
 
 from config import BACKEND_URL
+from services.media_cache_policy import IMMUTABLE_PUBLIC_CACHE
 
 ProviderCallable = Callable[[str], str | None]
 
@@ -164,15 +165,44 @@ def get_tts_audio_cache_public_config() -> dict[str, Any]:
     public_base_url = _audio_cache_public_base_url()
     parsed = urlparse(public_base_url) if public_base_url else None
     host = parsed.netloc if parsed and parsed.netloc else None
+    cdn_configured = bool(public_base_url)
+    public_url_mode = "cdn" if cdn_configured else "backend_static"
 
     return {
+        "contract_version": "tts.audio_cache_publication.v1",
+        "provider": "cloudflare_or_backend_static",
+        "recommended_provider": "cloudflare",
         "public_path": "/static/audio_cache",
-        "public_url_mode": "cdn" if public_base_url else "backend_static",
-        "cdn_configured": bool(public_base_url),
+        "public_url_mode": public_url_mode,
+        "cdn_configured": cdn_configured,
         "cdn_host": host,
+        "edge_ready": cdn_configured,
+        "cache_control": IMMUTABLE_PUBLIC_CACHE,
+        "headers": {
+            "Cache-Control": IMMUTABLE_PUBLIC_CACHE,
+            "X-Content-Type-Options": "nosniff",
+        },
+        "privacy": {
+            "content_text_exposed": False,
+            "pii_in_url": False,
+            "filename_strategy": "sha256_audio_fingerprint",
+        },
+        "next_action": "monitor_hit_rate" if cdn_configured else "configure_cloudflare_audio_cache_public_base_url",
         "cdn_env_vars": [
             "TTS_AUDIO_CACHE_PUBLIC_BASE_URL",
             "CLOUDFLARE_AUDIO_CACHE_PUBLIC_BASE_URL",
+        ],
+        "required_env": [
+            {
+                "name": "CLOUDFLARE_AUDIO_CACHE_PUBLIC_BASE_URL",
+                "target": "backend_render",
+                "configured": bool(str(os.getenv("CLOUDFLARE_AUDIO_CACHE_PUBLIC_BASE_URL") or "").strip()),
+            },
+            {
+                "name": "TTS_AUDIO_CACHE_PUBLIC_BASE_URL",
+                "target": "backend_render",
+                "configured": bool(str(os.getenv("TTS_AUDIO_CACHE_PUBLIC_BASE_URL") or "").strip()),
+            },
         ],
     }
 
