@@ -465,26 +465,70 @@ def _build_tenant_dashboard_bundle_payload(
 
 
 def _build_tenant_heatmap_summary_payload(tenant: TenantProfile, *, limit_points: int = 1500) -> dict:
+    def _normalized_label(value, fallback: str) -> str:
+        label = str(value or fallback).strip().lower()
+        return label or fallback
+
+    def _survey_zone(response: EncRespuesta) -> str:
+        return _normalized_label(
+            response.barrio or response.ciudad or response.provincia or response.pais,
+            'sin_zona',
+        )
+
     rows = []
     for ticket in MunicipioTicket.query.filter_by(tenant_id=tenant.id).all():
         rows.append({
+            'source': 'ticket',
             'ticket_type': 'municipio',
             'ticket_id': ticket.id,
-            'categoria': (ticket.categoria or 'sin_categoria').strip().lower(),
-            'zona': (ticket.distrito or 'sin_zona').strip().lower(),
+            'categoria': _normalized_label(ticket.categoria, 'sin_categoria'),
+            'zona': _normalized_label(ticket.distrito, 'sin_zona'),
             'lat': ticket.latitud,
             'lon': ticket.longitud,
             'status': ticket.estado,
         })
     for ticket in PymeTicket.query.filter_by(tenant_id=tenant.id).all():
         rows.append({
+            'source': 'ticket',
             'ticket_type': 'pyme',
             'ticket_id': ticket.id,
-            'categoria': (ticket.categoria or 'sin_categoria').strip().lower(),
-            'zona': (getattr(ticket, 'direccion', None) or 'sin_zona').strip().lower(),
+            'categoria': _normalized_label(ticket.categoria, 'sin_categoria'),
+            'zona': _normalized_label(getattr(ticket, 'direccion', None), 'sin_zona'),
             'lat': ticket.latitud,
             'lon': ticket.longitud,
             'status': ticket.estado,
+        })
+    survey_rows = (
+        db.session.query(EncRespuesta, EncEncuesta)
+        .join(EncEncuesta, EncEncuesta.id == EncRespuesta.encuesta_id)
+        .filter(EncRespuesta.tenant_id == tenant.id)
+        .all()
+    )
+    for respuesta, encuesta in survey_rows:
+        category = 'votacion' if bool(getattr(encuesta, 'es_votacion_envivo', False)) else 'encuesta'
+        rows.append({
+            'source': 'survey_response',
+            'ticket_type': 'survey_response',
+            'ticket_id': respuesta.id,
+            'response_id': respuesta.id,
+            'survey_id': encuesta.id,
+            'survey_slug': encuesta.slug,
+            'survey_title': encuesta.titulo,
+            'survey_tipo': encuesta.tipo,
+            'is_live_vote': bool(getattr(encuesta, 'es_votacion_envivo', False)),
+            'categoria': category,
+            'zona': _survey_zone(respuesta),
+            'lat': respuesta.lat,
+            'lon': respuesta.lng,
+            'lng': respuesta.lng,
+            'status': encuesta.estado,
+            'channel': respuesta.canal,
+            'canal': respuesta.canal,
+            'barrio': respuesta.barrio,
+            'ciudad': respuesta.ciudad,
+            'provincia': respuesta.provincia,
+            'pais': respuesta.pais,
+            'submitted_at': respuesta.submitted_at.isoformat() if respuesta.submitted_at else None,
         })
 
     by_categoria = {}
@@ -497,20 +541,49 @@ def _build_tenant_heatmap_summary_payload(tenant: TenantProfile, *, limit_points
         hotspot_key = f"{row['categoria']}::{row['zona']}"
         hotspots[hotspot_key] = hotspots.get(hotspot_key, 0) + 1
         if row['lat'] is not None and row['lon'] is not None:
-            points.append({
+            point = {
+                'source': row.get('source'),
                 'ticket_type': row['ticket_type'],
                 'ticket_id': row['ticket_id'],
                 'lat': row['lat'],
                 'lon': row['lon'],
+                'lng': row.get('lng') if row.get('lng') is not None else row['lon'],
                 'categoria': row['categoria'],
                 'zona': row['zona'],
                 'status': row['status'],
                 'weight': 1,
-            })
+            }
+            for key in (
+                'response_id',
+                'survey_id',
+                'survey_slug',
+                'survey_title',
+                'survey_tipo',
+                'is_live_vote',
+                'channel',
+                'canal',
+                'barrio',
+                'ciudad',
+                'provincia',
+                'pais',
+                'submitted_at',
+            ):
+                if row.get(key) is not None:
+                    point[key] = row[key]
+            points.append(point)
 
     top_categories = sorted(by_categoria.items(), key=lambda item: item[1], reverse=True)[:10]
     top_zones = sorted(by_zona.items(), key=lambda item: item[1], reverse=True)[:10]
     top_hotspots = sorted(hotspots.items(), key=lambda item: item[1], reverse=True)[:10]
+
+    hotspot_items = [
+        {
+            'categoria': key.split('::', 1)[0],
+            'zona': key.split('::', 1)[1],
+            'count': value,
+        }
+        for key, value in top_hotspots
+    ]
 
     return {
         'tenant_id': tenant.id,
@@ -518,14 +591,8 @@ def _build_tenant_heatmap_summary_payload(tenant: TenantProfile, *, limit_points
         'total': len(rows),
         'top_categories': [{'categoria': key, 'count': value} for key, value in top_categories],
         'top_zones': [{'zona': key, 'count': value} for key, value in top_zones],
-        'hotspots': [
-            {
-                'categoria': key.split('::', 1)[0],
-                'zona': key.split('::', 1)[1],
-                'count': value,
-            }
-            for key, value in top_hotspots
-        ],
+        'hotspots': hotspot_items,
+        'hotspot_pairs': hotspot_items,
         'heatmap_points': points[:limit_points],
     }
 

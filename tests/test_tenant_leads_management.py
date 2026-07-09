@@ -447,6 +447,29 @@ def test_tenant_heatmap_summary(client, app):
             estado="nuevo",
         )
     )
+    survey = EncEncuesta(
+        tenant_id=tenant.id,
+        slug="consulta-heatmap-territorial",
+        titulo="Consulta heatmap territorial",
+        estado="publicada",
+        tipo="opinion",
+        es_votacion_envivo=True,
+        mostrar_resultados_envivo=True,
+    )
+    db.session.add(survey)
+    db.session.flush()
+    db.session.add(
+        EncRespuesta(
+            encuesta_id=survey.id,
+            tenant_id=tenant.id,
+            canal="whatsapp",
+            lat=-32.92,
+            lng=-68.82,
+            barrio="Centro",
+            ciudad="Junin",
+            provincia="Mendoza",
+        )
+    )
     db.session.commit()
 
     resp = client.get(
@@ -460,7 +483,20 @@ def test_tenant_heatmap_summary(client, app):
     assert isinstance(body["top_categories"], list)
     assert isinstance(body["top_zones"], list)
     assert isinstance(body["hotspots"], list)
+    assert isinstance(body["hotspot_pairs"], list)
     assert isinstance(body["heatmap_points"], list)
+    survey_points = [
+        point for point in body["heatmap_points"]
+        if point.get("source") == "survey_response"
+    ]
+    assert survey_points
+    assert survey_points[0]["ticket_type"] == "survey_response"
+    assert survey_points[0]["survey_id"] == survey.id
+    assert survey_points[0]["survey_slug"] == survey.slug
+    assert survey_points[0]["categoria"] == "votacion"
+    assert survey_points[0]["zona"] == "centro"
+    assert survey_points[0]["channel"] == "whatsapp"
+    assert any(item["categoria"] == "votacion" for item in body["top_categories"])
 
 
 def test_tenant_dashboard_bundle_counts_full_backlog_even_when_items_are_limited(client, app):
