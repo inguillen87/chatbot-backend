@@ -1,11 +1,13 @@
 from flask import Blueprint, abort, request, jsonify, g
-from models import db, Order, OrderItem, CatalogoItem, User
+from sqlalchemy import func
+
+from models import db, Order, OrderItem, CatalogoItem, User, MarketOrder, PedidoConversacional, PymePedido
 from middleware.tenant_context import require_tenant
+from services.commerce_unified import dedupe_unified_orders, serialize_unified_order
 from services.notification_dispatcher import notification_dispatcher
 from utils.auth_helpers import token_requerido
 from utils.auth_decorators import _is_authorized_for_tenant
 from utils.permissions import require_role
-from datetime import datetime
 
 orders_bp = Blueprint('orders_bp', __name__)
 
@@ -17,6 +19,26 @@ def _ensure_tenant_operator(current_user, tenant):
 
 def _tenant_config(tenant) -> dict:
     return tenant.configuracion if isinstance(getattr(tenant, "configuracion", None), dict) else {}
+
+
+def _with_admin_order_legacy_aliases(order_payload: dict) -> dict:
+    payload = dict(order_payload)
+    contact = payload.get("contact") if isinstance(payload.get("contact"), dict) else {}
+    if "buyer" not in payload:
+        payload["buyer"] = {
+            "name": contact.get("name"),
+            "email": contact.get("email"),
+            "phone": contact.get("phone"),
+        }
+    if "source_type" not in payload:
+        source_model = str(payload.get("source_model") or "").lower()
+        payload["source_type"] = {
+            "order": "new",
+            "pymepedido": "legacy",
+            "marketorder": "market",
+            "pedidoconversacional": "assisted_intake",
+        }.get(source_model, source_model or "unknown")
+    return payload
 
 
 @orders_bp.route('/api/orders', methods=['POST'])
@@ -147,49 +169,36 @@ def list_admin_orders(current_user):
     per_page = request.args.get('per_page', 20, type=int)
     status = request.args.get('status')
 
-    # Unified Query Logic (Order + PymePedido)
-    from models import PymePedido
+    status_filter = status.strip().lower() if isinstance(status, str) and status.strip() else None
+    per_source_limit = max(1, min(per_page * page, 200))
+    order_records = []
 
-    # 1. New Orders
-    query_new = Order.query.filter_by(tenant_id=tenant.id)
-    if status:
-        query_new = query_new.filter_by(status=status)
-    new_orders = query_new.order_by(Order.created_at.desc()).limit(per_page * page).all()
+    canonical_query = Order.query.filter(Order.tenant_id == tenant.id)
+    if status_filter:
+        canonical_query = canonical_query.filter(func.lower(Order.status) == status_filter)
+    order_records.extend(canonical_query.order_by(Order.created_at.desc()).limit(per_source_limit).all())
 
-    # 2. Legacy Orders
-    # Handle optional pyme_id fallback
     pyme_id_filter = tenant.pyme_id if tenant.pyme_id else -1
-    query_legacy = PymePedido.query.filter(
+    legacy_query = PymePedido.query.filter(
         (PymePedido.tenant_id == tenant.id) | (PymePedido.pyme_id == pyme_id_filter)
     )
-    if status:
-        query_legacy = query_legacy.filter(PymePedido.estado == status)
-    legacy_orders = query_legacy.order_by(PymePedido.fecha.desc()).limit(per_page * page).all()
+    if status_filter:
+        legacy_query = legacy_query.filter(func.lower(PymePedido.estado) == status_filter)
+    order_records.extend(legacy_query.order_by(PymePedido.fecha.desc()).limit(per_source_limit).all())
 
-    # 3. Merge & Sort
-    combined = []
-    for o in new_orders:
-        d = o.to_dict()
-        d['_sort_date'] = o.created_at
-        d['source_type'] = 'new'
-        # Ensure total is at root for table consistency
-        if 'total' not in d and 'totals' in d and 'total' in d['totals']:
-            d['total'] = d['totals']['total']
-        combined.append(d)
+    market_query = MarketOrder.legacy_safe_query().filter(MarketOrder.tenant_id == tenant.id)
+    if status_filter:
+        market_query = market_query.filter(func.lower(MarketOrder.status) == status_filter)
+    order_records.extend(market_query.order_by(MarketOrder.created_at.desc()).limit(per_source_limit).all())
 
-    for o in legacy_orders:
-        d = o.to_dict()
-        d['_sort_date'] = o.fecha
-        d['source_type'] = 'legacy'
-        # Map legacy fields to match new frontend expectations if needed
-        if 'total' not in d and 'monto_total' in d:
-             d['total'] = d['monto_total']
-        if 'status' not in d and 'estado' in d:
-             d['status'] = d['estado']
-        combined.append(d)
+    conversational_query = PedidoConversacional.query.filter(PedidoConversacional.tenant_id == tenant.id)
+    if status_filter:
+        conversational_query = conversational_query.filter(func.lower(PedidoConversacional.estado) == status_filter)
+    order_records.extend(conversational_query.order_by(PedidoConversacional.created_at.desc()).limit(per_source_limit).all())
 
-    # Sort descending
-    combined.sort(key=lambda x: x['_sort_date'] or datetime.min, reverse=True)
+    combined = dedupe_unified_orders([serialize_unified_order(record) for record in order_records])
+    combined.sort(key=lambda item: item.get("created_at") or item.get("updated_at") or "", reverse=True)
+    combined = [_with_admin_order_legacy_aliases(item) for item in combined]
 
     # 4. Manual Pagination Slice
     start = (page - 1) * per_page
@@ -205,7 +214,8 @@ def list_admin_orders(current_user):
         "items": sliced_items,
         "total": total_count,
         "pages": total_pages,
-        "current_page": page
+        "current_page": page,
+        "sources": sorted({item.get("source_model") for item in sliced_items if item.get("source_model")}),
     })
 
 @orders_bp.route('/api/admin/orders/<order_id>', methods=['PATCH'])

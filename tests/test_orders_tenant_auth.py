@@ -8,7 +8,7 @@ os.environ.setdefault("FLASK_SKIP_GLOBAL_APP", "1")
 
 from app import create_app, db
 from config import Config
-from models import Order, TenantProfile, User
+from models import Order, PedidoConversacional, TenantProfile, User
 
 
 class OrdersTenantAuthConfig(Config):
@@ -47,7 +47,43 @@ class OrdersTenantAuthTest(unittest.TestCase):
 
         self.order_1 = Order(tenant_id=self.tenant_1.id, buyer_name="Buyer 1", total=100, status="created")
         self.order_2 = Order(tenant_id=self.tenant_2.id, buyer_name="Buyer 2", total=200, status="created")
-        db.session.add_all([self.order_1, self.order_2])
+        self.assisted_order = PedidoConversacional(
+            tenant_id=self.tenant_1.id,
+            user_id=self.admin_1.id,
+            estado="pendiente",
+            tipo="nota_de_pedido",
+            origen="marketplace",
+            monto_monetario=0,
+            items=[
+                {
+                    "items_detectados": [
+                        {"nombre": "Clavos punta paris", "cantidad": 3, "precio_float": 0},
+                    ],
+                    "customer_message": "Recibimos tu nota y armamos un borrador.",
+                }
+            ],
+            metadata_payload={
+                "contract_version": "marketplace.assisted_request.v1",
+                "mode": "order_note_upload",
+                "request_kind": "quote_request",
+                "request_kind_label": "nota de pedido",
+                "contact": {"name": "Marcelo", "phone": "+5492613168608", "email": "marcelo@example.com"},
+                "source": {"channel": "marketplace", "input_type": "text"},
+                "match_summary": {"matched": 1, "unmatched": 0, "detected": 1, "needs_operator_review": False},
+                "crm_order_draft": {
+                    "contract_version": "marketplace.crm_order_draft.v1",
+                    "reference": "pedido:test",
+                    "summary": {"matched": 1, "unmatched": 0},
+                    "lines": [{"status": "catalog_matched", "source_name": "Clavos punta paris"}],
+                },
+                "operator_intake_summary": {
+                    "contract_version": "marketplace.operator_intake_summary.v1",
+                    "target_module": "orders",
+                    "recommended_next_step": "confirmar_y_responder",
+                },
+            },
+        )
+        db.session.add_all([self.order_1, self.order_2, self.assisted_order])
         db.session.commit()
 
     def tearDown(self):
@@ -100,6 +136,25 @@ class OrdersTenantAuthTest(unittest.TestCase):
         buyers = [(item.get("buyer") or {}).get("name") for item in payload.get("items") or []]
         self.assertIn("Buyer 1", buyers)
         self.assertNotIn("Buyer 2", buyers)
+
+    def test_admin_orders_includes_assisted_marketplace_intakes(self):
+        resp = self.client.get(
+            "/api/admin/orders",
+            headers={**self._auth_header(self.employee), "X-Tenant-Slug": "tenant-1"},
+        )
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.get_json() or {}
+        items = payload.get("items") or []
+        assisted = next(
+            item for item in items if item.get("id") == f"conversational:{self.assisted_order.id}"
+        )
+        self.assertEqual(assisted["source_model"], "PedidoConversacional")
+        self.assertEqual(assisted["source_type"], "assisted_intake")
+        self.assertEqual(assisted["buyer"]["name"], "Marcelo")
+        self.assertEqual(assisted["buyer"]["phone"], "+5492613168608")
+        self.assertEqual(assisted["assisted_request"]["contract_version"], "marketplace.assisted_request.v1")
+        self.assertEqual(assisted["assisted_request"]["crm_order_draft"]["contract_version"], "marketplace.crm_order_draft.v1")
+        self.assertEqual(assisted["crm_review_card"]["contract_version"], "marketplace.crm_review_card.v1")
 
     def test_update_order_rejects_cross_tenant_admin(self):
         resp = self.client.patch(
