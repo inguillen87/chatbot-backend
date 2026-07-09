@@ -6,6 +6,7 @@ import hashlib
 import io
 import json
 import logging
+import math
 import os
 from collections import Counter, defaultdict
 from datetime import datetime, timezone, timedelta
@@ -107,6 +108,43 @@ def _as_bool(value: Any) -> Optional[bool]:
     return None
 
 
+def _parse_bbox_filter(value: Any) -> Optional[Tuple[float, float, float, float]]:
+    if not value:
+        return None
+
+    raw_values: List[Any]
+    if isinstance(value, Mapping):
+        raw_values = [
+            value.get("min_lng", value.get("min_lon", value.get("west", value.get("lng_min", value.get("lon_min"))))),
+            value.get("min_lat", value.get("south", value.get("lat_min"))),
+            value.get("max_lng", value.get("max_lon", value.get("east", value.get("lng_max", value.get("lon_max"))))),
+            value.get("max_lat", value.get("north", value.get("lat_max"))),
+        ]
+    elif isinstance(value, str):
+        raw_values = [part.strip() for part in value.replace(";", ",").split(",") if part.strip()]
+    elif isinstance(value, (list, tuple)):
+        raw_values = list(value)
+    else:
+        return None
+
+    if len(raw_values) != 4:
+        return None
+
+    try:
+        min_lng, min_lat, max_lng, max_lat = (float(item) for item in raw_values)
+    except (TypeError, ValueError):
+        return None
+
+    values = (min_lng, min_lat, max_lng, max_lat)
+    if not all(math.isfinite(item) for item in values):
+        return None
+    if min_lng > max_lng or min_lat > max_lat:
+        return None
+    if min_lng < -180 or max_lng > 180 or min_lat < -90 or max_lat > 90:
+        return None
+    return values
+
+
 def _is_demo_respuesta(respuesta: EncRespuesta) -> bool:
     metadata = getattr(respuesta, "metadata_payload", None)
     if isinstance(metadata, dict):
@@ -131,6 +169,15 @@ def _apply_filters(query, filtros: Optional[Dict[str, Any]]):
         query = query.filter(EncRespuesta.utm_source == filtros["utm_source"])
     if filtros.get("utm_campaign"):
         query = query.filter(EncRespuesta.utm_campaign == filtros["utm_campaign"])
+    bbox = _parse_bbox_filter(filtros.get("bbox"))
+    if bbox:
+        min_lng, min_lat, max_lng, max_lat = bbox
+        query = query.filter(
+            EncRespuesta.lng >= min_lng,
+            EncRespuesta.lng <= max_lng,
+            EncRespuesta.lat >= min_lat,
+            EncRespuesta.lat <= max_lat,
+        )
 
     def _apply_text_filter(column, key: str):
         values = filtros.get(key)

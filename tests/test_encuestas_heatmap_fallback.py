@@ -66,3 +66,58 @@ def test_heatmap_without_coordinates_returns_empty_by_default():
 
         db.session.remove()
         db.drop_all()
+
+
+def test_heatmap_applies_bbox_filter_to_real_survey_coordinates():
+    app = create_app(TestConfig)
+    with app.app_context():
+        db.create_all()
+        encuesta = EncEncuesta(
+            tenant_id=1,
+            slug="encuesta-con-bbox",
+            titulo="Encuesta con bbox",
+            estado="publicada",
+            tipo="opinion",
+        )
+        db.session.add(encuesta)
+        db.session.commit()
+
+        inside = EncRespuesta(
+            encuesta_id=encuesta.id,
+            tenant_id=encuesta.tenant_id,
+            canal="web",
+            barrio="Centro",
+            ciudad="Junin",
+            provincia="Mendoza",
+            pais="Argentina",
+            lat=-32.9205,
+            lng=-68.8122,
+            submitted_at=datetime.now(timezone.utc),
+        )
+        outside = EncRespuesta(
+            encuesta_id=encuesta.id,
+            tenant_id=encuesta.tenant_id,
+            canal="whatsapp",
+            barrio="Norte",
+            ciudad="Junin",
+            provincia="Mendoza",
+            pais="Argentina",
+            lat=-32.8701,
+            lng=-68.7601,
+            submitted_at=datetime.now(timezone.utc),
+        )
+        db.session.add_all([inside, outside])
+        db.session.commit()
+
+        payload = get_heatmap(encuesta.id, {"bbox": "-68.83,-32.94,-68.80,-32.90"})
+
+        assert payload["render_contract"]["state"] == "ready"
+        assert len(payload["points"]) == 1
+        assert payload["points"][0]["barrio"] == "Centro"
+        assert payload["points"][0]["canal"] == "web"
+        assert len(payload["cells"]) == 1
+        assert payload["metadata"]["has_coordinates"] is True
+        assert payload["metadata"]["using_synthetic_points"] is False
+
+        db.session.remove()
+        db.drop_all()
