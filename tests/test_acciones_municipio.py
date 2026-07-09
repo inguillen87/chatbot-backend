@@ -924,10 +924,11 @@ class TestAccionesMunicipio(unittest.TestCase):
         mock_validar_email, mock_validar_telefono, mock_crear_ticket
     ):
         # 1. Setup: Crear un usuario existente en la base de datos.
-        existing_user = User(nombre="Usuario Original", email="original@example.com", telefono="123456789")
+        existing_user = User(name="Usuario Original", email="original@example.com", telefono="123456789")
+        existing_user.set_password("123456")
         self.session.add(existing_user)
         self.session.commit()
-        self.assertEqual(User.query.count(), 1)
+        self.assertEqual(User.query.filter_by(email="original@example.com").count(), 1)
 
         # Mock de los servicios externos
         mock_crear_ticket.return_value = {"id": 99, "nro_ticket": "TICKET-99", "consulta_pin": "9876"}
@@ -964,7 +965,11 @@ class TestAccionesMunicipio(unittest.TestCase):
 
         # 4. Asserts
         self.assertTrue(respuesta["success"], "La acción debería ser exitosa.")
-        self.assertEqual(User.query.count(), 1, "No se debería haber creado un nuevo usuario.")
+        self.assertEqual(
+            User.query.filter_by(email="original@example.com").count(),
+            1,
+            "No se debería haber creado un nuevo usuario para el mismo email.",
+        )
 
         # Verificar que el ticket se creó con los datos del LLM pero se asoció al usuario existente
         mock_crear_ticket.assert_called_once()
@@ -975,12 +980,13 @@ class TestAccionesMunicipio(unittest.TestCase):
         self.assertEqual(ticket_data['email_vecino'], "original@example.com")
 
         # El user_id asociado al ticket debe ser el del usuario original
-        self.assertEqual(kwargs['user_id'], existing_user.id)
+        self.assertEqual(ticket_data['user_id'], existing_user.id)
+        self.assertNotIn('anon_id', ticket_data)
 
-        # Verificar que se intentó actualizar el perfil del usuario existente con los datos nuevos
+        # No sobrescribir el perfil registrado desde una sesion anonima.
         updated_user = self.session.get(User, existing_user.id)
-        self.assertEqual(updated_user.nombre, "Usuario Nuevo Intento")
-        self.assertEqual(updated_user.telefono, "+549987654321")
+        self.assertEqual(updated_user.name, "Usuario Original")
+        self.assertEqual(updated_user.telefono, "123456789")
 
 
 if __name__ == '__main__':

@@ -21,7 +21,7 @@ from services.user_service import assign_whatsapp_numbers
 
 DEFAULT_CONFIG_PATH = Path("data/municipios/default/config.json")
 DEFAULT_EMAIL = "mauricio@junin.com"
-DEFAULT_PASSWORD = "junin1234"
+DEFAULT_PASSWORD = "123456"
 DEFAULT_TENANT_SLUG = "municipio"
 DEFAULT_TENANT_NAME = "Municipio de Junín"
 DEFAULT_WIDGET_TOKEN = "1146cb3e-eaef-4230-b54e-1c340ac062d8"
@@ -67,8 +67,8 @@ def _ensure_user(password: str, rubro: Rubro, tenant_slug: str) -> User:
     else:
         user.rol = "admin"
         user.tipo_chat = "municipio"
-        user.nombre_empresa = user.nombre_empresa or DEFAULT_TENANT_NAME
-        user.tenant_slug = user.tenant_slug or tenant_slug
+        user.nombre_empresa = DEFAULT_TENANT_NAME
+        user.tenant_slug = tenant_slug
         if not user.rubro_id:
             user.rubro_id = rubro.id
 
@@ -103,10 +103,12 @@ def _ensure_tenant(
         )
         created = True
     else:
-        tenant.municipio_id = tenant.municipio_id or user.id
-        tenant.nombre = tenant.nombre or DEFAULT_TENANT_NAME
-        tenant.tipo = tenant.tipo or "municipio"
+        tenant.municipio_id = user.id
+        tenant.pyme_id = None
+        tenant.nombre = DEFAULT_TENANT_NAME
+        tenant.tipo = "municipio"
         tenant.dominio = tenant.dominio or f"{tenant_slug}.chatboc.ar"
+        tenant.is_active = True
         if tenant.configuracion is None:
             tenant.configuracion = {}
 
@@ -176,13 +178,16 @@ def bootstrap(password: str, config_path: Path, *, tenant_slug: str, widget_toke
     config_data = _load_config(config_path)
     rubro = _ensure_rubro()
     user = _ensure_user(password, rubro, tenant_slug)
-    _ensure_tenant(
+    tenant = _ensure_tenant(
         user,
         config_data,
         tenant_slug=tenant_slug,
         widget_token=widget_token,
         whatsapp_number=OFFICIAL_WHATSAPP,
     )
+    user.tenant_id = tenant.id
+    user.tenant_slug = tenant.slug
+    user.municipio_id = user.id
     assign_whatsapp_numbers(user, [OFFICIAL_WHATSAPP], activate=True, commit=False)
     _remove_widget_token_from_others(widget_token, tenant_slug)
     db.session.commit()
@@ -195,7 +200,7 @@ def main() -> None:
         "--password",
         dest="password",
         default=DEFAULT_PASSWORD,
-        help="Contraseña a asignar al usuario municipal (default: junin1234)",
+        help="Contraseña a asignar al usuario municipal (default: 123456)",
     )
     parser.add_argument(
         "--config",

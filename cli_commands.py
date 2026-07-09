@@ -221,7 +221,11 @@ def register_commands(app):
             current_app.logger.info("Creando usuario municipal demo Junín...")
             user = User(
                 email=email,
-                nombre="Mauricio",
+                name="Mauricio",
+                rol="admin",
+                tipo_chat="municipio",
+                tenant_slug="municipio",
+                nombre_empresa="Municipio de Junin",
                 is_active=True,
             )
             if hasattr(user, "is_admin"):
@@ -239,10 +243,21 @@ def register_commands(app):
             current_app.logger.info(
                 "Usuario municipal ya existe, refrescando password..."
             )
+            user.rol = "admin"
+            user.tipo_chat = "municipio"
+            user.tenant_slug = "municipio"
+            user.nombre_empresa = user.nombre_empresa or "Municipio de Junin"
             if hasattr(user, "set_password"):
                 user.set_password(raw_password)
             else:
                 user.password_hash = generate_password_hash(raw_password)
+
+        if hasattr(user, "is_admin"):
+            user.is_admin = True
+        if hasattr(user, "role"):
+            user.role = "admin"
+        user.name = user.name or "Mauricio"
+        user.nombre_empresa = "Municipio de Junin"
 
         rubro = None
         try:
@@ -270,8 +285,21 @@ def register_commands(app):
                 slug="municipio",
                 nombre="Municipio de Junín",
                 tipo="municipio",
+                municipio_id=user.id,
             )
             db.session.add(tenant)
+        else:
+            tenant.nombre = "Municipio de Junin"
+            tenant.tipo = "municipio"
+            tenant.pyme_id = None
+            tenant.municipio_id = user.id
+            tenant.is_active = True
+
+        db.session.flush()
+        tenant.nombre = "Municipio de Junin"
+        user.tenant_id = tenant.id
+        user.tenant_slug = tenant.slug
+        user.municipio_id = user.id
 
         config = tenant.configuracion or {}
         widget_tokens = set(config.get("widget_tokens", []))

@@ -6,7 +6,7 @@ import sys
 import time
 from urllib.parse import urlparse
 
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 
 from .base_action_handler import BaseActionHandler
 from typing import Dict, Any, Optional
@@ -34,7 +34,7 @@ from services.live_chat_schedule import build_tenant_live_chat_status
 from utils.ticket_utils import normalize_category
 from services.common_utils import validar_telefono, formatear_telefono_e164, validar_email
 from services.config_loader import cargar_configuracion_municipio
-from models import MunicipioTicket, TenantProfile, CategoriaTicket, db
+from models import MunicipioTicket, TenantProfile, CategoriaTicket, User, db
 from services.common_utils import _get_main_menu_payload
 from services import promo_service
 from services.voice_handler import initiate_outbound_call
@@ -824,6 +824,14 @@ class CrearReclamoActionHandler(BaseActionHandler):
         contacto_especializado = dict(contactos.get(categoria_lookup, contactos.get("default", {})))
 
         tenant_id, municipio_id = _resolve_municipio_tenant_ids(owner_user, self.context)
+        linked_user_id = getattr(viewer_user, "id", None)
+        if not linked_user_id and email_final:
+            existing_contact_user = (
+                User.query.filter(func.lower(User.email) == email_final.lower()).first()
+            )
+            existing_role = (getattr(existing_contact_user, "rol", "") or "").lower()
+            if existing_contact_user and existing_role in {"", "usuario", "cliente", "vecino"}:
+                linked_user_id = existing_contact_user.id
 
         ticket_data = {
             "pregunta": pregunta_original,
@@ -838,8 +846,8 @@ class CrearReclamoActionHandler(BaseActionHandler):
             "dni_vecino": dni_final,
             "direccion_contacto": direccion_contacto,
             "estado": "nuevo",
-            "user_id": getattr(viewer_user, "id", None),
-            "anon_id": self.context.get("anon_id"),
+            "user_id": linked_user_id,
+            "anon_id": None if linked_user_id else self.context.get("anon_id"),
             "municipio_id": municipio_id,
             "tenant_id": tenant_id,
             "latitud": coordenadas_llm.get("lat") if isinstance(coordenadas_llm, dict) else None,
