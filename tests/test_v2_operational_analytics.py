@@ -244,6 +244,7 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertEqual(monitor.get("slug"), "voto-plaza")
         self.assertEqual(monitor.get("public_token"), "voto-plaza-publica")
         self.assertEqual(monitor.get("public_url"), "/e/voto-plaza-publica")
+        self.assertEqual(monitor.get("admin_url"), "/admin/encuestas/1/analytics?focus=live")
         self.assertEqual(monitor.get("live_results_endpoint"), "/api/v2/public/surveys/voto-plaza-publica/live-results")
         self.assertEqual(monitor.get("whatsapp_template_id"), "gov_survey_invite")
         live_response = self.client.get(f"{monitor.get('live_results_endpoint')}?include_heatmap=0")
@@ -792,6 +793,7 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertIn("/tickets", actions_by_source.get("ticket", {}).get("href") or "")
         self.assertIn("/pedidos/", actions_by_source.get("order", {}).get("href") or "")
         self.assertIn("/admin/encuestas", actions_by_source.get("survey", {}).get("href") or "")
+        self.assertIn("focus=live", actions_by_source.get("survey", {}).get("href") or "")
 
         encoded = str(payload).lower()
         self.assertNotIn("cliente.sensible@example.com", encoded)

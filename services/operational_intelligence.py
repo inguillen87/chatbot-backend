@@ -511,7 +511,7 @@ def _survey_live_control_room(
                 "geo_coverage_rate": round((geo / total) * 100, 2) if total else 0.0,
                 "channels": _counter(channel_by_survey.get(survey_id, Counter())),
                 "public_url": f"/e/{public_token}",
-                "admin_url": f"/admin/encuestas/{survey_id}/analytics",
+                "admin_url": f"/admin/encuestas/{survey_id}/analytics?focus=live",
                 "live_results_endpoint": f"/api/v2/public/surveys/{public_token}/live-results",
                 "heatmap_endpoint": f"/api/v2/public/surveys/{public_token}/live-results?include_heatmap=1",
                 "whatsapp_template_id": "gov_survey_invite" if getattr(tenant, "tipo", "") == "municipio" else "survey_invite",
@@ -2879,7 +2879,7 @@ def _ai_ops_survey_items(surveys: dict[str, Any], *, limit: int) -> list[dict[st
                     endpoint=f"/api/v2/public/surveys/{monitor.get('public_token')}/live-results",
                     ui_hint="open_survey_analytics",
                     href=(
-                        f"/admin/encuestas/{quote(str(record_id), safe='')}/analytics"
+                        f"/admin/encuestas/{quote(str(record_id), safe='')}/analytics?focus=live"
                         if record_id is not None
                         else "/admin/encuestas"
                     ),
