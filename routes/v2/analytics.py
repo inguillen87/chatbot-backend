@@ -173,6 +173,7 @@ def _dashboard_report_lines(payload: dict[str, Any]) -> list[str]:
     tickets = ((payload.get("tickets") or {}).get("summary") or {})
     surveys = ((payload.get("surveys") or {}).get("summary") or {})
     chats = ((payload.get("chats") or {}).get("summary") or {})
+    commerce = ((payload.get("commerce") or {}).get("summary") or {})
     maps = (((payload.get("maps") or {}).get("heatmap") or {}) or {})
     heatmap_summary = maps.get("summary") or {}
     location_quality = maps.get("location_quality") or {}
@@ -189,6 +190,7 @@ def _dashboard_report_lines(payload: dict[str, Any]) -> list[str]:
         f"- Tickets vencidos: {summary.get('overdue_tickets', 0)}",
         f"- Respuestas encuestas: {summary.get('survey_responses', 0)}",
         f"- Mensajes chat: {summary.get('chat_messages', 0)}",
+        f"- Pedidos asistidos a revisar: {summary.get('orders_needing_review', 0)}",
         "",
         "Tickets:",
         f"- Total: {tickets.get('total', 0)}",
@@ -205,6 +207,12 @@ def _dashboard_report_lines(payload: dict[str, Any]) -> list[str]:
         f"- Votaciones live: {surveys.get('votaciones_live', 0)}",
         f"- WhatsApp: {chats.get('whatsapp_messages', 0)}",
         f"- Widget: {chats.get('widget_messages', 0)}",
+        "",
+        "Marketplace y pedidos:",
+        f"- Pedidos: {commerce.get('orders', 0)}",
+        f"- Asistidos: {commerce.get('assisted_orders', 0)}",
+        f"- Requieren revision: {commerce.get('orders_needing_review', 0)}",
+        f"- Items sin resolver: {commerce.get('unmatched_items', 0)}",
         "",
         "Alertas:",
     ]

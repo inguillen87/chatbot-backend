@@ -599,6 +599,118 @@ def _chat_metrics(tenant: TenantProfile, start_date: datetime, end_date: datetim
     }
 
 
+def _order_is_assisted(order: PedidoConversacional, metadata: dict[str, Any]) -> bool:
+    contract_version = _norm(metadata.get("contract_version"), "")
+    assisted_contract = _norm(metadata.get("assisted_request_contract_version"), "")
+    origin = _norm(getattr(order, "origen", None), "")
+    tipo = _norm(getattr(order, "tipo", None), "")
+    return (
+        contract_version == "marketplace.assisted_request.v1"
+        or assisted_contract == "marketplace.assisted_request.v1"
+        or "assisted" in origin
+        or "marketplace_upload" in origin
+        or "whatsapp_assisted" in origin
+        or "nota" in tipo
+    )
+
+
+def _commerce_metrics(tenant: TenantProfile, start_date: datetime, end_date: datetime) -> dict[str, Any]:
+    orders = (
+        _between(PedidoConversacional.query.filter_by(tenant_id=tenant.id), PedidoConversacional.created_at, start_date, end_date)
+        .order_by(PedidoConversacional.created_at.desc())
+        .all()
+    )
+
+    by_state: Counter[str] = Counter()
+    by_origin: Counter[str] = Counter()
+    by_request_kind: Counter[str] = Counter()
+    review_items: list[dict[str, Any]] = []
+    assisted_orders = 0
+    orders_needing_review = 0
+    detected_items = 0
+    matched_items = 0
+    unmatched_items = 0
+
+    for order in orders:
+        metadata = _order_metadata(order)
+        needs_review, payload = _order_needs_operator_review(order)
+        summary = payload.get("summary") or {}
+        source = _json_object(metadata.get("source"))
+        request_kind = (
+            _clean_text(metadata.get("request_kind"))
+            or _clean_text(source.get("request_kind"))
+            or _clean_text(getattr(order, "tipo", None))
+            or "pedido"
+        )
+        origin = _norm(getattr(order, "origen", None), "unknown")
+        state = _norm(getattr(order, "estado", None), "unknown")
+        detected = int(summary.get("detected") or 0)
+        matched = int(summary.get("matched") or 0)
+        unmatched = int(summary.get("unmatched") or 0)
+
+        by_state[state] += 1
+        by_origin[origin] += 1
+        by_request_kind[_norm(request_kind, "pedido")] += 1
+        detected_items += detected
+        matched_items += matched
+        unmatched_items += unmatched
+
+        is_assisted = _order_is_assisted(order, metadata)
+        if is_assisted:
+            assisted_orders += 1
+        if not needs_review:
+            continue
+
+        orders_needing_review += 1
+        priority = "high" if unmatched >= 2 or detected == 0 else "medium"
+        review_items.append(
+            {
+                "id": f"assisted_order:{order.id}",
+                "record_id": order.id,
+                "title": "Pedido asistido requiere revision",
+                "label": f"Pedido asistido #{order.id}",
+                "priority": priority,
+                "reason_code": "assisted_order_review",
+                "state": state,
+                "origin": origin,
+                "request_kind": request_kind,
+                "detected": detected,
+                "matched": matched,
+                "unmatched": unmatched,
+                "channel": origin,
+                "endpoint": f"/api/admin/tenants/{tenant.slug}/orders/{order.id}",
+                "frontend_path": f"/t/{quote(str(tenant.slug), safe='')}/pedidos/{quote(str(order.id), safe='')}",
+                "ui_hint": "open_assisted_order_review",
+                "pii": {"redacted": True},
+            }
+        )
+
+    review_items.sort(key=lambda item: {"high": 0, "medium": 1, "low": 2}.get(_norm(item.get("priority"), "low"), 9))
+    return {
+        "contract_version": "operations.commerce.v1",
+        "summary": {
+            "orders": len(orders),
+            "assisted_orders": assisted_orders,
+            "orders_needing_review": orders_needing_review,
+            "detected_items": detected_items,
+            "matched_items": matched_items,
+            "unmatched_items": unmatched_items,
+            "review_rate": round((orders_needing_review / len(orders)) * 100, 2) if orders else 0.0,
+        },
+        "by_state": _counter(by_state),
+        "by_origin": _counter(by_origin),
+        "by_request_kind": _counter(by_request_kind),
+        "review_items": review_items[:8],
+        "frontend_contract": {
+            "render_as": "commerce_assisted_ops",
+            "recommended_widgets": ["assisted_order_queue", "source_mix", "operator_review_rate"],
+            "empty_state_behavior": "show_upload_or_whatsapp_intake_cta",
+            "safe_for_public_demo": True,
+            "pii_policy": "redacted",
+        },
+    }
+
+
 def _employee_metrics(tenant: TenantProfile, records: list[dict[str, Any]]) -> dict[str, Any]:
     employees = User.query.filter_by(tenant_id=tenant.id, es_empleado=True).order_by(User.id.asc()).all()
     open_records = [record for record in records if record["status"] not in _CLOSED_STATES]
@@ -789,6 +901,10 @@ def build_operational_freshness(tenant: TenantProfile, start_date: datetime, end
     chat_count = _between(chat_query, ChatSessionContext.last_updated, start_date, end_date).count()
     chat_latest = _latest_from_query(chat_query, ChatSessionContext.last_updated)
 
+    order_query = PedidoConversacional.query.filter_by(tenant_id=tenant.id)
+    order_count = _between(order_query, PedidoConversacional.created_at, start_date, end_date).count()
+    order_latest = _latest_from_query(order_query, PedidoConversacional.created_at)
+
     employee_count = User.query.filter_by(tenant_id=tenant.id, es_empleado=True).count()
     heatmap = build_operational_heatmap(
         tenant,
@@ -845,6 +961,15 @@ def build_operational_freshness(tenant: TenantProfile, start_date: datetime, end
             stale_after_seconds=2 * 60 * 60,
             empty_reason="no_chat_sessions_in_period",
             recommended_action={"endpoint": "/api/v2/inbox/omnichannel", "ui_hint": "open_live_chat"},
+        ),
+        _freshness_item(
+            key="commerce",
+            label="Pedidos asistidos y marketplace",
+            latest_at=order_latest,
+            period_count=order_count,
+            stale_after_seconds=6 * 60 * 60,
+            empty_reason="no_assisted_orders_in_period",
+            recommended_action={"endpoint": "/api/v2/saas/admin?module=marketplace", "ui_hint": "open_assisted_order_queue"},
         ),
         _freshness_item(
             key="heatmap",
@@ -2177,12 +2302,20 @@ def build_operational_heatmap(
     }
 
 
-def _build_alerts(ticket_metrics: dict[str, Any], survey_metrics: dict[str, Any], chat_metrics: dict[str, Any], employee_metrics: dict[str, Any], heatmap: dict[str, Any]) -> list[dict[str, Any]]:
+def _build_alerts(
+    ticket_metrics: dict[str, Any],
+    survey_metrics: dict[str, Any],
+    chat_metrics: dict[str, Any],
+    employee_metrics: dict[str, Any],
+    heatmap: dict[str, Any],
+    commerce_metrics: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     alerts: list[dict[str, Any]] = []
     ticket_summary = ticket_metrics.get("summary") or {}
     survey_summary = survey_metrics.get("summary") or {}
     chat_summary = chat_metrics.get("summary") or {}
     employee_summary = employee_metrics.get("summary") or {}
+    commerce_summary = (commerce_metrics or {}).get("summary") or {}
 
     if ticket_summary.get("overdue", 0) > 0:
         alerts.append({"severity": "high", "reason_code": "tickets_overdue", "message": "Hay tickets o reclamos vencidos que requieren accion."})
@@ -2194,6 +2327,12 @@ def _build_alerts(ticket_metrics: dict[str, Any], survey_metrics: dict[str, Any]
         alerts.append({"severity": "medium", "reason_code": "live_vote_without_responses", "message": "Hay votaciones activas sin respuestas recientes."})
     if chat_summary.get("handoff_rate", 0) >= 30:
         alerts.append({"severity": "medium", "reason_code": "high_handoff_rate", "message": "La tasa de derivacion humana esta alta; revisar intents y respuestas."})
+    if int(commerce_summary.get("orders_needing_review") or 0) > 0:
+        alerts.append({
+            "severity": "medium",
+            "reason_code": "assisted_orders_need_review",
+            "message": "Hay pedidos asistidos desde WhatsApp o marketplace esperando revision operativa.",
+        })
     hotspot = (heatmap.get("hotspots") or [None])[0]
     if hotspot and hotspot.get("count", 0) >= 5:
         alerts.append({"severity": "medium", "reason_code": "heatmap_hotspot", "message": "Se detecto una zona con alta concentracion de actividad.", "cell_id": hotspot.get("id")})
@@ -2201,7 +2340,16 @@ def _build_alerts(ticket_metrics: dict[str, Any], survey_metrics: dict[str, Any]
     return alerts
 
 
-def _summary_from_metrics(ticket_metrics: dict[str, Any], survey_metrics: dict[str, Any], chat_metrics: dict[str, Any], employee_metrics: dict[str, Any], heatmap: dict[str, Any], alerts: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+def _summary_from_metrics(
+    ticket_metrics: dict[str, Any],
+    survey_metrics: dict[str, Any],
+    chat_metrics: dict[str, Any],
+    employee_metrics: dict[str, Any],
+    heatmap: dict[str, Any],
+    alerts: list[dict[str, Any]] | None = None,
+    commerce_metrics: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    commerce_summary = (commerce_metrics or {}).get("summary") or {}
     return {
         "open_tickets": ticket_metrics["summary"]["open"],
         "overdue_tickets": ticket_metrics["summary"]["overdue"],
@@ -2209,6 +2357,10 @@ def _summary_from_metrics(ticket_metrics: dict[str, Any], survey_metrics: dict[s
         "live_votes": survey_metrics["summary"]["votaciones_live"],
         "chat_messages": chat_metrics["summary"]["messages"],
         "whatsapp_messages": chat_metrics["summary"]["whatsapp_messages"],
+        "orders": commerce_summary.get("orders", 0),
+        "assisted_orders": commerce_summary.get("assisted_orders", 0),
+        "orders_needing_review": commerce_summary.get("orders_needing_review", 0),
+        "unmatched_order_items": commerce_summary.get("unmatched_items", 0),
         "employees": employee_metrics["summary"]["employees"],
         "heatmap_points": heatmap["summary"]["points"],
         "alerts": len(alerts or []),
@@ -2223,6 +2375,9 @@ def _build_trends(current: dict[str, Any], previous: dict[str, Any]) -> dict[str
         "live_votes",
         "chat_messages",
         "whatsapp_messages",
+        "orders",
+        "assisted_orders",
+        "orders_needing_review",
         "heatmap_points",
     ]
     return {
@@ -2263,12 +2418,14 @@ def _build_next_best_actions(
     employee_metrics: dict[str, Any],
     heatmap: dict[str, Any],
     alerts: list[dict[str, Any]],
+    commerce_metrics: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     actions: list[dict[str, Any]] = []
     ticket_summary = ticket_metrics.get("summary") or {}
     survey_summary = survey_metrics.get("summary") or {}
     chat_summary = chat_metrics.get("summary") or {}
     employee_summary = employee_metrics.get("summary") or {}
+    commerce_summary = (commerce_metrics or {}).get("summary") or {}
     coverage = employee_metrics.get("coverage") or {}
 
     if ticket_summary.get("overdue", 0) > 0:
@@ -2346,6 +2503,19 @@ def _build_next_best_actions(
                 reason_code="high_handoff_rate",
                 endpoint="/api/v2/analytics/operations/dashboard",
                 ui_hint="open_chat_quality_panel",
+            )
+        )
+
+    if int(commerce_summary.get("orders_needing_review") or 0) > 0:
+        actions.append(
+            _action(
+                action_id="review_assisted_orders",
+                title="Revisar pedidos asistidos",
+                description="Hay notas, fotos o PDFs de pedido que la IA normalizo y esperan validacion comercial.",
+                priority="high" if int(commerce_summary.get("unmatched_items") or 0) >= 3 else "medium",
+                reason_code="assisted_orders_need_review",
+                endpoint="/api/v2/saas/admin?module=marketplace",
+                ui_hint="open_assisted_order_queue",
             )
         )
 
@@ -2444,6 +2614,16 @@ def _build_ai_operational_brief(
                 "ui_hint": "open_whatsapp_inbox",
             }
         )
+    if summary.get("orders_needing_review", 0):
+        focus_items.append(
+            {
+                "id": "orders_needing_review",
+                "label": "Pedidos asistidos a revisar",
+                "value": int(summary.get("orders_needing_review") or 0),
+                "priority": "high" if int(summary.get("unmatched_order_items") or 0) >= 3 else "medium",
+                "ui_hint": "open_assisted_order_queue",
+            }
+        )
 
     if not focus_items:
         focus_items.append(
@@ -2476,12 +2656,14 @@ def _build_ai_operational_brief(
         "requires_human_attention": bool(ai_summary.get("requires_human_attention") or high_alerts),
         "requires_location_focus": bool(ai_summary.get("requires_location_focus")),
         "top_action": top_action,
-        "focus_items": focus_items[:4],
+        "focus_items": focus_items[:5],
         "signals": {
             "alerts": len(alerts),
             "high_alerts": len(high_alerts),
             "medium_alerts": len(medium_alerts),
             "actions": len(next_best_actions or []),
+            "assisted_orders": int(summary.get("assisted_orders") or 0),
+            "orders_needing_review": int(summary.get("orders_needing_review") or 0),
             "hf_mode": (heatmap.get("ai_insights") or {}).get("mode"),
             "hf_configured": (((heatmap.get("ai_insights") or {}).get("hf_status") or {}).get("configured")),
         },
@@ -2768,6 +2950,7 @@ def build_operational_dashboard(tenant: TenantProfile, start_date: datetime, end
     ticket_metrics = _ticket_metrics(ticket_records)
     survey_metrics = _survey_metrics(tenant, start_date, end_date)
     chat_metrics = _chat_metrics(tenant, start_date, end_date)
+    commerce_metrics = _commerce_metrics(tenant, start_date, end_date)
     employee_metrics = _employee_metrics(tenant, ticket_records)
     live_chat = _active_presence(ticket_records)
     heatmap = build_operational_heatmap(
@@ -2778,8 +2961,8 @@ def build_operational_dashboard(tenant: TenantProfile, start_date: datetime, end
         max_points=500,
         include_ai=False,
     )
-    alerts = _build_alerts(ticket_metrics, survey_metrics, chat_metrics, employee_metrics, heatmap)
-    summary = _summary_from_metrics(ticket_metrics, survey_metrics, chat_metrics, employee_metrics, heatmap, alerts)
+    alerts = _build_alerts(ticket_metrics, survey_metrics, chat_metrics, employee_metrics, heatmap, commerce_metrics)
+    summary = _summary_from_metrics(ticket_metrics, survey_metrics, chat_metrics, employee_metrics, heatmap, alerts, commerce_metrics)
     period = _period_delta(start_date, end_date)
     previous_start = start_date - period
     previous_end = start_date
@@ -2787,6 +2970,7 @@ def build_operational_dashboard(tenant: TenantProfile, start_date: datetime, end
     previous_ticket_metrics = _ticket_metrics(previous_ticket_records)
     previous_survey_metrics = _survey_metrics(tenant, previous_start, previous_end)
     previous_chat_metrics = _chat_metrics(tenant, previous_start, previous_end)
+    previous_commerce_metrics = _commerce_metrics(tenant, previous_start, previous_end)
     previous_employee_metrics = _employee_metrics(tenant, previous_ticket_records)
     previous_heatmap = build_operational_heatmap(
         tenant,
@@ -2803,8 +2987,9 @@ def build_operational_dashboard(tenant: TenantProfile, start_date: datetime, end
         previous_employee_metrics,
         previous_heatmap,
         [],
+        previous_commerce_metrics,
     )
-    next_best_actions = _build_next_best_actions(ticket_metrics, survey_metrics, chat_metrics, employee_metrics, heatmap, alerts)
+    next_best_actions = _build_next_best_actions(ticket_metrics, survey_metrics, chat_metrics, employee_metrics, heatmap, alerts, commerce_metrics)
     ai_brief = _build_ai_operational_brief(
         summary=summary,
         alerts=alerts,
@@ -2823,6 +3008,7 @@ def build_operational_dashboard(tenant: TenantProfile, start_date: datetime, end
         "tickets": ticket_metrics,
         "surveys": survey_metrics,
         "chats": chat_metrics,
+        "commerce": commerce_metrics,
         "live_chat": live_chat,
         "employees": employee_metrics,
         "maps": {
@@ -2849,6 +3035,7 @@ def build_operational_dashboard(tenant: TenantProfile, start_date: datetime, end
                 "executive_summary",
                 "ticket_board",
                 "live_chat_inbox",
+                "commerce_assisted_orders",
                 "survey_vote_monitor",
                 "heatmap",
                 "interactive_globe",
@@ -2858,7 +3045,7 @@ def build_operational_dashboard(tenant: TenantProfile, start_date: datetime, end
             ],
             "primary_refresh_seconds": 30,
             "empty_state_behavior": "show_contract_empty_state",
-            "map_layers": ["tickets", "surveys", "analytics_events", "ai_risk", "whatsapp_activity", "survey_participation"],
+            "map_layers": ["tickets", "surveys", "analytics_events", "ai_risk", "whatsapp_activity", "survey_participation", "commerce_activity"],
             "exports": {
                 "pdf": "/api/v2/analytics/operations/export.pdf",
                 "ai_summary": "/api/v2/analytics/operations/executive-summary",

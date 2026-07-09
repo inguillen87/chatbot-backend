@@ -230,6 +230,9 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertEqual(response.headers.get("X-Request-Id"), "ops-dashboard-1")
         self.assertEqual((payload.get("summary") or {}).get("open_tickets"), 2)
         self.assertEqual((payload.get("summary") or {}).get("overdue_tickets"), 1)
+        self.assertEqual((payload.get("summary") or {}).get("assisted_orders"), 1)
+        self.assertEqual((payload.get("summary") or {}).get("orders_needing_review"), 1)
+        self.assertEqual((payload.get("summary") or {}).get("unmatched_order_items"), 2)
         self.assertEqual((payload.get("surveys") or {}).get("summary", {}).get("votaciones_live"), 1)
         live_control = (payload.get("surveys") or {}).get("live_control_room") or {}
         self.assertEqual(live_control.get("contract_version"), "operations.survey_live_control_room.v1")
@@ -248,18 +251,33 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertEqual(live_response.get_json().get("contract_version"), "surveys.live_results.v2")
         self.assertTrue(any(action.get("id") == "sync_whatsapp_survey_template" for action in live_control.get("actions") or []))
         self.assertEqual((payload.get("chats") or {}).get("summary", {}).get("whatsapp_messages"), 1)
+        commerce = payload.get("commerce") or {}
+        self.assertEqual(commerce.get("contract_version"), "operations.commerce.v1")
+        self.assertEqual((commerce.get("summary") or {}).get("orders"), 1)
+        self.assertEqual((commerce.get("summary") or {}).get("assisted_orders"), 1)
+        self.assertEqual((commerce.get("summary") or {}).get("orders_needing_review"), 1)
+        self.assertEqual((commerce.get("summary") or {}).get("unmatched_items"), 2)
+        self.assertEqual((commerce.get("frontend_contract") or {}).get("render_as"), "commerce_assisted_ops")
+        review_item = (commerce.get("review_items") or [])[0]
+        self.assertEqual(review_item.get("ui_hint"), "open_assisted_order_review")
+        self.assertTrue((review_item.get("pii") or {}).get("redacted"))
         self.assertEqual((payload.get("employees") or {}).get("summary", {}).get("employees"), 1)
         self.assertTrue((payload.get("maps") or {}).get("heatmap", {}).get("hotspots"))
         self.assertEqual((payload.get("trends") or {}).get("contract_version"), "operations.trends.v1")
         self.assertTrue(payload.get("next_best_actions"))
+        self.assertTrue(any(action.get("id") == "review_assisted_orders" for action in payload.get("next_best_actions") or []))
         self.assertEqual((payload.get("ai_brief") or {}).get("contract_version"), "operations.ai_brief.v1")
         self.assertEqual((payload.get("ai_brief") or {}).get("severity"), "high")
         self.assertTrue((payload.get("ai_brief") or {}).get("focus_items"))
+        focus_ids = {item.get("id") for item in (payload.get("ai_brief") or {}).get("focus_items") or []}
+        self.assertIn("orders_needing_review", focus_ids)
+        self.assertEqual(((payload.get("ai_brief") or {}).get("signals") or {}).get("orders_needing_review"), 1)
         self.assertIn(
             "ai_brief",
             ((payload.get("frontend_contract") or {}).get("exports") or {}),
         )
         self.assertTrue(any(alert.get("reason_code") == "tickets_overdue" for alert in payload.get("alerts") or []))
+        self.assertTrue(any(alert.get("reason_code") == "assisted_orders_need_review" for alert in payload.get("alerts") or []))
 
     def test_operations_heatmap_returns_points_cells_and_layers(self):
         response = self.client.get("/api/v2/analytics/operations/heatmap", headers=self._auth())
@@ -803,8 +821,10 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         sources = {item.get("key"): item for item in payload.get("sources") or []}
         self.assertIn("tickets", sources)
         self.assertIn("analytics_events", sources)
+        self.assertIn("commerce", sources)
         self.assertIn("heatmap", sources)
         self.assertEqual(sources["tickets"].get("period_count"), 2)
+        self.assertEqual(sources["commerce"].get("period_count"), 1)
         self.assertGreaterEqual(sources["heatmap"].get("period_count"), 1)
         self.assertEqual((payload.get("frontend_contract") or {}).get("render_as"), "analytics_freshness")
 
