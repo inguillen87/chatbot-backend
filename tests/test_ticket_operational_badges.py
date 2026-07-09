@@ -42,6 +42,53 @@ class TicketOperationalBadgesTest(unittest.TestCase):
         self.assertEqual(payload["sla_status"], "por_vencer")
         self.assertIn("sin_asignar", payload["operational_badges"])
         self.assertIn("por_vencer", payload["operational_badges"])
+        self.assertEqual(payload["crm_queue"]["contract_version"], "tickets.crm_queue.v1")
+        self.assertEqual(payload["crm_queue"]["state"], "sla_attention")
+        self.assertEqual(payload["crm_queue"]["next_team_action"], "review_sla_and_update")
+        self.assertTrue(payload["crm_queue"]["requires_admin_response"])
+        self.assertIn(
+            {"id": "sla_risk", "label": "SLA en riesgo", "tone": "warning"},
+            payload["crm_queue"]["badges"],
+        )
+        self.assertIn(
+            {"id": "unassigned", "label": "Sin responsable", "tone": "warning"},
+            payload["crm_queue"]["badges"],
+        )
+
+    def test_ticket_queue_contract_prioritizes_unread_customer_activity(self):
+        ticket = MunicipioTicket(
+            municipio_id=self.admin.id,
+            pregunta="consulta de estado",
+            nro_ticket="123457",
+            estado="nuevo",
+            fecha=get_local_now(),
+            ultima_actividad=get_local_now(),
+        )
+        db.session.add(ticket)
+        db.session.commit()
+
+        payload = serialize_ticket_to_json(
+            ticket,
+            "municipio",
+            compact=True,
+            collaboration_state_override={
+                "unread_count": 2,
+                "unread_viewer_count": 1,
+                "has_unread": True,
+                "active_viewers_count": 1,
+            },
+        )
+
+        self.assertEqual(payload["crm_queue"]["state"], "customer_waiting")
+        self.assertEqual(payload["crm_queue"]["label"], "Responder ahora")
+        self.assertEqual(payload["crm_queue"]["next_team_action"], "reply_from_crm")
+        self.assertEqual(payload["crm_queue"]["signals"]["unread_count"], 2)
+        self.assertEqual(payload["crm_queue"]["signals"]["active_viewers_count"], 1)
+        self.assertGreaterEqual(payload["crm_queue"]["score"], 100)
+        self.assertIn(
+            {"id": "unread", "label": "Mensaje sin leer", "tone": "live"},
+            payload["crm_queue"]["badges"],
+        )
 
     def test_detail_payload_marks_pending_response_for_assigned_ticket(self):
         agente = User(

@@ -289,6 +289,116 @@ def _ticket_priority_payload(ticket_obj) -> dict[str, Any]:
     }
 
 
+def _ticket_crm_queue_payload(
+    ticket_obj,
+    *,
+    ticket_type: str,
+    operational_hints: dict[str, Any],
+    priority_payload: dict[str, Any],
+    collaboration_state: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Normalize operator queue signals for CRM list/detail surfaces."""
+
+    collaboration_state = collaboration_state or {}
+
+    def _safe_int(value: Any) -> int:
+        try:
+            return int(value or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    estado = _normalize_ticket_filter_token(getattr(ticket_obj, "estado", None))
+    is_closed = estado in {"cerrado", "resuelto"}
+    assigned_user_id = getattr(ticket_obj, "asignado_a_id", None)
+    unread_count = _safe_int(collaboration_state.get("unread_count"))
+    unread_viewer_count = _safe_int(collaboration_state.get("unread_viewer_count"))
+    active_viewers_count = _safe_int(collaboration_state.get("active_viewers_count"))
+    has_unread = bool(collaboration_state.get("has_unread") or unread_count > 0 or unread_viewer_count > 0)
+    sla_status = str(operational_hints.get("sla_status") or "ok")
+    badges = list(operational_hints.get("badges") or [])
+    priority = priority_payload.get("priority")
+    priority_score = priority_payload.get("priority_score")
+    is_high_priority = _normalize_ticket_filter_token(priority) in {
+        "alta",
+        "high",
+        "urgent",
+        "urgente",
+        "critica",
+        "critical",
+    }
+    is_sla_risk = sla_status in {"vencido", "por_vencer", "breached", "overdue", "risk"}
+    is_unassigned = not assigned_user_id
+
+    queue_badges: list[dict[str, str]] = []
+    score = 0
+    if has_unread:
+        score += 100
+        queue_badges.append({"id": "unread", "label": "Mensaje sin leer", "tone": "live"})
+    if is_sla_risk:
+        score += 60 if sla_status == "vencido" else 40
+        queue_badges.append({"id": "sla_risk", "label": "SLA en riesgo", "tone": "warning"})
+    if is_high_priority:
+        score += 35
+        queue_badges.append({"id": "high_priority", "label": "Prioridad alta", "tone": "danger"})
+    if is_unassigned and not is_closed:
+        score += 25
+        queue_badges.append({"id": "unassigned", "label": "Sin responsable", "tone": "warning"})
+    if active_viewers_count > 0:
+        score += 10
+        queue_badges.append({"id": "active_team", "label": "Equipo activo", "tone": "info"})
+
+    if is_closed:
+        state = "resolved"
+        label = "Caso cerrado"
+        reason = "No requiere accion operativa salvo reapertura."
+        next_team_action = "monitor_closed_ticket"
+    elif has_unread:
+        state = "customer_waiting"
+        label = "Responder ahora"
+        reason = "Hay actividad del vecino o cliente sin lectura completa del equipo."
+        next_team_action = "reply_from_crm"
+    elif is_sla_risk:
+        state = "sla_attention"
+        label = "Revisar SLA"
+        reason = "El caso esta vencido o por vencer segun la ultima actividad."
+        next_team_action = "review_sla_and_update"
+    elif is_unassigned:
+        state = "unassigned"
+        label = "Asignar responsable"
+        reason = "El caso esta abierto y todavia no tiene operador asignado."
+        next_team_action = "assign_owner"
+    else:
+        state = "ready"
+        label = "Mesa al dia"
+        reason = "No hay senales criticas activas para este caso."
+        next_team_action = "monitor_ticket"
+
+    return {
+        "contract_version": "tickets.crm_queue.v1",
+        "id": "ticket_crm_queue",
+        "ticket_type": ticket_type,
+        "state": state,
+        "score": score,
+        "label": label,
+        "reason": reason,
+        "next_team_action": next_team_action,
+        "requires_admin_response": state in {"customer_waiting", "sla_attention", "unassigned"},
+        "badges": queue_badges,
+        "signals": {
+            "sla_status": sla_status,
+            "operational_badges": badges,
+            "priority": priority,
+            "priority_score": priority_score,
+            "unread_count": unread_count,
+            "unread_viewer_count": unread_viewer_count,
+            "active_viewers_count": active_viewers_count,
+            "assigned": bool(assigned_user_id),
+            "age_hours": operational_hints.get("age_hours"),
+            "inactivity_hours": operational_hints.get("inactivity_hours"),
+        },
+    }
+
+
 def _ticket_priority_filter_condition(TicketModel, requested_priority):
     normalized = _normalize_ticket_filter_token(requested_priority)
     if not _is_active_ticket_filter(normalized):
@@ -1321,6 +1431,13 @@ def serialize_ticket_to_json(
     location_payload = _ticket_location_payload(ticket, user_data.get("direccion"))
     priority_payload = _ticket_priority_payload(ticket)
     ai_payload = _ticket_ai_enrichment_payload(ticket)
+    crm_queue_payload = _ticket_crm_queue_payload(
+        ticket,
+        ticket_type=ticket_type,
+        operational_hints=operational_hints,
+        priority_payload=priority_payload,
+        collaboration_state=collaboration_state,
+    )
 
     compact_contact_identity = None
     compact_identity_visual = None
@@ -1442,6 +1559,7 @@ def serialize_ticket_to_json(
         "priority": priority_payload["priority"],
         "priority_score": priority_payload["priority_score"],
         "priority_breakdown": priority_payload["priority_breakdown"],
+        "crm_queue": crm_queue_payload,
         "operational_badges": operational_hints["badges"],
         "operational_metrics": {
             "age_hours": operational_hints["age_hours"],
@@ -2302,6 +2420,25 @@ def _serialize_ticket_details(ticket, ticket_type):
     operational_hints = _build_ticket_operational_badges(ticket)
     location_payload = _ticket_location_payload(ticket, user_data["direccion"])
     priority_payload = _ticket_priority_payload(ticket)
+    try:
+        collaboration_state = build_ticket_collaboration_state(ticket_type=ticket_type, ticket_id=ticket.id)
+    except Exception as exc:
+        current_app.logger.warning(
+            "Ticket detail collaboration state degraded for %s ticket %s: %s",
+            ticket_type,
+            getattr(ticket, "id", None),
+            exc,
+            exc_info=True,
+        )
+        collaboration_state = {"active_viewers": [], "meta": {"degraded": True, "retryable": True}}
+        degraded_reasons.append("ticket_collaboration_state_unavailable")
+    crm_queue_payload = _ticket_crm_queue_payload(
+        ticket,
+        ticket_type=ticket_type,
+        operational_hints=operational_hints,
+        priority_payload=priority_payload,
+        collaboration_state=collaboration_state,
+    )
 
     ticket_data = {
         "id": ticket.id,
@@ -2363,6 +2500,7 @@ def _serialize_ticket_details(ticket, ticket_type):
         "priority": priority_payload["priority"],
         "priority_score": priority_payload["priority_score"],
         "priority_breakdown": priority_payload["priority_breakdown"],
+        "crm_queue": crm_queue_payload,
         "operational_badges": operational_hints["badges"],
         "operational_metrics": {
             "age_hours": operational_hints["age_hours"],
