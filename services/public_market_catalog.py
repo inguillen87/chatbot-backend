@@ -9,6 +9,10 @@ from sqlalchemy import func, or_
 from models import CatalogoItem, Promocion, TenantProfile, User
 from routes.catalogo import _formatear_producto
 from services.common_utils import parse_precio_flexible
+from utils.turnstile import (
+    turnstile_enforce_public_intake,
+    turnstile_public_intake_contract,
+)
 
 
 PUBLIC_MARKET_CATALOG_CONTRACT_VERSION = "public.market_catalog.v1"
@@ -160,6 +164,11 @@ def public_market_api_contract(tenant: TenantProfile, assisted_intake: dict[str,
     tenant_param = quote_plus(str(tenant.slug or ""))
     pwa_cart_base = f"/api/pwa/public/cart?tenant={tenant_param}"
     pwa_cart_summary = f"/api/pwa/public/cart/summary?tenant={tenant_param}"
+    turnstile_security = turnstile_public_intake_contract(
+        surface="marketplace_assisted_upload",
+        status="required" if turnstile_enforce_public_intake() else "not_required",
+        reset_required=False,
+    )
     return {
         "contract_version": PUBLIC_MARKET_API_CONTRACT_VERSION,
         "tenant_slug": tenant.slug,
@@ -195,6 +204,11 @@ def public_market_api_contract(tenant: TenantProfile, assisted_intake: dict[str,
             "fallback_behavior": "return_structured_plan_or_payment_error_never_tokenized_endpoint",
         },
         "assisted_upload": assisted_intake["submit"],
+        "security": {
+            "contract_version": "marketplace.public_security.v1",
+            "turnstile": turnstile_security,
+            "protected_surfaces": ["marketplace_assisted_upload"],
+        },
         "flow_runtime": {
             "method": "GET",
             "endpoint": f"/api/public/flows/runtime?tenant={tenant_param}&channel=whatsapp",

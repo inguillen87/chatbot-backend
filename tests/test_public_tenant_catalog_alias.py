@@ -169,6 +169,15 @@ def test_public_market_catalog_contract_includes_promotions(client):
     assert payload["public_api"]["checkout"]["start"]["endpoint"] == "/api/checkout/crear-preferencia"
     assert payload["public_api"]["checkout"]["fallback_behavior"] == "return_structured_plan_or_payment_error_never_tokenized_endpoint"
     assert payload["public_api"]["assisted_upload"]["endpoint"] == "/api/pedidos/from-file?origen=marketplace"
+    assert payload["public_api"]["security"]["contract_version"] == "marketplace.public_security.v1"
+    assert payload["public_api"]["security"]["protected_surfaces"] == ["marketplace_assisted_upload"]
+    assert payload["public_api"]["security"]["turnstile"]["contract_version"] == "cloudflare.turnstile.public_intake.v1"
+    assert payload["public_api"]["security"]["turnstile"]["provider"] == "cloudflare_turnstile"
+    assert payload["public_api"]["security"]["turnstile"]["surface"] == "marketplace_assisted_upload"
+    assert payload["public_api"]["security"]["turnstile"]["status"] == "not_required"
+    assert payload["public_api"]["security"]["turnstile"]["required"] is False
+    assert payload["public_api"]["security"]["turnstile"]["token_header"] == "X-Turnstile-Token"
+    assert "turnstile_token" in payload["public_api"]["security"]["turnstile"]["token_fields"]
     assert payload["public_api"]["flow_runtime"]["contract_version"] == "public.whatsapp.flow_runtime.v1"
     assert payload["public_api"]["flow_runtime"]["endpoint"] == f"/api/public/flows/runtime?tenant={tenant.slug}&channel=whatsapp"
     assert payload["public_api"]["flow_runtime"]["actions_endpoint"] == f"/api/public/flows/actions?tenant={tenant.slug}"
@@ -192,6 +201,25 @@ def test_public_market_catalog_contract_includes_promotions(client):
     assert event.metadata_payload["source"] == "public_tenant_catalog_contract"
     assert event.metadata_payload["product_count"] == len(payload["products"])
     assert event.metadata_payload["assisted_intake_mode"] == payload["assisted_intake"]["mode"]
+
+
+def test_public_market_catalog_contract_marks_turnstile_required_when_enforced(client, monkeypatch):
+    tenant = _seed_pyme_tenant_with_catalog()
+    monkeypatch.setenv("CLOUDFLARE_TURNSTILE_ENFORCE_PUBLIC_INTAKE", "true")
+    monkeypatch.setenv("CLOUDFLARE_TURNSTILE_SECRET_KEY", "test-turnstile-secret")
+    monkeypatch.setitem(client.application.config, "CLOUDFLARE_TURNSTILE_ENFORCE_PUBLIC_INTAKE", "true")
+    monkeypatch.setitem(client.application.config, "CLOUDFLARE_TURNSTILE_SECRET_KEY", "test-turnstile-secret")
+
+    resp = client.get(f"/api/public/tenants/{tenant.slug}/catalog?contract=marketplace")
+    assert resp.status_code == 200
+    payload = resp.get_json()
+
+    turnstile = payload["public_api"]["security"]["turnstile"]
+    assert turnstile["status"] == "required"
+    assert turnstile["configured"] is True
+    assert turnstile["enforced"] is True
+    assert turnstile["required"] is True
+    assert turnstile["reset_required"] is False
 
 
 def test_public_market_catalog_contract_for_empty_catalog_promotes_assisted_intake(client):
