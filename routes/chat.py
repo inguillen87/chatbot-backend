@@ -28,7 +28,7 @@ from services.logic import (
     normalizar_rubro,
     es_rubro_publico,
 )
-from services.live_chat_schedule import build_live_chat_status
+from services.live_chat_schedule import build_live_chat_status, build_live_chat_transport
 from services.demo_registry import load_demo_rubros, demo_rubro_for_token
 from services.education_contracts import (
     build_education_whatsapp_menu_payload,
@@ -4445,16 +4445,24 @@ def widget_config():
 
     return jsonify(config)
 
-def _live_chat_schedule_public_response(status: dict):
+def _live_chat_schedule_public_response(status: dict, realtime_config: Optional[dict] = None):
     status.setdefault("contract_version", "live_chat.schedule.v1")
     status.setdefault("enabled", False)
     status.setdefault("available", False)
-    status["socket_transport_hint"] = "disabled"
-    status["socket_transports"] = []
-    status["socket_fallback_enabled"] = False
-    status["socket_enabled"] = False
-    status["realtime"] = False
-    status["fallback_mode"] = "http_chat"
+    transport = status.get("transport") if isinstance(status.get("transport"), dict) else None
+    if transport is None:
+        transport = build_live_chat_transport(status, config_override=realtime_config)
+        status["transport"] = transport
+    socket_enabled = bool(transport.get("socket_enabled"))
+    fallback_mode = transport.get("fallback_mode") or "http_chat"
+    status["socket_transport_hint"] = "socket_io_enabled" if socket_enabled else "disabled"
+    status["socket_transports"] = list(transport.get("transports") or [])
+    status["socket_fallback_enabled"] = bool(socket_enabled and transport.get("http_fallback_enabled"))
+    status["socket_enabled"] = socket_enabled
+    status["socket_url"] = transport.get("socket_url")
+    status["socket_path"] = transport.get("socket_path")
+    status["realtime"] = socket_enabled
+    status["fallback_mode"] = fallback_mode
     response = jsonify(status)
     origin = request.headers.get("Origin")
     if origin:
@@ -4486,7 +4494,7 @@ def live_chat_schedule():
                     status = build_live_chat_status(schedule_override=schedule_cfg)
                     status["tenant_slug"] = tenant.slug
                     status["source"] = "tenant_config"
-                    return _live_chat_schedule_public_response(status)
+                    return _live_chat_schedule_public_response(status, tenant.configuracion)
     except Exception as exc:
         current_app.logger.warning("[live_chat_schedule] tenant lookup failed for %s: %s", tenant_slug, exc)
 

@@ -223,6 +223,8 @@ def test_tenant_live_chat_schedule_config_and_public_status(client, app):
     assert public_body.get("socket_transport_hint") == "disabled"
     assert public_body.get("socket_transports") == []
     assert public_body.get("socket_fallback_enabled") is False
+    assert public_body.get("transport", {}).get("socket_enabled") is False
+    assert public_body.get("transport", {}).get("http_fallback_enabled") is True
     assert public_body.get("fallback_mode") == "http_chat"
 
 
@@ -250,7 +252,45 @@ def test_public_api_live_chat_schedule_alias_includes_socket_hints(client, app):
     assert body.get("socket_transport_hint") == "disabled"
     assert body.get("socket_transports") == []
     assert body.get("socket_fallback_enabled") is False
+    assert body.get("transport", {}).get("socket_enabled") is False
+    assert body.get("transport", {}).get("http_fallback_enabled") is True
     assert body.get("fallback_mode") == "http_chat"
+
+
+def test_public_api_live_chat_schedule_uses_tenant_socket_transport_when_enabled(client, app):
+    owner = User(email="owner-schedule-socket@test.com", name="Owner Socket Schedule", rol="admin", tipo_chat="pyme")
+    owner.set_password("pass")
+    db.session.add(owner)
+    db.session.commit()
+
+    tenant = TenantProfile(slug="tenant-schedule-socket", nombre="Tenant Socket Schedule", tipo="pyme", pyme_id=owner.id)
+    tenant.configuracion = {
+        "live_chat_schedule": {
+            "enabled": True,
+            "days": [0, 1, 2, 3, 4],
+            "start_time": "09:00",
+            "end_time": "18:00",
+        },
+        "socket_enabled": True,
+        "socket_url": "https://socket.chatboc.test/api/socket.io",
+        "live_chat_polling_interval_ms": 7000,
+    }
+    db.session.add(tenant)
+    db.session.commit()
+
+    resp = client.get("/api/live-chat/schedule", query_string={"tenant_slug": tenant.slug})
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body.get("tenant_slug") == tenant.slug
+    assert body.get("socket_enabled") is True
+    assert body.get("realtime") is True
+    assert body.get("socket_transport_hint") == "socket_io_enabled"
+    assert body.get("socket_transports") == ["websocket", "polling"]
+    assert body.get("socket_url") == "https://socket.chatboc.test/api/socket.io"
+    assert body.get("fallback_mode") == "socket_io_enabled"
+    assert body.get("transport", {}).get("contract_version") == "live_chat.transport.v1"
+    assert body.get("transport", {}).get("polling_interval_ms") == 7000
+    assert body.get("transport", {}).get("http_fallback_enabled") is True
 
 
 def test_public_live_chat_schedule_aliases_never_404_for_demo_widget(client, app):

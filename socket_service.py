@@ -296,11 +296,13 @@ def emit_ticket_comment(data: Any) -> None:
     """Broadcast a new comment without altering the legacy ticket_update payloads."""
     _emit_to_ticket_room('new_comment', data)
     _emit_standard_ticket_event('conversation.message.created', data)
+    _emit_standard_ticket_event('ticket.message.created', data)
 
 def emit_new_chat_message(data: Any) -> None:
     """Broadcast a new chat message to the live chat room."""
     _emit_to_ticket_room('new_chat_message', data)
     _emit_standard_ticket_event('conversation.message.created', data)
+    _emit_standard_ticket_event('ticket.message.created', data)
     _emit_standard_ticket_event('whatsapp.message.created', data)
 
 

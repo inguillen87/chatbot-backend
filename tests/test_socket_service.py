@@ -45,6 +45,9 @@ class SocketServiceEventTests(unittest.TestCase):
         self.assertEqual(event_payload['ticket']['tenant_type'], 'pyme')
         self.assertEqual(event_payload['payload'], payload)
         self.assertEqual(mock_emit.call_args_list[1].kwargs, {'room': 'pyme_3'})
+        self.assertEqual(mock_emit.call_args_list[2].args[0], 'ticket.message.created')
+        self.assertEqual(mock_emit.call_args_list[2].args[1]['payload'], payload)
+        self.assertEqual(mock_emit.call_args_list[2].kwargs, {'room': 'pyme_3'})
 
     def test_emit_ticket_status_changed_emits_legacy_and_standard_events(self):
         payload = {"socket_room": "municipio_7", "tenant_type": "municipio", "ticket_id": 11, "estado": "en_proceso"}
@@ -89,9 +92,12 @@ class SocketServiceEventTests(unittest.TestCase):
         self.assertEqual(mock_emit.call_args_list[0], call('new_chat_message', payload, room='ticket_municipio_11'))
         self.assertEqual(mock_emit.call_args_list[1].args[0], 'conversation.message.created')
         self.assertEqual(mock_emit.call_args_list[1].kwargs, {'room': 'ticket_municipio_11'})
-        self.assertEqual(mock_emit.call_args_list[2].args[0], 'whatsapp.message.created')
+        self.assertEqual(mock_emit.call_args_list[2].args[0], 'ticket.message.created')
         self.assertEqual(mock_emit.call_args_list[2].args[1]['payload'], payload)
         self.assertEqual(mock_emit.call_args_list[2].kwargs, {'room': 'ticket_municipio_11'})
+        self.assertEqual(mock_emit.call_args_list[3].args[0], 'whatsapp.message.created')
+        self.assertEqual(mock_emit.call_args_list[3].args[1]['payload'], payload)
+        self.assertEqual(mock_emit.call_args_list[3].kwargs, {'room': 'ticket_municipio_11'})
 
     def test_emit_ticket_presence_changed_uses_enterprise_envelope(self):
         payload = {"socket_room": "municipio_7", "tenant_type": "municipio", "ticket_id": 11, "presence_status": "active"}

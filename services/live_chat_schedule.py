@@ -7,7 +7,7 @@ import re
 import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, time
-from typing import Iterable, Optional, Set, Tuple
+from typing import Any, Iterable, Mapping, Optional, Set, Tuple
 
 from flask import current_app, has_app_context
 from zoneinfo import ZoneInfo
@@ -114,6 +114,85 @@ def _get_config_value(key: str, default):
     if has_app_context():
         return current_app.config.get(key, default)
     return default
+
+
+def _coerce_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "si", "sí", "enabled", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "disabled", "off"}:
+        return False
+    return default
+
+
+def _first_config_value(config: Mapping[str, Any], *keys: str, default: Any = None) -> Any:
+    for key in keys:
+        if key in config and config.get(key) is not None:
+            return config.get(key)
+    return default
+
+
+def build_live_chat_transport(
+    status: Optional[Mapping[str, Any]] = None,
+    *,
+    config_override: Optional[Mapping[str, Any]] = None,
+) -> dict:
+    config = config_override if isinstance(config_override, Mapping) else {}
+    enabled_raw = _first_config_value(
+        config,
+        "socket_enabled",
+        "live_chat_socket_enabled",
+        default=None,
+    )
+    if enabled_raw is None:
+        enabled_raw = _get_config_value("PUBLIC_SOCKET_IO_ENABLED", None)
+    if enabled_raw is None:
+        enabled_raw = _get_config_value("LIVE_CHAT_SOCKET_ENABLED", None)
+
+    socket_enabled = _coerce_bool(enabled_raw, default=False)
+    socket_url = _first_config_value(config, "socket_url", "socket_io_url", default=None)
+    if socket_enabled and not socket_url:
+        socket_url = _get_config_value("PUBLIC_SOCKET_IO_URL", None) or _get_config_value("LIVE_CHAT_SOCKET_URL", None) or "/api/socket.io"
+
+    fallback_mode = str(
+        _first_config_value(
+            config,
+            "live_chat_fallback_mode",
+            "fallback_mode",
+            default="socket_io_enabled" if socket_enabled else "http_chat",
+        )
+        or ""
+    ).strip() or ("socket_io_enabled" if socket_enabled else "http_chat")
+    fallback_disabled = fallback_mode.lower() in {"disabled", "none", "polling_disabled"}
+    polling_interval_raw = _first_config_value(
+        config,
+        "live_chat_polling_interval_ms",
+        "polling_interval_ms",
+        default=_get_config_value("LIVE_CHAT_POLLING_INTERVAL_MS", None),
+    )
+    try:
+        polling_interval_ms = int(polling_interval_raw) if polling_interval_raw is not None else (5000 if socket_enabled else 12000)
+    except (TypeError, ValueError):
+        polling_interval_ms = 5000 if socket_enabled else 12000
+    polling_interval_ms = max(1000, min(polling_interval_ms, 60000))
+
+    status_dict = status if isinstance(status, Mapping) else {}
+    return {
+        "contract_version": "live_chat.transport.v1",
+        "socket_enabled": socket_enabled,
+        "socket_url": socket_url if socket_enabled else None,
+        "socket_path": "/api/socket.io" if socket_enabled else None,
+        "socket_room": status_dict.get("socket_room"),
+        "transports": ["websocket", "polling"] if socket_enabled else [],
+        "fallback_mode": fallback_mode,
+        "http_fallback_enabled": not fallback_disabled,
+        "polling_enabled": not fallback_disabled,
+        "polling_interval_ms": polling_interval_ms,
+    }
 
 
 def _normalize_text(value: str) -> str:
@@ -441,6 +520,7 @@ def build_tenant_live_chat_status(
     if tenant is not None:
         status["tenant_id"] = getattr(tenant, "id", None)
         status["tenant_slug"] = getattr(tenant, "slug", None)
+    status["transport"] = build_live_chat_transport(status, config_override=tenant_config)
     return status
 
 

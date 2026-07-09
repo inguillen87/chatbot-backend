@@ -1267,7 +1267,7 @@ def public_live_chat_schedule(slug):
     if request.method == 'OPTIONS':
         return _add_cors_headers(jsonify({"ok": True}))
 
-    from services.live_chat_schedule import build_live_chat_status
+    from services.live_chat_schedule import build_live_chat_status, build_live_chat_transport
     # We might want to pass the tenant slug to build_live_chat_status if it supports tenant-specific schedules
     # For now, assuming global or default logic, but checking tenant existence first
 
@@ -1293,15 +1293,24 @@ def public_live_chat_schedule(slug):
         status["fallback_reason"] = None if tenant else "tenant_not_found_schedule_fallback"
         status.setdefault("enabled", False)
         status.setdefault("available", False)
-        status["socket_transport_hint"] = "disabled"
-        status["socket_transports"] = []
-        status["socket_fallback_enabled"] = False
-        status["socket_enabled"] = False
-        status["realtime"] = False
-        status["fallback_mode"] = "http_chat"
+        transport = build_live_chat_transport(
+            status,
+            config_override=tenant.configuracion if tenant and isinstance(tenant.configuracion, dict) else None,
+        )
+        socket_enabled = bool(transport.get("socket_enabled"))
+        status["transport"] = transport
+        status["socket_transport_hint"] = "socket_io_enabled" if socket_enabled else "disabled"
+        status["socket_transports"] = list(transport.get("transports") or [])
+        status["socket_fallback_enabled"] = bool(socket_enabled and transport.get("http_fallback_enabled"))
+        status["socket_enabled"] = socket_enabled
+        status["socket_url"] = transport.get("socket_url")
+        status["socket_path"] = transport.get("socket_path")
+        status["realtime"] = socket_enabled
+        status["fallback_mode"] = transport.get("fallback_mode") or "http_chat"
         return _add_cors_headers(jsonify(status))
     except Exception as e:
         current_app.logger.error(f"Error getting schedule: {e}")
+        transport = build_live_chat_transport(None, config_override=None)
         response = jsonify({
             "contract_version": "live_chat.schedule.v1",
             "enabled": False,
@@ -1309,10 +1318,13 @@ def public_live_chat_schedule(slug):
             "tenant_slug": str(requested_slug).strip().lower(),
             "source": "error_fallback",
             "fallback_reason": "schedule_error",
+            "transport": transport,
             "socket_transport_hint": "disabled",
             "socket_transports": [],
             "socket_fallback_enabled": False,
             "socket_enabled": False,
+            "socket_url": None,
+            "socket_path": None,
             "realtime": False,
             "fallback_mode": "http_chat",
         })
