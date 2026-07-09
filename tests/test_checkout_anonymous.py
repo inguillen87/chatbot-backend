@@ -72,6 +72,32 @@ def test_anonymous_checkout_requires_contact(client, tenant_with_catalog):
 
 
 @pytest.mark.usefixtures("client")
+def test_checkout_rejects_quantity_above_known_stock(client, tenant_with_catalog):
+    tenant, product, _, _ = tenant_with_catalog
+    product.cantidad = "1"
+    db.session.commit()
+
+    with client.session_transaction() as sess:
+        _build_cart(sess, tenant.id, product.id, cantidad=2)
+
+    resp = client.post(
+        "/api/checkout/crear-preferencia",
+        data=json.dumps({"nombre": "Anon", "email": "anon@example.com"}),
+        content_type="application/json",
+        headers={"X-Tenant": tenant.slug},
+    )
+
+    assert resp.status_code == 409
+    data = resp.get_json()
+    assert data["codigo"] == "INVENTARIO_NO_CONFIRMABLE"
+    assert data["frontend_contract"]["render_as"] == "inventory_resolution_required"
+    assert data["inventory_blockers"][0]["catalogo_item_id"] == product.id
+    assert data["inventory_blockers"][0]["quantity_requested"] == 2
+    assert data["inventory_blockers"][0]["stock_quantity"] == 1.0
+    assert MarketOrder.query.filter_by(tenant_id=tenant.id).count() == 0
+
+
+@pytest.mark.usefixtures("client")
 def test_donation_checkout_confirms_without_payment(client, tenant_with_catalog):
     tenant, _, donation, _ = tenant_with_catalog
 

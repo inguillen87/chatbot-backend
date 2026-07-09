@@ -15,6 +15,7 @@ from services.commerce_contracts import (
     build_customer_profile,
     resolve_order_contact_payload,
 )
+from services.catalog_inventory import inventory_contract
 from services.marketplace_analytics import track_marketplace_event
 from services.plan_access import integration_plan_required_payload, plan_allows_full_integrations
 from services.rewards import recompensas_service
@@ -68,6 +69,44 @@ def _normalize_quantity(value: object) -> int:
         return 1
 
 
+def _requested_quantity_fits_inventory(item: dict) -> bool:
+    inventory = item.get("inventory") or {}
+    stock_quantity = inventory.get("stock_quantity")
+    if stock_quantity is None:
+        return True
+    try:
+        return float(item.get("quantity") or item.get("cantidad") or 1) <= float(stock_quantity)
+    except (TypeError, ValueError):
+        return False
+
+
+def _checkout_inventory_blockers(items: List[dict]) -> List[dict]:
+    blockers: List[dict] = []
+    for item in items:
+        inventory = item.get("inventory") or {}
+        stock_status = inventory.get("stock_status")
+        stock_quantity = inventory.get("stock_quantity")
+        quantity = _normalize_quantity(item.get("quantity") or item.get("cantidad") or 1)
+        if stock_status in {"not_available", "out_of_stock"}:
+            reason = "Producto no disponible" if stock_status == "not_available" else "Producto sin stock"
+        elif stock_quantity is not None and quantity > float(stock_quantity):
+            reason = "Cantidad solicitada mayor al stock disponible"
+        else:
+            continue
+        blockers.append(
+            {
+                "catalogo_item_id": item.get("catalogo_item_id"),
+                "title": item.get("title"),
+                "quantity_requested": quantity,
+                "stock_quantity": stock_quantity,
+                "stock_status": stock_status,
+                "reason": reason,
+                "inventory": inventory,
+            }
+        )
+    return blockers
+
+
 def _build_items(cart_entries: List[dict], tenant: TenantProfile, owner: Optional[User]) -> List[dict]:
     items: List[dict] = []
     if not cart_entries:
@@ -112,6 +151,15 @@ def _build_items(cart_entries: List[dict], tenant: TenantProfile, owner: Optiona
             unit_price = int(item.precio_puntos)
         elif unit_price in (None, 0) and item.precio_monetario is not None:
             unit_price = float(item.precio_monetario)
+        inventory = inventory_contract(
+            item.cantidad,
+            available=bool(item.disponible),
+            source="checkout_catalogo_item",
+            updated_at=getattr(item, "timestamp", None),
+        )
+        amount_validated = _requested_quantity_fits_inventory(
+            {"quantity": cantidad, "inventory": inventory}
+        )
         items.append(
             {
                 "title": formatted.get("nombre"),
@@ -123,6 +171,13 @@ def _build_items(cart_entries: List[dict], tenant: TenantProfile, owner: Optiona
                 "tenant_id": tenant.id,
                 "categoria": formatted.get("categoria"),
                 "imagen_url": formatted.get("imagen_url"),
+                "inventory": inventory,
+                "stock_quantity": inventory["stock_quantity"],
+                "stock_status": inventory["stock_status"],
+                "available_to_sell": inventory["available_to_sell"],
+                "can_start_order": inventory["can_start_order"],
+                "can_confirm_order": bool(inventory["can_confirm_order"] and amount_validated),
+                "amount_validated": amount_validated,
             }
         )
     return items
@@ -357,6 +412,24 @@ def _crear_pedido(payload: dict):
     if not cart_entries:
         return jsonify({"error": "Carrito vacío"}), 400
 
+    inventory_blockers = _checkout_inventory_blockers(cart_entries)
+    if inventory_blockers:
+        return (
+            jsonify(
+                {
+                    "error": "Hay productos que no se pueden confirmar con el stock actual.",
+                    "codigo": "INVENTARIO_NO_CONFIRMABLE",
+                    "inventory_blockers": inventory_blockers,
+                    "frontend_contract": {
+                        "contract_version": "checkout.inventory_validation.v1",
+                        "render_as": "inventory_resolution_required",
+                        "next_action": "open_assisted_order",
+                    },
+                }
+            ),
+            409,
+        )
+
     total_money, total_points, has_donation = _totales(cart_entries)
     is_anonymous = bool(getattr(user, "anon_id", None))
     checkout_channel = (
@@ -501,7 +574,13 @@ def _crear_pedido(payload: dict):
             currency=item.get("currency_id") or "ARS",
             modalidad=item.get("modalidad"),
             name_snapshot=item.get("title"),
-            extra={"tenant_id": tenant.id, "categoria": item.get("categoria")},
+            extra={
+                "tenant_id": tenant.id,
+                "categoria": item.get("categoria"),
+                "inventory": item.get("inventory"),
+                "amount_validated": item.get("amount_validated"),
+                "can_confirm_order": item.get("can_confirm_order"),
+            },
         ))
     db.session.add(OrderEvent(market_order_id=market_order.id, type="checkout.created", payload={
         "pedido_conversacional_id": pedido.id,

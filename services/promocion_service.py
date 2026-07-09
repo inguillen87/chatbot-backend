@@ -16,7 +16,7 @@ from sqlalchemy.orm import aliased # Importar aliased
 import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import models
-from models import Promocion, CatalogoItem, db
+from models import Promocion, PromocionAlcance, CatalogoItem, db
 from services.common_utils import parse_precio_flexible # Para obtener precio float del item
 
 logger = logging.getLogger(__name__)
@@ -217,15 +217,15 @@ class PromocionService:
 
             items_finales_con_promo.append({
                 "catalogo_item_id": item_catalogo.id,
-                "nombre_producto": item_catalogo.nombre,
-                "sku": item_catalogo.sku,
-                "presentacion": item_catalogo.unidad, # o el campo que corresponda
+                "nombre_producto": item_carr_info.get("nombre_producto") or item_catalogo.nombre,
+                "sku": item_carr_info.get("sku") or item_catalogo.sku,
+                "presentacion": item_carr_info.get("presentacion") or item_catalogo.unidad, # o el campo que corresponda
                 "cantidad": cantidad_en_carrito,
                 "precio_unitario_original": precio_orig_float,
                 "subtotal_original": round(subtotal_original_item, 2),
                 "subtotal_con_descuento": subtotal_item_con_descuento,
                 "descuento_aplicado_linea": round(descuento_esta_linea, 2),
-                "moneda": moneda_orig or "ARS",
+                "moneda": item_carr_info.get("moneda") or moneda_orig or "ARS",
                 "promocion_aplicada_info": mejor_promo_aplicada_a_linea_item
             })
 

@@ -36,6 +36,7 @@ from services.plan_access import (
     integration_plan_required_payload as build_integration_plan_required_payload,
     plan_allows_full_integrations,
 )
+from services.catalog_inventory import inventory_contract
 
 municipio_api_bp = Blueprint(
     "municipio_api",
@@ -645,6 +646,12 @@ def borrar_producto_admin(current_user: User, tenant_slug: str, producto_id: int
 
 
 def serialize_catalogo_item(item: CatalogoItem) -> dict:
+    inventory = inventory_contract(
+        item.cantidad,
+        available=bool(item.disponible),
+        source="catalogo_item",
+        updated_at=getattr(item, "timestamp", None),
+    )
     return {
         "id": item.id,
         "nombre": item.nombre,
@@ -652,6 +659,12 @@ def serialize_catalogo_item(item: CatalogoItem) -> dict:
         "precio": item.precio_monetario or item.precio,
         "moneda": item.moneda,
         "stock": item.cantidad,
+        "stock_quantity": inventory["stock_quantity"],
+        "stock_status": inventory["stock_status"],
+        "available_to_sell": inventory["available_to_sell"],
+        "can_start_order": inventory["can_start_order"],
+        "can_confirm_order": inventory["can_confirm_order"],
+        "inventory": inventory,
         "foto_url": item.imagen_url,
         "estado_activo": bool(item.disponible),
         "tags": (item.extra_metadata or {}).get("tags", []),
@@ -786,7 +799,7 @@ def legacy_carrito_publico():
             "checkout_options": {"points_enabled": False}
         })
 
-    owner = tenant.municipio or tenant.pyme
+    owner = getattr(tenant, "municipio", None) or getattr(tenant, "pyme", None)
     return jsonify(_db_cart_summary(cart, owner))
 
 
@@ -804,7 +817,7 @@ def legacy_productos_publicos():
     tenant = _resolve_tenant_or_404(tenant_slug)
 
     # Ensure demo content is seeded (avoids 404s for new demos)
-    owner = tenant.municipio or tenant.pyme
+    owner = getattr(tenant, "municipio", None) or getattr(tenant, "pyme", None)
     if owner:
         from services.catalog_seed import ensure_seed_catalog
 

@@ -1,6 +1,7 @@
 from app import create_app, db
 from config import TestConfig
 from models import CatalogoItem, MarketCart, MarketCartItem, TenantProfile, User
+from routes.municipio_api import serialize_catalogo_item
 from routes.market import _cart_summary, _checkout_money_totals, _mercadopago_preference_items_for_checkout
 from services.commerce_contracts import build_contact_key, normalize_sales_channel, resolve_order_contact_payload
 
@@ -24,6 +25,71 @@ def test_resolve_order_contact_payload_prefers_user_identity():
     assert payload["channel"] == "widget"
     assert payload["contact_key"] == "user:44"
     assert payload["phone"] == "+5491188877766"
+
+
+def test_catalog_serializer_exposes_inventory_contract_without_breaking_legacy_keys():
+    product = CatalogoItem(
+        id=77,
+        user_id=1,
+        tenant_id=10,
+        nombre="Luminaria LED",
+        descripcion="Repuesto municipal",
+        precio="1000",
+        cantidad="2",
+        moneda="ARS",
+        modalidad="venta",
+        disponible=True,
+    )
+
+    data = serialize_catalogo_item(product)
+
+    assert data["stock"] == "2"
+    assert data["estado_activo"] is True
+    assert data["inventory"]["contract_version"] == "catalog.inventory_item.v1"
+    assert data["stock_quantity"] == 2.0
+    assert data["stock_status"] == "low_stock"
+    assert data["available_to_sell"] is True
+    assert data["can_start_order"] is True
+    assert data["can_confirm_order"] is True
+
+
+def test_public_market_products_include_inventory_contract():
+    app = create_app(TestConfig)
+    with app.app_context():
+        db.create_all()
+
+        owner = User(email="owner-public-market@test.com", name="Owner Market", rol="admin", tipo_chat="pyme")
+        owner.set_password("pass")
+        db.session.add(owner)
+        db.session.commit()
+
+        tenant = TenantProfile(slug="tenant-public-market", nombre="Tenant Public Market", tipo="pyme", pyme_id=owner.id)
+        db.session.add(tenant)
+        db.session.commit()
+
+        product = CatalogoItem(
+            user_id=owner.id,
+            tenant_id=tenant.id,
+            nombre="Caja sin stock",
+            precio="1000",
+            precio_monetario=1000,
+            moneda="ARS",
+            modalidad="venta",
+            cantidad="0",
+            disponible=True,
+        )
+        db.session.add(product)
+        db.session.commit()
+
+        client = app.test_client()
+        resp = client.get(f"/api/public/market/{tenant.slug}/productos")
+
+    assert resp.status_code == 200
+    item = resp.get_json()["productos"][0]
+    assert item["stock"] == "0"
+    assert item["inventory"]["stock_status"] == "out_of_stock"
+    assert item["can_start_order"] is False
+    assert item["can_confirm_order"] is False
 
 
 def test_market_cart_summary_includes_promotions_and_contact_contract():
