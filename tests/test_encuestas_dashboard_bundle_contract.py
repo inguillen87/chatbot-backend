@@ -37,11 +37,22 @@ def test_dashboard_bundle_includes_normalized_cards_and_states(monkeypatch):
     monkeypatch.setattr(svc, "get_anomaly_report", lambda encuesta_id, filtros=None: {"risk_score": "0.331"})
     monkeypatch.setattr(svc, "get_segment_compare", lambda encuesta_id, filtros=None, segment_a=None, segment_b=None: {"segment_a": {"stats": {"total_respuestas": 7}}, "segment_b": {"stats": {"total_respuestas": 5}}})
     monkeypatch.setattr(svc, "_build_latest_responses_preview", lambda encuesta_id, filtros=None, limit=10: [{"id": 1}])
+    monkeypatch.setattr(
+        svc,
+        "_build_survey_publication_contract",
+        lambda encuesta_id: {
+            "contract_version": "surveys.dashboard_publication.v1",
+            "public_state": "published",
+            "links": {"live_results_endpoint": "/api/v2/public/surveys/demo/live-results"},
+            "actions": [{"id": "open_live_results"}],
+        },
+    )
 
     bundle = svc.get_dashboard_bundle(84, {"canal": "web"})
 
     assert bundle["meta"]["schema_version"] == "2026.03"
     assert bundle["meta"]["module_state"]["alerts"] == "attention"
+    assert bundle["meta"]["module_state"]["publication"] == "published"
     assert bundle["ui_state"]["latest_responses"] == "ready"
     assert bundle["ui_state"]["map_participation"] == "ready"
     assert isinstance(bundle["cards"], list)
@@ -61,6 +72,9 @@ def test_dashboard_bundle_includes_normalized_cards_and_states(monkeypatch):
     assert "participacion_total" in bundle["kpis_executive"]
     assert bundle["frontend_render_contract"]["hierarchy"]["chart_engines"][0] == "echarts"
     assert bundle["frontend_render_contract"]["modules"]["heatmap"]["state"] == "ready"
+    assert bundle["frontend_render_contract"]["modules"]["publication"]["state"] == "published"
+    assert bundle["survey_publication"]["links"]["live_results_endpoint"].endswith("/live-results")
+    assert bundle["modules"]["publication"]["actions"][0]["id"] == "open_live_results"
     assert bundle["sections"]["mapas"]["heatmap"]["state"] == "ready"
     assert "categorias" in bundle["sections"]["estadisticas"]
     assert "demografia" in bundle["sections"]["estadisticas"]

@@ -12,11 +12,12 @@ from collections import Counter, defaultdict
 from datetime import datetime, timezone, timedelta
 from statistics import mean, median
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from urllib.parse import quote_plus
 
 from sqlalchemy.orm import joinedload
 
 from database import db
-from models import EncEncuesta, EncRespuesta, EncPregunta, EncRespuestaDetalle
+from models import EncEncuesta, EncRespuesta, EncPregunta, EncRespuestaDetalle, EncLink, TenantProfile
 from services.openai_bridge import client as openai_client
 from services.encuestas_service import (
     EncuestaError,
@@ -1735,6 +1736,7 @@ def _build_frontend_render_contract(
     timeseries: Sequence[Dict[str, Any]],
     latest_responses_state: str,
     fast_mode: bool,
+    publication: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Return explicit FE orchestration hints to keep charts/maps stable.
 
@@ -1750,6 +1752,7 @@ def _build_frontend_render_contract(
 
     map_ready = bool(heatmap.get("points") or heatmap.get("cells"))
     timeseries_ready = bool(timeseries)
+    publication_state = (publication or {}).get("public_state") or "unavailable"
 
     return {
         "version": "2026.04",
@@ -1774,6 +1777,11 @@ def _build_frontend_render_contract(
             "latest_responses": {
                 "state": latest_responses_state,
                 "dataset_key": "modules.latest_responses",
+            },
+            "publication": {
+                "state": publication_state,
+                "dataset_key": "survey_publication",
+                "links_dataset_key": "survey_publication.links",
             },
         },
         "render_strategy": "fast" if fast_mode else "full",
@@ -2147,6 +2155,127 @@ def _build_executive_kpis(
         "tendencia_7d": {"value": trend_7d, "trend": trend_7d, "status": "good" if trend_7d >= 0.05 else "neutral", "explanation": "Tasa actual de participación por minuto (proxy 7d)."},
         "tendencia_30d": {"value": trend_30d, "trend": trend_30d, "status": "good" if trend_30d >= 0.05 else "neutral", "explanation": "Proyección media por minuto para horizonte extendido (proxy 30d)."},
     }
+
+
+def _append_query(endpoint: Optional[str], params: Mapping[str, Any]) -> Optional[str]:
+    if not endpoint:
+        return endpoint
+    clean_params = {key: value for key, value in (params or {}).items() if value not in (None, "")}
+    if not clean_params:
+        return endpoint
+    separator = "&" if "?" in endpoint else "?"
+    return endpoint + separator + "&".join(
+        f"{quote_plus(str(key))}={quote_plus(str(value))}" for key, value in clean_params.items()
+    )
+
+
+def _build_survey_publication_contract(encuesta_id: int) -> Dict[str, Any]:
+    base_payload: Dict[str, Any] = {
+        "contract_version": "surveys.dashboard_publication.v1",
+        "encuesta_id": encuesta_id,
+        "public_state": "unavailable",
+        "is_published": False,
+        "has_public_link": False,
+        "live_results_enabled": False,
+        "links": {},
+        "actions": [],
+    }
+
+    try:
+        encuesta = get_encuesta(encuesta_id)
+    except Exception:
+        base_payload["reason_code"] = "survey_context_unavailable"
+        return base_payload
+
+    link = (
+        EncLink.query.filter_by(encuesta_id=encuesta.id)
+        .order_by(EncLink.id.asc())
+        .first()
+    )
+    tenant_slug = None
+    tenant_id = getattr(encuesta, "tenant_id", None)
+    if tenant_id:
+        try:
+            tenant = db.session.get(TenantProfile, tenant_id)
+            tenant_slug = getattr(tenant, "slug", None) if tenant else None
+        except Exception:
+            tenant_slug = None
+
+    slug_publico = str(getattr(link, "slug_publico", "") or "").strip() if link else ""
+    has_public_link = bool(slug_publico)
+    is_published = str(getattr(encuesta, "estado", "") or "").lower() == "publicada" and has_public_link
+    live_results_enabled = bool(getattr(encuesta, "mostrar_resultados_envivo", False))
+    public_state = "published" if is_published else "closed" if getattr(encuesta, "estado", None) == "cerrada" else "draft"
+
+    links: Dict[str, Any] = {}
+    if has_public_link:
+        tenant_query = {"tenant_slug": tenant_slug}
+        public_page_path = f"/e/{slug_publico}"
+        public_api_endpoint = _append_query(f"/api/v2/public/surveys/{slug_publico}", tenant_query)
+        respond_endpoint = _append_query(f"/api/v2/public/surveys/{slug_publico}/respond", tenant_query)
+        live_results_endpoint = _append_query(f"/api/v2/public/surveys/{slug_publico}/live-results", tenant_query)
+        legacy_public_api_endpoint = f"/api/public/encuestas/v1/{slug_publico}"
+        legacy_live_results_endpoint = f"/api/public/encuestas/v1/{slug_publico}/live-results"
+        qr_endpoint = f"/api/public/encuestas/v1/{slug_publico}/qr?size=320"
+        share_text = f"Participa en {getattr(encuesta, 'titulo', None) or 'esta encuesta'}: {public_page_path}"
+        links = {
+            "public_page_path": public_page_path,
+            "public_url": public_page_path,
+            "share_url": public_page_path,
+            "copy_url": public_page_path,
+            "copy_text": share_text,
+            "public_api_endpoint": public_api_endpoint,
+            "respond_endpoint": respond_endpoint,
+            "live_results_endpoint": live_results_endpoint,
+            "results_endpoint": live_results_endpoint,
+            "legacy_public_api_endpoint": legacy_public_api_endpoint,
+            "legacy_live_results_endpoint": legacy_live_results_endpoint,
+            "qr_endpoint": qr_endpoint,
+            "qr_image_url": qr_endpoint,
+            "whatsapp_share_url": f"https://wa.me/?text={quote_plus(share_text)}",
+        }
+
+    actions: List[Dict[str, Any]] = []
+    if has_public_link:
+        actions.extend(
+            [
+                {"id": "copy_public_link", "label": "Copiar link", "ui_hint": "copy", "href": links.get("copy_url")},
+                {"id": "open_public_survey", "label": "Abrir encuesta", "ui_hint": "open", "href": links.get("public_page_path")},
+                {"id": "download_qr", "label": "QR", "ui_hint": "qr", "href": links.get("qr_endpoint")},
+            ]
+        )
+        actions.append(
+            {
+                "id": "open_live_results" if live_results_enabled else "enable_live_results",
+                "label": "Resultados en vivo" if live_results_enabled else "Activar resultados",
+                "ui_hint": "live_results" if live_results_enabled else "settings",
+                "href": links.get("live_results_endpoint") if live_results_enabled else None,
+                "enabled": live_results_enabled,
+            }
+        )
+    else:
+        actions.append({"id": "publish_survey", "label": "Publicar encuesta", "ui_hint": "publish"})
+
+    return {
+        **base_payload,
+        "encuesta_id": encuesta.id,
+        "tenant_id": tenant_id,
+        "tenant_slug": tenant_slug,
+        "slug_publico": slug_publico or None,
+        "canonical_slug": slug_publico or None,
+        "estado": getattr(encuesta, "estado", None),
+        "public_state": public_state,
+        "is_published": is_published,
+        "has_public_link": has_public_link,
+        "is_live_vote": bool(getattr(encuesta, "es_votacion_envivo", False)),
+        "live_results_enabled": live_results_enabled,
+        "requires_identity": bool(getattr(encuesta, "requiere_identidad", False)),
+        "anonymous_allowed": bool(getattr(encuesta, "anonimo_permitido", True)),
+        "links": links,
+        "actions": actions,
+    }
+
+
 def get_dashboard_bundle(
     encuesta_id: int,
     filtros: Optional[Dict[str, Any]] = None,
@@ -2224,12 +2353,6 @@ def get_dashboard_bundle(
         segment_compare=segment_compare_default,
         timeseries=timeseries,
     )
-    frontend_render_contract = _build_frontend_render_contract(
-        heatmap=heatmap,
-        timeseries=timeseries,
-        latest_responses_state=latest_responses_state,
-        fast_mode=fast_mode,
-    )
     sections = _build_dashboard_sections(
         summary=summary,
         heatmap=heatmap,
@@ -2238,9 +2361,19 @@ def get_dashboard_bundle(
         alerts=alerts,
         brief=brief,
     )
+    survey_publication = _build_survey_publication_contract(encuesta_id)
+    frontend_render_contract = _build_frontend_render_contract(
+        heatmap=heatmap,
+        timeseries=timeseries,
+        latest_responses_state=latest_responses_state,
+        fast_mode=fast_mode,
+        publication=survey_publication,
+    )
 
     return {
         "encuesta_id": encuesta_id,
+        "survey_publication": survey_publication,
+        "public_links": survey_publication.get("links") or {},
         "executive_summary": executive_summary,
         "brief": brief,
         "kpis": {
@@ -2264,6 +2397,7 @@ def get_dashboard_bundle(
                 "heatmap": "ready" if bool((heatmap.get("points") or []) or (heatmap.get("cells") or [])) else "empty",
                 "alerts": "attention" if active_alerts > 0 else "normal",
                 "latest_responses": latest_responses_state,
+                "publication": survey_publication.get("public_state") or "unavailable",
             },
         },
         "modules": {
@@ -2273,6 +2407,7 @@ def get_dashboard_bundle(
             "forecast": forecast,
             "alerts": alerts,
             "anomalies": anomalies,
+            "publication": survey_publication,
             "latest_responses": latest_responses,
             "latest_responses_meta": {
                 "state": latest_responses_state,

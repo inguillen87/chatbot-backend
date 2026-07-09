@@ -5,8 +5,8 @@ os.environ.setdefault("FLASK_SKIP_GLOBAL_APP", "1")
 
 from app import create_app, db
 from config import Config
-from models import EncEncuesta, EncRespuesta
-from services.encuestas_analytics_service import get_heatmap
+from models import EncEncuesta, EncRespuesta, EncLink, TenantProfile, User
+from services.encuestas_analytics_service import get_heatmap, _build_survey_publication_contract
 
 
 class TestConfig(Config):
@@ -118,6 +118,72 @@ def test_heatmap_applies_bbox_filter_to_real_survey_coordinates():
         assert len(payload["cells"]) == 1
         assert payload["metadata"]["has_coordinates"] is True
         assert payload["metadata"]["using_synthetic_points"] is False
+
+        db.session.remove()
+        db.drop_all()
+
+
+def test_survey_publication_contract_exposes_public_links_and_live_results():
+    app = create_app(TestConfig)
+    with app.app_context():
+        db.create_all()
+        owner = User(
+            name="Admin Junin",
+            email="admin-junin@test.com",
+            rol="admin",
+            tenant_slug="junin",
+        )
+        owner.password_hash = "test"
+        db.session.add(owner)
+        db.session.commit()
+        tenant = TenantProfile(
+            slug="junin-public-contract",
+            nombre="Municipalidad de Junin",
+            tipo="municipio",
+            municipio_id=owner.id,
+        )
+        db.session.add(tenant)
+        db.session.commit()
+
+        encuesta = EncEncuesta(
+            tenant_id=tenant.id,
+            slug="votacion-plaza",
+            titulo="Votacion Plaza",
+            estado="publicada",
+            tipo="votacion",
+            es_votacion_envivo=True,
+            mostrar_resultados_envivo=True,
+            requiere_identidad=True,
+            anonimo_permitido=False,
+        )
+        db.session.add(encuesta)
+        db.session.commit()
+        db.session.add(
+            EncLink(
+                encuesta_id=encuesta.id,
+                slug_publico="votacion-plaza-publica",
+                canal="whatsapp",
+            )
+        )
+        db.session.commit()
+
+        payload = _build_survey_publication_contract(encuesta.id)
+
+        assert payload["contract_version"] == "surveys.dashboard_publication.v1"
+        assert payload["public_state"] == "published"
+        assert payload["tenant_slug"] == "junin-public-contract"
+        assert payload["slug_publico"] == "votacion-plaza-publica"
+        assert payload["is_live_vote"] is True
+        assert payload["live_results_enabled"] is True
+        assert payload["requires_identity"] is True
+        assert payload["anonymous_allowed"] is False
+        assert payload["links"]["public_api_endpoint"] == "/api/v2/public/surveys/votacion-plaza-publica?tenant_slug=junin-public-contract"
+        assert payload["links"]["respond_endpoint"] == "/api/v2/public/surveys/votacion-plaza-publica/respond?tenant_slug=junin-public-contract"
+        assert payload["links"]["live_results_endpoint"] == "/api/v2/public/surveys/votacion-plaza-publica/live-results?tenant_slug=junin-public-contract"
+        assert payload["links"]["legacy_live_results_endpoint"] == "/api/public/encuestas/v1/votacion-plaza-publica/live-results"
+        assert payload["links"]["qr_endpoint"] == "/api/public/encuestas/v1/votacion-plaza-publica/qr?size=320"
+        assert payload["links"]["whatsapp_share_url"].startswith("https://wa.me/?text=")
+        assert "open_live_results" in [action["id"] for action in payload["actions"]]
 
         db.session.remove()
         db.drop_all()
