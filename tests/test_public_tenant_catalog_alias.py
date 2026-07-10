@@ -296,6 +296,8 @@ def test_municipio_market_catalog_contract_exposes_service_request_intake(client
     assert "IA" not in public_copy
     assert any(item["id"] == "service_request" for item in assisted["document_types"])
     assert any(example["document_type"] == "service_request" for example in assisted["text_examples"])
+    assert any(item["id"] == "service_request" for item in assisted["use_cases"])
+    assert any("boleta" in item["title"].lower() for item in assisted["use_cases"])
     assert "boleta" in assisted["empty_state"]["description"].lower()
 
 

@@ -477,6 +477,28 @@ def public_market_assisted_intake(tenant: TenantProfile, *, total_products: int)
             "Reclamo con direccion o foto",
             "Pedido escrito para cuadrilla, compras o mesa de entrada",
         ]
+        use_cases = [
+            {
+                "id": "service_request",
+                "title": "Reclamo vecinal",
+                "description": "Direccion, foto o descripcion para generar seguimiento del municipio.",
+            },
+            {
+                "id": "tax_bill",
+                "title": "Boleta o comprobante",
+                "description": "Cuenta, padron, periodo, vencimiento o pago para derivar al area correcta.",
+            },
+            {
+                "id": "certificate",
+                "title": "Certificado o tramite",
+                "description": "Documento, permiso o constancia para que mesa de entrada responda.",
+            },
+            {
+                "id": "handwritten_order",
+                "title": "Pedido escrito",
+                "description": "Lista de materiales, compras o notas internas sin cargar formularios.",
+            },
+        ]
         text_examples = [
             {
                 "id": "gov_tax_bill",
@@ -515,6 +537,28 @@ def public_market_assisted_intake(tenant: TenantProfile, *, total_products: int)
             "Pedido de uniforme o materiales",
             "Nota escrita por la familia",
         ]
+        use_cases = [
+            {
+                "id": "receipt",
+                "title": "Cuota o comprobante",
+                "description": "Pago, transferencia o recibo para responder a la familia sin pedir otra carga.",
+            },
+            {
+                "id": "certificate",
+                "title": "Certificado o autorizacion",
+                "description": "Documentacion de alumnos, asistencia, permisos o constancias.",
+            },
+            {
+                "id": "order_note",
+                "title": "Pedido de materiales",
+                "description": "Uniformes, libreria, comedor o solicitudes de proveedores.",
+            },
+            {
+                "id": "family_note",
+                "title": "Nota de familia",
+                "description": "Mensaje escrito o foto de papel para abrir una consulta trazable.",
+            },
+        ]
         text_examples = [
             {
                 "id": "school_receipt",
@@ -546,6 +590,28 @@ def public_market_assisted_intake(tenant: TenantProfile, *, total_products: int)
             "Pedido de ferreteria, super o bebidas",
             "Pedido pegado desde WhatsApp",
             "Factura, recibo o comprobante",
+        ]
+        use_cases = [
+            {
+                "id": "quote_request",
+                "title": "Pedido o cotizacion",
+                "description": "Ferreteria, supermercado, bebidas, repuestos o compras por lista.",
+            },
+            {
+                "id": "handwritten_order",
+                "title": "Nota manuscrita",
+                "description": "Foto de papel, mostrador o pedido pegado desde WhatsApp.",
+            },
+            {
+                "id": "receipt",
+                "title": "Factura o comprobante",
+                "description": "Recibos, transferencias o constancias que requieren revision.",
+            },
+            {
+                "id": "follow_up",
+                "title": "Continuidad comercial",
+                "description": "Solicitud con referencia para responder por WhatsApp, mail o llamada.",
+            },
         ]
         text_examples = [
             {
@@ -611,6 +677,7 @@ def public_market_assisted_intake(tenant: TenantProfile, *, total_products: int)
             },
         },
         "input_examples": examples,
+        "use_cases": use_cases,
         "text_examples": text_examples,
         "document_types": [
             {"id": "order_note", "label": "Nota de pedido", "supports_catalog_matching": True},
