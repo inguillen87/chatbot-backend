@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from functools import wraps
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -17,7 +18,7 @@ from extensions import db
 from services.contact_intake import is_placeholder_email, normalize_email
 from services.crm_intelligence import serialize_crm_contact
 from socket_service import emit_crm_contact_update, emit_crm_notification_update
-from utils.roles import is_authorized_superadmin_user
+from utils.roles import canonical_role, is_authorized_superadmin_user
 
 crm_bp = Blueprint('crm_bp', __name__)
 
@@ -83,6 +84,71 @@ def _int_arg(name: str, default: int, *, min_value: int = 1, max_value: int = 10
 
 def _is_superadmin(user: User) -> bool:
     return is_authorized_superadmin_user(user)
+
+
+CRM_TENANT_OPERATOR_ROLES = {"admin", "empleado", "manager", "supervisor"}
+
+
+def _crm_access_error(reason_code: str, action_hint: str, status_code: int = 403):
+    request_id = (
+        request.headers.get("X-Request-Id")
+        or request.headers.get("X-Correlation-Id")
+        or getattr(g, "request_id", None)
+        or uuid4().hex
+    )
+    g.request_id = request_id
+    response = jsonify({
+        "contract_version": "shared.error.v1",
+        "status_code": status_code,
+        "reason_code": reason_code,
+        "action_hint": action_hint,
+        "retryable": False,
+        "request_id": request_id,
+        "error": {
+            "code": status_code,
+            "message": "No tenes permisos para operar este CRM.",
+        },
+    })
+    response.headers["X-Request-Id"] = request_id
+    return response, status_code
+
+
+def _user_belongs_to_tenant(user: User | None, tenant: TenantProfile | None) -> bool:
+    if not user or not tenant:
+        return False
+    if _is_superadmin(user):
+        return True
+    if str(getattr(user, "tenant_id", "") or "") == str(getattr(tenant, "id", "") or ""):
+        return True
+    user_slug = str(getattr(user, "tenant_slug", "") or "").strip().lower()
+    tenant_slug = str(getattr(tenant, "slug", "") or "").strip().lower()
+    if user_slug and tenant_slug and user_slug == tenant_slug:
+        return True
+    user_id = getattr(user, "id", None)
+    if user_id and user_id in {getattr(tenant, "municipio_id", None), getattr(tenant, "pyme_id", None)}:
+        return True
+    empresa_id = getattr(user, "empresa_id", None)
+    if empresa_id and empresa_id in {getattr(tenant, "municipio_id", None), getattr(tenant, "pyme_id", None)}:
+        return True
+    return False
+
+
+def require_crm_tenant_operator(func):
+    @wraps(func)
+    def wrapper(current_user, *args, **kwargs):
+        tenant = getattr(g, "tenant_profile", None)
+        if not tenant:
+            return _crm_access_error("tenant_not_resolved", "switch_tenant", 400)
+        if _is_superadmin(current_user):
+            return func(current_user, *args, **kwargs)
+        if not _user_belongs_to_tenant(current_user, tenant):
+            return _crm_access_error("tenant_access_denied", "switch_tenant")
+        role = canonical_role(getattr(current_user, "rol", None))
+        if role not in CRM_TENANT_OPERATOR_ROLES:
+            return _crm_access_error("insufficient_permissions", "ask_admin")
+        return func(current_user, *args, **kwargs)
+
+    return wrapper
 
 
 def _clean_phone(value: str | None) -> str:
@@ -593,6 +659,7 @@ def list_legacy_clients(current_user):
 @crm_bp.route('/api/admin/tenants/<slug>/contacts', methods=['GET'])
 @token_requerido
 @require_tenant
+@require_crm_tenant_operator
 def list_contacts(current_user, slug):
     tenant = g.tenant_profile
     contacts = (
@@ -616,6 +683,7 @@ def list_contacts(current_user, slug):
 @crm_bp.route('/api/admin/tenants/<slug>/contacts/<contact_id>/history', methods=['GET'])
 @token_requerido
 @require_tenant
+@require_crm_tenant_operator
 def get_contact_history(current_user, slug, contact_id):
     tenant = g.tenant_profile
     contact = Contact.query.filter_by(id=contact_id, tenant_id=tenant.id).first_or_404()
@@ -654,6 +722,7 @@ def get_contact_history(current_user, slug, contact_id):
 @crm_bp.route('/api/admin/tenants/<slug>/contacts/<contact_id>/stage', methods=['PATCH'])
 @token_requerido
 @require_tenant
+@require_crm_tenant_operator
 def update_contact_stage(current_user, slug, contact_id):
     tenant = g.tenant_profile
     contact = Contact.query.filter_by(id=contact_id, tenant_id=tenant.id).first_or_404()
@@ -717,6 +786,7 @@ def update_contact_stage(current_user, slug, contact_id):
 @crm_bp.route('/api/admin/tenants/<slug>/crm/module-permissions', methods=['GET'])
 @token_requerido
 @require_tenant
+@require_crm_tenant_operator
 def crm_module_permissions(current_user, slug):
     tenant = g.tenant_profile
     is_superadmin = _is_superadmin(current_user)
@@ -750,6 +820,7 @@ def crm_module_permissions(current_user, slug):
 @crm_bp.route('/api/admin/tenants/<slug>/campaigns/templates', methods=['GET'])
 @token_requerido
 @require_tenant
+@require_crm_tenant_operator
 def campaign_templates_list(current_user, slug):
     tenant = g.tenant_profile
     return jsonify({"templates": _tenant_templates(tenant)})
@@ -758,6 +829,7 @@ def campaign_templates_list(current_user, slug):
 @crm_bp.route('/api/admin/tenants/<slug>/campaigns/templates', methods=['POST'])
 @token_requerido
 @require_tenant
+@require_crm_tenant_operator
 def campaign_templates_create(current_user, slug):
     tenant = g.tenant_profile
     payload = request.get_json(silent=True) or {}
@@ -789,6 +861,7 @@ def campaign_templates_create(current_user, slug):
 @crm_bp.route('/api/admin/tenants/<slug>/campaigns/templates/<string:template_slug>', methods=['PUT'])
 @token_requerido
 @require_tenant
+@require_crm_tenant_operator
 def campaign_templates_update(current_user, slug, template_slug):
     tenant = g.tenant_profile
     payload = request.get_json(silent=True) or {}
@@ -811,6 +884,7 @@ def campaign_templates_update(current_user, slug, template_slug):
 @crm_bp.route('/api/admin/tenants/<slug>/campaigns/opt-out/<string:contact_id>', methods=['POST'])
 @token_requerido
 @require_tenant
+@require_crm_tenant_operator
 def campaign_opt_out(current_user, slug, contact_id):
     tenant = g.tenant_profile
     contact = Contact.query.filter_by(id=contact_id, tenant_id=tenant.id).first_or_404()
@@ -836,6 +910,7 @@ def campaign_opt_out(current_user, slug, contact_id):
 @crm_bp.route('/api/admin/tenants/<slug>/campaigns/send', methods=['POST'])
 @token_requerido
 @require_tenant
+@require_crm_tenant_operator
 def campaign_send(current_user, slug):
     tenant = g.tenant_profile
     return _send_campaign_for_tenant(current_user, tenant)
@@ -1037,6 +1112,7 @@ def _send_campaign_for_tenant(current_user: User, tenant: TenantProfile):
 @crm_bp.route('/api/admin/tenants/<slug>/campaigns/history', methods=['GET'])
 @token_requerido
 @require_tenant
+@require_crm_tenant_operator
 def campaign_history(current_user, slug):
     tenant = g.tenant_profile
     days = _int_arg("days", 30, min_value=1, max_value=365)
@@ -1088,6 +1164,7 @@ def campaign_history(current_user, slug):
 @crm_bp.route('/api/admin/tenants/<slug>/campaigns/ledger', methods=['GET'])
 @token_requerido
 @require_tenant
+@require_crm_tenant_operator
 def campaign_ledger(current_user, slug):
     tenant = g.tenant_profile
     days = _int_arg("days", 30, min_value=1, max_value=365)
@@ -1107,6 +1184,7 @@ def campaign_ledger(current_user, slug):
 @crm_bp.route('/api/admin/tenants/<slug>/notifications/center', methods=['GET'])
 @token_requerido
 @require_tenant
+@require_crm_tenant_operator
 def notifications_center(current_user, slug):
     tenant = g.tenant_profile
     limit = _int_arg("limit", 50, min_value=1, max_value=200)
@@ -1209,6 +1287,7 @@ def superadmin_crm_leads(current_user):
 @crm_bp.route('/api/admin/tenants/<slug>/campaigns/<string:campaign_id>/metrics', methods=['GET'])
 @token_requerido
 @require_tenant
+@require_crm_tenant_operator
 def campaign_metrics(current_user, slug, campaign_id):
     tenant = g.tenant_profile
     base = InteractionEvent.query.filter(
