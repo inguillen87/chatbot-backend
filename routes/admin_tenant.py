@@ -2623,7 +2623,7 @@ def list_integrations(current_user, slug):
     integrations = IntegrationAccount.query.filter_by(tenant_id=tenant.id).all()
 
     # Mock status for known types if missing
-    known_types = ["MercadoLibre", "TiendaNube", "WhatsApp"]
+    known_types = ["MercadoLibre", "TiendaNube", "WhatsApp", "MercadoPago"]
     result = {}
 
     # Fill from DB
@@ -2633,6 +2633,17 @@ def list_integrations(current_user, slug):
             "connected": integ.status == 'active',
             "lastSync": integ.last_sync_at.isoformat() if integ.last_sync_at else None,
             "account": integ.metadata_payload.get('account_name') if integ.metadata_payload else None
+        }
+
+    cfg = tenant.configuracion if isinstance(tenant.configuracion, dict) else {}
+    mercadopago_token = cfg.get("mercadopago_access_token")
+    if mercadopago_token:
+        result["MercadoPago"] = {
+            "type": "MercadoPago",
+            "connected": True,
+            "status": cfg.get("mercadopago_status") or "configured",
+            "lastSync": cfg.get("mercadopago_tested_at"),
+            "account": _mask_token(mercadopago_token),
         }
 
     # Fill missing

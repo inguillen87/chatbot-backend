@@ -77,6 +77,16 @@ class AdminMercadoPagoIntegrationTest(unittest.TestCase):
         self.assertTrue(get_payload["configured"])
         self.assertNotIn("tenant-secret-token", str(get_payload))
 
+        list_resp = self.client.get(
+            f"/api/admin/tenants/{self.tenant.slug}/integrations",
+            headers=self.headers,
+        )
+        self.assertEqual(list_resp.status_code, 200)
+        integrations = {item["type"]: item for item in list_resp.get_json()}
+        self.assertTrue(integrations["MercadoPago"]["connected"])
+        self.assertIn("...", integrations["MercadoPago"]["account"])
+        self.assertNotIn("tenant-secret-token", str(integrations["MercadoPago"]))
+
     def test_test_connection_updates_status(self):
         self.tenant.configuracion = {"mercadopago_access_token": "APP_USR-tenant-secret-token"}
         db.session.commit()
