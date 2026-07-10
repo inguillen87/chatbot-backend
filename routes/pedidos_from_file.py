@@ -76,6 +76,7 @@ _CORS_ALLOWED_HEADERS = [
     "X-Widget-Token",
     "X-Whatsapp-Dst",
     "X-Checkout-Origin",
+    "X-Turnstile-Token",
     "Idempotency-Key",
     "X-Idempotency-Key",
 ]

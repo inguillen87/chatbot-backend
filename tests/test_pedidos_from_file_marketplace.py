@@ -520,7 +520,7 @@ def test_marketplace_order_note_preflight_allows_checkout_origin_header(client, 
         headers={
             "Origin": "http://127.0.0.1:4174",
             "Access-Control-Request-Method": "POST",
-            "Access-Control-Request-Headers": "X-Checkout-Origin, X-Tenant, Idempotency-Key",
+            "Access-Control-Request-Headers": "X-Checkout-Origin, X-Tenant, X-Turnstile-Token, Idempotency-Key",
         },
     )
 
@@ -528,6 +528,7 @@ def test_marketplace_order_note_preflight_allows_checkout_origin_header(client, 
     allowed_headers = response.headers.get("Access-Control-Allow-Headers", "")
     assert "X-Checkout-Origin" in allowed_headers
     assert "X-Tenant" in allowed_headers
+    assert "X-Turnstile-Token" in allowed_headers
     assert "Idempotency-Key" in allowed_headers
 
 
