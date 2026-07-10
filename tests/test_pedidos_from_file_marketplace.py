@@ -42,6 +42,27 @@ def _assert_public_copy_without_internal_jargon(*parts: str) -> None:
         assert forbidden not in visible_copy
 
 
+def test_marketplace_order_note_upload_requires_explicit_tenant(client, init_database, monkeypatch):
+    extract_called = {"value": False}
+
+    def fake_extract(*args, **kwargs):
+        extract_called["value"] = True
+        return []
+
+    monkeypatch.setattr("routes.pedidos_from_file.extract_table_from_file", fake_extract)
+
+    response = client.post(
+        "/api/pedidos/from-file?origen=marketplace",
+        data={"pedido_text": "2 chapas galvanizadas"},
+    )
+
+    assert response.status_code == 400
+    payload = response.get_json()
+    assert payload["codigo"] == "tenant_requerido"
+    assert "tenant" in payload["mensaje"].lower()
+    assert extract_called["value"] is False
+
+
 def test_marketplace_order_note_upload_rejects_invalid_turnstile_when_enforced(client, init_database, monkeypatch):
     owner = User.query.filter_by(email="admin@test.com").first()
     tenant = TenantProfile(slug="market-turnstile", nombre="Market Turnstile", tipo="pyme", pyme_id=owner.id, plan="full")

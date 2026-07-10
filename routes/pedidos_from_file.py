@@ -2220,6 +2220,14 @@ def pedidos_desde_archivo():
         or request.args.get("tenant_id")
         or _form_or_json_value(json_payload, "tenant_id", "tenantId")
     )
+    origen = request.headers.get("X-Checkout-Origin") or request.args.get("origen") or "web"
+    widget_token = request.headers.get("X-Widget-Token") or request.args.get("widget_token")
+    if origen in {"marketplace", "widget", "public"} and not (tenant_slug or tenant_id or widget_token):
+        return _json_error(
+            400,
+            "tenant_requerido",
+            "Indica el tenant para cargar una solicitud publica de marketplace.",
+        )
     user = getattr(g, "user", None)
     owner = None
     resolved_as_anon = False
@@ -2228,7 +2236,7 @@ def pedidos_desde_archivo():
             tenant_slug=tenant_slug,
             tenant_id=tenant_id,
             current_user=user,
-            widget_token=request.headers.get("X-Widget-Token") or request.args.get("widget_token"),
+            widget_token=widget_token,
         )
     except TenantResolutionError:
         tenant, owner = _resolve_public_owner()
@@ -2241,7 +2249,6 @@ def pedidos_desde_archivo():
     if tenant:
         g.tenant_profile = tenant
 
-    origen = request.headers.get("X-Checkout-Origin") or request.args.get("origen") or "web"
     idempotency_key = _request_idempotency_key(json_payload)
     turnstile_token = (
         request.headers.get("X-Turnstile-Token")

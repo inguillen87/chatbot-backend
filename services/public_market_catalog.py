@@ -645,6 +645,8 @@ def public_market_assisted_intake(tenant: TenantProfile, *, total_products: int)
         "show_on_empty_catalog": True,
         "submit": {
             "contract_version": "marketplace.assisted_intake_submit.v1",
+            "aliases": ["marketplace.upload_order_from_file.v1"],
+            "component_contract": "marketplace.upload_order_from_file.v1",
             "method": "POST",
             "endpoint": "/api/pedidos/from-file?origen=marketplace",
             "content_type": "multipart/form-data",

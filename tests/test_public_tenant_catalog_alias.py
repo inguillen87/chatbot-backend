@@ -566,6 +566,8 @@ def test_widget_commerce_session_returns_embedded_operating_contract(client):
     assert body["assisted_intake"]["mode"] == "catalog_plus_assisted"
     assert body["assisted_intake"]["anonymous_intake"] is True
     assert body["assisted_intake"]["submit"]["endpoint"] == "/api/pedidos/from-file?origen=marketplace"
+    assert "marketplace.upload_order_from_file.v1" in body["assisted_intake"]["submit"]["aliases"]
+    assert body["assisted_intake"]["submit"]["component_contract"] == "marketplace.upload_order_from_file.v1"
     assert body["assisted_intake"]["frontend_contract"]["supports_anonymous_follow_up"] is True
     assert body["cart"]["summary_endpoint"] == "/api/pwa/public/cart/summary"
     assert body["cart"]["items_endpoint"] == "/api/pwa/public/cart/items"
