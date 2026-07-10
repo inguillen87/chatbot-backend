@@ -430,7 +430,7 @@ def _backoffice_actions(tenant: TenantProfile, *, analytics_modes: dict[str, Any
             "access": analytics_access,
         }
     )
-    return actions
+    return [action for action in actions if action.get("enabled")]
 
 
 def _navigation_payload(current_user: User, tenant: TenantProfile, request_id: str) -> dict[str, Any]:

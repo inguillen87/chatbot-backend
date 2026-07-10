@@ -36,7 +36,7 @@ from services.education_case_service import (
 from services.plan_access import (
     integration_access_payload,
     integration_plan_required_payload,
-    plan_allows_full_integrations,
+    plan_allows_integration_feature,
 )
 
 education_bp = Blueprint("education", __name__)
@@ -110,7 +110,7 @@ def _tenant_write_access_response(
     if not tenant:
         return None, (jsonify({"error": {"code": 404, "message": "Tenant profile not found"}}), 404)
 
-    if not plan_allows_full_integrations(tenant):
+    if not plan_allows_integration_feature(tenant, feature_id):
         return None, _education_plan_required_response(
             tenant,
             feature_id=feature_id,
@@ -342,7 +342,7 @@ def update_education_capabilities(current_user, actor_principal=None):
     tenant = TenantProfile.query.filter_by(id=tenant_id).first()
     if not tenant:
         return jsonify({"error": {"code": 404, "message": "Tenant profile not found"}}), 404
-    if not plan_allows_full_integrations(tenant):
+    if not plan_allows_integration_feature(tenant, "education_management"):
         return _education_plan_required_response(tenant)
 
     payload = request.json or {}
@@ -457,7 +457,7 @@ def get_education_operations_heatmap(current_user, actor_principal=None):
     tenant = TenantProfile.query.filter_by(id=tenant_id).first()
     if not tenant:
         return jsonify({"error": {"code": 404, "message": "Tenant profile not found"}}), 404
-    if not plan_allows_full_integrations(tenant):
+    if not plan_allows_integration_feature(tenant, "heatmaps"):
         return _education_plan_required_response(
             tenant,
             feature_id="heatmaps",
@@ -508,7 +508,7 @@ def create_school(current_user, actor_principal=None):
     tenant = TenantProfile.query.filter_by(id=tenant_id).first()
     if not tenant:
         return jsonify({"error": {"code": 404, "message": "Tenant profile not found"}}), 404
-    if not plan_allows_full_integrations(tenant):
+    if not plan_allows_integration_feature(tenant, "education_management"):
         return _education_plan_required_response(tenant)
     if not _tenant_supports_education(tenant):
         return jsonify({"error": {"code": 403, "message": "Education capability disabled for tenant"}}), 403

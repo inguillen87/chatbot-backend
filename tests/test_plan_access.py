@@ -5,6 +5,7 @@ from services.plan_access import (
     integration_access_payload,
     integration_feature_payload,
     integration_plan_required_payload,
+    plan_allows_integration_feature,
     plan_allows_full_integrations,
 )
 
@@ -30,28 +31,35 @@ def tenant_stub(
 
 
 class PlanAccessContractTest(unittest.TestCase):
-    def test_free_plan_locks_all_productive_integration_features(self):
+    def test_free_plan_enables_self_service_features_and_locks_productive_channels(self):
         payload = integration_access_payload(tenant_stub(plan="free"))
 
         self.assertEqual(payload["contract_version"], "tenant.integration_access.v1")
         self.assertFalse(payload["enabled"])
+        self.assertEqual(payload["status"], "partial")
         self.assertEqual(payload["reason_code"], "plan_full_required")
         self.assertEqual(payload["lock_reason_code"], "plan_full_required")
-        self.assertTrue(payload["frontend_contract"]["render_locked_state"])
+        self.assertFalse(payload["frontend_contract"]["render_locked_state"])
+        self.assertTrue(payload["frontend_contract"]["self_service_enabled"])
+        self.assertTrue(payload["frontend_contract"]["productive_channels_locked"])
         self.assertTrue(payload["frontend_contract"]["hide_embed_copy"])
         self.assertFalse(payload["features"]["widget_embed"]["enabled"])
         self.assertFalse(payload["features"]["whatsapp_business_platform"]["enabled"])
         self.assertFalse(payload["features"]["mercadopago_checkout"]["enabled"])
-        self.assertFalse(payload["features"]["analytics_dashboard"]["enabled"])
-        self.assertFalse(payload["features"]["heatmaps"]["enabled"])
-        self.assertFalse(payload["features"]["surveys_votings"]["enabled"])
-        self.assertFalse(payload["features"]["comments_inbox"]["enabled"])
-        self.assertFalse(payload["features"]["education_management"]["enabled"])
+        self.assertTrue(payload["features"]["catalog_management"]["enabled"])
+        self.assertTrue(payload["features"]["analytics_dashboard"]["enabled"])
+        self.assertTrue(payload["features"]["heatmaps"]["enabled"])
+        self.assertTrue(payload["features"]["surveys_votings"]["enabled"])
+        self.assertTrue(payload["features"]["comments_inbox"]["enabled"])
+        self.assertTrue(payload["features"]["education_management"]["enabled"])
+        self.assertTrue(plan_allows_integration_feature(tenant_stub(plan="free"), "catalog_management"))
+        self.assertFalse(plan_allows_integration_feature(tenant_stub(plan="free"), "whatsapp_sender_management"))
         self.assertIn("connect_whatsapp_sender", payload["blocked_actions"])
-        self.assertIn("create_surveys", payload["blocked_actions"])
-        self.assertIn("run_analytics_dashboard", payload["blocked_actions"])
-        self.assertIn("open_heatmap", payload["blocked_actions"])
-        self.assertIn("manage_education_operations", payload["blocked_actions"])
+        self.assertIn("configure_payment_gateway", payload["blocked_actions"])
+        self.assertIn("create_surveys", payload["allowed_actions"])
+        self.assertIn("run_analytics_dashboard", payload["allowed_actions"])
+        self.assertIn("open_heatmap", payload["allowed_actions"])
+        self.assertIn("manage_education_operations", payload["allowed_actions"])
 
     def test_full_plan_enables_productive_integration_features(self):
         tenant = tenant_stub(plan="full")
@@ -86,6 +94,7 @@ class PlanAccessContractTest(unittest.TestCase):
         self.assertEqual(payload["reason_code"], "plan_full_required")
         self.assertEqual(payload["lock_reason_code"], "demo_tenant_locked")
         self.assertFalse(payload["features"]["widget_embed"]["enabled"])
+        self.assertFalse(payload["features"]["catalog_management"]["enabled"])
         self.assertTrue(payload["security"]["demo_tenants_blocked"])
 
     def test_plan_required_payload_exposes_widget_frontend_contract(self):

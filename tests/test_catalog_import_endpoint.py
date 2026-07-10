@@ -46,7 +46,7 @@ def test_missing_file_returns_json(client):
     assert response.headers["Content-Type"].startswith("application/json")
 
 
-def test_free_plan_cannot_import_catalog_before_processing(client, monkeypatch):
+def test_free_plan_can_import_catalog_as_self_service_module(client, monkeypatch):
     processed = {"called": False}
 
     monkeypatch.setattr(
@@ -54,6 +54,39 @@ def test_free_plan_cannot_import_catalog_before_processing(client, monkeypatch):
         "resolve_tenant_and_user",
         lambda tenant_slug=None, current_user=None: (
             Obj(id=1, plan="free", is_active=True, configuracion={}),
+            Obj(id=2),
+            None,
+        ),
+    )
+
+    def _parse_catalog(*args, **kwargs):
+        processed["called"] = True
+        return [{"titulo": "Producto", "precio": "100"}]
+
+    monkeypatch.setattr(catalog_import, "extract_table_from_file", _parse_catalog)
+
+    response = client.post(
+        "/api/admin/catalogo/importar",
+        data={"archivo": (io.BytesIO(b"data"), "catalogo.pdf")},
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 200
+    assert response.is_json
+    body = response.get_json()
+    assert body["ok"] is True
+    assert body["filas_detectadas"] == 1
+    assert processed["called"] is True
+
+
+def test_demo_tenant_cannot_import_catalog_before_processing(client, monkeypatch):
+    processed = {"called": False}
+
+    monkeypatch.setattr(
+        catalog_import,
+        "resolve_tenant_and_user",
+        lambda tenant_slug=None, current_user=None: (
+            Obj(id=1, plan="full", is_active=True, configuracion={"demo_mode": True}),
             Obj(id=2),
             None,
         ),
@@ -77,6 +110,7 @@ def test_free_plan_cannot_import_catalog_before_processing(client, monkeypatch):
     assert body["error"] == "plan_required"
     assert body["feature"]["id"] == "catalog_management"
     assert body["access"]["features"]["catalog_management"]["enabled"] is False
+    assert body["lock_reason_code"] == "demo_tenant_locked"
     assert processed["called"] is False
 
 

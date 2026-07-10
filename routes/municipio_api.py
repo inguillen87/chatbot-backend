@@ -34,7 +34,7 @@ from socket_service import emit_tenant_update
 from services.plan_access import (
     integration_access_payload,
     integration_plan_required_payload as build_integration_plan_required_payload,
-    plan_allows_full_integrations,
+    plan_allows_integration_feature,
 )
 from services.catalog_inventory import inventory_contract
 
@@ -380,7 +380,7 @@ def obtener_widget_config(current_user: User, tenant_slug: str):
 def actualizar_widget_config(current_user: User, tenant_slug: str):
     tenant = _resolve_tenant_or_404(tenant_slug)
     _require_tenant_admin(current_user, tenant)
-    if not plan_allows_full_integrations(tenant):
+    if not plan_allows_integration_feature(tenant, "widget_embed"):
         return jsonify(_integration_plan_required_payload(tenant, "municipio.widget_config.v1")), 403
 
     data = request.get_json(silent=True) or {}
@@ -408,7 +408,7 @@ def actualizar_widget_config(current_user: User, tenant_slug: str):
 @widget_public_bp.route("/<tenant_slug>", methods=["GET"])
 def obtener_config_publica(tenant_slug: str):
     tenant = _resolve_tenant_or_404(tenant_slug)
-    if not plan_allows_full_integrations(tenant):
+    if not plan_allows_integration_feature(tenant, "widget_embed"):
         return jsonify(_integration_plan_required_payload(tenant, "public.municipio_widget_config.v1")), 403
     config = WidgetConfig.query.filter_by(tenant_id=tenant.id).first()
     if not config:
@@ -426,7 +426,7 @@ def obtener_config_publica(tenant_slug: str):
 def heatmap_tickets(current_user: User, tenant_slug: str):
     tenant = _resolve_tenant_or_404(tenant_slug)
     _require_tenant_admin(current_user, tenant)
-    if not plan_allows_full_integrations(tenant):
+    if not plan_allows_integration_feature(tenant, "heatmaps"):
         return jsonify(
             _integration_plan_required_payload(
                 tenant,
@@ -550,7 +550,7 @@ def productos_admin(current_user: User, tenant_slug: str):
 def crear_producto_admin(current_user: User, tenant_slug: str):
     tenant = _resolve_tenant_or_404(tenant_slug)
     _require_tenant_admin(current_user, tenant)
-    if not plan_allows_full_integrations(tenant):
+    if not plan_allows_integration_feature(tenant, "catalog_management"):
         return jsonify(
             _integration_plan_required_payload(
                 tenant,
@@ -583,7 +583,7 @@ def crear_producto_admin(current_user: User, tenant_slug: str):
 def actualizar_producto_admin(current_user: User, tenant_slug: str, producto_id: int):
     tenant = _resolve_tenant_or_404(tenant_slug)
     _require_tenant_admin(current_user, tenant)
-    if not plan_allows_full_integrations(tenant):
+    if not plan_allows_integration_feature(tenant, "catalog_management"):
         return jsonify(
             _integration_plan_required_payload(
                 tenant,
@@ -629,7 +629,7 @@ def actualizar_producto_admin(current_user: User, tenant_slug: str, producto_id:
 def borrar_producto_admin(current_user: User, tenant_slug: str, producto_id: int):
     tenant = _resolve_tenant_or_404(tenant_slug)
     _require_tenant_admin(current_user, tenant)
-    if not plan_allows_full_integrations(tenant):
+    if not plan_allows_integration_feature(tenant, "catalog_management"):
         return jsonify(
             _integration_plan_required_payload(
                 tenant,

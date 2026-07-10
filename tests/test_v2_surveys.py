@@ -532,26 +532,24 @@ class V2SurveysApiTest(unittest.TestCase):
         self.assertEqual(payload.get("draft_id"), "draft_draft-offline-1")
         self.assertEqual(payload.get("idempotency_key"), "draft-offline-1")
 
-    def test_free_plan_cannot_create_or_save_survey_draft(self):
+    def test_free_plan_can_create_and_save_survey_draft_as_self_service_module(self):
         self.tenant_1.plan = "free"
         db.session.add(self.tenant_1)
         db.session.commit()
         headers = {**self._auth(self.admin_1), "X-Tenant-Slug": self.tenant_1.slug}
 
         create_resp = self.client.post("/api/v2/surveys", json=self._create_payload(), headers=headers)
-        self.assertEqual(create_resp.status_code, 403)
+        self.assertEqual(create_resp.status_code, 201, create_resp.get_json())
         create_payload = create_resp.get_json()
-        self.assertEqual(create_payload["error"], "plan_required")
-        self.assertEqual(create_payload["feature"]["id"], "surveys_votings")
-        self.assertFalse(create_payload["access"]["features"]["surveys_votings"]["enabled"])
+        self.assertEqual(create_payload["tenant_id"], self.tenant_1.id)
 
         draft_resp = self.client.post(
             "/api/v2/surveys/draft",
-            json={"title": "Borrador bloqueado", "questions": []},
+            json={"title": "Borrador self service", "questions": []},
             headers=headers,
         )
-        self.assertEqual(draft_resp.status_code, 403)
-        self.assertEqual(draft_resp.get_json()["error"], "plan_required")
+        self.assertEqual(draft_resp.status_code, 200, draft_resp.get_json())
+        self.assertTrue(draft_resp.get_json()["ok"])
 
     def test_closed_survey_rejects_public_responses(self):
         headers = {**self._auth(self.admin_1), "X-Tenant-Slug": self.tenant_1.slug}

@@ -14,7 +14,7 @@ from services.catalog_inventory import (
 from services.plan_access import (
     integration_access_payload,
     integration_plan_required_payload,
-    plan_allows_full_integrations,
+    plan_allows_integration_feature,
 )
 from sqlalchemy.orm.attributes import flag_modified
 import os
@@ -52,7 +52,7 @@ def _catalog_plan_required_response(tenant):
 
 
 def _catalog_writes_allowed(tenant) -> bool:
-    return bool(tenant and plan_allows_full_integrations(tenant))
+    return bool(tenant and plan_allows_integration_feature(tenant, "catalog_management"))
 
 
 def _coerce_dataframe_rows(frame) -> list[dict]:

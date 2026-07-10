@@ -10,7 +10,7 @@ from services.catalog_vector_sync_service import catalog_vector_sync_service
 from services.plan_access import (
     integration_access_payload,
     integration_plan_required_payload,
-    plan_allows_full_integrations,
+    plan_allows_integration_feature,
 )
 
 
@@ -83,7 +83,7 @@ def trigger_catalog_vector_sync(current_user, pyme_id: int):
     if not _user_can_access_pyme(current_user, pyme_id):
         return jsonify({"error": "No tiene permiso para consultar esta PYME."}), 403
 
-    if not plan_allows_full_integrations(_tenant_for_pyme(pyme_id)):
+    if not plan_allows_integration_feature(_tenant_for_pyme(pyme_id), "catalog_management"):
         return _catalog_plan_required_response(pyme_id)
 
     return jsonify({"status": "accepted"}), 202

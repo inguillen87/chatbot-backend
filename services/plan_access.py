@@ -24,6 +24,24 @@ FULL_INTEGRATION_CAPABILITIES = {
     "widget.embed",
 }
 
+SELF_SERVICE_INTEGRATION_FEATURES = {
+    "catalog_management",
+    "education_management",
+    "analytics_dashboard",
+    "heatmaps",
+    "surveys_votings",
+    "comments_inbox",
+}
+
+PRODUCTIVE_INTEGRATION_FEATURES = {
+    "widget_embed",
+    "whatsapp_business_platform",
+    "whatsapp_sender_management",
+    "marketplace_sync",
+    "mercadopago_checkout",
+    "realtime_voice",
+}
+
 INTEGRATION_FEATURES: dict[str, dict[str, str]] = {
     "widget_embed": {
         "label": "Widget web embebido",
@@ -179,6 +197,28 @@ def plan_allows_full_integrations(tenant: TenantProfile | None) -> bool:
     return tenant_has_any_capability(tenant)
 
 
+def _feature_capability_names(feature_id: str) -> set[str]:
+    feature = INTEGRATION_FEATURES.get(feature_id)
+    names = {feature_id}
+    if feature:
+        names.add(str(feature.get("capability") or "").strip().lower())
+    return {name for name in names if name}
+
+
+def plan_allows_integration_feature(tenant: TenantProfile | None, feature_id: str) -> bool:
+    if plan_allows_full_integrations(tenant):
+        return True
+    if tenant is None:
+        return False
+    if not bool(getattr(tenant, "is_active", True)):
+        return False
+    if tenant_is_demo_context(tenant):
+        return False
+    if tenant_has_any_capability(tenant, _feature_capability_names(feature_id)):
+        return True
+    return feature_id in SELF_SERVICE_INTEGRATION_FEATURES
+
+
 def _integration_lock_reason(tenant: TenantProfile | None) -> str:
     if tenant is None:
         return "tenant_missing"
@@ -189,7 +229,13 @@ def _integration_lock_reason(tenant: TenantProfile | None) -> str:
     return "plan_full_required"
 
 
-def _feature_payload(feature_id: str, enabled: bool, lock_reason: str | None) -> dict[str, Any]:
+def _feature_payload(
+    feature_id: str,
+    enabled: bool,
+    lock_reason: str | None,
+    *,
+    full_enabled: bool = False,
+) -> dict[str, Any]:
     feature = INTEGRATION_FEATURES[feature_id]
     return {
         "id": feature_id,
@@ -202,6 +248,7 @@ def _feature_payload(feature_id: str, enabled: bool, lock_reason: str | None) ->
         "reason_code": None if enabled else "plan_full_required",
         "lock_reason_code": None if enabled else lock_reason,
         "required_plan": "full",
+        "access_scope": "productive" if full_enabled else ("self_service" if enabled else "locked"),
     }
 
 
@@ -210,14 +257,32 @@ def integration_access_payload(tenant: TenantProfile | None) -> dict[str, Any]:
     current_plan = normalize_plan(getattr(tenant, "plan", None) if tenant is not None else None) or "free"
     lock_reason = None if enabled else _integration_lock_reason(tenant)
     features = {
-        feature_id: _feature_payload(feature_id, enabled, lock_reason)
+        feature_id: _feature_payload(
+            feature_id,
+            plan_allows_integration_feature(tenant, feature_id),
+            lock_reason,
+            full_enabled=enabled,
+        )
         for feature_id in INTEGRATION_FEATURES
     }
-    actions = [feature["action"] for feature in INTEGRATION_FEATURES.values()]
+    allowed_actions = [
+        feature["action"]
+        for feature_id, feature in INTEGRATION_FEATURES.items()
+        if features[feature_id]["enabled"]
+    ]
+    blocked_actions = [
+        feature["action"]
+        for feature_id, feature in INTEGRATION_FEATURES.items()
+        if not features[feature_id]["enabled"]
+    ]
+    has_self_service_access = bool(allowed_actions)
+    widget_enabled = bool(features["widget_embed"]["enabled"])
+    whatsapp_enabled = bool(features["whatsapp_business_platform"]["enabled"])
+    payments_enabled = bool(features["mercadopago_checkout"]["enabled"])
     payload = {
         "contract_version": "tenant.integration_access.v1",
         "enabled": enabled,
-        "status": "enabled" if enabled else "locked",
+        "status": "enabled" if enabled else ("partial" if has_self_service_access else "locked"),
         "reason_code": None if enabled else "plan_full_required",
         "lock_reason_code": lock_reason,
         "required_plan": "full",
@@ -225,7 +290,11 @@ def integration_access_payload(tenant: TenantProfile | None) -> dict[str, Any]:
         "message": (
             "Integraciones productivas habilitadas."
             if enabled
-            else "Las integraciones productivas de WhatsApp, widget embebido y marketplaces requieren plan Full activo."
+            else (
+                "Modulos operativos habilitados. WhatsApp productivo, cobros, widget embebido y marketplaces externos requieren plan Full activo."
+                if has_self_service_access
+                else "Las integraciones productivas de WhatsApp, widget embebido y marketplaces requieren plan Full activo."
+            )
         ),
         "upgrade": {
             "label": "Solicitar upgrade a Full",
@@ -239,8 +308,8 @@ def integration_access_payload(tenant: TenantProfile | None) -> dict[str, Any]:
             "operations": ["analytics_dashboard", "heatmaps", "surveys_votings", "comments_inbox"],
             "verticals": ["education_management"],
         },
-        "allowed_actions": actions if enabled else [],
-        "blocked_actions": [] if enabled else actions,
+        "allowed_actions": allowed_actions,
+        "blocked_actions": blocked_actions,
         "security": {
             "demo_tenants_blocked": True,
             "inactive_tenants_blocked": True,
@@ -251,13 +320,15 @@ def integration_access_payload(tenant: TenantProfile | None) -> dict[str, Any]:
             "public_widget_resolves_readonly_contract": True,
         },
         "frontend_contract": {
-            "render_locked_state": not enabled,
-            "hide_embed_copy": not enabled,
-            "hide_provider_connect": not enabled,
-            "hide_payment_credentials_form": not enabled,
+            "render_locked_state": not has_self_service_access,
+            "hide_embed_copy": not widget_enabled,
+            "hide_provider_connect": not whatsapp_enabled,
+            "hide_payment_credentials_form": not payments_enabled,
             "show_upgrade_cta": not enabled,
             "show_readiness_checklist": True,
             "primary_locked_reason": lock_reason,
+            "self_service_enabled": has_self_service_access and not enabled,
+            "productive_channels_locked": not enabled,
         },
     }
     return payload

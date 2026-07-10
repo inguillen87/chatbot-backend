@@ -2,7 +2,7 @@ from flask import Blueprint, jsonify, request
 from models import TenantProfile
 from services.catalog_mapping_service import catalog_mapping_service
 from routes.auth import token_requerido
-from services.plan_access import integration_plan_required_payload, plan_allows_full_integrations
+from services.plan_access import integration_plan_required_payload, plan_allows_integration_feature
 
 def _options_ok():
     return "", 204
@@ -26,7 +26,7 @@ def _catalog_plan_required_response(pyme_id: int):
 
 
 def _catalog_writes_allowed(pyme_id: int) -> bool:
-    return plan_allows_full_integrations(_tenant_for_pyme(pyme_id))
+    return plan_allows_integration_feature(_tenant_for_pyme(pyme_id), "catalog_management")
 
 
 # Note: The user requested the URL prefix /api/pymes/:pymeId/catalog-mappings

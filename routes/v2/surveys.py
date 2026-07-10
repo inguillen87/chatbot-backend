@@ -36,7 +36,7 @@ from services.demo_surveys import (
 from services.plan_access import (
     integration_access_payload,
     integration_plan_required_payload,
-    plan_allows_full_integrations,
+    plan_allows_integration_feature,
 )
 from utils.auth_helpers import token_requerido
 from utils.permissions import require_role
@@ -306,7 +306,7 @@ def _survey_plan_required_response(tenant):
 
 
 def _survey_writes_allowed(tenant) -> bool:
-    return plan_allows_full_integrations(tenant)
+    return plan_allows_integration_feature(tenant, "surveys_votings")
 
 
 def _stable_id_suffix(value: Any) -> str:
