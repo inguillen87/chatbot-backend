@@ -1,7 +1,8 @@
-from urllib.parse import unquote_plus
+from urllib.parse import unquote_plus, urlparse
 
 from app import db
 from models import AnalyticsEventV2, CatalogoItem, MarketCart, MarketCartItem, MunicipioTicket, Promocion, PromocionAlcance, PymePedido, TenantFollower, TenantProfile, User
+from services.catalog_share import build_catalog_share_payload
 
 
 def _seed_pyme_tenant_with_catalog():
@@ -207,6 +208,61 @@ def test_public_market_catalog_contract_includes_promotions(client):
     assert event.metadata_payload["source"] == "public_tenant_catalog_contract"
     assert event.metadata_payload["product_count"] == len(payload["products"])
     assert event.metadata_payload["assisted_intake_mode"] == payload["assisted_intake"]["mode"]
+
+
+def test_public_catalog_download_json_exports_marketplace_contract(client):
+    tenant = _seed_pyme_tenant_with_catalog()
+
+    resp = client.get(
+        f"/api/public/tenants/{tenant.slug}/catalog/download?format=json",
+        headers={"Origin": "https://www.chatboc.ar"},
+    )
+
+    assert resp.status_code == 200
+    assert resp.headers.get("Access-Control-Allow-Origin") == "https://www.chatboc.ar"
+    assert 'filename="catalogo-tienda-demo.json"' in resp.headers.get("Content-Disposition", "")
+    body = resp.get_json()
+    assert body["contract_version"] == "public.catalog_download.v1"
+    assert body["ok"] is True
+    assert body["tenant"]["slug"] == tenant.slug
+    assert body["catalog"]["contract_version"] == "public.market_catalog.v1"
+    assert body["catalog"]["tenant_slug"] == tenant.slug
+    assert any(product["nombre"] == "Producto Demo" for product in body["catalog"]["products"])
+
+
+def test_public_catalog_download_pdf_returns_valid_attachment(client):
+    tenant = _seed_pyme_tenant_with_catalog()
+
+    resp = client.get(f"/api/public/tenants/{tenant.slug}/catalog/download?format=pdf")
+
+    assert resp.status_code == 200
+    assert "application/pdf" in resp.headers.get("Content-Type", "")
+    assert "filename=catalogo-tienda-demo.pdf" in resp.headers.get("Content-Disposition", "")
+    assert resp.data.startswith(b"%PDF")
+    assert len(resp.data) > 900
+    assert resp.headers.get("X-Catalog-Contract-Version") == "public.market_catalog.v1"
+
+
+def test_catalog_share_payload_download_links_resolve_public_endpoint(client):
+    tenant = _seed_pyme_tenant_with_catalog()
+    owner = tenant.pyme
+    owner.tenant_slug = tenant.slug
+    client.application.config["APP_BASE_URL"] = "https://www.chatboc.ar"
+    client.application.config["API_BASE_URL"] = "https://api.chatboc.ar"
+
+    with client.application.test_request_context("/"):
+        payload = build_catalog_share_payload(owner, channel="whatsapp")
+
+    download_path = urlparse(payload["data"]["catalog_share"]["download_url"]).path
+    json_path = urlparse(payload["data"]["catalog_share"]["download_url_json"]).path
+
+    pdf_resp = client.get(f"{download_path}?format=pdf")
+    json_resp = client.get(f"{json_path}?format=json")
+
+    assert pdf_resp.status_code == 200
+    assert json_resp.status_code == 200
+    assert pdf_resp.data.startswith(b"%PDF")
+    assert json_resp.get_json()["catalog"]["tenant_slug"] == tenant.slug
 
 
 def test_public_market_catalog_contract_marks_turnstile_required_when_enforced(client, monkeypatch):

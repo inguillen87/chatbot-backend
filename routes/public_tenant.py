@@ -1,7 +1,9 @@
-from datetime import timezone
+from datetime import datetime, timezone
+from io import BytesIO
+import re
 import uuid
 
-from flask import Blueprint, request, jsonify, g, current_app
+from flask import Blueprint, request, jsonify, g, current_app, send_file
 from sqlalchemy import func, or_
 
 from models import (
@@ -109,6 +111,100 @@ def _catalog_resolution_payload(slug: object, *, reason_code: str = "tenant_reso
         "items": [],
         "cart": {"enabled": False},
     }
+
+
+def _catalog_download_error(slug: object, reason_code: str, *, status_code: int = 404):
+    return _public_json(
+        {
+            "contract_version": "public.catalog_download.v1",
+            "ok": False,
+            "tenant_slug": _normalize_public_slug(slug),
+            "reason_code": reason_code,
+            "error": {"code": status_code, "message": "Catalog download unavailable"},
+        },
+        status_code,
+    )
+
+
+def _catalog_download_filename(tenant: TenantProfile, fmt: str) -> str:
+    slug = re.sub(r"[^a-z0-9-]+", "-", str(tenant.slug or "catalogo").strip().lower()).strip("-")
+    return f"catalogo-{slug or 'tenant'}.{fmt}"
+
+
+def _build_catalog_download_contract(tenant: TenantProfile, owner: User) -> dict:
+    ensure_seed_catalog(owner, tenant)
+    return build_public_market_catalog_contract(
+        tenant,
+        owner,
+        base_web_url=current_app.config.get("APP_BASE_URL", "https://chatboc.ar"),
+        categoria=request.args.get("categoria"),
+        q=request.args.get("q"),
+        precio_min=request.args.get("precio_min"),
+        precio_max=request.args.get("precio_max"),
+        en_promocion=request.args.get("en_promocion"),
+        sort=request.args.get("sort"),
+    )
+
+
+def _truncate_pdf_text(value: object, max_chars: int = 160) -> str:
+    text = " ".join(str(value or "").split())
+    if len(text) <= max_chars:
+        return text
+    return f"{text[: max_chars - 3].rstrip()}..."
+
+
+def _write_catalog_pdf(payload: dict, tenant: TenantProfile) -> BytesIO:
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.units import mm
+    from reportlab.pdfgen import canvas
+
+    buffer = BytesIO()
+    pdf = canvas.Canvas(buffer, pagesize=A4)
+    _, height = A4
+    left = 18 * mm
+    top = height - 18 * mm
+    line_height = 6 * mm
+    y = top
+
+    def new_page_if_needed(lines: int = 1) -> None:
+        nonlocal y
+        if y - (lines * line_height) < 18 * mm:
+            pdf.showPage()
+            y = top
+
+    def draw_line(text: object, *, font: str = "Helvetica", size: int = 10) -> None:
+        nonlocal y
+        safe_text = _truncate_pdf_text(text, 190)
+        new_page_if_needed()
+        pdf.setFont(font, size)
+        pdf.drawString(left, y, safe_text)
+        y -= line_height
+
+    pdf.setTitle(f"Catalogo {tenant.nombre or tenant.slug}")
+    draw_line(f"Catalogo publico - {tenant.nombre or tenant.slug}", font="Helvetica-Bold", size=16)
+    draw_line(f"Tenant: {tenant.slug}", size=9)
+    draw_line(f"Generado: {datetime.now(timezone.utc).isoformat()}", size=8)
+    y -= 3 * mm
+
+    products = payload.get("products") or []
+    draw_line(f"Productos visibles: {len(products)}", font="Helvetica-Bold", size=11)
+    if not products:
+        draw_line("El catalogo no tiene productos visibles. El marketplace mantiene carga asistida activa.", size=10)
+    for index, product in enumerate(products, start=1):
+        price = product.get("precio") or product.get("precio_str") or product.get("price") or ""
+        category = product.get("categoria") or product.get("category") or "Sin categoria"
+        stock = product.get("stock_status") or product.get("cantidad") or ""
+        title = product.get("nombre") or product.get("name") or f"Producto {index}"
+        draw_line(f"{index}. {title}", font="Helvetica-Bold", size=10)
+        draw_line(f"Categoria: {category} | Precio: {price} | Stock: {stock}", size=9)
+        description = product.get("descripcion") or product.get("description") or product.get("descripcion_corta")
+        if description:
+            draw_line(description, size=9)
+        y -= 1 * mm
+
+    pdf.save()
+    buffer.seek(0)
+    return buffer
 
 
 def _add_cors_headers(response):
@@ -609,6 +705,91 @@ def get_widget_config(slug):
     except Exception as e:
         current_app.logger.error(f"Error fetching widget config: {e}")
         return jsonify({"error": "Internal Error"}), 500
+
+
+@public_tenant_bp.route('/api/public/tenants/<slug>/catalog/download', methods=['GET', 'OPTIONS'])
+@public_tenant_bp.route('/public/tenants/<slug>/catalog/download', methods=['GET', 'OPTIONS'])
+def download_catalog(slug):
+    if request.method == 'OPTIONS':
+        return _add_cors_headers(jsonify({"ok": True, "contract_version": "public.catalog_download.v1"}))
+
+    fmt = str(request.args.get("format") or "pdf").strip().lower()
+    if fmt not in {"pdf", "json"}:
+        return _public_json(
+            {
+                "contract_version": "public.catalog_download.v1",
+                "ok": False,
+                "tenant_slug": _normalize_public_slug(slug),
+                "reason_code": "unsupported_format",
+                "supported_formats": ["pdf", "json"],
+                "error": {"code": 400, "message": "Unsupported catalog download format"},
+            },
+            400,
+        )
+
+    if (
+        _is_reserved_public_slug(slug)
+        or _is_reserved_public_slug(request.args.get("tenant_slug"))
+        or _is_reserved_public_slug(request.args.get("tenant"))
+    ):
+        return _catalog_download_error(slug, "reserved_public_slug")
+
+    tenant = _get_tenant_from_request(slug)
+    if not tenant:
+        return _catalog_download_error(slug, "tenant_resolution_failed")
+
+    owner = _resolve_catalog_owner(tenant)
+    if not owner:
+        current_app.logger.warning(
+            "[public_tenant.catalog_download] tenant=%s has no owner binding (municipio_id=%s pyme_id=%s)",
+            tenant.slug,
+            tenant.municipio_id,
+            tenant.pyme_id,
+        )
+        return _catalog_download_error(tenant.slug, "tenant_owner_missing")
+
+    payload = _build_catalog_download_contract(tenant, owner)
+    try:
+        track_marketplace_event(
+            tenant,
+            "catalog_downloaded",
+            {
+                "source": "public_tenant_catalog_download",
+                "format": fmt,
+                "contract_version": payload.get("contract_version"),
+                "total": payload.get("total"),
+                "product_count": len(payload.get("products") or []),
+            },
+        )
+    except Exception:
+        current_app.logger.info("[public_tenant.catalog_download] analytics skipped", exc_info=True)
+
+    filename = _catalog_download_filename(tenant, fmt)
+    if fmt == "json":
+        response = jsonify(
+            {
+                "contract_version": "public.catalog_download.v1",
+                "ok": True,
+                "format": "json",
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "tenant": _tenant_public_summary(tenant),
+                "catalog": payload,
+            }
+        )
+        response.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+        response.headers["X-Catalog-Contract-Version"] = str(payload.get("contract_version") or "")
+        return _add_cors_headers(response)
+
+    pdf_buffer = _write_catalog_pdf(payload, tenant)
+    response = send_file(
+        pdf_buffer,
+        mimetype="application/pdf",
+        as_attachment=True,
+        download_name=filename,
+    )
+    response.headers["X-Catalog-Contract-Version"] = str(payload.get("contract_version") or "")
+    response.headers["X-Request-Id"] = _request_id()
+    return _add_cors_headers(response)
 
 
 @public_tenant_bp.route('/api/public/tenants/<slug>/catalog', methods=['GET', 'OPTIONS'])
