@@ -4,7 +4,7 @@ from app import create_app, db
 from config import TestConfig
 from models import MarketOrder, MarketOrderItem, PedidoConversacional, PymePedido, TenantProfile, User
 from services.commerce_contracts import build_customer_profile
-from services.commerce_unified import dedupe_unified_orders, serialize_unified_order
+from services.commerce_unified import dedupe_unified_orders, serialize_unified_order, summarize_unified_orders
 
 
 def test_build_customer_profile_normalizes_phone_channels_and_identity():
@@ -188,6 +188,61 @@ def test_dedupe_unified_orders_prefers_market_order_mirror_for_conversational_ch
     assert len(deduped) == 1
     assert deduped[0]["source_model"] == "MarketOrder"
     assert deduped[0]["source_id"] == 7
+
+
+def test_summarize_unified_orders_exposes_crm_operational_metrics():
+    orders = [
+        {
+            "source_model": "PedidoConversacional",
+            "status": "confirmado",
+            "commercial_stage": "confirmed",
+            "channel": "marketplace",
+            "created_at": "2026-07-10T09:00:00",
+            "updated_at": "2026-07-10T09:03:00",
+            "totals": {"monetary": 2500, "points": 0},
+            "assisted_request": {
+                "operator_pack": {"operator_queue": "commerce_assisted_orders"},
+            },
+            "crm_review_card": {
+                "status": "ready_to_reply",
+                "operational_state": "ready_for_order_creation",
+                "needs_operator_review": False,
+            },
+        },
+        {
+            "source_model": "MarketOrder",
+            "status": "pending",
+            "commercial_stage": "awaiting_confirmation",
+            "channel": "whatsapp",
+            "created_at": "2026-07-10T08:00:00",
+            "totals": {"monetary": 1200, "points": 4},
+            "crm_review_card": {
+                "status": "needs_review",
+                "operational_state": "needs_catalog_resolution",
+                "needs_operator_review": True,
+            },
+        },
+    ]
+
+    summary = summarize_unified_orders(orders, page_limit=25)
+
+    assert summary["contract_version"] == "orders.unified_summary.v1"
+    assert summary["total"] == 2
+    assert summary["page_limit"] == 25
+    assert summary["sources"] == ["MarketOrder", "PedidoConversacional"]
+    assert summary["by_source_model"]["PedidoConversacional"] == 1
+    assert summary["by_channel"]["whatsapp"] == 1
+    assert summary["by_operational_state"]["ready_for_order_creation"] == 1
+    assert summary["by_operational_state"]["needs_catalog_resolution"] == 1
+    assert summary["by_operator_queue"]["commerce_assisted_orders"] == 1
+    assert summary["assisted_requests"] == 2
+    assert summary["needs_operator_review"] == 1
+    assert summary["ready_for_order_creation"] == 1
+    assert summary["ready_to_reply"] == 1
+    assert summary["totals"]["monetary"] == 3700
+    assert summary["totals"]["points"] == 4
+    assert summary["latest_activity_at"] == "2026-07-10T09:03:00"
+    assert summary["crm_focus"]["primary_next_action"] == "resolve_operator_review"
 
 
 def test_serialize_unified_order_exposes_assisted_marketplace_upload_contract():

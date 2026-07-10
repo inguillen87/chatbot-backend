@@ -771,8 +771,19 @@ def test_marketplace_order_note_upload_is_manageable_from_tenant_crm(client, app
 
     list_response = client.get(f"/api/admin/tenants/{tenant.slug}/orders?limit=25", headers=headers)
     assert list_response.status_code == 200
-    listed = list_response.get_json()["orders"]
+    list_payload = list_response.get_json()
+    listed = list_payload["orders"]
     listed_order = next(order for order in listed if order["id"] == crm_id)
+    order_summary = list_payload["summary"]
+    assert list_payload["total"] >= 1
+    assert "PedidoConversacional" in list_payload["sources"]
+    assert order_summary["contract_version"] == "orders.unified_summary.v1"
+    assert order_summary["by_source_model"]["PedidoConversacional"] >= 1
+    assert order_summary["by_commercial_stage"][listed_order["commercial_stage"]] >= 1
+    assert order_summary["by_channel"][listed_order["channel"]] >= 1
+    assert order_summary["assisted_requests"] >= 1
+    assert order_summary["ready_for_order_creation"] >= 1
+    assert order_summary["crm_focus"]["has_assisted_intake"] is True
     assert listed_order["assisted_request"]["request_kind_label"] == "nota de pedido"
     assert listed_order["assisted_request"]["contact"]["phone"] == "+5492613168608"
     assert listed_order["assisted_request"]["source_attachment"]["url"] == "https://cdn.example.com/pedido.jpg"

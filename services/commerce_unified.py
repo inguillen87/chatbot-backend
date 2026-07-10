@@ -39,6 +39,7 @@ _COMMERCIAL_STAGE_BY_STATUS = {
 _ASSISTED_REQUEST_CONTRACT_VERSION = "marketplace.assisted_request.v1"
 _WHATSAPP_ASSISTED_INTAKE_CONTRACT_VERSION = "whatsapp.assisted_intake.v1"
 _ASSISTED_REQUEST_MODES = {"order_note_upload", "whatsapp_order_note_upload"}
+_UNIFIED_ORDER_SUMMARY_CONTRACT_VERSION = "orders.unified_summary.v1"
 
 
 def _as_float(value: Any) -> float | None:
@@ -120,6 +121,114 @@ def dedupe_unified_orders(orders: list[dict[str, Any]]) -> list[dict[str, Any]]:
             deduped[key] = order
 
     return list(deduped.values())
+
+
+def _counter_add(counter: dict[str, int], value: Any, *, fallback: str = "unknown") -> None:
+    key = str(value or "").strip() or fallback
+    counter[key] = counter.get(key, 0) + 1
+
+
+def _summary_dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def summarize_unified_orders(
+    orders: list[dict[str, Any]],
+    *,
+    page_limit: int | None = None,
+) -> dict[str, Any]:
+    by_source_model: dict[str, int] = {}
+    by_status: dict[str, int] = {}
+    by_commercial_stage: dict[str, int] = {}
+    by_channel: dict[str, int] = {}
+    by_operational_state: dict[str, int] = {}
+    by_operator_queue: dict[str, int] = {}
+    assisted_requests = 0
+    needs_operator_review = 0
+    ready_for_order_creation = 0
+    ready_to_reply = 0
+    total_monetary = 0.0
+    total_points = 0
+    latest_activity_at = None
+
+    for order in orders:
+        _counter_add(by_source_model, order.get("source_model"))
+        _counter_add(by_status, order.get("status"))
+        _counter_add(by_commercial_stage, order.get("commercial_stage"))
+        _counter_add(by_channel, order.get("channel"))
+
+        totals = _summary_dict(order.get("totals"))
+        total_monetary += _as_float(totals.get("monetary") if totals else order.get("total")) or 0.0
+        try:
+            total_points += int(totals.get("points") or 0)
+        except (TypeError, ValueError):
+            pass
+
+        activity_at = order.get("updated_at") or order.get("created_at")
+        if activity_at and (latest_activity_at is None or str(activity_at) > str(latest_activity_at)):
+            latest_activity_at = str(activity_at)
+
+        assisted_request = _summary_dict(order.get("assisted_request"))
+        review_card = _summary_dict(order.get("crm_review_card"))
+        if assisted_request or review_card:
+            assisted_requests += 1
+
+        operational_state = review_card.get("operational_state")
+        if operational_state:
+            _counter_add(by_operational_state, operational_state)
+
+        operator_pack = _summary_dict(assisted_request.get("operator_pack"))
+        operator_queue = operator_pack.get("operator_queue")
+        if operator_queue:
+            _counter_add(by_operator_queue, operator_queue)
+
+        card_status = str(review_card.get("status") or "").strip().lower()
+        state = str(operational_state or "").strip().lower()
+        if review_card.get("needs_operator_review") is True or card_status == "needs_review" or state in {
+            "needs_catalog_resolution",
+            "needs_operator_review",
+        }:
+            needs_operator_review += 1
+        if state == "ready_for_order_creation":
+            ready_for_order_creation += 1
+        if state == "ready_to_reply" or card_status == "ready_to_reply":
+            ready_to_reply += 1
+
+    sources = sorted(by_source_model)
+    crm_focus = {
+        "has_assisted_intake": assisted_requests > 0,
+        "has_operator_review_queue": needs_operator_review > 0,
+        "has_ready_order_creation": ready_for_order_creation > 0,
+        "primary_next_action": (
+            "resolve_operator_review"
+            if needs_operator_review
+            else "create_ready_orders"
+            if ready_for_order_creation
+            else "monitor_orders"
+        ),
+    }
+    return {
+        "contract_version": _UNIFIED_ORDER_SUMMARY_CONTRACT_VERSION,
+        "total": len(orders),
+        "page_limit": page_limit,
+        "sources": sources,
+        "by_source_model": by_source_model,
+        "by_status": by_status,
+        "by_commercial_stage": by_commercial_stage,
+        "by_channel": by_channel,
+        "by_operational_state": by_operational_state,
+        "by_operator_queue": by_operator_queue,
+        "assisted_requests": assisted_requests,
+        "needs_operator_review": needs_operator_review,
+        "ready_for_order_creation": ready_for_order_creation,
+        "ready_to_reply": ready_to_reply,
+        "totals": {
+            "monetary": round(total_monetary, 2),
+            "points": total_points,
+        },
+        "latest_activity_at": latest_activity_at,
+        "crm_focus": crm_focus,
+    }
 
 
 def _derive_stage(status: Any) -> str:

@@ -32,7 +32,7 @@ from models import (
 )
 from routes.catalogo import _formatear_producto
 from routes.carrito import _product_query_for_tenant
-from services.commerce_unified import dedupe_unified_orders, serialize_unified_order
+from services.commerce_unified import dedupe_unified_orders, serialize_unified_order, summarize_unified_orders
 from services.common_utils import parse_precio_flexible
 from services.catalog_seed import ensure_seed_catalog
 from services.catalog_inventory import inventory_columns_contract, inventory_contract, new_catalog_version
@@ -3013,11 +3013,15 @@ def list_tenant_orders(current_user, slug):
 
     results = dedupe_unified_orders([serialize_unified_order(record) for record in order_records])
     results.sort(key=lambda item: item.get('created_at') or '', reverse=True)
+    page_results = results[:limit]
+    summary = summarize_unified_orders(results, page_limit=limit)
 
     return jsonify({
-        "orders": results[:limit],
-        "count": len(results[:limit]),
-        "sources": sorted({item.get('source_model') for item in results[:limit] if item.get('source_model')}),
+        "orders": page_results,
+        "count": len(page_results),
+        "total": len(results),
+        "sources": summary["sources"],
+        "summary": summary,
     })
 
 
