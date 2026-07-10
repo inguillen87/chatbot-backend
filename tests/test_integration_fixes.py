@@ -23,7 +23,7 @@ def app():
 def client(app):
     return app.test_client()
 
-def _create_admin_tenant(email="admin@test.com"):
+def _create_admin_tenant(email="admin@test.com", plan="full"):
     user = User(email=email, name="Admin", rol="admin", tipo_chat="pyme")
     user.set_password("password")
     db.session.add(user)
@@ -33,7 +33,7 @@ def _create_admin_tenant(email="admin@test.com"):
         slug="test-tenant",
         nombre="Test Tenant",
         tipo="pyme",
-        plan="full",
+        plan=plan,
         pyme_id=user.id,
     )
     db.session.add(tenant)
@@ -77,6 +77,22 @@ def test_whatsapp_integration_returns_tech_provider_config_error(client, app):
     assert resp.json['provider'] == 'twilio_tech_provider'
     assert resp.json['frontend_contract']['render_as'] == 'twilio_tech_provider_onboarding'
     assert 'TWILIO_META_APP_ID' in resp.json['missing']
+
+
+def test_whatsapp_connect_plan_lock_uses_whatsapp_sender_feature(client, app):
+    with app.app_context():
+        _user, _tenant, headers = _create_admin_tenant(plan="free")
+
+    resp = client.get('/api/admin/tenants/test-tenant/integrations/whatsapp/connect', headers=headers)
+
+    assert resp.status_code == 403
+    payload = resp.json
+    assert payload["error"] == "plan_required"
+    assert payload["feature_id"] == "whatsapp_sender_management"
+    assert payload["feature"]["id"] == "whatsapp_sender_management"
+    assert payload["frontend_contract"]["render_as"] == "integration_locked"
+    assert payload["frontend_contract"]["feature_id"] == "whatsapp_sender_management"
+    assert payload["access"]["features"]["whatsapp_sender_management"]["enabled"] is False
 
 def test_widget_settings_includes_style(client, app):
     # Mock tenant resolution which might be complex in tests

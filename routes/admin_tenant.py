@@ -659,9 +659,9 @@ def _plan_allows_integrations(tenant: TenantProfile) -> bool:
     return plan_allows_full_integrations(tenant)
 
 
-def _integration_plan_required_response(tenant: TenantProfile):
+def _integration_plan_required_response(tenant: TenantProfile, feature_id: str = "catalog_management"):
     return (
-        jsonify(integration_plan_required_payload(tenant, "catalog_management")),
+        jsonify(integration_plan_required_payload(tenant, feature_id)),
         403,
     )
 
@@ -2604,7 +2604,7 @@ def list_integrations(current_user, slug):
     if not _is_authorized_for_tenant(current_user, tenant):
          return jsonify({'error': 'Unauthorized'}), 403
     if not _plan_allows_integrations(tenant):
-        return _integration_plan_required_response(tenant)
+        return _integration_plan_required_response(tenant, "marketplace_sync")
 
     integrations = IntegrationAccount.query.filter_by(tenant_id=tenant.id).all()
 
@@ -2653,7 +2653,8 @@ def connect_integration(current_user, slug, integration_type):
     if not _is_authorized_for_tenant(current_user, tenant):
          return jsonify({'error': 'Unauthorized'}), 403
     if not _plan_allows_integrations(tenant):
-        return _integration_plan_required_response(tenant)
+        feature_id = "whatsapp_sender_management" if integration_type.lower() == "whatsapp" else "marketplace_sync"
+        return _integration_plan_required_response(tenant, feature_id)
 
     base_url = current_app.config.get("PUBLIC_BASE_URL", "https://chatboc.ar").rstrip("/")
 
