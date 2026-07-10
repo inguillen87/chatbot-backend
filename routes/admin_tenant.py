@@ -3352,6 +3352,17 @@ def _customer_confirmation_from_resolved_draft(*, detected: int, matched: int, u
     }
 
 
+def _uses_assisted_request_contract(metadata: dict) -> bool:
+    contract_version = metadata.get("contract_version")
+    return (
+        contract_version == "marketplace.assisted_request.v1"
+        or metadata.get("assisted_request_contract_version") == "marketplace.assisted_request.v1"
+        or contract_version == "whatsapp.assisted_intake.v1"
+        or metadata.get("mode") in {"order_note_upload", "whatsapp_order_note_upload"}
+        or metadata.get("source_mode") in {"order_note_upload", "whatsapp_order_note_upload"}
+    )
+
+
 def _apply_assisted_catalog_resolutions(record, tenant: TenantProfile, resolutions):
     if not isinstance(record, PedidoConversacional):
         return None, (
@@ -3371,7 +3382,7 @@ def _apply_assisted_catalog_resolutions(record, tenant: TenantProfile, resolutio
         )
 
     metadata = dict(record.metadata_payload or {})
-    if metadata.get("contract_version") != "marketplace.assisted_request.v1":
+    if not _uses_assisted_request_contract(metadata):
         return None, (
             {
                 "error": "unsupported_assisted_contract",

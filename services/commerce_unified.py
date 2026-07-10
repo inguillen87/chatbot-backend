@@ -36,6 +36,10 @@ _COMMERCIAL_STAGE_BY_STATUS = {
     "devuelto": "post_sale",
 }
 
+_ASSISTED_REQUEST_CONTRACT_VERSION = "marketplace.assisted_request.v1"
+_WHATSAPP_ASSISTED_INTAKE_CONTRACT_VERSION = "whatsapp.assisted_intake.v1"
+_ASSISTED_REQUEST_MODES = {"order_note_upload", "whatsapp_order_note_upload"}
+
 
 def _as_float(value: Any) -> float | None:
     if value is None:
@@ -88,6 +92,17 @@ def _dedupe_priority(order: dict[str, Any]) -> int:
     if source_model == "PymePedido" and str(metadata.get("idempotency_key") or "").startswith("conv_order_"):
         return 2
     return 1
+
+
+def _is_assisted_request_metadata(metadata: dict[str, Any]) -> bool:
+    contract_version = metadata.get("contract_version")
+    return (
+        contract_version == _ASSISTED_REQUEST_CONTRACT_VERSION
+        or metadata.get("assisted_request_contract_version") == _ASSISTED_REQUEST_CONTRACT_VERSION
+        or contract_version == _WHATSAPP_ASSISTED_INTAKE_CONTRACT_VERSION
+        or metadata.get("mode") in _ASSISTED_REQUEST_MODES
+        or metadata.get("source_mode") in _ASSISTED_REQUEST_MODES
+    )
 
 
 def dedupe_unified_orders(orders: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -543,8 +558,13 @@ def _build_assisted_operator_pack(
 def _build_assisted_request(metadata: dict[str, Any], raw_items: list[Any], *, record_id: Any = None) -> dict[str, Any] | None:
     mode = metadata.get("mode")
     contract_version = metadata.get("contract_version")
-    if contract_version != "marketplace.assisted_request.v1" and mode != "order_note_upload":
+    if not _is_assisted_request_metadata(metadata):
         return None
+    assisted_contract_version = (
+        metadata.get("assisted_request_contract_version")
+        if metadata.get("assisted_request_contract_version") == _ASSISTED_REQUEST_CONTRACT_VERSION
+        else _ASSISTED_REQUEST_CONTRACT_VERSION
+    )
 
     raw_payload = _as_dict(raw_items[0]) if raw_items else {}
     detected = _as_list(raw_payload.get("items_detectados"))
@@ -632,8 +652,11 @@ def _build_assisted_request(metadata: dict[str, Any], raw_items: list[Any], *, r
         )
 
     return {
-        "contract_version": contract_version or "marketplace.assisted_request.v1",
-        "mode": mode or "order_note_upload",
+        "contract_version": assisted_contract_version,
+        "source_contract_version": metadata.get("source_contract_version")
+        or (contract_version if contract_version != assisted_contract_version else None),
+        "mode": "order_note_upload" if mode in _ASSISTED_REQUEST_MODES or not mode else mode,
+        "source_mode": metadata.get("source_mode"),
         "crm_state": metadata.get("crm_state") or "pending_operator_review",
         "request_kind": metadata.get("request_kind") or raw_payload.get("request_kind"),
         "request_kind_label": request_kind_label,

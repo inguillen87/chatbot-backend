@@ -6,12 +6,19 @@ import mimetypes
 import os
 from typing import Any, Optional
 
+from sqlalchemy.orm.attributes import flag_modified
+
 from database import db
 from models import CatalogoItem, PedidoConversacional, TenantProfile, TenantTicket, User
 from routes.catalogo import _formatear_producto
 from routes.pedidos_from_file import (
     _ASSISTED_REQUEST_CONTRACT_VERSION,
+    _build_customer_next_steps,
     _build_crm_handoff_payload,
+    _build_intake_experience,
+    _build_next_actions,
+    _build_operator_intake_summary,
+    _build_public_follow_up,
     _build_document_profile,
     _build_review_context,
     _build_structured_extraction,
@@ -26,6 +33,7 @@ from routes.pedidos_from_file import (
 )
 from services.commerce_unified import _build_assisted_operator_pack
 from services.marketplace_analytics import track_marketplace_event
+from services.order_attachment_preview import build_crm_order_draft
 
 logger = logging.getLogger(__name__)
 
@@ -158,6 +166,42 @@ def _fingerprint(tenant_id: int, from_number: Optional[str], content: bytes, tex
     return f"wa-intake:{digest.hexdigest()[:32]}"
 
 
+def _source_attachment_payload(
+    uploaded_file_info: Optional[dict[str, Any]],
+    *,
+    filename: str,
+    mime_type: str,
+    file_size_bytes: int,
+) -> dict[str, Any]:
+    if not isinstance(uploaded_file_info, dict) or not uploaded_file_info:
+        return {}
+    public_url = uploaded_file_info.get("url") or uploaded_file_info.get("public_url")
+    attachment_id = uploaded_file_info.get("id") or uploaded_file_info.get("attachment_id")
+    if not public_url and not attachment_id:
+        return {}
+    return {
+        "id": attachment_id,
+        "attachment_id": attachment_id,
+        "url": public_url,
+        "public_url": public_url,
+        "name": uploaded_file_info.get("name") or filename,
+        "filename": uploaded_file_info.get("name") or filename,
+        "original_name": uploaded_file_info.get("original_name") or uploaded_file_info.get("name") or filename,
+        "mime_type": uploaded_file_info.get("mime_type") or mime_type,
+        "size_bytes": uploaded_file_info.get("size_bytes") or file_size_bytes,
+    }
+
+
+def _attach_source_aliases(target: dict[str, Any], attachment_info: dict[str, Any]) -> None:
+    if not attachment_info:
+        return
+    target["attachment_id"] = attachment_info.get("id") or attachment_info.get("attachment_id")
+    target["attachmentInfo"] = attachment_info
+    target["attachment_info"] = attachment_info
+    target["source_attachment"] = attachment_info
+    target["sourceAttachment"] = attachment_info
+
+
 def create_whatsapp_assisted_intake(
     *,
     tenant: TenantProfile,
@@ -261,6 +305,13 @@ def create_whatsapp_assisted_intake(
         "chat_session_id": session_id,
         "anon_id": from_number,
     }
+    attachment_info = _source_attachment_payload(
+        uploaded_file_info,
+        filename=filename,
+        mime_type=source_payload["mime_type"],
+        file_size_bytes=len(content),
+    )
+    _attach_source_aliases(source_payload, attachment_info)
     if text_payload:
         source_payload["text_preview"] = text_payload[:500]
     if location_info:
@@ -286,12 +337,43 @@ def create_whatsapp_assisted_intake(
         contact_payload=contact,
     )
     catalog_candidates = _unmatched_catalog_candidates_payload(not_found) if catalog_matching_enabled else []
+    unmatched_labels = [_row_label(row) for row in not_found]
     match_summary = {
         "matched": matched_count,
         "unmatched": unmatched_count,
         "detected": detected_count,
         "needs_operator_review": bool(unmatched_count or matched_count == 0 or extraction_error or missing_fields),
     }
+    crm_state = "pending_operator_review" if match_summary["needs_operator_review"] else "ready_for_confirmation"
+    crm_order_draft = None
+    if catalog_matching_enabled:
+        crm_order_draft = build_crm_order_draft(
+            request_kind=request_kind,
+            request_kind_label=request_kind_label,
+            source=source_payload,
+            contact=contact,
+            matched_items=enriched,
+            unmatched_items=not_found,
+            catalog_candidates=catalog_candidates,
+            match_summary=match_summary,
+        )
+        if attachment_info:
+            crm_order_draft = {
+                **crm_order_draft,
+                "source_attachment": attachment_info,
+                "sourceAttachment": attachment_info,
+                "attachmentInfo": attachment_info,
+                "attachment_info": attachment_info,
+                "source": {
+                    **(crm_order_draft.get("source") if isinstance(crm_order_draft.get("source"), dict) else {}),
+                    "attachment_id": attachment_info.get("id") or attachment_info.get("attachment_id"),
+                    "attachmentInfo": attachment_info,
+                    "attachment_info": attachment_info,
+                    "source_attachment": attachment_info,
+                    "sourceAttachment": attachment_info,
+                },
+            }
+        crm_handoff["draft_order"] = crm_order_draft
     review_context = _build_review_context(
         document_profile=document_profile,
         matched_count=matched_count,
@@ -301,7 +383,22 @@ def create_whatsapp_assisted_intake(
         contact_payload=contact,
         missing_fields=missing_fields,
     )
-    unmatched_labels = [_row_label(row) for row in not_found]
+    customer_next_steps = _build_customer_next_steps(
+        document_profile=document_profile,
+        request_kind_label=request_kind_label,
+        matched_count=matched_count,
+        unmatched_count=unmatched_count,
+        extraction_error=extraction_error,
+    )
+    intake_experience = _build_intake_experience(
+        document_profile=document_profile,
+        request_kind_label=request_kind_label,
+        matched_count=matched_count,
+        unmatched_count=unmatched_count,
+        detected_count=detected_count,
+        extraction_error=extraction_error,
+        contact_payload=contact,
+    )
     operator_pack = _build_assisted_operator_pack(
         request_kind_label=request_kind_label,
         contact=contact,
@@ -314,7 +411,7 @@ def create_whatsapp_assisted_intake(
     )
     customer_message = (
         f"Recibimos tu {request_kind_label} por WhatsApp. "
-        "La IA separo la informacion y el equipo ya tiene un borrador operativo en el CRM."
+        "Separamos la informacion y el equipo ya tiene un borrador listo para revisar."
     )
     if unmatched_count:
         customer_message += f" Quedan {unmatched_count} renglon(es) para validar manualmente."
@@ -330,25 +427,39 @@ def create_whatsapp_assisted_intake(
         }
 
     payload = {
-        "contract_version": WHATSAPP_ASSISTED_INTAKE_CONTRACT_VERSION,
+        "contract_version": _ASSISTED_REQUEST_CONTRACT_VERSION,
         "assisted_request_contract_version": _ASSISTED_REQUEST_CONTRACT_VERSION,
-        "mode": "whatsapp_order_note_upload",
+        "source_contract_version": WHATSAPP_ASSISTED_INTAKE_CONTRACT_VERSION,
+        "whatsapp_assisted_intake_contract_version": WHATSAPP_ASSISTED_INTAKE_CONTRACT_VERSION,
+        "mode": "order_note_upload",
+        "source_mode": "whatsapp_order_note_upload",
         "request_kind": request_kind,
         "request_kind_label": request_kind_label,
         "document_profile": document_profile,
         "structured_extraction": structured_extraction,
         "crm_handoff": crm_handoff,
+        "crm_order_draft": crm_order_draft,
         "source": source_payload,
         "contact": contact,
         "items": enriched,
+        "items_detectados": enriched,
+        "detected_items": enriched,
         "no_encontrados": not_found,
+        "no_encontrados_labels": unmatched_labels,
         "items_no_encontrados": unmatched_labels,
+        "unmatched_items": unmatched_labels,
         "catalog_candidates": catalog_candidates,
         "match_summary": match_summary,
         "review_context": review_context,
+        "row_errors": row_errors,
+        "customer_next_steps": customer_next_steps,
+        "intake_experience": intake_experience,
         "operator_pack": operator_pack,
+        "next_actions": [],
         "customer_message": customer_message,
+        "crm_state": crm_state,
     }
+    _attach_source_aliases(payload, attachment_info)
 
     pedido = PedidoConversacional(
         tenant_id=tenant.id,
@@ -360,10 +471,80 @@ def create_whatsapp_assisted_intake(
         anon_id=from_number,
         origen="whatsapp",
         items=[payload],
-        metadata_payload={**payload, "crm_state": "pending_operator_review"},
+        metadata_payload=payload,
     )
     db.session.add(pedido)
     db.session.flush()
+
+    public_follow_up = _build_public_follow_up(
+        pedido_id=pedido.id,
+        tenant_slug=getattr(tenant, "slug", None),
+        request_kind_label=request_kind_label,
+        customer_message=customer_message,
+        whatsapp_phone=getattr(tenant, "dispatch_phone", None)
+        if getattr(tenant, "send_dispatch_whatsapp", True)
+        else None,
+    )
+    if crm_order_draft:
+        crm_order_draft = {
+            **crm_order_draft,
+            "pedido_id": pedido.id,
+            "lead_id": pedido.id,
+            "reference": f"pedido:{pedido.id}",
+        }
+        crm_handoff["draft_order"] = crm_order_draft
+    operator_intake_summary = _build_operator_intake_summary(
+        document_profile=document_profile,
+        request_kind_label=request_kind_label,
+        source_payload=source_payload,
+        contact_payload=contact,
+        match_summary=match_summary,
+        crm_handoff=crm_handoff,
+        enriched_items=enriched,
+        unmatched_labels=unmatched_labels,
+        public_follow_up=public_follow_up,
+    )
+    next_actions = _build_next_actions(
+        pedido_id=pedido.id,
+        tenant_slug=getattr(tenant, "slug", None),
+        document_profile=document_profile,
+        matched_count=matched_count,
+        unmatched_count=unmatched_count,
+    )
+    for action in next_actions:
+        if action.get("id") == "tracking":
+            action["type"] = "link"
+            action["href"] = public_follow_up["tracking"]["path"]
+            action["tracking_code"] = public_follow_up["tracking"]["code"]
+            action["tracking_kind"] = public_follow_up["tracking"]["kind"]
+    for channel in public_follow_up.get("channels", []):
+        if not isinstance(channel, dict) or channel.get("id") == "tracking_page":
+            continue
+        if not any(action.get("id") == channel.get("id") for action in next_actions):
+            next_actions.append({**channel, "enabled": True})
+    operator_pack = _build_assisted_operator_pack(
+        record_id=pedido.id,
+        request_kind_label=request_kind_label,
+        contact=contact,
+        match_summary=match_summary,
+        unmatched_items=unmatched_labels,
+        extraction_error=extraction_error,
+        primary_intent=document_profile.get("primary_intent"),
+        target_module=crm_handoff.get("target_module"),
+        missing_fields=missing_fields,
+    )
+    payload.update(
+        {
+            "pedido_id": pedido.id,
+            "lead_id": pedido.id,
+            "crm_order_draft": crm_order_draft,
+            "crm_handoff": crm_handoff,
+            "operator_pack": operator_pack,
+            "operator_intake_summary": operator_intake_summary,
+            "public_follow_up": public_follow_up,
+            "next_actions": next_actions,
+        }
+    )
 
     ticket = TenantTicket(
         tenant_id=tenant.id,
@@ -380,18 +561,44 @@ def create_whatsapp_assisted_intake(
         origen="whatsapp",
         datos_extra={
             **payload,
-            "pedido_id": pedido.id,
-            "lead_id": pedido.id,
+            "contract_version": "marketplace.commerce_intake_ticket.v1",
+            "type": "commerce_assisted_intake",
+            "assisted_request_contract_version": _ASSISTED_REQUEST_CONTRACT_VERSION,
+            "pedido_conversacional_id": pedido.id,
+            "pedido_reference": f"pedido:{pedido.id}",
+            "target_module": crm_handoff.get("target_module") or "orders",
+            "lead_profile": contact,
+            "attachments": [attachment_info] if attachment_info else [],
             "ticket_contract_version": "whatsapp.assisted_intake_ticket.v1",
         },
         fingerprint=fingerprint,
     )
     db.session.add(ticket)
     db.session.flush()
-    payload["pedido_id"] = pedido.id
-    payload["lead_id"] = pedido.id
     payload["ticket_id"] = ticket.id
-    pedido.metadata_payload = {**(pedido.metadata_payload or {}), "ticket_id": ticket.id}
+    linked_record = {
+        "kind": "tenant_ticket",
+        "id": ticket.id,
+        "ticket_id": ticket.id,
+        "display_code": f"T-{ticket.id}",
+        "category": ticket.categoria,
+        "target_module": crm_handoff.get("target_module") or "orders",
+        "status": ticket.estado,
+        "fingerprint": ticket.fingerprint,
+    }
+    if attachment_info:
+        linked_record["attachment_id"] = attachment_info.get("id")
+        linked_record["attachmentInfo"] = attachment_info
+        linked_record["source_attachment"] = attachment_info
+    payload["linked_record"] = linked_record
+    crm_handoff["materialized_record"] = linked_record
+    payload["crm_handoff"] = crm_handoff
+    pedido.metadata_payload = dict(payload)
+    pedido.items = [dict(payload)]
+    ticket.datos_extra = {**(ticket.datos_extra or {}), "ticket_id": ticket.id, "linked_record": linked_record}
+    flag_modified(pedido, "metadata_payload")
+    flag_modified(pedido, "items")
+    flag_modified(ticket, "datos_extra")
     db.session.commit()
 
     try:
@@ -400,7 +607,9 @@ def create_whatsapp_assisted_intake(
             "whatsapp_assisted_intake_created",
             {
                 "source": "whatsapp_assisted_intake",
-                "contract_version": WHATSAPP_ASSISTED_INTAKE_CONTRACT_VERSION,
+                "contract_version": _ASSISTED_REQUEST_CONTRACT_VERSION,
+                "source_contract_version": WHATSAPP_ASSISTED_INTAKE_CONTRACT_VERSION,
+                "mode": "order_note_upload",
                 "request_kind": request_kind,
                 "request_kind_label": request_kind_label,
                 "primary_intent": document_profile.get("primary_intent"),
@@ -426,7 +635,8 @@ def create_whatsapp_assisted_intake(
 
     return {
         "created": True,
-        "contract_version": WHATSAPP_ASSISTED_INTAKE_CONTRACT_VERSION,
+        "contract_version": _ASSISTED_REQUEST_CONTRACT_VERSION,
+        "source_contract_version": WHATSAPP_ASSISTED_INTAKE_CONTRACT_VERSION,
         "pedido_id": pedido.id,
         "lead_id": pedido.id,
         "ticket_id": ticket.id,
