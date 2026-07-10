@@ -559,6 +559,160 @@ def _build_realtime_contract(
     }
 
 
+def _build_survey_admin_paths(
+    encuesta,
+    token: str,
+    *,
+    tenant_slug: str | None = None,
+) -> dict[str, Any]:
+    survey_id = getattr(encuesta, "id", None)
+    base_params = {
+        "focus": "live_results",
+        "survey_slug": token,
+        "tenant_slug": tenant_slug,
+    }
+    heatmap_params = {
+        **base_params,
+        "focus": "heatmap",
+        "include_heatmap": "1",
+    }
+    moderation_params = {
+        **base_params,
+        "focus": "moderation",
+    }
+
+    if survey_id is not None:
+        detail_path = f"/admin/encuestas/{survey_id}"
+        analytics_path = _append_query(f"/admin/encuestas/{survey_id}/analytics", base_params)
+        heatmap_path = _append_query(f"/admin/encuestas/{survey_id}/analytics", heatmap_params)
+        moderation_path = _append_query(f"/admin/encuestas/{survey_id}/analytics", moderation_params)
+        analytics_endpoint = _append_query(
+            f"/api/v2/surveys/{survey_id}/analytics",
+            {"tenant_slug": tenant_slug},
+        )
+    else:
+        detail_path = _append_query("/admin/encuestas", {"survey_slug": token, "tenant_slug": tenant_slug})
+        analytics_path = _append_query("/admin/encuestas", base_params)
+        heatmap_path = _append_query("/admin/encuestas", heatmap_params)
+        moderation_path = _append_query("/admin/encuestas", moderation_params)
+        analytics_endpoint = None
+
+    base_url = _public_frontend_base_url()
+    return {
+        "survey_id": survey_id,
+        "detail_path": detail_path,
+        "detail_href": _absolute_url(detail_path, base_url),
+        "analytics_path": analytics_path,
+        "analytics_href": _absolute_url(analytics_path, base_url),
+        "heatmap_path": heatmap_path,
+        "heatmap_href": _absolute_url(heatmap_path, base_url),
+        "moderation_path": moderation_path,
+        "moderation_href": _absolute_url(moderation_path, base_url),
+        "analytics_endpoint": analytics_endpoint,
+    }
+
+
+def _build_survey_operations_contract(
+    encuesta,
+    token: str,
+    *,
+    tenant_slug: str | None = None,
+    live_results_enabled: bool,
+    public_state: dict[str, Any] | None = None,
+    responses_count: int | None = None,
+) -> dict[str, Any]:
+    state = public_state or {}
+    links = _build_survey_links(token, tenant_slug=tenant_slug)
+    paths = _build_survey_admin_paths(encuesta, token, tenant_slug=tenant_slug)
+    realtime = _build_realtime_contract(
+        token,
+        tenant_slug=tenant_slug,
+        enabled=live_results_enabled,
+    )
+    comments_enabled = bool(state.get("comments_enabled"))
+
+    actions = [
+        {
+            "id": "open_live_results_admin",
+            "label": "Monitorear en vivo",
+            "href": paths["analytics_href"],
+            "frontend_path": paths["analytics_path"],
+            "requires_auth": True,
+            "requires_role": ["tenant_admin", "employee", "superadmin"],
+            "ui_hint": "live_command_center",
+            "enabled": bool(live_results_enabled),
+        },
+        {
+            "id": "open_heatmap_admin",
+            "label": "Abrir mapa de calor",
+            "href": paths["heatmap_href"],
+            "frontend_path": paths["heatmap_path"],
+            "requires_auth": True,
+            "requires_role": ["tenant_admin", "employee", "superadmin"],
+            "ui_hint": "heatmap",
+            "enabled": True,
+        },
+        {
+            "id": "moderate_comments",
+            "label": "Moderar comentarios",
+            "href": paths["moderation_href"],
+            "frontend_path": paths["moderation_path"],
+            "requires_auth": True,
+            "requires_role": ["tenant_admin", "employee", "superadmin"],
+            "ui_hint": "moderation_queue",
+            "enabled": comments_enabled,
+        },
+        {
+            "id": "share_whatsapp_qr",
+            "label": "Compartir QR por WhatsApp",
+            "href": links["qr_image_url"],
+            "share_url": links["share_url"],
+            "requires_auth": True,
+            "requires_role": ["tenant_admin", "employee", "superadmin"],
+            "ui_hint": "qr_share",
+            "enabled": True,
+        },
+    ]
+
+    return {
+        "contract_version": "surveys.operations.v2",
+        "survey_id": paths["survey_id"],
+        "public_token": str(token or "").strip(),
+        "tenant_slug": tenant_slug,
+        "status": state.get("status"),
+        "is_live_vote": bool(state.get("is_live_vote")),
+        "live_results_enabled": bool(live_results_enabled),
+        "comments_enabled": comments_enabled,
+        "responses_count": int(responses_count or 0),
+        "admin_surface": {
+            "id": "survey_live_ops",
+            "label": "Centro operativo de encuesta",
+            "route": paths["analytics_path"],
+            "frontend_path": paths["analytics_path"],
+            "href": paths["analytics_href"],
+            "required_roles": ["tenant_admin", "employee", "superadmin"],
+            "actions": actions,
+        },
+        "analytics_surface": {
+            "id": "survey_analytics",
+            "route": paths["analytics_path"],
+            "frontend_path": paths["analytics_path"],
+            "href": paths["analytics_href"],
+            "endpoint": paths["analytics_endpoint"],
+            "heatmap_route": paths["heatmap_path"],
+            "heatmap_href": paths["heatmap_href"],
+            "moderation_route": paths["moderation_path"],
+            "moderation_href": paths["moderation_href"],
+        },
+        "public_surface": {
+            "public_page_url": links["public_page_url"],
+            "live_results_endpoint": links["live_results_endpoint"],
+            "qr_image_url": links["qr_image_url"],
+        },
+        "realtime": realtime,
+    }
+
+
 def _build_operational_next_steps(
     token: str,
     *,
@@ -566,6 +720,7 @@ def _build_operational_next_steps(
     live_results_enabled: bool,
     public_state: dict[str, Any] | None = None,
     responses_count: int | None = None,
+    operations: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     links = _build_survey_links(token, tenant_slug=tenant_slug)
     status = (public_state or {}).get("status")
@@ -623,6 +778,29 @@ def _build_operational_next_steps(
                 "priority": 5,
             }
         )
+    if operations:
+        admin_surface = operations.get("admin_surface") or {}
+        analytics_surface = operations.get("analytics_surface") or {}
+        items.extend(
+            [
+                {
+                    "id": "open_admin_analytics",
+                    "label": "Abrir tablero operativo",
+                    "href": admin_surface.get("href"),
+                    "frontend_path": admin_surface.get("frontend_path"),
+                    "requires_auth": True,
+                    "priority": 6,
+                },
+                {
+                    "id": "open_heatmap_admin",
+                    "label": "Ver mapa de calor",
+                    "href": analytics_surface.get("heatmap_href"),
+                    "frontend_path": analytics_surface.get("heatmap_route"),
+                    "requires_auth": True,
+                    "priority": 7,
+                },
+            ]
+        )
 
     return {
         "contract_version": "surveys.operational_next_steps.v2",
@@ -658,12 +836,21 @@ def _attach_public_contract(
     live_results_enabled = bool(getattr(encuesta, "mostrar_resultados_envivo", False))
     links = _build_survey_links(token, tenant_slug=tenant_slug)
     realtime = _build_realtime_contract(token, tenant_slug=tenant_slug, enabled=live_results_enabled)
+    operations = _build_survey_operations_contract(
+        encuesta,
+        token,
+        tenant_slug=tenant_slug,
+        live_results_enabled=live_results_enabled,
+        public_state=public_state,
+        responses_count=responses_count,
+    )
     next_steps = _build_operational_next_steps(
         token,
         tenant_slug=tenant_slug,
         live_results_enabled=live_results_enabled,
         public_state=public_state,
         responses_count=responses_count,
+        operations=operations,
     )
 
     payload.setdefault("contract_version", "surveys.public.v2")
@@ -672,6 +859,8 @@ def _attach_public_contract(
     payload["links"] = {**(payload.get("links") or {}), **links}
     payload["share"] = _build_share_contract(token, title=title, tenant_slug=tenant_slug)
     payload["realtime"] = realtime
+    payload["operations"] = operations
+    payload["admin_operations"] = operations
     payload["operational_next_steps"] = next_steps
     payload["next_steps"] = next_steps["items"]
     security = _survey_security_contract(
@@ -839,12 +1028,21 @@ def _attach_live_results_contract(
         or 5000
     )
     links = _build_survey_links(token, tenant_slug=tenant_slug)
+    operations = _build_survey_operations_contract(
+        encuesta,
+        token,
+        tenant_slug=tenant_slug,
+        live_results_enabled=True,
+        public_state=public_state,
+        responses_count=int(results.get("total_respuestas") or 0),
+    )
     next_steps = _build_operational_next_steps(
         token,
         tenant_slug=tenant_slug,
         live_results_enabled=True,
         public_state=public_state,
         responses_count=int(results.get("total_respuestas") or 0),
+        operations=operations,
     )
 
     results["public_state"] = public_state
@@ -863,12 +1061,14 @@ def _attach_live_results_contract(
         result_version=results.get("result_version"),
         snapshot_version=results.get("snapshot_version"),
     )
+    results["operations"] = operations
+    results["admin_operations"] = operations
     results["operational_next_steps"] = next_steps
     results["next_steps"] = next_steps["items"]
 
     render_contract = results.setdefault("render_contract", {})
     supports = list(render_contract.get("supports") or [])
-    for capability in ("realtime_socket", "polling_fallback", "qr_share", "admin_next_steps"):
+    for capability in ("realtime_socket", "polling_fallback", "qr_share", "admin_next_steps", "admin_operations"):
         if capability not in supports:
             supports.append(capability)
     render_contract["supports"] = supports
@@ -1318,11 +1518,25 @@ def respond_public_survey_v2(token: str):
     tenant_slug = _tenant_slug_value(tenant)
     links = _build_survey_links(token, tenant_slug=tenant_slug)
     public_state = _survey_public_state(encuesta) if encuesta is not None else None
+    operations = (
+        _build_survey_operations_contract(
+            encuesta,
+            token,
+            tenant_slug=tenant_slug,
+            live_results_enabled=live_results_enabled,
+            public_state=public_state,
+            responses_count=_survey_response_count(encuesta),
+        )
+        if encuesta is not None
+        else None
+    )
     next_steps = _build_operational_next_steps(
         token,
         tenant_slug=tenant_slug,
         live_results_enabled=live_results_enabled,
         public_state=public_state,
+        responses_count=_survey_response_count(encuesta) if encuesta is not None else None,
+        operations=operations,
     )
     response_payload = {
         "ok": True,
@@ -1338,6 +1552,8 @@ def respond_public_survey_v2(token: str):
             tenant_slug=tenant_slug,
         ),
         "realtime": _build_realtime_contract(token, tenant_slug=tenant_slug, enabled=live_results_enabled),
+        "operations": operations,
+        "admin_operations": operations,
         "operational_next_steps": next_steps,
         "next_steps": next_steps["items"],
         "rate_limit": {

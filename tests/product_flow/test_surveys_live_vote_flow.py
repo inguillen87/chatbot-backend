@@ -103,11 +103,33 @@ class ProductFlowSurveyLiveVoteTest(unittest.TestCase):
 
         public = self.client.get(f"/api/v2/public/surveys/{token}")
         self.assertEqual(public.status_code, 200, public.get_json())
+        published_payload = published.get_json()
+        self._assert_admin_operations(published_payload, token, survey_id, tenant_slug=self.tenant.slug)
         question = public.get_json()["preguntas"][0]
-        return token, question["id"], question["opciones"][0]["id"]
+        return survey_id, token, question["id"], question["opciones"][0]["id"]
+
+    def _assert_admin_operations(self, payload, token, survey_id, tenant_slug=None):
+        operations = payload["operations"]
+        self.assertEqual(operations["contract_version"], "surveys.operations.v2")
+        self.assertEqual(operations["survey_id"], survey_id)
+        self.assertEqual(operations["public_token"], token)
+        self.assertEqual(operations["tenant_slug"], tenant_slug)
+        self.assertEqual(operations["admin_surface"]["id"], "survey_live_ops")
+        self.assertIn(f"/admin/encuestas/{survey_id}/analytics", operations["admin_surface"]["frontend_path"])
+        self.assertIn(f"survey_slug={token}", operations["admin_surface"]["frontend_path"])
+        if tenant_slug:
+            self.assertIn(f"tenant_slug={tenant_slug}", operations["admin_surface"]["frontend_path"])
+        action_ids = {action["id"] for action in operations["admin_surface"]["actions"]}
+        self.assertIn("open_live_results_admin", action_ids)
+        self.assertIn("open_heatmap_admin", action_ids)
+        self.assertIn("moderate_comments", action_ids)
+        self.assertIn("share_whatsapp_qr", action_ids)
+        self.assertIn("focus=heatmap", operations["analytics_surface"]["heatmap_route"])
+        self.assertIn("include_heatmap=1", operations["analytics_surface"]["heatmap_route"])
+        self.assertEqual(payload["admin_operations"], operations)
 
     def test_vote_emits_realtime_and_updates_live_results(self):
-        token, question_id, option_id = self._create_live_vote()
+        survey_id, token, question_id, option_id = self._create_live_vote()
 
         with patch("services.encuestas_service.emit_survey_update") as emit_update:
             response = self.client.post(
@@ -133,6 +155,9 @@ class ProductFlowSurveyLiveVoteTest(unittest.TestCase):
         self.assertIn("survey.vote.created", event_names)
         self.assertEqual(ack["links"]["qr_endpoint"], f"/api/public/encuestas/v1/{token}/qr?size=320")
         self.assertIn("download_qr", [step["id"] for step in ack["next_steps"]])
+        self.assertIn("open_admin_analytics", [step["id"] for step in ack["next_steps"]])
+        self.assertIn("open_heatmap_admin", [step["id"] for step in ack["next_steps"]])
+        self._assert_admin_operations(ack, token, survey_id)
 
         emit_update.assert_called_once()
         self.assertEqual(emit_update.call_args.args[0], token)
@@ -167,10 +192,12 @@ class ProductFlowSurveyLiveVoteTest(unittest.TestCase):
         self.assertEqual(data["realtime"]["room"], f"encuesta_{token}")
         self.assertEqual(data["realtime"]["polling"]["href"], f"/api/v2/public/surveys/{token}/live-results")
         self.assertIn("admin_next_steps", data["render_contract"]["supports"])
+        self.assertIn("admin_operations", data["render_contract"]["supports"])
+        self._assert_admin_operations(data, token, survey_id)
         self.assertTrue(data["live_telemetry"]["has_responses"])
 
     def test_live_results_with_heatmap_returns_privacy_safe_vote_coordinates(self):
-        token, question_id, option_id = self._create_live_vote()
+        survey_id, token, question_id, option_id = self._create_live_vote()
 
         response = self.client.post(
             f"/api/v2/public/surveys/{token}/respond",
@@ -213,9 +240,10 @@ class ProductFlowSurveyLiveVoteTest(unittest.TestCase):
         self.assertTrue(data["heatmap"]["metadata"]["raw_points_redacted"])
         self.assertEqual(data["heatmap"]["metadata"]["coordinate_precision"], "rounded_3_decimals")
         self.assertEqual(data["heatmap"]["metadata"]["raw_points_count"], 1)
+        self._assert_admin_operations(data, token, survey_id)
 
     def test_pwa_survey_response_matches_realtime_contract_for_whatsapp_webview(self):
-        token, question_id, option_id = self._create_live_vote()
+        survey_id, token, question_id, option_id = self._create_live_vote()
 
         response = self.client.post(
             f"/api/pwa/public/surveys/{token}/respond?tenant={self.tenant.slug}",
@@ -248,3 +276,5 @@ class ProductFlowSurveyLiveVoteTest(unittest.TestCase):
         self.assertEqual(ack["runtime"]["action_id"], "survey_response")
         self.assertIn("open_live_results", [action["id"] for action in ack["ui_actions"]])
         self.assertIn("download_qr", [step["id"] for step in ack["next_steps"]])
+        self.assertIn("open_admin_analytics", [step["id"] for step in ack["next_steps"]])
+        self._assert_admin_operations(ack, token, survey_id, tenant_slug=self.tenant.slug)

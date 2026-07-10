@@ -789,8 +789,10 @@ def respond_survey(slug: str):
         _build_realtime_contract,
         _build_share_contract,
         _build_survey_links,
+        _build_survey_operations_contract,
         _merge_ui_actions,
         _survey_public_state,
+        _survey_response_count,
     )
 
     encuesta = getattr(respuesta, "encuesta", None)
@@ -798,11 +800,25 @@ def respond_survey(slug: str):
     tenant_slug = getattr(tenant, "slug", None)
     links = _build_survey_links(slug, tenant_slug=tenant_slug)
     public_state = _survey_public_state(encuesta) if encuesta is not None else None
+    operations = (
+        _build_survey_operations_contract(
+            encuesta,
+            slug,
+            tenant_slug=tenant_slug,
+            live_results_enabled=live_results_enabled,
+            public_state=public_state,
+            responses_count=_survey_response_count(encuesta),
+        )
+        if encuesta is not None
+        else None
+    )
     next_steps = _build_operational_next_steps(
         slug,
         tenant_slug=tenant_slug,
         live_results_enabled=live_results_enabled,
         public_state=public_state,
+        responses_count=_survey_response_count(encuesta) if encuesta is not None else None,
+        operations=operations,
     )
     response_payload = {
         "ok": True,
@@ -819,6 +835,8 @@ def respond_survey(slug: str):
             tenant_slug=tenant_slug,
         ),
         "realtime": _build_realtime_contract(slug, tenant_slug=tenant_slug, enabled=live_results_enabled),
+        "operations": operations,
+        "admin_operations": operations,
         "operational_next_steps": next_steps,
         "next_steps": next_steps["items"],
         "ui_actions": [],
