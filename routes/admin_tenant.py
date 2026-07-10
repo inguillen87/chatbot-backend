@@ -28,6 +28,7 @@ from models import (
     EncRespuesta,
     TicketComentario,
     TicketRealtimeState,
+    TenantTicket,
     Promocion,
 )
 from routes.catalogo import _formatear_producto
@@ -3658,6 +3659,188 @@ def _save_ticket_details(ticket, details: dict):
     ticket.detalles = json.dumps(details, ensure_ascii=False)
 
 
+def _lead_details(ticket) -> dict:
+    if isinstance(ticket, TenantTicket):
+        details = getattr(ticket, "datos_extra", None)
+        return dict(details) if isinstance(details, dict) else {}
+    return _ticket_details(ticket)
+
+
+def _save_lead_details(ticket, details: dict):
+    if isinstance(ticket, TenantTicket):
+        ticket.datos_extra = dict(details or {})
+        flag_modified(ticket, "datos_extra")
+        return
+    _save_ticket_details(ticket, details)
+
+
+def _resolve_tenant_lead_ticket(ticket_type: str, ticket_id: int):
+    normalized = str(ticket_type or "").strip().lower()
+    if normalized == "municipio":
+        return MunicipioTicket.query.get(ticket_id)
+    if normalized == "pyme":
+        return PymeTicket.query.get(ticket_id)
+    if normalized == "tenant":
+        return TenantTicket.query.get(ticket_id)
+    return None
+
+
+def _is_tenant_ticket_lead(ticket: TenantTicket) -> bool:
+    details = _lead_details(ticket)
+    category = str(getattr(ticket, "categoria", None) or "").strip().lower()
+    if category in {"lead_capture", "marketplace_assisted_order", "commerce_assisted_intake"}:
+        return True
+
+    metadata_markers = {
+        str(details.get("type") or "").strip().lower(),
+        str(details.get("contract_version") or "").strip().lower(),
+        str(details.get("intake_ticket_contract_version") or "").strip().lower(),
+        str(details.get("assisted_request_contract_version") or "").strip().lower(),
+    }
+    return (
+        "commerce_assisted_intake" in metadata_markers
+        or "marketplace.commerce_intake_ticket.v1" in metadata_markers
+        or "marketplace.assisted_request.v1" in metadata_markers
+        or bool(details.get("pedido_conversacional_id"))
+        or bool(details.get("conversational_order_id"))
+    )
+
+
+def _first_non_empty(*values):
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, str):
+            cleaned = value.strip()
+            if cleaned:
+                return cleaned
+            continue
+        if value not in ("", [], {}):
+            return value
+    return None
+
+
+def _extract_lead_contact(ticket, details: dict) -> dict:
+    contact = _admin_dict(details.get("contact"))
+    customer_profile = _admin_dict(details.get("customer_profile"))
+    assisted_request = _admin_dict(details.get("assisted_request"))
+    crm_review_card = _admin_dict(details.get("crm_review_card"))
+    review_contact = _admin_dict(crm_review_card.get("contact"))
+    assisted_contact = _admin_dict(assisted_request.get("contact"))
+    public_follow_up = _admin_dict(assisted_request.get("public_follow_up"))
+    follow_up_contact = _admin_dict(public_follow_up.get("contact"))
+
+    return {
+        "nombre": _first_non_empty(
+            getattr(ticket, "nombre_vecino", None),
+            getattr(ticket, "nombre_cliente", None),
+            details.get("contact_name"),
+            details.get("nombre"),
+            details.get("name"),
+            contact.get("name"),
+            contact.get("nombre"),
+            customer_profile.get("name"),
+            customer_profile.get("nombre"),
+            assisted_contact.get("name"),
+            assisted_contact.get("nombre"),
+            review_contact.get("name"),
+            follow_up_contact.get("name"),
+        ),
+        "telefono": _first_non_empty(
+            getattr(ticket, "telefono_vecino", None),
+            getattr(ticket, "telefono_cliente", None),
+            details.get("contact_phone"),
+            details.get("telefono"),
+            details.get("phone"),
+            contact.get("phone"),
+            contact.get("telefono"),
+            customer_profile.get("phone"),
+            customer_profile.get("telefono"),
+            assisted_contact.get("phone"),
+            assisted_contact.get("telefono"),
+            review_contact.get("phone"),
+            follow_up_contact.get("phone"),
+        ),
+        "email": _first_non_empty(
+            getattr(ticket, "email_vecino", None),
+            getattr(ticket, "email_cliente", None),
+            details.get("contact_email"),
+            details.get("email"),
+            contact.get("email"),
+            customer_profile.get("email"),
+            assisted_contact.get("email"),
+            review_contact.get("email"),
+            follow_up_contact.get("email"),
+        ),
+    }
+
+
+def _lead_last_seen(ticket):
+    return (
+        getattr(ticket, "ultima_actividad", None)
+        or getattr(ticket, "fecha", None)
+        or getattr(ticket, "updated_at", None)
+        or getattr(ticket, "created_at", None)
+    )
+
+
+def _tenant_lead_order_id(details: dict):
+    linked_record = _admin_dict(details.get("linked_record"))
+    crm_review_card = _admin_dict(details.get("crm_review_card"))
+    assisted_request = _admin_dict(details.get("assisted_request"))
+    crm_handoff = _admin_dict(assisted_request.get("crm_handoff"))
+    candidates = (
+        details.get("pedido_conversacional_id"),
+        details.get("conversational_order_id"),
+        linked_record.get("pedido_conversacional_id"),
+        linked_record.get("id") if str(linked_record.get("source_model") or "").lower() == "pedidoconversacional" else None,
+        crm_review_card.get("source_id"),
+        crm_handoff.get("pedido_conversacional_id"),
+    )
+    for candidate in candidates:
+        try:
+            return int(candidate)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _serialize_tenant_lead_item(ticket, tenant: TenantProfile, now) -> dict:
+    details = _lead_details(ticket)
+    stage = str(details.get("lead_stage") or getattr(ticket, "estado", None) or "nuevo").strip().lower()
+    last_seen = _lead_last_seen(ticket)
+    last_dt = last_seen if (last_seen and last_seen.tzinfo) else (last_seen.replace(tzinfo=timezone.utc) if last_seen else None)
+    sla_breached = bool(last_dt and (now - last_dt).total_seconds() > 1800 and stage not in {"ganado", "perdido"})
+    contact = _extract_lead_contact(ticket, details)
+    order_id = _tenant_lead_order_id(details)
+    source_metadata = {
+        "type": details.get("type"),
+        "contract_version": details.get("contract_version") or details.get("intake_ticket_contract_version"),
+        "assisted_request_contract_version": details.get("assisted_request_contract_version"),
+        "pedido_conversacional_id": order_id,
+        "needs_operator_review": details.get("needs_operator_review"),
+    }
+    return {
+        "ticket_type": "tenant",
+        "source_model": "TenantTicket",
+        "ticket_id": ticket.id,
+        "source_id": ticket.id,
+        "nro": details.get("nro") or details.get("crm_id") or f"T-{ticket.id}",
+        "nombre": contact.get("nombre"),
+        "telefono": contact.get("telefono"),
+        "email": contact.get("email"),
+        "categoria": getattr(ticket, "categoria", None),
+        "stage": stage,
+        "status": getattr(ticket, "estado", None),
+        "origen": getattr(ticket, "origen", None),
+        "sla_breached": sla_breached,
+        "last_seen": last_seen.isoformat() if last_seen else None,
+        "detail_endpoint": f"/api/v2/tickets/{ticket.id}",
+        "order_endpoint": f"/api/admin/tenants/{tenant.slug}/orders/conversational:{order_id}" if order_id else None,
+        "source_metadata": {k: v for k, v in source_metadata.items() if v not in (None, "", [], {})},
+    }
+
+
 @admin_tenant_bp.route('/api/admin/tenants/<slug>/leads', methods=['GET'])
 @token_requerido
 @require_tenant
@@ -3673,29 +3856,43 @@ def tenant_list_leads(current_user, slug):
 
     m_query = MunicipioTicket.query.filter_by(tenant_id=tenant.id)
     p_query = PymeTicket.query.filter_by(tenant_id=tenant.id)
+    t_query = TenantTicket.query.filter_by(tenant_id=tenant.id)
     rows = []
     for t in m_query.order_by(MunicipioTicket.ultima_actividad.desc()).limit(limit).all():
         rows.append(('municipio', t))
     for t in p_query.order_by(PymeTicket.fecha.desc()).limit(limit).all():
         rows.append(('pyme', t))
+    for t in t_query.order_by(TenantTicket.updated_at.desc()).limit(limit).all():
+        if _is_tenant_ticket_lead(t):
+            rows.append(('tenant', t))
 
     items = []
     now = datetime.now(timezone.utc)
     for t_type, ticket in rows:
-        details = _ticket_details(ticket)
+        if t_type == "tenant":
+            item = _serialize_tenant_lead_item(ticket, tenant, now)
+            if stage_filter and stage_filter != item.get("stage"):
+                continue
+            items.append(item)
+            continue
+
+        details = _lead_details(ticket)
         stage = str(details.get('lead_stage') or ticket.estado or 'nuevo').lower()
         if stage_filter and stage_filter != stage:
             continue
-        last_seen = getattr(ticket, 'ultima_actividad', None) or ticket.fecha
+        last_seen = _lead_last_seen(ticket)
         last_dt = last_seen if (last_seen and last_seen.tzinfo) else (last_seen.replace(tzinfo=timezone.utc) if last_seen else None)
         sla_breached = bool(last_dt and (now - last_dt).total_seconds() > 1800 and stage not in {'ganado', 'perdido'})
+        contact = _extract_lead_contact(ticket, details)
         items.append({
             'ticket_type': t_type,
+            'source_model': 'MunicipioTicket' if t_type == 'municipio' else 'PymeTicket',
             'ticket_id': ticket.id,
+            'source_id': ticket.id,
             'nro': getattr(ticket, 'nro_ticket', None) or getattr(ticket, 'nro_pedido', None),
-            'nombre': getattr(ticket, 'nombre_vecino', None) or getattr(ticket, 'nombre_cliente', None),
-            'telefono': getattr(ticket, 'telefono_vecino', None) or getattr(ticket, 'telefono_cliente', None),
-            'email': getattr(ticket, 'email_vecino', None) or getattr(ticket, 'email_cliente', None),
+            'nombre': contact.get("nombre"),
+            'telefono': contact.get("telefono"),
+            'email': contact.get("email"),
             'categoria': getattr(ticket, 'categoria', None),
             'stage': stage,
             'status': ticket.estado,
@@ -3724,11 +3921,11 @@ def tenant_update_lead_stage(current_user, slug, ticket_type: str, ticket_id: in
     if stage not in allowed:
         return jsonify({'error': 'stage inválido'}), 400
 
-    ticket = MunicipioTicket.query.get(ticket_id) if ticket_type == 'municipio' else PymeTicket.query.get(ticket_id) if ticket_type == 'pyme' else None
+    ticket = _resolve_tenant_lead_ticket(ticket_type, ticket_id)
     if not ticket or not _ticket_belongs_to_tenant(ticket, tenant):
         return jsonify({'error': 'Lead no encontrado'}), 404
 
-    details = _ticket_details(ticket)
+    details = _lead_details(ticket)
     timeline = details.get('lead_timeline') if isinstance(details.get('lead_timeline'), list) else []
     prev = details.get('lead_stage') or ticket.estado or 'nuevo'
     details['lead_stage'] = stage
@@ -3741,7 +3938,7 @@ def tenant_update_lead_stage(current_user, slug, ticket_type: str, ticket_id: in
         'note': note or None,
     })
     details['lead_timeline'] = timeline[-100:]
-    _save_ticket_details(ticket, details)
+    _save_lead_details(ticket, details)
 
     status_map = {
         'nuevo': 'nuevo', 'contactado': 'en_proceso', 'calificado': 'en_proceso',
@@ -3792,12 +3989,12 @@ def tenant_bulk_stage(current_user, slug):
             errors.append({'ticket_type': ticket_type, 'ticket_id': row.get('ticket_id'), 'error': 'ticket_id inválido'})
             continue
 
-        ticket = MunicipioTicket.query.get(ticket_id) if ticket_type == 'municipio' else PymeTicket.query.get(ticket_id) if ticket_type == 'pyme' else None
+        ticket = _resolve_tenant_lead_ticket(ticket_type, ticket_id)
         if not ticket or not _ticket_belongs_to_tenant(ticket, tenant):
             errors.append({'ticket_type': ticket_type, 'ticket_id': ticket_id, 'error': 'no encontrado'})
             continue
 
-        details = _ticket_details(ticket)
+        details = _lead_details(ticket)
         timeline = details.get('lead_timeline') if isinstance(details.get('lead_timeline'), list) else []
         prev = details.get('lead_stage') or ticket.estado or 'nuevo'
         details['lead_stage'] = stage
@@ -3810,7 +4007,7 @@ def tenant_bulk_stage(current_user, slug):
             'note': note or None,
         })
         details['lead_timeline'] = timeline[-100:]
-        _save_ticket_details(ticket, details)
+        _save_lead_details(ticket, details)
         ticket.estado = status_map.get(stage, 'en_proceso')
         if hasattr(ticket, 'ultima_actividad'):
             ticket.ultima_actividad = datetime.now(timezone.utc)
@@ -3830,11 +4027,11 @@ def tenant_lead_timeline(current_user, slug, ticket_type: str, ticket_id: int):
     if not _is_authorized_for_tenant(current_user, tenant):
         return jsonify({"error": "Unauthorized"}), 403
 
-    ticket = MunicipioTicket.query.get(ticket_id) if ticket_type == 'municipio' else PymeTicket.query.get(ticket_id) if ticket_type == 'pyme' else None
+    ticket = _resolve_tenant_lead_ticket(ticket_type, ticket_id)
     if not ticket or not _ticket_belongs_to_tenant(ticket, tenant):
         return jsonify({'error': 'Lead no encontrado'}), 404
 
-    details = _ticket_details(ticket)
+    details = _lead_details(ticket)
     timeline = details.get('lead_timeline') if isinstance(details.get('lead_timeline'), list) else []
 
     if request.method == 'GET':
@@ -3852,7 +4049,7 @@ def tenant_lead_timeline(current_user, slug, ticket_type: str, ticket_id: int):
         'note': note[:1000],
     })
     details['lead_timeline'] = timeline[-100:]
-    _save_ticket_details(ticket, details)
+    _save_lead_details(ticket, details)
     if hasattr(ticket, 'ultima_actividad'):
         ticket.ultima_actividad = datetime.now(timezone.utc)
     db.session.commit()

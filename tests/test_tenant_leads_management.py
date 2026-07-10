@@ -3,7 +3,18 @@ from datetime import datetime, timedelta, timezone
 import jwt
 
 from app import db
-from models import CatalogoItem, EncEncuesta, EncRespuesta, MunicipioTicket, TenantProfile, TicketComentario, TicketRealtimeState, User
+from models import (
+    CatalogoItem,
+    EncEncuesta,
+    EncRespuesta,
+    MunicipioTicket,
+    PedidoConversacional,
+    TenantProfile,
+    TenantTicket,
+    TicketComentario,
+    TicketRealtimeState,
+    User,
+)
 
 
 def _headers(app, user):
@@ -89,6 +100,95 @@ def test_tenant_admin_bulk_stage_and_timeline(client, app):
     )
     assert note_resp.status_code == 200
     assert any(ev.get("event") == "tenant_note" for ev in note_resp.get_json()["timeline"])
+
+
+def test_tenant_admin_includes_marketplace_assisted_ticket_in_leads(client, app):
+    owner = User(email="owner-tenant-assisted@test.com", name="Owner Assisted", rol="admin", tipo_chat="pyme")
+    owner.set_password("pass")
+    db.session.add(owner)
+    db.session.commit()
+
+    tenant = TenantProfile(slug="tenant-assisted-leads", nombre="Tenant Assisted Leads", tipo="pyme", pyme_id=owner.id)
+    db.session.add(tenant)
+    db.session.commit()
+
+    pedido = PedidoConversacional(
+        tenant_id=tenant.id,
+        estado="nuevo",
+        origen="marketplace",
+        items=[{"nombre": "Clavos", "cantidad": 2}],
+        metadata_payload={"contract_version": "marketplace.assisted_request.v1"},
+    )
+    db.session.add(pedido)
+    db.session.commit()
+
+    ticket = TenantTicket(
+        tenant_id=tenant.id,
+        categoria="marketplace_assisted_order",
+        descripcion="Pedido asistido desde nota manuscrita",
+        estado="nuevo",
+        origen="marketplace",
+        datos_extra={
+            "type": "commerce_assisted_intake",
+            "contract_version": "marketplace.commerce_intake_ticket.v1",
+            "assisted_request_contract_version": "marketplace.assisted_request.v1",
+            "pedido_conversacional_id": pedido.id,
+            "lead_stage": "nuevo",
+            "contact": {
+                "name": "Marcelo",
+                "phone": "+5492613168608",
+                "email": "marcelo@example.com",
+            },
+            "needs_operator_review": True,
+        },
+    )
+    db.session.add(ticket)
+    db.session.commit()
+
+    list_resp = client.get(f"/api/admin/tenants/{tenant.slug}/leads?stage=nuevo", headers=_headers(app, owner))
+    assert list_resp.status_code == 200
+    payload = list_resp.get_json()
+    item = next((row for row in payload["items"] if row["ticket_type"] == "tenant" and row["ticket_id"] == ticket.id), None)
+    assert item is not None
+    assert item["source_model"] == "TenantTicket"
+    assert item["nro"] == f"T-{ticket.id}"
+    assert item["nombre"] == "Marcelo"
+    assert item["telefono"] == "+5492613168608"
+    assert item["email"] == "marcelo@example.com"
+    assert item["detail_endpoint"] == f"/api/v2/tickets/{ticket.id}"
+    assert item["order_endpoint"] == f"/api/admin/tenants/{tenant.slug}/orders/conversational:{pedido.id}"
+    assert item["source_metadata"]["pedido_conversacional_id"] == pedido.id
+
+    stage_resp = client.patch(
+        f"/api/admin/tenants/{tenant.slug}/leads/tenant/{ticket.id}/stage",
+        json={"stage": "calificado", "note": "Pedido listo para revisar"},
+        headers=_headers(app, owner),
+    )
+    assert stage_resp.status_code == 200
+    assert stage_resp.get_json()["lead_stage"] == "calificado"
+    refreshed = TenantTicket.query.get(ticket.id)
+    assert refreshed.estado == "en_proceso"
+    assert refreshed.datos_extra["lead_stage"] == "calificado"
+    assert any(ev.get("event") == "tenant_stage_update" for ev in refreshed.datos_extra["lead_timeline"])
+
+    timeline_resp = client.get(
+        f"/api/admin/tenants/{tenant.slug}/leads/tenant/{ticket.id}/timeline",
+        headers=_headers(app, owner),
+    )
+    assert timeline_resp.status_code == 200
+    assert any(ev.get("to") == "calificado" for ev in timeline_resp.get_json()["timeline"])
+
+    bulk_resp = client.patch(
+        f"/api/admin/tenants/{tenant.slug}/leads/bulk-stage",
+        json={"stage": "ganado", "updates": [{"ticket_type": "tenant", "ticket_id": ticket.id}]},
+        headers=_headers(app, owner),
+    )
+    assert bulk_resp.status_code == 200
+    assert bulk_resp.get_json()["changed"] == 1
+    refreshed = TenantTicket.query.get(ticket.id)
+    assert refreshed.estado == "cerrado"
+    assert refreshed.datos_extra["lead_stage"] == "ganado"
+    assert any(ev.get("event") == "tenant_bulk_stage_update" for ev in refreshed.datos_extra["lead_timeline"])
 
 
 
