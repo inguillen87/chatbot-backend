@@ -1145,7 +1145,10 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertTrue(payload["state"]["voice_sender_attached"])
         self.assertEqual(payload["onboarding"]["status"], "sender_registered")
         register_channels = {item["id"]: item for item in payload["channel_activation"]["channels"]}
-        self.assertEqual(register_channels["whatsapp"]["status"], "ready")
+        self.assertEqual(register_channels["whatsapp"]["status"], "pending")
+        self.assertFalse(register_channels["whatsapp"]["ready"])
+        self.assertEqual(register_channels["whatsapp"]["reason_code"], "sender_not_online")
+        self.assertEqual(register_channels["whatsapp"]["actions"][0]["id"], "open_sender_status")
         self.assertEqual(payload["voice_app"]["contract_version"], "twilio.tech_provider.voice_application.v1")
         self.assertEqual(len(calls), 4)
         sender = ProviderSender.query.filter_by(tenant_id=self.tenant.id, channel="whatsapp").first()

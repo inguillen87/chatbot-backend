@@ -148,6 +148,87 @@ def test_channel_activation_contract_marks_ready_full_tenant_channels(client):
     assert "APP_USR-secret-token" not in str(payload)
 
 
+def test_channel_activation_contract_keeps_registered_sender_pending_until_twilio_approves(client):
+    _, tenant = _create_owner_and_tenant(
+        slug="pending-sender-activation",
+        plan="full",
+        configuracion={
+            "whatsapp_onboarding": {
+                "provider": "twilio_tech_provider",
+                "status": "sender_registered",
+                "connect": {
+                    "register_sender_endpoint": "/api/v2/tenants/pending-sender-activation/whatsapp/tech-provider/register-sender",
+                },
+            },
+            "twilio_tech_provider": {
+                "sender_sid": "XEpending",
+                "sender_status": "PENDING",
+            },
+        },
+    )
+
+    payload = build_channel_activation_payload(tenant)
+
+    whatsapp = {item["id"]: item for item in payload["channels"]}["whatsapp"]
+    assert whatsapp["status"] == "pending"
+    assert whatsapp["ready"] is False
+    assert whatsapp["reason_code"] == "sender_not_online"
+    assert "sender:pending" in whatsapp["evidence"]
+    assert whatsapp["actions"][0]["id"] == "open_sender_status"
+    assert whatsapp["actions"][0]["href"] == "/t/pending-sender-activation/integracion?channel=whatsapp&action=sender-status"
+    assert whatsapp["actions"][1]["id"] == "poll_sender_status"
+    assert whatsapp["actions"][1]["kind"] == "api"
+
+
+def test_channel_activation_contract_register_sender_action_when_meta_signup_completed(client):
+    _, tenant = _create_owner_and_tenant(
+        slug="register-sender-activation",
+        plan="full",
+        configuracion={
+            "whatsapp_onboarding": {
+                "provider": "twilio_tech_provider",
+                "status": "pending_sender_registration",
+                "connect": {
+                    "register_sender_endpoint": "/api/v2/tenants/register-sender-activation/whatsapp/tech-provider/register-sender",
+                },
+            },
+            "twilio_tech_provider": {
+                "waba_id": "123456",
+                "phone_number_id": "987654",
+            },
+        },
+    )
+
+    payload = build_channel_activation_payload(tenant)
+
+    whatsapp = {item["id"]: item for item in payload["channels"]}["whatsapp"]
+    assert whatsapp["status"] == "action_required"
+    assert whatsapp["ready"] is False
+    assert whatsapp["reason_code"] == "register_sender"
+    assert whatsapp["actions"][0]["id"] == "open_register_sender"
+    assert whatsapp["actions"][0]["href"] == "/t/register-sender-activation/integracion?channel=whatsapp&action=register-sender"
+    assert whatsapp["actions"][1]["href"].endswith("/whatsapp/tech-provider/register-sender")
+
+
+def test_channel_activation_contract_marks_provider_online_sender_ready(client):
+    _, tenant = _create_owner_and_tenant(
+        slug="online-sender-activation",
+        plan="full",
+        configuracion={
+            "whatsapp_onboarding": {"provider": "twilio_tech_provider", "status": "sender_registered"},
+            "twilio_tech_provider": {"sender_sid": "XEonline", "sender_status": "ONLINE"},
+        },
+    )
+
+    payload = build_channel_activation_payload(tenant)
+
+    whatsapp = {item["id"]: item for item in payload["channels"]}["whatsapp"]
+    assert whatsapp["status"] == "ready"
+    assert whatsapp["ready"] is True
+    assert whatsapp["reason_code"] is None
+    assert whatsapp["actions"][0]["id"] == "open_whatsapp_setup"
+
+
 def test_channel_activation_contract_surfaces_public_intake_security_readiness(client, monkeypatch):
     monkeypatch.delenv("VITE_CLOUDFLARE_TURNSTILE_SITE_KEY", raising=False)
     monkeypatch.delenv("NEXT_PUBLIC_CLOUDFLARE_TURNSTILE_SITE_KEY", raising=False)

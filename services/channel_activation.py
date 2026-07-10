@@ -13,7 +13,7 @@ from utils.roles import superadmin_email_allowlist_configured
 
 
 CONTRACT_VERSION = "tenant.channel_activation.v1"
-READY_STATES = {"ready", "online", "connected", "approved", "sender_registered", "enabled"}
+READY_STATES = {"ready", "online", "connected", "approved", "active", "enabled"}
 LOCKED_STATES = {"locked", "blocked", "plan_required", "needs_platform_config"}
 
 
@@ -146,13 +146,108 @@ def _whatsapp_status(cfg: Mapping[str, Any], access_enabled: bool) -> tuple[str,
 
     if not access_enabled:
         return "locked", evidence, "plan_full_required"
-    if raw_status in READY_STATES or sender_status in READY_STATES:
+    if sender_status in READY_STATES or raw_status in READY_STATES:
         return "ready", evidence, None
-    if raw_status in {"pending_sender_registration", "ready_for_embedded_signup", "provisioning_started", "plan_ready"}:
+    if raw_status == "sender_registered":
+        return "pending", evidence, "sender_not_online"
+    if raw_status == "pending_sender_registration":
+        return "action_required", evidence, "register_sender"
+    if raw_status in {"ready_for_embedded_signup", "plan_ready"}:
+        return "action_required", evidence, raw_status
+    if raw_status == "provisioning_started":
         return "pending", evidence, raw_status
     if raw_status in {"needs_platform_config", "disabled"}:
         return "blocked", evidence, raw_status
     return "action_required", evidence, "connect_whatsapp"
+
+
+def _whatsapp_actions(
+    tenant: TenantProfile | None,
+    cfg: Mapping[str, Any],
+    status: str,
+    reason_code: str | None,
+    access_enabled: bool,
+) -> list[dict[str, Any]]:
+    tenant_slug = getattr(tenant, "slug", "") or ""
+    onboarding = _as_mapping(cfg.get("whatsapp_onboarding"))
+    connect = _as_mapping(onboarding.get("connect"))
+
+    def api_endpoint(name: str, fallback_suffix: str) -> str:
+        configured = str(connect.get(name) or "").strip()
+        if configured:
+            return configured
+        return f"/api/v2/tenants/{tenant_slug}/whatsapp/tech-provider/{fallback_suffix}"
+
+    setup_action = _action(
+        "open_whatsapp_setup",
+        "Abrir panel WhatsApp",
+        _tenant_path(tenant, "/integracion?channel=whatsapp"),
+        primary=True,
+    )
+    if not access_enabled:
+        return [
+            _action(
+                "upgrade_whatsapp",
+                "Activar plan para WhatsApp",
+                _tenant_path(tenant, "/integracion?channel=whatsapp"),
+                primary=True,
+            )
+        ]
+    if reason_code == "register_sender":
+        return [
+            _action(
+                "open_register_sender",
+                "Registrar sender",
+                _tenant_path(tenant, "/integracion?channel=whatsapp&action=register-sender"),
+                primary=True,
+            ),
+            _action(
+                "register_sender_api",
+                "Ejecutar registro sender",
+                api_endpoint("register_sender_endpoint", "register-sender"),
+                kind="api",
+            ),
+        ]
+    if reason_code == "sender_not_online":
+        return [
+            _action(
+                "open_sender_status",
+                "Revisar aprobacion del sender",
+                _tenant_path(tenant, "/integracion?channel=whatsapp&action=sender-status"),
+                primary=True,
+            ),
+            _action(
+                "poll_sender_status",
+                "Actualizar estado sender",
+                api_endpoint("sender_status_endpoint", "sender-status"),
+                kind="api",
+            ),
+        ]
+    if reason_code in {"ready_for_embedded_signup", "plan_ready", "connect_whatsapp"}:
+        return [
+            _action(
+                "open_embedded_signup",
+                "Conectar WhatsApp",
+                _tenant_path(tenant, "/integracion?channel=whatsapp&action=embedded-signup"),
+                primary=True,
+            )
+        ]
+    if status == "ready":
+        return [
+            _action(
+                "open_whatsapp_setup",
+                "Ver WhatsApp",
+                _tenant_path(tenant, "/integracion?channel=whatsapp"),
+                primary=True,
+            ),
+            _action(
+                "run_sandbox",
+                "Probar sandbox",
+                f"/api/v2/tenants/{tenant_slug}/whatsapp/sandbox-test",
+                kind="api",
+            ),
+        ]
+    return [setup_action]
 
 
 def _live_chat_status(cfg: Mapping[str, Any]) -> tuple[str, list[str]]:
@@ -382,10 +477,7 @@ def build_channel_activation_payload(tenant: TenantProfile | None) -> dict[str, 
             "WhatsApp Business",
             whatsapp_status,
             "Sender productivo, proveedor Twilio/Meta y pruebas de conversacion.",
-            actions=[
-                _action("connect_whatsapp", "Conectar WhatsApp", _tenant_path(tenant, "/integracion"), primary=True),
-                _action("run_sandbox", "Probar sandbox", f"/api/v2/tenants/{getattr(tenant, 'slug', '')}/whatsapp/sandbox-test", kind="api"),
-            ],
+            actions=_whatsapp_actions(tenant, cfg, whatsapp_status, whatsapp_reason, access_enabled),
             evidence=whatsapp_evidence,
             reason_code=whatsapp_reason,
             required_plan=None if access_enabled else "full",
