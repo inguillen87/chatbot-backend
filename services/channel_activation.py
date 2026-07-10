@@ -66,6 +66,17 @@ def _truthy_setting(name: str) -> bool:
     return _truthy_env(name)
 
 
+def _clerk_environment_from_key(value: str | None) -> str:
+    key = str(value or "").strip()
+    if key.startswith("pk_live_"):
+        return "production"
+    if key.startswith("pk_test_"):
+        return "development"
+    if key:
+        return "unknown"
+    return "unconfigured"
+
+
 def _safe_count(query: Any) -> int:
     try:
         return int(query.count())
@@ -303,7 +314,9 @@ def _identity_auth_status(
     onboarding = _as_mapping(cfg.get("onboarding"))
     provider = str(auth_cfg.get("provider") or "").strip().lower()
     linked_to_clerk = provider == "clerk" or str(onboarding.get("source") or "").strip().lower() == "clerk"
-    publishable = bool(_env_value("VITE_CLERK_PUBLISHABLE_KEY", "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY", "CLERK_PUBLISHABLE_KEY"))
+    publishable_key = _env_value("VITE_CLERK_PUBLISHABLE_KEY", "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY", "CLERK_PUBLISHABLE_KEY")
+    publishable = bool(publishable_key)
+    clerk_environment = _clerk_environment_from_key(publishable_key)
     jwt_verification = bool(_env_value("CLERK_JWKS_URL", "CLERK_ISSUER", "CLERK_JWT_ISSUER", "NEXT_PUBLIC_CLERK_FRONTEND_API"))
     webhook = bool(_env_value("CLERK_WEBHOOK_SECRET"))
     enabled = not _truthy_env("CLERK_DISABLED") and (
@@ -317,6 +330,7 @@ def _identity_auth_status(
         evidence.append("tenant usa auth legacy")
     if publishable:
         evidence.append("publishable key configurada")
+        evidence.append(f"entorno Clerk:{clerk_environment}")
     if jwt_verification:
         evidence.append("JWT/JWKS configurado")
     if webhook:
@@ -340,6 +354,13 @@ def _identity_auth_status(
             evidence,
             "clerk_config_missing",
             f"Completar configuracion Clerk: {', '.join(missing_critical)}.",
+        )
+    if clerk_environment != "production":
+        return (
+            "blocked",
+            evidence,
+            "clerk_production_keys_missing",
+            "Clerk esta en development/test. Pasar la app Chatboc a produccion, configurar claves pk_live/sk_live, issuer/JWKS productivo y dominio en Cloudflare.",
         )
     if not linked_to_clerk:
         return (

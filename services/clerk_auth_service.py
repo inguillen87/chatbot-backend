@@ -186,6 +186,17 @@ def _clerk_publishable_key() -> Optional[str]:
     return str(value).strip() if value and str(value).strip() else None
 
 
+def _clerk_runtime_environment(publishable_key: Optional[str]) -> str:
+    key = str(publishable_key or "").strip()
+    if key.startswith("pk_live_"):
+        return "production"
+    if key.startswith("pk_test_"):
+        return "development"
+    if key:
+        return "unknown"
+    return "unconfigured"
+
+
 def is_clerk_superadmin_email(email: str | None) -> bool:
     return is_authorized_superadmin_email(email)
 
@@ -236,7 +247,11 @@ def _configured_clerk_social_providers(publishable_key: Optional[str] = None) ->
 
 
 def _clerk_configuration_warnings(
-    *, publishable_key: Optional[str], verification_configured: bool, social_providers: list[str]
+    *,
+    publishable_key: Optional[str],
+    verification_configured: bool,
+    social_providers: list[str],
+    runtime_environment: str,
 ) -> list[dict]:
     warnings: list[dict] = []
     if not publishable_key:
@@ -253,6 +268,13 @@ def _clerk_configuration_warnings(
                 "message": "Configure CLERK_ISSUER or CLERK_JWKS_URL on the backend. CLERK_SECRET_KEY alone does not validate session JWTs.",
             }
         )
+    if runtime_environment == "development":
+        warnings.append(
+            {
+                "code": "development_key_in_use",
+                "message": "Clerk esta usando claves de development/test. Para produccion configure claves pk_live/sk_live, issuer/JWKS de produccion y dominio productivo.",
+            }
+        )
     if str(publishable_key or "").startswith("pk_live_") and not social_providers:
         warnings.append(
             {
@@ -265,13 +287,23 @@ def _clerk_configuration_warnings(
 
 def build_clerk_frontend_contract() -> dict:
     publishable_key = _clerk_publishable_key()
+    runtime_environment = _clerk_runtime_environment(publishable_key)
     providers = _configured_clerk_social_providers(publishable_key)
     verification_configured = _clerk_verification_configured()
     ui_enabled = bool(clerk_enabled() and publishable_key and verification_configured)
+    webhook_configured = bool(os.getenv("CLERK_WEBHOOK_SECRET"))
+    production_ready = bool(
+        ui_enabled
+        and runtime_environment == "production"
+        and webhook_configured
+        and superadmin_email_allowlist_configured()
+    )
     return {
         "contract_version": CLERK_AUTH_CONTRACT_VERSION,
         "enabled": ui_enabled,
         "provider": "clerk",
+        "environment": runtime_environment,
+        "production_ready": production_ready,
         "session_sync_endpoint": "/auth/clerk/session",
         "onboarding_endpoint": "/auth/clerk/onboarding",
         "webhook_endpoint": "/auth/clerk/webhook",
@@ -280,13 +312,21 @@ def build_clerk_frontend_contract() -> dict:
         "publishable_key_configured": bool(publishable_key),
         "issuer_configured": bool(_clerk_issuer()),
         "jwks_configured": verification_configured,
-        "webhook_configured": bool(os.getenv("CLERK_WEBHOOK_SECRET")),
+        "webhook_configured": webhook_configured,
         "ready_for_session_sync": verification_configured,
         "configuration_warnings": _clerk_configuration_warnings(
             publishable_key=publishable_key,
             verification_configured=verification_configured,
             social_providers=providers,
+            runtime_environment=runtime_environment,
         ),
+        "production_requirements": {
+            "live_publishable_key": runtime_environment == "production",
+            "session_verification": verification_configured,
+            "webhook_secret": webhook_configured,
+            "superadmin_allowlist": superadmin_email_allowlist_configured(),
+            "custom_domain_or_production_instance": runtime_environment == "production",
+        },
         "social_providers": providers,
         "superadmin_policy": {
             "mode": "email_allowlist",

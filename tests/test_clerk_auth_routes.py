@@ -45,8 +45,10 @@ def test_clerk_config_contract(client, monkeypatch):
     assert payload["session_sync_endpoint"] == "/auth/clerk/session"
     assert payload["oauth_callback_path"] == "/sso-callback"
     assert payload["publishable_key"] == "pk_test_public"
+    assert payload["environment"] == "development"
+    assert payload["production_ready"] is False
     assert payload["ready_for_session_sync"] is True
-    assert payload["configuration_warnings"] == []
+    assert any(item["code"] == "development_key_in_use" for item in payload["configuration_warnings"])
     assert "facebook" in payload["social_providers"]
     assert "linkedin" in payload["social_providers"]
     assert payload["superadmin_policy"] == {
@@ -71,7 +73,35 @@ def test_clerk_config_contract_api_alias(client, monkeypatch):
     assert payload["enabled"] is True
     assert payload["session_sync_endpoint"] == "/auth/clerk/session"
     assert payload["publishable_key"] == "pk_test_public"
+    assert payload["environment"] == "development"
+    assert payload["production_ready"] is False
     assert payload["ready_for_session_sync"] is True
+
+
+def test_clerk_config_marks_production_ready_only_with_live_key_webhook_and_allowlist(client, monkeypatch):
+    monkeypatch.setenv("CLERK_ENABLED", "true")
+    monkeypatch.delenv("VITE_CLERK_PUBLISHABLE_KEY", raising=False)
+    monkeypatch.delenv("CLERK_PUBLISHABLE_KEY", raising=False)
+    monkeypatch.setenv("NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY", "pk_live_public")
+    monkeypatch.setenv("CLERK_JWKS_URL", "https://chatboc.clerk.accounts.dev/.well-known/jwks.json")
+    monkeypatch.setenv("CLERK_WEBHOOK_SECRET", "whsec_secret_value")
+    monkeypatch.setenv("CLERK_SUPERADMIN_EMAILS", "guillen.marce@gmail.com")
+    monkeypatch.setenv("CLERK_SOCIAL_PROVIDERS", "google,linkedin")
+
+    resp = client.get("/auth/clerk/config")
+
+    assert resp.status_code == 200
+    payload = resp.get_json()
+    assert payload["environment"] == "production"
+    assert payload["production_ready"] is True
+    assert payload["production_requirements"] == {
+        "live_publishable_key": True,
+        "session_verification": True,
+        "webhook_secret": True,
+        "superadmin_allowlist": True,
+        "custom_domain_or_production_instance": True,
+    }
+    assert "whsec_secret_value" not in str(payload)
 
 
 def test_clerk_config_hides_social_providers_for_live_key_until_explicitly_enabled(client, monkeypatch):

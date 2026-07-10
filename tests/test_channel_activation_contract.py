@@ -289,3 +289,29 @@ def test_channel_activation_contract_surfaces_clerk_identity_readiness(client, m
     assert ready_identity["status"] == "ready"
     assert ready_identity["reason_code"] is None
     assert "whsec_secret_value" not in str(ready_payload)
+
+
+def test_channel_activation_contract_blocks_clerk_development_keys_for_production(client, monkeypatch):
+    monkeypatch.setenv("CLERK_ENABLED", "true")
+    monkeypatch.setenv("VITE_CLERK_PUBLISHABLE_KEY", "pk_test_visible_key")
+    monkeypatch.setenv("CLERK_ISSUER", "https://skilled-walleye-28.clerk.accounts.dev")
+    monkeypatch.setenv("CLERK_WEBHOOK_SECRET", "whsec_secret_value")
+    monkeypatch.setenv("CLERK_SUPERADMIN_EMAILS", "guillen.marce@gmail.com")
+    _, tenant = _create_owner_and_tenant(
+        slug="clerk-dev-tenant",
+        plan="full",
+        configuracion={
+            "auth": {"provider": "clerk"},
+            "onboarding": {"source": "clerk", "preferred_channels": ["whatsapp", "webchat"]},
+        },
+    )
+
+    payload = build_channel_activation_payload(tenant)
+
+    identity = {item["id"]: item for item in payload["channels"]}["identity_auth"]
+    assert identity["status"] == "blocked"
+    assert identity["reason_code"] == "clerk_production_keys_missing"
+    assert "development/test" in identity["progress_hint"]
+    assert "entorno Clerk:development" in identity["evidence"]
+    assert "pk_test_visible_key" not in str(payload)
+    assert "whsec_secret_value" not in str(payload)
