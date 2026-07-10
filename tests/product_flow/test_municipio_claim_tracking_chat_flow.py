@@ -116,6 +116,8 @@ class ProductFlowMunicipioClaimTrackingChatTest(unittest.TestCase):
             self.assertEqual(payload["support"]["mode"], "offline")
             self.assertEqual(payload["support"]["conversation"]["message_count"], 1)
             self.assertEqual(payload["support"]["admin_response_surface"]["id"], "tenant_claims_inbox")
+            self.assertIn(f"ticket_id={self.ticket.id}", payload["support"]["admin_response_surface"]["route"])
+            self.assertIn("offline_message", payload["support"]["admin_response_surface"]["route"])
 
             message = self.client.post(
                 f"/api/public/tracking/claims/{self.ticket.id}/messages?pin=654321",
@@ -130,10 +132,12 @@ class ProductFlowMunicipioClaimTrackingChatTest(unittest.TestCase):
         self.assertEqual(message_payload["comment"]["source"], "public_tracking")
         self.assertTrue(message_payload["comment"]["unread_for_team"])
         self.assertEqual(message_payload["delivery"]["admin_surface"], "tenant_claims_inbox")
+        self.assertIn(f"ticket_id={self.ticket.id}", message_payload["delivery"]["admin_route"])
         self.assertTrue(message_payload["delivery"]["admin_unread"])
         self.assertTrue(message_payload["delivery"]["timeline_updated"])
         self.assertEqual(message_payload["delivery"]["reply_status"], "queued_for_agent")
         self.assertEqual(message_payload["crm_writeback"]["thread_binding"], "municipio_ticket_id")
+        self.assertIn(f"ticket_id={self.ticket.id}", message_payload["crm_writeback"]["frontend_path"])
         self.assertTrue(message_payload["crm_writeback"]["requires_admin_response"])
         self.assertIn(
             "admin_inbox_unread_incremented",
@@ -149,6 +153,7 @@ class ProductFlowMunicipioClaimTrackingChatTest(unittest.TestCase):
         self.assertEqual(emitted_payload["comment_id"], message_payload["comment"]["id"])
         self.assertTrue(emitted_payload["requires_response"])
         self.assertTrue(emitted_payload["admin_unread"])
+        self.assertIn(f"ticket_id={self.ticket.id}", emitted_payload["admin_route"])
         emit_unread.assert_called_once()
         unread_payload = emit_unread.call_args.args[0]
         self.assertEqual(unread_payload["ticket_id"], self.ticket.id)

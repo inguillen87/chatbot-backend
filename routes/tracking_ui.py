@@ -161,6 +161,7 @@ def _build_public_claim_message_payload(
     live_mode = support.get("mode") or "offline"
     unread_payload = _build_public_claim_unread_payload(ticket, comment, tenant)
     admin_surface = support.get("admin_response_surface") or {}
+    admin_route = admin_surface.get("frontend_path") or admin_surface.get("href") or admin_surface.get("route") or "/perfil?tab=tickets"
     operator_queue = support.get("operator_queue") or {}
     support_conversation = support.get("conversation") or {}
     crm_writebacks = (
@@ -216,6 +217,7 @@ def _build_public_claim_message_payload(
             "realtime_available": live_mode == "live",
             "offline_queue": live_mode != "live",
             "admin_surface": "tenant_claims_inbox",
+            "admin_route": admin_route,
             "reply_status": "sent_to_live_chat" if live_mode == "live" else "queued_for_agent",
             "queue_state": operator_queue.get("state") or "pending_admin_response",
             "pending_customer_messages": operator_queue.get("pending_customer_messages") or 1,
@@ -227,7 +229,9 @@ def _build_public_claim_message_payload(
         },
         "crm_writeback": {
             "admin_surface": admin_surface.get("id") or "tenant_claims_inbox",
-            "route": admin_surface.get("route") or "/perfil?tab=tickets",
+            "route": admin_route,
+            "href": admin_route,
+            "frontend_path": admin_route,
             "thread_binding": admin_surface.get("thread_binding") or "municipio_ticket_id",
             "ticket_id": ticket.id,
             "ticket_number": ticket.nro_ticket,
@@ -242,6 +246,7 @@ def _build_public_claim_message_payload(
             "writebacks": crm_writebacks,
             "previous_status": previous_status,
             "current_status": ticket.estado,
+            "actions": admin_surface.get("actions") or [],
         },
         "unread_event": unread_payload,
         "timeline_endpoint": support.get("endpoints", {}).get("timeline"),
@@ -283,6 +288,8 @@ def _persist_public_claim_tracking_message(ticket: MunicipioTicket, mensaje: str
                     "comment_id": comment.id,
                     "requires_response": True,
                     "admin_unread": True,
+                    "admin_route": payload.get("crm_writeback", {}).get("frontend_path"),
+                    "admin_surface": payload.get("crm_writeback", {}).get("admin_surface"),
                     "message": {
                         "id": comment.id,
                         "comentario": mensaje,

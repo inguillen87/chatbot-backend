@@ -177,6 +177,16 @@ def _tenant_live_chat_status(tenant: TenantProfile | None) -> dict[str, Any]:
     return status
 
 
+def _claim_admin_crm_route(ticket_id: int | None, *, focus: str = "live_chat") -> str:
+    base_route = "/perfil?tab=tickets"
+    if not ticket_id:
+        return base_route
+    return (
+        f"{base_route}&ticket_id={ticket_id}"
+        f"&focus={focus}&source=public_tracking&source_model=MunicipioTicket"
+    )
+
+
 def _claim_helpdesk_queue_state(
     conversation: list[dict[str, Any]],
     *,
@@ -273,6 +283,8 @@ def _claim_support_contract(
     primary_cta_id = "open_live_chat" if available else "leave_offline_message"
     primary_action_variant = "primary" if available else "secondary"
     support_action_label = "Chatear con un agente" if available else "Dejar mensaje"
+    admin_focus = "live_chat" if available else "offline_message"
+    admin_crm_route = _claim_admin_crm_route(ticket_id, focus=admin_focus)
     queue_state = _claim_helpdesk_queue_state(
         conversation,
         mode=mode,
@@ -328,6 +340,17 @@ def _claim_support_contract(
                 "schedule_label": schedule_label,
                 "timezone": live_chat.get("timezone"),
             },
+            "admin": {
+                "id": "open_admin_ticket_thread",
+                "label": "Responder desde CRM",
+                "action": "open_crm_ticket_thread",
+                "href": admin_crm_route,
+                "frontend_path": admin_crm_route,
+                "focus": admin_focus,
+                "method": "GET",
+                "bound_resource": "municipio_ticket",
+                "requires_role": ["admin", "empleado", "super_admin"],
+            },
         },
         "service_window": {
             "mode": mode,
@@ -342,6 +365,7 @@ def _claim_support_contract(
             "next_action": "socket_live_message" if available else "queue_ticket_comment",
             "response_expectation_label": response_expectation_label,
             "channel_binding_label": channel_binding_label,
+            "admin_crm_route": admin_crm_route,
         },
         "ticket": {
             "id": ticket_id,
@@ -380,6 +404,7 @@ def _claim_support_contract(
             "external_redirect_required": False,
             "pin_required_for_public_reply": True,
             "safe_for_whatsapp_cta": True,
+            "admin_handoff_inside_crm": True,
         },
         "admin_response_surface": {
             "id": "tenant_claims_inbox",
@@ -387,9 +412,29 @@ def _claim_support_contract(
             "endpoint": "/api/v2/inbox/omnichannel",
             "thread_binding": "municipio_ticket_id",
             "socket_room": socket_room,
-            "route": "/perfil?tab=tickets",
+            "route": admin_crm_route,
+            "href": admin_crm_route,
+            "frontend_path": admin_crm_route,
+            "focus": admin_focus,
+            "ticket_id": ticket_id,
             "unread_counter_key": "claim_public_messages",
             "writebacks": crm_writebacks,
+            "actions": [
+                {
+                    "id": "open_admin_ticket_thread",
+                    "label": "Abrir hilo del reclamo",
+                    "href": admin_crm_route,
+                    "frontend_path": admin_crm_route,
+                    "ui_hint": "focus_ticket_conversation",
+                },
+                {
+                    "id": "reply_from_claim_inbox",
+                    "label": "Responder al vecino",
+                    "href": admin_crm_route,
+                    "frontend_path": admin_crm_route,
+                    "ui_hint": "focus_reply_composer",
+                },
+            ],
         },
         "operator_queue": {
             **queue_state,
@@ -399,6 +444,8 @@ def _claim_support_contract(
             "requires_admin_response": has_customer_activity,
             "crm_writebacks": crm_writebacks,
             "routing_key": f"municipio:{municipio_id}:ticket:{ticket_id}" if municipio_id and ticket_id else None,
+            "admin_route": admin_crm_route,
+            "admin_action": "reply_from_claim_inbox",
         },
         "ui": {
             "render_as": "ticket_bound_helpdesk",
@@ -418,6 +465,7 @@ def _claim_support_contract(
             "polling_label": polling_label,
             "no_external_redirect_label": "Sin redireccion externa",
             "operational_state_label": "Canal seguro asociado al reclamo",
+            "admin_route_label": "Abrir hilo en CRM",
         },
     }
 

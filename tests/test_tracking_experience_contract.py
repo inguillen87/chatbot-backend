@@ -141,7 +141,19 @@ class TrackingExperienceContractTest(unittest.TestCase):
         self.assertFalse(payload["support"]["webview_policy"]["external_redirect_required"])
         self.assertEqual(payload["support"]["admin_response_surface"]["id"], "tenant_claims_inbox")
         self.assertEqual(payload["support"]["admin_response_surface"]["thread_binding"], "municipio_ticket_id")
-        self.assertEqual(payload["support"]["admin_response_surface"]["route"], "/perfil?tab=tickets")
+        self.assertIn(f"ticket_id={self.claim.id}", payload["support"]["admin_response_surface"]["route"])
+        self.assertIn("focus=", payload["support"]["admin_response_surface"]["route"])
+        self.assertEqual(
+            payload["support"]["admin_response_surface"]["frontend_path"],
+            payload["support"]["admin_response_surface"]["route"],
+        )
+        self.assertEqual(payload["support"]["admin_response_surface"]["ticket_id"], self.claim.id)
+        admin_actions = {item["id"]: item for item in payload["support"]["admin_response_surface"]["actions"]}
+        self.assertIn("reply_from_claim_inbox", admin_actions)
+        self.assertEqual(
+            admin_actions["reply_from_claim_inbox"]["frontend_path"],
+            payload["support"]["admin_response_surface"]["route"],
+        )
         self.assertTrue(payload["support"]["operator_queue"]["unread_on_customer_message"])
         self.assertFalse(payload["support"]["operator_queue"]["requires_admin_response"])
         self.assertEqual(payload["support"]["operator_queue"]["contract_version"], "claim.helpdesk_queue.v1")
@@ -265,8 +277,10 @@ class TrackingExperienceContractTest(unittest.TestCase):
         self.assertEqual(payload["delivery"]["pending_customer_messages"], 1)
         self.assertEqual(payload["delivery"]["next_team_action"], "reply_from_admin_inbox")
         self.assertEqual(payload["crm_writeback"]["admin_surface"], "tenant_claims_inbox")
-        self.assertEqual(payload["crm_writeback"]["route"], "/perfil?tab=tickets")
+        self.assertIn(f"ticket_id={self.claim.id}", payload["crm_writeback"]["route"])
+        self.assertEqual(payload["crm_writeback"]["frontend_path"], payload["crm_writeback"]["route"])
         self.assertEqual(payload["crm_writeback"]["thread_binding"], "municipio_ticket_id")
+        self.assertTrue(payload["crm_writeback"]["actions"])
         self.assertTrue(payload["crm_writeback"]["unread_for_team"])
         self.assertTrue(payload["crm_writeback"]["requires_admin_response"])
         self.assertEqual(payload["crm_writeback"]["queue_state"], "offline_waiting_admin_response")

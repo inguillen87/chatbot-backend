@@ -238,6 +238,9 @@ def _inbox_live_chat_contract(
     queued: bool = False,
     pending_customer_messages: int = 0,
     pending_since: str | None = None,
+    ticket_id: Any = None,
+    source_model: str | None = None,
+    crm_route: str | None = None,
 ) -> dict[str, Any]:
     status = deepcopy(dict(base_status or {}))
     base_state = str(status.get("base_channel_state") or ("online" if status.get("available") else "offline"))
@@ -245,6 +248,12 @@ def _inbox_live_chat_contract(
     schedule_label = status.get("description")
     offline_message = status.get("offline_message") if isinstance(status.get("offline_message"), dict) else {}
     offline_fallback_message = status.get("offline_fallback_message") or offline_message.get("message")
+    source_model_suffix = f"&source_model={source_model}" if source_model else ""
+    admin_route = crm_route or (
+        f"/perfil?tab=tickets&ticket_id={ticket_id}&focus=live_chat&source=omnichannel_inbox{source_model_suffix}"
+        if ticket_id is not None
+        else "/perfil?tab=tickets"
+    )
     status["channel_state"] = channel_state
     status["availability"] = {
         "state": channel_state,
@@ -264,12 +273,33 @@ def _inbox_live_chat_contract(
         "pending_customer_messages": max(0, int(pending_customer_messages or 0)),
         "pending_since": pending_since,
         "next_team_action": "reply_from_inbox" if queued else "monitor_ticket",
+        "admin_route": admin_route,
     }
+    status["admin_response_surface"] = {
+        "id": "tenant_claims_inbox",
+        "label": "Inbox de reclamos",
+        "route": admin_route,
+        "href": admin_route,
+        "frontend_path": admin_route,
+        "ticket_id": ticket_id,
+        "source_model": source_model,
+        "focus": "live_chat",
+    }
+    status["actions"] = [
+        {
+            "id": "open_live_chat_thread" if channel_state == "online" else "open_offline_queue_thread",
+            "label": "Abrir hilo de atencion" if channel_state == "online" else "Responder mensaje en cola",
+            "href": admin_route,
+            "frontend_path": admin_route,
+            "ui_hint": "focus_reply_composer" if queued else "focus_ticket_conversation",
+        }
+    ]
     status["frontend_contract"] = {
         "render_as": "live_chat_channel_state",
         "states": ["online", "offline", "queued"],
         "must_show_schedule": True,
         "must_show_offline_fallback": True,
+        "deep_link_supported": True,
     }
     return status
 
@@ -3895,7 +3925,14 @@ def _legacy_claim_inbox_payload(ticket: MunicipioTicket, live_chat_status: Mappi
         status=ticket.estado,
         timeline=timeline,
     )
-    live_chat = _inbox_live_chat_contract(live_chat_status or {}, queued=queued, pending_customer_messages=pending_count, pending_since=pending_since)
+    live_chat = _inbox_live_chat_contract(
+        live_chat_status or {},
+        queued=queued,
+        pending_customer_messages=pending_count,
+        pending_since=pending_since,
+        ticket_id=ticket.id,
+        source_model="MunicipioTicket",
+    )
 
     return {
         "id": f"municipio:{ticket.id}",
@@ -3982,7 +4019,14 @@ def _inbox_ticket_payload(ticket: TenantTicket, live_chat_status: Mapping[str, A
         timeline=timeline,
         handoff=handoff,
     )
-    live_chat = _inbox_live_chat_contract(live_chat_status or {}, queued=queued, pending_customer_messages=pending_count, pending_since=pending_since)
+    live_chat = _inbox_live_chat_contract(
+        live_chat_status or {},
+        queued=queued,
+        pending_customer_messages=pending_count,
+        pending_since=pending_since,
+        ticket_id=ticket.id,
+        source_model="TenantTicket",
+    )
 
     assignee = None
     if extra.get("assignee_id"):
