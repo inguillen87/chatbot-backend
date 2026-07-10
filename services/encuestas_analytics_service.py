@@ -243,6 +243,17 @@ def _counter_to_list(counter: Counter) -> List[Dict[str, Any]]:
 
 
 DEFAULT_HEATMAP_RESOLUTION = 8
+NOETHER_ANALYTICS_MAPS_SURFACE = {
+    "name": "Noether Analytics Maps",
+    "scope": "surveys_live_heatmap",
+    "supports": [
+        "live_vote_heatmaps",
+        "privacy_safe_geo_aggregation",
+        "maplibre_layers",
+        "socket_polling_sync",
+        "operator_actions",
+    ],
+}
 
 
 def _build_synthetic_heatmap_points(
@@ -1756,6 +1767,7 @@ def _build_frontend_render_contract(
 
     return {
         "version": "2026.04",
+        "product_surface": NOETHER_ANALYTICS_MAPS_SURFACE,
         "hierarchy": {
             "chart_engines": ["echarts", "recharts", "plotly"],
             "map_engines": [preferred_provider, "deckgl", "maplibre", "google"],
@@ -3238,6 +3250,7 @@ def calculate_live_results(
         "operator_recommendations": operator_recommendations[:6],
         "render_contract": {
             "preferred_visualization": "live_vote_command_center",
+            "product_surface": NOETHER_ANALYTICS_MAPS_SURFACE,
             "supports": [
                 "cards",
                 "bars",
