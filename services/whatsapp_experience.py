@@ -2613,7 +2613,7 @@ def _webview_blueprint_payload(
             "verticals": ["pyme"],
             "surface": "whatsapp_cta_webview",
             "template_ids": ["pyme_catalog_invite", "order_checkout"],
-            "url_template": f"/catalogo/{slug}",
+            "url_template": f"/t/{slug}/market",
             "requires": ["tenant_slug"],
             "signed_params": ["tenant_slug", "contact_key", "cart_id", "expires_at"],
             "server_confirmation": ["cart_updated", "order_created"],

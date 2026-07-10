@@ -1,3 +1,5 @@
+from urllib.parse import unquote_plus
+
 from app import db
 from models import AnalyticsEventV2, CatalogoItem, MarketCart, MarketCartItem, MunicipioTicket, Promocion, PromocionAlcance, PymePedido, TenantFollower, TenantProfile, User
 
@@ -183,6 +185,10 @@ def test_public_market_catalog_contract_includes_promotions(client):
     assert payload["public_api"]["flow_runtime"]["actions_endpoint"] == f"/api/public/flows/actions?tenant={tenant.slug}"
     assert payload["public_api"]["flow_runtime"]["guest_safe"] is True
     assert payload["public_api"]["tracking"]["order_path_template"] == f"/tracking/order/{{code}}?tenant_slug={tenant.slug}"
+    assert payload["publicCartUrl"].endswith(f"/t/{tenant.slug}/cart")
+    assert payload["public_cart_url"].endswith(f"/t/{tenant.slug}/cart")
+    assert f"/t/{tenant.slug}/market" in unquote_plus(payload["whatsappShareUrl"])
+    assert f"/{tenant.slug}/productos" not in unquote_plus(payload["whatsappShareUrl"])
     assert payload["public_api"]["analytics"]["contract_version"] == "marketplace.public_analytics_loop.v1"
     assert payload["public_api"]["analytics"]["public_client_can_write_events_directly"] is False
     assert payload["public_api"]["analytics"]["event_endpoint"] == "/api/analytics/event"

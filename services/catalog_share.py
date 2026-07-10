@@ -34,7 +34,7 @@ def is_catalog_share_intent(pregunta: Any) -> bool:
     return any(pattern.search(text) for pattern in CATALOG_INTENT_PATTERNS)
 
 
-def _build_portal_url(tenant_slug: str) -> str:
+def _build_public_web_base_url() -> str:
     base_url = None
     if current_app:
         base_url = current_app.config.get("APP_BASE_URL")
@@ -42,12 +42,15 @@ def _build_portal_url(tenant_slug: str) -> str:
         base_url = request.url_root.rstrip("/")
     if not base_url:
         base_url = "https://chatboc.ar"
-    return f"{base_url}/{tenant_slug}"
+    return base_url.rstrip("/")
+
+
+def _build_portal_url(tenant_slug: str) -> str:
+    return f"{_build_public_web_base_url()}/t/{tenant_slug}"
 
 
 def _build_catalog_view_url(tenant_slug: str) -> str:
-    base_url = _build_portal_url(tenant_slug)
-    return f"{base_url}/catalogo"
+    return f"{_build_portal_url(tenant_slug)}/market"
 
 
 def _build_catalog_download_url(tenant_slug: str, fmt: str = "pdf") -> str:

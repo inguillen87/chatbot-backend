@@ -723,7 +723,7 @@ def build_public_market_catalog_contract(
         products.sort(key=lambda product: _safe_text(product.get("nombre")).lower())
 
     base_web = base_web_url.rstrip("/")
-    public_url = f"{base_web}/{tenant.slug}/productos"
+    public_url = f"{base_web}/t/{tenant.slug}/market"
     share_text = f"Catalogo de {tenant.nombre or tenant.slug}: {public_url}"
     assisted_intake = public_market_assisted_intake(tenant, total_products=len(all_products))
     public_api = public_market_api_contract(tenant, assisted_intake)
@@ -755,8 +755,8 @@ def build_public_market_catalog_contract(
         "promotions": public_catalog_promotions(tenant, owner, all_items),
         "assisted_intake": assisted_intake,
         "public_api": public_api,
-        "publicCartUrl": f"{base_web}/{tenant.slug}/cart",
-        "public_cart_url": f"{base_web}/{tenant.slug}/cart",
+        "publicCartUrl": f"{base_web}/t/{tenant.slug}/cart",
+        "public_cart_url": f"{base_web}/t/{tenant.slug}/cart",
         "whatsappShareUrl": f"https://wa.me/?text={quote_plus(share_text)}",
         "heroSubtitle": (
             "Catalogo actualizado con promociones y disponibilidad operativa."

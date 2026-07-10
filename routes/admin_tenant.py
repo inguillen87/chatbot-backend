@@ -764,7 +764,7 @@ def admin_get_catalog(current_user, slug):
         "tenant_slug": tenant.slug,
         "status": "published" if has_pdf else "missing",
         "catalog_version": cfg.get("catalog_version"),
-        "view_url": f"{base_web}/{tenant.slug}/catalogo",
+        "view_url": f"{base_web.rstrip('/')}/t/{tenant.slug}/market",
         "download_url": f"{base_api}/api/public/tenants/{tenant.slug}/catalog/download?format=pdf",
         "download_url_json": f"{base_api}/api/public/tenants/{tenant.slug}/catalog/download?format=json",
         "links": {

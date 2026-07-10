@@ -11,13 +11,14 @@ from services.whatsapp_experience import build_whatsapp_experience
 from services.plan_access import integration_access_payload, integration_frontend_contract
 from utils.auth_decorators import _is_authorized_for_tenant
 from utils.auth_helpers import token_requerido
+from utils.roles import ROLE_SUPERADMIN, ROLE_TENANT_ADMIN, canonical_role
 from utils.tenant import require_tenant
 
 whatsapp_rules_bp = Blueprint("whatsapp_rules_bp", __name__)
 
 
 def _guard(user: User, tenant):
-    if getattr(user, "rol", None) not in {"admin", "super_admin"}:
+    if canonical_role(getattr(user, "rol", None)) not in {ROLE_TENANT_ADMIN, ROLE_SUPERADMIN}:
         abort(403, description="Permisos insuficientes")
     if not _is_authorized_for_tenant(user, tenant_id=tenant.id, tenant_slug=tenant.slug):
         abort(403, description="Acceso denegado")

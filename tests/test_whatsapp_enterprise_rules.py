@@ -18,8 +18,8 @@ def _auth_headers(app, user: User, tenant_slug: str) -> dict:
     return {"Authorization": f"Bearer {token}", "X-Tenant": tenant_slug}
 
 
-def _seed(*, plan=None):
-    admin = User(email="wa-rules-admin@test.com", name="Admin", rol="admin", tipo_chat="pyme")
+def _seed(*, plan=None, role="admin"):
+    admin = User(email=f"wa-rules-{role}@test.com", name="Admin", rol=role, tipo_chat="pyme")
     admin.set_password("pass")
     db.session.add(admin)
     db.session.flush()
@@ -61,6 +61,16 @@ def test_whatsapp_rules_update_and_notification_enforcement(client, app):
     assert dispatch.status_code == 200
     data = dispatch.get_json()
     assert data["failed"] >= 1
+
+
+def test_whatsapp_rules_accepts_canonical_tenant_admin_alias(client, app):
+    admin, tenant = _seed(role="tenant_admin")
+    headers = _auth_headers(app, admin, tenant.slug)
+
+    response = client.get("/api/admin/whatsapp/rules", headers=headers)
+
+    assert response.status_code == 200
+    assert response.get_json()["tenant_id"] == tenant.id
 
 
 def test_whatsapp_rules_uses_contact_state_24h_window(client, app):
