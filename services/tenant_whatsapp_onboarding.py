@@ -5,7 +5,7 @@ from typing import Any, Mapping
 
 from sqlalchemy.orm.attributes import flag_modified
 
-from services.provider_platform import sync_twilio_provider_records
+from services.provider_platform import is_sender_ready_status, sync_twilio_provider_records
 from services.twilio_tech_provider import (
     STATE_KEY,
     build_twilio_tech_provider_contract,
@@ -42,7 +42,7 @@ def _tenant_ref(tenant) -> dict[str, Any]:
 
 def _onboarding_status(contract: Mapping[str, Any], state: Mapping[str, Any], auto_provision_enabled: bool) -> str:
     sender_status = _clean(state.get("sender_status")).lower()
-    if sender_status in {"online", "approved", "connected"}:
+    if is_sender_ready_status(sender_status):
         return "online"
     if state.get("sender_sid"):
         return "sender_registered"

@@ -9,6 +9,7 @@ import re
 
 import requests
 
+from services.provider_platform import is_sender_ready_status
 from services.render_env_sync import sync_render_env_var
 
 
@@ -103,7 +104,7 @@ def _build_setup_health(
     base_url: str,
 ) -> dict[str, Any]:
     sender_status = _clean(state.get("sender_status")).upper()
-    sender_online = sender_status in {"ONLINE", "APPROVED", "CONNECTED", "ACTIVE"} or _step_done(sender_status)
+    sender_online = is_sender_ready_status(sender_status) or _step_done(sender_status)
     has_subaccount = bool(state.get("twilio_account_sid"))
     has_messaging_service = bool(state.get("messaging_service_sid"))
     has_meta_account = bool(state.get("waba_id") and state.get("phone_number_id"))
@@ -697,7 +698,7 @@ def build_twilio_tech_provider_contract(tenant, app_config: Mapping[str, Any]) -
                 "owner": "backend",
                 "method": "GET",
                 "endpoint": "https://messaging.twilio.com/v2/Channels/Senders/{SenderSid}",
-                "state": "online" if state.get("sender_status") == "ONLINE" else "pending",
+                "state": "online" if is_sender_ready_status(state.get("sender_status")) else "pending",
             },
         ],
         "frontend_contract": {
@@ -1301,7 +1302,7 @@ def poll_whatsapp_sender_status(tenant, app_config: Mapping[str, Any]) -> dict[s
     result["sender"] = sender
     result["state_patch"].update(
         {
-            "status": "sender_online" if status == "ONLINE" else "sender_pending",
+            "status": "sender_online" if is_sender_ready_status(status) else "sender_pending",
             "last_step": "poll_sender_status",
             "sender_status": status,
             "sender_id": sender_id or state.get("sender_id"),

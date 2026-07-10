@@ -15,10 +15,15 @@ from models import (
 
 
 CONTRACT_VERSION = "provider.platform_status.v1"
+READY_SENDER_STATUSES = frozenset({"online", "approved", "connected", "active"})
 
 
 def _clean(value: Any) -> str:
     return str(value or "").strip()
+
+
+def is_sender_ready_status(value: Any) -> bool:
+    return _clean(value).lower() in READY_SENDER_STATUSES
 
 
 def _bool_config(config: Mapping[str, Any], key: str, default: bool = False) -> bool:
@@ -61,7 +66,7 @@ def _twilio_state(tenant: TenantProfile) -> dict[str, Any]:
 def _connection_status(state: Mapping[str, Any]) -> str:
     sender_status = _clean(state.get("sender_status")).lower()
     status = _clean(state.get("status")).lower()
-    if sender_status in {"online", "approved", "connected"}:
+    if is_sender_ready_status(sender_status):
         return "online"
     if status in {"pending_sender_registration", "subaccount_created", "provisioning_plan_ready"}:
         return status
@@ -366,7 +371,7 @@ def build_whatsapp_provider_status(tenant: TenantProfile, app_config: Mapping[st
         {
             "id": "sender",
             "label": "Sender WhatsApp",
-            "ok": bool(sender and sender.status in {"registered", "online", "approved"}),
+            "ok": bool(sender and (sender.status == "registered" or is_sender_ready_status(sender.status))),
         },
         {
             "id": "templates",
@@ -421,4 +426,3 @@ def build_whatsapp_provider_status(tenant: TenantProfile, app_config: Mapping[st
             "show_template_health": True,
         },
     }
-

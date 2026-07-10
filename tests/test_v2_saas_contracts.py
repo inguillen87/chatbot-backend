@@ -1165,7 +1165,7 @@ class V2SaasContractsTest(unittest.TestCase):
             return _FakeTwilioResponse(
                 {
                     "sid": "XE123",
-                    "status": "ONLINE",
+                    "status": "ACTIVE",
                     "sender_id": "whatsapp:+5491112223333",
                 }
             )
@@ -1179,7 +1179,7 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(status_response.status_code, 200, status_response.get_json())
         status_payload = status_response.get_json()
         self.assertEqual(status_payload["state"]["status"], "sender_online")
-        self.assertEqual(status_payload["state"]["sender_status"], "ONLINE")
+        self.assertEqual(status_payload["state"]["sender_status"], "ACTIVE")
         self.assertEqual(status_payload["onboarding"]["status"], "online")
         status_channels = {item["id"]: item for item in status_payload["channel_activation"]["channels"]}
         self.assertEqual(status_channels["whatsapp"]["status"], "ready")

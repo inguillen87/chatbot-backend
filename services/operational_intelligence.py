@@ -663,6 +663,7 @@ def _commerce_metrics(tenant: TenantProfile, start_date: datetime, end_date: dat
 
         orders_needing_review += 1
         priority = "high" if unmatched >= 2 or detected == 0 else "medium"
+        admin_order_id = _conversational_order_admin_id(order)
         review_items.append(
             {
                 "id": f"assisted_order:{order.id}",
@@ -678,7 +679,7 @@ def _commerce_metrics(tenant: TenantProfile, start_date: datetime, end_date: dat
                 "matched": matched,
                 "unmatched": unmatched,
                 "channel": origin,
-                "endpoint": f"/api/admin/tenants/{tenant.slug}/orders/{order.id}",
+                "endpoint": f"/api/admin/tenants/{tenant.slug}/orders/{admin_order_id}",
                 "frontend_path": f"/t/{quote(str(tenant.slug), safe='')}/pedidos/{quote(str(order.id), safe='')}",
                 "ui_hint": "open_assisted_order_review",
                 "pii": {"redacted": True},
@@ -2876,6 +2877,10 @@ def _order_needs_operator_review(order: PedidoConversacional) -> tuple[bool, dic
     return needs_review, {"metadata": metadata, "draft": draft, "summary": summary, "intake": intake}
 
 
+def _conversational_order_admin_id(order: PedidoConversacional) -> str:
+    return f"conversational:{order.id}"
+
+
 def _ai_ops_order_items(tenant: TenantProfile, start_date: datetime, end_date: datetime, *, limit: int) -> list[dict[str, Any]]:
     orders = (
         _between(PedidoConversacional.query.filter_by(tenant_id=tenant.id), PedidoConversacional.created_at, start_date, end_date)
@@ -2897,6 +2902,7 @@ def _ai_ops_order_items(tenant: TenantProfile, start_date: datetime, end_date: d
         if not detected:
             reason_codes.append("low_extraction_confidence")
         priority = "high" if unmatched >= 2 or not detected else "medium"
+        admin_order_id = _conversational_order_admin_id(order)
         items.append(
             {
                 "id": f"order:pedido_conversacional:{order.id}",
@@ -2909,7 +2915,7 @@ def _ai_ops_order_items(tenant: TenantProfile, start_date: datetime, end_date: d
                 "recommended_action": _ai_ops_recommended_action(
                     action_id="open_assisted_order",
                     label="Revisar pedido",
-                    endpoint=f"/api/admin/tenants/{tenant.slug}/orders/{order.id}",
+                    endpoint=f"/api/admin/tenants/{tenant.slug}/orders/{admin_order_id}",
                     ui_hint="open_order_detail",
                     href=f"/t/{quote(str(tenant.slug), safe='')}/pedidos/{quote(str(order.id), safe='')}",
                 ),

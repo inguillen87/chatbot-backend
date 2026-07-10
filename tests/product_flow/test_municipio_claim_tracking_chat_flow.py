@@ -175,3 +175,73 @@ class ProductFlowMunicipioClaimTrackingChatTest(unittest.TestCase):
         body = timeline.get_json()
         serialized = str(body)
         self.assertIn("Sigue sin luz", serialized)
+
+    def test_conversational_claim_intake_opens_tracking_and_public_thread(self):
+        from routes.v2.tenants import create_demo_session_token
+
+        demo_session_id = create_demo_session_token(tenant_slug=self.tenant.slug, sector="gobierno", rubro="gobierno")
+        intake = self.client.post(
+            f"/api/ask/municipio?tenant_slug={self.tenant.slug}&demo_session_id={demo_session_id}",
+            json={
+                "pregunta": "Donde reporto baches con ubicacion?",
+                "demo_mode": True,
+                "tenant_slug": self.tenant.slug,
+                "location": {"lat": -34.61, "lng": -58.44, "address": "San Martin 500"},
+            },
+            headers={
+                "Origin": "https://www.chatboc.ar",
+                "X-Request-Id": "claim-intake-tracking-1",
+                "X-Chat-Session-Id": "sid_claim_intake_tracking",
+            },
+        )
+
+        self.assertEqual(intake.status_code, 200, intake.get_json())
+        intake_payload = intake.get_json()
+        self.assertEqual(intake_payload.get("fuente"), "demo_municipio_runtime")
+        self.assertEqual((intake_payload.get("ticket") or {}).get("category"), "Baches y calzada")
+
+        ticket = (
+            MunicipioTicket.query.filter(MunicipioTicket.id != self.ticket.id)
+            .order_by(MunicipioTicket.id.desc())
+            .first()
+        )
+        self.assertIsNotNone(ticket)
+        self.assertEqual(ticket.categoria, "Baches y calzada")
+        self.assertEqual(ticket.direccion, "San Martin 500")
+        self.assertTrue(ticket.consulta_pin)
+
+        with patch("routes.tracking_ui.emit_new_chat_message") as emit_chat, patch(
+            "routes.tracking_ui.emit_ticket_unread_changed"
+        ) as emit_unread, patch(
+            "services.tracking_experience.build_tenant_live_chat_status",
+            side_effect=self._offline_status,
+        ):
+            tracking = self.client.get(
+                f"/api/public/tracking/experience?kind=claim&code=M-{ticket.nro_ticket}&pin={ticket.consulta_pin}",
+                headers={"X-Request-Id": "claim-intake-tracking-view-1"},
+            )
+            self.assertEqual(tracking.status_code, 200, tracking.get_json())
+            tracking_payload = tracking.get_json()
+            self.assertEqual(tracking_payload["contract_version"], "tracking.experience.v1")
+            self.assertEqual(tracking_payload["resource"]["code"], f"M-{ticket.nro_ticket}")
+            self.assertEqual(tracking_payload["support"]["mode"], "offline")
+
+            public_message = self.client.post(
+                f"/api/public/tracking/claims/{ticket.id}/messages?pin={ticket.consulta_pin}",
+                json={"mensaje": "Necesito saber cuando viene la cuadrilla"},
+                headers={"X-Request-Id": "claim-intake-public-message-1"},
+            )
+
+        self.assertEqual(public_message.status_code, 201, public_message.get_json())
+        message_payload = public_message.get_json()
+        self.assertEqual(message_payload["contract_version"], "tracking.support_message.v1")
+        self.assertEqual(message_payload["request_id"], "claim-intake-public-message-1")
+        self.assertIn(f"ticket_id={ticket.id}", message_payload["delivery"]["admin_route"])
+        self.assertTrue(message_payload["delivery"]["admin_unread"])
+        self.assertEqual(message_payload["crm_writeback"]["thread_binding"], "municipio_ticket_id")
+        emit_chat.assert_called_once()
+        emit_unread.assert_called_once()
+
+        timeline = self.client.get(f"/tickets/municipio/{ticket.id}/timeline?pin={ticket.consulta_pin}")
+        self.assertEqual(timeline.status_code, 200, timeline.get_json())
+        self.assertIn("Necesito saber cuando viene la cuadrilla", str(timeline.get_json()))

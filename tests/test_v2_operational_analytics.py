@@ -261,6 +261,10 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertEqual((commerce.get("frontend_contract") or {}).get("render_as"), "commerce_assisted_ops")
         review_item = (commerce.get("review_items") or [])[0]
         self.assertEqual(review_item.get("ui_hint"), "open_assisted_order_review")
+        self.assertEqual(
+            review_item.get("endpoint"),
+            f"/api/admin/tenants/{self.tenant.slug}/orders/conversational:{self.assisted_order.id}",
+        )
         self.assertTrue((review_item.get("pii") or {}).get("redacted"))
         self.assertEqual((payload.get("employees") or {}).get("summary", {}).get("employees"), 1)
         self.assertTrue((payload.get("maps") or {}).get("heatmap", {}).get("hotspots"))
@@ -817,6 +821,10 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
 
         actions_by_source = {item.get("source"): item.get("recommended_action") or {} for item in items}
         self.assertIn("/tickets", actions_by_source.get("ticket", {}).get("href") or "")
+        self.assertEqual(
+            actions_by_source.get("order", {}).get("endpoint"),
+            f"/api/admin/tenants/{self.tenant.slug}/orders/conversational:{self.assisted_order.id}",
+        )
         self.assertIn("/pedidos/", actions_by_source.get("order", {}).get("href") or "")
         self.assertIn("/admin/encuestas", actions_by_source.get("survey", {}).get("href") or "")
         self.assertIn("focus=live", actions_by_source.get("survey", {}).get("href") or "")
