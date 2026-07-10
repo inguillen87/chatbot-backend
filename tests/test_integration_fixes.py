@@ -94,6 +94,40 @@ def test_whatsapp_connect_plan_lock_uses_whatsapp_sender_feature(client, app):
     assert payload["frontend_contract"]["feature_id"] == "whatsapp_sender_management"
     assert payload["access"]["features"]["whatsapp_sender_management"]["enabled"] is False
 
+
+@pytest.mark.parametrize("path", [
+    "/api/admin/tenants/test-tenant/integrations/mercadolibre/sync",
+    "/api/admin/tenants/test-tenant/integrations/tiendanube/sync",
+])
+def test_marketplace_sync_plan_lock_uses_marketplace_feature(client, app, path):
+    with app.app_context():
+        _user, _tenant, headers = _create_admin_tenant(plan="free")
+
+    resp = client.post(path, headers=headers)
+
+    assert resp.status_code == 403
+    payload = resp.json
+    assert payload["error"] == "plan_required"
+    assert payload["feature_id"] == "marketplace_sync"
+    assert payload["feature"]["id"] == "marketplace_sync"
+    assert payload["feature"]["action"] == "connect_marketplace"
+    assert payload["frontend_contract"]["feature_id"] == "marketplace_sync"
+    assert payload["access"]["features"]["marketplace_sync"]["enabled"] is False
+
+
+def test_marketplace_preview_plan_lock_uses_marketplace_feature(client, app):
+    with app.app_context():
+        _user, _tenant, headers = _create_admin_tenant(plan="free")
+
+    resp = client.get('/api/admin/tenants/test-tenant/integrations/mercadolibre/preview', headers=headers)
+
+    assert resp.status_code == 403
+    payload = resp.json
+    assert payload["error"] == "plan_required"
+    assert payload["feature_id"] == "marketplace_sync"
+    assert payload["frontend_contract"]["feature_id"] == "marketplace_sync"
+
+
 def test_widget_settings_includes_style(client, app):
     # Mock tenant resolution which might be complex in tests
     with app.app_context():

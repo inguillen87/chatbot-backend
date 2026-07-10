@@ -120,6 +120,10 @@ class AdminMercadoPagoIntegrationTest(unittest.TestCase):
         self.assertEqual(save_resp.status_code, 403)
         save_payload = save_resp.get_json()
         self.assertEqual(save_payload["error"], "plan_required")
+        self.assertEqual(save_payload["feature_id"], "mercadopago_checkout")
+        self.assertEqual(save_payload["feature"]["id"], "mercadopago_checkout")
+        self.assertEqual(save_payload["feature"]["action"], "configure_payment_gateway")
+        self.assertEqual(save_payload["frontend_contract"]["feature_id"], "mercadopago_checkout")
         self.assertFalse(save_payload["access"]["features"]["mercadopago_checkout"]["enabled"])
 
         get_resp = self.client.get(
@@ -127,6 +131,8 @@ class AdminMercadoPagoIntegrationTest(unittest.TestCase):
             headers=self.headers,
         )
         self.assertEqual(get_resp.status_code, 403)
+        get_payload = get_resp.get_json()
+        self.assertEqual(get_payload["feature_id"], "mercadopago_checkout")
 
 
 if __name__ == "__main__":

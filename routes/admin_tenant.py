@@ -667,6 +667,19 @@ def _integration_plan_required_response(tenant: TenantProfile, feature_id: str =
     )
 
 
+def _integration_plan_feature_id(integration_type: str | None, *, operation: str = "connect") -> str:
+    normalized = str(integration_type or "").strip().lower().replace("-", "_")
+    if normalized in {"whatsapp", "whatsapp_business", "whatsapp_business_platform", "twilio", "meta"}:
+        return "whatsapp_sender_management"
+    if normalized in {"mercadopago", "mercado_pago", "payments", "payment_gateway", "checkout"}:
+        return "mercadopago_checkout"
+    if normalized in {"mercadolibre", "mercado_libre", "tiendanube", "tienda_nube", "marketplace"}:
+        return "marketplace_sync"
+    if operation in {"sync", "preview"}:
+        return "marketplace_sync"
+    return "marketplace_sync"
+
+
 def _resolve_admin_tenant(current_user: User, slug: str) -> TenantProfile | None:
     slug = apply_tenant_alias(slug) or slug
     tenant = TenantProfile.query.filter_by(slug=slug).first()
@@ -2654,8 +2667,7 @@ def connect_integration(current_user, slug, integration_type):
     if not _is_authorized_for_tenant(current_user, tenant):
          return jsonify({'error': 'Unauthorized'}), 403
     if not _plan_allows_integrations(tenant):
-        feature_id = "whatsapp_sender_management" if integration_type.lower() == "whatsapp" else "marketplace_sync"
-        return _integration_plan_required_response(tenant, feature_id)
+        return _integration_plan_required_response(tenant, _integration_plan_feature_id(integration_type))
 
     base_url = current_app.config.get("PUBLIC_BASE_URL", "https://chatboc.ar").rstrip("/")
 
@@ -2764,7 +2776,7 @@ def get_mercadopago_credentials(current_user, slug):
         return jsonify({'error': 'Unauthorized'}), 403
 
     if not _plan_allows_integrations(tenant):
-        return _integration_plan_required_response(tenant)
+        return _integration_plan_required_response(tenant, "mercadopago_checkout")
 
     cfg = tenant.configuracion or {}
     token = cfg.get('mercadopago_access_token')
@@ -2792,7 +2804,7 @@ def set_mercadopago_credentials(current_user, slug):
         return jsonify({'error': 'Unauthorized'}), 403
 
     if not _plan_allows_integrations(tenant):
-        return _integration_plan_required_response(tenant)
+        return _integration_plan_required_response(tenant, "mercadopago_checkout")
 
     payload = request.get_json(silent=True) or {}
     access_token = (payload.get('access_token') or payload.get('token') or '').strip()
@@ -2826,7 +2838,7 @@ def test_mercadopago_credentials(current_user, slug):
         return jsonify({'error': 'Unauthorized'}), 403
 
     if not _plan_allows_integrations(tenant):
-        return _integration_plan_required_response(tenant)
+        return _integration_plan_required_response(tenant, "mercadopago_checkout")
 
     cfg = tenant.configuracion or {}
     token = cfg.get('mercadopago_access_token')
@@ -2934,7 +2946,7 @@ def sync_integration(current_user, slug, integration_type):
     if not _is_authorized_for_tenant(current_user, tenant):
          return jsonify({'error': 'Unauthorized'}), 403
     if not _plan_allows_integrations(tenant):
-        return _integration_plan_required_response(tenant)
+        return _integration_plan_required_response(tenant, _integration_plan_feature_id(integration_type, operation="sync"))
 
     if integration_type.lower() == 'mercadolibre':
         from services.integrations.mercadolibre import MercadoLibreService
@@ -2961,7 +2973,7 @@ def preview_integration_sync(current_user, slug, integration_type):
     if not _is_authorized_for_tenant(current_user, tenant):
          return jsonify({'error': 'Unauthorized'}), 403
     if not _plan_allows_integrations(tenant):
-        return _integration_plan_required_response(tenant)
+        return _integration_plan_required_response(tenant, _integration_plan_feature_id(integration_type, operation="preview"))
 
     if integration_type.lower() == 'mercadolibre':
         from services.integrations.mercadolibre import MercadoLibreService
