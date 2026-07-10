@@ -201,8 +201,8 @@ def test_marketplace_order_note_upload_creates_assisted_request_contract(client,
     assert payload["security"]["surface"] == "marketplace_assisted_upload"
     assert payload["security"]["status"] == "not_required"
     assert payload["security"]["reset_required"] is False
-    assert payload["request_kind"] == "order_note"
-    assert payload["request_kind_label"] == "nota de pedido"
+    assert payload["request_kind"] == "handwritten_order"
+    assert payload["request_kind_label"] == "nota manuscrita de pedido"
     assert payload["source"]["original_filename"] == "nota.png"
     assert payload["source"]["mime_type"] == "image/png"
     assert payload["source"]["file_size_bytes"] == len(b"foto-nota")
@@ -367,7 +367,7 @@ def test_marketplace_order_note_upload_creates_assisted_request_contract(client,
     assert pedido is not None
     assert pedido.tipo == "nota_de_pedido"
     assert pedido.metadata_payload["contract_version"] == "marketplace.assisted_request.v1"
-    assert pedido.metadata_payload["request_kind"] == "order_note"
+    assert pedido.metadata_payload["request_kind"] == "handwritten_order"
     assert pedido.metadata_payload["document_profile"]["operator_goal"] == "convertir_a_pedido_o_cotizacion"
     assert pedido.metadata_payload["intake_experience"]["render_as"] == "anonymous_assisted_marketplace_intake"
     assert pedido.metadata_payload["source"]["channel"] == "marketplace"
@@ -414,7 +414,7 @@ def test_marketplace_order_note_upload_creates_assisted_request_contract(client,
     assert ticket_event is not None
     assert ticket_event.metadata_payload["contract_version"] == "marketplace.commerce_loop.analytics.v1"
     assert ticket_event.metadata_payload["intake_ticket_contract_version"] == "marketplace.commerce_intake_ticket.v1"
-    assert ticket_event.metadata_payload["request_kind"] == "order_note"
+    assert ticket_event.metadata_payload["request_kind"] == "handwritten_order"
     assert ticket_event.metadata_payload["target_module"] == "orders"
     assert ticket_event.metadata_payload["ticket_category"] == "marketplace_assisted_order"
     assert ticket_event.metadata_payload["linked_record_type"] == "tenant_ticket"
@@ -1088,6 +1088,110 @@ def test_marketplace_text_without_document_type_infers_quote_request(client, ini
     assert payload["source"]["classification"]["source"] == "text_or_filename"
     assert payload["match_summary"]["matched"] == 1
     assert payload["match_summary"]["unmatched"] == 1
+
+
+def test_marketplace_text_without_document_type_infers_handwritten_hardware_list(client, init_database, monkeypatch):
+    owner = User.query.filter_by(email="admin@test.com").first()
+    tenant = TenantProfile(slug="market-ferretero", nombre="Market Ferretero", tipo="pyme", pyme_id=owner.id, plan="full")
+    db.session.add(tenant)
+    db.session.flush()
+    db.session.add(
+        CatalogoItem(
+            user_id=owner.id,
+            tenant_id=tenant.id,
+            nombre="Clavos punta paris",
+            sku="CL-HAND",
+            precio="3000",
+            modalidad="venta",
+            disponible=True,
+        )
+    )
+    db.session.commit()
+
+    monkeypatch.setattr(
+        "routes.pedidos_from_file.extract_table_from_file",
+        lambda content, prompt: [
+            {"sku": "CL-HAND", "nombre": "Clavos punta paris", "cantidad": 2},
+            {"nombre": "Chapas galvanizadas", "cantidad": 4},
+        ],
+    )
+
+    response = client.post(
+        "/api/pedidos/from-file?origen=marketplace",
+        data={
+            "pedido_text": "Lista del ferretero: 2 cajas de clavos punta paris y 4 chapas galvanizadas",
+            "contact_phone": "+5492600000000",
+        },
+        headers={"X-Tenant": tenant.slug},
+    )
+
+    assert response.status_code == 201
+    payload = response.get_json()
+    assert payload["request_kind"] == "handwritten_order"
+    assert payload["request_kind_label"] == "nota manuscrita de pedido"
+    assert payload["document_profile"]["catalog_matching"] is True
+    assert payload["document_profile"]["classification"]["method"] == "heuristic"
+    assert "lista del ferretero" in payload["document_profile"]["classification"]["matched_terms"]
+    assert payload["document_profile"]["input_mode"] == "text"
+    assert payload["match_summary"]["matched"] == 1
+    assert payload["match_summary"]["unmatched"] == 1
+    assert payload["crm_order_draft"]["request_kind"] == "handwritten_order"
+    assert payload["operator_intake_summary"]["target_module"] == "orders"
+
+
+def test_marketplace_image_order_filename_infers_handwritten_order(client, init_database, monkeypatch):
+    owner = User.query.filter_by(email="admin@test.com").first()
+    tenant = TenantProfile(slug="market-image-order", nombre="Market Image Order", tipo="pyme", pyme_id=owner.id, plan="full")
+    db.session.add(tenant)
+    db.session.flush()
+    db.session.add(
+        CatalogoItem(
+            user_id=owner.id,
+            tenant_id=tenant.id,
+            nombre="Clavos punta paris",
+            sku="CL-IMG",
+            precio="3000",
+            modalidad="venta",
+            disponible=True,
+        )
+    )
+    db.session.commit()
+
+    monkeypatch.setattr(
+        "routes.pedidos_from_file.upload_to_gcs",
+        lambda file_storage, *_, **__: {"public_url": "https://cdn.example.com/pedido-123.jpg", "original_name": file_storage.filename},
+    )
+    monkeypatch.setattr(
+        "routes.pedidos_from_file.extract_table_from_file",
+        lambda content, prompt: [
+            {"sku": "CL-IMG", "nombre": "Clavos punta paris", "cantidad": 2},
+            {"nombre": "Chapas galvanizadas", "cantidad": 4},
+        ],
+    )
+
+    response = client.post(
+        "/api/pedidos/from-file?origen=marketplace",
+        data={
+            "archivo": (io.BytesIO(b"foto-pedido-ferreteria"), "pedido-123.jpg"),
+            "contact_phone": "+5492600000000",
+        },
+        content_type="multipart/form-data",
+        headers={"X-Tenant": tenant.slug},
+    )
+
+    assert response.status_code == 201
+    payload = response.get_json()
+    assert payload["request_kind"] == "handwritten_order"
+    assert payload["request_kind_label"] == "nota manuscrita de pedido"
+    assert payload["document_profile"]["input_mode"] == "file"
+    assert payload["document_profile"]["classification"]["method"] == "image_filename"
+    assert payload["document_profile"]["classification"]["source"] == "filename"
+    assert "pedido" in payload["document_profile"]["classification"]["matched_terms"]
+    assert payload["source"]["archivo_nombre"] == "pedido-123.jpg"
+    assert payload["source"]["classification"]["method"] == "image_filename"
+    assert payload["match_summary"]["matched"] == 1
+    assert payload["match_summary"]["unmatched"] == 1
+    assert payload["crm_order_draft"]["request_kind"] == "handwritten_order"
 
 
 def test_widget_text_order_keeps_session_identity_for_crm(client, init_database, monkeypatch):

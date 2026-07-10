@@ -61,6 +61,17 @@ _ORDER_NOTE_ALLOWED_MIME_TYPES = {
     "text/plain",
 }
 _ORDER_NOTE_GENERIC_MIME_TYPES = {"application/octet-stream", "binary/octet-stream"}
+_ORDER_NOTE_IMAGE_EXTENSIONS = {"png", "jpg", "jpeg", "webp"}
+_HANDWRITTEN_IMAGE_FILENAME_TERMS = (
+    "pedido",
+    "lista",
+    "papel",
+    "mostrador",
+    "ferreteria",
+    "ferretero",
+    "corralon",
+    "materiales",
+)
 
 _CORS_ALLOWED_HEADERS = [
     "Content-Type",
@@ -246,9 +257,28 @@ _REQUEST_KIND_INFERENCE_TERMS: dict[str, tuple[str, ...]] = {
         "manuscrita",
         "manuscrito",
         "papel",
+        "nota de papel",
+        "nota del ferretero",
+        "lista del ferretero",
+        "lista de ferreteria",
+        "lista de materiales",
+        "pedido de mostrador",
         "foto de pedido",
         "foto del pedido",
+        "foto de la lista",
+        "foto del papel",
         "lista escrita",
+        "ferreteria",
+        "ferretero",
+        "corralon",
+        "clavos",
+        "chapas",
+        "cemento",
+        "tornillos",
+        "supermercado",
+        "almacen",
+        "bebidas",
+        "repuestos",
     ),
     "service_request": (
         "reclamo",
@@ -310,6 +340,20 @@ def _infer_request_kind(raw_kind: Optional[str], *, text_payload: Optional[str],
                 "matched_terms": matches[:5],
                 "source": "text_or_filename",
             }
+
+    filename_text = _normalize_inference_text(filename or "")
+    extension = _uploaded_order_note_extension(filename or "")
+    image_filename_matches = [
+        term
+        for term in _HANDWRITTEN_IMAGE_FILENAME_TERMS
+        if _normalize_inference_text(term) and _normalize_inference_text(term) in filename_text
+    ]
+    if extension in _ORDER_NOTE_IMAGE_EXTENSIONS and image_filename_matches:
+        return "handwritten_order", {
+            "method": "image_filename",
+            "matched_terms": image_filename_matches[:5],
+            "source": "filename",
+        }
 
     return "order_note", {"method": "default", "matched_terms": [], "source": "text_or_filename"}
 
