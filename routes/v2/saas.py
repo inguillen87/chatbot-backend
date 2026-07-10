@@ -3843,9 +3843,23 @@ def _legacy_claim_assignee(ticket: MunicipioTicket) -> dict[str, Any] | None:
     return {"id": assignee.id, "name": assignee.name, "email": assignee.email}
 
 
+def _legacy_claim_tracking_links(ticket: MunicipioTicket) -> dict[str, str]:
+    public_code = str(ticket.nro_ticket or ticket.id)
+    encoded_code = quote_plus(public_code)
+    pin = str(ticket.consulta_pin or "").strip()
+    pin_query = f"&pin={quote_plus(pin)}" if pin else ""
+    pin_path_query = f"?pin={quote_plus(pin)}" if pin else ""
+    return {
+        "code": public_code,
+        "endpoint": f"/api/public/tracking/experience?kind=claim&code={encoded_code}{pin_query}",
+        "href": f"/tracking/claim/{encoded_code}{pin_path_query}",
+    }
+
+
 def _legacy_claim_allowed_actions(ticket: MunicipioTicket) -> list[dict[str, Any]]:
     base_endpoint = "/api/v2/inbox/omnichannel/actions"
     defaults = {"source_model": "MunicipioTicket", "legacy_id": ticket.id, "ticket_id": ticket.id}
+    tracking_links = _legacy_claim_tracking_links(ticket)
     actions = [
         {
             "id": "reply",
@@ -3892,7 +3906,9 @@ def _legacy_claim_allowed_actions(ticket: MunicipioTicket) -> list[dict[str, Any
             "id": "open_tracking",
             "label": "Ver seguimiento publico",
             "method": "GET",
-            "endpoint": f"/api/public/tracking/experience?kind=claim&code={ticket.id}&pin={ticket.consulta_pin}",
+            "endpoint": tracking_links["endpoint"],
+            "href": tracking_links["href"],
+            "frontend_path": tracking_links["href"],
             "requires": [],
         }
     )
@@ -3917,6 +3933,7 @@ def _legacy_claim_inbox_payload(ticket: MunicipioTicket, live_chat_status: Mappi
     updated_at = _legacy_claim_updated_at(ticket, comments)
     assignee = _legacy_claim_assignee(ticket)
     actions = _legacy_claim_allowed_actions(ticket)
+    tracking_links = _legacy_claim_tracking_links(ticket)
     channel = str(ticket.canal_ingreso or "whatsapp").strip().lower()
     title = ticket.asunto or ticket.categoria or f"Reclamo {ticket.nro_ticket or ticket.id}"
     description = ticket.detalles or ticket.pregunta or title
@@ -3993,7 +4010,9 @@ def _legacy_claim_inbox_payload(ticket: MunicipioTicket, live_chat_status: Mappi
             "admin_surface": "tenant_claims_inbox",
             "legacy_reply_endpoint": f"/tickets/municipio/{ticket.id}/responder",
             "public_messages_endpoint": f"/api/public/tracking/claims/{ticket.id}/messages",
-            "tracking_endpoint": f"/api/public/tracking/experience?kind=claim&code={ticket.id}&pin={ticket.consulta_pin}",
+            "tracking_code": tracking_links["code"],
+            "tracking_endpoint": tracking_links["endpoint"],
+            "tracking_href": tracking_links["href"],
         },
         "handoff": None,
         "live_chat": live_chat,

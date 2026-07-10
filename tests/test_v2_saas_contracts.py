@@ -1507,6 +1507,19 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(legacy_item["source_metadata"]["read_model"], "TicketComentario")
         self.assertTrue(any("quiero hablar" in event["body"].lower() for event in legacy_item["timeline"]))
         self.assertTrue(any(action["id"] == "reply" for action in legacy_item["allowed_actions"]))
+        tracking_action = next(action for action in legacy_item["allowed_actions"] if action["id"] == "open_tracking")
+        self.assertEqual(
+            tracking_action["endpoint"],
+            "/api/public/tracking/experience?kind=claim&code=M-900144&pin=900144",
+        )
+        self.assertEqual(tracking_action["href"], "/tracking/claim/M-900144?pin=900144")
+        self.assertEqual(tracking_action["frontend_path"], "/tracking/claim/M-900144?pin=900144")
+        self.assertEqual(legacy_item["source_metadata"]["tracking_code"], "M-900144")
+        self.assertEqual(
+            legacy_item["source_metadata"]["tracking_endpoint"],
+            "/api/public/tracking/experience?kind=claim&code=M-900144&pin=900144",
+        )
+        self.assertEqual(legacy_item["source_metadata"]["tracking_href"], "/tracking/claim/M-900144?pin=900144")
         self.assertIsNone(legacy_item["contact"]["avatar"]["url"])
         self.assertEqual(legacy_item["frontend_contract"]["avatar_policy"], "consented_real_image_or_deterministic_fallback")
 
