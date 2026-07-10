@@ -148,6 +148,35 @@ def test_channel_activation_contract_marks_ready_full_tenant_channels(client):
     assert "APP_USR-secret-token" not in str(payload)
 
 
+def test_channel_activation_contract_surfaces_public_intake_security_readiness(client, monkeypatch):
+    monkeypatch.delenv("VITE_CLOUDFLARE_TURNSTILE_SITE_KEY", raising=False)
+    monkeypatch.delenv("NEXT_PUBLIC_CLOUDFLARE_TURNSTILE_SITE_KEY", raising=False)
+    monkeypatch.delenv("CLOUDFLARE_TURNSTILE_SITE_KEY", raising=False)
+    monkeypatch.delenv("CLOUDFLARE_TURNSTILE_SECRET_KEY", raising=False)
+    monkeypatch.delenv("TURNSTILE_SECRET_KEY", raising=False)
+    monkeypatch.delenv("CLOUDFLARE_TURNSTILE_ENFORCE_PUBLIC_INTAKE", raising=False)
+    _, tenant = _create_owner_and_tenant(slug="turnstile-activation", plan="full")
+
+    payload = build_channel_activation_payload(tenant)
+
+    security_channel = {item["id"]: item for item in payload["channels"]}["public_intake_security"]
+    assert security_channel["status"] == "action_required"
+    assert security_channel["reason_code"] == "turnstile_config_missing"
+    assert "VITE_CLOUDFLARE_TURNSTILE_SITE_KEY" in security_channel["progress_hint"]
+    assert "CLOUDFLARE_TURNSTILE_SECRET_KEY" in security_channel["progress_hint"]
+
+    monkeypatch.setenv("VITE_CLOUDFLARE_TURNSTILE_SITE_KEY", "site-key-visible")
+    monkeypatch.setenv("CLOUDFLARE_TURNSTILE_SECRET_KEY", "secret-never-exposed")
+    monkeypatch.setenv("CLOUDFLARE_TURNSTILE_ENFORCE_PUBLIC_INTAKE", "true")
+
+    ready_payload = build_channel_activation_payload(tenant)
+    ready_security = {item["id"]: item for item in ready_payload["channels"]}["public_intake_security"]
+    assert ready_security["status"] == "ready"
+    assert "enforcement activo" in ready_security["evidence"]
+    assert "site-key-visible" not in str(ready_payload)
+    assert "secret-never-exposed" not in str(ready_payload)
+
+
 def test_channel_activation_contract_surfaces_clerk_identity_readiness(client, monkeypatch):
     monkeypatch.setenv("CLERK_ENABLED", "true")
     monkeypatch.setenv("VITE_CLERK_PUBLISHABLE_KEY", "pk_live_visible_key")

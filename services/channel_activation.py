@@ -39,6 +39,33 @@ def _truthy_env(name: str) -> bool:
     return value in {"1", "true", "yes", "y", "on"}
 
 
+def _setting_value(*names: str) -> str | None:
+    try:
+        from flask import current_app, has_app_context
+
+        if has_app_context():
+            for name in names:
+                value = current_app.config.get(name)
+                if value and str(value).strip():
+                    return str(value).strip()
+    except Exception:
+        pass
+    return _env_value(*names)
+
+
+def _truthy_setting(name: str) -> bool:
+    try:
+        from flask import current_app, has_app_context
+
+        if has_app_context():
+            value = current_app.config.get(name)
+            if value is not None:
+                return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+    except Exception:
+        pass
+    return _truthy_env(name)
+
+
 def _safe_count(query: Any) -> int:
     try:
         return int(query.count())
@@ -236,6 +263,56 @@ def _identity_auth_status(
     return "ready", evidence, None, "Login social, portal y guardrail superadmin listos para operar."
 
 
+def _public_intake_security_status() -> tuple[str, list[str], str | None, str | None]:
+    """Secret-free readiness for anonymous marketplace and survey protection."""
+
+    site_key = bool(
+        _setting_value(
+            "VITE_CLOUDFLARE_TURNSTILE_SITE_KEY",
+            "NEXT_PUBLIC_CLOUDFLARE_TURNSTILE_SITE_KEY",
+            "CLOUDFLARE_TURNSTILE_SITE_KEY",
+        )
+    )
+    secret = bool(_setting_value("CLOUDFLARE_TURNSTILE_SECRET_KEY", "TURNSTILE_SECRET_KEY"))
+    enforced = _truthy_setting("CLOUDFLARE_TURNSTILE_ENFORCE_PUBLIC_INTAKE")
+
+    evidence = ["protege marketplace asistido", "protege encuestas publicas"]
+    if site_key:
+        evidence.append("site key publica configurada")
+    if secret:
+        evidence.append("secret backend configurado")
+    evidence.append("enforcement activo" if enforced else "enforcement pendiente")
+
+    missing: list[str] = []
+    if not site_key:
+        missing.append("VITE_CLOUDFLARE_TURNSTILE_SITE_KEY")
+    if not secret:
+        missing.append("CLOUDFLARE_TURNSTILE_SECRET_KEY")
+
+    if enforced and missing:
+        return (
+            "blocked",
+            evidence,
+            "turnstile_enforced_missing_config",
+            f"Enforcement activo sin configuracion completa: {', '.join(missing)}.",
+        )
+    if missing:
+        return (
+            "action_required",
+            evidence,
+            "turnstile_config_missing",
+            f"Configurar Cloudflare Turnstile antes de exigir desafio publico: {', '.join(missing)}.",
+        )
+    if not enforced:
+        return (
+            "pending",
+            evidence,
+            "turnstile_enforcement_pending",
+            "Site key y secret estan configurados. Activar enforcement despues del deploy frontend/backend.",
+        )
+    return "ready", evidence, None, "Cargas anonimas protegidas con Cloudflare Turnstile."
+
+
 def _counts(tenant: TenantProfile | None) -> dict[str, int]:
     if tenant is None or not getattr(tenant, "id", None):
         return {"catalog_items": 0, "approved_templates": 0, "surveys": 0, "team_members": 0}
@@ -264,6 +341,9 @@ def build_channel_activation_payload(tenant: TenantProfile | None) -> dict[str, 
     whatsapp_status, whatsapp_evidence, whatsapp_reason = _whatsapp_status(cfg, access_enabled)
     live_status, live_evidence = _live_chat_status(cfg)
     payment_status, payment_evidence, payment_reason = _payment_status(tenant, access_enabled)
+    public_security_status, public_security_evidence, public_security_reason, public_security_hint = (
+        _public_intake_security_status()
+    )
 
     widget_configured = bool(
         getattr(tenant, "widget_settings", None)
@@ -319,6 +399,16 @@ def build_channel_activation_payload(tenant: TenantProfile | None) -> dict[str, 
             evidence=["widget token listo"] if widget_configured else [],
             reason_code=None if access_enabled else "plan_full_required",
             required_plan=None if access_enabled else "full",
+        ),
+        _channel(
+            "public_intake_security",
+            "Proteccion publica",
+            public_security_status,
+            "Cloudflare Turnstile para cargas anonimas de marketplace, reclamos asistidos y encuestas.",
+            actions=[_action("configure_turnstile", "Configurar Cloudflare", _tenant_path(tenant, "/integracion"), primary=True)],
+            evidence=public_security_evidence,
+            reason_code=public_security_reason,
+            progress_hint=public_security_hint,
         ),
         _channel(
             "templates",

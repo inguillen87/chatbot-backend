@@ -1,16 +1,16 @@
 from utils.turnstile import turnstile_public_intake_contract, verify_turnstile
 
 
-def test_verify_turnstile_without_secret_skips_check(app):
+def test_verify_turnstile_without_secret_skips_check(app, monkeypatch):
     with app.app_context():
-        app.config.pop("CLOUDFLARE_TURNSTILE_SECRET_KEY", None)
-        app.config.pop("TURNSTILE_SECRET_KEY", None)
+        monkeypatch.delitem(app.config, "CLOUDFLARE_TURNSTILE_SECRET_KEY", raising=False)
+        monkeypatch.delitem(app.config, "TURNSTILE_SECRET_KEY", raising=False)
         assert verify_turnstile("dummy") is True
 
 
 def test_verify_turnstile_posts_siteverify(app, monkeypatch):
     with app.app_context():
-        app.config["CLOUDFLARE_TURNSTILE_SECRET_KEY"] = "turnstile-secret"
+        monkeypatch.setitem(app.config, "CLOUDFLARE_TURNSTILE_SECRET_KEY", "turnstile-secret")
         posted = {}
 
         class Response:
@@ -39,10 +39,10 @@ def test_verify_turnstile_posts_siteverify(app, monkeypatch):
         assert posted["timeout"] == 5
 
 
-def test_turnstile_public_intake_contract_exposes_retry_reset_state(app):
+def test_turnstile_public_intake_contract_exposes_retry_reset_state(app, monkeypatch):
     with app.app_context():
-        app.config["CLOUDFLARE_TURNSTILE_SECRET_KEY"] = "turnstile-secret"
-        app.config["CLOUDFLARE_TURNSTILE_ENFORCE_PUBLIC_INTAKE"] = "true"
+        monkeypatch.setitem(app.config, "CLOUDFLARE_TURNSTILE_SECRET_KEY", "turnstile-secret")
+        monkeypatch.setitem(app.config, "CLOUDFLARE_TURNSTILE_ENFORCE_PUBLIC_INTAKE", "true")
 
         contract = turnstile_public_intake_contract(
             surface="marketplace_assisted_upload",
