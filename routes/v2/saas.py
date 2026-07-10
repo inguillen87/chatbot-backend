@@ -47,6 +47,7 @@ from services.live_chat_schedule import build_tenant_live_chat_status
 from services.operational_intelligence import build_operational_dashboard, build_operational_freshness
 from services.provider_platform import build_whatsapp_provider_status, sync_twilio_provider_records
 from services.plan_access import integration_access_payload, integration_frontend_contract, plan_allows_full_integrations
+from services.tenant_whatsapp_onboarding import refresh_tenant_whatsapp_onboarding
 from services.twilio_tech_provider import (
     STATE_KEY,
     build_twilio_tech_provider_contract,
@@ -2149,6 +2150,12 @@ def whatsapp_tech_provider_smoke_test_v2(current_user, test_id: str, tenant_slug
             request_id=_request_id(),
             event_type="twilio_sender_status_smoke",
         )
+        onboarding = refresh_tenant_whatsapp_onboarding(
+            tenant,
+            app_config=current_app.config,
+            source="twilio_sender_status_smoke",
+        )
+        channel_activation = build_channel_activation_payload(tenant)
         flag_modified(tenant, "configuracion")
         db.session.commit()
         sender_status = str(merged_state.get("sender_status") or "").upper()
@@ -2165,6 +2172,8 @@ def whatsapp_tech_provider_smoke_test_v2(current_user, test_id: str, tenant_slug
                     "sender_status": merged_state.get("sender_status"),
                     "sender_sid": merged_state.get("sender_sid"),
                     "sender_id": merged_state.get("sender_id"),
+                    "onboarding": onboarding,
+                    "channel_activation": channel_activation,
                 },
                 next_action="send_whatsapp_smoke_test" if ok else "wait_for_meta_approval_or_poll_again",
                 status="pass" if ok else "warning",
@@ -2212,6 +2221,12 @@ def whatsapp_tech_provider_provision_v2(current_user, tenant_slug: str | None = 
         request_id=_request_id(),
         event_type="twilio_provisioning_plan",
     )
+    onboarding = refresh_tenant_whatsapp_onboarding(
+        tenant,
+        app_config=current_app.config,
+        source="twilio_provisioning_plan",
+    )
+    channel_activation = build_channel_activation_payload(tenant)
     flag_modified(tenant, "configuracion")
     db.session.commit()
     return _json_response(
@@ -2229,6 +2244,8 @@ def whatsapp_tech_provider_provision_v2(current_user, tenant_slug: str | None = 
                 "sender_id": merged_state.get("sender_id"),
                 "updated_at": merged_state.get("updated_at"),
             },
+            "onboarding": onboarding,
+            "channel_activation": channel_activation,
             "contract": build_twilio_tech_provider_contract(tenant, current_app.config),
         },
         200 if result.get("ok", True) else 400,
@@ -2264,6 +2281,12 @@ def whatsapp_tech_provider_voice_app_v2(current_user, tenant_slug: str | None = 
         request_id=_request_id(),
         event_type="twilio_voice_application",
     )
+    onboarding = refresh_tenant_whatsapp_onboarding(
+        tenant,
+        app_config=current_app.config,
+        source="twilio_voice_application",
+    )
+    channel_activation = build_channel_activation_payload(tenant)
     flag_modified(tenant, "configuracion")
     db.session.commit()
     return _json_response(
@@ -2282,6 +2305,8 @@ def whatsapp_tech_provider_voice_app_v2(current_user, tenant_slug: str | None = 
                 "voice_sender_attached": merged_state.get("voice_sender_attached"),
                 "updated_at": merged_state.get("updated_at"),
             },
+            "onboarding": onboarding,
+            "channel_activation": channel_activation,
             "contract": build_twilio_tech_provider_contract(tenant, current_app.config),
         },
         200 if result.get("ok", True) else 400,
@@ -2330,6 +2355,12 @@ def whatsapp_tech_provider_embedded_signup_v2(current_user, tenant_slug: str | N
         request_id=_request_id(),
         event_type="meta_embedded_signup_completed",
     )
+    onboarding = refresh_tenant_whatsapp_onboarding(
+        tenant,
+        app_config=current_app.config,
+        source="meta_embedded_signup_completed",
+    )
+    channel_activation = build_channel_activation_payload(tenant)
     flag_modified(tenant, "configuracion")
     db.session.commit()
     return _json_response(
@@ -2338,6 +2369,8 @@ def whatsapp_tech_provider_embedded_signup_v2(current_user, tenant_slug: str | N
             "ok": True,
             "tenant": _tenant_ref(tenant),
             "state": public_state,
+            "onboarding": onboarding,
+            "channel_activation": channel_activation,
             "next_action": "register_whatsapp_sender_via_senders_api",
             "contract": build_twilio_tech_provider_contract(tenant, current_app.config),
         }
@@ -2377,6 +2410,12 @@ def whatsapp_tech_provider_register_sender_v2(current_user, tenant_slug: str | N
         request_id=_request_id(),
         event_type="twilio_sender_registration",
     )
+    onboarding = refresh_tenant_whatsapp_onboarding(
+        tenant,
+        app_config=current_app.config,
+        source="twilio_sender_registration",
+    )
+    channel_activation = build_channel_activation_payload(tenant)
     flag_modified(tenant, "configuracion")
     db.session.commit()
     return _json_response(
@@ -2401,6 +2440,8 @@ def whatsapp_tech_provider_register_sender_v2(current_user, tenant_slug: str | N
                 "voice_sender_attached": merged_state.get("voice_sender_attached"),
                 "updated_at": merged_state.get("updated_at"),
             },
+            "onboarding": onboarding,
+            "channel_activation": channel_activation,
             "contract": build_twilio_tech_provider_contract(tenant, current_app.config),
         },
         200 if result.get("ok", True) and (not voice_result or voice_result.get("ok", True)) else 400,
@@ -2429,6 +2470,12 @@ def whatsapp_tech_provider_sender_status_v2(current_user, tenant_slug: str | Non
         request_id=_request_id(),
         event_type="twilio_sender_status_poll",
     )
+    onboarding = refresh_tenant_whatsapp_onboarding(
+        tenant,
+        app_config=current_app.config,
+        source="twilio_sender_status_poll",
+    )
+    channel_activation = build_channel_activation_payload(tenant)
     flag_modified(tenant, "configuracion")
     db.session.commit()
     return _json_response(
@@ -2443,6 +2490,8 @@ def whatsapp_tech_provider_sender_status_v2(current_user, tenant_slug: str | Non
                 "sender_status": merged_state.get("sender_status"),
                 "updated_at": merged_state.get("updated_at"),
             },
+            "onboarding": onboarding,
+            "channel_activation": channel_activation,
             "contract": build_twilio_tech_provider_contract(tenant, current_app.config),
         },
         200 if result.get("ok", True) else 400,

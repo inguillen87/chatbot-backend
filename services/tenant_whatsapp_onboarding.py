@@ -146,6 +146,36 @@ def _public_payload_for_config(
     }
 
 
+def refresh_tenant_whatsapp_onboarding(
+    tenant,
+    *,
+    app_config: Mapping[str, Any],
+    source: str = "provider_state_changed",
+) -> dict[str, Any]:
+    """Refresh the secret-free public onboarding snapshot from provider state.
+
+    The Twilio tech-provider state is the source of truth after provisioning,
+    embedded signup, sender registration and sender polling. This keeps the
+    tenant-facing checklist aligned without requiring every route to duplicate
+    the mapping rules.
+    """
+
+    cfg = tenant.configuracion if isinstance(getattr(tenant, "configuracion", None), dict) else {}
+    contract = build_twilio_tech_provider_contract(tenant, app_config)
+    state = cfg.get(STATE_KEY) if isinstance(cfg.get(STATE_KEY), dict) else {}
+    onboarding = _public_payload_for_config(
+        tenant=tenant,
+        contract=contract,
+        state=state,
+        auto_provision_enabled=_bool_config(app_config, "TWILIO_TENANT_AUTO_PROVISION_ENABLED", False),
+        source=source,
+    )
+    cfg[ONBOARDING_KEY] = onboarding
+    tenant.configuracion = cfg
+    flag_modified(tenant, "configuracion")
+    return onboarding
+
+
 def bootstrap_tenant_whatsapp_onboarding(
     tenant,
     *,
@@ -230,19 +260,12 @@ def bootstrap_tenant_whatsapp_onboarding(
         result.update({"ok": False, "status": "bootstrap_failed", "error": str(exc)})
         state = cfg.get(STATE_KEY) if isinstance(cfg.get(STATE_KEY), dict) else {}
 
-    contract = build_twilio_tech_provider_contract(tenant, app_config)
-    cfg = tenant.configuracion if isinstance(tenant.configuracion, dict) else {}
-    state = cfg.get(STATE_KEY) if isinstance(cfg.get(STATE_KEY), dict) else {}
-    cfg[ONBOARDING_KEY] = _public_payload_for_config(
-        tenant=tenant,
-        contract=contract,
-        state=state,
-        auto_provision_enabled=auto_provision_enabled,
+    onboarding = refresh_tenant_whatsapp_onboarding(
+        tenant,
+        app_config=app_config,
         source=source,
     )
-    tenant.configuracion = cfg
-    flag_modified(tenant, "configuracion")
-    result["status"] = cfg[ONBOARDING_KEY]["status"]
-    result["onboarding"] = cfg[ONBOARDING_KEY]
-    result["contract"] = contract
+    result["status"] = onboarding["status"]
+    result["onboarding"] = onboarding
+    result["contract"] = build_twilio_tech_provider_contract(tenant, app_config)
     return result

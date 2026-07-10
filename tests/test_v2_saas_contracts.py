@@ -802,10 +802,15 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(payload["mode"], "dry_run")
         self.assertEqual(payload["state"]["status"], "provisioning_plan_ready")
         self.assertTrue(any(step["id"] == "embedded_signup" for step in payload["steps"]))
+        self.assertEqual(payload["onboarding"]["contract_version"], "tenant.whatsapp_onboarding.v1")
+        self.assertEqual(payload["onboarding"]["provider"], "twilio_tech_provider")
+        self.assertEqual(payload["onboarding"]["status"], "plan_ready")
+        self.assertEqual(payload["channel_activation"]["contract_version"], "tenant.channel_activation.v1")
         refreshed = db.session.get(TenantProfile, self.tenant.id)
         state = refreshed.configuracion["twilio_tech_provider"]
         self.assertEqual(state["requested_phone_number"], "+5491112223333")
         self.assertEqual(state["display_name"], "Colegio SaaS")
+        self.assertEqual(refreshed.configuracion["whatsapp_onboarding"]["status"], "plan_ready")
 
         signup_response = self.client.post(
             f"/api/v2/tenants/{self.tenant.slug}/whatsapp/tech-provider/embedded-signup",
@@ -821,8 +826,12 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertNotIn("embedded_signup_code", signup["state"])
         self.assertNotIn("meta-code", json.dumps(signup, sort_keys=True))
         self.assertEqual(signup["next_action"], "register_whatsapp_sender_via_senders_api")
+        self.assertEqual(signup["onboarding"]["status"], "pending_sender_registration")
+        signup_channels = {item["id"]: item for item in signup["channel_activation"]["channels"]}
+        self.assertEqual(signup_channels["whatsapp"]["status"], "pending")
         refreshed_after_signup = db.session.get(TenantProfile, self.tenant.id)
         self.assertNotIn("meta-code", json.dumps(refreshed_after_signup.configuracion, sort_keys=True))
+        self.assertEqual(refreshed_after_signup.configuracion["whatsapp_onboarding"]["status"], "pending_sender_registration")
 
         connection = ProviderConnection.query.filter_by(tenant_id=self.tenant.id, provider="twilio", channel="whatsapp").first()
         self.assertIsNotNone(connection)
@@ -1134,6 +1143,9 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(payload["state"]["sender_status"], "PENDING")
         self.assertEqual(payload["state"]["voice_twiml_app_sid"], "APvoice")
         self.assertTrue(payload["state"]["voice_sender_attached"])
+        self.assertEqual(payload["onboarding"]["status"], "sender_registered")
+        register_channels = {item["id"]: item for item in payload["channel_activation"]["channels"]}
+        self.assertEqual(register_channels["whatsapp"]["status"], "ready")
         self.assertEqual(payload["voice_app"]["contract_version"], "twilio.tech_provider.voice_application.v1")
         self.assertEqual(len(calls), 4)
         sender = ProviderSender.query.filter_by(tenant_id=self.tenant.id, channel="whatsapp").first()
@@ -1141,6 +1153,34 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(sender.sender_sid, "XE123")
         self.assertEqual(sender.messaging_service_sid, "MGchild")
         self.assertEqual(sender.status, "pending")
+        refreshed_after_register = db.session.get(TenantProfile, self.tenant.id)
+        self.assertEqual(refreshed_after_register.configuracion["whatsapp_onboarding"]["status"], "sender_registered")
+
+        def fake_get(url, **kwargs):
+            self.assertEqual(url, "https://messaging.twilio.com/v2/Channels/Senders/XE123")
+            return _FakeTwilioResponse(
+                {
+                    "sid": "XE123",
+                    "status": "ONLINE",
+                    "sender_id": "whatsapp:+5491112223333",
+                }
+            )
+
+        with patch("services.twilio_tech_provider.requests.get", side_effect=fake_get):
+            status_response = self.client.post(
+                f"/api/v2/tenants/{self.tenant.slug}/whatsapp/tech-provider/sender-status",
+                headers={**self._auth(self.owner), "X-Request-Id": "tech-provider-sender-status-1"},
+            )
+
+        self.assertEqual(status_response.status_code, 200, status_response.get_json())
+        status_payload = status_response.get_json()
+        self.assertEqual(status_payload["state"]["status"], "sender_online")
+        self.assertEqual(status_payload["state"]["sender_status"], "ONLINE")
+        self.assertEqual(status_payload["onboarding"]["status"], "online")
+        status_channels = {item["id"]: item for item in status_payload["channel_activation"]["channels"]}
+        self.assertEqual(status_channels["whatsapp"]["status"], "ready")
+        refreshed_after_status = db.session.get(TenantProfile, self.tenant.id)
+        self.assertEqual(refreshed_after_status.configuracion["whatsapp_onboarding"]["status"], "online")
 
     def test_admin_catalog_exposes_and_saves_draft_endpoint(self):
         get_response = self.client.get(
