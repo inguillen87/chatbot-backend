@@ -828,7 +828,8 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(signup["next_action"], "register_whatsapp_sender_via_senders_api")
         self.assertEqual(signup["onboarding"]["status"], "pending_sender_registration")
         signup_channels = {item["id"]: item for item in signup["channel_activation"]["channels"]}
-        self.assertEqual(signup_channels["whatsapp"]["status"], "pending")
+        self.assertEqual(signup_channels["whatsapp"]["status"], "action_required")
+        self.assertEqual(signup_channels["whatsapp"]["reason_code"], "register_sender")
         refreshed_after_signup = db.session.get(TenantProfile, self.tenant.id)
         self.assertNotIn("meta-code", json.dumps(refreshed_after_signup.configuracion, sort_keys=True))
         self.assertEqual(refreshed_after_signup.configuracion["whatsapp_onboarding"]["status"], "pending_sender_registration")
