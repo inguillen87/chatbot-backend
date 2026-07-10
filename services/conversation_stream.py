@@ -209,5 +209,12 @@ def build_unified_conversation_stream(
 
     _append_items("timeline", timeline)
     _append_items("chat_history", historial_chat)
-    unified_items.sort(key=lambda item: (item.get("timestamp") or "", item.get("id") or ""))
+    source_priority = {"timeline": 0, "chat_history": 1}
+    unified_items.sort(
+        key=lambda item: (
+            item.get("timestamp") or "",
+            source_priority.get(str(item.get("source") or ""), 99),
+            item.get("id") or "",
+        )
+    )
     return unified_items

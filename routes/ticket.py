@@ -1369,7 +1369,7 @@ def _categorias_permitidas_para_empleado(user: User) -> tuple[list[str], list[in
 
 
 def _resolve_tenant_scope(current_user: User) -> tuple[Optional[TenantProfile], Optional[int], Optional[int]]:
-    tenant = get_current_tenant_profile()
+    tenant = get_current_tenant_profile(allow_fallback=False)
     if not tenant:
         return None, None, None
     return tenant, tenant.municipio_id, tenant.pyme_id
@@ -2040,7 +2040,7 @@ def get_tickets_del_usuario_logic(current_user: User):
     g.current_user = current_user
 
     try:
-        tenant_for_query = get_current_tenant_profile()
+        tenant_for_query = get_current_tenant_profile(allow_fallback=False)
         tenant_slug = getattr(tenant_for_query, "slug", None)
 
         ticket_filters = _ticket_request_filter_payload()

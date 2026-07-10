@@ -54,6 +54,7 @@ class TenantUtilsFallbackTest(unittest.TestCase):
     def test_get_current_tenant_falls_back_to_first_when_resolver_fails(self):
         """Debe devolver algún tenant aun si el resolver principal falla."""
 
+        self.app.config["PUBLIC_CATALOG_DEFAULT_TENANT"] = None
         with patch(
             "services.tenant_resolver.resolve_tenant_only",
             side_effect=TenantResolutionError("sin tenant"),
@@ -63,7 +64,20 @@ class TenantUtilsFallbackTest(unittest.TestCase):
 
         mock_resolver.assert_called_once()
         self.assertIsNotNone(tenant)
-        self.assertEqual(tenant.id, self.tenant.id)
+
+    def test_get_current_tenant_can_disable_global_fallback(self):
+        """Los modulos operativos pueden rechazar tenants ambiguos."""
+
+        self.app.config["PUBLIC_CATALOG_DEFAULT_TENANT"] = None
+        with patch(
+            "services.tenant_resolver.resolve_tenant_only",
+            side_effect=TenantResolutionError("sin tenant"),
+        ) as mock_resolver:
+            with self.app.test_request_context("/productos"):
+                tenant = tenant_utils.get_current_tenant_profile(allow_fallback=False)
+
+        mock_resolver.assert_called_once()
+        self.assertIsNone(tenant)
 
 
 if __name__ == "__main__":

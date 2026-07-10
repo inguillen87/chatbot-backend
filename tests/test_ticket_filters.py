@@ -46,7 +46,7 @@ class DummyQuery:
     def limit(self, *args):
         return self
 
-from models import User, MunicipioTicket, PymeTicket, TicketComentario, TicketRealtimeState
+from models import User, MunicipioTicket, PymeTicket, TicketComentario, TicketRealtimeState, TenantProfile
 from datetime import datetime, timedelta
 from utils.time_utils import get_local_now
 
@@ -79,6 +79,48 @@ class TicketFiltersTests(unittest.TestCase):
             data = response.get_json()
             self.assertEqual(len(data['tickets']), 1)
             self.assertEqual(data['tickets'][0]['id'], 1)
+
+    def test_invalid_explicit_tenant_slug_does_not_fall_back_to_first_tenant(self):
+        owner_like_employee = User(
+            id=20,
+            email='owner-employee@test.com',
+            name='Owner Employee',
+            rol='empleado',
+            tipo_chat='municipio',
+            municipio_id=None,
+        )
+        owner_like_employee.set_password('password')
+        db.session.add(owner_like_employee)
+        db.session.commit()
+
+        first_tenant = TenantProfile(
+            slug='primer-tenant',
+            nombre='Primer tenant',
+            tipo='municipio',
+            municipio_id=owner_like_employee.id,
+        )
+        ticket = MunicipioTicket(
+            id=70,
+            nro_ticket='M-FIRST',
+            estado='abierto',
+            fecha=datetime.now(),
+            categoria='A',
+            direccion=None,
+            latitud=None,
+            longitud=None,
+            municipio_id=owner_like_employee.id,
+        )
+        db.session.add_all([first_tenant, ticket])
+        db.session.commit()
+
+        with self.app.test_request_context(headers={'X-Tenant-Slug': 'tenant-inexistente'}):
+            response = get_tickets_del_usuario_logic(owner_like_employee)
+
+        self.assertEqual(response.status_code, 403)
+        data = response.get_json()
+        self.assertEqual(data["access_contract"]["contract_version"], "tickets.access.v1")
+        self.assertEqual(data["reason_code"], "missing_municipal_scope")
+        self.assertIsNone(data["current_scope"]["tenant_slug"])
 
     def test_estado_filter_uses_filtered_pagination_total(self):
         admin_user = User(email='admin-pagination@test.com', name='Admin Pagination', rol='admin', municipio_id=15, tipo_chat='municipio')

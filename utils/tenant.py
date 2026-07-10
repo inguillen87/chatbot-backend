@@ -145,7 +145,11 @@ def get_current_tenant_slug() -> Optional[str]:
         return None
 
 
-def get_current_tenant_profile(slug: Optional[str] = None) -> Optional[TenantProfile]:
+def get_current_tenant_profile(
+    slug: Optional[str] = None,
+    *,
+    allow_fallback: bool = True,
+) -> Optional[TenantProfile]:
     """Return the tenant associated with the current request if any."""
 
     slug = slug or get_current_tenant_slug()
@@ -192,11 +196,12 @@ def get_current_tenant_profile(slug: Optional[str] = None) -> Optional[TenantPro
             widget_token=widget_token,
             host=host_hint,
             require_explicit_slug=False,
+            allow_fallback=allow_fallback,
         )
     except TenantResolutionError:
         tenant = None
 
-    if not tenant:
+    if not tenant and allow_fallback:
         fallback_slug = current_app.config.get("PUBLIC_CATALOG_DEFAULT_TENANT")
         if fallback_slug:
             tenant = (
@@ -207,7 +212,7 @@ def get_current_tenant_profile(slug: Optional[str] = None) -> Optional[TenantPro
                 .first()
             )
 
-    if not tenant:
+    if not tenant and allow_fallback:
         tenant = TenantProfile.query.order_by(TenantProfile.id.asc()).first()
 
     if tenant:

@@ -467,6 +467,7 @@ def resolve_tenant_only(
     tenant_slug: Optional[str] = None,
     host: Optional[str] = None,
     require_explicit_slug: bool = False,
+    allow_fallback: bool = True,
 ) -> TenantProfile:
     preferred_slug = apply_tenant_alias(tenant_slug)
     tenant = _tenant_by_slug(preferred_slug)
@@ -500,10 +501,10 @@ def resolve_tenant_only(
         if slug_match:
             tenant = slug_match
 
-    if not tenant:
+    if not tenant and allow_fallback:
         fallback_slug = current_app.config.get("PUBLIC_CATALOG_DEFAULT_TENANT")
         tenant = _tenant_by_slug(fallback_slug)
-    if not tenant:
+    if not tenant and allow_fallback:
         tenant = TenantProfile.query.order_by(TenantProfile.id.asc()).first()
 
     if not tenant:
