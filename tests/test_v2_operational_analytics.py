@@ -267,6 +267,13 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertEqual((payload.get("trends") or {}).get("contract_version"), "operations.trends.v1")
         self.assertTrue(payload.get("next_best_actions"))
         self.assertTrue(any(action.get("id") == "review_assisted_orders" for action in payload.get("next_best_actions") or []))
+        for action in payload.get("next_best_actions") or []:
+            self.assertTrue(action.get("href"))
+            self.assertEqual(action.get("frontend_path"), action.get("href"))
+            self.assertFalse(str(action.get("href")).startswith("/api/"))
+        actions_by_id = {action.get("id"): action for action in payload.get("next_best_actions") or []}
+        self.assertIn("/perfil?tab=tickets", actions_by_id.get("review_overdue_tickets", {}).get("href") or "")
+        self.assertIn("/perfil?tab=pedidos", actions_by_id.get("review_assisted_orders", {}).get("href") or "")
         self.assertEqual((payload.get("ai_brief") or {}).get("contract_version"), "operations.ai_brief.v1")
         self.assertEqual((payload.get("ai_brief") or {}).get("severity"), "high")
         self.assertTrue((payload.get("ai_brief") or {}).get("focus_items"))
@@ -361,8 +368,12 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertEqual(ticket_point.get("assignee_id"), self.employee.id)
         ticket_actions = {item.get("id"): item for item in ticket_point.get("actions") or []}
         self.assertEqual(ticket_actions.get("open_record", {}).get("endpoint"), f"/api/v2/tickets/{self.ticket.id}")
+        self.assertEqual(ticket_actions.get("open_record", {}).get("frontend_path"), ticket_actions.get("open_record", {}).get("href"))
+        self.assertIn("/perfil?tab=tickets", ticket_actions.get("open_record", {}).get("href") or "")
+        self.assertIn(f"ticket_id={self.ticket.id}", ticket_actions.get("open_record", {}).get("href") or "")
         self.assertEqual(ticket_actions.get("update_location", {}).get("method"), "PATCH")
         self.assertEqual(ticket_actions.get("update_location", {}).get("endpoint"), f"/api/v2/tickets/{self.ticket.id}")
+        self.assertIn("focus=open_geocoding_queue", ticket_actions.get("update_location", {}).get("href") or "")
 
         categories = {item.get("key") for item in (payload.get("segments") or {}).get("category") or []}
         genders = {item.get("key") for item in (payload.get("segments") or {}).get("gender") or []}
@@ -574,8 +585,12 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertEqual(candidate.get("reason_code"), "address_without_coordinates")
         candidate_actions = {item.get("id"): item for item in candidate.get("actions") or []}
         self.assertEqual(candidate_actions.get("open_record", {}).get("endpoint"), f"/api/v2/tickets/{candidate.get('record_id')}")
+        self.assertEqual(candidate_actions.get("open_record", {}).get("frontend_path"), candidate_actions.get("open_record", {}).get("href"))
+        self.assertIn("/perfil?tab=tickets", candidate_actions.get("open_record", {}).get("href") or "")
         self.assertEqual(candidate_actions.get("update_location", {}).get("method"), "PATCH")
         self.assertEqual(candidate_actions.get("update_location", {}).get("endpoint"), f"/api/v2/tickets/{candidate.get('record_id')}")
+        self.assertIn("focus=open_geocoding_queue", candidate_actions.get("update_location", {}).get("href") or "")
+        self.assertTrue(candidate_actions.get("update_location", {}).get("writes_enabled"))
         self.assertIn("location.lat", candidate_actions.get("update_location", {}).get("requires") or [])
         self.assertTrue((payload.get("render_contract") or {}).get("address_geocoding"))
         self.assertEqual((payload.get("quality") or {}).get("state"), "pending_geocode")
@@ -585,11 +600,22 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertEqual(((payload.get("geocoding") or {}).get("guidance") or {}).get("backend_external_calls"), "none")
         self.assertEqual(((payload.get("geocoding") or {}).get("recommended_action") or {}).get("method"), "dynamic")
         self.assertIn("candidates[]", ((payload.get("geocoding") or {}).get("recommended_action") or {}).get("endpoint_template") or "")
+        guidance_action = {
+            item.get("id"): item
+            for item in ((payload.get("geocoding") or {}).get("guidance") or {}).get("recommended_actions") or []
+        }.get("open_geocoding_queue") or {}
+        self.assertIn("/perfil?tab=tickets", guidance_action.get("href") or "")
+        self.assertEqual(guidance_action.get("frontend_path"), guidance_action.get("href"))
         viewport_ids = {item.get("id") for item in (payload.get("viewport_presets") or {}).get("presets") or []}
         self.assertIn("geocoding_queue", viewport_ids)
         self.assertEqual(((payload.get("map_narrative") or {}).get("empty_state") or {}).get("recommended_view"), "geocoding_queue")
         action_ids = {item.get("id") for item in (payload.get("hotspot_actions") or {}).get("actions") or []}
         self.assertIn("open_geocoding_queue", action_ids)
+        open_queue_action = {
+            item.get("id"): item for item in (payload.get("hotspot_actions") or {}).get("actions") or []
+        }.get("open_geocoding_queue") or {}
+        self.assertIn("/perfil?tab=tickets", open_queue_action.get("href") or "")
+        self.assertEqual(open_queue_action.get("frontend_path"), open_queue_action.get("href"))
         geocode_playbook = {
             item.get("id"): item
             for item in (payload.get("hotspot_actions") or {}).get("playbook") or []

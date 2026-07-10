@@ -1041,6 +1041,34 @@ def _record_to_filter_probe(record: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _crm_tickets_href(
+    *,
+    focus: str | None = None,
+    ticket_id: Any | None = None,
+    category: Any | None = None,
+    channel: Any | None = None,
+    status: Any | None = None,
+    heatmap_cell: Any | None = None,
+    sla: Any | None = None,
+) -> str:
+    params: list[tuple[str, Any]] = [("tab", "tickets")]
+    if focus:
+        params.append(("focus", focus))
+    if ticket_id is not None:
+        params.append(("ticket_id", ticket_id))
+    if category:
+        params.append(("categoria", category))
+    if channel:
+        params.append(("canal", channel))
+    if status:
+        params.append(("estado", status))
+    if heatmap_cell:
+        params.append(("heatmap_cell", heatmap_cell))
+    if sla:
+        params.append(("sla", sla))
+    return "/perfil?" + "&".join(f"{key}={quote(str(value), safe='')}" for key, value in params)
+
+
 def _ticket_action_contract(record: dict[str, Any]) -> list[dict[str, Any]]:
     record_source = str(record.get("source") or "")
     record_id = record.get("id")
@@ -1074,6 +1102,22 @@ def _ticket_action_contract(record: dict[str, Any]) -> list[dict[str, Any]]:
     if not source_config:
         return []
 
+    open_href = _crm_tickets_href(
+        focus="open_ticket_detail",
+        ticket_id=record_id,
+        category=record.get("category"),
+        channel=record.get("channel"),
+        status=record.get("status"),
+    )
+    geocoding_href = _crm_tickets_href(
+        focus="open_geocoding_queue",
+        ticket_id=record_id,
+        category=record.get("category"),
+        channel=record.get("channel"),
+        status=record.get("status"),
+        sla="risk",
+    )
+
     return [
         {
             "id": "open_record",
@@ -1081,6 +1125,10 @@ def _ticket_action_contract(record: dict[str, Any]) -> list[dict[str, Any]]:
             "type": "api",
             "method": "GET",
             "endpoint": source_config["open_endpoint"],
+            "href": open_href,
+            "frontend_path": open_href,
+            "action_type": "open_record",
+            "writes_enabled": False,
             "record_source": record_source,
             "record_id": record_id,
         },
@@ -1090,6 +1138,10 @@ def _ticket_action_contract(record: dict[str, Any]) -> list[dict[str, Any]]:
             "type": "api",
             "method": source_config["location_method"],
             "endpoint": source_config["location_endpoint"],
+            "href": geocoding_href,
+            "frontend_path": geocoding_href,
+            "action_type": "update_location",
+            "writes_enabled": True,
             "record_source": record_source,
             "record_id": record_id,
             "requires": source_config["requires"],
@@ -1278,6 +1330,12 @@ def _heatmap_operational_hotspots(cell_items: list[dict[str, Any]], *, limit: in
         score = _heatmap_operational_score(cell)
         top_category = (cell.get("top_categories") or [{}])[0].get("key")
         top_channel = (cell.get("top_channels") or [{}])[0].get("key")
+        hotspot_href = _crm_tickets_href(
+            focus="focus_map_cell_and_filter_tickets",
+            category=top_category,
+            channel=top_channel,
+            heatmap_cell=cell.get("id"),
+        )
         hotspots.append(
             {
                 "id": cell.get("id"),
@@ -1299,6 +1357,8 @@ def _heatmap_operational_hotspots(cell_items: list[dict[str, Any]], *, limit: in
                     "action_id": f"open_operational_hotspot_{cell.get('id')}",
                     "label": "Abrir zona prioritaria",
                     "ui_hint": "focus_map_cell_and_filter_tickets",
+                    "href": hotspot_href,
+                    "frontend_path": hotspot_href,
                     "filters": {
                         "category": top_category,
                         "channel": top_channel,
@@ -1580,6 +1640,8 @@ def _heatmap_hotspot_actions_contract(
                 "action_type": "open_queue",
                 "target": {"type": "geocoding_queue", "candidate_count": len(geocoding_candidates)},
                 "ui_hint": "open_geocoding_queue",
+                "href": _crm_tickets_href(focus="open_geocoding_queue", sla="risk"),
+                "frontend_path": _crm_tickets_href(focus="open_geocoding_queue", sla="risk"),
                 "writes_enabled": False,
             }
         )
@@ -1593,6 +1655,8 @@ def _heatmap_hotspot_actions_contract(
                 "action_type": "open_panel",
                 "target": {"type": "ai_risk", "risk_level": ai_summary.get("risk_level")},
                 "ui_hint": "open_ai_risk_layers",
+                "href": _crm_tickets_href(focus="open_ai_risk_layers"),
+                "frontend_path": _crm_tickets_href(focus="open_ai_risk_layers"),
                 "writes_enabled": False,
             }
         )
@@ -1669,12 +1733,16 @@ def _heatmap_geocoding_guidance(
                 "label": "Abrir cola de geocodificacion",
                 "enabled": bool(candidate_count),
                 "ui_hint": "open_geocoding_queue",
+                "href": _crm_tickets_href(focus="open_geocoding_queue", sla="risk"),
+                "frontend_path": _crm_tickets_href(focus="open_geocoding_queue", sla="risk"),
             },
             {
                 "id": "request_whatsapp_location",
                 "label": "Pedir ubicacion por WhatsApp",
                 "enabled": True,
                 "ui_hint": "open_template_or_live_chat",
+                "href": _crm_tickets_href(focus="open_template_or_live_chat"),
+                "frontend_path": _crm_tickets_href(focus="open_template_or_live_chat"),
             },
         ],
     }
@@ -2397,7 +2465,9 @@ def _action(
     method: str = "GET",
     payload_template: dict[str, Any] | None = None,
     ui_hint: str = "open_view",
+    href: str | None = None,
 ) -> dict[str, Any]:
+    frontend_path = href or _crm_tickets_href(focus=ui_hint)
     return {
         "id": action_id,
         "title": title,
@@ -2406,6 +2476,8 @@ def _action(
         "reason_code": reason_code,
         "endpoint": endpoint,
         "method": method,
+        "href": frontend_path,
+        "frontend_path": frontend_path,
         "payload_template": payload_template or {},
         "ui_hint": ui_hint,
     }
@@ -2437,6 +2509,7 @@ def _build_next_best_actions(
                 priority="high",
                 reason_code="tickets_overdue",
                 endpoint="/api/v2/tickets?status=overdue",
+                href=_crm_tickets_href(focus="open_overdue_queue", status="overdue", sla="risk"),
             )
         )
 
@@ -2452,6 +2525,7 @@ def _build_next_best_actions(
                 method="POST",
                 payload_template={"action": "assign", "ticket_id": "{ticket_id}", "assignee_id": "{employee_id}"},
                 ui_hint="open_assignment_drawer",
+                href=_crm_tickets_href(focus="open_assignment_drawer", sla="risk"),
             )
         )
 
@@ -2465,6 +2539,7 @@ def _build_next_best_actions(
                 reason_code="employee_coverage_gap",
                 endpoint="/api/v2/employee-coverage",
                 ui_hint="open_employee_coverage",
+                href="/perfil?tab=empleados&focus=coverage",
             )
         )
 
@@ -2478,6 +2553,7 @@ def _build_next_best_actions(
                 reason_code="live_vote_without_responses",
                 endpoint="/api/v2/analytics/operations/dashboard",
                 ui_hint="open_vote_monitor",
+                href="/perfil?tab=encuestas&focus=live",
             )
         )
 
@@ -2490,6 +2566,8 @@ def _build_next_best_actions(
                 priority="medium",
                 reason_code="whatsapp_activity",
                 endpoint="/api/v2/inbox/omnichannel?channel=whatsapp",
+                ui_hint="open_whatsapp_inbox",
+                href=_crm_tickets_href(focus="open_whatsapp_inbox", channel="whatsapp"),
             )
         )
 
@@ -2503,6 +2581,7 @@ def _build_next_best_actions(
                 reason_code="high_handoff_rate",
                 endpoint="/api/v2/analytics/operations/dashboard",
                 ui_hint="open_chat_quality_panel",
+                href="/perfil?tab=analitica&focus=chat_quality",
             )
         )
 
@@ -2516,6 +2595,7 @@ def _build_next_best_actions(
                 reason_code="assisted_orders_need_review",
                 endpoint="/api/v2/saas/admin?module=marketplace",
                 ui_hint="open_assisted_order_queue",
+                href="/perfil?tab=pedidos&focus=assisted_order_queue",
             )
         )
 
@@ -2531,6 +2611,12 @@ def _build_next_best_actions(
                 endpoint="/api/v2/analytics/operations/heatmap",
                 payload_template={"cell_id": hotspot.get("id")},
                 ui_hint="open_heatmap_cell",
+                href=_crm_tickets_href(
+                    focus="open_heatmap_cell",
+                    category=(hotspot.get("top_categories") or [{}])[0].get("key"),
+                    channel=(hotspot.get("top_channels") or [{}])[0].get("key"),
+                    heatmap_cell=hotspot.get("id"),
+                ),
             )
         )
 
@@ -2543,6 +2629,7 @@ def _build_next_best_actions(
                 priority="low",
                 reason_code="all_clear",
                 endpoint="/api/v2/analytics/operations/dashboard",
+                href="/perfil?tab=analitica&focus=operations",
             )
         )
 
