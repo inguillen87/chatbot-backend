@@ -20,6 +20,7 @@ PUBLIC_CATALOG_PROMOTIONS_CONTRACT_VERSION = "public.catalog_promotions.v1"
 PUBLIC_MARKET_ASSISTED_INTAKE_CONTRACT_VERSION = "marketplace.assisted_intake_entry.v1"
 PUBLIC_MARKET_API_CONTRACT_VERSION = "marketplace.public_api.v1"
 PUBLIC_MARKET_ANALYTICS_CONTRACT_VERSION = "marketplace.public_analytics_loop.v1"
+VEGA_MARKETPLACE_DISPLAY_NAME = "Vega Marketplace IA"
 
 
 def tenant_public_summary(tenant: TenantProfile) -> dict[str, Any]:
@@ -636,6 +637,12 @@ def public_market_assisted_intake(tenant: TenantProfile, *, total_products: int)
 
     return {
         "contract_version": PUBLIC_MARKET_ASSISTED_INTAKE_CONTRACT_VERSION,
+        "display_name": VEGA_MARKETPLACE_DISPLAY_NAME,
+        "product_surface": {
+            "name": VEGA_MARKETPLACE_DISPLAY_NAME,
+            "scope": "anonymous_marketplace_intake",
+            "supports": ["handwritten_orders", "document_reviews", "catalog_matching", "crm_handoff"],
+        },
         "render_as": "marketplace_assisted_intake",
         "mode": "assisted_first" if total_products <= 0 else "catalog_plus_assisted",
         "title": title,
@@ -731,6 +738,11 @@ def public_market_assisted_intake(tenant: TenantProfile, *, total_products: int)
         },
         "frontend_contract": {
             "render_as": "marketplace_assisted_intake",
+            "display_name": VEGA_MARKETPLACE_DISPLAY_NAME,
+            "product_surface": {
+                "name": VEGA_MARKETPLACE_DISPLAY_NAME,
+                "scope": "anonymous_marketplace_intake",
+            },
             "primary_cta": "Subir foto o papel",
             "secondary_cta": "Escribir pedido",
             "show_quick_examples": True,

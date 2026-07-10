@@ -41,6 +41,7 @@ from utils.turnstile import (
 logger = logging.getLogger(__name__)
 
 _ASSISTED_REQUEST_CONTRACT_VERSION = "marketplace.assisted_request.v1"
+VEGA_MARKETPLACE_DISPLAY_NAME = "Vega Marketplace IA"
 _MAX_ORDER_NOTE_BYTES = 8 * 1024 * 1024
 _MAX_ORDER_TEXT_CHARS = 12000
 _MAX_CATALOG_CANDIDATES_PER_ROW = 3
@@ -993,6 +994,12 @@ def _build_intake_experience(
 
     return {
         "contract_version": "marketplace.assisted_intake_experience.v1",
+        "display_name": VEGA_MARKETPLACE_DISPLAY_NAME,
+        "product_surface": {
+            "name": VEGA_MARKETPLACE_DISPLAY_NAME,
+            "scope": "anonymous_marketplace_intake",
+            "supports": ["handwritten_orders", "document_reviews", "catalog_matching", "crm_handoff"],
+        },
         "render_as": "anonymous_assisted_marketplace_intake",
         "title": title,
         "summary": (
@@ -1038,6 +1045,11 @@ def _build_intake_experience(
         },
         "frontend_contract": {
             "render_as": "marketplace_assisted_intake",
+            "display_name": VEGA_MARKETPLACE_DISPLAY_NAME,
+            "product_surface": {
+                "name": VEGA_MARKETPLACE_DISPLAY_NAME,
+                "scope": "anonymous_marketplace_intake",
+            },
             "primary_cta": "Subir foto o papel",
             "secondary_cta": "Escribir pedido",
             "show_on_empty_catalog": True,

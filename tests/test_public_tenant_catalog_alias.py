@@ -148,6 +148,9 @@ def test_public_market_catalog_contract_includes_promotions(client):
     assert any(item["value"] == "Marca Demo" for item in payload["facets"]["brands"])
     assert payload["facets"]["promotion_count"] >= 1
     assert payload["assisted_intake"]["contract_version"] == "marketplace.assisted_intake_entry.v1"
+    assert payload["assisted_intake"]["display_name"] == "Vega Marketplace IA"
+    assert payload["assisted_intake"]["product_surface"]["name"] == "Vega Marketplace IA"
+    assert payload["assisted_intake"]["frontend_contract"]["display_name"] == "Vega Marketplace IA"
     assert payload["assisted_intake"]["mode"] == "catalog_plus_assisted"
     assert payload["assisted_intake"]["anonymous_intake"] is True
     assert payload["assisted_intake"]["submit"]["contract_version"] == "marketplace.assisted_intake_submit.v1"

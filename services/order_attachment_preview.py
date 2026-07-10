@@ -12,6 +12,7 @@ from services.pedido_processor_service import UMBRAL_SIMILITUD_OCR_PEDIDO, busca
 _ASSISTED_REQUEST_CONTRACT_VERSION = "marketplace.assisted_request.v1"
 _INTAKE_EXPERIENCE_CONTRACT_VERSION = "marketplace.assisted_intake_experience.v1"
 _CRM_ORDER_DRAFT_CONTRACT_VERSION = "marketplace.crm_order_draft.v1"
+VEGA_MARKETPLACE_DISPLAY_NAME = "Vega Marketplace IA"
 
 
 def _clean_optional_text(value: Any) -> str | None:
@@ -482,6 +483,12 @@ def _build_intake_experience(
 
     return {
         "contract_version": _INTAKE_EXPERIENCE_CONTRACT_VERSION,
+        "display_name": VEGA_MARKETPLACE_DISPLAY_NAME,
+        "product_surface": {
+            "name": VEGA_MARKETPLACE_DISPLAY_NAME,
+            "scope": "anonymous_marketplace_intake",
+            "supports": ["handwritten_orders", "document_reviews", "catalog_matching", "crm_handoff"],
+        },
         "render_as": "anonymous_assisted_marketplace_intake",
         "title": "Pedido asistido por foto, papel o texto",
         "summary": (
@@ -528,6 +535,11 @@ def _build_intake_experience(
         "crm_handoff": crm_handoff,
         "frontend_contract": {
             "render_as": "marketplace_assisted_intake",
+            "display_name": VEGA_MARKETPLACE_DISPLAY_NAME,
+            "product_surface": {
+                "name": VEGA_MARKETPLACE_DISPLAY_NAME,
+                "scope": "anonymous_marketplace_intake",
+            },
             "primary_cta": "Subir foto o papel",
             "secondary_cta": "Escribir pedido",
             "show_on_empty_catalog": True,

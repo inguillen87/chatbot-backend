@@ -218,6 +218,9 @@ def test_marketplace_order_note_upload_creates_assisted_request_contract(client,
     assert payload["document_profile"]["primary_intent"] == "create_order_or_quote"
     assert payload["document_profile"]["catalog_matching"] is True
     assert payload["intake_experience"]["contract_version"] == "marketplace.assisted_intake_experience.v1"
+    assert payload["intake_experience"]["display_name"] == "Vega Marketplace IA"
+    assert payload["intake_experience"]["product_surface"]["name"] == "Vega Marketplace IA"
+    assert payload["intake_experience"]["frontend_contract"]["display_name"] == "Vega Marketplace IA"
     assert payload["intake_experience"]["anonymous_intake"] is True
     assert payload["intake_experience"]["catalog_matching"] is True
     assert payload["intake_experience"]["needs_operator_review"] is True
@@ -846,6 +849,8 @@ def test_marketplace_order_note_upload_is_manageable_from_tenant_crm(client, app
     assert detail_tracking["path"].startswith(f"/tracking/order/pc-{pedido_id}?tenant_slug={tenant.slug}&token=")
     assert f"token={detail_tracking['token']}" in detail_tracking["path"]
     assert detail_payload["assisted_request"]["intake_experience"]["anonymous_intake"] is True
+    assert detail_payload["assisted_request"]["intake_experience"]["display_name"] == "Vega Marketplace IA"
+    assert detail_payload["assisted_request"]["intake_experience"]["product_surface"]["name"] == "Vega Marketplace IA"
     assert detail_payload["assisted_request"]["intake_experience"]["crm_handoff"]["channels"] == [
         "whatsapp",
         "chat_widget",
