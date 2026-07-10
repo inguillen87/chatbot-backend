@@ -1233,27 +1233,11 @@ def _resolve_ticket_tenant_profile(ticket_obj, ticket_type: str) -> Optional[Ten
 
 def _build_public_ticket_live_chat_status(ticket_obj, ticket_type: str) -> dict:
     try:
-        from services.live_chat_schedule import build_live_chat_status
+        from services.live_chat_schedule import build_tenant_live_chat_status
 
         tenant = _resolve_ticket_tenant_profile(ticket_obj, ticket_type)
-        tenant_config = getattr(tenant, "configuracion", None) if tenant else None
-        schedule_config = (
-            tenant_config.get("live_chat_schedule")
-            if isinstance(tenant_config, dict)
-            else None
-        )
-        status = build_live_chat_status(
-            schedule_override=schedule_config if isinstance(schedule_config, dict) else None
-        )
-        status["contract_version"] = "live_chat.schedule.v1"
-        status["source"] = "tenant_config" if isinstance(schedule_config, dict) else "global_config"
-        status["mode"] = "live" if status.get("enabled") and status.get("available") else "offline"
         socket_room = _build_ticket_socket_room(ticket_obj, ticket_type)
-        if socket_room:
-            status["socket_room"] = socket_room
-        if tenant:
-            status["tenant_id"] = tenant.id
-            status["tenant_slug"] = tenant.slug
+        status = build_tenant_live_chat_status(tenant, socket_room=socket_room)
         return status
     except Exception as exc:  # pragma: no cover - fallback defensivo
         current_app.logger.warning(
@@ -1294,7 +1278,13 @@ def _build_public_ticket_reply_payload(ticket_obj, ticket_type: str, comment_obj
     live_chat_status = _build_public_ticket_live_chat_status(ticket_obj, ticket_type)
     socket_room = live_chat_status.get("socket_room") or _build_ticket_socket_room(ticket_obj, ticket_type)
     reply_mode = live_chat_status.get("mode", "offline")
-    realtime_available = reply_mode == "live" and bool(live_chat_status.get("socket_enabled"))
+    transport = live_chat_status.get("transport") if isinstance(live_chat_status.get("transport"), dict) else {}
+    socket_enabled = bool(live_chat_status.get("socket_enabled") or transport.get("socket_enabled"))
+    realtime_available = reply_mode == "live" and (
+        socket_enabled
+        or bool(transport.get("http_fallback_enabled"))
+        or bool(live_chat_status.get("available"))
+    )
     user_message = (
         "Mensaje enviado al canal de atencion en vivo."
         if realtime_available
@@ -1316,7 +1306,9 @@ def _build_public_ticket_reply_payload(ticket_obj, ticket_type: str, comment_obj
         "delivery": {
             "channel": "ticket_conversation",
             "realtime_available": realtime_available,
+            "socket_enabled": socket_enabled,
             "offline_queue": not realtime_available,
+            "transport": transport,
             "next_step_label": (
                 "Esperar respuesta del agente"
                 if realtime_available

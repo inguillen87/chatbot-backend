@@ -67,6 +67,52 @@ class TicketPublicChatReplyTest(unittest.TestCase):
         self.assertEqual(comentario.comentario, "Necesito una actualización del reclamo")
         self.assertFalse(comentario.es_admin)
 
+    def test_public_reply_uses_transport_socket_for_live_chat(self):
+        ticket = MunicipioTicket(
+            municipio_id=self.admin.id,
+            pregunta="bache en la calle",
+            estado="nuevo",
+            nro_ticket="123461",
+            consulta_pin="654321",
+        )
+        db.session.add(ticket)
+        db.session.commit()
+
+        live_status = {
+            "contract_version": "live_chat.schedule.v1",
+            "enabled": True,
+            "available": True,
+            "mode": "live",
+            "description": "lunes a viernes de 09:00 a 13:00 hs",
+            "source": "tenant_config",
+            "socket_room": f"municipio_{self.admin.id}",
+            "transport": {
+                "contract_version": "live_chat.transport.v1",
+                "socket_enabled": True,
+                "socket_url": "/api/socket.io",
+                "socket_room": f"municipio_{self.admin.id}",
+                "http_fallback_enabled": True,
+                "polling_enabled": True,
+                "polling_interval_ms": 5000,
+            },
+        }
+
+        with patch("services.live_chat_schedule.build_tenant_live_chat_status", return_value=live_status):
+            response = self.client.post(
+                f"/tickets/chat/{ticket.id}/responder_ciudadano?pin=654321",
+                json={"comentario": "Estoy online, necesito hablar con alguien"},
+            )
+
+        self.assertEqual(response.status_code, 201)
+        payload = response.get_json()
+        self.assertEqual(payload["mode"], "live")
+        self.assertEqual(payload["reply_status"], "sent_to_live_chat")
+        self.assertTrue(payload["delivery"]["realtime_available"])
+        self.assertFalse(payload["delivery"]["offline_queue"])
+        self.assertTrue(payload["delivery"]["socket_enabled"])
+        self.assertTrue(payload["delivery"]["transport"]["socket_enabled"])
+        self.assertEqual(payload["live_chat"]["transport"]["socket_room"], f"municipio_{self.admin.id}")
+
     def test_public_pin_reply_rejects_invalid_pin(self):
         ticket = MunicipioTicket(
             municipio_id=self.admin.id,
