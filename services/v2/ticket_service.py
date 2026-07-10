@@ -175,6 +175,144 @@ def serialize_comment(comment: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _dict_or_empty(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _list_of_dicts(value: Any) -> list[dict[str, Any]]:
+    return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+
+
+def _first_text(*values: Any) -> str | None:
+    for value in values:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _humanize_action(value: Any) -> str | None:
+    text = _first_text(value)
+    if not text:
+        return None
+    normalized = " ".join(text.replace("-", " ").replace("_", " ").split())
+    return normalized[:1].upper() + normalized[1:] if normalized else None
+
+
+def _assisted_marketplace_fields(extra: dict[str, Any], attachments: list[dict[str, Any]]) -> dict[str, Any]:
+    if extra.get("contract_version") != "marketplace.commerce_intake_ticket.v1":
+        return {}
+
+    crm_handoff = _dict_or_empty(extra.get("crm_handoff"))
+    operator_pack = _dict_or_empty(extra.get("operator_pack"))
+    operator_summary = _dict_or_empty(extra.get("operator_intake_summary"))
+    public_follow_up = _dict_or_empty(extra.get("public_follow_up"))
+
+    next_steps = (
+        _list_of_dicts(extra.get("next_steps"))
+        or _list_of_dicts(crm_handoff.get("operator_next_steps"))
+        or _list_of_dicts(operator_summary.get("operator_next_steps"))
+        or _list_of_dicts(operator_summary.get("next_steps"))
+        or _list_of_dicts(operator_pack.get("suggested_tasks"))
+    )
+
+    allowed_actions = _list_of_dicts(extra.get("allowed_actions"))
+    tracking = _dict_or_empty(public_follow_up.get("tracking"))
+    if tracking.get("path"):
+        allowed_actions.append(
+            {
+                "id": "open_public_follow_up",
+                "label": tracking.get("label") or "Abrir seguimiento",
+                "description": "Abrir el estado publico asociado a esta solicitud.",
+                "href": tracking.get("path"),
+                "enabled": True,
+            }
+        )
+    for channel in _list_of_dicts(public_follow_up.get("channels")):
+        if not channel.get("href"):
+            continue
+        allowed_actions.append(
+            {
+                "id": channel.get("id") or "public_channel",
+                "label": channel.get("label") or "Continuar canal",
+                "description": channel.get("description"),
+                "href": channel.get("href"),
+                "enabled": True,
+            }
+        )
+    for link in _list_of_dicts(operator_pack.get("contact_links")):
+        if not link.get("href"):
+            continue
+        allowed_actions.append(
+            {
+                "id": link.get("type") or link.get("id") or "contact_link",
+                "label": link.get("label") or "Contactar",
+                "description": link.get("description"),
+                "href": link.get("href"),
+                "enabled": True,
+            }
+        )
+
+    if not any(action.get("id") == "reply" for action in allowed_actions):
+        allowed_actions.append(
+            {
+                "id": "reply",
+                "label": "Responder desde el panel",
+                "description": "Guardar una respuesta publica en la conversacion del ticket.",
+                "enabled": True,
+            }
+        )
+
+    recommended_next_step = _first_text(
+        operator_summary.get("recommended_next_step"),
+        crm_handoff.get("recommended_next_action"),
+        operator_pack.get("recommended_next_action"),
+    )
+    recommended_next_action = _first_text(
+        extra.get("recommended_next_action"),
+        operator_summary.get("recommended_next_step_label"),
+        crm_handoff.get("recommended_next_action_label"),
+        operator_pack.get("recommended_next_action_label"),
+    ) or _humanize_action(recommended_next_step) or "Revisar solicitud asistida y responder"
+
+    ai_operator_brief = {
+        "contract_version": "ticket.assisted_operator_brief.v1",
+        "source_contract_version": extra.get("contract_version"),
+        "summary": _first_text(
+            operator_summary.get("summary"),
+            operator_pack.get("summary"),
+            operator_pack.get("suggested_reply"),
+        ),
+        "recommended_next_step": recommended_next_step,
+        "recommended_next_action": recommended_next_action,
+        "target_module": operator_summary.get("target_module") or crm_handoff.get("target_module"),
+        "priority": operator_summary.get("priority") or operator_pack.get("priority"),
+        "missing_fields": operator_summary.get("missing_fields") or operator_pack.get("missing_fields") or [],
+        "match_summary": extra.get("match_summary") if isinstance(extra.get("match_summary"), dict) else {},
+        "public_follow_up": public_follow_up or None,
+    }
+    ai_operator_brief = {key: value for key, value in ai_operator_brief.items() if value not in (None, "", [])}
+
+    return {
+        "assisted_request": {
+            "contract_version": "ticket.assisted_marketplace_request.v1",
+            "source_contract_version": extra.get("contract_version"),
+            "request_kind": extra.get("request_kind"),
+            "request_kind_label": extra.get("request_kind_label"),
+            "target_module": operator_summary.get("target_module") or crm_handoff.get("target_module"),
+            "operator_intake_summary": operator_summary or None,
+            "operator_pack": operator_pack or None,
+            "crm_handoff": crm_handoff or None,
+            "public_follow_up": public_follow_up or None,
+            "attachments": attachments,
+        },
+        "recommended_next_action": recommended_next_action,
+        "next_steps": next_steps,
+        "allowed_actions": allowed_actions,
+        "ai_operator_brief": ai_operator_brief,
+        "public_follow_up": public_follow_up or None,
+    }
+
+
 def serialize_ticket(ticket: TenantTicket, *, viewer: User | None = None) -> dict[str, Any]:
     extra = ticket.datos_extra if isinstance(ticket.datos_extra, dict) else {}
     role = _role_of(viewer)
@@ -186,8 +324,9 @@ def serialize_ticket(ticket: TenantTicket, *, viewer: User | None = None) -> dic
     sla_status = _sla_status(ticket)
 
     attachments = ticket_attachment_payloads(ticket)
+    assisted_fields = _assisted_marketplace_fields(extra, attachments)
 
-    return {
+    payload = {
         "id": ticket.id,
         "tenant_id": ticket.tenant_id,
         "title": extra.get("title"),
@@ -218,6 +357,8 @@ def serialize_ticket(ticket: TenantTicket, *, viewer: User | None = None) -> dic
         "created_at": ticket.created_at.isoformat() if ticket.created_at else None,
         "updated_at": ticket.updated_at.isoformat() if ticket.updated_at else None,
     }
+    payload.update({key: value for key, value in assisted_fields.items() if value not in (None, "", [])})
+    return payload
 
 
 def create_ticket(*, tenant, actor_user: User | None, payload: dict[str, Any]) -> TenantTicket:

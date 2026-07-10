@@ -191,6 +191,102 @@ class V2TicketsApiTest(unittest.TestCase):
         self.assertEqual(cross_tenant.status_code, 404)
         self.assertEqual((cross_tenant.get_json() or {}).get("reason_code"), "ticket_not_found")
 
+    def test_assisted_marketplace_ticket_promotes_operational_contract(self):
+        headers = {**self._auth_header(self.employee), "X-Tenant-Slug": "tenant-1"}
+        ticket = TenantTicket(
+            tenant_id=self.tenant_1.id,
+            user_id=self.end_user.id,
+            categoria="Luminaria",
+            descripcion="Luminaria quemada en Don Bosco 55",
+            estado="nuevo",
+            origen="marketplace",
+            datos_extra={
+                "title": "Luminaria quemada",
+                "contract_version": "marketplace.commerce_intake_ticket.v1",
+                "request_kind": "service_request",
+                "request_kind_label": "reclamo o solicitud vecinal",
+                "channel": "marketplace",
+                "contact": {"name": "Marcelo", "phone": "+5492613168608"},
+                "address": "Don Bosco 55, Junin",
+                "operator_intake_summary": {
+                    "contract_version": "marketplace.operator_intake_summary.v1",
+                    "target_module": "municipal_claims",
+                    "recommended_next_step": "resolver_faltantes_y_responder",
+                    "summary": "Vecino informa luminaria quemada con direccion suficiente.",
+                    "missing_fields": ["foto_opcional"],
+                },
+                "crm_handoff": {
+                    "target_module": "municipal_claims",
+                    "operator_next_steps": [
+                        {
+                            "id": "assign_area",
+                            "label": "Asignar area responsable",
+                            "description": "Derivar a alumbrado publico.",
+                        }
+                    ],
+                },
+                "operator_pack": {
+                    "priority": "high",
+                    "suggested_reply": "Recibimos el reclamo y lo derivamos al area responsable.",
+                    "contact_links": [
+                        {
+                            "type": "whatsapp",
+                            "label": "Responder por WhatsApp",
+                            "href": "https://wa.me/5492613168608",
+                        }
+                    ],
+                },
+                "public_follow_up": {
+                    "contract_version": "marketplace.assisted_followup.v1",
+                    "tracking": {
+                        "kind": "claim",
+                        "code": "M-123456",
+                        "path": "/tracking/claim/M-123456?pin=900144",
+                        "label": "Seguimiento de reclamo",
+                    },
+                    "channels": [
+                        {
+                            "id": "tracking_page",
+                            "label": "Ver reclamo",
+                            "type": "link",
+                            "href": "/tracking/claim/M-123456?pin=900144",
+                        }
+                    ],
+                },
+                "attachments": [
+                    {
+                        "id": "att-claim-1",
+                        "name": "foto.jpg",
+                        "url": "https://cdn.example.com/foto.jpg",
+                        "mimeType": "image/jpeg",
+                    }
+                ],
+            },
+        )
+        db.session.add(ticket)
+        db.session.commit()
+
+        listed = self.client.get("/api/v2/tickets", headers=headers)
+        self.assertEqual(listed.status_code, 200)
+        item = next(entry for entry in (listed.get_json() or {}).get("items", []) if entry["id"] == ticket.id)
+        self.assertEqual(item["recommended_next_action"], "Resolver faltantes y responder")
+        self.assertEqual(item["assisted_request"]["target_module"], "municipal_claims")
+        self.assertEqual(item["assisted_request"]["operator_intake_summary"]["recommended_next_step"], "resolver_faltantes_y_responder")
+        self.assertEqual(item["public_follow_up"]["tracking"]["code"], "M-123456")
+        self.assertEqual(item["ai_operator_brief"]["recommended_next_action"], "Resolver faltantes y responder")
+        self.assertEqual(item["ai_operator_brief"]["summary"], "Vecino informa luminaria quemada con direccion suficiente.")
+        self.assertTrue(any(step["id"] == "assign_area" for step in item["next_steps"]))
+        self.assertTrue(any(action["id"] == "open_public_follow_up" for action in item["allowed_actions"]))
+        self.assertTrue(any(action["id"] == "whatsapp" for action in item["allowed_actions"]))
+        self.assertTrue(any(action["id"] == "reply" for action in item["allowed_actions"]))
+        self.assertEqual(item["attachments"][0]["id"], "att-claim-1")
+
+        detail = self.client.get(f"/api/v2/tickets/{ticket.id}", headers=headers)
+        self.assertEqual(detail.status_code, 200)
+        detail_ticket = (detail.get_json() or {}).get("ticket") or {}
+        self.assertEqual(detail_ticket["assisted_request"]["source_contract_version"], "marketplace.commerce_intake_ticket.v1")
+        self.assertEqual(detail_ticket["recommended_next_action"], "Resolver faltantes y responder")
+
     def test_detail_messages_and_timeline_expose_source_attachments(self):
         headers = {**self._auth_header(self.employee), "X-Tenant-Slug": "tenant-1"}
         attachment = {
