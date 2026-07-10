@@ -124,10 +124,13 @@ class V2SurveysApiTest(unittest.TestCase):
         self.assertEqual(publish_payload.get("realtime", {}).get("room"), f"encuesta:{self.tenant_1.slug}:{token}")
         self.assertEqual(publish_payload.get("realtime", {}).get("legacy_room"), f"encuesta_{token}")
         self.assertIn(f"encuesta_{token}", publish_payload.get("realtime", {}).get("rooms", []))
-        self.assertEqual(
-            publish_payload.get("realtime", {}).get("socket", {}).get("events", [])[0].get("name"),
-            "survey_update_v2",
-        )
+        event_names = {
+            event.get("name")
+            for event in publish_payload.get("realtime", {}).get("socket", {}).get("events", [])
+            if isinstance(event, dict)
+        }
+        self.assertIn("survey_update_v2", event_names)
+        self.assertIn("survey.vote.created", event_names)
         self.assertEqual(
             publish_payload.get("links", {}).get("qr_endpoint"),
             f"/api/public/encuestas/v1/{token}/qr?size=320",

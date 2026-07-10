@@ -540,6 +540,7 @@ def _build_realtime_contract(
             "join_payloads": [{"room": room} for room in rooms],
             "events": [
                 {"name": "survey_update_v2", "contract_version": "surveys.live_results.v2"},
+                {"name": "survey.vote.created", "contract_version": "surveys.live_results.v2"},
                 {"name": "survey_update", "contract_version": "legacy"},
             ],
         },

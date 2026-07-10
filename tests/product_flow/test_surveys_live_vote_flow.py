@@ -128,7 +128,9 @@ class ProductFlowSurveyLiveVoteTest(unittest.TestCase):
         self.assertEqual(ack["public_state"]["status"], "live")
         self.assertEqual(ack["realtime"]["room"], f"encuesta_{token}")
         self.assertEqual(ack["realtime"]["socket"]["join_payload"], {"room": f"encuesta_{token}"})
-        self.assertEqual(ack["realtime"]["socket"]["events"][0]["name"], "survey_update_v2")
+        event_names = {event["name"] for event in ack["realtime"]["socket"]["events"]}
+        self.assertIn("survey_update_v2", event_names)
+        self.assertIn("survey.vote.created", event_names)
         self.assertEqual(ack["links"]["qr_endpoint"], f"/api/public/encuestas/v1/{token}/qr?size=320")
         self.assertIn("download_qr", [step["id"] for step in ack["next_steps"]])
 
@@ -238,7 +240,9 @@ class ProductFlowSurveyLiveVoteTest(unittest.TestCase):
         self.assertEqual(ack["realtime"]["room"], f"encuesta:{self.tenant.slug}:{token}")
         self.assertEqual(ack["realtime"]["legacy_room"], f"encuesta_{token}")
         self.assertIn(f"encuesta_{token}", ack["realtime"]["rooms"])
-        self.assertEqual(ack["realtime"]["socket"]["events"][0]["name"], "survey_update_v2")
+        event_names = {event["name"] for event in ack["realtime"]["socket"]["events"]}
+        self.assertIn("survey_update_v2", event_names)
+        self.assertIn("survey.vote.created", event_names)
         self.assertEqual(ack["links"]["qr_endpoint"], f"/api/public/encuestas/v1/{token}/qr?size=320")
         self.assertEqual(ack["runtime"]["flow_id"], "survey_vote")
         self.assertEqual(ack["runtime"]["action_id"], "survey_response")
