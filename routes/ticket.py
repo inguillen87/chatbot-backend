@@ -524,6 +524,359 @@ def _ticket_unread_filter_condition(TicketModel, ticket_type: str, requested_unr
     return unread_exists if wants_unread else ~unread_exists
 
 
+def _ticket_facet_label(value: Any, fallback: str = "Sin dato") -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return fallback
+    labels = {
+        "nuevo": "Nuevo",
+        "abierto": "Abierto",
+        "en_proceso": "En proceso",
+        "en_vivo": "En vivo",
+        "esperando_agente_en_vivo": "Esperando agente",
+        "cerrado": "Cerrado",
+        "resuelto": "Resuelto",
+        "whatsapp": "WhatsApp",
+        "web": "Web",
+        "web_demo_widget": "Widget web",
+        "widget": "Widget",
+        "email": "Email",
+        "alta": "Alta",
+        "media": "Media",
+        "baja": "Baja",
+        "risk": "Riesgo",
+        "vencido": "Vencido",
+        "por_vencer": "Por vencer",
+        "sin_asignar": "Sin asignar",
+        "seguimiento": "Seguimiento",
+        "ok": "Al dia",
+        "unread": "No leidos",
+        "read": "Leidos",
+    }
+    normalized = _normalize_ticket_filter_token(raw)
+    return labels.get(normalized) or raw.replace("_", " ").title()
+
+
+def _ticket_filter_value_active(value: Any) -> bool:
+    return _is_active_ticket_filter(_normalize_ticket_filter_token(value))
+
+
+def _ticket_channel_column(TicketModel):
+    if hasattr(TicketModel, "canal_ingreso"):
+        return TicketModel.canal_ingreso
+    if hasattr(TicketModel, "origen"):
+        return TicketModel.origen
+    return None
+
+
+def _ticket_request_filter_payload() -> dict:
+    requested_categoria_id = request.args.get("categoria_id")
+    try:
+        requested_categoria_id_int = int(requested_categoria_id) if requested_categoria_id else None
+    except (TypeError, ValueError):
+        requested_categoria_id_int = None
+
+    return {
+        "status": request.args.get("estado"),
+        "category": request.args.get("categoria"),
+        "category_id": requested_categoria_id_int,
+        "channel": (
+            request.args.get("channel")
+            or request.args.get("canal")
+            or request.args.get("canal_ingreso")
+        ),
+        "agent": (
+            request.args.get("assigned_agent")
+            or request.args.get("assigned_agent_id")
+            or request.args.get("asignado_a_id")
+            or request.args.get("agent")
+        ),
+        "unassigned": (
+            request.args.get("unassigned")
+            or request.args.get("sin_responsable")
+            or request.args.get("solo_sin_responsable")
+        ),
+        "priority": request.args.get("priority") or request.args.get("prioridad"),
+        "sla": request.args.get("sla") or request.args.get("sla_status") or request.args.get("estado_sla"),
+        "unread": request.args.get("unread") or request.args.get("no_leidos") or request.args.get("lectura"),
+        "search": request.args.get("q"),
+    }
+
+
+def _apply_ticket_category_filter(query, TicketModel, category: Any = None, category_id: Any = None):
+    if category_id is not None and hasattr(TicketModel, "categoria_id"):
+        return query.filter(TicketModel.categoria_id == category_id)
+
+    if not _ticket_filter_value_active(category):
+        return query
+
+    category_value = str(category).strip()
+    if category_value.lower() == "luminarias":
+        return query.filter(TicketModel.categoria.ilike("%lumin%"))
+    return query.filter(TicketModel.categoria == category_value)
+
+
+def _apply_ticket_filter_set(query, TicketModel, ticket_type: str, filters: Mapping[str, Any], exclude=None):
+    exclude = set(exclude or [])
+
+    if "category" not in exclude:
+        query = _apply_ticket_category_filter(
+            query,
+            TicketModel,
+            filters.get("category"),
+            filters.get("category_id"),
+        )
+
+    if "search" not in exclude:
+        search_query = filters.get("search")
+        if search_query:
+            search_query = str(search_query).strip()
+        if search_query:
+            like_pattern = f"%{search_query}%"
+            search_filters = [
+                User.name.ilike(like_pattern),
+                TicketModel.nro_ticket.ilike(like_pattern),
+                TicketModel.estado.ilike(like_pattern),
+            ]
+            if hasattr(TicketModel, "nombre_vecino"):
+                search_filters.append(TicketModel.nombre_vecino.ilike(like_pattern))
+            if hasattr(TicketModel, "dni"):
+                search_filters.append(TicketModel.dni.ilike(like_pattern))
+            if hasattr(TicketModel, "dni_vecino"):
+                search_filters.append(TicketModel.dni_vecino.ilike(like_pattern))
+            query = query.outerjoin(User, TicketModel.user_id == User.id).filter(or_(*search_filters))
+
+    if "status" not in exclude:
+        requested_status = filters.get("status")
+        if requested_status and requested_status != "todos":
+            if requested_status == "resuelto":
+                query = query.filter(TicketModel.estado.in_(["resuelto", "cerrado"]))
+            else:
+                query = query.filter(TicketModel.estado == requested_status)
+
+    if "channel" not in exclude:
+        normalized_channel = _normalize_ticket_filter_token(filters.get("channel"))
+        if _is_active_ticket_filter(normalized_channel):
+            channel_column = _ticket_channel_column(TicketModel)
+            if channel_column is not None:
+                query = query.filter(func.lower(func.coalesce(channel_column, "desconocido")) == normalized_channel)
+
+    if "agent" not in exclude:
+        normalized_unassigned = _normalize_ticket_filter_token(filters.get("unassigned"))
+        wants_unassigned = normalized_unassigned in {
+            "1",
+            "true",
+            "yes",
+            "si",
+            "sin_responsable",
+            "unassigned",
+        }
+        normalized_agent = _normalize_ticket_filter_token(filters.get("agent"))
+        if normalized_agent == "unassigned":
+            wants_unassigned = True
+            normalized_agent = ""
+
+        if hasattr(TicketModel, "asignado_a_id"):
+            if wants_unassigned:
+                query = query.filter(TicketModel.asignado_a_id.is_(None))
+            elif _is_active_ticket_filter(normalized_agent):
+                try:
+                    assigned_agent_id = int(normalized_agent)
+                except (TypeError, ValueError):
+                    assigned_agent_id = None
+                if assigned_agent_id is not None:
+                    query = query.filter(TicketModel.asignado_a_id == assigned_agent_id)
+
+    if "priority" not in exclude:
+        priority_condition = _ticket_priority_filter_condition(TicketModel, filters.get("priority"))
+        if priority_condition is not None:
+            query = query.filter(priority_condition)
+
+    if "sla" not in exclude:
+        sla_condition = _ticket_sla_filter_condition(TicketModel, filters.get("sla"))
+        if sla_condition is not None:
+            query = query.filter(sla_condition)
+
+    if "unread" not in exclude:
+        unread_condition = _ticket_unread_filter_condition(TicketModel, ticket_type, filters.get("unread"))
+        if unread_condition is not None:
+            query = query.filter(unread_condition)
+
+    return query
+
+
+def _ticket_grouped_facet(query, TicketModel, column, *, label_map=None, fallback_label="Sin dato"):
+    if column is None:
+        return []
+    rows = (
+        query.with_entities(column, func.count(TicketModel.id))
+        .group_by(column)
+        .all()
+    )
+    items = []
+    for raw_value, count in rows:
+        if raw_value is None:
+            continue
+        value = str(raw_value).strip()
+        if not value:
+            continue
+        normalized = _normalize_ticket_filter_token(value)
+        label = label_map.get(normalized) if label_map else None
+        items.append({
+            "value": normalized,
+            "label": label or _ticket_facet_label(value, fallback_label),
+            "count": int(count or 0),
+        })
+    return sorted(items, key=lambda item: (-item["count"], item["label"]))
+
+
+def _ticket_category_facet(query, TicketModel):
+    if not hasattr(TicketModel, "categoria"):
+        return []
+    columns = [TicketModel.categoria, func.count(TicketModel.id)]
+    if hasattr(TicketModel, "categoria_id"):
+        columns.insert(0, TicketModel.categoria_id)
+        rows = query.with_entities(*columns).group_by(TicketModel.categoria_id, TicketModel.categoria).all()
+    else:
+        rows = query.with_entities(*columns).group_by(TicketModel.categoria).all()
+
+    items = []
+    for row in rows:
+        if hasattr(TicketModel, "categoria_id"):
+            category_id, category, count = row
+        else:
+            category_id = None
+            category, count = row
+        label = str(category or "").strip()
+        if not label:
+            continue
+        item = {
+            "value": label,
+            "label": label,
+            "count": int(count or 0),
+        }
+        if category_id is not None:
+            item["category_id"] = category_id
+        items.append(item)
+    return sorted(items, key=lambda item: (-item["count"], item["label"]))
+
+
+def _ticket_agent_facet(query, TicketModel):
+    if not hasattr(TicketModel, "asignado_a_id"):
+        return []
+
+    rows = (
+        query.with_entities(TicketModel.asignado_a_id, func.count(TicketModel.id))
+        .group_by(TicketModel.asignado_a_id)
+        .all()
+    )
+    agent_ids = [agent_id for agent_id, _ in rows if agent_id is not None]
+    user_labels = {}
+    if agent_ids:
+        for user in User.query.filter(User.id.in_(agent_ids)).all():
+            label = getattr(user, "nombre_usuario", None) or getattr(user, "name", None) or getattr(user, "email", None)
+            user_labels[user.id] = label or f"Agente {user.id}"
+
+    items = []
+    for agent_id, count in rows:
+        if agent_id is None:
+            items.append({
+                "value": "unassigned",
+                "id": "unassigned",
+                "label": "Sin responsable",
+                "count": int(count or 0),
+            })
+        else:
+            label = user_labels.get(agent_id, f"Agente {agent_id}")
+            items.append({
+                "value": str(agent_id),
+                "id": str(agent_id),
+                "label": label,
+                "count": int(count or 0),
+            })
+    return sorted(items, key=lambda item: (item["value"] != "unassigned", -item["count"], item["label"]))
+
+
+def _ticket_condition_facet(query, TicketModel, specs, condition_builder):
+    items = []
+    for value, label in specs:
+        condition = condition_builder(TicketModel, value)
+        if condition is None:
+            continue
+        count = query.filter(condition).count()
+        if count <= 0:
+            continue
+        items.append({
+            "value": value,
+            "label": label,
+            "count": int(count),
+        })
+    return items
+
+
+def _build_ticket_facets(scoped_query, TicketModel, ticket_type: str, filters: Mapping[str, Any], filtered_total: int):
+    status_query = _apply_ticket_filter_set(scoped_query, TicketModel, ticket_type, filters, exclude={"status"})
+    category_query = _apply_ticket_filter_set(scoped_query, TicketModel, ticket_type, filters, exclude={"category"})
+    channel_query = _apply_ticket_filter_set(scoped_query, TicketModel, ticket_type, filters, exclude={"channel"})
+    agent_query = _apply_ticket_filter_set(scoped_query, TicketModel, ticket_type, filters, exclude={"agent"})
+    priority_query = _apply_ticket_filter_set(scoped_query, TicketModel, ticket_type, filters, exclude={"priority"})
+    sla_query = _apply_ticket_filter_set(scoped_query, TicketModel, ticket_type, filters, exclude={"sla"})
+    unread_query = _apply_ticket_filter_set(scoped_query, TicketModel, ticket_type, filters, exclude={"unread"})
+
+    priority_specs = [
+        ("alta", "Alta"),
+        ("media", "Media"),
+        ("baja", "Baja"),
+    ]
+    sla_specs = [
+        ("risk", "Riesgo"),
+        ("vencido", "Vencido"),
+        ("por_vencer", "Por vencer"),
+        ("sin_asignar", "Sin asignar"),
+        ("seguimiento", "Seguimiento"),
+        ("ok", "Al dia"),
+        ("resuelto", "Resuelto"),
+    ]
+    unread_specs = [
+        ("unread", "No leidos"),
+        ("read", "Leidos"),
+    ]
+
+    return {
+        "contract_version": "tickets.facets.v1",
+        "mode": "global_excluding_self_filter",
+        "ticket_type": ticket_type,
+        "total_scoped": int(scoped_query.count()),
+        "total_filtered": int(filtered_total or 0),
+        "statuses": _ticket_grouped_facet(status_query, TicketModel, TicketModel.estado),
+        "categories": _ticket_category_facet(category_query, TicketModel),
+        "areas": _ticket_category_facet(category_query, TicketModel),
+        "channels": _ticket_grouped_facet(channel_query, TicketModel, _ticket_channel_column(TicketModel)),
+        "agents": _ticket_agent_facet(agent_query, TicketModel),
+        "priorities": _ticket_condition_facet(priority_query, TicketModel, priority_specs, _ticket_priority_filter_condition),
+        "sla": _ticket_condition_facet(sla_query, TicketModel, sla_specs, _ticket_sla_filter_condition),
+        "slaStatuses": _ticket_condition_facet(sla_query, TicketModel, sla_specs, _ticket_sla_filter_condition),
+        "unread": _ticket_condition_facet(
+            unread_query,
+            TicketModel,
+            unread_specs,
+            lambda model, value: _ticket_unread_filter_condition(model, ticket_type, value),
+        ),
+    }
+
+
+def _ticket_datetime_value_to_iso(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    try:
+        return datetime_to_iso_utc(value)
+    except AttributeError:
+        isoformat = getattr(value, "isoformat", None)
+        if callable(isoformat):
+            return isoformat()
+    return None
+
+
 def _validar_asignacion_empleado(ticket_obj, current_user: User):
     """Devuelve una respuesta de error si el empleado no está asignado al ticket."""
 
@@ -1698,44 +2051,10 @@ def get_tickets_del_usuario_logic(current_user: User):
         tenant_for_query = get_current_tenant_profile()
         tenant_slug = getattr(tenant_for_query, "slug", None)
 
-        requested_estado_filter = request.args.get("estado")
-        requested_categoria_filter = request.args.get("categoria")
-        requested_categoria_id = request.args.get("categoria_id")
-        requested_channel_filter = (
-            request.args.get("channel")
-            or request.args.get("canal")
-            or request.args.get("canal_ingreso")
-        )
-        requested_assigned_agent = (
-            request.args.get("assigned_agent")
-            or request.args.get("assigned_agent_id")
-            or request.args.get("asignado_a_id")
-            or request.args.get("agent")
-        )
-        requested_unassigned = (
-            request.args.get("unassigned")
-            or request.args.get("sin_responsable")
-            or request.args.get("solo_sin_responsable")
-        )
-        requested_priority_filter = (
-            request.args.get("priority")
-            or request.args.get("prioridad")
-        )
-        requested_sla_filter = (
-            request.args.get("sla")
-            or request.args.get("sla_status")
-            or request.args.get("estado_sla")
-        )
-        requested_unread_filter = (
-            request.args.get("unread")
-            or request.args.get("no_leidos")
-            or request.args.get("lectura")
-        )
-
-        try:
-            requested_categoria_id_int = int(requested_categoria_id) if requested_categoria_id else None
-        except (TypeError, ValueError):
-            requested_categoria_id_int = None
+        ticket_filters = _ticket_request_filter_payload()
+        requested_estado_filter = ticket_filters.get("status")
+        requested_categoria_filter = ticket_filters.get("category")
+        requested_categoria_id_int = ticket_filters.get("category_id")
 
         TicketModel = None
         tipo_ticket_str = '' # Para usar en la serialización
@@ -1815,25 +2134,27 @@ def get_tickets_del_usuario_logic(current_user: User):
                 tenant=tenant_for_query,
             )
 
-        # Aplicar filtro de categoría si se proveyó (afecta tanto al summary como a la lista)
-        if requested_categoria_id_int is not None:
-            query_base = query_base.filter(TicketModel.categoria_id == requested_categoria_id_int)
-        elif requested_categoria_filter:
-            if requested_categoria_filter.lower() == "luminarias":
-                query_base = query_base.filter(TicketModel.categoria.ilike("%lumin%"))
-            else:
-                query_base = query_base.filter(TicketModel.categoria == requested_categoria_filter)
-
+        # Separar el scope real del tenant/rol de los filtros activos de UI.
+        # Las facetas salen de scoped_query; summary y lista mantienen el filtro
+        # legacy de categoria cuando se pide explicitamente.
+        scoped_query = query_base
         if _is_employee_user(current_user):
             categorias_empleado, categorias_ids = _categorias_permitidas_para_empleado(current_user)
             if categorias_ids:
-                query_base = query_base.filter(TicketModel.categoria_id.in_(categorias_ids))
+                scoped_query = scoped_query.filter(TicketModel.categoria_id.in_(categorias_ids))
             elif categorias_empleado:
-                query_base = query_base.filter(
+                scoped_query = scoped_query.filter(
                     func.lower(TicketModel.categoria).in_(categorias_empleado)
                 )
             else:
-                query_base = query_base.filter(False)
+                scoped_query = scoped_query.filter(False)
+
+        query_base = _apply_ticket_category_filter(
+            scoped_query,
+            TicketModel,
+            requested_categoria_filter,
+            requested_categoria_id_int,
+        )
 
         # Obtener todos los tickets que cumplen con los filtros base (municipio/rubro y categoría
         # de empleado/request) para el resumen utilizando una consulta agregada en lugar de traer
@@ -1875,75 +2196,12 @@ def get_tickets_del_usuario_logic(current_user: User):
             f"Filtros aplicados: estado={requested_estado_filter}, "
             f"categoria={requested_categoria_filter}, categoria_id={requested_categoria_id_int}"
         )
-        final_tickets_query = query_base  # query_base ya tiene los filtros de categoria y rol
-
-        search_query = request.args.get("q")
-        if search_query:
-            search_query = str(search_query).strip()
-        if search_query:
-            like_pattern = f"%{search_query}%"
-            search_filters = [
-                User.name.ilike(like_pattern),
-                TicketModel.nro_ticket.ilike(like_pattern),
-                TicketModel.estado.ilike(like_pattern),
-            ]
-            if hasattr(TicketModel, "nombre_vecino"):
-                search_filters.append(TicketModel.nombre_vecino.ilike(like_pattern))
-            if hasattr(TicketModel, "dni"):
-                search_filters.append(TicketModel.dni.ilike(like_pattern))
-            if hasattr(TicketModel, "dni_vecino"):
-                search_filters.append(TicketModel.dni_vecino.ilike(like_pattern))
-            final_tickets_query = (
-                final_tickets_query
-                .outerjoin(User, TicketModel.user_id == User.id)
-                .filter(or_(*search_filters))
-            )
-
-        if requested_estado_filter and requested_estado_filter != 'todos':
-            if requested_estado_filter == 'resuelto':
-                final_tickets_query = final_tickets_query.filter(TicketModel.estado.in_(["resuelto", "cerrado"]))
-            else:
-                final_tickets_query = final_tickets_query.filter(TicketModel.estado == requested_estado_filter)
-
-        normalized_channel = str(requested_channel_filter or "").strip().lower()
-        if normalized_channel and normalized_channel not in {"all", "todos"}:
-            if hasattr(TicketModel, "canal_ingreso"):
-                final_tickets_query = final_tickets_query.filter(
-                    func.lower(func.coalesce(TicketModel.canal_ingreso, "desconocido")) == normalized_channel
-                )
-            elif hasattr(TicketModel, "origen"):
-                final_tickets_query = final_tickets_query.filter(
-                    func.lower(func.coalesce(TicketModel.origen, "desconocido")) == normalized_channel
-                )
-
-        normalized_unassigned = str(requested_unassigned or "").strip().lower()
-        wants_unassigned = normalized_unassigned in {"1", "true", "yes", "si", "sin_responsable", "unassigned"}
-        normalized_agent = str(requested_assigned_agent or "").strip().lower()
-        if normalized_agent == "unassigned":
-            wants_unassigned = True
-            normalized_agent = ""
-
-        if wants_unassigned and hasattr(TicketModel, "asignado_a_id"):
-            final_tickets_query = final_tickets_query.filter(TicketModel.asignado_a_id.is_(None))
-        elif normalized_agent and normalized_agent not in {"all", "todos"} and hasattr(TicketModel, "asignado_a_id"):
-            try:
-                assigned_agent_id = int(normalized_agent)
-            except (TypeError, ValueError):
-                assigned_agent_id = None
-            if assigned_agent_id is not None:
-                final_tickets_query = final_tickets_query.filter(TicketModel.asignado_a_id == assigned_agent_id)
-
-        priority_condition = _ticket_priority_filter_condition(TicketModel, requested_priority_filter)
-        if priority_condition is not None:
-            final_tickets_query = final_tickets_query.filter(priority_condition)
-
-        sla_condition = _ticket_sla_filter_condition(TicketModel, requested_sla_filter)
-        if sla_condition is not None:
-            final_tickets_query = final_tickets_query.filter(sla_condition)
-
-        unread_condition = _ticket_unread_filter_condition(TicketModel, tipo_ticket_str, requested_unread_filter)
-        if unread_condition is not None:
-            final_tickets_query = final_tickets_query.filter(unread_condition)
+        final_tickets_query = _apply_ticket_filter_set(
+            scoped_query,
+            TicketModel,
+            tipo_ticket_str,
+            ticket_filters,
+        )
 
         try:
             page = int(request.args.get("page", 1))
@@ -1965,6 +2223,13 @@ def get_tickets_del_usuario_logic(current_user: User):
             page = 1  # Cuando no hay paginación, forzamos la página a 1
 
         filtered_total_tickets = final_tickets_query.count()
+        facets_payload = _build_ticket_facets(
+            scoped_query,
+            TicketModel,
+            tipo_ticket_str,
+            ticket_filters,
+            filtered_total_tickets,
+        )
         ordered_query = final_tickets_query.order_by(TicketModel.fecha.desc())
         if per_page > 0:
             tickets_for_list_page = (
@@ -2033,6 +2298,7 @@ def get_tickets_del_usuario_logic(current_user: User):
             "tickets": serialized_tickets,
             "summary": dict(summary_by_status),
             "pagination": pagination_info,
+            "facets": facets_payload,
         })
 
     except ApiError as e:
@@ -2095,7 +2361,7 @@ def get_mis_tickets(current_user: User):
                 "nro_ticket": t.nro_ticket,
                 "asunto": getattr(t, "asunto", "N/A"),
                 "estado": estado_serializado,
-                "fecha": datetime_to_iso_utc(t.fecha),
+                "fecha": _ticket_datetime_value_to_iso(t.fecha),
                 "direccion": getattr(t, "direccion", None),
                 "latitud": getattr(t, "latitud", None),
                 "longitud": getattr(t, "longitud", None),

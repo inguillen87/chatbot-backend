@@ -166,6 +166,76 @@ class TicketFiltersTests(unittest.TestCase):
             self.assertEqual(data['pagination']['total_items'], 1)
             self.assertEqual(data['tickets'][0]['id'], 32)
 
+    def test_facets_are_global_to_scope_not_current_page(self):
+        admin_user = User(email='admin-facets@test.com', name='Admin Facets', rol='admin', municipio_id=21, tipo_chat='municipio')
+        assigned_user = User(email='agent-facets@test.com', name='Agent Facets', rol='empleado', municipio_id=21, tipo_chat='municipio')
+        admin_user.set_password('password')
+        assigned_user.set_password('password')
+        db.session.add_all([admin_user, assigned_user])
+        db.session.commit()
+
+        tickets = [
+            MunicipioTicket(
+                id=71,
+                nro_ticket='M-FACET-WA',
+                estado='nuevo',
+                fecha=get_local_now() - timedelta(minutes=1),
+                categoria='Luminaria',
+                municipio_id=21,
+                canal_ingreso='whatsapp',
+                asignado_a_id=assigned_user.id,
+            ),
+            MunicipioTicket(
+                id=72,
+                nro_ticket='M-FACET-WEB',
+                estado='nuevo',
+                fecha=get_local_now() - timedelta(minutes=2),
+                categoria='Arbolado',
+                municipio_id=21,
+                canal_ingreso='web',
+                asignado_a_id=None,
+            ),
+            MunicipioTicket(
+                id=73,
+                nro_ticket='M-FACET-CLOSED',
+                estado='cerrado',
+                fecha=get_local_now() - timedelta(minutes=3),
+                categoria='Luminaria',
+                municipio_id=21,
+                canal_ingreso='whatsapp',
+                asignado_a_id=assigned_user.id,
+            ),
+        ]
+        db.session.add_all(tickets)
+        db.session.commit()
+
+        with self.app.test_request_context('?estado=nuevo&per_page=1&include=compact'), patch('routes.ticket.get_current_tenant_profile', return_value=None):
+            response = get_tickets_del_usuario_logic(admin_user)
+            self.assertEqual(response.status_code, 200)
+            data = response.get_json()
+
+            self.assertEqual(len(data['tickets']), 1)
+            self.assertEqual(data['pagination']['total_items'], 2)
+            self.assertEqual(data['facets']['contract_version'], 'tickets.facets.v1')
+            self.assertEqual(data['facets']['total_scoped'], 3)
+            self.assertEqual(data['facets']['total_filtered'], 2)
+
+            channels = {item['value']: item['count'] for item in data['facets']['channels']}
+            self.assertEqual(channels['whatsapp'], 1)
+            self.assertEqual(channels['web'], 1)
+
+            statuses = {item['value']: item['count'] for item in data['facets']['statuses']}
+            self.assertEqual(statuses['nuevo'], 2)
+            self.assertEqual(statuses['cerrado'], 1)
+
+            categories = {item['value']: item['count'] for item in data['facets']['categories']}
+            self.assertEqual(categories['Luminaria'], 1)
+            self.assertEqual(categories['Arbolado'], 1)
+
+            agents = {item['value']: item['count'] for item in data['facets']['agents']}
+            self.assertEqual(agents[str(assigned_user.id)], 1)
+            self.assertEqual(agents['unassigned'], 1)
+
     def test_operational_sla_filter_is_applied_before_pagination(self):
         admin_user = User(email='admin-sla@test.com', name='Admin SLA', rol='admin', municipio_id=18, tipo_chat='municipio')
         admin_user.set_password('password')
