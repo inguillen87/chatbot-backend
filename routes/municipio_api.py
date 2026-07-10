@@ -475,7 +475,8 @@ def heatmap_tickets(current_user: User, tenant_slug: str):
     if distrito:
         query = query.filter(MunicipioTicket.distrito == distrito)
     if barrio:
-        query = query.filter(MunicipioTicket.barrio == barrio)
+        # El modelo historico usa distrito; aceptamos barrio como alias publico.
+        query = query.filter(MunicipioTicket.distrito == barrio)
 
     tickets = query.all()
     points = []

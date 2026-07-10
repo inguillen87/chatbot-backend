@@ -353,6 +353,19 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertEqual((payload.get("realtime") or {}).get("contract_version"), "operations.heatmap_realtime.v1")
         self.assertIn("whatsapp.message.created", (payload.get("realtime") or {}).get("socket_events") or [])
         self.assertEqual((payload.get("legend") or {}).get("mode"), "category_source_quality")
+        self.assertIn("geo_layers", (payload.get("render_contract") or {}).get("premium_metadata") or [])
+        self.assertIn("map_layers", (payload.get("render_contract") or {}).get("premium_metadata") or [])
+        self.assertIn("source_quality", (payload.get("render_contract") or {}).get("premium_metadata") or [])
+        self.assertEqual((payload.get("geo_layers") or {}).get("contract_version"), "operations.heatmap_geo_layers.v1")
+        self.assertEqual((payload.get("map_layers") or {}).get("contract_version"), "operations.heatmap_map_layers.v1")
+        self.assertEqual((payload.get("source_quality") or {}).get("contract_version"), "operations.heatmap_source_quality.v1")
+        geo_points = (((payload.get("geo_layers") or {}).get("points") or {}).get("features") or [])
+        self.assertEqual(len(geo_points), (payload.get("summary") or {}).get("points"))
+        self.assertEqual(((payload.get("map_layers") or {}).get("telemetry") or {}).get("event_endpoint"), "/api/analytics/event")
+        self.assertEqual(
+            (((payload.get("source_quality") or {}).get("sources") or {}).get("ticket") or {}).get("points"),
+            (payload.get("summary") or {}).get("ticket_points"),
+        )
         self.assertEqual((payload.get("demographics") or {}).get("source"), "real_metadata_only")
         self.assertGreaterEqual((payload.get("summary") or {}).get("points_with_gender"), 3)
         self.assertGreaterEqual((payload.get("summary") or {}).get("points_with_age"), 3)
@@ -399,6 +412,31 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertIn("25_34", age_ranges)
         self.assertIn("45_59", age_ranges)
         self.assertIn("60_plus", age_ranges)
+
+    def test_operations_heatmap_supports_limit_and_bbox(self):
+        limited_response = self.client.get(
+            "/api/v2/analytics/operations/heatmap?include_ai=0&limit=2",
+            headers=self._auth(),
+        )
+        self.assertEqual(limited_response.status_code, 200)
+        limited_payload = limited_response.get_json()
+        self.assertEqual((limited_payload.get("quality") or {}).get("max_points"), 2)
+        self.assertLessEqual((limited_payload.get("summary") or {}).get("points"), 2)
+        self.assertEqual(
+            len((((limited_payload.get("geo_layers") or {}).get("points") or {}).get("features") or [])),
+            (limited_payload.get("summary") or {}).get("points"),
+        )
+
+        bbox_response = self.client.get(
+            "/api/v2/analytics/operations/heatmap?include_ai=0&bbox=-58.38165,-34.60375,-58.38155,-34.60365",
+            headers=self._auth(),
+        )
+        self.assertEqual(bbox_response.status_code, 200)
+        bbox_payload = bbox_response.get_json()
+        self.assertTrue((bbox_payload.get("spatial_filter") or {}).get("applied"))
+        self.assertEqual((bbox_payload.get("summary") or {}).get("points"), 1)
+        point = (bbox_payload.get("points") or [])[0]
+        self.assertEqual(point.get("id"), f"tenant_ticket:{self.ticket.id}")
 
     def test_operations_heatmap_can_skip_synchronous_ai_for_operational_load(self):
         response = self.client.get("/api/v2/analytics/operations/heatmap?include_ai=0", headers=self._auth())

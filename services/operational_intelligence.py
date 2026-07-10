@@ -276,6 +276,165 @@ def _point_matches_filters(point: dict[str, Any], filters: dict[str, Any]) -> bo
     return True
 
 
+def _point_matches_bbox(point: dict[str, Any], bbox: dict[str, float] | None) -> bool:
+    if not bbox:
+        return True
+    try:
+        lat = float(point.get("lat"))
+        lng = float(point.get("lng"))
+    except (TypeError, ValueError):
+        return False
+    return (
+        float(bbox["south"]) <= lat <= float(bbox["north"])
+        and float(bbox["west"]) <= lng <= float(bbox["east"])
+    )
+
+
+def _geojson_point_feature(point: dict[str, Any], *, properties: dict[str, Any] | None = None) -> dict[str, Any]:
+    props = dict(properties or point)
+    props.pop("lat", None)
+    props.pop("lng", None)
+    return {
+        "type": "Feature",
+        "geometry": {
+            "type": "Point",
+            "coordinates": [float(point["lng"]), float(point["lat"])],
+        },
+        "properties": props,
+    }
+
+
+def _geojson_feature_collection(features: list[dict[str, Any]]) -> dict[str, Any]:
+    return {"type": "FeatureCollection", "features": features}
+
+
+def _heatmap_source_quality(
+    *,
+    points: list[dict[str, Any]],
+    records: list[dict[str, Any]],
+    geocoding_candidates: list[dict[str, Any]],
+) -> dict[str, Any]:
+    source_counts = Counter(point.get("source") or "unknown" for point in points)
+    ticket_records = [record for record in records if record.get("source") in {"tenant_ticket", "municipio_ticket"}]
+    ticket_points = source_counts.get("ticket", 0)
+    ticket_total = len(ticket_records)
+
+    sources = {
+        "ticket": {
+            "label": "Reclamos",
+            "records": ticket_total,
+            "points": int(ticket_points),
+            "pending_geocode": len(geocoding_candidates),
+            "coordinate_coverage_pct": round((ticket_points / ticket_total) * 100, 2) if ticket_total else 0.0,
+        },
+        "survey": {
+            "label": "Encuestas y votaciones",
+            "records": int(source_counts.get("survey", 0)),
+            "points": int(source_counts.get("survey", 0)),
+            "pending_geocode": 0,
+            "coordinate_coverage_pct": 100.0 if source_counts.get("survey", 0) else 0.0,
+        },
+        "analytics_event": {
+            "label": "Eventos digitales",
+            "records": int(source_counts.get("analytics_event", 0)),
+            "points": int(source_counts.get("analytics_event", 0)),
+            "pending_geocode": 0,
+            "coordinate_coverage_pct": 100.0 if source_counts.get("analytics_event", 0) else 0.0,
+        },
+    }
+
+    return {
+        "contract_version": "operations.heatmap_source_quality.v1",
+        "sources": sources,
+        "summary": {
+            "records": sum(item["records"] for item in sources.values()),
+            "points": len(points),
+            "pending_geocode": len(geocoding_candidates),
+            "weakest_source": min(
+                sources.items(),
+                key=lambda item: (item[1]["coordinate_coverage_pct"], -item[1]["pending_geocode"]),
+            )[0],
+        },
+    }
+
+
+def _heatmap_geo_layers(
+    *,
+    points: list[dict[str, Any]],
+    cells: list[dict[str, Any]],
+    hotspots: list[dict[str, Any]],
+    category_layers: list[dict[str, Any]],
+) -> dict[str, Any]:
+    category_feature_collections = {
+        str(layer.get("key") or "unknown"): _geojson_feature_collection(
+            [_geojson_point_feature(point) for point in layer.get("points") or []]
+        )
+        for layer in category_layers
+    }
+    return {
+        "contract_version": "operations.heatmap_geo_layers.v1",
+        "provider": "geojson",
+        "coordinate_order": "lng_lat",
+        "points": _geojson_feature_collection([_geojson_point_feature(point) for point in points]),
+        "cells": _geojson_feature_collection([_geojson_point_feature(cell) for cell in cells]),
+        "hotspots": _geojson_feature_collection([_geojson_point_feature(hotspot) for hotspot in hotspots]),
+        "categories": category_feature_collections,
+    }
+
+
+def _heatmap_map_layers(
+    *,
+    geo_layers: dict[str, Any],
+    category_layers: list[dict[str, Any]],
+    source_quality: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "contract_version": "operations.heatmap_map_layers.v1",
+        "engine": "maplibre",
+        "format": "geojson",
+        "default_layers": ["base_heatmap", "cells", "hotspots"],
+        "layers": [
+            {
+                "id": "base_heatmap",
+                "label": "Actividad territorial",
+                "source": "geo_layers.points",
+                "type": "heatmap",
+                "weight_field": "weight",
+                "available": bool((geo_layers.get("points") or {}).get("features")),
+            },
+            {
+                "id": "cells",
+                "label": "Celdas operativas",
+                "source": "geo_layers.cells",
+                "type": "circle",
+                "weight_field": "count",
+                "available": bool((geo_layers.get("cells") or {}).get("features")),
+            },
+            {
+                "id": "hotspots",
+                "label": "Zonas criticas",
+                "source": "geo_layers.hotspots",
+                "type": "symbol",
+                "weight_field": "operational_score",
+                "available": bool((geo_layers.get("hotspots") or {}).get("features")),
+            },
+            {
+                "id": "category_layers",
+                "label": "Categorias",
+                "source": "geo_layers.categories",
+                "type": "heatmap_collection",
+                "available_categories": [item.get("key") for item in category_layers],
+                "available": bool(category_layers),
+            },
+        ],
+        "telemetry": {
+            "event_endpoint": "/api/analytics/event",
+            "events": ["map_layer_toggled", "heatmap_hotspot_selected", "heatmap_bbox_changed"],
+        },
+        "source_quality": source_quality,
+    }
+
+
 def _tenant_ticket_record(ticket: TenantTicket) -> dict[str, Any]:
     extra = _as_dict(ticket.datos_extra)
     status = _norm(ticket.estado, "nuevo")
@@ -1929,6 +2088,7 @@ def build_operational_heatmap(
     max_points: int = 1000,
     segment_filters: dict[str, Any] | None = None,
     include_ai: bool = True,
+    bbox: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     records = ticket_records if ticket_records is not None else _collect_ticket_records(tenant, start_date, end_date)
     points: list[dict[str, Any]] = []
@@ -1968,7 +2128,7 @@ def build_operational_heatmap(
             "demographics_source": demographics.get("source") or "missing",
             "actions": _ticket_action_contract(record),
         }
-        if _point_matches_filters(point, filters):
+        if _point_matches_filters(point, filters) and _point_matches_bbox(point, bbox):
             points.append(point)
 
     survey_responses = _between(EncRespuesta.query.filter_by(tenant_id=tenant.id), EncRespuesta.submitted_at, start_date, end_date).filter(
@@ -2003,7 +2163,7 @@ def build_operational_heatmap(
             "age_range": demographics.get("age_range") or "unknown",
             "demographics_source": demographics.get("source") or "missing",
         }
-        if _point_matches_filters(point, filters):
+        if _point_matches_filters(point, filters) and _point_matches_bbox(point, bbox):
             points.append(point)
 
     events = _between(AnalyticsEventV2.query.filter_by(tenant_id=tenant.id), AnalyticsEventV2.ts, start_date, end_date).filter(
@@ -2030,7 +2190,7 @@ def build_operational_heatmap(
             "age_range": demographics.get("age_range") or "unknown",
             "demographics_source": demographics.get("source") or "missing",
         }
-        if _point_matches_filters(point, filters):
+        if _point_matches_filters(point, filters) and _point_matches_bbox(point, bbox):
             points.append(point)
 
     points = points[:max_points]
@@ -2237,6 +2397,22 @@ def build_operational_heatmap(
         ai_summary=ai_summary,
     )
     ai_status = _heatmap_ai_status_contract(ai_insights, ai_layers)
+    source_quality = _heatmap_source_quality(
+        points=points,
+        records=records,
+        geocoding_candidates=geocoding_candidates,
+    )
+    geo_layers = _heatmap_geo_layers(
+        points=points,
+        cells=cell_items,
+        hotspots=hotspots,
+        category_layers=category_layers,
+    )
+    map_layers = _heatmap_map_layers(
+        geo_layers=geo_layers,
+        category_layers=category_layers,
+        source_quality=source_quality,
+    )
 
     return {
         "contract_version": "operations.heatmap.v1",
@@ -2272,6 +2448,9 @@ def build_operational_heatmap(
                 "layer_style_contract",
                 "hotspot_actions",
                 "operational_hotspots",
+                "geo_layers",
+                "map_layers",
+                "source_quality",
                 "geocoding.guidance",
                 "ai_status",
             ],
@@ -2284,6 +2463,9 @@ def build_operational_heatmap(
         "ai_status": ai_status,
         "ai_insights": ai_insights,
         "ai_layers": ai_layers,
+        "source_quality": source_quality,
+        "geo_layers": geo_layers,
+        "map_layers": map_layers,
         "map_experience": {
             "contract_version": "operations.map_experience.v1",
             "preferred_visualization": "interactive_globe_heatmap",
@@ -2312,6 +2494,10 @@ def build_operational_heatmap(
             },
         },
         "applied_filters": normalized_filters,
+        "spatial_filter": {
+            "bbox": bbox,
+            "applied": bool(bbox),
+        },
         "segments": {
             "category": _segment_items(category_counter),
             "gender": _segment_items(gender_counter),

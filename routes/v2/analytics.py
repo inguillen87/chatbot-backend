@@ -373,6 +373,46 @@ def _request_bool_arg(name: str, default: bool = True) -> bool:
     return default
 
 
+def _request_int_arg(*names: str, default: int, minimum: int, maximum: int) -> int:
+    for name in names:
+        raw = request.args.get(name)
+        if raw in (None, ""):
+            continue
+        try:
+            return max(minimum, min(int(raw), maximum))
+        except (TypeError, ValueError):
+            continue
+    return default
+
+
+def _heatmap_bbox_filter() -> dict[str, float] | None:
+    raw_bbox = request.args.get("bbox") or request.args.get("bounds")
+    values: list[float] = []
+
+    if raw_bbox:
+        try:
+            values = [float(part.strip()) for part in str(raw_bbox).split(",") if part.strip()]
+        except (TypeError, ValueError):
+            values = []
+
+    if len(values) != 4:
+        try:
+            west = request.args.get("west") or request.args.get("min_lng") or request.args.get("minLng")
+            south = request.args.get("south") or request.args.get("min_lat") or request.args.get("minLat")
+            east = request.args.get("east") or request.args.get("max_lng") or request.args.get("maxLng")
+            north = request.args.get("north") or request.args.get("max_lat") or request.args.get("maxLat")
+            values = [float(west), float(south), float(east), float(north)]
+        except (TypeError, ValueError):
+            return None
+
+    west, south, east, north = values
+    if west > east:
+        west, east = east, west
+    if south > north:
+        south, north = north, south
+    return {"west": west, "south": south, "east": east, "north": north}
+
+
 @v2_analytics_bp.route("/overview", methods=["GET"])
 @token_requerido
 @require_role("admin", "empleado", "super_admin")
@@ -502,12 +542,15 @@ def operations_heatmap_v2(current_user):
 
     start_date, end_date = _date_range(default_days=365)
     include_ai = _request_bool_arg("include_ai", _request_bool_arg("ai", True))
+    max_points = _request_int_arg("limit", "max_points", "maxPoints", default=1000, minimum=1, maximum=5000)
     payload = build_operational_heatmap(
         tenant,
         start_date,
         end_date,
         segment_filters=_heatmap_segment_filters(),
         include_ai=include_ai,
+        max_points=max_points,
+        bbox=_heatmap_bbox_filter(),
     )
     return _json_response(_with_access(payload, tenant))
 
