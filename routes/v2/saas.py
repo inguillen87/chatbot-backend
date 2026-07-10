@@ -43,6 +43,7 @@ from services.employee_routing import (
 from services.catalog_quality import build_catalog_quality_fallback_payload, build_catalog_quality_payload
 from services.channel_activation import build_channel_activation_payload
 from services.demo_sandbox_contract import build_demo_whatsapp_sandbox_contract, sandbox_context_from_contract
+from services.live_chat_schedule import build_tenant_live_chat_status
 from services.operational_intelligence import build_operational_dashboard, build_operational_freshness
 from services.provider_platform import build_whatsapp_provider_status, sync_twilio_provider_records
 from services.plan_access import integration_access_payload, integration_frontend_contract, plan_allows_full_integrations
@@ -66,6 +67,14 @@ v2_saas_bp = Blueprint("v2_saas", __name__, url_prefix="/api/v2")
 
 _ACTIVE_TICKET_STATES = {"nuevo", "open", "pendiente", "in_progress", "en_proceso", "waiting_customer"}
 _CLOSED_TICKET_STATES = {"resuelto", "cerrado", "closed", "resolved"}
+_LIVE_CHAT_QUEUE_STATES = {
+    "esperando_agente_en_vivo",
+    "queued_for_agent",
+    "waiting_agent",
+    "pending_admin_response",
+    "offline_waiting_admin_response",
+}
+_INBOX_TEAM_ORIGINS = {"admin_panel", "agent", "team", "operator", "internal", "municipio", "pyme"}
 _WHATSAPP_QA_SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "qa_whatsapp_flows.py"
 _TWILIO_STATE_SECRET_KEYS = {
     "embedded_signup_code",
@@ -199,6 +208,69 @@ def _tenant_ref(tenant: TenantProfile) -> dict[str, Any]:
         "plan": tenant.plan,
         "is_active": bool(getattr(tenant, "is_active", True)),
     }
+
+
+def _tenant_live_chat_socket_room(tenant: TenantProfile) -> str | None:
+    tenant_type = str(getattr(tenant, "tipo", "") or "").strip().lower()
+    if tenant_type == "municipio" and getattr(tenant, "municipio_id", None):
+        return f"municipio_{tenant.municipio_id}"
+    if getattr(tenant, "pyme_id", None):
+        return f"pyme_{tenant.pyme_id}"
+    if getattr(tenant, "municipio_id", None):
+        return f"municipio_{tenant.municipio_id}"
+    return f"tenant_{tenant.id}" if getattr(tenant, "id", None) else None
+
+
+def _tenant_inbox_live_chat_status(tenant: TenantProfile) -> dict[str, Any]:
+    socket_room = _tenant_live_chat_socket_room(tenant)
+    status = build_tenant_live_chat_status(tenant, socket_room=socket_room)
+    status["contract_version"] = "inbox.live_chat_channel.v1"
+    status["base_channel_state"] = "online" if status.get("enabled") and status.get("available") else "offline"
+    status["channel_state"] = status["base_channel_state"]
+    status["accepts_offline_messages"] = True
+    return status
+
+
+def _inbox_live_chat_contract(
+    base_status: Mapping[str, Any],
+    *,
+    queued: bool = False,
+    pending_customer_messages: int = 0,
+    pending_since: str | None = None,
+) -> dict[str, Any]:
+    status = deepcopy(dict(base_status or {}))
+    base_state = str(status.get("base_channel_state") or ("online" if status.get("available") else "offline"))
+    channel_state = "queued" if queued else base_state
+    schedule_label = status.get("description")
+    offline_message = status.get("offline_message") if isinstance(status.get("offline_message"), dict) else {}
+    offline_fallback_message = status.get("offline_fallback_message") or offline_message.get("message")
+    status["channel_state"] = channel_state
+    status["availability"] = {
+        "state": channel_state,
+        "base_state": base_state,
+        "label": {
+            "online": "Atencion en vivo disponible",
+            "offline": "Mesa de ayuda fuera de horario",
+            "queued": "Mensaje en cola para el equipo",
+        }.get(channel_state, channel_state),
+        "schedule_label": schedule_label,
+        "timezone": status.get("timezone"),
+        "offline_fallback_message": offline_fallback_message,
+    }
+    status["queue"] = {
+        "enabled": True,
+        "state": "waiting_team_response" if queued else "empty",
+        "pending_customer_messages": max(0, int(pending_customer_messages or 0)),
+        "pending_since": pending_since,
+        "next_team_action": "reply_from_inbox" if queued else "monitor_ticket",
+    }
+    status["frontend_contract"] = {
+        "render_as": "live_chat_channel_state",
+        "states": ["online", "offline", "queued"],
+        "must_show_schedule": True,
+        "must_show_offline_fallback": True,
+    }
+    return status
 
 
 def _iso(value: Any) -> str | None:
@@ -3231,7 +3303,8 @@ def production_smoke_v2(current_user, tenant_slug: str | None = None):
         )
         freshness = (admin_payload.get("operations") or {}).get("freshness") or {}
         first_ticket = TenantTicket.query.filter_by(tenant_id=tenant.id).order_by(TenantTicket.updated_at.desc()).first()
-        inbox_item = _inbox_ticket_payload(first_ticket) if first_ticket else None
+        live_chat_status = _tenant_inbox_live_chat_status(tenant)
+        inbox_item = _inbox_ticket_payload(first_ticket, live_chat_status=live_chat_status) if first_ticket else None
         checks.extend(
             [
                 _smoke_check(
@@ -3384,8 +3457,9 @@ def omnichannel_inbox_v2(current_user):
         .all()
     )
     legacy_claims = _legacy_claim_query_for_tenant(tenant).order_by(MunicipioTicket.ultima_actividad.desc()).limit(limit).all()
-    items = [_inbox_ticket_payload(ticket) for ticket in tenant_tickets]
-    items.extend(_legacy_claim_inbox_payload(ticket) for ticket in legacy_claims)
+    live_chat_status = _tenant_inbox_live_chat_status(tenant)
+    items = [_inbox_ticket_payload(ticket, live_chat_status=live_chat_status) for ticket in tenant_tickets]
+    items.extend(_legacy_claim_inbox_payload(ticket, live_chat_status=live_chat_status) for ticket in legacy_claims)
     items.sort(key=_inbox_sort_key, reverse=True)
     items = items[:limit]
 
@@ -3393,16 +3467,21 @@ def omnichannel_inbox_v2(current_user):
         {
             "contract_version": "inbox.omnichannel.v1",
             "tenant": _tenant_ref(tenant),
+            "live_chat": _inbox_live_chat_contract(live_chat_status),
             "items": items,
             "summary": {
                 "total": len(items),
                 "open": len([item for item in items if str(item.get("status") or "").lower() not in _CLOSED_TICKET_STATES]),
                 "unassigned": len([item for item in items if not item.get("assignee")]),
+                "queued_live_chat": len(
+                    [item for item in items if ((item.get("live_chat") or {}).get("channel_state") == "queued")]
+                ),
             },
             "frontend_contract": {
                 "render_as": "omnichannel_inbox",
                 "detail_endpoint_template": "/api/v2/inbox/omnichannel/{ticket_id}",
                 "drawer_contract": "inbox.omnichannel.detail.v1",
+                "live_chat_contract": "inbox.live_chat_channel.v1",
             },
         }
     )
@@ -3496,6 +3575,41 @@ def _timeline_items(extra: Mapping[str, Any], *, limit: int = 30) -> list[dict[s
             }
         )
     return timeline
+
+
+def _timeline_pending_customer_response(timeline: list[dict[str, Any]]) -> tuple[int, str | None]:
+    latest_team_index = -1
+    pending: list[dict[str, Any]] = []
+    for index, item in enumerate(timeline):
+        origin = str(item.get("origin") or "").strip().lower()
+        actor = item.get("actor") if isinstance(item.get("actor"), dict) else {}
+        actor_type = str(actor.get("type") or actor.get("role") or "").strip().lower()
+        visibility = str(item.get("visibility") or "").strip().lower()
+        if origin in _INBOX_TEAM_ORIGINS or actor_type in {"agent", "admin", "empleado", "team"} or visibility == "internal":
+            latest_team_index = index
+            pending = []
+            continue
+        body = str(item.get("body") or "").strip()
+        if body and index > latest_team_index:
+            pending.append(item)
+    return len(pending), (pending[0].get("created_at") if pending else None)
+
+
+def _ticket_live_chat_queue_signals(
+    *,
+    status: Any,
+    timeline: list[dict[str, Any]],
+    handoff: Mapping[str, Any] | None = None,
+) -> tuple[bool, int, str | None]:
+    pending_count, pending_since = _timeline_pending_customer_response(timeline)
+    normalized_status = str(status or "").strip().lower()
+    handoff_status = str((handoff or {}).get("status") or "").strip().lower()
+    queued = (
+        normalized_status in _LIVE_CHAT_QUEUE_STATES
+        or handoff_status in {"requested", "pending", "queued", "waiting_agent", "esperando_agente_en_vivo"}
+        or pending_count > 0
+    )
+    return queued, pending_count, pending_since
 
 
 def _ticket_sla_payload(ticket: TenantTicket, extra: Mapping[str, Any]) -> dict[str, Any]:
@@ -3717,8 +3831,9 @@ def _legacy_claim_next_steps(ticket: MunicipioTicket) -> list[dict[str, Any]]:
     return steps[:4]
 
 
-def _legacy_claim_inbox_payload(ticket: MunicipioTicket) -> dict[str, Any]:
+def _legacy_claim_inbox_payload(ticket: MunicipioTicket, live_chat_status: Mapping[str, Any] | None = None) -> dict[str, Any]:
     comments = _legacy_claim_comments(ticket)
+    timeline = _legacy_claim_timeline(ticket, comments)
     latest_comment = comments[-1].comentario if comments else None
     updated_at = _legacy_claim_updated_at(ticket, comments)
     assignee = _legacy_claim_assignee(ticket)
@@ -3727,6 +3842,11 @@ def _legacy_claim_inbox_payload(ticket: MunicipioTicket) -> dict[str, Any]:
     title = ticket.asunto or ticket.categoria or f"Reclamo {ticket.nro_ticket or ticket.id}"
     description = ticket.detalles or ticket.pregunta or title
     contact_name = ticket.nombre_vecino or ticket.nombre_display_whatsapp or "Vecino/a"
+    queued, pending_count, pending_since = _ticket_live_chat_queue_signals(
+        status=ticket.estado,
+        timeline=timeline,
+    )
+    live_chat = _inbox_live_chat_contract(live_chat_status or {}, queued=queued, pending_customer_messages=pending_count, pending_since=pending_since)
 
     return {
         "id": f"municipio:{ticket.id}",
@@ -3772,7 +3892,7 @@ def _legacy_claim_inbox_payload(ticket: MunicipioTicket) -> dict[str, Any]:
             "next_update_due_at": None,
             "paused": False,
         },
-        "timeline": _legacy_claim_timeline(ticket, comments),
+        "timeline": timeline,
         "presence": {"viewers": [], "locked_by": None},
         "actions": [item["id"] for item in actions],
         "allowed_actions": actions,
@@ -3790,6 +3910,7 @@ def _legacy_claim_inbox_payload(ticket: MunicipioTicket) -> dict[str, Any]:
             "tracking_endpoint": f"/api/public/tracking/experience?kind=claim&code={ticket.id}&pin={ticket.consulta_pin}",
         },
         "handoff": None,
+        "live_chat": live_chat,
         "created_at": _iso(ticket.fecha),
         "updated_at": _iso(updated_at),
         "frontend_contract": {
@@ -3803,9 +3924,16 @@ def _legacy_claim_inbox_payload(ticket: MunicipioTicket) -> dict[str, Any]:
     }
 
 
-def _inbox_ticket_payload(ticket: TenantTicket) -> dict[str, Any]:
+def _inbox_ticket_payload(ticket: TenantTicket, live_chat_status: Mapping[str, Any] | None = None) -> dict[str, Any]:
     extra = _ticket_extra(ticket)
     timeline = _timeline_items(extra)
+    handoff = extra.get("handoff") if isinstance(extra.get("handoff"), dict) else None
+    queued, pending_count, pending_since = _ticket_live_chat_queue_signals(
+        status=ticket.estado,
+        timeline=timeline,
+        handoff=handoff,
+    )
+    live_chat = _inbox_live_chat_contract(live_chat_status or {}, queued=queued, pending_customer_messages=pending_count, pending_since=pending_since)
 
     assignee = None
     if extra.get("assignee_id"):
@@ -3844,7 +3972,8 @@ def _inbox_ticket_payload(ticket: TenantTicket) -> dict[str, Any]:
         "allowed_actions": _allowed_inbox_actions(ticket, extra),
         "next_steps": _next_steps(ticket, extra),
         "source_metadata": _source_metadata(ticket, extra),
-        "handoff": extra.get("handoff") if isinstance(extra.get("handoff"), dict) else None,
+        "handoff": handoff,
+        "live_chat": live_chat,
         "created_at": ticket.created_at.isoformat() if ticket.created_at else None,
         "updated_at": ticket.updated_at.isoformat() if ticket.updated_at else None,
         "frontend_contract": {
@@ -3862,16 +3991,18 @@ def omnichannel_inbox_detail_v2(current_user, ticket_id: int):
     tenant, error = _resolve_tenant_or_error(current_user)
     if error:
         return error
+    live_chat_status = _tenant_inbox_live_chat_status(tenant)
     source_model = str(request.args.get("source_model") or "").strip().lower()
     if source_model in {"municipioticket", "municipio_ticket", "municipio"}:
         legacy_ticket = _legacy_claim_for_tenant(tenant, ticket_id)
         if not legacy_ticket:
             return _error_response("Ticket no encontrado", 404, "ticket_not_found", "refresh_inbox")
-        item = _legacy_claim_inbox_payload(legacy_ticket)
+        item = _legacy_claim_inbox_payload(legacy_ticket, live_chat_status=live_chat_status)
         return _json_response(
             {
                 "contract_version": "inbox.omnichannel.detail.v1",
                 "tenant": _tenant_ref(tenant),
+                "live_chat": _inbox_live_chat_contract(live_chat_status),
                 "item": item,
                 "ticket": item,
             }
@@ -3881,21 +4012,23 @@ def omnichannel_inbox_detail_v2(current_user, ticket_id: int):
     if not ticket:
         legacy_ticket = _legacy_claim_for_tenant(tenant, ticket_id)
         if legacy_ticket:
-            item = _legacy_claim_inbox_payload(legacy_ticket)
+            item = _legacy_claim_inbox_payload(legacy_ticket, live_chat_status=live_chat_status)
             return _json_response(
                 {
                     "contract_version": "inbox.omnichannel.detail.v1",
                     "tenant": _tenant_ref(tenant),
+                    "live_chat": _inbox_live_chat_contract(live_chat_status),
                     "item": item,
                     "ticket": item,
                 }
             )
         return _error_response("Ticket no encontrado", 404, "ticket_not_found", "refresh_inbox")
-    item = _inbox_ticket_payload(ticket)
+    item = _inbox_ticket_payload(ticket, live_chat_status=live_chat_status)
     return _json_response(
         {
             "contract_version": "inbox.omnichannel.detail.v1",
             "tenant": _tenant_ref(tenant),
+            "live_chat": _inbox_live_chat_contract(live_chat_status),
             "item": item,
             "ticket": item,
         }
@@ -4148,6 +4281,8 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
         external_dispatch=external_dispatch,
         delivery_results=delivery_results,
     )
+    live_chat_status = _tenant_inbox_live_chat_status(tenant)
+    ticket_payload = _legacy_claim_inbox_payload(ticket, live_chat_status=live_chat_status)
 
     return _json_response(
         {
@@ -4156,7 +4291,8 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
             "tenant": _tenant_ref(tenant),
             "action": action,
             "delivery": delivery,
-            "ticket": _legacy_claim_inbox_payload(ticket),
+            "live_chat": ticket_payload.get("live_chat"),
+            "ticket": ticket_payload,
         }
     )
 
@@ -4263,6 +4399,8 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
         timeline_updated=timeline_updated,
         source_model="TenantTicket",
     )
+    live_chat_status = _tenant_inbox_live_chat_status(tenant)
+    ticket_payload = _inbox_ticket_payload(ticket, live_chat_status=live_chat_status)
 
     return _json_response(
         {
@@ -4271,6 +4409,7 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
             "tenant": _tenant_ref(tenant),
             "action": action,
             "delivery": delivery,
-            "ticket": _inbox_ticket_payload(ticket),
+            "live_chat": ticket_payload.get("live_chat"),
+            "ticket": ticket_payload,
         }
     )

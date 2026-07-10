@@ -19,6 +19,10 @@ DEFAULT_TIMEZONE = "America/Argentina/Buenos_Aires"
 DEFAULT_START = time(9, 0)
 DEFAULT_END = time(13, 0)
 DEFAULT_DAYS = {0, 1, 2, 3, 4}  # Monday-Friday
+DEFAULT_OFFLINE_MESSAGE = (
+    "Ahora no hay agentes disponibles en vivo. Deja tu mensaje y queda asociado al ticket "
+    "para que el equipo lo responda."
+)
 
 DAY_ALIASES = {
     "0": 0,
@@ -134,6 +138,23 @@ def _first_config_value(config: Mapping[str, Any], *keys: str, default: Any = No
         if key in config and config.get(key) is not None:
             return config.get(key)
     return default
+
+
+def _offline_message_from_config(config: Optional[Mapping[str, Any]]) -> str:
+    cfg = config if isinstance(config, Mapping) else {}
+    schedule_cfg = cfg.get("live_chat_schedule") if isinstance(cfg.get("live_chat_schedule"), Mapping) else {}
+    for value in (
+        schedule_cfg.get("offline_message"),
+        schedule_cfg.get("fallback_message"),
+        schedule_cfg.get("offline_fallback_message"),
+        cfg.get("live_chat_offline_message"),
+        cfg.get("offline_message"),
+        cfg.get("offline_fallback_message"),
+    ):
+        text = str(value or "").strip()
+        if text:
+            return text[:500]
+    return DEFAULT_OFFLINE_MESSAGE
 
 
 def build_live_chat_transport(
@@ -508,6 +529,20 @@ def build_tenant_live_chat_status(
     status["contract_version"] = "live_chat.schedule.v1"
     status["source"] = "tenant_config" if schedule_config else "global_config"
     status.update(_build_channel_metadata(status))
+    offline_message = dict(status.get("offline_message") or {})
+    offline_fallback_message = _offline_message_from_config(tenant_config)
+    offline_message.update(
+        {
+            "enabled": True,
+            "action": "queue_offline_message",
+            "message": offline_fallback_message,
+            "fallback_message": offline_fallback_message,
+            "customer_visible": True,
+            "queue_state": "offline_waiting_admin_response",
+        }
+    )
+    status["offline_message"] = offline_message
+    status["offline_fallback_message"] = offline_fallback_message
     status["offline_message_enabled"] = True
     status["channel_policy"] = {
         "opens_ticket_room": True,

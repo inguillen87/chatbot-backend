@@ -1245,6 +1245,102 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(item["frontend_contract"]["render_as"], "inbox_360_drawer")
         self.assertEqual(payload["frontend_contract"]["drawer_contract"], "inbox.omnichannel.detail.v1")
 
+    def test_omnichannel_inbox_live_chat_contract_reports_online_offline_and_queue(self):
+        self.tenant.configuracion = {
+            **self.tenant.configuracion,
+            "live_chat_schedule": {
+                "enabled": True,
+                "days": ["fri"],
+                "start_time": "09:00",
+                "end_time": "18:00",
+                "timezone": "UTC",
+                "offline_message": "Dejanos tu mensaje y el equipo lo responde desde el ticket.",
+            },
+        }
+        self.ticket.datos_extra = {
+            **self.ticket.datos_extra,
+            "comments": [
+                {
+                    "id": 1,
+                    "body": "Hola",
+                    "origin": "public_tracking",
+                    "visibility": "public",
+                    "created_at": "2026-07-10T09:15:00Z",
+                },
+                {
+                    "id": 2,
+                    "body": "Lo revisamos desde mesa de entrada.",
+                    "origin": "admin_panel",
+                    "visibility": "public",
+                    "created_at": "2026-07-10T09:20:00Z",
+                    "actor": {"id": self.employee.id, "type": "agent", "name": self.employee.name},
+                },
+            ],
+        }
+        db.session.commit()
+
+        with patch("services.live_chat_schedule.datetime") as clock:
+            clock.now.return_value = datetime(2026, 7, 10, 10, 0, tzinfo=timezone.utc)
+            online_response = self.client.get("/api/v2/inbox/omnichannel", headers=self._auth(self.owner))
+
+        self.assertEqual(online_response.status_code, 200)
+        online_payload = online_response.get_json()
+        self.assertEqual(online_payload["live_chat"]["contract_version"], "inbox.live_chat_channel.v1")
+        self.assertEqual(online_payload["live_chat"]["channel_state"], "online")
+        self.assertEqual(online_payload["live_chat"]["availability"]["state"], "online")
+        self.assertIn("09:00", online_payload["live_chat"]["availability"]["schedule_label"])
+        self.assertEqual(
+            online_payload["live_chat"]["offline_message"]["message"],
+            "Dejanos tu mensaje y el equipo lo responde desde el ticket.",
+        )
+        online_item = online_payload["items"][0]
+        self.assertEqual(online_item["live_chat"]["channel_state"], "online")
+        self.assertEqual(online_payload["summary"]["queued_live_chat"], 0)
+
+        with patch("services.live_chat_schedule.datetime") as clock:
+            clock.now.return_value = datetime(2026, 7, 10, 20, 0, tzinfo=timezone.utc)
+            offline_response = self.client.get("/api/v2/inbox/omnichannel", headers=self._auth(self.owner))
+
+        self.assertEqual(offline_response.status_code, 200)
+        offline_payload = offline_response.get_json()
+        self.assertEqual(offline_payload["live_chat"]["channel_state"], "offline")
+        self.assertEqual(offline_payload["live_chat"]["availability"]["state"], "offline")
+        self.assertEqual(offline_payload["items"][0]["live_chat"]["channel_state"], "offline")
+        self.assertEqual(
+            offline_payload["items"][0]["live_chat"]["availability"]["offline_fallback_message"],
+            "Dejanos tu mensaje y el equipo lo responde desde el ticket.",
+        )
+
+        self.ticket.datos_extra = {
+            **self.ticket.datos_extra,
+            "comments": [
+                *self.ticket.datos_extra["comments"],
+                {
+                    "id": 3,
+                    "body": "Sigo esperando respuesta.",
+                    "origin": "public_tracking",
+                    "visibility": "public",
+                    "created_at": "2026-07-10T20:05:00Z",
+                },
+            ],
+        }
+        db.session.commit()
+
+        with patch("services.live_chat_schedule.datetime") as clock:
+            clock.now.return_value = datetime(2026, 7, 10, 20, 10, tzinfo=timezone.utc)
+            queued_response = self.client.get("/api/v2/inbox/omnichannel", headers=self._auth(self.owner))
+
+        self.assertEqual(queued_response.status_code, 200)
+        queued_payload = queued_response.get_json()
+        queued_item = queued_payload["items"][0]
+        self.assertEqual(queued_payload["live_chat"]["channel_state"], "offline")
+        self.assertEqual(queued_item["live_chat"]["channel_state"], "queued")
+        self.assertEqual(queued_item["live_chat"]["availability"]["base_state"], "offline")
+        self.assertEqual(queued_item["live_chat"]["queue"]["state"], "waiting_team_response")
+        self.assertEqual(queued_item["live_chat"]["queue"]["pending_customer_messages"], 1)
+        self.assertEqual(queued_payload["summary"]["queued_live_chat"], 1)
+        self.assertEqual(queued_payload["frontend_contract"]["live_chat_contract"], "inbox.live_chat_channel.v1")
+
     def test_omnichannel_pyme_inbound_creates_tenant_ticket_visible_in_inbox(self):
         from services.omnichannel_service import registrar_interaccion_omnicanal
 
