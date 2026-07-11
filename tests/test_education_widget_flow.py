@@ -183,6 +183,9 @@ class EducationWidgetFlowTest(unittest.TestCase):
         data = response.get("data") or {}
         self.assertEqual(data.get("status"), "esperando_agente_en_vivo")
         self.assertIsInstance(data.get("live_chat"), dict)
+        self.assertTrue(data.get("live_chat_access_token"))
+        self.assertTrue(str(data.get("socket_room") or "").startswith("ticket_pyme_"))
+        self.assertEqual(data["live_chat"].get("access_mode"), "signed_ticket_room")
         self.assertIsInstance(data.get("school_case"), dict)
         self.assertEqual(PymeTicket.query.count(), 1)
         self.assertEqual(PymeTicket.query.first().estado, "esperando_agente_en_vivo")

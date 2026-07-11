@@ -2300,6 +2300,7 @@ def _find_live_chat_ticket(
     owner_user: Optional[User],
     end_user: Optional[User],
     anon_id: Optional[str],
+    tenant_profile: Optional[TenantProfile] = None,
 ) -> Tuple[Optional[str], Optional[MunicipioTicket | PymeTicket]]:
     if not owner_user:
         return None, None
@@ -2317,14 +2318,20 @@ def _find_live_chat_ticket(
         return "municipio", query.order_by(MunicipioTicket.fecha.desc()).first()
 
     if tipo_chat == "pyme":
-        rubro_id = getattr(owner_user, "rubro_id", None)
+        resolved_tenant = tenant_profile or _tenant_profile_for_user(owner_user)
+        tenant_id = getattr(resolved_tenant, "id", None)
+        if not tenant_id:
+            current_app.logger.warning(
+                "[WHATSAPP_WEBHOOK] Live chat PyME ticket lookup rejected without exact tenant owner=%s",
+                getattr(owner_user, "id", None),
+            )
+            return "pyme", None
         query = PymeTicket.query.filter(PymeTicket.estado.in_(LIVE_CHAT_STATES))
         if end_user:
             query = query.filter(or_(PymeTicket.user_id == end_user.id, PymeTicket.anon_id == anon_id))
         elif anon_id:
             query = query.filter(PymeTicket.anon_id == anon_id)
-        if rubro_id:
-            query = query.filter(PymeTicket.rubro_id == rubro_id)
+        query = query.filter(PymeTicket.tenant_id == tenant_id)
         return "pyme", query.order_by(PymeTicket.fecha.desc()).first()
 
     return None, None
@@ -5567,6 +5574,7 @@ def whatsapp_webhook():
                 client_user,
                 end_user,
                 from_number_cleaned,
+                tenant_profile,
             )
             if live_ticket:
                 comentario_text = (message_body or "").strip()
@@ -5642,13 +5650,19 @@ def whatsapp_webhook():
 
                 return "OK", 200
 
-    # --- Human Chat Check ---
+    # Legacy room relays are not a valid authorization boundary. If no exact
+    # open ticket was resolved above, clear stale state and resume normal bot
+    # handling instead of emitting to a client-controlled/stored room.
     if session_context_db_entry.context_data.get("human_chat_in_progress"):
-        room = session_context_db_entry.context_data.get("room")
-        if room:
-            from socket_service import socketio
-            socketio.emit('message', {'msg': message_body}, room=room)
-            return "OK", 200
+        current_app.logger.warning(
+            "[WHATSAPP_WEBHOOK] Clearing stale live-chat state without exact ticket session=%s",
+            chat_session_id_internal,
+        )
+        session_context_db_entry.context_data.pop("human_chat_in_progress", None)
+        session_context_db_entry.context_data.pop("room", None)
+        safe_flag_modified(session_context_db_entry, "context_data")
+        db.session.add(session_context_db_entry)
+        db.session.commit()
 
 
     # --- Call Real Chatbot Logic: responder_chatboc ---

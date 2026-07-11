@@ -40,6 +40,7 @@ from services.ticket_realtime_state import (
     upsert_ticket_presence,
 )
 from services.conversation_stream import build_unified_conversation_stream
+from services.live_chat_access import attach_ticket_room_access, build_ticket_room
 from services.gcs_service import upload_to_gcs # Import the new GCS service
 from services.attachment_delivery import serialize_attachment_for_delivery
 from services.geo.route import obtener_ruta
@@ -61,7 +62,13 @@ ticket_bp = Blueprint('ticket_bp', __name__)
 MENSAJE_CHAT_CERRADO = "El chat fue cerrado"
 MENSAJE_SIN_PERMISOS = "No tienes permiso para acceder a este chat."
 
-TICKET_BACKOFFICE_ROLES = {ROLE_TENANT_ADMIN, ROLE_EMPLEADO, ROLE_SUPERADMIN}
+TICKET_BACKOFFICE_ROLES = {
+    ROLE_TENANT_ADMIN,
+    ROLE_EMPLEADO,
+    ROLE_SUPERADMIN,
+    "manager",
+    "supervisor",
+}
 TICKET_READ_REQUIRED_CAPABILITIES = [
     "tickets.read",
     "crm.tickets.read",
@@ -919,12 +926,7 @@ def _resolver_acceso_chat_ticket(ticket_obj, current_user: User, anon_id: str = 
             )
         )
     )
-    es_agente_pyme = bool(
-        current_user
-        and getattr(current_user, "rubro_id", None)
-        and getattr(ticket_obj, "rubro_id", None) == current_user.rubro_id
-    )
-    es_agente = es_agente_municipal or es_agente_pyme
+    es_agente = es_agente_municipal
     es_dueno = bool(current_user and getattr(ticket_obj, "user_id", None) == current_user.id)
     es_anon_valido = bool(anon_id and getattr(ticket_obj, "anon_id", None) == anon_id)
     es_pin_valido = bool(pin and str(getattr(ticket_obj, "consulta_pin", "")) == str(pin))
@@ -952,13 +954,7 @@ def _resolve_ticket_with_access(ticket_type: str, ticket_id: int, current_user: 
         access = _resolver_acceso_chat_ticket(ticket_obj, current_user, anon_id, pin)
     else:
         tenant_scope_allows = _ticket_scope_access_allows("pyme", ticket_obj, current_user)
-        es_agente = bool(
-            current_user
-            and (
-                tenant_scope_allows
-                or (current_user.rubro_id and ticket_obj.rubro_id == current_user.rubro_id)
-            )
-        )
+        es_agente = bool(current_user and tenant_scope_allows)
         es_dueno = bool(current_user and ticket_obj.user_id == current_user.id)
         es_anon_valido = bool(anon_id and getattr(ticket_obj, "anon_id", None) == anon_id)
         es_pin_valido = bool(pin and str(getattr(ticket_obj, "consulta_pin", "")) == str(pin))
@@ -1193,15 +1189,26 @@ def _build_realtime_actor_context(*, current_user: User, anon_id: str = None, ac
     return viewer_key, viewer_role, viewer_anon_id
 
 
+def _ticket_admin_socket_scope(ticket_obj, ticket_type: str) -> tuple[Optional[int], Optional[int], Optional[str]]:
+    tenant_profile_id = getattr(ticket_obj, "tenant_id", None)
+    if tenant_profile_id:
+        return tenant_profile_id, tenant_profile_id, f"tenant_{tenant_profile_id}"
+    if ticket_type == "municipio":
+        municipio_id = getattr(ticket_obj, "municipio_id", None)
+        if municipio_id:
+            return municipio_id, None, f"municipio_{municipio_id}"
+    return None, None, None
+
+
 def _build_ticket_unread_event_payload(ticket_obj, ticket_type: str) -> dict:
     summary = build_ticket_realtime_summary(ticket_type=ticket_type, ticket_id=ticket_obj.id)
-    tenant_id = getattr(ticket_obj, "municipio_id", None) if ticket_type == "municipio" else getattr(ticket_obj, "rubro_id", None)
-    room = f"{'municipio' if ticket_type == 'municipio' else 'pyme'}_{tenant_id}" if tenant_id else None
+    tenant_id, tenant_profile_id, room = _ticket_admin_socket_scope(ticket_obj, ticket_type)
     return {
         "ticket_id": ticket_obj.id,
         "tipo": ticket_type,
         "tenant_type": ticket_type,
         "tenant_id": tenant_id,
+        "tenant_profile_id": tenant_profile_id,
         "municipio_id": getattr(ticket_obj, "municipio_id", None),
         "rubro_id": getattr(ticket_obj, "rubro_id", None),
         "socket_room": room,
@@ -1238,7 +1245,11 @@ def _build_public_ticket_live_chat_status(ticket_obj, ticket_type: str) -> dict:
         tenant = _resolve_ticket_tenant_profile(ticket_obj, ticket_type)
         socket_room = _build_ticket_socket_room(ticket_obj, ticket_type)
         status = build_tenant_live_chat_status(tenant, socket_room=socket_room)
-        return status
+        return attach_ticket_room_access(
+            status,
+            ticket_type=ticket_type,
+            ticket_id=ticket_obj.id,
+        )
     except Exception as exc:  # pragma: no cover - fallback defensivo
         current_app.logger.warning(
             "No se pudo resolver horario publico para ticket %s: %s",
@@ -1255,21 +1266,10 @@ def _build_public_ticket_live_chat_status(ticket_obj, ticket_type: str) -> dict:
 
 
 def _build_ticket_socket_room(ticket_obj, ticket_type: str) -> Optional[str]:
-    if ticket_type == "municipio":
-        municipio_id = getattr(ticket_obj, "municipio_id", None)
-        if municipio_id:
-            return f"municipio_{municipio_id}"
-    if ticket_type == "pyme":
-        rubro_id = getattr(ticket_obj, "rubro_id", None)
-        if rubro_id:
-            return f"pyme_{rubro_id}"
-        pyme_id = (
-            getattr(ticket_obj, "pyme_id", None)
-            or getattr(ticket_obj, "user_id", None)
-        )
-        if pyme_id:
-            return f"pyme_{pyme_id}"
-    return None
+    try:
+        return build_ticket_room(ticket_type, ticket_obj.id)
+    except (AttributeError, TypeError, ValueError):
+        return None
 
 
 def _build_public_ticket_reply_payload(ticket_obj, ticket_type: str, comment_obj) -> dict:
@@ -1303,6 +1303,7 @@ def _build_public_ticket_reply_payload(ticket_obj, ticket_type: str, comment_obj
         "mode": reply_mode,
         "reply_status": "sent_to_live_chat" if realtime_available else "queued_for_agent",
         "socket_room": socket_room,
+        "live_chat_access_token": live_chat_status.get("access_token"),
         "delivery": {
             "channel": "ticket_conversation",
             "realtime_available": realtime_available,
@@ -1369,14 +1370,45 @@ def _categorias_permitidas_para_empleado(user: User) -> tuple[list[str], list[in
 
 
 def _resolve_tenant_scope(current_user: User) -> tuple[Optional[TenantProfile], Optional[int], Optional[int]]:
-    tenant = get_current_tenant_profile(allow_fallback=False)
+    requested_slug = next(
+        (
+            str(value).strip()
+            for value in (
+                request.headers.get("X-Tenant-Slug"),
+                request.headers.get("X-Tenant"),
+                request.args.get("tenant_slug"),
+                request.args.get("tenant"),
+            )
+            if value and str(value).strip()
+        ),
+        "",
+    )
+    tenant = None
+    if requested_slug:
+        tenant = (
+            TenantProfile.query.filter(func.lower(TenantProfile.slug) == requested_slug.lower())
+            .order_by(TenantProfile.id.asc())
+            .first()
+        )
+    if not tenant and getattr(current_user, "tenant_id", None):
+        tenant = db.session.get(TenantProfile, current_user.tenant_id)
+    if not tenant and getattr(current_user, "tenant_slug", None):
+        tenant = (
+            TenantProfile.query.filter(
+                func.lower(TenantProfile.slug) == str(current_user.tenant_slug).strip().lower()
+            )
+            .order_by(TenantProfile.id.asc())
+            .first()
+        )
+    if not tenant:
+        tenant = get_current_tenant_profile(allow_fallback=False)
     if not tenant:
         return None, None, None
     return tenant, tenant.municipio_id, tenant.pyme_id
 
 
 def _authorized_for_tenant_scope(current_user: User, tenant: Optional[TenantProfile]) -> bool:
-    if not tenant:
+    if not tenant or canonical_role(getattr(current_user, "rol", None)) not in TICKET_BACKOFFICE_ROLES:
         return False
     if current_user.tenant_id == tenant.id:
         return True
@@ -1456,12 +1488,12 @@ def _ticket_matches_tenant_scope(
 ) -> bool:
     if not tenant:
         return False
-    if getattr(ticket_obj, "tenant_id", None) == getattr(tenant, "id", None):
-        return True
+    ticket_tenant_id = getattr(ticket_obj, "tenant_id", None)
+    if ticket_tenant_id is not None:
+        return ticket_tenant_id == getattr(tenant, "id", None)
     if tenant_municipio_id and getattr(ticket_obj, "municipio_id", None) == tenant_municipio_id:
         return True
-    tenant_owner_rubro_id = getattr(getattr(tenant, "pyme", None), "rubro_id", None)
-    if tenant_pyme_id and tenant_owner_rubro_id and getattr(ticket_obj, "rubro_id", None) == tenant_owner_rubro_id:
+    if tenant_pyme_id and getattr(ticket_obj, "pyme_id", None) == tenant_pyme_id:
         return True
     return False
 
@@ -1738,18 +1770,18 @@ def serialize_ticket_to_json(
 
     municipio_id = getattr(ticket, 'municipio_id', None) if ticket_type == 'municipio' else None
     rubro_id = getattr(ticket, 'rubro_id', None) if ticket_type == 'pyme' else None
+    tenant_profile_id = getattr(ticket, 'tenant_id', None)
 
     tenant_type = ticket_type
-    tenant_id = None
-    if ticket_type == 'municipio':
+    tenant_id = tenant_profile_id
+    if not tenant_id and ticket_type == 'municipio':
         tenant_id = municipio_id or getattr(ticket, 'user_id', None)
-    elif ticket_type == 'pyme':
-        tenant_id = rubro_id or getattr(ticket, 'pyme_id', None) or getattr(ticket, 'user_id', None)
 
     socket_room = None
-    if tenant_id:
-        room_prefix = 'municipio' if ticket_type == 'municipio' else 'pyme'
-        socket_room = f"{room_prefix}_{tenant_id}"
+    if tenant_profile_id:
+        socket_room = f"tenant_{tenant_profile_id}"
+    elif ticket_type == 'municipio' and municipio_id:
+        socket_room = f"municipio_{municipio_id}"
 
     assigned_user = getattr(ticket, "asignado_a", None)
     operational_hints = _build_ticket_operational_badges(ticket)
@@ -1889,6 +1921,7 @@ def serialize_ticket_to_json(
         "rubro_id": rubro_id,
         "tenant_type": tenant_type,
         "tenant_id": tenant_id,
+        "tenant_profile_id": tenant_profile_id,
         "socket_room": socket_room,
         "asignado_a": (
             {
@@ -1933,6 +1966,7 @@ def build_ticket_comment_payload(ticket, ticket_type, comment_obj, ticket_snapsh
         "nro_ticket": ticket_snapshot.get("nro_ticket"),
         "tenant_type": ticket_snapshot.get("tenant_type"),
         "tenant_id": ticket_snapshot.get("tenant_id"),
+        "tenant_profile_id": ticket_snapshot.get("tenant_profile_id"),
         "municipio_id": ticket_snapshot.get("municipio_id"),
         "rubro_id": ticket_snapshot.get("rubro_id"),
         "socket_room": ticket_snapshot.get("socket_room"),
@@ -2104,14 +2138,12 @@ def get_tickets_del_usuario_logic(current_user: User):
                 query_base = TicketModel.query.filter(PymeTicket.tenant_id == tenant_for_query.id)
             elif tenant_pyme:
                 query_base = TicketModel.query.filter(PymeTicket.tenant_id == tenant_pyme.id)
-            elif current_user.rubro_id:
-                query_base = TicketModel.query.filter(PymeTicket.rubro_id == current_user.rubro_id)
             else:
-                current_app.logger.warning(f"Usuario PYME {current_user.id} sin rubro_id intentando acceder a /tickets")
+                current_app.logger.warning("Usuario PYME %s sin tenant verificable intentando acceder a /tickets", current_user.id)
                 return _ticket_access_contract_response(
                     current_user,
                     reason_code="missing_pyme_scope",
-                    message="El usuario de empresa no tiene pyme_id, rubro_id o tenant_id valido para operar tickets.",
+                    message="El usuario de empresa no tiene un tenant verificable para operar tickets.",
                     tenant=tenant_for_query,
                 )
             tipo_ticket_str = 'pyme'
@@ -3028,19 +3060,12 @@ def asignar_ticket(current_user: User, tipo: str, ticket_id: int):
         if ticket_obj.municipio_id not in allowed_municipio_ids and not tenant_scope_allows:
             return jsonify({"error": "No tienes permiso para asignar este ticket."}), 403
     else:
-        pyme_owner_id = (
-            current_user.id
-            if canonical_role(getattr(current_user, "rol", None)) == ROLE_TENANT_ADMIN
-            else current_user.empresa_id
-        )
         tenant_scope_allows = (
             _authorized_for_tenant_scope(current_user, tenant)
             and _ticket_matches_tenant_scope(ticket_obj, tenant, None, tenant_pyme_id)
         )
-        if not tenant_scope_allows and (current_user.tipo_chat != "pyme" or ticket_obj.rubro_id != current_user.rubro_id):
+        if not tenant_scope_allows:
             return jsonify({"error": "No tienes permiso para asignar este ticket."}), 403
-        if pyme_owner_id is None and not tenant_scope_allows:
-            return _ticket_access_contract_response(current_user, reason_code="missing_pyme_scope", message="El usuario de empresa no tiene pyme_id, rubro_id o tenant_id valido para operar tickets.", tenant=tenant_for_query)
 
     data = request.get_json(silent=True) or {}
     requested_user_id = (
@@ -3164,12 +3189,7 @@ def get_ticket_details_pyme(current_user: User, ticket_id: int):
         return jsonify({"error": "Ticket no encontrado."}), 404
 
     tenant_scope_allows = _ticket_scope_access_allows("pyme", ticket, current_user)
-    rubro_scope_allows = bool(
-        current_user.tipo_chat == "pyme"
-        and current_user.rubro_id
-        and ticket.rubro_id == current_user.rubro_id
-    )
-    if not (tenant_scope_allows or rubro_scope_allows):
+    if not tenant_scope_allows:
         return jsonify({"error": "No tienes permiso para ver este ticket."}), 403
 
     error_response = _validar_asignacion_empleado(ticket, current_user)
@@ -3231,11 +3251,7 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
             return jsonify({"error": "No tienes permiso para responder este ticket."}), 403
     elif tipo == 'pyme':
         tenant_scope_allows = _ticket_scope_access_allows("pyme", ticket_obj, current_user)
-        rubro_scope_allows = bool(
-            current_user.rubro_id
-            and ticket_obj.rubro_id == current_user.rubro_id
-        )
-        if not (tenant_scope_allows or rubro_scope_allows):
+        if not tenant_scope_allows:
             return jsonify({"error": "No tienes permiso para responder este ticket."}), 403
 
     error_response = _validar_asignacion_empleado(ticket_obj, current_user)
@@ -3507,10 +3523,7 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
         if ticket_obj.municipio_id not in allowed_municipio_ids:
             return jsonify({"error": "No tienes permiso para cambiar el estado de este ticket."}), 403
     elif tipo == 'pyme':
-        if not (
-            current_user.rubro_id and
-            ticket_obj.rubro_id == current_user.rubro_id
-        ):
+        if not _ticket_scope_access_allows("pyme", ticket_obj, current_user):
             return jsonify({"error": "No tienes permiso para cambiar el estado de este ticket."}), 403
 
     error_response = _validar_asignacion_empleado(ticket_obj, current_user)
@@ -3934,14 +3947,16 @@ def update_ticket_presence(current_user: User, tipo: str, ticket_id: int, anon_i
     db.session.commit()
 
     summary = build_ticket_realtime_summary(ticket_type=tipo, ticket_id=ticket_id)
+    tenant_id, tenant_profile_id, socket_room = _ticket_admin_socket_scope(ticket_obj, tipo)
     event_payload = {
         "ticket_id": ticket_id,
         "tipo": tipo,
         "tenant_type": tipo,
-        "tenant_id": getattr(ticket_obj, "municipio_id", None) if tipo == "municipio" else getattr(ticket_obj, "rubro_id", None),
+        "tenant_id": tenant_id,
+        "tenant_profile_id": tenant_profile_id,
         "municipio_id": getattr(ticket_obj, "municipio_id", None),
         "rubro_id": getattr(ticket_obj, "rubro_id", None),
-        "socket_room": f"{'municipio' if tipo == 'municipio' else 'pyme'}_{getattr(ticket_obj, 'municipio_id', None) if tipo == 'municipio' else getattr(ticket_obj, 'rubro_id', None)}" if (getattr(ticket_obj, "municipio_id", None) if tipo == "municipio" else getattr(ticket_obj, "rubro_id", None)) else None,
+        "socket_room": socket_room,
         "presence_status": presence_status,
         "viewer": state.to_dict(),
         "summary": summary["presence"],
@@ -3985,14 +4000,16 @@ def update_ticket_read_state(current_user: User, tipo: str, ticket_id: int, anon
     db.session.commit()
 
     summary = build_ticket_realtime_summary(ticket_type=tipo, ticket_id=ticket_id)
+    tenant_id, tenant_profile_id, socket_room = _ticket_admin_socket_scope(ticket_obj, tipo)
     event_payload = {
         "ticket_id": ticket_id,
         "tipo": tipo,
         "tenant_type": tipo,
-        "tenant_id": getattr(ticket_obj, "municipio_id", None) if tipo == "municipio" else getattr(ticket_obj, "rubro_id", None),
+        "tenant_id": tenant_id,
+        "tenant_profile_id": tenant_profile_id,
         "municipio_id": getattr(ticket_obj, "municipio_id", None),
         "rubro_id": getattr(ticket_obj, "rubro_id", None),
-        "socket_room": f"{'municipio' if tipo == 'municipio' else 'pyme'}_{getattr(ticket_obj, 'municipio_id', None) if tipo == 'municipio' else getattr(ticket_obj, 'rubro_id', None)}" if (getattr(ticket_obj, "municipio_id", None) if tipo == "municipio" else getattr(ticket_obj, "rubro_id", None)) else None,
+        "socket_room": socket_room,
         "read_at": state.to_dict().get("last_read_at"),
         "last_read_comment_id": state.last_read_comment_id,
         "viewer": state.to_dict(),
@@ -4029,7 +4046,7 @@ def get_ticket_knowledge_base_suggestions(current_user: User, owner_user: User, 
         es_dueno = current_user and ticket_obj.user_id == current_user.id
         es_anon = anon_id and ticket_obj.anon_id == anon_id
     else:  # pyme
-        es_agente = current_user and current_user.rubro_id and ticket_obj.rubro_id == current_user.rubro_id
+        es_agente = current_user and _ticket_scope_access_allows("pyme", ticket_obj, current_user)
         es_dueno = current_user and ticket_obj.user_id == current_user.id
         es_anon = anon_id and ticket_obj.anon_id == anon_id
 
@@ -4379,19 +4396,11 @@ def get_panel_por_categoria(current_user: User):
 @require_role('admin', 'empleado')
 def get_panel_pyme(current_user: User):
     try:
-        query = PymeTicket.query
-        if current_user.rubro_id:
-            query = query.filter_by(rubro_id=current_user.rubro_id)
-        tickets = query.order_by(PymeTicket.fecha.desc()).all()
-        # Re-using _calculate_ticket_metrics_for_list defined above in get_panel_por_categoria
-        # from datetime import datetime, timedelta # Ensure datetime is available
+        tenant, _municipio_id, _pyme_id = _resolve_tenant_scope(current_user)
+        if not _authorized_for_tenant_scope(current_user, tenant):
+            return jsonify({"error": "No tienes un tenant verificable para ver este panel."}), 403
 
-        query = PymeTicket.query  # Comments will be loaded lazily
-
-        if current_user.rubro_id:
-            query = query.filter_by(rubro_id=current_user.rubro_id)
-        # else: # Should not happen for a PYME admin/employee if setup is correct
-            # return jsonify({"error": "Rubro no asignado al usuario PYME."}), 400
+        query = PymeTicket.query.filter(PymeTicket.tenant_id == tenant.id)
 
         all_tickets_for_user_pyme = query.order_by(PymeTicket.fecha.desc()).all()
 
@@ -4534,7 +4543,7 @@ def actualizar_ubicacion_ticket(current_user: User, tipo: str, ticket_id: int):
         pass
     elif tipo == 'municipio' and current_user.tipo_chat == "municipio" and ticket_obj.municipio_id == current_user.municipio_id:
         pass
-    elif tipo == 'pyme' and current_user.rubro_id and getattr(ticket_obj, 'rubro_id', None) == current_user.rubro_id:
+    elif tipo == 'pyme' and _ticket_scope_access_allows("pyme", ticket_obj, current_user):
         pass
     else:
         return jsonify({"error": "No tienes permiso para modificar este ticket."}), 403
@@ -4587,7 +4596,7 @@ def enviar_encuesta(current_user: User, tipo: str, ticket_id: int):
     es_admin = False
     if tipo == 'municipio' and current_user.tipo_chat == "municipio" and ticket_obj.municipio_id == current_user.municipio_id:
         es_admin = True
-    if tipo == 'pyme' and current_user.rubro_id and getattr(ticket_obj, 'rubro_id', None) == current_user.rubro_id:
+    if tipo == 'pyme' and _ticket_scope_access_allows("pyme", ticket_obj, current_user):
         es_admin = True
 
     if not (es_dueño or es_admin):
@@ -4611,7 +4620,7 @@ def obtener_encuesta(current_user: User, tipo: str, ticket_id: int):
     es_admin = False
     if tipo == 'municipio' and current_user.tipo_chat == "municipio" and ticket_obj.municipio_id == current_user.municipio_id:
         es_admin = True
-    if tipo == 'pyme' and current_user.rubro_id and ticket_obj and getattr(ticket_obj, 'rubro_id', None) == current_user.rubro_id:
+    if tipo == 'pyme' and ticket_obj and _ticket_scope_access_allows("pyme", ticket_obj, current_user):
         es_admin = True
     if not (es_dueño or es_admin):
         return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
@@ -4663,12 +4672,13 @@ def mapa_de_tickets(current_user: User, tipo: str):
             estado=estado # Pasar el nuevo filtro
         )
     elif tipo == "pyme":
-        if not current_user.rubro_id: # Asumimos que si es pyme, debe tener rubro_id
+        tenant, _municipio_id, _pyme_id = _resolve_tenant_scope(current_user)
+        if not _authorized_for_tenant_scope(current_user, tenant):
             return jsonify({"error": "No tienes permiso para ver este mapa."}), 403
 
         datos = servicio_tickets.obtener_tickets_con_ubicacion_para_mapa( # Asumiendo que se renombra/modifica el servicio
             tipo_ticket=tipo,
-            rubro_id=current_user.rubro_id,
+            tenant_id=tenant.id,
             fecha_inicio=fecha_inicio,
             fecha_fin=fecha_fin,
             categoria=categoria,
@@ -4766,13 +4776,7 @@ def send_ticket_history(current_user: User, tipo: str, ticket_id: int, anon_id: 
             and _authorized_for_tenant_scope(actor_user, tenant)
             and _ticket_matches_tenant_scope(ticket_obj, tenant, None, tenant_pyme_id)
         )
-        es_agente = (
-            actor_user
-            and (
-                (actor_user.rubro_id and ticket_obj.rubro_id == actor_user.rubro_id)
-                or tenant_scope_allows
-            )
-        )
+        es_agente = actor_user and tenant_scope_allows
         es_dueno = actor_user and ticket_obj.user_id == actor_user.id
         es_anon = anon_id and ticket_obj.anon_id == anon_id
         pin_valido = pin and str(ticket_obj.consulta_pin) == str(pin)

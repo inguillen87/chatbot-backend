@@ -49,8 +49,10 @@ class TicketPublicChatReplyTest(unittest.TestCase):
         self.assertEqual(payload["ticket_id"], ticket.id)
         self.assertEqual(payload["tipo"], "municipio")
         self.assertEqual(payload["estado_chat"], "nuevo")
-        self.assertEqual(payload["socket_room"], f"municipio_{self.admin.id}")
-        self.assertEqual(payload["live_chat"]["socket_room"], f"municipio_{self.admin.id}")
+        expected_room = f"ticket_municipio_{ticket.id}"
+        self.assertEqual(payload["socket_room"], expected_room)
+        self.assertEqual(payload["live_chat"]["socket_room"], expected_room)
+        self.assertEqual(payload["live_chat_access_token"], payload["live_chat"]["access_token"])
         self.assertIn(payload["reply_status"], {"sent_to_live_chat", "queued_for_agent"})
         self.assertEqual(payload["delivery"]["channel"], "ticket_conversation")
         self.assertTrue(payload["polling"]["enabled"])
@@ -111,7 +113,11 @@ class TicketPublicChatReplyTest(unittest.TestCase):
         self.assertFalse(payload["delivery"]["offline_queue"])
         self.assertTrue(payload["delivery"]["socket_enabled"])
         self.assertTrue(payload["delivery"]["transport"]["socket_enabled"])
-        self.assertEqual(payload["live_chat"]["transport"]["socket_room"], f"municipio_{self.admin.id}")
+        self.assertEqual(payload["live_chat"]["transport"]["socket_room"], f"ticket_municipio_{ticket.id}")
+        self.assertEqual(
+            payload["live_chat"]["transport"]["access_token"],
+            payload["live_chat_access_token"],
+        )
 
     def test_public_pin_reply_rejects_invalid_pin(self):
         ticket = MunicipioTicket(
@@ -322,7 +328,8 @@ class TicketPublicChatReplyTest(unittest.TestCase):
         self.assertTrue(payload["success"])
         self.assertEqual(payload["ticket_id"], ticket.id)
         self.assertEqual(payload["tipo"], "pyme")
-        self.assertEqual(payload["socket_room"], "pyme_77")
+        self.assertEqual(payload["socket_room"], f"ticket_pyme_{ticket.id}")
+        self.assertEqual(payload["live_chat_access_token"], payload["live_chat"]["access_token"])
         self.assertEqual(payload["delivery"]["channel"], "ticket_conversation")
         self.assertTrue(payload["polling"]["enabled"])
         self.assertEqual(payload["comment"]["comentario"], "Hola, quiero hablar con ventas")

@@ -254,7 +254,7 @@ class TicketServiceTests(unittest.TestCase):
         self.assertEqual(dummy_creator.last_ticket_data['telefono_vecino'], '351122395')
 
 
-    def test_mapa_filtra_por_rubro(self):
+    def test_mapa_pyme_filtra_por_tenant(self):
         DummyTicket = SimpleNamespace
         class DummyQuery(list):
             def filter_by(self, **kwargs):
@@ -265,9 +265,9 @@ class TicketServiceTests(unittest.TestCase):
                 return list(self)
 
         from datetime import datetime # Needed for fecha
-        t1 = DummyTicket(id=1, estado='abierto', latitud=10.0, longitud=20.0, rubro_id=5, fecha=datetime.utcnow(), categoria=None, asunto=None)
-        t2 = DummyTicket(id=2, estado='abierto', latitud=11.0, longitud=21.0, rubro_id=5, fecha=datetime.utcnow(), categoria=None, asunto=None)
-        t3 = DummyTicket(id=3, estado='abierto', latitud=12.0, longitud=22.0, rubro_id=7, fecha=datetime.utcnow(), categoria=None, asunto=None) # Different rubro
+        t1 = DummyTicket(id=1, estado='abierto', latitud=10.0, longitud=20.0, tenant_id=5, fecha=datetime.utcnow(), categoria=None, asunto=None)
+        t2 = DummyTicket(id=2, estado='abierto', latitud=11.0, longitud=21.0, tenant_id=5, fecha=datetime.utcnow(), categoria=None, asunto=None)
+        t3 = DummyTicket(id=3, estado='abierto', latitud=12.0, longitud=22.0, tenant_id=7, fecha=datetime.utcnow(), categoria=None, asunto=None)
 
         class DummyModel:
             latitud = MagicMock()
@@ -280,16 +280,16 @@ class TicketServiceTests(unittest.TestCase):
                     setattr(self, key, value)
 
         query = DummyQuery([
-            SimpleNamespace(id=1, estado='abierto', latitud=10.0, longitud=20.0, rubro_id=5, fecha=datetime.utcnow(), categoria=None, asunto=None),
-            SimpleNamespace(id=2, estado='abierto', latitud=11.0, longitud=21.0, rubro_id=5, fecha=datetime.utcnow(), categoria=None, asunto=None),
-            SimpleNamespace(id=3, estado='abierto', latitud=12.0, longitud=22.0, rubro_id=7, fecha=datetime.utcnow(), categoria=None, asunto=None)
+            SimpleNamespace(id=1, estado='abierto', latitud=10.0, longitud=20.0, tenant_id=5, fecha=datetime.utcnow(), categoria=None, asunto=None),
+            SimpleNamespace(id=2, estado='abierto', latitud=11.0, longitud=21.0, tenant_id=5, fecha=datetime.utcnow(), categoria=None, asunto=None),
+            SimpleNamespace(id=3, estado='abierto', latitud=12.0, longitud=22.0, tenant_id=7, fecha=datetime.utcnow(), categoria=None, asunto=None)
         ])
         DummyModel.query = query
         with patch.object(ts, 'PymeTicket', DummyModel):
             service = ServicioTickets()
-            res = service.obtener_tickets_con_ubicacion_para_mapa(tipo_ticket='pyme', rubro_id=5)
+            res = service.obtener_tickets_con_ubicacion_para_mapa(tipo_ticket='pyme', tenant_id=5)
 
-        # Expecting two items for rubro_id=5, each with weight 1 as they are distinct locations
+        # Two points belong to tenant 5; tenant 7 must remain isolated.
         self.assertEqual(len(res), 2)
         self.assertTrue(
             any(

@@ -5,6 +5,7 @@ from .base_action_handler import BaseActionHandler
 from services.ticket_service import servicio_tickets
 from services.ticket_utils import formatear_ticket_respuesta
 from services.live_chat_schedule import build_tenant_live_chat_status
+from services.live_chat_access import attach_ticket_room_access, build_ticket_room
 from socket_service import emit_new_ticket
 from routes.ticket import serialize_ticket_to_json
 
@@ -87,17 +88,18 @@ class DerivarHumanoAction(BaseActionHandler):
                 "Atención en Vivo",
                 chat_id,
             )
-            socket_room = None
-            if target_entity_type == "municipio":
-                municipio_id = getattr(sala, "municipio_id", None)
-                socket_room = f"municipio_{municipio_id}" if municipio_id else None
-            elif target_entity_type == "pyme":
-                pyme_id = getattr(sala, "pyme_id", None) or getattr(sala, "user_id", None)
-                socket_room = f"pyme_{pyme_id}" if pyme_id else None
             tenant_profile = self.context.get("tenant_profile") or self.context.get("tenant")
             if not tenant_profile:
                 tenant_profile = getattr(owner_user, "tenant", None)
-            live_chat_status = build_tenant_live_chat_status(tenant_profile, socket_room=socket_room)
+            live_chat_status = attach_ticket_room_access(
+                build_tenant_live_chat_status(
+                    tenant_profile,
+                    socket_room=build_ticket_room(target_entity_type, sala.id),
+                ),
+                ticket_type=target_entity_type,
+                ticket_id=sala.id,
+            )
+            socket_room = live_chat_status["socket_room"]
             if not live_chat_status.get("available"):
                 schedule_text = live_chat_status.get("description")
                 if schedule_text:
@@ -115,6 +117,7 @@ class DerivarHumanoAction(BaseActionHandler):
                     "chat_id": chat_id,
                     "status": "esperando_agente_en_vivo",
                     "live_chat": live_chat_status,
+                    "live_chat_access_token": live_chat_status["access_token"],
                     "socket_room": socket_room,
                     "channel_mode": live_chat_status.get("mode"),
                 },

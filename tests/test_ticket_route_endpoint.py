@@ -11,12 +11,12 @@ class TicketRouteEndpointTests(unittest.TestCase):
         self.client = self.app.test_client()
         with self.app.app_context():
             db.create_all()
-            municipio = User(id=1, name='Muni', email='m@e.com', password_hash='x', tipo_chat='municipio', latitud=-34.6, longitud=-58.45)
+            municipio = User(id=1, name='Muni', email='m@e.com', password_hash='x', rol='admin', tipo_chat='municipio', latitud=-34.6, longitud=-58.45)
             db.session.add(municipio)
             ticket = MunicipioTicket(id=1, pregunta='p', municipio_id=1, latitud=-34.61, longitud=-58.44)
             db.session.add(ticket)
             db.session.commit()
-            self.token = generar_token(1, 'usuario', 'municipio', municipio_id=1, pyme_id=None)
+            self.token = generar_token(1, 'admin', 'municipio', municipio_id=1, pyme_id=None)
 
     def tearDown(self):
         with self.app.app_context():

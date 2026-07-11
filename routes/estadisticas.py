@@ -7,11 +7,12 @@ from utils.time_utils import get_local_now
 from services.ticket_service import servicio_tickets
 from services.municipal_stats import build_stats_for_municipio, StatsFilters
 from services.metricas_service import MetricasService
-from models import User
+from models import User, db
 from utils.heatmap import aggregate_heatmap_points, build_feature_collection, enrich_heatmap_points
 from utils.map_config import get_map_config
 from utils.tenant import get_current_tenant, get_current_tenant_profile, get_current_tenant_slug
 from services.tenant_resolver import TenantResolutionError, resolve_tenant_only
+from utils.roles import is_authorized_superadmin_user
 
 
 estadisticas_bp = Blueprint("estadisticas", __name__, url_prefix="/estadisticas")
@@ -182,6 +183,48 @@ def _resolve_tenant_profile_or_error(args) -> object:
         g.current_tenant = tenant
         g.current_tenant_slug = getattr(tenant, "slug", None)
     return tenant
+
+
+def _stats_tenant_access_allowed(current_user, tenant) -> bool:
+    if tenant is None:
+        return bool(current_app.config.get("TESTING"))
+    if current_user is None:
+        return False
+    if is_authorized_superadmin_user(current_user):
+        return True
+
+    owner = current_user
+    empresa_id = getattr(current_user, "empresa_id", None)
+    if empresa_id:
+        owner = db.session.get(User, empresa_id) or current_user
+
+    tenant_ids = {
+        getattr(current_user, "tenant_id", None),
+        getattr(owner, "tenant_id", None),
+    } - {None}
+    if getattr(tenant, "id", None) in tenant_ids:
+        return True
+
+    owner_id = getattr(owner, "id", None)
+    municipality_ids = {
+        getattr(current_user, "municipio_id", None),
+        getattr(owner, "municipio_id", None),
+        owner_id if getattr(owner, "tipo_chat", None) == "municipio" else None,
+    } - {None}
+    business_ids = {
+        getattr(current_user, "pyme_id", None),
+        getattr(owner, "pyme_id", None),
+        owner_id if getattr(owner, "tipo_chat", None) == "pyme" else None,
+    } - {None}
+    return bool(
+        getattr(tenant, "municipio_id", None) in municipality_ids
+        or getattr(tenant, "pyme_id", None) in business_ids
+    )
+
+
+def _resolve_stats_rubro_id(current_user, tenant) -> int | None:
+    tenant_owner = getattr(tenant, "pyme", None) if tenant is not None else None
+    return getattr(tenant_owner, "rubro_id", None) or getattr(current_user, "rubro_id", None)
 
 
 def _mark_empty_heatmap_payload(payload: dict[str, object], *, key: str = "heatmap") -> None:
@@ -711,6 +754,16 @@ def estadisticas_dashboard(current_user):
     args = request.args
     tipo = _normalize_dashboard_tipo(args.get("tipo", "municipio"))
 
+    try:
+        tenant = _resolve_tenant_profile_or_error(args)
+    except TenantResolutionError as exc:
+        return jsonify({"error": "tenant_desconocido", "detail": str(exc)}), 404
+    if not _stats_tenant_access_allowed(current_user, tenant):
+        return jsonify({"error": "tenant_forbidden"}), 403
+    tenant_id = getattr(tenant, "id", None)
+    if tipo == "pyme" and tenant_id is None and not current_app.config.get("TESTING"):
+        return jsonify({"error": "tenant_required"}), 403
+
     estados = _parse_estado_params(args)
     estado_param = None
     if estados:
@@ -726,10 +779,10 @@ def estadisticas_dashboard(current_user):
     municipio_id = args.get("municipio_id", type=int)
     rubro_id = args.get("rubro_id", type=int)
 
-    if tipo == "municipio" and municipio_id is None:
-        municipio_id = _resolve_municipio_id(current_user)
-    if tipo == "pyme" and rubro_id is None:
-        rubro_id = getattr(current_user, "rubro_id", None)
+    if tipo == "municipio":
+        municipio_id = getattr(tenant, "municipio_id", None) or _resolve_municipio_id(current_user)
+    if tipo == "pyme":
+        rubro_id = _resolve_stats_rubro_id(current_user, tenant)
 
     try:
         stats_filters = _build_stats_filters(args, estados)
@@ -740,6 +793,7 @@ def estadisticas_dashboard(current_user):
         tipo_ticket=tipo,
         municipio_id=municipio_id,
         rubro_id=rubro_id,
+        tenant_id=tenant_id,
         fecha_inicio=fecha_inicio,
         fecha_fin=fecha_fin,
         categoria=categorias or None,
@@ -750,6 +804,7 @@ def estadisticas_dashboard(current_user):
     metadata = {
         "municipio_id": municipio_id,
         "rubro_id": rubro_id,
+        "tenant_id": tenant_id,
         "last_updated": get_local_now().isoformat(),
     }
 
@@ -786,7 +841,7 @@ def estadisticas_dashboard(current_user):
         payload["cards"] = _build_summary_cards(resumen)
         payload["filters"] = _serialize_filters(stats_filters)
     else:
-        pyme_id = args.get("pyme_id", type=int)
+        pyme_id = getattr(tenant, "pyme_id", None)
         if pyme_id is None:
             pyme_id = getattr(current_user, "pyme_id", None) or getattr(current_user, "id", None)
 
@@ -844,6 +899,11 @@ def mapa_calor_datos(current_user):
         tenant = _resolve_tenant_profile_or_error(args)
     except TenantResolutionError as exc:
         return jsonify({"error": "tenant_desconocido", "detail": str(exc)}), 404
+    if not _stats_tenant_access_allowed(current_user, tenant):
+        return jsonify({"error": "tenant_forbidden"}), 403
+    tenant_id = getattr(tenant, "id", None)
+    if tipo_ticket == "pyme" and tenant_id is None and not current_app.config.get("TESTING"):
+        return jsonify({"error": "tenant_required"}), 403
 
     estados = _parse_estado_params(args)
     estado_param = None
@@ -854,14 +914,12 @@ def mapa_calor_datos(current_user):
     distrito = distritos[0] if distritos else None
 
     municipio_id = args.get("municipio_id", type=int)
-    if municipio_id is None and tipo_ticket == "municipio":
-        municipio_id = getattr(tenant, "municipio_id", None) or _resolve_municipio_id(
-            current_user
-        )
+    if tipo_ticket == "municipio":
+        municipio_id = getattr(tenant, "municipio_id", None) or _resolve_municipio_id(current_user)
 
     rubro_id = args.get("rubro_id", type=int)
-    if rubro_id is None and tipo_ticket == "pyme":
-        rubro_id = getattr(tenant, "pyme_id", None) or getattr(current_user, "rubro_id", None)
+    if tipo_ticket == "pyme":
+        rubro_id = _resolve_stats_rubro_id(current_user, tenant)
 
     categorias = _parse_multi_value_param(args, "categoria")
 
@@ -871,6 +929,7 @@ def mapa_calor_datos(current_user):
             tipo_ticket=tipo_ticket,
             municipio_id=municipio_id,
             rubro_id=rubro_id,
+            tenant_id=tenant_id,
             fecha_inicio=args.get("fecha_inicio"),
             fecha_fin=args.get("fecha_fin"),
             categoria=categorias or None,
@@ -960,6 +1019,11 @@ def estadisticas_tickets(current_user):
         tenant = _resolve_tenant_profile_or_error(args)
     except TenantResolutionError as exc:
         return jsonify({"error": "tenant_desconocido", "detail": str(exc)}), 404
+    if not _stats_tenant_access_allowed(current_user, tenant):
+        return jsonify({"error": "tenant_forbidden"}), 403
+    tenant_id = getattr(tenant, "id", None)
+    if tipo == "pyme" and tenant_id is None and not current_app.config.get("TESTING"):
+        return jsonify({"error": "tenant_required"}), 403
 
     municipio_id = args.get("municipio_id", type=int)
     rubro_id = args.get("rubro_id", type=int)
@@ -973,12 +1037,10 @@ def estadisticas_tickets(current_user):
     if distrito:
         distrito = distrito.strip() or None
 
-    if tipo == "municipio" and municipio_id is None:
-        municipio_id = getattr(tenant, "municipio_id", None) or _resolve_municipio_id(
-            current_user
-        )
-    if tipo == "pyme" and rubro_id is None:
-        rubro_id = getattr(tenant, "pyme_id", None) or getattr(current_user, "rubro_id", None)
+    if tipo == "municipio":
+        municipio_id = getattr(tenant, "municipio_id", None) or _resolve_municipio_id(current_user)
+    if tipo == "pyme":
+        rubro_id = _resolve_stats_rubro_id(current_user, tenant)
 
     categoria_values = _parse_multi_value_param(args, "categoria")
     categoria = categoria_values or None
@@ -989,6 +1051,7 @@ def estadisticas_tickets(current_user):
             tipo_ticket=tipo,
             municipio_id=municipio_id,
             rubro_id=rubro_id,
+            tenant_id=tenant_id,
             fecha_inicio=args.get("fecha_inicio"),
             fecha_fin=args.get("fecha_fin"),
             categoria=categoria,

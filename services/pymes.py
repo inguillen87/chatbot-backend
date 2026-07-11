@@ -71,6 +71,30 @@ from services.demo_surveys import build_demo_survey_chat_menu
 
 logger = logging.getLogger(__name__)
 
+_LIVE_CHAT_PERSISTENCE_STATES = {
+    "esperando_agente_en_vivo",
+    "en_proceso",
+    "en_vivo",
+}
+
+
+def _resolve_pyme_chat_persistence_ticket_id(
+    pyme_context: dict[str, Any],
+    action_data: dict[str, Any],
+) -> Optional[int]:
+    candidate = action_data.get("ticket_id") or pyme_context.get("ultimo_ticket_creado")
+    if not candidate:
+        return None
+    try:
+        candidate_id = int(candidate)
+    except (TypeError, ValueError):
+        return None
+
+    ticket = db.session.get(PymeTicket, candidate_id)
+    if not ticket or ticket.estado in _LIVE_CHAT_PERSISTENCE_STATES:
+        return None
+    return candidate_id
+
 
 def _render_pyme_template_variables(
     variables: dict[str, Any] | None,
@@ -1866,6 +1890,38 @@ class FaqHandler(BaseHandler):
 
 class HumanHandler(BaseHandler):
     def execute(self, action_data):
+        from services.actions.pyme_actions import DerivarHumanoActionHandlerPyme
+
+        owner_user = self.context.get("user_obj") or db.session.get(models.User, self.pyme_id_actual)
+        tenant_profile = self.context.get("tenant_profile") or self.context.get("tenant")
+        if not tenant_profile and owner_user:
+            tenant_profile = getattr(owner_user, "tenant_profile_pyme", None)
+        handler_context = {
+            **self.context,
+            "user_obj": owner_user,
+            "viewer_user_obj": self.context.get("viewer_user_obj"),
+            "cliente_id": self.cliente_id_actual,
+            "anon_id": self.context.get("anon_id"),
+            "user_id": self.pyme_id_actual,
+            "tenant_id": getattr(tenant_profile, "id", None) or self.context.get("tenant_id"),
+            "tenant_profile": tenant_profile,
+            "pregunta_actual_usuario": action_data.get("pregunta", ""),
+        }
+        result = DerivarHumanoActionHandlerPyme(handler_context).execute(
+            {"motivo_derivacion": action_data.get("pregunta") or "Solicitud de asesor humano"}
+        )
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        return {
+            "message_body": result.get("message_to_user") or "No pude abrir el canal de atencion en este momento.",
+            "options_list": [{"id": "ver_catalogo_pyme_post_human", "texto": "Ver catalogo"}],
+            "message_type": "interactive_buttons",
+            "fuente": "pyme_human_handler_scoped_v4",
+            "ticket_id": data.get("ticket_id"),
+            "data": data,
+            "success": bool(result.get("success")),
+        }
+
+    def _execute_legacy_unreachable(self, action_data):
         pregunta = action_data.get("pregunta", "")
         # Lógica para transferir a un humano o proveer info de contacto.
         # Por ahora, un placeholder.
@@ -1956,7 +2012,12 @@ class UnclearHandler(BaseHandler): # Aunque no está en handler_map, es bueno te
         if self.pyme_ctx["reintentos_ambigua"] > 2:
             self.pyme_ctx["reintentos_ambigua"] = 0 # Reset
             self._guardar_contexto_pyme()
-            return HumanHandler(self.context).handle("El usuario está teniendo dificultades para que lo entienda.")
+            return HumanHandler(self.context).execute(
+                {
+                    "pregunta": pregunta
+                    or "El usuario esta teniendo dificultades para que lo entienda."
+                }
+            )
 
         sugerencias = sugerencias_por_rubro(self.context.get("rubro_nombre"))
         msg = "No estoy seguro de cómo ayudarte con eso."
@@ -3390,11 +3451,12 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
 
     # --- Persistence: Save Chat History for Ticket (Pyme) ---
     try:
-        # Check if an active ticket exists in the context (set by HumanHandler)
-        active_ticket_id = pyme_ctx_actual.get("ultimo_ticket_creado")
-        # Or if one was created in this turn
-        if final_response_dict.get("ticket_id"):
-            active_ticket_id = final_response_dict["ticket_id"]
+        # Persist automatically only when this turn created the ticket. Existing
+        # live tickets are written through the signed widget endpoint instead.
+        active_ticket_id = _resolve_pyme_chat_persistence_ticket_id(
+            pyme_ctx_actual,
+            action_data,
+        )
 
         if active_ticket_id:
             # 1. Save User Message

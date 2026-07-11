@@ -6,13 +6,37 @@ import jwt
 from services.ticket_service import servicio_tickets # Reutilizamos el servicio de tickets
 from services.tts_orchestrator import generar_audio
 from services.conversation_stream import build_realtime_envelope
+from services.live_chat_access import LiveChatAccessError, build_ticket_room, verify_ticket_room_token
 from utils.response_utils import ensure_buttons_compatibility
+from utils.roles import canonical_role, is_authorized_superadmin_user
 from typing import Any, Optional, Set
+from uuid import UUID
 import os
 
 SOCKET_CORS_ORIGINS = list(
     dict.fromkeys(list(ALLOWED_ORIGINS) + ["https://chatboc.ar", "https://www.chatboc.ar"])
 )
+
+TICKET_OPERATOR_ROLES = {"admin", "empleado", "manager", "supervisor"}
+PUBLIC_TICKET_COMMENT_ORIGINS = {
+    "",
+    "admin",
+    "agent",
+    "api",
+    "chat",
+    "cliente",
+    "ciudadano",
+    "email",
+    "operator",
+    "portal",
+    "public_tracking",
+    "pwa",
+    "sms",
+    "tracking_page",
+    "web",
+    "whatsapp",
+    "widget",
+}
 
 def _resolve_socket_async_mode() -> str:
     """Use threading by default; allow explicit override via env."""
@@ -45,12 +69,85 @@ def _get_owner_user(user: Optional[User]) -> Optional[User]:
     return user
 
 
+def _is_ticket_operator(user: Optional[User]) -> bool:
+    if not user:
+        return False
+    if is_authorized_superadmin_user(user):
+        return True
+    return canonical_role(getattr(user, "rol", None)) in TICKET_OPERATOR_ROLES
+
+
+def _tenant_for_operator(user: Optional[User]) -> Optional[TenantProfile]:
+    if not user:
+        return None
+
+    owner = _get_owner_user(user)
+    tenant_id = getattr(user, "tenant_id", None) or getattr(owner, "tenant_id", None)
+    if tenant_id:
+        tenant = db.session.get(TenantProfile, tenant_id)
+        if tenant:
+            return tenant
+
+    tenant_slug = str(
+        getattr(user, "tenant_slug", None) or getattr(owner, "tenant_slug", None) or ""
+    ).strip()
+    if tenant_slug:
+        tenant = TenantProfile.query.filter_by(slug=tenant_slug).first()
+        if tenant:
+            return tenant
+
+    owner_id = getattr(owner, "id", None)
+    if not owner_id:
+        return None
+    return (
+        TenantProfile.query.filter_by(municipio_id=owner_id).first()
+        or TenantProfile.query.filter_by(pyme_id=owner_id).first()
+    )
+
+
+def _user_can_operate_tenant(user: Optional[User], tenant: Optional[TenantProfile]) -> bool:
+    if not user or not tenant or not _is_ticket_operator(user):
+        return False
+    if is_authorized_superadmin_user(user):
+        return True
+
+    owner = _get_owner_user(user)
+    if getattr(user, "tenant_id", None) == tenant.id or getattr(owner, "tenant_id", None) == tenant.id:
+        return True
+
+    user_slug = str(
+        getattr(user, "tenant_slug", None) or getattr(owner, "tenant_slug", None) or ""
+    ).strip().lower()
+    if user_slug and user_slug == str(getattr(tenant, "slug", "") or "").strip().lower():
+        return True
+
+    owner_id = getattr(owner, "id", None)
+    municipality_scope = {
+        getattr(user, "municipio_id", None),
+        getattr(owner, "municipio_id", None),
+        owner_id,
+    } - {None}
+    business_scope = {
+        getattr(user, "pyme_id", None),
+        getattr(owner, "pyme_id", None),
+        owner_id,
+    } - {None}
+    return bool(
+        getattr(tenant, "municipio_id", None) in municipality_scope
+        or getattr(tenant, "pyme_id", None) in business_scope
+    )
+
+
 def _get_rooms_for_user(user: Optional[User]) -> list[str]:
     rooms: Set[str] = set()
-    if not user:
+    if not _is_ticket_operator(user):
         return []
 
     owner = _get_owner_user(user)
+
+    tenant = _tenant_for_operator(user)
+    if tenant:
+        rooms.update(_get_rooms_for_tenant_slug(tenant.slug))
 
     usuario_tipo = getattr(user, "tipo_chat", None)
     owner_tipo = getattr(owner, "tipo_chat", None)
@@ -64,16 +161,12 @@ def _get_rooms_for_user(user: Optional[User]) -> list[str]:
     if (usuario_tipo == "municipio" or owner_tipo == "municipio") and municipio_id:
         rooms.add(f"municipio_{municipio_id}")
 
-    rubro_id = getattr(user, "rubro_id", None) or getattr(owner, "rubro_id", None)
     pyme_id = getattr(user, "pyme_id", None) or getattr(owner, "pyme_id", None)
     if not pyme_id and owner_tipo == "pyme":
         pyme_id = getattr(owner, "id", None)
 
-    if (usuario_tipo == "pyme" or owner_tipo == "pyme"):
-        if rubro_id:
-            rooms.add(f"pyme_{rubro_id}")
-        elif pyme_id:
-            rooms.add(f"pyme_{pyme_id}")
+    if (usuario_tipo == "pyme" or owner_tipo == "pyme") and pyme_id:
+        rooms.add(f"pyme_{pyme_id}")
 
     return list(rooms)
 
@@ -97,58 +190,75 @@ def _get_rooms_for_tenant_slug(tenant_slug: Optional[str]) -> list[str]:
     return list(rooms)
 
 
+def _user_can_access_tenant_slug(user: Optional[User], tenant_slug: Optional[str]) -> bool:
+    if not user or not tenant_slug or not _is_ticket_operator(user):
+        return False
+    tenant = TenantProfile.query.filter_by(slug=str(tenant_slug).strip()).first()
+    return _user_can_operate_tenant(user, tenant)
+
+
 
 def _merge_rooms_for_subscription(user: User, tenant_slug: Optional[str]) -> list[str]:
     """Merge user-derived and tenant-derived rooms without dropping either scope."""
 
     rooms = list(_get_rooms_for_user(user))
-    for room in _get_rooms_for_tenant_slug(tenant_slug):
+    tenant_rooms = _get_rooms_for_tenant_slug(tenant_slug) if _user_can_access_tenant_slug(user, tenant_slug) else []
+    for room in tenant_rooms:
         if room not in rooms:
             rooms.append(room)
     return rooms
 
-def _resolve_ticket_room(payload: Any) -> Optional[str]:
+def _resolve_tenant_ticket_room(payload: Any) -> Optional[str]:
     if not isinstance(payload, dict):
         return None
 
-    explicit_room = payload.get("socket_room")
-    if explicit_room:
-        return explicit_room
-
     tenant_type = payload.get("tenant_type") or payload.get("tipo")
-    tenant_id = payload.get("tenant_id")
+    tenant_profile_id = payload.get("tenant_profile_id")
+    if tenant_profile_id:
+        return f"tenant_{tenant_profile_id}"
 
     if tenant_type == "municipio":
-        municipio_id = payload.get("municipio_id") or tenant_id
+        municipio_id = payload.get("municipio_id")
         if municipio_id:
             return f"municipio_{municipio_id}"
     elif tenant_type == "pyme":
-        rubro_id = payload.get("rubro_id")
-        if rubro_id:
-            return f"pyme_{rubro_id}"
-        fallback_id = tenant_id or payload.get("pyme_id")
-        if fallback_id:
-            return f"pyme_{fallback_id}"
+        pyme_id = payload.get("pyme_id")
+        if pyme_id:
+            return f"pyme_{pyme_id}"
 
     ticket_id = payload.get("id") or payload.get("ticket_id")
     if ticket_id and tenant_type in {"municipio", "pyme"}:
         try:
+            TicketModel = MunicipioTicket if tenant_type == "municipio" else PymeTicket
+            ticket_obj = db.session.get(TicketModel, ticket_id)
+            tenant_profile_id = getattr(ticket_obj, "tenant_id", None) if ticket_obj else None
+            if tenant_profile_id:
+                return f"tenant_{tenant_profile_id}"
             if tenant_type == "municipio":
-                ticket_obj = db.session.get(MunicipioTicket, ticket_id)
                 municipio_id = getattr(ticket_obj, "municipio_id", None) if ticket_obj else None
                 if municipio_id:
                     return f"municipio_{municipio_id}"
-            elif tenant_type == "pyme":
-                ticket_obj = db.session.get(PymeTicket, ticket_id)
-                rubro_id = getattr(ticket_obj, "rubro_id", None) if ticket_obj else None
-                if rubro_id:
-                    return f"pyme_{rubro_id}"
         except Exception:
             current_app.logger.exception(
                 "Error resolving socket room for ticket %s of type %s", ticket_id, tenant_type
             )
 
+    tenant_slug = str(payload.get("tenant_slug") or payload.get("tenant") or "").strip()
+    if tenant_slug:
+        tenant = TenantProfile.query.filter_by(slug=tenant_slug).first()
+        if tenant:
+            return f"tenant_{tenant.id}"
+
     return None
+
+
+def _resolve_ticket_room(payload: Any) -> Optional[str]:
+    if not isinstance(payload, dict):
+        return None
+    explicit_room = payload.get("socket_room")
+    if explicit_room:
+        return explicit_room
+    return _resolve_tenant_ticket_room(payload)
 
 
 def _emit_to_ticket_room(event_name: str, data: Any) -> None:
@@ -156,19 +266,24 @@ def _emit_to_ticket_room(event_name: str, data: Any) -> None:
     room = _resolve_ticket_room(data)
     if room:
         socketio.emit(event_name, data, room=room)
-    else:
-        socketio.emit(event_name, data)
+        return
+    current_app.logger.warning("Dropped unscoped ticket socket event event=%s", event_name)
 
 
 def _emit_standard_ticket_event(event_name: str, data: Any) -> None:
     """Emit normalized enterprise-style events alongside legacy socket payloads."""
     payload = data if isinstance(data, dict) else {"payload": data}
     room = _resolve_ticket_room(payload)
-    envelope = build_realtime_envelope(event_name=event_name, payload=payload, room=room)
     if room:
-        socketio.emit(event_name, envelope, room=room)
-    else:
-        socketio.emit(event_name, envelope)
+        _emit_standard_ticket_event_to_room(event_name, payload, room)
+        return
+    current_app.logger.warning("Dropped unscoped standard ticket event event=%s", event_name)
+
+
+def _emit_standard_ticket_event_to_room(event_name: str, data: Any, room: str) -> None:
+    payload = data if isinstance(data, dict) else {"payload": data}
+    envelope = build_realtime_envelope(event_name=event_name, payload=payload, room=room)
+    socketio.emit(event_name, envelope, room=room)
 
 
 def emit_ticket_update(data: Any) -> None:
@@ -292,18 +407,108 @@ def emit_new_ticket(data: Any) -> None:
     emit_ticket_update(data)
 
 
+def _is_public_ticket_comment(comment: Any) -> bool:
+    if not isinstance(comment, dict):
+        return False
+    if comment.get("is_internal") is True or comment.get("internal") is True:
+        return False
+    visibility = str(comment.get("visibility") or "").strip().lower()
+    if visibility and visibility not in {"public", "customer", "citizen"}:
+        return False
+    origin = str(comment.get("origen") or comment.get("origin") or "").strip().lower()
+    return origin in PUBLIC_TICKET_COMMENT_ORIGINS
+
+
+def _build_public_ticket_comment_event(data: dict[str, Any], room: str) -> Optional[dict[str, Any]]:
+    comment = data.get("comment") or data.get("comentario") or data.get("message")
+    if not _is_public_ticket_comment(comment):
+        return None
+
+    allowed_comment_keys = {
+        "attachmentInfo",
+        "autor",
+        "comentario",
+        "es_admin",
+        "estado_ticket",
+        "fecha",
+        "id",
+        "origen",
+        "texto",
+    }
+    public_comment = {key: value for key, value in comment.items() if key in allowed_comment_keys}
+    message_text = public_comment.get("comentario") or public_comment.get("texto") or ""
+    ticket_id = data.get("ticket_id") or data.get("ticketId")
+    return {
+        "contract_version": "live_chat.public_message.v1",
+        "ticket_id": ticket_id,
+        "ticketId": ticket_id,
+        "nro_ticket": data.get("nro_ticket"),
+        "tenant_type": data.get("tenant_type") or data.get("tipo"),
+        "tipo": data.get("tipo") or data.get("tenant_type"),
+        "estado": data.get("estado"),
+        "socket_room": room,
+        "actor": "agent" if public_comment.get("es_admin") else "neighbor",
+        "mensaje": message_text,
+        "comment": public_comment,
+        "message": public_comment,
+    }
+
+
 def emit_ticket_comment(data: Any) -> None:
     """Broadcast a new comment without altering the legacy ticket_update payloads."""
     _emit_to_ticket_room('new_comment', data)
     _emit_standard_ticket_event('conversation.message.created', data)
     _emit_standard_ticket_event('ticket.message.created', data)
 
+    if isinstance(data, dict):
+        ticket_type = data.get('tipo') or data.get('tenant_type')
+        ticket_id = data.get('ticket_id') or data.get('ticketId')
+        try:
+            public_room = build_ticket_room(ticket_type, ticket_id)
+        except LiveChatAccessError:
+            public_room = None
+        if public_room:
+            public_payload = _build_public_ticket_comment_event(data, public_room)
+            if public_payload:
+                socketio.emit('new_chat_message', public_payload, room=public_room)
+
 def emit_new_chat_message(data: Any) -> None:
-    """Broadcast a new chat message to the live chat room."""
-    _emit_to_ticket_room('new_chat_message', data)
-    _emit_standard_ticket_event('conversation.message.created', data)
-    _emit_standard_ticket_event('ticket.message.created', data)
-    _emit_standard_ticket_event('whatsapp.message.created', data)
+    """Broadcast sanitized public chat data and the full event only to operators."""
+    if not isinstance(data, dict):
+        current_app.logger.warning("Dropped malformed live chat socket event")
+        return
+
+    ticket_type = data.get("tenant_type") or data.get("tipo")
+    ticket_id = data.get("ticket_id") or data.get("ticketId")
+    try:
+        public_room = build_ticket_room(ticket_type, ticket_id)
+    except LiveChatAccessError:
+        public_room = None
+
+    if public_room:
+        public_payload = _build_public_ticket_comment_event(data, public_room)
+        if public_payload:
+            socketio.emit("new_chat_message", public_payload, room=public_room)
+        else:
+            current_app.logger.warning(
+                "Dropped non-public live chat payload ticket_type=%s ticket_id=%s",
+                ticket_type,
+                ticket_id,
+            )
+
+    admin_room = _resolve_tenant_ticket_room(data)
+    if not admin_room:
+        current_app.logger.warning(
+            "Dropped unscoped admin live chat event ticket_type=%s ticket_id=%s",
+            ticket_type,
+            ticket_id,
+        )
+        return
+
+    socketio.emit("new_chat_message", data, room=admin_room)
+    _emit_standard_ticket_event_to_room("conversation.message.created", data, admin_room)
+    _emit_standard_ticket_event_to_room("ticket.message.created", data, admin_room)
+    _emit_standard_ticket_event_to_room("whatsapp.message.created", data, admin_room)
 
 
 def _survey_realtime_rooms(slug_publico: str, data: Any = None, tenant_slug: str | None = None) -> list[str]:
@@ -472,9 +677,18 @@ def on_subscribe_ticket_updates(data):
         return
 
     user_id = payload.get('user_id')
-    user = User.query.get(user_id) if user_id else None
+    user = db.session.get(User, user_id) if user_id else None
     if not user:
         emit('subscription_error', {'error': 'unknown_user'})
+        return
+
+    if tenant_slug and not _user_can_access_tenant_slug(user, tenant_slug):
+        current_app.logger.warning(
+            "Socket tenant subscription rejected user=%s tenant_slug=%s",
+            user.id,
+            tenant_slug,
+        )
+        emit('subscription_error', {'error': 'tenant_forbidden'})
         return
 
     rooms = _merge_rooms_for_subscription(user, tenant_slug)
@@ -484,18 +698,63 @@ def on_subscribe_ticket_updates(data):
 
 @socketio.on('join')
 def on_join(data):
-    room = data['room']
-    join_room(room)
-    # Support for survey rooms
-    if room.startswith("encuesta_"):
-        current_app.logger.debug(f"Client joined survey room: {room}")
-    # Remove 'status' emit to prevent annoying "pip" sound on frontend
-    # socketio.emit('status', {'msg': 'Conectado a la sala ' + room}, room=room)
+    payload = data if isinstance(data, dict) else {}
+    room = str(payload.get('room') or '').strip()
+    if not room:
+        emit('join_error', {'error': 'missing_room'})
+        return
+
+    if room.startswith(('encuesta_', 'encuesta:')):
+        join_room(room)
+        current_app.logger.debug("Client joined public survey room: %s", room)
+        return
+
+    if room.startswith('ticket_'):
+        try:
+            access = verify_ticket_room_token(
+                str(payload.get('access_token') or payload.get('ticket_token') or ''),
+                expected_room=room,
+            )
+            TicketModel = MunicipioTicket if access['ticket_type'] == 'municipio' else PymeTicket
+            ticket = db.session.get(TicketModel, access['ticket_id'])
+            if not ticket:
+                raise LiveChatAccessError('ticket_not_found')
+            if str(getattr(ticket, 'estado', '') or '').strip().lower() in {'cerrado', 'resuelto', 'closed'}:
+                raise LiveChatAccessError('ticket_closed')
+        except LiveChatAccessError as exc:
+            error_code = str(exc) or 'invalid_access_token'
+            current_app.logger.warning(
+                "Socket ticket room join rejected room=%s reason=%s",
+                room,
+                error_code,
+            )
+            emit('join_error', {'error': error_code, 'room': room})
+            return
+
+        join_room(room)
+        emit('join_ack', {'room': room, 'access_mode': 'signed_ticket_room'})
+        return
+
+    # Legacy web-chat session rooms remain isolated by their high-entropy UUID.
+    # Tenant/operator rooms are joined during authenticated connect, never here.
+    if payload.get('channel') == 'web' and len(room) <= 128:
+        try:
+            UUID(room)
+        except (TypeError, ValueError, AttributeError):
+            pass
+        else:
+            join_room(room)
+            return
+
+    current_app.logger.warning("Socket generic room join rejected room=%s", room)
+    emit('join_error', {'error': 'room_not_joinable', 'room': room})
 
 @socketio.on('new_chat')
 def on_new_chat(data):
-    room = data['room']
-    socketio.emit('new_chat', data, room=room)
+    # Public and operator messages must pass through persisted HTTP/actions or
+    # the authenticated send_chat_message handler. Never relay arbitrary room data.
+    current_app.logger.warning("Rejected unsupported client-side new_chat relay")
+    emit('chat_error', {'error': 'event_not_supported'})
 
 @socketio.on('send_chat_message')
 def handle_send_chat_message(data):
@@ -515,13 +774,52 @@ def handle_send_chat_message(data):
 
     try:
         token_data = jwt.decode(token, current_app.config['SECRET_KEY'], algorithms=["HS256"])
-        current_user = User.query.get(token_data['user_id'])
-        if not current_user or current_user.rol not in ['admin', 'empleado']:
+        current_user = db.session.get(User, token_data['user_id'])
+        if not _is_ticket_operator(current_user):
             current_app.logger.warning(f"Intento de envío de mensaje de chat por usuario no autorizado: {token_data.get('user_id')}")
+            emit('chat_error', {'error': 'operator_forbidden'})
             return
     except (jwt.ExpiredSignatureError, jwt.InvalidTokenError) as e:
         current_app.logger.error(f"Token inválido en 'send_chat_message': {e}")
         return
+
+    TicketModel = MunicipioTicket if ticket_type == "municipio" else PymeTicket if ticket_type == "pyme" else None
+    ticket_obj = db.session.get(TicketModel, ticket_id) if TicketModel else None
+    if not ticket_obj:
+        current_app.logger.warning(
+            "Socket chat message rejected: unknown ticket type=%s id=%s",
+            ticket_type,
+            ticket_id,
+        )
+        emit('chat_error', {'error': 'ticket_not_found'})
+        return
+
+    owner_user = _get_owner_user(current_user)
+    ticket_tenant_id = getattr(ticket_obj, 'tenant_id', None)
+    ticket_tenant = db.session.get(TenantProfile, ticket_tenant_id) if ticket_tenant_id else None
+    same_tenant = _user_can_operate_tenant(current_user, ticket_tenant)
+    if ticket_type == 'municipio':
+        allowed_scope = {
+            getattr(current_user, 'municipio_id', None),
+            getattr(owner_user, 'municipio_id', None),
+            getattr(owner_user, 'id', None) if getattr(owner_user, 'tipo_chat', None) == 'municipio' else None,
+        }
+        scoped = getattr(ticket_obj, 'municipio_id', None) in (allowed_scope - {None})
+    else:
+        # Rubro is shared taxonomy, not a tenant boundary. Legacy PyME tickets
+        # without tenant_id therefore fail closed for realtime writes.
+        scoped = False
+    if not (same_tenant or scoped):
+        current_app.logger.warning(
+            "Socket chat message rejected: user=%s cannot access %s ticket=%s",
+            current_user.id,
+            ticket_type,
+            ticket_id,
+        )
+        emit('chat_error', {'error': 'ticket_forbidden'})
+        return
+
+    room = build_ticket_room(ticket_type, ticket_id)
 
     # Guardar el comentario en la base de datos
     nuevo_comentario = servicio_tickets.crear_comentario(
@@ -530,22 +828,25 @@ def handle_send_chat_message(data):
         comentario_data={
             "comentario": message_text,
             "user_id": current_user.id,
-            "es_admin": True # Los mensajes desde el panel siempre son de un admin/empleado
+            "es_admin": True, # Los mensajes desde el panel siempre son de un admin/empleado
+            "emit_socket": False,
         }
     )
 
     if nuevo_comentario:
         db.session.commit()
         # 1. Emitir el nuevo mensaje a todos en la sala del chat en vivo.
-        emit('new_chat_message', {
+        emit_new_chat_message({
+            'socket_room': room,
             'ticket_id': ticket_id,
-            'message': nuevo_comentario.to_dict()
-        }, room=room)
+            'tenant_type': ticket_type,
+            'tenant_profile_id': getattr(ticket_obj, 'tenant_id', None),
+            'municipio_id': getattr(ticket_obj, 'municipio_id', None),
+            'message': nuevo_comentario.to_dict(),
+        })
 
         # 2. Enviar notificaciones a otros canales (Email, SMS, WhatsApp)
         try:
-            TicketModel = MunicipioTicket if ticket_type == "municipio" else PymeTicket
-            ticket_obj = db.session.get(TicketModel, ticket_id)
             if ticket_obj:
                 from services.email_service import (
                     enviar_email_ticket_novedad,

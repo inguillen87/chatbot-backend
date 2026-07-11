@@ -28,7 +28,17 @@ from services.logic import (
     normalizar_rubro,
     es_rubro_publico,
 )
-from services.live_chat_schedule import build_live_chat_status, build_live_chat_transport
+from services.live_chat_schedule import (
+    build_live_chat_status,
+    build_live_chat_transport,
+    build_tenant_live_chat_status,
+)
+from services.live_chat_access import (
+    LiveChatAccessError,
+    attach_ticket_room_access,
+    build_ticket_room,
+    verify_ticket_room_token,
+)
 from services.demo_registry import load_demo_rubros, demo_rubro_for_token
 from services.education_contracts import (
     build_education_whatsapp_menu_payload,
@@ -912,6 +922,36 @@ def _persist_demo_pyme_ticket(
         return None
 
 
+def _build_demo_ticket_live_chat_contract(
+    ticket: Optional[PymeTicket],
+    tenant: Optional[TenantProfile],
+) -> dict:
+    if not ticket or not getattr(ticket, "id", None):
+        return {
+            "status": "unavailable",
+            "availability": "ticket_not_created",
+            "access_mode": "none",
+        }
+    try:
+        room = build_ticket_room("pyme", ticket.id)
+        return attach_ticket_room_access(
+            build_tenant_live_chat_status(tenant, socket_room=room),
+            ticket_type="pyme",
+            ticket_id=ticket.id,
+        )
+    except Exception as exc:
+        current_app.logger.exception(
+            "[DEMO_WIDGET_RUNTIME] could not build signed live-chat access for ticket %s: %s",
+            getattr(ticket, "id", None),
+            exc,
+        )
+        return {
+            "status": "unavailable",
+            "availability": "credential_generation_failed",
+            "access_mode": "none",
+        }
+
+
 def _persist_demo_pyme_order(
     *,
     tenant: Optional[TenantProfile],
@@ -1162,6 +1202,11 @@ def _demo_widget_runtime_response(
         elif ticket_id:
             body = f"Listo, deje abierto el caso escolar #{ticket_number or ticket_id}. Podes sumar detalles o adjuntos."
 
+        live_chat_contract = (
+            _build_demo_ticket_live_chat_contract(ticket, tenant)
+            if status == "esperando_agente_en_vivo"
+            else {}
+        )
         payload = {
             "contract_version": "demo.widget_runtime.v1",
             "ok": True,
@@ -1176,10 +1221,9 @@ def _demo_widget_runtime_response(
                 "ticket_id": ticket_id,
                 "chat_id": f"P-{ticket_number or ticket_id}" if ticket_id else chat_session_id,
                 "status": status,
-                "live_chat": {
-                    "status": status,
-                    "availability": "not_published",
-                } if status == "esperando_agente_en_vivo" else {},
+                "live_chat": live_chat_contract,
+                "live_chat_access_token": live_chat_contract.get("access_token"),
+                "socket_room": live_chat_contract.get("socket_room"),
                 "school_case": {
                     **pending_case,
                     "ticket_id": ticket_id,
@@ -1319,6 +1363,7 @@ def _demo_widget_runtime_response(
                 pregunta=question_text or "Cliente en espera de ventas desde demo widget.",
                 estado="esperando_agente_en_vivo",
             )
+            live_chat_contract = _build_demo_ticket_live_chat_contract(ticket, tenant)
             payload = {
                 "contract_version": "demo.widget_runtime.v1",
                 "ok": True,
@@ -1333,7 +1378,9 @@ def _demo_widget_runtime_response(
                     "ticket_id": getattr(ticket, "id", None),
                     "chat_id": f"P-{getattr(ticket, 'nro_ticket', '')}" if ticket else chat_session_id,
                     "status": "esperando_agente_en_vivo",
-                    "live_chat": {"status": "esperando_agente_en_vivo", "availability": "not_published"},
+                    "live_chat": live_chat_contract,
+                    "live_chat_access_token": live_chat_contract.get("access_token"),
+                    "socket_room": live_chat_contract.get("socket_room"),
                 },
             }
             normalize_response_payload(payload)
@@ -1349,6 +1396,11 @@ def _demo_widget_runtime_response(
             pregunta=question_text or "Solicitud iniciada desde menu demo.",
             estado="esperando_agente_en_vivo" if normalized_action in {"derivar_humano", "human_handoff"} else "nuevo",
         )
+        live_chat_contract = (
+            _build_demo_ticket_live_chat_contract(ticket, tenant)
+            if normalized_action in {"derivar_humano", "human_handoff"}
+            else {}
+        )
         payload = {
             "contract_version": "demo.widget_runtime.v1",
             "ok": True,
@@ -1363,6 +1415,9 @@ def _demo_widget_runtime_response(
                 "ticket_id": getattr(ticket, "id", None),
                 "chat_id": f"P-{getattr(ticket, 'nro_ticket', '')}" if ticket else chat_session_id,
                 "status": getattr(ticket, "estado", None) or "registrada",
+                "live_chat": live_chat_contract,
+                "live_chat_access_token": live_chat_contract.get("access_token"),
+                "socket_room": live_chat_contract.get("socket_room"),
                 "request": {"type": "consulta", "tenant_slug": getattr(tenant, "slug", None)},
             },
         }
@@ -2795,6 +2850,23 @@ def _procesar_chat(
         from models import MunicipioTicket, PymeTicket
         from services.ticket_service import servicio_tickets
 
+        if tipo_ticket not in {"municipio", "pyme"}:
+            return jsonify({"error": {"code": 400, "message": "Tipo de ticket invalido."}}), 400
+
+        expected_room = build_ticket_room(tipo_ticket, ticket_id)
+        request_payload = _request_json_payload()
+        live_chat_token = request_payload.get("live_chat_access_token") or request_payload.get("access_token")
+        try:
+            verify_ticket_room_token(str(live_chat_token or ""), expected_room=expected_room)
+        except LiveChatAccessError as exc:
+            current_app.logger.warning(
+                "Live chat widget write rejected ticket_type=%s ticket_id=%s reason=%s",
+                tipo_ticket,
+                ticket_id,
+                exc,
+            )
+            return jsonify({"error": {"code": 403, "message": "Acceso al chat no valido."}}), 403
+
         TicketModel = MunicipioTicket if tipo_ticket == "municipio" else PymeTicket
         # Use with_for_update to lock the row during the check and update
         ticket = db.session.query(TicketModel).filter_by(id=ticket_id).with_for_update().first()
@@ -2804,7 +2876,8 @@ def _procesar_chat(
                 "comentario": pregunta,
                 "user_id": getattr(current_user, "id", None),
                 "anon_id": anon_id if not current_user else None,
-                "es_admin": False
+                "es_admin": False,
+                "origen": "widget",
             }
 
             if attachment_info:
@@ -2823,12 +2896,10 @@ def _procesar_chat(
 
             if nuevo_comentario:
                 commit_with_retry(db.session) # Commit the new comment
-                room_name = f"ticket_{tipo_ticket}_{ticket_id}"
-                socketio.emit('new_chat_message', {
-                    'ticket_id': ticket_id,
-                    'message': nuevo_comentario.to_dict()
-                }, room=room_name)
-                current_app.logger.info(f"User message for active ticket {ticket_id} sent to room {room_name}")
+                current_app.logger.info(
+                    "User message for active ticket %s persisted through scoped realtime delivery",
+                    ticket_id,
+                )
                 return jsonify({"status": "message_sent_to_live_chat"}), 200
             else:
                 db.session.rollback()

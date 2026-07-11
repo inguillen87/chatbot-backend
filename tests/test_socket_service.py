@@ -32,22 +32,71 @@ class SocketServiceEventTests(unittest.TestCase):
         self.assertEqual(mock_emit.call_args_list[2].kwargs, {'room': 'municipio_7'})
 
     def test_emit_ticket_comment_prefers_explicit_room(self):
-        payload = {"socket_room": "pyme_3", "tenant_type": "pyme", "ticket_id": 15}
+        payload = {
+            "socket_room": "tenant_3",
+            "tenant_type": "pyme",
+            "tenant_id": 3,
+            "ticket_id": 15,
+            "ticket": {"contacto": {"email": "private@example.com"}, "ai_summary": "internal"},
+            "comment": {
+                "id": 81,
+                "comentario": "Respuesta publica",
+                "texto": "Respuesta publica",
+                "origen": "chat",
+                "es_admin": True,
+                "user_id": 44,
+                "anon_id": "private-anon",
+            },
+        }
 
         with patch('socket_service.socketio.emit') as mock_emit:
             emit_ticket_comment(payload)
 
-        assert mock_emit.call_args_list[0] == call('new_comment', payload, room='pyme_3')
+        assert mock_emit.call_args_list[0] == call('new_comment', payload, room='tenant_3')
         event_name, event_payload = mock_emit.call_args_list[1].args[:2]
         self.assertEqual(event_name, 'conversation.message.created')
-        self.assertEqual(event_payload['room'], 'pyme_3')
+        self.assertEqual(event_payload['room'], 'tenant_3')
         self.assertEqual(event_payload['ticket']['id'], 15)
         self.assertEqual(event_payload['ticket']['tenant_type'], 'pyme')
         self.assertEqual(event_payload['payload'], payload)
-        self.assertEqual(mock_emit.call_args_list[1].kwargs, {'room': 'pyme_3'})
+        self.assertEqual(mock_emit.call_args_list[1].kwargs, {'room': 'tenant_3'})
         self.assertEqual(mock_emit.call_args_list[2].args[0], 'ticket.message.created')
         self.assertEqual(mock_emit.call_args_list[2].args[1]['payload'], payload)
-        self.assertEqual(mock_emit.call_args_list[2].kwargs, {'room': 'pyme_3'})
+        self.assertEqual(mock_emit.call_args_list[2].kwargs, {'room': 'tenant_3'})
+        public_event = mock_emit.call_args_list[3]
+        self.assertEqual(public_event.args[0], 'new_chat_message')
+        self.assertEqual(public_event.args[1]['socket_room'], 'ticket_pyme_15')
+        self.assertEqual(public_event.args[1]['contract_version'], 'live_chat.public_message.v1')
+        self.assertEqual(public_event.args[1]['message']['comentario'], 'Respuesta publica')
+        self.assertNotIn('ticket', public_event.args[1])
+        self.assertNotIn('tenant_id', public_event.args[1])
+        self.assertNotIn('user_id', public_event.args[1]['message'])
+        self.assertNotIn('anon_id', public_event.args[1]['message'])
+        self.assertEqual(public_event.kwargs, {'room': 'ticket_pyme_15'})
+
+    def test_emit_ticket_comment_never_mirrors_internal_notes_to_public_room(self):
+        payload = {
+            "socket_room": "tenant_3",
+            "tenant_type": "pyme",
+            "ticket_id": 15,
+            "comment": {
+                "id": 82,
+                "comentario": "Nota solo para operadores",
+                "origen": "internal",
+                "es_admin": True,
+            },
+        }
+
+        with patch('socket_service.socketio.emit') as mock_emit:
+            emit_ticket_comment(payload)
+
+        emitted_names = [item.args[0] for item in mock_emit.call_args_list]
+        self.assertNotIn('new_chat_message', emitted_names)
+        self.assertEqual(emitted_names, [
+            'new_comment',
+            'conversation.message.created',
+            'ticket.message.created',
+        ])
 
     def test_emit_ticket_status_changed_emits_legacy_and_standard_events(self):
         payload = {"socket_room": "municipio_7", "tenant_type": "municipio", "ticket_id": 11, "estado": "en_proceso"}
@@ -84,20 +133,49 @@ class SocketServiceEventTests(unittest.TestCase):
         self.assertEqual(mock_emit.call_args_list[2].kwargs, {'room': 'municipio_7'})
 
     def test_emit_new_chat_message_emits_whatsapp_analytics_alias(self):
-        payload = {"socket_room": "ticket_municipio_11", "tenant_type": "municipio", "ticket_id": 11, "channel": "whatsapp"}
+        payload = {
+            "socket_room": "ticket_municipio_11",
+            "tenant_type": "municipio",
+            "municipio_id": 7,
+            "ticket_id": 11,
+            "channel": "whatsapp",
+            "message": {
+                "id": 91,
+                "comentario": "Respuesta del operador",
+                "texto": "Respuesta del operador",
+                "origen": "chat",
+                "es_admin": True,
+                "user_id": 44,
+                "anon_id": "private-anon",
+                "actor_identity": {
+                    "email": "operator@example.com",
+                    "phone": "+5491111111111",
+                },
+            },
+        }
 
         with patch('socket_service.socketio.emit') as mock_emit:
             emit_new_chat_message(payload)
 
-        self.assertEqual(mock_emit.call_args_list[0], call('new_chat_message', payload, room='ticket_municipio_11'))
-        self.assertEqual(mock_emit.call_args_list[1].args[0], 'conversation.message.created')
-        self.assertEqual(mock_emit.call_args_list[1].kwargs, {'room': 'ticket_municipio_11'})
-        self.assertEqual(mock_emit.call_args_list[2].args[0], 'ticket.message.created')
+        public_message = mock_emit.call_args_list[0]
+        self.assertEqual(public_message.args[0], 'new_chat_message')
+        self.assertEqual(public_message.kwargs, {'room': 'ticket_municipio_11'})
+        self.assertEqual(public_message.args[1]['contract_version'], 'live_chat.public_message.v1')
+        self.assertEqual(public_message.args[1]['message']['comentario'], 'Respuesta del operador')
+        self.assertNotIn('user_id', public_message.args[1]['message'])
+        self.assertNotIn('anon_id', public_message.args[1]['message'])
+        self.assertNotIn('actor_identity', public_message.args[1]['message'])
+        self.assertEqual(mock_emit.call_args_list[1], call('new_chat_message', payload, room='municipio_7'))
+        self.assertEqual(mock_emit.call_args_list[2].args[0], 'conversation.message.created')
         self.assertEqual(mock_emit.call_args_list[2].args[1]['payload'], payload)
-        self.assertEqual(mock_emit.call_args_list[2].kwargs, {'room': 'ticket_municipio_11'})
-        self.assertEqual(mock_emit.call_args_list[3].args[0], 'whatsapp.message.created')
+        self.assertEqual(mock_emit.call_args_list[2].kwargs, {'room': 'municipio_7'})
+        self.assertEqual(mock_emit.call_args_list[3].args[0], 'ticket.message.created')
         self.assertEqual(mock_emit.call_args_list[3].args[1]['payload'], payload)
-        self.assertEqual(mock_emit.call_args_list[3].kwargs, {'room': 'ticket_municipio_11'})
+        self.assertEqual(mock_emit.call_args_list[3].kwargs, {'room': 'municipio_7'})
+        self.assertEqual(mock_emit.call_args_list[4].args[0], 'whatsapp.message.created')
+        self.assertEqual(mock_emit.call_args_list[4].args[1]['payload'], payload)
+        self.assertEqual(mock_emit.call_args_list[4].kwargs, {'room': 'municipio_7'})
+        self.assertEqual(len(mock_emit.call_args_list), 5)
 
     def test_emit_ticket_presence_changed_uses_enterprise_envelope(self):
         payload = {"socket_room": "municipio_7", "tenant_type": "municipio", "ticket_id": 11, "presence_status": "active"}

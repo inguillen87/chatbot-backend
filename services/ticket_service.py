@@ -636,28 +636,15 @@ class ServicioTickets:
             # la ruta llamadora no emite un evento normalizado propio.
             if emit_socket:
                 try:
-                    # We need to construct a payload that matches what frontend expects for 'new_chat_message'
-                    # Ideally reuse 'new_chat_message' event structure if frontend listens to it.
-                    # Currently socket_service.handle_send_chat_message emits 'new_chat_message'.
-                    # emit_ticket_comment emits 'new_comment'.
-                    # We will emit 'new_chat_message' manually here to match the Live Chat expectation.
+                    from socket_service import emit_new_chat_message
 
-                    from socket_service import _resolve_ticket_room, socketio
-
-                    room_payload = {
+                    emit_new_chat_message({
                         "tenant_type": tipo_ticket,
-                        "id": ticket_id,
-                        # Fallbacks
+                        "ticket_id": ticket_id,
+                        "tenant_profile_id": getattr(ticket, "tenant_id", None),
                         "municipio_id": getattr(ticket, "municipio_id", None),
-                        "pyme_id": getattr(ticket, "rubro_id", None) # Approximation for pyme room resolution
-                    }
-
-                    room = _resolve_ticket_room(room_payload)
-                    if room:
-                        socketio.emit('new_chat_message', {
-                            'ticket_id': ticket_id,
-                            'message': nuevo_comentario.to_dict()
-                        }, room=room)
+                        "message": nuevo_comentario.to_dict(),
+                    })
 
                 except Exception as e_sock:
                     logger.error(f"Error emitting socket event for comment on ticket {ticket_id}: {e_sock}", exc_info=True)
@@ -722,6 +709,7 @@ class ServicioTickets:
         *,
         municipio_id: int | None = None,
         rubro_id: int | None = None,
+        tenant_id: int | None = None,
         fecha_inicio: str | None = None,
         fecha_fin: str | None = None,
         categoria: str | Iterable[str] | None = None,
@@ -737,10 +725,11 @@ class ServicioTickets:
         Model = MunicipioTicket if tipo_ticket == "municipio" else PymeTicket
         try:
             logger.info(
-                "[TICKET_SERVICE_MAPA] tipo=%s municipio_id=%s rubro_id=%s fecha_inicio=%s fecha_fin=%s categoria=%s distrito=%s estado=%s",
+                "[TICKET_SERVICE_MAPA] tipo=%s municipio_id=%s rubro_id=%s tenant_id=%s fecha_inicio=%s fecha_fin=%s categoria=%s distrito=%s estado=%s",
                 tipo_ticket,
                 municipio_id,
                 rubro_id,
+                tenant_id,
                 fecha_inicio,
                 fecha_fin,
                 categoria,
@@ -801,8 +790,13 @@ class ServicioTickets:
 
             if tipo_ticket == "municipio" and municipio_id is not None:
                 query = query.filter_by(municipio_id=municipio_id)
-            if tipo_ticket == "pyme" and rubro_id is not None:
-                query = query.filter_by(rubro_id=rubro_id)
+            if tipo_ticket == "pyme":
+                if tenant_id is None:
+                    logger.warning(
+                        "[TICKET_SERVICE_MAPA] PyME heatmap rejected without exact tenant_id"
+                    )
+                    return []
+                query = query.filter_by(tenant_id=tenant_id)
 
             if fecha_inicio:
                 try:

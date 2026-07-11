@@ -31,6 +31,7 @@ from services.whatsapp_receipts import (
     render_ticket_whatsapp,
 )
 from services.live_chat_schedule import build_tenant_live_chat_status
+from services.live_chat_access import attach_ticket_room_access, build_ticket_room
 from utils.ticket_utils import normalize_category
 from services.common_utils import validar_telefono, formatear_telefono_e164, validar_email
 from services.config_loader import cargar_configuracion_municipio
@@ -1767,11 +1768,11 @@ class DerivarHumanoActionHandler(BaseActionHandler):
             )
 
             # Emitir evento de socket para notificar al panel de administración
-            socket_room = f"municipio_{sala_obj.municipio_id}"
+            admin_socket_room = f"municipio_{sala_obj.municipio_id}"
             try:
                 ticket_json = serialize_ticket_to_json(sala_obj, ticket_type)
-                socketio.emit('live_chat_request', ticket_json, room=socket_room)
-                logger.info(f"Socket event 'live_chat_request' emitted to room '{socket_room}' for ticket {sala_obj.id}")
+                socketio.emit('live_chat_request', ticket_json, room=admin_socket_room)
+                logger.info(f"Socket event 'live_chat_request' emitted to room '{admin_socket_room}' for ticket {sala_obj.id}")
             except Exception as e_socket:
                 logger.error(f"Failed to emit socket event for new live chat ticket {sala_obj.id}: {e_socket}", exc_info=True)
 
@@ -1789,7 +1790,15 @@ class DerivarHumanoActionHandler(BaseActionHandler):
             tenant_profile = self.context.get("tenant_profile") or self.context.get("tenant")
             if not tenant_profile:
                 tenant_profile = getattr(owner_user, "tenant", None)
-            live_chat_status = build_tenant_live_chat_status(tenant_profile, socket_room=socket_room)
+            live_chat_status = attach_ticket_room_access(
+                build_tenant_live_chat_status(
+                    tenant_profile,
+                    socket_room=build_ticket_room(ticket_type, sala_obj.id),
+                ),
+                ticket_type=ticket_type,
+                ticket_id=sala_obj.id,
+            )
+            socket_room = live_chat_status["socket_room"]
             chat_context_data = self.context.get("chat_db_context_data")
             if isinstance(chat_context_data, dict):
                 chat_context_data.update(
@@ -1819,6 +1828,7 @@ class DerivarHumanoActionHandler(BaseActionHandler):
                     "chat_id": chat_id,
                     "status": "esperando_agente_en_vivo",
                     "live_chat": live_chat_status,
+                    "live_chat_access_token": live_chat_status["access_token"],
                     "socket_room": socket_room,
                     "channel_mode": live_chat_status.get("mode"),
                 },

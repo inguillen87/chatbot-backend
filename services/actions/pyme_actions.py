@@ -10,6 +10,7 @@ from services.qdrant_search import buscar_catalogo_qdrant, CATALOGO_PYME
 from services.preferences import add_preference
 from services.config_loader import cargar_configuracion_pyme
 from services.live_chat_schedule import build_live_chat_status, build_tenant_live_chat_status
+from services.live_chat_access import attach_ticket_room_access, build_ticket_room
 from models import db
 import models
 from services.common_utils import parse_precio_flexible
@@ -284,6 +285,21 @@ class OfertasHandler(BasePymeHandler):
 
 class HumanHandler(BasePymeHandler):
     def execute(self, action_data):
+        result = DerivarHumanoActionHandlerPyme(self.context).execute(
+            {"motivo_derivacion": action_data.get("pregunta") or "Solicitud de asesor humano"}
+        )
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        return {
+            "message_body": result.get("message_to_user") or "No pude abrir el canal de atencion en este momento.",
+            "options_list": [{"id": "ver_catalogo_pyme_post_human", "texto": "Ver catalogo"}],
+            "message_type": "interactive_buttons",
+            "fuente": "pyme_human_handler_scoped_v4",
+            "ticket_id": data.get("ticket_id"),
+            "data": data,
+            "success": bool(result.get("success")),
+        }
+
+    def _execute_legacy_unreachable(self, action_data):
         pregunta = action_data.get("pregunta", "")
         self.pyme_ctx["estado_conversacion"] = PymeConversationState.IDLE.name
         self._guardar_contexto_pyme()
@@ -443,12 +459,6 @@ class DerivarHumanoActionHandlerPyme(BasePymeHandler):
             )
 
             chat_id = f"P-{sala.nro_ticket}"
-            socket_room = None
-            if owner_rubro_id:
-                socket_room = f"pyme_{owner_rubro_id}"
-            elif owner_pyme_id:
-                socket_room = f"pyme_{owner_pyme_id}"
-
             user_message = (
                 "En breve un representante se pondrá en contacto contigo. "
                 f"Tu número de chat es {chat_id}."
@@ -458,7 +468,15 @@ class DerivarHumanoActionHandlerPyme(BasePymeHandler):
                 tenant_profile = db.session.get(models.TenantProfile, self.context.get("tenant_id"))
             if not tenant_profile:
                 tenant_profile = getattr(owner_user, "tenant", None)
-            live_chat_status = build_tenant_live_chat_status(tenant_profile, socket_room=socket_room)
+            live_chat_status = attach_ticket_room_access(
+                build_tenant_live_chat_status(
+                    tenant_profile,
+                    socket_room=build_ticket_room("pyme", sala.id),
+                ),
+                ticket_type="pyme",
+                ticket_id=sala.id,
+            )
+            socket_room = live_chat_status["socket_room"]
             chat_context_data = self.context.get("chat_db_context_data")
             if isinstance(chat_context_data, dict):
                 chat_context_data.update(
@@ -488,6 +506,7 @@ class DerivarHumanoActionHandlerPyme(BasePymeHandler):
                     "chat_id": chat_id,
                     "status": "esperando_agente_en_vivo",
                     "live_chat": live_chat_status,
+                    "live_chat_access_token": live_chat_status["access_token"],
                     "socket_room": socket_room,
                     "channel_mode": live_chat_status.get("mode"),
                 },

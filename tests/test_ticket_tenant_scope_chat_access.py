@@ -1,7 +1,9 @@
 import jwt
+from types import SimpleNamespace
 
 from app import db
-from models import MunicipioTicket, TenantProfile, TicketComentario, User
+from models import MunicipioTicket, PymeTicket, Rubro, TenantProfile, TicketComentario, User
+from routes.ticket import _ticket_matches_tenant_scope
 
 
 def _auth_headers(app, user: User, tenant_slug: str) -> dict[str, str]:
@@ -19,6 +21,17 @@ def _auth_headers(app, user: User, tenant_slug: str) -> dict[str, str]:
         "X-Tenant": tenant_slug,
         "X-Tenant-Slug": tenant_slug,
     }
+
+
+def test_explicit_foreign_tenant_id_never_falls_back_to_legacy_owner_scope():
+    tenant = SimpleNamespace(id=10)
+    mismatched_ticket = SimpleNamespace(tenant_id=20, municipio_id=910, pyme_id=77)
+
+    assert not _ticket_matches_tenant_scope(mismatched_ticket, tenant, 910, None)
+    assert not _ticket_matches_tenant_scope(mismatched_ticket, tenant, None, 77)
+
+    legacy_ticket = SimpleNamespace(tenant_id=None, municipio_id=910, pyme_id=None)
+    assert _ticket_matches_tenant_scope(legacy_ticket, tenant, 910, None)
 
 
 def test_tenant_admin_can_read_public_ticket_conversation(client, app):
@@ -173,3 +186,73 @@ def test_same_type_admin_cannot_read_other_tenant_ticket_conversation(client, ap
         query_string=query_string,
     )
     assert timeline_response.status_code == 403
+
+
+def test_same_rubro_pyme_admin_cannot_read_or_reply_to_other_tenant_ticket(client, app):
+    rubro = Rubro(clave="shared-rubro-http", nombre="Shared rubro")
+    owner_a = User(
+        email="pyme-a-owner@test.com",
+        name="Pyme A",
+        rol="admin",
+        tipo_chat="pyme",
+    )
+    owner_b = User(
+        email="pyme-b-owner@test.com",
+        name="Pyme B",
+        rol="admin",
+        tipo_chat="pyme",
+    )
+    owner_a.set_password("pass")
+    owner_b.set_password("pass")
+    db.session.add_all([rubro, owner_a, owner_b])
+    db.session.flush()
+    owner_a.rubro_id = rubro.id
+    owner_b.rubro_id = rubro.id
+
+    tenant_a = TenantProfile(
+        slug="pyme-a-chat-scope",
+        nombre="Pyme A",
+        tipo="pyme",
+        pyme_id=owner_a.id,
+    )
+    tenant_b = TenantProfile(
+        slug="pyme-b-chat-scope",
+        nombre="Pyme B",
+        tipo="pyme",
+        pyme_id=owner_b.id,
+    )
+    db.session.add_all([tenant_a, tenant_b])
+    db.session.flush()
+    owner_a.tenant_id = tenant_a.id
+    owner_a.tenant_slug = tenant_a.slug
+    owner_b.tenant_id = tenant_b.id
+    owner_b.tenant_slug = tenant_b.slug
+
+    ticket_b = PymeTicket(
+        tenant_id=tenant_b.id,
+        rubro_id=rubro.id,
+        nro_ticket=778899,
+        pregunta="Pedido privado de Pyme B",
+        estado="nuevo",
+        user_id=owner_b.id,
+    )
+    db.session.add(ticket_b)
+    db.session.commit()
+
+    headers = _auth_headers(app, owner_a, tenant_b.slug)
+    query_string = {"tenant_slug": tenant_b.slug, "tenant": tenant_b.slug}
+
+    detail_response = client.get(
+        f"/tickets/pyme/{ticket_b.id}",
+        headers=headers,
+        query_string=query_string,
+    )
+    assert detail_response.status_code == 403
+
+    reply_response = client.post(
+        f"/tickets/pyme/{ticket_b.id}/responder",
+        headers=headers,
+        query_string=query_string,
+        json={"comentario": "Intento cross-tenant"},
+    )
+    assert reply_response.status_code == 403

@@ -956,6 +956,8 @@ class DemoOnboardingTestCase(unittest.TestCase):
         data = payload.get("data") or {}
         self.assertEqual(data.get("status"), "esperando_agente_en_vivo")
         self.assertTrue(data.get("ticket_id"))
+        self.assertTrue(data.get("live_chat_access_token"))
+        self.assertEqual(data.get("socket_room"), f"ticket_pyme_{data['ticket_id']}")
         self.assertEqual(PymeTicket.query.count(), 1)
 
     def test_government_demo_menu_returns_action_buttons_and_messages(self):

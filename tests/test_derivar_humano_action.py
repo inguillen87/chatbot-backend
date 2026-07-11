@@ -71,17 +71,18 @@ class TestDerivarHumanoAction:
         # Assert
         assert result['success']
         assert 'M-' in result['data']['chat_id']
-        assert result['data']['socket_room'] == 'municipio_10'
+        ticket_id = result['data']['ticket_id']
+        assert result['data']['socket_room'] == f'ticket_municipio_{ticket_id}'
         assert result['data']['channel_mode'] == 'offline'
         assert result['data']['live_chat']['source'] == 'tenant_config'
-        assert result['data']['live_chat']['socket_room'] == 'municipio_10'
+        assert result['data']['live_chat']['socket_room'] == f'ticket_municipio_{ticket_id}'
+        assert result['data']['live_chat_access_token'] == result['data']['live_chat']['access_token']
         assert result['data']['live_chat']['offline_message_enabled'] is True
         assert result['data']['live_chat']['availability_state'] == 'offline_accepting_messages'
         assert result['data']['live_chat']['cta']['primary']['action'] == 'queue_offline_message'
         assert result['data']['live_chat']['ui']['primary_cta_label'] == 'Dejar mensaje'
 
         # Check database
-        ticket_id = result['data']['ticket_id']
         ticket_db = db.session.query(MunicipioTicket).get(ticket_id)
         assert ticket_db is not None
         assert ticket_db.estado == 'esperando_agente_en_vivo'
@@ -139,14 +140,15 @@ class TestDerivarHumanoAction:
         # Assert
         assert result['success']
         assert 'P-' in result['data']['chat_id']
-        assert result['data']['socket_room'] == 'pyme_20'
-        assert result['data']['live_chat']['socket_room'] == 'pyme_20'
+        ticket_id = result['data']['ticket_id']
+        assert result['data']['socket_room'] == f'ticket_pyme_{ticket_id}'
+        assert result['data']['live_chat']['socket_room'] == f'ticket_pyme_{ticket_id}'
+        assert result['data']['live_chat_access_token'] == result['data']['live_chat']['access_token']
         assert result['data']['channel_mode'] == 'offline'
         assert result['data']['live_chat']['source'] == 'tenant_config'
         assert result['data']['live_chat']['offline_message_enabled'] is True
 
         # Check database
-        ticket_id = result['data']['ticket_id']
         ticket_db = db.session.query(PymeTicket).get(ticket_id)
         assert ticket_db is not None
         assert ticket_db.estado == 'esperando_agente_en_vivo'
@@ -183,7 +185,8 @@ class TestDerivarHumanoAction:
         assert result['executed_action_handler'] == 'DerivarHumanoActionHandlerPyme'
         assert result['success']
         assert 'P-' in result['data']['chat_id']
-        assert result['data']['socket_room'] == 'pyme_20'
+        assert result['data']['socket_room'] == f"ticket_pyme_{result['data']['ticket_id']}"
+        assert result['data']['live_chat_access_token']
         assert chat_context_data["human_chat_in_progress"] is True
         assert chat_context_data["tipo_ticket"] == "pyme"
         assert chat_context_data["ticket_id"] == result["data"]["ticket_id"]

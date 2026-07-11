@@ -39,10 +39,22 @@ class TicketStateSyncTest(unittest.TestCase):
         pyme_admin = User(name='Pyme Admin', email='pyme@example.com', rol='admin', tipo_chat='pyme', rubro_id=rubro.id)
         pyme_admin.set_password('pass')
         db.session.add(pyme_admin)
+        db.session.flush()
+        pyme_tenant = TenantProfile(
+            slug='pyme-state-sync',
+            nombre='Pyme State Sync',
+            tipo='pyme',
+            pyme_id=pyme_admin.id,
+        )
+        db.session.add(pyme_tenant)
+        db.session.flush()
+        pyme_admin.tenant_id = pyme_tenant.id
+        pyme_admin.tenant_slug = pyme_tenant.slug
         db.session.commit()
 
         self.muni_admin = muni_admin
         self.pyme_admin = pyme_admin
+        self.pyme_tenant = pyme_tenant
 
         # Create a municipal ticket
         muni_ticket = MunicipioTicket(nro_ticket='111111', municipio_id=1, pregunta='p', consulta_pin='222222', user_id=muni_admin.id)
@@ -51,7 +63,13 @@ class TicketStateSyncTest(unittest.TestCase):
         self.muni_ticket = muni_ticket
 
         # Create a pyme ticket
-        pyme_ticket = PymeTicket(nro_ticket=1, rubro_id=rubro.id, pregunta='p', user_id=pyme_admin.id)
+        pyme_ticket = PymeTicket(
+            nro_ticket=1,
+            tenant_id=pyme_tenant.id,
+            rubro_id=rubro.id,
+            pregunta='p',
+            user_id=pyme_admin.id,
+        )
         db.session.add(pyme_ticket)
         db.session.commit()
         self.pyme_ticket = pyme_ticket
